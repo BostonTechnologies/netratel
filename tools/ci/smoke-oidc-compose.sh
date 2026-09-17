@@ -168,7 +168,7 @@ start_gateway_client() {
     --volume "${client_volume}:/var/lib/netratel" \
     --volume "${tls_certificate_path}:/run/netratel-smoke/tls.crt:ro" \
     --env SSL_CERT_FILE=/run/netratel-smoke/tls.crt \
-    "$client_image" --api http://api:9222 --Gateway:Endpoint=https://api:9443 \
+    "$client_image" --api http://api:9222 --Gateway:Endpoint=https://api:9223 \
     --Gateway:TelemetryShadowEnabled=true --Gateway:TelemetryAuthorityEnabled=true \
     --Gateway:TelemetryFastIntervalSeconds=1 --Gateway:CommandAuthorityEnabled=true \
     --Gateway:JobAuthorityEnabled=false --Gateway:ControlGatewayEnabled=false \
