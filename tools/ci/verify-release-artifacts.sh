@@ -109,12 +109,12 @@ printf '%s\n' '{"apiBaseUrl":"https://netratel.example.invalid","oidcTokenUrl":"
 
 mcp_initialize_response="$({
   printf '%s\\n' \
-    '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"release-artifact-verifier","version":"1"}}}' \
+    '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"release-artifact-verifier","version":"1"}}}' \
     '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
     '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
     '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"netratel_capabilities","arguments":{"operation":"get"}}}'
   sleep 1
-} | NETRATEL_MCP_CONFIG="$mcp_config" timeout 10s dotnet "$mcp_assembly" 2>/dev/null)"
+} | NETRATEL_MCP_CONFIG="$mcp_config" NETRATEL_MCP_INSTANCE=dev timeout 10s dotnet "$mcp_assembly" 2>/dev/null)"
 jq -se '
   length == 3
   and (map(.id) | sort == [1, 2, 3])
