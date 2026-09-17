@@ -28,7 +28,7 @@ jobs:
         run: >-
           docker run --rm --volume "$GITHUB_WORKSPACE:/repo:ro" --workdir /repo
           zricethezav/gitleaks@sha256:e5fa09c73ff086ea57f3731a4e1fb372969fb73314cc932020472eb23a5dfc7e
-          detect --source . --redact --no-banner
+          detect --source . --config .gitleaks.toml --redact --no-banner
       - run: tools/ci/check-public-disclosure.sh
       - run: tools/ci/test-public-disclosure.sh
 
