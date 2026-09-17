@@ -32,6 +32,7 @@ tls_bundle_path="$(mktemp --suffix=.pfx)"
 cli_extract_dir=""
 mcp_stdio_extract_dir=""
 mcp_stdio_config_path="$(mktemp --suffix=.json)"
+mcp_stdio_error_path="$(mktemp)"
 client_volume="${project}-client-state"
 gateway_client="${project}-gateway-client"
 stage="initializing Compose OIDC smoke"
@@ -122,6 +123,7 @@ cleanup() {
     find "$mcp_stdio_extract_dir" -depth -delete 2>/dev/null || true
   fi
   unlink "$mcp_stdio_config_path" 2>/dev/null || true
+  unlink "$mcp_stdio_error_path" 2>/dev/null || true
   return "$status"
 }
 trap cleanup EXIT
@@ -305,7 +307,7 @@ verify_cli_archive_scoped_read() {
 }
 
 verify_mcp_stdio_archive_scoped_read() {
-  local mcp_archive="$1" mcp_assembly mcp_response
+  local mcp_archive="$1" mcp_assembly mcp_response mcp_status mcp_error
   [[ -s "$mcp_archive" ]] || {
     echo "NETRATEL_MCP_STDIO_SMOKE_ARCHIVE must name the packaged stdio MCP archive to verify." >&2
     return 1
@@ -326,13 +328,20 @@ verify_mcp_stdio_archive_scoped_read() {
     > "$mcp_stdio_config_path"
   chmod 600 "$mcp_stdio_config_path"
 
+  set +e
   mcp_response="$({
     printf '%s\n' \
       '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"compose-archive-smoke","version":"1"}}}' \
       '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
       '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"netratel_tenants","arguments":{"operation":"list"}}}'
     sleep 1
-  } | NETRATEL_MCP_CONFIG="$mcp_stdio_config_path" NETRATEL_MCP_INSTANCE=dev timeout 15s dotnet "$mcp_assembly" 2>/dev/null)"
+  } | NETRATEL_MCP_CONFIG="$mcp_stdio_config_path" NETRATEL_MCP_INSTANCE=dev timeout 15s dotnet "$mcp_assembly" 2>"$mcp_stdio_error_path")"
+  mcp_status=$?
+  set -e
+  if (( mcp_status != 0 )); then
+    stage="packaged stdio MCP exited ${mcp_status}: $(head -n 1 "$mcp_stdio_error_path")"
+    return 1
+  fi
   jq -se --argjson expected_tenant "$tenant_id" '
     length == 2
     and (map(.id) | sort == [1, 2])
@@ -340,7 +349,8 @@ verify_mcp_stdio_archive_scoped_read() {
     and (map(select(.id == 2))[0].result.structuredContent.success == true)
     and ([map(select(.id == 2))[0].result.structuredContent | .. | objects | select(.tenantId? == $expected_tenant)] | length > 0)
   ' <<<"$mcp_response" >/dev/null || {
-    echo "The packaged stdio MCP did not authenticate and read the disposable tenant." >&2
+    mcp_error="$(jq -r 'map(select(.id == 2))[0].result.structuredContent.error.code // map(select(.id == 2))[0].error.code // "unexpected_response"' <<<"$mcp_response" 2>/dev/null || true)"
+    stage="packaged stdio MCP did not authenticate and read the disposable tenant (${mcp_error:-unexpected_response})"
     return 1
   }
 }
@@ -459,9 +469,17 @@ docker run --rm --user 0:0 --volume "${client_volume}:/var/lib/netratel" \
 stage="enrolling the disposable Client"
 docker run --rm --network "${project}_default" --volume "${client_volume}:/var/lib/netratel" \
   "$client_image" --api http://api:9222 --enroll "$enrollment_code"
+stage="validating disposable Client authentication"
+set +e
 auth_check_output="$(docker run --rm --network "${project}_default" --volume "${client_volume}:/var/lib/netratel" \
-  "$client_image" --api http://api:9222 --auth-check)"
+  "$client_image" --api http://api:9222 --auth-check 2>&1)"
+auth_check_status=$?
+set -e
 printf '%s\n' "$auth_check_output"
+if (( auth_check_status != 0 )); then
+  stage="Client auth check exited ${auth_check_status}: $(grep -E '^.*\[Auth(Check)?\]' <<<"$auth_check_output" | tail -n 1)"
+  return 1
+fi
 agent_id="$(sed -nE 's/.*[Aa]gent[Ii]d=([0-9A-Fa-f-]{36}).*/\1/ip' <<<"$auth_check_output" | head -n 1)"
 [[ "$agent_id" =~ ^[0-9A-Fa-f-]{36}$ ]] || {
   echo "Disposable Client auth check did not report its enrolled agent ID." >&2
