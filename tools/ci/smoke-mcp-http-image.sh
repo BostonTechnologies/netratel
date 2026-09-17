@@ -24,8 +24,12 @@ chmod 0644 "$certificate_file"
 
 container="netratel-mcp-http-smoke-$$_${RANDOM}"
 oidc_container="${container}-oidc"
+stage="initializing disposable HTTP MCP rehearsal"
 cleanup() {
   local status=$?
+  if (( status != 0 )); then
+    echo "::error title=HTTP MCP image smoke test failed::${stage}" >&2
+  fi
   docker rm -f "$oidc_container" >/dev/null 2>&1 || true
   if docker container inspect "$container" >/dev/null 2>&1; then
     if (( status != 0 )); then
@@ -39,6 +43,7 @@ cleanup() {
 trap cleanup EXIT
 
 oidc_config='{"interactiveLogin":true,"tokenCallbacks":[{"issuerId":"default","requestMappings":[{"requestParam":"client_id","match":"netratel-mcp-smoke-client","claims":{"preferred_username":"netratel-mcp-smoke@example.test","roles":["netratel-operators"],"groups":["netratel-operators"],"scope":"netratel.mcp.read","aud":["https://mcp.example.invalid/mcp"]}},{"requestParam":"client_id","match":"netratel-mcp-wrong-scope-client","claims":{"preferred_username":"netratel-mcp-wrong-scope@example.test","roles":["netratel-operators"],"groups":["netratel-operators"],"scope":"netratel.mcp.observe","aud":["https://mcp.example.invalid/mcp"]}}]}]}'
+stage="starting the disposable OIDC issuer"
 docker run --detach --name "$oidc_container" --hostname host.docker.internal --publish 127.0.0.1::8080 \
   --env "JSON_CONFIG=${oidc_config}" \
   ghcr.io/navikt/mock-oauth2-server@sha256:ae36f65ca23e07e8786b288e53145e7ffb191c9dccfa9868ed433e7bbacad5db >/dev/null
@@ -47,6 +52,7 @@ oidc_port="$(docker port "$oidc_container" 8080/tcp | sed -n '1s/.*://p')"
 [[ -n "$oidc_port" ]] || { echo "Disposable OIDC provider did not expose port 8080." >&2; exit 1; }
 oidc_authority="http://host.docker.internal:${oidc_port}/default"
 oidc_resolve="host.docker.internal:${oidc_port}:127.0.0.1"
+stage="waiting for the disposable OIDC issuer"
 for _ in $(seq 1 30); do
   if curl --resolve "$oidc_resolve" --fail --silent --show-error "${oidc_authority}/isalive" >/dev/null; then
     break
@@ -55,6 +61,7 @@ for _ in $(seq 1 30); do
 done
 curl --resolve "$oidc_resolve" --fail --silent --show-error "${oidc_authority}/isalive" >/dev/null
 
+stage="starting the HTTPS HTTP MCP container"
 docker run --detach --name "$container" --no-healthcheck --publish 127.0.0.1::9224 \
   --add-host host.docker.internal:host-gateway \
   --mount "type=bind,source=$mcp_config,target=/run/netratel/mcp-config.json,readonly" \
@@ -84,6 +91,7 @@ mcp_public_request_headers=(
   --header 'Host: mcp.example.invalid'
 )
 
+stage="waiting for the HTTPS HTTP MCP health endpoint"
 for _ in $(seq 1 30); do
   if curl --insecure --fail --silent --show-error "$base_url/health/live" >/dev/null; then
     break
@@ -92,12 +100,14 @@ for _ in $(seq 1 30); do
 done
 curl --insecure --fail --silent --show-error "$base_url/health/live" >/dev/null
 
+stage="reading protected-resource metadata"
 resource_metadata="$(curl --fail --silent --show-error "${mcp_public_request_headers[@]}" "$base_url/.well-known/oauth-protected-resource/mcp")"
 jq -e '
   .resource == "https://mcp.example.invalid/mcp"
   and (.scopes_supported | index("netratel.mcp.read"))
 ' <<<"$resource_metadata" >/dev/null
 
+stage="checking unauthenticated HTTP MCP rejection"
 unauthenticated_response="$(curl --silent --show-error --dump-header - --output /dev/null --write-out $'\n%{http_code}' \
   "${mcp_public_request_headers[@]}" \
   --header 'Content-Type: application/json' \
@@ -127,9 +137,11 @@ request_operator_access_token() {
   printf '%s' "$access_token"
 }
 
+stage="requesting the operator access token"
 operator_access_token="$(request_operator_access_token netratel-mcp-smoke-client netratel.mcp.read)"
 invalid_token="${operator_access_token%?}x"
 [[ "$invalid_token" != "$operator_access_token" ]] || invalid_token="${operator_access_token%?}y"
+stage="checking invalid bearer-token rejection"
 invalid_status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
   "${mcp_public_request_headers[@]}" \
   --header "Authorization: Bearer ${invalid_token}" \
@@ -138,7 +150,9 @@ invalid_status="$(curl --silent --show-error --output /dev/null --write-out '%{h
   "$base_url/mcp")"
 [[ "$invalid_status" == 401 ]] || { echo "Invalid HTTP MCP bearer token returned $invalid_status instead of 401." >&2; exit 1; }
 
+stage="requesting the wrong-scope access token"
 wrong_scope_token="$(request_operator_access_token netratel-mcp-wrong-scope-client netratel.mcp.observe)"
+stage="checking wrong-scope HTTP MCP rejection"
 wrong_scope_status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
   "${mcp_public_request_headers[@]}" \
   --header "Authorization: Bearer ${wrong_scope_token}" \
@@ -147,6 +161,7 @@ wrong_scope_status="$(curl --silent --show-error --output /dev/null --write-out 
   "$base_url/mcp")"
 [[ "$wrong_scope_status" == 403 ]] || { echo "Wrong-scope HTTP MCP bearer token returned $wrong_scope_status instead of 403." >&2; exit 1; }
 
+stage="checking authorized HTTP MCP capability read"
 authorized_response="$(curl --fail --silent --show-error \
   "${mcp_public_request_headers[@]}" \
   --header "Authorization: Bearer ${operator_access_token}" \
