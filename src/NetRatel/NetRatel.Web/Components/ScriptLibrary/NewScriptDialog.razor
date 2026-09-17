@@ -1,0 +1,40 @@
+@using MudBlazor
+@using NetRatel.Shared.Contracts.Execution
+
+@code
+{
+    private static readonly (string Label, ScriptType Value)[] ScriptTypes = new[]
+    {
+        ("PowerShell", ScriptType.PowerShell),
+        ("Bash",       ScriptType.Bash),
+        ("Python",     ScriptType.Python),
+        ("JavaScript", ScriptType.JavaScript),
+        ("TypeScript", ScriptType.TypeScript),
+        ("SQL",        ScriptType.Sql),
+        ("JSON",       ScriptType.Json),
+    };
+
+    [CascadingParameter] public IMudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public NewScriptDialogModel Model { get; set; } = default!;
+}
+
+<MudDialog>
+  <DialogContent>
+    <MudStack Spacing="2">
+      <MudTextField @bind-Value="Model.Name" Label="Name" Required="true" />
+      <MudTextField @bind-Value="Model.Folder" Label="Folder (e.g. /windows/powershell/)" />
+      <MudSelect T="ScriptType?" Label="Type" @bind-Value="Model.Type" Clearable="true">
+        @foreach (var option in ScriptTypes)
+        {
+            <MudSelectItem T="ScriptType?" Value="@option.Value">@option.Label</MudSelectItem>
+        }
+      </MudSelect>
+    </MudStack>
+  </DialogContent>
+  <DialogActions>
+    <MudButton Variant="Variant.Text" OnClick="() => MudDialog.Cancel()">Cancel</MudButton>
+    <MudButton Color="Color.Primary"
+               Disabled="@string.IsNullOrWhiteSpace(Model?.Name)"
+               OnClick="() => MudDialog.Close(DialogResult.Ok(true))">Create</MudButton>
+  </DialogActions>
+</MudDialog>

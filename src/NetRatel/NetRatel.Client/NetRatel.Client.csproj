@@ -1,0 +1,162 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <CheckEolTargetFramework>false</CheckEolTargetFramework>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+
+    <IsPackable>false</IsPackable>
+    <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>true</SelfContained>
+    <PublishTrimmed>false</PublishTrimmed>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <IncludeAllContentForSelfExtract>true</IncludeAllContentForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <RuntimeIdentifiers>win-x64;linux-x64;osx-arm64</RuntimeIdentifiers>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <CopyOutputSymbolsToPublishDirectory>false</CopyOutputSymbolsToPublishDirectory>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Google.Protobuf" Version="3.36.0" />
+    <PackageReference Include="Grpc.Net.Client" Version="2.83.0" />
+    <PackageReference Include="mcpdotnet" Version="1.2.0.1" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.11" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Ini" Version="10.0.11" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.11" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Systemd" Version="10.0.11" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.11" />
+    <PackageReference Include="Microsoft.PowerShell.Commands.Diagnostics" Version="7.6.5" />
+    <PackageReference Include="Microsoft.PowerShell.Commands.Management" Version="7.6.5" />
+    <PackageReference Include="Microsoft.PowerShell.Commands.Utility" Version="7.6.5" />
+    <PackageReference Include="Microsoft.PowerShell.ConsoleHost" Version="7.6.5" />
+    <PackageReference Include="Microsoft.PowerShell.SDK" Version="7.6.5" />
+    <PackageReference Include="Microsoft.WSMan.Management" Version="7.6.5" />
+    <PackageReference Include="NuGet.Versioning" Version="7.9.0" />
+    <PackageReference Include="Refit" Version="15.2.0" />
+    <PackageReference Include="Rundeck.Api" Version="34.0.60" />
+    <PackageReference Include="SIPSorcery" Version="10.0.16" />
+    <PackageReference Include="SIPSorceryMedia.Encoders" Version="10.0.4" />
+    <PackageReference Include="System.Security.Cryptography.Xml" Version="10.0.11" />
+    <PackageReference Include="System.ServiceProcess.ServiceController" Version="10.0.11" />
+    <PackageReference Include="System.Diagnostics.PerformanceCounter" Version="10.0.11" />
+    <PackageReference Include="System.Drawing.Common" Version="10.0.11" />
+    <PackageReference Include="System.Management.Automation" Version="7.6.5" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\NetRatel.Application\NetRatel.Application.csproj" />
+    <ProjectReference Include="..\NetRatel.Infrastructure\NetRatel.Infrastructure.csproj" />
+    <ProjectReference Include="..\NetRatel.Shared\NetRatel.Shared.csproj" />
+    <ProjectReference Include="..\NetRatel.AgentGateway.Contracts\NetRatel.AgentGateway.Contracts.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="NetRatel.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="appsettings.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>Always</CopyToPublishDirectory>
+      <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="Service\Terminal\terminal_pty_helper.py">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>Always</CopyToPublishDirectory>
+      <TargetPath>terminal_pty_helper.py</TargetPath>
+      <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+    </None>
+  </ItemGroup>
+
+  <Target Name="BuildNativeUnixPtySpawnHelper" BeforeTargets="GetCopyToOutputDirectoryItems;ComputeFilesToPublish;CoreCompile" Condition="$([MSBuild]::IsOSPlatform('Linux'))">
+    <PropertyGroup>
+      <NativeUnixPtySpawnDirectory>$(IntermediateOutputPath)native-unix-pty</NativeUnixPtySpawnDirectory>
+      <NativeUnixPtySpawnLibrary>$(NativeUnixPtySpawnDirectory)/libnetratel_terminal_pty.so</NativeUnixPtySpawnLibrary>
+    </PropertyGroup>
+    <MakeDir Directories="$(NativeUnixPtySpawnDirectory)" />
+    <Exec Command="gcc -shared -fPIC -O2 -Wall -Wextra -Werror -o &quot;$(NativeUnixPtySpawnLibrary)&quot; &quot;$(MSBuildProjectDirectory)/Service/Terminal/native_unix_pty_spawn.c&quot; -lutil" />
+    <ItemGroup>
+      <Content Include="$(NativeUnixPtySpawnLibrary)" Link="libnetratel_terminal_pty.so" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="Always" />
+    </ItemGroup>
+  </Target>
+
+  <Target Name="CopyNativeUnixPtySpawnHelper" DependsOnTargets="BuildNativeUnixPtySpawnHelper" BeforeTargets="CopyFilesToOutputDirectory">
+    <Copy SourceFiles="$(NativeUnixPtySpawnLibrary)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+  </Target>
+
+  <Target Name="IncludeNativeUnixPtySpawnHelperInPublish" DependsOnTargets="BuildNativeUnixPtySpawnHelper" AfterTargets="ComputeFilesToPublish" Condition="$([MSBuild]::IsOSPlatform('Linux'))">
+    <ItemGroup>
+      <!-- The single-file bundle must know about the helper so it extracts beside AppContext.BaseDirectory. -->
+      <ResolvedFileToPublish Include="$(NativeUnixPtySpawnLibrary)">
+        <RelativePath>libnetratel_terminal_pty.so</RelativePath>
+        <CopyToPublishDirectory>Always</CopyToPublishDirectory>
+        <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+      </ResolvedFileToPublish>
+    </ItemGroup>
+  </Target>
+
+  <ItemGroup>
+	  <None Update="powershell.config.json">
+		<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		<CopyToPublishDirectory>Always</CopyToPublishDirectory>
+    <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+	  </None>
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="tools\netratel-update.sh">
+      <Link>updater\netratel-update.sh</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>Always</CopyToPublishDirectory>
+      <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+    </None>
+    <None Update="tools\netratel-update.ps1">
+      <Link>updater\netratel-update.ps1</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>Always</CopyToPublishDirectory>
+      <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+    </None>
+  </ItemGroup>
+
+  <Target Name="CleanupPublishSymbols" AfterTargets="Publish">
+    <ItemGroup>
+      <PublishedSymbols Include="$(PublishDir)*.pdb" />
+    </ItemGroup>
+    <Delete Files="@(PublishedSymbols)" TreatErrorsAsWarnings="true" />
+  </Target>
+
+  <Target Name="GenerateClientUpdateManifest" AfterTargets="Publish">
+    <PropertyGroup>
+      <ClientManifestCommit Condition="'$(SourceRevisionId)' != ''">$(SourceRevisionId)</ClientManifestCommit>
+      <ClientManifestCommit Condition="'$(ClientManifestCommit)' == ''">unknown</ClientManifestCommit>
+      <ClientManifestExecutable Condition="$([System.String]::Copy('$(RuntimeIdentifier)').StartsWith('win-'))">NetRatel.Client.exe</ClientManifestExecutable>
+      <ClientManifestExecutable Condition="'$(ClientManifestExecutable)' == ''">NetRatel.Client</ClientManifestExecutable>
+    </PropertyGroup>
+    <WriteLinesToFile File="$(PublishDir)netratel-client-manifest.json" Lines="{&quot;schema&quot;:&quot;netratel.client.manifest.v1&quot;,&quot;product&quot;:&quot;NetRatel.Client&quot;,&quot;version&quot;:&quot;$(Version)&quot;,&quot;runtimeId&quot;:&quot;$(RuntimeIdentifier)&quot;,&quot;commitSha&quot;:&quot;$(ClientManifestCommit)&quot;,&quot;executable&quot;:&quot;$(ClientManifestExecutable)&quot;}" Overwrite="true" Encoding="UTF-8" />
+  </Target>
+
+  <Target Name="CreateClientArtifactPackage" AfterTargets="GenerateClientUpdateManifest" Condition="'$(CreateClientArtifactPackage)' == 'true'">
+    <Error Condition="'$(RuntimeIdentifier)' == ''" Text="A RuntimeIdentifier is required to create a client artifact package." />
+    <PropertyGroup>
+      <ClientArtifactPackagePath Condition="'$(ClientArtifactPackagePath)' == ''">$([System.IO.Path]::Combine('$(PublishDir)', '..', 'NetRatel.Client-$(RuntimeIdentifier)-$(Version).zip'))</ClientArtifactPackagePath>
+    </PropertyGroup>
+    <MakeDir Directories="$([System.IO.Path]::GetDirectoryName('$(ClientArtifactPackagePath)'))" />
+    <ZipDirectory SourceDirectory="$(PublishDir)" DestinationFile="$(ClientArtifactPackagePath)" Overwrite="true" />
+    <Message Importance="high" Text="Client artifact created: $(ClientArtifactPackagePath)" />
+  </Target>
+
+</Project>

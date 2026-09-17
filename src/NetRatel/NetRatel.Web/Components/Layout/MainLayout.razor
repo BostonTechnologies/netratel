@@ -1,0 +1,194 @@
+﻿@inherits LayoutComponentBase
+@implements IAsyncDisposable
+@inject IJSRuntime JS
+@inject Microsoft.Extensions.Configuration.IConfiguration Configuration
+
+<ThemePreferenceProvider Context="themePreference">
+<MudPopoverProvider />
+<MudDialogProvider />
+<MudSnackbarProvider />
+
+<MudLayout>
+    <MudAppBar Dense="true" Fixed="true" Elevation="1" Class="netratel-app-bar">
+        <div class="netratel-appbar-grid" data-testid="netratel-appbar-grid">
+        <div class="netratel-appbar-left">
+            <MudIconButton Icon="@Icons.Material.Filled.Menu"
+                           Color="Color.Inherit"
+                           Edge="Edge.Start"
+                           OnClick="ToggleDrawer"
+                           aria-label="Toggle navigation"
+                           data-testid="navigation-toggle" />
+        </div>
+        <div class="netratel-appbar-search-wrap">
+            <button type="button"
+                    class="netratel-appbar-search"
+                    @onclick="OpenSearch"
+                    data-testid="global-search"
+                    aria-label="Search NetRatel">
+                <MudIcon Icon="@Icons.Material.Filled.Search" Size="Size.Small" />
+                <span>Search NetRatel</span>
+                <kbd>Shift + S</kbd>
+            </button>
+        </div>
+        <div class="netratel-appbar-actions netratel-appbar-desktop-actions">
+            <MudChip T="string"
+                     Class="netratel-appbar-chip netratel-appbar-api-chip"
+                     Size="Size.Small"
+                     Variant="Variant.Outlined"
+                     Color="Color.Default"
+                     Href="/api/docs/">
+                API
+            </MudChip>
+            <AppBarVersionChip Version="_appBarVersion" />
+            <NotificationBell />
+            <MudTooltip Text="@themePreference.Label">
+                <MudMenu Icon="@themePreference.Icon"
+                         Color="Color.Inherit"
+                         aria-label="Choose colour theme"
+                         data-testid="theme-preference-menu">
+                    <MudMenuItem Icon="@Icons.Material.Rounded.AutoMode"
+                                 data-testid="theme-option-system"
+                                 aria-current="@(themePreference.Mode is ThemePreferenceMode.System ? "true" : "false")"
+                                 OnClick="@(() => themePreference.SetModeAsync(ThemePreferenceMode.System))">
+                        System@(themePreference.Mode is ThemePreferenceMode.System ? " (current)" : string.Empty)
+                    </MudMenuItem>
+                    <MudMenuItem Icon="@Icons.Material.Outlined.LightMode"
+                                 data-testid="theme-option-light"
+                                 aria-current="@(themePreference.Mode is ThemePreferenceMode.Light ? "true" : "false")"
+                                 OnClick="@(() => themePreference.SetModeAsync(ThemePreferenceMode.Light))">
+                        Light@(themePreference.Mode is ThemePreferenceMode.Light ? " (current)" : string.Empty)
+                    </MudMenuItem>
+                    <MudMenuItem Icon="@Icons.Material.Outlined.DarkMode"
+                                 data-testid="theme-option-dark"
+                                 aria-current="@(themePreference.Mode is ThemePreferenceMode.Dark ? "true" : "false")"
+                                 OnClick="@(() => themePreference.SetModeAsync(ThemePreferenceMode.Dark))">
+                        Dark@(themePreference.Mode is ThemePreferenceMode.Dark ? " (current)" : string.Empty)
+                    </MudMenuItem>
+                </MudMenu>
+            </MudTooltip>
+            <MudMenu Icon="@Icons.Material.Filled.Settings"
+                     aria-label="Settings"
+                     AnchorOrigin="Origin.TopRight"
+                     TransformOrigin="Origin.TopRight">
+                <MudMenuItem Href="/settings/connectivity">Connectivity</MudMenuItem>
+            </MudMenu>
+        </div>
+        <div class="netratel-appbar-mobile-actions">
+            <MudMenu Icon="@Icons.Material.Filled.MoreVert"
+                     Color="Color.Inherit"
+                     AnchorOrigin="Origin.BottomRight"
+                     TransformOrigin="Origin.TopRight"
+                     Class="netratel-appbar-overflow-menu"
+                     aria-label="More application actions"
+                     data-testid="mobile-overflow">
+                <MudMenuItem Icon="@Icons.Material.Filled.Api" Href="/api/docs/">API Docs</MudMenuItem>
+                <MudMenuItem Icon="@Icons.Material.Filled.NewReleases">@_appBarVersion.DisplayVersion</MudMenuItem>
+                <MudMenuItem Icon="@Icons.Material.Filled.Notifications" Href="/notifications">Notifications</MudMenuItem>
+                <MudDivider />
+                <MudMenuItem Icon="@themePreference.Icon" Disabled="true">Theme: @themePreference.Label</MudMenuItem>
+                <MudMenuItem Icon="@Icons.Material.Rounded.AutoMode"
+                             data-testid="mobile-theme-option-system"
+                             aria-current="@(themePreference.Mode is ThemePreferenceMode.System ? "true" : "false")"
+                             OnClick="@(() => themePreference.SetModeAsync(ThemePreferenceMode.System))">System</MudMenuItem>
+                <MudMenuItem Icon="@Icons.Material.Outlined.LightMode"
+                             data-testid="mobile-theme-option-light"
+                             aria-current="@(themePreference.Mode is ThemePreferenceMode.Light ? "true" : "false")"
+                             OnClick="@(() => themePreference.SetModeAsync(ThemePreferenceMode.Light))">Light</MudMenuItem>
+                <MudMenuItem Icon="@Icons.Material.Outlined.DarkMode"
+                             data-testid="mobile-theme-option-dark"
+                             aria-current="@(themePreference.Mode is ThemePreferenceMode.Dark ? "true" : "false")"
+                             OnClick="@(() => themePreference.SetModeAsync(ThemePreferenceMode.Dark))">Dark</MudMenuItem>
+                <MudDivider />
+                <MudMenuItem Icon="@Icons.Material.Filled.Settings" Href="/settings/connectivity">Connectivity</MudMenuItem>
+            </MudMenu>
+        </div>
+        </div>
+    </MudAppBar>
+    <MudDrawer id="nav-drawer"
+               @bind-Open="_drawerOpen"
+               Variant="DrawerVariant.Responsive"
+               Breakpoint="Breakpoint.Lg"
+               Overlay="true"
+               OverlayAutoClose="true"
+               ClipMode="DrawerClipMode.Always"
+               Elevation="2"
+               Class="netratel-app-drawer"
+               data-testid="app-navigation-drawer">
+        <NavMenu />
+    </MudDrawer>
+    <MudMainContent Class="netratel-main-content" data-testid="app-main-content">
+        @Body
+    </MudMainContent>
+    <GlobalSearchOverlay Open="_searchOpen" OpenChanged="OnSearchOpenChanged" />
+</MudLayout>
+</ThemePreferenceProvider>
+
+<div id="blazor-error-ui" data-nosnippet>
+    An unhandled error has occurred.
+    <a href="." class="reload">Reload</a>
+    <span class="dismiss">🗙</span>
+</div>
+
+@code {
+    private bool _drawerOpen = true;
+    private bool _searchOpen;
+    private AppBarVersionDetails _appBarVersion = new("NetRatel.Web", "vdev", "dev", "Fallback", "unknown");
+    private DotNetObjectReference<MainLayout>? _dotNetRef;
+    private int? _hotkeyRegistrationId;
+
+    protected override void OnInitialized()
+    {
+        _appBarVersion = AppBarVersionResolver.ResolveDetails(Configuration, typeof(MainLayout).Assembly);
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender)
+        {
+            return;
+        }
+
+        _dotNetRef = DotNetObjectReference.Create(this);
+        _hotkeyRegistrationId = await JS.InvokeAsync<int>("netratelGlobalSearchHotkeys.register", _dotNetRef);
+    }
+
+    private void ToggleDrawer()
+    {
+        _drawerOpen = !_drawerOpen;
+    }
+
+    private void OpenSearch()
+    {
+        _searchOpen = true;
+    }
+
+    [JSInvokable]
+    public Task OpenGlobalSearchFromShortcut()
+    {
+        _searchOpen = true;
+        StateHasChanged();
+        return Task.CompletedTask;
+    }
+
+    private Task OnSearchOpenChanged(bool value)
+    {
+        _searchOpen = value;
+        return Task.CompletedTask;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_hotkeyRegistrationId.HasValue)
+        {
+            try
+            {
+                await JS.InvokeVoidAsync("netratelGlobalSearchHotkeys.dispose", _hotkeyRegistrationId.Value);
+            }
+            catch (JSDisconnectedException)
+            {
+            }
+        }
+
+        _dotNetRef?.Dispose();
+    }
+}

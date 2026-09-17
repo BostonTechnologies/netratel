@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\NetRatel.Application\NetRatel.Application.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Akka.Cluster.Hosting" Version="1.5.70" />
+    <PackageReference Include="Akka.Hosting" Version="1.5.70" />
+    <PackageReference Include="OpenTelemetry.Api" Version="1.18.0" />
+  </ItemGroup>
+
+</Project>

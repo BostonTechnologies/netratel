@@ -1,0 +1,1144 @@
+syntax = "proto3";
+
+package netratel.gateway.v1;
+
+option csharp_namespace = "NetRatel.AgentGateway.Contracts.V1";
+
+import "google/protobuf/timestamp.proto";
+
+// Presence remains isolated from the Phase 2 telemetry shadow stream so
+// telemetry pressure cannot delay heartbeats on an admitted connection.
+service AgentGateway {
+  rpc Connect(stream AgentFrame) returns (stream GatewayFrame);
+}
+
+service AgentTelemetryGateway {
+  rpc PublishTelemetry(stream TelemetryFrame) returns (TelemetryPublishSummary);
+}
+
+// V2 is additive so existing shadow clients retain wire compatibility.  It
+// authenticates and admits a fenced session before it accepts any telemetry.
+service AgentTelemetryGatewayV2 {
+  rpc Connect(stream AgentTelemetryFrame) returns (stream GatewayTelemetryFrame);
+}
+
+// Command observations remain isolated from presence and telemetry so shadow
+// pressure cannot delay heartbeats or change the authoritative command path.
+service AgentCommandShadowGateway {
+  rpc PublishCommandEvents(stream CommandShadowFrame) returns (CommandShadowPublishSummary);
+}
+
+// The authoritative command transport is deliberately separate from the
+// shadow publisher. It is a fenced, bidirectional session: the server creates
+// and dispatches work, while the admitted agent acknowledges and reports its
+// lifecycle. No SpacetimeDB command stream participates when this service is
+// enabled.
+service AgentCommandGateway {
+  rpc Connect(stream AgentCommandFrame) returns (stream GatewayCommandFrame);
+}
+
+// Job execution has its own fenced stream so a long-running workflow cannot
+// share backpressure or lifecycle ordering with ad-hoc commands.  The API
+// owns job scheduling and durable state; the admitted agent owns execution of
+// a dispatched step and reports its ordered lifecycle over this stream.
+service AgentJobGateway {
+  rpc Connect(stream AgentJobFrame) returns (stream GatewayJobFrame);
+}
+
+// Control traffic is intentionally isolated from presence and telemetry. It is
+// the authenticated server-to-agent path for non-terminal operations such as
+// operator latency probes, file browse requests, and remote-support signalling.
+service AgentControlGateway {
+  rpc Connect(stream AgentControlFrame) returns (stream GatewayControlFrame);
+}
+
+// File bytes are isolated from control, telemetry and presence so transfer
+// pressure cannot delay heartbeats. Every request is fenced to a presence epoch.
+service AgentFileGateway {
+  rpc Connect(stream AgentFileFrame) returns (stream GatewayFileFrame);
+}
+
+// Remote-support signalling is a distinct session transport. WebRTC media is
+// never carried by this RPC; only ordered, bounded signalling/control envelopes.
+service AgentRemoteSupportGateway {
+  rpc Connect(stream AgentRemoteSupportFrame) returns (stream GatewayRemoteSupportFrame);
+}
+
+// V2 target inventory and preparation is isolated from retained signalling.
+// It is feature-gated and carries only redacted WTS readiness metadata; it
+// never carries SDP, ICE, media, browser input, or credentials.
+service AgentRemoteSupportPreparationGateway {
+  rpc Connect(stream AgentRemoteSupportPreparationFrame) returns (stream GatewayRemoteSupportPreparationFrame);
+}
+
+// Terminal bytes are isolated from every other gateway stream. The server
+// authorizes a mapped primary-card session, while the agent owns the PTY. Raw
+// terminal data is transient transport state and must never enter actor or DB
+// persistence.
+service AgentTerminalGateway {
+  rpc Connect(stream AgentTerminalFrame) returns (stream GatewayTerminalFrame);
+}
+
+// Logs are isolated from presence, telemetry, control and terminal traffic.
+// Raw records remain transient, bounded transport data after the presence
+// authority has admitted the connection.
+service AgentLogGateway {
+  rpc Connect(stream AgentLogFrame) returns (stream GatewayLogFrame);
+}
+
+message AgentFrame {
+  string protocol_version = 1;
+  int32 tenant_id = 2;
+  string client_id = 3;
+  uint64 connection_epoch = 4;
+  // The hello supplies a client correlation GUID. The accepted response
+  // replaces it with the server-issued connection GUID that later frames echo.
+  string connection_id = 5;
+  string operation_id = 6;
+  uint64 sequence = 7;
+
+  oneof payload {
+    ConnectHello hello = 10;
+    PresenceHeartbeat heartbeat = 11;
+  }
+}
+
+message ConnectHello {
+  string agent_version = 1;
+  repeated string capabilities = 2;
+
+  // Diagnostic only in Phase 1. The gateway never uses this value for
+  // authentication, actor routing, or current SpacetimeDB operations.
+  string legacy_spacetime_identity = 3;
+  TerminalCapability terminal_capability = 4;
+  string runtime_id = 5;
+  string update_channel = 6;
+  UpdateActivationContext update_activation = 7;
+  int64 update_policy_revision = 8;
+}
+
+message UpdateActivationContext {
+  string attempt_id = 1;
+  string release_id = 2;
+  string admission_nonce = 3;
+}
+
+message ClientUpdateOffer {
+  string release_id = 1;
+  int64 catalog_revision = 2;
+  string runtime_id = 3;
+  string version = 4;
+  string sha256 = 5;
+  int64 size_bytes = 6;
+  string download_path = 7;
+}
+
+message ClientUpdatePolicy {
+  int64 revision = 1;
+  bool auto_update_enabled = 2;
+  bool suspended = 3;
+  bool resume_requested = 4;
+  string suppressed_release_id = 5;
+}
+
+message UpdateActivationConfirmation {
+  string attempt_id = 1;
+  string release_id = 2;
+  string confirmation_id = 3;
+}
+
+message TerminalCapability {
+  bool supported = 1;
+  repeated string available_shells = 2;
+}
+
+message PresenceHeartbeat {
+  // Agent time is retained only for diagnostics. Presence expiry uses the
+  // gateway receipt time to avoid trusting a remote clock.
+  google.protobuf.Timestamp observed_at_utc = 1;
+}
+
+message GatewayFrame {
+  string protocol_version = 1;
+  int32 tenant_id = 2;
+  string client_id = 3;
+  uint64 connection_epoch = 4;
+  string connection_id = 5;
+  string operation_id = 6;
+  uint64 sequence = 7;
+
+  oneof payload {
+    ConnectAccepted connected = 10;
+    HeartbeatAccepted heartbeat_accepted = 11;
+  }
+}
+
+message ConnectAccepted {
+  uint32 heartbeat_interval_seconds = 1;
+  uint32 heartbeat_timeout_seconds = 2;
+  string presence_authority = 3;
+  ClientUpdateOffer update_offer = 4;
+  ClientUpdatePolicy update_policy = 5;
+}
+
+message HeartbeatAccepted {
+  bool duplicate = 1;
+  google.protobuf.Timestamp received_at_utc = 2;
+  string presence_authority = 3;
+  ClientUpdateOffer update_offer = 4;
+  ClientUpdatePolicy update_policy = 5;
+  UpdateActivationConfirmation update_confirmation = 6;
+}
+
+message TelemetryFrame {
+  string protocol_version = 1;
+  int32 tenant_id = 2;
+  string client_id = 3;
+  uint64 connection_epoch = 4;
+  string connection_id = 5;
+  uint64 sequence = 6;
+  google.protobuf.Timestamp observed_at_utc = 7;
+  TelemetryCpu cpu = 10;
+  TelemetryMemory memory = 11;
+  repeated TelemetryDisk disks = 12;
+  repeated TelemetryNetwork networks = 13;
+  TelemetryTransportHealth transport_health = 14;
+}
+
+message TelemetryCpu {
+  double usage_percent = 1;
+  optional double load_average = 2;
+  optional int32 process_count = 3;
+}
+
+message TelemetryMemory {
+  double total_mb = 1;
+  double used_mb = 2;
+  double available_mb = 3;
+  double usage_percent = 4;
+}
+
+message TelemetryDisk {
+  string scope = 1;
+  double total_gb = 2;
+  double used_gb = 3;
+  double free_gb = 4;
+  double usage_percent = 5;
+}
+
+message TelemetryNetwork {
+  string scope = 1;
+  double rx_bytes_per_sec = 2;
+  double tx_bytes_per_sec = 3;
+}
+
+message TelemetryTransportHealth {
+  int64 uptime_seconds = 1;
+  string agent_version = 2;
+  string os_version = 3;
+  google.protobuf.Timestamp last_heartbeat = 4;
+}
+
+message TelemetryPublishSummary {
+  uint64 accepted_count = 1;
+  uint64 rejected_count = 2;
+  uint64 last_accepted_sequence = 3;
+  string telemetry_authority = 4;
+}
+
+message AgentTelemetryFrame {
+  string protocol_version = 1;
+  int32 tenant_id = 2;
+  string client_id = 3;
+  uint64 connection_epoch = 4;
+  string connection_id = 5;
+  uint64 sequence = 6;
+
+  oneof payload {
+    AgentTelemetryHello hello = 10;
+    TelemetryFrame snapshot = 11;
+  }
+}
+
+message AgentTelemetryHello {
+  string agent_version = 1;
+  repeated string capabilities = 2;
+}
+
+message GatewayTelemetryFrame {
+  string protocol_version = 1;
+  int32 tenant_id = 2;
+  string client_id = 3;
+  uint64 connection_epoch = 4;
+  string connection_id = 5;
+  uint64 sequence = 6;
+
+  oneof payload {
+    TelemetryConnectAccepted accepted = 10;
+    TelemetrySnapshotAccepted snapshot_accepted = 11;
+    TelemetrySamplingPolicy telemetry_sampling_policy = 12;
+  }
+}
+
+message TelemetryConnectAccepted {
+  string telemetry_authority = 1;
+  uint32 maximum_in_flight_frames = 2;
+}
+
+message TelemetrySnapshotAccepted {
+  uint64 accepted_sequence = 1;
+  uint32 available_credits = 2;
+}
+
+// Additive, bounded server-to-agent telemetry cadence policy. Old clients do
+// not advertise the capability and therefore receive no instances of this frame.
+message TelemetrySamplingPolicy {
+  uint64 revision = 1;
+  uint32 fast_interval_milliseconds = 2;
+  uint32 slow_interval_seconds = 3;
+  bool interactive = 4;
+  google.protobuf.Timestamp expires_at_utc = 5;
+  string reason = 6;
+}
+
+message CommandShadowFrame {
+  string protocol_version = 1;
+  int32 tenant_id = 2;
+  string client_id = 3;
+  uint64 connection_epoch = 4;
+  string connection_id = 5;
+  string command_id = 6;
+  string correlation_id = 7;
+  google.protobuf.Timestamp request_timestamp = 8;
+  google.protobuf.Timestamp status_timestamp = 9;
+  uint64 version = 10;
+  uint64 sequence = 11;
+  CommandShadowStatus status = 12;
+}
+
+enum CommandShadowStatus {
+  COMMAND_SHADOW_STATUS_UNSPECIFIED = 0;
+  COMMAND_SHADOW_STATUS_CREATED = 1;
+  COMMAND_SHADOW_STATUS_DISPATCHED = 2;
+  COMMAND_SHADOW_STATUS_ACCEPTED = 3;
+  COMMAND_SHADOW_STATUS_STARTED = 4;
+  COMMAND_SHADOW_STATUS_COMPLETED = 5;
+  COMMAND_SHADOW_STATUS_FAILED = 6;
+  COMMAND_SHADOW_STATUS_CANCELLED = 7;
+}
+
+message CommandShadowPublishSummary {
+  uint64 accepted_count = 1;
+  uint64 rejected_count = 2;
+  uint64 last_accepted_sequence = 3;
+  string command_authority = 4;
+}
+
+message AgentCommandFrame {
+  string protocol_version = 1;
+  int32 tenant_id = 2;
+  string client_id = 3;
+  uint64 connection_epoch = 4;
+  string connection_id = 5;
+  uint64 sequence = 6;
+  oneof payload {
+    AgentCommandHello hello = 10;
+    CommandLifecycleUpdate lifecycle = 11;
+  }
+}
+
+message GatewayCommandFrame {
+  string protocol_version = 1;
+  int32 tenant_id = 2;
+  string client_id = 3;
+  uint64 connection_epoch = 4;
+  string connection_id = 5;
+  uint64 sequence = 6;
+  oneof payload {
+    CommandConnectAccepted accepted = 10;
+    CommandDispatch dispatch = 11;
+    CommandCancel cancel = 12;
+  }
+}
+
+message AgentCommandHello { repeated string capabilities = 1; }
+message CommandConnectAccepted { string command_authority = 1; }
+
+message CommandDispatch {
+  string command_id = 1;
+  string correlation_id = 2;
+  google.protobuf.Timestamp request_timestamp = 3;
+  uint64 next_version = 4;
+  uint64 next_sequence = 5;
+  string task_type = 6;
+  string payload_json = 7;
+  int32 environment = 8;
+  int32 tenant_id = 9;
+}
+
+message CommandLifecycleUpdate {
+  string command_id = 1;
+  string correlation_id = 2;
+  google.protobuf.Timestamp request_timestamp = 3;
+  google.protobuf.Timestamp status_timestamp = 4;
+  uint64 version = 5;
+  CommandShadowStatus status = 6;
+  string result_json = 7;
+  int32 exit_code = 8;
+  uint64 sequence = 9;
+}
+
+message CommandCancel {
+  string command_id = 1;
+  string reason = 2;
+}
+
+message AgentJobFrame {
+  string protocol_version = 1;
+  int32 tenant_id = 2;
+  string client_id = 3;
+  uint64 connection_epoch = 4;
+  string connection_id = 5;
+  uint64 sequence = 6;
+  oneof payload {
+    AgentJobHello hello = 10;
+    JobLifecycleUpdate lifecycle = 11;
+  }
+}
+
+message GatewayJobFrame {
+  string protocol_version = 1;
+  int32 tenant_id = 2;
+  string client_id = 3;
+  uint64 connection_epoch = 4;
+  string connection_id = 5;
+  uint64 sequence = 6;
+  oneof payload {
+    JobConnectAccepted accepted = 10;
+    JobStepDispatch dispatch = 11;
+    JobCancel cancel = 12;
+  }
+}
+
+message AgentJobHello { repeated string capabilities = 1; }
+message JobConnectAccepted { string job_authority = 1; }
+
+enum JobLifecycleStatus {
+  JOB_LIFECYCLE_STATUS_UNSPECIFIED = 0;
+  JOB_LIFECYCLE_STATUS_QUEUED = 1;
+  JOB_LIFECYCLE_STATUS_SCHEDULED = 2;
+  JOB_LIFECYCLE_STATUS_DISPATCHED = 3;
+  JOB_LIFECYCLE_STATUS_ACCEPTED = 4;
+  JOB_LIFECYCLE_STATUS_STARTED = 5;
+  JOB_LIFECYCLE_STATUS_PROGRESS = 6;
+  JOB_LIFECYCLE_STATUS_COMPLETED = 7;
+  JOB_LIFECYCLE_STATUS_FAILED = 8;
+  JOB_LIFECYCLE_STATUS_CANCELLED = 9;
+}
+
+message JobStepDispatch {
+  uint64 job_run_id = 1;
+  uint64 job_step_id = 2;
+  uint64 job_step_run_id = 12;
+  int32 tenant_id = 13;
+  int32 ordinal = 3;
+  string request_id = 4;
+  string correlation_id = 5;
+  string task_type = 6;
+  string payload_json = 7;
+  int32 environment = 8;
+  uint64 next_version = 9;
+  uint64 next_sequence = 10;
+  google.protobuf.Timestamp requested_at_utc = 11;
+}
+
+message JobLifecycleUpdate {
+  uint64 job_run_id = 1;
+  uint64 job_step_id = 2;
+  uint64 job_step_run_id = 14;
+  int32 ordinal = 3;
+  string request_id = 4;
+  string correlation_id = 5;
+  JobLifecycleStatus status = 6;
+  uint64 version = 7;
+  uint64 lifecycle_sequence = 8;
+  google.protobuf.Timestamp requested_at_utc = 9;
+  google.protobuf.Timestamp status_at_utc = 10;
+  double progress_percent = 11;
+  string result_json = 12;
+  int32 exit_code = 13;
+}
+
+message JobCancel {
+  uint64 job_run_id = 1;
+  string reason = 2;
+}
+
+message AgentControlFrame {
+  string protocol_version = 1;
+  int32 tenant_id = 2;
+  string client_id = 3;
+  uint64 connection_epoch = 4;
+  string connection_id = 5;
+  uint64 sequence = 6;
+
+  oneof payload {
+    AgentControlHello hello = 10;
+    PingResponse ping_response = 11;
+  }
+}
+
+message AgentControlHello {
+  repeated string capabilities = 1;
+}
+
+message PingResponse {
+  string request_id = 1;
+  google.protobuf.Timestamp responded_at_utc = 2;
+}
+
+message GatewayControlFrame {
+  string protocol_version = 1;
+  int32 tenant_id = 2;
+  string client_id = 3;
+  uint64 connection_epoch = 4;
+  string connection_id = 5;
+  uint64 sequence = 6;
+
+  oneof payload {
+    ControlAccepted accepted = 10;
+    PingRequest ping_request = 11;
+  }
+}
+
+message ControlAccepted {
+  string control_authority = 1;
+}
+
+message PingRequest {
+  string request_id = 1;
+  google.protobuf.Timestamp sent_at_utc = 2;
+  google.protobuf.Timestamp deadline_utc = 3;
+}
+
+message AgentFileFrame {
+  string protocol_version = 1;
+  int32 tenant_id = 2;
+  string client_id = 3;
+  uint64 connection_epoch = 4;
+  string connection_id = 5;
+  uint64 sequence = 6;
+  oneof payload {
+    AgentFileHello hello = 10;
+    FileRequestAccepted request_accepted = 11;
+    FileListPage list_page = 12;
+    FileTransferChunk transfer_chunk = 13;
+    FileRequestCompleted completed = 14;
+    FileRequestFailed failed = 15;
+    // Additive stat metadata. Older servers and clients ignore this field,
+    // while the file-stat-v1 capability keeps dispatch fail-closed until both
+    // stream endpoints have explicitly opted in.
+    FileMetadata metadata = 16;
+  }
+}
+
+message GatewayFileFrame {
+  string protocol_version = 1;
+  int32 tenant_id = 2;
+  string client_id = 3;
+  uint64 connection_epoch = 4;
+  string connection_id = 5;
+  uint64 sequence = 6;
+  oneof payload {
+    FileConnectAccepted accepted = 10;
+    FileRequestDispatch dispatch = 11;
+    FileRequestCancel cancel = 12;
+    FileTransferCredit credit = 13;
+    // Server-to-agent write chunks. These use the same request/attempt and
+    // monotonic chunk sequence fields as agent-to-server read chunks.
+    FileTransferChunk transfer_chunk = 14;
+  }
+}
+
+message AgentFileHello { repeated string capabilities = 1; }
+message FileConnectAccepted { string file_authority = 1; }
+message FileRequestDispatch {
+  string request_id = 1;
+  string attempt_id = 2;
+  string operation = 3;
+  string path = 4;
+  uint32 page_size = 5;
+  bytes write_chunk = 6;
+  string sha256 = 7;
+  // Optional server-approved roots for an operator-policy constrained
+  // request. An empty list retains the existing general gateway behavior;
+  // a non-empty list requires the agent to resolve the requested path beneath
+  // one of these roots without following a link or reparse point outside it.
+  repeated string allowed_roots = 8;
+  // Additive dual-path contract for policy-admitted copy and move requests.
+  // Both root sets are independently authorized by the API and independently
+  // resolved by the agent. Older agents do not advertise the matching
+  // capabilities, so the server never dispatches these fields to them.
+  string destination_path = 9;
+  repeated string source_allowed_roots = 10;
+  repeated string destination_allowed_roots = 11;
+}
+message FileRequestAccepted { string request_id = 1; string attempt_id = 2; }
+message FileListPage {
+  string request_id = 1;
+  string attempt_id = 2;
+  uint32 page_index = 3;
+  repeated FileEntry entries = 4;
+  bool is_last_page = 5;
+}
+message FileEntry { string name = 1; string full_path = 2; bool is_directory = 3; int64 size_bytes = 4; }
+message FileMetadata {
+  string request_id = 1;
+  string attempt_id = 2;
+  string full_path = 3;
+  bool is_directory = 4;
+  int64 size_bytes = 5;
+  google.protobuf.Timestamp last_modified_utc = 6;
+  string mime_type = 7;
+}
+message FileTransferChunk {
+  string request_id = 1;
+  string attempt_id = 2;
+  uint64 chunk_index = 3;
+  bytes content = 4;
+  string sha256 = 5;
+  bool is_last_chunk = 6;
+}
+message FileRequestCompleted { string request_id = 1; string attempt_id = 2; }
+message FileRequestFailed { string request_id = 1; string attempt_id = 2; string code = 3; }
+message FileRequestCancel { string request_id = 1; string attempt_id = 2; string reason = 3; }
+message FileTransferCredit { string request_id = 1; string attempt_id = 2; uint32 available_bytes = 3; }
+
+message AgentRemoteSupportFrame {
+  string protocol_version = 1;
+  int32 tenant_id = 2;
+  string client_id = 3;
+  uint64 connection_epoch = 4;
+  string connection_id = 5;
+  uint64 sequence = 6;
+  oneof payload {
+    AgentRemoteSupportHello hello = 10;
+    RemoteSupportSignal signal = 11;
+    RemoteSupportSessionClosed closed = 12;
+    RemoteSupportV2AgentEdgeRegistration v2_edge_registration = 13;
+    RemoteSupportV2RouteEnvelope v2_envelope = 14;
+  }
+}
+
+message GatewayRemoteSupportFrame {
+  string protocol_version = 1;
+  int32 tenant_id = 2;
+  string client_id = 3;
+  uint64 connection_epoch = 4;
+  string connection_id = 5;
+  uint64 sequence = 6;
+  oneof payload {
+    RemoteSupportConnectAccepted accepted = 10;
+    RemoteSupportSignal signal = 11;
+    RemoteSupportSessionClosed closed = 12;
+    RemoteSupportV2RouteEnvelope v2_envelope = 13;
+  }
+}
+
+message AgentRemoteSupportHello { repeated string capabilities = 1; }
+message RemoteSupportConnectAccepted { string support_authority = 1; }
+message RemoteSupportSignal {
+  string session_id = 1;
+  string message_id = 2;
+  string signal_type = 3;
+  uint64 session_sequence = 4;
+  bytes payload = 5;
+}
+message RemoteSupportSessionClosed { string session_id = 1; string reason = 2; }
+
+// RS2-3B transient edge protocol. These frames are live transport only and
+// are deliberately excluded from lifecycle/audit persistence and SSE.
+message RemoteSupportV2AgentEdgeRegistration {
+  RemoteSupportV2SessionKey session = 1;
+  uint64 route_generation = 2;
+}
+message RemoteSupportV2RouteEnvelope {
+  RemoteSupportV2SessionKey session = 1;
+  string edge_route_id = 2;
+  uint64 route_generation = 3;
+  string kind = 4;
+  bytes payload = 5;
+  RemoteSupportV2NegotiationEnvelope negotiation = 6;
+}
+
+// RS2-4 typed transient signalling. Readers retain the generic RS2-3B
+// carrier for rolling compatibility, while media-enabled writers use this
+// envelope exclusively. It is never a lifecycle/audit persistence contract.
+message RemoteSupportV2NegotiationEnvelope {
+  RemoteSupportV2SessionKey session = 1;
+  uint64 negotiation_generation = 2;
+  string direction = 3;
+  uint64 sequence = 4;
+  string message_id = 5;
+  string signal_type = 6;
+  bytes payload = 7;
+  // Session-scoped ICE configuration is carried only with the browser offer.
+  // It is transient gateway traffic and never part of lifecycle/audit state.
+  repeated RemoteSupportV2IceServer ice_servers = 8;
+  int64 ice_expires_unix_ms = 9;
+  bool has_ice_configuration = 10;
+}
+
+message RemoteSupportV2IceServer {
+  repeated string urls = 1;
+  string username = 2;
+  string credential = 3;
+}
+
+// RS2-5 factual Windows/provider evidence carried through the already-admitted
+// V2 edge with RouteEnvelope.kind = "v2_transition_evidence". It intentionally
+// contains no media, SDP, ICE, keystrokes, desktop content, or credentials.
+message RemoteSupportV2TransitionEvidence {
+  string evidence_id = 1;
+  uint64 negotiation_generation = 2;
+  uint64 transition_sequence = 3;
+  int64 observed_unix_ms = 4;
+  string evidence_kind = 5;
+  int32 windows_session_id = 6;
+  bool has_windows_session_id = 7;
+  string user_sid_hash = 8;
+  int32 active_console_session_id = 9;
+  bool has_active_console_session_id = 10;
+  string windows_session_state = 11;
+  string desktop_kind = 12;
+  string provider_kind = 13;
+  string helper_route_id = 14;
+  uint64 inventory_sequence = 15;
+  bool has_inventory_sequence = 16;
+  bool has_helper_route_id = 17;
+}
+
+// Add-only V2 lifecycle contracts. These messages are not yet attached to the
+// gateway stream oneofs: RS2-3A/RS2-3B will introduce readers before writers.
+// They deliberately exclude SDP, ICE, media, control payloads, and credentials.
+message RemoteSupportV2SessionKey {
+  int32 tenant_id = 1;
+  string agent_id = 2;
+  string remote_support_session_id = 3;
+}
+
+message RemoteSupportV2OperatorBinding { string operator_id = 1; }
+
+message RemoteSupportV2Target {
+  string kind = 1;
+  int32 windows_session_id = 2;
+  string user_sid_hash = 3;
+  uint64 inventory_sequence = 4;
+  bool has_windows_session_id = 5;
+  bool has_inventory_sequence = 6;
+}
+
+message RemoteSupportV2OpenSession {
+  uint32 contract_version = 1;
+  int32 tenant_id = 2;
+  string agent_id = 3;
+  string request_id = 4;
+  RemoteSupportV2OperatorBinding initiating_operator = 5;
+  RemoteSupportV2Target target = 6;
+  repeated string requested_capabilities = 7;
+  int64 requested_unix_ms = 8;
+  int64 expires_unix_ms = 9;
+  bool has_expires_unix_ms = 10;
+}
+
+message RemoteSupportV2SessionStatus {
+  uint32 contract_version = 1;
+  RemoteSupportV2SessionKey session = 2;
+  uint64 lifecycle_revision = 3;
+  string state = 4;
+  string message_code = 5;
+  int64 occurred_unix_ms = 6;
+}
+
+message RemoteSupportV2ControlCommand {
+  uint32 contract_version = 1;
+  RemoteSupportV2SessionKey session = 2;
+  RemoteSupportV2OperatorBinding operator = 3;
+  string request_id = 4;
+  string control_type = 5;
+  uint64 expected_lifecycle_revision = 6;
+  bool has_expected_lifecycle_revision = 7;
+  int64 requested_unix_ms = 8;
+}
+
+message RemoteSupportV2ResumeRequest {
+  uint32 contract_version = 1;
+  RemoteSupportV2SessionKey session = 2;
+  RemoteSupportV2OperatorBinding operator = 3;
+  uint64 after_audit_sequence = 4;
+  string request_id = 5;
+  int64 requested_unix_ms = 6;
+}
+
+message RemoteSupportV2CapabilityAdvertisement {
+  uint32 contract_version = 1;
+  int32 tenant_id = 2;
+  string agent_id = 3;
+  repeated string capabilities = 4;
+  int64 observed_unix_ms = 5;
+  int64 expires_unix_ms = 6;
+  bool has_expires_unix_ms = 7;
+}
+
+message RemoteSupportV2AuditEvent {
+  uint32 contract_version = 1;
+  RemoteSupportV2SessionKey session = 2;
+  uint64 audit_sequence = 3;
+  string event_id = 4;
+  string event_type = 5;
+  string actor_kind = 6;
+  string actor_id = 7;
+  string request_id = 8;
+  bool has_request_id = 9;
+  string outcome = 10;
+  string failure_code = 11;
+  int64 occurred_unix_ms = 12;
+}
+
+message AgentRemoteSupportPreparationFrame {
+  string protocol_version = 1;
+  int32 tenant_id = 2;
+  string client_id = 3;
+  uint64 connection_epoch = 4;
+  string connection_id = 5;
+  uint64 sequence = 6;
+  oneof payload {
+    AgentRemoteSupportPreparationHello hello = 10;
+    RemoteSupportV2InventorySnapshot inventory_snapshot = 11;
+    RemoteSupportV2PreparedTarget prepared_target = 12;
+  }
+}
+
+message GatewayRemoteSupportPreparationFrame {
+  string protocol_version = 1;
+  int32 tenant_id = 2;
+  string client_id = 3;
+  uint64 connection_epoch = 4;
+  string connection_id = 5;
+  uint64 sequence = 6;
+  oneof payload {
+    RemoteSupportPreparationConnectAccepted accepted = 10;
+    RemoteSupportV2InventoryRefresh inventory_refresh = 11;
+    RemoteSupportV2PrepareTarget prepare_target = 12;
+  }
+}
+
+message AgentRemoteSupportPreparationHello { repeated string capabilities = 1; }
+message RemoteSupportPreparationConnectAccepted { string preparation_authority = 1; }
+
+message RemoteSupportV2InventorySnapshot {
+  uint32 contract_version = 1;
+  uint64 inventory_sequence = 2;
+  int64 observed_unix_ms = 3;
+  int64 expires_unix_ms = 4;
+  repeated RemoteSupportV2WindowsSession entries = 5;
+  // Correlates this canonical inventory observation to an actor-issued
+  // transition effect. It is metadata on the existing inventory protocol,
+  // never a second transition inventory payload.
+  repeated RemoteSupportV2TransitionCorrelation transition_correlations = 6;
+}
+
+message RemoteSupportV2TransitionCorrelation {
+  string effect_id = 1;
+  RemoteSupportV2SessionKey session = 2;
+  string transition_id = 3;
+  uint64 presence_epoch = 4;
+}
+
+message RemoteSupportV2WindowsSession {
+  int32 windows_session_id = 1;
+  string state = 2;
+  string user_sid_hash = 3;
+  bool is_console_session = 4;
+  bool is_connected = 5;
+  bool is_locked = 6;
+  bool is_winlogon = 7;
+  bool helper_connected = 8;
+  bool helper_version_matches = 9;
+  string helper_version = 10;
+  // Operator-safe identity label, never a Windows SID or client credential.
+  string display_label = 11;
+}
+
+message RemoteSupportV2InventoryRefresh { string request_id = 1; }
+
+message RemoteSupportV2PrepareTarget {
+  uint32 contract_version = 1;
+  string request_id = 2;
+  RemoteSupportV2OperatorBinding operator = 3;
+  RemoteSupportV2Target target = 4;
+  string route_nonce = 5;
+  int64 requested_unix_ms = 6;
+  int64 expires_unix_ms = 7;
+  // Present only for RS2-4 media preparation. Legacy inventory preflight
+  // intentionally leaves it unset.
+  RemoteSupportV2SessionKey session = 8;
+  bool has_session = 9;
+}
+
+message RemoteSupportV2HelperRoute {
+  string helper_route_id = 1;
+  int32 windows_session_id = 2;
+  string user_sid_hash = 3;
+  string helper_version = 4;
+}
+
+message RemoteSupportV2PreparedTarget {
+  uint32 contract_version = 1;
+  string request_id = 2;
+  string route_nonce = 3;
+  RemoteSupportV2Target target = 4;
+  uint64 inventory_sequence = 5;
+  bool target_valid = 6;
+  bool provider_ready = 7;
+  string code = 8;
+  string message = 9;
+  RemoteSupportV2HelperRoute helper_route = 10;
+  bool has_helper_route = 11;
+  int64 observed_unix_ms = 12;
+  RemoteSupportV2SessionKey session = 13;
+  bool has_session = 14;
+  RemoteSupportV2TransitionCorrelation transition_correlation = 15;
+  bool has_transition_correlation = 16;
+}
+
+message AgentTerminalFrame {
+  string protocol_version = 1;
+  int32 tenant_id = 2;
+  string client_id = 3;
+  uint64 connection_epoch = 4;
+  string connection_id = 5;
+  uint64 sequence = 6;
+  oneof payload {
+    AgentTerminalHello hello = 10;
+    TerminalSessionOpened opened = 11;
+    TerminalOutput output = 12;
+    TerminalSessionClosed closed = 13;
+    TerminalSessionFailed failed = 14;
+    TerminalResizeApplied resize_applied = 15;
+  }
+}
+
+message GatewayTerminalFrame {
+  string protocol_version = 1;
+  int32 tenant_id = 2;
+  string client_id = 3;
+  uint64 connection_epoch = 4;
+  string connection_id = 5;
+  uint64 sequence = 6;
+  oneof payload {
+    TerminalConnectAccepted accepted = 10;
+    TerminalSessionStart start = 11;
+    TerminalInput input = 12;
+    TerminalResize resize = 13;
+    TerminalSessionClose close = 14;
+  }
+}
+
+message AgentTerminalHello {
+  repeated string capabilities = 1;
+  TerminalCapability terminal_capability = 2;
+}
+message TerminalConnectAccepted {
+  string terminal_authority = 1;
+  uint32 maximum_frame_bytes = 2;
+  uint32 maximum_in_flight_frames = 3;
+}
+message TerminalSessionStart {
+  string session_id = 1;
+  uint64 generation = 2;
+  uint32 columns = 3;
+  uint32 rows = 4;
+  string shell_type = 5;
+  string working_directory = 6;
+}
+message TerminalSessionOpened { string session_id = 1; uint64 generation = 2; }
+message TerminalInput {
+  string session_id = 1;
+  uint64 generation = 2;
+  uint64 session_sequence = 3;
+  bytes content = 4;
+}
+message TerminalOutput {
+  string session_id = 1;
+  uint64 generation = 2;
+  uint64 session_sequence = 3;
+  bytes content = 4;
+}
+message TerminalResize {
+  string session_id = 1;
+  uint64 generation = 2;
+  uint64 session_sequence = 3;
+  uint32 columns = 4;
+  uint32 rows = 5;
+}
+message TerminalResizeApplied {
+  string session_id = 1;
+  uint64 generation = 2;
+  uint64 session_sequence = 3;
+  string result = 4;
+  uint32 requested_columns = 5;
+  uint32 requested_rows = 6;
+  uint32 applied_columns = 7;
+  uint32 applied_rows = 8;
+  string error = 9;
+}
+message TerminalSessionClose {
+  string session_id = 1;
+  uint64 generation = 2;
+  string reason = 3;
+}
+message TerminalSessionClosed {
+  string session_id = 1;
+  uint64 generation = 2;
+  string reason = 3;
+}
+message TerminalSessionFailed {
+  string session_id = 1;
+  uint64 generation = 2;
+  string code = 3;
+  string message = 4;
+}
+
+message AgentLogFrame {
+  string protocol_version = 1;
+  int32 tenant_id = 2;
+  string client_id = 3;
+  uint64 connection_epoch = 4;
+  string connection_id = 5;
+  string operation_id = 6;
+  uint64 sequence = 7;
+  // Optional W3C trace context; it is propagated without participating in
+  // identity, presence fencing, routing, actor, or persistence decisions.
+  string traceparent = 8;
+  string tracestate = 9;
+
+  oneof payload {
+    AgentLogHello hello = 10;
+    AgentLogBatch batch = 11;
+    LogQueryResult query_result = 12;
+  }
+}
+
+message GatewayLogFrame {
+  string protocol_version = 1;
+  int32 tenant_id = 2;
+  string client_id = 3;
+  uint64 connection_epoch = 4;
+  string connection_id = 5;
+  string operation_id = 6;
+  uint64 sequence = 7;
+  string traceparent = 8;
+  string tracestate = 9;
+
+  oneof payload {
+    LogConnectAccepted accepted = 10;
+    LogFlowControl flow_control = 11;
+    LogQueryRequest query = 12;
+  }
+}
+
+message AgentLogHello {
+  string agent_version = 1;
+  repeated string capabilities = 2;
+  repeated LogSourceDescriptor sources = 3;
+}
+
+message LogSourceDescriptor {
+  string source_id = 1;
+  string kind = 2;
+  string display_name = 3;
+  string platform = 4;
+  bool available = 5;
+  string unavailable_reason = 6;
+  bool supports_live = 7;
+  bool supports_history = 8;
+  bool supports_paging = 9;
+  repeated string filter_capabilities = 10;
+}
+
+message AgentLogRecord {
+  string cursor = 1;
+  uint64 record_sequence = 2;
+  google.protobuf.Timestamp timestamp_utc = 3;
+  string severity = 4;
+  string source_id = 5;
+  string category = 6;
+  string prefix = 7;
+  string provider = 8;
+  int64 event_id = 9;
+  int64 record_id = 10;
+  string machine = 11;
+  string message = 12;
+  map<string, string> structured_properties = 13;
+  bool truncated = 14;
+}
+
+message AgentLogBatch {
+  string session_id = 1;
+  repeated AgentLogRecord records = 2;
+  string next_cursor = 3;
+  uint64 dropped_record_count = 4;
+  bool resync_required = 5;
+}
+
+message LogConnectAccepted {
+  string log_authority = 1;
+  uint32 maximum_records_per_batch = 2;
+  uint32 maximum_encoded_batch_bytes = 3;
+}
+
+message LogFlowControl {
+  uint32 available_credits = 1;
+  bool resync_required = 2;
+  string resume_cursor = 3;
+}
+
+// An additive, typed request for agent-owned log providers.  The browser never
+// provides a path, a journalctl argument string, or an Event Log query.
+message LogQueryRequest {
+  string request_id = 1;
+  string source_id = 2;
+  LogQueryOperation operation = 3;
+  string cursor = 4;
+  uint32 page_size = 5;
+  google.protobuf.Timestamp from_utc = 6;
+  google.protobuf.Timestamp to_utc = 7;
+  repeated string severities = 8;
+  repeated string prefixes = 9;
+  string text = 10;
+  repeated string providers = 11;
+  repeated int64 event_ids = 12;
+  repeated string categories = 13;
+}
+
+enum LogQueryOperation {
+  LOG_QUERY_OPERATION_UNSPECIFIED = 0;
+  LOG_QUERY_OPERATION_HISTORY = 1;
+  LOG_QUERY_OPERATION_START_LIVE = 2;
+  LOG_QUERY_OPERATION_STOP_LIVE = 3;
+}
+
+// The query response is bounded to a single page.  Ongoing live records use
+// AgentLogBatch so the API can fan them out without coupling query lifetimes
+// to browser connections.
+message LogQueryResult {
+  string request_id = 1;
+  repeated AgentLogRecord records = 2;
+  string next_cursor = 3;
+  string previous_cursor = 4;
+  bool has_more = 5;
+  uint64 dropped_record_count = 6;
+  bool resync_required = 7;
+  string error_code = 8;
+}

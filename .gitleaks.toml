@@ -1,0 +1,15 @@
+title = "NetRatel public-source disclosure scan"
+
+[allowlist]
+description = "Synthetic bearer-token fixtures in named public tests."
+paths = [
+  '''^src/NetRatel/NetRatel\.Tests/API/McpOperatorClientFileEndpointTests\.cs$''',
+  '''^src/NetRatel/NetRatel\.Tests/API/McpOperatorClientObservabilityEndpointTests\.cs$''',
+  '''^src/NetRatel/NetRatel\.Tests/API/McpOperatorNotificationEndpointTests\.cs$''',
+  '''^src/NetRatel/NetRatel\.Tests/API/McpOperatorOnboardingEndpointTests\.cs$''',
+  '''^src/NetRatel/NetRatel\.Tests/API/McpOperatorPolicyMutationEndpointTests\.cs$''',
+  '''^src/NetRatel/NetRatel\.Tests/API/McpOperatorScriptRunTrackingTests\.cs$''',
+  '''^src/NetRatel/NetRatel\.Tests/AgentClient/McpOperatorV2ClientTests\.cs$''',
+  '''^src/NetRatel/NetRatel\.Tests/Cli/NetRatelCliTests\.cs$''',
+  '''^src/NetRatel/NetRatel\.Tests/Mcp/NetRatelMcpHttpToolTests\.cs$''',
+]

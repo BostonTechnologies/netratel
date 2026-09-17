@@ -1,0 +1,1396 @@
+@using NetRatel.Shared.Contracts.Terminals
+@using NetRatel.Web.Components.Pages.Terminal
+@using System.Text.Json
+@using Microsoft.JSInterop
+@inject ITerminalService Term
+@inject AkkaAuthorityFanoutClient AuthorityFanout
+@inject ISnackbar Snack
+@inject ILogger<ClientTerminalSessionDialog> Logger
+@inject IJSRuntime JS
+@implements IAsyncDisposable
+
+<MudDialog Class="client-terminal-session-dialog netratel-terminal-dialog">
+  <TitleContent>
+    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2" Class="client-terminal-session-header">
+      <MudStack Spacing="0" Class="client-terminal-session-title">
+        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
+          <MudText Typo="Typo.h6">Terminal @Shell</MudText>
+          <MudText Typo="Typo.caption" Class="client-terminal-session-host">@HostLabel</MudText>
+        </MudStack>
+      </MudStack>
+      <MudSpacer />
+      <MudTooltip Text="Fit terminal">
+        <MudIconButton Icon="@Icons.Material.Filled.CenterFocusStrong"
+                       Disabled="@(_console is null)"
+                       OnClick="FitTerminalAsync" />
+      </MudTooltip>
+      <MudTooltip Text="@(_isFullscreen ? "Exit fullscreen" : "Enter fullscreen")">
+        <MudIconButton Icon="@(_isFullscreen ? Icons.Material.Filled.FullscreenExit : Icons.Material.Filled.Fullscreen)"
+                       Disabled="@(_console is null)"
+                       OnClick="ToggleFullscreenAsync" />
+      </MudTooltip>
+      <MudTooltip Text="Clear terminal">
+        <MudIconButton Icon="@Icons.Material.Filled.ClearAll"
+                       Disabled="@(_console is null)"
+                       OnClick="ClearTerminalAsync" />
+      </MudTooltip>
+      @if (_canReconnect)
+      {
+        <MudButton OnClick="ReconnectAsync" Disabled="@_recoveryRunning" StartIcon="@Icons.Material.Filled.Refresh">Reconnect</MudButton>
+      }
+      <MudButton Variant="Variant.Filled"
+                 Color="Color.Error"
+                 StartIcon="@Icons.Material.Filled.Close"
+                 OnClick="CloseAndExitAsync">Close</MudButton>
+    </MudStack>
+  </TitleContent>
+
+  <DialogContent>
+    <div class="client-terminal-session-body">
+      <div class="client-terminal-session-status">
+        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1" Class="client-terminal-session-chip-row">
+          <MudChip @key="_connectionLabel"
+                   T="string"
+                   Size="Size.Small"
+                   Variant="Variant.Filled"
+                   Color="@GetConnectionColor()"
+                   Icon="@GetConnectionIcon()">@_connectionLabel</MudChip>
+          @if (_session is not null)
+          {
+            <MudChip @key="_session.Backend" T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Info">@(_session.Backend ?? "agent-pty")</MudChip>
+            <MudChip @key="_session.Transport" T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Primary">@FormatTransport(_session.Transport)</MudChip>
+          }
+          <MudChip @key="DimensionsKey" T="string" Size="Size.Small" Variant="Variant.Outlined">@EffectiveCols x @EffectiveRows</MudChip>
+          <MudChip @key="_inputChannelLabel"
+                   T="string"
+                   Size="Size.Small"
+                   Variant="Variant.Outlined"
+                   Color="@GetInputChannelColor()">@_inputChannelLabel</MudChip>
+          @if (!string.IsNullOrWhiteSpace(_terminalNotice))
+          {
+            <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Warning">@_terminalNotice</MudChip>
+          }
+        </MudStack>
+      </div>
+      <div class="client-terminal-session-console">
+        <TerminalConsole @ref="_console"
+                         SessionId="@(_session?.SessionId ?? string.Empty)"
+                         IsInputEnabled="@(_session is not null && _inputEnabled)"
+                         OnReady="HandleConsoleReadyAsync"
+                         OnResized="HandleConsoleResizedAsync"
+                         OnResizeApplied="RefreshSessionMetadataAsync"
+                         OnInputChannelStatusChanged="HandleInputChannelStatusChangedAsync"
+                         OnConsoleStatusChanged="HandleConsoleStatusChangedAsync"
+                         OnClosed="HandleClosedAsync" />
+        @if (_isOpening)
+        {
+          <div class="client-terminal-session-loading client-terminal-session-overlay">
+            <MudStack AlignItems="AlignItems.Center" Justify="Justify.Center" Spacing="2">
+              <MudProgressCircular Indeterminate="true" Color="Color.Primary" Size="Size.Large" />
+              <MudText Typo="Typo.body2">Measuring terminal layout...</MudText>
+            </MudStack>
+          </div>
+        }
+        else if (!string.IsNullOrWhiteSpace(_openError))
+        {
+          <MudAlert Class="ma-3 client-terminal-session-error" Severity="Severity.Error">@_openError</MudAlert>
+        }
+      </div>
+    </div>
+  </DialogContent>
+</MudDialog>
+
+@code {
+  [CascadingParameter] public IMudDialogInstance MudDialog { get; set; } = default!;
+  [Parameter] public string ClientIdentityHex { get; set; } = string.Empty;
+  [Parameter] public int? TenantId { get; set; }
+  [Parameter] public Guid? AgentId { get; set; }
+  [Parameter] public string? HostLabel { get; set; }
+  [Parameter] public string Shell { get; set; } = "bash";
+  [Parameter] public string? WorkingDirectory { get; set; }
+  [Parameter] public int? Cols { get; set; }
+  [Parameter] public int? Rows { get; set; }
+
+  private TerminalSessionDto? _session;
+  private TerminalConsole? _console;
+  private CancellationTokenSource? _streamCts;
+  private CancellationTokenSource? _statusCts;
+  private Task? _streamTask;
+  private Task? _statusTask;
+  private IAsyncDisposable? _authoritySubscription;
+  private IJSObjectReference? _viewportModule;
+  private IJSObjectReference? _attachmentHeartbeatModule;
+  private DotNetObjectReference<ClientTerminalSessionDialog>? _attachmentHeartbeatReference;
+  private long? _attachmentHeartbeatId;
+  private string? _attachmentHeartbeatSessionId;
+  private ulong? _attachmentHeartbeatGeneration;
+  private string? _attachmentHeartbeatLeaseId;
+  private string? _attachmentHeartbeatOwnershipLostSessionId;
+  private ulong? _attachmentHeartbeatOwnershipLostGeneration;
+  private long _attachmentHeartbeatVersion;
+  private readonly object _closeResourcesSync = new();
+  private Task? _closeResourcesTask;
+  private bool _isOpening = true;
+  private bool _isClosing;
+  private bool _inputEnabled;
+  private bool _openStarted;
+  private bool _closedByUser;
+  private bool _disposed;
+  private bool _dialogCloseRequested;
+  private bool _restoreAttempted;
+  private bool _isFullscreen;
+  private bool _hasReceivedOutput;
+  private string _connectionLabel = "requested";
+  private string _inputChannelLabel = "stdin not-started";
+  private string _inputChannelState = "not-started";
+  private string? _terminalNotice;
+  private string? _openError;
+  private TerminalConsole.TerminalGridSize? _measuredGrid;
+  private static readonly TimeSpan LifecyclePollInterval = TimeSpan.FromMilliseconds(500);
+  private static readonly TimeSpan StreamReconnectDelay = TimeSpan.FromMilliseconds(500);
+  private static readonly TimeSpan CloseCleanupTimeout = TimeSpan.FromSeconds(4);
+  private static readonly TimeSpan AttachmentHeartbeatRequestTimeout = TimeSpan.FromSeconds(10);
+  private readonly CancellationTokenSource _attachmentHeartbeatLifecycleCts = new();
+  private const string GatewayTerminalHandleStorageKey = "netratel.gateway-terminal-handles.v1";
+  private const string GatewayTerminalRoute = "gateway-v2";
+  private const int MaxPersistedGatewayTerminalHandles = 8;
+  private static readonly JsonSerializerOptions BrowserHandleJsonOptions = new(JsonSerializerDefaults.Web);
+  private int EffectiveCols => _session?.Cols ?? _measuredGrid?.Cols ?? Cols ?? 80;
+  private int EffectiveRows => _session?.Rows ?? _measuredGrid?.Rows ?? Rows ?? 24;
+  private string DimensionsKey => $"{EffectiveCols}x{EffectiveRows}";
+
+  protected override async Task OnAfterRenderAsync(bool firstRender)
+  {
+    if (firstRender)
+    {
+      _viewportModule = await JS.InvokeAsync<IJSObjectReference>("import", "./js/resizeObserver.js");
+      if (await _viewportModule.InvokeAsync<bool>("isMobileViewport"))
+      {
+        await SetFullscreenAsync(true);
+      }
+
+      _attachmentHeartbeatModule = await JS.InvokeAsync<IJSObjectReference>("import", "./js/terminalAttachmentHeartbeat.js");
+      _attachmentHeartbeatReference = DotNetObjectReference.Create(this);
+      await SynchronizeGatewayTerminalAttachmentHeartbeatAsync();
+    }
+  }
+
+  private async Task OpenAndStartAsync()
+  {
+    string? openedSessionId = null;
+    try
+    {
+      if (await TryRestoreGatewaySessionAsync())
+      {
+        return;
+      }
+
+      _connectionLabel = "requested";
+      var grid = _measuredGrid ?? new TerminalConsole.TerminalGridSize(Cols ?? 80, Rows ?? 24);
+      var request = new OpenTerminalRequest(Shell, grid.Cols, grid.Rows, WorkingDirectory);
+      var response = TenantId is > 0 && AgentId is { } agentId && agentId != Guid.Empty
+        ? await Term.OpenGatewaySessionAsync(TenantId.Value, agentId, request)
+        : await Term.OpenSessionAsync(ClientIdentityHex, request);
+      openedSessionId = response.SessionId;
+      await PersistGatewayTerminalHandleAsync(response.SessionId);
+
+      if (IsCloseRequested)
+      {
+        if (IsExplicitCloseRequested || !HasGatewayTerminalContext)
+        {
+          await CloseOpenedSessionAfterDialogCloseAsync(response.SessionId);
+        }
+
+        return;
+      }
+
+      _connectionLabel = "connecting";
+      await InvokeAsync(StateHasChanged);
+      _session = await Term.GetSessionAsync(response.SessionId);
+      if (IsCloseRequested)
+      {
+        if (IsExplicitCloseRequested || !HasGatewayTerminalContext)
+        {
+          await CloseOpenedSessionAfterDialogCloseAsync(response.SessionId);
+        }
+
+        return;
+      }
+
+      if (_session is null)
+      {
+        _openError = $"Terminal session {response.SessionId} was not found after opening.";
+        return;
+      }
+
+      ApplySessionLifecycle(_session);
+      await PersistGatewayTerminalHandleAsync(response.SessionId, _session);
+      await SynchronizeGatewayTerminalAttachmentHeartbeatAsync();
+      if (IsTerminalFinalState())
+      {
+        await RemoveGatewayTerminalHandleAsync(response.SessionId);
+        return;
+      }
+
+      await StartSessionObservationAsync();
+    }
+    catch (Exception ex)
+    {
+      if ((IsExplicitCloseRequested || !HasGatewayTerminalContext) && !string.IsNullOrWhiteSpace(openedSessionId))
+      {
+        await CloseOpenedSessionAfterDialogCloseAsync(openedSessionId);
+      }
+
+      if (!IsCloseRequested)
+      {
+        _connectionLabel = "failed";
+        _openError = $"Failed to open terminal: {ex.Message}";
+        Snack.Add(_openError, Severity.Error);
+      }
+    }
+    finally
+    {
+      _isOpening = false;
+      await InvokeAsync(StateHasChanged);
+    }
+  }
+
+  private async Task<bool> TryRestoreGatewaySessionAsync()
+  {
+    if (_restoreAttempted || !HasGatewayTerminalContext || IsCloseRequested)
+    {
+      return false;
+    }
+
+    _restoreAttempted = true;
+    var handle = (await ReadGatewayTerminalHandlesAsync())
+      .Where(IsCurrentGatewayTerminalHandle)
+      .OrderByDescending(candidate => candidate.CreatedUnix)
+      .FirstOrDefault();
+    if (handle is null)
+    {
+      return false;
+    }
+
+    TerminalSessionDto? restored;
+    try
+    {
+      // A persisted handle must remain on V2. It must never use a coincident
+      // legacy session ID as an authority fallback after a circuit replacement.
+      restored = await Term.GetGatewaySessionAsync(handle.SessionId);
+    }
+    catch (Exception)
+    {
+      if (IsCloseRequested)
+      {
+        if (IsExplicitCloseRequested)
+        {
+          await CloseOpenedSessionAfterDialogCloseAsync(handle.SessionId);
+        }
+
+        return true;
+      }
+
+      _session = ToReconnectingSession(handle);
+      MarkTransportReconnecting();
+      _terminalNotice = "Reattaching the previous terminal session; waiting for terminal transport.";
+      Logger.LogDebug("[Terminal] Gateway terminal restore lookup will retry.");
+      await SynchronizeGatewayTerminalAttachmentHeartbeatAsync();
+      await StartSessionObservationAsync();
+      return true;
+    }
+
+    if (IsCloseRequested)
+    {
+      if (IsExplicitCloseRequested)
+      {
+        await CloseOpenedSessionAfterDialogCloseAsync(handle.SessionId);
+      }
+
+      return true;
+    }
+
+    if (restored is null || IsTerminalFinalState(restored))
+    {
+      await RemoveGatewayTerminalHandleAsync(handle.SessionId);
+      return false;
+    }
+
+    _session = restored;
+    ApplySessionLifecycle(restored);
+    await PersistGatewayTerminalHandleAsync(restored.SessionId, restored);
+    await SynchronizeGatewayTerminalAttachmentHeartbeatAsync();
+    if (IsSessionInputCapable(restored))
+    {
+      _terminalNotice = "Reattached terminal session.";
+    }
+
+    await StartSessionObservationAsync();
+    return true;
+  }
+
+  private async Task StartSessionObservationAsync()
+  {
+    if (_session is not { } observed || IsCloseRequested)
+    {
+      return;
+    }
+
+    var observationVersion = _sessionObservationVersion;
+    if (_authoritySubscription is null && TenantId is > 0 && AgentId is { } authorityAgentId && authorityAgentId != Guid.Empty)
+    {
+      try
+      {
+        var subscription = await AuthorityFanout.SubscribeTerminalAsync(TenantId.Value, authorityAgentId, observed.SessionId,
+          _attachmentHeartbeatLifecycleCts.Token);
+        if (!IsObservedSession(observed.SessionId, observationVersion))
+        {
+          await subscription.DisposeAsync();
+          return;
+        }
+        _authoritySubscription = subscription;
+      }
+      catch (Exception exception)
+      {
+        Logger.LogWarning(exception,
+          "Akka authority terminal fanout is unavailable; continuing with the terminal data stream tenant={TenantId} agent={AgentId} session={SessionId}",
+          TenantId.Value, authorityAgentId, observed.SessionId);
+      }
+    }
+
+    if (!IsObservedSession(observed.SessionId, observationVersion))
+    {
+      return;
+    }
+    if (_streamTask is null)
+    {
+      _streamCts = new CancellationTokenSource();
+      _streamTask = PumpTerminalStreamAsync(_streamCts.Token);
+    }
+    if (_statusTask is null)
+    {
+      _statusCts = new CancellationTokenSource();
+      _statusTask = PollSessionStatusAsync(_statusCts.Token);
+    }
+  }
+
+  /// <summary>
+  /// Invoked only by the browser-owned JavaScript timer. Its result tells the
+  /// JavaScript owner whether to continue and which rotated lease fence to use.
+  /// Server-side polling and stream activity never renew attachment ownership.
+  /// </summary>
+  [JSInvokable]
+  public async Task<TerminalAttachmentHeartbeatResult> OnGatewayTerminalAttachmentHeartbeat(
+    string sessionId,
+    string generationText,
+    string attachmentLeaseId,
+    string browserAttachmentId,
+    bool claimOwnership)
+  {
+    if (!ulong.TryParse(
+          generationText,
+          System.Globalization.NumberStyles.None,
+          System.Globalization.CultureInfo.InvariantCulture,
+          out var generation) ||
+        string.IsNullOrWhiteSpace(browserAttachmentId) || browserAttachmentId.Length > 128 ||
+        !IsCurrentGatewayTerminalAttachment(sessionId, generation, attachmentLeaseId))
+    {
+      InvalidateGatewayTerminalAttachmentHeartbeat(sessionId, generation, attachmentLeaseId);
+      return new(false);
+    }
+
+    using var heartbeatCts = CancellationTokenSource.CreateLinkedTokenSource(_attachmentHeartbeatLifecycleCts.Token);
+    heartbeatCts.CancelAfter(AttachmentHeartbeatRequestTimeout);
+    try
+    {
+      var renewed = await Term.RenewGatewayAttachmentAsync(
+          sessionId,
+          generation,
+          attachmentLeaseId,
+          browserAttachmentId,
+          claimOwnership,
+          heartbeatCts.Token)
+        .WaitAsync(heartbeatCts.Token);
+      if (!IsCurrentGatewayTerminalAttachment(sessionId, generation, attachmentLeaseId) ||
+          string.IsNullOrWhiteSpace(renewed.AttachmentLeaseId))
+      {
+        return new(false);
+      }
+
+      if (!string.Equals(attachmentLeaseId, renewed.AttachmentLeaseId, StringComparison.Ordinal))
+      {
+        _session = _session! with { AttachmentLeaseId = renewed.AttachmentLeaseId };
+        _attachmentHeartbeatLeaseId = renewed.AttachmentLeaseId;
+        // Persist the rotated fence before returning to JavaScript. This is a
+        // duplex JS-to-.NET callback; the browser runtime remains alive while
+        // the response is in flight, so a hard reload cannot resurrect its
+        // former copied handle after this ownership handoff succeeds.
+        await PersistGatewayTerminalHandleAsync(sessionId, _session);
+      }
+
+      return new(true, OwnershipConfirmed: true, renewed.AttachmentLeaseId);
+    }
+    catch (OperationCanceledException) when (IsCloseRequested)
+    {
+      InvalidateGatewayTerminalAttachmentHeartbeat(sessionId, generation, attachmentLeaseId);
+      return new(false);
+    }
+    catch (OperationCanceledException)
+    {
+      // A bounded attempt that did not finish is not proof that the browser is
+      // gone. Return control to JavaScript so its next timer tick can retry.
+      return new(!IsCloseRequested);
+    }
+    catch (HttpRequestException exception) when (
+      exception.Message.Contains("terminal_session_failed", StringComparison.Ordinal))
+    {
+      // A final shell is distinct from a rejected browser owner. Confirm its
+      // lifecycle through GET before deciding whether a fresh shell is allowed.
+      QueueSessionReconciliation();
+      return new(false);
+    }
+    catch (HttpRequestException exception) when (IsAttachmentHeartbeatRejected(exception))
+    {
+      // A stale generation, explicit close, or final session cannot be revived
+      // by a late browser callback. Let the next lifecycle observation reconcile
+      // the local presentation while this timer stops immediately.
+      InvalidateGatewayTerminalAttachmentHeartbeat(sessionId, generation, attachmentLeaseId);
+      Logger.LogDebug(
+        "[Terminal] Browser attachment heartbeat was rejected session={SessionId} generation={Generation} status={StatusCode}",
+        sessionId,
+        generation,
+        exception.StatusCode);
+      return new(false);
+    }
+    catch (Exception exception)
+    {
+      // Transport failures are not attachment authority. Keep the browser timer
+      // alive for a later bounded retry; the API lease will still expire if the
+      // browser disappears or the circuit is retained without browser execution.
+      Logger.LogDebug(
+        exception,
+        "[Terminal] Browser attachment heartbeat will retry session={SessionId} generation={Generation}",
+        sessionId,
+        generation);
+      return new(true);
+    }
+  }
+
+  private async Task SynchronizeGatewayTerminalAttachmentHeartbeatAsync()
+  {
+    if (!TryGetGatewayTerminalAttachmentTarget(out var sessionId, out var generation, out var attachmentLeaseId))
+    {
+      await StopGatewayTerminalAttachmentHeartbeatAsync();
+      return;
+    }
+
+    if (_attachmentHeartbeatId is not null &&
+        string.Equals(_attachmentHeartbeatSessionId, sessionId, StringComparison.Ordinal) &&
+        _attachmentHeartbeatGeneration == generation &&
+        string.Equals(_attachmentHeartbeatLeaseId, attachmentLeaseId, StringComparison.Ordinal))
+    {
+      return;
+    }
+
+    await StopGatewayTerminalAttachmentHeartbeatAsync();
+    var module = _attachmentHeartbeatModule;
+    var callback = _attachmentHeartbeatReference;
+    if (module is null || callback is null)
+    {
+      return;
+    }
+
+    var version = Interlocked.Increment(ref _attachmentHeartbeatVersion);
+    // Reserve the target before JavaScript starts its immediate heartbeat. A
+    // rejection that races this interop call can then invalidate this start
+    // rather than leaving the component believing a stopped timer is active.
+    _attachmentHeartbeatId = 0;
+    _attachmentHeartbeatSessionId = sessionId;
+    _attachmentHeartbeatGeneration = generation;
+    _attachmentHeartbeatLeaseId = attachmentLeaseId;
+    try
+    {
+      var heartbeatId = await module.InvokeAsync<long>(
+        "startTerminalAttachmentHeartbeat",
+        callback,
+        sessionId,
+        generation.ToString(System.Globalization.CultureInfo.InvariantCulture),
+        attachmentLeaseId);
+
+      if (version != Volatile.Read(ref _attachmentHeartbeatVersion) ||
+          !IsCurrentGatewayTerminalAttachment(sessionId, generation))
+      {
+        await StopGatewayTerminalAttachmentHeartbeatAsync(module, heartbeatId);
+        return;
+      }
+
+      _attachmentHeartbeatId = heartbeatId;
+      _attachmentHeartbeatSessionId = sessionId;
+      _attachmentHeartbeatGeneration = generation;
+    }
+    catch (Exception exception)
+    {
+      if (version == Volatile.Read(ref _attachmentHeartbeatVersion))
+      {
+        _attachmentHeartbeatId = null;
+        _attachmentHeartbeatSessionId = null;
+        _attachmentHeartbeatGeneration = null;
+        _attachmentHeartbeatLeaseId = null;
+      }
+
+      Logger.LogDebug(
+        exception,
+        "[Terminal] Browser attachment heartbeat could not be started session={SessionId} generation={Generation}",
+        sessionId,
+        generation);
+    }
+  }
+
+  private async Task StopGatewayTerminalAttachmentHeartbeatAsync(CancellationToken ct = default)
+  {
+    Interlocked.Increment(ref _attachmentHeartbeatVersion);
+    var heartbeatId = _attachmentHeartbeatId;
+    _attachmentHeartbeatId = null;
+    _attachmentHeartbeatSessionId = null;
+    _attachmentHeartbeatGeneration = null;
+    _attachmentHeartbeatLeaseId = null;
+
+    if (heartbeatId is { } id && id > 0 && _attachmentHeartbeatModule is { } module)
+    {
+      await StopGatewayTerminalAttachmentHeartbeatAsync(module, id, ct);
+    }
+  }
+
+  private async Task StopGatewayTerminalAttachmentHeartbeatAsync(
+    IJSObjectReference module,
+    long heartbeatId,
+    CancellationToken ct = default)
+  {
+    try
+    {
+      await module.InvokeVoidAsync("stopTerminalAttachmentHeartbeat", ct, heartbeatId);
+    }
+    catch (OperationCanceledException) when (ct.IsCancellationRequested)
+    {
+      Logger.LogDebug("[Terminal] Browser attachment heartbeat cleanup reached its deadline.");
+    }
+    catch (Exception)
+    {
+      // Browser unload/circuit loss can make JS interop unavailable exactly when
+      // this cleanup runs. The browser-side pagehide handler independently stops
+      // the timer, and the server lease remains bounded without this acknowledgement.
+      Logger.LogDebug("[Terminal] Browser attachment heartbeat cleanup was unavailable.");
+    }
+  }
+
+  private bool TryGetGatewayTerminalAttachmentTarget(
+    out string sessionId,
+    out ulong generation,
+    out string attachmentLeaseId)
+  {
+    sessionId = string.Empty;
+    generation = 0;
+    attachmentLeaseId = string.Empty;
+    if (!HasGatewayTerminalContext || IsCloseRequested || _isClosing || _session is not { } session ||
+        session.Generation is not { } currentGeneration || currentGeneration == 0 ||
+        string.IsNullOrWhiteSpace(session.AttachmentLeaseId) ||
+        IsTerminalFinalState(session) || string.Equals(session.State, "closing", StringComparison.OrdinalIgnoreCase))
+    {
+      return false;
+    }
+
+    sessionId = session.SessionId;
+    generation = currentGeneration;
+    attachmentLeaseId = session.AttachmentLeaseId;
+    return !string.IsNullOrWhiteSpace(sessionId) &&
+      !IsGatewayTerminalAttachmentOwnershipLost(sessionId, generation);
+  }
+
+  private bool IsCurrentGatewayTerminalAttachment(string sessionId, ulong generation, string attachmentLeaseId) =>
+    TryGetGatewayTerminalAttachmentTarget(out var currentSessionId, out var currentGeneration, out var currentAttachmentLeaseId) &&
+    string.Equals(currentSessionId, sessionId, StringComparison.Ordinal) &&
+    currentGeneration == generation &&
+    string.Equals(currentAttachmentLeaseId, attachmentLeaseId, StringComparison.Ordinal);
+
+  private bool IsCurrentGatewayTerminalAttachment(string sessionId, ulong generation) =>
+    TryGetGatewayTerminalAttachmentTarget(out var currentSessionId, out var currentGeneration, out _) &&
+    string.Equals(currentSessionId, sessionId, StringComparison.Ordinal) &&
+    currentGeneration == generation;
+
+  private void InvalidateGatewayTerminalAttachmentHeartbeat(string sessionId, ulong generation, string attachmentLeaseId)
+  {
+    if (!string.Equals(_attachmentHeartbeatSessionId, sessionId, StringComparison.Ordinal) ||
+        _attachmentHeartbeatGeneration != generation ||
+        !string.Equals(_attachmentHeartbeatLeaseId, attachmentLeaseId, StringComparison.Ordinal))
+    {
+      return;
+    }
+
+    Interlocked.Increment(ref _attachmentHeartbeatVersion);
+    _attachmentHeartbeatId = null;
+    _attachmentHeartbeatSessionId = null;
+    _attachmentHeartbeatGeneration = null;
+    _attachmentHeartbeatLeaseId = null;
+    _attachmentHeartbeatOwnershipLostSessionId = sessionId;
+    _attachmentHeartbeatOwnershipLostGeneration = generation;
+  }
+
+  private bool IsGatewayTerminalAttachmentOwnershipLost(string sessionId, ulong generation) =>
+    string.Equals(_attachmentHeartbeatOwnershipLostSessionId, sessionId, StringComparison.Ordinal) &&
+    _attachmentHeartbeatOwnershipLostGeneration == generation;
+
+  private static bool IsAttachmentHeartbeatRejected(HttpRequestException exception) =>
+    exception.StatusCode is System.Net.HttpStatusCode.BadRequest or
+      System.Net.HttpStatusCode.NotFound or
+      System.Net.HttpStatusCode.Conflict or
+      System.Net.HttpStatusCode.UnprocessableEntity;
+
+  private bool HasGatewayTerminalContext =>
+    TenantId is > 0 && AgentId is { } agentId && agentId != Guid.Empty;
+
+  private bool IsCurrentGatewayTerminalHandle(GatewayTerminalBrowserHandle handle) =>
+    TenantId is > 0 &&
+    AgentId is { } agentId &&
+    !string.IsNullOrWhiteSpace(handle.SessionId) &&
+    handle.TenantId == TenantId.Value &&
+    handle.AgentId == agentId &&
+    string.Equals(handle.Route, GatewayTerminalRoute, StringComparison.Ordinal) &&
+    string.Equals(handle.Shell, Shell, StringComparison.OrdinalIgnoreCase);
+
+  private async Task PersistGatewayTerminalHandleAsync(string sessionId, TerminalSessionDto? session = null)
+  {
+    if (!HasGatewayTerminalContext || string.IsNullOrWhiteSpace(sessionId))
+    {
+      return;
+    }
+
+    var agentId = AgentId!.Value;
+    var handles = await ReadGatewayTerminalHandlesAsync();
+    handles.RemoveAll(handle =>
+      handle.TenantId == TenantId &&
+      handle.AgentId == agentId &&
+      string.Equals(handle.SessionId, sessionId, StringComparison.Ordinal));
+    handles.Add(new GatewayTerminalBrowserHandle(
+      sessionId,
+      TenantId!.Value,
+      agentId,
+      GatewayTerminalRoute,
+      session?.ShellType ?? Shell,
+      session?.Cols ?? _measuredGrid?.Cols ?? Cols ?? 80,
+      session?.Rows ?? _measuredGrid?.Rows ?? Rows ?? 24,
+      session?.CreatedUnix ?? DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+      session?.Generation,
+      session?.AttachmentLeaseId));
+
+    if (handles.Count > MaxPersistedGatewayTerminalHandles)
+    {
+      handles = handles
+        .OrderByDescending(handle => handle.CreatedUnix)
+        .Take(MaxPersistedGatewayTerminalHandles)
+        .ToList();
+    }
+
+    await WriteGatewayTerminalHandlesAsync(handles);
+  }
+
+  private async Task RemoveGatewayTerminalHandleAsync(string sessionId, CancellationToken ct = default)
+  {
+    if (!HasGatewayTerminalContext || string.IsNullOrWhiteSpace(sessionId))
+    {
+      return;
+    }
+
+    var handles = await ReadGatewayTerminalHandlesAsync(ct);
+    var removed = handles.RemoveAll(handle =>
+      handle.TenantId == TenantId &&
+      AgentId is { } agentId && handle.AgentId == agentId &&
+      string.Equals(handle.SessionId, sessionId, StringComparison.Ordinal));
+    if (removed > 0)
+    {
+      await WriteGatewayTerminalHandlesAsync(handles, ct);
+    }
+  }
+
+  private async Task<List<GatewayTerminalBrowserHandle>> ReadGatewayTerminalHandlesAsync(CancellationToken ct = default)
+  {
+    try
+    {
+      var payload = await JS.InvokeAsync<string?>("sessionStorage.getItem", ct, GatewayTerminalHandleStorageKey);
+      return string.IsNullOrWhiteSpace(payload)
+        ? []
+        : JsonSerializer.Deserialize<List<GatewayTerminalBrowserHandle>>(payload, BrowserHandleJsonOptions) ?? [];
+    }
+    catch (OperationCanceledException) when (ct.IsCancellationRequested)
+    {
+      return [];
+    }
+    catch (Exception)
+    {
+      Logger.LogDebug("[Terminal] Browser terminal handle storage is unavailable.");
+      return [];
+    }
+  }
+
+  private async Task WriteGatewayTerminalHandlesAsync(IReadOnlyList<GatewayTerminalBrowserHandle> handles, CancellationToken ct = default)
+  {
+    try
+    {
+      var payload = JsonSerializer.Serialize(handles, BrowserHandleJsonOptions);
+      await JS.InvokeVoidAsync("sessionStorage.setItem", ct, GatewayTerminalHandleStorageKey, payload);
+    }
+    catch (OperationCanceledException) when (ct.IsCancellationRequested)
+    {
+    }
+    catch (Exception)
+    {
+      Logger.LogDebug("[Terminal] Browser terminal handle storage could not be updated.");
+    }
+  }
+
+  private static TerminalSessionDto ToReconnectingSession(GatewayTerminalBrowserHandle handle) =>
+    new(
+      handle.SessionId,
+      handle.AgentId.ToString("N"),
+      handle.Shell,
+      "reconnecting",
+      HasWebSocket: true,
+      handle.CreatedUnix,
+      DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+      CloseReason: null,
+      Backend: "agent-pty",
+      handle.Cols,
+      handle.Rows,
+      ["akka-gateway"],
+      TerminalTransportKind.AkkaGateway)
+    {
+      Generation = handle.Generation,
+      AttachmentLeaseId = handle.AttachmentLeaseId
+    };
+
+  private sealed record GatewayTerminalBrowserHandle(
+    string SessionId,
+    int TenantId,
+    Guid AgentId,
+    string Route,
+    string Shell,
+    int Cols,
+    int Rows,
+    long CreatedUnix,
+    ulong? Generation = null,
+    string? AttachmentLeaseId = null);
+
+  private Task CloseAndExitAsync() => RequestDialogCloseAsync("User closed terminal dialog.");
+
+  private async Task RequestDialogCloseAsync(string reason)
+  {
+    if (_dialogCloseRequested)
+    {
+      return;
+    }
+
+    _dialogCloseRequested = true;
+    _closedByUser = true;
+    _connectionLabel = "closing";
+    _inputEnabled = false;
+    await InvokeAsync(StateHasChanged);
+
+    await CloseResourcesAndSessionAsync(reason);
+    if (!_disposed)
+    {
+      MudDialog.Close(DialogResult.Ok(true));
+    }
+  }
+
+  private async Task FitTerminalAsync()
+  {
+    if (_console is null)
+    {
+      return;
+    }
+
+    await _console.FitAsync();
+    await RefreshSessionMetadataAsync();
+  }
+
+  private async Task ToggleFullscreenAsync() => await SetFullscreenAsync(!_isFullscreen);
+
+  private async Task SetFullscreenAsync(bool fullscreen)
+  {
+    _isFullscreen = fullscreen;
+    await MudDialog.SetOptionsAsync(MudDialog.Options with
+    {
+      FullScreen = fullscreen,
+      FullWidth = true,
+      MaxWidth = fullscreen ? MaxWidth.False : MaxWidth.ExtraExtraLarge
+    });
+    await Task.Yield();
+    if (_console is not null)
+    {
+      await _console.FitAsync();
+    }
+  }
+
+  private Task ClearTerminalAsync() =>
+    _console?.ClearAsync() ?? Task.CompletedTask;
+
+  private async Task PumpTerminalStreamAsync(CancellationToken ct)
+  {
+    var sessionId = _session?.SessionId;
+    if (string.IsNullOrWhiteSpace(sessionId))
+    {
+      return;
+    }
+
+    var observationVersion = _sessionObservationVersion;
+    while (!ct.IsCancellationRequested && IsObservedSession(sessionId, observationVersion))
+    {
+      var reconnect = false;
+      try
+      {
+        await foreach (var message in Term.StreamSessionAsync(sessionId, ct))
+        {
+          if (ct.IsCancellationRequested || !IsObservedSession(sessionId, observationVersion))
+          {
+            return;
+          }
+
+          if (message.Kind.Equals("status", StringComparison.OrdinalIgnoreCase))
+          {
+            _terminalNotice = message.Reason;
+            if (IsRecoverableTerminalTransportSignal(message.Reason))
+            {
+              MarkTransportReconnecting();
+            }
+
+            await InvokeAsync(StateHasChanged);
+            continue;
+          }
+
+          if (message.Kind.Equals("error", StringComparison.OrdinalIgnoreCase))
+          {
+            _inputEnabled = false;
+            QueueSessionReconciliation();
+            break;
+          }
+
+          if (message.Kind.Equals("data", StringComparison.OrdinalIgnoreCase) ||
+              (!message.Kind.Equals("close", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrEmpty(message.Data)))
+          {
+            var shouldRefresh = false;
+            if (string.Equals(message.Kind, "data", StringComparison.OrdinalIgnoreCase))
+            {
+              _hasReceivedOutput = true;
+            }
+
+            // Output can be buffered before the session GET observes a transport
+            // suspension. Do not treat it as authority to resume stdin: only a
+            // server-reported active/opened session may do that.
+            if (IsSessionInputCapable(_session))
+            {
+              if (!_inputEnabled || !string.Equals(_connectionLabel, "connected", StringComparison.OrdinalIgnoreCase))
+              {
+                ApplyConnectedState();
+                shouldRefresh = true;
+              }
+
+              if (!string.IsNullOrWhiteSpace(_terminalNotice))
+              {
+                _terminalNotice = null;
+                shouldRefresh = true;
+              }
+            }
+
+            if (shouldRefresh)
+            {
+              await InvokeAsync(StateHasChanged);
+            }
+
+            if (_console is not null)
+            {
+              await _console.AppendOutputAsync(message.Data ?? string.Empty);
+            }
+
+            continue;
+          }
+
+          if (message.Kind.Equals("close", StringComparison.OrdinalIgnoreCase))
+          {
+            _inputEnabled = false;
+            QueueSessionReconciliation();
+            return;
+          }
+        }
+
+        reconnect = !IsTerminalFinalState();
+      }
+      catch (OperationCanceledException) when (ct.IsCancellationRequested)
+      {
+        return;
+      }
+      catch (Exception)
+      {
+        reconnect = true;
+      }
+
+      if (!reconnect || !IsObservedSession(sessionId, observationVersion) || IsTerminalFinalState())
+      {
+        return;
+      }
+
+      MarkTransportReconnecting();
+      QueueSessionReconciliation();
+      await InvokeAsync(StateHasChanged);
+      await Task.Delay(StreamReconnectDelay, ct);
+    }
+  }
+
+  private Task HandleConsoleReadyAsync() => Task.CompletedTask;
+
+  private Task HandleInputChannelStatusChangedAsync(TerminalInputChannelStatus status)
+  {
+    _inputChannelState = status.State;
+    _inputChannelLabel = status.State switch
+    {
+      "not-started" => "stdin not-started",
+      "opening" => "stdin opening",
+      "connected" => "stdin connected",
+      "sending" => "stdin sending",
+      "reconnecting" => "stdin reconnecting",
+      "rest-fallback" => "stdin rest-fallback",
+      "failed" => "stdin failed",
+      "closed" => "stdin closed",
+      _ => $"stdin {status.State}"
+    };
+
+    if (string.Equals(status.State, "reconnecting", StringComparison.OrdinalIgnoreCase))
+    {
+      MarkTransportReconnecting();
+      QueueSessionReconciliation();
+    }
+    else if (string.Equals(status.State, "connected", StringComparison.OrdinalIgnoreCase) &&
+             IsSessionInputCapable(_session))
+    {
+      ApplyConnectedState();
+    }
+    else if (string.Equals(status.State, "closed", StringComparison.OrdinalIgnoreCase))
+    {
+      _inputEnabled = false;
+      QueueSessionReconciliation();
+    }
+    else if (string.Equals(status.State, "failed", StringComparison.OrdinalIgnoreCase))
+    {
+      _inputEnabled = false;
+      QueueSessionReconciliation();
+      _terminalNotice = string.IsNullOrWhiteSpace(status.Detail)
+        ? "Terminal input channel failed."
+        : $"Terminal input channel failed: {status.Detail}";
+    }
+    else if (string.Equals(status.State, "rest-fallback", StringComparison.OrdinalIgnoreCase))
+    {
+      _terminalNotice = "Terminal input websocket unavailable; using REST stdin fallback.";
+    }
+
+    return InvokeAsync(StateHasChanged);
+  }
+
+  private Task HandleConsoleStatusChangedAsync(TerminalConsole.TerminalConsoleStatus status)
+  {
+    if (string.Equals(status.State, "stdin-error", StringComparison.OrdinalIgnoreCase))
+    {
+      _inputEnabled = false;
+      QueueSessionReconciliation();
+    }
+
+    if (!string.IsNullOrWhiteSpace(status.Detail))
+    {
+      _terminalNotice = $"Terminal render {status.State}: {status.Detail}";
+      if (status.State.Contains("error", StringComparison.OrdinalIgnoreCase))
+      {
+        _connectionLabel = "failed";
+      }
+    }
+
+    return InvokeAsync(StateHasChanged);
+  }
+
+  private async Task HandleConsoleResizedAsync(TerminalConsole.TerminalGridSize size)
+  {
+    _measuredGrid = size;
+    if (_session is null && !_openStarted)
+    {
+      _openStarted = true;
+      await OpenAndStartAsync();
+    }
+
+    await InvokeAsync(StateHasChanged);
+  }
+
+  private Task RefreshSessionMetadataAsync()
+  {
+    QueueSessionReconciliation();
+    return Task.CompletedTask;
+  }
+
+  private async Task PollSessionStatusAsync(CancellationToken ct)
+  {
+    var sessionId = _session?.SessionId;
+    var observationVersion = _sessionObservationVersion;
+    try
+    {
+      using var timer = new PeriodicTimer(LifecyclePollInterval);
+      while (await timer.WaitForNextTickAsync(ct) && IsObservedSession(sessionId, observationVersion))
+      {
+        QueueSessionReconciliation();
+      }
+    }
+    catch (OperationCanceledException) when (ct.IsCancellationRequested)
+    {
+      Logger.LogDebug("[Terminal] Session observation stopped.");
+    }
+  }
+
+  private Task HandleClosedAsync(string? reason)
+  {
+    if (!string.IsNullOrWhiteSpace(reason))
+    {
+      Snack.Add(reason, Severity.Info);
+    }
+
+    return Task.CompletedTask;
+  }
+
+  private async Task CloseSessionIfActiveAsync(string reason, CancellationToken ct)
+  {
+    if (_isClosing || _session is null)
+    {
+      return;
+    }
+
+    if (IsTerminalFinalState(_session))
+    {
+      await RemoveGatewayTerminalHandleAsync(_session.SessionId, ct);
+      return;
+    }
+
+    _isClosing = true;
+    try
+    {
+      await StopGatewayTerminalAttachmentHeartbeatAsync(ct);
+      await Term.CloseAsync(_session.SessionId, reason, ct);
+      _session = _session with { State = "closed", CloseReason = reason };
+      _inputEnabled = false;
+      _connectionLabel = "closed";
+      // A successful close response is the server's durable acceptance of the
+      // close request. Keep the persisted handle until that point so a transient
+      // route/transport failure leaves a subsequent dialog able to reattach and
+      // retry the close instead of orphaning a live terminal session.
+      await RemoveGatewayTerminalHandleAsync(_session.SessionId, ct);
+    }
+    catch (OperationCanceledException) when (ct.IsCancellationRequested)
+    {
+      _isClosing = false;
+    }
+    catch (Exception ex)
+    {
+      if (!_closedByUser && !_disposed)
+      {
+        Snack.Add($"Failed to close terminal session: {ex.Message}", Severity.Warning);
+      }
+      _isClosing = false;
+    }
+  }
+
+  private async Task DisposeStreamAsync(CancellationToken cleanupCt)
+  {
+    // Detach ownership before awaiting: Close and replacement may both enter
+    // cleanup, and neither may dispose a successor's observers.
+    var statusCts = _statusCts;
+    var statusTask = _statusTask;
+    var streamCts = _streamCts;
+    var streamTask = _streamTask;
+    _statusCts = null;
+    _statusTask = null;
+    _streamCts = null;
+    _streamTask = null;
+    statusCts?.Cancel();
+    streamCts?.Cancel();
+    try
+    {
+      await Task.WhenAll(statusTask ?? Task.CompletedTask, streamTask ?? Task.CompletedTask).WaitAsync(cleanupCt);
+    }
+    catch (OperationCanceledException)
+    {
+      Logger.LogDebug("[Terminal] Session observers stopped or reached their cleanup deadline.");
+    }
+    finally
+    {
+      statusCts?.Dispose();
+      streamCts?.Dispose();
+    }
+  }
+
+  private static string FormatTransport(TerminalTransportKind transport) =>
+    transport switch
+    {
+      TerminalTransportKind.ApiWebSocket => "direct-ws",
+      TerminalTransportKind.AkkaGateway => "akka-gateway",
+      _ => "auto"
+    };
+
+  private Color GetConnectionColor() =>
+    _connectionLabel switch
+    {
+      "connected" => Color.Success,
+      "reconnecting" => Color.Warning,
+      "failed" => Color.Error,
+      "closed" => Color.Default,
+      "closing" => Color.Warning,
+      _ => Color.Info
+    };
+
+  private Color GetInputChannelColor() =>
+    _inputChannelState switch
+    {
+      "connected" => Color.Success,
+      "sending" => Color.Info,
+      "opening" => Color.Info,
+      "reconnecting" => Color.Warning,
+      "rest-fallback" => Color.Warning,
+      "failed" => Color.Error,
+      _ => Color.Default
+    };
+
+  private string GetConnectionIcon() =>
+    _connectionLabel switch
+    {
+      "connected" => Icons.Material.Filled.CheckCircle,
+      "reconnecting" => Icons.Material.Filled.Sync,
+      "failed" => Icons.Material.Filled.Error,
+      "closed" => Icons.Material.Filled.StopCircle,
+      "closing" => Icons.Material.Filled.Sync,
+      _ => Icons.Material.Filled.RadioButtonChecked
+    };
+
+  private bool MergeSessionMetadata(TerminalSessionDto latest)
+  {
+    if (_session is not null && !string.Equals(_session.SessionId, latest.SessionId, StringComparison.Ordinal))
+    {
+      return false;
+    }
+
+    ObserveGatewayTerminalAttachmentOwnership(latest);
+    var changed = _session != latest;
+    var previousLabel = _connectionLabel;
+    var previousInputEnabled = _inputEnabled;
+    var previousNotice = _terminalNotice;
+    _session = latest;
+    ApplySessionLifecycle(latest);
+    return changed ||
+           !string.Equals(previousLabel, _connectionLabel, StringComparison.Ordinal) ||
+           previousInputEnabled != _inputEnabled ||
+           !string.Equals(previousNotice, _terminalNotice, StringComparison.Ordinal);
+  }
+
+  private void ObserveGatewayTerminalAttachmentOwnership(TerminalSessionDto latest)
+  {
+    if (_session is not { } current ||
+        current.Generation is not { } currentGeneration ||
+        latest.Generation != currentGeneration ||
+        string.IsNullOrWhiteSpace(current.AttachmentLeaseId) ||
+        string.IsNullOrWhiteSpace(latest.AttachmentLeaseId) ||
+        string.Equals(current.AttachmentLeaseId, latest.AttachmentLeaseId, StringComparison.Ordinal) ||
+        !string.Equals(_attachmentHeartbeatSessionId, current.SessionId, StringComparison.Ordinal) ||
+        _attachmentHeartbeatGeneration != currentGeneration ||
+        !string.Equals(_attachmentHeartbeatLeaseId, current.AttachmentLeaseId, StringComparison.Ordinal))
+    {
+      return;
+    }
+
+    // A status GET may observe a newer owner after a hard reload or cloned-tab
+    // handoff. It is evidence of lifecycle state, not permission for this old
+    // circuit to claim the new fence back; the next browser callback stops.
+    InvalidateGatewayTerminalAttachmentHeartbeat(
+      current.SessionId,
+      currentGeneration,
+      current.AttachmentLeaseId);
+  }
+
+  private void ApplySessionLifecycle(TerminalSessionDto session)
+  {
+    if (IsSessionInputCapable(session))
+    {
+      ApplyConnectedState();
+      return;
+    }
+
+    if (string.Equals(session.State, "failed", StringComparison.OrdinalIgnoreCase))
+    {
+      _connectionLabel = "failed";
+      _inputEnabled = false;
+      _terminalNotice = session.FailureCode ?? session.CloseReason ?? "Terminal open failed.";
+      return;
+    }
+
+    if (string.Equals(session.State, "closed", StringComparison.OrdinalIgnoreCase))
+    {
+      _connectionLabel = "closed";
+      _inputEnabled = false;
+      return;
+    }
+
+    if (IsRecoverableTerminalTransportSignal(session.State))
+    {
+      MarkTransportReconnecting();
+      return;
+    }
+
+    _inputEnabled = false;
+    _connectionLabel = "connecting";
+    _terminalNotice = "Terminal is opening.";
+  }
+
+  private void MarkTransportReconnecting()
+  {
+    if (IsTerminalFinalState())
+    {
+      return;
+    }
+
+    _inputEnabled = false;
+    _connectionLabel = "reconnecting";
+    _terminalNotice = "Terminal transport is reconnecting; input will resume automatically.";
+  }
+
+  private bool IsTerminalFinalState() =>
+    _session is not null && IsTerminalFinalState(_session);
+
+  private static bool IsTerminalFinalState(TerminalSessionDto session) =>
+    string.Equals(session.State, "closed", StringComparison.OrdinalIgnoreCase) ||
+    string.Equals(session.State, "failed", StringComparison.OrdinalIgnoreCase);
+
+  private static bool IsRecoverableTerminalTransportSignal(string? value) =>
+    !string.IsNullOrWhiteSpace(value) &&
+    (value.Contains("terminal_transport_reconnecting", StringComparison.OrdinalIgnoreCase) ||
+     value.Contains("terminal_transport_unavailable", StringComparison.OrdinalIgnoreCase) ||
+     value.Contains("terminal-stream-connected:akka-gateway:suspended", StringComparison.OrdinalIgnoreCase) ||
+     value.Contains("terminal-stream-connected:akka-gateway:reconnecting", StringComparison.OrdinalIgnoreCase) ||
+     string.Equals(value, "suspended", StringComparison.OrdinalIgnoreCase) ||
+     string.Equals(value, "reconnecting", StringComparison.OrdinalIgnoreCase));
+
+  private void ApplyConnectedState()
+  {
+    _connectionLabel = "connected";
+    _inputEnabled = true;
+    if (!_hasReceivedOutput)
+    {
+      _terminalNotice = "Terminal is open; waiting for shell output.";
+    }
+  }
+
+  private static bool IsSessionInputCapable(TerminalSessionDto? session) =>
+    session is not null &&
+    (string.Equals(session.State, "active", StringComparison.OrdinalIgnoreCase) ||
+     string.Equals(session.State, "opened", StringComparison.OrdinalIgnoreCase) ||
+     string.Equals(session.State, "open", StringComparison.OrdinalIgnoreCase));
+
+  private bool IsExplicitCloseRequested => _closedByUser || _dialogCloseRequested;
+  private bool IsCloseRequested => _disposed || IsExplicitCloseRequested;
+
+  private async Task CloseOpenedSessionAfterDialogCloseAsync(string sessionId)
+  {
+    using var closeCts = new CancellationTokenSource(CloseCleanupTimeout);
+    try
+    {
+      await Term.CloseAsync(sessionId, "Terminal dialog closed before opening completed.", closeCts.Token);
+      // Do not discard recovery state before the server has accepted the close.
+      // If this late-open cleanup races a recoverable outage, the persisted V2
+      // handle remains available for the next dialog to reconcile it.
+      await RemoveGatewayTerminalHandleAsync(sessionId, closeCts.Token);
+    }
+    catch (OperationCanceledException) when (closeCts.IsCancellationRequested)
+    {
+      Logger.LogDebug("[Terminal] Late-open terminal cleanup reached its deadline.");
+    }
+    catch (Exception)
+    {
+      Logger.LogDebug("[Terminal] Late-open terminal cleanup did not complete.");
+    }
+  }
+
+  public async ValueTask DisposeAsync()
+  {
+    if (_disposed)
+    {
+      return;
+    }
+
+    _disposed = true;
+    if (IsExplicitCloseRequested || !HasGatewayTerminalContext)
+    {
+      await CloseResourcesAndSessionAsync("Terminal dialog disposed.");
+    }
+    else
+    {
+      // A circuit replacement/hard reload should detach browser resources but
+      // preserve the non-secret V2 handle for the next dialog to reattach.
+      await DisposeResourcesWithoutClosingSessionAsync();
+    }
+  }
+
+  private Task CloseResourcesAndSessionAsync(string reason)
+    => CloseResourcesAsync(reason, closeSession: true);
+
+  private Task DisposeResourcesWithoutClosingSessionAsync()
+    => CloseResourcesAsync("Terminal dialog disposed after browser detach.", closeSession: false);
+
+  private Task CloseResourcesAsync(string reason, bool closeSession)
+  {
+    lock (_closeResourcesSync)
+    {
+      return _closeResourcesTask ??= CloseResourcesAndSessionCoreAsync(reason, closeSession);
+    }
+  }
+
+  private async Task CloseResourcesAndSessionCoreAsync(string reason, bool closeSession)
+  {
+    using var cleanupCts = new CancellationTokenSource(CloseCleanupTimeout);
+    var cleanupCt = cleanupCts.Token;
+    try
+    {
+      ++_sessionObservationVersion;
+      _attachmentHeartbeatLifecycleCts.Cancel();
+      await StopGatewayTerminalAttachmentHeartbeatAsync(cleanupCt);
+      if (closeSession)
+      {
+        await CloseSessionIfActiveAsync(reason, cleanupCt);
+      }
+
+      await DisposeStreamAsync(cleanupCt);
+      _attachmentHeartbeatReference?.Dispose();
+      _attachmentHeartbeatReference = null;
+      if (_attachmentHeartbeatModule is not null)
+      {
+        await _attachmentHeartbeatModule.DisposeAsync().AsTask().WaitAsync(cleanupCt);
+        _attachmentHeartbeatModule = null;
+      }
+      if (_viewportModule is not null)
+      {
+        await _viewportModule.DisposeAsync().AsTask().WaitAsync(cleanupCt);
+        _viewportModule = null;
+      }
+      if (_authoritySubscription is not null)
+      {
+        await _authoritySubscription.DisposeAsync().AsTask().WaitAsync(cleanupCt);
+        _authoritySubscription = null;
+      }
+    }
+    catch (OperationCanceledException) when (cleanupCt.IsCancellationRequested)
+    {
+      Logger.LogDebug("[Terminal] Terminal dialog cleanup timed out.");
+    }
+    catch (Exception)
+    {
+      Logger.LogDebug("[Terminal] Terminal dialog cleanup did not complete.");
+    }
+  }
+}

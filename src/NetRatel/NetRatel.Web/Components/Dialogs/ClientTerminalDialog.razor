@@ -1,0 +1,88 @@
+@using NetRatel.Shared.Contracts.Terminals
+@inject ITerminalService Term
+@inject ISnackbar Snack
+
+<MudDialog>
+  <TitleContent>
+    <MudText Typo="Typo.h6">Open terminal for @(_hostLabel ?? ClientIdentityHex)</MudText>
+  </TitleContent>
+
+  <DialogContent>
+    <MudStack Spacing="2">
+      <MudSelect @bind-Value="_shell" Label="Shell">
+        @foreach (var shell in _availableShells)
+        {
+          <MudSelectItem Value="@shell">@shell</MudSelectItem>
+        }
+      </MudSelect>
+
+      <MudTextField @bind-Value="_workingDirectory" Label="Working directory" />
+
+      <MudStack Row="true" Spacing="2">
+        <MudNumericField T="int?" @bind-Value="_cols" Label="Cols" Min="40" Max="300" />
+        <MudNumericField T="int?" @bind-Value="_rows" Label="Rows" Min="10" Max="120" />
+      </MudStack>
+    </MudStack>
+  </DialogContent>
+
+  <DialogActions>
+    <MudSpacer />
+    <MudButton OnClick="() => MudDialog.Cancel()">Cancel</MudButton>
+    <MudButton Variant="Variant.Filled"
+               Color="Color.Primary"
+               Disabled="@string.IsNullOrWhiteSpace(_shell)"
+               OnClick="OpenAsync">Open</MudButton>
+  </DialogActions>
+</MudDialog>
+
+@code {
+  [CascadingParameter] public IMudDialogInstance MudDialog { get; set; } = default!;
+  [Parameter] public string ClientIdentityHex { get; set; } = default!;
+  [Parameter] public string? HostLabel { get; set; }
+  [Parameter] public IReadOnlyList<string>? AvailableShells { get; set; }
+
+  private readonly List<string> _availableShells = new();
+  private string? _hostLabel;
+  private string _shell = "pwsh";
+  private string? _workingDirectory;
+  private int? _cols = 120;
+  private int? _rows = 32;
+
+  protected override void OnParametersSet()
+  {
+    _hostLabel = string.IsNullOrWhiteSpace(HostLabel) ? null : HostLabel;
+
+    _availableShells.Clear();
+    if (AvailableShells is { Count: > 0 })
+    {
+      _availableShells.AddRange(AvailableShells.Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.OrdinalIgnoreCase));
+    }
+
+    if (_availableShells.Count == 0)
+    {
+      _availableShells.AddRange(new[] { "pwsh", "powershell", "cmd", "bash", "sh", "zsh" });
+    }
+
+    if (!_availableShells.Contains(_shell, StringComparer.OrdinalIgnoreCase))
+    {
+      _shell = _availableShells[0];
+    }
+  }
+
+  private async Task OpenAsync()
+  {
+    try
+    {
+      var response = await Term.OpenSessionAsync(
+        ClientIdentityHex,
+        new OpenTerminalRequest(_shell, _cols, _rows, _workingDirectory));
+
+      Snack.Add(response.Message, Severity.Info);
+      MudDialog.Close(DialogResult.Ok(response.SessionId));
+    }
+    catch (Exception ex)
+    {
+      Snack.Add($"Failed to open terminal: {ex.Message}", Severity.Error);
+    }
+  }
+}

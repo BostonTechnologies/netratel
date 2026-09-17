@@ -1,0 +1,270 @@
+@page "/clients"
+@rendermode InteractiveServer
+@implements IAsyncDisposable
+
+@using NetRatel.Web.Models.Clients
+@using NetRatel.Web.Services.Clients
+
+@inject ClientPresentationService ClientPresentation
+@inject NavigationManager Navigation
+@inject ISnackbar Snackbar
+
+<PageTitle>Clients</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="mt-4">
+    <MudPaper Elevation="2" Class="pa-4 mb-4">
+        <MudGrid Spacing="3" Justify="Justify.FlexStart">
+            <MudItem xs="12" sm="6" md="3">
+                <MudTextField T="string"
+                              Value="_search"
+                              ValueChanged="OnSearchChanged"
+                              Label="Search"
+                              Placeholder="Name, host, Agent ID, or tenant"
+                              Adornment="Adornment.Start"
+                              AdornmentIcon="@Icons.Material.Filled.Search"
+                              Immediate="true"
+                              Clearable="true" />
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <MudSelect T="int?" Label="Tenant" @bind-Value="SelectedTenantId" Clearable="true" AnchorOrigin="Origin.BottomCenter">
+                    <MudSelectItem T="int?" Value="@((int?)null)">All Tenants</MudSelectItem>
+                    @foreach (var tenant in TenantOptions)
+                    {
+                        <MudSelectItem T="int?" Value="@tenant.TenantId">@tenant.Name</MudSelectItem>
+                    }
+                </MudSelect>
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
+                <MudSelect T="string" Label="Operating System" @bind-Value="SelectedOs" Clearable="true" AnchorOrigin="Origin.BottomCenter">
+                    <MudSelectItem T="string" Value="@((string?)null)">All OS</MudSelectItem>
+                    @foreach (var os in OsOptions)
+                    {
+                        <MudSelectItem T="string" Value="@os">@os</MudSelectItem>
+                    }
+                </MudSelect>
+            </MudItem>
+            <MudItem xs="12" sm="12" md="3">
+                <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween" Class="clients-status-tools">
+                    <MudStack Spacing="0">
+                        <MudText Typo="Typo.caption">Status</MudText>
+                        <MudStack Row="true" Spacing="1">
+                            <MudChip T="string" Color="Color.Default" Variant="@GetStatusVariant(ClientStatusFilter.All)" OnClick="@(() => SelectedStatus = ClientStatusFilter.All)" aria-label="Show all clients">All</MudChip>
+                            <MudChip T="string" Color="Color.Success" Variant="@GetStatusVariant(ClientStatusFilter.Online)" OnClick="@(() => SelectedStatus = ClientStatusFilter.Online)" aria-label="Show online clients">Online</MudChip>
+                            <MudChip T="string" Color="Color.Default" Variant="@GetStatusVariant(ClientStatusFilter.Offline)" OnClick="@(() => SelectedStatus = ClientStatusFilter.Offline)" aria-label="Show offline clients">Offline</MudChip>
+                        </MudStack>
+                    </MudStack>
+                    <MudIconButton Icon="@Icons.Material.Filled.Refresh"
+                                   Color="Color.Primary"
+                                   Variant="Variant.Outlined"
+                                   Disabled="@_isLoading"
+                                   OnClick="ReloadClientsAsync"
+                                   aria-label="Refresh clients" />
+                    <MudIconButton Icon="@(_view == ClientListView.Cards ? Icons.Material.Filled.TableRows : Icons.Material.Filled.GridView)"
+                                   Color="Color.Primary"
+                                   Variant="Variant.Outlined"
+                                   OnClick="ToggleView"
+                                   aria-label="Switch client view" />
+                </MudStack>
+            </MudItem>
+        </MudGrid>
+    </MudPaper>
+
+    @if (_isLoading)
+    {
+        <div class="d-flex align-center">
+            <MudProgressCircular Color="Color.Primary" Indeterminate="true" />
+            <MudText Class="ml-2">Loading clients...</MudText>
+        </div>
+    }
+    else if (_gatewayUnavailable)
+    {
+        <MudAlert Severity="Severity.Error">The authoritative client directory is unavailable. No legacy client fallback is used.</MudAlert>
+    }
+    else if (FilteredClients.Count == 0)
+    {
+        <MudAlert Severity="Severity.Info">No clients match the active filters.</MudAlert>
+    }
+    else
+    {
+        @if (_view == ClientListView.Table)
+        {
+            <ClientGridView Clients="@FilteredClients" RefreshRequested="ReloadClientsAsync" />
+        }
+        else
+        {
+            <ClientCardGrid Clients="@FilteredClients" RefreshRequested="ReloadClientsAsync" />
+        }
+    }
+</MudContainer>
+
+@code {
+    [SupplyParameterFromQuery(Name = "search")]
+    public string? Search { get; set; }
+
+    [SupplyParameterFromQuery(Name = "view")]
+    public string? View { get; set; }
+
+    private IReadOnlyList<ClientPresentationModel> _clients = [];
+    private bool _isLoading = true;
+    private bool _gatewayUnavailable;
+    private int? _selectedTenantId;
+    private string? _selectedOs;
+    private ClientStatusFilter _selectedStatus = ClientStatusFilter.All;
+    private string _search = string.Empty;
+    private ClientListView _view = ClientListView.Cards;
+    private CancellationTokenSource? _refreshLoop;
+
+    private int? SelectedTenantId
+    {
+        get => _selectedTenantId;
+        set { if (_selectedTenantId != value) { _selectedTenantId = value; StateHasChanged(); } }
+    }
+
+    private string? SelectedOs
+    {
+        get => _selectedOs;
+        set { if (!string.Equals(_selectedOs, value, StringComparison.OrdinalIgnoreCase)) { _selectedOs = value; StateHasChanged(); } }
+    }
+
+    private ClientStatusFilter SelectedStatus
+    {
+        get => _selectedStatus;
+        set { if (_selectedStatus != value) { _selectedStatus = value; StateHasChanged(); } }
+    }
+
+    private IReadOnlyList<(int TenantId, string Name)> TenantOptions => _clients
+        .Select(client => (TenantId: client.TenantId, Name: client.TenantName))
+        .Distinct()
+        .OrderBy(tenant => tenant.Name, StringComparer.OrdinalIgnoreCase)
+        .ToArray();
+
+    private IReadOnlyList<string> OsOptions => _clients
+        .Select(client => client.OperatingSystem)
+        .Where(os => !string.IsNullOrWhiteSpace(os))
+        .Cast<string>()
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .OrderBy(os => os, StringComparer.OrdinalIgnoreCase)
+        .ToArray();
+
+    private IReadOnlyList<ClientPresentationModel> FilteredClients => _clients
+        .Where(client => !_selectedTenantId.HasValue || client.TenantId == _selectedTenantId.Value)
+        .Where(client => string.IsNullOrWhiteSpace(_selectedOs) || string.Equals(client.OperatingSystem, _selectedOs, StringComparison.OrdinalIgnoreCase))
+        .Where(client => _selectedStatus == ClientStatusFilter.All ||
+                         (_selectedStatus == ClientStatusFilter.Online && client.Online) ||
+                         (_selectedStatus == ClientStatusFilter.Offline && !client.Online))
+        .Where(MatchesSearch)
+        .OrderBy(client => client.DisplayName, StringComparer.OrdinalIgnoreCase)
+        .ThenBy(client => client.TenantId)
+        .ThenBy(client => client.AgentId)
+        .ToArray();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await ReloadClientsAsync();
+        _refreshLoop = new CancellationTokenSource();
+        _ = RefreshPeriodicallyAsync(_refreshLoop.Token);
+    }
+
+    protected override void OnParametersSet()
+    {
+        _search = Search ?? string.Empty;
+        _view = NormalizeView(View);
+    }
+
+    private async Task ReloadClientsAsync()
+    {
+        _isLoading = true;
+        try
+        {
+            var result = await ClientPresentation.GetClientsAsync();
+            _gatewayUnavailable = !result.IsAvailable;
+            _clients = result.Clients;
+        }
+        catch (Exception exception)
+        {
+            _gatewayUnavailable = true;
+            Snackbar.Add($"Failed to load clients: {exception.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isLoading = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task RefreshPeriodicallyAsync(CancellationToken cancellationToken)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(15));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(cancellationToken))
+            {
+                await ReloadClientsAsync();
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return;
+        }
+    }
+
+    private bool MatchesSearch(ClientPresentationModel client)
+    {
+        if (string.IsNullOrWhiteSpace(_search)) return true;
+        var term = _search.Trim();
+        return Contains(client.DisplayName, term) || Contains(client.HostName, term) ||
+               Contains(client.OperatingSystem, term) || Contains(client.TenantName, term) ||
+               Contains(client.AgentVersion, term);
+    }
+
+    private void OnSearchChanged(string? value)
+    {
+        _search = value ?? string.Empty;
+        NavigateWithQuery();
+    }
+
+    private void ToggleView()
+    {
+        _view = _view == ClientListView.Cards ? ClientListView.Table : ClientListView.Cards;
+        NavigateWithQuery();
+    }
+
+    private void NavigateWithQuery()
+    {
+        var uri = Navigation.GetUriWithQueryParameters(new Dictionary<string, object?>
+        {
+            ["search"] = string.IsNullOrWhiteSpace(_search) ? null : _search.Trim(),
+            ["view"] = _view == ClientListView.Table ? "table" : "cards"
+        });
+        Navigation.NavigateTo(uri, replace: true);
+    }
+
+    private static ClientListView NormalizeView(string? view) =>
+        string.Equals(view, "table", StringComparison.OrdinalIgnoreCase) ? ClientListView.Table : ClientListView.Cards;
+
+    private static bool Contains(string? value, string term) =>
+        !string.IsNullOrWhiteSpace(value) && value.Contains(term, StringComparison.OrdinalIgnoreCase);
+
+    private Variant GetStatusVariant(ClientStatusFilter status) =>
+        _selectedStatus == status ? Variant.Filled : Variant.Outlined;
+
+    private enum ClientStatusFilter
+    {
+        All,
+        Online,
+        Offline
+    }
+
+    private enum ClientListView
+    {
+        Cards,
+        Table
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        _refreshLoop?.Cancel();
+        _refreshLoop?.Dispose();
+        return ValueTask.CompletedTask;
+    }
+}

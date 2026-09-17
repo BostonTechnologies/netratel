@@ -1,0 +1,50 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UserSecretsId>8a60dfbe-1ade-4a47-b0bd-3925006a9dcb</UserSecretsId>
+    <DockerDefaultTargetOS>Linux</DockerDefaultTargetOS>
+    <CompressDiscoveredAssetsDuringBuild>false</CompressDiscoveredAssetsDuringBuild>
+    <EnableDefaultCompressedItems>false</EnableDefaultCompressedItems>
+    <NoWarn>$(NoWarn);EXTEXP0001</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="Components\ScriptLibraryView.razor.cs" />
+  </ItemGroup>
+
+    <ItemGroup>
+      <PackageReference Include="BlazorDownloadFile" Version="2.4.0.2" />
+      <PackageReference Include="BlazorMonaco" Version="3.5.0" />
+      <PackageReference Include="Microsoft.AspNetCore.Authentication.OpenIdConnect" Version="10.0.11" />
+      <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="10.0.11" />
+      <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.11" />
+      <PackageReference Include="Microsoft.Extensions.Http.Resilience" Version="10.9.0" />
+      <PackageReference Include="Microsoft.IdentityModel.Protocols.OpenIdConnect" Version="8.22.0" />
+      <PackageReference Include="Microsoft.VisualStudio.Azure.Containers.Tools.Targets" Version="1.23.0" />
+      <PackageReference Include="CodeBeam.MudBlazor.Extensions" Version="8.3.0" />
+      <PackageReference Include="MudBlazor" Version="8.13.0" />
+      <PackageReference Include="MudBlazor.Extensions" Version="8.13.1" />
+      <PackageReference Include="MudBlazor.ThemeManager" Version="3.0.0" />
+      <PackageReference Include="Scalar.AspNetCore" Version="2.17.1" />
+      <PackageReference Include="SharpCompress" Version="1.0.0" />
+    <PackageReference Include="XtermBlazor" Version="2.4.0" />
+    <PackageReference Include="Yarp.ReverseProxy" Version="2.3.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\NetRatel.Application\NetRatel.Application.csproj" />
+    <ProjectReference Include="..\NetRatel.Infrastructure\NetRatel.Infrastructure.csproj" />
+    <ProjectReference Include="..\NetRatel.ServiceDefaults\NetRatel.ServiceDefaults.csproj" />
+    <ProjectReference Include="..\NetRatel.Shared\NetRatel.Shared.csproj" />
+    <PackageReference Include="Microsoft.Extensions.ServiceDiscovery.Yarp" Version="10.9.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Folder Include="Components\Pages\Clients\Tasks\" />
+    <Folder Include="Components\Views\" />
+  </ItemGroup>
+
+</Project>

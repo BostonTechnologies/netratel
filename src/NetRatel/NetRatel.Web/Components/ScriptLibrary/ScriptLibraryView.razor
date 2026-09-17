@@ -1,0 +1,880 @@
+@rendermode InteractiveServer
+@using System.Linq
+@using System.Timers
+@using BlazorMonaco.Editor
+@using MudBlazor
+@using NetRatel.Shared.Contracts.Execution
+@using NetRatel.Shared.Contracts.Scripts
+@using NetRatel.Web.Services
+@using NetRatel.Web.Services.ScriptLibrary
+
+@inject ScriptLibraryClient Api
+@inject IDialogService Dialogs
+@inject ISnackbar Snackbar
+@inject IJSRuntime JS
+@inject ILogger<ScriptLibraryView> Logger
+
+@implements IAsyncDisposable
+
+<MudStack Spacing="3" Class="script-library-shell">
+    <MudPaper Elevation="0" Class="script-library-hero pa-5">
+        <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween" Class="flex-wrap">
+            <MudStack Spacing="1">
+                <MudText Class="script-library-kicker">Shared Automation</MudText>
+                <MudText Typo="Typo.h4">Script Library</MudText>
+                <MudText Typo="Typo.body2">Organize reusable scripts, keep the editor central, and manage the library without fighting the tree.</MudText>
+            </MudStack>
+            <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
+                <MudChip T="string" Variant="Variant.Outlined" Size="Size.Small">@_all.Count script@(_all.Count == 1 ? string.Empty : "s")</MudChip>
+                <MudChip T="string" Variant="Variant.Outlined" Size="Size.Small">@_types.Count type@(_types.Count == 1 ? string.Empty : "s")</MudChip>
+                @if (_current is not null)
+                {
+                    <MudChip T="string" Variant="Variant.Text" Size="Size.Small">@_current.Name</MudChip>
+                }
+            </MudStack>
+        </MudStack>
+    </MudPaper>
+
+<MudGrid Class="script-library-workspace" data-testid="script-library-workspace">
+    <MudItem xs="12" sm="4" md="3" Class="script-library-tree-column">
+        <MudPaper Elevation="0" Class="pa-3 h-100 d-flex flex-column script-library-panel">
+            <MudStack Spacing="1">
+                <MudTextField T="string"
+                              Label="Search"
+                              Immediate="true"
+                              Value="@_search"
+                              ValueChanged="@OnSearchChanged"
+                              Adornment="Adornment.Start"
+                              AdornmentIcon="@Icons.Material.Filled.Search"
+                              Clearable="true" />
+
+                <MudSelect T="string" Label="Type" Dense="true" Value="@_filterType" ValueChanged="@OnFilterChanged" Clearable="true">
+                    <MudSelectItem Value="@((string?)null)">All</MudSelectItem>
+                    @foreach (var t in _types.OrderBy(t => t, StringComparer.OrdinalIgnoreCase))
+                    {
+                        <MudSelectItem Value="@t">@t</MudSelectItem>
+                    }
+                </MudSelect>
+            </MudStack>
+
+            <MudDivider Class="my-2" />
+
+            <!-- Scrollable tree area -->
+            <div class="script-library-tree-scroll" data-testid="script-library-tree">
+                @if (_loading)
+                {
+                    <div class="d-flex h-100 w-100 justify-center align-center">
+                        <MudProgressCircular Indeterminate="true" />
+                    </div>
+                }
+                else
+                {
+                    <MudTreeView T="ScriptTreeNode" Items="@_tree"
+                                 Hover="true"
+                                 ExpandOnClick="true"
+                                 SelectedValue="@_active"
+                                 SelectedValueChanged="OnActivatedChanged">
+                        <ItemTemplate Context="item">
+                            <MudTreeViewItem T="ScriptTreeNode" Items="@item.Children"
+                                             Value="@item.Value"
+                                             Expanded="@item.Expanded"
+                                             ExpandedChanged="@(expanded => OnExpandedChanged(item, expanded))"
+                                             Icon="@GetNodeIcon(item)">
+                                <BodyContent>
+                                    @if (item.Value is { } value)
+                                    {
+                                        <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween" Class="w-100">
+                                            <MudText Typo="Typo.body2" Class="mud-truncate">@value.Name</MudText>
+                                            @if (!value.IsFolder && AllowEditing && !ReadOnly)
+                                            {
+                                                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
+                                                    <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="@(() => BeginRename(value))" />
+                                                    <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error" OnClick="@(() => DeleteScript(value))" />
+                                                </MudStack>
+                                            }
+                                        </MudStack>
+                                    }
+                                </BodyContent>
+                            </MudTreeViewItem>
+                        </ItemTemplate>
+                    </MudTreeView>
+                }
+            </div>
+
+            <MudDivider Class="my-2" />
+
+            <MudStack Row="true" Spacing="1">
+                <MudTooltip Text="New script">
+                    <MudIconButton Icon="@Icons.Material.Filled.Add"
+                                   Size="Size.Small"
+                                   Disabled="@(ReadOnly || !AllowAdding)"
+                                   OnClick="@NewScript" />
+                </MudTooltip>
+                <MudTooltip Text="Save (Ctrl+S)">
+                    <MudIconButton Icon="@Icons.Material.Filled.Save"
+                                   Size="Size.Small"
+                                   Color="Color.Primary"
+                                   Disabled="@(!AllowEditing || ReadOnly || !_dirty || _current is null)"
+                                   OnClick="@Save" />
+                </MudTooltip>
+                <MudTooltip Text="Refresh list">
+                    <MudIconButton Icon="@Icons.Material.Filled.Refresh"
+                                   Size="Size.Small"
+                                   OnClick="@ReloadAsync" />
+                </MudTooltip>
+            </MudStack>
+        </MudPaper>
+    </MudItem>
+
+    @if (ShowViewer)
+    {
+        <MudItem xs="12" sm="8" md="9" Class="script-library-editor-column">
+            <MudPaper Elevation="0" Class="pa-3 h-full d-flex flex-column script-library-panel">
+                @if (_current is null)
+                {
+                    <MudStack Class="justify-center align-center h-100" Spacing="1">
+                        <MudText Typo="Typo.h6">Select a script to view or edit.</MudText>
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Use the left workspace to search, filter, create, rename, and choose the script you want to work on.</MudText>
+                    </MudStack>
+                }
+                else
+                {
+                    <MudPaper Class="script-library-editor-head pa-3 mb-3" Elevation="0">
+                        <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween" Class="flex-wrap">
+                            <MudStack Spacing="1">
+                                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
+                                    <MudText Typo="Typo.h6" Class="mr-2">@_current.Name</MudText>
+                                    <MudChip T="string" Variant="Variant.Outlined" Color="Color.Info" Size="Size.Small">@(_current.ScriptType ?? "plaintext")</MudChip>
+                                    @if (_dirty)
+                                    {
+                                        <MudChip T="string" Variant="Variant.Outlined" Color="Color.Warning" Size="Size.Small">unsaved</MudChip>
+                                    }
+                                </MudStack>
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">@NormalizeFolder(_current.FolderPath) - updated @_current.UpdatedAt.ToLocalTime().ToString("g")</MudText>
+                            </MudStack>
+                            <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
+                                @if (!ReadOnly && AllowAdding)
+                                {
+                                    <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Add" OnClick="@NewScript">New</MudButton>
+                                }
+                                <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Refresh" OnClick="@ReloadAsync">Refresh</MudButton>
+                                <MudButton Variant="Variant.Filled"
+                                           Color="Color.Primary"
+                                           StartIcon="@Icons.Material.Filled.Save"
+                                           Disabled="@(!AllowEditing || ReadOnly || !_dirty || _current is null)"
+                                           OnClick="@Save">
+                                    Save
+                                </MudButton>
+                            </MudStack>
+                        </MudStack>
+                    </MudPaper>
+
+                    <div @ref="_editorHost" class="script-library-editor-frame" data-testid="script-library-editor-frame">
+                        <div class="script-library-editor" data-testid="script-library-editor">
+                            <StandaloneCodeEditor @key="_editorKey"
+                                                  @ref="_editor"
+                                                  Id="script-library-monaco"
+                                                  CssClass="script-library-monaco"
+                                                  OnDidChangeModelContent="OnEditorContentChanged"
+                                                  ConstructionOptions="@EditorOptions" />
+                        </div>
+                    </div>
+                }
+            </MudPaper>
+        </MudItem>
+    }
+</MudGrid>
+</MudStack>
+
+@code
+{
+    [Parameter] public bool AllowAdding { get; set; }
+    [Parameter] public bool AllowEditing { get; set; }
+    [Parameter] public bool ReadOnly { get; set; }
+    [Parameter] public bool ShowViewer { get; set; } = true;
+    [Parameter] public string? FilterByType { get; set; }
+    [Parameter] public string? InitialSearch { get; set; }
+
+    private readonly HashSet<string> _expanded = new(StringComparer.OrdinalIgnoreCase);
+    private List<ScriptDto> _all = new();
+    private List<ScriptTreeNode> _treeRoots = new();
+    private List<TreeItemData<ScriptTreeNode>> _tree = new();
+    private HashSet<string> _types = new(StringComparer.OrdinalIgnoreCase);
+    private ScriptTreeNode? _active;
+    private ScriptDto? _current;
+    private StandaloneCodeEditor? _editor;
+    private ElementReference _editorHost;
+    private System.Timers.Timer? _debounce;
+    private IJSObjectReference? _resizeObserverModule;
+    private DotNetObjectReference<ScriptLibraryView>? _selfReference;
+    private bool _disposed;
+    private int _layoutQueued;
+    private bool _loading;
+    private bool _dirty;
+    private bool _suppressDirty;
+    private string _editorBaseline = string.Empty;
+    private string? _search;
+    private string? _filterType;
+    private string _editorKey = Guid.NewGuid().ToString();
+
+    protected override async Task OnInitializedAsync()
+    {
+        _filterType = FilterByType;
+        _search = InitialSearch;
+        await ReloadAsync();
+        HookCtrlS();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_disposed || _current is null)
+        {
+            return;
+        }
+
+        if (_resizeObserverModule is null)
+        {
+            _selfReference = DotNetObjectReference.Create(this);
+            _resizeObserverModule = await JS.InvokeAsync<IJSObjectReference>("import", "./js/resizeObserver.js");
+            await _resizeObserverModule.InvokeVoidAsync("observeResize", _editorHost, _selfReference, nameof(OnEditorHostResize));
+        }
+
+        await LayoutEditorAsync();
+    }
+
+    [JSInvokable]
+    public Task OnEditorHostResize()
+    {
+        if (_disposed || Interlocked.Exchange(ref _layoutQueued, 1) != 0)
+        {
+            return Task.CompletedTask;
+        }
+
+        _ = InvokeAsync(LayoutEditorAfterResizeAsync);
+        return Task.CompletedTask;
+    }
+
+    private async Task LayoutEditorAfterResizeAsync()
+    {
+        try
+        {
+            await LayoutEditorAsync();
+        }
+        finally
+        {
+            Volatile.Write(ref _layoutQueued, 0);
+        }
+    }
+
+    private async Task LayoutEditorAsync()
+    {
+        if (_editor is null || _disposed)
+        {
+            return;
+        }
+
+        try
+        {
+            await _editor.Layout();
+        }
+        catch (JSException) when (_disposed)
+        {
+            return;
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _disposed = true;
+        if (_debounce is not null)
+        {
+            _debounce.Elapsed -= DebounceElapsed;
+            _debounce.Dispose();
+        }
+
+        if (_resizeObserverModule is not null)
+        {
+            try
+            {
+                await _resizeObserverModule.InvokeVoidAsync("unobserveResize", _editorHost);
+            }
+            catch (JSDisconnectedException ex)
+            {
+                Logger.LogDebug(ex, "The browser circuit closed before the script-library resize observer detached.");
+            }
+            try
+            {
+                await _resizeObserverModule.DisposeAsync();
+            }
+            catch (JSDisconnectedException ex)
+            {
+                Logger.LogDebug(ex, "The browser circuit closed before the script-library resize module disposed.");
+            }
+            _resizeObserverModule = null;
+        }
+
+        if (_editor is not null)
+        {
+            try
+            {
+                await _editor.DisposeEditor();
+            }
+            catch (JSDisconnectedException ex)
+            {
+                Logger.LogDebug(ex, "The browser circuit closed before the script-library Monaco editor disposed.");
+            }
+        }
+
+        _selfReference?.Dispose();
+        _selfReference = null;
+    }
+
+    private async Task ReloadAsync()
+    {
+        _loading = true;
+        StateHasChanged();
+
+        try
+        {
+            _all = await Api.ListAsync(CancellationToken.None);
+            _types = _all
+                .Select(s => s.ScriptType)
+                .Where(t => !string.IsNullOrWhiteSpace(t))
+                .Select(t => t!.Trim())
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            RebuildTree();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to load scripts: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _loading = false;
+            StateHasChanged();
+        }
+    }
+
+    private void RebuildTree()
+    {
+        UpdateExpandedSnapshot();
+        _treeRoots = ScriptTreeBuilder.Build(_all, _filterType, _search, _expanded);
+        _tree = _treeRoots.Select(CreateTreeItemData).ToList();
+
+        if (_current is not null)
+        {
+            var match = _treeRoots.SelectMany(Flatten).FirstOrDefault(n => !n.IsFolder && n.Id == _current.Id);
+            if (match is null)
+            {
+                SelectNone();
+            }
+            else
+            {
+                _active = match;
+            }
+        }
+        else
+        {
+            _active = null;
+        }
+    }
+
+    private void UpdateExpandedSnapshot()
+    {
+        _expanded.Clear();
+        foreach (var item in _tree)
+        {
+            Capture(item);
+        }
+
+        void Capture(TreeItemData<ScriptTreeNode> item)
+        {
+            if (item.Value is { } value)
+            {
+                value.IsExpanded = item.Expanded;
+                if (value.IsFolder && value.IsExpanded)
+                {
+                    _expanded.Add(value.FullPath);
+                }
+            }
+
+            if (item.Children is { Count: > 0 } children)
+            {
+                foreach (var child in children)
+                {
+                    Capture(child);
+                }
+            }
+        }
+    }
+
+    private static TreeItemData<ScriptTreeNode> CreateTreeItemData(ScriptTreeNode node)
+    {
+        var item = new TreeItemData<ScriptTreeNode>
+        {
+            Value = node,
+            Text = node.Name,
+            Icon = node.IsFolder ? null : node.Icon,
+            Expanded = node.IsExpanded,
+            Children = node.Children.Count == 0
+                ? new List<TreeItemData<ScriptTreeNode>>()
+                : node.Children.Select(CreateTreeItemData).ToList()
+        };
+
+        return item;
+    }
+
+    private static string GetNodeIcon(TreeItemData<ScriptTreeNode> item)
+    {
+        if (item.Value is not { } value)
+        {
+            return Icons.Material.Filled.InsertDriveFile;
+        }
+
+        if (value.IsFolder)
+        {
+            return item.Expanded
+                ? Icons.Custom.Uncategorized.FolderOpen
+                : Icons.Custom.Uncategorized.Folder;
+        }
+
+        return value.Icon ?? Icons.Material.Filled.InsertDriveFile;
+    }
+
+    private static void OnExpandedChanged(TreeItemData<ScriptTreeNode> item, bool expanded)
+    {
+        item.Expanded = expanded;
+        if (item.Value is { } value)
+        {
+            value.IsExpanded = expanded;
+        }
+    }
+
+    private static IEnumerable<ScriptTreeNode> Flatten(ScriptTreeNode root)
+    {
+        yield return root;
+        foreach (var child in root.Children.SelectMany(Flatten))
+        {
+            yield return child;
+        }
+    }
+
+    private async Task OnActivatedChanged(ScriptTreeNode? node)
+    {
+        if (_dirty && node?.Id != _current?.Id)
+        {
+            var leave = await Confirm("Unsaved changes", "Discard changes and switch file?");
+            if (!leave)
+            {
+                // revert to previous selection
+                _active = _treeRoots.SelectMany(Flatten).FirstOrDefault(n => !n.IsFolder && n.Id == _current?.Id);
+                StateHasChanged();
+                return;
+            }
+        }
+
+        _active = node;
+
+        if (node is null || node.IsFolder)
+        {
+            SelectNone();
+            return;
+        }
+
+        _current = _all.FirstOrDefault(s => s.Id == node.Id);
+        _editorBaseline = _current?.Content ?? string.Empty;
+        _dirty = false;
+        _suppressDirty = true;
+        _editorKey = Guid.NewGuid().ToString();
+        StateHasChanged();
+    }
+
+    private Task OnEditorContentChanged(ModelContentChangedEvent _)
+        => UpdateDirtyFlagAsync();
+
+    private async Task UpdateDirtyFlagAsync()
+    {
+        if (_suppressDirty)
+        {
+            _suppressDirty = false;
+            return;
+        }
+
+        if (_editor is null)
+        {
+            return;
+        }
+
+        var value = await _editor.GetValue();
+        var dirty = !string.Equals(value, _editorBaseline, StringComparison.Ordinal);
+        if (dirty != _dirty)
+        {
+            _dirty = dirty;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task Save()
+    {
+        if (_current is null || _editor is null)
+        {
+            return;
+        }
+
+        var observed = _current;
+        try
+        {
+            var content = await _editor.GetValue();
+            if (!ReferenceEquals(_current, observed)) return;
+            var sourceRevision = await Api.UpdateAsync(observed.Id, new UpdateScriptRequest(
+                Name: null,
+                FolderPath: null,
+                Description: null,
+                Content: content,
+                ScriptType: null, ExpectedSourceRevision: observed.SourceRevision), CancellationToken.None);
+
+            var idx = _all.FindIndex(s => s.Id == observed.Id);
+            if (idx >= 0 && _all[idx].SourceRevision <= sourceRevision)
+            {
+                _all[idx] = _all[idx] with { Content = content, UpdatedAt = DateTimeOffset.UtcNow, SourceRevision = sourceRevision };
+            }
+
+            if (ReferenceEquals(_current, observed))
+            {
+                _current = observed with { Content = content, UpdatedAt = DateTimeOffset.UtcNow, SourceRevision = sourceRevision };
+                _editorBaseline = content;
+                _dirty = false;
+            }
+            Snackbar.Add("Saved.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Save failed: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task NewScript()
+    {
+        if (!AllowAdding || ReadOnly)
+        {
+            return;
+        }
+
+        var (ok, name, folder, type) = await PromptNewScript();
+        if (!ok)
+        {
+            return;
+        }
+
+        try
+        {
+            var scriptType = type?.ToString();
+            await Api.CreateAsync(new CreateScriptRequest(name, folder, "", "", scriptType), CancellationToken.None);
+            await ReloadAsync();
+            Snackbar.Add("Script created.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Create failed: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task DeleteScript(ScriptTreeNode node)
+    {
+        if (node.Id is null)
+        {
+            return;
+        }
+
+        var observedRevision = _all.Single(script => script.Id == node.Id.Value).SourceRevision;
+        if (!await Confirm("Delete script", $"Delete '{node.Name}'?"))
+        {
+            return;
+        }
+
+        try
+        {
+            await Api.DeleteAsync(node.Id.Value, observedRevision, CancellationToken.None);
+            if (_current?.Id == node.Id.Value)
+            {
+                SelectNone();
+            }
+
+            await ReloadAsync();
+            Snackbar.Add("Deleted.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Delete failed: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task BeginRename(ScriptTreeNode node)
+    {
+        if (node.Id is null)
+        {
+            return;
+        }
+
+        var observedRevision = _all.Single(script => script.Id == node.Id.Value).SourceRevision;
+        var (ok, newName) = await PromptRename(node.Name);
+        if (!ok || string.Equals(newName, node.Name, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        try
+        {
+            await Api.UpdateAsync(node.Id.Value, new UpdateScriptRequest(
+                Name: newName,
+                FolderPath: null,
+                Description: null,
+                Content: null,
+                ScriptType: null, ExpectedSourceRevision: observedRevision), CancellationToken.None);
+
+            await ReloadAsync();
+            Snackbar.Add("Renamed.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Rename failed: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private void OnSearchChanged(string? value)
+    {
+        _search = value;
+        EnsureDebounceTimer();
+        _debounce!.Stop();
+        _debounce.Start();
+    }
+
+    private Task OnFilterChanged(string? value)
+    {
+        _filterType = string.IsNullOrWhiteSpace(value) ? null : value;
+        RebuildTree();
+        StateHasChanged();
+        return Task.CompletedTask;
+    }
+
+    private void EnsureDebounceTimer()
+    {
+        if (_debounce is not null)
+        {
+            return;
+        }
+
+        _debounce = new System.Timers.Timer(250) { AutoReset = false };
+        _debounce.Elapsed += DebounceElapsed;
+    }
+
+    private void DebounceElapsed(object? sender, ElapsedEventArgs e)
+    {
+        InvokeAsync(() =>
+        {
+            RebuildTree();
+            StateHasChanged();
+        });
+    }
+
+    private void SelectNone()
+    {
+        _active = null;
+        _current = null;
+        _dirty = false;
+        _editorBaseline = string.Empty;
+        _editorKey = Guid.NewGuid().ToString();
+        StateHasChanged();
+    }
+
+    private async Task<(bool ok, string name, string folder, ScriptType? type)> PromptNewScript()
+    {
+        var model = new NewScriptDialogModel();
+        var parameters = new DialogParameters { ["Model"] = model };
+        var dialogRef = await Dialogs.ShowAsync<NewScriptDialog>("New Script", parameters);
+        if (dialogRef is not { } dialog)
+        {
+            return (false, string.Empty, NormalizeFolder(model.Folder), model.Type);
+        }
+
+        var result = await dialog.Result;
+        if (result is null)
+        {
+            return (false, string.Empty, NormalizeFolder(model.Folder), model.Type);
+        }
+
+        return (!result.Canceled, model.Name?.Trim() ?? string.Empty, NormalizeFolder(model.Folder), model.Type);
+    }
+
+    private async Task<(bool ok, string name)> PromptRename(string current)
+    {
+        var model = new RenameScriptDialogModel { Name = current };
+        var parameters = new DialogParameters { ["Model"] = model };
+        var dialogRef = await Dialogs.ShowAsync<RenameScriptDialog>("Rename Script", parameters);
+        if (dialogRef is not { } dialog)
+        {
+            return (false, current);
+        }
+
+        var result = await dialog.Result;
+        if (result is null)
+        {
+            return (false, current);
+        }
+
+        return (!result.Canceled, model.Name?.Trim() ?? current);
+    }
+
+    private Task<bool> Confirm(string title, string message)
+        => Dialogs.ShowMessageBox(title, message, yesText: "Yes", cancelText: "Cancel")
+                  .ContinueWith(t => t.Result == true);
+
+    private StandaloneEditorConstructionOptions EditorOptions(StandaloneCodeEditor _)
+        => new()
+        {
+            Theme = "vs-dark",
+            AutomaticLayout = true,
+            ReadOnly = ReadOnly || !AllowEditing,
+            Language = LangFor(_current?.ScriptType),
+            Value = _current?.Content ?? string.Empty,
+            ScrollBeyondLastLine = false
+        };
+
+    private static string LangFor(string? type) => (type ?? string.Empty).ToLowerInvariant() switch
+    {
+        "powershell" => "powershell",
+        "bash" or "shell" => "shell",
+        "python" => "python",
+        "javascript" => "javascript",
+        "typescript" => "typescript",
+        "sql" => "sql",
+        "json" => "json",
+        _ => "plaintext"
+    };
+
+    private void HookCtrlS()
+    {
+        // Monaco already wires CMD/CTRL+S to "save" if you register it; hook via JS later if desired.
+    }
+
+    private static string NormalizeFolder(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return "/";
+        }
+
+        var normalized = path.Replace('\\', '/');
+        if (!normalized.StartsWith('/'))
+        {
+            normalized = "/" + normalized;
+        }
+
+        if (!normalized.EndsWith('/'))
+        {
+            normalized += "/";
+        }
+
+        return normalized;
+    }
+}
+
+<style>
+    .script-library-shell {
+        padding-bottom: 1rem;
+    }
+
+    .script-library-hero,
+    .script-library-panel,
+    .script-library-editor-head {
+        border-radius: var(--mud-default-borderradius);
+        border: 1px solid var(--mud-palette-lines-default);
+        background: var(--mud-palette-surface);
+        box-shadow: none;
+    }
+
+    .script-library-hero {
+        border-left: 2px solid var(--mud-palette-primary);
+    }
+
+    .script-library-kicker {
+        color: var(--mud-palette-primary);
+        font-size: 0.76rem;
+        font-weight: 700;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+    }
+
+    .script-library-editor-head {
+        background: color-mix(in srgb, var(--mud-palette-primary) 6%, var(--mud-palette-surface));
+    }
+
+    .script-library-workspace {
+        height: min(680px, calc(100dvh - 216px));
+        min-height: 420px;
+    }
+
+    .script-library-tree-column,
+    .script-library-editor-column,
+    .script-library-panel,
+    .script-library-tree-scroll,
+    .script-library-editor-frame {
+        min-height: 0;
+        min-width: 0;
+    }
+
+    .script-library-tree-column,
+    .script-library-editor-column,
+    .script-library-panel {
+        height: 100%;
+    }
+
+    .script-library-tree-scroll {
+        flex: 1 1 auto;
+        overflow: auto;
+        overscroll-behavior: contain;
+    }
+
+    .script-library-editor-frame {
+        display: flex;
+        flex: 1 1 auto;
+        overflow: hidden;
+        border: 1px solid var(--mud-palette-divider);
+        border-radius: var(--netratel-radius-surface, 7px);
+    }
+
+    .script-library-editor {
+        display: flex;
+        flex: 1 1 auto;
+        width: 100%;
+        height: 100%;
+        min-height: 0;
+        min-width: 0;
+    }
+
+    .script-library-editor .monaco-editor-container,
+    .script-library-editor .monaco-editor,
+    .script-library-editor .overflow-guard {
+        flex: 1 1 auto;
+        width: 100%;
+        height: 100%;
+        min-height: 0;
+        min-width: 0;
+    }
+
+    @@media (max-width: 599px) {
+        .script-library-workspace {
+            height: auto;
+            min-height: 0;
+        }
+
+        .script-library-tree-column {
+            min-height: 420px;
+        }
+
+        .script-library-editor-column {
+            min-height: 560px;
+        }
+    }
+</style>

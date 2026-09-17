@@ -1,0 +1,19 @@
+name: netratel
+
+# Optional HTTP MCP deployment overlay. It is intentionally not included by
+# compose.images.yaml: enable it only when an external HTTPS OIDC/resource
+# configuration has been reviewed for this instance.
+services:
+  mcp-http:
+    image: ${NETRATEL_MCP_HTTP_IMAGE:?set the approved HTTP MCP image digest}
+    ports:
+      - "${NETRATEL_MCP_HTTP_PORT:-9224}:9224"
+    environment:
+      NETRATEL_MCP_INSTANCE: ${NETRATEL_MCP_INSTANCE:?set NETRATEL_MCP_INSTANCE to dev or prod}
+      NETRATEL_MCP_DEV_API_BASE_URL: ${NETRATEL_MCP_DEV_API_BASE_URL:-}
+      NETRATEL_MCP_PROD_API_BASE_URL: ${NETRATEL_MCP_PROD_API_BASE_URL:-}
+      NetRatel__Mcp__Http__PublicResourceUri: ${NETRATEL_MCP_PUBLIC_RESOURCE_URI:?set the public HTTPS /mcp resource URI}
+      NetRatel__Mcp__Http__Authority: ${NETRATEL_MCP_OIDC_AUTHORITY:?set the HTTPS OIDC authority}
+      NetRatel__Mcp__Http__Audience: ${NETRATEL_MCP_AUDIENCE:?set the MCP audience, equal to the resource URI}
+      NetRatel__Mcp__Http__RequiredGroups__0: ${NETRATEL_MCP_REQUIRED_GROUP:?set the required operator group}
+      NetRatel__Mcp__Http__RequiredScopes__0: ${NETRATEL_MCP_REQUIRED_SCOPE:?set the required MCP read scope}

@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "product": "NetRatel",
+  "version": "0.1.0-rc.1",
+  "prerelease": true,
+  "components": [
+    { "name": "web", "distribution": "container" },
+    { "name": "api", "distribution": "container" },
+    { "name": "migrations", "distribution": "container" },
+    { "name": "mcp-http", "distribution": "container" },
+    { "name": "cli", "distribution": "archive-and-dotnet-tool" },
+    { "name": "mcp-stdio", "distribution": "archive" },
+    { "name": "client", "distribution": "native-archives-and-manifest" }
+  ]
+}

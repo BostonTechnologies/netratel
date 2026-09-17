@@ -1,0 +1,556 @@
+@page "/requests"
+@rendermode InteractiveServer
+@implements IAsyncDisposable
+
+@using System.Globalization
+@using System.Text.RegularExpressions
+@using NetRatel.Web.Models.Requests
+@using NetRatel.Web.Components.RequestsUi
+@using NetRatel.Web.Services.Requests
+
+@inject RequestApiService RequestApi
+@inject IRequestStreamService RequestStream
+@inject ISnackbar Snackbar
+
+<PageTitle>Requests</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="requests-workbench py-4">
+    <MudStack Spacing="3">
+        <MudPaper Class="requests-hero pa-4" Elevation="0">
+            <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="requests-hero-content">
+                <div>
+                    <MudText Typo="Typo.overline" Class="requests-kicker">Intake Control</MudText>
+                    <MudText Typo="Typo.h4">Request Operations</MudText>
+                    <MudText Typo="Typo.body2" Class="requests-subtitle">
+                        ExternalService ingress, orchestration handoff, and job-run output in one operator surface.
+                    </MudText>
+                </div>
+                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1" Class="requests-hero-actions">
+                    <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Info" Icon="@Icons.Material.Filled.Stream">
+                        @RunningCount live@(_streamConnected ? string.Empty : " - reconnecting")
+                    </MudChip>
+                    <MudButton Variant="Variant.Filled"
+                               Color="Color.Primary"
+                               StartIcon="@Icons.Material.Filled.Refresh"
+                               OnClick="@(() => LoadRequestsAsync())"
+                               Disabled="_isLoading">
+                        Refresh
+                    </MudButton>
+                </MudStack>
+            </MudStack>
+        </MudPaper>
+
+        <MudGrid Spacing="2">
+            <MudItem xs="6" md="3">
+                <MudPaper Class="request-metric request-metric-total pa-3" Elevation="0">
+                    <MudText Typo="Typo.caption" Class="metric-label">Total</MudText>
+                    <MudText Typo="Typo.h4">@_requests.Count</MudText>
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">Requests captured</MudText>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="6" md="3">
+                <MudPaper Class="request-metric request-metric-live pa-3" Elevation="0">
+                    <MudText Typo="Typo.caption" Class="metric-label">Live</MudText>
+                    <MudText Typo="Typo.h4">@RunningCount</MudText>
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">Running or pending</MudText>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="6" md="3">
+                <MudPaper Class="request-metric request-metric-ok pa-3" Elevation="0">
+                    <MudText Typo="Typo.caption" Class="metric-label">Succeeded</MudText>
+                    <MudText Typo="Typo.h4">@SuccessCount</MudText>
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">Completed cleanly</MudText>
+                </MudPaper>
+            </MudItem>
+            <MudItem xs="6" md="3">
+                <MudPaper Class="request-metric request-metric-fail pa-3" Elevation="0">
+                    <MudText Typo="Typo.caption" Class="metric-label">Failed</MudText>
+                    <MudText Typo="Typo.h4">@FailedCount</MudText>
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">Needs attention</MudText>
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+
+        <MudPaper Class="requests-panel pa-4" Elevation="0">
+            <MudStack Spacing="2">
+                <MudGrid Spacing="2" Class="request-filter-grid">
+                    <MudItem xs="12" md="7">
+                        <MudTextField T="string"
+                                      @bind-Value="_search"
+                                      Placeholder="Search request id, source, client, job, run, or log text"
+                                      Adornment="Adornment.Start"
+                                      AdornmentIcon="@Icons.Material.Filled.Search"
+                                      Immediate="true"
+                                      Clearable="true"
+                                      Variant="Variant.Outlined"
+                                      Margin="Margin.Dense" />
+                    </MudItem>
+                    <MudItem xs="12" sm="6" md="3">
+                        <MudSelect T="string"
+                                   @bind-Value="_statusFilter"
+                                   Variant="Variant.Outlined"
+                                   Margin="Margin.Dense"
+                                   Label="Status">
+                            @foreach (var option in StatusFilters)
+                            {
+                                <MudSelectItem T="string" Value="@option">@option</MudSelectItem>
+                            }
+                        </MudSelect>
+                    </MudItem>
+                    <MudItem xs="12" sm="6" md="2">
+                        <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Primary" Class="request-count-chip">
+                            @FilteredRequests.Count() visible
+                        </MudChip>
+                    </MudItem>
+                </MudGrid>
+
+                @if (_isLoading)
+                {
+                    <MudProgressLinear Color="Color.Primary" Indeterminate="true" Class="my-4" />
+                }
+                else if (!FilteredRequests.Any())
+                {
+                    <MudAlert Severity="Severity.Info" Variant="Variant.Outlined">No matching requests.</MudAlert>
+                }
+                else
+                {
+                    <MudExpansionPanels MultiExpansion="true" Elevation="0" Class="request-list">
+                        @foreach (var request in FilteredRequests)
+                        {
+                            <MudExpansionPanel Class="@($"request-row {StatusClass(request.Status)}")">
+                                <TitleContent>
+                                    <MudGrid Spacing="2" Class="request-row-title">
+                                        <MudItem xs="12" md="4">
+                                            <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
+                                                <MudIcon Icon="@Icons.Material.Filled.RadioButtonChecked" Color="@StatusColor(request.Status)" Size="Size.Small" />
+                                                <div>
+                                                    <MudText Typo="Typo.subtitle2">#@request.Id - @DisplayJob(request)</MudText>
+                                                    <MudText Typo="Typo.caption" Color="Color.Secondary">@request.SourceSystem - @DisplayClient(request)</MudText>
+                                                </div>
+                                            </MudStack>
+                                        </MudItem>
+                                        <MudItem xs="12" sm="6" md="2">
+                                            <MudChip T="string"
+                                                     Size="Size.Small"
+                                                     Variant="Variant.Outlined"
+                                                     Color="@StatusColor(request.Status)">
+                                                @request.Status
+                                            </MudChip>
+                                        </MudItem>
+                                        <MudItem xs="12" sm="6" md="3">
+                                            <MudText Typo="Typo.caption" Class="latest-event">@LatestEvent(request)</MudText>
+                                        </MudItem>
+                                        <MudItem xs="12" md="3" Class="request-row-actions">
+                                            @if (HasRunLink(request))
+                                            {
+                                                <MudTooltip Text="@($"Open {DisplayExecution(request)}")">
+                                                    <MudIconButton Href="@BuildRunHref(request)"
+                                                                   Icon="@Icons.Material.Filled.Link"
+                                                                   Variant="Variant.Outlined"
+                                                                   Size="Size.Small"
+                                                                   Color="Color.Primary"
+                                                                   aria-label="@($"Open {DisplayExecution(request)}")" />
+                                                </MudTooltip>
+                                            }
+                                            else
+                                            {
+                                                <MudChip T="string" Size="Size.Small" Variant="Variant.Text" Color="Color.Default">
+                                                    @DisplayExecution(request)
+                                                </MudChip>
+                                            }
+                                            <MudText Typo="Typo.caption" Color="Color.Secondary">@FormatWhen(request.Updated)</MudText>
+                                        </MudItem>
+                                    </MudGrid>
+                                </TitleContent>
+                                <ChildContent>
+                                    <MudGrid Spacing="2" Class="request-details">
+                                        <MudItem xs="12" lg="6" Class="request-details-left">
+                                            <MudPaper Class="request-detail-card request-detail-panel pa-3" Elevation="0">
+                                                <MudText Typo="Typo.subtitle2" Class="detail-heading">Event stream</MudText>
+                                                @if (request.Logs.Count == 0)
+                                                {
+                                                    <MudAlert Severity="Severity.Info" Variant="Variant.Outlined">No request log entries recorded.</MudAlert>
+                                                }
+                                                else
+                                                {
+                                                    <div class="request-log-timeline">
+                                                        @foreach (var entry in ParseLogs(request))
+                                                        {
+                                                            <div class="request-log-entry">
+                                                                <span class="request-log-dot"></span>
+                                                                <div class="request-log-line">
+                                                                    <span class="request-log-time">@entry.Timestamp</span>
+                                                                    <span class="request-log-message">@entry.Message</span>
+                                                                </div>
+                                                            </div>
+                                                        }
+                                                    </div>
+                                                }
+                                            </MudPaper>
+                                        </MudItem>
+                                        <MudItem xs="12" lg="6" Class="request-details-right">
+                                            <MudPaper Class="request-detail-card request-detail-panel request-inspector pa-3" Elevation="0">
+                                                <MudStack Spacing="2">
+                                                    <div>
+                                                        <MudText Typo="Typo.subtitle2" Class="detail-heading">Routing</MudText>
+                                                        <div class="request-routing-grid">
+                                                            <span>Job definition</span>
+                                                            <strong>@request.JobDefinitionId</strong>
+                                                            <span>Run</span>
+                                                            <strong>@DisplayExecution(request)</strong>
+                                                            <span>Created</span>
+                                                            <strong>@FormatDateTime(request.Created)</strong>
+                                                        </div>
+                                                    </div>
+                                                    <div class="request-payload-actions">
+                                                        <MudText Typo="Typo.subtitle2" Class="detail-heading">Payloads</MudText>
+                                                        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1" Class="request-payload-buttons">
+                                                            <RequestJsonAction Title="Inputs"
+                                                                               Json="@request.JobInputs"
+                                                                               Icon="@Icons.Material.Filled.Input"
+                                                                               Color="Color.Info" />
+                                                            <RequestJsonAction Title="Output"
+                                                                               Json="@request.ResultData"
+                                                                               Icon="@Icons.Material.Filled.Output"
+                                                                               Color="Color.Success" />
+                                                            @if (string.IsNullOrWhiteSpace(request.JobInputs) && string.IsNullOrWhiteSpace(request.ResultData))
+                                                            {
+                                                                <MudChip T="string" Size="Size.Small" Variant="Variant.Text" Color="Color.Default">No payloads</MudChip>
+                                                            }
+                                                        </MudStack>
+                                                    </div>
+                                                </MudStack>
+                                            </MudPaper>
+                                            @if (!string.IsNullOrWhiteSpace(request.ResultMessage))
+                                            {
+                                                <MudPaper Class="request-detail-card request-detail-panel pa-3" Elevation="0">
+                                                    <MudText Typo="Typo.subtitle2" Class="detail-heading">Result</MudText>
+                                                    <MudText Typo="Typo.body2" Class="request-result-message">@request.ResultMessage</MudText>
+                                                </MudPaper>
+                                            }
+                                        </MudItem>
+                                    </MudGrid>
+                                </ChildContent>
+                            </MudExpansionPanel>
+                        }
+                    </MudExpansionPanels>
+                }
+            </MudStack>
+        </MudPaper>
+    </MudStack>
+</MudContainer>
+
+@code {
+    [SupplyParameterFromQuery(Name = "search")]
+    public string? Search { get; set; }
+
+    private static readonly string[] StatusFilters = ["All", "Live", "Succeeded", "Failed"];
+    private static readonly Regex LogLineRegex = new(@"^\[(?<timestamp>[^\]]+)\]\s*(?<message>.*)$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly TimeSpan ReconcileInterval = TimeSpan.FromSeconds(5);
+
+    private List<RequestDto> _requests = new();
+    private readonly SemaphoreSlim _refreshGate = new(1, 1);
+    private CancellationTokenSource? _reconcileCts;
+    private Task? _reconcileTask;
+    private bool _isLoading = true;
+    private bool _streamConnected;
+    private bool _hasStreamConnectedOnce;
+    private string _search = string.Empty;
+    private string _statusFilter = "All";
+
+    private IEnumerable<RequestDto> FilteredRequests => _requests
+        .Where(MatchesStatus)
+        .Where(MatchesSearch)
+        .OrderByDescending(x => x.Updated);
+
+    private int RunningCount => _requests.Count(x => IsLive(x.Status));
+    private int SuccessCount => _requests.Count(x => IsSuccess(x.Status));
+    private int FailedCount => _requests.Count(x => IsFailed(x.Status));
+
+    protected override async Task OnInitializedAsync()
+    {
+        _search = Search ?? string.Empty;
+        await LoadRequestsAsync();
+        RequestStream.ConnectionChanged += OnRequestStreamConnectionChanged;
+        await RequestStream.StartAsync(HandleRequestUpsertAsync);
+        StartReconcileLoop();
+    }
+
+    private async Task LoadRequestsAsync()
+        => await LoadRequestsAsync(showErrors: true);
+
+    private async Task LoadRequestsAsync(bool showErrors)
+        => await RefreshRequestsAsync(showSpinner: true, showErrors);
+
+    private async Task RefreshRequestsAsync(bool showSpinner, bool showErrors)
+    {
+        if (!await _refreshGate.WaitAsync(0))
+        {
+            return;
+        }
+
+        try
+        {
+            if (showSpinner)
+            {
+                _isLoading = true;
+                StateHasChanged();
+            }
+
+            var latest = (await RequestApi.GetRequestsAsync()).ToList();
+            ReplaceRequests(latest);
+        }
+        catch (Exception ex)
+        {
+            if (showErrors)
+            {
+                Snackbar.Add($"Failed to load requests: {ex.Message}", Severity.Error);
+            }
+        }
+        finally
+        {
+            if (showSpinner)
+            {
+                _isLoading = false;
+            }
+
+            _refreshGate.Release();
+        }
+    }
+
+    private void ReplaceRequests(IReadOnlyList<RequestDto> latest)
+    {
+        _requests = latest.ToList();
+    }
+
+    private Task HandleRequestUpsertAsync(RequestDto request)
+        => InvokeAsync(() =>
+        {
+            UpsertRequest(request);
+            StateHasChanged();
+        });
+
+    private void UpsertRequest(RequestDto incoming)
+    {
+        var index = _requests.FindIndex(x => x.Id == incoming.Id);
+        if (index < 0)
+        {
+            _requests.Add(incoming);
+            return;
+        }
+
+        if (incoming.Updated < _requests[index].Updated)
+        {
+            return;
+        }
+
+        _requests[index] = incoming;
+    }
+
+    private void StartReconcileLoop()
+    {
+        _reconcileCts = new CancellationTokenSource();
+        _reconcileTask = ReconcileLoopAsync(_reconcileCts.Token);
+    }
+
+    private async Task ReconcileLoopAsync(CancellationToken ct)
+    {
+        using var timer = new PeriodicTimer(ReconcileInterval);
+        try
+        {
+            while (await timer.WaitForNextTickAsync(ct))
+            {
+                await InvokeAsync(async () =>
+                {
+                    await RefreshRequestsAsync(showSpinner: false, showErrors: false);
+                    StateHasChanged();
+                });
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+        }
+    }
+
+    private void OnRequestStreamConnectionChanged(bool connected)
+    {
+        _ = InvokeAsync(async () =>
+        {
+            _streamConnected = connected;
+            if (connected && _hasStreamConnectedOnce)
+            {
+                await LoadRequestsAsync(showErrors: false);
+            }
+
+            if (connected)
+            {
+                _hasStreamConnectedOnce = true;
+            }
+
+            StateHasChanged();
+        });
+    }
+
+    private bool MatchesStatus(RequestDto request)
+        => _statusFilter switch
+        {
+            "Live" => IsLive(request.Status),
+            "Succeeded" => IsSuccess(request.Status),
+            "Failed" => IsFailed(request.Status),
+            _ => true
+        };
+
+    private bool MatchesSearch(RequestDto request)
+    {
+        if (string.IsNullOrWhiteSpace(_search))
+        {
+            return true;
+        }
+
+        var haystack = string.Join(' ',
+            request.Id.ToString(CultureInfo.InvariantCulture),
+            request.SourceSystem,
+            request.TargetClientIdentity,
+            request.JobDefinitionId,
+            request.ExecutionId,
+            request.JobRunId?.ToString(CultureInfo.InvariantCulture),
+            request.JobName,
+            request.Status,
+            request.ResultMessage,
+            string.Join(' ', request.Logs));
+
+        return haystack.Contains(_search, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool HasRunLink(RequestDto request) => request.JobId.HasValue && request.JobRunId.HasValue;
+
+    private static string BuildRunHref(RequestDto request) => $"/jobs/{request.JobId}/runs/{request.JobRunId}";
+
+    private static string DisplayJob(RequestDto request)
+        => !string.IsNullOrWhiteSpace(request.JobName) ? request.JobName! : request.JobDefinitionId;
+
+    private static string DisplayClient(RequestDto request)
+        => string.IsNullOrWhiteSpace(request.TargetClientIdentity) ? "No client target" : Shorten(request.TargetClientIdentity!, 28);
+
+    private static string DisplayExecution(RequestDto request)
+    {
+        if (request.JobRunId.HasValue)
+        {
+            return $"JobRun {request.JobRunId.Value}";
+        }
+
+        return string.IsNullOrWhiteSpace(request.ExecutionId) ? "No run linked" : $"External {request.ExecutionId}";
+    }
+
+    private static string LatestEvent(RequestDto request)
+    {
+        var latest = request.Logs.LastOrDefault();
+        if (string.IsNullOrWhiteSpace(latest))
+        {
+            return request.ResultMessage ?? "Request created";
+        }
+
+        var match = LogLineRegex.Match(latest);
+        return Shorten(match.Success ? match.Groups["message"].Value : latest, 110);
+    }
+
+    private static IReadOnlyList<RequestLogEntry> ParseLogs(RequestDto request)
+        => request.Logs
+            .Select(log =>
+            {
+                var match = LogLineRegex.Match(log);
+                if (!match.Success)
+                {
+                    return new RequestLogEntry("event", log);
+                }
+
+                var timestamp = match.Groups["timestamp"].Value;
+                return new RequestLogEntry(FormatTimestamp(timestamp), match.Groups["message"].Value);
+            })
+            .ToList();
+
+    private static string FormatTimestamp(string timestamp)
+        => DateTimeOffset.TryParse(timestamp, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var parsed)
+            ? parsed.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.CurrentCulture)
+            : timestamp;
+
+    private static string FormatDateTime(DateTimeOffset value)
+        => value.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.CurrentCulture);
+
+    private static string FormatWhen(DateTimeOffset value)
+    {
+        var span = DateTimeOffset.Now - value.ToLocalTime();
+        if (span.TotalMinutes < 1)
+        {
+            return "just now";
+        }
+
+        if (span.TotalHours < 1)
+        {
+            return $"{(int)span.TotalMinutes}m ago";
+        }
+
+        if (span.TotalDays < 1)
+        {
+            return $"{(int)span.TotalHours}h ago";
+        }
+
+        return value.ToLocalTime().ToString("dd MMM HH:mm", CultureInfo.CurrentCulture);
+    }
+
+    private static Color StatusColor(string status)
+    {
+        if (IsSuccess(status)) return Color.Success;
+        if (IsFailed(status)) return Color.Error;
+        if (IsLive(status)) return Color.Info;
+        return Color.Warning;
+    }
+
+    private static string StatusClass(string status)
+    {
+        if (IsSuccess(status)) return "is-success";
+        if (IsFailed(status)) return "is-failed";
+        if (IsLive(status)) return "is-live";
+        return "is-pending";
+    }
+
+    private static bool IsSuccess(string status)
+        => status.Contains("success", StringComparison.OrdinalIgnoreCase)
+           || status.Contains("succeeded", StringComparison.OrdinalIgnoreCase)
+           || status.Contains("completed", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsFailed(string status)
+        => status.Contains("fail", StringComparison.OrdinalIgnoreCase)
+           || status.Contains("error", StringComparison.OrdinalIgnoreCase)
+           || status.Contains("cancel", StringComparison.OrdinalIgnoreCase)
+           || status.Contains("timeout", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsLive(string status)
+        => status.Contains("running", StringComparison.OrdinalIgnoreCase)
+           || status.Contains("processing", StringComparison.OrdinalIgnoreCase)
+           || status.Contains("pending", StringComparison.OrdinalIgnoreCase)
+           || status.Contains("new", StringComparison.OrdinalIgnoreCase);
+
+    private static string Shorten(string value, int maxLength)
+        => value.Length <= maxLength ? value : $"{value[..Math.Max(0, maxLength - 3)]}...";
+
+    private sealed record RequestLogEntry(string Timestamp, string Message);
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_reconcileCts is not null)
+        {
+            await _reconcileCts.CancelAsync();
+        }
+
+        if (_reconcileTask is not null)
+        {
+            try { await _reconcileTask; } catch (OperationCanceledException) { }
+        }
+
+        _reconcileCts?.Dispose();
+        _refreshGate.Dispose();
+        RequestStream.ConnectionChanged -= OnRequestStreamConnectionChanged;
+        await RequestStream.DisposeAsync();
+    }
+}

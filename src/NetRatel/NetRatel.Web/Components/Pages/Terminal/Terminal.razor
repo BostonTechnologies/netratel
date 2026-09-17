@@ -1,0 +1,235 @@
+@page "/terminal/{SessionId}"
+@rendermode InteractiveServer
+@implements IAsyncDisposable
+
+@using NetRatel.Shared.Contracts.Terminals
+@inject ITerminalService Term
+@inject ISnackbar Snack
+
+<PageTitle>Terminal</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="py-4 terminal-page">
+  @if (_isLoading)
+  {
+    <MudStack AlignItems="AlignItems.Center" Class="mt-6">
+      <MudProgressCircular Indeterminate="true" Color="Color.Primary" Size="Size.Large" />
+    </MudStack>
+  }
+  else if (_session is null)
+  {
+    <MudAlert Severity="Severity.Error">Terminal session @SessionId was not found.</MudAlert>
+  }
+  else
+  {
+    <MudStack Spacing="2">
+      <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2" Class="flex-wrap">
+        <MudText Typo="Typo.h5">Terminal @_session.ShellType</MudText>
+        <MudChip T="string" Variant="Variant.Outlined">@_session.State</MudChip>
+        @if (!string.IsNullOrWhiteSpace(_session.Backend))
+        {
+          <MudChip T="string" Variant="Variant.Outlined" Color="Color.Info">@_session.Backend</MudChip>
+        }
+        <MudChip T="string" Variant="Variant.Outlined" Color="Color.Primary">@FormatTransport(_session.Transport)</MudChip>
+        @if (_session.Cols.HasValue && _session.Rows.HasValue)
+        {
+          <MudText Typo="Typo.caption" Class="text-secondary">@_session.Cols x @_session.Rows</MudText>
+        }
+        <MudSpacer />
+        <MudButton Variant="Variant.Outlined"
+                   Color="Color.Default"
+                   OnClick="FitTerminalAsync">Fit</MudButton>
+        <MudButton Variant="Variant.Outlined"
+                   Color="Color.Default"
+                   OnClick="ClearTerminalAsync">Clear</MudButton>
+        <MudButton Variant="Variant.Filled"
+                   Color="Color.Error"
+                   Disabled="@string.Equals(_session.State, "closed", StringComparison.OrdinalIgnoreCase)"
+                   OnClick="CloseSessionAsync">Close Session</MudButton>
+      </MudStack>
+
+      <MudText Typo="Typo.caption" Class="text-secondary">Session @_session.SessionId</MudText>
+
+      <MudPaper Class="pa-0 terminal-console-surface">
+        <TerminalConsole @ref="_console"
+                         SessionId="@_session.SessionId"
+                         IsInputEnabled="@_inputEnabled"
+                         OnClosed="HandleClosedAsync" />
+      </MudPaper>
+    </MudStack>
+  }
+</MudContainer>
+
+@code {
+  [Parameter] public string SessionId { get; set; } = string.Empty;
+
+  private TerminalSessionDto? _session;
+  private bool _isLoading = true;
+  private TerminalConsole? _console;
+  private CancellationTokenSource? _streamCts;
+  private Task? _streamTask;
+  private bool _streamStarted;
+  private bool _inputEnabled;
+
+  protected override async Task OnParametersSetAsync()
+  {
+    await DisposeStreamAsync();
+    _isLoading = true;
+    _streamStarted = false;
+    _inputEnabled = false;
+
+    try
+    {
+      _session = await Term.GetSessionAsync(SessionId);
+      _inputEnabled = _session is not null &&
+                      !string.Equals(_session.State, "closed", StringComparison.OrdinalIgnoreCase);
+    }
+    catch (Exception ex)
+    {
+      Snack.Add($"Failed to load terminal session: {ex.Message}", Severity.Error);
+      _session = null;
+    }
+    finally
+    {
+      _isLoading = false;
+    }
+  }
+
+  protected override Task OnAfterRenderAsync(bool firstRender)
+  {
+    if (_session is not null && _console is not null && !_streamStarted)
+    {
+      _streamStarted = true;
+      _streamCts = new CancellationTokenSource();
+      _streamTask = PumpTerminalStreamAsync(_streamCts.Token);
+    }
+
+    return Task.CompletedTask;
+  }
+
+  private async Task CloseSessionAsync()
+  {
+    try
+    {
+      var response = await Term.CloseAsync(SessionId);
+      Snack.Add(response.Message, Severity.Info);
+      _session = await Term.GetSessionAsync(SessionId);
+    }
+    catch (Exception ex)
+    {
+      Snack.Add($"Failed to close session: {ex.Message}", Severity.Error);
+    }
+  }
+
+  private Task FitTerminalAsync() =>
+    _console?.FitAsync() ?? Task.CompletedTask;
+
+  private Task ClearTerminalAsync() =>
+    _console?.ClearAsync() ?? Task.CompletedTask;
+
+  private static string FormatTransport(TerminalTransportKind transport) =>
+    transport switch
+    {
+      TerminalTransportKind.ApiWebSocket => "direct-ws",
+      TerminalTransportKind.AkkaGateway => "akka-gateway",
+      _ => "auto"
+    };
+
+  private Task HandleClosedAsync(string? reason)
+  {
+    Snack.Add(string.IsNullOrWhiteSpace(reason) ? "Terminal closed." : reason, Severity.Info);
+    return Task.CompletedTask;
+  }
+
+  private async Task PumpTerminalStreamAsync(CancellationToken ct)
+  {
+    try
+    {
+      await foreach (var message in Term.StreamSessionAsync(SessionId, ct))
+      {
+        if (message.Kind.Equals("data", StringComparison.OrdinalIgnoreCase))
+        {
+          var shouldRefresh = false;
+
+          if (!_inputEnabled)
+          {
+            _inputEnabled = true;
+            shouldRefresh = true;
+          }
+
+          if (_session is not null && !string.Equals(_session.State, "active", StringComparison.OrdinalIgnoreCase))
+          {
+            _session = _session with { State = "active" };
+            shouldRefresh = true;
+          }
+
+          if (shouldRefresh)
+          {
+            await InvokeAsync(StateHasChanged);
+          }
+
+          if (_console is not null)
+          {
+            await _console.AppendOutputAsync(message.Data ?? string.Empty);
+          }
+
+          continue;
+        }
+
+        if (message.Kind.Equals("close", StringComparison.OrdinalIgnoreCase))
+        {
+          _inputEnabled = false;
+          if (_session is not null)
+          {
+            _session = _session with { State = "closed", CloseReason = message.Reason };
+            await InvokeAsync(StateHasChanged);
+          }
+
+          if (_console is not null)
+          {
+            await _console.ShowClosedAsync(message.Reason);
+          }
+
+          break;
+        }
+      }
+    }
+    catch (OperationCanceledException) when (ct.IsCancellationRequested)
+    {
+    }
+    catch (Exception ex)
+    {
+      await InvokeAsync(() => Snack.Add($"Terminal stream failed: {ex.Message}", Severity.Error));
+    }
+  }
+
+  private async Task DisposeStreamAsync()
+  {
+    if (_streamCts is null)
+    {
+      return;
+    }
+
+    try
+    {
+      _streamCts.Cancel();
+      if (_streamTask is not null)
+      {
+        await _streamTask;
+      }
+    }
+    catch (OperationCanceledException)
+    {
+    }
+    finally
+    {
+      _streamCts.Dispose();
+      _streamCts = null;
+      _streamTask = null;
+    }
+  }
+
+  public async ValueTask DisposeAsync()
+  {
+    await DisposeStreamAsync();
+  }
+}

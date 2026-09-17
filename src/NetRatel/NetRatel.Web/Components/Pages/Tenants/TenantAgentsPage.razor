@@ -1,0 +1,134 @@
+@page "/tenants/{TenantId:int}/agents"
+@rendermode InteractiveServer
+@attribute [Microsoft.AspNetCore.Authorization.Authorize]
+@using NetRatel.Web.Services.Agents
+@inject IAgentApiService AgentApi
+@inject MudBlazor.ISnackbar Snackbar
+@inject NavigationManager Nav
+
+<MudContainer MaxWidth="MaxWidth.False" Class="mt-4">
+    <MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center">
+        <MudText Typo="Typo.h5">Agents (Tenant @TenantId)</MudText>
+        <MudSpacer />
+        <MudTextField @bind-Value="_search" Label="Search" Immediate="true" />
+        <MudSelect T="bool?" Label="Status" @bind-Value="_enabledFilter">
+            <MudSelectItem T="bool?" Value="@((bool?)null)">All</MudSelectItem>
+            <MudSelectItem T="bool?" Value="true">Enabled</MudSelectItem>
+            <MudSelectItem T="bool?" Value="false">Disabled</MudSelectItem>
+        </MudSelect>
+        <MudButton Variant="Variant.Outlined" OnClick="OpenEnrollmentCodes">Enrollment Codes</MudButton>
+        <MudButton Variant="Variant.Filled" OnClick="LoadAsync">Refresh</MudButton>
+    </MudStack>
+
+    <MudTable Items="_agents" Dense="true" Hover="true" Loading="_loading" Class="mt-4">
+        <HeaderContent>
+            <MudTh>AgentId</MudTh>
+            <MudTh>Display</MudTh>
+            <MudTh>Created</MudTh>
+            <MudTh>Last Token</MudTh>
+            <MudTh>Status</MudTh>
+            <MudTh></MudTh>
+        </HeaderContent>
+        <RowTemplate>
+            <MudTd>@context.AgentId</MudTd>
+            <MudTd>@context.DisplayName</MudTd>
+            <MudTd>@context.CreatedAtUtc.ToLocalTime().ToString("g")</MudTd>
+            <MudTd>@context.LastTokenIssuedAtUtc?.ToLocalTime().ToString("g")</MudTd>
+            <MudTd>
+                <MudChip T="string"
+                         Value="@(context.IsEnabled ? "Enabled" : "Disabled")"
+                         Color="@(context.IsEnabled ? MudBlazor.Color.Success : MudBlazor.Color.Error)">
+                    @(context.IsEnabled ? "Enabled" : "Disabled")
+                </MudChip>
+            </MudTd>
+            <MudTd>
+                @if (context.IsEnabled)
+                {
+                    <MudButton Size="Size.Small" Color="Color.Error" OnClick="@(() => DisableAsync(context))">Disable</MudButton>
+                }
+                else
+                {
+                    <MudButton Size="Size.Small" Color="Color.Success" OnClick="@(() => EnableAsync(context))">Enable</MudButton>
+                }
+            </MudTd>
+        </RowTemplate>
+    </MudTable>
+</MudContainer>
+
+<MudOverlay Visible="_disableDialogOpen" AutoClose="false" DarkBackground="true">
+    <MudPaper Class="pa-4 mx-auto mt-12" Style="max-width: 420px;">
+        <MudStack Spacing="2">
+            <MudText Typo="Typo.h6">Disable Agent</MudText>
+            <MudTextField @bind-Value="_disableReason" Label="Reason" Required="true" />
+            <MudStack Row="true" Justify="Justify.FlexEnd">
+                <MudButton Variant="Variant.Text" OnClick="@(() => _disableDialogOpen = false)">Cancel</MudButton>
+                <MudButton Color="Color.Error" Disabled="@string.IsNullOrWhiteSpace(_disableReason)" OnClick="ConfirmDisableAsync">Disable</MudButton>
+            </MudStack>
+        </MudStack>
+    </MudPaper>
+</MudOverlay>
+
+@code {
+    [Parameter] public int TenantId { get; set; }
+
+    private List<AgentListItem> _agents = new();
+    private bool _loading;
+    private string? _search;
+    private bool? _enabledFilter;
+    private bool _disableDialogOpen;
+    private string? _disableReason;
+    private AgentListItem? _pendingDisable;
+
+    protected override async Task OnParametersSetAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        try
+        {
+            var response = await AgentApi.ListAsync(TenantId, _search, _enabledFilter, 1, 100);
+            _agents = response.Items;
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to load agents: {ex.Message}", MudBlazor.Severity.Error);
+        }
+        finally
+        {
+            _loading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task DisableAsync(AgentListItem item)
+    {
+        _pendingDisable = item;
+        _disableReason = null;
+        _disableDialogOpen = true;
+    }
+
+    private async Task EnableAsync(AgentListItem item)
+    {
+        await AgentApi.EnableAsync(TenantId, item.AgentId);
+        await LoadAsync();
+    }
+
+    private async Task ConfirmDisableAsync()
+    {
+        if (_pendingDisable is null || string.IsNullOrWhiteSpace(_disableReason))
+        {
+            return;
+        }
+
+        await AgentApi.DisableAsync(TenantId, _pendingDisable.AgentId, _disableReason.Trim());
+        _disableDialogOpen = false;
+        _pendingDisable = null;
+        _disableReason = null;
+        await LoadAsync();
+    }
+
+    private void OpenEnrollmentCodes()
+    {
+        Nav.NavigateTo($"/tenants/{TenantId}/enrollment");
+    }
+}

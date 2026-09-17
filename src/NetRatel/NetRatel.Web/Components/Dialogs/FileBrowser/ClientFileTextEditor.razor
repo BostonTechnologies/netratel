@@ -1,0 +1,64 @@
+@using BlazorMonaco.Editor
+
+@inject IJSRuntime JSRuntime
+@inject ILogger<ClientFileTextEditor> Logger
+
+<div class="client-file-text-editor">
+    <StandaloneCodeEditor @key="_editorKey"
+                          @ref="_editor"
+                          ConstructionOptions="BuildEditorOptions"
+                          OnDidInit="OnEditorInit" />
+</div>
+
+<style>
+    .client-file-text-editor {
+        height: 26rem;
+        border-radius: 10px;
+        overflow: hidden;
+        border: 1px solid rgba(14, 90, 135, 0.12);
+    }
+</style>
+
+@code {
+    [Parameter] public string Content { get; set; } = string.Empty;
+    [Parameter] public string? FileName { get; set; }
+    [Parameter] public string Language { get; set; } = "plaintext";
+
+    private StandaloneCodeEditor? _editor;
+    private int _editorKey;
+    private string _lastContent = string.Empty;
+
+    protected override void OnParametersSet()
+    {
+        if (!string.Equals(_lastContent, Content, StringComparison.Ordinal))
+        {
+            _lastContent = Content;
+            _editorKey++;
+        }
+    }
+
+    public async Task<string> GetValueAsync()
+        => _editor is null ? Content : await _editor.GetValue();
+
+    private StandaloneEditorConstructionOptions BuildEditorOptions(StandaloneCodeEditor _) => new()
+    {
+        AutomaticLayout = true,
+        Value = Content,
+        Language = Language,
+        Theme = "vs-dark",
+        ScrollBeyondLastLine = false,
+        GlyphMargin = true
+    };
+
+    private async Task OnEditorInit()
+    {
+        try
+        {
+            await BlazorMonaco.Editor.Global.SetTheme(JSRuntime, "vs-dark");
+        }
+        catch (JSException exception)
+        {
+            Logger.LogDebug(exception, "Unable to set the Monaco theme for the remote file viewer.");
+        }
+    }
+}

@@ -1,0 +1,12 @@
+<Project>
+  <!--
+    Public CI supplies PublicSourceRevision from the checked-out public commit.
+    Deliberately do not derive a revision from a private staging checkout.
+  -->
+  <Target Name="AddNetRatelProductBuildMetadata" BeforeTargets="GetAssemblyAttributes">
+    <ItemGroup>
+      <AssemblyMetadata Include="ProductVersion" Value="$(Version)" />
+      <AssemblyMetadata Include="SourceRevisionId" Value="$(PublicSourceRevision)" Condition="'$(PublicSourceRevision)' != ''" />
+    </ItemGroup>
+  </Target>
+</Project>

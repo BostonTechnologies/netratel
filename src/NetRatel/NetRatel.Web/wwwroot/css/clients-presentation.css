@@ -1,0 +1,235 @@
+.client-card-grid-shell {
+    width: 100%;
+}
+
+.client-card-grid-shell .client-grid .mud-grid-item {
+    display: flex;
+    align-items: stretch;
+}
+
+.client-card-grid-shell .client-card.mud-card {
+    display: flex;
+    flex-direction: column;
+    height: 500px !important;
+    overflow: hidden;
+    width: 100%;
+}
+
+.client-card-grid-shell .client-card .mud-card-header-content,
+.client-card-grid-shell .client-card .mud-card-content {
+    min-width: 0;
+}
+
+.client-card-grid-shell .client-card .mud-card-content {
+    flex: 1 1 0;
+    min-height: 0;
+    overflow: hidden;
+}
+
+.client-card-grid-shell .client-card > .mud-divider {
+    flex: 0 0 auto;
+}
+
+.client-card-grid-shell .client-header-content {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+}
+
+.client-card-grid-shell .client-title-row,
+.client-card-grid-shell .client-host-row,
+.client-card-grid-shell .client-action-row {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+}
+
+.client-card-grid-shell .client-title-row {
+    gap: 8px;
+}
+
+.client-card-grid-shell .client-title {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.client-card-grid-shell .client-host-row {
+    gap: 2px;
+}
+
+.client-card-grid-shell .client-host {
+    color: var(--mud-palette-secondary);
+    font-size: .875rem;
+    font-weight: 500;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.client-card-grid-shell .client-action-row {
+    flex-wrap: nowrap;
+    gap: 4px;
+    min-height: 32px;
+}
+
+.client-card-grid-shell .client-meta-grid {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 4px 12px;
+    align-items: baseline;
+    margin-block: 2px;
+    min-width: 0;
+}
+
+.client-card-grid-shell .client-meta-label,
+.client-card-grid-shell .client-meta-value,
+.client-card-grid-shell .client-connectivity-label,
+.client-card-grid-shell .client-connectivity-value {
+    font-size: .75rem;
+    line-height: 1.35;
+}
+
+.client-card-grid-shell .client-meta-label,
+.client-card-grid-shell .client-connectivity-label {
+    opacity: .72;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+}
+
+.client-card-grid-shell .client-meta-value,
+.client-card-grid-shell .client-connectivity-value {
+    font-weight: 500;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.client-card-grid-shell .client-connectivity-row,
+.client-card-grid-shell .telemetry-split-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.client-card-grid-shell .client-connectivity-item,
+.client-card-grid-shell .telemetry-row-panel,
+.client-card-grid-shell .telemetry-row-button {
+    border: 1px solid color-mix(in srgb, var(--mud-palette-text-primary) 10%, transparent);
+    background: color-mix(in srgb, var(--mud-palette-surface) 94%, var(--mud-palette-text-primary));
+    border-radius: 6px;
+    padding: 7px 9px;
+}
+
+.client-card-grid-shell .client-connectivity-item {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.client-card-grid-shell .telemetry-row {
+    display: flex;
+    flex-direction: column;
+    gap: .2rem;
+}
+
+.client-card-grid-shell .telemetry-row-button {
+    width: 100%;
+    color: inherit;
+    cursor: pointer;
+    text-align: left;
+    transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.client-card-grid-shell .telemetry-row-button:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--mud-palette-surface) 88%, var(--mud-palette-text-primary));
+    border-color: color-mix(in srgb, var(--mud-palette-text-primary) 20%, transparent);
+}
+
+.client-card-grid-shell .telemetry-row-button:disabled {
+    cursor: default;
+    opacity: .55;
+}
+
+.client-card-grid-shell .telemetry-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.client-card-grid-shell .client-offline .mud-progress-linear {
+    filter: grayscale(1);
+    opacity: .55;
+}
+
+.client-card-grid-shell .client-offline .telemetry-row-panel,
+.client-card-grid-shell .client-offline .telemetry-row-button {
+    filter: grayscale(1);
+    opacity: .68;
+}
+
+.client-grid-view-shell {
+    min-width: 0;
+    width: 100%;
+}
+
+.client-grid-view-shell .client-grid-view .mud-table-cell {
+    padding: 8px 10px;
+    vertical-align: top;
+}
+
+.client-grid-view-shell .client-grid-actions {
+    flex-wrap: nowrap;
+    gap: 2px;
+}
+
+.client-grid-view-shell .client-table-host {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.client-grid-view-shell .client-table-host-line {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+}
+
+.client-grid-view-shell .client-table-value {
+    display: block;
+    max-width: 15rem;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.client-grid-view-shell .client-table-secondary {
+    color: var(--mud-palette-text-secondary);
+    font-size: .75rem;
+    line-height: 1.3;
+}
+
+@media (max-width: 720px) {
+    .client-card-grid-shell .client-card.mud-card {
+        height: auto !important;
+        min-height: 500px;
+        overflow: visible;
+    }
+
+    .client-card-grid-shell .client-card .mud-card-content {
+        flex: 0 0 auto;
+        overflow: visible;
+    }
+
+    .client-card-grid-shell .client-connectivity-row,
+    .client-card-grid-shell .telemetry-split-grid {
+        grid-template-columns: 1fr;
+    }
+}

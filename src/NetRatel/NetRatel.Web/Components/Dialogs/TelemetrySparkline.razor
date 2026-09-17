@@ -1,0 +1,54 @@
+@if (Values.Count > 1 || SecondaryValues.Count > 1)
+{
+    <svg class="telemetry-sparkline" viewBox="0 0 100 32" preserveAspectRatio="none" role="img" aria-label="@Label telemetry history">
+        <title>@Label telemetry history</title>
+        <desc>@Description</desc>
+        <polyline points="@Points" fill="none" stroke="@Stroke" stroke-width="2" vector-effect="non-scaling-stroke" />
+        @if (SecondaryValues.Count > 1)
+        {
+            <polyline points="@SecondaryPoints" fill="none" stroke="@SecondaryStroke" stroke-width="2" vector-effect="non-scaling-stroke" />
+        }
+    </svg>
+}
+else
+{
+    <div class="telemetry-sparkline telemetry-sparkline-empty">Awaiting history</div>
+}
+
+@code {
+    [Parameter, EditorRequired] public IReadOnlyList<double> Values { get; set; } = [];
+    [Parameter] public string Label { get; set; } = "Metric";
+    [Parameter] public string Stroke { get; set; } = "var(--mud-palette-primary)";
+    [Parameter] public IReadOnlyList<double> SecondaryValues { get; set; } = [];
+    [Parameter] public string SecondaryStroke { get; set; } = "var(--mud-palette-info)";
+    [Parameter] public double? MinimumValue { get; set; }
+    [Parameter] public double? MaximumValue { get; set; }
+
+    private string Description => SecondaryValues.Count > 1
+        ? $"{Label} history with primary and secondary series."
+        : $"{Label} history with one series.";
+    private string Points => CreatePoints(Values, MinimumValue, MaximumValue);
+    private string SecondaryPoints => CreatePoints(SecondaryValues, MinimumValue, MaximumValue);
+
+    private static string CreatePoints(IReadOnlyList<double> values, double? minimumValue, double? maximumValue)
+    {
+        if (values.Count == 0) return string.Empty;
+        var min = minimumValue ?? values.Min();
+        var max = maximumValue ?? values.Max();
+        var span = max - min;
+        var points = new System.Text.StringBuilder(values.Count * 14);
+
+        for (var index = 0; index < values.Count; index++)
+        {
+            if (index > 0) points.Append(' ');
+            var x = values.Count == 1 ? 50d : index * 100d / (values.Count - 1);
+            var normalized = span < 0.001d ? .5d : Math.Clamp((values[index] - min) / span, 0d, 1d);
+            var y = 30d - normalized * 28d;
+            points.Append(x.ToString("F2", System.Globalization.CultureInfo.InvariantCulture));
+            points.Append(',');
+            points.Append(y.ToString("F2", System.Globalization.CultureInfo.InvariantCulture));
+        }
+
+        return points.ToString();
+    }
+}

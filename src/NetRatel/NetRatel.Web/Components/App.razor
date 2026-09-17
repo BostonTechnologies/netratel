@@ -1,0 +1,105 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <base href="/" />
+    <link rel="stylesheet" href="app-site.css?v=20260831-professional-ux" />
+    <link rel="stylesheet" href=@Assets["css/clients-presentation.css"] />
+    <link rel="stylesheet" href=@Assets["NetRatel.Web.styles.css"] />
+    <link href="https://fonts.googleapis.com/css?family=Roboto:300,400,500,700&display=swap" rel="stylesheet" />
+    <link href="_content/MudBlazor/MudBlazor.min.css" rel="stylesheet" />
+    <link href="_content/CodeBeam.MudBlazor.Extensions/MudExtensions.min.css" rel="stylesheet" />
+    <link href="_content/XtermBlazor/XtermBlazor.min.css" rel="stylesheet" />
+    <link rel="icon" type="image/x-icon" href=@Assets["favicon.ico"] />
+    <link rel="icon" type="image/png" sizes="32x32" href=@Assets["icons/netratel/favicon-32x32.png"] />
+    <link rel="icon" type="image/png" sizes="48x48" href=@Assets["icons/netratel/favicon-48x48.png"] />
+    <HeadOutlet @rendermode="InteractiveServer" />
+</head>
+
+<body>
+    <Routes @rendermode="InteractiveServer" />
+
+    <script src="/js/theme-preference.js"></script>
+
+    <!-- Local pinned copy of @xterm/addon-fit@0.11.0. Load before Blazor and XtermBlazor addon registration. -->
+    <script src="/js/xterm/addon-fit-0.11.0.min.js"></script>
+
+    <!-- BlazorMonaco Scripts (Before Blazor framework script) -->
+    <script src="_content/BlazorMonaco/jsInterop.js"></script>
+
+    <script src="_content/BlazorMonaco/lib/monaco-editor/min/vs/loader.js"></script>
+    <script src="_content/BlazorMonaco/lib/monaco-editor/min/vs/editor/editor.main.js"></script>
+
+    @* Remote Support must be available before Blazor components invoke its JS interop API. *@
+    <script>
+        window.netratelRemoteSupportAssetStatus = () => {
+            const script = document.getElementById("netratel-remote-support-script");
+            return {
+                expectedAssetUrl: script?.src ?? "unknown",
+                loaded: script?.dataset.loaded === "true",
+                error: script?.dataset.loadError ?? null
+            };
+        };
+    </script>
+    <script id="netratel-remote-support-script"
+            src=@Assets["js/remote-support-dialog.js"]
+            onload="this.dataset.loaded='true'"
+            onerror="this.dataset.loadError='remote_support_asset_load_failed'"></script>
+
+    @* File-browser downloads invoke this bridge from interactive components. Load the
+       fingerprinted asset before Blazor can dispatch those component events. *@
+    <script id="netratel-downloads-script" src=@Assets["download.js"]></script>
+
+    <!-- Blazor Framework Script -->
+    <script src="_framework/blazor.web.js"></script>
+    <script src="/js/notifications.js"></script>
+    <script src="/js/global-search-hotkeys.js"></script>
+
+    <!-- MudBlazor -->
+    <script src="_content/MudBlazor/MudBlazor.min.js"></script>
+    <script src="_content/CodeBeam.MudBlazor.Extensions/MudExtensions.min.js"></script>
+
+    <script src="_content/XtermBlazor/XtermBlazor.min.js"></script>
+
+    @* Global addon registration after addon-fit and XtermBlazor.min.js are both loaded. *@
+    <script>
+        try {
+            console.info("XtermBlazor addon preflight", {
+                fitAddon: typeof FitAddon,
+                fitAddonCtor: typeof FitAddon?.FitAddon,
+                xtermBlazor: typeof XtermBlazor,
+                registeredAddonId: "addon-fit"
+            });
+            if (typeof XtermBlazor === 'undefined') {
+                throw new Error("XtermBlazor global is unavailable during addon registration.");
+            }
+            if (typeof FitAddon === 'undefined' || typeof FitAddon.FitAddon !== 'function') {
+                throw new Error("@@xterm/addon-fit@@0.11.0 FitAddon constructor is unavailable.");
+            }
+
+            XtermBlazor.registerAddons({
+                "addon-fit": new FitAddon.FitAddon()
+            });
+        } catch (e) {
+            console.error("XtermBlazor addon registration failed:", e);
+        }
+    </script>
+
+    <script>
+        // Function to scroll an element to its bottom
+        window.scrollToBottom = (element) => {
+            if (element) {
+                element.scrollTop = element.scrollHeight;
+            }
+        };
+
+        // You might already have the clipboard function if using MudBlazor defaults,
+        // but explicitly defining it or ensuring it exists is good.
+        // The navigator.clipboard.writeText is standard, so direct calls from C# often work.
+    </script>
+
+</body>
+
+</html>

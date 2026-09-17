@@ -1,0 +1,548 @@
+using System.Diagnostics;
+using System.Security.Cryptography;
+using System.Text;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using NetRatel.API.Services.AgentDirectory;
+using NetRatel.Infrastructure.Persistence;
+using NetRatel.Shared;
+using NetRatel.Shared.Contracts;
+using NetRatel.Shared.Contracts.Jobs;
+using NetRatel.Shared.Contracts.Scripts;
+using NetRatel.Shared.Contracts.Tasks;
+
+namespace NetRatel.API.Endpoints.Search;
+
+/// <summary>Current business search over PostgreSQL directory and orchestration projections.</summary>
+public static class GlobalSearchEndpoints
+{
+    private const int MaxPageSize = 25;
+
+    public static IEndpointRouteBuilder MapGlobalSearchEndpoints(this IEndpointRouteBuilder app)
+    {
+        var group = app.MapGroup("/api/v1/global-search").WithTags("Global Search").RequireAuthorization("Operator");
+        group.MapGet("/tenants", SearchTenantsAsync);
+        group.MapGet("/scripts", SearchScriptsAsync);
+        group.MapGet("/jobs", SearchJobsAsync);
+        group.MapGet("/requests", SearchRequestsAsync);
+        group.MapGet("/clients", SearchAgentsAsync);
+        group.MapGet("/tasks", SearchTasksAsync);
+        return app;
+    }
+
+    private static async Task<IResult> SearchTenantsAsync(
+        [FromServices] OrchestratorDbContext db,
+        [FromQuery] string? q,
+        [FromQuery] int pageSize = 6,
+        CancellationToken ct = default)
+    {
+        var term = NormalizeTerm(q);
+        var take = NormalizePageSize(pageSize);
+        var query = db.Tenants.AsNoTracking();
+        if (term is not null)
+        {
+            var like = Like(term);
+            var hasId = int.TryParse(term, out var id);
+            query = query.Where(tenant =>
+                EF.Functions.ILike(tenant.Name, like) ||
+                (tenant.Description != null && EF.Functions.ILike(tenant.Description, like)) ||
+                (tenant.Location != null && EF.Functions.ILike(tenant.Location, like)) ||
+                (tenant.ContactPerson != null && EF.Functions.ILike(tenant.ContactPerson, like)) ||
+                (tenant.ContactEmail != null && EF.Functions.ILike(tenant.ContactEmail, like)) ||
+                (hasId && tenant.Id == id));
+        }
+
+        var rows = await query
+            .OrderBy(tenant => tenant.Name)
+            .Take(take)
+            .Select(tenant => new TenantDto(
+                tenant.Id,
+                tenant.Name,
+                tenant.Description,
+                tenant.Location,
+                tenant.Domains,
+                tenant.ContactPerson,
+                tenant.ContactEmail,
+                tenant.AutoUpdate,
+                tenant.CreatedAtUtc,
+                tenant.UpdatedAtUtc))
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+        return Results.Ok(Page(rows, take));
+    }
+
+    private static async Task<IResult> SearchScriptsAsync(
+        [FromServices] OrchestratorDbContext db,
+        [FromQuery] string? q,
+        [FromQuery] int pageSize = 6,
+        CancellationToken ct = default)
+    {
+        var term = NormalizeTerm(q);
+        var take = NormalizePageSize(pageSize);
+        var query = db.Scripts.AsNoTracking();
+        if (term is not null)
+        {
+            var like = Like(term);
+            query = query.Where(script =>
+                EF.Functions.ILike(script.Name, like) ||
+                EF.Functions.ILike(script.FolderPath, like) ||
+                EF.Functions.ILike(script.Description, like) ||
+                EF.Functions.ILike(script.ScriptType, like));
+        }
+
+        var rows = await query
+            .OrderBy(script => script.FolderPath)
+            .ThenBy(script => script.Name)
+            .Take(take)
+            .Select(script => new ScriptDto(
+                (ulong)script.Id,
+                script.Name,
+                script.FolderPath,
+                script.Description,
+                null,
+                script.ScriptType,
+                script.CreatedAtUtc,
+                script.UpdatedAtUtc))
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+        return Results.Ok(Page(rows, take));
+    }
+
+    private static async Task<IResult> SearchAgentsAsync(
+        [FromServices] OrchestratorDbContext db,
+        [FromServices] DatabaseCommandMetricsInterceptor commandMetrics,
+        ILoggerFactory loggerFactory,
+        [FromQuery] string? q,
+        [FromQuery] int pageSize = 6,
+        CancellationToken ct = default)
+    {
+        var term = NormalizeTerm(q);
+        var take = NormalizePageSize(pageSize);
+        commandMetrics.Reset();
+        var started = Stopwatch.GetTimestamp();
+        var queryStarted = Stopwatch.GetTimestamp();
+        var rows = await BuildAgentQuery(db, term)
+            .Take(take)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+        var queryElapsed = Stopwatch.GetElapsedTime(queryStarted);
+        var mappingStarted = Stopwatch.GetTimestamp();
+        var items = rows.Select(MapAgent).ToList();
+        var mappingElapsed = Stopwatch.GetElapsedTime(mappingStarted);
+        LogSearch(loggerFactory, commandMetrics, "clients", term, rows.Count, items.Count, started, queryElapsed, mappingElapsed);
+        return Results.Ok(Page(items, take));
+    }
+
+    private static async Task<IResult> SearchJobsAsync(
+        [FromServices] OrchestratorDbContext db,
+        [FromServices] DatabaseCommandMetricsInterceptor commandMetrics,
+        ILoggerFactory loggerFactory,
+        [FromQuery] string? q,
+        [FromQuery] int pageSize = 6,
+        CancellationToken ct = default)
+    {
+        var term = NormalizeTerm(q);
+        var take = NormalizePageSize(pageSize);
+        commandMetrics.Reset();
+        var started = Stopwatch.GetTimestamp();
+        var queryStarted = Stopwatch.GetTimestamp();
+        var rows = await BuildJobQuery(db, term)
+            .Take(take)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+        var queryElapsed = Stopwatch.GetElapsedTime(queryStarted);
+        var mappingStarted = Stopwatch.GetTimestamp();
+        var items = rows.Select(MapJob).ToList();
+        var mappingElapsed = Stopwatch.GetElapsedTime(mappingStarted);
+        LogSearch(loggerFactory, commandMetrics, "jobs", term, rows.Count, items.Count, started, queryElapsed, mappingElapsed);
+        return Results.Ok(Page(items, take));
+    }
+
+    private static async Task<IResult> SearchRequestsAsync(
+        [FromServices] OrchestratorDbContext db,
+        [FromServices] DatabaseCommandMetricsInterceptor commandMetrics,
+        ILoggerFactory loggerFactory,
+        [FromQuery] string? q,
+        [FromQuery] int pageSize = 6,
+        CancellationToken ct = default)
+    {
+        var term = NormalizeTerm(q);
+        var take = NormalizePageSize(pageSize);
+        commandMetrics.Reset();
+        var started = Stopwatch.GetTimestamp();
+        var queryStarted = Stopwatch.GetTimestamp();
+        var rows = await BuildRequestQuery(db, term)
+            .Take(take)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+        var queryElapsed = Stopwatch.GetElapsedTime(queryStarted);
+        var mappingStarted = Stopwatch.GetTimestamp();
+        var items = rows.Select(MapRequest).ToList();
+        var mappingElapsed = Stopwatch.GetElapsedTime(mappingStarted);
+        LogSearch(loggerFactory, commandMetrics, "requests", term, rows.Count, items.Count, started, queryElapsed, mappingElapsed);
+        return Results.Ok(Page(items, take));
+    }
+
+    private static async Task<IResult> SearchTasksAsync(
+        [FromServices] OrchestratorDbContext db,
+        [FromServices] DatabaseCommandMetricsInterceptor commandMetrics,
+        ILoggerFactory loggerFactory,
+        [FromQuery] string? q,
+        [FromQuery] int pageSize = 6,
+        CancellationToken ct = default)
+    {
+        var term = NormalizeTerm(q);
+        var take = NormalizePageSize(pageSize);
+        commandMetrics.Reset();
+        var started = Stopwatch.GetTimestamp();
+        var queryStarted = Stopwatch.GetTimestamp();
+        var rows = await BuildTaskQuery(db, term)
+            .Take(take)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+        var queryElapsed = Stopwatch.GetElapsedTime(queryStarted);
+        var mappingStarted = Stopwatch.GetTimestamp();
+        var items = rows.Select(MapTask).ToList();
+        var mappingElapsed = Stopwatch.GetElapsedTime(mappingStarted);
+        LogSearch(loggerFactory, commandMetrics, "tasks", term, rows.Count, items.Count, started, queryElapsed, mappingElapsed);
+        return Results.Ok(Page(items, take));
+    }
+
+    internal static IQueryable<AgentDirectoryRow> BuildAgentQuery(OrchestratorDbContext db, string? term) =>
+        AgentDirectorySearch.Query(db, term);
+
+    internal static IQueryable<JobSearchRow> BuildJobQuery(OrchestratorDbContext db, string? term)
+    {
+        var matchingAgents = AgentDirectorySearch.MatchingAgents(db, term);
+        var matchingTenantIds = MatchingTenantIds(db, term);
+        var like = term is null ? null : Like(term);
+        var hasId = long.TryParse(term, out var id);
+
+        return from job in db.Jobs.AsNoTracking()
+               join tenantValue in db.Tenants.AsNoTracking()
+                   on job.TenantId equals (int?)tenantValue.Id into tenantJoin
+               from tenant in tenantJoin.DefaultIfEmpty()
+               join agentValue in db.Agents.AsNoTracking()
+                   on new { job.TenantId, job.AgentId }
+                   equals new { TenantId = (int?)agentValue.TenantId, AgentId = (Guid?)agentValue.Id } into agentJoin
+               from agent in agentJoin.DefaultIfEmpty()
+               where term == null ||
+                     EF.Functions.ILike(job.Name, like!) ||
+                     EF.Functions.ILike(job.FolderPath, like!) ||
+                     (job.Description != null && EF.Functions.ILike(job.Description!, like!)) ||
+                     (job.ClientIdentity != null && EF.Functions.ILike(job.ClientIdentity, like!)) ||
+                     (hasId && job.Id == id) ||
+                     matchingTenantIds.Any(tenantId => (int?)tenantId == job.TenantId) ||
+                     matchingAgents.Any(match =>
+                         (int?)match.TenantId == job.TenantId && (Guid?)match.Id == job.AgentId)
+               orderby job.FolderPath, job.Name, job.Id
+               select new JobSearchRow(
+                   job.Id,
+                   job.Name,
+                   job.FolderPath,
+                   job.Description,
+                   job.TenantId,
+                   job.AgentId,
+                   job.ClientIdentity,
+                   job.CreatedAtUtc,
+                   job.UpdatedAtUtc,
+                   tenant == null ? null : tenant.Name,
+                   agent == null ? null : agent.Name,
+                   agent == null ? null : agent.IsEnabled,
+                   agent == null ? null : agent.DeviceInfoJson);
+    }
+
+    internal static IQueryable<RequestSearchRow> BuildRequestQuery(OrchestratorDbContext db, string? term)
+    {
+        var matchingAgents = AgentDirectorySearch.MatchingAgents(db, term);
+        var matchingTenantIds = MatchingTenantIds(db, term);
+        var matchingJobIds = MatchingJobIds(db, term);
+        var like = term is null ? null : Like(term);
+        var hasId = int.TryParse(term, out var id);
+
+        return from request in db.Requests.AsNoTracking()
+               join tenantValue in db.Tenants.AsNoTracking()
+                   on request.TargetTenantId equals (int?)tenantValue.Id into tenantJoin
+               from tenant in tenantJoin.DefaultIfEmpty()
+               join agentValue in db.Agents.AsNoTracking()
+                   on new { TenantId = request.TargetTenantId, AgentId = request.TargetAgentId }
+                   equals new { TenantId = (int?)agentValue.TenantId, AgentId = (Guid?)agentValue.Id } into agentJoin
+               from agent in agentJoin.DefaultIfEmpty()
+               where term == null ||
+                     (hasId && request.Id == id) ||
+                     EF.Functions.ILike(request.SourceSystem, like!) ||
+                     EF.Functions.ILike(request.Status, like!) ||
+                     (request.JobDefinitionId != null && EF.Functions.ILike(request.JobDefinitionId!, like!)) ||
+                     (request.ExecutionId != null && EF.Functions.ILike(request.ExecutionId!, like!)) ||
+                     (request.ResultMessage != null && EF.Functions.ILike(request.ResultMessage!, like!)) ||
+                     (request.TargetClientIdentity != null && EF.Functions.ILike(request.TargetClientIdentity, like!)) ||
+                     matchingTenantIds.Any(tenantId => (int?)tenantId == request.TargetTenantId) ||
+                     matchingAgents.Any(match =>
+                         (int?)match.TenantId == request.TargetTenantId && (Guid?)match.Id == request.TargetAgentId) ||
+                     (request.JobDefinitionId != null && matchingJobIds.Any(jobId => jobId.ToString() == request.JobDefinitionId))
+               orderby request.UpdatedAtUtc descending, request.Id descending
+               select new RequestSearchRow(
+                   request.Id,
+                   request.SourceSystem,
+                   request.Status,
+                   request.JobDefinitionId,
+                   request.ExecutionId,
+                   request.ResultMessage,
+                   request.TargetTenantId,
+                   request.TargetAgentId,
+                   request.TargetClientIdentity,
+                   request.UpdatedAtUtc,
+                   tenant == null ? null : tenant.Name,
+                   agent == null ? null : agent.Name,
+                   agent == null ? null : agent.IsEnabled,
+                   agent == null ? null : agent.DeviceInfoJson);
+    }
+
+    internal static IQueryable<TaskSearchRow> BuildTaskQuery(OrchestratorDbContext db, string? term)
+    {
+        var matchingAgents = AgentDirectorySearch.MatchingAgents(db, term);
+        var matchingTenantIds = MatchingTenantIds(db, term);
+        var like = term is null ? null : Like(term);
+        var hasId = long.TryParse(term, out var id);
+
+        return from task in db.JobTaskActivities.AsNoTracking()
+               join agentValue in db.Agents.AsNoTracking()
+                   on new { task.TenantId, task.AgentId }
+                   equals new { TenantId = (int?)agentValue.TenantId, AgentId = (Guid?)agentValue.Id } into agentJoin
+               from agent in agentJoin.DefaultIfEmpty()
+               where term == null ||
+                     (hasId && task.Id == id) ||
+                     EF.Functions.ILike(task.RequestId, like!) ||
+                     EF.Functions.ILike(task.TaskType, like!) ||
+                     EF.Functions.ILike(task.Status, like!) ||
+                     (task.Error != null && EF.Functions.ILike(task.Error, like!)) ||
+                     (task.ClientIdentity != null && EF.Functions.ILike(task.ClientIdentity, like!)) ||
+                     matchingTenantIds.Any(tenantId => (int?)tenantId == task.TenantId) ||
+                     matchingAgents.Any(match =>
+                         (int?)match.TenantId == task.TenantId && (Guid?)match.Id == task.AgentId)
+               orderby task.CreatedAtUtc descending, task.Id descending
+               select new TaskSearchRow(
+                   task.Id,
+                   task.RequestId,
+                   task.ClientIdentity,
+                   task.TenantId,
+                   task.AgentId,
+                   task.TaskType,
+                   task.Status,
+                   task.Error,
+                   task.CreatedAtUtc,
+                   task.CompletedAtUtc,
+                   agent == null ? null : agent.Name,
+                   agent == null ? null : agent.IsEnabled,
+                   agent == null ? null : agent.DeviceInfoJson);
+    }
+
+    private static IQueryable<int> MatchingTenantIds(OrchestratorDbContext db, string? term)
+    {
+        var query = db.Tenants.AsNoTracking();
+        if (term is not null)
+        {
+            var like = Like(term);
+            query = query.Where(tenant => EF.Functions.ILike(tenant.Name, like));
+        }
+
+        return query.Select(tenant => tenant.Id);
+    }
+
+    private static IQueryable<long> MatchingJobIds(OrchestratorDbContext db, string? term)
+    {
+        var query = db.Jobs.AsNoTracking();
+        if (term is not null)
+        {
+            var like = Like(term);
+            var hasId = long.TryParse(term, out var id);
+            query = query.Where(job =>
+                EF.Functions.ILike(job.Name, like) ||
+                EF.Functions.ILike(job.FolderPath, like) ||
+                (job.Description != null && EF.Functions.ILike(job.Description, like)) ||
+                (hasId && job.Id == id));
+        }
+
+        return query.Select(job => job.Id);
+    }
+
+    internal static GlobalSearchAgentDto MapAgent(AgentDirectoryRow row)
+    {
+        var agent = AgentDirectoryPresentation.Create(
+            row.TenantId,
+            row.AgentId,
+            row.Name,
+            row.IsEnabled,
+            row.DeviceInfoJson,
+            row.TenantName);
+        return new(
+            agent.TenantId,
+            agent.AgentId,
+            agent.DisplayName,
+            agent.HostName,
+            agent.TenantName,
+            agent.OperatingSystem,
+            null,
+            agent.IsEnabled);
+    }
+
+    internal static JobDto MapJob(JobSearchRow row)
+    {
+        var agent = MapAgentPresentation(row.TenantId, row.AgentId, row.AgentName, row.AgentIsEnabled, row.AgentDeviceInfoJson, row.TenantName);
+        var agentLabel = agent?.DisplayName ?? (row.AgentId is null ? "Legacy target unavailable" : null);
+        return new(
+            (ulong)row.Id,
+            row.Name,
+            row.FolderPath,
+            row.Description,
+            row.TenantId,
+            row.ClientIdentity,
+            row.CreatedAtUtc.ToUnixTimeMilliseconds() * 1000,
+            row.UpdatedAtUtc.ToUnixTimeMilliseconds() * 1000,
+            row.TenantName,
+            agentLabel,
+            ClientEnvironment.None,
+            AgentId: row.AgentId);
+    }
+
+    internal static GlobalSearchRequestDto MapRequest(RequestSearchRow row)
+    {
+        var agent = MapAgentPresentation(row.TargetTenantId, row.TargetAgentId, row.AgentName, row.AgentIsEnabled, row.AgentDeviceInfoJson, row.TenantName);
+        return new(
+            row.Id,
+            row.SourceSystem,
+            row.Status,
+            row.JobDefinitionId,
+            row.ExecutionId,
+            row.ResultMessage,
+            row.TargetTenantId,
+            row.TargetAgentId,
+            row.TenantName,
+            agent?.DisplayName,
+            agent?.HostName,
+            row.TargetClientIdentity);
+    }
+
+    internal static TaskDto MapTask(TaskSearchRow row)
+    {
+        var agent = MapAgentPresentation(row.TenantId, row.AgentId, row.AgentName, row.AgentIsEnabled, row.AgentDeviceInfoJson, tenantName: null);
+        return new(
+            row.Id > int.MaxValue ? 0 : (int)row.Id,
+            row.RequestId,
+            row.ClientIdentity,
+            row.TenantId,
+            ClientEnvironment.None,
+            row.TaskType,
+            row.Status,
+            row.Error,
+            null,
+            row.CreatedAtUtc,
+            null,
+            row.CompletedAtUtc,
+            null,
+            agent?.DisplayName,
+            agent?.HostName,
+            agent?.DisplayName,
+            row.AgentId);
+    }
+
+    private static AgentDirectoryPresentation? MapAgentPresentation(
+        int? tenantId,
+        Guid? agentId,
+        string? agentName,
+        bool? isEnabled,
+        string? deviceInfoJson,
+        string? tenantName)
+    {
+        if (!tenantId.HasValue || !agentId.HasValue || !isEnabled.HasValue)
+        {
+            return null;
+        }
+
+        return AgentDirectoryPresentation.Create(
+            tenantId.Value,
+            agentId.Value,
+            agentName,
+            isEnabled.Value,
+            deviceInfoJson,
+            tenantName ?? $"Tenant {tenantId.Value}");
+    }
+
+    private static void LogSearch(
+        ILoggerFactory loggerFactory,
+        DatabaseCommandMetricsInterceptor commandMetrics,
+        string section,
+        string? term,
+        int candidateCount,
+        int resultCount,
+        long started,
+        TimeSpan queryElapsed,
+        TimeSpan mappingElapsed)
+    {
+        var database = commandMetrics.Snapshot();
+        loggerFactory.CreateLogger("NetRatel.API.GlobalSearch").LogInformation(
+            "Global search source completed. Section={Section} QueryLength={QueryLength} QueryHash={QueryHash} DatabaseCommandCount={DatabaseCommandCount} DatabaseElapsedMs={DatabaseElapsedMs:F3} QueryElapsedMs={QueryElapsedMs:F3} MappingElapsedMs={MappingElapsedMs:F3} CandidateCount={CandidateCount} ResultCount={ResultCount} ElapsedMs={ElapsedMs:F3}",
+            section,
+            term?.Length ?? 0,
+            QueryHash(term),
+            database.CommandCount,
+            database.Elapsed.TotalMilliseconds,
+            queryElapsed.TotalMilliseconds,
+            mappingElapsed.TotalMilliseconds,
+            candidateCount,
+            resultCount,
+            Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+    }
+
+    private static PagedResult<T> Page<T>(IReadOnlyList<T> rows, int pageSize) => new(rows, 1, pageSize, rows.Count);
+    private static int NormalizePageSize(int pageSize) => Math.Clamp(pageSize, 1, MaxPageSize);
+    private static string? NormalizeTerm(string? q) => string.IsNullOrWhiteSpace(q) ? null : q.Trim();
+    private static string Like(string term) => $"%{term.Replace("%", "\\%", StringComparison.Ordinal).Replace("_", "\\_", StringComparison.Ordinal)}%";
+    private static string QueryHash(string? term) => term is null ? "empty" : Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(term)))[..12];
+}
+
+internal sealed record JobSearchRow(
+    long Id,
+    string Name,
+    string FolderPath,
+    string? Description,
+    int? TenantId,
+    Guid? AgentId,
+    string ClientIdentity,
+    DateTimeOffset CreatedAtUtc,
+    DateTimeOffset UpdatedAtUtc,
+    string? TenantName,
+    string? AgentName,
+    bool? AgentIsEnabled,
+    string? AgentDeviceInfoJson);
+
+internal sealed record RequestSearchRow(
+    int Id,
+    string SourceSystem,
+    string Status,
+    string? JobDefinitionId,
+    string? ExecutionId,
+    string? ResultMessage,
+    int? TargetTenantId,
+    Guid? TargetAgentId,
+    string TargetClientIdentity,
+    DateTimeOffset UpdatedAtUtc,
+    string? TenantName,
+    string? AgentName,
+    bool? AgentIsEnabled,
+    string? AgentDeviceInfoJson);
+
+internal sealed record TaskSearchRow(
+    long Id,
+    string RequestId,
+    string ClientIdentity,
+    int? TenantId,
+    Guid? AgentId,
+    string TaskType,
+    string Status,
+    string? Error,
+    DateTimeOffset CreatedAtUtc,
+    DateTimeOffset? CompletedAtUtc,
+    string? AgentName,
+    bool? AgentIsEnabled,
+    string? AgentDeviceInfoJson);

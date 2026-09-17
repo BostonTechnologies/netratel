@@ -1,0 +1,156 @@
+@using NetRatel.Shared.Contracts
+@using NetRatel.Shared.Contracts.Requests
+
+<MudDialog Class="tenant-editor-dialog">
+    <DialogContent>
+        <MudStack Spacing="3">
+            <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Start" Class="flex-wrap">
+                <div>
+                    <MudText Typo="Typo.h6">@DialogTitle</MudText>
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">
+                        @(IsEditMode && Tenant is not null ? $"Tenant #{Tenant.TenantId}" : "Create a new tenant record")
+                    </MudText>
+                </div>
+
+                @if (IsEditMode && Tenant is not null)
+                {
+                    <MudChip T="string" Variant="Variant.Outlined" Size="Size.Small" Color="Color.Primary">
+                        Updated @Tenant.UpdatedAt.ToLocalTime().ToString("g")
+                    </MudChip>
+                }
+            </MudStack>
+
+            <MudForm @ref="_form">
+                <MudGrid Spacing="2">
+                    <MudItem xs="12" md="6">
+                        <MudTextField @bind-Value="_model.Name"
+                                      Label="Tenant name"
+                                      Variant="Variant.Outlined"
+                                      Required="true"
+                                      Immediate="true" />
+                    </MudItem>
+
+                    <MudItem xs="12" md="6">
+                        <MudTextField @bind-Value="_model.Location"
+                                      Label="Location"
+                                      Variant="Variant.Outlined"
+                                      Immediate="true" />
+                    </MudItem>
+
+                    <MudItem xs="12">
+                        <MudTextField @bind-Value="_model.Description"
+                                      Label="Description"
+                                      Variant="Variant.Outlined"
+                                      Lines="2"
+                                      Immediate="true" />
+                    </MudItem>
+
+                    <MudItem xs="12" md="6">
+                        <MudTextField @bind-Value="_model.ContactPerson"
+                                      Label="Contact person"
+                                      Variant="Variant.Outlined"
+                                      Immediate="true" />
+                    </MudItem>
+
+                    <MudItem xs="12" md="6">
+                        <MudTextField @bind-Value="_model.ContactEmail"
+                                      Label="Contact email"
+                                      Variant="Variant.Outlined"
+                                      InputType="InputType.Email"
+                                      Immediate="true" />
+                    </MudItem>
+
+                    <MudItem xs="12">
+                        <MudTextField @bind-Value="_domainsText"
+                                      Label="Domains"
+                                      HelperText="Comma, space, or new-line separated"
+                                      Variant="Variant.Outlined"
+                                      Lines="3"
+                                      Immediate="true" />
+                    </MudItem>
+
+                    <MudItem xs="12">
+                        <MudSwitch T="bool"
+                                   @bind-Value="_model.AutoUpdate"
+                                   Color="Color.Primary">
+                            Auto Update
+                        </MudSwitch>
+                    </MudItem>
+                </MudGrid>
+            </MudForm>
+        </MudStack>
+    </DialogContent>
+
+    <DialogActions>
+        <MudButton Variant="Variant.Text" OnClick="Cancel">Cancel</MudButton>
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="SubmitAsync">
+            @(IsEditMode ? "Save Changes" : "Create Tenant")
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance MudDialog { get; set; } = default!;
+
+    [Parameter] public TenantDto? Tenant { get; set; }
+    [Parameter] public string DialogTitle { get; set; } = "Tenant";
+    [Parameter] public bool IsEditMode { get; set; }
+
+    private MudForm? _form;
+    private CreateTenantRequest _model = new();
+    private string _domainsText = string.Empty;
+
+    protected override void OnParametersSet()
+    {
+        if (Tenant is null)
+        {
+            _model = new CreateTenantRequest();
+            _domainsText = string.Empty;
+            return;
+        }
+
+        _model = new CreateTenantRequest
+        {
+            Name = Tenant.Name,
+            Description = Tenant.Description,
+            Location = Tenant.Location,
+            ContactPerson = Tenant.ContactPerson,
+            ContactEmail = Tenant.ContactEmail,
+            AutoUpdate = Tenant.AutoUpdate,
+            Domains = Tenant.Domains.ToList()
+        };
+
+        _domainsText = string.Join(System.Environment.NewLine, Tenant.Domains);
+    }
+
+    private void Cancel() => MudDialog.Cancel();
+
+    private async Task SubmitAsync()
+    {
+        if (_form is not null)
+        {
+            await _form.Validate();
+            if (!_form.IsValid)
+            {
+                return;
+            }
+        }
+
+        _model.Name = _model.Name?.Trim() ?? string.Empty;
+        _model.Description = string.IsNullOrWhiteSpace(_model.Description) ? null : _model.Description.Trim();
+        _model.Location = string.IsNullOrWhiteSpace(_model.Location) ? null : _model.Location.Trim();
+        _model.ContactPerson = string.IsNullOrWhiteSpace(_model.ContactPerson) ? null : _model.ContactPerson.Trim();
+        _model.ContactEmail = string.IsNullOrWhiteSpace(_model.ContactEmail) ? null : _model.ContactEmail.Trim();
+        _model.Domains = ParseDomains(_domainsText);
+
+        MudDialog.Close(DialogResult.Ok(_model));
+    }
+
+    private static List<string> ParseDomains(string? raw)
+    {
+        return (raw ?? string.Empty)
+            .Split([',', '\n', '\r', '\t', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+}

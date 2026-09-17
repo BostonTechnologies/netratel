@@ -1,0 +1,175 @@
+@using BlazorDownloadFile
+@using Microsoft.AspNetCore.Components.Forms
+@using NetRatel.Shared.Contracts.FileSystem
+@using NetRatel.Web.Services.FileSystem
+@inject GatewayFileSystemApiService Files
+@inject IBlazorDownloadFileService Downloader
+@inject ISnackbar Snackbar
+
+<MudDialog MaxWidth="MaxWidth.Large" FullWidth="true">
+    <TitleContent>
+        <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween" Class="w-100">
+            <MudText Typo="Typo.h6">Akka gateway file browser · @HostLabel</MudText>
+            <MudChip T="string" Size="Size.Small" Color="Color.Success">akka-dev-canary</MudChip>
+        </MudStack>
+    </TitleContent>
+    <DialogContent>
+        <MudStack Spacing="2">
+            <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center">
+                <MudTextField @bind-Value="_path" Label="Path" Class="flex-grow-1" Immediate="true" />
+                <MudButton Color="Color.Primary" Variant="Variant.Filled" Disabled="@_loading" OnClick="LoadAsync">Browse</MudButton>
+                <MudButton Variant="Variant.Outlined" Disabled="@_loading" OnClick="GoUpAsync">Up</MudButton>
+            </MudStack>
+            <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center">
+                <InputFile OnChange="OnUploadSelectedAsync" disabled="@_uploading" />
+                @if (_uploading)
+                {
+                    <MudProgressCircular Size="Size.Small" Indeterminate="true" />
+                }
+            </MudStack>
+            @if (!string.IsNullOrWhiteSpace(_error))
+            {
+                <MudAlert Severity="Severity.Error" Variant="Variant.Outlined">@_error</MudAlert>
+            }
+            @if (_loading)
+            {
+                <MudProgressLinear Indeterminate="true" />
+            }
+            else
+            {
+                <MudTable Items="@_entries" Dense="true" Hover="true">
+                    <HeaderContent>
+                        <MudTh>Name</MudTh>
+                        <MudTh>Type</MudTh>
+                        <MudTh>Size</MudTh>
+                        <MudTh>Actions</MudTh>
+                    </HeaderContent>
+                    <RowTemplate>
+                        <MudTd>@context.Name</MudTd>
+                        <MudTd>@(context.IsDirectory ? "Folder" : "File")</MudTd>
+                        <MudTd>@(context.IsDirectory ? "—" : FormatBytes(context.SizeBytes))</MudTd>
+                        <MudTd>
+                            @if (context.IsDirectory)
+                            {
+                                <MudButton Size="Size.Small" Variant="Variant.Text" OnClick="@(() => BrowseAsync(context.FullPath))">Open</MudButton>
+                            }
+                            else
+                            {
+                                <MudButton Size="Size.Small" Variant="Variant.Text" OnClick="@(() => DownloadAsync(context))">Download</MudButton>
+                            }
+                        </MudTd>
+                    </RowTemplate>
+                </MudTable>
+            }
+        </MudStack>
+    </DialogContent>
+    <DialogActions><MudButton OnClick="Close">Close</MudButton></DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter, EditorRequired] public int TenantId { get; set; }
+    [Parameter, EditorRequired] public Guid AgentId { get; set; }
+    [Parameter] public string HostLabel { get; set; } = "Gateway agent";
+    [Parameter] public string InitialPath { get; set; } = "/";
+
+    private readonly List<GatewayFileSystemEntryDto> _entries = new();
+    private string _path = "/";
+    private bool _loading;
+    private bool _uploading;
+    private string? _error;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _path = string.IsNullOrWhiteSpace(InitialPath) ? "/" : InitialPath;
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        _error = null;
+        try
+        {
+            var result = await Files.ListAsync(TenantId, AgentId, _path);
+            _path = result.Path;
+            _entries.Clear();
+            _entries.AddRange(result.Entries.OrderBy(entry => !entry.IsDirectory).ThenBy(entry => entry.Name, StringComparer.OrdinalIgnoreCase));
+        }
+        catch (Exception exception)
+        {
+            _error = exception.Message;
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task BrowseAsync(string path)
+    {
+        _path = path;
+        await LoadAsync();
+    }
+
+    private async Task GoUpAsync()
+    {
+        var parent = Path.GetDirectoryName(_path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        _path = string.IsNullOrWhiteSpace(parent) ? Path.GetPathRoot(_path) ?? "/" : parent;
+        await LoadAsync();
+    }
+
+    private async Task DownloadAsync(GatewayFileSystemEntryDto entry)
+    {
+        try
+        {
+            using var response = await Files.DownloadAsync(TenantId, AgentId, entry.FullPath);
+            response.EnsureSuccessStatusCode();
+            var bytes = await response.Content.ReadAsByteArrayAsync();
+            await Downloader.DownloadFile(entry.Name, bytes,
+                response.Content.Headers.ContentType?.MediaType ?? "application/octet-stream");
+        }
+        catch (Exception exception)
+        {
+            Snackbar.Add($"Gateway file download failed: {exception.Message}", Severity.Error);
+        }
+    }
+
+    private Task OnUploadSelectedAsync(InputFileChangeEventArgs args) => UploadAsync(args.File);
+
+    private async Task UploadAsync(IBrowserFile? file)
+    {
+        if (file is null)
+        {
+            return;
+        }
+
+        _uploading = true;
+        try
+        {
+            var destination = Path.Combine(_path, Path.GetFileName(file.Name));
+            await using var content = file.OpenReadStream(maxAllowedSize: 512L * 1024 * 1024);
+            await Files.UploadAsync(TenantId, AgentId, destination, content);
+            Snackbar.Add($"Uploaded {file.Name} through the Akka gateway.", Severity.Success);
+            await LoadAsync();
+        }
+        catch (Exception exception)
+        {
+            Snackbar.Add($"Gateway file upload failed: {exception.Message}", Severity.Error);
+        }
+        finally
+        {
+            _uploading = false;
+        }
+    }
+
+    private void Close() => MudDialog.Close();
+
+    private static string FormatBytes(long bytes) => bytes switch
+    {
+        < 1024 => $"{bytes} B",
+        < 1024 * 1024 => $"{bytes / 1024d:0.0} KiB",
+        < 1024 * 1024 * 1024 => $"{bytes / 1024d / 1024d:0.0} MiB",
+        _ => $"{bytes / 1024d / 1024d / 1024d:0.0} GiB"
+    };
+}

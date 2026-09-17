@@ -1,0 +1,341 @@
+@page "/tasks/history"
+
+@using NetRatel.Shared.Contracts.Tasks
+@using NetRatel.Web.Services.ClientTasks
+
+@inject TaskApiService TaskApi
+@inject ISnackbar Snackbar
+
+@implements IDisposable
+
+<MudStack Spacing="3" Class="task-history-page">
+    <MudPaper Class="task-history-hero pa-5" Elevation="0">
+        <MudStack Spacing="3">
+            <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
+                <MudStack Spacing="1">
+                    <MudText Class="task-history-kicker">Execution Ledger</MudText>
+                    <MudText Typo="Typo.h4">Task History</MudText>
+                    <MudText Class="task-history-subtitle">Search the persisted execution ledger and open the bounded task evidence for a complete result.</MudText>
+                </MudStack>
+                <MudButton Variant="Variant.Outlined"
+                           StartIcon="@Icons.Material.Filled.Refresh"
+                           OnClick="ReloadFromFirstPageAsync"
+                           Disabled="_isLoading">
+                    Refresh
+                </MudButton>
+            </MudStack>
+
+            <MudGrid Spacing="2">
+                <MudItem xs="12" sm="6" md="3">
+                    <MudPaper Class="task-history-stat pa-3" Elevation="0">
+                        <MudText Class="task-history-stat-label">Rows on this page</MudText>
+                        <MudText Typo="Typo.h5">@_items.Count</MudText>
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">@_total matching runs</MudText>
+                    </MudPaper>
+                </MudItem>
+                <MudItem xs="12" sm="6" md="3">
+                    <MudPaper Class="task-history-stat pa-3" Elevation="0">
+                        <MudText Class="task-history-stat-label">Completed</MudText>
+                        <MudText Typo="Typo.h5">@_items.Count(item => IsStatus(item, "Completed"))</MudText>
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">On this page</MudText>
+                    </MudPaper>
+                </MudItem>
+                <MudItem xs="12" sm="6" md="3">
+                    <MudPaper Class="task-history-stat pa-3" Elevation="0">
+                        <MudText Class="task-history-stat-label">Failed</MudText>
+                        <MudText Typo="Typo.h5">@_items.Count(item => IsStatus(item, "Failed"))</MudText>
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">On this page</MudText>
+                    </MudPaper>
+                </MudItem>
+                <MudItem xs="12" sm="6" md="3">
+                    <MudPaper Class="task-history-stat pa-3" Elevation="0">
+                        <MudText Class="task-history-stat-label">Processing</MudText>
+                        <MudText Typo="Typo.h5">@_items.Count(item => IsStatus(item, "Processing"))</MudText>
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">On this page</MudText>
+                    </MudPaper>
+                </MudItem>
+            </MudGrid>
+        </MudStack>
+    </MudPaper>
+
+    <MudPaper Class="task-history-surface pa-4" Elevation="0">
+        <MudStack Spacing="3">
+            <MudGrid Spacing="2">
+                <MudItem xs="12" md="8">
+                    <MudTextField T="string"
+                                  Value="_search"
+                                  ValueChanged="OnSearchChangedAsync"
+                                  Label="Search request id, task, or target"
+                                  Variant="Variant.Outlined"
+                                  Immediate="true"
+                                  Adornment="Adornment.Start"
+                                  AdornmentIcon="@Icons.Material.Filled.Search"
+                                  Clearable="true"
+                                  data-testid="task-history-search" />
+                </MudItem>
+                <MudItem xs="12" sm="6" md="4">
+                    <MudSelect T="string"
+                               Label="Status"
+                               Variant="Variant.Outlined"
+                               Value="_statusFilter"
+                               ValueChanged="OnStatusChangedAsync"
+                               data-testid="task-history-status">
+                        <MudSelectItem Value="@AllFilter">All statuses</MudSelectItem>
+                        <MudSelectItem Value="@("Completed")">Completed</MudSelectItem>
+                        <MudSelectItem Value="@("Failed")">Failed</MudSelectItem>
+                        <MudSelectItem Value="@("Cancelled")">Cancelled</MudSelectItem>
+                        <MudSelectItem Value="@("Processing")">Processing</MudSelectItem>
+                        <MudSelectItem Value="@("Pending")">Pending</MudSelectItem>
+                    </MudSelect>
+                </MudItem>
+            </MudGrid>
+
+            <MudText Typo="Typo.caption" Color="Color.Secondary">
+                Execution activities do not persist an authoritative environment dimension, so no environment filter is shown.
+            </MudText>
+
+            <MudTable T="TaskHistoryItemDto"
+                      @ref="_table"
+                      ServerData="LoadServerDataAsync"
+                      Dense="true"
+                      Hover="true"
+                      Breakpoint="Breakpoint.Md"
+                      Loading="_isLoading"
+                      RowsPerPage="10"
+                      Class="task-history-table"
+                      data-testid="task-history-table">
+                <HeaderContent>
+                    <MudTh>Status</MudTh>
+                    <MudTh>Task</MudTh>
+                    <MudTh Class="task-history-target-column">Target</MudTh>
+                    <MudTh>Started</MudTh>
+                    <MudTh>Runtime</MudTh>
+                    <MudTh style="width:72px;"></MudTh>
+                </HeaderContent>
+                <RowTemplate>
+                    <MudTd>
+                        <MudChip T="string" Color="@TaskStatusColor(context.Status)" Variant="Variant.Outlined" Size="Size.Small">@context.Status</MudChip>
+                    </MudTd>
+                    <MudTd>
+                        <MudText Typo="Typo.subtitle2">@context.TaskType</MudText>
+                        <MudText Typo="Typo.caption" Color="Color.Secondary" Class="task-history-request-id">@context.RequestId</MudText>
+                        @if (!string.IsNullOrWhiteSpace(context.StatusMessage))
+                        {
+                            <MudText Typo="Typo.caption" Color="Color.Secondary" Class="task-history-status-message">@context.StatusMessage</MudText>
+                        }
+                    </MudTd>
+                    <MudTd Class="task-history-target-column">
+                        <MudText Typo="Typo.body2">@GetTaskTargetDisplay(context)</MudText>
+                        @if (!string.IsNullOrWhiteSpace(GetTaskTargetMeta(context)))
+                        {
+                            <MudText Typo="Typo.caption" Color="Color.Secondary" Class="task-history-target-meta">@GetTaskTargetMeta(context)</MudText>
+                        }
+                    </MudTd>
+                    <MudTd>@FormatTimestamp(context.Created)</MudTd>
+                    <MudTd>@FormatRuntime(context)</MudTd>
+                    <MudTd Style="text-align: right;">
+                        <MudIconButton Icon="@Icons.Material.Filled.OpenInNew"
+                                       Color="Color.Primary"
+                                       Size="Size.Small"
+                                       aria-label="Open task details"
+                                       Href="@($"/tasks/request/{Uri.EscapeDataString(context.RequestId)}")" />
+                    </MudTd>
+                </RowTemplate>
+                <NoRecordsContent>
+                    <MudText Typo="Typo.subtitle1" Class="pa-4">No task executions match the current filters.</MudText>
+                </NoRecordsContent>
+                <PagerContent>
+                    <MudTablePager PageSizeOptions="new int[] { 10, 20, 50, 100 }" />
+                </PagerContent>
+            </MudTable>
+        </MudStack>
+    </MudPaper>
+</MudStack>
+
+<style>
+  .task-history-hero,
+  .task-history-surface,
+  .task-history-stat {
+      border: 1px solid var(--mud-palette-divider);
+      border-radius: var(--netratel-radius-surface, 7px);
+      background: var(--mud-palette-surface);
+  }
+
+  .task-history-hero {
+      border-left: 3px solid var(--mud-palette-primary);
+  }
+
+  .task-history-kicker,
+  .task-history-stat-label {
+      color: var(--mud-palette-primary);
+      font-size: 0.76rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+  }
+
+  .task-history-subtitle {
+      color: var(--mud-palette-text-secondary);
+      max-width: 72ch;
+  }
+
+  .task-history-target-column {
+      min-width: 12rem;
+      max-width: 22rem;
+  }
+
+  .task-history-target-meta,
+  .task-history-status-message,
+  .task-history-request-id {
+      display: -webkit-box;
+      overflow: hidden;
+      overflow-wrap: anywhere;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 2;
+  }
+</style>
+
+@code {
+    [SupplyParameterFromQuery(Name = "search")]
+    public string? Search { get; set; }
+
+    private const string AllFilter = "__all__";
+
+    private readonly CancellationTokenSource _disposeCts = new();
+    private IReadOnlyList<TaskHistoryItemDto> _items = [];
+    private MudTable<TaskHistoryItemDto>? _table;
+    private CancellationTokenSource? _searchDebounceCts;
+    private bool _isLoading;
+    private int _total;
+    private string _search = string.Empty;
+    private string _statusFilter = AllFilter;
+
+    protected override void OnInitialized()
+    {
+        _search = Search ?? string.Empty;
+    }
+
+    private async Task<TableData<TaskHistoryItemDto>> LoadServerDataAsync(TableState state, CancellationToken ct)
+    {
+        _isLoading = true;
+        try
+        {
+            var pageSize = state.PageSize <= 0 ? 10 : state.PageSize;
+            var page = await TaskApi.GetHistoryAsync(
+                state.Page,
+                pageSize,
+                search: _search,
+                status: _statusFilter == AllFilter ? null : _statusFilter,
+                cancellationToken: ct).ConfigureAwait(false);
+
+            _items = page?.Items ?? [];
+            _total = page?.Total ?? 0;
+            return new TableData<TaskHistoryItemDto>
+            {
+                Items = _items,
+                TotalItems = _total
+            };
+        }
+        catch (OperationCanceledException)
+        {
+            return new TableData<TaskHistoryItemDto>
+            {
+                Items = _items,
+                TotalItems = _total
+            };
+        }
+        catch (Exception exception)
+        {
+            Snackbar.Add($"Failed to load task history: {exception.Message}", Severity.Warning);
+            _items = [];
+            _total = 0;
+            return new TableData<TaskHistoryItemDto>
+            {
+                Items = [],
+                TotalItems = 0
+            };
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private async Task OnSearchChangedAsync(string value)
+    {
+        _search = value;
+        _searchDebounceCts?.Cancel();
+        _searchDebounceCts?.Dispose();
+        _searchDebounceCts = CancellationTokenSource.CreateLinkedTokenSource(_disposeCts.Token);
+
+        try
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(300), _searchDebounceCts.Token).ConfigureAwait(false);
+            await ReloadFromFirstPageAsync().ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+    }
+
+    private async Task OnStatusChangedAsync(string status)
+    {
+        _statusFilter = status;
+        await ReloadFromFirstPageAsync().ConfigureAwait(false);
+    }
+
+    private async Task ReloadFromFirstPageAsync()
+    {
+        if (_table is null)
+        {
+            return;
+        }
+
+        _table.NavigateTo(0);
+        await _table.ReloadServerData().ConfigureAwait(false);
+    }
+
+    private static string FormatTimestamp(DateTimeOffset value)
+        => value.ToLocalTime().ToString("yyyy/MM/dd HH:mm");
+
+    private static string FormatRuntime(TaskHistoryItemDto task)
+    {
+        var end = task.CompletedAt ?? DateTimeOffset.UtcNow;
+        var duration = end - task.Created;
+        if (duration.TotalHours >= 1) return duration.ToString(@"hh\:mm\:ss");
+        if (duration.TotalMinutes >= 1) return duration.ToString(@"mm\:ss");
+        return $"{Math.Max(duration.TotalMilliseconds, 0):0} ms";
+    }
+
+    private static bool IsStatus(TaskHistoryItemDto task, string status)
+        => string.Equals(task.Status, status, StringComparison.OrdinalIgnoreCase);
+
+    private static Color TaskStatusColor(string status) => status switch
+    {
+        "Completed" => Color.Success,
+        "Processing" => Color.Info,
+        "Failed" => Color.Error,
+        "Cancelled" => Color.Warning,
+        _ => Color.Default
+    };
+
+    private static string GetTaskTargetDisplay(TaskHistoryItemDto task)
+        => FirstPresent(task.ClientHostName, task.ClientDisplayName, task.ClientName) ?? "Client unavailable";
+
+    private static string? GetTaskTargetMeta(TaskHistoryItemDto task)
+        => FirstPresent(task.ClientName, task.ClientDisplayName) is { } meta &&
+           !string.Equals(meta, GetTaskTargetDisplay(task), StringComparison.OrdinalIgnoreCase)
+            ? meta
+            : null;
+
+    private static string? FirstPresent(params string?[] values)
+        => values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim();
+
+    public void Dispose()
+    {
+        _searchDebounceCts?.Cancel();
+        _searchDebounceCts?.Dispose();
+        _disposeCts.Dispose();
+    }
+}

@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UserSecretsId>aspnet-NetRatel.API-d2187f23-2b56-4959-b8ce-2336c7433904</UserSecretsId>
+    <DockerDefaultTargetOS>Linux</DockerDefaultTargetOS>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Duende.IdentityModel" Version="8.1.0" />
+    <PackageReference Include="Grpc.AspNetCore" Version="2.83.0" />
+    <PackageReference Include="Hangfire.AspNetCore" Version="1.8.24" />
+    <PackageReference Include="Hangfire.PostgreSql" Version="1.21.1" />
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.11" NoWarn="NU1605" />
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.OpenIdConnect" Version="10.0.11" NoWarn="NU1605" />
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.11" />
+    <PackageReference Include="Microsoft.Identity.Web" Version="4.14.2" />
+    <PackageReference Include="Microsoft.Identity.Web.DownstreamApi" Version="4.14.2" />
+    <PackageReference Include="Microsoft.VisualStudio.Azure.Containers.Tools.Targets" Version="1.23.0" />
+    <PackageReference Include="Scalar.AspNetCore" Version="2.17.1" />
+    <PackageReference Include="Microsoft.Extensions.Http.Polly" Version="10.0.11" />
+    <PackageReference Include="Microsoft.Extensions.Http.Resilience" Version="10.9.0" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.11">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="NuGet.Versioning" Version="7.9.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\NetRatel.Application\NetRatel.Application.csproj" />
+    <ProjectReference Include="..\NetRatel.Infrastructure\NetRatel.Infrastructure.csproj" />
+    <ProjectReference Include="..\NetRatel.ServiceDefaults\NetRatel.ServiceDefaults.csproj" />
+    <ProjectReference Include="..\NetRatel.Shared\NetRatel.Shared.csproj" />
+    <ProjectReference Include="..\NetRatel.AgentGateway.Contracts\NetRatel.AgentGateway.Contracts.csproj" />
+    <ProjectReference Include="..\NetRatel.Akka\NetRatel.Akka.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Folder Include="artifacts\client\" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="NetRatel.Tests" />
+  </ItemGroup>
+</Project>

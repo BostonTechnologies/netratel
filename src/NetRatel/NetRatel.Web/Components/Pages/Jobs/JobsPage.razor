@@ -1,0 +1,1011 @@
+@page "/jobs"
+@rendermode InteractiveServer
+
+@using Microsoft.AspNetCore.Components.Web
+@using MudBlazor
+@using NetRatel.Shared
+@using NetRatel.Shared.Contracts
+@using NetRatel.Shared.Contracts.Jobs
+
+@inject IJobApiClient JobApi
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+@inject NavigationManager NavManager
+
+<PageTitle>Jobs</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="mt-4 jobs-console">
+    <MudStack Spacing="3">
+        <MudGrid Spacing="2" AlignItems="AlignItems.Stretch">
+            <MudItem xs="12" lg="8">
+                <MudPaper Class="jobs-hero jobs-hero-main pa-4">
+                    <MudStack Spacing="2">
+                        <MudText Typo="Typo.overline" Class="jobs-kicker">Workflow Control</MudText>
+                        <MudText Typo="Typo.h4">Jobs Console</MudText>
+                        <MudText Typo="Typo.body2" Class="jobs-subtitle">
+                            Design, launch, and supervise Dev and Prod orchestration from one surface.
+                            Filter fast, pivot by folder, and move straight from a definition to a live run.
+                        </MudText>
+
+                        <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween" Class="jobs-hero-toolbar flex-wrap">
+                            <div class="jobs-hero-chips">
+                                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Primary">
+                                    @_jobs.Count visible jobs
+                                </MudChip>
+                                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Info">
+                                    @_folders.Count folders
+                                </MudChip>
+                                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="@(_jobEnvironment == ClientEnvironment.Prod ? Color.Warning : Color.Success)">
+                                    @(_jobEnvironment?.ToShortLabel() ?? "Dev + Prod")
+                                </MudChip>
+                                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="@(_runSummaryRunning > 0 ? Color.Info : Color.Default)">
+                                    @_runSummaryRunning running
+                                </MudChip>
+                            </div>
+
+                            <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1" Class="jobs-hero-action-chips">
+                                <MudChip T="string"
+                                         Color="Color.Primary"
+                                         Variant="Variant.Filled"
+                                         Size="Size.Small"
+                                         OnClick="CreateJobAsync"
+                                         Icon="@Icons.Material.Filled.AddTask">
+                                    New Job
+                                </MudChip>
+                                <MudChip T="string"
+                                         Variant="Variant.Outlined"
+                                         Size="Size.Small"
+                                         OnClick="ReloadAsync"
+                                         Icon="@Icons.Material.Filled.Refresh">
+                                    Refresh
+                                </MudChip>
+                            </MudStack>
+                        </MudStack>
+                    </MudStack>
+                </MudPaper>
+            </MudItem>
+
+            <MudItem xs="12" lg="4">
+                <MudGrid Spacing="2">
+                    <MudItem xs="6">
+                        <MudPaper Class="jobs-summary-card jobs-summary-card-compact pa-3">
+                            <MudText Typo="Typo.caption" Class="jobs-section-label">Definitions</MudText>
+                            <MudText Typo="Typo.h5">@_jobs.Count</MudText>
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                @(_selectedFolder is null ? "Full estate" : GetFolderDisplay(_selectedFolder))
+                            </MudText>
+                        </MudPaper>
+                    </MudItem>
+                    <MudItem xs="6">
+                        <MudPaper Class="jobs-summary-card jobs-summary-card-compact pa-3">
+                            <MudText Typo="Typo.caption" Class="jobs-section-label">Folders</MudText>
+                            <MudText Typo="Typo.h5">@_folders.Count</MudText>
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">Scope ready</MudText>
+                        </MudPaper>
+                    </MudItem>
+                    <MudItem xs="6">
+                        <MudPaper Class="jobs-summary-card jobs-summary-card-compact pa-3">
+                            <MudText Typo="Typo.caption" Class="jobs-section-label">Recent Success</MudText>
+                            <MudText Typo="Typo.h5">@RunSuccessRateLabel</MudText>
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">@_runSummarySucceeded ok · @_runSummaryFailed failed</MudText>
+                        </MudPaper>
+                    </MudItem>
+                    <MudItem xs="6">
+                        <MudPaper Class="jobs-summary-card jobs-summary-card-compact pa-3">
+                            <MudText Typo="Typo.caption" Class="jobs-section-label">Selection</MudText>
+                            <MudText Typo="Typo.h5">@(_selectedJobId.HasValue ? "Focused" : "All Runs")</MudText>
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">@(_selectedJobId.HasValue ? _selectedJobName : "Execution stream")</MudText>
+                        </MudPaper>
+                    </MudItem>
+                </MudGrid>
+            </MudItem>
+        </MudGrid>
+
+        <MudPaper Class="jobs-panel pa-4">
+            <MudStack Spacing="2">
+                <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="flex-wrap">
+                    <div>
+                        <MudText Typo="Typo.h5">Definitions</MudText>
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">
+                            Search by name, tenant, folder, or target and jump directly into run, edit, or clone actions.
+                        </MudText>
+                    </div>
+                </MudStack>
+
+                <MudGrid Spacing="2" AlignItems="AlignItems.Center">
+                    <MudItem xs="12" sm="6" md="4">
+                        <MudMenu Dense="true"
+                                 Variant="Variant.Outlined"
+                                 Color="Color.Default"
+                                 Label="@FolderMenuLabel"
+                                 StartIcon="@Icons.Material.Filled.FolderOpen"
+                                 AnchorOrigin="Origin.BottomLeft"
+                                 TransformOrigin="Origin.TopLeft"
+                                 FullWidth="true">
+                            <MudMenuItem OnClick="@(() => SelectFolder(null))">All folders</MudMenuItem>
+                            <MudDivider />
+                            @foreach (var folder in _folders)
+                            {
+                                <MudMenuItem OnClick="@(() => SelectFolder(folder))">
+                                    @GetFolderDisplay(folder)
+                                </MudMenuItem>
+                            }
+                        </MudMenu>
+                    </MudItem>
+                    <MudItem xs="12" md="5">
+                        <MudTextField T="string"
+                                      Value="_jobSearch"
+                                      ValueChanged="OnJobSearchChanged"
+                                      Placeholder="Search jobs, tenants, folders, or targets"
+                                      Adornment="Adornment.Start"
+                                      AdornmentIcon="@Icons.Material.Filled.Search"
+                                      Immediate="true"
+                                      Clearable="true"
+                                      Variant="Variant.Outlined"
+                                      Margin="Margin.Dense" />
+                    </MudItem>
+                    <MudItem xs="12" sm="6" md="3">
+                        <MudSelect T="ClientEnvironment?"
+                                   Label="Environment"
+                                   Value="_jobEnvironment"
+                                   ValueChanged="OnJobEnvironmentChanged"
+                                   Variant="Variant.Outlined"
+                                   Margin="Margin.Dense">
+                            <MudSelectItem T="ClientEnvironment?" Value="@(null)">Dev + Prod</MudSelectItem>
+                            <MudSelectItem T="ClientEnvironment?" Value="@(ClientEnvironment.Dev)">Dev</MudSelectItem>
+                            <MudSelectItem T="ClientEnvironment?" Value="@(ClientEnvironment.Prod)">Prod</MudSelectItem>
+                        </MudSelect>
+                    </MudItem>
+                </MudGrid>
+
+                <MudStack Row="true" Spacing="1" Class="flex-wrap">
+                    @if (!string.IsNullOrWhiteSpace(_jobSearch))
+                    {
+                        <MudChip T="string" Closeable="true" OnClose="@(() => OnJobSearchChanged(null))" Variant="Variant.Outlined" Color="Color.Info">
+                            Search: @_jobSearch
+                        </MudChip>
+                    }
+                    @if (_jobEnvironment.HasValue)
+                    {
+                        <MudChip T="string" Closeable="true" OnClose="ClearJobEnvironmentFilter" Variant="Variant.Outlined" Color="Color.Primary">
+                            Env: @_jobEnvironment.Value.ToShortLabel()
+                        </MudChip>
+                    }
+                    @if (!string.IsNullOrWhiteSpace(_selectedFolder))
+                    {
+                        <MudChip T="string" Closeable="true" OnClose="@(() => SelectFolder(null))" Variant="Variant.Outlined" Color="Color.Secondary">
+                            Folder: @GetFolderDisplay(_selectedFolder)
+                        </MudChip>
+                    }
+                </MudStack>
+
+                @if (_isLoading)
+                {
+                    <MudStack AlignItems="AlignItems.Center" Justify="Justify.Center" Class="py-8">
+                        <MudProgressCircular Color="Color.Primary" Indeterminate="true" />
+                        <MudText Class="mt-2">Loading job definitions...</MudText>
+                    </MudStack>
+                }
+                else if (_jobs.Count == 0)
+                {
+                    <MudAlert Severity="Severity.Info" Variant="Variant.Outlined">
+                        No jobs match the current filters. Adjust the scope or create a new workflow.
+                    </MudAlert>
+                }
+                else
+                {
+                    <MudTable T="JobDto"
+                              @key="_jobsTableKey"
+                              Items="_jobs"
+                              Dense="true"
+                              Hover="true"
+                              Elevation="0"
+                              Breakpoint="Breakpoint.Md"
+                              OnRowClick="OnJobRowClick"
+                              RowStyleFunc="JobRowStyle"
+                              RowsPerPage="10"
+                              RowsPerPageOptions="new int[] {10, 20, 50}"
+                              Class="jobs-table">
+                        <HeaderContent>
+                            <MudTh>Tenant</MudTh>
+                            <MudTh>Folder</MudTh>
+                            <MudTh>Target</MudTh>
+                            <MudTh>Workflow</MudTh>
+                            <MudTh>Env</MudTh>
+                            <MudTh>Updated</MudTh>
+                            <MudTh Class="text-right">Actions</MudTh>
+                        </HeaderContent>
+                        <RowTemplate>
+                            <MudTd DataLabel="Tenant">@((context.TenantDisplayName ?? context.TenantId?.ToString()) ?? "Unassigned")</MudTd>
+                            <MudTd DataLabel="Folder">@GetFolderDisplay(context.FolderPath)</MudTd>
+                            <MudTd DataLabel="Target">
+                                <MudTooltip Text="@GetClientTooltip(context)">
+                                    <span>@GetClientDisplayText(context)</span>
+                                </MudTooltip>
+                            </MudTd>
+                            <MudTd DataLabel="Workflow">
+                                <MudStack Spacing="0">
+                                    <MudText Typo="Typo.body2">@context.Name</MudText>
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                        @(string.IsNullOrWhiteSpace(context.Description) ? "No description" : context.Description)
+                                    </MudText>
+                                </MudStack>
+                            </MudTd>
+                            <MudTd DataLabel="Env">
+                                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="@(context.Environment == ClientEnvironment.Prod ? Color.Warning : Color.Success)">
+                                    @context.Environment.ToShortLabel()
+                                </MudChip>
+                            </MudTd>
+                            <MudTd DataLabel="Updated">@FormatTimestamp(context.UpdatedAtMicros)</MudTd>
+                            <MudTd DataLabel="Actions" Class="text-right">
+                                <MudMenu Dense="true"
+                                         Variant="Variant.Text"
+                                         Icon="@Icons.Material.Filled.MoreHoriz"
+                                         AnchorOrigin="Origin.TopRight"
+                                         TransformOrigin="Origin.TopRight">
+                                    <MudMenuItem Icon="@Icons.Material.Filled.PlayArrow" OnClick="@(async () => await OpenRunDialogAsync(context))">
+                                        Run Workflow
+                                    </MudMenuItem>
+                                    <MudMenuItem Icon="@Icons.Material.Filled.Edit" OnClick="@(async () => await OpenEditDialogAsync(context))">
+                                        Edit
+                                    </MudMenuItem>
+                                    <MudMenuItem Icon="@Icons.Material.Filled.ContentCopy" OnClick="@(async () => await OpenCopyDialogAsync(context))">
+                                        Clone
+                                    </MudMenuItem>
+                                    <MudDivider />
+                                    <MudMenuItem Icon="@Icons.Material.Filled.Delete" Class="jobs-delete-action" OnClick="@(async () => await DeleteJobAsync(context))">
+                                        Delete
+                                    </MudMenuItem>
+                                </MudMenu>
+                            </MudTd>
+                        </RowTemplate>
+                        <PagerContent>
+                            <MudTablePager />
+                        </PagerContent>
+                    </MudTable>
+                }
+            </MudStack>
+        </MudPaper>
+
+        <MudPaper Class="jobs-panel pa-4">
+            <MudStack Spacing="2">
+                <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="flex-wrap">
+                    <div>
+                        <MudText Typo="Typo.h5">Recent Runs</MudText>
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">
+                            Live execution history across environments, with quick drill-down into step-by-step traces.
+                        </MudText>
+                    </div>
+                </MudStack>
+
+                <MudGrid Spacing="2">
+                    <MudItem xs="6" md="3">
+                        <MudPaper Class="jobs-run-stat jobs-run-stat-running pa-3" Outlined="true">
+                            <MudText Typo="Typo.caption">Running</MudText>
+                            <MudText Typo="Typo.h6">@_runSummaryRunning</MudText>
+                        </MudPaper>
+                    </MudItem>
+                    <MudItem xs="6" md="3">
+                        <MudPaper Class="jobs-run-stat jobs-run-stat-success pa-3" Outlined="true">
+                            <MudText Typo="Typo.caption">Succeeded</MudText>
+                            <MudText Typo="Typo.h6">@_runSummarySucceeded</MudText>
+                        </MudPaper>
+                    </MudItem>
+                    <MudItem xs="6" md="3">
+                        <MudPaper Class="jobs-run-stat jobs-run-stat-failed pa-3" Outlined="true">
+                            <MudText Typo="Typo.caption">Failed</MudText>
+                            <MudText Typo="Typo.h6">@_runSummaryFailed</MudText>
+                        </MudPaper>
+                    </MudItem>
+                    <MudItem xs="6" md="3">
+                        <MudPaper Class="jobs-run-stat jobs-run-stat-other pa-3" Outlined="true">
+                            <MudText Typo="Typo.caption">Loaded</MudText>
+                            <MudText Typo="Typo.h6">@_runsTableTotal</MudText>
+                        </MudPaper>
+                    </MudItem>
+                </MudGrid>
+
+                <MudGrid Spacing="2" AlignItems="AlignItems.Center">
+                    <MudItem xs="12" md="4">
+                        <MudTextField T="string"
+                                      Value="_runSearch"
+                                      ValueChanged="OnRunSearchChanged"
+                                      Placeholder="Search runs, clients, jobs"
+                                      Adornment="Adornment.Start"
+                                      AdornmentIcon="@Icons.Material.Filled.Search"
+                                      Immediate="true"
+                                      Clearable="true"
+                                      Variant="Variant.Outlined"
+                                      Margin="Margin.Dense" />
+                    </MudItem>
+                    <MudItem xs="12" sm="6" md="3">
+                        <MudSelect T="JobRunStatusDto?"
+                                   Label="Status"
+                                   Value="_runStatus"
+                                   ValueChanged="OnRunStatusChanged"
+                                   Variant="Variant.Outlined"
+                                   Margin="Margin.Dense">
+                            <MudSelectItem T="JobRunStatusDto?" Value="@(null)">All statuses</MudSelectItem>
+                            @foreach (var status in _runStatusOptions)
+                            {
+                                <MudSelectItem T="JobRunStatusDto?" Value="@((JobRunStatusDto?)status)">@status</MudSelectItem>
+                            }
+                        </MudSelect>
+                    </MudItem>
+                    <MudItem xs="12" sm="6" md="3">
+                        <MudSelect T="ClientEnvironment?"
+                                   Label="Environment"
+                                   Value="_runEnvironment"
+                                   ValueChanged="OnRunEnvironmentChanged"
+                                   Variant="Variant.Outlined"
+                                   Margin="Margin.Dense">
+                            <MudSelectItem T="ClientEnvironment?" Value="@(null)">Dev + Prod</MudSelectItem>
+                            <MudSelectItem T="ClientEnvironment?" Value="@(ClientEnvironment.Dev)">Dev</MudSelectItem>
+                            <MudSelectItem T="ClientEnvironment?" Value="@(ClientEnvironment.Prod)">Prod</MudSelectItem>
+                        </MudSelect>
+                    </MudItem>
+                    <MudItem xs="12" md="2" Class="d-flex justify-end">
+                        @if (_selectedJobId.HasValue)
+                        {
+                            <MudButton Variant="Variant.Text" Color="Color.Primary" OnClick="ClearSelectedJobFilter">
+                                Clear Job Focus
+                            </MudButton>
+                        }
+                    </MudItem>
+                </MudGrid>
+
+                <MudStack Row="true" Spacing="1" Class="flex-wrap">
+                    @if (_selectedJobId.HasValue)
+                    {
+                        <MudChip T="string" Closeable="true" OnClose="ClearSelectedJobFilter" Variant="Variant.Outlined" Color="Color.Primary">
+                            Job: @_selectedJobName
+                        </MudChip>
+                    }
+                    @if (_runStatus.HasValue)
+                    {
+                        <MudChip T="string" Closeable="true" OnClose="ClearRunStatusFilter" Variant="Variant.Outlined" Color="Color.Secondary">
+                            Status: @_runStatus.Value
+                        </MudChip>
+                    }
+                    @if (_runEnvironment.HasValue)
+                    {
+                        <MudChip T="string" Closeable="true" OnClose="ClearRunEnvironmentFilter" Variant="Variant.Outlined" Color="Color.Info">
+                            Env: @_runEnvironment.Value.ToShortLabel()
+                        </MudChip>
+                    }
+                </MudStack>
+
+                <MudTable T="JobRunDto"
+                          @ref="_runsTable"
+                          Dense="true"
+                          Hover="true"
+                          Elevation="0"
+                          ServerData="ReloadRunsAsync"
+                          RowsPerPage="20"
+                          RowsPerPageOptions="new int[] {10, 20, 50}"
+                          OnRowClick="OnRunRowClick"
+                          RowStyleFunc="RunRowStyle"
+                          Breakpoint="Breakpoint.Md"
+                          Class="jobs-table jobs-runs-table">
+                    <HeaderContent>
+                        <MudTh>Status</MudTh>
+                        <MudTh>Run</MudTh>
+                        <MudTh>Client</MudTh>
+                        <MudTh>Env</MudTh>
+                        <MudTh>Workflow</MudTh>
+                        <MudTh>Started</MudTh>
+                        <MudTh>Completed</MudTh>
+                        <MudTh Class="text-right">Actions</MudTh>
+                    </HeaderContent>
+                    <RowTemplate>
+                        <MudTd DataLabel="Status">
+                            <MudChip T="string"
+                                     Color="@RunStatusColor(context.Status)"
+                                     Variant="Variant.Outlined"
+                                     Size="Size.Small">
+                                @context.Status
+                            </MudChip>
+                        </MudTd>
+                        <MudTd DataLabel="Run">
+                            <MudStack Spacing="0">
+                                <MudText Typo="Typo.body2">#@context.Id</MudText>
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">@((context.TenantDisplayName ?? context.TenantId?.ToString()) ?? "Unassigned")</MudText>
+                            </MudStack>
+                        </MudTd>
+                        <MudTd DataLabel="Client">
+                            <MudTooltip Text="@context.ClientIdentity">
+                                <span>@ShortenIdentity(context.ClientDisplayName ?? context.ClientIdentity)</span>
+                            </MudTooltip>
+                        </MudTd>
+                        <MudTd DataLabel="Env">@context.Environment.ToShortLabel()</MudTd>
+                        <MudTd DataLabel="Workflow">@DisplayJobName(context)</MudTd>
+                        <MudTd DataLabel="Started">@FormatTimestamp(context.StartedAtMicros)</MudTd>
+                        <MudTd DataLabel="Completed">@FormatTimestamp(context.CompletedAtMicros)</MudTd>
+                        <MudTd DataLabel="Actions" Class="text-right">
+                            <span @onclick:stopPropagation="true">
+                                <MudTooltip Text="Delete execution">
+                                    <MudIconButton Icon="@Icons.Material.Filled.Delete"
+                                                   Color="Color.Error"
+                                                   Size="Size.Small"
+                                                   OnClick="@(async () => await DeleteRunAsync(context))" />
+                                </MudTooltip>
+                            </span>
+                        </MudTd>
+                    </RowTemplate>
+                    <PagerContent>
+                        <MudTablePager />
+                    </PagerContent>
+                </MudTable>
+            </MudStack>
+        </MudPaper>
+    </MudStack>
+</MudContainer>
+
+<style>
+    .jobs-console {
+        padding-bottom: 2rem;
+    }
+
+    .jobs-hero,
+    .jobs-panel,
+    .jobs-summary-card {
+        border-radius: var(--netratel-radius-surface, 7px);
+        background: var(--mud-palette-surface);
+        border: 1px solid var(--mud-palette-divider);
+    }
+
+    .jobs-hero {
+        border-left: 3px solid var(--mud-palette-primary);
+    }
+
+    .jobs-hero-main {
+        min-height: 100%;
+    }
+
+    .jobs-hero-actions,
+    .jobs-run-stat {
+        border-radius: var(--netratel-radius-surface, 7px);
+        background: var(--mud-palette-background-gray);
+        border-color: var(--mud-palette-divider);
+    }
+
+    .jobs-kicker,
+    .jobs-section-label {
+        color: var(--mud-palette-text-secondary);
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+    }
+
+    .jobs-subtitle {
+        max-width: 44rem;
+        color: var(--mud-palette-text-secondary);
+    }
+
+    .jobs-hero-chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.6rem;
+    }
+
+    .jobs-hero-toolbar {
+        margin-top: 0.15rem;
+        gap: 0.75rem;
+    }
+
+    .jobs-hero-action-chips {
+        flex-wrap: wrap;
+        justify-content: flex-end;
+    }
+
+    .jobs-hero-action-chips .mud-chip {
+        cursor: pointer;
+        font-weight: 600;
+    }
+
+    .jobs-summary-card-compact {
+        min-height: 100%;
+    }
+
+    .jobs-summary-card-compact .mud-typography-h5 {
+        line-height: 1.1;
+    }
+
+    .jobs-table .mud-table-head th {
+        font-size: 0.76rem;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        opacity: 0.74;
+    }
+
+    .jobs-table .mud-table-body td {
+        vertical-align: top;
+        padding-top: 0.9rem;
+        padding-bottom: 0.9rem;
+    }
+
+    .jobs-delete-action {
+        color: var(--mud-palette-error);
+    }
+
+    .jobs-run-stat-running {
+        border-color: color-mix(in srgb, var(--mud-palette-info) 56%, var(--mud-palette-divider));
+    }
+
+    .jobs-run-stat-success {
+        border-color: color-mix(in srgb, var(--mud-palette-success) 56%, var(--mud-palette-divider));
+    }
+
+    .jobs-run-stat-failed {
+        border-color: color-mix(in srgb, var(--mud-palette-error) 56%, var(--mud-palette-divider));
+    }
+
+    .jobs-run-stat-other {
+        border-color: color-mix(in srgb, var(--mud-palette-warning) 56%, var(--mud-palette-divider));
+    }
+
+    @@media (max-width: 1279.98px) {
+        .jobs-hero-action-chips {
+            justify-content: flex-start;
+        }
+    }
+</style>
+
+@code {
+    [SupplyParameterFromQuery(Name = "search")]
+    public string? Search { get; set; }
+
+    private readonly List<JobDto> _jobs = new();
+    private readonly List<string> _folders = new();
+    private string? _selectedFolder;
+    private bool _isLoading;
+    private MudTable<JobRunDto>? _runsTable;
+    private string? _runSearch;
+    private string? _jobSearch;
+    private ClientEnvironment? _jobEnvironment;
+
+    private ulong? _selectedJobId;
+    private string _selectedJobName = string.Empty;
+
+    private readonly JobRunStatusDto[] _runStatusOptions = Enum.GetValues<JobRunStatusDto>();
+    private JobRunStatusDto? _runStatus;
+    private ClientEnvironment? _runEnvironment;
+    private int _jobsTableKey;
+    private int _runsTableTotal;
+    private int _runSummaryRunning;
+    private int _runSummarySucceeded;
+    private int _runSummaryFailed;
+
+    private string FolderMenuLabel => string.IsNullOrWhiteSpace(_selectedFolder) ? "All folders" : GetFolderDisplay(_selectedFolder);
+    private string RunSuccessRateLabel
+    {
+        get
+        {
+            var visible = _runSummaryRunning + _runSummarySucceeded + _runSummaryFailed;
+            if (visible == 0)
+            {
+                return "n/a";
+            }
+
+            return $"{(_runSummarySucceeded / (double)visible) * 100d:F0}%";
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        _jobSearch = Search;
+        await ReloadAsync();
+    }
+
+    private async Task ReloadAsync()
+    {
+        _isLoading = true;
+        StateHasChanged();
+
+        try
+        {
+            var jobs = await JobApi.GetJobsAsync(_selectedFolder, _jobSearch, _jobEnvironment);
+            _jobs.Clear();
+            _jobs.AddRange(jobs.OrderBy(j => j.FolderPath).ThenBy(j => j.Name));
+
+            _folders.Clear();
+            _folders.AddRange(_jobs.Select(j => j.FolderPath)
+                .Where(p => !string.IsNullOrWhiteSpace(p))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(p => p, StringComparer.OrdinalIgnoreCase));
+
+            if (_runsTable is not null)
+            {
+                await _runsTable.ReloadServerData();
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to load jobs: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private void SelectFolder(string? folder)
+    {
+        if (string.Equals(_selectedFolder, folder, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        _selectedFolder = folder;
+        _selectedJobId = null;
+        _selectedJobName = string.Empty;
+        _jobsTableKey++;
+        _ = ReloadAsync();
+    }
+
+    private async Task CreateJobAsync()
+    {
+        var parameters = new DialogParameters
+        {
+            ["JobId"] = (ulong?)null,
+            ["SuggestedFolder"] = _selectedFolder
+        };
+
+        var options = new DialogOptions
+        {
+            MaxWidth = MaxWidth.ExtraLarge,
+            FullWidth = true,
+            CloseOnEscapeKey = true
+        };
+
+        var dialogRef = await DialogService.ShowAsync<JobEditDialog>("New Job", parameters, options);
+        var result = await dialogRef.Result;
+
+        if (result is not null && !result.Canceled)
+        {
+            await ReloadAsync();
+        }
+    }
+
+    private async Task OpenEditDialogAsync(JobDto job)
+    {
+        var parameters = new DialogParameters
+        {
+            ["JobId"] = job.Id,
+            ["SuggestedFolder"] = job.FolderPath
+        };
+
+        var options = new DialogOptions
+        {
+            MaxWidth = MaxWidth.ExtraLarge,
+            FullWidth = true,
+            CloseOnEscapeKey = true
+        };
+
+        var dialogRef = await DialogService.ShowAsync<JobEditDialog>($"Edit Job: {job.Name}", parameters, options);
+        var result = await dialogRef.Result;
+
+        if (result is not null && !result.Canceled)
+        {
+            await ReloadAsync();
+        }
+    }
+
+    private async Task OpenCopyDialogAsync(JobDto job)
+    {
+        var parameters = new DialogParameters
+        {
+            ["JobId"] = (ulong?)null,
+            ["CloneFromJobId"] = job.Id,
+            ["SuggestedFolder"] = job.FolderPath
+        };
+
+        var options = new DialogOptions
+        {
+            MaxWidth = MaxWidth.ExtraLarge,
+            FullWidth = true,
+            CloseOnEscapeKey = true
+        };
+
+        var dialogRef = await DialogService.ShowAsync<JobEditDialog>($"Copy Job: {job.Name}", parameters, options);
+        var result = await dialogRef.Result;
+
+        if (result is not null && !result.Canceled)
+        {
+            await ReloadAsync();
+        }
+    }
+
+    private async Task DeleteJobAsync(JobDto job)
+    {
+        var confirm = await DialogService.ShowMessageBox(
+            "Delete Job",
+            $"Are you sure you want to delete job '{job.Name}'?",
+            yesText: "Delete",
+            cancelText: "Cancel");
+
+        if (confirm is true)
+        {
+            try
+            {
+                await JobApi.DeleteJobAsync(job.Id);
+                Snackbar.Add("Job deleted.", Severity.Success);
+                await ReloadAsync();
+            }
+            catch (Exception ex)
+            {
+                Snackbar.Add($"Failed to delete job: {ex.Message}", Severity.Error);
+            }
+        }
+    }
+
+    private string JobRowStyle(JobDto job, int _) =>
+        _selectedJobId.HasValue && _selectedJobId.Value == job.Id
+            ? "cursor:pointer;background-color:rgba(99,102,241,0.10);"
+            : "cursor:pointer";
+
+    private void OnJobRowClick(TableRowClickEventArgs<JobDto> args)
+    {
+        if (args.Item is null) return;
+        _selectedJobId = args.Item.Id;
+        _selectedJobName = args.Item.Name;
+        _ = _runsTable?.ReloadServerData();
+    }
+
+    private async Task OnJobSearchChanged(string? value)
+    {
+        _jobSearch = value;
+        await ReloadAsync();
+    }
+
+    private async Task OnJobEnvironmentChanged(ClientEnvironment? env)
+    {
+        _jobEnvironment = env;
+        await ReloadAsync();
+    }
+
+    private Task ClearJobEnvironmentFilter()
+    {
+        _jobEnvironment = null;
+        return ReloadAsync();
+    }
+
+    private Task ClearSelectedJobFilter()
+    {
+        _selectedJobId = null;
+        _selectedJobName = string.Empty;
+        return _runsTable is null ? Task.CompletedTask : _runsTable.ReloadServerData();
+    }
+
+    private async Task OpenRunDialogAsync(JobDto job)
+    {
+        var parameters = new DialogParameters
+        {
+            ["Job"] = job
+        };
+
+        var options = new DialogOptions
+        {
+            MaxWidth = MaxWidth.Medium,
+            FullWidth = true,
+            CloseOnEscapeKey = true
+        };
+
+        var dialogRef = await DialogService.ShowAsync<RunJobDialog>($"Run Job: {job.Name}", parameters, options);
+        var result = await dialogRef.Result;
+
+        if (result is not null && !result.Canceled && result.Data is JobRunDto run)
+        {
+            Snackbar.Add($"Job run {run.Id} started ({run.Status})", Severity.Success);
+            NavManager.NavigateTo($"/jobs/{run.JobId}/runs/{run.Id}");
+            if (_runsTable is not null)
+            {
+                await _runsTable.ReloadServerData();
+            }
+        }
+    }
+
+    private async Task<TableData<JobRunDto>> ReloadRunsAsync(TableState state, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var paged = await JobApi.QueryJobRunsAsync(
+                jobId: _selectedJobId,
+                folder: _selectedFolder,
+                search: _runSearch,
+                status: _runStatus,
+                environment: _runEnvironment,
+                page: state.Page,
+                pageSize: state.PageSize,
+                cancellationToken: cancellationToken);
+
+            var items = paged.Items ?? Array.Empty<JobRunDto>();
+            _runsTableTotal = paged.TotalCount;
+            _runSummaryRunning = items.Count(x => x.Status == JobRunStatusDto.Running);
+            _runSummarySucceeded = items.Count(x => x.Status == JobRunStatusDto.Succeeded);
+            _runSummaryFailed = items.Count(x => x.Status is JobRunStatusDto.Failed or JobRunStatusDto.TimedOut);
+
+            return new TableData<JobRunDto>
+            {
+                Items = items,
+                TotalItems = paged.TotalCount
+            };
+        }
+        catch (OperationCanceledException)
+        {
+            return new TableData<JobRunDto>
+            {
+                Items = Array.Empty<JobRunDto>(),
+                TotalItems = 0
+            };
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to load job runs: {ex.Message}", Severity.Error);
+            return new TableData<JobRunDto>
+            {
+                Items = Array.Empty<JobRunDto>(),
+                TotalItems = 0
+            };
+        }
+    }
+
+    private async Task OnRunSearchChanged(string? value)
+    {
+        _runSearch = value;
+        if (_runsTable is not null)
+        {
+            await _runsTable.ReloadServerData();
+        }
+    }
+
+    private async Task OnRunStatusChanged(JobRunStatusDto? status)
+    {
+        _runStatus = status;
+        if (_runsTable is not null)
+        {
+            await _runsTable.ReloadServerData();
+        }
+    }
+
+    private async Task OnRunEnvironmentChanged(ClientEnvironment? environment)
+    {
+        _runEnvironment = environment;
+        if (_runsTable is not null)
+        {
+            await _runsTable.ReloadServerData();
+        }
+    }
+
+    private Task ClearRunStatusFilter()
+    {
+        _runStatus = null;
+        return _runsTable is null ? Task.CompletedTask : _runsTable.ReloadServerData();
+    }
+
+    private Task ClearRunEnvironmentFilter()
+    {
+        _runEnvironment = null;
+        return _runsTable is null ? Task.CompletedTask : _runsTable.ReloadServerData();
+    }
+
+    private string RunRowStyle(JobRunDto _, int __) => "cursor:pointer";
+
+    private void OnRunRowClick(TableRowClickEventArgs<JobRunDto> args)
+    {
+        if (args.Item is null) return;
+        var run = args.Item;
+        NavManager.NavigateTo($"/jobs/{run.JobId}/runs/{run.Id}");
+    }
+
+    private async Task DeleteRunAsync(JobRunDto run)
+    {
+        var confirm = await DialogService.ShowMessageBox(
+            "Delete Execution",
+            $"Delete run #{run.Id} for '{DisplayJobName(run)}'? This removes the execution history entry and its logs.",
+            yesText: "Delete",
+            cancelText: "Cancel");
+
+        if (confirm is not true)
+        {
+            return;
+        }
+
+        try
+        {
+            await JobApi.DeleteJobRunAsync(run.Id);
+            Snackbar.Add($"Run #{run.Id} deleted.", Severity.Success);
+            if (_runsTable is not null)
+            {
+                await _runsTable.ReloadServerData();
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to delete run: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private Color RunStatusColor(JobRunStatusDto status) => status switch
+    {
+        JobRunStatusDto.Succeeded => Color.Success,
+        JobRunStatusDto.Running => Color.Info,
+        JobRunStatusDto.Pending => Color.Warning,
+        JobRunStatusDto.Cancelled => Color.Warning,
+        JobRunStatusDto.Failed => Color.Error,
+        JobRunStatusDto.TimedOut => Color.Error,
+        _ => Color.Default
+    };
+
+    private static string DisplayJobName(JobRunDto run)
+    {
+        if (!string.IsNullOrWhiteSpace(run.JobName))
+        {
+            return run.JobName;
+        }
+
+        return $"Job #{run.JobId}";
+    }
+
+    private static string FormatTimestamp(long micros) => FormatTimestamp((long?)micros);
+
+    private static string FormatTimestamp(long? micros)
+    {
+        if (micros is null) return "-";
+
+        try
+        {
+            var dt = DateTimeOffset.FromUnixTimeMilliseconds(micros.Value / 1000);
+            return dt.ToLocalTime().ToString("g");
+        }
+        catch
+        {
+            return "-";
+        }
+    }
+
+    private static string ShortenIdentity(string? identity, int head = 6, int tail = 6)
+    {
+        if (string.IsNullOrWhiteSpace(identity))
+            return "-";
+
+        if (identity.Length <= head + tail + 3)
+            return identity;
+
+        return $"{identity[..head]}…{identity[^tail..]}";
+    }
+
+    private static string GetClientDisplayText(JobDto job)
+    {
+        if (!string.IsNullOrWhiteSpace(job.ClientDisplayName))
+            return StripTrailingIp(job.ClientDisplayName) ?? job.ClientDisplayName;
+
+        return ShortenIdentity(job.ClientIdentity);
+    }
+
+    private static string GetClientTooltip(JobDto job) => job.ClientIdentity ?? string.Empty;
+
+    private static string? StripTrailingIp(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var trimmed = value.Trim();
+        var openParen = trimmed.LastIndexOf(" (", StringComparison.Ordinal);
+        return openParen > 0 && trimmed.EndsWith(')')
+            ? trimmed[..openParen].Trim()
+            : trimmed;
+    }
+
+    private static string GetFolderDisplay(string? folder)
+    {
+        if (string.IsNullOrWhiteSpace(folder))
+        {
+            return "Root";
+        }
+
+        return folder.Trim('/').Replace("/", " / ", StringComparison.Ordinal);
+    }
+}

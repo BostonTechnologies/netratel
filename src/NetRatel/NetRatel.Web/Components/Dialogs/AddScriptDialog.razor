@@ -1,0 +1,110 @@
+@using System
+@using NetRatel.Web.Services.Script
+@using MudBlazor
+
+@inject ScriptService ScriptService
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <TitleContent>
+        <MudText Typo="Typo.h6">Add New Script</MudText>
+    </TitleContent>
+    <DialogContent>
+        <MudForm @ref="_form" @bind-IsValid="_isValid" Class="mt-4">
+            <MudTextField @bind-Value="_folderPath" Label="Folder Path" HelperText="e.g., /utils/windows/ or / for root" Required="true" RequiredError="Folder path is required." />
+            <MudTextField @bind-Value="_name" Label="Script Name" HelperText="e.g., RestartService.ps1" Required="true" RequiredError="Script name is required." />
+            <MudTextField @bind-Value="_scriptType" Label="Script Type" HelperText="e.g., powershell, bash, python" Required="true" RequiredError="Script type is required." />
+            <MudTextField @bind-Value="_description" Label="Description" Lines="3" />
+            <MudTextField @bind-Value="_content" Label="Initial Content (Optional)" Lines="5" />
+        </MudForm>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Cancel</MudButton>
+        <MudButton Color="Color.Primary" OnClick="Submit" Disabled="(!_isValid || _isSubmitting)">
+            @if (_isSubmitting)
+            {
+                <MudProgressCircular Class="ms-n1" Size="Size.Small" Indeterminate="true" />
+                <MudText Class="ms-2">Adding...</MudText>
+            }
+            else
+            {
+                <MudText>Add Script</MudText>
+            }
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] IMudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public string DefaultFolderPath { get; set; } = "/";
+
+    private MudForm? _form;
+    private bool _isValid;
+    private bool _isSubmitting;
+
+    private string _folderPath = "/";
+    private string _name = string.Empty;
+    private string _description = string.Empty;
+    private string _content = string.Empty;
+    private string _scriptType = string.Empty;
+
+    protected override void OnInitialized()
+    {
+        _folderPath = NormalizeFolderPath(DefaultFolderPath);
+    }
+
+    private async Task Submit()
+    {
+        await _form!.Validate();
+        if (!_isValid)
+        {
+            return;
+        }
+
+        _isSubmitting = true;
+        try
+        {
+            var request = new ScriptCreateRequest(
+                _name,
+                NormalizeFolderPath(_folderPath),
+                string.IsNullOrWhiteSpace(_description) ? null : _description,
+                string.IsNullOrWhiteSpace(_content) ? null : _content,
+                string.IsNullOrWhiteSpace(_scriptType) ? null : _scriptType?.Trim()
+            );
+
+            await ScriptService.CreateScriptAsync(request);
+            MudDialog.Close(DialogResult.Ok(true));
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error adding script: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isSubmitting = false;
+        }
+    }
+
+    private void Cancel() => MudDialog.Cancel();
+
+    private static string NormalizeFolderPath(string? folderPath)
+    {
+        if (string.IsNullOrWhiteSpace(folderPath))
+        {
+            return "/";
+        }
+
+        var normalized = folderPath.Replace("\\", "/", StringComparison.Ordinal);
+        if (!normalized.StartsWith('/'))
+        {
+            normalized = "/" + normalized;
+        }
+
+        if (!normalized.EndsWith('/'))
+        {
+            normalized += "/";
+        }
+
+        return normalized;
+    }
+}

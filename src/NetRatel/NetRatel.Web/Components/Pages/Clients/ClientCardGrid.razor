@@ -1,0 +1,311 @@
+@using NetRatel.Web.Components.Dialogs
+@using NetRatel.Web.Models.Clients
+@using NetRatel.Web.Services.Clients
+@using NetRatel.Web.Services.RemoteSupport
+@using NetRatel.Web.Services.Telemetry
+@using Microsoft.JSInterop
+@inject GatewayClientActionApiService GatewayActions
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+@inject IJSRuntime JsRuntime
+
+<div class="client-card-grid-shell">
+<MudGrid Spacing="3" Class="client-grid">
+    @if (Clients.Count == 0)
+    {
+        <MudItem xs="12">
+            <MudText Typo="Typo.subtitle1">No clients available.</MudText>
+        </MudItem>
+    }
+    else
+    {
+        @foreach (var client in Clients)
+        {
+            var telemetry = client.Telemetry;
+            var hostLabel = client.HostName ?? client.DisplayName;
+            var primaryDisk = telemetry?.Disks.OrderByDescending(disk => disk.UsedGb).FirstOrDefault();
+
+            <MudItem xs="12" sm="12" md="6" lg="4" data-testid="client-card-item">
+                <MudCard Elevation="3"
+                         Class="@($"client-card{(client.Online ? string.Empty : " client-card-offline")}")"
+                         data-testid="client-card">
+                    <MudCardHeader>
+                        <CardHeaderAvatar>
+                            <MudAvatar Color="@(client.Online ? Color.Success : Color.Default)">
+                                @GetInitials(client.DisplayName)
+                            </MudAvatar>
+                        </CardHeaderAvatar>
+
+                        <CardHeaderContent>
+                            <div class="client-header-content">
+                                <div class="client-title-row">
+                                    <MudText Typo="Typo.h6" Class="client-title" title="@client.DisplayName">@client.DisplayName</MudText>
+                                    <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined"
+                                             Color="@(client.Online ? Color.Success : Color.Default)">
+                                        @(client.Online ? "Online" : "Offline")
+                                    </MudChip>
+                                </div>
+
+                                <div class="client-host-row">
+                                    <span class="client-host" title="@hostLabel">@hostLabel</span>
+                                    <MudIconButton Icon="@Icons.Material.Filled.ContentCopy" Size="Size.Small" OnClick="@(() => CopyHostAsync(client))" aria-label="Copy host" />
+                                </div>
+
+                                <div class="client-meta-grid" data-testid="client-meta-grid">
+                                    <span class="client-meta-label">Tenant</span>
+                                    <span class="client-meta-value" title="@(client.TenantName ?? $"Tenant {client.TenantId}")">@(client.TenantName ?? $"Tenant {client.TenantId}")</span>
+
+                                    <span class="client-meta-label">OS</span>
+                                    <span class="client-meta-value" title="@ClientPresentationFormatting.OperatingSystem(client)">@ClientPresentationFormatting.OperatingSystem(client)</span>
+
+                                    <span class="client-meta-label">Latency</span>
+                                    <span class="client-meta-value">@FormatLatency(client)</span>
+
+                                    <span class="client-meta-label">Last heartbeat</span>
+                                    <span class="client-meta-value">@ClientPresentationFormatting.Heartbeat(client.LastHeartbeatUtc)</span>
+
+                                    <span class="client-meta-label">Telemetry</span>
+                                    <span class="client-meta-value">@ClientPresentationFormatting.TelemetryAge(telemetry?.ReceivedAtUtc, DateTimeOffset.UtcNow)</span>
+
+                                    <span class="client-meta-label">Version</span>
+                                    <span class="client-meta-value"
+                                          data-testid="client-version"
+                                          title="@ClientPresentationFormatting.VersionTooltip(client.AgentVersion)">@ClientPresentationFormatting.Version(client.AgentVersion)</span>
+                                </div>
+
+                                <div class="client-action-row" data-testid="client-action-row">
+                                    <MudTooltip Text="Telemetry summary">
+                                        <MudIconButton Icon="@Icons.Material.Filled.Insights"
+                                                       Size="Size.Small"
+                                                       Color="Color.Info"
+                                                       Disabled="@(telemetry is null)"
+                                                       OnClick="@(() => OpenTelemetryDialogAsync(client, telemetry))"
+                                                       aria-label="Open telemetry dashboard" />
+                                    </MudTooltip>
+                                    <MudTooltip Text="Open interactive terminal">
+                                        <MudMenu Dense="true" Disabled="@(!client.CanUseTerminal)"
+                                                 AnchorOrigin="Origin.BottomCenter" TransformOrigin="Origin.TopCenter">
+                                            <ActivatorContent>
+                                                <MudIconButton Icon="@Icons.Material.Filled.Terminal" Color="Color.Primary"
+                                                               Size="Size.Small"
+                                                               Disabled="@(!client.CanUseTerminal)"
+                                                               aria-label="Open terminal" />
+                                            </ActivatorContent>
+                                            <ChildContent>
+                                                @foreach (var shell in GetTerminalShells(client))
+                                                {
+                                                    var selectedShell = shell;
+                                                    <MudMenuItem Icon="@GetShellIcon(selectedShell)"
+                                                                 OnClick="@(() => OpenTerminalAsync(client, selectedShell))">
+                                                        @ClientPresentationFormatting.ShellLabel(selectedShell)
+                                                    </MudMenuItem>
+                                                }
+                                            </ChildContent>
+                                        </MudMenu>
+                                    </MudTooltip>
+                                    <MudTooltip Text="@client.FilesystemUnavailableReason">
+                                        <MudIconButton Icon="@Icons.Material.Filled.FolderOpen" Color="Color.Secondary"
+                                                       Size="Size.Small"
+                                                       Disabled="@(!client.CanUseFilesystem)"
+                                                       OnClick="@(() => OpenFileBrowserAsync(client, primaryDisk?.Scope ?? "/"))"
+                                                       aria-label="Open file browser" />
+                                    </MudTooltip>
+                                    <MudTooltip Text="@LogsTooltip(client)">
+                                        <MudIconButton Icon="@Icons.Material.Filled.FormatListBulleted" Color="Color.Info"
+                                                       Size="Size.Small"
+                                                       Disabled="@(!client.CanUseLogs)"
+                                                       OnClick="@(() => OpenLogExplorerAsync(client))"
+                                                       aria-label="Open client logs" />
+                                    </MudTooltip>
+                                    <MudTooltip Text="Open remote support">
+                                        <MudIconButton Icon="@Icons.Material.Filled.SupportAgent" Color="Color.Secondary"
+                                                       Size="Size.Small"
+                                                       Disabled="@(!client.CanUseRemoteSupport)"
+                                                       OnClick="@(() => OpenRemoteSupportAsync(client))"
+                                                       aria-label="Open remote support" />
+                                    </MudTooltip>
+                                    <MudTooltip Text="Ping client">
+                                        <MudIconButton Icon="@Icons.Material.Filled.NetworkPing" Color="Color.Default"
+                                                       Size="Size.Small"
+                                                       Disabled="@(!client.Online)"
+                                                       OnClick="@(() => PingAsync(client))"
+                                                       aria-label="Ping client" />
+                                    </MudTooltip>
+                                </div>
+                            </div>
+                        </CardHeaderContent>
+                    </MudCardHeader>
+
+                    <MudDivider />
+                    <MudCardContent Class="@($"pb-0{(client.Online ? string.Empty : " client-offline")}")">
+                        <div class="client-connectivity-row" data-testid="client-connectivity-row">
+                            <div class="client-connectivity-item client-connectivity-item-split">
+                                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
+                                    <MudIcon Icon="@Icons.Material.Filled.Language" Size="Size.Small" Color="Color.Info" />
+                                    <span class="client-connectivity-label">IP Address</span>
+                                </MudStack>
+                                <span class="client-connectivity-value">n/a</span>
+                            </div>
+                            <div class="client-connectivity-item client-connectivity-item-split">
+                                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
+                                    <MudIcon Icon="@Icons.Material.Filled.SwapHoriz" Size="Size.Small" Color="Color.Info" />
+                                    <span class="client-connectivity-label">Network</span>
+                                </MudStack>
+                                <span class="client-connectivity-value" title="@ClientPresentationFormatting.Network(telemetry)">@ClientPresentationFormatting.Network(telemetry)</span>
+                            </div>
+                        </div>
+
+                        <MudDivider Class="my-2" />
+                        <MudText Typo="Typo.subtitle2" Class="mb-1">Live Telemetry</MudText>
+                        <div class="telemetry-split-grid" data-testid="client-telemetry-grid">
+                            <div class="telemetry-row telemetry-row-panel">
+                                <div class="telemetry-head">
+                                    <MudText Typo="Typo.caption">CPU</MudText>
+                                    <MudText Typo="Typo.caption">@ClientPresentationFormatting.Percent(telemetry?.Cpu?.UsagePercent)</MudText>
+                                </div>
+                                <MudProgressLinear Value="@(telemetry?.Cpu?.UsagePercent ?? 0)"
+                                                   Color="@GetUtilizationColor(telemetry?.Cpu?.UsagePercent)" />
+                            </div>
+                            <div class="telemetry-row telemetry-row-panel">
+                                <div class="telemetry-head">
+                                    <MudText Typo="Typo.caption">Memory</MudText>
+                                    <MudText Typo="Typo.caption">@ClientPresentationFormatting.Percent(telemetry?.Memory?.UsagePercent)</MudText>
+                                </div>
+                                <MudProgressLinear Value="@(telemetry?.Memory?.UsagePercent ?? 0)"
+                                                   Color="@GetUtilizationColor(telemetry?.Memory?.UsagePercent)" />
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">@ClientPresentationFormatting.Memory(telemetry?.Memory)</MudText>
+                            </div>
+                        </div>
+                        <button type="button" class="telemetry-row telemetry-row-button mt-2"
+                                title="@client.FilesystemUnavailableReason"
+                                disabled="@(!client.CanUseFilesystem)"
+                                @onclick="@(() => OpenFileBrowserAsync(client, primaryDisk?.Scope ?? "/"))">
+                            <div class="telemetry-head">
+                                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
+                                    <MudIcon Icon="@Icons.Material.Filled.FolderOpen" Size="Size.Small" Color="Color.Secondary" />
+                                    <MudText Typo="Typo.caption">Disk</MudText>
+                                </MudStack>
+                                <MudText Typo="Typo.caption">@ClientPresentationFormatting.Disk(primaryDisk)</MudText>
+                            </div>
+                            <MudProgressLinear Value="@(primaryDisk?.UsagePercent ?? 0)" Color="@GetUtilizationColor(primaryDisk?.UsagePercent)" />
+                        </button>
+                    </MudCardContent>
+                </MudCard>
+            </MudItem>
+        }
+    }
+</MudGrid>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public IReadOnlyList<ClientPresentationModel> Clients { get; set; } = [];
+    [Parameter] public EventCallback RefreshRequested { get; set; }
+
+    private readonly Dictionary<(int TenantId, Guid AgentId), double> _latencyByAgent = [];
+
+    private static string GetInitials(string name) => string.IsNullOrWhiteSpace(name)
+        ? "?"
+        : string.Concat(name.Split(' ', StringSplitOptions.RemoveEmptyEntries).Take(2).Select(part => char.ToUpperInvariant(part[0])));
+
+    private string FormatLatency(ClientPresentationModel client)
+    {
+        var latency = _latencyByAgent.TryGetValue((client.TenantId, client.AgentId), out var measuredLatency)
+            ? measuredLatency
+            : (double?)null;
+        return ClientPresentationFormatting.Latency(client.Online, latency);
+    }
+
+    private static Color GetUtilizationColor(double? value) => value switch
+    {
+        >= 90 => Color.Error,
+        >= 75 => Color.Warning,
+        _ => Color.Success
+    };
+
+    private static IReadOnlyList<string> GetTerminalShells(ClientPresentationModel client) => client.AvailableShells;
+
+    private static string GetShellIcon(string shell) => shell.ToLowerInvariant() switch
+    {
+        "pwsh" or "powershell" => Icons.Material.Filled.PowerSettingsNew,
+        "cmd" => Icons.Material.Filled.KeyboardCommandKey,
+        _ => Icons.Material.Filled.Terminal
+    };
+
+    private async Task CopyHostAsync(ClientPresentationModel client)
+    {
+        await JsRuntime.InvokeVoidAsync("navigator.clipboard.writeText", client.HostName);
+        Snackbar.Add("Host copied.", Severity.Success);
+    }
+
+    private async Task OpenTelemetryDialogAsync(ClientPresentationModel client, GatewayTelemetrySummary? telemetry)
+    {
+        var parameters = new DialogParameters<GatewayTelemetryDialog>
+        {
+            { dialog => dialog.TenantId, client.TenantId }, { dialog => dialog.AgentId, client.AgentId },
+            { dialog => dialog.HostLabel, client.HostName ?? client.DisplayName }, { dialog => dialog.TenantLabel, client.TenantName ?? $"Tenant {client.TenantId}" },
+            { dialog => dialog.InitialSnapshot, telemetry }
+        };
+        await DialogService.ShowAsync<GatewayTelemetryDialog>("Telemetry", parameters,
+            new DialogOptions { FullScreen = true, FullWidth = true, CloseOnEscapeKey = true, CloseButton = false });
+    }
+
+    private async Task PingAsync(ClientPresentationModel client)
+    {
+        try
+        {
+            var result = await GatewayActions.PingAsync(client.TenantId, client.AgentId);
+            _latencyByAgent[(client.TenantId, client.AgentId)] = result.RoundTripMilliseconds;
+            Snackbar.Add($"Gateway ping: {result.RoundTripMilliseconds:0} ms ({result.Authority}).", Severity.Success);
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (Exception exception)
+        {
+            Snackbar.Add($"Gateway ping failed: {exception.Message}", Severity.Error);
+        }
+    }
+
+    private async Task OpenFileBrowserAsync(ClientPresentationModel client, string initialPath)
+    {
+        var parameters = new DialogParameters<ClientFileSystemViewer>
+        {
+            { dialog => dialog.TenantId, client.TenantId }, { dialog => dialog.AgentId, client.AgentId },
+            { dialog => dialog.HostLabel, client.HostName ?? client.DisplayName }, { dialog => dialog.InitialPath, initialPath }
+        };
+        await DialogService.ShowAsync<ClientFileSystemViewer>("File Browser", parameters,
+            new DialogOptions { FullScreen = true, CloseOnEscapeKey = true, CloseButton = false });
+    }
+
+    private async Task OpenTerminalAsync(ClientPresentationModel client, string shell)
+    {
+        var parameters = new DialogParameters<ClientTerminalSessionDialog>
+        {
+            { dialog => dialog.TenantId, client.TenantId }, { dialog => dialog.AgentId, client.AgentId }, { dialog => dialog.HostLabel, client.DisplayName },
+            { dialog => dialog.Shell, shell }
+        };
+        await DialogService.ShowAsync<ClientTerminalSessionDialog>($"{ClientPresentationFormatting.ShellLabel(shell)} terminal", parameters,
+            new DialogOptions { CloseOnEscapeKey = true, FullWidth = true, MaxWidth = MaxWidth.ExtraExtraLarge, CloseButton = false });
+    }
+
+    private static string LogsTooltip(ClientPresentationModel client) => client.CanUseLogs
+        ? "Open client logs"
+        : $"Logs unavailable: {client.LogsUnavailableReason}";
+
+    private async Task OpenLogExplorerAsync(ClientPresentationModel client)
+    {
+        var parameters = new DialogParameters<GatewayClientLogExplorerDialog>
+        {
+            { dialog => dialog.TenantId, client.TenantId }, { dialog => dialog.AgentId, client.AgentId },
+            { dialog => dialog.HostLabel, client.HostName ?? client.DisplayName },
+            { dialog => dialog.TenantLabel, client.TenantName ?? $"Tenant {client.TenantId}" },
+            { dialog => dialog.Online, client.Online }
+        };
+        await DialogService.ShowAsync<GatewayClientLogExplorerDialog>("Client logs", parameters,
+            new DialogOptions { FullScreen = true, FullWidth = true, CloseOnEscapeKey = true, CloseButton = false });
+    }
+
+    private async Task OpenRemoteSupportAsync(ClientPresentationModel client)
+    {
+        await DialogService.ShowAsync<GatewayRemoteSupportDialog>("Remote Support",
+            RemoteSupportDialogLauncher.CreateParameters(client), RemoteSupportDialogLauncher.CreateOptions());
+    }
+}

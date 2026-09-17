@@ -1,0 +1,412 @@
+@using System.Collections.Generic
+@using System.Linq
+@using System.Text.Json
+@using NetRatel.Shared.Contracts.Jobs
+@using NetRatel.Shared.Contracts.Scripts
+@using NetRatel.Web.Services.Script
+@using NetRatel.Web.Components.Shared.Dialogs
+@inject IJobApiClient JobApi
+@inject IScriptLibraryService ScriptLibraryService
+@inject IDialogService DialogService
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <DialogContent>
+        <MudStack Spacing="2">
+            <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                <MudText Typo="Typo.h6">@((ExistingStep is null) ? "Add Step" : "Edit Step")</MudText>
+                <MudSwitch T="bool" @bind-value="_enabled" Color="Color.Primary">Enabled</MudSwitch>
+            </MudStack>
+
+            <MudSelect T="JobStepTypeDto" Label="Action" @bind-Value="_action">
+                @foreach (JobStepTypeDto value in Enum.GetValues(typeof(JobStepTypeDto)))
+                {
+                    <MudSelectItem Value="@value">@value</MudSelectItem>
+                }
+            </MudSelect>
+
+            @if (_action == JobStepTypeDto.RunCommand)
+            {
+                <MudSelect T="string" Label="Runner" @bind-Value="_runner" Required="true">
+                    @foreach (var runner in _runnerOptions)
+                    {
+                        <MudSelectItem Value="@runner">@runner</MudSelectItem>
+                    }
+                </MudSelect>
+                <MudTextField @bind-Value="_command" Label="Command" Lines="3" Required="true" />
+                @if (_jobParams.Count > 0)
+                {
+                    <MudText Typo="Typo.caption" Class="mud-text-secondary">Available options:</MudText>
+                    <MudChipSet T="String">
+                        @foreach (var param in _jobParams)
+                        {
+                            var placeholder = BuildPlaceholder(param.Name);
+                            <MudChip Color="Color.Primary" Variant="Variant.Outlined" Size="Size.Small" OnClick="@(() => AppendToCommand(param.Name))">@placeholder</MudChip>
+                        }
+                    </MudChipSet>
+                }
+            }
+
+            @if (_action == JobStepTypeDto.LibraryScript)
+            {
+                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
+                    <MudTextField Value="@(_scriptDisplayName ?? "No script selected")"
+                                  Label="Script"
+                                  ReadOnly="true"
+                                  Disabled="true"
+                                  Class="flex-grow-1" />
+                    <MudButton Variant="Variant.Outlined" Color="Color.Primary" OnClick="OpenScriptDialog">Choose Script</MudButton>
+                </MudStack>
+                <MudTextField @bind-Value="_libraryPayloadJson" Label="Payload JSON" Lines="4" />
+                @if (_jobParams.Count > 0)
+                {
+                    <MudText Typo="Typo.caption" Class="mud-text-secondary">Available options:</MudText>
+                    <MudChipSet T="String">
+                        @foreach (var param in _jobParams)
+                        {
+                            var placeholder = BuildPlaceholder(param.Name);
+                            <MudChip Color="Color.Primary" Variant="Variant.Outlined" Size="Size.Small" OnClick="@(() => AppendToLibraryPayload(param.Name))">@placeholder</MudChip>
+                        }
+                    </MudChipSet>
+                }
+            }
+
+            @if (_action == JobStepTypeDto.HttpAction)
+            {
+                <MudSelect T="string" Label="HTTP Method" @bind-Value="_httpMethod">
+                    <MudSelectItem T="string" Value="@("GET")">GET</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("POST")">POST</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("PUT")">PUT</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("PATCH")">PATCH</MudSelectItem>
+                    <MudSelectItem T="string" Value="@("DELETE")">DELETE</MudSelectItem>
+                </MudSelect>
+
+                <MudTextField @bind-Value="_httpUrl" Label="URL" Required="true" />
+
+                <MudSwitch T="bool" @bind-value="_httpIncludeAuthHeader" Color="Color.Primary">Send auth header</MudSwitch>
+                <MudTextField @bind-Value="_httpAuthHeader"
+                              Label="Auth header value"
+                              Disabled="!_httpIncludeAuthHeader"
+                              Lines="2" />
+
+                <MudSwitch T="bool" @bind-value="_httpIncludeJsonPayload" Color="Color.Primary">Send JSON payload</MudSwitch>
+                <MudTextField @bind-Value="_httpJsonPayload"
+                              Label="JSON payload"
+                              Disabled="!_httpIncludeJsonPayload"
+                              Lines="4" />
+                @if (_jobParams.Count > 0)
+                {
+                    <MudText Typo="Typo.caption" Class="mud-text-secondary">Available options:</MudText>
+                    <MudChipSet T="String">
+                        @foreach (var param in _jobParams)
+                        {
+                            var placeholder = BuildPlaceholder(param.Name);
+                            <MudChip T="String" Color="Color.Primary" Variant="Variant.Outlined" Size="Size.Small" Disabled="!_httpIncludeJsonPayload" OnClick="@(() => AppendToHttpJsonPayload(param.Name))">@placeholder</MudChip>
+                        }
+                    </MudChipSet>
+                }
+
+                <MudSwitch T="bool" @bind-value="_httpIncludeBody" Color="Color.Primary">Send body</MudSwitch>
+                <MudTextField @bind-Value="_httpBody"
+                              Label="Body"
+                              Disabled="!_httpIncludeBody"
+                              Lines="4" />
+                @if (_jobParams.Count > 0)
+                {
+                    <MudText Typo="Typo.caption" Class="mud-text-secondary">Available options:</MudText>
+                    <MudChipSet T="String">
+                        @foreach (var param in _jobParams)
+                        {
+                            var placeholder = BuildPlaceholder(param.Name);
+                            <MudChip Color="Color.Primary" Variant="Variant.Outlined" Size="Size.Small" Disabled="!_httpIncludeBody" OnClick="@(() => AppendToHttpBody(param.Name))">@placeholder</MudChip>
+                        }
+                    </MudChipSet>
+                }
+            }
+        </MudStack>
+    </DialogContent>
+    <DialogActions>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="SaveAsync">Save</MudButton>
+        <MudButton Variant="Variant.Text" OnClick="Cancel">Cancel</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] public IMudDialogInstance MudDialog { get; set; } = default!;
+
+    [Parameter] public ulong JobId { get; set; }
+    [Parameter] public JobStepDto? ExistingStep { get; set; }
+    [Parameter] public IReadOnlyList<JobParamDto>? JobParams { get; set; }
+
+    private JobStepTypeDto _action = JobStepTypeDto.RunCommand;
+    private bool _enabled = true;
+    private List<JobParamDto> _jobParams = new();
+
+    private readonly string[] _runnerOptions = new[] { "powershell", "pwsh", "cmd", "bash" };
+    private string? _runner;
+    private string? _command;
+
+    private ulong? _scriptId;
+    private string? _scriptDisplayName;
+    private string? _libraryPayloadJson;
+
+    private string _httpMethod = "GET";
+    private string _httpUrl = string.Empty;
+    private bool _httpIncludeAuthHeader;
+    private string? _httpAuthHeader;
+    private bool _httpIncludeJsonPayload;
+    private string? _httpJsonPayload;
+    private bool _httpIncludeBody;
+    private string? _httpBody;
+
+    protected override async Task OnInitializedAsync()
+    {
+        ResetHttpDefaults();
+        _jobParams = JobParams?.ToList() ?? new List<JobParamDto>();
+        if (_jobParams.Count == 0)
+        {
+            await LoadJobParamsAsync();
+        }
+
+        if (ExistingStep is null)
+        {
+            _runner = _runnerOptions.FirstOrDefault();
+            _enabled = true;
+            return;
+        }
+
+        _action = ExistingStep.Type;
+        _enabled = ExistingStep.Enabled;
+        switch (_action)
+        {
+            case JobStepTypeDto.RunCommand:
+                _runner = ExistingStep.Runner;
+                _command = ExistingStep.Command;
+                break;
+            case JobStepTypeDto.LibraryScript:
+                _scriptId = ExistingStep.ScriptId;
+                _libraryPayloadJson = ExistingStep.PayloadJson;
+                if (_scriptId.HasValue)
+                {
+                    await LoadScriptSummaryAsync(_scriptId.Value);
+                }
+                break;
+            case JobStepTypeDto.HttpAction:
+                if (!string.IsNullOrWhiteSpace(ExistingStep.PayloadJson))
+                {
+                    TryHydrateHttpConfig(ExistingStep.PayloadJson);
+                }
+                break;
+        }
+
+        if (_action == JobStepTypeDto.RunCommand && string.IsNullOrWhiteSpace(_runner))
+        {
+            _runner = _runnerOptions.FirstOrDefault();
+        }
+    }
+
+    private void ResetHttpDefaults()
+    {
+        _httpMethod = "GET";
+        _httpUrl = string.Empty;
+        _httpIncludeAuthHeader = false;
+        _httpAuthHeader = null;
+        _httpIncludeJsonPayload = false;
+        _httpJsonPayload = null;
+        _httpIncludeBody = false;
+        _httpBody = null;
+    }
+
+    private async Task LoadJobParamsAsync()
+    {
+        try
+        {
+            var list = await JobApi.GetJobParamsAsync(JobId);
+            _jobParams = list.ToList();
+        }
+        catch
+        {
+            _jobParams = new List<JobParamDto>();
+        }
+    }
+
+    private void TryHydrateHttpConfig(string payload)
+    {
+        try
+        {
+            var config = JsonSerializer.Deserialize<HttpActionConfigDto>(payload);
+            if (config is null) return;
+
+            _httpMethod = string.IsNullOrWhiteSpace(config.Method) ? "GET" : config.Method;
+            _httpUrl = config.Url ?? string.Empty;
+            _httpIncludeAuthHeader = config.IncludeAuthHeader;
+            _httpAuthHeader = config.AuthHeader;
+            _httpIncludeJsonPayload = config.IncludeJsonPayload;
+            _httpJsonPayload = config.JsonPayload;
+            _httpIncludeBody = config.IncludeBody;
+            _httpBody = config.Body;
+        }
+        catch
+        {
+            ResetHttpDefaults();
+        }
+    }
+
+    private async Task LoadScriptSummaryAsync(ulong id)
+    {
+        try
+        {
+            var summary = await ScriptLibraryService.GetByIdAsync(id);
+            if (summary is not null)
+            {
+                _scriptDisplayName = summary.Name;
+                _scriptId = summary.Id;
+            }
+        }
+        catch
+        {
+            // Ignore lookup failures.
+        }
+    }
+
+    private async Task OpenScriptDialog()
+    {
+        var options = new DialogOptions { CloseButton = true, MaxWidth = MaxWidth.Medium, FullWidth = false };
+        var dialogReference = await DialogService.ShowAsync<ScriptLibraryDialog>("Choose Script", options);
+        var result = await dialogReference.Result;
+
+        if (!result.Canceled && result.Data is ScriptSummaryDto summary)
+        {
+            _scriptId = summary.Id;
+            _scriptDisplayName = summary.Name;
+            StateHasChanged();
+        }
+    }
+
+    private string BuildPlaceholder(string name) => $"@option.{name}@";
+
+    private static string AppendPlaceholderValue(string? current, string placeholder)
+    {
+        if (string.IsNullOrWhiteSpace(current))
+        {
+            return placeholder;
+        }
+
+        return current.EndsWith(" ", StringComparison.Ordinal) ? current + placeholder : $"{current} {placeholder}";
+    }
+
+    private void AppendToCommand(string name)
+    {
+        _command = AppendPlaceholderValue(_command, BuildPlaceholder(name));
+        StateHasChanged();
+    }
+
+    private void AppendToLibraryPayload(string name)
+    {
+        _libraryPayloadJson = AppendPlaceholderValue(_libraryPayloadJson, BuildPlaceholder(name));
+        StateHasChanged();
+    }
+
+    private void AppendToHttpJsonPayload(string name)
+    {
+        _httpJsonPayload = AppendPlaceholderValue(_httpJsonPayload, BuildPlaceholder(name));
+        StateHasChanged();
+    }
+
+    private void AppendToHttpBody(string name)
+    {
+        _httpBody = AppendPlaceholderValue(_httpBody, BuildPlaceholder(name));
+        StateHasChanged();
+    }
+
+    private async Task SaveAsync()
+    {
+        var type = _action;
+
+        string? runnerToSend = null;
+        string? commandToSend = null;
+        ulong? scriptIdToSend = null;
+        string? payloadToSend = null;
+
+        switch (type)
+        {
+            case JobStepTypeDto.RunCommand:
+                runnerToSend = _runner;
+                commandToSend = _command;
+                if (string.IsNullOrWhiteSpace(commandToSend))
+                {
+                    Snackbar.Add("Command is required for RunCommand.", Severity.Warning);
+                    return;
+                }
+                break;
+
+            case JobStepTypeDto.LibraryScript:
+                if (!_scriptId.HasValue)
+                {
+                    Snackbar.Add("Select a script for this step.", Severity.Warning);
+                    return;
+                }
+
+                scriptIdToSend = _scriptId;
+                payloadToSend = _libraryPayloadJson;
+                break;
+
+            case JobStepTypeDto.HttpAction:
+                if (string.IsNullOrWhiteSpace(_httpUrl))
+                {
+                    Snackbar.Add("URL is required for HttpAction.", Severity.Warning);
+                    return;
+                }
+
+                var config = new HttpActionConfigDto(
+                    _httpMethod,
+                    _httpUrl,
+                    _httpIncludeAuthHeader,
+                    _httpAuthHeader,
+                    _httpIncludeJsonPayload,
+                    _httpJsonPayload,
+                    _httpIncludeBody,
+                    _httpBody);
+
+                payloadToSend = JsonSerializer.Serialize(config, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+                break;
+        }
+
+        try
+        {
+            if (ExistingStep is null)
+            {
+                var req = new AddJobStepRequest(
+                    Ordinal: null,
+                    Type: type,
+                    Runner: runnerToSend,
+                    Command: commandToSend,
+                    ScriptId: scriptIdToSend,
+                    PayloadJson: payloadToSend,
+                    Enabled: _enabled);
+
+                var step = await JobApi.AddJobStepAsync(JobId, req);
+                MudDialog.Close(DialogResult.Ok(step));
+            }
+            else
+            {
+                var req = new UpdateJobStepRequest(
+                    Type: type,
+                    Runner: runnerToSend,
+                    Command: commandToSend,
+                    ScriptId: scriptIdToSend,
+                    PayloadJson: payloadToSend,
+                    Enabled: _enabled);
+
+                var step = await JobApi.UpdateJobStepAsync(ExistingStep.Id, req);
+                MudDialog.Close(DialogResult.Ok(step));
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to save step: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private void Cancel() => MudDialog.Cancel();
+}

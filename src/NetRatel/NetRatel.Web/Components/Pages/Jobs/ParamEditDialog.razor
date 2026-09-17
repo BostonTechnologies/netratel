@@ -1,0 +1,112 @@
+@using NetRatel.Shared.Contracts.Jobs
+@inject IJobApiClient JobApi
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <DialogContent>
+        <MudStack Spacing="2">
+            <MudTextField @bind-Value="_name" Label="Name" Required="true" />
+            <MudSelect T="string" Label="Type" @bind-Value="_type" Required="true">
+                @foreach (var option in _typeOptions)
+                {
+                    <MudSelectItem Value="@option">@option</MudSelectItem>
+                }
+            </MudSelect>
+            <MudSwitch T="bool" @bind-value="_required" Color="Color.Primary">Required</MudSwitch>
+            <MudTextField @bind-Value="_default" Label="Default Value" />
+            <MudTextField @bind-Value="_description" Label="Description" Lines="2" />
+            <MudTextField @bind-Value="_optionsJson" Label="Options (JSON)" Lines="3" />
+        </MudStack>
+    </DialogContent>
+    <DialogActions>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="SaveAsync">Save</MudButton>
+        <MudButton Variant="Variant.Text" OnClick="Cancel">Cancel</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] public IMudDialogInstance MudDialog { get; set; } = default!;
+
+    [Parameter] public ulong JobId { get; set; }
+    [Parameter] public JobParamDto? ExistingParam { get; set; }
+
+    private readonly string[] _typeOptions = ["string", "int", "bool", "json", "select", "secret"];
+
+    private ulong? _paramId;
+    private string _name = string.Empty;
+    private string _type = "string";
+    private bool _required;
+    private string? _default;
+    private string? _description;
+    private string? _optionsJson;
+
+    protected override void OnInitialized()
+    {
+        if (ExistingParam is null)
+        {
+            _paramId = null;
+            _name = string.Empty;
+            _type = "string";
+            _required = false;
+            _default = null;
+            _description = null;
+            _optionsJson = null;
+            return;
+        }
+
+        _paramId = ExistingParam.Id;
+        _name = ExistingParam.Name;
+        _type = ExistingParam.Type;
+        _required = ExistingParam.Required;
+        _default = ExistingParam.Default;
+        _description = ExistingParam.Description;
+        _optionsJson = ExistingParam.OptionsJson;
+    }
+
+    private async Task SaveAsync()
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(_name))
+            {
+                Snackbar.Add("Name is required.", Severity.Warning);
+                return;
+            }
+
+            if (_paramId is null)
+            {
+                var req = new AddJobParamRequest(
+                    _name,
+                    _type,
+                    _required,
+                    _default,
+                    _description,
+                    _optionsJson);
+
+                var param = await JobApi.AddJobParamAsync(JobId, req);
+                Snackbar.Add("Parameter added.", Severity.Success);
+                MudDialog.Close(DialogResult.Ok(param));
+            }
+            else
+            {
+                var req = new UpdateJobParamRequest(
+                    _name,
+                    _type,
+                    _required,
+                    _default,
+                    _description,
+                    _optionsJson);
+
+                var param = await JobApi.UpdateJobParamAsync(_paramId.Value, req);
+                Snackbar.Add("Parameter updated.", Severity.Success);
+                MudDialog.Close(DialogResult.Ok(param));
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to save parameter: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private void Cancel() => MudDialog.Cancel();
+}

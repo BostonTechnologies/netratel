@@ -1,0 +1,65 @@
+<MudPaper Class="client-file-details-strip" Outlined="true">
+    <MudStack Spacing="1">
+        <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween" Class="flex-wrap">
+            <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1" Class="flex-wrap">
+                <MudChip T="string" Variant="Variant.Outlined" Size="Size.Small">@FileName</MudChip>
+                <MudChip T="string" Variant="Variant.Text" Size="Size.Small">@ViewerLabel</MudChip>
+                <MudChip T="string" Variant="Variant.Text" Size="Size.Small">@ContentTypeLabel</MudChip>
+                <MudChip T="string" Variant="Variant.Text" Size="Size.Small">@SizeLabel</MudChip>
+            </MudStack>
+            <MudStack Row="true" Spacing="1" Class="flex-wrap">
+                <MudTooltip Text="Open containing folder">
+                    <MudIconButton Icon="@Icons.Material.Filled.FolderOpen"
+                                   Variant="Variant.Text"
+                                   Size="Size.Small"
+                                   Color="Color.Default"
+                                   OnClick="OpenFolder" />
+                </MudTooltip>
+                <MudTooltip Text="Copy file path">
+                    <MudIconButton Icon="@Icons.Material.Filled.ContentCopy"
+                                   Variant="Variant.Text"
+                                   Size="Size.Small"
+                                   Color="Color.Default"
+                                   OnClick="CopyPath" />
+                </MudTooltip>
+                <MudTooltip Text="Reload selected file">
+                    <MudIconButton Icon="@Icons.Material.Filled.Refresh"
+                                   Variant="Variant.Text"
+                                   Size="Size.Small"
+                                   Color="Color.Default"
+                                   OnClick="Refresh" />
+                </MudTooltip>
+            </MudStack>
+        </MudStack>
+        <MudText Typo="Typo.caption" Class="client-file-details-path">@FullPath</MudText>
+    </MudStack>
+</MudPaper>
+
+<style>
+    .client-file-details-strip {
+        padding: 0.85rem 1rem;
+        border-radius: var(--netratel-radius-surface, 7px);
+        background: var(--mud-palette-surface);
+        border-color: var(--mud-palette-divider);
+    }
+
+    .client-file-details-strip .client-file-details-path {
+        color: var(--mud-palette-text-secondary);
+        word-break: break-all;
+    }
+</style>
+
+@code {
+    [Parameter] public string FileName { get; set; } = "No file selected";
+    [Parameter] public string FullPath { get; set; } = string.Empty;
+    [Parameter] public string ViewerLabel { get; set; } = "text";
+    [Parameter] public string ContentTypeLabel { get; set; } = "application/octet-stream";
+    [Parameter] public string SizeLabel { get; set; } = "0 B";
+    [Parameter] public EventCallback OnOpenContainingFolder { get; set; }
+    [Parameter] public EventCallback OnCopyPath { get; set; }
+    [Parameter] public EventCallback OnRefreshFile { get; set; }
+
+    private Task OpenFolder() => OnOpenContainingFolder.InvokeAsync();
+    private Task CopyPath() => OnCopyPath.InvokeAsync();
+    private Task Refresh() => OnRefreshFile.InvokeAsync();
+}

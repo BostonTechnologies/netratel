@@ -1,0 +1,35 @@
+@using System.Text.Json
+
+<div class="@($"request-json-payload {(Preview ? "is-preview" : "is-dialog")}")">
+    @if (string.IsNullOrWhiteSpace(Json))
+    {
+        <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Dense="true">No payload captured.</MudAlert>
+    }
+    else if (IsValidJson(Json))
+    {
+        <MudJsonTreeView Json="@Json" Dense="true" Hover="true" Sorted="false" />
+    }
+    else
+    {
+        <MudAlert Severity="Severity.Warning" Variant="Variant.Outlined" Dense="true">Payload is not valid JSON.</MudAlert>
+        <pre class="request-json-raw">@Json</pre>
+    }
+</div>
+
+@code {
+    [Parameter] public string? Json { get; set; }
+    [Parameter] public bool Preview { get; set; }
+
+    private static bool IsValidJson(string json)
+    {
+        try
+        {
+            using var _ = JsonDocument.Parse(json);
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+}

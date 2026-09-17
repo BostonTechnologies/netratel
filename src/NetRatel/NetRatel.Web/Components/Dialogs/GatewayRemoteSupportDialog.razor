@@ -1,0 +1,243 @@
+@using Microsoft.JSInterop
+@using NetRatel.Shared.Contracts.RemoteSupport
+@using NetRatel.Web.Services.RemoteSupport
+@implements IAsyncDisposable
+@inject GatewayRemoteSupportApiService RemoteSupport
+@inject IJSRuntime JS
+@inject ISnackbar Snackbar
+@inject ILogger<GatewayRemoteSupportDialog> Logger
+
+<MudDialog MaxWidth="MaxWidth.False" FullWidth="true">
+    <TitleContent><MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween" Class="w-100"><MudText Typo="Typo.h6">Remote Support · @HostLabel</MudText><MudChip T="string" Size="Size.Small" Color="@StateColor">@_stateLabel</MudChip></MudStack></TitleContent>
+    <DialogContent>
+        <MudStack Spacing="2">
+            <MudText Typo="Typo.body2" Color="Color.Secondary">@_detail</MudText>
+            @if (!string.IsNullOrWhiteSpace(_error)) { <MudAlert Severity="Severity.Error" Variant="Variant.Outlined">@_error</MudAlert> }
+            @if (_discovering) { <MudProgressCircular Indeterminate="true" Color="Color.Primary" /> }
+            else if (_session is null && _capabilities is not null)
+            {
+                <MudPaper Outlined="true" Class="pa-4"><MudText Typo="Typo.subtitle1">Choose a target</MudText><MudText Typo="Typo.body2" Color="Color.Secondary">A V2 session is created only after you explicitly choose the target.</MudText><MudStack Spacing="1" Class="mt-3">
+                    @if (CanUse(RemoteSupportV2CapabilityNames.ConsoleLogin)) { <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="OpenConsoleAsync">Console / sign-in desktop</MudButton> }
+                    @foreach (var target in AssistTargets) { <MudButton Variant="Variant.Outlined" Color="Color.Primary" OnClick="@(() => OpenAssistAsync(target))">Assist @TargetLabel(target)</MudButton> }
+                    <MudButton Variant="Variant.Text" OnClick="RefreshDiscoveryAsync">Refresh available targets</MudButton>
+                </MudStack></MudPaper>
+            }
+            @if (_session is not null)
+            {
+                @if (_transitionSelection is not null)
+                {
+                    <MudPaper Outlined="true" Class="pa-3"><MudText Typo="Typo.subtitle2">Choose the signed-in user to continue</MudText><MudStack Spacing="1" Class="mt-2">
+                        @foreach (var candidate in _transitionSelection.Candidates) { <MudButton Variant="Variant.Outlined" Color="Color.Primary" OnClick="@(() => SelectTransitionTargetAsync(candidate))">Continue with @TransitionTargetLabel(candidate)</MudButton> }
+                    </MudStack></MudPaper>
+                }
+                <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center">
+                    <MudButton Size="Size.Small" Variant="Variant.Outlined" Disabled="@(!CanUse(RemoteSupportV2CapabilityNames.InputControl))" OnClick="ToggleControlAsync">@(_controlEnabled ? "Stop control" : "Enable control")</MudButton>
+                    <MudSelect T="string" Dense="true" Value="@_qualityProfile" ValueChanged="SetQualityAsync" Label="Quality"><MudSelectItem Value="@("balanced")">Balanced</MudSelectItem><MudSelectItem Value="@("low-bandwidth")">Low bandwidth</MudSelectItem><MudSelectItem Value="@("high-quality")">High quality</MudSelectItem></MudSelect>
+                    <MudButton Size="Size.Small" Variant="Variant.Outlined" OnClick="RefreshVideoAsync">Refresh video</MudButton>
+                    <MudButton Size="Size.Small" Variant="Variant.Outlined" Disabled="@(!CanUse(RemoteSupportV2CapabilityNames.SecureAttention))" OnClick="SendSasAsync">Ctrl+Alt+Del</MudButton>
+                    <MudButton Size="Size.Small" Variant="Variant.Outlined" Disabled="@(!CanUse(RemoteSupportV2CapabilityNames.HelperRepair))" OnClick="RepairAsync">Repair helper</MudButton>
+                </MudStack>
+                <video id="@_videoElementId" autoplay playsinline muted class="w-100" style="min-height: 28rem; background: #080b10;"></video>
+            }
+        </MudStack>
+    </DialogContent>
+    <DialogActions><MudButton Color="Color.Error" Variant="Variant.Filled" OnClick="CloseAsync">Close</MudButton></DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter, EditorRequired] public int TenantId { get; set; }
+    [Parameter, EditorRequired] public Guid AgentId { get; set; }
+    [Parameter] public string HostLabel { get; set; } = "Gateway agent";
+    private readonly string _videoElementId = $"gateway-remote-support-{Guid.NewGuid():N}";
+    private DotNetObjectReference<GatewayRemoteSupportDialog>? _self;
+    private RemoteSupportDialogAttempt? _attempt;
+    private RemoteSupportV2CapabilitySnapshot? _capabilities;
+    private RemoteSupportTargetInventorySnapshot? _inventory;
+    private RemoteSupportTargetDescriptor? _activeTarget;
+    private RemoteSupportSessionSnapshot? _session;
+    private RemoteSupportSessionIceConfiguration? _iceConfiguration;
+    private GatewayRemoteSupportTransitionSelection? _transitionSelection;
+    private bool _discovering = true, _controlEnabled, _offerCreated, _answerApplied, _firstFrameReported, _dataChannelReported;
+    private string _qualityProfile = "balanced", _stateLabel = "Discovering capabilities", _detail = "Checking this agent's current Remote Support V2 capabilities.";
+    private string? _error;
+    private long _generation = 1, _browserSequence, _lastAuditSequence, _transitionResetRevision;
+    private IReadOnlyList<RemoteSupportTargetInventoryEntry> AssistTargets => _inventory?.Entries.Where(x => x.WindowsSessionId > 0 && !x.IsConsoleSession && x.IsConnected && !x.IsLocked && !x.IsWinlogon).OrderBy(x => x.DisplayLabel ?? x.WindowsSessionId.ToString()).ToArray() ?? [];
+    private Color StateColor => _error is not null ? Color.Error : _session?.State switch { RemoteSupportV2SessionStates.Connected => Color.Success, RemoteSupportV2SessionStates.Failed or RemoteSupportV2SessionStates.Expired => Color.Error, _ => Color.Info };
+
+    protected override async Task OnInitializedAsync() { _self = DotNetObjectReference.Create(this); await RefreshDiscoveryAsync(); }
+    private async Task RefreshDiscoveryAsync()
+    {
+        _discovering = true; _error = null; _stateLabel = "Discovering capabilities"; _detail = "Checking this agent's current Remote Support V2 capabilities.";
+        try
+        {
+            _capabilities = await RemoteSupport.GetV2CapabilitiesAsync(TenantId, AgentId);
+            if (_capabilities is null || !_capabilities.IsFresh(DateTimeOffset.UtcNow) || !CanUse(RemoteSupportV2CapabilityNames.RemoteSupportV2) || !CanUse(RemoteSupportV2CapabilityNames.SessionInventory) || !CanUse(RemoteSupportV2CapabilityNames.DirectWebRtcMedia)) throw new InvalidOperationException("Required V2 capabilities are not currently advertised.");
+            _inventory = await RemoteSupport.GetV2InventoryAsync(TenantId, AgentId);
+            if (_inventory is null || _inventory.ExpiresAtUtc <= DateTimeOffset.UtcNow) { await RemoteSupport.RefreshV2InventoryAsync(TenantId, AgentId); _inventory = await WaitForFreshInventoryAsync(); }
+            if (_inventory is null) throw new InvalidOperationException("No current target inventory is available.");
+            _stateLabel = "Choose a target"; _detail = "Select the console/sign-in desktop or a currently connected user session.";
+        }
+        catch (RemoteSupportApiException exception) { _error = UserMessage(exception); _stateLabel = "Unavailable"; _detail = "Remote Support V2 discovery did not complete."; }
+        catch (Exception exception) { Logger.LogWarning(exception, "Remote Support V2 discovery failed for {TenantId}/{AgentId}.", TenantId, AgentId); _error = "Remote Support is currently unavailable for this agent."; _stateLabel = "Unavailable"; _detail = "Remote Support V2 discovery did not complete."; }
+        finally { _discovering = false; }
+    }
+    private async Task<RemoteSupportTargetInventorySnapshot?> WaitForFreshInventoryAsync()
+    {
+        for (var attempt = 0; attempt < 3; attempt++) { await Task.Delay(TimeSpan.FromMilliseconds(250 * (attempt + 1))); var inventory = await RemoteSupport.GetV2InventoryAsync(TenantId, AgentId); if (inventory is { } candidate && candidate.ExpiresAtUtc > DateTimeOffset.UtcNow) return candidate; }
+        return null;
+    }
+    private Task OpenConsoleAsync() => OpenTargetAsync(new RemoteSupportTargetDescriptor(RemoteSupportV2TargetKinds.ConsoleLogin));
+    private Task OpenAssistAsync(RemoteSupportTargetInventoryEntry target) => OpenTargetAsync(new RemoteSupportTargetDescriptor(RemoteSupportV2TargetKinds.InteractiveUser, target.WindowsSessionId, target.UserSidHash, _inventory?.InventorySequence));
+    private async Task OpenTargetAsync(RemoteSupportTargetDescriptor target)
+    {
+        if (!CanUse(RemoteSupportV2CapabilityNames.TargetPreflight) || _session is not null) return;
+        _activeTarget = target; _stateLabel = "Opening session"; _detail = "Creating the V2 lifecycle session for the selected exact target."; _error = null;
+        RemoteSupportDialogAttempt? attempt = null;
+        try
+        {
+            IReadOnlyList<string> requested = CanUse(RemoteSupportV2CapabilityNames.InputControl) ? ["view", "control"] : ["view"];
+            var session = await RemoteSupport.OpenV2Async(TenantId, AgentId, new GatewayRemoteSupportV2LifecycleOpenRequest(Guid.NewGuid(), target, requested));
+            attempt = new RemoteSupportDialogAttempt(Guid.NewGuid(), session); _attempt = attempt; _session = session;
+            attempt.LifecyclePump = PumpLifecycleWithResumeAsync(attempt, attempt.Cancellation.Token);
+            attempt.NegotiationPump = PumpNegotiationAsync(attempt, attempt.Cancellation.Token);
+            await RemoteSupport.PrepareV2MediaAsync(session, new GatewayRemoteSupportV2MediaPrepareRequest(Guid.NewGuid(), target, session.LifecycleRevision), attempt.Cancellation.Token);
+            _stateLabel = "Preparing target"; _detail = "Waiting for the exact target route and authoritative offer readiness.";
+        }
+        catch (Exception exception)
+        {
+            var failureCode = exception is RemoteSupportApiException apiException ? apiException.Code : "remote_support_open_failed";
+            Logger.LogWarning(exception, "Remote Support V2 open failed for {TenantId}/{AgentId}. FailureCode={FailureCode}", TenantId, AgentId, failureCode);
+            if (attempt is not null) await CleanupAttemptAsync(attempt);
+            _error = "The selected target could not be opened. Refresh targets and try again."; _stateLabel = "Target unavailable";
+        }
+    }
+    private async Task PumpLifecycleWithResumeAsync(RemoteSupportDialogAttempt attempt, CancellationToken cancellationToken)
+    {
+        var session = attempt.Session.Session;
+        var delay = TimeSpan.FromSeconds(1);
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                await foreach (var lifecycle in RemoteSupport.StreamV2LifecycleEventsAsync(session, _lastAuditSequence, cancellationToken)) { if (lifecycle.AuditSequence <= _lastAuditSequence) continue; _lastAuditSequence = lifecycle.AuditSequence; await InvokeAsync(() => HandleLifecycleEventAsync(attempt, lifecycle)); }
+                throw new IOException("The lifecycle event stream ended unexpectedly.");
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { return; }
+            catch (RemoteSupportApiException exception) when (exception.StatusCode is System.Net.HttpStatusCode.Forbidden or System.Net.HttpStatusCode.NotFound) { await InvokeAsync(() => Fail("This Remote Support session is no longer available.")); return; }
+            catch (Exception exception)
+            {
+                Logger.LogInformation(exception, "Remote Support lifecycle stream will resume from audit cursor {AuditSequence}.", _lastAuditSequence); await InvokeAsync(() => { _stateLabel = "Reconnecting"; _detail = "Reconnecting to lifecycle updates; media negotiation is not replayed."; });
+                var snapshot = await RemoteSupport.GetV2LifecycleAsync(session, cancellationToken); if (snapshot is null) { await InvokeAsync(() => Fail("This Remote Support session is no longer available.")); return; }
+                await InvokeAsync(() => HandleLifecycleAsync(attempt, snapshot)); await Task.Delay(delay, cancellationToken); delay = TimeSpan.FromSeconds(Math.Min(delay.TotalSeconds * 2, 8));
+            }
+        }
+    }
+    private async Task PumpNegotiationAsync(RemoteSupportDialogAttempt attempt, CancellationToken cancellationToken)
+    {
+        try { await foreach (var envelope in RemoteSupport.StreamV2NegotiationAsync(attempt.Session.Session, cancellationToken)) await InvokeAsync(() => HandleNegotiationAsync(attempt, envelope)); }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { Logger.LogDebug("Remote Support transient negotiation stream cancelled during dialog disposal."); }
+        catch (Exception exception) { Logger.LogInformation(exception, "Remote Support transient negotiation stream ended; it will not be replayed."); }
+    }
+    private async Task HandleLifecycleAsync(RemoteSupportDialogAttempt attempt, RemoteSupportSessionSnapshot snapshot)
+    {
+        if (!IsCurrentAttempt(attempt)) return;
+        _session = snapshot; _stateLabel = ToOperatorState(snapshot.State); _detail = ToOperatorDetail(snapshot.State);
+        if (snapshot.State == RemoteSupportV2SessionStates.RenegotiationRequired && snapshot.LifecycleRevision > _transitionResetRevision) { _transitionResetRevision = snapshot.LifecycleRevision; _generation++; _browserSequence = 0; _offerCreated = _answerApplied = _firstFrameReported = _dataChannelReported = _controlEnabled = false; await JS.InvokeVoidAsync("netratelRemoteSupport.resetTransition", snapshot.Session.RemoteSupportSessionId.ToString("D"), _generation); _detail = "Desktop transition detected. Control is paused while the replacement target is prepared."; }
+        if (snapshot.State == RemoteSupportV2SessionStates.ReadyForOffer)
+        {
+            if (_offerCreated) { _generation++; _browserSequence = 0; _answerApplied = _firstFrameReported = _dataChannelReported = false; await JS.InvokeVoidAsync("netratelRemoteSupport.close", snapshot.Session.RemoteSupportSessionId.ToString("D")); }
+            _iceConfiguration = await RemoteSupport.GetV2IceConfigurationAsync(snapshot.Session, _generation, attempt.Cancellation.Token);
+            _offerCreated = true; var offer = await JS.InvokeAsync<string>("netratelRemoteSupport.create", _self, snapshot.Session.RemoteSupportSessionId.ToString("D"), _videoElementId, _iceConfiguration.Servers, _generation, _activeTarget?.WindowsSessionId); await SendBrowserNegotiationAsync(RemoteSupportV2NegotiationSignalTypes.Offer, offer); _stateLabel = "Connecting video"; _detail = "The selected target is ready; sending the generation-scoped browser offer.";
+        }
+        else if (snapshot.State is RemoteSupportV2SessionStates.Failed or RemoteSupportV2SessionStates.Expired or RemoteSupportV2SessionStates.Completed) _controlEnabled = false;
+    }
+    private async Task HandleLifecycleEventAsync(RemoteSupportDialogAttempt attempt, GatewayRemoteSupportLifecycleSseEvent lifecycle)
+    {
+        if (!IsCurrentAttempt(attempt)) return;
+        await HandleLifecycleAsync(attempt, lifecycle.Event.Snapshot);
+        if (string.Equals(lifecycle.Event.EventType, RemoteSupportV2AuditEventTypes.TargetSelectionRequired, StringComparison.Ordinal))
+        {
+            _transitionSelection = await RemoteSupport.GetV2TransitionSelectionAsync(lifecycle.Event.Snapshot.Session, attempt.Cancellation.Token);
+            if (_transitionSelection is not null) { _stateLabel = "Choose replacement user"; _detail = "More than one eligible signed-in user was found after the desktop transition."; }
+        }
+    }
+    private async Task HandleNegotiationAsync(RemoteSupportDialogAttempt attempt, RemoteSupportV2NegotiationEnvelope envelope)
+    {
+        if (!IsCurrentAttempt(attempt) || _session is null || envelope.Session != _session.Session || envelope.Generation != _generation || envelope.Direction != RemoteSupportV2NegotiationDirections.Agent) return;
+        var payload = System.Text.Encoding.UTF8.GetString(envelope.Payload);
+        switch (envelope.SignalType) { case RemoteSupportV2NegotiationSignalTypes.Answer when !_answerApplied: _answerApplied = true; await JS.InvokeVoidAsync("netratelRemoteSupport.applyRemoteDescription", _session.Session.RemoteSupportSessionId.ToString("D"), _generation, payload); _detail = "Agent answer applied; waiting for a rendered frame."; break; case RemoteSupportV2NegotiationSignalTypes.Ice: await JS.InvokeVoidAsync("netratelRemoteSupport.addIceCandidate", _session.Session.RemoteSupportSessionId.ToString("D"), _generation, payload); break; case RemoteSupportV2NegotiationSignalTypes.Status when !payload.Contains("\"input_ready\"", StringComparison.Ordinal): Fail("The selected target rejected media negotiation."); break; }
+    }
+    private async Task ToggleControlAsync() { if (_session is null || !CanUse(RemoteSupportV2CapabilityNames.InputControl)) return; _controlEnabled = !_controlEnabled; await JS.InvokeVoidAsync("netratelRemoteSupport.setControlEnabled", _session.Session.RemoteSupportSessionId.ToString("D"), _controlEnabled); }
+    private async Task SetQualityAsync(string profile) { _qualityProfile = profile; if (_session is not null) await JS.InvokeVoidAsync("netratelRemoteSupport.setQualityProfile", _session.Session.RemoteSupportSessionId.ToString("D"), profile); }
+    private async Task RefreshVideoAsync() { if (_session is not null) await JS.InvokeVoidAsync("netratelRemoteSupport.refreshVideo", _session.Session.RemoteSupportSessionId.ToString("D")); }
+    private async Task SendSasAsync() { if (_session is null || !CanUse(RemoteSupportV2CapabilityNames.SecureAttention)) return; await RemoteSupport.SendV2SasAsync(_session); await JS.InvokeVoidAsync("netratelRemoteSupport.sendSas", _session.Session.RemoteSupportSessionId.ToString("D")); }
+    private async Task RepairAsync() { if (_session is null || !CanUse(RemoteSupportV2CapabilityNames.HelperRepair)) return; await RemoteSupport.RepairV2HelperAsync(_session); Snackbar.Add("Helper repair requested for the current target.", Severity.Info); }
+    private async Task SelectTransitionTargetAsync(GatewayRemoteSupportTransitionTarget candidate)
+    {
+        if (_session is null || _transitionSelection is null) return;
+        try { await RemoteSupport.SelectV2TransitionTargetAsync(_session, _transitionSelection, candidate, _attempt?.Cancellation.Token ?? CancellationToken.None); _transitionSelection = null; _stateLabel = "Preparing replacement"; _detail = "Preparing the selected replacement target."; }
+        catch (RemoteSupportApiException exception) { _error = UserMessage(exception); _stateLabel = "Selection expired"; _detail = "Refresh Remote Support to obtain a current target choice."; }
+    }
+    [JSInvokable] public Task OnLocalIceCandidate(int generation, string candidateJson) => generation == _generation ? SendBrowserNegotiationAsync(RemoteSupportV2NegotiationSignalTypes.Ice, candidateJson) : Task.CompletedTask;
+    [JSInvokable] public Task OnPeerStateChanged(int generation, string state) { if (generation == _generation) { _stateLabel = state.Equals("connected", StringComparison.OrdinalIgnoreCase) ? "Waiting for video" : "Connecting video"; _detail = "Browser peer state: " + state; return InvokeAsync(StateHasChanged); } return Task.CompletedTask; }
+    [JSInvokable] public Task OnIceStateChanged(int generation, string state) => Task.CompletedTask;
+    [JSInvokable] public async Task OnDataChannelStateChanged(int generation, string state) { if (generation == _generation && string.Equals(state, "open", StringComparison.OrdinalIgnoreCase) && !_dataChannelReported) { _dataChannelReported = true; await SendBrowserNegotiationAsync(RemoteSupportV2NegotiationSignalTypes.Status, "{\"code\":\"data_channel_open\"}"); } }
+    [JSInvokable] public Task OnRemoteTrack(int generation, string kind) => Task.CompletedTask;
+    [JSInvokable] public async Task OnFirstVideoFrame(int generation, string peerInstanceId, string renderedAt) { if (generation == _generation && !_firstFrameReported) { _firstFrameReported = true; await SendBrowserNegotiationAsync(RemoteSupportV2NegotiationSignalTypes.Status, "{\"code\":\"first_frame\"}"); _stateLabel = "Connected"; _detail = "Current-generation video is rendering."; } }
+    [JSInvokable] public Task OnRemoteVideoFrame(int generation, long renderedFrames, double fps) => Task.CompletedTask;
+    [JSInvokable] public Task OnMediaStatsChanged(int generation, object stats) => Task.CompletedTask;
+    [JSInvokable] public Task OnControlInputAcknowledged(int generation, object acknowledgement) => Task.CompletedTask;
+    [JSInvokable] public Task OnControlInputError(int generation, object error) => Task.CompletedTask;
+    private Task SendBrowserNegotiationAsync(string signalType, string payload) => _session is null ? Task.CompletedTask : RemoteSupport.SendV2NegotiationAsync(new RemoteSupportV2NegotiationEnvelope(_session.Session, _generation, RemoteSupportV2NegotiationDirections.Browser, Interlocked.Increment(ref _browserSequence), Guid.NewGuid(), signalType, System.Text.Encoding.UTF8.GetBytes(payload)));
+    private bool CanUse(string capability) => _capabilities?.Has(capability) == true;
+    private static string TargetLabel(RemoteSupportTargetInventoryEntry target) => string.IsNullOrWhiteSpace(target.DisplayLabel) ? $"Windows session {target.WindowsSessionId}" : target.DisplayLabel;
+    private string TransitionTargetLabel(GatewayRemoteSupportTransitionTarget target) => _inventory?.Entries.FirstOrDefault(entry => entry.WindowsSessionId == target.WindowsSessionId && string.Equals(entry.UserSidHash, target.IdentityReference, StringComparison.Ordinal)) is { } entry ? TargetLabel(entry) : $"Windows session {target.WindowsSessionId}";
+    private static string ToOperatorState(string state) => state switch { RemoteSupportV2SessionStates.Requested => "Requested", RemoteSupportV2SessionStates.PreparingTarget => "Preparing target", RemoteSupportV2SessionStates.ReadyForOffer => "Ready to connect", RemoteSupportV2SessionStates.Negotiating => "Connecting video", RemoteSupportV2SessionStates.Connected => "Connected", RemoteSupportV2SessionStates.Reconnecting => "Reconnecting", RemoteSupportV2SessionStates.RenegotiationRequired => "Desktop transition", RemoteSupportV2SessionStates.Completed => "Closed", RemoteSupportV2SessionStates.Expired => "Expired", RemoteSupportV2SessionStates.Failed => "Failed", _ => "Updating" };
+    private static string ToOperatorDetail(string state) => state switch { RemoteSupportV2SessionStates.PreparingTarget => "Verifying the exact selected target.", RemoteSupportV2SessionStates.ReadyForOffer => "The selected target is ready for a browser offer.", RemoteSupportV2SessionStates.RenegotiationRequired => "Desktop transition detected; selecting or preparing a replacement target.", RemoteSupportV2SessionStates.Reconnecting => "Reconnecting to the selected target.", _ => "Remote Support lifecycle updated." };
+    private static string UserMessage(RemoteSupportApiException exception) => exception.Code switch { "remote_support_forbidden" => "You are no longer authorized to use Remote Support for this agent.", "remote_support_stale" => "The agent capability or target inventory is stale. Refresh and try again.", "remote_support_not_found" => "The agent is not currently available for Remote Support V2.", _ => "Remote Support is currently unavailable for this agent." };
+    private void Fail(string message) { _error = message; _stateLabel = "Unavailable"; _detail = "Remote Support cannot continue for this session."; }
+    private bool IsCurrentAttempt(RemoteSupportDialogAttempt attempt) => ReferenceEquals(_attempt, attempt) && !attempt.Cancellation.IsCancellationRequested;
+    private async Task CloseAsync() { await DisposeAsync(); MudDialog.Close(); }
+    public async ValueTask DisposeAsync()
+    {
+        if (_attempt is { } attempt) await CleanupAttemptAsync(attempt);
+        _self?.Dispose(); _self = null;
+    }
+    private async Task CleanupAttemptAsync(RemoteSupportDialogAttempt attempt)
+    {
+        if (!ReferenceEquals(_attempt, attempt)) return;
+        var closeSnapshot = _session?.Session == attempt.Session.Session ? _session : attempt.Session;
+        _attempt = null;
+        attempt.Cancellation.Cancel();
+        try { await JS.InvokeVoidAsync("netratelRemoteSupport.close", attempt.Session.Session.RemoteSupportSessionId.ToString("D")); }
+        catch (Exception exception) { Logger.LogDebug(exception, "Unable to close the browser WebRTC peer."); }
+        try
+        {
+            using var closeCancellation = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            await RemoteSupport.CloseV2Async(closeSnapshot, closeCancellation.Token, requireCurrentRevision: false);
+        }
+        catch (Exception exception) { Logger.LogDebug(exception, "Unable to close the Remote Support V2 lifecycle session."); }
+        await AwaitPumpShutdownAsync(attempt);
+        if (_session?.Session == attempt.Session.Session) _session = null;
+        _activeTarget = null; _transitionSelection = null;
+        attempt.Cancellation.Dispose();
+    }
+    private async Task AwaitPumpShutdownAsync(RemoteSupportDialogAttempt attempt)
+    {
+        var pumps = new[] { attempt.LifecyclePump, attempt.NegotiationPump }.OfType<Task>().ToArray();
+        if (pumps.Length == 0) return;
+        try { await Task.WhenAll(pumps).WaitAsync(TimeSpan.FromSeconds(2)); }
+        catch (OperationCanceledException) { Logger.LogDebug("Remote Support V2 stream cleanup observed cancellation."); }
+        catch (TimeoutException) { Logger.LogWarning("Remote Support V2 stream cleanup timed out for {SessionId}.", attempt.Session.Session.RemoteSupportSessionId); }
+        catch (Exception exception) { Logger.LogDebug(exception, "Remote Support V2 stream ended while cleaning up a failed open."); }
+    }
+    private sealed class RemoteSupportDialogAttempt(Guid id, RemoteSupportSessionSnapshot session)
+    {
+        public Guid Id { get; } = id;
+        public RemoteSupportSessionSnapshot Session { get; } = session;
+        public CancellationTokenSource Cancellation { get; } = new();
+        public Task? LifecyclePump { get; set; }
+        public Task? NegotiationPump { get; set; }
+    }
+}

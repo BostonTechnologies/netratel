@@ -1,0 +1,107 @@
+@using NetRatel.Web.Models.Clients
+@using NetRatel.Shared.Contracts
+@using NetRatel.Shared.Contracts.Terminals
+
+<MudDialog>
+    <TitleContent>
+        <MudText Typo="Typo.h6">Edit Client: @Client?.DisplayName</MudText>
+    </TitleContent>
+    <DialogContent>
+        @if (Client is null)
+        {
+            <MudAlert Severity="Severity.Error">Client data is missing.</MudAlert>
+        }
+        else
+        {
+            <MudTabs Rounded="false" Elevation="0" PanelClass="pt-4">
+                <MudTabPanel Text="General">
+                    <MudTextField T="string" Label="Client Name" @bind-Value="_clientName" Margin="Margin.Dense" Class="mb-3" />
+                    <MudSelect T="int?" Label="Assign Tenant" @bind-Value="_selectedTenantId" Clearable="true" AnchorOrigin="Origin.BottomCenter" Margin="Margin.Dense">
+                        <MudSelectItem T="int?" Value="@((int?)null)">-- None --</MudSelectItem>
+                        @foreach (var tenant in AvailableTenants.OrderBy(t => t.Name))
+                        {
+                            <MudSelectItem T="int?" Value="@tenant.TenantId">@tenant.Name</MudSelectItem>
+                        }
+                    </MudSelect>
+                </MudTabPanel>
+                <MudTabPanel Text="Terminal">
+                    <MudSelect T="string"
+                               Label="Terminal route"
+                               @bind-Value="_terminalTransport"
+                               AnchorOrigin="Origin.BottomCenter"
+                               Margin="Margin.Dense"
+                               Variant="Variant.Outlined"
+                               FullWidth="true"
+                               Class="terminal-route-select">
+                        <MudSelectItem T="string" Value="@UseDefaultTerminalRoute">Use default (@FormatTransport(Client.DefaultTerminalTransport))</MudSelectItem>
+                        <MudSelectItem T="string" Value="@TerminalTransportKind.Auto.ToString()">Auto</MudSelectItem>
+                        <MudSelectItem T="string" Value="@TerminalTransportKind.ApiWebSocket.ToString()">Direct API websocket</MudSelectItem>
+                        <MudSelectItem T="string" Value="@TerminalTransportKind.AkkaGateway.ToString()">Akka Gateway</MudSelectItem>
+                    </MudSelect>
+                    <MudText Typo="Typo.caption" Class="mt-3 d-block">
+                        Requested: @FormatTransport(Client.RequestedTerminalTransport) · Active: @FormatTransport(Client.EffectiveTerminalTransport) · Tunnel: @(Client.TerminalTunnelConnected ? "connected" : "not connected")
+                    </MudText>
+                </MudTabPanel>
+            </MudTabs>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel" Color="Color.Secondary" Variant="Variant.Text">Cancel</MudButton>
+        <MudButton OnClick="Save" Color="Color.Primary" Variant="Variant.Filled" Disabled="@(Client == null)">Save</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] IMudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public ClientDto Client { get; set; } = default!;
+    [Parameter] public List<TenantDto> AvailableTenants { get; set; } = new();
+
+    private string _clientName = string.Empty;
+    private int? _selectedTenantId;
+    private const string UseDefaultTerminalRoute = "";
+    private string _terminalTransport = UseDefaultTerminalRoute;
+
+    protected override void OnInitialized()
+    {
+        if (Client is not null)
+        {
+            _clientName = Client.ClientName ?? string.Empty;
+            _selectedTenantId = Client.TenantId;
+            _terminalTransport = Client.TerminalTransportOverride?.ToString() ?? UseDefaultTerminalRoute;
+        }
+    }
+
+    private void Save()
+    {
+        if (Client is null)
+        {
+            return;
+        }
+
+        var terminalOverride = Enum.TryParse<TerminalTransportKind>(_terminalTransport, out var parsed)
+            ? NormalizeTerminalTransport(parsed)
+            : (TerminalTransportKind?)null;
+        var updated = Client with
+        {
+            ClientName = _clientName,
+            TenantId = _selectedTenantId,
+            TerminalTransportOverride = terminalOverride
+        };
+        MudDialog.Close(DialogResult.Ok(updated));
+    }
+
+    private void Cancel() => MudDialog.Cancel();
+
+    private static string FormatTransport(TerminalTransportKind transport) =>
+        transport switch
+        {
+            TerminalTransportKind.ApiWebSocket => "Direct API websocket",
+            TerminalTransportKind.AkkaGateway => "Akka Gateway",
+            _ => "Auto"
+        };
+
+    private static TerminalTransportKind NormalizeTerminalTransport(TerminalTransportKind transport) =>
+        transport == TerminalTransportKind.Spacetime
+            ? TerminalTransportKind.AkkaGateway
+            : transport;
+}

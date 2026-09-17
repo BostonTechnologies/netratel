@@ -1,0 +1,40 @@
+var builder = DistributedApplication.CreateBuilder(args);
+
+var api = builder.AddProject<Projects.NetRatel_API>("netratel-api")
+    .WithExternalHttpEndpoints()
+    .WithHttpHealthCheck("/health")
+    .WithEnvironment("NetRatelAkkaMigration__Enabled", "true")
+    .WithEnvironment("NetRatelAkkaMigration__PresenceEnabled", "true")
+    .WithEnvironment("NetRatelAkkaMigration__GatewayEnabled", "true")
+    .WithEnvironment("NetRatelAkkaMigration__ControlGatewayEnabled", "false")
+    .WithEnvironment("NetRatelAkkaMigration__FileGatewayEnabled", "false")
+    .WithEnvironment("NetRatelAkkaMigration__LogGatewayEnabled", "false")
+    .WithEnvironment("NetRatelAkkaMigration__RemoteSupportGatewayEnabled", "false")
+    .WithEnvironment("NetRatelAkkaMigration__TelemetryShadowEnabled", "true")
+    .WithEnvironment("NetRatelAkkaMigration__CommandShadowEnabled", "true")
+    .WithEnvironment("NetRatelAkkaMigration__CommandPersistenceEnabled", "true")
+    .WithEnvironment("NetRatelAkkaMigration__JobShadowEnabled", "true")
+    .WithEnvironment("NetRatelAkkaMigration__TerminalShadowEnabled", "true")
+    .WithEnvironment("NetRatelAkkaMigration__RemoteSupportShadowEnabled", "true")
+    .WithEnvironment("NetRatelAkkaMigration__SignalRShadowEnabled", "true")
+    .WithEnvironment("NetRatelAkkaMigration__SignalRShadowLocalCanaryEnabled", "true")
+    .WithEnvironment("NetRatelAkkaMigration__AuthorityMode", "Shadow")
+    .WithEnvironment("NetRatelAkkaMigration__PresenceAuthorityEnabled", "false")
+    .WithEnvironment("NetRatelAkkaMigration__PingAuthorityEnabled", "false")
+    .WithEnvironment("NetRatelAkkaMigration__TelemetryAuthorityEnabled", "false")
+    .WithEnvironment("NetRatelAkkaMigration__FileBrowseAuthorityEnabled", "false")
+    .WithEnvironment("NetRatelAkkaMigration__LogAuthorityEnabled", "false")
+    .WithEnvironment("NetRatelAkkaMigration__RemoteSupportAuthorityEnabled", "false")
+    .WithEnvironment("NetRatelAkkaMigration__CommandAuthorityEnabled", "false")
+    .WithEnvironment("NetRatelAkkaMigration__JobAuthorityEnabled", "false")
+    .WithEnvironment("NetRatelAkkaMigration__SignalRAuthorityEnabled", "false");
+
+builder.AddProject<Projects.NetRatel_Web>("netratel-web")
+    .WithExternalHttpEndpoints()
+    .WithReference(api)
+    .WaitFor(api)
+    .WithEnvironment("ApiBaseUrl", api.GetEndpoint("https"))
+    .WithEnvironment("NetRatelApi__BaseUrl", api.GetEndpoint("https"))
+    .WithEnvironment("ReverseProxy__Clusters__apiCluster__Destinations__api1__Address", api.GetEndpoint("https"));
+
+builder.Build().Run();

@@ -1,0 +1,28 @@
+<MudDialog>
+    <TitleContent>
+        <MudText Typo="Typo.h6">Client Logs</MudText>
+    </TitleContent>
+    <DialogContent>
+        @if (Logs is null || Logs.Count == 0)
+        {
+            <MudText>No logs available.</MudText>
+        }
+        else
+        {
+            foreach (var log in Logs)
+            {
+                <MudText Typo="Typo.caption">@log</MudText>
+            }
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Close">Close</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] IMudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public IReadOnlyList<string> Logs { get; set; } = Array.Empty<string>();
+
+    private void Close() => MudDialog.Close();
+}

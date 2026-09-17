@@ -1,0 +1,732 @@
+@using NetRatel.Shared.Contracts
+@using NetRatel.Web.Services.Clients
+@using System.Globalization
+@using MudBlazor
+@implements IAsyncDisposable
+
+@inject IGatewayLogApiService Logs
+@inject IGatewayLogLiveStreamService LiveLogs
+
+@{
+    RenderFragment explorerContent = @<div class="gateway-log-explorer-shell">
+        <header class="gateway-log-toolbar">
+            <div class="gateway-log-identity">
+                <MudText Typo="Typo.h5">@HostLabel</MudText>
+                <MudText Typo="Typo.caption" Color="Color.Secondary">@TenantLabel · Tenant @TenantId · @(Online ? "Online" : "Offline")</MudText>
+            </div>
+            <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="@StreamStateColor" data-testid="log-stream-state">@_streamState</MudChip>
+            <MudIconButton Icon="@Icons.Material.Filled.Close" OnClick="Close" aria-label="Close log explorer" data-testid="close-log-explorer" />
+        </header>
+
+        <section class="gateway-log-controls" aria-label="Log explorer controls">
+            <MudSelect T="string" Class="gateway-log-source" Value="@_sourceId" ValueChanged="ChangeSourceAsync" Label="Source" Dense="true" Disabled="@(_sources.Count == 0)" data-testid="log-source">
+                @foreach (var source in _sources)
+                {
+                    <MudSelectItem T="string" Value="@source.SourceId" Disabled="@(!source.Available)">@source.DisplayName</MudSelectItem>
+                }
+            </MudSelect>
+            <div class="gateway-log-quick-actions" aria-label="Log stream actions">
+                <MudTooltip Text="Live logs">
+                    <MudIconButton Icon="@Icons.Material.Filled.PlayArrow" Size="Size.Small" Color="@(_liveMode ? Color.Primary : Color.Default)" Variant="@(_liveMode ? Variant.Filled : Variant.Text)" OnClick="EnableLiveAsync" Disabled="@(_sourceId is null || _liveMode)" aria-label="Live logs" data-testid="log-live" />
+                </MudTooltip>
+                <MudTooltip Text="Log history">
+                    <MudIconButton Icon="@Icons.Material.Filled.History" Size="Size.Small" Color="@(!_liveMode ? Color.Primary : Color.Default)" Variant="@(!_liveMode ? Variant.Filled : Variant.Text)" OnClick="EnableHistoryAsync" Disabled="@(_sourceId is null || !_liveMode)" aria-label="Log history" data-testid="log-history" />
+                </MudTooltip>
+                <MudTooltip Text="Follow new records">
+                    <MudIconButton Icon="@Icons.Material.Filled.VerticalAlignBottom" Size="Size.Small" Color="@(_follow ? Color.Primary : Color.Default)" Variant="@(_follow ? Variant.Filled : Variant.Text)" OnClick="@(() => SetFollowAsync(!_follow))" aria-label="Follow new records" aria-pressed="@_follow" data-testid="toggle-log-follow" />
+                </MudTooltip>
+                <MudTooltip Text="Clear displayed records">
+                    <MudIconButton Icon="@Icons.Material.Filled.DeleteSweep" Size="Size.Small" OnClick="ClearDisplay" aria-label="Clear displayed records" data-testid="clear-log-display" />
+                </MudTooltip>
+                <MudTooltip Text="Show filters">
+                    <MudIconButton Icon="@(_filtersExpanded ? Icons.Material.Filled.FilterAltOff : Icons.Material.Filled.FilterAlt)" Size="Size.Small" Color="@(_filtersExpanded || HasPendingFilters ? Color.Primary : Color.Default)" Variant="@(_filtersExpanded ? Variant.Filled : Variant.Text)" OnClick="ToggleFilters" aria-label="@(_filtersExpanded ? "Hide filters" : "Show filters")" aria-expanded="@_filtersExpanded" data-testid="toggle-log-filters" />
+                </MudTooltip>
+            </div>
+        </section>
+
+        @if (_filtersExpanded)
+        {
+            <section class="gateway-log-filter-panel" aria-label="Log filters" data-testid="log-filter-panel">
+                <MudTextField Class="gateway-log-filter-full" @bind-Value="_textFilter" Immediate="true" Label="Search logs" Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search" />
+                <MudSelect T="string" Label="Severity" Dense="true" MultiSelection="true" SelectedValues="@_severities" SelectedValuesChanged="SetSeverities">
+                    @foreach (var severity in KnownSeverities)
+                    {
+                        <MudSelectItem T="string" Value="@severity">@severity</MudSelectItem>
+                    }
+                </MudSelect>
+                <MudSelect T="string" Label="Category / prefix" Dense="true" MultiSelection="true" SelectedValues="@_prefixes" SelectedValuesChanged="SetPrefixes">
+                    @foreach (var prefix in KnownPrefixes)
+                    {
+                        <MudSelectItem T="string" Value="@prefix">@prefix</MudSelectItem>
+                    }
+                </MudSelect>
+                @if (SourceSupports("provider"))
+                {
+                    <MudTextField @bind-Value="_providerFilter" Immediate="true" Label="Provider(s)" Placeholder="Comma separated" />
+                }
+                @if (SourceSupports("event-id"))
+                {
+                    <MudTextField @bind-Value="_eventIdFilter" Immediate="true" Label="Event ID(s)" Placeholder="Comma separated" />
+                }
+                @if (SourceSupports("time"))
+                {
+                    <MudDateRangePicker Class="gateway-log-filter-full" DateRange="_dateRange" DateRangeChanged="SetDateRange" Label="UTC date range" MaxDays="31" AutoClose="true" data-testid="log-date-range" />
+                    <MudTimePicker Time="_fromTime" TimeChanged="SetFromTime" Label="From time (UTC)" AmPm="false" TimeFormat="HH:mm:ss" Disabled="@(!CanNarrowToTime)" data-testid="log-from-time" />
+                    <MudTimePicker Time="_toTime" TimeChanged="SetToTime" Label="To time (UTC)" AmPm="false" TimeFormat="HH:mm:ss" Disabled="@(!CanNarrowToTime)" data-testid="log-to-time" />
+                }
+                <div class="gateway-log-filter-actions">
+                    <MudTooltip Text="Apply filters">
+                        <MudIconButton Icon="@Icons.Material.Filled.Done" Size="Size.Small" Color="Color.Primary" Variant="Variant.Filled" OnClick="ApplyFiltersAsync" Disabled="@(_sourceId is null)" aria-label="Apply filters" data-testid="apply-log-filters" />
+                    </MudTooltip>
+                    <MudTooltip Text="Clear filters">
+                        <MudIconButton Icon="@Icons.Material.Filled.FilterAltOff" Size="Size.Small" OnClick="ClearFiltersAsync" Disabled="@(_sourceId is null)" aria-label="Clear filters" data-testid="clear-log-filters" />
+                    </MudTooltip>
+                </div>
+            </section>
+        }
+
+        @if (_loading)
+        {
+            <MudStack Spacing="2" Class="pa-4" aria-label="Loading logs">
+                <MudSkeleton SkeletonType="SkeletonType.Text" Width="42%" />
+                <MudSkeleton SkeletonType="SkeletonType.Rectangle" Height="260px" />
+            </MudStack>
+        }
+        else if (!string.IsNullOrWhiteSpace(_error))
+        {
+            <MudAlert Severity="Severity.Warning" Variant="Variant.Outlined">@_error</MudAlert>
+        }
+        else
+        {
+            <section class="gateway-log-scroll" aria-live="polite" data-testid="gateway-log-records">
+                @if (!string.IsNullOrWhiteSpace(_previousCursor))
+                {
+                    <MudButton Variant="Variant.Outlined" Size="Size.Small" OnClick="LoadOlderAsync">Load older records</MudButton>
+                }
+                @if (_droppedRecordCount > 0 || _resyncRequired)
+                {
+                    <MudAlert Severity="Severity.Warning" Dense="true">@(_droppedRecordCount) record(s) were dropped; a resync may be required.</MudAlert>
+                }
+                @if (FilteredRecords.Count == 0)
+                {
+                    <MudText Color="Color.Secondary" Class="pa-4">No records match the selected filters.</MudText>
+                }
+                else
+                {
+                    @foreach (var record in FilteredRecords)
+                    {
+                        <article class="gateway-log-record" data-testid="gateway-log-record">
+                            <div class="gateway-log-record-meta">
+                                <time>@record.TimestampUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss.fff")</time>
+                                <MudChip T="string" Size="Size.Small" Color="@SeverityColor(record.Severity)">@record.Severity</MudChip>
+                                @if (!string.IsNullOrWhiteSpace(record.Prefix))
+                                {
+                                    <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">@record.Prefix</MudChip>
+                                }
+                                else if (!string.IsNullOrWhiteSpace(record.Category))
+                                {
+                                    <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">@record.Category</MudChip>
+                                }
+                                @if (!string.IsNullOrWhiteSpace(record.Provider))
+                                {
+                                    <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">@record.Provider</MudChip>
+                                }
+                                @if (record.EventId is { } eventId)
+                                {
+                                    <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">Event @eventId</MudChip>
+                                }
+                                @if (record.RecordId is { } recordId)
+                                {
+                                    <MudText Typo="Typo.caption">Record @recordId</MudText>
+                                }
+                                @if (!string.IsNullOrWhiteSpace(record.Machine))
+                                {
+                                    <MudText Typo="Typo.caption">@record.Machine</MudText>
+                                }
+                            </div>
+                            <pre>@record.Message</pre>
+                        </article>
+                    }
+                }
+            </section>
+        }
+    </div>;
+}
+
+@if (Embedded)
+{
+    <section class="gateway-log-explorer-embedded" data-testid="gateway-log-explorer-dialog">
+        @explorerContent
+    </section>
+}
+else
+{
+    <MudDialog Class="gateway-log-explorer-dialog" data-testid="gateway-log-explorer-dialog">
+        <DialogContent>@explorerContent</DialogContent>
+    </MudDialog>
+}
+
+@code {
+    private const int DisplayCapacity = 2_000;
+
+    [CascadingParameter] private IMudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter, EditorRequired] public int TenantId { get; set; }
+    [Parameter, EditorRequired] public Guid AgentId { get; set; }
+    [Parameter, EditorRequired] public string HostLabel { get; set; } = "Client logs";
+    [Parameter] public string TenantLabel { get; set; } = "";
+    [Parameter] public bool Online { get; set; }
+    [Parameter] public bool Embedded { get; set; }
+    [Parameter] public bool FiltersInitiallyExpanded { get; set; }
+
+    private readonly List<GatewayLogRecordDto> _records = [];
+    private readonly HashSet<string> _cursors = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _severities = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _prefixes = new(StringComparer.OrdinalIgnoreCase);
+    private readonly SemaphoreSlim _sourceTransitionGate = new(1, 1);
+    private readonly CancellationTokenSource _dialogCancellation = new();
+    private IReadOnlyList<GatewayLogSourceDescriptorDto> _sources = [];
+    private SourceRun? _activeRun;
+    private string? _sourceId;
+    private string? _previousCursor;
+    private string _streamState = "Connecting";
+    private string? _textFilter;
+    private string? _providerFilter;
+    private string? _eventIdFilter;
+    private DateRange? _dateRange;
+    private TimeSpan? _fromTime;
+    private TimeSpan? _toTime;
+    private string? _error;
+    private GatewayLogQueryFilters? _activeFilters;
+    private ulong _droppedRecordCount;
+    private bool _resyncRequired;
+    private bool _loading = true;
+    private bool _liveMode = true;
+    private bool _follow = true;
+    private bool _filtersExpanded;
+    private int _disposed;
+
+    private Color StreamStateColor => _streamState switch
+    {
+        "Live" => Color.Success,
+        "History" => Color.Info,
+        "Reconnecting" => Color.Warning,
+        _ => Color.Default
+    };
+
+    private bool CanNarrowToTime => EffectiveStartDate is { } start && EffectiveEndDate is { } end && start.Date == end.Date;
+    private bool HasPendingFilters => !string.IsNullOrWhiteSpace(_textFilter) || !string.IsNullOrWhiteSpace(_providerFilter) ||
+        !string.IsNullOrWhiteSpace(_eventIdFilter) || _dateRange is not null || _fromTime is not null || _toTime is not null ||
+        _severities.Count != 0 || _prefixes.Count != 0;
+    private DateTime? EffectiveStartDate => _dateRange?.Start?.Date;
+    private DateTime? EffectiveEndDate => (_dateRange?.End ?? _dateRange?.Start)?.Date;
+
+    private IReadOnlyList<GatewayLogRecordDto> FilteredRecords
+    {
+        get
+        {
+            var providers = Providers();
+            var eventIds = EventIds();
+            return _records
+                .Where(record => _severities.Count == 0 || _severities.Contains(record.Severity))
+                .Where(record => _prefixes.Count == 0 || _prefixes.Contains(record.Prefix ?? record.Category ?? "Other"))
+                .Where(record => providers.Count == 0 || providers.Contains(record.Provider ?? string.Empty, StringComparer.OrdinalIgnoreCase))
+                .Where(record => eventIds.Count == 0 || record.EventId is { } eventId && eventIds.Contains(eventId))
+                .Where(record => _activeFilters?.FromUtc is not { } from || record.TimestampUtc >= from)
+                .Where(record => _activeFilters?.ToUtc is not { } to || record.TimestampUtc <= to)
+                .Where(record => string.IsNullOrWhiteSpace(_textFilter) || record.Message.Contains(_textFilter, StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+        }
+    }
+
+    private IReadOnlyList<string> KnownSeverities => _records.Select(record => record.Severity)
+        .Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToArray();
+
+    private IReadOnlyList<string> KnownPrefixes => _records.Select(record => record.Prefix ?? record.Category ?? "Other")
+        .Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(value => value, StringComparer.OrdinalIgnoreCase).ToArray();
+
+    protected override Task OnInitializedAsync()
+    {
+        _filtersExpanded = FiltersInitiallyExpanded;
+        return InitializeAsync();
+    }
+
+    private async Task InitializeAsync()
+    {
+        try
+        {
+            _sources = await GetSourcesWithRetryAsync().ConfigureAwait(false);
+            _sourceId = _sources.FirstOrDefault(source => source.Available && string.Equals(source.SourceId, "netratel-runtime", StringComparison.Ordinal))?.SourceId
+                ?? _sources.FirstOrDefault(source => source.Available)?.SourceId;
+            if (_sourceId is null)
+            {
+                _error = "No readable log source is currently available for this client.";
+                return;
+            }
+
+            await StartSourceAsync().ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (Volatile.Read(ref _disposed) != 0)
+        {
+            System.Diagnostics.Trace.WriteLine("The log explorer was disposed while its initial source request was in flight.");
+        }
+        catch (Exception)
+        {
+            _streamState = "Reconnecting";
+            _error = "The log service is unavailable or this client needs an upgrade.";
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task ChangeSourceAsync(string? sourceId)
+    {
+        if (string.IsNullOrWhiteSpace(sourceId) || string.Equals(_sourceId, sourceId, StringComparison.Ordinal)) return;
+        CancelActiveSource();
+        _sourceId = sourceId;
+        await StartSourceAsync().ConfigureAwait(false);
+    }
+
+    private async Task EnableLiveAsync()
+    {
+        if (_liveMode) return;
+        CancelActiveSource();
+        _liveMode = true;
+        await StartSourceAsync().ConfigureAwait(false);
+    }
+
+    private async Task EnableHistoryAsync()
+    {
+        if (!_liveMode) return;
+        CancelActiveSource();
+        _liveMode = false;
+        await StartSourceAsync().ConfigureAwait(false);
+    }
+
+    private async Task StartSourceAsync()
+    {
+        _loading = true;
+        if (Volatile.Read(ref _disposed) == 0) await InvokeAsync(StateHasChanged);
+        await _sourceTransitionGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (Volatile.Read(ref _disposed) != 0 || _sourceId is null) return;
+            if (!TryBuildFilters(out var filters, out var error))
+            {
+                _error = error;
+                return;
+            }
+
+            await StopSourceCoreAsync().ConfigureAwait(false);
+            _records.Clear();
+            _cursors.Clear();
+            _droppedRecordCount = 0;
+            _resyncRequired = false;
+            _previousCursor = null;
+            _error = null;
+            _streamState = _liveMode ? "Connecting" : "History";
+            _activeFilters = filters;
+
+            var run = new SourceRun(_sourceId, _liveMode, filters);
+            _activeRun = run;
+            await LoadSourceAsync(run).ConfigureAwait(false);
+        }
+        finally
+        {
+            _sourceTransitionGate.Release();
+            _loading = false;
+            if (Volatile.Read(ref _disposed) == 0) await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task LoadSourceAsync(SourceRun run)
+    {
+        try
+        {
+            if (run.LiveMode)
+            {
+                var subscription = await SubscribeLiveAsync(run).ConfigureAwait(false);
+                if (!IsCurrent(run))
+                {
+                    await subscription.DisposeAsync().ConfigureAwait(false);
+                    return;
+                }
+
+                run.Attach(subscription);
+                AppendPage(subscription.InitialPage, updatePreviousCursor: true);
+                _streamState = "Live";
+            }
+            else
+            {
+                var page = await Logs.GetHistoryAsync(TenantId, AgentId, run.SourceId, cancellationToken: run.CancellationToken, filters: run.Filters).ConfigureAwait(false);
+                if (!IsCurrent(run)) return;
+                AppendPage(page, updatePreviousCursor: true);
+            }
+        }
+        catch (OperationCanceledException) when (run.IsCancellationRequested)
+        {
+            System.Diagnostics.Trace.WriteLine("The previous log source request was cancelled before it completed.");
+        }
+        catch (Exception)
+        {
+            if (!IsCurrent(run)) return;
+            _streamState = "Reconnecting";
+            _error = run.LiveMode
+                ? "The live log connection could not be established. History remains available while the gateway reconnects."
+                : "The selected log source could not be opened.";
+        }
+    }
+
+    private async Task<GatewayLogLiveSubscription> SubscribeLiveAsync(SourceRun run)
+    {
+        var delays = new[] { TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(5) };
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                return await LiveLogs.SubscribeAsync(
+                    TenantId,
+                    AgentId,
+                    run.SourceId,
+                    batch => OnBatchAsync(run, batch),
+                    run.CancellationToken,
+                    run.Filters).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (run.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch when (attempt < delays.Length)
+            {
+                _streamState = "Reconnecting";
+                _error = null;
+                if (Volatile.Read(ref _disposed) == 0) await InvokeAsync(StateHasChanged);
+                await Task.Delay(delays[attempt], run.CancellationToken).ConfigureAwait(false);
+            }
+        }
+    }
+
+    private Task OnBatchAsync(SourceRun run, GatewayLogBatchDto batch)
+    {
+        if (!IsCurrent(run)) return Task.CompletedTask;
+        if (batch.TenantId != TenantId || batch.AgentId != AgentId) return Task.CompletedTask;
+        if (!_follow) return Task.CompletedTask;
+        Append(batch.Records.Where(record => string.Equals(record.SourceId, run.SourceId, StringComparison.Ordinal)));
+        _droppedRecordCount = Math.Max(_droppedRecordCount, batch.DroppedRecordCount);
+        _resyncRequired |= batch.ResyncRequired;
+        return Volatile.Read(ref _disposed) == 0 ? InvokeAsync(StateHasChanged) : Task.CompletedTask;
+    }
+
+    private void AppendPage(GatewayLogPageDto page, bool updatePreviousCursor = false)
+    {
+        Append(page.Records);
+        if (updatePreviousCursor) _previousCursor = page.PreviousCursor;
+        _droppedRecordCount = Math.Max(_droppedRecordCount, page.DroppedRecordCount);
+        _resyncRequired |= page.ResyncRequired;
+    }
+
+    private void Append(IEnumerable<GatewayLogRecordDto> records)
+    {
+        foreach (var record in records)
+        {
+            if (!_cursors.Add(record.Cursor)) continue;
+            _records.Add(record);
+        }
+
+        // Gateway cursors are source-local and may be allocated in a different
+        // direction to the source timestamp. The explorer promise is temporal:
+        // the most recent record is always at the top, including an unfiltered
+        // initial page and later live batches.
+        _records.Sort(static (left, right) =>
+        {
+            var timestamp = right.TimestampUtc.CompareTo(left.TimestampUtc);
+            return timestamp != 0 ? timestamp : right.Sequence.CompareTo(left.Sequence);
+        });
+        while (_records.Count > DisplayCapacity)
+        {
+            var removed = _records[^1];
+            _cursors.Remove(removed.Cursor);
+            _records.RemoveAt(_records.Count - 1);
+        }
+    }
+
+    private async Task LoadOlderAsync()
+    {
+        var run = _activeRun;
+        if (run is null || _previousCursor is null) return;
+
+        try
+        {
+            var page = await Logs.GetHistoryAsync(TenantId, AgentId, run.SourceId, _previousCursor, cancellationToken: run.CancellationToken, filters: run.Filters).ConfigureAwait(false);
+            if (!IsCurrent(run)) return;
+            Append(page.Records);
+            _previousCursor = page.PreviousCursor;
+            _droppedRecordCount = Math.Max(_droppedRecordCount, page.DroppedRecordCount);
+            _resyncRequired |= page.ResyncRequired;
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (OperationCanceledException) when (run.IsCancellationRequested)
+        {
+            System.Diagnostics.Trace.WriteLine("The source changed while older log history was loading.");
+        }
+        catch (Exception)
+        {
+            _streamState = "Reconnecting";
+        }
+    }
+
+    private Task SetSeverities(IEnumerable<string> values)
+    {
+        _severities.Clear();
+        _severities.UnionWith(values);
+        return Task.CompletedTask;
+    }
+
+    private Task SetPrefixes(IEnumerable<string> values)
+    {
+        _prefixes.Clear();
+        _prefixes.UnionWith(values);
+        return Task.CompletedTask;
+    }
+
+    private async Task SetFollowAsync(bool follow)
+    {
+        _follow = follow;
+        if (!_follow || _sourceId is null || !_liveMode) return;
+
+        try
+        {
+            var cursor = _records.MaxBy(record => record.Sequence)?.Cursor;
+            AppendPage(await Logs.GetHistoryAsync(TenantId, AgentId, _sourceId, cursor, after: true, filters: _activeFilters).ConfigureAwait(false));
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (Exception)
+        {
+            _streamState = "Reconnecting";
+        }
+    }
+
+    private void ClearDisplay()
+    {
+        _records.Clear();
+        _cursors.Clear();
+    }
+
+    private void ToggleFilters() => _filtersExpanded = !_filtersExpanded;
+
+    private async Task ApplyFiltersAsync()
+    {
+        _filtersExpanded = false;
+        CancelActiveSource();
+        await StartSourceAsync().ConfigureAwait(false);
+    }
+
+    private async Task ClearFiltersAsync()
+    {
+        _textFilter = null;
+        _providerFilter = null;
+        _eventIdFilter = null;
+        _dateRange = null;
+        _fromTime = null;
+        _toTime = null;
+        _severities.Clear();
+        _prefixes.Clear();
+        _filtersExpanded = false;
+        CancelActiveSource();
+        await StartSourceAsync().ConfigureAwait(false);
+    }
+
+    private async Task<IReadOnlyList<GatewayLogSourceDescriptorDto>> GetSourcesWithRetryAsync()
+    {
+        var delays = new[] { TimeSpan.FromMilliseconds(300), TimeSpan.FromSeconds(1) };
+        IReadOnlyList<GatewayLogSourceDescriptorDto> sources = [];
+        Exception? lastFailure = null;
+        for (var attempt = 0; attempt <= delays.Length; attempt++)
+        {
+            try
+            {
+                sources = await Logs.GetSourcesAsync(TenantId, AgentId, _dialogCancellation.Token).ConfigureAwait(false);
+                if (sources.Any(source => source.Available) || attempt == delays.Length) return sources;
+            }
+            catch (OperationCanceledException) when (_dialogCancellation.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                lastFailure = exception;
+                if (attempt == delays.Length) throw;
+            }
+
+            await Task.Delay(delays[attempt], _dialogCancellation.Token).ConfigureAwait(false);
+        }
+
+        throw lastFailure ?? new InvalidOperationException("The log source discovery did not complete.");
+    }
+
+    private void SetDateRange(DateRange? dateRange)
+    {
+        _dateRange = dateRange;
+        if (!CanNarrowToTime)
+        {
+            _fromTime = null;
+            _toTime = null;
+        }
+    }
+
+    private void SetFromTime(TimeSpan? fromTime) => _fromTime = fromTime;
+
+    private void SetToTime(TimeSpan? toTime) => _toTime = toTime;
+
+    private bool SourceSupports(string capability) => _sources.FirstOrDefault(source => string.Equals(source.SourceId, _sourceId, StringComparison.Ordinal))?.FilterCapabilities
+        .Contains(capability, StringComparer.OrdinalIgnoreCase) == true;
+
+    private bool TryBuildFilters(out GatewayLogQueryFilters filters, out string? error)
+    {
+        filters = default!;
+        error = null;
+        var (from, to) = BuildUtcRange();
+        if (from is { } fromValue && to is { } toValue && (fromValue > toValue || toValue - fromValue > TimeSpan.FromDays(31)))
+        {
+            error = "Choose a UTC time range no longer than 31 days.";
+            return false;
+        }
+        var providers = Providers();
+        if (providers.Count > 32 || providers.Any(provider => provider.Length > 256))
+        {
+            error = "Use at most 32 provider filters, each no longer than 256 characters.";
+            return false;
+        }
+        if (!TryEventIds(_eventIdFilter, out var eventIds))
+        {
+            error = "Event IDs must be non-negative whole numbers separated by commas.";
+            return false;
+        }
+        filters = new(from, to, _severities.ToArray(), _prefixes.ToArray(), providers, eventIds, _textFilter);
+        return true;
+    }
+
+    private (DateTimeOffset? FromUtc, DateTimeOffset? ToUtc) BuildUtcRange()
+    {
+        if (EffectiveStartDate is not { } start || EffectiveEndDate is not { } end) return (null, null);
+        if (end.Date < start.Date) return (null, null);
+
+        if (start.Date != end.Date)
+        {
+            return (AtUtc(start, TimeSpan.Zero), AtUtc(end, EndOfDay));
+        }
+
+        return (AtUtc(start, _fromTime ?? TimeSpan.Zero), AtUtc(end, _toTime ?? EndOfDay));
+    }
+
+    private static readonly TimeSpan EndOfDay = TimeSpan.FromDays(1) - TimeSpan.FromTicks(1);
+
+    private static DateTimeOffset AtUtc(DateTime date, TimeSpan time) => new(DateTime.SpecifyKind(date.Date.Add(time), DateTimeKind.Utc));
+
+    private IReadOnlyList<string> Providers() => (_providerFilter ?? string.Empty).Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+        .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+
+    private IReadOnlyList<long> EventIds() => TryEventIds(_eventIdFilter, out var eventIds) ? eventIds : [];
+
+    private static bool TryEventIds(string? value, out IReadOnlyList<long> eventIds)
+    {
+        var values = new List<long>();
+        foreach (var text in (value ?? string.Empty).Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (!long.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out var eventId) || eventId < 0)
+            {
+                eventIds = [];
+                return false;
+            }
+            if (!values.Contains(eventId)) values.Add(eventId);
+        }
+        eventIds = values;
+        return values.Count <= 32;
+    }
+
+    private void CancelActiveSource() => _activeRun?.Cancel();
+
+    private bool IsCurrent(SourceRun run) => ReferenceEquals(_activeRun, run) && !run.IsCancellationRequested && Volatile.Read(ref _disposed) == 0;
+
+    private async Task StopSourceCoreAsync()
+    {
+        var run = _activeRun;
+        _activeRun = null;
+        _activeFilters = null;
+        if (run is null) return;
+
+        try
+        {
+            await run.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            // A source handoff must not be held hostage by a failed best-effort
+            // hub cleanup; disposing the connection still triggers server cleanup.
+            System.Diagnostics.Trace.TraceWarning("The previous live log subscription did not clean up cleanly: {0}", exception.GetType().Name);
+        }
+    }
+
+    private static Color SeverityColor(string severity) => severity.ToLowerInvariant() switch
+    {
+        "fatal" or "error" => Color.Error,
+        "warning" or "warn" => Color.Warning,
+        "debug" or "trace" => Color.Default,
+        _ => Color.Info
+    };
+
+    private void Close()
+    {
+        CancelActiveSource();
+        MudDialog.Close();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+        _dialogCancellation.Cancel();
+        CancelActiveSource();
+        await _sourceTransitionGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            await StopSourceCoreAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            _sourceTransitionGate.Release();
+            _dialogCancellation.Dispose();
+        }
+    }
+
+    private sealed class SourceRun(string sourceId, bool liveMode, GatewayLogQueryFilters filters) : IAsyncDisposable
+    {
+        private readonly CancellationTokenSource _cancellation = new();
+        private GatewayLogLiveSubscription? _subscription;
+        private int _disposed;
+
+        public string SourceId { get; } = sourceId;
+        public bool LiveMode { get; } = liveMode;
+        public GatewayLogQueryFilters Filters { get; } = filters;
+        public CancellationToken CancellationToken => _cancellation.Token;
+        public bool IsCancellationRequested => _cancellation.IsCancellationRequested;
+
+        public void Attach(GatewayLogLiveSubscription subscription)
+        {
+            if (IsCancellationRequested) throw new OperationCanceledException(CancellationToken);
+            _subscription = subscription;
+        }
+
+        public void Cancel() => _cancellation.Cancel();
+
+        public async ValueTask DisposeAsync()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+            _cancellation.Cancel();
+            var subscription = _subscription;
+            _subscription = null;
+            if (subscription is not null) await subscription.DisposeAsync().ConfigureAwait(false);
+            _cancellation.Dispose();
+        }
+    }
+}

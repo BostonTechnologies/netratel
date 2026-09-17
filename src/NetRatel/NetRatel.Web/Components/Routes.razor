@@ -1,0 +1,30 @@
+@using Microsoft.AspNetCore.Components
+@using Microsoft.AspNetCore.Components.Authorization
+@using NetRatel.Web.Components.Pages
+
+<CascadingAuthenticationState>
+    <Router AppAssembly="typeof(Program).Assembly">
+        <Found Context="routeData">
+            <AuthorizeView>
+                <Authorized>
+                    <!-- Authenticated users: always use MainLayout (menu visible) -->
+                    <RouteView RouteData="routeData" DefaultLayout="typeof(Layout.MainLayout)" />
+                </Authorized>
+                <NotAuthorized>
+                    <!-- Unauthenticated users: only render /login with PublicLayout; otherwise redirect to /login -->
+                    @if (routeData.PageType == typeof(Login))
+                    {
+                        <RouteView RouteData="routeData" DefaultLayout="typeof(Layout.PublicLayout)" />
+                    }
+                    else
+                    {
+                        <LayoutView Layout="typeof(Layout.PublicLayout)">
+                            <RedirectToLogin />
+                        </LayoutView>
+                    }
+                </NotAuthorized>
+            </AuthorizeView>
+            <FocusOnNavigate RouteData="routeData" Selector="h1" />
+        </Found>
+    </Router>
+</CascadingAuthenticationState>

@@ -1,0 +1,82 @@
+@using MudBlazor
+@using BlazorMonaco.Editor
+
+<MudDialog>
+    <TitleContent>
+        <MudText Typo="Typo.h6">Edit Script: @EditableName</MudText>
+    </TitleContent>
+
+    <DialogContent>
+        <MudGrid Spacing="3" Style="height: 75vh;">
+            <MudItem xs="12" sm="3">
+                <MudStack Spacing="2">
+                    <MudSelect T="string"
+                               @bind-Value="SelectedLanguage"
+                               Label="Language"
+                               Variant="Variant.Outlined"
+                               Dense="true"
+                               Disabled="@_saving">
+                        @foreach (var language in _availableLanguages)
+                        {
+                            <MudSelectItem T="string" Value="@language.Value">@language.Key</MudSelectItem>
+                        }
+                    </MudSelect>
+
+                    <MudSelect T="string"
+                               @bind-Value="SelectedTheme"
+                               Label="Theme"
+                               Variant="Variant.Outlined"
+                               Dense="true"
+                               Disabled="@_saving">
+                        @foreach (var theme in _availableThemes)
+                        {
+                            <MudSelectItem T="string" Value="@theme.Value">@theme.Key</MudSelectItem>
+                        }
+                    </MudSelect>
+
+                    <MudTextField @bind-Value="EditableName"
+                                  Label="Script Name"
+                                  Variant="Variant.Outlined"
+                                  Dense="true"
+                                  Required="true"
+                                  Disabled="@_saving" />
+
+                    <MudTextField @bind-Value="EditableFolderPath"
+                                  Label="Folder Path"
+                                  Variant="Variant.Outlined"
+                                  Dense="true"
+                                  Required="true"
+                                  Disabled="@_saving" />
+
+                    <MudTextField @bind-Value="EditableDescription"
+                                  Label="Description"
+                                  Variant="Variant.Outlined"
+                                  Lines="3"
+                                  Dense="true"
+                                  Disabled="@_saving" />
+                </MudStack>
+            </MudItem>
+
+            <MudItem xs="12" sm="9" Style="height: 100%;">
+                <StandaloneCodeEditor @ref="_editor"
+                                      ConstructionOptions="EditorConstructionOptions"
+                                      OnDidInit="EditorOnDidInit" />
+            </MudItem>
+        </MudGrid>
+    </DialogContent>
+
+    <DialogActions>
+        <MudButton OnClick="Cancel" Disabled="@_saving">Cancel</MudButton>
+        <MudButton Color="Color.Primary" OnClick="SaveScript" Disabled="@_saving">
+            @if (_saving)
+            {
+                <MudProgressCircular Class="ms-n1" Size="Size.Small" Indeterminate="true" />
+                <MudText Class="ms-2">Saving...</MudText>
+            }
+            else
+            {
+                <MudText>Save</MudText>
+            }
+        </MudButton>
+    </DialogActions>
+</MudDialog>

@@ -1,0 +1,296 @@
+@using System.Linq
+
+@using NetRatel.Shared.Contracts
+@using NetRatel.Shared.Contracts.Scripts
+
+@using NetRatel.Web.Services.Script
+
+@implements IDisposable
+@inject IScriptLibraryService ScriptLibraryService
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <TitleContent>
+        <MudText Typo="Typo.h6">Choose Script</MudText>
+    </TitleContent>
+
+    <DialogContent>
+        <MudStack Spacing="3" Class="script-picker">
+            <MudPaper Class="script-picker-hero pa-4" Elevation="0">
+                <MudStack Spacing="1">
+                    <MudText Class="script-picker-kicker">Library Search</MudText>
+                    <MudText Typo="Typo.h5">Select a reusable script</MudText>
+                    <MudText Typo="Typo.body2">Search the shared library, inspect metadata, and choose the exact script to execute.</MudText>
+                </MudStack>
+            </MudPaper>
+
+            <MudPaper Class="script-picker-panel pa-3" Elevation="0">
+                <MudStack Spacing="2">
+                    <MudGrid Spacing="2">
+                        <MudItem xs="12" md="8">
+                            <MudTextField @bind-Value="_search"
+                                          Label="Search scripts"
+                                          Immediate="true"
+                                          Variant="Variant.Outlined"
+                                          OnKeyDown="HandleSearchKey"
+                                          Adornment="Adornment.Start"
+                                          AdornmentIcon="@Icons.Material.Filled.Search" />
+                        </MudItem>
+                        <MudItem xs="12" md="4" Class="d-flex align-center">
+                            <MudButton OnClick="TriggerSearch"
+                                       Color="Color.Primary"
+                                       Variant="Variant.Filled"
+                                       Disabled="_isLoading"
+                                       StartIcon="@Icons.Material.Filled.Search">
+                                Search
+                            </MudButton>
+                        </MudItem>
+                    </MudGrid>
+
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
+                        <MudText Typo="Typo.subtitle2">Results</MudText>
+                        <MudChip T="string" Variant="Variant.Outlined" Size="Size.Small">@_totalCount total</MudChip>
+                    </MudStack>
+                </MudStack>
+            </MudPaper>
+
+            <MudPaper Class="script-picker-panel pa-2" Elevation="0">
+                @if (_isLoading && _scripts.Count == 0)
+                {
+                    <MudStack Spacing="1">
+                        <MudSkeleton Height="32" />
+                        <MudSkeleton Height="32" />
+                        <MudSkeleton Height="32" />
+                    </MudStack>
+                }
+                else if (_scripts.Count == 0)
+                {
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">No scripts found.</MudText>
+                }
+                else
+                {
+                    <MudTable T="ScriptSummaryDto"
+                              Items="_scripts"
+                              Dense="true"
+                              Hover="true"
+                              FixedHeader="true"
+                              Height="420px"
+                              RowClass="cursor-pointer"
+                              RowClassFunc="RowClass"
+                              OnRowClick="RowClicked">
+
+                        <HeaderContent>
+                            <MudTh style="width:56px;"></MudTh>
+                            <MudTh>Name</MudTh>
+                            <MudTh>Description</MudTh>
+                            <MudTh style="width:200px;">Tags</MudTh>
+                        </HeaderContent>
+
+                        <RowTemplate>
+                            <MudTd>
+                                <MudIcon Icon="@(_selectedScriptId == context.Id
+                                                                        ? Icons.Material.Filled.RadioButtonChecked
+                                                                        : Icons.Material.Outlined.RadioButtonUnchecked)" />
+                        </MudTd>
+
+                            <MudTd>
+                                <MudText Typo="Typo.subtitle2">@context.Name</MudText>
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">@context.Id</MudText>
+                            </MudTd>
+
+                            <MudTd>@context.Description</MudTd>
+
+                            <MudTd>
+                                @if (!string.IsNullOrWhiteSpace(context.ScriptType) || context.Tags is { Length: > 0 })
+                                {
+                                    <MudStack Row="true" Spacing="1">
+                                        @if (!string.IsNullOrWhiteSpace(context.ScriptType))
+                                        {
+                                            <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">@context.ScriptType</MudChip>
+                                        }
+                                        @if (context.Tags is { Length: > 0 })
+                                        {
+                                            @foreach (var tag in context.Tags)
+                                            {
+                                                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">@tag</MudChip>
+                                            }
+                                        }
+                                    </MudStack>
+                                }
+                                else
+                                {
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">—</MudText>
+                                }
+                            </MudTd>
+                        </RowTemplate>
+                    </MudTable>
+                }
+            </MudPaper>
+
+            <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                <MudText Typo="Typo.caption">Page @_page of @TotalPages</MudText>
+                <MudStack Row="true" Spacing="1">
+                    <MudButton Variant="Variant.Outlined" OnClick="PreviousPage" Disabled="_page <= 1 || _isLoading">Previous</MudButton>
+                    <MudButton Variant="Variant.Outlined" OnClick="NextPage" Disabled="!HasNextPage || _isLoading">Next</MudButton>
+                </MudStack>
+            </MudStack>
+        </MudStack>
+    </DialogContent>
+
+    <DialogActions>
+        <MudButton OnClick="Cancel" Disabled="_isLoading">Cancel</MudButton>
+        <MudButton Color="Color.Primary"
+                   OnClick="ConfirmSelection"
+                   Disabled="@(_selectedScriptId == 0 || _isLoading)">
+            Select
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+
+@code {
+    private const int PageSize = 25;
+
+    [CascadingParameter] private IMudDialogInstance MudDialog { get; set; } = default!;
+
+    private readonly List<ScriptSummaryDto> _scripts = new();
+    private ulong _selectedScriptId;
+    private string? _search;
+    private int _page = 1;
+    private int _totalCount;
+    private bool _isLoading;
+
+    private readonly CancellationTokenSource _disposeCts = new();
+    private CancellationTokenSource? _loadCts;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadScriptsAsync();
+    }
+
+    private async Task TriggerSearch()
+    {
+        _page = 1;
+        await LoadScriptsAsync();
+    }
+
+    private async Task PreviousPage()
+    {
+        if (_page <= 1)
+        {
+            return;
+        }
+
+        _page--;
+        await LoadScriptsAsync();
+    }
+
+    private async Task NextPage()
+    {
+        if (!HasNextPage)
+        {
+            return;
+        }
+
+        _page++;
+        await LoadScriptsAsync();
+    }
+
+    private async Task LoadScriptsAsync()
+    {
+        _loadCts?.Cancel();
+        _loadCts?.Dispose();
+
+        _loadCts = CancellationTokenSource.CreateLinkedTokenSource(_disposeCts.Token);
+        var ct = _loadCts.Token;
+
+        _isLoading = true;
+        try
+        {
+            var result = await ScriptLibraryService.SearchAsync(_search, _page, PageSize, ct).ConfigureAwait(false);
+
+            _scripts.Clear();
+            _scripts.AddRange(result.Items);
+            _totalCount = result.TotalCount;
+
+            if (_selectedScriptId != 0 && _scripts.All(s => s.Id != _selectedScriptId))
+            {
+                _selectedScriptId = 0;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // ignored
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to load scripts: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isLoading = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void HandleSearchKey(KeyboardEventArgs args)
+    {
+        if (string.Equals(args.Key, "Enter", System.StringComparison.OrdinalIgnoreCase))
+        {
+            _ = TriggerSearch();
+        }
+    }
+
+    private void Cancel() => MudDialog.Cancel();
+
+    private void RowClicked(TableRowClickEventArgs<ScriptSummaryDto> e)
+    {
+        // toggle behavior is nice; remove the ternary if you prefer one-way selection
+        _selectedScriptId = (_selectedScriptId == e.Item.Id) ? 0 : e.Item.Id;
+        StateHasChanged();
+    }
+
+    private string RowClass(ScriptSummaryDto row, int _)
+        => _selectedScriptId == row.Id ? "selected" : string.Empty;
+
+    private void ConfirmSelection()
+    {
+        if (_selectedScriptId == 0) return;
+        var selected = _scripts.FirstOrDefault(s => s.Id == _selectedScriptId);
+        if (selected is null) return;
+        MudDialog.Close(DialogResult.Ok(selected));
+    }
+
+    private bool HasNextPage => _page * PageSize < _totalCount;
+
+    private int TotalPages => Math.Max((_totalCount + PageSize - 1) / PageSize, 1);
+
+    public void Dispose()
+    {
+        _disposeCts.Cancel();
+        _disposeCts.Dispose();
+        _loadCts?.Cancel();
+        _loadCts?.Dispose();
+    }
+}
+
+<style>
+    .script-picker-hero,
+    .script-picker-panel {
+        border: 1px solid var(--mud-palette-divider);
+        border-radius: var(--netratel-radius-surface, 7px);
+        background: var(--mud-palette-surface);
+    }
+
+    .script-picker-hero {
+        border-left: 3px solid var(--mud-palette-primary);
+    }
+
+    .script-picker-kicker {
+        color: var(--mud-palette-primary);
+        font-size: 0.74rem;
+        font-weight: 700;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+    }
+</style>

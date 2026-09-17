@@ -1,0 +1,16 @@
+<MudDialog>
+    <TitleContent>
+        <MudText Typo="Typo.h6">Command Console (Coming Soon)</MudText>
+    </TitleContent>
+    <DialogContent>
+        <MudText>This feature will be available once the API-driven console is implemented.</MudText>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Close">Close</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] IMudDialogInstance MudDialog { get; set; } = default!;
+    private void Close() => MudDialog.Close();
+}

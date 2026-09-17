@@ -1,0 +1,62 @@
+[
+  {
+    "name": "target_prepare_ready_for_offer",
+    "currentOutcome": "The endpoint emits target preparation statuses, but the V2 dialog creates its offer immediately.",
+    "v2Gate": "Create an offer only after the exact target/provider is ready.",
+    "historicalIssues": [421, 431, 433]
+  },
+  {
+    "name": "offer_answer_ice",
+    "currentOutcome": "The gateway relays bounded ordered signalling and the helper owns direct WebRTC.",
+    "v2Gate": "Fence directional sequences and negotiation generation without persisting SDP or ICE.",
+    "historicalIssues": [294, 518]
+  },
+  {
+    "name": "duplicate_signal",
+    "currentOutcome": "The current registry rejects duplicate or lower agent session sequences.",
+    "v2Gate": "Deduplicate by direction, generation and message ID.",
+    "historicalIssues": [518]
+  },
+  {
+    "name": "reordered_signal",
+    "currentOutcome": "The current registry is monotonic rather than contiguous.",
+    "v2Gate": "Specify explicit out-of-order handling per negotiation generation.",
+    "historicalIssues": [431]
+  },
+  {
+    "name": "browser_reconnect",
+    "currentOutcome": "The browser peer can restart on a gateway reconnect, but has no durable cursor/resume authority.",
+    "v2Gate": "Authorize operator-bound cursor resume or require renegotiation.",
+    "historicalIssues": [518]
+  },
+  {
+    "name": "agent_gateway_reconnect",
+    "currentOutcome": "Same-process replacement replays open and resets agent sequence fencing.",
+    "v2Gate": "Fresh presence epoch and edge-route registration are required after loss.",
+    "historicalIssues": [518]
+  },
+  {
+    "name": "first_frame_timeout",
+    "currentOutcome": "The JavaScript asset can report a first frame, while the current dialog does not use it as the connected gate.",
+    "v2Gate": "A current-peer first frame is required before Connected.",
+    "historicalIssues": [444, 446]
+  },
+  {
+    "name": "data_channel_missing",
+    "currentOutcome": "The JavaScript asset reports channel state but the dialog leaves the callback empty.",
+    "v2Gate": "Control requires an open current data channel and helper input readiness.",
+    "historicalIssues": [436]
+  },
+  {
+    "name": "helper_loss",
+    "currentOutcome": "Per-WTS helper registry removal is reference-specific; the affected media route must recover independently.",
+    "v2Gate": "One exact helper repair per child session; no cross-session fallback.",
+    "historicalIssues": [420, 450]
+  },
+  {
+    "name": "console_to_user_transition",
+    "currentOutcome": "Historical workflow uses a fresh generation-1 user child after console login.",
+    "v2Gate": "Keep console media until a selected exact user target is ready; no same-peer handover.",
+    "historicalIssues": [422, 448, 450]
+  }
+]

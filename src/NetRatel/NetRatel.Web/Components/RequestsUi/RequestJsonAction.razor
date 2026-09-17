@@ -1,0 +1,88 @@
+@inject IDialogService DialogService
+@implements IDisposable
+
+@if (!string.IsNullOrWhiteSpace(Json))
+{
+    <span class="request-json-action" @onmouseenter="OpenPreview" @onmouseleave="ClosePreviewAsync">
+        <MudIconButton Icon="@Icon"
+                       Color="@Color"
+                       Variant="Variant.Outlined"
+                       Size="Size.Small"
+                       OnClick="OpenDialogAsync"
+                       aria-label="@Tooltip" />
+        <MudPopover Open="_previewOpen"
+                    AnchorReference="AnchorReference.PreviousSibling"
+                    AnchorOrigin="Origin.BottomRight"
+                    TransformOrigin="Origin.TopRight"
+                    CloseOnOutsideClick="true"
+                    Class="request-json-preview-popover pa-3">
+            <div @onmouseenter="OpenPreview" @onmouseleave="ClosePreviewAsync">
+                <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="mb-2">
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
+                        <MudIcon Icon="@Icon" Size="Size.Small" Color="@Color" />
+                        <MudText Typo="Typo.subtitle2">@Title</MudText>
+                    </MudStack>
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">Click icon to expand</MudText>
+                </MudStack>
+                <RequestJsonPayloadView Json="@Json" Preview="true" />
+            </div>
+        </MudPopover>
+    </span>
+}
+
+@code {
+    [Parameter] public string Title { get; set; } = "JSON payload";
+    [Parameter] public string? Json { get; set; }
+    [Parameter] public string Icon { get; set; } = Icons.Material.Filled.DataObject;
+    [Parameter] public Color Color { get; set; } = Color.Primary;
+
+    private bool _previewOpen;
+    private CancellationTokenSource? _closePreviewCts;
+    private string Tooltip => $"View {Title}";
+
+    private void OpenPreview()
+    {
+        _closePreviewCts?.Cancel();
+        _previewOpen = true;
+    }
+
+    private async Task ClosePreviewAsync()
+    {
+        _closePreviewCts?.Cancel();
+        var cts = new CancellationTokenSource();
+        _closePreviewCts = cts;
+
+        try
+        {
+            await Task.Delay(1000, cts.Token);
+            if (!cts.IsCancellationRequested)
+            {
+                _previewOpen = false;
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    private async Task OpenDialogAsync()
+    {
+        _closePreviewCts?.Cancel();
+        _previewOpen = false;
+        var parameters = new DialogParameters<RequestJsonDialog>
+        {
+            { x => x.Title, Title },
+            { x => x.Json, Json },
+            { x => x.Icon, Icon }
+        };
+        var options = new DialogOptions { CloseButton = true, MaxWidth = MaxWidth.Large, FullWidth = true };
+        await DialogService.ShowAsync<RequestJsonDialog>(Title, parameters, options);
+    }
+
+    public void Dispose()
+    {
+        _closePreviewCts?.Cancel();
+        _closePreviewCts?.Dispose();
+    }
+}

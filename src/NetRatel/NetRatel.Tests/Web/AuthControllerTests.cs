@@ -1,0 +1,55 @@
+using FluentAssertions;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Routing;
+using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Options;
+using NetRatel.Web.Configuration;
+using NetRatel.Web.Controllers;
+using Xunit;
+
+namespace NetRatel.Tests.Web;
+
+public sealed class AuthControllerTests
+{
+    [Fact]
+    public void Oidc_login_challenges_the_provider_neutral_scheme_and_preserves_a_local_return_url()
+    {
+        var result = CreateController().OidcLogin("/clients").Should().BeOfType<ChallengeResult>().Subject;
+
+        result.AuthenticationSchemes.Should().ContainSingle().Which.Should().Be("Oidc");
+        result.Properties.Should().NotBeNull();
+        result.Properties!.RedirectUri.Should().Be("/clients");
+    }
+
+    [Theory]
+    [InlineData("https://attacker.example.invalid")]
+    [InlineData("//attacker.example.invalid")]
+    public void Oidc_login_rejects_non_local_return_urls(string returnUrl)
+    {
+        var result = CreateController().OidcLogin(returnUrl).Should().BeOfType<ChallengeResult>().Subject;
+
+        result.Properties.Should().NotBeNull();
+        result.Properties!.RedirectUri.Should().Be("/");
+    }
+
+    private static AuthController CreateController()
+    {
+        var controller = new AuthController(
+            null!,
+            new ConfigurationBuilder().Build(),
+            null!,
+            Options.Create(new MachineTokenOptions()),
+            null!)
+        {
+            ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext(),
+                RouteData = new RouteData()
+            }
+        };
+        controller.Url = new UrlHelper(controller.ControllerContext);
+        return controller;
+    }
+}

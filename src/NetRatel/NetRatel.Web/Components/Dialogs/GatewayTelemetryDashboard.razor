@@ -1,0 +1,100 @@
+@using NetRatel.Web.Services.Telemetry
+
+<section class="telemetry-dashboard" data-testid="telemetry-dashboard" aria-label="Live client telemetry">
+    <div class="telemetry-metric-grid" data-testid="telemetry-metric-grid">
+        <section class="telemetry-metric-card telemetry-primary-card" data-testid="telemetry-metric-card-cpu" aria-labelledby="telemetry-cpu-title">
+            <header class="telemetry-card-header">
+                <div>
+                    <div id="telemetry-cpu-title" class="telemetry-card-label">CPU</div>
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">Processor utilisation</MudText>
+                </div>
+                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Success">Live</MudChip>
+            </header>
+            <div class="telemetry-primary-value" data-testid="telemetry-cpu-value">@FormatPercent(Snapshot.Cpu?.UsagePercent)</div>
+            <MudProgressLinear Value="@(Snapshot.Cpu?.UsagePercent ?? 0)" Color="Color.Success" Class="telemetry-utilisation" />
+            <div class="telemetry-supporting-values">
+                <span>Load <strong>@(Snapshot.Cpu?.LoadAverage?.ToString("F2") ?? "n/a")</strong></span>
+                <span>Processes <strong>@(Snapshot.Cpu?.ProcessCount?.ToString() ?? "n/a")</strong></span>
+            </div>
+            <div class="telemetry-chart-region"><TelemetrySparkline Values="CpuHistory" Label="CPU utilisation" MinimumValue="0" MaximumValue="100" /></div>
+            <footer class="telemetry-card-footer">@CadenceLabel</footer>
+        </section>
+
+        <section class="telemetry-metric-card telemetry-primary-card" data-testid="telemetry-metric-card-memory" aria-labelledby="telemetry-memory-title">
+            <header class="telemetry-card-header">
+                <div>
+                    <div id="telemetry-memory-title" class="telemetry-card-label">Memory</div>
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">Working set utilisation</MudText>
+                </div>
+                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Info">@FormatMemoryAvailable(Snapshot.Memory)</MudChip>
+            </header>
+            <div class="telemetry-primary-value" data-testid="telemetry-memory-value">@FormatPercent(Snapshot.Memory?.UsagePercent)</div>
+            <MudProgressLinear Value="@(Snapshot.Memory?.UsagePercent ?? 0)" Color="Color.Info" Class="telemetry-utilisation" />
+            <div class="telemetry-supporting-values">
+                <span>Used <strong>@FormatMemory(Snapshot.Memory?.UsedMb)</strong></span>
+                <span>Total <strong>@FormatMemory(Snapshot.Memory?.TotalMb)</strong></span>
+            </div>
+            <div class="telemetry-chart-region"><TelemetrySparkline Values="MemoryHistory" Label="Memory utilisation" Stroke="var(--mud-palette-info)" MinimumValue="0" MaximumValue="100" /></div>
+            <footer class="telemetry-card-footer">Available @FormatMemory(Snapshot.Memory?.AvailableMb)</footer>
+        </section>
+
+        <section class="telemetry-metric-card telemetry-primary-card" data-testid="telemetry-metric-card-network" aria-labelledby="telemetry-network-title">
+            <header class="telemetry-card-header">
+                <div>
+                    <div id="telemetry-network-title" class="telemetry-card-label">Network</div>
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">@PrimaryNetworkLabel</MudText>
+                </div>
+                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Primary">RX / TX</MudChip>
+            </header>
+            <div class="telemetry-network-values" data-testid="telemetry-network-value">
+                <div><span class="telemetry-rx-label">↓ RX</span><strong>@FormatRate(Snapshot.Networks.Sum(network => network.RxBytesPerSec))</strong></div>
+                <div><span class="telemetry-tx-label">↑ TX</span><strong>@FormatRate(Snapshot.Networks.Sum(network => network.TxBytesPerSec))</strong></div>
+            </div>
+            <div class="telemetry-chart-region"><TelemetrySparkline Values="NetworkRxHistory" SecondaryValues="NetworkTxHistory" Label="Network receive and transmit" Stroke="var(--mud-palette-primary)" SecondaryStroke="var(--mud-palette-info)" /></div>
+            <footer class="telemetry-card-footer">@NetworkSummary</footer>
+        </section>
+    </div>
+
+    <section class="telemetry-metric-card telemetry-disk-section" data-testid="telemetry-disk-section" aria-labelledby="telemetry-disk-title">
+        <header class="telemetry-card-header">
+            <div>
+                <div id="telemetry-disk-title" class="telemetry-card-label">Disk</div>
+                <MudText Typo="Typo.caption" Color="Color.Secondary">Capacity remains sampled at the standard cadence</MudText>
+            </div>
+        </header>
+        @if (Snapshot.Disks.Count == 0)
+        {
+            <MudText Typo="Typo.caption" Color="Color.Secondary">No disk telemetry yet.</MudText>
+        }
+        else
+        {
+            <div class="telemetry-disk-grid">
+                @foreach (var disk in Snapshot.Disks)
+                {
+                    <article class="telemetry-disk-card">
+                        <div class="telemetry-disk-heading"><strong title="@disk.Scope">@disk.Scope</strong><span>@FormatPercent(disk.UsagePercent)</span></div>
+                        <MudProgressLinear Value="@disk.UsagePercent" Color="@GetUtilizationColor(disk.UsagePercent)" />
+                        <div class="telemetry-disk-values"><span>@disk.UsedGb:F1 GB used</span><span>@disk.FreeGb:F1 GB free</span><span>@disk.TotalGb:F1 GB total</span></div>
+                    </article>
+                }
+            </div>
+        }
+    </section>
+</section>
+
+@code {
+    [Parameter, EditorRequired] public GatewayTelemetrySummary Snapshot { get; set; } = default!;
+    [Parameter, EditorRequired] public IReadOnlyList<double> CpuHistory { get; set; } = [];
+    [Parameter, EditorRequired] public IReadOnlyList<double> MemoryHistory { get; set; } = [];
+    [Parameter, EditorRequired] public IReadOnlyList<double> NetworkRxHistory { get; set; } = [];
+    [Parameter, EditorRequired] public IReadOnlyList<double> NetworkTxHistory { get; set; } = [];
+    [Parameter] public string CadenceLabel { get; set; } = "Connecting";
+
+    private string PrimaryNetworkLabel => Snapshot.Networks.OrderByDescending(network => network.RxBytesPerSec + network.TxBytesPerSec).FirstOrDefault()?.Scope ?? "No active interfaces";
+    private string NetworkSummary => Snapshot.Networks.Count == 0 ? "Awaiting interface telemetry" : $"{Snapshot.Networks.Count} interface{(Snapshot.Networks.Count == 1 ? string.Empty : "s")} reporting";
+    private static string FormatPercent(double? value) => value is null ? "n/a" : $"{value.Value:F1}%";
+    private static string FormatMemory(double? value) => value is null ? "n/a" : value.Value >= 1024 ? $"{value.Value / 1024d:F1} GB" : $"{value.Value:F0} MB";
+    private static string FormatMemoryAvailable(GatewayTelemetryMemory? memory) => memory is null ? "n/a" : $"{FormatMemory(memory.AvailableMb)} free";
+    private static string FormatRate(double value) => value >= 1024 * 1024 ? $"{value / 1024d / 1024d:F1} MB/s" : value >= 1024 ? $"{value / 1024d:F1} KB/s" : $"{value:F0} B/s";
+    private static Color GetUtilizationColor(double usage) => usage >= 90 ? Color.Error : usage >= 75 ? Color.Warning : Color.Success;
+}

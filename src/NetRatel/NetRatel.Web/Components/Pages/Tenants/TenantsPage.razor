@@ -1,0 +1,423 @@
+@page "/tenants"
+@rendermode InteractiveServer
+
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize]
+
+@using MudBlazor
+@using NetRatel.Shared.Contracts
+@using NetRatel.Shared.Contracts.Requests
+@using NetRatel.Web.Components.Dialogs
+@using NetRatel.Web.Services.Tenants
+
+@inject ITenantApiService TenantApi
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+@inject NavigationManager Nav
+
+<PageTitle>Tenants</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="mt-4">
+    <MudStack Spacing="3">
+        <MudPaper Class="tenants-hero pa-4">
+            <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="flex-wrap" Spacing="2">
+                <div>
+                    <MudText Typo="Typo.h4">Tenants</MudText>
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">
+                        Manage customer profiles, enrollment access, and tenant navigation from one place.
+                    </MudText>
+                </div>
+
+                <MudButton Variant="Variant.Filled"
+                           Color="Color.Primary"
+                           StartIcon="@Icons.Material.Filled.AddBusiness"
+                           OnClick="OpenAddDialogAsync">
+                    Add Tenant
+                </MudButton>
+            </MudStack>
+
+            <MudGrid Spacing="2" Class="mt-2">
+                <MudItem xs="12" md="4">
+                    <MudPaper Class="tenant-summary-card pa-3" Outlined="true">
+                        <MudText Typo="Typo.caption" Class="tenant-summary-label">Tenants</MudText>
+                        <MudText Typo="Typo.h5">@_tenants.Count</MudText>
+                    </MudPaper>
+                </MudItem>
+                <MudItem xs="12" md="4">
+                    <MudPaper Class="tenant-summary-card pa-3" Outlined="true">
+                        <MudText Typo="Typo.caption" Class="tenant-summary-label">Domains</MudText>
+                        <MudText Typo="Typo.h5">@_tenants.Sum(x => x.Domains?.Count ?? 0)</MudText>
+                    </MudPaper>
+                </MudItem>
+                <MudItem xs="12" md="4">
+                    <MudPaper Class="tenant-summary-card pa-3" Outlined="true">
+                        <MudText Typo="Typo.caption" Class="tenant-summary-label">Last Refresh</MudText>
+                        <MudText Typo="Typo.h5">@(_lastLoadedUtc?.ToLocalTime().ToString("HH:mm:ss") ?? "n/a")</MudText>
+                    </MudPaper>
+                </MudItem>
+            </MudGrid>
+        </MudPaper>
+
+        <MudPaper Class="pa-3">
+            <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="flex-wrap" Spacing="2">
+                <MudTextField @bind-Value="_searchText"
+                              Placeholder="Search tenant, domain, contact, or location"
+                              Variant="Variant.Outlined"
+                              Margin="Margin.Dense"
+                              Immediate="true"
+                              Adornment="Adornment.Start"
+                              AdornmentIcon="@Icons.Material.Filled.Search"
+                              Class="tenants-search" />
+
+                <MudStack Row="true" Spacing="1">
+                    <MudChip T="string" Variant="@GetFilterVariant(string.IsNullOrWhiteSpace(_searchText))" Color="Color.Primary">
+                        @FilteredTenants.Count result@(FilteredTenants.Count == 1 ? string.Empty : "s")
+                    </MudChip>
+                    @if (!string.IsNullOrWhiteSpace(_searchText))
+                    {
+                        <MudButton Variant="Variant.Text" OnClick="@(() => _searchText = string.Empty)">Clear</MudButton>
+                    }
+                </MudStack>
+            </MudStack>
+
+            @if (_isLoading)
+            {
+                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2" Class="py-6">
+                    <MudProgressCircular Color="Color.Primary" Indeterminate="true" />
+                    <MudText>Loading tenants...</MudText>
+                </MudStack>
+            }
+            else if (FilteredTenants.Count == 0)
+            {
+                <MudPaper Class="tenant-empty-state pa-6 mt-4" Outlined="true">
+                    <MudText Typo="Typo.h6">No tenants match this view</MudText>
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">
+                        Try a broader search, or add a new tenant to get started.
+                    </MudText>
+                </MudPaper>
+            }
+            else
+            {
+                <MudTable Items="@FilteredTenants"
+                          Hover="true"
+                          Dense="true"
+                          Breakpoint="Breakpoint.Md"
+                          Elevation="0"
+                          Class="tenant-table mt-4">
+                    <HeaderContent>
+                        <MudTh>ID</MudTh>
+                        <MudTh>Tenant</MudTh>
+                        <MudTh>Location</MudTh>
+                        <MudTh>Contact</MudTh>
+                        <MudTh>Domains</MudTh>
+                        <MudTh>Updated</MudTh>
+                        <MudTh Class="text-right">Actions</MudTh>
+                    </HeaderContent>
+
+                    <RowTemplate>
+                        <MudTd DataLabel="ID">
+                            <MudChip T="int" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Default">
+                                @context.TenantId
+                            </MudChip>
+                        </MudTd>
+
+                        <MudTd DataLabel="Tenant">
+                            <MudStack Spacing="0">
+                                <MudText Typo="Typo.subtitle2">@context.Name</MudText>
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                    @(string.IsNullOrWhiteSpace(context.Description) ? "No description" : context.Description)
+                                </MudText>
+                            </MudStack>
+                        </MudTd>
+
+                        <MudTd DataLabel="Location">
+                            <MudText Typo="Typo.body2">@(context.Location ?? "Unspecified")</MudText>
+                        </MudTd>
+
+                        <MudTd DataLabel="Contact">
+                            <MudStack Spacing="0">
+                                <MudText Typo="Typo.body2">@(context.ContactPerson ?? "No contact")</MudText>
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">@(context.ContactEmail ?? "No email")</MudText>
+                            </MudStack>
+                        </MudTd>
+
+                        <MudTd DataLabel="Domains">
+                            <div class="tenant-domain-wrap">
+                                @if (context.Domains is { Count: > 0 })
+                                {
+                                    @foreach (var domain in context.Domains)
+                                    {
+                                        <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Info">
+                                            @domain
+                                        </MudChip>
+                                    }
+                                }
+                                else
+                                {
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">No domains</MudText>
+                                }
+                            </div>
+                        </MudTd>
+
+                        <MudTd DataLabel="Updated">
+                            <MudText Typo="Typo.body2">@context.UpdatedAt.ToLocalTime().ToString("yyyy/MM/dd HH:mm")</MudText>
+                        </MudTd>
+
+                        <MudTd DataLabel="Actions" Class="text-right">
+                            <MudMenu Dense="true"
+                                     Variant="Variant.Text"
+                                     Color="Color.Default"
+                                     Icon="@Icons.Material.Filled.MoreHoriz"
+                                     AnchorOrigin="Origin.TopRight"
+                                     TransformOrigin="Origin.TopRight">
+                                <MudMenuItem Icon="@Icons.Material.Filled.Edit" OnClick="@(() => OpenEditDialogAsync(context))">
+                                    Edit Tenant
+                                </MudMenuItem>
+                                <MudMenuItem Icon="@Icons.Material.Filled.Devices" OnClick="@(() => OpenAgents(context))">
+                                    View Agents
+                                </MudMenuItem>
+                                <MudMenuItem Icon="@Icons.Material.Filled.VpnKey" OnClick="@(() => OpenEnrollmentCodes(context))">
+                                    Enrollment Codes
+                                </MudMenuItem>
+                                <MudDivider />
+                                <MudMenuItem Icon="@Icons.Material.Filled.DeleteForever"
+                                             Class="tenant-delete-action"
+                                             OnClick="@(() => ConfirmDeleteAsync(context))">
+                                    Delete Tenant
+                                </MudMenuItem>
+                            </MudMenu>
+                        </MudTd>
+                    </RowTemplate>
+                </MudTable>
+            }
+        </MudPaper>
+    </MudStack>
+</MudContainer>
+
+<style>
+    .tenants-hero {
+        background: var(--mud-palette-surface);
+        border: 1px solid var(--mud-palette-divider);
+        border-left: 3px solid var(--mud-palette-primary);
+        border-radius: var(--netratel-radius-surface, 7px);
+    }
+
+    .tenant-summary-card {
+        border-radius: var(--netratel-radius-surface, 7px);
+        background: var(--mud-palette-background-gray);
+        border-color: var(--mud-palette-divider);
+    }
+
+    .tenant-summary-label {
+        color: var(--mud-palette-text-secondary);
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+    }
+
+    .tenants-search {
+        min-width: min(100%, 420px);
+    }
+
+    .tenant-empty-state {
+        border-radius: var(--netratel-radius-surface, 7px);
+        text-align: center;
+        background: var(--mud-palette-surface);
+    }
+
+    .tenant-table .mud-table-head th {
+        font-size: 0.76rem;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        opacity: 0.74;
+    }
+
+    .tenant-table .mud-table-body td {
+        vertical-align: top;
+        padding-top: 0.95rem;
+        padding-bottom: 0.95rem;
+    }
+
+    .tenant-domain-wrap {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.35rem;
+        max-width: 28rem;
+    }
+
+    .tenant-delete-action {
+        color: var(--mud-palette-error);
+    }
+</style>
+
+@code {
+    [SupplyParameterFromQuery(Name = "search")]
+    public string? Search { get; set; }
+
+    private List<TenantDto> _tenants = new();
+    private bool _isLoading = true;
+    private string _searchText = string.Empty;
+    private DateTimeOffset? _lastLoadedUtc;
+
+    private IReadOnlyList<TenantDto> FilteredTenants =>
+        _tenants
+            .Where(MatchesSearch)
+            .OrderBy(x => x.Name)
+            .ToList();
+
+    protected override async Task OnInitializedAsync()
+    {
+        _searchText = Search ?? string.Empty;
+        await LoadTenantsAsync();
+    }
+
+    private async Task LoadTenantsAsync()
+    {
+        _isLoading = true;
+        try
+        {
+            _tenants = (await TenantApi.GetTenantsAsync()).ToList();
+            _lastLoadedUtc = DateTimeOffset.UtcNow;
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to load tenants: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task OpenAddDialogAsync()
+    {
+        var parameters = new DialogParameters
+        {
+            [nameof(TenantEditorDialog.DialogTitle)] = "Add Tenant",
+            [nameof(TenantEditorDialog.IsEditMode)] = false
+        };
+
+        var result = await DialogService.ShowAsync<TenantEditorDialog>(
+            "Add Tenant",
+            parameters,
+            BuildDialogOptions());
+
+        var dialogResult = await result.Result;
+        if (dialogResult is null || dialogResult.Canceled || dialogResult.Data is not CreateTenantRequest request)
+        {
+            return;
+        }
+
+        try
+        {
+            await TenantApi.CreateTenantAsync(request);
+            Snackbar.Add("Tenant created.", Severity.Success);
+            await LoadTenantsAsync();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to create tenant: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task OpenEditDialogAsync(TenantDto tenant)
+    {
+        var parameters = new DialogParameters
+        {
+            [nameof(TenantEditorDialog.DialogTitle)] = $"Edit {tenant.Name}",
+            [nameof(TenantEditorDialog.Tenant)] = tenant,
+            [nameof(TenantEditorDialog.IsEditMode)] = true
+        };
+
+        var result = await DialogService.ShowAsync<TenantEditorDialog>(
+            "Edit Tenant",
+            parameters,
+            BuildDialogOptions());
+
+        var dialogResult = await result.Result;
+        if (dialogResult is null || dialogResult.Canceled || dialogResult.Data is not CreateTenantRequest request)
+        {
+            return;
+        }
+
+        try
+        {
+            await TenantApi.UpdateTenantAsync(tenant.TenantId, new UpdateTenantRequest
+            {
+                Name = request.Name,
+                Description = request.Description,
+                Location = request.Location,
+                Domains = request.Domains,
+                ContactPerson = request.ContactPerson,
+                ContactEmail = request.ContactEmail,
+                AutoUpdate = request.AutoUpdate
+            });
+
+            Snackbar.Add("Tenant updated.", Severity.Success);
+            await LoadTenantsAsync();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to update tenant: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task ConfirmDeleteAsync(TenantDto tenant)
+    {
+        var result = await DialogService.ShowMessageBox(
+            title: "Delete Tenant",
+            markupMessage: (MarkupString)$"Delete <b>{tenant.Name}</b> and remove its tenant record?",
+            yesText: "Delete",
+            cancelText: "Cancel",
+            options: new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Small });
+
+        if (result != true)
+        {
+            return;
+        }
+
+        try
+        {
+            await TenantApi.DeleteTenantAsync(tenant.TenantId);
+            Snackbar.Add("Tenant deleted.", Severity.Success);
+            await LoadTenantsAsync();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to delete tenant: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private void OpenAgents(TenantDto tenant) => Nav.NavigateTo($"/tenants/{tenant.TenantId}/agents");
+
+    private void OpenEnrollmentCodes(TenantDto tenant) => Nav.NavigateTo($"/tenants/{tenant.TenantId}/enrollment");
+
+    private bool MatchesSearch(TenantDto tenant)
+    {
+        if (string.IsNullOrWhiteSpace(_searchText))
+        {
+            return true;
+        }
+
+        var search = _searchText.Trim();
+        return Contains(tenant.Name, search)
+            || Contains(tenant.Description, search)
+            || Contains(tenant.Location, search)
+            || Contains(tenant.ContactPerson, search)
+            || Contains(tenant.ContactEmail, search)
+            || tenant.TenantId.ToString().Contains(search, StringComparison.OrdinalIgnoreCase)
+            || tenant.Domains.Any(domain => Contains(domain, search));
+    }
+
+    private static bool Contains(string? value, string search) =>
+        !string.IsNullOrWhiteSpace(value) && value.Contains(search, StringComparison.OrdinalIgnoreCase);
+
+    private static DialogOptions BuildDialogOptions() => new()
+    {
+        CloseOnEscapeKey = true,
+        FullWidth = true,
+        MaxWidth = MaxWidth.Medium
+    };
+
+    private static Variant GetFilterVariant(bool isPrimary) => isPrimary ? Variant.Filled : Variant.Outlined;
+}

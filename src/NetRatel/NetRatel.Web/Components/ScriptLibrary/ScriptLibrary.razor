@@ -1,0 +1,16 @@
+@page "/scriptlibrary"
+@rendermode InteractiveServer
+@using NetRatel.Web.Components.ScriptLibrary
+
+<ScriptLibraryView
+    AllowAdding="true"
+    AllowEditing="true"
+    ReadOnly="false"
+    ShowViewer="true"
+    FilterByType="@((string?)null)"
+    InitialSearch="@Search" />
+
+@code {
+    [SupplyParameterFromQuery(Name = "search")]
+    public string? Search { get; set; }
+}
