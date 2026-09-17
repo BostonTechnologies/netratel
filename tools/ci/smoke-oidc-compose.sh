@@ -147,7 +147,10 @@ client_image="${NETRATEL_CLIENT_SMOKE_IMAGE:-}"
 [[ -n "$client_image" ]] || { echo "NETRATEL_CLIENT_SMOKE_IMAGE is required." >&2; exit 2; }
 
 openssl ecparam -name prime256v1 -genkey -noout -out "$key_path"
-chmod 600 "$key_path"
+# The API container runs as its own unprivileged UID, so this disposable key
+# must be readable through the read-only bind mount. The key exists only for
+# this isolated smoke run and is removed by cleanup.
+chmod 644 "$key_path"
 export NETRATEL_AGENT_AUTH_PRIVATE_KEY="$key_path"
 export NETRATEL_SMOKE_TLS_CERT_PASSWORD="netratel-compose-only-password"
 openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=api' \
