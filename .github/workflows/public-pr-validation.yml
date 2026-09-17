@@ -150,6 +150,7 @@ jobs:
       - shell: bash
         run: |
           version="$(jq -r '.version' release/release-manifest.json)"
+          mv "artifacts/netratel-client-${{ matrix.runtime }}.spdx.json" "artifacts/netratel-client-${version}-${{ matrix.runtime }}.spdx.json"
           (
             cd artifacts
             if command -v sha256sum >/dev/null 2>&1; then

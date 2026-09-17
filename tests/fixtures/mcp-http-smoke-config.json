@@ -1,0 +1,8 @@
+{
+  "apiBaseUrl": "https://api.example.invalid",
+  "oidcTokenUrl": "https://issuer.example.invalid/connect/token",
+  "oidcClientId": "netratel-mcp-http-smoke",
+  "oidcUsername": "netratel-mcp-http-smoke",
+  "oidcAppPassword": "synthetic-mcp-http-smoke-password",
+  "oidcScope": "netratel.api"
+}

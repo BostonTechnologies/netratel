@@ -3,6 +3,9 @@ set -euo pipefail
 
 image="${NETRATEL_MCP_HTTP_SMOKE_IMAGE:-}"
 [[ -n "$image" ]] || { echo "NETRATEL_MCP_HTTP_SMOKE_IMAGE is required." >&2; exit 2; }
+script_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+mcp_config="$script_root/tests/fixtures/mcp-http-smoke-config.json"
+[[ -f "$mcp_config" ]] || { echo "HTTP MCP smoke configuration fixture is missing." >&2; exit 1; }
 
 container="netratel-mcp-http-smoke-$$_${RANDOM}"
 oidc_container="${container}-oidc"
@@ -38,7 +41,9 @@ curl --resolve "$oidc_resolve" --fail --silent --show-error "${oidc_authority}/i
 
 docker run --detach --name "$container" --publish 127.0.0.1::9224 \
   --add-host host.docker.internal:host-gateway \
+  --mount "type=bind,source=$mcp_config,target=/run/netratel/mcp-config.json,readonly" \
   --env ASPNETCORE_ENVIRONMENT=Development \
+  --env NETRATEL_MCP_CONFIG=/run/netratel/mcp-config.json \
   --env NETRATEL_MCP_INSTANCE=dev \
   --env NETRATEL_MCP_DEV_API_BASE_URL=https://api.example.invalid \
   --env NetRatel__Mcp__Http__PublicResourceUri=https://mcp.example.invalid/mcp \
