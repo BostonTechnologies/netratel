@@ -14,7 +14,10 @@ public sealed class OidcComposeBrowserSmokeTests
         using var playwright = await Playwright.CreateAsync();
         await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
         {
-            Headless = true
+            Headless = true,
+            // The disposable issuer is exposed only on the hosted runner loopback.
+            // Containers and the OIDC issuer use this stable authority hostname.
+            Args = ["--host-resolver-rules=MAP host.docker.internal 127.0.0.1"]
         });
         await using var context = await browser.NewContextAsync();
         var page = await context.NewPageAsync();
