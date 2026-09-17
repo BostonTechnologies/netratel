@@ -313,7 +313,7 @@ verify_mcp_stdio_archive_scoped_read() {
 
   mcp_stdio_extract_dir="$(mktemp -d)"
   tar -xzf "$mcp_archive" -C "$mcp_stdio_extract_dir"
-  mcp_assembly="$mcp_stdio_extract_dir/netratel-mcp-stdio-linux-x64/NetRatel.Mcp.dll"
+  mcp_assembly="$mcp_stdio_extract_dir/netratel-mcp-linux-x64/NetRatel.Mcp.dll"
   [[ -f "$mcp_assembly" ]] || {
     echo "Packaged stdio MCP archive did not contain NetRatel.Mcp.dll." >&2
     return 1
