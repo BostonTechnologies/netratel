@@ -457,6 +457,7 @@ public sealed class NetRatelCliTests
             var body = await request.Content!.ReadAsStringAsync();
             body.Should().Contain("grant_type=client_credentials");
             body.Should().Contain("client_id=client");
+            body.Should().Contain("client_secret=secret");
             body.Should().Contain("username=agent");
             body.Should().Contain("password=secret");
             return Json(HttpStatusCode.OK, """{"access_token":"minted-token"}""");

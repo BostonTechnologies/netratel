@@ -173,6 +173,7 @@ public sealed class NetRatelAgentClient(AgentClientConfiguration configuration, 
             {
                 ["grant_type"] = "client_credentials",
                 ["client_id"] = config.OidcClientId,
+                ["client_secret"] = config.OidcAppPassword,
                 ["username"] = config.OidcUsername,
                 ["password"] = config.OidcAppPassword,
                 ["scope"] = config.OidcScope
