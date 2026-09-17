@@ -172,12 +172,19 @@ wrong_scope_status="$(curl --silent --show-error --output /dev/null --write-out 
 [[ "$wrong_scope_status" == 403 ]] || { echo "Wrong-scope HTTP MCP bearer token returned $wrong_scope_status instead of 403." >&2; exit 1; }
 
 stage="initializing the authorized HTTP MCP session"
-initialize_response="$(curl --fail --silent --show-error \
+initialize_response="$(curl --silent --show-error --write-out $'\n%{http_code}' \
   "${mcp_public_request_headers[@]}" \
   --header "Authorization: Bearer ${operator_access_token}" \
   --header 'Content-Type: application/json' \
   --data '{"jsonrpc":"2.0","id":4,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"netratel-http-smoke","version":"1"}}}' \
   "$base_url/mcp")"
+initialize_status="$(tail -n 1 <<<"$initialize_response")"
+initialize_response="$(sed '$d' <<<"$initialize_response")"
+if [[ "$initialize_status" != 200 ]]; then
+  stage="authorized HTTP MCP initialization returned ${initialize_status}"
+  exit 1
+fi
+stage="validating the authorized HTTP MCP initialization response"
 jq -e '
   .jsonrpc == "2.0"
   and .id == 4
