@@ -38,7 +38,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-oidc_config='{"interactiveLogin":true,"tokenCallbacks":[{"issuerId":"default","requestMappings":[{"requestParam":"client_id","match":"netratel-mcp-smoke-client","claims":{"preferred_username":"netratel-mcp-smoke@example.test","roles":["netratel-operators"],"scope":"netratel.mcp.read","aud":["https://mcp.example.invalid/mcp"]}},{"requestParam":"client_id","match":"netratel-mcp-wrong-scope-client","claims":{"preferred_username":"netratel-mcp-wrong-scope@example.test","roles":["netratel-operators"],"scope":"netratel.mcp.observe","aud":["https://mcp.example.invalid/mcp"]}}]}]}'
+oidc_config='{"interactiveLogin":true,"tokenCallbacks":[{"issuerId":"default","requestMappings":[{"requestParam":"client_id","match":"netratel-mcp-smoke-client","claims":{"preferred_username":"netratel-mcp-smoke@example.test","roles":["netratel-operators"],"groups":["netratel-operators"],"scope":"netratel.mcp.read","aud":["https://mcp.example.invalid/mcp"]}},{"requestParam":"client_id","match":"netratel-mcp-wrong-scope-client","claims":{"preferred_username":"netratel-mcp-wrong-scope@example.test","roles":["netratel-operators"],"groups":["netratel-operators"],"scope":"netratel.mcp.observe","aud":["https://mcp.example.invalid/mcp"]}}]}]}'
 docker run --detach --name "$oidc_container" --hostname host.docker.internal --publish 127.0.0.1::8080 \
   --env "JSON_CONFIG=${oidc_config}" \
   ghcr.io/navikt/mock-oauth2-server@sha256:ae36f65ca23e07e8786b288e53145e7ffb191c9dccfa9868ed433e7bbacad5db >/dev/null
