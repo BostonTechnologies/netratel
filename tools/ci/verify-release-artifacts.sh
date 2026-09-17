@@ -19,6 +19,12 @@ done
 [[ -n "$artifacts" && -n "$version" ]] || usage
 [[ -d "$artifacts" ]] || { echo "Artifact directory does not exist: $artifacts" >&2; exit 1; }
 
+temporary_dir="$(mktemp -d)"
+cleanup_temporary_dir() {
+  find "$temporary_dir" -depth -delete 2>/dev/null || true
+}
+trap cleanup_temporary_dir EXIT
+
 cli="netratel-cli-${version}-linux-x64.tar.gz"
 cli_tool="NetRatel.Cli.${version}.nupkg"
 mcp="netratel-mcp-stdio-${version}-linux-x64.tar.gz"
@@ -43,36 +49,39 @@ scan_archive_contents() {
 
 for archive in "$cli" "$mcp" "$bundle"; do
   [[ -s "$artifacts/$archive" ]] || { echo "Missing release archive: $archive" >&2; exit 1; }
-  tar -tzf "$artifacts/$archive" | while IFS= read -r path; do
+  listing="$temporary_dir/$archive.entries"
+  tar -tzf "$artifacts/$archive" > "$listing"
+  while IFS= read -r path; do
     case "$path" in
       /*|../*|*/../*) echo "Unsafe archive entry in $archive: $path" >&2; exit 1 ;;
     esac
-  done
+  done < "$listing"
   scan_archive_contents "$archive"
 done
+
+archive_has_entry() {
+  local archive="$1"
+  local pattern="$2"
+  local message="$3"
+  grep -Eq -- "$pattern" "$temporary_dir/$archive.entries" || {
+    echo "$message" >&2
+    exit 1
+  }
+}
 
 [[ -s "$artifacts/cli/$cli_tool" ]] || { echo "Missing CLI tool package: $cli_tool" >&2; exit 1; }
 unzip -l "$artifacts/cli/$cli_tool" | grep -Eq 'tools/net10\.0/any/(netratel|netratel\.dll)$' ||
   { echo "CLI tool package does not contain the NetRatel tool entry point." >&2; exit 1; }
 
-tar -tzf "$artifacts/$cli" | grep -Eq '^netratel-cli-linux-x64/(netratel|netratel\.dll)$' ||
-  { echo "CLI archive does not contain the NetRatel executable." >&2; exit 1; }
-tar -tzf "$artifacts/$mcp" | grep -Eq '^netratel-mcp-linux-x64/(NetRatel\.Mcp|NetRatel\.Mcp\.dll)$' ||
-  { echo "stdio MCP archive does not contain the MCP executable." >&2; exit 1; }
-tar -tzf "$artifacts/$bundle" | grep -qx './compose.images.yaml' ||
-  { echo "Release bundle is missing compose.images.yaml." >&2; exit 1; }
-tar -tzf "$artifacts/$bundle" | grep -qx './compose.mcp-http.yaml' ||
-  { echo "Release bundle is missing compose.mcp-http.yaml." >&2; exit 1; }
-tar -tzf "$artifacts/$bundle" | grep -qx './.env.images.example' ||
-  { echo "Release bundle is missing .env.images.example." >&2; exit 1; }
-tar -tzf "$artifacts/$bundle" | grep -qx './release-manifest.json' ||
-  { echo "Release bundle is missing release-manifest.json." >&2; exit 1; }
+archive_has_entry "$cli" '^netratel-cli-linux-x64/(netratel|netratel\.dll)$' "CLI archive does not contain the NetRatel executable."
+archive_has_entry "$mcp" '^netratel-mcp-linux-x64/(NetRatel\.Mcp|NetRatel\.Mcp\.dll)$' "stdio MCP archive does not contain the MCP executable."
+archive_has_entry "$bundle" '^\./compose\.images\.yaml$' "Release bundle is missing compose.images.yaml."
+archive_has_entry "$bundle" '^\./compose\.mcp-http\.yaml$' "Release bundle is missing compose.mcp-http.yaml."
+archive_has_entry "$bundle" '^\./\.env\.images\.example$' "Release bundle is missing .env.images.example."
+archive_has_entry "$bundle" '^\./release-manifest\.json$' "Release bundle is missing release-manifest.json."
 
-release_extract_dir="$(mktemp -d)"
-cleanup_release_extract() {
-  find "$release_extract_dir" -depth -delete 2>/dev/null || true
-}
-trap cleanup_release_extract EXIT
+release_extract_dir="$temporary_dir/release"
+mkdir "$release_extract_dir"
 tar -xzf "$artifacts/$cli" -C "$release_extract_dir"
 tar -xzf "$artifacts/$mcp" -C "$release_extract_dir"
 
