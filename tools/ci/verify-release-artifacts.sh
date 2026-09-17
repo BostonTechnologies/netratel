@@ -107,15 +107,28 @@ cli_tool_version="$("$cli_tool_extract_dir/netratel" --version)"
 mcp_config="$release_extract_dir/mcp-config.json"
 printf '%s\n' '{"apiBaseUrl":"https://netratel.example.invalid","oidcTokenUrl":"https://issuer.example.invalid/connect/token","oidcClientId":"release-artifact-verifier","oidcUsername":"release-artifact-verifier","oidcAppPassword":"synthetic-release-artifact-password","oidcScope":"netratel.api"}' > "$mcp_config"
 
-mcp_initialize_response="$({
-  printf '%s\\n' \
-    '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"release-artifact-verifier","version":"1"}}}' \
-    '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
-    '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
-    '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"netratel_capabilities","arguments":{"operation":"get"}}}'
-  sleep 1
-} | NETRATEL_MCP_CONFIG="$mcp_config" NETRATEL_MCP_INSTANCE=dev timeout 10s dotnet "$mcp_assembly" 2>/dev/null)"
-jq -se '
+coproc MCP_STDIO {
+  NETRATEL_MCP_CONFIG="$mcp_config" NETRATEL_MCP_INSTANCE=dev timeout 10s dotnet "$mcp_assembly" 2>/dev/null
+}
+mcp_stdout_fd="${MCP_STDIO[0]}"
+mcp_stdin_fd="${MCP_STDIO[1]}"
+
+mcp_call() {
+  local request="$1"
+  local response
+  printf '%s\n' "$request" >&"$mcp_stdin_fd"
+  IFS= read -r -t 10 response <&"$mcp_stdout_fd" || return 1
+  printf '%s\n' "$response"
+}
+
+mcp_initialize_response="$(mcp_call '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"release-artifact-verifier","version":"1"}}}')"
+printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/initialized"}' >&"$mcp_stdin_fd"
+mcp_tools_response="$(mcp_call '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}')"
+mcp_capabilities_response="$(mcp_call '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"netratel_capabilities","arguments":{"operation":"get"}}}')"
+kill "$MCP_STDIO_PID" 2>/dev/null || true
+wait "$MCP_STDIO_PID" 2>/dev/null || true
+
+if ! printf '%s\n%s\n%s\n' "$mcp_initialize_response" "$mcp_tools_response" "$mcp_capabilities_response" | jq -se '
   length == 3
   and (map(.id) | sort == [1, 2, 3])
   and (map(select(.id == 1))[0] | .jsonrpc == "2.0"
@@ -123,10 +136,10 @@ jq -se '
     and (.result.capabilities.tools | type == "object"))
   and (map(select(.id == 2))[0].result.tools | type == "array" and length > 0)
   and map(select(.id == 3))[0].result.structuredContent.success == true
-' <<<"$mcp_initialize_response" >/dev/null || {
+' >/dev/null; then
   echo "stdio MCP archive did not initialize, list tools, and complete its capabilities read." >&2
   exit 1
-}
+fi
 
 invalid_mcp_config="$release_extract_dir/invalid-mcp-config.json"
 printf '%s\n' '{"apiBaseUrl":"not-an-absolute-uri"}' > "$invalid_mcp_config"
