@@ -43,6 +43,7 @@ docker run --detach --name "$container" --publish 127.0.0.1::9224 \
   --add-host host.docker.internal:host-gateway \
   --mount "type=bind,source=$mcp_config,target=/run/netratel/mcp-config.json,readonly" \
   --env ASPNETCORE_ENVIRONMENT=Development \
+  --env ASPNETCORE_FORWARDEDHEADERS_ENABLED=true \
   --env NETRATEL_MCP_CONFIG=/run/netratel/mcp-config.json \
   --env NETRATEL_MCP_INSTANCE=dev \
   --env NETRATEL_MCP_DEV_API_BASE_URL=https://api.example.invalid \
@@ -59,7 +60,10 @@ port="$(docker port "$container" 9224/tcp | sed -n '1s/.*://p')"
 base_url="http://127.0.0.1:${port}"
 # The MCP handler binds protected-resource metadata to the public resource host.
 # Preserve that host while routing the disposable container through localhost.
-mcp_host_header=(--header 'Host: mcp.example.invalid')
+mcp_public_request_headers=(
+  --header 'Host: mcp.example.invalid'
+  --header 'X-Forwarded-Proto: https'
+)
 
 for _ in $(seq 1 30); do
   if curl --fail --silent --show-error "$base_url/health/live" >/dev/null; then
@@ -69,14 +73,14 @@ for _ in $(seq 1 30); do
 done
 curl --fail --silent --show-error "$base_url/health/live" >/dev/null
 
-resource_metadata="$(curl --fail --silent --show-error "${mcp_host_header[@]}" "$base_url/.well-known/oauth-protected-resource/mcp")"
+resource_metadata="$(curl --fail --silent --show-error "${mcp_public_request_headers[@]}" "$base_url/.well-known/oauth-protected-resource/mcp")"
 jq -e '
   .resource == "https://mcp.example.invalid/mcp"
   and (.scopes_supported | index("netratel.mcp.read"))
 ' <<<"$resource_metadata" >/dev/null
 
 unauthenticated_response="$(curl --silent --show-error --dump-header - --output /dev/null --write-out $'\n%{http_code}' \
-  "${mcp_host_header[@]}" \
+  "${mcp_public_request_headers[@]}" \
   --header 'Content-Type: application/json' \
   --data '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
   "$base_url/mcp")"
@@ -108,7 +112,7 @@ operator_access_token="$(request_operator_access_token netratel-mcp-smoke-client
 invalid_token="${operator_access_token%?}x"
 [[ "$invalid_token" != "$operator_access_token" ]] || invalid_token="${operator_access_token%?}y"
 invalid_status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
-  "${mcp_host_header[@]}" \
+  "${mcp_public_request_headers[@]}" \
   --header "Authorization: Bearer ${invalid_token}" \
   --header 'Content-Type: application/json' \
   --data '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
@@ -117,7 +121,7 @@ invalid_status="$(curl --silent --show-error --output /dev/null --write-out '%{h
 
 wrong_scope_token="$(request_operator_access_token netratel-mcp-wrong-scope-client netratel.mcp.observe)"
 wrong_scope_status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
-  "${mcp_host_header[@]}" \
+  "${mcp_public_request_headers[@]}" \
   --header "Authorization: Bearer ${wrong_scope_token}" \
   --header 'Content-Type: application/json' \
   --data '{"jsonrpc":"2.0","id":3,"method":"tools/list","params":{}}' \
@@ -125,7 +129,7 @@ wrong_scope_status="$(curl --silent --show-error --output /dev/null --write-out 
 [[ "$wrong_scope_status" == 403 ]] || { echo "Wrong-scope HTTP MCP bearer token returned $wrong_scope_status instead of 403." >&2; exit 1; }
 
 authorized_response="$(curl --fail --silent --show-error \
-  "${mcp_host_header[@]}" \
+  "${mcp_public_request_headers[@]}" \
   --header "Authorization: Bearer ${operator_access_token}" \
   --header 'Content-Type: application/json' \
   --data '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"netratel_capabilities","arguments":{"operation":"get"}}}' \
