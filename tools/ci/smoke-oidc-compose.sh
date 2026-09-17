@@ -34,6 +34,7 @@ mcp_stdio_extract_dir=""
 mcp_stdio_config_path="$(mktemp --suffix=.json)"
 client_volume="${project}-client-state"
 gateway_client="${project}-gateway-client"
+stage="initializing Compose OIDC smoke"
 wait_for_migrations() {
   local container_id state exit_code
   container_id="$(docker compose --project-name "$project" "${compose_args[@]}" ps -a -q migrations)"
@@ -102,6 +103,10 @@ run_browser_oidc_smoke() {
 }
 
 cleanup() {
+  local status=$?
+  if (( status != 0 )); then
+    echo "::error title=${mode} Compose OIDC smoke failed::${stage}" >&2
+  fi
   docker rm -f "$gateway_client" >/dev/null 2>&1 || true
   docker compose --project-name "$project" "${compose_args[@]}" down --volumes --remove-orphans --rmi local >/dev/null 2>&1 || true
   docker volume rm "$client_volume" >/dev/null 2>&1 || true
@@ -117,6 +122,7 @@ cleanup() {
     find "$mcp_stdio_extract_dir" -depth -delete 2>/dev/null || true
   fi
   unlink "$mcp_stdio_config_path" 2>/dev/null || true
+  return "$status"
 }
 trap cleanup EXIT
 
@@ -332,14 +338,20 @@ verify_mcp_stdio_archive_scoped_read() {
   }
 }
 
+stage="starting disposable Compose services"
 docker compose --project-name "$project" "${compose_args[@]}" up "${compose_up_args[@]}"
+stage="waiting for migrations"
 wait_for_migrations
 
+stage="waiting for disposable OIDC issuer"
 curl --retry 20 --retry-connrefused --fail --silent --show-error \
   "http://127.0.0.1:${oidc_port}/isalive" >/dev/null
 
+stage="waiting for the Web application"
 wait_for_web
+stage="checking anonymous API rejection"
 wait_for_status 401 "${web_url}/api/v1/tenants"
+stage="running browser OIDC rehearsal"
 run_browser_oidc_smoke
 
 unauthenticated_status="$(curl --silent --output /dev/null --write-out '%{http_code}' "${web_url}/api/v1/tenants")"
@@ -348,6 +360,7 @@ unauthenticated_status="$(curl --silent --output /dev/null --write-out '%{http_c
   exit 1
 }
 
+stage="starting interactive OIDC challenge"
 authorization_location="$(curl --silent --show-error --output /dev/null --dump-header - \
   --cookie "$cookie_jar" --cookie-jar "$cookie_jar" \
   "${web_url}/auth/oidc?returnUrl=%2Ftenants" \
@@ -357,10 +370,12 @@ authorization_location="$(curl --silent --show-error --output /dev/null --dump-h
   exit 1
 }
 
+stage="loading OIDC authorization page"
 curl --silent --show-error --fail --resolve "$oidc_resolve" \
   --cookie "$cookie_jar" --cookie-jar "$cookie_jar" \
   "$authorization_location" >/dev/null
 
+stage="authenticating disposable OIDC operator"
 callback_response="$(curl --silent --show-error --dump-header - \
   --resolve "$oidc_resolve" --cookie "$cookie_jar" --cookie-jar "$cookie_jar" \
   --data-urlencode 'username=netratel-test-operator' \
@@ -397,6 +412,7 @@ fi
   exit 1
 }
 
+stage="checking authenticated API access"
 protected_status="$(curl --silent --show-error --cookie "$cookie_jar" \
   --output /dev/null --write-out '%{http_code}' "${web_url}/api/v1/tenants")"
 [[ "$protected_status" == 200 ]] || {
@@ -406,6 +422,7 @@ protected_status="$(curl --silent --show-error --cookie "$cookie_jar" \
   exit 1
 }
 
+stage="creating disposable tenant"
 tenant_response="$(curl --silent --show-error --fail --cookie "$cookie_jar" \
   --header 'Content-Type: application/json' \
   --data '{"name":"compose-smoke","description":"Disposable Compose smoke tenant","location":"test","domains":[],"autoUpdate":false}' \
@@ -413,9 +430,12 @@ tenant_response="$(curl --silent --show-error --fail --cookie "$cookie_jar" \
 tenant_id="$(jq -r '.tenantId // empty' <<<"$tenant_response")"
 [[ "$tenant_id" =~ ^[1-9][0-9]*$ ]] || { echo "Compose smoke could not create a synthetic tenant." >&2; exit 1; }
 
+stage="verifying packaged CLI read"
 verify_cli_archive_scoped_read "${NETRATEL_CLI_SMOKE_ARCHIVE:-}"
+stage="verifying packaged stdio MCP read"
 verify_mcp_stdio_archive_scoped_read "${NETRATEL_MCP_STDIO_SMOKE_ARCHIVE:-}"
 
+stage="issuing disposable Client enrollment"
 enrollment_response="$(curl --silent --show-error --fail --cookie "$cookie_jar" \
   --header 'Content-Type: application/json' \
   --data '{"validForMinutes":5,"maxUses":1,"note":"Disposable Compose smoke enrollment"}' \
@@ -429,6 +449,7 @@ docker volume create "$client_volume" >/dev/null
 # `netratel` account for enrollment, token renewal, and gateway presence.
 docker run --rm --user 0:0 --volume "${client_volume}:/var/lib/netratel" \
   --entrypoint /bin/sh "$client_image" -c 'chown -R netratel:netratel /var/lib/netratel'
+stage="enrolling the disposable Client"
 docker run --rm --network "${project}_default" --volume "${client_volume}:/var/lib/netratel" \
   "$client_image" --api http://api:9222 --enroll "$enrollment_code"
 auth_check_output="$(docker run --rm --network "${project}_default" --volume "${client_volume}:/var/lib/netratel" \
@@ -441,10 +462,13 @@ agent_id="$(sed -nE 's/.*[Aa]gent[Ii]d=([0-9A-Fa-f-]{36}).*/\1/ip' <<<"$auth_che
 }
 echo "Disposable Client authenticated as agent ${agent_id}."
 
+stage="establishing Client gateway sessions"
 start_gateway_client
 wait_for_gateway_sessions
 
+stage="requesting direct operator token"
 operator_access_token="$(request_operator_access_token)"
+stage="waiting for Client telemetry"
 wait_for_telemetry "$operator_access_token"
 command_payload='{"command":"printf netratel-compose-smoke","timeoutSeconds":10}'
 command_response="$(curl --silent --show-error --fail \
