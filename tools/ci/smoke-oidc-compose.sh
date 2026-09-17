@@ -268,7 +268,7 @@ wait_for_telemetry() {
 }
 
 verify_cli_archive_scoped_read() {
-  local cli_archive="$1" cli_executable cli_output
+  local cli_archive="$1" cli_executable cli_output cli_status
   [[ -s "$cli_archive" ]] || {
     echo "NETRATEL_CLI_SMOKE_ARCHIVE must name the packaged CLI archive to verify." >&2
     return 1
@@ -282,6 +282,7 @@ verify_cli_archive_scoped_read() {
     return 1
   }
 
+  set +e
   cli_output="$("$cli_executable" \
     --api-base-url "$api_url" \
     --token-url "http://127.0.0.1:${oidc_port}/default/token" \
@@ -289,7 +290,13 @@ verify_cli_archive_scoped_read() {
     --username netratel-cli-smoke \
     --app-password synthetic-compose-only-password \
     --scope netratel.api \
-    tenants list)"
+    tenants list 2>&1)"
+  cli_status=$?
+  set -e
+  if (( cli_status != 0 )); then
+    stage="packaged CLI exited ${cli_status}: $(head -n 1 <<<"$cli_output")"
+    return 1
+  fi
   jq -e --argjson expected_tenant "$tenant_id" \
     '.. | objects | select(.tenantId? == $expected_tenant)' >/dev/null <<<"$cli_output" || {
       echo "The packaged CLI did not authenticate and read the disposable tenant." >&2
