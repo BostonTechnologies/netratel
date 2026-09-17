@@ -141,6 +141,12 @@ request_operator_access_token() {
   printf '%s' "$access_token"
 }
 
+mcp_response_json() {
+  local response="$1" sse_payload
+  sse_payload="$(sed -n 's/^data: //p' <<<"$response")"
+  printf '%s' "${sse_payload:-$response}"
+}
+
 stage="requesting the operator access token"
 operator_access_token="$(request_operator_access_token netratel-mcp-smoke-client netratel.mcp.read)"
 invalid_token="${operator_access_token%?}x"
@@ -176,7 +182,7 @@ jq -e '
   .jsonrpc == "2.0"
   and .id == 4
   and .result.serverInfo.name == "NetRatel.Mcp"
-' <<<"$initialize_response" >/dev/null || {
+' <<<"$(mcp_response_json "$initialize_response")" >/dev/null || {
   echo "Authorized HTTP MCP initialization did not return the expected server information." >&2
   exit 1
 }
@@ -192,7 +198,7 @@ jq -e '
   .jsonrpc == "2.0"
   and .id == 5
   and .result.structuredContent.success == true
-' <<<"$authorized_response" >/dev/null || {
+' <<<"$(mcp_response_json "$authorized_response")" >/dev/null || {
   echo "Authorized HTTP MCP capability read did not return a successful structured result." >&2
   exit 1
 }
