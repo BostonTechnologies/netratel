@@ -1,0 +1,43 @@
+<div class="client-file-media-preview">
+    @if (IsVideo)
+    {
+        <video controls class="client-file-media-preview-video">
+            <source src="@PreviewUrl" type="@ContentType" />
+        </video>
+    }
+    else
+    {
+        <img src="@PreviewUrl" alt="@FileName" class="client-file-media-preview-image" />
+    }
+</div>
+
+<style>
+    .client-file-media-preview {
+        flex: 1 1 auto;
+        min-height: 18rem;
+        border-radius: 10px;
+        overflow: auto;
+        border: 1px solid rgba(14, 90, 135, 0.12);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(6, 10, 18, 0.65);
+        padding: 1rem;
+    }
+
+    .client-file-media-preview-image,
+    .client-file-media-preview-video {
+        max-width: 100%;
+        max-height: 100%;
+        border-radius: 8px;
+    }
+</style>
+
+@code {
+    [Parameter] public string PreviewUrl { get; set; } = string.Empty;
+    [Parameter] public string ContentType { get; set; } = "application/octet-stream";
+    [Parameter] public string ViewerKind { get; set; } = "image";
+    [Parameter] public string FileName { get; set; } = "file";
+
+    private bool IsVideo => string.Equals(ViewerKind, "video", StringComparison.OrdinalIgnoreCase);
+}

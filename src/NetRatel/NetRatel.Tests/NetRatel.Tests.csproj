@@ -1,0 +1,48 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Akka.Cluster.Hosting" Version="1.5.70" />
+    <PackageReference Include="coverlet.collector" Version="10.0.1">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="FluentAssertions" Version="8.10.0" />
+    <PackageReference Include="Microsoft.AspNetCore.TestHost" Version="10.0.11" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="10.0.11" />
+    <PackageReference Include="SharpCompress" Version="1.0.0" />
+    <PackageReference Include="Testcontainers.PostgreSql" Version="4.14.0" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="4.0.0">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.9.0" />
+    <PackageReference Include="Xunit.SkippableFact" Version="1.5.61" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\NetRatel.Application\NetRatel.Application.csproj" />
+    <ProjectReference Include="..\NetRatel.AgentClient\NetRatel.AgentClient.csproj" />
+    <ProjectReference Include="..\NetRatel.API\NetRatel.API.csproj" />
+    <ProjectReference Include="..\NetRatel.Client\NetRatel.Client.csproj" />
+    <ProjectReference Include="..\NetRatel.Cli\NetRatel.Cli.csproj" />
+    <ProjectReference Include="..\NetRatel.Infrastructure\NetRatel.Infrastructure.csproj" />
+    <ProjectReference Include="..\NetRatel.Mcp\NetRatel.Mcp.csproj" />
+    <ProjectReference Include="..\NetRatel.ServiceDefaults\NetRatel.ServiceDefaults.csproj" />
+    <ProjectReference Include="..\NetRatel.Shared\NetRatel.Shared.csproj" />
+    <ProjectReference Include="..\NetRatel.Web\NetRatel.Web.csproj" />
+    <ProjectReference Include="..\NetRatel.AgentGateway.Contracts\NetRatel.AgentGateway.Contracts.csproj" />
+    <ProjectReference Include="..\NetRatel.Akka\NetRatel.Akka.csproj" />
+    <ProjectReference Include="..\NetRatel.Mcp.Core\NetRatel.Mcp.Core.csproj" />
+    <ProjectReference Include="..\NetRatel.Mcp.Http\NetRatel.Mcp.Http.csproj" />
+  </ItemGroup>
+</Project>

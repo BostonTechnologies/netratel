@@ -1,0 +1,163 @@
+@page "/settings/connectivity"
+@using NetRatel.Shared.Connectivity
+@inject IHttpClientFactory Clients
+@inject ISnackbar Snackbar
+
+<MudPaper Class="p-6 space-y-4">
+  <MudStack Row="true" AlignItems="AlignItems.Center">
+    <MudText Typo="Typo.h5">ExternalService Connectivity Status</MudText>
+    <MudSpacer />
+    <MudButton Color="Color.Primary" Variant="Variant.Filled" Disabled="_testing" OnClick="RunTests">Validate</MudButton>
+    <MudButton Color="Color.Secondary" Variant="Variant.Outlined" Disabled="_loading" OnClick="LoadAsync">Refresh</MudButton>
+  </MudStack>
+
+  @if (_loading)
+  {
+    <MudProgressLinear Indeterminate="true" />
+  }
+  else
+  {
+    <MudTable Items="ResolvedSettings" Dense="true" Hover="true">
+      <HeaderContent>
+        <MudTh>Setting</MudTh>
+        <MudTh>Value</MudTh>
+      </HeaderContent>
+      <RowTemplate>
+        <MudTd DataLabel="Setting">@context.Name</MudTd>
+        <MudTd DataLabel="Value">@context.Value</MudTd>
+      </RowTemplate>
+    </MudTable>
+  }
+
+  @if (!string.IsNullOrWhiteSpace(_lastMessage))
+  {
+    <MudAlert Severity="@(_lastSuccess ? Severity.Success : Severity.Warning)" Variant="Variant.Outlined">
+      @_lastMessage
+    </MudAlert>
+  }
+
+  @if (_tests is not null)
+  {
+    <MudTable Items="_tests.Probes" Dense="true" Hover="true">
+      <HeaderContent>
+        <MudTh>Probe</MudTh>
+        <MudTh>Target</MudTh>
+        <MudTh>Status</MudTh>
+        <MudTh>HTTP</MudTh>
+        <MudTh>Latency (ms)</MudTh>
+        <MudTh>Remote</MudTh>
+        <MudTh>When</MudTh>
+        <MudTh>Message</MudTh>
+      </HeaderContent>
+      <RowTemplate>
+        <MudTd DataLabel="Probe">@context.ProbeName</MudTd>
+        <MudTd DataLabel="Target">@context.Target</MudTd>
+        <MudTd DataLabel="Status">
+          @switch (context.Status)
+          {
+            case TrafficLight.Green:
+              <MudChip T="string" Color="Color.Success" Variant="Variant.Filled">Green</MudChip>; break;
+            case TrafficLight.Amber:
+              <MudChip T="string" Color="Color.Warning" Variant="Variant.Filled">Amber</MudChip>; break;
+            default:
+              <MudChip T="string" Color="Color.Error" Variant="Variant.Filled">Red</MudChip>; break;
+          }
+        </MudTd>
+        <MudTd DataLabel="HTTP">@context.HttpStatus</MudTd>
+        <MudTd DataLabel="Latency">@context.LatencyMs</MudTd>
+        <MudTd DataLabel="Remote">@context.RemoteSystemName</MudTd>
+        <MudTd DataLabel="When">@context.CheckedAtUtc.ToLocalTime()</MudTd>
+        <MudTd DataLabel="Message">@context.Message</MudTd>
+      </RowTemplate>
+    </MudTable>
+  }
+</MudPaper>
+
+@code {
+  private M2MConnectivitySettingsDto? _settings;
+  private M2MConnectivityTestResultDto? _tests;
+  private bool _loading = true;
+  private bool _testing;
+  private string? _lastMessage;
+  private bool _lastSuccess;
+
+  private HttpClient Api => Clients.CreateClient("OrchestratorApi");
+
+  private IReadOnlyList<SettingRow> ResolvedSettings =>
+    _settings is null
+      ? []
+      :
+      [
+        new("Enabled", _settings.Enabled ? "Yes" : "No"),
+        new("ExternalService API Base URL", Display(_settings.RemoteBaseUrl)),
+        new("Audience", Display(_settings.RemoteAudience)),
+        new("Remote Name", Display(_settings.RemoteSystemName))
+      ];
+
+  protected override async Task OnInitializedAsync()
+  {
+    await LoadAsync();
+  }
+
+  private async Task LoadAsync()
+  {
+    _loading = true;
+    try
+    {
+      _settings = await Api.GetFromJsonAsync<M2MConnectivitySettingsDto>("/api/v1/admin/connectivity/settings");
+    }
+    catch (Exception ex)
+    {
+      Snackbar.Add($"Failed to load connectivity status: {ex.Message}", Severity.Warning);
+    }
+    finally
+    {
+      _loading = false;
+    }
+  }
+
+  private async Task RunTests()
+  {
+    _testing = true;
+    try
+    {
+      var dto = new M2MConnectivityTestRequestDto(
+        IncludeTokenAcquire: true,
+        IncludeRemoteHealth: true);
+
+      using var response = await Api.PostAsJsonAsync("/api/v1/admin/connectivity/tests", dto);
+      if (!response.IsSuccessStatusCode)
+      {
+        Snackbar.Add(await ReadErrorAsync(response), Severity.Error);
+        return;
+      }
+
+      _tests = await response.Content.ReadFromJsonAsync<M2MConnectivityTestResultDto>();
+      var worst = _tests?.Probes.FirstOrDefault(p => p.Status != TrafficLight.Green);
+      _lastSuccess = worst is null;
+      _lastMessage = worst?.Message ?? "Connectivity probes succeeded.";
+      Snackbar.Add(_lastMessage, _lastSuccess ? Severity.Success : Severity.Warning);
+    }
+    catch (Exception ex)
+    {
+      Snackbar.Add($"Validation failed: {ex.Message}", Severity.Error);
+    }
+    finally
+    {
+      _testing = false;
+    }
+  }
+
+  private static async Task<string> ReadErrorAsync(HttpResponseMessage response)
+  {
+    var content = await response.Content.ReadAsStringAsync();
+    return string.IsNullOrWhiteSpace(content)
+      ? $"Request failed ({(int)response.StatusCode})."
+      : content;
+  }
+
+  private static string Display(string? value)
+    => string.IsNullOrWhiteSpace(value) ? "(not configured)" : value;
+
+  private sealed record SettingRow(string Name, string Value);
+}

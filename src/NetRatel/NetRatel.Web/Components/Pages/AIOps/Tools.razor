@@ -1,0 +1,124 @@
+@page "/ai/ops"
+@inject IHttpClientFactory Clients
+@inject ISnackbar Snackbar
+
+<MudPaper Class="p-6 space-y-4">
+  <MudText Typo="Typo.h5">AI Ops (MCP)</MudText>
+
+  <MudGrid>
+    <MudItem xs="12" md="4"><MudTextField @bind-Value="_tenant" Label="Tenant" Required="true" /></MudItem>
+    <MudItem xs="12" md="4">
+      <MudSelect T="string" @bind-Value="_searchProp" Label="Target selector" Required="true">
+        <MudSelectItem T="string" Value='@("clientName")'>clientName</MudSelectItem>
+        <MudSelectItem T="string" Value='@("ipAddress")'>ipAddress</MudSelectItem>
+        <MudSelectItem T="string" Value='@("hostName")'>hostName</MudSelectItem>
+      </MudSelect>
+    </MudItem>
+    <MudItem xs="12" md="4"><MudTextField @bind-Value="_searchValue" Label="Target value" Required="true" /></MudItem>
+  </MudGrid>
+
+  <MudDivider Class="my-4"/>
+
+  <MudStack Row="true" Spacing="2">
+    <MudButton OnClick="@(()=>RunTool("os.info"))" Color="Color.Primary">OS Info</MudButton>
+    <MudButton OnClick="@(()=>RunTool("processes.list"))" Color="Color.Primary">Processes</MudButton>
+    <MudButton OnClick="@(()=>RunTool("processes.top_cpu"))" Color="Color.Primary">Top CPU</MudButton>
+    <MudButton OnClick="@(()=>RunTool("disk.free"))" Color="Color.Primary">Disk Free</MudButton>
+  </MudStack>
+
+  <MudPaper Class="p-3 mt-4">
+    <MudText Typo="Typo.subtitle1">Live output</MudText>
+    <MudList T="string" Dense="true">
+      @foreach (var e in _events)
+      {
+        <MudListItem T="string">
+          <MudText>@e.TimestampUtc — <b>@e.Status</b> @e.Message</MudText>
+        </MudListItem>
+      }
+    </MudList>
+  </MudPaper>
+
+  @if (!string.IsNullOrWhiteSpace(_finalJson))
+  {
+    <MudPaper Class="p-3 mt-4">
+      <MudText Typo="Typo.subtitle1">Result</MudText>
+      <MudCodeHighlight Code="@_finalJson" Language="json" />
+    </MudPaper>
+  }
+</MudPaper>
+
+@code {
+  private string _tenant = "";
+  private string _searchProp = "clientName";
+  private string _searchValue = "";
+  private List<TaskEventDto> _events = new();
+  private string? _finalJson;
+
+  private HttpClient Api => Clients.CreateClient("OrchestratorApi");
+
+  private async Task RunTool(string tool)
+  {
+    _events.Clear();
+    _finalJson = null;
+
+    if (string.IsNullOrWhiteSpace(_tenant) || string.IsNullOrWhiteSpace(_searchValue))
+    {
+      Snackbar.Add("Tenant and Target value are required.", Severity.Warning);
+      return;
+    }
+
+    var target = new { Tenant = _tenant, TargetCliSearchProperty = _searchProp, TargetCliSearchString = _searchValue };
+    var resp = await Api.PostAsJsonAsync($"/api/v1/mcp/tools/{tool}/invoke", target);
+    resp.EnsureSuccessStatusCode();
+    var body = await resp.Content.ReadFromJsonAsync<Dictionary<string,object>>();
+    var requestId = body!["requestId"]!.ToString();
+
+    _ = Stream(requestId!);
+  }
+
+  private async Task Stream(string requestId)
+  {
+    using var req = new HttpRequestMessage(HttpMethod.Get, $"/api/v1/mcp/requests/{requestId}/events");
+    using var resp = await Api.SendAsync(req, HttpCompletionOption.ResponseHeadersRead);
+    resp.EnsureSuccessStatusCode();
+
+    using var stream = await resp.Content.ReadAsStreamAsync();
+    using var reader = new StreamReader(stream);
+    string? line;
+    string? eventType = null;
+    string? id = null;
+    var dataLines = new List<string>();
+
+    while ((line = await reader.ReadLineAsync()) is not null)
+    {
+      if (line.StartsWith(":")) continue; // comment
+      if (string.IsNullOrEmpty(line))
+      {
+        if (eventType == "update" && dataLines.Count > 0)
+        {
+          var json = string.Join("\n", dataLines);
+          var ev = System.Text.Json.JsonSerializer.Deserialize<TaskEventDto>(json);
+          if (ev is not null)
+          {
+            _events.Insert(0, ev);
+            StateHasChanged();
+            if (ev.Status == "Success" && !string.IsNullOrWhiteSpace(ev.DataChunk))
+            {
+              _finalJson = ev.DataChunk;
+              StateHasChanged();
+            }
+          }
+        }
+        // reset event
+        eventType = null; id = null; dataLines.Clear();
+        continue;
+      }
+
+      if (line.StartsWith("event:")) eventType = line.Substring(6).Trim();
+      else if (line.StartsWith("id:")) id = line.Substring(3).Trim();
+      else if (line.StartsWith("data:")) dataLines.Add(line.Substring(5).TrimStart());
+    }
+  }
+
+  public record TaskEventDto(string EventId, string RequestId, string Status, string? Message, string? DataChunk, string TimestampUtc);
+}

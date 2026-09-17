@@ -1,0 +1,126 @@
+﻿@using Microsoft.AspNetCore.Components.Forms
+@using NetRatel.Web.Services
+@using MudBlazor
+@inject Services.IClientArtifactsService Artifacts
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <DialogContent>
+        <MudForm @ref="_form" Class="d-flex flex-column gap-4">
+            <MudSelect @bind-Value="_rid" Label="Runtime Identifier" Dense="true">
+                <MudSelectItem Value="@("win-x64")">Windows (x64)</MudSelectItem>
+                <MudSelectItem Value="@("win-arm64")">Windows (ARM64)</MudSelectItem>
+                <MudSelectItem Value="@("linux-x64")">Linux (x64)</MudSelectItem>
+                <MudSelectItem Value="@("osx-x64")">macOS (Intel)</MudSelectItem>
+                <MudSelectItem Value="@("osx-arm64")">macOS (Apple Silicon)</MudSelectItem>
+            </MudSelect>
+
+            <MudTextField @bind-Value="_version" Label="Version" Placeholder="1.2.3 or 1.2.3-preview.1" Dense="true" Required="true" Immediate="true" />
+
+            <MudTextField @bind-Value="_notes" Label="Notes" Dense="true" Lines="3" />
+
+            <div class="d-flex flex-column gap-2">
+                <InputFile OnChange="OnFileChanged" accept=".zip,.7z,.tar,.gz" />
+                @if (_file is not null)
+                {
+                    <MudText Typo="Typo.body2">Selected: @_file.Name (@FormatSize(_file.Size))</MudText>
+                }
+            </div>
+        </MudForm>
+
+        @if (!string.IsNullOrEmpty(_error))
+        {
+            <MudAlert Severity="Severity.Error">@_error</MudAlert>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton Variant="Variant.Text" Disabled="_busy" OnClick="Cancel">Cancel</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" Disabled="_busy" OnClick="Submit">Upload</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance MudDialog { get; set; } = default!;
+
+    [Parameter] public string InitialRid { get; set; } = "win-x64";
+
+    [Parameter] public EventCallback OnUploaded { get; set; }
+
+    private MudForm? _form;
+    private string _rid = "win-x64";
+    private string? _version;
+    private string? _notes;
+    private IBrowserFile? _file;
+    private bool _busy;
+    private string? _error;
+
+    protected override void OnInitialized()
+    {
+        _rid = string.IsNullOrWhiteSpace(InitialRid) ? "win-x64" : InitialRid;
+    }
+
+    private async Task Submit()
+    {
+        _error = null;
+        await _form!.Validate();
+        if (!_form.IsValid)
+        {
+            _error = "Please correct the highlighted fields.";
+            return;
+        }
+
+        if (_file is null)
+        {
+            _error = "Select an artifact archive to upload.";
+            return;
+        }
+
+        _busy = true;
+        StateHasChanged();
+
+        try
+        {
+            await Artifacts.UploadAsync(_rid, _version!, _notes, _file);
+            if (OnUploaded.HasDelegate)
+            {
+                await OnUploaded.InvokeAsync();
+            }
+            MudDialog.Close(DialogResult.Ok(true));
+        }
+        catch (InvalidOperationException ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+            StateHasChanged();
+        }
+    }
+
+    private void Cancel()
+    {
+        MudDialog.Cancel();
+    }
+
+    private void OnFileChanged(InputFileChangeEventArgs args)
+    {
+        _file = args.File;
+        _error = null;
+        StateHasChanged();
+    }
+
+    private static string FormatSize(long bytes)
+    {
+        if (bytes < 1024) return $"{bytes} B";
+        var units = new[] { "KB", "MB", "GB", "TB" };
+        double size = bytes;
+        var unit = 0;
+        while (size >= 1024 && unit < units.Length - 1)
+        {
+            size /= 1024;
+            unit++;
+        }
+        return $"{size:0.##} {units[unit]}";
+    }
+}

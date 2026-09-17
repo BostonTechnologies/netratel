@@ -1,0 +1,9 @@
+@page "/_diag/js"
+<MudTextField @bind-Value="_txt" Label="Focus me and tab away" />
+<MudButton OnClick="() => _count++">Click me</MudButton>
+<MudText>You clicked @_count times.</MudText>
+
+@code {
+    private string? _txt;
+    private int _count;
+}

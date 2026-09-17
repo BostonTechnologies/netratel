@@ -1,0 +1,71 @@
+@page "/onboarding"
+@using NetRatel.Shared
+@using MudBlazor
+@using System.IO
+@using Microsoft.JSInterop
+@using NetRatel.Web.Services
+@inject IWebClientDownloadService ClientDl
+@inject NavigationManager Nav
+@inject IJSRuntime JS
+
+<MudPaper Class="pa-4 mx-auto" Style="max-width:700px;">
+  <MudText Typo="Typo.h4">Client Onboarding</MudText>
+  <MudText Typo="Typo.subtitle1" Class="mb-4">Select options and download a preconfigured client.</MudText>
+
+  <MudForm @ref="_form">
+    <MudSelect T="int" Label="Tenant" @bind-Value="_tenantId" Required="true">
+      @foreach (var t in _tenants)
+      {
+        <MudSelectItem Value="@(t.Id)">@t.Name</MudSelectItem>
+      }
+    </MudSelect>
+
+    <MudSelect T="ClientEnvironment" Label="Environment" @bind-Value="_env" Required="true">
+      <MudSelectItem Value="ClientEnvironment.Dev">Dev</MudSelectItem>
+      <MudSelectItem Value="ClientEnvironment.Prod">Prod</MudSelectItem>
+      <MudSelectItem Value="ClientEnvironment.Both">Dev + Prod</MudSelectItem>
+    </MudSelect>
+
+    <MudSelect T="string" Label="Target OS" @bind-Value="_rid" Required="true">
+      <MudSelectItem Value="@("win-x64")">Windows (x64)</MudSelectItem>
+      <MudSelectItem Value="@("linux-x64")">Linux (x64)</MudSelectItem>
+      <MudSelectItem Value="@("osx-arm64")">macOS (Apple Silicon)</MudSelectItem>
+    </MudSelect>
+
+    <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="Download" Class="mt-4">
+      Generate &amp; Download
+    </MudButton>
+  </MudForm>
+</MudPaper>
+
+@code {
+  private MudForm? _form;
+  private int _tenantId;
+  private ClientEnvironment _env = ClientEnvironment.Dev;
+  private string _rid = "win-x64";
+
+  // TODO: load tenants from your existing API
+  private List<(int Id, string Name)> _tenants = new();
+
+  protected override async Task OnInitializedAsync()
+  {
+      // Replace this with your real tenants call:
+      // var data = await Http.GetFromJsonAsync<List<TenantDto>>("/api/v1/tenants");
+      // _tenants = data.Select(x => (x.Id, x.Name)).ToList();
+      await Task.CompletedTask;
+  }
+
+  private async Task Download()
+  {
+    await _form!.Validate();
+    if (!_form.IsValid) return;
+
+    using var stream = await ClientDl.DownloadAsync(_tenantId, _env, _rid, injectEnrollment: true, validForMinutes: 60, maxUses: 1);
+    using var ms = new MemoryStream();
+    await stream.CopyToAsync(ms);
+    var bytes = ms.ToArray();
+
+    var fileName = $"NetRatel.Client-{_rid}.zip";
+    await JS.InvokeVoidAsync("BlazorDownloadFile", fileName, "application/zip", bytes);
+  }
+}

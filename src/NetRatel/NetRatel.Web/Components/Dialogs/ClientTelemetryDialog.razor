@@ -1,0 +1,348 @@
+@using NetRatel.Shared.Contracts
+@using NetRatel.Web.Services.Telemetry
+@implements IAsyncDisposable
+
+@inject TelemetryApiService TelemetryApi
+@inject ClientTelemetryStreamService TelemetryStream
+
+<MudDialog Class="client-telemetry-dialog">
+    <DialogContent>
+        <MudStack Spacing="2">
+            <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Start" Class="flex-wrap">
+                <div>
+                    <MudText Typo="Typo.h5">@Title</MudText>
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">@ClientIdentity</MudText>
+                </div>
+                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="@(IsFresh ? Color.Success : Color.Warning)">
+                    @(IsFresh ? "Live" : "Stale")
+                </MudChip>
+            </MudStack>
+
+            @if (_snapshot is null)
+            {
+                <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
+            }
+            else
+            {
+                <MudPaper Class="telemetry-health-strip pa-3">
+                    <MudGrid Spacing="2">
+                        <MudItem xs="6" sm="3">
+                            <MudText Typo="Typo.caption" Class="telemetry-health-label">Updated</MudText>
+                            <MudText Typo="Typo.subtitle2">@(_snapshot.LastUpdatedUtc?.ToLocalTime().ToString("T") ?? "n/a")</MudText>
+                        </MudItem>
+                        <MudItem xs="6" sm="3">
+                            <MudText Typo="Typo.caption" Class="telemetry-health-label">Uptime</MudText>
+                            <MudText Typo="Typo.subtitle2">@FormatUptime(_snapshot.Health?.UptimeSeconds)</MudText>
+                        </MudItem>
+                        <MudItem xs="6" sm="3">
+                            <MudText Typo="Typo.caption" Class="telemetry-health-label">OS</MudText>
+                            <MudText Typo="Typo.subtitle2">@(_snapshot.Health?.OsVersion ?? "n/a")</MudText>
+                        </MudItem>
+                        <MudItem xs="6" sm="3">
+                            <MudText Typo="Typo.caption" Class="telemetry-health-label">Agent</MudText>
+                            <MudText Typo="Typo.subtitle2">@(_snapshot.Health?.AgentVersion ?? "n/a")</MudText>
+                        </MudItem>
+                    </MudGrid>
+                </MudPaper>
+
+                <MudGrid Spacing="2">
+                    <MudItem xs="12" md="4" Class="d-flex">
+                        <MudPaper Class="telemetry-metric-card telemetry-top-card pa-3 h-100 w-100">
+                            <MudText Typo="Typo.caption" Class="telemetry-card-label">CPU</MudText>
+                            <MudText Typo="Typo.h4">@FormatPercent(_snapshot.Cpu?.UsagePercent)</MudText>
+                            <MudProgressLinear Value="@(_snapshot.Cpu?.UsagePercent ?? 0)" Color="Color.Success" Class="my-2" />
+                            <MudChart Class="telemetry-chart-compact"
+                                      ChartType="ChartType.Line"
+                                      ChartSeries="@BuildSeries("CPU", _snapshot.CpuHistory)"
+                                      XAxisLabels="@BuildXAxisLabels(_snapshot.CpuHistory.Count)"
+                                      ChartOptions="@_singleSeriesChartOptions"
+                                      Width="100%"
+                                      Height="220px" />
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">Load avg: @(_snapshot.Cpu?.LoadAverage?.ToString("F2") ?? "n/a")</MudText>
+                        </MudPaper>
+                    </MudItem>
+
+                    <MudItem xs="12" md="4" Class="d-flex">
+                        <MudPaper Class="telemetry-metric-card telemetry-top-card pa-3 h-100 w-100">
+                            <MudText Typo="Typo.caption" Class="telemetry-card-label">Memory</MudText>
+                            <MudText Typo="Typo.h5">@FormatMemory(_snapshot.Memory)</MudText>
+                            <MudProgressLinear Value="@(_snapshot.Memory?.UsagePercent ?? 0)" Color="Color.Info" Class="my-2" />
+                            <MudChart Class="telemetry-chart-compact"
+                                      ChartType="ChartType.Line"
+                                      ChartSeries="@BuildSeries("Memory", _snapshot.MemoryHistory)"
+                                      XAxisLabels="@BuildXAxisLabels(_snapshot.MemoryHistory.Count)"
+                                      ChartOptions="@_singleSeriesChartOptions"
+                                      Width="100%"
+                                      Height="220px" />
+                        </MudPaper>
+                    </MudItem>
+
+                    <MudItem xs="12" md="4" Class="d-flex">
+                        <MudPaper Class="telemetry-metric-card telemetry-top-card pa-3 h-100 w-100">
+                            <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                                <MudText Typo="Typo.caption" Class="telemetry-card-label">Network</MudText>
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">@FormatAggregateNetworkCompact(_snapshot)</MudText>
+                            </MudStack>
+                            <MudChart Class="telemetry-chart-compact"
+                                      ChartType="ChartType.Line"
+                                      ChartSeries="@BuildNetworkSeries()"
+                                      XAxisLabels="@BuildXAxisLabels(Math.Max(_snapshot.NetworkRxHistory.Count, _snapshot.NetworkTxHistory.Count))"
+                                      ChartOptions="@_multiSeriesChartOptions"
+                                      Width="100%"
+                                      Height="220px" />
+
+                            @{
+                                var activeNetworks = BuildActiveNetworkSummaries(_snapshot);
+                            }
+
+                            @if (activeNetworks.Count == 0)
+                            {
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">No active network traffic.</MudText>
+                            }
+                            else
+                            {
+                                <MudStack Spacing="1" Class="mt-2">
+                                    @foreach (var network in activeNetworks)
+                                    {
+                                        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                                            <MudText Typo="Typo.caption">@network.Name</MudText>
+                                            <MudText Typo="Typo.caption" Color="Color.Secondary">↓ @FormatRate(network.RxBytesPerSec) / ↑ @FormatRate(network.TxBytesPerSec)</MudText>
+                                        </MudStack>
+                                    }
+                                </MudStack>
+                            }
+                        </MudPaper>
+                    </MudItem>
+
+                    <MudItem xs="12">
+                        <MudPaper Class="telemetry-metric-card pa-3">
+                            <MudText Typo="Typo.caption" Class="telemetry-card-label">Disk</MudText>
+                            @if (_snapshot.Disks.Count == 0)
+                            {
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">No disk telemetry yet.</MudText>
+                            }
+                            else
+                            {
+                                <MudGrid Spacing="2">
+                                    @foreach (var disk in _snapshot.Disks)
+                                    {
+                                        <MudItem xs="12" md="6">
+                                            <MudPaper Class="telemetry-disk-card pa-3" Outlined="true">
+                                                <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                                                    <MudText Typo="Typo.subtitle2">@disk.Scope</MudText>
+                                                    <MudText Typo="Typo.caption">@FormatPercent(disk.UsagePercent)</MudText>
+                                                </MudStack>
+                                                <MudProgressLinear Value="@disk.UsagePercent"
+                                                                   Color="@GetUtilizationColor(disk.UsagePercent)"
+                                                                   Class="my-2" />
+                                                <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                                    @disk.UsedGb:F1 GB used / @disk.TotalGb:F1 GB total
+                                                </MudText>
+                                            </MudPaper>
+                                        </MudItem>
+                                    }
+                                </MudGrid>
+                            }
+                        </MudPaper>
+                    </MudItem>
+                </MudGrid>
+            }
+        </MudStack>
+    </DialogContent>
+    <DialogActions>
+        <MudButton Variant="Variant.Text" OnClick="Close">Close</MudButton>
+    </DialogActions>
+</MudDialog>
+
+<style>
+    .client-telemetry-dialog .telemetry-health-strip,
+    .client-telemetry-dialog .telemetry-metric-card {
+        background: var(--mud-palette-surface);
+        border: 1px solid var(--mud-palette-divider);
+        border-radius: var(--netratel-radius-surface, 7px);
+    }
+
+    .client-telemetry-dialog .telemetry-disk-card {
+        border-radius: var(--netratel-radius-surface, 7px);
+        border-color: var(--mud-palette-divider);
+        background: var(--mud-palette-background-gray);
+    }
+
+    .client-telemetry-dialog .telemetry-health-label,
+    .client-telemetry-dialog .telemetry-card-label {
+        color: var(--mud-palette-text-secondary);
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+    }
+
+    .client-telemetry-dialog .telemetry-top-card {
+        display: flex;
+        flex-direction: column;
+        min-height: min(360px, 52dvh);
+    }
+
+    .client-telemetry-dialog .telemetry-chart-compact {
+        flex: 1 1 auto;
+        min-height: 220px;
+        margin-top: 0.25rem;
+    }
+</style>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public string ClientIdentity { get; set; } = string.Empty;
+    [Parameter] public string Title { get; set; } = "Telemetry";
+    [Parameter] public AgentTelemetrySnapshotDto? InitialSnapshot { get; set; }
+
+    private AgentTelemetrySnapshotDto? _snapshot;
+
+    private readonly ChartOptions _singleSeriesChartOptions = new()
+    {
+        ShowLegend = false,
+        InterpolationOption = InterpolationOption.Straight,
+        YAxisTicks = 4,
+        ChartPalette = new[] { "#1492c8" }
+    };
+
+    private readonly ChartOptions _multiSeriesChartOptions = new()
+    {
+        ShowLegend = false,
+        InterpolationOption = InterpolationOption.Straight,
+        YAxisTicks = 4,
+        ChartPalette = new[] { "#1492c8", "#b84e2e" }
+    };
+
+    private bool IsFresh => _snapshot?.LastUpdatedUtc is DateTimeOffset ts && (DateTimeOffset.UtcNow - ts) < TimeSpan.FromSeconds(45);
+
+    protected override async Task OnInitializedAsync()
+    {
+        _snapshot = InitialSnapshot ?? await TelemetryApi.GetClientSnapshotAsync(ClientIdentity);
+        await TelemetryStream.StartAsync(ClientIdentity, snapshot => InvokeAsync(() =>
+        {
+            _snapshot = snapshot;
+            StateHasChanged();
+        }));
+    }
+
+    private void Close() => MudDialog.Close();
+
+    public async ValueTask DisposeAsync()
+    {
+        try { await TelemetryStream.StopAsync(); } catch { }
+        await TelemetryStream.DisposeAsync();
+    }
+
+    private static List<ChartSeries> BuildSeries(string label, IReadOnlyList<AgentTelemetryPointDto> history) =>
+        new()
+        {
+            new ChartSeries
+            {
+                Name = label,
+                Data = history.Select(x => x.Value).ToArray()
+            }
+        };
+
+    private List<ChartSeries> BuildNetworkSeries()
+    {
+        var snapshot = _snapshot;
+        if (snapshot is null)
+        {
+            return new();
+        }
+
+        return new List<ChartSeries>
+        {
+            new() { Name = "RX", Data = snapshot.NetworkRxHistory.Select(x => x.Value / 1024d).ToArray() },
+            new() { Name = "TX", Data = snapshot.NetworkTxHistory.Select(x => x.Value / 1024d).ToArray() }
+        };
+    }
+
+    private static string[] BuildXAxisLabels(int count) =>
+        count <= 0 ? Array.Empty<string>() : Enumerable.Repeat(string.Empty, count).ToArray();
+
+    private static List<NetworkSummary> BuildActiveNetworkSummaries(AgentTelemetrySnapshotDto snapshot)
+    {
+        return snapshot.Networks
+            .Select(network => new NetworkSummary(NormalizeNetworkName(network.Scope), network.RxBytesPerSec, network.TxBytesPerSec))
+            .GroupBy(x => x.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(group => new NetworkSummary(
+                group.Key,
+                group.Max(x => x.RxBytesPerSec),
+                group.Max(x => x.TxBytesPerSec)))
+            .Where(x => x.RxBytesPerSec > 0 || x.TxBytesPerSec > 0)
+            .OrderByDescending(x => x.RxBytesPerSec + x.TxBytesPerSec)
+            .Take(5)
+            .ToList();
+    }
+
+    private static string NormalizeNetworkName(string? scope)
+    {
+        if (string.IsNullOrWhiteSpace(scope))
+        {
+            return "Unknown";
+        }
+
+        var raw = scope.Trim();
+        var suffixIndex = raw.IndexOf("-Npcap", StringComparison.OrdinalIgnoreCase);
+        if (suffixIndex < 0) suffixIndex = raw.IndexOf("-QoS", StringComparison.OrdinalIgnoreCase);
+        if (suffixIndex < 0) suffixIndex = raw.IndexOf("-WFP", StringComparison.OrdinalIgnoreCase);
+        if (suffixIndex < 0) suffixIndex = raw.IndexOf("-Hyper-V", StringComparison.OrdinalIgnoreCase);
+
+        return suffixIndex > 0 ? raw[..suffixIndex].Trim() : raw;
+    }
+
+    private static string FormatPercent(double? value) => value.HasValue ? $"{value.Value:F1}%" : "n/a";
+
+    private static string FormatMemory(AgentMemoryTelemetryDto? memory)
+        => memory is null ? "n/a" : $"{memory.UsedMb:N0} / {memory.TotalMb:N0} MB";
+
+    private static string FormatAggregateNetworkCompact(AgentTelemetrySnapshotDto snapshot)
+    {
+        if (snapshot.Networks.Count == 0)
+        {
+            return "n/a";
+        }
+
+        var rx = snapshot.Networks.Sum(x => x.RxBytesPerSec);
+        var tx = snapshot.Networks.Sum(x => x.TxBytesPerSec);
+        return $"↓ {FormatRate(rx)} / ↑ {FormatRate(tx)}";
+    }
+
+    private static string FormatRate(double value)
+    {
+        if (value >= 1024 * 1024)
+        {
+            return $"{value / 1024d / 1024d:F1} MB/s";
+        }
+
+        if (value >= 1024)
+        {
+            return $"{value / 1024d:F1} KB/s";
+        }
+
+        return $"{value:F0} B/s";
+    }
+
+    private static string FormatUptime(long? uptimeSeconds)
+    {
+        if (!uptimeSeconds.HasValue)
+        {
+            return "n/a";
+        }
+
+        var span = TimeSpan.FromSeconds(uptimeSeconds.Value);
+        return span.TotalDays >= 1
+            ? $"{(int)span.TotalDays}d {span.Hours}h"
+            : $"{span.Hours}h {span.Minutes}m";
+    }
+
+    private static Color GetUtilizationColor(double usagePercent)
+        => usagePercent switch
+        {
+            >= 90 => Color.Error,
+            >= 75 => Color.Warning,
+            _ => Color.Success
+        };
+
+    private sealed record NetworkSummary(string Name, double RxBytesPerSec, double TxBytesPerSec);
+}

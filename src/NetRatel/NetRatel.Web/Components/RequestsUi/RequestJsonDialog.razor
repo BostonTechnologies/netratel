@@ -1,0 +1,23 @@
+<MudDialog Class="request-json-dialog">
+    <TitleContent>
+        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
+            <MudIcon Icon="@Icon" Color="Color.Primary" />
+            <MudText Typo="Typo.h6">@Title</MudText>
+        </MudStack>
+    </TitleContent>
+    <DialogContent>
+        <RequestJsonPayloadView Json="@Json" />
+    </DialogContent>
+    <DialogActions>
+        <MudButton Variant="Variant.Text" OnClick="Close">Close</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public string Title { get; set; } = "JSON payload";
+    [Parameter] public string? Json { get; set; }
+    [Parameter] public string Icon { get; set; } = Icons.Material.Filled.DataObject;
+
+    private void Close() => MudDialog.Close();
+}

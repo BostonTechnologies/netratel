@@ -1,0 +1,320 @@
+@page "/clients/mgmt"
+@using MudBlazor
+@using NetRatel.Shared
+@using NetRatel.Shared.Contracts
+@using NetRatel.Web.Services
+@using NetRatel.Web.Services.Tenants
+@inject IClientArtifactsService Artifacts
+@inject ITenantApiService TenantApi
+@inject IJSRuntime JsRuntime
+
+<MudPaper Class="client-mgmt-hero pa-4" Elevation="0">
+    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="flex-wrap">
+        <MudStack Spacing="0">
+            <MudText Typo="Typo.h5">Agent Installers &amp; Updates</MudText>
+            <MudText Typo="Typo.body2" Color="Color.Secondary">Manage immutable client packages, published auto-update releases, deployment scripts, update activity, and suspended update policy.</MudText>
+        </MudStack>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.Upload" OnClick="OpenUpload">Upload artifact</MudButton>
+    </MudStack>
+    <MudAlert Dense="true" Severity="Severity.Info" Variant="Variant.Outlined" Class="mt-3 mb-0">
+        Artifacts are downloadable client packages by runtime and version. Uploading a valid immutable artifact normally publishes an update release. Update Attempts records the client rollout lifecycle. Suspended Agents require explicit operator resumption.
+    </MudAlert>
+</MudPaper>
+
+<MudPaper Class="mt-4 pa-3 client-mgmt-surface" Elevation="0">
+    <MudTabs Rounded="true" KeepPanelsAlive="true" ActivePanelIndex="_activeTab" ActivePanelIndexChanged="OnTabChanged" PanelClass="client-mgmt-tab-panel" data-testid="client-management-tabs">
+        <MudTabPanel Text="Artifacts" Icon="@Icons.Material.Filled.Inventory2">
+            @if (_activeTab == 0)
+            {
+                <MudStack Spacing="2" data-testid="artifact-management-panel">
+                    <MudGrid Spacing="2">
+                        <MudItem xs="12" md="5"><MudTextField T="string" Value="_artifactSearch" ValueChanged="OnArtifactSearchChanged" Immediate="true" Label="Search artifacts" Placeholder="Runtime, version, filename, SHA, notes" Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search" Clearable="true" data-testid="artifact-search" /></MudItem>
+                        <MudItem xs="12" sm="6" md="3"><MudSelect T="string" Value="_artifactRid" ValueChanged="OnArtifactRidChanged" Label="Runtime" Immediate="true" data-testid="artifact-rid-filter"><MudSelectItem Value="@string.Empty">All runtimes</MudSelectItem>@foreach (var runtimeId in RuntimeIds) { <MudSelectItem Value="@runtimeId">@runtimeId</MudSelectItem> }</MudSelect></MudItem>
+                        <MudItem xs="12" sm="6" md="4"><MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Refresh" OnClick="ReloadArtifactsAsync" Disabled="_artifactsLoading">Refresh</MudButton></MudItem>
+                    </MudGrid>
+                    <MudTable T="ClientArtifactSummaryModel" @ref="_artifactTable" ServerData="LoadArtifactsAsync" Dense="true" Hover="true" Loading="_artifactsLoading" Breakpoint="Breakpoint.Sm" data-testid="artifact-table">
+                        <HeaderContent><MudTh>Runtime</MudTh><MudTh>Version</MudTh><MudTh>Notes</MudTh><MudTh>SHA256</MudTh><MudTh>Uploaded</MudTh><MudTh></MudTh></HeaderContent>
+                        <RowTemplate>
+                            <MudTd DataLabel="Runtime">@context.Rid</MudTd>
+                            <MudTd DataLabel="Version">@context.Version</MudTd>
+                            <MudTd DataLabel="Notes"><span class="client-mgmt-clamp">@(context.Notes ?? "—")</span></MudTd>
+                            <MudTd DataLabel="SHA256"><MudTooltip Text="@context.Sha256"><code>@ShortHash(context.Sha256)</code></MudTooltip><MudTooltip Text="Copy full SHA256"><MudIconButton Icon="@Icons.Material.Filled.ContentCopy" Size="Size.Small" OnClick="@(() => CopyAsync(context.Sha256))" /></MudTooltip></MudTd>
+                            <MudTd DataLabel="Uploaded">@context.UploadedAt.ToLocalTime().ToString("g")</MudTd>
+                            <MudTd><MudMenu Icon="@Icons.Material.Filled.MoreVert" aria-label="Artifact actions"><MudMenuItem OnClick="@(() => OpenDownload(context))">Download</MudMenuItem><MudMenuItem OnClick="@(() => OpenScript(context))">Generate script</MudMenuItem><MudMenuItem OnClick="@(() => Delete(context))">Delete unpublished artifact</MudMenuItem></MudMenu></MudTd>
+                        </RowTemplate>
+                        <NoRecordsContent><MudText Typo="Typo.body2" Color="Color.Secondary">No installer artifacts match the active filters.</MudText></NoRecordsContent>
+                        <PagerContent><MudTablePager PageSizeOptions="PageSizes" /></PagerContent>
+                    </MudTable>
+                </MudStack>
+            }
+        </MudTabPanel>
+
+        <MudTabPanel Text="Auto-update Releases" Icon="@Icons.Material.Filled.SystemUpdateAlt">
+            @if (_activeTab == 1)
+            {
+                <MudStack Spacing="2" data-testid="release-management-panel">
+                    <MudGrid Spacing="2">
+                        <MudItem xs="12" md="4"><MudTextField T="string" Value="_releaseSearch" ValueChanged="OnReleaseSearchChanged" Immediate="true" Label="Search releases" Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search" Clearable="true" data-testid="release-search" /></MudItem>
+                        <MudItem xs="12" sm="6" md="2"><MudSelect T="string" Value="_releaseRid" ValueChanged="OnReleaseRidChanged" Label="Runtime"><MudSelectItem Value="@string.Empty">All runtimes</MudSelectItem>@foreach (var runtimeId in RuntimeIds) { <MudSelectItem Value="@runtimeId">@runtimeId</MudSelectItem> }</MudSelect></MudItem>
+                        <MudItem xs="12" sm="6" md="2"><MudTextField T="string" Value="_releaseVersion" ValueChanged="OnReleaseVersionChanged" Immediate="true" Label="Version" Clearable="true" /></MudItem>
+                        <MudItem xs="12" sm="6" md="2"><MudSelect T="string" Value="_releaseChannel" ValueChanged="OnReleaseChannelChanged" Label="Channel"><MudSelectItem Value="@string.Empty">All channels</MudSelectItem><MudSelectItem Value="@("stable")">stable</MudSelectItem></MudSelect></MudItem>
+                        <MudItem xs="12" sm="6" md="2"><MudSelect T="string" Value="_releaseEnabled" ValueChanged="OnReleaseEnabledChanged" Label="Status"><MudSelectItem Value="@string.Empty">All statuses</MudSelectItem><MudSelectItem Value="@("enabled")">Enabled</MudSelectItem><MudSelectItem Value="@("disabled")">Disabled</MudSelectItem></MudSelect></MudItem>
+                    </MudGrid>
+                    <MudTable T="ClientUpdateReleaseModel" @ref="_releaseTable" ServerData="LoadReleasesAsync" Dense="true" Hover="true" Loading="_releasesLoading" Breakpoint="Breakpoint.Sm" data-testid="release-table">
+                        <HeaderContent><MudTh>Runtime</MudTh><MudTh>Version</MudTh><MudTh>Channel</MudTh><MudTh>SHA256</MudTh><MudTh>Published</MudTh><MudTh>Status</MudTh><MudTh></MudTh></HeaderContent>
+                        <RowTemplate>
+                            <MudTd DataLabel="Runtime">@context.RuntimeId</MudTd><MudTd DataLabel="Version">@context.Version</MudTd><MudTd DataLabel="Channel">@context.Channel</MudTd>
+                            <MudTd DataLabel="SHA256"><MudTooltip Text="@context.Sha256"><code>@ShortHash(context.Sha256)</code></MudTooltip></MudTd>
+                            <MudTd DataLabel="Published">@context.PublishedAt.ToLocalTime().ToString("g")</MudTd>
+                            <MudTd DataLabel="Status"><MudChip T="string" Size="Size.Small" Color="@(context.Enabled ? Color.Success : Color.Default)">@(context.Enabled ? "Enabled" : "Disabled")</MudChip></MudTd>
+                            <MudTd><MudButton Size="Size.Small" Color="Color.Warning" Disabled="@(!context.Enabled)" OnClick="@(() => DisableRelease(context))">Disable</MudButton></MudTd>
+                        </RowTemplate>
+                        <NoRecordsContent><MudText Typo="Typo.body2" Color="Color.Secondary">No update releases match the active filters.</MudText></NoRecordsContent>
+                        <PagerContent><MudTablePager PageSizeOptions="PageSizes" /></PagerContent>
+                    </MudTable>
+                </MudStack>
+            }
+        </MudTabPanel>
+
+        <MudTabPanel Text="Update Attempts" Icon="@Icons.Material.Filled.History">
+            @if (_activeTab == 2)
+            {
+                <MudStack Spacing="2" data-testid="attempt-management-panel">
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">Grouping is applied to this server-filtered page; group counts are not global totals.</MudText>
+                    <MudGrid Spacing="2">
+                        <MudItem xs="12" md="4"><MudTextField T="string" Value="_attemptSearch" ValueChanged="OnAttemptSearchChanged" Immediate="true" Label="Search attempts" Placeholder="Hostname, tenant, version, status" Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search" Clearable="true" data-testid="attempt-search" /></MudItem>
+                        <MudItem xs="12" sm="6" md="2"><MudSelect T="int?" Value="_attemptTenantId" ValueChanged="OnAttemptTenantChanged" Label="Tenant"><MudSelectItem T="int?" Value="@null">All tenants</MudSelectItem>@foreach (var tenant in _tenants) { <MudSelectItem T="int?" Value="@tenant.TenantId">@tenant.Name</MudSelectItem> }</MudSelect></MudItem>
+                        <MudItem xs="12" sm="6" md="2"><MudSelect T="string" Value="_attemptRid" ValueChanged="OnAttemptRidChanged" Label="Runtime"><MudSelectItem Value="@string.Empty">All runtimes</MudSelectItem>@foreach (var runtimeId in RuntimeIds) { <MudSelectItem Value="@runtimeId">@runtimeId</MudSelectItem> }</MudSelect></MudItem>
+                        <MudItem xs="12" sm="6" md="2"><MudTextField T="string" Value="_attemptVersion" ValueChanged="OnAttemptVersionChanged" Immediate="true" Label="Version" Clearable="true" /></MudItem>
+                        <MudItem xs="12" sm="6" md="2"><MudSelect T="string" Value="_attemptStatus" ValueChanged="OnAttemptStatusChanged" Label="Status"><MudSelectItem Value="@string.Empty">All states</MudSelectItem>@foreach (var state in UpdateStatuses) { <MudSelectItem Value="@state">@state</MudSelectItem> }</MudSelect></MudItem>
+                        <MudItem xs="12" sm="6" md="3"><MudSelect T="string" Value="_attemptGrouping" ValueChanged="OnAttemptGroupingChanged" Label="Group current page" data-testid="attempt-grouping"><MudSelectItem Value="@("None")">None</MudSelectItem><MudSelectItem Value="@("Tenant")">Tenant</MudSelectItem><MudSelectItem Value="@("Version")">Version</MudSelectItem><MudSelectItem Value="@("RID")">RID</MudSelectItem><MudSelectItem Value="@("Status")">Status</MudSelectItem></MudSelect></MudItem>
+                    </MudGrid>
+                    <MudTable T="ClientUpdateHistoryItemModel" @ref="_attemptTable" ServerData="LoadAttemptsAsync" GroupBy="AttemptGroup" Dense="true" Hover="true" Loading="_attemptsLoading" Breakpoint="Breakpoint.Sm" data-testid="attempt-table">
+                        <HeaderContent><MudTh>Client</MudTh><MudTh>Release</MudTh><MudTh>Status</MudTh><MudTh>Failure</MudTh><MudTh>Updated</MudTh></HeaderContent>
+                        <GroupHeaderTemplate><td colspan="5"><MudText Typo="Typo.subtitle2">@context.Key <span class="text-secondary">(@context.Items.Count() on this page)</span></MudText></td></GroupHeaderTemplate>
+                        <RowTemplate>
+                            <MudTd DataLabel="Client"><MudTooltip Text="@context.AgentId.ToString()"><MudStack Spacing="0"><MudText Typo="Typo.body2">@ClientTarget(context.ClientHostName, context.ClientDisplayName, context.AgentId)</MudText><MudText Typo="Typo.caption" Color="Color.Secondary">@(context.TenantName ?? $"Tenant {context.TenantId}")@(DisplaySecondaryName(context.ClientHostName, context.ClientDisplayName))</MudText></MudStack></MudTooltip></MudTd>
+                            <MudTd DataLabel="Release">@context.RuntimeId @context.TargetVersion</MudTd><MudTd DataLabel="Status"><MudChip T="string" Size="Size.Small" Color="@UpdateStatusColor(context.Status)">@context.Status</MudChip></MudTd>
+                            <MudTd DataLabel="Failure"><MudTooltip Text="@(context.Message ?? context.FailureCode ?? "No failure detail")"><span class="client-mgmt-clamp">@(context.FailureCode ?? context.Message ?? "—")</span></MudTooltip></MudTd><MudTd DataLabel="Updated">@context.UpdatedAtUtc.ToLocalTime().ToString("g")</MudTd>
+                        </RowTemplate>
+                        <NoRecordsContent><MudText Typo="Typo.body2" Color="Color.Secondary">No update attempts match the active filters.</MudText></NoRecordsContent>
+                        <PagerContent><MudTablePager PageSizeOptions="PageSizes" /></PagerContent>
+                    </MudTable>
+                </MudStack>
+            }
+        </MudTabPanel>
+
+        <MudTabPanel Text="Suspended Agents" Icon="@Icons.Material.Filled.PauseCircleOutline">
+            @if (_activeTab == 3)
+            {
+                <MudStack Spacing="2" data-testid="suspended-management-panel">
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">Resume affects only future automatic updates for the selected suspended client.</MudText>
+                    <MudGrid Spacing="2"><MudItem xs="12" md="6"><MudTextField T="string" Value="_suspendedSearch" ValueChanged="OnSuspendedSearchChanged" Immediate="true" Label="Search suspended agents" Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search" Clearable="true" data-testid="suspended-search" /></MudItem><MudItem xs="12" md="3"><MudSelect T="int?" Value="_suspendedTenantId" ValueChanged="OnSuspendedTenantChanged" Label="Tenant"><MudSelectItem T="int?" Value="@null">All tenants</MudSelectItem>@foreach (var tenant in _tenants) { <MudSelectItem T="int?" Value="@tenant.TenantId">@tenant.Name</MudSelectItem> }</MudSelect></MudItem></MudGrid>
+                    <MudTable T="AgentClientUpdateStateModel" @ref="_suspendedTable" ServerData="LoadSuspendedAsync" Dense="true" Hover="true" Loading="_suspendedLoading" Breakpoint="Breakpoint.Sm" data-testid="suspended-table">
+                        <HeaderContent><MudTh>Client</MudTh><MudTh>Reason</MudTh><MudTh>Suspended</MudTh><MudTh></MudTh></HeaderContent>
+                        <RowTemplate><MudTd DataLabel="Client"><MudTooltip Text="@context.AgentId.ToString()"><MudStack Spacing="0"><MudText Typo="Typo.body2">@StateTarget(context)</MudText><MudText Typo="Typo.caption" Color="Color.Secondary">@(context.TenantName ?? $"Tenant {context.TenantId}")@(DisplaySecondaryName(context.ClientHostName, context.ClientDisplayName))</MudText></MudStack></MudTooltip></MudTd><MudTd DataLabel="Reason"><span class="client-mgmt-clamp">@(context.SuspensionReason ?? "—")</span></MudTd><MudTd DataLabel="Suspended">@context.SuspendedAtUtc?.ToLocalTime().ToString("g")</MudTd><MudTd><MudButton Size="Size.Small" Color="Color.Primary" OnClick="@(() => Resume(context))">Resume future updates</MudButton></MudTd></RowTemplate>
+                        <NoRecordsContent><MudText Typo="Typo.body2" Color="Color.Secondary">No clients have auto-update suspended.</MudText></NoRecordsContent>
+                        <PagerContent><MudTablePager PageSizeOptions="PageSizes" /></PagerContent>
+                    </MudTable>
+                </MudStack>
+            }
+        </MudTabPanel>
+    </MudTabs>
+</MudPaper>
+
+<MudOverlay Visible="_downloadDialogOpen" AutoClose="false" DarkBackground="true">
+    <MudPaper Class="pa-4 mx-auto mt-12" Style="max-width: 520px;"><MudStack Spacing="2"><MudText Typo="Typo.h6">Download Client Package</MudText><MudText Typo="Typo.body2">Installer will auto-enroll on first run; no token is embedded.</MudText><MudSelect T="int?" Label="Tenant" @bind-Value="_selectedTenantId" Required="true">@foreach (var tenant in _tenants) { <MudSelectItem T="int?" Value="@tenant.TenantId">@tenant.Name (@tenant.TenantId)</MudSelectItem> }</MudSelect><MudSelect T="ClientEnvironment" Label="Environment" @bind-Value="_selectedEnvironment"><MudSelectItem T="ClientEnvironment" Value="ClientEnvironment.Dev">Dev</MudSelectItem><MudSelectItem T="ClientEnvironment" Value="ClientEnvironment.Prod">Prod</MudSelectItem><MudSelectItem T="ClientEnvironment" Value="ClientEnvironment.Both">Dev + Prod</MudSelectItem></MudSelect><MudSelect T="string" Label="Runtime" @bind-Value="_selectedRuntimeId">@foreach (var runtimeId in RuntimeIds) { <MudSelectItem Value="@runtimeId">@runtimeId</MudSelectItem> }</MudSelect><MudCheckBox T="bool" Label="Inject enrollment code" @bind-Value="_injectEnrollment" />@if (_injectEnrollment) { <MudSelect T="int?" Label="Validity" @bind-Value="_validityMinutes">@foreach (var preset in _validityPresets) { <MudSelectItem T="int?" Value="@preset.Minutes">@preset.Label</MudSelectItem> }</MudSelect><MudNumericField T="int" Label="Max uses" Min="1" @bind-Value="_maxUses" /> }<MudStack Row="true" Justify="Justify.FlexEnd" Spacing="1"><MudButton Variant="Variant.Text" OnClick="CloseDownloadDialog">Cancel</MudButton><MudButton Color="Color.Primary" Variant="Variant.Filled" Disabled="@(!CanDownload())" OnClick="DownloadSelectedAsync">Download</MudButton></MudStack></MudStack></MudPaper>
+</MudOverlay>
+
+<MudOverlay Visible="_scriptDialogOpen" AutoClose="false" DarkBackground="true">
+    <MudPaper Class="pa-4 mx-auto mt-12" Style="max-width: 520px;"><MudStack Spacing="2"><MudText Typo="Typo.h6">Generate Deployment Script</MudText><MudText Typo="Typo.body2">Script includes a short-lived enrollment code. No JWT is embedded.</MudText><MudSelect T="int?" Label="Tenant" @bind-Value="_selectedTenantId" Required="true">@foreach (var tenant in _tenants) { <MudSelectItem T="int?" Value="@tenant.TenantId">@tenant.Name (@tenant.TenantId)</MudSelectItem> }</MudSelect><MudSelect T="string" Label="Runtime" @bind-Value="_scriptRuntimeId">@foreach (var runtimeId in RuntimeIds) { <MudSelectItem Value="@runtimeId">@runtimeId</MudSelectItem> }</MudSelect><MudSelect T="int?" Label="Validity" @bind-Value="_scriptValidityMinutes">@foreach (var preset in _validityPresets) { <MudSelectItem T="int?" Value="@preset.Minutes">@preset.Label</MudSelectItem> }</MudSelect><MudNumericField T="int" Label="Max uses" Min="1" @bind-Value="_scriptMaxUses" /><MudCheckBox T="bool" Label="Install as Service" @bind-Value="_scriptInstallAsService" /><MudCheckBox T="bool" Label="Silent install" @bind-Value="_scriptSilentInstall" /><MudStack Row="true" Justify="Justify.FlexEnd" Spacing="1"><MudButton Variant="Variant.Text" OnClick="CloseScriptDialog">Cancel</MudButton><MudButton Color="Color.Primary" Variant="Variant.Filled" Disabled="@(!CanGenerateScript())" OnClick="GenerateScriptAsync">Generate Script</MudButton></MudStack></MudStack></MudPaper>
+</MudOverlay>
+
+@code {
+    private static readonly int[] PageSizes = [10, 20, 50, 100];
+    private static readonly string[] RuntimeIds = ["win-x64", "win-arm64", "linux-x64", "osx-x64", "osx-arm64"];
+    private static readonly string[] UpdateStatuses = ["Claimed", "Downloading", "Staged", "Activating", "GatewayReadmitted", "Accepted", "FailedPreActivation", "RolledBack", "RollbackUnverified"];
+    private readonly (string Label, int Minutes)[] _validityPresets = [("1 hour", 60), ("6 hours", 360), ("24 hours", 1440), ("3 days", 4320), ("7 days", 10080)];
+    private IReadOnlyList<TenantDto> _tenants = Array.Empty<TenantDto>();
+    private MudTable<ClientArtifactSummaryModel>? _artifactTable;
+    private MudTable<ClientUpdateReleaseModel>? _releaseTable;
+    private MudTable<ClientUpdateHistoryItemModel>? _attemptTable;
+    private MudTable<AgentClientUpdateStateModel>? _suspendedTable;
+    private int _activeTab;
+    private bool _artifactsLoading;
+    private bool _releasesLoading;
+    private bool _attemptsLoading;
+    private bool _suspendedLoading;
+    private string? _artifactSearch;
+    private string _artifactRid = string.Empty;
+    private string? _releaseSearch;
+    private string _releaseRid = string.Empty;
+    private string? _releaseVersion;
+    private string _releaseChannel = string.Empty;
+    private string _releaseEnabled = string.Empty;
+    private string? _attemptSearch;
+    private int? _attemptTenantId;
+    private string _attemptRid = string.Empty;
+    private string? _attemptVersion;
+    private string _attemptStatus = string.Empty;
+    private string _attemptGrouping = "Tenant";
+    private string? _suspendedSearch;
+    private int? _suspendedTenantId;
+    private bool _downloadDialogOpen;
+    private bool _scriptDialogOpen;
+    private ClientArtifactSummaryModel? _selectedItem;
+    private int? _selectedTenantId;
+    private ClientEnvironment _selectedEnvironment = ClientEnvironment.Dev;
+    private string _selectedRuntimeId = "win-x64";
+    private bool _injectEnrollment = true;
+    private int? _validityMinutes = 60;
+    private int _maxUses = 1;
+    private string _scriptRuntimeId = "win-x64";
+    private int? _scriptValidityMinutes = 60;
+    private int _scriptMaxUses = 1;
+    private bool _scriptInstallAsService = true;
+    private bool _scriptSilentInstall = true;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _tenants = await TenantApi.GetTenantsAsync();
+        _selectedTenantId = _tenants.FirstOrDefault()?.TenantId;
+    }
+
+    private async Task OnTabChanged(int index)
+    {
+        _activeTab = index;
+        await Task.Yield();
+        switch (index)
+        {
+            case 0 when _artifactTable is not null: await _artifactTable.ReloadServerData(); break;
+            case 1 when _releaseTable is not null: await _releaseTable.ReloadServerData(); break;
+            case 2 when _attemptTable is not null: await _attemptTable.ReloadServerData(); break;
+            case 3 when _suspendedTable is not null: await _suspendedTable.ReloadServerData(); break;
+        }
+    }
+
+    private async Task<TableData<ClientArtifactSummaryModel>> LoadArtifactsAsync(TableState state, CancellationToken ct)
+    {
+        _artifactsLoading = true;
+        try
+        {
+            var page = await Artifacts.GetArtifactsAsync(state.Page, state.PageSize, EmptyToNull(_artifactRid), EmptyToNull(_artifactSearch), ct);
+            return new TableData<ClientArtifactSummaryModel> { Items = page.Items, TotalItems = page.Total };
+        }
+        finally { _artifactsLoading = false; }
+    }
+
+    private async Task<TableData<ClientUpdateReleaseModel>> LoadReleasesAsync(TableState state, CancellationToken ct)
+    {
+        _releasesLoading = true;
+        try
+        {
+            var page = await Artifacts.GetUpdateReleasePageAsync(state.Page, state.PageSize, EmptyToNull(_releaseSearch), EmptyToNull(_releaseRid), EmptyToNull(_releaseVersion), EmptyToNull(_releaseChannel), ParseEnabledFilter(), ct);
+            return new TableData<ClientUpdateReleaseModel> { Items = page.Items, TotalItems = page.Total };
+        }
+        finally { _releasesLoading = false; }
+    }
+
+    private async Task<TableData<ClientUpdateHistoryItemModel>> LoadAttemptsAsync(TableState state, CancellationToken ct)
+    {
+        _attemptsLoading = true;
+        try
+        {
+            var page = await Artifacts.GetUpdateHistoryAsync(state.Page, state.PageSize, EmptyToNull(_attemptSearch), EmptyToNull(_attemptStatus), null, EmptyToNull(_attemptRid), _attemptTenantId, EmptyToNull(_attemptVersion), ct);
+            return new TableData<ClientUpdateHistoryItemModel> { Items = page.Items, TotalItems = page.Total };
+        }
+        finally { _attemptsLoading = false; }
+    }
+
+    private async Task<TableData<AgentClientUpdateStateModel>> LoadSuspendedAsync(TableState state, CancellationToken ct)
+    {
+        _suspendedLoading = true;
+        try
+        {
+            var page = await Artifacts.GetSuspendedAgentsAsync(state.Page, state.PageSize, EmptyToNull(_suspendedSearch), _suspendedTenantId, ct);
+            return new TableData<AgentClientUpdateStateModel> { Items = page.Items, TotalItems = page.Total };
+        }
+        finally { _suspendedLoading = false; }
+    }
+
+    private Task OnArtifactSearchChanged(string value) { _artifactSearch = value; return ResetAndReloadAsync(_artifactTable); }
+    private Task OnArtifactRidChanged(string value) { _artifactRid = value; return ResetAndReloadAsync(_artifactTable); }
+    private Task OnReleaseSearchChanged(string value) { _releaseSearch = value; return ResetAndReloadAsync(_releaseTable); }
+    private Task OnReleaseRidChanged(string value) { _releaseRid = value; return ResetAndReloadAsync(_releaseTable); }
+    private Task OnReleaseVersionChanged(string value) { _releaseVersion = value; return ResetAndReloadAsync(_releaseTable); }
+    private Task OnReleaseChannelChanged(string value) { _releaseChannel = value; return ResetAndReloadAsync(_releaseTable); }
+    private Task OnReleaseEnabledChanged(string value) { _releaseEnabled = value; return ResetAndReloadAsync(_releaseTable); }
+    private Task OnAttemptSearchChanged(string value) { _attemptSearch = value; return ResetAndReloadAsync(_attemptTable); }
+    private Task OnAttemptTenantChanged(int? value) { _attemptTenantId = value; return ResetAndReloadAsync(_attemptTable); }
+    private Task OnAttemptRidChanged(string value) { _attemptRid = value; return ResetAndReloadAsync(_attemptTable); }
+    private Task OnAttemptVersionChanged(string value) { _attemptVersion = value; return ResetAndReloadAsync(_attemptTable); }
+    private Task OnAttemptStatusChanged(string value) { _attemptStatus = value; return ResetAndReloadAsync(_attemptTable); }
+    private Task OnAttemptGroupingChanged(string value) { _attemptGrouping = value; return InvokeAsync(StateHasChanged); }
+    private Task OnSuspendedSearchChanged(string value) { _suspendedSearch = value; return ResetAndReloadAsync(_suspendedTable); }
+    private Task OnSuspendedTenantChanged(int? value) { _suspendedTenantId = value; return ResetAndReloadAsync(_suspendedTable); }
+    private Task ReloadArtifactsAsync() => ResetAndReloadAsync(_artifactTable);
+
+    private static async Task ResetAndReloadAsync<T>(MudTable<T>? table)
+    {
+        if (table is null) return;
+        table.NavigateTo(0);
+        await table.ReloadServerData();
+    }
+
+    private TableGroupDefinition<ClientUpdateHistoryItemModel>? AttemptGroup => _attemptGrouping switch
+    {
+        "Tenant" => NewAttemptGroup("Tenant", item => item.TenantName ?? $"Tenant {item.TenantId}"),
+        "Version" => NewAttemptGroup("Version", item => item.TargetVersion),
+        "RID" => NewAttemptGroup("RID", item => item.RuntimeId),
+        "Status" => NewAttemptGroup("Status", item => item.Status),
+        _ => null
+    };
+
+    private static TableGroupDefinition<ClientUpdateHistoryItemModel> NewAttemptGroup(string name, Func<ClientUpdateHistoryItemModel, object> selector) => new(selector) { GroupName = name, Expandable = true, IsInitiallyExpanded = false, Indentation = false };
+
+    private Task OpenUpload() { Artifacts.OpenUploadDialog(_artifactRid, OnUploaded); return Task.CompletedTask; }
+    private async Task OnUploaded() { await ResetAndReloadAsync(_artifactTable); await ResetAndReloadAsync(_releaseTable); }
+    private void OpenDownload(ClientArtifactSummaryModel item) { _selectedItem = item; _selectedRuntimeId = item.Rid; _downloadDialogOpen = true; }
+    private void CloseDownloadDialog() => _downloadDialogOpen = false;
+    private void OpenScript(ClientArtifactSummaryModel item) { _scriptRuntimeId = item.Rid; _scriptDialogOpen = true; }
+    private void CloseScriptDialog() => _scriptDialogOpen = false;
+
+    private async Task DownloadSelectedAsync()
+    {
+        if (_selectedItem is null || !_selectedTenantId.HasValue) return;
+        _downloadDialogOpen = false;
+        await Artifacts.DownloadClientPackageAsync(new ClientPackageDownloadRequest { TenantId = _selectedTenantId.Value, Environment = (int)_selectedEnvironment, RuntimeId = _selectedRuntimeId, Version = _selectedItem.Version, InjectEnrollment = _injectEnrollment, ValidForMinutes = _injectEnrollment ? _validityMinutes : null, MaxUses = _injectEnrollment ? _maxUses : null });
+    }
+
+    private bool CanDownload() => _selectedTenantId.HasValue && !string.IsNullOrWhiteSpace(_selectedRuntimeId) && (!_injectEnrollment || (_validityMinutes is >= 5 && _maxUses >= 1));
+    private bool CanGenerateScript() => _selectedTenantId.HasValue && !string.IsNullOrWhiteSpace(_scriptRuntimeId) && _scriptValidityMinutes is >= 5 and <= 10080 && _scriptMaxUses >= 1;
+
+    private async Task GenerateScriptAsync()
+    {
+        if (!_selectedTenantId.HasValue || !_scriptValidityMinutes.HasValue) return;
+        await Artifacts.DownloadDeploymentScriptAsync(new ClientScriptGenerateRequest { TenantId = _selectedTenantId.Value, RuntimeId = _scriptRuntimeId, ValidForMinutes = _scriptValidityMinutes.Value, MaxUses = _scriptMaxUses, InstallAsService = _scriptInstallAsService, SilentInstall = _scriptSilentInstall });
+        _scriptDialogOpen = false;
+    }
+
+    private async Task Delete(ClientArtifactSummaryModel item) { await Artifacts.DeleteAsync(item.Rid, item.Version); await ResetAndReloadAsync(_artifactTable); }
+    private async Task DisableRelease(ClientUpdateReleaseModel release) { await Artifacts.DisableReleaseAsync(release.ReleaseId); await ResetAndReloadAsync(_releaseTable); }
+    private async Task Resume(AgentClientUpdateStateModel state) { await Artifacts.ResumeAgentAsync(state.TenantId, state.AgentId); await ResetAndReloadAsync(_suspendedTable); }
+    private async Task CopyAsync(string value) { if (!string.IsNullOrWhiteSpace(value)) await JsRuntime.InvokeVoidAsync("navigator.clipboard.writeText", value); }
+    private bool? ParseEnabledFilter() => _releaseEnabled switch { "enabled" => true, "disabled" => false, _ => null };
+    private static string? EmptyToNull(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    private static string ShortHash(string hash) => string.IsNullOrWhiteSpace(hash) ? string.Empty : hash.Length <= 12 ? hash : $"{hash[..12]}…";
+    private static string ClientTarget(string? hostName, string? displayName, Guid agentId) => FirstPresent(hostName, displayName) ?? $"Unknown client · {agentId.ToString("N")[..8]}";
+    private static string StateTarget(AgentClientUpdateStateModel state) => FirstPresent(state.ClientHostName, state.ClientDisplayName, state.AgentName) ?? $"Unknown client · {state.AgentId.ToString("N")[..8]}";
+    private static string DisplaySecondaryName(string? hostName, string? displayName) => !string.IsNullOrWhiteSpace(hostName) && !string.IsNullOrWhiteSpace(displayName) && !string.Equals(hostName, displayName, StringComparison.OrdinalIgnoreCase) ? $" · {displayName}" : string.Empty;
+    private static string? FirstPresent(params string?[] values) => values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim();
+    private static Color UpdateStatusColor(string status) => status switch { "Accepted" or "GatewayReadmitted" => Color.Success, "FailedPreActivation" or "RolledBack" or "RollbackUnverified" => Color.Error, "Downloading" or "Staged" or "Activating" => Color.Info, _ => Color.Default };
+}
+
+<style>
+    .client-mgmt-hero, .client-mgmt-surface { border: 1px solid var(--mud-palette-divider); border-radius: var(--netratel-radius-surface, 7px); min-width: 0; }
+    .client-mgmt-hero { border-left: 3px solid var(--mud-palette-primary); }
+    .client-mgmt-tab-panel { min-width: 0; overflow-x: hidden; }
+    .client-mgmt-clamp { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
+    .client-mgmt-surface .mud-table-container { max-width: 100%; overflow-x: auto; }
+</style>

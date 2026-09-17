@@ -1,0 +1,36 @@
+@using MudBlazor
+
+<MudDialog>
+    <TitleContent>
+        <MudText Typo="Typo.h6">@Title</MudText>
+    </TitleContent>
+    <DialogContent>
+        @* Use MarkupString to allow potential HTML/formatting in the message *@
+        <MudText Typo="Typo.body1">@((MarkupString)Message)</MudText>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">@CancelText</MudButton>
+        @* Conditionally render No button if text is provided *@
+        @if (!string.IsNullOrWhiteSpace(NoText))
+        {
+            <MudButton Variant="Variant.Filled" OnClick="No">@NoText</MudButton>
+        }
+        <MudButton Variant="Variant.Filled" Color="@YesButtonColor" OnClick="Yes">@YesText</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] IMudDialogInstance MudDialog { get; set; } = default!;
+
+    // Parameters to customize the dialog
+    [Parameter] public string Title { get; set; } = "Confirmation";
+    [Parameter] public string Message { get; set; } = "Are you sure?";
+    [Parameter] public string YesText { get; set; } = "Yes";
+    [Parameter] public string? NoText { get; set; } // Optional No button
+    [Parameter] public string CancelText { get; set; } = "Cancel";
+    [Parameter] public Color YesButtonColor { get; set; } = Color.Primary; // Allow customizing Yes button color
+
+    private void Yes() => MudDialog.Close(DialogResult.Ok(true));
+    private void No() => MudDialog.Close(DialogResult.Ok(false)); // Distinguish No from Cancel if needed
+    private void Cancel() => MudDialog.Cancel();
+}

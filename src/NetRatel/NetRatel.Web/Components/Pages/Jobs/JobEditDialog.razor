@@ -1,0 +1,1002 @@
+@using System.Linq
+@using System.Threading
+@using MudBlazor
+@using NetRatel.Shared
+@using NetRatel.Shared.Contracts.Jobs
+@using NetRatel.Shared.Contracts
+@using NetRatel.Web.Models.Clients
+@using NetRatel.Web.Services.Clients
+
+@inject IJobApiClient JobApi
+@inject ITenantApiService TenantApi
+@inject ClientPresentationService ClientPresentation
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+
+<MudDialog>
+    <DialogContent>
+        <MudContainer MaxWidth="MaxWidth.False" Class="pa-0 jobs-editor-container">
+            <MudPaper Elevation="0" Class="jobs-editor-hero pa-4 mb-3 rounded-lg">
+                <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
+                    <MudStack Spacing="1">
+                        <MudText Class="jobs-editor-kicker">Workflow Designer</MudText>
+                        <MudText Typo="Typo.h5">@(_jobId == null ? "Create workflow" : $"Edit workflow #{_jobId}")</MudText>
+                        <MudText Typo="Typo.body2">Define tenant, environment, target client, execution steps, and runtime parameters in one place.</MudText>
+                    </MudStack>
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
+                        <MudChip T="string" Variant="Variant.Outlined" Size="Size.Small">@(_selectedTenant?.Name ?? "No tenant")</MudChip>
+                        <MudChip T="string" Variant="Variant.Outlined" Size="Size.Small">@_environment.ToShortLabel()</MudChip>
+                        <MudChip T="string" Variant="Variant.Text" Size="Size.Small">@($"{_steps.Count} step{(_steps.Count == 1 ? string.Empty : "s")}")</MudChip>
+                    </MudStack>
+                </MudStack>
+            </MudPaper>
+
+            <MudGrid Spacing="3" Class="flex-grow-1 jobs-editor-layout ma-0">
+                <MudItem xs="12" md="4" Class="d-flex">
+                    <MudPaper Elevation="0" Class="pa-4 rounded-lg jobs-editor-panel jobs-editor-sidebar">
+                        <MudStack Spacing="2">
+                            <MudTabs Rounded="true" Elevation="0" PanelClass="pt-3" Color="Color.Primary">
+                                <MudTabPanel Text="Definition" Icon="@Icons.Material.Filled.Work">
+                                    <MudStack Spacing="2">
+                                        <MudText Typo="Typo.caption" Color="Color.Secondary">
+                                            Workflow identity, tenant scope, environment, and target.
+                                        </MudText>
+
+                                        <MudTextField @bind-Value="_name"
+                                                      Label="Job Name"
+                                                      Variant="Variant.Outlined"
+                                                      Margin="Margin.Dense"
+                                                      Required="true"
+                                                      Adornment="Adornment.Start"
+                                                      AdornmentIcon="@Icons.Material.Filled.Work" />
+
+                                        <MudAutocomplete T="TenantDto"
+                                                         Label="Tenant"
+                                                         Value="_selectedTenant"
+                                                         ValueChanged="OnTenantChanged"
+                                                         SearchFunc="SearchTenants"
+                                                         ToStringFunc="@(t => t?.Name)"
+                                                         Variant="Variant.Outlined"
+                                                         Margin="Margin.Dense"
+                                                         AdornmentIcon="@Icons.Material.Filled.Business"
+                                                         ResetValueOnEmptyText="true"
+                                                         Clearable="true"
+                                                         Required="true" />
+
+                                        <MudSelect T="ClientEnvironment"
+                                                   Label="Environment"
+                                                   Value="_environment"
+                                                   ValueChanged="OnEnvironmentChanged"
+                                                   Variant="Variant.Outlined"
+                                                   Margin="Margin.Dense"
+                                                   Disabled="@(_selectedTenant == null)">
+                                            @foreach (var env in _environments)
+                                            {
+                                                <MudSelectItem Value="@env">@env.ToShortLabel()</MudSelectItem>
+                                            }
+                                        </MudSelect>
+
+                                        <MudAutocomplete T="ClientPresentationModel"
+                                                         Label="@(_selectedTenant == null ? "Select a Tenant first" : "Select Agent")"
+                                                         Value="_selectedClient"
+                                                         ValueChanged="OnClientChanged"
+                                                         SearchFunc="SearchClients"
+                                                         ToStringFunc="@(c => c == null ? "" : $"{c.DisplayName} ({c.HostName})")"
+                                                         Variant="Variant.Outlined"
+                                                         Margin="Margin.Dense"
+                                                         AdornmentIcon="@Icons.Material.Filled.Fingerprint"
+                                                         Disabled="@(_selectedTenant == null)"
+                                                         ResetValueOnEmptyText="true"
+                                                         Clearable="true"
+                                                         Required="true">
+                                            <ItemTemplate Context="client">
+                                                <MudText Typo="Typo.body2">
+                                                    <b>@client.DisplayName</b>
+                                                    <span class="mud-text-secondary"> - @client.HostName (@client.OperatingSystem)</span>
+                                                </MudText>
+                                            </ItemTemplate>
+                                        </MudAutocomplete>
+
+                                        <MudTextField T="string"
+                                                      Value="_folderSubfolder"
+                                                      ValueChanged="OnSubfolderChanged"
+                                                      Label="Folder (within tenant)"
+                                                      Variant="Variant.Outlined"
+                                                      Margin="Margin.Dense"
+                                                      Placeholder="e.g. Tests/Smoke"
+                                                      Adornment="Adornment.Start"
+                                                      AdornmentIcon="@Icons.Material.Filled.Folder"
+                                                      Disabled="@(_selectedTenant is null)" />
+
+                                        <MudPaper Class="pa-3 jobs-editor-folder-preview" Outlined="true">
+                                            <MudText Typo="Typo.caption" Class="jobs-editor-kicker-muted">Saved Path</MudText>
+                                            <MudText Typo="Typo.body2" Style="font-family:monospace">@EffectiveFolderPathLabel</MudText>
+                                        </MudPaper>
+
+                                        <MudText Typo="Typo.subtitle2">Runtime Policy</MudText>
+                                        <MudGrid Spacing="1">
+                                            <MudItem xs="12" sm="6">
+                                                <MudNumericField T="int"
+                                                                 @bind-Value="_expectedRuntimeMinutes"
+                                                                 Label="Expected Runtime (minutes)"
+                                                                 Variant="Variant.Outlined"
+                                                                 Margin="Margin.Dense"
+                                                                 Min="1" />
+                                            </MudItem>
+                                            <MudItem xs="12" sm="6">
+                                                <MudNumericField T="int"
+                                                                 @bind-Value="_graceRuntimeMinutes"
+                                                                 Label="Grace Runtime (minutes)"
+                                                                 Variant="Variant.Outlined"
+                                                                 Margin="Margin.Dense"
+                                                                 Min="0" />
+                                            </MudItem>
+                                        </MudGrid>
+                                    </MudStack>
+                                </MudTabPanel>
+                                <MudTabPanel Text="Schedule" Icon="@Icons.Material.Filled.Schedule">
+                                    <MudStack Spacing="2">
+                                        <MudSwitch T="bool"
+                                                   @bind-Value="_scheduleEnabled"
+                                                   Color="Color.Primary"
+                                                   Label="Run on a schedule" />
+
+                                        <MudSelect T="SchedulePreset"
+                                                   Label="Repeat"
+                                                   @bind-Value="_schedulePreset"
+                                                   Variant="Variant.Outlined"
+                                                   Margin="Margin.Dense"
+                                                   Disabled="@(!_scheduleEnabled)">
+                                            <MudSelectItem Value="@SchedulePreset.EveryDay">Every day</MudSelectItem>
+                                            <MudSelectItem Value="@SchedulePreset.SelectedDays">Selected days</MudSelectItem>
+                                        </MudSelect>
+
+                                        @if (_schedulePreset == SchedulePreset.SelectedDays)
+                                        {
+                                            <MudGrid Spacing="1">
+                                                @foreach (var day in ScheduleDays)
+                                                {
+                                                    <MudItem xs="6">
+                                                        <MudCheckBox T="bool"
+                                                                     Value="@IsScheduleDaySelected(day)"
+                                                                     ValueChanged="@(value => SetScheduleDay(day, value))"
+                                                                     Disabled="@(!_scheduleEnabled)"
+                                                                     Label="@day.ToString()" />
+                                                    </MudItem>
+                                                }
+                                            </MudGrid>
+                                        }
+
+                                        <MudTimePicker Label="Run time"
+                                                       Time="_scheduleTime"
+                                                       TimeChanged="OnScheduleTimeChanged"
+                                                       Variant="Variant.Outlined"
+                                                       Margin="Margin.Dense"
+                                                       AmPm="false"
+                                                       Disabled="@(!_scheduleEnabled)" />
+
+                                        <MudPaper Class="pa-3 jobs-editor-folder-preview" Outlined="true">
+                                            <MudText Typo="Typo.caption" Class="jobs-editor-kicker-muted">Timezone</MudText>
+                                            <MudText Typo="Typo.body2">@ScheduleTimeZoneId</MudText>
+                                        </MudPaper>
+                                    </MudStack>
+                                </MudTabPanel>
+                            </MudTabs>
+                        </MudStack>
+                    </MudPaper>
+                </MudItem>
+
+                <MudItem xs="12" md="8" Class="d-flex">
+                    <MudTabs Elevation="2" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pa-0" Color="Color.Primary" Class="flex-grow-1 jobs-editor-tabs">
+
+                <!-- STEPS TAB -->
+                <MudTabPanel Text="Execution Steps" Icon="@Icons.Material.Filled.PlaylistPlay" BadgeData="@(_steps.Count > 0 ? _steps.Count : null)" BadgeColor="Color.Secondary">
+                    <MudTable Items="_steps" Dense="true" Hover="true" FixedHeader="true" Height="430px" Style="background: transparent;">
+                        <ToolBarContent>
+                            <MudText Typo="Typo.h6">Steps</MudText>
+                            <MudSpacer />
+                            <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.Add" OnClick="AddStep" Disabled="@(_jobId == null)">
+                                Add Step
+                            </MudButton>
+                        </ToolBarContent>
+                        <HeaderContent>
+                            <MudTh>#</MudTh>
+                            <MudTh>Action</MudTh>
+                            <MudTh>Enabled</MudTh>
+                            <MudTh>Details</MudTh>
+                            <MudTh Style="text-align:right">Actions</MudTh>
+                        </HeaderContent>
+                        <RowTemplate>
+                            <MudTd><b>@context.Ordinal</b></MudTd>
+                            <MudTd>
+                                <MudChip T="string" Size="Size.Small" Color="Color.Info" Variant="Variant.Text">@context.Type</MudChip>
+                            </MudTd>
+                            <MudTd>
+                                <MudSwitch T="bool"
+                                           Value="context.Enabled"
+                                           ValueChanged="@(async (bool value) => await ToggleStepEnabledAsync(context, value))"
+                                           Color="Color.Primary"
+                                           Disabled="@(_jobId == null)" />
+                            </MudTd>
+                            <MudTd><MudText Typo="Typo.body2" Class="mud-text-secondary">@GetStepSummary(context)</MudText></MudTd>
+                            <MudTd Style="text-align:right">
+                                <MudIconButton Icon="@Icons.Material.Filled.ArrowUpward" Size="Size.Small" OnClick="@(() => MoveStepAsync(context, -1))" Disabled="@(_jobId == null || !CanMove(context, -1))"/>
+                                <MudIconButton Icon="@Icons.Material.Filled.ArrowDownward" Size="Size.Small" OnClick="@(() => MoveStepAsync(context, 1))" Disabled="@(_jobId == null || !CanMove(context, 1))"/>
+                                <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="@(() => EditStepAsync(context))" Disabled="@(_jobId == null)" />
+                                <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error" OnClick="@(() => DeleteStepAsync(context))" Disabled="@(_jobId == null)" />
+                            </MudTd>
+                        </RowTemplate>
+                        <NoRecordsContent>
+                            @if (_jobId == null)
+                            {
+                                <MudAlert Severity="Severity.Warning" Class="ma-2">Save job to enable steps.</MudAlert>
+                            }
+                            else
+                            {
+                                <MudText Align="Align.Center" Class="pa-4">No steps configured.</MudText>
+                            }
+                        </NoRecordsContent>
+                    </MudTable>
+                </MudTabPanel>
+
+                <!-- PARAMETERS TAB -->
+                <MudTabPanel Text="Parameters" Icon="@Icons.Material.Filled.Tune" BadgeData="@(_params.Count > 0 ? _params.Count : null)" BadgeColor="Color.Secondary">
+                    <MudTable Items="_params" Dense="true" Hover="true" FixedHeader="true" Height="430px">
+                        <ToolBarContent>
+                            <MudText Typo="Typo.h6">Parameters</MudText>
+                            <MudSpacer />
+                            <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.Add" OnClick="AddParam" Disabled="@(_jobId == null)">
+                                Add Param
+                            </MudButton>
+                        </ToolBarContent>
+                        <HeaderContent>
+                            <MudTh>Name</MudTh>
+                            <MudTh>Type</MudTh>
+                            <MudTh>Default</MudTh>
+                            <MudTh Style="text-align:right">Actions</MudTh>
+                        </HeaderContent>
+                        <RowTemplate>
+                            <MudTd>@context.Name @(context.Required ? "*" : "")</MudTd>
+                            <MudTd>@context.Type</MudTd>
+                            <MudTd><MudText Typo="Typo.caption" Style="font-family:monospace">@GetParamDefault(context)</MudText></MudTd>
+                            <MudTd Style="text-align:right">
+                                <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" OnClick="@(() => EditParamAsync(context))" Disabled="@(_jobId == null)" />
+                                <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error" OnClick="@(() => DeleteParamAsync(context))" Disabled="@(_jobId == null)" />
+                            </MudTd>
+                        </RowTemplate>
+                        <NoRecordsContent>
+                            @if (_jobId == null)
+                            {
+                                <MudAlert Severity="Severity.Warning" Class="ma-2">Save job to enable parameters.</MudAlert>
+                            }
+                            else
+                            {
+                                <MudText Align="Align.Center" Class="pa-4">No parameters configured.</MudText>
+                            }
+                        </NoRecordsContent>
+                    </MudTable>
+                </MudTabPanel>
+                    </MudTabs>
+                </MudItem>
+            </MudGrid>
+        </MudContainer>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Cancel">Cancel</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="SaveAsync" StartIcon="@Icons.Material.Filled.Save">
+            @(_jobId == null ? "Create Job" : "Save Changes")
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance MudDialog { get; set; } = default!;
+
+    [Parameter] public ulong? JobId { get; set; }
+    [Parameter] public ulong? CloneFromJobId { get; set; }
+    [Parameter] public string? SuggestedFolder { get; set; }
+
+    private enum SchedulePreset
+    {
+        EveryDay,
+        SelectedDays
+    }
+
+    private ulong? _jobId;
+    private string _name = string.Empty;
+    private string? _suggestedFolderNormalized;
+    private string _folderSubfolder = string.Empty;
+    private bool _folderSubfolderOverridden;
+    private bool _suppressFolderSubfolderTracking;
+    private bool _isCloneDraft;
+    private int _expectedRuntimeMinutes = 30;
+    private int _graceRuntimeMinutes;
+    private const string ScheduleTimeZoneId = "Africa/Johannesburg";
+    private static readonly DayOfWeek[] ScheduleDays =
+    [
+        DayOfWeek.Monday,
+        DayOfWeek.Tuesday,
+        DayOfWeek.Wednesday,
+        DayOfWeek.Thursday,
+        DayOfWeek.Friday,
+        DayOfWeek.Saturday,
+        DayOfWeek.Sunday
+    ];
+    private bool _scheduleEnabled;
+    private SchedulePreset _schedulePreset = SchedulePreset.EveryDay;
+    private TimeSpan? _scheduleTime = new(8, 0, 0);
+    private HashSet<DayOfWeek> _selectedScheduleDays = ScheduleDays.ToHashSet();
+
+    // --- Tenant / Client Selection State ---
+    private List<TenantDto> _tenants = new();
+    private TenantDto? _selectedTenant;
+
+    private ClientEnvironment[] _environments = new[] { ClientEnvironment.Dev, ClientEnvironment.Prod };
+    private ClientEnvironment _environment = ClientEnvironment.Dev;
+
+    private ClientPresentationModel? _selectedClient;
+    private Guid? _rawAgentId;
+
+    private List<JobParamDto> _params = new();
+    private List<JobStepDto> _steps = new();
+    private CancellationTokenSource _disposeCts = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        _suggestedFolderNormalized = string.IsNullOrWhiteSpace(SuggestedFolder)
+            ? null
+            : NormalizeFolder(SuggestedFolder!);
+
+        // 1. Always load tenants first
+        await LoadTenantsAsync();
+
+        if (JobId.HasValue)
+        {
+            _jobId = JobId;
+            await LoadJobAsync(JobId.Value);
+        }
+        else if (CloneFromJobId.HasValue)
+        {
+            await LoadCloneAsync(CloneFromJobId.Value);
+        }
+        else
+        {
+            TryPreselectTenantAndFolderFromSuggestedPath();
+        }
+    }
+
+    private async Task LoadTenantsAsync()
+    {
+        try
+        {
+            var list = await TenantApi.GetTenantsAsync(_disposeCts.Token);
+            _tenants = list.OrderBy(t => t.Name).ToList();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to load tenants: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task LoadJobAsync(ulong jobId)
+    {
+        try
+        {
+            var job = await JobApi.GetJobAsync(jobId);
+            if (job == null)
+            {
+                MudDialog.Cancel();
+                return;
+            }
+
+            _name = job.Name;
+            _rawAgentId = job.AgentId;
+            _environment = job.Environment is ClientEnvironment.None ? _environment : job.Environment;
+            ApplyRuntimePolicy(job);
+            ApplySchedule(job.Schedule);
+
+            // Match Tenant
+            if (job.TenantId.HasValue)
+            {
+                _selectedTenant = _tenants.FirstOrDefault(t => t.Id == job.TenantId.Value);
+                if (_selectedTenant != null)
+                {
+                    SetSubfolder(ExtractSubfolder(job.FolderPath, _selectedTenant.Name), isUserOverride: false);
+                    await TryPreselectAgentAsync(job.AgentId);
+                }
+            }
+            else
+            {
+                SetSubfolder(string.Empty, isUserOverride: false);
+            }
+
+            // Load sub-lists
+            _params = (await JobApi.GetJobParamsAsync(jobId)).OrderBy(p => p.Name).ToList();
+            _steps = (await JobApi.GetJobStepsAsync(jobId)).OrderBy(s => s.Ordinal).ToList();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to load job: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task LoadCloneAsync(ulong jobId)
+    {
+        try
+        {
+            var details = await JobApi.GetJobWithDetailsAsync(jobId, _disposeCts.Token);
+            if (details is null)
+            {
+                MudDialog.Cancel();
+                return;
+            }
+
+            var job = details.Job;
+
+            _name = $"{job.Name} (copy)";
+            _rawAgentId = job.AgentId;
+            _environment = job.Environment is ClientEnvironment.None ? ClientEnvironment.Dev : job.Environment;
+            ApplyRuntimePolicy(job);
+            ApplySchedule(job.Schedule);
+
+            _selectedTenant = job.TenantId.HasValue
+                ? _tenants.FirstOrDefault(t => t.Id == job.TenantId.Value)
+                : null;
+
+            _selectedClient = null;
+            if (_selectedTenant is not null)
+            {
+                SetSubfolder(ExtractSubfolder(job.FolderPath, _selectedTenant.Name), isUserOverride: false);
+                await TryPreselectAgentAsync(job.AgentId);
+            }
+            else
+            {
+                SetSubfolder(string.Empty, isUserOverride: false);
+            }
+
+            _params = details.Params.OrderBy(p => p.Name).ToList();
+            _steps = details.Steps.OrderBy(s => s.Ordinal).ToList();
+
+            _isCloneDraft = true;
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to load job copy data: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task TryPreselectAgentAsync(Guid? agentId)
+    {
+        if (_selectedTenant is null || !agentId.HasValue) return;
+        var snapshot = await ClientPresentation.GetClientsAsync(_disposeCts.Token);
+        _selectedClient = snapshot.Clients.FirstOrDefault(c => c.TenantId == _selectedTenant.Id && c.AgentId == agentId.Value);
+    }
+
+    // --- Autocomplete Logic ---
+
+    private Task<IEnumerable<TenantDto>> SearchTenants(string value, CancellationToken ct)
+    {
+        IEnumerable<TenantDto> result =
+            string.IsNullOrWhiteSpace(value)
+                ? _tenants
+                : _tenants.Where(t => t.Name.Contains(value, StringComparison.OrdinalIgnoreCase));
+
+        return Task.FromResult(result);
+    }
+
+    private void OnTenantChanged(TenantDto? tenant)
+    {
+        _selectedTenant = tenant;
+        _selectedClient = null; // Reset client on tenant change
+        _rawAgentId = null;
+
+        _folderSubfolderOverridden = false;
+        SetSubfolder(string.Empty, isUserOverride: false);
+
+        StateHasChanged();
+    }
+
+    private void OnEnvironmentChanged(ClientEnvironment env)
+    {
+        _environment = env;
+        _selectedClient = null; // Reset client on env change (optional, but safer)
+        StateHasChanged();
+    }
+
+    private async Task<IEnumerable<ClientPresentationModel>> SearchClients(string value, CancellationToken ct)
+    {
+        if (_selectedTenant == null) return Enumerable.Empty<ClientPresentationModel>();
+
+        try
+        {
+            var snapshot = await ClientPresentation.GetClientsAsync(ct);
+            return snapshot.Clients.Where(c => c.TenantId == _selectedTenant.Id && c.Enabled)
+                .Where(c => string.IsNullOrWhiteSpace(value) || $"{c.DisplayName} {c.HostName} {c.OperatingSystem}".Contains(value, StringComparison.OrdinalIgnoreCase))
+                .Take(20);
+        }
+        catch
+        {
+            return Enumerable.Empty<ClientPresentationModel>();
+        }
+    }
+
+    private void OnClientChanged(ClientPresentationModel? client)
+    {
+        _selectedClient = client;
+    }
+
+    private void OnSubfolderChanged(string path)
+    {
+        if (_suppressFolderSubfolderTracking)
+        {
+            _folderSubfolder = path;
+            return;
+        }
+
+        _folderSubfolder = NormalizeSubfolder(path);
+        _folderSubfolderOverridden = true;
+    }
+
+    private void SetSubfolder(string path, bool isUserOverride)
+    {
+        _suppressFolderSubfolderTracking = true;
+        _folderSubfolder = NormalizeSubfolder(path);
+        _folderSubfolderOverridden = isUserOverride;
+        _suppressFolderSubfolderTracking = false;
+    }
+
+    private static string NormalizeFolder(string folder)
+    {
+        if (string.IsNullOrWhiteSpace(folder)) return "/";
+        var f = folder.Replace("\\", "/", StringComparison.Ordinal);
+        if (!f.StartsWith('/')) f = "/" + f;
+        if (!f.EndsWith('/')) f += "/";
+        return f;
+    }
+
+    private static string NormalizeSubfolder(string? subfolder)
+    {
+        if (string.IsNullOrWhiteSpace(subfolder))
+            return string.Empty;
+
+        var s = subfolder.Replace("\\", "/", StringComparison.Ordinal).Trim();
+        s = s.Trim('/');
+
+        if (string.IsNullOrWhiteSpace(s))
+            return string.Empty;
+
+        var segments = s.Split('/', StringSplitOptions.RemoveEmptyEntries)
+            .Where(seg => seg is not "." and not "..")
+            .ToArray();
+
+        return string.Join("/", segments);
+    }
+
+    private static string BuildTenantLockedFolder(string tenantName, string? subfolder)
+    {
+        var root = NormalizeFolder($"/{tenantName}/");
+        var normalizedSubfolder = NormalizeSubfolder(subfolder);
+        return string.IsNullOrWhiteSpace(normalizedSubfolder)
+            ? root
+            : NormalizeFolder(root + normalizedSubfolder + "/");
+    }
+
+    private static string ExtractSubfolder(string? folderPath, string tenantName)
+    {
+        if (string.IsNullOrWhiteSpace(folderPath))
+            return string.Empty;
+
+        var normalized = NormalizeFolder(folderPath);
+        var tenantRoot = NormalizeFolder($"/{tenantName}/");
+
+        if (!normalized.StartsWith(tenantRoot, StringComparison.OrdinalIgnoreCase))
+            return string.Empty;
+
+        var remainder = normalized[tenantRoot.Length..].Trim('/');
+        return NormalizeSubfolder(remainder);
+    }
+
+    private string EffectiveFolderPath =>
+        _selectedTenant is null ? "/" : BuildTenantLockedFolder(_selectedTenant.Name, _folderSubfolder);
+
+    private string EffectiveFolderPathLabel =>
+        _selectedTenant is null ? "(select a tenant)" : EffectiveFolderPath;
+
+    private void TryPreselectTenantAndFolderFromSuggestedPath()
+    {
+        if (string.IsNullOrWhiteSpace(_suggestedFolderNormalized))
+            return;
+
+        var segments = _suggestedFolderNormalized.Trim('/').Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (segments.Length == 0)
+            return;
+
+        var tenantName = segments[0];
+        var tenant = _tenants.FirstOrDefault(t => string.Equals(t.Name, tenantName, StringComparison.OrdinalIgnoreCase));
+        if (tenant is null)
+            return;
+
+        _selectedTenant = tenant;
+        SetSubfolder(ExtractSubfolder(_suggestedFolderNormalized, tenant.Name), isUserOverride: false);
+    }
+
+    // --- Save & Main Logic ---
+
+    private async Task SaveAsync()
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(_name))
+            {
+                Snackbar.Add("Name is required.", Severity.Warning);
+                return;
+            }
+
+            var finalTenantId = _selectedTenant?.Id;
+            var finalAgentId = _selectedClient?.AgentId ?? _rawAgentId;
+
+            if (finalTenantId == null) {
+                 Snackbar.Add("Please select a Tenant.", Severity.Warning);
+                 return;
+            }
+            if (!finalAgentId.HasValue)
+            {
+                Snackbar.Add("Please select an Agent.", Severity.Warning);
+                return;
+            }
+
+            var lockedFolder = EffectiveFolderPath;
+            var schedule = BuildScheduleRequest();
+            if (_scheduleEnabled && schedule is null)
+            {
+                Snackbar.Add("Select at least one schedule day and a run time.", Severity.Warning);
+                return;
+            }
+
+            JobDto job;
+            if (_jobId == null)
+            {
+                var templateParams = _isCloneDraft ? _params.ToList() : null;
+                var templateSteps = _isCloneDraft ? _steps.ToList() : null;
+
+                var req = new CreateJobRequest(
+                    _name,
+                    lockedFolder,
+                    null,
+                    finalTenantId,
+                    string.Empty,
+                    ExpectedRuntimeSeconds: _expectedRuntimeMinutes * 60,
+                    GraceSeconds: _graceRuntimeMinutes * 60,
+                    HardTimeoutSeconds: (_expectedRuntimeMinutes + _graceRuntimeMinutes) * 60,
+                    Schedule: schedule,
+                    AgentId: finalAgentId);
+                job = await JobApi.CreateJobAsync(req);
+                _jobId = job.Id;
+
+                if (_isCloneDraft && templateParams is not null && templateSteps is not null)
+                {
+                    try
+                    {
+                        await CloneJobDetailsAsync(job.Id, templateParams, templateSteps);
+                        _isCloneDraft = false;
+                        Snackbar.Add("Job copied. You can now edit steps and parameters.", Severity.Success);
+                        await LoadJobAsync(job.Id);
+                    }
+                    catch (Exception ex)
+                    {
+                        Snackbar.Add($"Job created but failed to copy steps/params: {ex.Message}", Severity.Warning);
+                    }
+                }
+                else
+                {
+                    Snackbar.Add("Job Created. You can now add steps.", Severity.Success);
+                }
+
+                StateHasChanged();
+            }
+            else
+            {
+                var req = new UpdateJobRequest(
+                    _name,
+                    lockedFolder,
+                    null,
+                    finalTenantId,
+                    string.Empty,
+                    ExpectedRuntimeSeconds: _expectedRuntimeMinutes * 60,
+                    GraceSeconds: _graceRuntimeMinutes * 60,
+                    HardTimeoutSeconds: (_expectedRuntimeMinutes + _graceRuntimeMinutes) * 60,
+                    Schedule: schedule,
+                    AgentId: finalAgentId);
+                job = await JobApi.UpdateJobAsync(_jobId.Value, req);
+                MudDialog.Close(DialogResult.Ok(job));
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to save: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task CloneJobDetailsAsync(ulong jobId, IReadOnlyList<JobParamDto> templateParams, IReadOnlyList<JobStepDto> templateSteps)
+    {
+        foreach (var p in templateParams)
+        {
+            await JobApi.AddJobParamAsync(jobId, new AddJobParamRequest(
+                p.Name,
+                p.Type,
+                p.Required,
+                p.Default,
+                p.Description,
+                p.OptionsJson));
+        }
+
+        foreach (var s in templateSteps.OrderBy(s => s.Ordinal))
+        {
+            await JobApi.AddJobStepAsync(jobId, new AddJobStepRequest(
+                s.Ordinal,
+                s.Type,
+                s.Runner,
+                s.Command,
+                s.ScriptId,
+                s.PayloadJson,
+                s.Enabled));
+        }
+    }
+
+    private void ApplyRuntimePolicy(JobDto job)
+    {
+        _expectedRuntimeMinutes = Math.Max(1, (int)Math.Ceiling(job.ExpectedRuntimeSeconds / 60d));
+        _graceRuntimeMinutes = Math.Max(0, (int)Math.Ceiling(job.GraceSeconds / 60d));
+    }
+
+    private void ApplySchedule(JobScheduleDto? schedule)
+    {
+        if (schedule is null || !schedule.Enabled)
+        {
+            _scheduleEnabled = false;
+            _schedulePreset = SchedulePreset.EveryDay;
+            _scheduleTime = new TimeSpan(8, 0, 0);
+            _selectedScheduleDays = ScheduleDays.ToHashSet();
+            return;
+        }
+
+        _scheduleEnabled = true;
+        _scheduleTime = TimeSpan.TryParse(schedule.TimeOfDay, out var parsedTime)
+            ? parsedTime
+            : new TimeSpan(8, 0, 0);
+
+        var selectedDays = schedule.DaysOfWeek
+            .Select(day => Enum.TryParse<DayOfWeek>(day, ignoreCase: true, out var parsedDay) ? parsedDay : (DayOfWeek?)null)
+            .Where(day => day.HasValue)
+            .Select(day => day!.Value)
+            .ToHashSet();
+
+        _selectedScheduleDays = selectedDays.Count == 0
+            ? ScheduleDays.ToHashSet()
+            : selectedDays;
+        _schedulePreset = _selectedScheduleDays.Count == ScheduleDays.Length
+            ? SchedulePreset.EveryDay
+            : SchedulePreset.SelectedDays;
+    }
+
+    private JobScheduleDto? BuildScheduleRequest()
+    {
+        if (!_scheduleEnabled)
+        {
+            return null;
+        }
+
+        if (_scheduleTime is null)
+        {
+            return null;
+        }
+
+        var days = _schedulePreset == SchedulePreset.EveryDay
+            ? ScheduleDays
+            : ScheduleDays.Where(_selectedScheduleDays.Contains).ToArray();
+
+        if (days.Length == 0)
+        {
+            return null;
+        }
+
+        return new JobScheduleDto(
+            true,
+            ScheduleTimeZoneId,
+            $"{_scheduleTime.Value.Hours:00}:{_scheduleTime.Value.Minutes:00}",
+            days.Select(day => day.ToString()).ToList());
+    }
+
+    private bool IsScheduleDaySelected(DayOfWeek day) => _selectedScheduleDays.Contains(day);
+
+    private void SetScheduleDay(DayOfWeek day, bool selected)
+    {
+        if (selected)
+        {
+            _selectedScheduleDays.Add(day);
+        }
+        else
+        {
+            _selectedScheduleDays.Remove(day);
+        }
+    }
+
+    private void OnScheduleTimeChanged(TimeSpan? time)
+    {
+        _scheduleTime = time;
+    }
+
+    // --- Standard Helpers (Same as previous) ---
+
+    private void Cancel() => MudDialog.Cancel();
+
+    public void Dispose()
+    {
+        _disposeCts.Cancel();
+        _disposeCts.Dispose();
+    }
+
+    // --- Steps & Params (Dialog Calls) ---
+
+    private async Task AddParam()
+    {
+        if (_jobId is null) return;
+        var jobId = _jobId.Value;
+
+        var parameters = new DialogParameters { ["JobId"] = jobId };
+        var dialog = await DialogService.ShowAsync<ParamEditDialog>("Add Parameter", parameters);
+        var result = await dialog.Result;
+        if (result is not null && !result.Canceled) await LoadJobAsync(jobId);
+    }
+
+    private async Task EditParamAsync(JobParamDto param)
+    {
+        if (_jobId is null) return;
+        var jobId = _jobId.Value;
+
+        var parameters = new DialogParameters { ["JobId"] = jobId, ["ExistingParam"] = param };
+        var dialog = await DialogService.ShowAsync<ParamEditDialog>("Edit Parameter", parameters);
+        var result = await dialog.Result;
+        if (result is not null && !result.Canceled) await LoadJobAsync(jobId);
+    }
+
+    private async Task AddStep()
+    {
+        if (_jobId is null) return;
+        var jobId = _jobId.Value;
+
+        var parameters = new DialogParameters { ["JobId"] = jobId, ["JobParams"] = _params };
+        var dialog = await DialogService.ShowAsync<StepEditDialog>("Add Step", parameters, new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true });
+        var result = await dialog.Result;
+        if (result is not null && !result.Canceled) await LoadJobAsync(jobId);
+    }
+
+    private async Task EditStepAsync(JobStepDto step)
+    {
+        if (_jobId is null) return;
+        var jobId = _jobId.Value;
+
+        var parameters = new DialogParameters { ["JobId"] = jobId, ["ExistingStep"] = step, ["JobParams"] = _params };
+        var dialog = await DialogService.ShowAsync<StepEditDialog>("Edit Step", parameters, new DialogOptions { MaxWidth = MaxWidth.Medium, FullWidth = true });
+        var result = await dialog.Result;
+        if (result is not null && !result.Canceled) await LoadJobAsync(jobId);
+    }
+
+    private async Task DeleteParamAsync(JobParamDto param)
+    {
+        if (_jobId is null) return;
+        await JobApi.DeleteJobParamAsync(param.Id);
+        await LoadJobAsync(_jobId.Value);
+    }
+
+    private async Task DeleteStepAsync(JobStepDto step)
+    {
+        if (_jobId is null) return;
+        await JobApi.DeleteJobStepAsync(step.Id);
+        await LoadJobAsync(_jobId.Value);
+    }
+
+    private async Task ToggleStepEnabledAsync(JobStepDto step, bool enabled)
+    {
+        if (_jobId is null) return;
+        var req = new UpdateJobStepRequest(
+            step.Type,
+            step.Runner,
+            step.Command,
+            step.ScriptId,
+            step.PayloadJson,
+            enabled);
+
+        await JobApi.UpdateJobStepAsync(step.Id, req);
+        await LoadJobAsync(_jobId.Value);
+    }
+
+    private async Task MoveStepAsync(JobStepDto step, int delta)
+    {
+        if (_jobId is null) return;
+        await JobApi.ReorderJobStepAsync(step.Id, step.Ordinal + delta);
+        await LoadJobAsync(_jobId.Value);
+    }
+
+    private bool CanMove(JobStepDto step, int delta)
+    {
+        var newOrdinal = step.Ordinal + delta;
+        return newOrdinal > 0 && newOrdinal <= _steps.Count;
+    }
+
+    private string GetStepSummary(JobStepDto step)
+        => step.Type == JobStepTypeDto.RunCommand
+            ? (string.IsNullOrWhiteSpace(step.Command) ? "RunCommand" : step.Command)
+            : step.Type.ToString();
+    private string GetParamDefault(JobParamDto param) => param.Default ?? "-";
+}
+
+<style>
+    .jobs-editor-hero,
+    .jobs-editor-panel {
+        border: 1px solid var(--mud-palette-divider);
+        border-radius: var(--netratel-radius-surface, 7px);
+        background: var(--mud-palette-surface);
+        box-shadow: none;
+    }
+
+    .jobs-editor-hero {
+        border-left: 2px solid var(--mud-palette-primary);
+    }
+
+    .jobs-editor-kicker {
+        color: var(--mud-palette-primary);
+        font-size: 0.74rem;
+        font-weight: 700;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+    }
+
+    .jobs-editor-kicker-muted {
+        opacity: 0.74;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+    }
+
+    .jobs-editor-layout {
+        min-height: 0;
+    }
+
+    .jobs-editor-container {
+        display: flex;
+        height: min(650px, calc(100dvh - 140px));
+        min-height: 0;
+        flex-direction: column;
+    }
+
+    .jobs-editor-sidebar {
+        width: 100%;
+    }
+
+    .jobs-editor-folder-preview {
+        background: var(--mud-palette-background-gray);
+        border-color: var(--mud-palette-divider);
+    }
+
+    .jobs-editor-tabs {
+        width: 100%;
+        min-height: 0;
+    }
+
+    .jobs-editor-tabs .mud-tabs-panels,
+    .jobs-editor-tabs .mud-tabpanel {
+        height: 100%;
+    }
+
+    @@media (max-width: 959px) {
+        .jobs-editor-container {
+            height: auto;
+            max-height: calc(100dvh - 96px);
+            overflow: auto;
+        }
+
+        .jobs-editor-hero {
+            margin-bottom: 0.75rem;
+        }
+    }
+</style>

@@ -1,0 +1,75 @@
+@page "/clients/settings"
+
+@using NetRatel.Shared.Contracts
+@using NetRatel.Web.Services
+
+@inject ClientSettingsApiService Api
+@inject ISnackbar Snackbar
+
+<MudPaper Class="pa-4">
+    <MudStack Spacing="2">
+        <MudText Typo="Typo.h5">Client Settings</MudText>
+        <MudDivider />
+
+        @if (_loading)
+        {
+            <MudProgressLinear Indeterminate="true" />
+        }
+        else
+        {
+            <MudForm @ref="_form" Model="_model" >
+                <MudStack Spacing="2">
+                    <MudNumericField T="int" Label="Heartbeat (seconds)" @bind-Value="_model.HeartbeatSeconds" Min="5" Max="300" Immediate="true" />
+
+                    <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="SaveAsync">Save</MudButton>
+                </MudStack>
+            </MudForm>
+            <MudText Typo="Typo.caption" Class="mt-2">
+                Last updated: @_lastUpdatedDisplay
+            </MudText>
+        }
+    </MudStack>
+</MudPaper>
+
+@code {
+    private bool _loading = true;
+    private MudForm? _form;
+    private ClientSettingsEdit _model = new() { HeartbeatSeconds = 15 };
+    private string _lastUpdatedDisplay = "N/A";
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var dto = await Api.GetAsync();
+            _model = new ClientSettingsEdit
+            {
+                HeartbeatSeconds = dto.HeartbeatSeconds
+            };
+            _lastUpdatedDisplay = dto.UpdatedAt?.ToLocalTime().ToString("g") ?? "N/A";
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to load settings: {ex.Message}", Severity.Error);
+        }
+        finally { _loading = false; }
+    }
+
+    private async Task SaveAsync()
+    {
+        try
+        {
+            await Api.UpdateAsync(new UpdateClientSettingsRequest(_model.HeartbeatSeconds, null));
+            Snackbar.Add("Settings updated.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Update failed: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private sealed class ClientSettingsEdit
+    {
+        public int HeartbeatSeconds { get; set; }
+    }
+}

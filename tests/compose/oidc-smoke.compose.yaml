@@ -1,0 +1,58 @@
+services:
+  oidc:
+    image: ghcr.io/navikt/mock-oauth2-server@sha256:ae36f65ca23e07e8786b288e53145e7ffb191c9dccfa9868ed433e7bbacad5db
+    hostname: host.docker.internal
+    ports:
+      - "${NETRATEL_OIDC_TEST_PORT:-8081}:8080"
+    environment:
+      JSON_CONFIG: >-
+        {"interactiveLogin":true,"tokenCallbacks":[{"issuerId":"default","requestMappings":[{"requestParam":"code","match":"*","claims":{"preferred_username":"netratel-test-operator@example.test","roles":["Operator"],"aud":["netratel-smoke-client","netratel.api"]}},{"requestParam":"client_id","match":"netratel-cli-smoke-client","claims":{"preferred_username":"netratel-cli-smoke@example.test","roles":["Operator"],"scope":"netratel.api","aud":["netratel.api"]}}]}]}
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/isalive"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
+  api:
+    ports:
+      - "127.0.0.1:${NETRATEL_API_TEST_PORT:-9222}:9222"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:9222;https://+:9443
+      ASPNETCORE_Kestrel__Certificates__Default__Path: /run/netratel-smoke/tls.pfx
+      ASPNETCORE_Kestrel__Certificates__Default__Password: ${NETRATEL_SMOKE_TLS_CERT_PASSWORD:-netratel-compose-only-password}
+      Authentication__Oidc__Authority: http://host.docker.internal:${NETRATEL_OIDC_TEST_PORT:-8081}/default
+      Authentication__Oidc__Audience: netratel.api
+      # The public runtime defaults these additive migration surfaces off. The
+      # disposable smoke enables only the presence, telemetry, and command
+      # authorities it verifies.
+      NetRatelAkkaMigration__Enabled: "true"
+      NetRatelAkkaMigration__PresenceEnabled: "true"
+      NetRatelAkkaMigration__GatewayEnabled: "true"
+      NetRatelAkkaMigration__PresenceAuthorityEnabled: "true"
+      NetRatelAkkaMigration__TelemetryShadowEnabled: "true"
+      NetRatelAkkaMigration__TelemetryAuthorityEnabled: "true"
+      NetRatelAkkaMigration__CommandShadowEnabled: "true"
+      NetRatelAkkaMigration__CommandAuthorityEnabled: "true"
+    volumes:
+      - ${NETRATEL_SMOKE_TLS_CERT_PATH:-/tmp/netratel-compose-smoke-unavailable.pfx}:/run/netratel-smoke/tls.pfx:ro
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    depends_on:
+      oidc:
+        condition: service_healthy
+
+  web:
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      Authentication__Oidc__Authority: http://host.docker.internal:${NETRATEL_OIDC_TEST_PORT:-8081}/default
+      Authentication__Oidc__ClientId: netratel-smoke-client
+      Authentication__Oidc__ApiScope: netratel.api
+      Authentication__Oidc__TokenEndpoint: http://host.docker.internal:${NETRATEL_OIDC_TEST_PORT:-8081}/default/token
+      Authentication__Oidc__RequireHttpsMetadata: "false"
+      OIDC_CLIENT_SECRET: synthetic-compose-only-secret
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    depends_on:
+      oidc:
+        condition: service_healthy

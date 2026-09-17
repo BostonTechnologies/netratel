@@ -1,0 +1,1246 @@
+@page "/jobs/{JobId:long}/runs/{RunId:long}"
+
+@using System.Net
+@using System.Text.Json
+@using NetRatel.Shared.Contracts.Tasks
+@using NetRatel.Shared.Utils
+@using NetRatel.Web.Services
+
+@inject IJobApiClient JobApi
+@inject ISnackbar Snackbar
+@inject NavigationManager NavManager
+
+@implements IDisposable
+
+<PageTitle>Job Run</PageTitle>
+
+<MudStack Spacing="3" Class="job-run-page">
+    @if (_isLoading)
+    {
+        <MudStack AlignItems="AlignItems.Center" Class="py-6">
+            <MudProgressCircular Color="Color.Primary" Indeterminate="true" />
+            <MudText Class="mt-2">Loading run...</MudText>
+        </MudStack>
+    }
+    else if (!string.IsNullOrWhiteSpace(_loadError))
+    {
+        <MudAlert Severity="Severity.Error">@_loadError</MudAlert>
+    }
+    else if (_run is null)
+    {
+        <MudAlert Severity="Severity.Warning">Run not found.</MudAlert>
+    }
+    else
+    {
+        var timeline = BuildTimeline().ToList();
+
+        <MudGrid Spacing="3" AlignItems="AlignItems.Stretch">
+            <MudItem xs="12" lg="8">
+                <MudPaper Class="job-run-hero pa-5" Elevation="0">
+                    <MudStack Spacing="3">
+                        <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
+                            <MudStack Spacing="1">
+                                <MudText Class="job-run-kicker">Execution Trace</MudText>
+                                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                                    <MudText Typo="Typo.h4">@GetJobName()</MudText>
+                                    <MudChip T="string" Color="@RunStatusColor(_run.Status)" Variant="Variant.Filled" Size="Size.Medium">
+                                        @_run.Status
+                                    </MudChip>
+                                    @if (_isPolling)
+                                    {
+                                        <MudChip T="string" Color="Color.Info" Variant="Variant.Outlined" Size="Size.Small">
+                                            Live updating
+                                        </MudChip>
+                                    }
+                                </MudStack>
+                                <MudText Class="job-run-subtitle">
+                                    Run #@RunId · @_steps.Count step@(_steps.Count == 1 ? string.Empty : "s") · @(_run.TenantDisplayName ?? _run.TenantId?.ToString() ?? "Unscoped")
+                                </MudText>
+                            </MudStack>
+
+                            <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
+                                <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.ArrowBack" OnClick="@(() => NavManager.NavigateTo("/jobs"))">
+                                    Jobs
+                                </MudButton>
+                                @if (_run is not null && !IsRunTerminal(_run))
+                                {
+                                    <MudButton Variant="Variant.Outlined"
+                                               Color="Color.Error"
+                                               StartIcon="@Icons.Material.Filled.Cancel"
+                                               OnClick="CancelRunAsync"
+                                               Disabled="_isLoading">
+                                        Cancel Run
+                                    </MudButton>
+                                }
+                                <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Refresh" OnClick="ManualRefresh" Disabled="_isLoading">
+                                    Refresh
+                                </MudButton>
+                            </MudStack>
+                        </MudStack>
+
+                        <MudGrid Spacing="2">
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudPaper Class="job-run-stat-card pa-3" Elevation="0">
+                                    <MudText Class="job-run-stat-label">Started By</MudText>
+                                    <MudText Typo="Typo.h6">@(!string.IsNullOrWhiteSpace(_run.StartedBy) ? _run.StartedBy : "system")</MudText>
+                                    <MudText Class="job-run-stat-meta">@FormatTimestamp(_run.CreatedAtMicros)</MudText>
+                                </MudPaper>
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudPaper Class="job-run-stat-card pa-3" Elevation="0">
+                                    <MudText Class="job-run-stat-label">Client</MudText>
+                                    <MudText Typo="Typo.h6">@GetClientDisplayText(_run.ClientDisplayName, _run.ClientIdentity)</MudText>
+                                    <MudText Class="job-run-stat-meta">@ShortenIdentity(_run.ClientIdentity)</MudText>
+                                </MudPaper>
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudPaper Class="job-run-stat-card pa-3" Elevation="0">
+                                    <MudText Class="job-run-stat-label">Window</MudText>
+                                    <MudText Typo="Typo.h6">@GetRunWindowLabel()</MudText>
+                                    <MudText Class="job-run-stat-meta">Started @FormatTimestamp(_run.StartedAtMicros)</MudText>
+                                </MudPaper>
+                            </MudItem>
+                            <MudItem xs="12" sm="6" md="3">
+                                <MudPaper Class="job-run-stat-card pa-3" Elevation="0">
+                                    <MudText Class="job-run-stat-label">Outcome</MudText>
+                                    <MudText Typo="Typo.h6">@GetRunOutcomeSummary()</MudText>
+                                    <MudText Class="job-run-stat-meta">@GetStepStatusSummary()</MudText>
+                                </MudPaper>
+                            </MudItem>
+                        </MudGrid>
+                    </MudStack>
+                </MudPaper>
+            </MudItem>
+
+            <MudItem xs="12" lg="4">
+                <MudPaper Class="job-run-panel job-run-profile-panel pa-4" Elevation="0">
+                    <MudStack Spacing="2">
+                        <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
+                            <MudText Typo="Typo.h6">Run Profile</MudText>
+                            <MudChip T="string" Variant="Variant.Outlined" Size="Size.Small">
+                                @_runOptions.Count option@(_runOptions.Count == 1 ? string.Empty : "s")
+                            </MudChip>
+                        </MudStack>
+
+                        <MudGrid Spacing="2">
+                            <MudItem xs="6">
+                                <div class="job-run-detail">
+                                    <span class="job-run-detail-label">Tenant</span>
+                                    <span class="job-run-detail-value">@(_run.TenantDisplayName ?? _run.TenantId?.ToString() ?? "-")</span>
+                                </div>
+                            </MudItem>
+                            <MudItem xs="6">
+                                <div class="job-run-detail">
+                                    <span class="job-run-detail-label">Job Id</span>
+                                    <span class="job-run-detail-value">@_run.JobId</span>
+                                </div>
+                            </MudItem>
+                            <MudItem xs="6">
+                                <div class="job-run-detail">
+                                    <span class="job-run-detail-label">Started</span>
+                                    <span class="job-run-detail-value">@FormatTimestamp(_run.StartedAtMicros)</span>
+                                </div>
+                            </MudItem>
+                            <MudItem xs="6">
+                                <div class="job-run-detail">
+                                    <span class="job-run-detail-label">Completed</span>
+                                    <span class="job-run-detail-value">@FormatTimestamp(_run.CompletedAtMicros)</span>
+                                </div>
+                            </MudItem>
+                        </MudGrid>
+
+                        <MudDivider />
+
+                        <MudText Typo="Typo.subtitle1">Run Inputs</MudText>
+
+                        @if (_runOptions.Count > 0)
+                        {
+                            <MudTable T="JobRunOptionDto" Dense="true" Hover="false" Bordered="false" Elevation="0" Class="job-run-options">
+                                <HeaderContent>
+                                    <MudTh>Name</MudTh>
+                                    <MudTh>Value</MudTh>
+                                    <MudTh>Source</MudTh>
+                                </HeaderContent>
+                                <RowTemplate>
+                                    <MudTd DataLabel="Name">@context.Name</MudTd>
+                                    <MudTd DataLabel="Value">@context.Value</MudTd>
+                                    <MudTd DataLabel="Source">@(!string.IsNullOrWhiteSpace(context.Source) ? context.Source : "-")</MudTd>
+                                </RowTemplate>
+                            </MudTable>
+                        }
+                        else
+                        {
+                            <MudAlert Severity="Severity.Info" Variant="Variant.Outlined">No run inputs were captured for this execution.</MudAlert>
+                        }
+                    </MudStack>
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+
+        @if (!string.IsNullOrWhiteSpace(_run.Error))
+        {
+            <MudAlert Severity="Severity.Error" Variant="Variant.Filled">Run error: @_run.Error</MudAlert>
+        }
+
+        <MudGrid Spacing="3">
+            <MudItem xs="12" md="3" lg="2">
+                <MudPaper Class="job-run-panel job-run-timeline-panel pa-4" Elevation="0">
+                    <MudStack Spacing="2">
+                        <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
+                            <MudText Typo="Typo.h6">Execution Timeline</MudText>
+                            <MudChip T="string" Variant="Variant.Text" Size="Size.Small">
+                                @timeline.Count event@(timeline.Count == 1 ? string.Empty : "s")
+                            </MudChip>
+                        </MudStack>
+
+                        @if (timeline.Count == 0)
+                        {
+                            <MudAlert Severity="Severity.Info" Variant="Variant.Outlined">No timeline events yet.</MudAlert>
+                        }
+                        else
+                        {
+                            <MudTimeline TimelineOrientation="TimelineOrientation.Vertical"
+                                         TimelinePosition="TimelinePosition.Start"
+                                         Dense="true"
+                                         Class="job-run-timeline">
+                                @foreach (var item in timeline)
+                                {
+                                    <MudTimelineItem Color="@item.Color">
+                                        <ChildContent>
+                                            <MudStack Spacing="0">
+                                                <MudText Typo="Typo.subtitle2">@item.Title</MudText>
+                                                @if (!string.IsNullOrWhiteSpace(item.Description))
+                                                {
+                                                    <MudText Typo="Typo.caption">@item.Description</MudText>
+                                                }
+                                                <MudText Typo="Typo.caption" Color="Color.Secondary">@FormatTimestamp(item.Micros)</MudText>
+                                            </MudStack>
+                                        </ChildContent>
+                                    </MudTimelineItem>
+                                }
+                            </MudTimeline>
+                        }
+                    </MudStack>
+                </MudPaper>
+            </MudItem>
+
+            <MudItem xs="12" md="9" lg="10">
+                <MudPaper Class="job-run-panel pa-4" Elevation="0">
+                    <MudStack Spacing="3">
+                        <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
+                            <MudStack Spacing="0">
+                                <MudText Typo="Typo.h6">Step Telemetry</MudText>
+                                <MudText Class="job-run-subtitle">Console-grade output, state, and drill-down by execution step.</MudText>
+                            </MudStack>
+                            <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
+                                <MudChip T="string" Color="Color.Info" Variant="Variant.Outlined" Size="Size.Small">@_steps.Count total</MudChip>
+                                <MudChip T="string" Color="Color.Success" Variant="Variant.Outlined" Size="Size.Small">@GetStepCount(JobStepRunStatusDto.Succeeded) succeeded</MudChip>
+                                <MudChip T="string" Color="Color.Warning" Variant="Variant.Outlined" Size="Size.Small">@GetStepCount(JobStepRunStatusDto.Running) running</MudChip>
+                                <MudChip T="string" Color="Color.Error" Variant="Variant.Outlined" Size="Size.Small">@GetStepCount(JobStepRunStatusDto.Failed) failed</MudChip>
+                            </MudStack>
+                        </MudStack>
+
+                        @if (_steps.Count == 0 && !_isLoading)
+                        {
+                            <MudAlert Severity="Severity.Info" Variant="Variant.Outlined">No step telemetry is available for this run yet.</MudAlert>
+                        }
+                        else
+                        {
+                            <MudExpansionPanels MultiExpansion="true" Elevation="0">
+                                @foreach (var state in _steps.OrderBy(s => s.Step.Ordinal))
+                                {
+                                    var step = state.Step;
+                                    var definition = ResolveStepDefinition(step);
+                                    var parsedLog = state.Log is null ? null : ParseExecutionLog(state.Log);
+                                    <MudExpansionPanel Expanded="@IsStepRunning(step)"
+                                                       ExpandedChanged="@((bool expanded) => OnStepExpanded(state, expanded))"
+                                                       Class="job-run-step-panel">
+                                        <TitleContent>
+                                            <MudGrid Spacing="2" Class="job-run-step-header">
+                                                <MudItem xs="12" md="6">
+                                                    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
+                                                        <MudIcon Icon="@Icons.Material.Filled.Circle" Color="@StepStatusColor(step.Status)" Size="Size.Small" />
+                                                        <MudText Typo="Typo.subtitle2">@GetStepHeader(step, definition)</MudText>
+                                                    </MudStack>
+                                                </MudItem>
+                                                <MudItem xs="12" md="6">
+                                                    <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.FlexEnd" Spacing="1">
+                                                        <MudChip T="string"
+                                                                 Color="@StepStatusColor(step.Status)"
+                                                                 Variant="Variant.Outlined"
+                                                                 Size="Size.Small">
+                                                            @step.Status
+                                                        </MudChip>
+                                                        <MudText Typo="Typo.caption">@FormatTimestamp(step.StartedAtMicros)</MudText>
+                                                    </MudStack>
+                                                </MudItem>
+                                            </MudGrid>
+                                        </TitleContent>
+                                        <ChildContent>
+                                            <MudStack Spacing="2">
+                                                <MudGrid Spacing="2">
+                                                    <MudItem xs="12" md="6">
+                                                        <div class="job-run-step-detail">
+                                                            <span class="job-run-detail-label">Summary</span>
+                                                            <span class="job-run-detail-value">@GetStepSummary(step, definition)</span>
+                                                        </div>
+                                                    </MudItem>
+                                                    <MudItem xs="12" md="3">
+                                                        <div class="job-run-step-detail">
+                                                            <span class="job-run-detail-label">Started</span>
+                                                            <span class="job-run-detail-value">@FormatTimestamp(step.StartedAtMicros)</span>
+                                                        </div>
+                                                    </MudItem>
+                                                    <MudItem xs="12" md="3">
+                                                        <div class="job-run-step-detail">
+                                                            <span class="job-run-detail-label">Completed</span>
+                                                            <span class="job-run-detail-value">@FormatTimestamp(step.CompletedAtMicros)</span>
+                                                        </div>
+                                                    </MudItem>
+                                                </MudGrid>
+
+                                                @if (!string.IsNullOrWhiteSpace(step.TaskRequestId))
+                                                {
+                                                    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
+                                                        <MudChip T="string" Variant="Variant.Outlined" Size="Size.Small">Task @step.TaskRequestId</MudChip>
+                                                        <MudButton Variant="Variant.Text" Size="Size.Small" OnClick="@(() => NavManager.NavigateTo($"/tasks/request/{Uri.EscapeDataString(step.TaskRequestId!)}"))">
+                                                            View task
+                                                        </MudButton>
+                                                    </MudStack>
+                                                }
+
+                                                @if (!string.IsNullOrWhiteSpace(step.Error))
+                                                {
+                                                    <MudAlert Severity="Severity.Error" Variant="Variant.Filled">Step error: @step.Error</MudAlert>
+                                                }
+
+                                                <MudPaper Class="job-run-log-surface pa-3" Elevation="0">
+                                                    @if (state.Loading)
+                                                    {
+                                                        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
+                                                            <MudProgressCircular Size="Size.Small" Indeterminate="true" />
+                                                            <MudText Typo="Typo.caption">Loading logs...</MudText>
+                                                        </MudStack>
+                                                    }
+                                                    else if (state.Log is not null)
+                                                    {
+                                                        <MudTabs Rounded="true" PanelClass="job-run-log-tab-panel">
+                                                            <MudTabPanel Text="Console">
+                                                                <div class="job-run-log-html" @onclick:stopPropagation="true" @onmousedown:stopPropagation="true">
+                                                                    @((MarkupString)parsedLog!.ConsoleHtml)
+                                                                </div>
+                                                            </MudTabPanel>
+                                                            <MudTabPanel Text="Stdout">
+                                                                <pre class="job-run-log-plain">@BuildPlainBlock(parsedLog!.StdoutLines, "No stdout captured.")</pre>
+                                                            </MudTabPanel>
+                                                            <MudTabPanel Text="Stderr">
+                                                                <pre class="job-run-log-plain job-run-log-plain-error">@BuildPlainBlock(parsedLog!.StderrLines, "No stderr captured.")</pre>
+                                                            </MudTabPanel>
+                                                            <MudTabPanel Text="Plain">
+                                                                <pre class="job-run-log-plain">@BuildPlainBlock(parsedLog!.PlainLines, "No log output.")</pre>
+                                                            </MudTabPanel>
+                                                            <MudTabPanel Text="Diagnostics">
+                                                                <MudStack Spacing="2">
+                                                                    <MudChip T="int" Color="Color.Info" Variant="Variant.Outlined" Size="Size.Small">
+                                                                        Exit Code: @parsedLog!.ExitCode
+                                                                    </MudChip>
+                                                                    @if (!string.IsNullOrWhiteSpace(state.Log.RequestId))
+                                                                    {
+                                                                        <MudButton Variant="Variant.Text" Size="Size.Small" OnClick="@(() => NavManager.NavigateTo($"/tasks/request/{Uri.EscapeDataString(state.Log.RequestId!)}"))">
+                                                                            View task
+                                                                        </MudButton>
+                                                                    }
+                                                                    else
+                                                                    {
+                                                                        <MudText Typo="Typo.caption">No linked task diagnostics available.</MudText>
+                                                                    }
+                                                                </MudStack>
+                                                            </MudTabPanel>
+                                                            <MudTabPanel Text="Raw JSON">
+                                                                <pre class="job-run-log-plain">@parsedLog!.RawJson</pre>
+                                                            </MudTabPanel>
+                                                        </MudTabs>
+                                                    }
+                                                    else
+                                                    {
+                                                        <MudText Typo="Typo.caption" Color="Color.Error">@((state.LoadFailed ? "Failed to load logs." : "Logs not yet available."))</MudText>
+                                                    }
+                                                </MudPaper>
+                                            </MudStack>
+                                        </ChildContent>
+                                    </MudExpansionPanel>
+                                }
+                            </MudExpansionPanels>
+                        }
+                    </MudStack>
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+    }
+</MudStack>
+
+@code {
+    [Parameter] public long JobId { get; set; }
+    [Parameter] public long RunId { get; set; }
+
+    private JobDto? _job;
+    private JobRunDto? _run;
+    private List<StepState> _steps = new();
+    private List<JobStepDto> _jobSteps = new();
+    private Dictionary<ulong, JobStepDto> _stepDefinitions = new();
+    private IReadOnlyList<JobRunOptionDto> _runOptions = Array.Empty<JobRunOptionDto>();
+
+    private bool _isLoading = true;
+    private bool _isPolling;
+    private string? _loadError;
+
+    private readonly CancellationTokenSource _disposeCts = new();
+    private CancellationTokenSource? _pollingCts;
+    private Task? _pollingTask;
+
+    private ulong JobIdValue => JobId < 0 ? 0UL : (ulong)JobId;
+    private ulong RunIdValue => RunId < 0 ? 0UL : (ulong)RunId;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadInitialAsync(_disposeCts.Token);
+    }
+
+    private async Task ManualRefresh()
+    {
+        await LoadInitialAsync(_disposeCts.Token, true);
+    }
+
+    private async Task CancelRunAsync()
+    {
+        if (_run is null || IsRunTerminal(_run))
+        {
+            return;
+        }
+
+        try
+        {
+            await JobApi.CancelJobRunAsync(_run.Id, _disposeCts.Token);
+            Snackbar.Add("Run cancellation requested.", Severity.Info);
+            await LoadInitialAsync(_disposeCts.Token, true);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to cancel run: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task LoadInitialAsync(CancellationToken cancellationToken, bool fromUser = false)
+    {
+        if (fromUser && _isLoading)
+        {
+            return;
+        }
+
+        _isLoading = true;
+        _loadError = null;
+        _runOptions = Array.Empty<JobRunOptionDto>();
+        if (fromUser)
+        {
+            StateHasChanged();
+        }
+
+        try
+        {
+            var run = await JobApi.GetJobRunAsync(RunIdValue, cancellationToken);
+            if (run is null)
+            {
+                _loadError = "Job run not found.";
+                _run = null;
+                _steps = new List<StepState>();
+                _job = null;
+                _runOptions = Array.Empty<JobRunOptionDto>();
+                return;
+            }
+
+            _run = run;
+            JobId = (long)run.JobId;
+            _runOptions = BuildRunOptions(run);
+
+            var jobTask = JobApi.GetJobAsync(run.JobId, cancellationToken);
+            var stepRunsTask = JobApi.GetJobRunStepsAsync(RunIdValue, cancellationToken);
+            var jobStepsTask = JobApi.GetJobStepsAsync(run.JobId, cancellationToken);
+
+            await Task.WhenAll(jobTask, stepRunsTask, jobStepsTask);
+
+            _job = jobTask.Result;
+            var fetchedSteps = stepRunsTask.Result?.OrderBy(s => s.Ordinal).ToList() ?? new List<JobStepRunDto>();
+            _jobSteps = jobStepsTask.Result?.ToList() ?? new List<JobStepDto>();
+            _stepDefinitions = _jobSteps.ToDictionary(s => s.Id, s => s);
+            SyncStepStates(fetchedSteps);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            _loadError = $"Failed to load run: {ex.Message}";
+            Snackbar.Add(_loadError, Severity.Error);
+        }
+        finally
+        {
+            _isLoading = false;
+            StartPolling();
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void StartPolling()
+    {
+        StopPollingInternal();
+
+        if (_run is null || IsRunTerminal(_run))
+            return;
+
+        _pollingCts = CancellationTokenSource.CreateLinkedTokenSource(_disposeCts.Token);
+        var token = _pollingCts.Token;
+        _isPolling = true;
+
+        _pollingTask = Task.Run(async () =>
+        {
+            var timer = new PeriodicTimer(TimeSpan.FromSeconds(2));
+            try
+            {
+                while (await timer.WaitForNextTickAsync(token).ConfigureAwait(false))
+                {
+                    var changed = false;
+                    changed |= await RefreshRunAsync(token).ConfigureAwait(false);
+                    changed |= await RefreshStepRunsAsync(token).ConfigureAwait(false);
+
+                    if (changed)
+                    {
+                        await InvokeAsync(StateHasChanged);
+                    }
+
+                    if (_run is null || IsRunTerminal(_run))
+                    {
+                        break;
+                    }
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            finally
+            {
+                timer.Dispose();
+                _isPolling = false;
+                await InvokeAsync(StateHasChanged);
+            }
+        }, token);
+    }
+
+    private void StopPollingInternal()
+    {
+        _pollingCts?.Cancel();
+        _pollingCts?.Dispose();
+        _pollingCts = null;
+        _isPolling = false;
+    }
+
+    private async Task<bool> RefreshRunAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var latest = await JobApi.GetJobRunAsync(RunIdValue, cancellationToken);
+            if (latest is null)
+                return false;
+
+            if (_run is null || !_run.Equals(latest))
+            {
+                _run = latest;
+                _runOptions = BuildRunOptions(latest);
+                return true;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Failed to refresh run: {ex.Message}");
+        }
+
+        return false;
+    }
+
+    private async Task<bool> RefreshStepRunsAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var latest = await JobApi.GetJobRunStepsAsync(RunIdValue, cancellationToken);
+            if (latest is null)
+                return false;
+
+            var ordered = latest.OrderBy(s => s.Ordinal).ToList();
+            var changed = SyncStepStates(ordered);
+            return changed;
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Failed to refresh steps: {ex.Message}");
+        }
+
+        return false;
+    }
+
+    private IReadOnlyList<JobRunOptionDto> BuildRunOptions(JobRunDto? run)
+    {
+        if (run is null)
+            return Array.Empty<JobRunOptionDto>();
+
+        if (run.Options is { Count: > 0 })
+            return run.Options;
+
+        if (string.IsNullOrWhiteSpace(run.InputsJson))
+            return Array.Empty<JobRunOptionDto>();
+
+        try
+        {
+            using var doc = JsonDocument.Parse(run.InputsJson);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object)
+                return Array.Empty<JobRunOptionDto>();
+
+            var list = new List<JobRunOptionDto>();
+            foreach (var prop in doc.RootElement.EnumerateObject())
+            {
+                var source = $"@option.{prop.Name}@";
+                list.Add(new JobRunOptionDto(prop.Name, ConvertJsonElementToString(prop.Value), source));
+            }
+
+            return list;
+        }
+        catch
+        {
+            return Array.Empty<JobRunOptionDto>();
+        }
+    }
+
+    private static string ConvertJsonElementToString(JsonElement value) => value.ValueKind switch
+    {
+        JsonValueKind.True => "true",
+        JsonValueKind.False => "false",
+        JsonValueKind.String => value.GetString() ?? string.Empty,
+        JsonValueKind.Number => value.GetRawText(),
+        JsonValueKind.Null or JsonValueKind.Undefined => string.Empty,
+        _ => value.GetRawText()
+    };
+
+    private string GetJobName()
+    {
+        if (!string.IsNullOrWhiteSpace(_run?.JobName))
+            return _run.JobName;
+
+        if (!string.IsNullOrWhiteSpace(_job?.Name))
+            return _job.Name;
+
+        return $"Job {_run?.JobId}";
+    }
+
+    private string GetRunWindowLabel()
+    {
+        if (_run?.StartedAtMicros is null)
+            return "Queued";
+
+        if (_run.CompletedAtMicros is null)
+            return "In progress";
+
+        var duration = _run.CompletedAtMicros.Value - _run.StartedAtMicros.Value;
+        return FormatDuration(duration);
+    }
+
+    private string GetRunOutcomeSummary() => _run?.Status switch
+    {
+        JobRunStatusDto.Succeeded => "Completed cleanly",
+        JobRunStatusDto.Failed => "Failed during execution",
+        JobRunStatusDto.Running => "Currently executing",
+        JobRunStatusDto.Pending => "Awaiting execution",
+        JobRunStatusDto.Cancelled => "Cancelled",
+        JobRunStatusDto.TimedOut => "Timed out",
+        _ => _run?.Status.ToString() ?? "-"
+    };
+
+    private string GetStepStatusSummary()
+        => $"{GetStepCount(JobStepRunStatusDto.Succeeded)} ok · {GetStepCount(JobStepRunStatusDto.Failed)} failed · {GetStepCount(JobStepRunStatusDto.Running)} running";
+
+    private int GetStepCount(JobStepRunStatusDto status)
+        => _steps.Count(s => s.Step.Status == status);
+
+    private string GetClientDisplayText(string? displayName, string? identity)
+    {
+        if (!string.IsNullOrWhiteSpace(displayName))
+            return displayName!;
+
+        return ShortenIdentity(identity);
+    }
+
+    private static string ShortenIdentity(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return "-";
+
+        return value.Length <= 16 ? value : $"{value[..8]}...{value[^6..]}";
+    }
+
+    private static string FormatDuration(long micros)
+    {
+        if (micros <= 0)
+            return "0s";
+
+        var span = TimeSpan.FromMilliseconds(micros / 1000d);
+        if (span.TotalHours >= 1)
+            return $"{(int)span.TotalHours}h {span.Minutes}m";
+        if (span.TotalMinutes >= 1)
+            return $"{(int)span.TotalMinutes}m {span.Seconds}s";
+        return $"{Math.Max(1, span.Seconds)}s";
+    }
+
+    private IEnumerable<TimelineItem> BuildTimeline()
+    {
+        if (_run is null)
+            yield break;
+
+        yield return new TimelineItem("Run created", _run.CreatedAtMicros, Color.Info);
+
+        if (_run.StartedAtMicros.HasValue)
+        {
+            yield return new TimelineItem("Run started", _run.StartedAtMicros, Color.Info);
+        }
+
+        foreach (var step in _steps.Select(s => s.Step).OrderBy(s => s.Ordinal))
+        {
+            if (step.StartedAtMicros.HasValue)
+            {
+                yield return new TimelineItem($"Step {step.Ordinal} started", step.StartedAtMicros, Color.Info, GetStepSummary(step, ResolveStepDefinition(step)));
+            }
+
+            if (step.CompletedAtMicros.HasValue)
+            {
+                var color = step.Status == JobStepRunStatusDto.Succeeded
+                    ? Color.Success
+                    : step.Status == JobStepRunStatusDto.Failed
+                        ? Color.Error
+                        : Color.Warning;
+                yield return new TimelineItem($"Step {step.Ordinal} {step.Status}", step.CompletedAtMicros, color, GetStepSummary(step, ResolveStepDefinition(step)));
+            }
+        }
+
+        if (_run.CompletedAtMicros.HasValue)
+        {
+            yield return new TimelineItem($"Run {_run.Status}", _run.CompletedAtMicros, RunStatusColor(_run.Status));
+        }
+    }
+
+    private JobStepDto? ResolveStepDefinition(JobStepRunDto step)
+    {
+        if (step.JobStepId.HasValue && _stepDefinitions.TryGetValue(step.JobStepId.Value, out var definition))
+            return definition;
+
+        return null;
+    }
+
+    private string GetStepHeader(JobStepRunDto run, JobStepDto? definition)
+    {
+        var label = definition?.Type.ToString() ?? "Step";
+        if (definition?.Type == JobStepTypeDto.RunCommand && !string.IsNullOrWhiteSpace(definition.Command))
+        {
+            label = $"RunCommand: {Truncate(definition.Command, 40)}";
+        }
+        else if (definition?.Type == JobStepTypeDto.LibraryScript && definition.ScriptId.HasValue)
+        {
+            label = $"LibraryScript #{definition.ScriptId}";
+        }
+        else if (definition?.Type == JobStepTypeDto.HttpAction)
+        {
+            label = "HttpAction";
+        }
+
+        return $"{run.Ordinal}. {label}";
+    }
+
+    private string GetStepSummary(JobStepRunDto run, JobStepDto? definition)
+    {
+        if (definition is null)
+            return $"Step {run.Ordinal} ({run.Status})";
+
+        return definition.Type switch
+        {
+            JobStepTypeDto.RunCommand => $"RunCommand via {definition.Runner}: {definition.Command}",
+            JobStepTypeDto.LibraryScript => $"LibraryScript Id {definition.ScriptId}",
+            JobStepTypeDto.HttpAction => "HTTP action",
+            _ => $"Step {run.Ordinal}"
+        };
+    }
+
+    private bool SyncStepStates(List<JobStepRunDto> latest)
+    {
+        var existingById = _steps.ToDictionary(s => s.Step.Id, s => s);
+        var newList = new List<StepState>();
+        var changed = false;
+
+        foreach (var step in latest)
+        {
+            if (existingById.TryGetValue(step.Id, out var state))
+            {
+                state.Step = step;
+                newList.Add(state);
+            }
+            else
+            {
+                newList.Add(new StepState { Step = step });
+                changed = true;
+            }
+        }
+
+        if (_steps.Count != newList.Count || !_steps.Select(s => s.Step).SequenceEqual(latest))
+        {
+            changed = true;
+        }
+
+        _steps = newList;
+        return changed;
+    }
+
+    private async Task OnStepExpanded(StepState state, bool expanded)
+    {
+        if (!expanded || state.Log is not null || state.Loading)
+        {
+            return;
+        }
+
+        if (_run is null || string.IsNullOrWhiteSpace(state.Step.TaskRequestId))
+        {
+            return;
+        }
+
+        state.Loading = true;
+        try
+        {
+            var log = await JobApi.GetJobStepLogsAsync(_run.Id, state.Step.Ordinal, _disposeCts.Token);
+            state.Log = log;
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            state.LoadFailed = true;
+            Snackbar.Add($"Failed to load step logs: {ex.Message}", Severity.Warning);
+        }
+        finally
+        {
+            state.Loading = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private bool IsStepRunning(JobStepRunDto run) =>
+        run.Status == JobStepRunStatusDto.Running || run.Status == JobStepRunStatusDto.Pending;
+
+    private Color RunStatusColor(JobRunStatusDto status) => status switch
+    {
+        JobRunStatusDto.Succeeded => Color.Success,
+        JobRunStatusDto.Running => Color.Info,
+        JobRunStatusDto.Pending => Color.Warning,
+        JobRunStatusDto.Cancelled => Color.Warning,
+        JobRunStatusDto.Failed => Color.Error,
+        JobRunStatusDto.TimedOut => Color.Error,
+        _ => Color.Default
+    };
+
+    private Color StepStatusColor(JobStepRunStatusDto status) => status switch
+    {
+        JobStepRunStatusDto.Succeeded => Color.Success,
+        JobStepRunStatusDto.Running => Color.Info,
+        JobStepRunStatusDto.Pending => Color.Warning,
+        JobStepRunStatusDto.Skipped => Color.Secondary,
+        JobStepRunStatusDto.Failed => Color.Error,
+        _ => Color.Default
+    };
+
+    private static bool IsRunTerminal(JobRunDto run) =>
+        run.Status is JobRunStatusDto.Succeeded or JobRunStatusDto.Failed or JobRunStatusDto.Cancelled or JobRunStatusDto.TimedOut;
+
+    private string FormatTimestamp(long micros) => FormatTimestamp((long?)micros);
+
+    private string FormatTimestamp(long? micros)
+    {
+        if (micros is null) return "-";
+
+        try
+        {
+            var dt = DateTimeOffset.FromUnixTimeMilliseconds(micros.Value / 1000);
+            return dt.ToLocalTime().ToString("g");
+        }
+        catch
+        {
+            return "-";
+        }
+    }
+
+    private string Truncate(string value, int max)
+    {
+        if (string.IsNullOrEmpty(value) || value.Length <= max)
+            return value;
+
+        return value[..max] + "…";
+    }
+
+    private static ParsedExecutionLog ParseExecutionLog(ExecutionLogDto log)
+    {
+        var execPayload = TryGetExecPayload(log);
+        if (!string.IsNullOrWhiteSpace(execPayload))
+        {
+            var (execPlain, html, exitCode, stdoutLines, stderrLines) = ParseExecPayload(execPayload);
+            return new ParsedExecutionLog(
+                ConsoleHtml: html,
+                StdoutLines: stdoutLines,
+                StderrLines: stderrLines,
+                PlainLines: SplitLines(execPlain),
+                ExitCode: exitCode,
+                RawJson: execPayload);
+        }
+
+        var stdout = GetLogLines(log, "stdout");
+        var stderr = GetLogLines(log, "stderr");
+        var plain = GetAllLogLines(log);
+
+        return new ParsedExecutionLog(
+            ConsoleHtml: BuildConsoleHtml(log),
+            StdoutLines: stdout,
+            StderrLines: stderr,
+            PlainLines: plain,
+            ExitCode: log.ExitCode,
+            RawJson: string.IsNullOrWhiteSpace(log.Plain) ? "{}" : log.Plain);
+    }
+
+    private static string? TryGetExecPayload(ExecutionLogDto log)
+    {
+        if (LooksLikeExecPayload(log.Plain))
+        {
+            return log.Plain;
+        }
+
+        foreach (var entry in log.Logs.OrderBy(x => x.Seq))
+        {
+            if (LooksLikeExecPayload(entry.Message))
+            {
+                return entry.Message;
+            }
+        }
+
+        return null;
+    }
+
+    private static bool LooksLikeExecPayload(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        var trimmed = value.TrimStart();
+        return trimmed.StartsWith("{", StringComparison.Ordinal)
+               && trimmed.Contains("\"stdout\"", StringComparison.Ordinal)
+               && trimmed.Contains("\"stderr\"", StringComparison.Ordinal)
+               && trimmed.Contains("\"exitCode\"", StringComparison.Ordinal);
+    }
+
+    private static (string Plain, string Html, int ExitCode, IReadOnlyList<string> StdoutLines, IReadOnlyList<string> StderrLines) ParseExecPayload(string json)
+    {
+        var (plain, html, exitCode) = ExecOutputFormatter.ParseExecReturn(json);
+
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            var stdout = root.TryGetProperty("stdout", out var stdoutEl) && stdoutEl.ValueKind == JsonValueKind.Array
+                ? stdoutEl.EnumerateArray()
+                    .Select(x => AnsiConsole.NormalizeForDisplay(x.GetString() ?? string.Empty))
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .ToList()
+                : new List<string>();
+            var stderr = root.TryGetProperty("stderr", out var stderrEl) && stderrEl.ValueKind == JsonValueKind.Array
+                ? stderrEl.EnumerateArray()
+                    .Select(x => AnsiConsole.NormalizeForDisplay(x.GetString() ?? string.Empty))
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .ToList()
+                : new List<string>();
+
+            return (plain, html, exitCode, stdout, stderr);
+        }
+        catch
+        {
+            return (plain, html, exitCode, Array.Empty<string>(), Array.Empty<string>());
+        }
+    }
+
+    private static IReadOnlyList<string> SplitLines(string? text)
+        => string.IsNullOrWhiteSpace(text)
+            ? Array.Empty<string>()
+            : AnsiConsole.NormalizeForDisplay(text)
+                .Split(System.Environment.NewLine, StringSplitOptions.None)
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .ToList();
+
+    private static IReadOnlyList<string> GetLogLines(ExecutionLogDto log, string stream)
+        => log.Logs
+            .Where(x => string.Equals(x.Stream, stream, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(x => x.Seq)
+            .Select(x => AnsiConsole.NormalizeForDisplay(x.Message))
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .ToList();
+
+    private static IReadOnlyList<string> GetAllLogLines(ExecutionLogDto log)
+    {
+        if (log.Logs.Count > 0)
+        {
+            return log.Logs
+                .OrderBy(x => x.Seq)
+                .Select(x => AnsiConsole.NormalizeForDisplay(x.Message))
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .ToList();
+        }
+
+        return string.IsNullOrWhiteSpace(log.Plain)
+            ? Array.Empty<string>()
+            : AnsiConsole.NormalizeForDisplay(log.Plain)
+                .Split(System.Environment.NewLine, StringSplitOptions.None)
+                .ToList();
+    }
+
+    private static string BuildPlainBlock(IReadOnlyList<string> lines, string emptyMessage)
+        => lines.Count == 0 ? emptyMessage : string.Join(System.Environment.NewLine, lines);
+
+    private static string BuildConsoleHtml(ExecutionLogDto log)
+    {
+        var lines = log.Logs
+            .OrderBy(x => x.Seq)
+            .Select(entry =>
+            {
+                var css = string.Equals(entry.Stream, "stderr", StringComparison.OrdinalIgnoreCase)
+                    ? "job-run-console-line job-run-console-error"
+                    : "job-run-console-line";
+                var message = WebUtility.HtmlEncode(AnsiConsole.NormalizeForDisplay(entry.Message));
+                return $"<div class=\"{css}\">{message}</div>";
+            })
+            .ToList();
+
+        if (lines.Count == 0)
+        {
+            var fallback = WebUtility.HtmlEncode(AnsiConsole.NormalizeForDisplay(log.Plain ?? "No log output."));
+            lines.Add($"<div class=\"job-run-console-line\">{fallback}</div>");
+        }
+
+        return $"<pre class=\"job-run-log-console\">{string.Join(string.Empty, lines)}</pre>";
+    }
+
+    public void Dispose()
+    {
+        StopPollingInternal();
+        _disposeCts.Cancel();
+
+        try
+        {
+            _pollingTask?.Wait(TimeSpan.FromSeconds(1));
+        }
+        catch
+        {
+        }
+
+        _disposeCts.Dispose();
+    }
+
+    private sealed class StepState
+    {
+        public JobStepRunDto Step { get; set; } = default!;
+        public ExecutionLogDto? Log { get; set; }
+        public bool Loading { get; set; }
+        public bool LoadFailed { get; set; }
+    }
+
+    private sealed record ParsedExecutionLog(
+        string ConsoleHtml,
+        IReadOnlyList<string> StdoutLines,
+        IReadOnlyList<string> StderrLines,
+        IReadOnlyList<string> PlainLines,
+        int ExitCode,
+        string RawJson
+    );
+
+    private sealed record TimelineItem(string Title, long? Micros, Color Color, string? Description = null);
+}
+
+<style>
+    .job-run-page {
+        padding-bottom: 1rem;
+    }
+
+    .job-run-hero,
+    .job-run-panel {
+        border: 1px solid var(--mud-palette-divider);
+        border-radius: var(--netratel-radius-surface, 7px);
+        background: var(--mud-palette-surface);
+    }
+
+    .job-run-hero {
+        border-left: 3px solid var(--mud-palette-primary);
+    }
+
+    .job-run-kicker {
+        color: var(--mud-palette-text-secondary);
+        font-size: 0.78rem;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+    }
+
+    .job-run-subtitle {
+        color: var(--mud-palette-text-secondary);
+        font-size: 0.94rem;
+    }
+
+    .job-run-stat-card {
+        height: 100%;
+        border-radius: var(--netratel-radius-surface, 7px);
+        border: 1px solid var(--mud-palette-divider);
+        background: var(--mud-palette-background-gray);
+    }
+
+    .job-run-stat-label,
+    .job-run-detail-label {
+        display: block;
+        color: var(--mud-palette-text-secondary);
+        font-size: 0.72rem;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+    }
+
+    .job-run-stat-meta {
+        color: var(--mud-palette-text-secondary);
+        font-size: 0.82rem;
+    }
+
+    .job-run-detail,
+    .job-run-step-detail {
+        display: flex;
+        flex-direction: column;
+        gap: 0.3rem;
+        padding: 0.9rem 1rem;
+        min-height: 100%;
+        border-radius: var(--netratel-radius-surface, 7px);
+        background: var(--mud-palette-background-gray);
+        border: 1px solid var(--mud-palette-divider);
+    }
+
+    .job-run-detail-value {
+        color: var(--mud-palette-text-primary);
+        font-size: 0.98rem;
+        font-weight: 600;
+        line-height: 1.4;
+    }
+
+    .job-run-options {
+        background: transparent;
+    }
+
+    .job-run-timeline {
+        padding-top: 0.25rem;
+    }
+
+    .job-run-step-panel {
+        margin-bottom: 0.85rem;
+        border: 1px solid var(--mud-palette-divider);
+        border-radius: var(--netratel-radius-surface, 7px);
+        background: var(--mud-palette-background-gray);
+        overflow: hidden;
+    }
+
+    .job-run-step-header {
+        width: 100%;
+        padding-right: 0.25rem;
+    }
+
+    .job-run-log-surface {
+        border-radius: var(--netratel-radius-surface, 7px);
+        background: var(--mud-palette-background-gray);
+        color: var(--mud-palette-text-primary);
+        border: 1px solid color-mix(in srgb, var(--mud-palette-primary) 18%, transparent);
+    }
+
+    .job-run-log-plain,
+    .job-run-log-html {
+        margin: 0;
+        max-height: 420px;
+        overflow: auto;
+        white-space: pre-wrap;
+        color: var(--mud-palette-text-primary);
+    }
+
+    .job-run-log-html :is(span, div, p, pre) {
+        color: inherit;
+    }
+
+    .job-run-log-console,
+    .job-run-log-plain {
+        margin: 0;
+        min-height: 220px;
+        max-height: 540px;
+        overflow: auto;
+        white-space: pre-wrap;
+        border-radius: var(--netratel-radius-surface, 7px);
+        padding: 1rem;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        font-size: 0.88rem;
+        line-height: 1.45;
+        background: var(--mud-palette-background-gray);
+    }
+
+    .job-run-log-console {
+        color: var(--mud-palette-text-primary);
+    }
+
+    .job-run-console-line {
+        color: var(--mud-palette-text-primary);
+    }
+
+    .job-run-console-error,
+    .job-run-log-plain-error {
+        color: var(--mud-palette-error);
+    }
+
+    .job-run-log-tab-panel {
+        padding-top: 0.75rem;
+    }
+
+    .job-run-profile-panel,
+    .job-run-timeline-panel {
+        height: 100%;
+    }
+
+    .job-run-timeline .mud-timeline-item-content {
+        padding-bottom: 1.25rem;
+    }
+
+    @@media (max-width: 959px) {
+        .job-run-hero,
+        .job-run-panel {
+            border-radius: var(--netratel-radius-surface, 7px);
+        }
+
+        .job-run-log-console,
+        .job-run-log-plain {
+            min-height: 180px;
+            max-height: 360px;
+        }
+    }
+</style>

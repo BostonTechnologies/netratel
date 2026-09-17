@@ -1,0 +1,38 @@
+@inherits LayoutComponentBase
+
+<ThemePreferenceProvider Context="themePreference">
+<MudPopoverProvider />
+<MudDialogProvider />
+<MudSnackbarProvider />
+
+<MudLayout Class="netratel-public-layout">
+    <div class="netratel-public-theme-control">
+        <MudMenu Icon="@themePreference.Icon"
+                 Color="Color.Inherit"
+                 aria-label="Choose colour theme"
+                 data-testid="theme-preference-menu">
+            <MudMenuItem Icon="@Icons.Material.Rounded.AutoMode"
+                         data-testid="theme-option-system"
+                         aria-current="@(themePreference.Mode is ThemePreferenceMode.System ? "true" : "false")"
+                         OnClick="@(() => themePreference.SetModeAsync(ThemePreferenceMode.System))">
+                System@(themePreference.Mode is ThemePreferenceMode.System ? " (current)" : string.Empty)
+            </MudMenuItem>
+            <MudMenuItem Icon="@Icons.Material.Outlined.LightMode"
+                         data-testid="theme-option-light"
+                         aria-current="@(themePreference.Mode is ThemePreferenceMode.Light ? "true" : "false")"
+                         OnClick="@(() => themePreference.SetModeAsync(ThemePreferenceMode.Light))">
+                Light@(themePreference.Mode is ThemePreferenceMode.Light ? " (current)" : string.Empty)
+            </MudMenuItem>
+            <MudMenuItem Icon="@Icons.Material.Outlined.DarkMode"
+                         data-testid="theme-option-dark"
+                         aria-current="@(themePreference.Mode is ThemePreferenceMode.Dark ? "true" : "false")"
+                         OnClick="@(() => themePreference.SetModeAsync(ThemePreferenceMode.Dark))">
+                Dark@(themePreference.Mode is ThemePreferenceMode.Dark ? " (current)" : string.Empty)
+            </MudMenuItem>
+        </MudMenu>
+    </div>
+    <MudMainContent Class="netratel-public-main">
+        @Body
+    </MudMainContent>
+</MudLayout>
+</ThemePreferenceProvider>

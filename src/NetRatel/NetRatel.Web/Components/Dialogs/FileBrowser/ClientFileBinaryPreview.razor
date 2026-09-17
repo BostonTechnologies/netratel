@@ -1,0 +1,16 @@
+<MudAlert Severity="Severity.Info" Variant="Variant.Outlined">
+    <MudStack Spacing="1">
+        <MudText Typo="Typo.subtitle2">Preview not available</MudText>
+        <MudText Typo="Typo.body2">
+            This file type is not editable in the browser yet. Use Download to inspect it locally.
+        </MudText>
+        @if (!string.IsNullOrWhiteSpace(ContentType))
+        {
+            <MudText Typo="Typo.caption" Color="Color.Secondary">Type: @ContentType</MudText>
+        }
+    </MudStack>
+</MudAlert>
+
+@code {
+    [Parameter] public string ContentType { get; set; } = "application/octet-stream";
+}

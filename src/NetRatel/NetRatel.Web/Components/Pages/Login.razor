@@ -1,0 +1,95 @@
+@page "/login"
+@attribute [Microsoft.AspNetCore.Authorization.AllowAnonymous]
+
+@using Microsoft.AspNetCore.Components.Authorization
+@inject IConfiguration Config
+@inject IHostEnvironment HostEnvironment
+@inject NavigationManager Nav
+@inject AuthenticationStateProvider? AuthStateProvider
+
+<PageTitle>Login</PageTitle>
+
+<section class="netratel-login-page">
+    <MudPaper Elevation="2" Class="netratel-login-panel">
+        <MudStack AlignItems="AlignItems.Center" Spacing="2" Class="netratel-login-header">
+            <MudText Typo="Typo.overline" HtmlTag="p" Class="netratel-login-product">Automation Platform</MudText>
+            <MudText Typo="Typo.h4" HtmlTag="h1" Class="netratel-login-title">NetRatel</MudText>
+            <MudText Typo="Typo.body2" HtmlTag="p" Class="netratel-login-environment">@EnvironmentLabel</MudText>
+        </MudStack>
+
+        <MudStack Spacing="3">
+            <MudText Typo="Typo.body1" Align="Align.Center" Class="netratel-login-copy">
+                Continue to NetRatel by signing in with your organization account.
+            </MudText>
+
+            <MudButton Variant="Variant.Filled"
+                       Size="Size.Large"
+                       Color="Color.Primary"
+                       FullWidth="true"
+                       Class="netratel-login-primary-action"
+                       StartIcon="@Icons.Material.Filled.Cloud"
+                       Href="@OidcLoginHref">
+                Sign in
+            </MudButton>
+
+            @if (ShowDevelopmentLogin)
+            {
+                <MudDivider Class="my-1" />
+                <MudText Typo="Typo.body2" Align="Align.Center" Class="netratel-login-dev-copy">
+                    Local development access is enabled.
+                </MudText>
+                <MudButton Variant="Variant.Outlined"
+                           Size="Size.Large"
+                           Color="Color.Secondary"
+                           FullWidth="true"
+                           Class="netratel-login-dev-action"
+                           StartIcon="@Icons.Material.Filled.Terminal"
+                           Href="@DevelopmentLoginHref">
+                    Sign in as local operator
+                </MudButton>
+            }
+        </MudStack>
+    </MudPaper>
+</section>
+
+@code {
+    [SupplyParameterFromQuery(Name = "ReturnUrl")]
+    public string? ReturnUrl { get; set; }
+
+    private bool ShowDevelopmentLogin =>
+        HostEnvironment.IsDevelopment() &&
+        Config.GetValue<bool>("DevelopmentOperator:Enabled");
+
+    private string EnvironmentLabel =>
+        Config["LoginUi:EnvironmentLabel"]?.Trim() is { Length: > 0 } label
+            ? label
+            : "Development system";
+
+    private string OidcLoginHref => BuildAuthHref("/auth/oidc");
+
+    private string DevelopmentLoginHref => BuildAuthHref("/auth/development");
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (AuthStateProvider is null)
+        {
+            return;
+        }
+
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        if (authState.User.Identity?.IsAuthenticated == true)
+        {
+            Nav.NavigateTo("/", forceLoad: true);
+        }
+    }
+
+    private string BuildAuthHref(string path)
+    {
+        if (string.IsNullOrWhiteSpace(ReturnUrl))
+        {
+            return path;
+        }
+
+        return $"{path}?returnUrl={Uri.EscapeDataString(ReturnUrl)}";
+    }
+}

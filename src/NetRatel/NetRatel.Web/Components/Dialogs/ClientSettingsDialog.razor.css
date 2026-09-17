@@ -1,0 +1,7 @@
+.terminal-route-select {
+    min-width: 320px;
+}
+
+.terminal-route-select :deep(.mud-input-control) {
+    margin-top: 0;
+}

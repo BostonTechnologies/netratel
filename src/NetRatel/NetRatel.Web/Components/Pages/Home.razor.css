@@ -1,0 +1,133 @@
+.dashboard-shell {
+    padding-bottom: 2rem;
+}
+
+.dashboard-loading,
+.dashboard-hero,
+.dashboard-panel,
+.dashboard-metric-card {
+    border: 1px solid var(--mud-palette-divider);
+    border-radius: var(--mud-default-borderradius);
+    background: var(--mud-palette-surface);
+    box-shadow: none;
+}
+
+.dashboard-hero {
+    border-left: 2px solid var(--mud-palette-primary);
+}
+
+.dashboard-hero-panel,
+.dashboard-stat-tile,
+.dashboard-watch-item,
+.dashboard-link-card {
+    border-radius: var(--mud-default-borderradius);
+    background: color-mix(in srgb, var(--mud-palette-surface) 94%, var(--mud-palette-background) 6%);
+    border-color: var(--mud-palette-divider);
+}
+
+.dashboard-hero-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+.dashboard-hero-metrics {
+    margin-top: 0.25rem;
+}
+
+.dashboard-metric-compact {
+    min-height: 112px;
+}
+
+.dashboard-quick-actions {
+    max-width: 360px;
+    margin-left: auto;
+}
+
+.dashboard-compact-panel {
+    min-height: 220px;
+}
+
+.dashboard-kicker,
+.dashboard-section-label {
+    color: var(--mud-palette-text-secondary);
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+}
+
+.dashboard-subtitle {
+    max-width: 52rem;
+    color: var(--mud-palette-text-secondary);
+}
+
+::deep .dashboard-table .mud-table-head th {
+    color: var(--mud-palette-text-secondary);
+    font-size: 0.76rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+}
+
+::deep .dashboard-table td,
+::deep .dashboard-table th {
+    vertical-align: middle;
+}
+
+.dashboard-click-row {
+    cursor: pointer;
+}
+
+.dashboard-run-target {
+    max-width: 18rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.dashboard-link-card {
+    cursor: pointer;
+    transition: border-color 140ms ease, background-color 140ms ease;
+}
+
+.dashboard-link-card:hover,
+.dashboard-link-card:focus-within {
+    border-color: color-mix(in srgb, var(--mud-palette-primary) 42%, var(--mud-palette-divider));
+    background: color-mix(in srgb, var(--mud-palette-primary) 7%, var(--mud-palette-surface));
+}
+
+.dashboard-stat-running {
+    border-color: color-mix(in srgb, var(--mud-palette-info) 42%, var(--mud-palette-divider));
+}
+
+.dashboard-stat-success {
+    border-color: color-mix(in srgb, var(--mud-palette-success) 42%, var(--mud-palette-divider));
+}
+
+.dashboard-stat-failed {
+    border-color: color-mix(in srgb, var(--mud-palette-error) 42%, var(--mud-palette-divider));
+}
+
+.dashboard-stat-other {
+    border-color: color-mix(in srgb, var(--mud-palette-warning) 42%, var(--mud-palette-divider));
+}
+
+@media (max-width: 599px) {
+    .dashboard-metric-compact,
+    .dashboard-compact-panel {
+        min-height: 0;
+    }
+
+    .dashboard-quick-actions {
+        max-width: none;
+        margin-left: 0;
+    }
+
+    .dashboard-run-target {
+        max-width: none;
+        overflow: visible;
+        text-overflow: clip;
+        white-space: normal;
+        overflow-wrap: anywhere;
+    }
+}

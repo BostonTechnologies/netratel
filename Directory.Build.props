@@ -1,0 +1,23 @@
+<Project>
+  <!--
+    NetRatel product version authority. Change the prefix/suffix in this file
+    only as part of a reviewed release-source change; deployment build numbers
+    are operational metadata and are not product versions.
+  -->
+  <PropertyGroup>
+    <VersionPrefix>0.1.0</VersionPrefix>
+    <VersionSuffix>rc.1</VersionSuffix>
+    <Version>$(VersionPrefix)-$(VersionSuffix)</Version>
+    <PackageVersion>$(Version)</PackageVersion>
+
+    <!-- AssemblyVersion and FileVersion must remain numeric. -->
+    <AssemblyVersion>$(VersionPrefix).0</AssemblyVersion>
+    <FileVersion>$(VersionPrefix).0</FileVersion>
+    <InformationalVersion>$(Version)</InformationalVersion>
+
+    <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <RepositoryUrl>https://github.com/BostonTechnologies/netratel</RepositoryUrl>
+  </PropertyGroup>
+</Project>

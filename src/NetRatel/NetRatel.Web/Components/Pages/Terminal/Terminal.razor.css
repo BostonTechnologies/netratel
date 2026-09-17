@@ -1,0 +1,18 @@
+.terminal-page {
+    min-width: 0;
+}
+
+.terminal-console-surface {
+    height: min(70dvh, calc(100dvh - 210px));
+    min-height: 320px;
+    overflow: hidden;
+    border: 1px solid var(--mud-palette-divider);
+    border-radius: var(--mud-default-borderradius);
+}
+
+@media (max-width: 599px) {
+    .terminal-console-surface {
+        height: calc(100dvh - 290px);
+        min-height: 280px;
+    }
+}

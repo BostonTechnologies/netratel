@@ -1,0 +1,537 @@
+@page "/"
+
+@using NetRatel.Application.Notifications
+@using NetRatel.Shared.Contracts
+@using NetRatel.Shared.Contracts.Jobs
+@using NetRatel.Web.Models.Requests
+@using NetRatel.Web.Services.Clients
+@using NetRatel.Web.Services.Jobs
+@using NetRatel.Web.Services.Notifications
+@using NetRatel.Web.Services.Requests
+@using NetRatel.Web.Services.Telemetry
+@using NetRatel.Web.Services.Tenants
+
+@inject ITenantApiService TenantApi
+@inject ClientApiService ClientApi
+@inject IJobApiClient JobApi
+@inject RequestApiService RequestApi
+@inject INetRatelNotificationApiClient NotificationApi
+@inject TelemetryApiService TelemetryApi
+@inject ISnackbar Snackbar
+@inject NavigationManager Nav
+
+<PageTitle>Dashboard</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.False" Class="mt-4 dashboard-shell">
+    @if (_isLoading)
+    {
+        <MudPaper Class="dashboard-loading pa-6">
+            <MudStack AlignItems="AlignItems.Center" Spacing="2">
+                <MudProgressCircular Color="Color.Primary" Indeterminate="true" Size="Size.Large" />
+                <MudText Typo="Typo.h6">Assembling the operations dashboard...</MudText>
+            </MudStack>
+        </MudPaper>
+    }
+    else
+    {
+        <MudStack Spacing="3">
+            <MudPaper Class="dashboard-hero pa-5">
+                <MudGrid Spacing="3">
+                    <MudItem xs="12" lg="9">
+                        <MudStack Spacing="2">
+                            <MudText Typo="Typo.overline" Class="dashboard-kicker">Operations Console</MudText>
+                            <MudText Typo="Typo.h4">MSP orchestration overview</MudText>
+                            <MudText Typo="Typo.body2" Class="dashboard-subtitle">
+                                Monitor tenant automation, client reachability, queued work, and alert pressure from one operational surface.
+                            </MudText>
+
+                            <div class="dashboard-hero-chips">
+                                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Success">
+                                    @_onlineClients online clients
+                                </MudChip>
+                                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Info">
+                                    @_tenantCount tenants
+                                </MudChip>
+                                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="@(_failedRuns > 0 ? Color.Error : Color.Success)">
+                                    @_failedRuns failed recent runs
+                                </MudChip>
+                                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="@(_notificationSummary.UnreadErrorCount > 0 ? Color.Warning : Color.Success)">
+                                    @_notificationSummary.UnreadErrorCount unread errors
+                                </MudChip>
+                            </div>
+
+                            <MudGrid Spacing="2" Class="dashboard-hero-metrics">
+                                <MudItem xs="12" sm="6" md="3">
+                                    <MudPaper Class="dashboard-metric-card dashboard-metric-compact dashboard-link-card pa-3" @onclick="@(() => Nav.NavigateTo("/jobs"))">
+                                        <MudText Typo="Typo.caption" Class="dashboard-section-label">Job Success</MudText>
+                                        <MudText Typo="Typo.h5">@_successRateLabel</MudText>
+                                        <MudText Typo="Typo.caption" Color="Color.Secondary">@_succeededRuns / @_recentRuns.Count recent runs</MudText>
+                                        <MudProgressLinear Class="mt-2" Value="@_successRate" Color="@(_successRate >= 80 ? Color.Success : _successRate >= 50 ? Color.Warning : Color.Error)" />
+                                    </MudPaper>
+                                </MudItem>
+
+                                <MudItem xs="12" sm="6" md="3">
+                                    <MudPaper Class="dashboard-metric-card dashboard-metric-compact dashboard-link-card pa-3" @onclick="@(() => Nav.NavigateTo("/clients"))">
+                                        <MudText Typo="Typo.caption" Class="dashboard-section-label">Client Estate</MudText>
+                                        <MudText Typo="Typo.h5">@_onlineClients / @_clientCount</MudText>
+                                        <MudText Typo="Typo.caption" Color="Color.Secondary">@_offlineClients offline · @_disabledClients disabled</MudText>
+                                        <MudProgressLinear Class="mt-2" Value="@OnlineRatio" Color="Color.Info" />
+                                    </MudPaper>
+                                </MudItem>
+
+                                <MudItem xs="12" sm="6" md="3">
+                                    <MudPaper Class="dashboard-metric-card dashboard-metric-compact dashboard-link-card pa-3" @onclick="@(() => Nav.NavigateTo("/requests"))">
+                                        <MudText Typo="Typo.caption" Class="dashboard-section-label">Work Queue</MudText>
+                                        <MudText Typo="Typo.h5">@_activeRequestsLabel</MudText>
+                                        <MudText Typo="Typo.caption" Color="Color.Secondary">@_pendingRequests pending · @_failedRequests failed</MudText>
+                                        <MudProgressLinear Class="mt-2" Value="@RequestPressure" Color="@(_failedRequests > 0 ? Color.Warning : Color.Success)" />
+                                    </MudPaper>
+                                </MudItem>
+
+                                <MudItem xs="12" sm="6" md="3">
+                                    <MudPaper Class="dashboard-metric-card dashboard-metric-compact dashboard-link-card pa-3" @onclick="@(() => Nav.NavigateTo("/notifications"))">
+                                        <MudText Typo="Typo.caption" Class="dashboard-section-label">Notifications</MudText>
+                                        <MudText Typo="Typo.h5">@_notificationSummary.UnreadCount unread</MudText>
+                                        <MudText Typo="Typo.caption" Color="Color.Secondary">@_notificationSummary.UnreadErrorCount errors · @_notificationSummary.TotalCount total</MudText>
+                                        <MudProgressLinear Class="mt-2" Value="@NotificationPressure" Color="@(_notificationSummary.UnreadErrorCount > 0 ? Color.Error : Color.Success)" />
+                                    </MudPaper>
+                                </MudItem>
+                            </MudGrid>
+                        </MudStack>
+                    </MudItem>
+
+                    <MudItem xs="12" lg="3">
+                        <MudPaper Class="dashboard-hero-panel dashboard-quick-actions pa-3" Outlined="true">
+                            <MudText Typo="Typo.caption" Class="dashboard-section-label">Quick Actions</MudText>
+                            <MudStack Spacing="1" Class="mt-2">
+                                <MudButton Size="Size.Small" Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Bolt" Href="/tasks/new">
+                                    Launch New Task
+                                </MudButton>
+                                <MudButton Size="Size.Small" Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Workspaces" Href="/jobs">
+                                    Review Jobs
+                                </MudButton>
+                                <MudButton Size="Size.Small" Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Devices" Href="/clients">
+                                    Inspect Clients
+                                </MudButton>
+                                <MudButton Size="Size.Small" Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Tune" Href="/settings/connectivity">
+                                    Connectivity
+                                </MudButton>
+                            </MudStack>
+                        </MudPaper>
+                    </MudItem>
+                </MudGrid>
+            </MudPaper>
+
+            <MudGrid Spacing="2">
+                <MudItem xs="12" lg="6">
+                    <MudPaper Class="dashboard-panel dashboard-compact-panel pa-4 h-100">
+                        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="flex-wrap">
+                            <div>
+                                <MudText Typo="Typo.h6">Operational Watchlist</MudText>
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">Clients that deserve attention right now.</MudText>
+                            </div>
+                            <MudButton Size="Size.Small" Variant="Variant.Text" EndIcon="@Icons.Material.Filled.ArrowOutward" Href="/clients">Open Clients</MudButton>
+                        </MudStack>
+
+                        @if (_watchItems.Count == 0)
+                        {
+                            <MudAlert Severity="Severity.Success" Variant="Variant.Outlined" Dense="true" Class="mt-3">
+                                No immediate client hot-spots detected.
+                            </MudAlert>
+                        }
+                        else
+                        {
+                            <MudGrid Spacing="1" Class="mt-2">
+                                @foreach (var item in _watchItems)
+                                {
+                                    <MudItem xs="12" md="6">
+                                        <MudPaper Class="dashboard-watch-item pa-3" Outlined="true">
+                                            <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Start" Class="flex-wrap">
+                                                <div>
+                                                    <MudText Typo="Typo.body2">@item.Title</MudText>
+                                                    <MudText Typo="Typo.caption" Color="Color.Secondary">@item.Subtitle</MudText>
+                                                </div>
+                                                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="@item.Color">@item.Badge</MudChip>
+                                            </MudStack>
+                                        </MudPaper>
+                                    </MudItem>
+                                }
+                            </MudGrid>
+                        }
+                    </MudPaper>
+                </MudItem>
+
+                <MudItem xs="12" lg="6">
+                    <MudPaper Class="dashboard-panel dashboard-compact-panel pa-4 h-100">
+                        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="flex-wrap">
+                            <div>
+                                <MudText Typo="Typo.h6">Control Surface</MudText>
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">Shortcuts into the busiest parts of the orchestrator.</MudText>
+                            </div>
+                        </MudStack>
+
+                        <MudGrid Spacing="2" Class="mt-1">
+                            <MudItem xs="12" sm="6">
+                                <MudPaper Class="dashboard-link-card pa-3" Outlined="true" @onclick="@(() => Nav.NavigateTo("/tenants"))">
+                                    <MudText Typo="Typo.caption" Class="dashboard-section-label">Tenants</MudText>
+                                    <MudText Typo="Typo.h6">@_tenantCount managed</MudText>
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">Profiles, contacts, domains</MudText>
+                                </MudPaper>
+                            </MudItem>
+                            <MudItem xs="12" sm="6">
+                                <MudPaper Class="dashboard-link-card pa-3" Outlined="true" @onclick="@(() => Nav.NavigateTo("/requests"))">
+                                    <MudText Typo="Typo.caption" Class="dashboard-section-label">Requests</MudText>
+                                    <MudText Typo="Typo.h6">@_requests.Count tracked</MudText>
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">Queue pressure and outcomes</MudText>
+                                </MudPaper>
+                            </MudItem>
+                            <MudItem xs="12" sm="6">
+                                <MudPaper Class="dashboard-link-card pa-3" Outlined="true" @onclick="@(() => Nav.NavigateTo("/notifications"))">
+                                    <MudText Typo="Typo.caption" Class="dashboard-section-label">Notifications</MudText>
+                                    <MudText Typo="Typo.h6">@_notificationSummary.UnreadCount unread</MudText>
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">Errors and event traffic</MudText>
+                                </MudPaper>
+                            </MudItem>
+                            <MudItem xs="12" sm="6">
+                                <MudPaper Class="dashboard-link-card pa-3" Outlined="true" @onclick="@(() => Nav.NavigateTo("/settings/connectivity"))">
+                                    <MudText Typo="Typo.caption" Class="dashboard-section-label">Connectivity</MudText>
+                                    <MudText Typo="Typo.h6">Check pipes</MudText>
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">M2M, OAuth, API reachability</MudText>
+                                </MudPaper>
+                            </MudItem>
+                        </MudGrid>
+                    </MudPaper>
+                </MudItem>
+
+                <MudItem xs="12">
+                    <MudPaper Class="dashboard-panel pa-4">
+                        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="flex-wrap">
+                            <div>
+                                <MudText Typo="Typo.h6">Execution Pulse</MudText>
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">Recent run health with direct drill-down into job output.</MudText>
+                            </div>
+                            <MudButton Size="Size.Small" Variant="Variant.Text" EndIcon="@Icons.Material.Filled.ArrowOutward" Href="/jobs">Open Jobs</MudButton>
+                        </MudStack>
+
+                        <MudGrid Spacing="2" Class="mt-1">
+                            <MudItem xs="6" md="3">
+                                <MudPaper Class="dashboard-stat-tile dashboard-stat-running pa-3" Outlined="true">
+                                    <MudText Typo="Typo.caption">Running</MudText>
+                                    <MudText Typo="Typo.h5">@_runningRuns</MudText>
+                                </MudPaper>
+                            </MudItem>
+                            <MudItem xs="6" md="3">
+                                <MudPaper Class="dashboard-stat-tile dashboard-stat-success pa-3" Outlined="true">
+                                    <MudText Typo="Typo.caption">Succeeded</MudText>
+                                    <MudText Typo="Typo.h5">@_succeededRuns</MudText>
+                                </MudPaper>
+                            </MudItem>
+                            <MudItem xs="6" md="3">
+                                <MudPaper Class="dashboard-stat-tile dashboard-stat-failed pa-3" Outlined="true">
+                                    <MudText Typo="Typo.caption">Failed</MudText>
+                                    <MudText Typo="Typo.h5">@_failedRuns</MudText>
+                                </MudPaper>
+                            </MudItem>
+                            <MudItem xs="6" md="3">
+                                <MudPaper Class="dashboard-stat-tile dashboard-stat-other pa-3" Outlined="true">
+                                    <MudText Typo="Typo.caption">Other</MudText>
+                                    <MudText Typo="Typo.h5">@_otherRuns</MudText>
+                                </MudPaper>
+                            </MudItem>
+                        </MudGrid>
+
+                        <MudTable T="JobRunDto"
+                                  Items="@_recentRuns"
+                                  Dense="true"
+                                  Hover="true"
+                                  Elevation="0"
+                                  Class="dashboard-table mt-3"
+                                  RowClassFunc="GetRunRowClass"
+                                  OnRowClick="OnRunRowClicked">
+                            <HeaderContent>
+                                <MudTh>Run</MudTh>
+                                <MudTh>Status</MudTh>
+                                <MudTh>Tenant</MudTh>
+                                <MudTh>Target</MudTh>
+                                <MudTh>Started</MudTh>
+                            </HeaderContent>
+                            <RowTemplate>
+                                <MudTd DataLabel="Run">
+                                    <MudStack Spacing="0">
+                                        <MudText Typo="Typo.body2">@context.JobName</MudText>
+                                        <MudText Typo="Typo.caption" Color="Color.Secondary">Run #@context.Id</MudText>
+                                    </MudStack>
+                                </MudTd>
+                                <MudTd DataLabel="Status">
+                                    <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="@GetRunStatusColor(context.Status)">
+                                        @context.Status
+                                    </MudChip>
+                                </MudTd>
+                                <MudTd DataLabel="Tenant">@GetRunTenantDisplay(context)</MudTd>
+                                <MudTd DataLabel="Target" Class="dashboard-run-target">
+                                    <MudText Typo="Typo.body2">@GetRunTargetDisplay(context)</MudText>
+                                </MudTd>
+                                <MudTd DataLabel="Started">@FormatRunTime(context)</MudTd>
+                            </RowTemplate>
+                        </MudTable>
+                    </MudPaper>
+                </MudItem>
+            </MudGrid>
+        </MudStack>
+    }
+</MudContainer>
+
+@code {
+    private bool _isLoading = true;
+    private List<TenantDto> _tenants = new();
+    private List<ClientDto> _clients = new();
+    private List<JobDto> _jobs = new();
+    private List<JobRunDto> _recentRuns = new();
+    private List<RequestDto> _requests = new();
+    private IReadOnlyList<AgentTelemetrySnapshotDto> _telemetry = Array.Empty<AgentTelemetrySnapshotDto>();
+    private NetRatelNotificationSummaryDto _notificationSummary = new();
+    private List<WatchItem> _watchItems = new();
+
+    private int _tenantCount;
+    private int _clientCount;
+    private int _onlineClients;
+    private int _offlineClients;
+    private int _disabledClients;
+    private int _runningRuns;
+    private int _succeededRuns;
+    private int _failedRuns;
+    private int _otherRuns;
+    private int _pendingRequests;
+    private int _failedRequests;
+    private double _successRate;
+
+    private string _activeRequestsLabel => $"{_pendingRequests + _failedRequests}";
+    private string _successRateLabel => _recentRuns.Count == 0 ? "n/a" : $"{_successRate:F0}%";
+    private double OnlineRatio => _clientCount == 0 ? 0 : (_onlineClients / (double)_clientCount) * 100d;
+    private double RequestPressure => _requests.Count == 0 ? 0 : ((_pendingRequests + _failedRequests) / (double)_requests.Count) * 100d;
+    private double NotificationPressure => _notificationSummary.TotalCount == 0 ? 0 : (_notificationSummary.UnreadCount / (double)_notificationSummary.TotalCount) * 100d;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadDashboardAsync();
+    }
+
+    private async Task LoadDashboardAsync()
+    {
+        _isLoading = true;
+
+        try
+        {
+            var tenantsTask = Safe(async () => (await TenantApi.GetTenantsAsync()).ToList(), new List<TenantDto>());
+            var clientsTask = Safe(async () => (await ClientApi.GetClientsAsync()).ToList(), new List<ClientDto>());
+            var jobsTask = Safe(async () => (await JobApi.GetJobsAsync(folder: null)).ToList(), new List<JobDto>());
+            var runsTask = Safe(async () => (await JobApi.GetJobRunsAsync(take: 12)).OrderByDescending(x => x.CreatedAtMicros).ToList(), new List<JobRunDto>());
+            var requestsTask = Safe(async () => (await RequestApi.GetRequestsAsync()).ToList(), new List<RequestDto>());
+            var notificationsTask = Safe(() => NotificationApi.GetSummaryAsync(), new NetRatelNotificationSummaryDto());
+            var telemetryTask = Safe(() => TelemetryApi.GetOverviewAsync(), Array.Empty<AgentTelemetrySnapshotDto>() as IReadOnlyList<AgentTelemetrySnapshotDto>);
+
+            await Task.WhenAll(tenantsTask, clientsTask, jobsTask, runsTask, requestsTask, notificationsTask, telemetryTask);
+
+            _tenants = tenantsTask.Result;
+            _clients = clientsTask.Result;
+            _jobs = jobsTask.Result;
+            _recentRuns = runsTask.Result;
+            _requests = requestsTask.Result;
+            _notificationSummary = notificationsTask.Result;
+            _telemetry = telemetryTask.Result;
+
+            ComputeDashboard();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to load dashboard: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private void ComputeDashboard()
+    {
+        _tenantCount = _tenants.Count;
+        _clientCount = _clients.Count;
+        _onlineClients = _clients.Count(x => x.Online);
+        _offlineClients = _clients.Count(x => !x.Online);
+        _disabledClients = _clients.Count(x => !x.Enabled);
+
+        _runningRuns = _recentRuns.Count(x => x.Status == JobRunStatusDto.Running);
+        _succeededRuns = _recentRuns.Count(x => x.Status == JobRunStatusDto.Succeeded);
+        _failedRuns = _recentRuns.Count(x => x.Status == JobRunStatusDto.Failed || x.Status == JobRunStatusDto.TimedOut);
+        _otherRuns = _recentRuns.Count - _runningRuns - _succeededRuns - _failedRuns;
+        _successRate = _recentRuns.Count == 0 ? 0 : (_succeededRuns / (double)_recentRuns.Count) * 100d;
+
+        _pendingRequests = _requests.Count(x => IsPendingRequest(x.Status));
+        _failedRequests = _requests.Count(x => IsFailedRequest(x.Status));
+
+        _watchItems = BuildWatchItems();
+    }
+
+    private List<WatchItem> BuildWatchItems()
+    {
+        var items = new List<WatchItem>();
+
+        items.AddRange(_clients
+            .Where(x => !x.Online)
+            .Take(3)
+            .Select(x => new WatchItem(
+                GetClientDisplayName(x),
+                $"Offline · Last heartbeat {FormatRelative(x.LastHeartbeat)}",
+                "Offline",
+                Color.Error)));
+
+        items.AddRange(_clients
+            .Where(x => x.Online && x.LastLatencyMs is > 800)
+            .OrderByDescending(x => x.LastLatencyMs)
+            .Take(2)
+            .Select(x => new WatchItem(
+                GetClientDisplayName(x),
+                $"{x.TenantName ?? "Unassigned"} · latency {x.LastLatencyMs} ms",
+                "Latency",
+                Color.Warning)));
+
+        items.AddRange(_telemetry
+            .Where(x => x.Cpu?.UsagePercent is > 85 || x.Memory?.UsagePercent is > 85)
+            .OrderByDescending(x => Math.Max(x.Cpu?.UsagePercent ?? 0, x.Memory?.UsagePercent ?? 0))
+            .Take(2)
+            .Select(x =>
+            {
+                var matchingClient = _clients.FirstOrDefault(client => string.Equals(client.ClientIdentity, x.ClientIdentity, StringComparison.OrdinalIgnoreCase));
+                return new WatchItem(
+                    matchingClient is null ? "Client unavailable" : GetClientDisplayName(matchingClient),
+                    $"CPU {FormatMetricPercent(x.Cpu?.UsagePercent)} · Memory {FormatMetricPercent(x.Memory?.UsagePercent)}",
+                    "Hot",
+                    Color.Info);
+            }));
+
+        if (_notificationSummary.UnreadErrorCount > 0)
+        {
+            items.Add(new WatchItem(
+                "Unread error notifications",
+                $"{_notificationSummary.UnreadErrorCount} event(s) are still unread in the alert stream.",
+                "Alerts",
+                Color.Error));
+        }
+
+        return items.Take(6).ToList();
+    }
+
+    private void OnRunRowClicked(TableRowClickEventArgs<JobRunDto> args)
+    {
+        if (args.Item is not null)
+        {
+            OpenRun(args.Item);
+        }
+    }
+
+    private static string GetRunRowClass(JobRunDto _, int __) => "dashboard-click-row";
+
+    private void OpenRun(JobRunDto run) => Nav.NavigateTo($"/jobs/{run.JobId}/runs/{run.Id}");
+
+    private string GetRunTenantDisplay(JobRunDto run)
+        => FirstPresent(run.TenantDisplayName, run.TenantId?.ToString()) ?? "Unassigned";
+
+    private string GetRunTargetDisplay(JobRunDto run)
+    {
+        var client = _clients.FirstOrDefault(x => string.Equals(x.ClientIdentity, run.ClientIdentity, StringComparison.OrdinalIgnoreCase));
+        if (client is not null)
+        {
+            return GetClientDisplayName(client);
+        }
+
+        return FirstPresent(StripTrailingIp(run.ClientDisplayName)) ?? "Client unavailable";
+    }
+
+    private static string GetClientDisplayName(ClientDto client)
+        => FirstPresent(client.HostName, client.ClientName, client.DisplayName, client.IpAddress) ?? "Client unavailable";
+
+    private static string? StripTrailingIp(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var trimmed = value.Trim();
+        var openParen = trimmed.LastIndexOf(" (", StringComparison.Ordinal);
+        return openParen > 0 && trimmed.EndsWith(')')
+            ? trimmed[..openParen].Trim()
+            : trimmed;
+    }
+
+    private static string? FirstPresent(params string?[] values)
+        => values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim();
+
+    private static Color GetRunStatusColor(JobRunStatusDto status) => status switch
+    {
+        JobRunStatusDto.Running => Color.Info,
+        JobRunStatusDto.Succeeded => Color.Success,
+        JobRunStatusDto.Failed or JobRunStatusDto.TimedOut => Color.Error,
+        JobRunStatusDto.Cancelled => Color.Warning,
+        _ => Color.Default
+    };
+
+    private static string FormatRunTime(JobRunDto run)
+    {
+        var micros = run.StartedAtMicros ?? run.CreatedAtMicros;
+        return FromUnixMicros(micros).ToLocalTime().ToString("MMM d HH:mm");
+    }
+
+    private static DateTimeOffset FromUnixMicros(long micros)
+    {
+        var seconds = micros / 1_000_000;
+        var remainderMicros = micros % 1_000_000;
+        return DateTimeOffset.FromUnixTimeSeconds(seconds).AddTicks(remainderMicros * 10);
+    }
+
+    private static bool IsPendingRequest(string? status) =>
+        ContainsAny(status, "pending", "queued", "running", "open", "processing");
+
+    private static bool IsFailedRequest(string? status) =>
+        ContainsAny(status, "failed", "error", "timeout", "timedout", "cancelled");
+
+    private static bool ContainsAny(string? value, params string[] fragments)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        return fragments.Any(fragment => value.Contains(fragment, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string FormatRelative(DateTimeOffset? value)
+    {
+        if (value is null)
+        {
+            return "unknown";
+        }
+
+        var delta = DateTimeOffset.UtcNow - value.Value;
+        if (delta < TimeSpan.FromMinutes(1)) return "just now";
+        if (delta < TimeSpan.FromHours(1)) return $"{Math.Max(1, (int)delta.TotalMinutes)}m ago";
+        if (delta < TimeSpan.FromDays(1)) return $"{Math.Max(1, (int)delta.TotalHours)}h ago";
+        return $"{Math.Max(1, (int)delta.TotalDays)}d ago";
+    }
+
+    private static string FormatMetricPercent(double? value) => value.HasValue ? $"{value.Value:F0}%" : "n/a";
+
+    private async Task<T> Safe<T>(Func<Task<T>> action, T fallback)
+    {
+        try
+        {
+            return await action();
+        }
+        catch
+        {
+            return fallback;
+        }
+    }
+
+    private sealed record WatchItem(string Title, string Subtitle, string Badge, Color Color);
+}

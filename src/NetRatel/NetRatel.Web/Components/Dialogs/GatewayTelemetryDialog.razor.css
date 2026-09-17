@@ -1,0 +1,60 @@
+.client-telemetry-dialog {
+    min-width: 0;
+}
+
+.client-telemetry-dialog.mud-dialog-fullscreen {
+    position: fixed;
+    inset: 0;
+    width: 100vw !important;
+    height: 100dvh !important;
+    max-width: none !important;
+    max-height: none !important;
+    margin: 0 !important;
+}
+
+.client-telemetry-dialog ::deep .mud-dialog-content {
+    min-height: 0;
+    overflow: auto;
+    padding: max(12px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom));
+}
+
+.telemetry-toolbar {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-areas: "identity state close";
+    align-items: start;
+    column-gap: .75rem;
+    row-gap: .25rem;
+    padding: 8px 0;
+    background: var(--mud-palette-surface);
+}
+
+.telemetry-identity { grid-area: identity; min-width: 0; }
+.telemetry-stream-state { grid-area: state; max-width: 100%; justify-self: end; }
+.telemetry-close-button { grid-area: close; min-width: 44px; min-height: 44px; justify-self: end; }
+
+.client-telemetry-dialog ::deep .telemetry-health-strip {
+    border: 1px solid var(--mud-palette-lines-default);
+    border-radius: 12px;
+}
+
+.client-telemetry-dialog ::deep .telemetry-health-label { opacity: .72; letter-spacing: .04em; text-transform: uppercase; }
+.client-telemetry-dialog ::deep .telemetry-health-strip .mud-grid-item { min-width: 0; }
+.client-telemetry-dialog ::deep .telemetry-health-strip .mud-typography:not(.telemetry-health-label) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+@media (max-width: 480px) {
+    .telemetry-toolbar {
+        grid-template-columns: minmax(0, 1fr) auto;
+        grid-template-areas:
+            "identity close"
+            "state close";
+    }
+    .telemetry-stream-state { justify-self: start; }
+}
+
+@media (max-width: 390px) {
+    .client-telemetry-dialog ::deep .mud-dialog-content { padding-inline: 12px; }
+}

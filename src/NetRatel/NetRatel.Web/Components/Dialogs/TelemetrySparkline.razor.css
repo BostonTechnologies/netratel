@@ -1,0 +1,21 @@
+.telemetry-sparkline {
+    display: block;
+    width: 100%;
+    height: 140px;
+    margin-top: .75rem;
+}
+
+.telemetry-sparkline-empty {
+    display: grid;
+    place-items: center;
+    color: var(--mud-palette-text-secondary);
+    border: 1px dashed var(--mud-palette-lines-default);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .telemetry-sparkline { transition: none; }
+}
+
+@media (max-width: 390px) {
+    .telemetry-sparkline { height: 120px; }
+}

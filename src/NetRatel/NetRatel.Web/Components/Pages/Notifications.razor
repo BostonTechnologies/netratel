@@ -1,0 +1,1041 @@
+@page "/notifications"
+@rendermode InteractiveServer
+@implements IAsyncDisposable
+@using System.Text.Json
+@using System.Text.RegularExpressions
+@using Microsoft.AspNetCore.Components
+@using Microsoft.AspNetCore.Components.Web
+@using NetRatel.Application.Notifications
+@using NetRatel.Web.Services.Notifications
+@inject INetRatelNotificationApiClient NotificationClient
+@inject NetRatelNotificationStreamService NotificationStream
+@inject NetRatelNotificationEventBus NotificationEventBus
+@inject NavigationManager Navigation
+@inject IJSRuntime JS
+@inject ISnackbar Snackbar
+
+<PageTitle>Notifications</PageTitle>
+
+<MudPaper Class="pa-4">
+    <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween" Class="mb-3">
+        <MudText Typo="Typo.h5">Notifications</MudText>
+        <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center">
+            <MudChip T="string" Variant="Variant.Outlined" Color="Color.Primary">@summary.UnreadCount unread / @summary.TotalCount total</MudChip>
+            <MudChip T="string" Color="@(streamConnected ? Color.Success : Color.Error)" Variant="Variant.Outlined">@(streamConnected ? "LIVE" : "DISCONNECTED")</MudChip>
+            <MudChip T="string" Variant="Variant.Outlined">Last event: @(lastSseReceivedUtc?.ToLocalTime().ToString("g") ?? "-")</MudChip>
+        </MudStack>
+    </MudStack>
+
+    <MudGrid Class="mb-3" Spacing="2">
+        <MudItem xs="12" md="3">
+            <MudTextField T="string"
+                          Label="Search"
+                          Placeholder="Event, message, entity, correlation"
+                          Value="searchTerm"
+                          ValueChanged="OnSearchChanged"
+                          Immediate="true" />
+        </MudItem>
+        <MudItem xs="12" sm="4" md="2">
+            <MudSelect T="NetRatelNotificationSeverity?" Label="Severity" Value="severity" ValueChanged="OnSeverityChanged" Clearable="true">
+                <MudSelectItem T="NetRatelNotificationSeverity?" Value="@(null)">All</MudSelectItem>
+                @foreach (var severityOption in Enum.GetValues<NetRatelNotificationSeverity>())
+                {
+                    <MudSelectItem T="NetRatelNotificationSeverity?" Value="@severityOption">@severityOption</MudSelectItem>
+                }
+            </MudSelect>
+        </MudItem>
+        <MudItem xs="12" sm="4" md="2">
+            <MudSelect T="string" Label="Status" Value="status" ValueChanged="OnStatusChanged" Clearable="true">
+                <MudSelectItem T="string" Value="@(null)">All</MudSelectItem>
+                <MudSelectItem T="string" Value="@("Pending")">Pending</MudSelectItem>
+                <MudSelectItem T="string" Value="@("Published")">Published</MudSelectItem>
+                <MudSelectItem T="string" Value="@("Failed")">Failed</MudSelectItem>
+                <MudSelectItem T="string" Value="@("Disabled")">Disabled</MudSelectItem>
+            </MudSelect>
+        </MudItem>
+        <MudItem xs="12" sm="4" md="2">
+            <MudSelect T="string" Label="Source" Value="source" ValueChanged="OnSourceChanged" Clearable="true">
+                <MudSelectItem T="string" Value="@(null)">All</MudSelectItem>
+                @foreach (var sourceOption in sourceOptions.OrderBy(x => x, StringComparer.OrdinalIgnoreCase))
+                {
+                    <MudSelectItem T="string" Value="@sourceOption">@sourceOption</MudSelectItem>
+                }
+            </MudSelect>
+        </MudItem>
+        <MudItem xs="12" sm="4" md="1">
+            <MudButton Variant="Variant.Outlined"
+                       Color="@(HasOccurredFilter ? Color.Primary : Color.Default)"
+                       StartIcon="@Icons.Material.Filled.DateRange"
+                       OnClick="OpenOccurredPopover"
+                       title="@OccurredFilterSummary"
+                       Class="notifications-occurred-button">
+                @OccurredFilterLabel
+            </MudButton>
+            <MudPopover Open="occurredPopoverOpen"
+                        AnchorOrigin="Origin.BottomCenter"
+                        TransformOrigin="Origin.TopCenter"
+                        Class="pa-4 notifications-occurred-popover">
+                <MudStack Spacing="2">
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
+                        <MudText Typo="Typo.subtitle2">Occurred</MudText>
+                        <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small" OnClick="CloseOccurredPopover" />
+                    </MudStack>
+                    <MudGrid Spacing="2">
+                        <MudItem xs="12" sm="7">
+                            <MudDatePicker Label="From date"
+                                           Date="pendingFromDate"
+                                           DateChanged="OnPendingFromDateChanged"
+                                           Clearable="true" />
+                        </MudItem>
+                        <MudItem xs="12" sm="5">
+                            <MudTimePicker Label="From time"
+                                           Time="pendingFromTime"
+                                           TimeChanged="OnPendingFromTimeChanged"
+                                           Clearable="true"
+                                           Disabled="@(!pendingFromDate.HasValue)" />
+                        </MudItem>
+                        <MudItem xs="12" sm="7">
+                            <MudDatePicker Label="To date"
+                                           Date="pendingToDate"
+                                           DateChanged="OnPendingToDateChanged"
+                                           Clearable="true" />
+                        </MudItem>
+                        <MudItem xs="12" sm="5">
+                            <MudTimePicker Label="To time"
+                                           Time="pendingToTime"
+                                           TimeChanged="OnPendingToTimeChanged"
+                                           Clearable="true"
+                                           Disabled="@(!pendingToDate.HasValue)" />
+                        </MudItem>
+                    </MudGrid>
+                    <MudStack Row="true" Justify="Justify.FlexEnd" Spacing="1">
+                        <MudButton Variant="Variant.Text" OnClick="ClearOccurredFilterAsync">Clear</MudButton>
+                        <MudButton Variant="Variant.Outlined" OnClick="CloseOccurredPopover">Cancel</MudButton>
+                        <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="ApplyOccurredFilterAsync">Apply</MudButton>
+                    </MudStack>
+                </MudStack>
+            </MudPopover>
+        </MudItem>
+        <MudItem xs="12" sm="6" md="1">
+            <MudButton Variant="Variant.Outlined" OnClick="ClearFiltersAsync">Clear</MudButton>
+        </MudItem>
+        <MudItem xs="12" sm="6" md="1">
+            <MudButton Variant="Variant.Outlined" OnClick="RefreshTableAsync">Refresh</MudButton>
+        </MudItem>
+    </MudGrid>
+
+    <MudStack Row="true" Spacing="2" Class="mb-2" AlignItems="AlignItems.Center">
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="@(selectedIds.Count == 0)" OnClick="MarkSelectedReadAsync">
+            Mark Selected Read (@selectedIds.Count)
+        </MudButton>
+        <MudText Typo="Typo.caption" Color="Color.Secondary">Select All applies to unread rows on this page.</MudText>
+    </MudStack>
+
+    <MudTable T="NetRatelNotificationDto"
+              @ref="_table"
+              Class="notifications-table"
+              ServerData="LoadServerData"
+              Dense="true"
+              Hover="true"
+              Breakpoint="Breakpoint.Sm"
+              Loading="tableLoading"
+              RowClassFunc="GetRowClass"
+              OnRowClick="OnRowClicked"
+              RowsPerPage="20"
+              RowsPerPageOptions="new int[] { 10, 20, 50, 100 }">
+        <HeaderContent>
+            <MudTh>
+                <div @onclick:stopPropagation="true">
+                    <MudCheckBox T="bool"
+                                 Disabled="@(UnreadOnPageCount == 0)"
+                                 Checked="AreAllUnreadSelected"
+                                 CheckedChanged="ToggleSelectAllUnread" />
+                </div>
+            </MudTh>
+            <MudTh>Severity</MudTh>
+            <MudTh>Event</MudTh>
+            <MudTh>Source</MudTh>
+            <MudTh>Entity</MudTh>
+            <MudTh>Correlation</MudTh>
+            <MudTh>Occurred</MudTh>
+            <MudTh>Status</MudTh>
+            <MudTh>Actions</MudTh>
+        </HeaderContent>
+        <RowTemplate>
+            <MudTd @attributes="GetCellAttributes(context)">
+                <div @onclick:stopPropagation="true">
+                    <MudCheckBox T="bool"
+                                 Disabled="@context.IsRead"
+                                 Checked="@selectedIds.Contains(context.Id)"
+                                 CheckedChanged="@((bool value) => ToggleSelection(context.Id, value))" />
+                </div>
+            </MudTd>
+            <MudTd>
+                <MudChip T="string" Size="Size.Small" Color="@SeverityColor(context.Severity)">@context.Severity</MudChip>
+            </MudTd>
+            <MudTd>
+                <MudTooltip Text="@context.EventType" Placement="Placement.Top">
+                    <MudText Class="cell-ellipsis">@FriendlyEvent(context.EventType)</MudText>
+                </MudTooltip>
+                <MudTooltip Text="@(context.Message ?? "-")" Placement="Placement.Top">
+                    <MudText Typo="Typo.caption" Color="Color.Secondary" Class="cell-ellipsis">@(context.Message ?? "-")</MudText>
+                </MudTooltip>
+            </MudTd>
+            <MudTd>
+                <MudTooltip Text="@context.Source" Placement="Placement.Top">
+                    <MudText Class="cell-ellipsis">@context.Source</MudText>
+                </MudTooltip>
+            </MudTd>
+            <MudTd>
+                <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center" @onclick:stopPropagation="true">
+                    <MudTooltip Text="@(context.EntityId ?? "-")" Placement="Placement.Top">
+                        <MudText Class="cell-ellipsis">@(ShortId(context.EntityId) ?? "-")</MudText>
+                    </MudTooltip>
+                    @if (!string.IsNullOrWhiteSpace(context.EntityId))
+                    {
+                        <MudTooltip Text="Copy entity">
+                            <MudIconButton Icon="@Icons.Material.Filled.ContentCopy" Size="Size.Small" OnClick='@((MouseEventArgs _) => CopyToClipboardAsync(context.EntityId!, "Entity ID"))' />
+                        </MudTooltip>
+                    }
+                </MudStack>
+            </MudTd>
+            <MudTd>
+                <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center" @onclick:stopPropagation="true">
+                    <MudTooltip Text="@context.CorrelationId" Placement="Placement.Top">
+                        <MudText Class="cell-ellipsis">@ShortId(context.CorrelationId)</MudText>
+                    </MudTooltip>
+                    <MudTooltip Text="Copy correlation">
+                        <MudIconButton Icon="@Icons.Material.Filled.ContentCopy" Size="Size.Small" OnClick='@((MouseEventArgs _) => CopyToClipboardAsync(context.CorrelationId, "Correlation ID"))' />
+                    </MudTooltip>
+                </MudStack>
+            </MudTd>
+            <MudTd>@context.OccurredUtc.ToLocalTime().ToString("g")</MudTd>
+            <MudTd>
+                <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">@context.Status</MudChip>
+            </MudTd>
+            <MudTd>
+                <MudStack Row="true" Spacing="1" @onclick:stopPropagation="true">
+                    @if (CanRetryEvent(context))
+                    {
+                        <MudButton Size="Size.Small"
+                                   Variant="Variant.Outlined"
+                                   Color="Color.Warning"
+                                   Disabled="@retryingNotificationIds.Contains(context.Id)"
+                                   OnClick="@((MouseEventArgs _) => RetryEventAsync(context))">
+                            @(retryingNotificationIds.Contains(context.Id) ? "Working..." : GetRetryLabel(context))
+                        </MudButton>
+                    }
+                    @if (!context.IsRead)
+                    {
+                        <MudButton Size="Size.Small" Variant="Variant.Outlined" OnClick="@((MouseEventArgs _) => MarkReadAsync(context))">Mark Read</MudButton>
+                    }
+                </MudStack>
+            </MudTd>
+        </RowTemplate>
+        <NoRecordsContent>
+            <MudAlert Severity="Severity.Info" Variant="Variant.Outlined">No notifications found.</MudAlert>
+        </NoRecordsContent>
+        <PagerContent>
+            <MudTablePager />
+        </PagerContent>
+    </MudTable>
+</MudPaper>
+
+<MudDrawer Anchor="Anchor.Right" Variant="DrawerVariant.Temporary" Width="560px" @bind-Open="drawerOpen">
+    <MudStack Class="pa-4" Spacing="2">
+        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+            <MudText Typo="Typo.h6">Event Detail</MudText>
+            <MudIconButton Icon="@Icons.Material.Filled.Close" OnClick="CloseDrawer" />
+        </MudStack>
+
+        @if (selectedDetail is not null)
+        {
+            <MudPaper Class="pa-3">
+                <MudStack Spacing="1">
+                    <MudText Typo="Typo.subtitle1" Style="word-break: break-word; white-space: normal;">@selectedDetail.Notification.EventType</MudText>
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">@selectedDetail.Notification.OccurredUtc.ToLocalTime().ToString("g")</MudText>
+                    <MudText Typo="Typo.body2">Severity: @selectedDetail.Notification.Severity</MudText>
+                    <MudText Typo="Typo.body2" Style="word-break: break-word; white-space: normal;">Source: @selectedDetail.Notification.Source</MudText>
+                    <MudText Typo="Typo.body2">Status: @selectedDetail.Notification.Status</MudText>
+                    <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center">
+                        <MudText Typo="Typo.body2" Style="word-break: break-word; white-space: normal;">Entity: @(selectedDetail.Notification.EntityId ?? "-")</MudText>
+                        @if (!string.IsNullOrWhiteSpace(selectedDetail.Notification.EntityId))
+                        {
+                            <MudTooltip Text="Copy entity">
+                                <MudIconButton Icon="@Icons.Material.Filled.ContentCopy" Size="Size.Small" OnClick='@((MouseEventArgs _) => CopyToClipboardAsync(selectedDetail.Notification.EntityId!, "Entity ID"))' />
+                            </MudTooltip>
+                        }
+                    </MudStack>
+                    <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center">
+                        <MudText Typo="Typo.body2" Style="word-break: break-word; white-space: normal;">Correlation: @selectedDetail.Notification.CorrelationId</MudText>
+                        <MudTooltip Text="Copy correlation">
+                            <MudIconButton Icon="@Icons.Material.Filled.ContentCopy" Size="Size.Small" OnClick='@((MouseEventArgs _) => CopyToClipboardAsync(selectedDetail.Notification.CorrelationId, "Correlation ID"))' />
+                        </MudTooltip>
+                    </MudStack>
+
+                    @if (!string.IsNullOrWhiteSpace(selectedDetail.Notification.Message))
+                    {
+                        <MudText Typo="Typo.body2" Style="word-break: break-word; white-space: normal;">Message: @selectedDetail.Notification.Message</MudText>
+                    }
+
+                    @if (CanRetryEvent(selectedDetail.Notification))
+                    {
+                        <MudButton Variant="Variant.Outlined"
+                                   Color="Color.Warning"
+                                   Disabled="@retryingNotificationIds.Contains(selectedDetail.Notification.Id)"
+                                   OnClick="@(() => RetryEventAsync(selectedDetail.Notification))">
+                            @(retryingNotificationIds.Contains(selectedDetail.Notification.Id) ? "Working..." : GetRetryLabel(selectedDetail.Notification))
+                        </MudButton>
+                    }
+
+                    @if (selectedDetail.StructuredFields.Count > 0)
+                    {
+                        <MudDivider Class="my-1" />
+                        @foreach (var field in selectedDetail.StructuredFields)
+                        {
+                            <MudText Typo="Typo.body2" Style="word-break: break-word; white-space: normal;"><strong>@field.Key:</strong> @field.Value</MudText>
+                        }
+                    }
+
+                    <MudExpansionPanels Dense="true">
+                        <MudExpansionPanel Text="Raw JSON">
+                            <MudText Typo="Typo.caption" Class="pa-2" Style="white-space: pre-wrap; word-break: break-word;">@selectedDetail.RawJson</MudText>
+                        </MudExpansionPanel>
+                    </MudExpansionPanels>
+                </MudStack>
+            </MudPaper>
+        }
+    </MudStack>
+</MudDrawer>
+
+<style>
+    .notifications-table .mud-table {
+        table-layout: fixed;
+    }
+
+    .notifications-table .mud-table-container {
+        overflow-x: hidden;
+    }
+
+    .notifications-table .mud-table td,
+    .notifications-table .mud-table th {
+        word-break: break-word;
+    }
+
+    .cell-ellipsis {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        display: block;
+        max-width: 100%;
+    }
+
+    .notification-row-clickable {
+        cursor: pointer;
+    }
+
+    .notifications-occurred-button {
+        min-width: 100%;
+        white-space: nowrap;
+    }
+
+    .notifications-occurred-popover {
+        width: min(420px, calc(100vw - 32px));
+    }
+
+    .notification-row-live {
+        animation: notification-live-fade 2.5s ease-out;
+        background-color: rgba(33, 150, 243, 0.12);
+    }
+
+    @@keyframes notification-live-fade {
+        0% {
+            background-color: rgba(33, 150, 243, 0.26);
+        }
+
+        100% {
+            background-color: transparent;
+        }
+    }
+</style>
+
+@code {
+    private MudTable<NetRatelNotificationDto>? _table;
+    private readonly HashSet<Guid> selectedIds = new();
+    private readonly HashSet<Guid> highlightedNotificationIds = new();
+    private readonly HashSet<Guid> retryingNotificationIds = new();
+    private readonly HashSet<string> sourceOptions = new(StringComparer.OrdinalIgnoreCase);
+    private readonly int[] rowsPerPageOptions = { 10, 20, 50, 100 };
+    private List<NetRatelNotificationDto> rows = new();
+    private NetRatelNotificationDto? deepLinkPinnedRow;
+    private NetRatelNotificationSummaryDto summary = new();
+    private NotificationDetailView? selectedDetail;
+    private bool streamConnected;
+    private bool streamStarted;
+    private bool drawerOpen;
+    private bool tableLoading;
+    private DateTimeOffset? lastSseReceivedUtc;
+    private DateTimeOffset? occurredFrom;
+    private DateTimeOffset? occurredTo;
+    private DateTime? pendingFromDate;
+    private DateTime? pendingToDate;
+    private TimeSpan? pendingFromTime;
+    private TimeSpan? pendingToTime;
+    private string? searchTerm;
+    private NetRatelNotificationSeverity? severity;
+    private string? status;
+    private string? source;
+    private Guid? pendingDeepLinkId;
+    private bool deepLinkHandled;
+    private bool occurredPopoverOpen;
+    private CancellationTokenSource? searchDebounceCts;
+    private int activePageSize = 20;
+
+    private bool HasOccurredFilter => occurredFrom.HasValue || occurredTo.HasValue;
+    private string OccurredFilterLabel => HasOccurredFilter ? "Occurred *" : "Occurred";
+    private string OccurredFilterSummary => FormatOccurredFilterSummary();
+
+    [SupplyParameterFromQuery(Name = "event")]
+    public Guid? EventId { get; set; }
+
+    private int UnreadOnPageCount => rows.Count(x => !x.IsRead);
+    private bool AreAllUnreadSelected => UnreadOnPageCount > 0 && rows.Where(x => !x.IsRead).All(x => selectedIds.Contains(x.Id));
+
+    protected override async Task OnInitializedAsync()
+    {
+        summary = await NotificationClient.GetSummaryAsync();
+        streamConnected = NotificationStream.IsConnected;
+        NotificationStream.ConnectionChanged += HandleStreamConnectionChanged;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender || streamStarted)
+            return;
+
+        streamStarted = true;
+        try
+        {
+            await NotificationStream.StartAsync(async notification =>
+            {
+                lastSseReceivedUtc = DateTimeOffset.UtcNow;
+                await InvokeAsync(() =>
+                {
+                    InsertLiveNotification(notification);
+                    StateHasChanged();
+                });
+            });
+
+            streamConnected = true;
+            await InvokeAsync(StateHasChanged);
+        }
+        catch
+        {
+            streamConnected = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    protected override void OnParametersSet()
+    {
+        if (EventId.HasValue)
+        {
+            pendingDeepLinkId = EventId.Value;
+            deepLinkHandled = false;
+        }
+    }
+
+    private async Task<TableData<NetRatelNotificationDto>> LoadServerData(TableState state, CancellationToken ct)
+    {
+        tableLoading = true;
+
+        var page = state.Page + 1;
+        var pageSize = state.PageSize <= 0 ? 20 : state.PageSize;
+        activePageSize = pageSize;
+
+        try
+        {
+            var summaryTask = NotificationClient.GetSummaryAsync(ct);
+            var pageTask = NotificationClient.GetPageAsync(
+                page,
+                pageSize,
+                status: status,
+                from: occurredFrom,
+                to: occurredTo,
+                searchTerm: searchTerm,
+                source: source,
+                severity: severity,
+                ct: ct);
+
+            await Task.WhenAll(summaryTask, pageTask);
+
+            summary = await summaryTask;
+            var pageResult = await pageTask;
+            rows = pageResult.Items.ToList();
+
+            foreach (var item in rows)
+            {
+                if (!string.IsNullOrWhiteSpace(item.Source))
+                    sourceOptions.Add(item.Source);
+            }
+
+            if (deepLinkPinnedRow is not null && rows.All(x => x.Id != deepLinkPinnedRow.Id))
+                rows.Insert(0, deepLinkPinnedRow);
+
+            selectedIds.RemoveWhere(id => rows.All(row => row.Id != id));
+
+            if (pendingDeepLinkId.HasValue && !deepLinkHandled)
+                await HandleDeepLinkAsync(pendingDeepLinkId.Value);
+
+            return new TableData<NetRatelNotificationDto>
+            {
+                Items = rows,
+                TotalItems = pageResult.TotalCount
+            };
+        }
+        finally
+        {
+            tableLoading = false;
+        }
+    }
+
+    private async Task HandleDeepLinkAsync(Guid id)
+    {
+        deepLinkHandled = true;
+        pendingDeepLinkId = null;
+
+        var match = rows.FirstOrDefault(n => n.Id == id);
+        if (match is null)
+        {
+            var single = await NotificationClient.GetByIdAsync(id);
+            if (single is not null)
+            {
+                deepLinkPinnedRow = single;
+                rows.Insert(0, single);
+                match = single;
+            }
+        }
+
+        if (match is null)
+            return;
+
+        HighlightNotification(match.Id);
+
+        if (!match.IsRead)
+        {
+            var updated = await NotificationClient.MarkReadBulkAsync(new[] { match.Id });
+            if (updated > 0)
+            {
+                UpdateRowReadState(match.Id, true);
+                summary = summary with { UnreadCount = Math.Max(summary.UnreadCount - updated, 0) };
+                await NotificationEventBus.NotifyReadAsync(updated);
+            }
+        }
+
+        await OpenDetailAsync(match);
+        await JS.InvokeVoidAsync("scrollToNotificationRow", id.ToString());
+
+        Navigation.NavigateTo("/notifications", replace: true);
+    }
+
+    private async Task MarkReadAsync(NetRatelNotificationDto dto)
+    {
+        if (dto.IsRead)
+            return;
+
+        var updated = await NotificationClient.MarkReadBulkAsync(new[] { dto.Id });
+        if (updated <= 0)
+            return;
+
+        UpdateRowReadState(dto.Id, true);
+        selectedIds.Remove(dto.Id);
+        summary = summary with { UnreadCount = Math.Max(summary.UnreadCount - updated, 0) };
+        await NotificationEventBus.NotifyReadAsync(updated);
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task MarkSelectedReadAsync()
+    {
+        if (selectedIds.Count == 0)
+            return;
+
+        var targetIds = selectedIds.ToList();
+        var updated = await NotificationClient.MarkReadBulkAsync(targetIds);
+
+        if (updated > 0)
+        {
+            foreach (var id in targetIds)
+                UpdateRowReadState(id, true);
+
+            summary = summary with { UnreadCount = Math.Max(summary.UnreadCount - updated, 0) };
+            await NotificationEventBus.NotifyReadAsync(updated);
+        }
+
+        selectedIds.Clear();
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task OnSearchChanged(string? value)
+    {
+        searchTerm = string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+        await DebouncedReloadAsync();
+    }
+
+    private async Task OnSeverityChanged(NetRatelNotificationSeverity? value)
+    {
+        severity = value;
+        await ReloadTableAsync(resetPage: true);
+    }
+
+    private async Task OnStatusChanged(string? value)
+    {
+        status = string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+        await ReloadTableAsync(resetPage: true);
+    }
+
+    private async Task OnSourceChanged(string? value)
+    {
+        source = string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+        await ReloadTableAsync(resetPage: true);
+    }
+
+    private async Task ClearFiltersAsync()
+    {
+        searchTerm = null;
+        severity = null;
+        status = null;
+        source = null;
+        occurredFrom = null;
+        occurredTo = null;
+        pendingFromDate = null;
+        pendingToDate = null;
+        pendingFromTime = null;
+        pendingToTime = null;
+        deepLinkPinnedRow = null;
+        await ReloadTableAsync(resetPage: true);
+    }
+
+    private Task RefreshTableAsync() => ReloadTableAsync(resetPage: false);
+
+    private async Task ReloadTableAsync(bool resetPage)
+    {
+        if (_table is null)
+            return;
+
+        if (resetPage)
+            _table.NavigateTo(0);
+
+        await _table.ReloadServerData();
+    }
+
+    private async Task DebouncedReloadAsync()
+    {
+        searchDebounceCts?.Cancel();
+        searchDebounceCts?.Dispose();
+        searchDebounceCts = new CancellationTokenSource();
+        try
+        {
+            await Task.Delay(300, searchDebounceCts.Token);
+            await ReloadTableAsync(resetPage: true);
+        }
+        catch (TaskCanceledException)
+        {
+            // no-op
+        }
+    }
+
+    private Task OnRowClicked(TableRowClickEventArgs<NetRatelNotificationDto> args)
+    {
+        if (args.Item is null)
+            return Task.CompletedTask;
+
+        return OpenDetailAsync(args.Item);
+    }
+
+    private async Task OpenDetailAsync(NetRatelNotificationDto item)
+    {
+        var detail = await NotificationClient.GetByIdAsync(item.Id) ?? item;
+        selectedDetail = MapDetail(detail);
+        drawerOpen = true;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task RetryEventAsync(NetRatelNotificationDto notification)
+    {
+        if (!CanRetryEvent(notification) || retryingNotificationIds.Contains(notification.Id))
+            return;
+
+        retryingNotificationIds.Add(notification.Id);
+        try
+        {
+            await NotificationClient.RetryAsync(notification.Id);
+            Snackbar.Add(
+                IsCallbackReplayEvent(notification)
+                    ? "ExternalService callback replay requested."
+                    : "Notification retry requested.",
+                Severity.Success);
+            await ReloadTableAsync(resetPage: false);
+
+            if (selectedDetail?.Notification.Id == notification.Id)
+            {
+                var refreshed = await NotificationClient.GetByIdAsync(notification.Id) ?? notification;
+                selectedDetail = MapDetail(refreshed);
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Retry failed: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            retryingNotificationIds.Remove(notification.Id);
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void CloseDrawer()
+    {
+        drawerOpen = false;
+        selectedDetail = null;
+    }
+
+    private void ToggleSelection(Guid id, bool selected)
+    {
+        if (selected)
+            selectedIds.Add(id);
+        else
+            selectedIds.Remove(id);
+
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    private void ToggleSelectAllUnread(bool selected)
+    {
+        if (!selected)
+        {
+            selectedIds.Clear();
+            _ = InvokeAsync(StateHasChanged);
+            return;
+        }
+
+        foreach (var row in rows.Where(x => !x.IsRead))
+            selectedIds.Add(row.Id);
+
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    private void InsertLiveNotification(NetRatelNotificationDto notification)
+    {
+        summary = summary with
+        {
+            TotalCount = summary.TotalCount + 1,
+            UnreadCount = notification.IsRead ? summary.UnreadCount : summary.UnreadCount + 1
+        };
+
+        if (!MatchesCurrentFilters(notification))
+            return;
+
+        if (!string.IsNullOrWhiteSpace(notification.Source))
+            sourceOptions.Add(notification.Source);
+
+        rows.Insert(0, notification);
+        if (rows.Count > Math.Max(activePageSize, rowsPerPageOptions[0]))
+            rows.RemoveAt(rows.Count - 1);
+
+        HighlightNotification(notification.Id);
+    }
+
+    private bool MatchesCurrentFilters(NetRatelNotificationDto dto)
+    {
+        if (severity.HasValue && dto.Severity != severity.Value)
+            return false;
+
+        if (!string.IsNullOrWhiteSpace(status) && !string.Equals(dto.Status, status, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        if (!string.IsNullOrWhiteSpace(source) && !string.Equals(dto.Source, source, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        if (occurredFrom.HasValue && dto.OccurredUtc < occurredFrom.Value)
+            return false;
+
+        if (occurredTo.HasValue && dto.OccurredUtc > occurredTo.Value)
+            return false;
+
+        if (string.IsNullOrWhiteSpace(searchTerm))
+            return true;
+
+        var term = searchTerm.Trim();
+        return dto.EventType.Contains(term, StringComparison.OrdinalIgnoreCase)
+               || (dto.Message?.Contains(term, StringComparison.OrdinalIgnoreCase) ?? false)
+               || (dto.EntityId?.Contains(term, StringComparison.OrdinalIgnoreCase) ?? false)
+               || dto.CorrelationId.Contains(term, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void OpenOccurredPopover()
+    {
+        SetPendingOccurredFromApplied();
+        occurredPopoverOpen = true;
+    }
+
+    private void CloseOccurredPopover() => occurredPopoverOpen = false;
+
+    private Task OnPendingFromDateChanged(DateTime? value)
+    {
+        pendingFromDate = value?.Date;
+        if (!pendingFromDate.HasValue)
+            pendingFromTime = null;
+        return Task.CompletedTask;
+    }
+
+    private Task OnPendingToDateChanged(DateTime? value)
+    {
+        pendingToDate = value?.Date;
+        if (!pendingToDate.HasValue)
+            pendingToTime = null;
+        return Task.CompletedTask;
+    }
+
+    private Task OnPendingFromTimeChanged(TimeSpan? value)
+    {
+        pendingFromTime = value;
+        return Task.CompletedTask;
+    }
+
+    private Task OnPendingToTimeChanged(TimeSpan? value)
+    {
+        pendingToTime = value;
+        return Task.CompletedTask;
+    }
+
+    private async Task ApplyOccurredFilterAsync()
+    {
+        var from = CombineLocalDateTime(pendingFromDate, pendingFromTime, endOfDay: false);
+        var to = CombineLocalDateTime(pendingToDate, pendingToTime, endOfDay: true);
+
+        if (from.HasValue && to.HasValue && from.Value > to.Value)
+        {
+            Snackbar.Add("Occurred From must be before To.", Severity.Warning);
+            return;
+        }
+
+        occurredFrom = from;
+        occurredTo = to;
+        occurredPopoverOpen = false;
+        await ReloadTableAsync(resetPage: true);
+    }
+
+    private async Task ClearOccurredFilterAsync()
+    {
+        pendingFromDate = null;
+        pendingToDate = null;
+        pendingFromTime = null;
+        pendingToTime = null;
+        occurredFrom = null;
+        occurredTo = null;
+        occurredPopoverOpen = false;
+        await ReloadTableAsync(resetPage: true);
+    }
+
+    private void SetPendingOccurredFromApplied()
+    {
+        (pendingFromDate, pendingFromTime) = SplitLocalDateTime(occurredFrom);
+        (pendingToDate, pendingToTime) = SplitLocalDateTime(occurredTo);
+    }
+
+    private static DateTimeOffset? CombineLocalDateTime(DateTime? date, TimeSpan? time, bool endOfDay)
+    {
+        if (!date.HasValue)
+            return null;
+
+        var localTime = time ?? (endOfDay ? new TimeSpan(23, 59, 59) : TimeSpan.Zero);
+        var localDateTime = DateTime.SpecifyKind(date.Value.Date.Add(localTime), DateTimeKind.Unspecified);
+        return new DateTimeOffset(localDateTime, TimeZoneInfo.Local.GetUtcOffset(localDateTime)).ToUniversalTime();
+    }
+
+    private static (DateTime? Date, TimeSpan? Time) SplitLocalDateTime(DateTimeOffset? value)
+    {
+        if (!value.HasValue)
+            return (null, null);
+
+        var local = value.Value.ToLocalTime();
+        return (local.Date, local.TimeOfDay);
+    }
+
+    private string FormatOccurredFilterSummary()
+    {
+        if (!occurredFrom.HasValue && !occurredTo.HasValue)
+            return "Filter by occurred date and time";
+
+        if (occurredFrom.HasValue && occurredTo.HasValue)
+            return $"Occurred: {FormatOccurredCompact(occurredFrom.Value)} - {FormatOccurredCompact(occurredTo.Value)}";
+
+        return occurredFrom.HasValue
+            ? $"Occurred from {FormatOccurredCompact(occurredFrom.Value)}"
+            : $"Occurred to {FormatOccurredCompact(occurredTo!.Value)}";
+    }
+
+    private static string FormatOccurredCompact(DateTimeOffset value)
+        => value.ToLocalTime().ToString("MM/dd HH:mm");
+
+    private void HighlightNotification(Guid id)
+    {
+        highlightedNotificationIds.Add(id);
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(3));
+                await InvokeAsync(() =>
+                {
+                    highlightedNotificationIds.Remove(id);
+                    StateHasChanged();
+                });
+            }
+            catch
+            {
+                // Ignore lifecycle races.
+            }
+        });
+    }
+
+    private void UpdateRowReadState(Guid id, bool isRead)
+    {
+        var idx = rows.FindIndex(x => x.Id == id);
+        if (idx >= 0)
+            rows[idx] = rows[idx] with { IsRead = isRead };
+
+        if (deepLinkPinnedRow?.Id == id)
+            deepLinkPinnedRow = deepLinkPinnedRow with { IsRead = isRead };
+    }
+
+    private string GetRowClass(NetRatelNotificationDto dto, int _)
+        => highlightedNotificationIds.Contains(dto.Id)
+            ? "notification-row-clickable notification-row-live"
+            : "notification-row-clickable";
+
+    private static Dictionary<string, object> GetCellAttributes(NetRatelNotificationDto dto)
+        => new()
+        {
+            ["data-notification-id"] = dto.Id.ToString()
+        };
+
+    private static Color SeverityColor(NetRatelNotificationSeverity severity) => severity switch
+    {
+        NetRatelNotificationSeverity.Critical => Color.Error,
+        NetRatelNotificationSeverity.Error => Color.Error,
+        NetRatelNotificationSeverity.Warning => Color.Warning,
+        NetRatelNotificationSeverity.Success => Color.Success,
+        _ => Color.Info
+    };
+
+    private static string? ShortId(string? value, int head = 10, int tail = 6)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
+
+        if (value.Length <= head + tail + 3)
+            return value;
+
+        return $"{value[..head]}...{value[^tail..]}";
+    }
+
+    private static string FriendlyEvent(string eventType)
+    {
+        if (string.IsNullOrWhiteSpace(eventType))
+            return "-";
+
+        var normalized = eventType.StartsWith("DomainEvent.", StringComparison.OrdinalIgnoreCase)
+            ? eventType["DomainEvent.".Length..]
+            : eventType;
+
+        var parts = normalized.Split('.', StringSplitOptions.RemoveEmptyEntries).ToList();
+        if (parts.Count > 1 && string.Equals(parts[0], "Orchestration", StringComparison.OrdinalIgnoreCase))
+            parts.RemoveAt(0);
+
+        for (var i = 0; i < parts.Count; i++)
+            parts[i] = Regex.Replace(parts[i], "(?<!^)([A-Z])", " $1");
+
+        return string.Join(" ", parts);
+    }
+
+    private static bool CanRetryEvent(NetRatelNotificationDto notification)
+        => IsCallbackReplayEvent(notification)
+            || string.Equals(notification.Status, "Failed", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(notification.Status, "Disabled", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsCallbackReplayEvent(NetRatelNotificationDto notification)
+        => string.Equals(notification.EventType, "DomainEvent.Orchestration.ExternalServiceCallbackFailed", StringComparison.Ordinal)
+            || string.Equals(notification.EventType, "DomainEvent.Orchestration.ExternalServiceCallbackRejected", StringComparison.Ordinal);
+
+    private static string GetRetryLabel(NetRatelNotificationDto notification)
+        => IsCallbackReplayEvent(notification) ? "Replay Callback" : "Retry";
+
+    private async Task CopyToClipboardAsync(string value, string _)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return;
+
+        await JS.InvokeVoidAsync("navigator.clipboard.writeText", value);
+    }
+
+    private static NotificationDetailView MapDetail(NetRatelNotificationDto notification)
+    {
+        var rawJson = string.IsNullOrWhiteSpace(notification.PayloadJson)
+            ? (notification.Message ?? string.Empty)
+            : notification.PayloadJson;
+
+        var structuredFields = new List<KeyValuePair<string, string>>();
+        if (!string.IsNullOrWhiteSpace(rawJson))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(rawJson);
+                if (doc.RootElement.ValueKind == JsonValueKind.Object)
+                {
+                    foreach (var property in doc.RootElement.EnumerateObject())
+                    {
+                        var value = property.Value.ValueKind switch
+                        {
+                            JsonValueKind.String => property.Value.GetString(),
+                            JsonValueKind.Number => property.Value.GetRawText(),
+                            JsonValueKind.True => "true",
+                            JsonValueKind.False => "false",
+                            JsonValueKind.Null => null,
+                            _ => property.Value.GetRawText()
+                        };
+
+                        if (!string.IsNullOrWhiteSpace(value))
+                            structuredFields.Add(new KeyValuePair<string, string>(property.Name, value!));
+                    }
+                }
+            }
+            catch
+            {
+                // ignored
+            }
+        }
+
+        return new NotificationDetailView(notification, rawJson, structuredFields);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        searchDebounceCts?.Cancel();
+        searchDebounceCts?.Dispose();
+        NotificationStream.ConnectionChanged -= HandleStreamConnectionChanged;
+        streamConnected = false;
+        await NotificationStream.StopAsync();
+    }
+
+    private void HandleStreamConnectionChanged(bool connected)
+    {
+        streamConnected = connected;
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    private sealed record NotificationDetailView(
+        NetRatelNotificationDto Notification,
+        string RawJson,
+        List<KeyValuePair<string, string>> StructuredFields);
+}

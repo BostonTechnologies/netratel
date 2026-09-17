@@ -1,0 +1,371 @@
+@using NetRatel.Shared.Contracts.FileSystem
+@using NetRatel.Web.Services.FileSystem
+@using Microsoft.Extensions.Options
+@implements IDisposable
+
+<MudDialog Class="client-file-viewer-dialog">
+    <TitleContent>
+        <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween" Class="w-100">
+            <MudStack Spacing="0" Class="client-file-viewer-title">
+                <MudText Typo="Typo.h6">@File.Name</MudText>
+                <MudText Typo="Typo.caption">Remote file viewer</MudText>
+            </MudStack>
+            <MudButton Variant="Variant.Text" OnClick="Close">Close</MudButton>
+        </MudStack>
+    </TitleContent>
+    <DialogContent>
+        <section class="client-file-viewer-shell" data-testid="client-file-viewer">
+            <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1" Class="client-file-viewer-toolbar">
+                <MudChip T="string" Variant="Variant.Outlined" Size="Size.Small">@_sizeLabel</MudChip>
+                <MudChip T="string" Variant="Variant.Text" Size="Size.Small">@_classification.ViewerKind</MudChip>
+                <MudChip T="string" Variant="Variant.Text" Size="Size.Small">@_classification.ContentType</MudChip>
+                <span class="flex-grow-1"></span>
+                <MudIconButton Icon="@Icons.Material.Filled.Refresh" OnClick="RefreshAsync" Disabled="_loading" aria-label="Refresh file" />
+                <MudIconButton Icon="@Icons.Material.Filled.ContentCopy" OnClick="CopyPathAsync" aria-label="Copy remote path" />
+                <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Download" OnClick="DownloadAsync" Disabled="@(!IsGatewayClient)">Download</MudButton>
+                <MudButton Variant="Variant.Filled" Color="Color.Success" StartIcon="@Icons.Material.Filled.Save" OnClick="SaveAsync" Disabled="@(!_editable || _loading || _saving)">Save</MudButton>
+            </MudStack>
+            <MudText Typo="Typo.caption" Class="client-file-viewer-path">@File.FullPath</MudText>
+
+            @if (_downloadState is not null)
+            {
+                <MudAlert Severity="@DownloadSeverity" Variant="Variant.Outlined" data-testid="client-file-viewer-download-state">
+                    <MudStack Spacing="1">
+                        <MudText Typo="Typo.subtitle2">@DownloadTitle</MudText>
+                        <MudText Typo="Typo.body2">@DownloadDetail</MudText>
+                        @if (_downloadExpectedBytes is > 0)
+                        {
+                            <MudProgressLinear Value="@DownloadPercent" Color="@DownloadColor" />
+                        }
+                        <MudStack Row="true" Spacing="1">
+                            @if (_downloadState is "preparing" or "streaming")
+                            {
+                                <MudButton Variant="Variant.Text" Color="Color.Error" OnClick="CancelDownloadAsync">Cancel</MudButton>
+                            }
+                            else if (_downloadState is "failed" or "cancelled")
+                            {
+                                <MudButton Variant="Variant.Text" OnClick="DownloadAsync">Retry</MudButton>
+                            }
+                        </MudStack>
+                    </MudStack>
+                </MudAlert>
+            }
+
+            @if (_loading)
+            {
+                <div class="client-file-viewer-state" data-testid="client-file-viewer-loading">
+                    <MudProgressCircular Indeterminate="true" Color="Color.Primary" />
+                    <MudText>Loading bounded preview…</MudText>
+                </div>
+            }
+            else if (!string.IsNullOrWhiteSpace(_error))
+            {
+                <MudAlert Severity="Severity.Error" Variant="Variant.Outlined" data-testid="client-file-viewer-error">@_error</MudAlert>
+            }
+            else if (_tooLarge)
+            {
+                <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" data-testid="client-file-viewer-too-large">
+                    This file exceeds the @FormatBytes(_previewLimit) preview limit and was not loaded into the browser. Use Download when browser-native streaming is available.
+                </MudAlert>
+            }
+            else if (IsImagePreview)
+            {
+                <ClientFileMediaPreview PreviewUrl="@ImagePreviewUrl" ContentType="@_classification.ContentType" ViewerKind="image" FileName="@File.Name" />
+            }
+            else if (!_classification.IsText)
+            {
+                <ClientFileBinaryPreview ContentType="@_classification.ContentType" />
+            }
+            else
+            {
+                <ClientFileTextEditor @ref="_editor" Content="@_content" FileName="@File.Name" Language="@_classification.Language" />
+            }
+        </section>
+    </DialogContent>
+</MudDialog>
+
+<style>
+    .client-file-viewer-dialog .mud-dialog-content { overflow: hidden; padding: 0; }
+    .client-file-viewer-shell { height: calc(100dvh - 7.5rem); min-height: 0; display: flex; flex-direction: column; gap: 0.75rem; padding: 1rem; }
+    .client-file-viewer-toolbar { flex: 0 0 auto; flex-wrap: wrap; }
+    .client-file-viewer-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .client-file-viewer-state { flex: 1 1 auto; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.75rem; }
+    .client-file-viewer-shell .client-file-text-editor { height: 100%; min-height: 18rem; flex: 1 1 auto; }
+    @@media (max-width: 600px) {
+        .client-file-viewer-shell { height: calc(100dvh - 5.5rem); padding: 0.75rem; }
+        .client-file-viewer-toolbar .mud-chip { display: none; }
+    }
+</style>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance MudDialog { get; set; } = default!;
+    [Inject] private GatewayFileSystemApiService GatewayFileSystemApi { get; set; } = default!;
+    [Inject] private FileSystemApiService FileSystemApi { get; set; } = default!;
+    [Inject] private FileBrowserContentClassifier ContentClassifier { get; set; } = default!;
+    [Inject] private IOptions<FileBrowserOptions> Options { get; set; } = default!;
+    [Inject] private ISnackbar Snackbar { get; set; } = default!;
+    [Inject] private IJSRuntime JSRuntime { get; set; } = default!;
+
+    [Parameter] public FileSystemEntryDto File { get; set; } = default!;
+    [Parameter] public string ClientIdentity { get; set; } = string.Empty;
+    [Parameter] public int? TenantId { get; set; }
+    [Parameter] public Guid? AgentId { get; set; }
+
+    private ClientFileTextEditor? _editor;
+    private readonly FileBrowserContentClassification _defaultClassification = new(false, "binary", "plaintext", "application/octet-stream");
+    private FileBrowserContentClassification _classification = new(false, "binary", "plaintext", "application/octet-stream");
+    private string _content = string.Empty;
+    private string? _error;
+    private bool _loading;
+    private bool _saving;
+    private bool _tooLarge;
+    private bool _editable;
+    private int _previewLimit;
+    private long _currentSize;
+    private string? _downloadState;
+    private string? _downloadFailure;
+    private long _downloadBytes;
+    private long? _downloadExpectedBytes;
+    private string? _activeDownloadId;
+    private DotNetObjectReference<ClientFileViewer>? _downloadCallbacks;
+    private Guid _imagePreviewTransferId;
+
+    private bool IsGatewayClient => TenantId is not null && AgentId is not null;
+    private bool IsImagePreview => IsGatewayClient && string.Equals(_classification.ViewerKind, "image", StringComparison.Ordinal);
+    private string _sizeLabel => FormatBytes(_currentSize >= 0 ? _currentSize : File.SizeBytes);
+    private string ImagePreviewUrl => $"/file-browser/transfers/download?tenantId={TenantId}&agentId={AgentId:D}&transferId={_imagePreviewTransferId:D}&expectedBytes={File.SizeBytes}&inlinePreview=true&path={Uri.EscapeDataString(File.FullPath)}";
+
+    protected override async Task OnInitializedAsync()
+    {
+        _previewLimit = Options.Value.MaxPreviewBytes;
+        _currentSize = File.SizeBytes;
+        await RefreshAsync();
+    }
+
+    private async Task RefreshAsync()
+    {
+        _loading = true;
+        _error = null;
+        _tooLarge = File.SizeBytes > _previewLimit;
+        _editable = false;
+        _content = string.Empty;
+        _classification = _defaultClassification;
+        _imagePreviewTransferId = Guid.Empty;
+
+        try
+        {
+            if (_tooLarge)
+            {
+                return;
+            }
+
+            if (IsGatewayClient && FileBrowserContentClassifier.TryGetPreviewImageContentType(File.Name, out var imageContentType))
+            {
+                _classification = new FileBrowserContentClassification(false, "image", "plaintext", imageContentType);
+                _imagePreviewTransferId = Guid.NewGuid();
+                return;
+            }
+
+            var preview = await ReadBoundedPreviewAsync();
+            _tooLarge = preview.ExceededLimit;
+            _currentSize = preview.Length;
+            if (_tooLarge)
+            {
+                return;
+            }
+
+            _classification = ContentClassifier.Classify(File.Name, preview.ContentType, preview.Bytes);
+            if (!_classification.IsText)
+            {
+                return;
+            }
+
+            _content = new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true).GetString(preview.Bytes);
+            _editable = true;
+        }
+        catch (Exception exception)
+        {
+            _error = "The remote file could not be loaded for preview.";
+            Snackbar.Add($"Failed to read {File.Name}: {exception.Message}", Severity.Error);
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        if (!_editable || _editor is null)
+        {
+            return;
+        }
+
+        _saving = true;
+        try
+        {
+            var content = await _editor.GetValueAsync();
+            var bytes = new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false).GetBytes(content);
+            if (bytes.Length > _previewLimit)
+            {
+                Snackbar.Add($"Save cancelled because the edited file exceeds the {FormatBytes(_previewLimit)} preview limit.", Severity.Warning);
+                return;
+            }
+
+            if (IsGatewayClient)
+            {
+                await using var stream = new MemoryStream(bytes, writable: false);
+                await GatewayFileSystemApi.UploadAsync(TenantId!.Value, AgentId!.Value, File.FullPath, stream);
+            }
+            else
+            {
+                await FileSystemApi.WriteFileAsync(ClientIdentity, new FileSystemWriteRequest(File.FullPath, content));
+            }
+
+            Snackbar.Add($"Saved {File.Name} through the file gateway.", Severity.Success);
+            _currentSize = bytes.Length;
+            await RefreshAsync();
+        }
+        catch (Exception exception)
+        {
+            Snackbar.Add($"Failed to save {File.Name}: {exception.Message}", Severity.Error);
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private async Task<BoundedPreview> ReadBoundedPreviewAsync()
+    {
+        if (!IsGatewayClient)
+        {
+            var legacyResponse = await FileSystemApi.ReadFileAsync(ClientIdentity, File.FullPath);
+            var bytes = System.Text.Encoding.UTF8.GetBytes(legacyResponse.Content);
+            return new BoundedPreview(bytes, legacyResponse.ContentType, bytes.LongLength, bytes.Length > _previewLimit);
+        }
+
+        using var response = await GatewayFileSystemApi.DownloadAsync(TenantId!.Value, AgentId!.Value, File.FullPath);
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        return await ReadBoundedAsync(stream, response.Content.Headers.ContentType?.MediaType, _previewLimit);
+    }
+
+    private static async Task<BoundedPreview> ReadBoundedAsync(Stream stream, string? contentType, int limit)
+    {
+        await using var buffer = new MemoryStream(Math.Min(limit + 1, 128 * 1024));
+        var readBuffer = new byte[80 * 1024];
+        var total = 0L;
+        while (true)
+        {
+            var read = await stream.ReadAsync(readBuffer);
+            if (read == 0)
+            {
+                return new BoundedPreview(buffer.ToArray(), contentType, total, false);
+            }
+
+            total += read;
+            if (total > limit)
+            {
+                return new BoundedPreview([], contentType, total, true);
+            }
+
+            await buffer.WriteAsync(readBuffer.AsMemory(0, read));
+        }
+    }
+
+    private async Task CopyPathAsync()
+    {
+        try
+        {
+            await JSRuntime.InvokeVoidAsync("navigator.clipboard.writeText", File.FullPath);
+            Snackbar.Add("Remote path copied to clipboard.", Severity.Success);
+        }
+        catch (Exception exception)
+        {
+            Snackbar.Add($"Failed to copy remote path: {exception.Message}", Severity.Error);
+        }
+    }
+
+    private async Task DownloadAsync()
+    {
+        if (!IsGatewayClient)
+        {
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(_activeDownloadId))
+        {
+            await CancelDownloadAsync();
+        }
+
+        _activeDownloadId = Guid.NewGuid().ToString("D");
+        _downloadCallbacks?.Dispose();
+        _downloadCallbacks = DotNetObjectReference.Create(this);
+        _downloadState = "preparing";
+        _downloadFailure = null;
+        _downloadBytes = 0;
+        _downloadExpectedBytes = File.SizeBytes >= 0 ? File.SizeBytes : null;
+        var url = $"/file-browser/transfers/download?tenantId={TenantId}&agentId={AgentId:D}&transferId={_activeDownloadId}&expectedBytes={_downloadExpectedBytes}&path={Uri.EscapeDataString(File.FullPath)}";
+        await JSRuntime.InvokeVoidAsync("netratelDownloads.start", url, _activeDownloadId, _downloadCallbacks);
+    }
+
+    private async Task CancelDownloadAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_activeDownloadId))
+        {
+            return;
+        }
+
+        await JSRuntime.InvokeVoidAsync("netratelDownloads.cancel", _activeDownloadId);
+    }
+
+    [JSInvokable]
+    public Task OnDownloadStatus(string state, long bytesTransferred, long? expectedBytes, string? failureCode)
+    {
+        _downloadState = state;
+        _downloadBytes = Math.Max(0, bytesTransferred);
+        _downloadExpectedBytes = expectedBytes;
+        _downloadFailure = failureCode;
+        if (state is "completed" or "failed" or "cancelled")
+        {
+            _activeDownloadId = null;
+        }
+
+        return InvokeAsync(StateHasChanged);
+    }
+
+    private void Close() => MudDialog.Close();
+
+    private Severity DownloadSeverity => _downloadState is "failed" ? Severity.Error : _downloadState is "cancelled" ? Severity.Warning : Severity.Info;
+    private Color DownloadColor => _downloadState is "failed" or "cancelled" ? Color.Warning : Color.Primary;
+    private double DownloadPercent => _downloadExpectedBytes is > 0 ? Math.Clamp(_downloadBytes * 100d / _downloadExpectedBytes.Value, 0, 100) : 0;
+    private string DownloadTitle => _downloadState switch
+    {
+        "preparing" => $"Downloading {File.Name}",
+        "streaming" => $"Downloading {File.Name}",
+        "completed" => $"{File.Name} downloaded",
+        "cancelled" => "Download cancelled",
+        _ => "Download failed"
+    };
+    private string DownloadDetail => _downloadState switch
+    {
+        "preparing" => "Preparing remote stream…",
+        "streaming" => _downloadExpectedBytes is > 0 ? $"{FormatBytes(_downloadBytes)} / {FormatBytes(_downloadExpectedBytes.Value)}" : $"{FormatBytes(_downloadBytes)} transferred",
+        "completed" => $"Download completed · {FormatBytes(_downloadBytes)}",
+        "cancelled" => $"Transfer stopped after {FormatBytes(_downloadBytes)}.",
+        _ => string.IsNullOrWhiteSpace(_downloadFailure) ? "The remote transfer could not be completed." : $"Transfer failed: {_downloadFailure}."
+    };
+
+    public void Dispose() => _downloadCallbacks?.Dispose();
+
+    private static string FormatBytes(long bytes) => bytes switch
+    {
+        < 0 => "Unknown",
+        < 1024 => $"{bytes} B",
+        < 1024 * 1024 => $"{bytes / 1024d:F1} KB",
+        _ => $"{bytes / 1024d / 1024d:F1} MB"
+    };
+
+    private sealed record BoundedPreview(byte[] Bytes, string? ContentType, long Length, bool ExceededLimit);
+}

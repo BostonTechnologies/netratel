@@ -1,0 +1,205 @@
+@using NetRatel.Web.Services.Telemetry
+@implements IAsyncDisposable
+
+@inject GatewayTelemetryLiveStreamService TelemetryStream
+@inject GatewayTelemetryApiService TelemetryApi
+
+<MudDialog Class="client-telemetry-dialog" data-testid="gateway-telemetry-dialog">
+    <DialogContent>
+        <MudStack Spacing="2">
+            <div class="telemetry-toolbar">
+                <div class="telemetry-identity">
+                    <MudText Typo="Typo.h5">@HostLabel</MudText>
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">@TenantLabel</MudText>
+                    @if (_snapshot is not null)
+                    {
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">Age @FormatAge(_snapshot.ReceivedAtUtc) · @_snapshot.Source</MudText>
+                    }
+                </div>
+                <div class="telemetry-stream-state">
+                    <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="@(IsFresh ? Color.Success : Color.Warning)">
+                        @_streamState
+                    </MudChip>
+                </div>
+                <div class="telemetry-close-button">
+                    <MudIconButton Icon="@Icons.Material.Filled.Close" OnClick="Close" aria-label="Close telemetry dashboard" data-testid="close-telemetry-dashboard" />
+                </div>
+            </div>
+
+            @if (_snapshot is null)
+            {
+                <MudStack Spacing="2" aria-label="Loading telemetry">
+                    <MudSkeleton SkeletonType="SkeletonType.Text" Width="45%" />
+                    <MudSkeleton SkeletonType="SkeletonType.Rectangle" Height="110px" />
+                    <MudSkeleton SkeletonType="SkeletonType.Rectangle" Height="160px" />
+                </MudStack>
+            }
+            else
+            {
+                <MudPaper Elevation="0" Class="telemetry-health-strip pa-3">
+                    <MudGrid Spacing="2">
+                        <MudItem xs="6" sm="3">
+                            <MudText Typo="Typo.caption" Class="telemetry-health-label">Updated</MudText>
+                            <MudText Typo="Typo.subtitle2">@_snapshot.ReceivedAtUtc.ToLocalTime().ToString("T")</MudText>
+                        </MudItem>
+                        <MudItem xs="6" sm="3">
+                            <MudText Typo="Typo.caption" Class="telemetry-health-label">Uptime</MudText>
+                            <MudText Typo="Typo.subtitle2">@FormatUptime(_snapshot.TransportHealth?.UptimeSeconds)</MudText>
+                        </MudItem>
+                        <MudItem xs="6" sm="3">
+                            <MudText Typo="Typo.caption" Class="telemetry-health-label">OS</MudText>
+                            <MudText Typo="Typo.subtitle2">@(_snapshot.TransportHealth?.OsVersion ?? "n/a")</MudText>
+                        </MudItem>
+                        <MudItem xs="6" sm="3">
+                            <MudText Typo="Typo.caption" Class="telemetry-health-label">Agent</MudText>
+                            <MudText Typo="Typo.subtitle2">@(_snapshot.TransportHealth?.AgentVersion ?? "n/a")</MudText>
+                        </MudItem>
+                        <MudItem xs="6" sm="3">
+                            <MudText Typo="Typo.caption" Class="telemetry-health-label">Authority</MudText>
+                            <MudText Typo="Typo.subtitle2">@_snapshot.Source</MudText>
+                        </MudItem>
+                    </MudGrid>
+                </MudPaper>
+
+                <GatewayTelemetryDashboard Snapshot="_snapshot" CpuHistory="_cpuHistory" MemoryHistory="_memoryHistory"
+                                           NetworkRxHistory="_networkRxHistory" NetworkTxHistory="_networkTxHistory" CadenceLabel="@_streamState" />
+            }
+        </MudStack>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter, EditorRequired] public int TenantId { get; set; }
+    [Parameter, EditorRequired] public Guid AgentId { get; set; }
+    [Parameter] public string HostLabel { get; set; } = "Client telemetry";
+    [Parameter] public string TenantLabel { get; set; } = "";
+    [Parameter] public GatewayTelemetrySummary? InitialSnapshot { get; set; }
+
+    private readonly TelemetryRingBuffer _cpuHistory = new(120);
+    private readonly TelemetryRingBuffer _memoryHistory = new(120);
+    private readonly TelemetryRingBuffer _networkRxHistory = new(120);
+    private readonly TelemetryRingBuffer _networkTxHistory = new(120);
+    private GatewayTelemetrySummary? _snapshot;
+    private CancellationTokenSource? _streamCancellation;
+    private Task? _streamTask;
+    private int _disposed;
+    private string _streamState = "Connecting";
+    private long _lastEpoch = -1;
+    private ulong _lastSequence;
+
+    private bool IsFresh => _snapshot is not null && DateTimeOffset.UtcNow - _snapshot.ReceivedAtUtc < TimeSpan.FromSeconds(45);
+
+    protected override Task OnInitializedAsync() => InitializeAsync();
+
+    private async Task InitializeAsync()
+    {
+        _streamCancellation = new CancellationTokenSource();
+        _snapshot = InitialSnapshot;
+        _streamTask = ReadStreamAsync(_streamCancellation.Token);
+        if (_snapshot is not null) return;
+
+        try
+        {
+            var fallback = await TelemetryApi.GetAsync(TenantId, AgentId, _streamCancellation.Token);
+            // A live SSE item wins if it arrived while the one-off fallback was in flight.
+            if (_snapshot is null && fallback is not null && Volatile.Read(ref _disposed) == 0)
+            {
+                await SetSnapshotAsync(fallback);
+            }
+        }
+        catch (HttpRequestException)
+        {
+            System.Diagnostics.Trace.WriteLine("Telemetry fallback lookup was unavailable; the owned SSE subscription remains active.");
+        }
+    }
+
+    private async Task ReadStreamAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await foreach (var item in TelemetryStream.SubscribeAsync(TenantId, AgentId, 1000, cancellationToken))
+            {
+                if (Volatile.Read(ref _disposed) != 0) return;
+                _streamState = string.Equals(item.StateReason, "client-upgrade-required", StringComparison.OrdinalIgnoreCase)
+                    ? "Standard 5 s — client upgrade required"
+                    : item.ConnectionState.Equals("Live", StringComparison.OrdinalIgnoreCase)
+                        ? item.InteractiveEffective
+                            ? $"Interactive {item.EffectiveSamplePeriodMilliseconds / 1000d:0.#} s"
+                            : $"Standard {item.EffectiveSamplePeriodMilliseconds / 1000d:0.#} s"
+                        : item.ConnectionState;
+                if (item.Snapshot is not null && item.ConnectionEpoch is long epoch && item.Sequence is ulong sequence &&
+                    (epoch > _lastEpoch || epoch == _lastEpoch && sequence > _lastSequence))
+                {
+                    _lastEpoch = epoch;
+                    _lastSequence = sequence;
+                    await SetSnapshotAsync(item.Snapshot);
+                }
+                if (Volatile.Read(ref _disposed) == 0) await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return;
+        }
+    }
+
+    private Task SetSnapshotAsync(GatewayTelemetrySummary? snapshot)
+    {
+        if (snapshot is null)
+        {
+            return Task.CompletedTask;
+        }
+
+        _snapshot = snapshot;
+        AddHistory(_cpuHistory, snapshot.Cpu?.UsagePercent ?? 0);
+        AddHistory(_memoryHistory, snapshot.Memory?.UsagePercent ?? 0);
+        AddHistory(_networkRxHistory, snapshot.Networks.Sum(network => network.RxBytesPerSec) / 1024d);
+        AddHistory(_networkTxHistory, snapshot.Networks.Sum(network => network.TxBytesPerSec) / 1024d);
+        return Task.CompletedTask;
+    }
+
+    private static void AddHistory(TelemetryRingBuffer history, double value)
+    {
+        history.Add(value);
+    }
+
+    private static string FormatPercent(double? value) => value is null ? "n/a" : $"{value.Value:F1}%";
+    private static string FormatUptime(long? seconds) => seconds is null ? "n/a" : TimeSpan.FromSeconds(seconds.Value) is var duration && duration.TotalDays >= 1 ? $"{(int)duration.TotalDays}d {duration.Hours}h" : $"{duration.Hours}h {duration.Minutes}m";
+    private static string FormatAge(DateTimeOffset timestamp) => DateTimeOffset.UtcNow - timestamp is var age && age < TimeSpan.FromSeconds(60) ? $"{Math.Max(0, (int)age.TotalSeconds)}s" : $"{Math.Max(0, (int)age.TotalMinutes)}m";
+    private void Close() => MudDialog.Close();
+
+    public async ValueTask DisposeAsync()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+        _streamCancellation?.Cancel();
+        if (_streamTask is not null)
+        {
+            try { await _streamTask.ConfigureAwait(false); }
+            catch (OperationCanceledException)
+            {
+                System.Diagnostics.Trace.WriteLine("Telemetry dialog stream stopped during disposal.");
+            }
+        }
+        _streamCancellation?.Dispose();
+    }
+
+    private sealed class TelemetryRingBuffer(int capacity) : IReadOnlyList<double>
+    {
+        private readonly double[] _values = new double[capacity];
+        private int _start;
+        public int Count { get; private set; }
+        public double this[int index] => index < 0 || index >= Count ? throw new ArgumentOutOfRangeException(nameof(index)) : _values[(_start + index) % _values.Length];
+        public void Add(double value)
+        {
+            if (Count < _values.Length) _values[Count++] = value;
+            else
+            {
+                _values[_start] = value;
+                _start = (_start + 1) % _values.Length;
+            }
+        }
+        public IEnumerator<double> GetEnumerator() => Enumerable.Range(0, Count).Select(index => this[index]).GetEnumerator();
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+    }
+}

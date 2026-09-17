@@ -1,0 +1,26 @@
+.request-json-payload {
+    min-width: 0;
+    overflow: auto;
+}
+
+.request-json-payload.is-preview {
+    max-width: min(680px, calc(100dvw - 48px));
+    max-height: 420px;
+}
+
+.request-json-payload.is-dialog {
+    max-height: min(70dvh, 760px);
+}
+
+.request-json-raw {
+    max-height: 360px;
+    overflow: auto;
+    margin: 0.75rem 0 0;
+    padding: 0.75rem;
+    border: 1px solid var(--mud-palette-divider);
+    border-radius: var(--netratel-radius-control, 6px);
+    background: var(--mud-palette-background-gray);
+    color: var(--mud-palette-text-primary);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}

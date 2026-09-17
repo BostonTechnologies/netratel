@@ -1,0 +1,516 @@
+@page "/tasks/{TaskId:int}"
+@page "/tasks/request/{RequestId}"
+
+@using System.Text
+@using System.Text.Json
+@using System.Text.Json.Nodes
+
+@using NetRatel.Shared.Contracts.Tasks
+@using NetRatel.Shared.Utils
+@using NetRatel.Web.Services
+
+@inject TaskApiService TaskApi
+@inject ISnackbar Snackbar
+
+@implements IAsyncDisposable
+
+<MudStack Spacing="2">
+    @if (_task is null)
+    {
+        <MudProgressCircular Indeterminate="true" Color="Color.Primary" />
+    }
+    else
+    {
+        <MudPaper Class="task-detail-hero pa-4" Elevation="0">
+            <MudGrid Spacing="2">
+                <MudItem xs="12" md="7">
+                    <MudStack Spacing="1">
+                        <MudText Class="task-detail-kicker">Task Execution</MudText>
+                        <MudText Typo="Typo.h5">@_task.TaskType (@DisplayTaskLabel())</MudText>
+                        <MudText Typo="Typo.caption">Request: @_task.RequestId</MudText>
+                        <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center">
+                            <MudChip T="string" Color="@StatusColor(_task.Status)" Variant="Variant.Outlined">@_task.Status</MudChip>
+                            @if (!string.IsNullOrWhiteSpace(_task.StatusMessage))
+                            {
+                                <MudText Typo="Typo.subtitle2">@_task.StatusMessage</MudText>
+                            }
+                            @if (_task.ExitCode is not null)
+                            {
+                                <MudChip T="string" Variant="Variant.Text" Size="Size.Small">Exit @_task.ExitCode</MudChip>
+                            }
+                        </MudStack>
+                    </MudStack>
+                </MudItem>
+                <MudItem xs="12" md="5">
+                    <MudGrid Spacing="2">
+                        <MudItem xs="6">
+                            <MudPaper Class="task-detail-stat pa-3" Elevation="0">
+                                <MudText Class="task-detail-stat-label">Client</MudText>
+                                <MudText Typo="Typo.subtitle2">@GetTaskTargetDisplay(_task)</MudText>
+                                @if (!string.IsNullOrWhiteSpace(GetTaskTargetMeta(_task)))
+                                {
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">@GetTaskTargetMeta(_task)</MudText>
+                                }
+                            </MudPaper>
+                        </MudItem>
+                        <MudItem xs="6">
+                            <MudPaper Class="task-detail-stat pa-3" Elevation="0">
+                                <MudText Class="task-detail-stat-label">Runtime</MudText>
+                                <MudText Typo="Typo.subtitle2">@FormatRuntime(_task)</MudText>
+                            </MudPaper>
+                        </MudItem>
+                        <MudItem xs="6">
+                            <MudPaper Class="task-detail-stat pa-3" Elevation="0">
+                                <MudText Class="task-detail-stat-label">Started</MudText>
+                                <MudText Typo="Typo.subtitle2">@FormatTimestamp(_task.StartedAt ?? _task.Created)</MudText>
+                            </MudPaper>
+                        </MudItem>
+                        <MudItem xs="6">
+                            <MudPaper Class="task-detail-stat pa-3" Elevation="0">
+                                <MudText Class="task-detail-stat-label">Completed</MudText>
+                                <MudText Typo="Typo.subtitle2">@FormatTimestamp(_task.CompletedAt)</MudText>
+                            </MudPaper>
+                        </MudItem>
+                    </MudGrid>
+                </MudItem>
+            </MudGrid>
+        </MudPaper>
+
+        <MudPaper Class="task-output-surface pa-3" Elevation="0" data-testid="task-output-panel">
+            <MudStack Spacing="2">
+                <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                    <MudText Typo="Typo.subtitle1">Execution output</MudText>
+                    @if (!IsTerminal(_task))
+                    {
+                        <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Info">Live</MudChip>
+                    }
+                </MudStack>
+
+                @if (HasAnyOutput)
+                {
+                    var finalOutput = _task.ReturnData;
+                    var (plain, html, parsedExitCode) = string.IsNullOrWhiteSpace(finalOutput)
+                        ? (string.Empty, string.Empty, (int?)null)
+                        : ExecOutputFormatter.ParseExecReturn(finalOutput);
+                    var parsed = ParseReturnData(finalOutput);
+
+                    <MudTabs Rounded="true" PanelClass="task-output-tab-panel">
+                        <MudTabPanel Text="Console">
+                            <MudPaper Class="task-execution-console pa-2">
+                                @if (!string.IsNullOrWhiteSpace(finalOutput))
+                                {
+                                    <div class="task-output-scroll task-output-console"
+                                         @onclick:stopPropagation="true"
+                                         @onmousedown:stopPropagation="true"
+                                         @onmouseup:stopPropagation="true"
+                                         @onmousemove:stopPropagation="true">
+                                        @((MarkupString)html)
+                                    </div>
+                                }
+                                else
+                                {
+                                    <pre class="task-output-scroll task-output-console">@LiveConsoleOutput</pre>
+                                }
+                            </MudPaper>
+                            @if ((_task.ExitCode ?? parsedExitCode) is { } exitCode)
+                            {
+                                <MudText Typo="Typo.caption">Exit code: @exitCode</MudText>
+                            }
+                        </MudTabPanel>
+                        <MudTabPanel Text="Stdout">
+                            <MudPaper Class="task-stream-panel pa-3">
+                                @if (parsed.Stdout.Count == 0)
+                                {
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">No stdout captured.</MudText>
+                                }
+                                else
+                                {
+                                    <pre class="task-output-scroll">@string.Join(System.Environment.NewLine, parsed.Stdout)</pre>
+                                }
+                            </MudPaper>
+                        </MudTabPanel>
+                        <MudTabPanel Text="Stderr">
+                            <MudPaper Class="task-stream-panel pa-3">
+                                @if (parsed.Stderr.Count == 0)
+                                {
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">No stderr captured.</MudText>
+                                }
+                                else
+                                {
+                                    @if (!string.IsNullOrWhiteSpace(parsed.ErrorSummary))
+                                    {
+                                        <MudAlert Severity="Severity.Error" Variant="Variant.Outlined" Dense="true" Class="mb-3">
+                                            @parsed.ErrorSummary
+                                        </MudAlert>
+                                    }
+                                    <pre class="task-output-scroll task-stream-error">@string.Join(System.Environment.NewLine, parsed.Stderr)</pre>
+                                }
+                            </MudPaper>
+                        </MudTabPanel>
+                        <MudTabPanel Text="Diagnostics">
+                            <MudPaper Class="task-stream-panel pa-3">
+                                @if (parsed.Diagnostics.Count == 0)
+                                {
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">No execution diagnostics were captured.</MudText>
+                                }
+                                else
+                                {
+                                    @foreach (var item in parsed.Diagnostics)
+                                    {
+                                        <MudText Typo="Typo.caption"><b>@item.Key:</b> @item.Value</MudText>
+                                    }
+                                }
+                            </MudPaper>
+                        </MudTabPanel>
+                        <MudTabPanel Text="Plain">
+                            <MudPaper Class="task-stream-panel pa-3">
+                                <pre class="task-output-scroll">@plain</pre>
+                            </MudPaper>
+                        </MudTabPanel>
+                        <MudTabPanel Text="Raw JSON">
+                            <MudPaper Class="task-stream-panel pa-3">
+                                @if (string.IsNullOrWhiteSpace(finalOutput))
+                                {
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">The final result has not arrived yet.</MudText>
+                                }
+                                else
+                                {
+                                    <pre class="task-output-scroll">@finalOutput</pre>
+                                }
+                            </MudPaper>
+                        </MudTabPanel>
+                    </MudTabs>
+                }
+                else if (IsTerminal(_task))
+                {
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">No execution output was captured.</MudText>
+                }
+                else
+                {
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">Waiting for execution output. New log lines will appear here while the task runs.</MudText>
+                }
+            </MudStack>
+        </MudPaper>
+    }
+</MudStack>
+
+<style>
+  pre { line-height: 1.25; }
+  .task-detail-hero,
+  .task-detail-stat,
+  .task-stream-panel,
+  .task-output-surface {
+      border: 1px solid var(--mud-palette-divider);
+      border-radius: var(--netratel-radius-surface, 7px);
+      background: var(--mud-palette-surface);
+  }
+
+  .task-detail-hero {
+      border-left: 3px solid var(--mud-palette-primary);
+  }
+
+  .task-detail-kicker,
+  .task-detail-stat-label {
+      color: var(--mud-palette-primary);
+      font-size: 0.76rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+  }
+
+  .task-execution-console {
+      background: var(--mud-palette-background-gray);
+      border-radius: var(--netratel-radius-surface, 7px);
+      color: var(--mud-palette-text-primary);
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 0.85rem;
+  }
+
+  .task-output-tab-panel {
+      min-height: 0;
+  }
+
+  .task-output-scroll {
+      display: block;
+      max-height: min(46dvh, 34rem);
+      margin: 0;
+      overflow: auto;
+      overflow-wrap: anywhere;
+      white-space: pre-wrap;
+      word-break: break-word;
+  }
+
+  .task-output-console {
+      max-width: 100%;
+      white-space: pre;
+      word-break: normal;
+  }
+
+  .task-stream-error {
+      color: var(--mud-palette-error);
+      white-space: pre-wrap;
+  }
+</style>
+
+@code {
+    [Parameter] public int TaskId { get; set; }
+    [Parameter] public string? RequestId { get; set; }
+
+    private TaskDto? _task;
+    private readonly CancellationTokenSource _disposeCts = new();
+    private CancellationTokenSource? _pollingCts;
+    private Task? _pollingTask;
+    private readonly List<TaskLogDto> _logs = [];
+    private readonly HashSet<long> _logIds = [];
+    private long _latestLogId;
+
+    private bool HasAnyOutput => !string.IsNullOrWhiteSpace(_task?.ReturnData) || _logs.Count > 0;
+    private string LiveConsoleOutput => string.Join(System.Environment.NewLine, _logs
+        .OrderBy(log => log.Id)
+        .Select(log => $"[{log.Ts.ToLocalTime():T}] {log.Stream}: {log.Message}"));
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadTaskAsync(_disposeCts.Token).ConfigureAwait(false);
+        await LoadLogsAsync(_disposeCts.Token).ConfigureAwait(false);
+        StartPolling();
+    }
+
+    private async Task LoadTaskAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            _task = !string.IsNullOrWhiteSpace(RequestId)
+                ? await TaskApi.GetByRequestIdAsync(RequestId, cancellationToken).ConfigureAwait(false)
+                : await TaskApi.GetAsync(TaskId, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to load task: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void StartPolling()
+    {
+        _pollingCts?.Cancel();
+        _pollingCts?.Dispose();
+
+        _pollingCts = CancellationTokenSource.CreateLinkedTokenSource(_disposeCts.Token);
+        var token = _pollingCts.Token;
+
+        _pollingTask = PollAsync(token);
+    }
+
+    private async Task PollAsync(CancellationToken token)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(2));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(token).ConfigureAwait(false))
+            {
+                if (IsTerminal(_task))
+                {
+                    return;
+                }
+
+                await LoadTaskAsync(token).ConfigureAwait(false);
+                await LoadLogsAsync(token).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+            return;
+        }
+    }
+
+    private async Task LoadLogsAsync(CancellationToken cancellationToken)
+    {
+        if (_task is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var logs = !string.IsNullOrWhiteSpace(_task.RequestId)
+                ? await TaskApi.GetLogsByRequestIdAsync(_task.RequestId, _latestLogId, cancellationToken: cancellationToken).ConfigureAwait(false)
+                : await TaskApi.GetLogsAsync(_task.Id, _latestLogId, cancellationToken: cancellationToken).ConfigureAwait(false);
+            if (logs is null)
+            {
+                return;
+            }
+
+            var changed = false;
+            foreach (var log in logs.OrderBy(log => log.Id))
+            {
+                if (_logIds.Add(log.Id))
+                {
+                    _logs.Add(log);
+                    _latestLogId = Math.Max(_latestLogId, log.Id);
+                    changed = true;
+                }
+            }
+
+            if (changed)
+            {
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return;
+        }
+    }
+
+    private static string GetTaskTargetDisplay(TaskDto task)
+        => FirstPresent(task.ClientHostName, task.ClientDisplayName, task.ClientName) ?? "Client unavailable";
+
+    private static string? GetTaskTargetMeta(TaskDto task)
+        => FirstPresent(task.ClientName, task.ClientDisplayName) is { } meta &&
+           !string.Equals(meta, GetTaskTargetDisplay(task), StringComparison.OrdinalIgnoreCase)
+            ? meta
+            : null;
+
+    private static string? FirstPresent(params string?[] values)
+        => values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim();
+
+    private string DisplayTaskLabel()
+        => !string.IsNullOrWhiteSpace(_task?.RequestId)
+            ? _task!.RequestId
+            : $"#{TaskId}";
+
+    private Color StatusColor(string status) => status switch
+    {
+        "Completed" => Color.Success,
+        "Processing" => Color.Info,
+        "Failed" => Color.Error,
+        "Cancelled" => Color.Warning,
+        _ => Color.Default
+    };
+
+    private static bool IsTerminal(TaskDto? t) =>
+        t is not null && (string.Equals(t.Status, "Completed", System.StringComparison.OrdinalIgnoreCase) ||
+                          string.Equals(t.Status, "Failed", System.StringComparison.OrdinalIgnoreCase) ||
+                          string.Equals(t.Status, "Cancelled", System.StringComparison.OrdinalIgnoreCase));
+
+    private static string FormatTimestamp(DateTimeOffset? ts)
+        => ts is null ? "Waiting" : ts.Value.ToLocalTime().ToString("g");
+
+    private static string FormatRuntime(TaskDto task)
+    {
+        var start = task.StartedAt ?? task.Created;
+        var end = task.CompletedAt ?? DateTimeOffset.UtcNow;
+        var duration = end - start;
+        if (duration.TotalHours >= 1) return duration.ToString(@"hh\:mm\:ss");
+        if (duration.TotalMinutes >= 1) return duration.ToString(@"mm\:ss");
+        return $"{Math.Max(duration.TotalMilliseconds, 0):0} ms";
+    }
+
+    private sealed record ParsedTaskResult(
+        List<string> Stdout,
+        List<string> Stderr,
+        Dictionary<string, string> Diagnostics,
+        string? ErrorSummary);
+
+    private static ParsedTaskResult ParseReturnData(string? json)
+    {
+        var stdout = new List<string>();
+        var stderr = new List<string>();
+        var diagnostics = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        string? errorSummary = null;
+
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return new ParsedTaskResult(stdout, stderr, diagnostics, errorSummary);
+        }
+
+        try
+        {
+            var root = JsonNode.Parse(json)?.AsObject();
+            if (root is null)
+            {
+                return new ParsedTaskResult(stdout, stderr, diagnostics, errorSummary);
+            }
+
+            if (root["stdout"] is JsonArray stdoutArray)
+            {
+                stdout.AddRange(stdoutArray.Select(x => AnsiConsole.NormalizeForDisplay(x?.ToString() ?? string.Empty)));
+            }
+
+            if (root["stderr"] is JsonArray stderrArray)
+            {
+                stderr.AddRange(stderrArray.Select(x => AnsiConsole.NormalizeForDisplay(x?.ToString() ?? string.Empty)));
+                errorSummary = stderr
+                    .Select(ExtractErrorSummary)
+                    .FirstOrDefault(x => !string.IsNullOrWhiteSpace(x));
+            }
+
+            if (root["diagnostics"] is JsonObject diag)
+            {
+                foreach (var kv in diag)
+                {
+                    diagnostics[kv.Key] = kv.Value?.ToString() ?? string.Empty;
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            return new ParsedTaskResult(stdout, stderr, diagnostics, errorSummary);
+        }
+
+        return new ParsedTaskResult(stdout, stderr, diagnostics, errorSummary);
+    }
+
+    private static string? ExtractErrorSummary(string? raw)
+    {
+        var text = AnsiConsole.NormalizeForDisplay(raw ?? string.Empty);
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return null;
+        }
+
+        var lines = text
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(x => !x.Equals("Write-Error:", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        var preferred = lines.LastOrDefault(line =>
+            line.Contains("because", StringComparison.OrdinalIgnoreCase) ||
+            line.Contains("not exist", StringComparison.OrdinalIgnoreCase) ||
+            line.Contains("access", StringComparison.OrdinalIgnoreCase) ||
+            line.Contains("failed", StringComparison.OrdinalIgnoreCase) ||
+            line.Contains("error", StringComparison.OrdinalIgnoreCase));
+
+        return preferred ?? lines.LastOrDefault() ?? text;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _pollingCts?.Cancel();
+        _disposeCts.Cancel();
+
+        try
+        {
+            if (_pollingTask is not null)
+            {
+                await _pollingTask.ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (_disposeCts.IsCancellationRequested)
+        {
+            return;
+        }
+        finally
+        {
+            _pollingCts?.Dispose();
+            _disposeCts.Dispose();
+        }
+    }
+}

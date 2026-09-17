@@ -1,0 +1,81 @@
+﻿@implements IDisposable
+@inject NavigationManager NavigationManager
+@inject AuthenticationStateProvider AuthenticationStateProvider
+
+<MudNavMenu Class="netratel-nav">
+    <AuthorizeView Context="outerAuthState">
+        <Authorized Context="outerAuthState">
+            <MudText Typo="Typo.caption" Class="nav-section-label">Command</MudText>
+            <MudNavLink Href="/" Match="NavLinkMatch.All" Icon="@Icons.Material.Filled.Dashboard">Dashboard</MudNavLink>
+
+            <MudNavGroup Title="Orchestration" Expanded="true" Icon="@Icons.Material.Filled.Workspaces">
+                <MudNavLink Href="/jobs" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Work">Jobs</MudNavLink>
+                <MudNavLink Href="/requests" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Stream">Requests</MudNavLink>
+                <MudNavLink Href="/tasks/new" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.AddTask">New Task</MudNavLink>
+                <MudNavLink Href="/tasks/history" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.History">Task History</MudNavLink>
+            </MudNavGroup>
+
+            <MudNavLink Href="/scriptlibrary" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Code">Script Library</MudNavLink>
+
+            <MudText Typo="Typo.caption" Class="nav-section-label">Estate</MudText>
+            <MudNavGroup Title="Estate Management" Expanded="false" Icon="@Icons.Material.Filled.Business">
+                <MudNavLink Href="/clients" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Devices">Clients</MudNavLink>
+                <MudNavLink Href="/tenants" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.People">Tenants</MudNavLink>
+            </MudNavGroup>
+            <MudNavLink Href="/clients/mgmt" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.RocketLaunch">Agent Installers</MudNavLink>
+
+            <MudText Typo="Typo.caption" Class="nav-section-label">Signals</MudText>
+            <MudNavLink Href="/notifications" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Notifications">Notifications</MudNavLink>
+            <MudNavGroup Title="AI Ops" Expanded="false">
+                <MudNavLink Href="/ai/ops" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Insights">MCP Tools</MudNavLink>
+            </MudNavGroup>
+        </Authorized>
+    </AuthorizeView>
+
+    <MudDivider Class="my-2 nav-account-divider" />
+
+    <AuthorizeView Context="accountAuthState">
+        <Authorized Context="accountAuthState">
+            <MudNavLink Href="/auth" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Person">@userName</MudNavLink>
+            <AuthorizeView Roles="Operator" Context="adminAuthState">
+                <Authorized Context="adminAuthState">
+                    <MudNavGroup Title="Admin" Expanded="false" Icon="@Icons.Material.Filled.Settings">
+                        <MudNavLink Href="/admin/app-settings" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Tune">App Settings</MudNavLink>
+                        <MudNavLink Href="/settings/connectivity" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Lan">Connectivity</MudNavLink>
+                        <MudNavLink Href="/clients/settings" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Terminal">Client Runtime Settings</MudNavLink>
+                    </MudNavGroup>
+                </Authorized>
+            </AuthorizeView>
+            <MudNavLink Href="/logout" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Logout">Logout</MudNavLink>
+        </Authorized>
+        <NotAuthorized>
+            <MudNavLink Href="/login" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Login">Login</MudNavLink>
+        </NotAuthorized>
+    </AuthorizeView>
+
+</MudNavMenu>
+
+@code {
+    private string? currentUrl;
+    private string? userName;
+
+    protected override async Task OnInitializedAsync()
+    {
+        currentUrl = NavigationManager.ToBaseRelativePath(NavigationManager.Uri);
+        NavigationManager.LocationChanged += OnLocationChanged;
+
+        var authState = await AuthenticationStateProvider.GetAuthenticationStateAsync();
+        userName = authState.User.Identity?.Name;
+    }
+
+    private void OnLocationChanged(object? sender, LocationChangedEventArgs e)
+    {
+        currentUrl = NavigationManager.ToBaseRelativePath(e.Location);
+        StateHasChanged();
+    }
+
+    public void Dispose()
+    {
+        NavigationManager.LocationChanged -= OnLocationChanged;
+    }
+}

@@ -1,0 +1,16 @@
+<MudDialog>
+    <TitleContent>
+        <MudText Typo="Typo.h6">Terminal Console</MudText>
+    </TitleContent>
+    <DialogContent>
+        <MudText>Interactive terminal functionality is currently unavailable.</MudText>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="Close">Close</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] IMudDialogInstance MudDialog { get; set; } = default!;
+    private void Close() => MudDialog.Close();
+}

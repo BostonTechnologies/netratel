@@ -1,0 +1,90 @@
+@* LatencyDisplay.razor *@
+
+<MudPaper Class="pa-3 elevation-1" Style="min-width: 320px;">
+    @if ((Samples?.Count ?? 0) == 0 && !StreamConnected)
+    {
+        <MudText Typo="Typo.body2" Align="Align.Center">Connecting...</MudText>
+    }
+    else
+    {
+        <MudStack Spacing="1" AlignItems="AlignItems.Center">
+            <MudChip T="string" Size="Size.Small" Variant="Variant.Filled"
+                     Color="@(StreamConnected ? Color.Success : Color.Info)">
+                @(StreamConnected ? "Live" : "Connecting")
+            </MudChip>
+
+            <MudChart ChartType="ChartType.Line"
+                      ChartSeries="@_chartSeries"
+                      XAxisLabels="@_xAxisLabels"
+                      ChartOptions="_chartOptions"
+                      Width="100%" Height="280px" />
+
+            <MudGrid Justify="Justify.SpaceEvenly">
+                <MudItem xs="4">
+                    <MudText Typo="Typo.caption" Align="Align.Center">Min</MudText>
+                    <MudText Typo="Typo.body2" Align="Align.Center">@($"{_min:F0} ms")</MudText>
+                </MudItem>
+                <MudItem xs="4">
+                    <MudText Typo="Typo.caption" Align="Align.Center">Avg</MudText>
+                    <MudText Typo="Typo.body2" Align="Align.Center">@($"{_avg:F1} ms")</MudText>
+                </MudItem>
+                <MudItem xs="4">
+                    <MudText Typo="Typo.caption" Align="Align.Center">Max</MudText>
+                    <MudText Typo="Typo.body2" Align="Align.Center">@($"{_max:F0} ms")</MudText>
+                </MudItem>
+            </MudGrid>
+
+            <MudText Typo="Typo.subtitle2" Align="Align.Center">
+                Latest: @($"{_latest:F0} ms")
+            </MudText>
+        </MudStack>
+    }
+</MudPaper>
+
+@code {
+    [Parameter] public IReadOnlyList<(long TicksUtc, double Ms)> Samples { get; set; } = Array.Empty<(long TicksUtc, double Ms)>();
+    [Parameter] public bool StreamConnected { get; set; }
+
+    private double _min;
+    private double _max;
+    private double _avg;
+    private double _latest;
+
+    private List<ChartSeries> _chartSeries = new();
+    private string[] _xAxisLabels = Array.Empty<string>();
+
+    private readonly ChartOptions _chartOptions = new()
+    {
+        ShowLegend = false,
+        InterpolationOption = InterpolationOption.Straight,
+        YAxisTicks = 4,
+        ChartPalette = new[] { "#1492c8" }
+    };
+
+    protected override void OnParametersSet()
+        => UpdateChart();
+
+    private void UpdateChart()
+    {
+        if (Samples.Count == 0)
+        {
+            _chartSeries = new();
+            _xAxisLabels = Array.Empty<string>();
+            _min = _max = _avg = _latest = 0;
+            return;
+        }
+
+        var data = Samples.Select(x => x.Ms).ToArray();
+        _min = data.Min();
+        _max = data.Max();
+        _avg = data.Average();
+        _latest = data[^1];
+
+        _chartSeries = new()
+        {
+            new ChartSeries { Name = "Latency", Data = data }
+        };
+
+        _xAxisLabels = Enumerable.Range(1, data.Length).Select(_ => string.Empty).ToArray();
+    }
+}

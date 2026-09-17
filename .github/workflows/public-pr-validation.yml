@@ -1,0 +1,311 @@
+name: Public PR validation
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, converted_to_draft, ready_for_review]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: public-pr-validation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  disclosure:
+    name: Public disclosure gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
+      - run: tools/ci/check-public-disclosure.sh
+      - run: tools/ci/test-public-disclosure.sh
+
+  dotnet:
+    name: .NET build and tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          global-json-file: global.json
+      - run: dotnet restore NetRatel.sln
+      - run: tools/ci/verify-product-version.sh
+      - run: dotnet build NetRatel.sln --configuration Release --no-restore
+      - run: pwsh src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/playwright.ps1 install --with-deps chromium
+      - run: dotnet test NetRatel.sln --configuration Release --no-build --filter "category!=compose" --logger "trx;LogFileName=netratel-tests.trx" --results-directory TestResults
+      - if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: dotnet-test-results
+          path: TestResults
+          if-no-files-found: warn
+          retention-days: 14
+
+  review-artifacts:
+    name: CLI and stdio MCP review artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          global-json-file: global.json
+      - run: |
+          version="$(jq -r '.version' release/release-manifest.json)"
+          mkdir -p artifacts/cli artifacts/mcp-stdio artifacts/release-bundle
+          dotnet restore src/NetRatel/NetRatel.Cli/NetRatel.Cli.csproj --runtime linux-x64
+          dotnet restore src/NetRatel/NetRatel.Mcp/NetRatel.Mcp.csproj --runtime linux-x64
+          dotnet publish src/NetRatel/NetRatel.Cli/NetRatel.Cli.csproj --configuration Release --no-restore --runtime linux-x64 --self-contained false --output artifacts/cli/netratel-cli-linux-x64
+          dotnet publish src/NetRatel/NetRatel.Mcp/NetRatel.Mcp.csproj --configuration Release --no-restore --runtime linux-x64 --self-contained false --output artifacts/mcp-stdio/netratel-mcp-linux-x64
+          dotnet pack src/NetRatel/NetRatel.Cli/NetRatel.Cli.csproj --configuration Release --no-restore --no-build --output artifacts/cli
+          tar -C artifacts/cli -czf "artifacts/netratel-cli-${version}-linux-x64.tar.gz" netratel-cli-linux-x64
+          tar -C artifacts/mcp-stdio -czf "artifacts/netratel-mcp-stdio-${version}-linux-x64.tar.gz" netratel-mcp-linux-x64
+          cp release/compose.images.yaml release/compose.mcp-http.yaml release/.env.images.example release/release-manifest.json artifacts/release-bundle/
+          tar -C artifacts/release-bundle -czf "artifacts/netratel-compose-${version}.tar.gz" .
+      - uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          path: artifacts
+          format: spdx-json
+          output-file: artifacts/netratel-${{ github.sha }}.spdx.json
+      - run: |
+          version="$(jq -r '.version' release/release-manifest.json)"
+          mv "artifacts/netratel-${GITHUB_SHA}.spdx.json" "artifacts/netratel-${version}.spdx.json"
+          (
+            cd artifacts
+            sha256sum *.tar.gz "netratel-${version}.spdx.json" cli/*.nupkg > SHA256SUMS
+          )
+          tools/ci/verify-release-artifacts.sh --artifacts artifacts --version "$version"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: pr-netratel-cli-mcp-linux-x64
+          path: artifacts
+          if-no-files-found: error
+          retention-days: 14
+
+  client-packages:
+    name: Native Client package (${{ matrix.runtime }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runtime: linux-x64
+            runner: ubuntu-latest
+            extension: tar.gz
+          - runtime: win-x64
+            runner: windows-latest
+            extension: zip
+          - runtime: osx-arm64
+            runner: macos-latest
+            extension: tar.gz
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          global-json-file: global.json
+      - shell: bash
+        run: |
+          version="$(jq -r '.version' release/release-manifest.json)"
+          directory="artifacts/netratel-client-${{ matrix.runtime }}"
+          dotnet restore src/NetRatel/NetRatel.Client/NetRatel.Client.csproj --runtime "${{ matrix.runtime }}"
+          dotnet publish src/NetRatel/NetRatel.Client/NetRatel.Client.csproj --configuration Release --no-restore --runtime "${{ matrix.runtime }}" --output "$directory"
+          test -f "$directory/netratel-client-manifest.json"
+          grep -Fq "\"version\":\"${version}\"" "$directory/netratel-client-manifest.json"
+          if [[ "${{ matrix.extension }}" == zip ]]; then
+            (cd artifacts && zip -qr "netratel-client-${version}-${{ matrix.runtime }}.zip" "netratel-client-${{ matrix.runtime }}")
+          else
+            tar -C artifacts -czf "artifacts/netratel-client-${version}-${{ matrix.runtime }}.tar.gz" "netratel-client-${{ matrix.runtime }}"
+          fi
+          test -s "artifacts/netratel-client-${version}-${{ matrix.runtime }}.${{ matrix.extension }}"
+          case "${{ matrix.runtime }}" in
+            linux-x64)
+              "$directory/NetRatel.Client" --terminal-pty-self-test-native
+              ;;
+            win-x64)
+              "$directory/NetRatel.Client.exe" --version
+              ;;
+            osx-arm64)
+              "$directory/NetRatel.Client" --version
+              ;;
+          esac
+      - uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          path: artifacts
+          format: spdx-json
+          output-file: artifacts/netratel-client-${{ matrix.runtime }}.spdx.json
+      - shell: bash
+        run: |
+          version="$(jq -r '.version' release/release-manifest.json)"
+          (
+            cd artifacts
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum "netratel-client-${version}-${{ matrix.runtime }}.${{ matrix.extension }}" "netratel-client-${{ matrix.runtime }}.spdx.json" > SHA256SUMS
+            else
+              shasum -a 256 "netratel-client-${version}-${{ matrix.runtime }}.${{ matrix.extension }}" "netratel-client-${{ matrix.runtime }}.spdx.json" > SHA256SUMS
+            fi
+          )
+          tools/ci/verify-client-release-artifact.sh \
+            --artifacts artifacts \
+            --version "$version" \
+            --runtime "${{ matrix.runtime }}" \
+            --extension "${{ matrix.extension }}"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: pr-netratel-client-${{ matrix.runtime }}
+          path: artifacts
+          if-no-files-found: error
+          retention-days: 14
+
+  images:
+    name: Final public image (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: api
+            dockerfile: docker/api/Dockerfile
+          - name: web
+            dockerfile: docker/web/Dockerfile
+          - name: migrations
+            dockerfile: docker/migrations/Dockerfile
+          - name: mcp-http
+            dockerfile: docker/mcp-http/Dockerfile
+          - name: client
+            dockerfile: docker/client/Dockerfile.public
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - run: |
+          version="$(jq -r '.version' release/release-manifest.json)"
+          image="netratel-${{ matrix.name }}:pr-validation"
+          tools/ci/build-public-image.sh --dockerfile "${{ matrix.dockerfile }}" --image "$image" --version "$version" --revision "$GITHUB_SHA"
+          tools/ci/scan-public-image.sh --image "$image" --version "$version" --revision "$GITHUB_SHA"
+
+  compose:
+    name: Source Compose generic OIDC smoke test
+    needs: review-artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          global-json-file: global.json
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: pr-netratel-cli-mcp-linux-x64
+          path: review-artifacts
+      - run: |
+          version="$(jq -r '.version' release/release-manifest.json)"
+          tools/ci/build-public-image.sh --dockerfile docker/client/Dockerfile.public --image netratel-client:compose-smoke --version "$version" --revision "$GITHUB_SHA"
+          tools/ci/scan-public-image.sh --image netratel-client:compose-smoke --version "$version" --revision "$GITHUB_SHA"
+      - env:
+          POSTGRES_PASSWORD: synthetic-ci-only-password
+          OIDC_AUTHORITY: https://issuer.example.invalid
+          OIDC_CLIENT_ID: synthetic-ci-only-client
+          OIDC_API_SCOPE: netratel.api
+          OIDC_API_AUDIENCE: netratel.api
+          OIDC_TOKEN_ENDPOINT: https://issuer.example.invalid/oauth/token
+          OIDC_ADMIN_GROUP_ID: synthetic-ci-only-group
+          OIDC_CLIENT_SECRET: synthetic-ci-only-oidc-secret
+          NETRATEL_AGENT_AUTH_PRIVATE_KEY: ./synthetic-ci-only-agent-auth.pem
+          NETRATEL_CLIENT_SMOKE_IMAGE: netratel-client:compose-smoke
+        run: |
+          docker compose -f compose.yaml config --quiet
+          NETRATEL_CLI_SMOKE_ARCHIVE="review-artifacts/netratel-cli-$(jq -r '.version' release/release-manifest.json)-linux-x64.tar.gz" \
+            NETRATEL_MCP_STDIO_SMOKE_ARCHIVE="review-artifacts/netratel-mcp-stdio-$(jq -r '.version' release/release-manifest.json)-linux-x64.tar.gz" \
+            tools/ci/smoke-oidc-compose.sh
+
+  release-image-compose:
+    name: Release-image Compose generic OIDC smoke test
+    needs: review-artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          global-json-file: global.json
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: pr-netratel-cli-mcp-linux-x64
+          path: review-artifacts
+      - run: |
+          version="$(jq -r '.version' release/release-manifest.json)"
+          for component in migrations api web; do
+            image="netratel-${component}:release-smoke"
+            tools/ci/build-public-image.sh --dockerfile "docker/${component}/Dockerfile" --image "$image" --version "$version" --revision "$GITHUB_SHA"
+            tools/ci/scan-public-image.sh --image "$image" --version "$version" --revision "$GITHUB_SHA"
+          done
+          tools/ci/build-public-image.sh --dockerfile docker/client/Dockerfile.public --image netratel-client:release-smoke --version "$version" --revision "$GITHUB_SHA"
+          tools/ci/scan-public-image.sh --image netratel-client:release-smoke --version "$version" --revision "$GITHUB_SHA"
+      - env:
+          NETRATEL_COMPOSE_SMOKE_MODE: release-images
+          NETRATEL_MIGRATIONS_IMAGE: netratel-migrations:release-smoke
+          NETRATEL_API_IMAGE: netratel-api:release-smoke
+          NETRATEL_WEB_IMAGE: netratel-web:release-smoke
+          POSTGRES_PASSWORD: synthetic-ci-only-password
+          OIDC_AUTHORITY: https://issuer.example.invalid
+          OIDC_CLIENT_ID: synthetic-ci-only-client
+          OIDC_API_SCOPE: netratel.api
+          OIDC_API_AUDIENCE: netratel.api
+          OIDC_TOKEN_ENDPOINT: https://issuer.example.invalid/oauth/token
+          OIDC_ADMIN_GROUP_ID: synthetic-ci-only-group
+          OIDC_CLIENT_SECRET: synthetic-ci-only-oidc-secret
+          NETRATEL_AGENT_AUTH_PRIVATE_KEY: ./synthetic-ci-only-agent-auth.pem
+          NETRATEL_CLIENT_SMOKE_IMAGE: netratel-client:release-smoke
+        run: |
+          docker compose -f release/compose.images.yaml -f tests/compose/oidc-smoke.compose.yaml config --quiet
+          NETRATEL_CLI_SMOKE_ARCHIVE="review-artifacts/netratel-cli-$(jq -r '.version' release/release-manifest.json)-linux-x64.tar.gz" \
+            NETRATEL_MCP_STDIO_SMOKE_ARCHIVE="review-artifacts/netratel-mcp-stdio-$(jq -r '.version' release/release-manifest.json)-linux-x64.tar.gz" \
+            tools/ci/smoke-oidc-compose.sh
+
+  mcp-http-image-smoke:
+    name: HTTP MCP image smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - run: |
+          version="$(jq -r '.version' release/release-manifest.json)"
+          tools/ci/build-public-image.sh --dockerfile docker/mcp-http/Dockerfile --image netratel-mcp-http:pr-smoke --version "$version" --revision "$GITHUB_SHA"
+          tools/ci/scan-public-image.sh --image netratel-mcp-http:pr-smoke --version "$version" --revision "$GITHUB_SHA"
+      - env:
+          NETRATEL_MCP_HTTP_SMOKE_IMAGE: netratel-mcp-http:pr-smoke
+        run: tools/ci/smoke-mcp-http-image.sh
+
+  pr-validation:
+    name: PR validation
+    if: always()
+    needs: [disclosure, dotnet, review-artifacts, client-packages, images, compose, release-image-compose, mcp-http-image-smoke]
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          DISCLOSURE_RESULT: ${{ needs.disclosure.result }}
+          DOTNET_RESULT: ${{ needs.dotnet.result }}
+          REVIEW_ARTIFACTS_RESULT: ${{ needs.review-artifacts.result }}
+          CLIENT_PACKAGES_RESULT: ${{ needs.client-packages.result }}
+          IMAGES_RESULT: ${{ needs.images.result }}
+          COMPOSE_RESULT: ${{ needs.compose.result }}
+          RELEASE_IMAGE_COMPOSE_RESULT: ${{ needs.release-image-compose.result }}
+          MCP_HTTP_IMAGE_SMOKE_RESULT: ${{ needs.mcp-http-image-smoke.result }}
+        run: |
+          [[ "$DISCLOSURE_RESULT" == success ]]
+          [[ "$DOTNET_RESULT" == success ]]
+          [[ "$REVIEW_ARTIFACTS_RESULT" == success ]]
+          [[ "$CLIENT_PACKAGES_RESULT" == success ]]
+          [[ "$IMAGES_RESULT" == success ]]
+          [[ "$COMPOSE_RESULT" == success ]]
+          [[ "$RELEASE_IMAGE_COMPOSE_RESULT" == success ]]
+          [[ "$MCP_HTTP_IMAGE_SMOKE_RESULT" == success ]]

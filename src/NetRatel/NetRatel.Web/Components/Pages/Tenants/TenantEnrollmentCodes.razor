@@ -1,0 +1,299 @@
+@page "/tenants/{TenantId:int}/enrollment"
+@rendermode InteractiveServer
+@attribute [Microsoft.AspNetCore.Authorization.Authorize]
+
+@using Microsoft.AspNetCore.Components
+@using Microsoft.JSInterop
+@using NetRatel.Shared.Contracts.Enrollment
+@using NetRatel.Web.Services.Enrollment
+
+@inject IEnrollmentCodeApiService EnrollmentCodes
+@inject MudBlazor.ISnackbar Snackbar
+@inject IJSRuntime JSRuntime
+@inject NavigationManager Nav
+
+<MudContainer MaxWidth="MaxWidth.False" Class="mt-4">
+    <MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center">
+        <MudText Typo="Typo.h5">Enrollment Codes (Tenant @TenantId)</MudText>
+        <MudSpacer />
+        <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.People" OnClick="OpenAgents">Agents</MudButton>
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Add" OnClick="OpenIssueDialog">New Code</MudButton>
+        <MudButton Variant="Variant.Outlined" OnClick="LoadAsync">Refresh</MudButton>
+    </MudStack>
+
+    <MudStack Row="true" Spacing="2" Class="mt-3">
+        <MudSelect T="string" Label="Status" @bind-Value="_statusFilter" @bind-Value:after="OnStatusChangedAsync" Dense="true" Style="min-width: 170px">
+            <MudSelectItem Value="@("active")">Active</MudSelectItem>
+            <MudSelectItem Value="@("expired")">Expired</MudSelectItem>
+            <MudSelectItem Value="@("revoked")">Revoked</MudSelectItem>
+            <MudSelectItem Value="@("all")">All</MudSelectItem>
+        </MudSelect>
+        <MudTextField @bind-Value="_search" @bind-Value:after="OnSearchChangedAsync" Label="Search note/code" Immediate="true" Dense="true" />
+    </MudStack>
+
+    <MudTable Items="_codes" Dense="true" Hover="true" Loading="_loading" Class="mt-4">
+        <HeaderContent>
+            <MudTh>Status</MudTh>
+            <MudTh>Code</MudTh>
+            <MudTh>Note</MudTh>
+            <MudTh>Created</MudTh>
+            <MudTh>Expires</MudTh>
+            <MudTh>Uses</MudTh>
+            <MudTh>Last Used</MudTh>
+            <MudTh></MudTh>
+        </HeaderContent>
+        <RowTemplate>
+            <MudTd>
+                <MudChip T="string" Value="@context.Status" Color="@StatusColor(context.Status)">@context.Status</MudChip>
+            </MudTd>
+            <MudTd>
+                <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center">
+                    <MudText Typo="Typo.body2">@context.DisplayCode</MudText>
+                    @if (!string.IsNullOrWhiteSpace(context.EnrollmentCode))
+                    {
+                        <MudIconButton Icon="@Icons.Material.Filled.ContentCopy" Size="Size.Small" OnClick="@(() => CopyCodeAsync(context.EnrollmentCode!))" />
+                    }
+                </MudStack>
+            </MudTd>
+            <MudTd>@context.Note</MudTd>
+            <MudTd>@context.CreatedUtc.ToLocalTime().ToString("g")</MudTd>
+            <MudTd>@context.ExpiresUtc.ToLocalTime().ToString("g")</MudTd>
+            <MudTd>@context.Uses/@(context.MaxUses?.ToString() ?? "∞")</MudTd>
+            <MudTd>@(context.LastUsedUtc?.ToLocalTime().ToString("g") ?? "-")</MudTd>
+            <MudTd>
+                <MudStack Row="true" Spacing="1">
+                    @if (!string.IsNullOrWhiteSpace(context.EnrollmentCode))
+                    {
+                        <MudButton Size="Size.Small" Variant="Variant.Outlined" OnClick="@(() => CopyCodeAsync(context.EnrollmentCode!))">Copy</MudButton>
+                    }
+                    @if (context.IsActive)
+                    {
+                        <MudButton Size="Size.Small" Color="Color.Error" Variant="Variant.Text" OnClick="@(() => OpenRevokeDialog(context))">Revoke</MudButton>
+                    }
+                </MudStack>
+            </MudTd>
+        </RowTemplate>
+        <NoRecordsContent>
+            <MudText Typo="Typo.body2">No enrollment codes found.</MudText>
+        </NoRecordsContent>
+    </MudTable>
+</MudContainer>
+
+<MudOverlay Visible="_issueDialogOpen" AutoClose="false" DarkBackground="true">
+    <MudPaper Class="pa-4 mx-auto mt-12" Style="max-width: 520px; width: 100%;">
+        <MudStack Spacing="2">
+            <MudText Typo="Typo.h6">New Enrollment Code</MudText>
+
+            <MudSelect T="int" Label="Validity preset" @bind-Value="_issuePresetMinutes" @bind-Value:after="OnIssuePresetChanged">
+                @foreach (var preset in _validityPresets)
+                {
+                    <MudSelectItem T="int" Value="@preset.Minutes">@preset.Label</MudSelectItem>
+                }
+            </MudSelect>
+
+            <MudNumericField T="int" Label="Custom minutes" Min="5" Max="10080" Value="@_issueMinutes" ValueChanged="OnIssueMinutesChanged" />
+            <MudNumericField T="int" Label="Max uses" Min="1" Value="@_issueMaxUses" ValueChanged="OnIssueMaxUsesChanged" />
+            <MudTextField @bind-Value="_issueNote" Label="Note / Label" />
+
+            @if (_lastIssued is not null)
+            {
+                <MudAlert Severity="Severity.Success" Dense="true">
+                    <MudStack Spacing="1">
+                        <MudText Typo="Typo.subtitle2">Generated code</MudText>
+                        <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center">
+                            <MudText Typo="Typo.h6">@_lastIssued.EnrollmentCode</MudText>
+                            <MudIconButton Icon="@Icons.Material.Filled.ContentCopy" OnClick="@(() => CopyCodeAsync(_lastIssued.EnrollmentCode))" />
+                        </MudStack>
+                        <MudText Typo="Typo.caption">Expires @_lastIssued.ExpiresUtc.ToLocalTime().ToString("g") | Max uses @_lastIssued.MaxUses</MudText>
+                    </MudStack>
+                </MudAlert>
+            }
+
+            <MudStack Row="true" Justify="Justify.FlexEnd" Spacing="1">
+                <MudButton Variant="Variant.Text" OnClick="CloseIssueDialog">Close</MudButton>
+                <MudButton Color="Color.Primary" Variant="Variant.Filled" Disabled="@(_issueMinutes < 5 || _issueMinutes > 10080 || _issueMaxUses < 1)" OnClick="IssueAsync">Generate</MudButton>
+            </MudStack>
+        </MudStack>
+    </MudPaper>
+</MudOverlay>
+
+<MudOverlay Visible="_revokeDialogOpen" AutoClose="false" DarkBackground="true">
+    <MudPaper Class="pa-4 mx-auto mt-12" Style="max-width: 520px; width: 100%;">
+        <MudStack Spacing="2">
+            <MudText Typo="Typo.h6">Revoke Enrollment Code</MudText>
+            <MudText Typo="Typo.body2">This code will stop working immediately.</MudText>
+            <MudTextField @bind-Value="_revokeReason" Label="Reason (optional)" />
+            <MudStack Row="true" Justify="Justify.FlexEnd" Spacing="1">
+                <MudButton Variant="Variant.Text" OnClick="CloseRevokeDialog">Cancel</MudButton>
+                <MudButton Color="Color.Error" Variant="Variant.Filled" OnClick="RevokeAsync">Revoke</MudButton>
+            </MudStack>
+        </MudStack>
+    </MudPaper>
+</MudOverlay>
+
+@code {
+    [Parameter] public int TenantId { get; set; }
+
+    private List<EnrollmentCodeDto> _codes = new();
+    private bool _loading;
+    private string _statusFilter = "active";
+    private string? _search;
+
+    private bool _issueDialogOpen;
+    private IssuedEnrollmentCodeDto? _lastIssued;
+    private int _issuePresetMinutes = 60;
+    private int _issueMinutes = 60;
+    private int _issueMaxUses = 1;
+    private string? _issueNote;
+
+    private bool _revokeDialogOpen;
+    private EnrollmentCodeDto? _pendingRevoke;
+    private string? _revokeReason;
+
+    private readonly (string Label, int Minutes)[] _validityPresets =
+    [
+        ("1 hour", 60),
+        ("6 hours", 360),
+        ("24 hours", 1440),
+        ("3 days", 4320),
+        ("7 days", 10080)
+    ];
+
+    protected override async Task OnParametersSetAsync()
+    {
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        try
+        {
+            _codes = (await EnrollmentCodes.ListAsync(TenantId, _statusFilter, _search)).ToList();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to load enrollment codes: {ex.Message}", MudBlazor.Severity.Error);
+        }
+        finally
+        {
+            _loading = false;
+            StateHasChanged();
+        }
+    }
+
+    private void OpenAgents() => Nav.NavigateTo($"/tenants/{TenantId}/agents");
+
+    private void OpenIssueDialog()
+    {
+        _issueDialogOpen = true;
+        _lastIssued = null;
+    }
+
+    private void CloseIssueDialog()
+    {
+        _issueDialogOpen = false;
+    }
+
+    private async Task IssueAsync()
+    {
+        try
+        {
+            var issued = await EnrollmentCodes.IssueAsync(TenantId, new IssueEnrollmentCodeRequest(_issueMinutes, _issueMaxUses, _issueNote));
+            _lastIssued = issued;
+            Snackbar.Add("Enrollment code generated.", MudBlazor.Severity.Success);
+            await CopyAsync(issued.EnrollmentCode, "Enrollment code");
+            await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to generate enrollment code: {ex.Message}", MudBlazor.Severity.Error);
+        }
+    }
+
+    private void OpenRevokeDialog(EnrollmentCodeDto item)
+    {
+        _pendingRevoke = item;
+        _revokeReason = null;
+        _revokeDialogOpen = true;
+    }
+
+    private void CloseRevokeDialog()
+    {
+        _revokeDialogOpen = false;
+        _pendingRevoke = null;
+        _revokeReason = null;
+    }
+
+    private async Task RevokeAsync()
+    {
+        if (_pendingRevoke is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await EnrollmentCodes.RevokeAsync(TenantId, _pendingRevoke.EnrollmentCodeId, _revokeReason);
+            Snackbar.Add("Enrollment code revoked.", MudBlazor.Severity.Success);
+            CloseRevokeDialog();
+            await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to revoke enrollment code: {ex.Message}", MudBlazor.Severity.Error);
+        }
+    }
+
+    private async Task CopyAsync(string value, string label)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return;
+        }
+
+        try
+        {
+            await JSRuntime.InvokeVoidAsync("navigator.clipboard.writeText", value);
+            Snackbar.Add($"{label} copied to clipboard.", MudBlazor.Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to copy {label.ToLowerInvariant()}: {ex.Message}", MudBlazor.Severity.Error);
+        }
+    }
+
+    private Task CopyCodeAsync(string value) => CopyAsync(value, "Enrollment code");
+
+    private static MudBlazor.Color StatusColor(string status) => status switch
+    {
+        "Active" => MudBlazor.Color.Success,
+        "Revoked" => MudBlazor.Color.Error,
+        _ => MudBlazor.Color.Warning
+    };
+
+    private async Task OnStatusChangedAsync()
+    {
+        await LoadAsync();
+    }
+
+    private async Task OnSearchChangedAsync()
+    {
+        await LoadAsync();
+    }
+
+    private void OnIssuePresetChanged()
+    {
+        _issueMinutes = _issuePresetMinutes;
+    }
+
+    private void OnIssueMinutesChanged(int value)
+    {
+        _issueMinutes = value;
+    }
+
+    private void OnIssueMaxUsesChanged(int value)
+    {
+        _issueMaxUses = value;
+    }
+}

@@ -1,0 +1,1155 @@
+@page "/tasks/new"
+@using System.Collections.Generic
+@using System.Linq
+@using Microsoft.AspNetCore.Components.Web
+
+@using NetRatel.Shared
+@using NetRatel.Shared.Contracts.Execution
+@using NetRatel.Shared.Contracts.Scripts
+@using NetRatel.Shared.Contracts.Tasks
+@using NetRatel.Web.Models.Clients
+@using NetRatel.Web.Services.Clients
+
+@inject ITenantApiService TenantApi
+@inject ClientPresentationService ClientPresentation
+@inject IScriptLibraryService ScriptLibraryService
+@inject TaskApiService TaskApi
+@inject NavigationManager Navigation
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+
+<MudStack Spacing="3" Class="task-console">
+    <MudPaper Class="task-hero pa-5" Elevation="0">
+        <MudStack Spacing="3">
+            <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
+                <MudStack Spacing="1">
+                    <MudText Class="task-kicker">Ad Hoc Execution</MudText>
+                    <MudText Typo="Typo.h4">Task Launch Console</MudText>
+                    <MudText Class="task-subtitle">Run shell code or shared library scripts directly against a selected client without wrapping them in a job definition.</MudText>
+                </MudStack>
+                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
+                    <MudChip T="string" Variant="Variant.Outlined" Size="Size.Small">@(_selectedTenant?.Name ?? "No tenant")</MudChip>
+                    <MudChip T="string" Variant="Variant.Outlined" Size="Size.Small">@_environment.ToShortLabel()</MudChip>
+                    <MudChip T="string" Variant="Variant.Text" Size="Size.Small">@GetSelectedTargetDisplay()</MudChip>
+                </MudStack>
+            </MudStack>
+
+            <MudGrid Spacing="2">
+                <MudItem xs="12" sm="6" md="3">
+                    <MudPaper Class="task-stat-card pa-3" Elevation="0">
+                        <MudText Class="task-stat-label">Scope</MudText>
+                        <MudText Typo="Typo.h6">@(_selectedTenant?.Name ?? "Select tenant")</MudText>
+                        <MudText Class="task-stat-meta">@_environment.ToShortLabel() environment</MudText>
+                    </MudPaper>
+                </MudItem>
+                <MudItem xs="12" sm="6" md="3">
+                    <MudPaper Class="task-stat-card pa-3" Elevation="0">
+                        <MudText Class="task-stat-label">Target</MudText>
+                        <MudText Typo="Typo.h6">@GetSelectedTargetDisplay("Awaiting client")</MudText>
+                        <MudText Class="task-stat-meta">@(_selectedClient?.HostName ?? "Search and select an Agent")</MudText>
+                    </MudPaper>
+                </MudItem>
+                <MudItem xs="12" sm="6" md="3">
+                    <MudPaper Class="task-stat-card pa-3" Elevation="0">
+                        <MudText Class="task-stat-label">Execution Mode</MudText>
+                        <MudText Typo="Typo.h6">@GetTaskModeLabel()</MudText>
+                        <MudText Class="task-stat-meta">@GetTaskModeHint()</MudText>
+                    </MudPaper>
+                </MudItem>
+                <MudItem xs="12" sm="6" md="3">
+                    <MudPaper Class="task-stat-card pa-3" Elevation="0">
+                        <MudText Class="task-stat-label">Ready State</MudText>
+                        <MudText Typo="Typo.h6">@(_canSubmit ? "Ready to launch" : "Needs input")</MudText>
+                        <MudText Class="task-stat-meta">@GetReadinessSummary()</MudText>
+                    </MudPaper>
+                </MudItem>
+            </MudGrid>
+        </MudStack>
+    </MudPaper>
+
+    <MudGrid Spacing="3">
+        <MudItem xs="12" md="5">
+            <MudPaper Class="task-panel pa-4" Elevation="0">
+                <MudStack Spacing="3">
+                    <MudText Typo="Typo.h6">Target Selection</MudText>
+
+                    <MudStack Spacing="1">
+                        <MudText Typo="Typo.subtitle2">Tenant</MudText>
+                        <MudAutocomplete T="TenantDto"
+                                          Label="Select tenant"
+                                          @bind-Value="TenantSelection"
+                                          ToStringFunc="TenantDisplay"
+                                          SearchFunc="SearchTenants"
+                                          ResetValueOnEmptyText="true"
+                                          Clearable="true"
+                                          Disabled="_isLoadingTenants"
+                                          Variant="Variant.Outlined" />
+                        @if (_isLoadingTenants)
+                        {
+                            <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
+                        }
+                        @if (_showValidation && _selectedTenant is null)
+                        {
+                            <MudText Typo="Typo.caption" Color="Color.Error">Tenant selection is required.</MudText>
+                        }
+                    </MudStack>
+
+                    <MudStack Spacing="1">
+                        <MudText Typo="Typo.subtitle2">Environment</MudText>
+                        <MudChipSet T="ClientEnvironment" Mandatory="true" SingleSelection="true" @bind-SelectedValue="EnvironmentSelection">
+                            @foreach (var env in _environments)
+                            {
+                                <MudChip T="ClientEnvironment" Value="@env">@env.ToShortLabel()</MudChip>
+                            }
+                        </MudChipSet>
+                    </MudStack>
+
+                    <MudDivider />
+
+                    <MudStack Spacing="2">
+                        <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
+                            <MudText Typo="Typo.subtitle1">Client Inventory</MudText>
+                            <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
+                                <MudTextField @bind-Value="_clientSearch"
+                                              Label="Search clients"
+                                              Immediate="true"
+                                              Variant="Variant.Outlined"
+                                              Adornment="Adornment.Start"
+                                              AdornmentIcon="@Icons.Material.Filled.Search"
+                                              OnKeyDown="HandleClientSearchKey"
+                                              Disabled="_isLoadingClients || _selectedTenant is null" />
+                                <MudButton Variant="Variant.Outlined" Color="Color.Primary" OnClick="PerformClientSearch" Disabled="_isLoadingClients || _selectedTenant is null">
+                                    Search
+                                </MudButton>
+                            </MudStack>
+                        </MudStack>
+
+                        <MudPaper Class="task-client-surface pa-0" Elevation="0">
+                            @if (_selectedTenant is null)
+                            {
+                                <MudStack Class="pa-4" Spacing="1">
+                                    <MudText Typo="Typo.subtitle2">Choose a tenant to load its client estate.</MudText>
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">The environment filter and search will then scope the available targets.</MudText>
+                                </MudStack>
+                            }
+                            else if (_isLoadingClients && _clients.Count == 0)
+                            {
+                                <MudStack Class="pa-3" Spacing="1">
+                                    <MudSkeleton Height="32" />
+                                    <MudSkeleton Height="32" />
+                                    <MudSkeleton Height="32" />
+                                </MudStack>
+                            }
+                            else if (_clients.Count == 0)
+                            {
+                                <MudStack Class="pa-4" Spacing="1">
+                                    <MudText Typo="Typo.subtitle2">No clients found.</MudText>
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">Try another search term or switch environment.</MudText>
+                                </MudStack>
+                            }
+                            else
+                            {
+                                <MudTable T="ClientPresentationModel"
+                                          Items="_clients"
+                                          Hover="true"
+                                          Dense="true"
+                                          FixedHeader="true"
+                                          Height="310px"
+                                          OnRowClick="OnClientRowClick"
+                                          RowClass="cursor-pointer"
+                                          RowClassFunc="SelectedRowClassFunc"
+                                          Class="task-client-table">
+                                    <HeaderContent>
+                                        <MudTh style="width:56px;"></MudTh>
+                                        <MudTh>Client</MudTh>
+                                        <MudTh>Host</MudTh>
+                                        <MudTh>IP</MudTh>
+                                        <MudTh>OS</MudTh>
+                                    </HeaderContent>
+                                    <RowTemplate>
+                                        <MudTd>
+                                            <MudIcon Icon="@(IsClientSelected(context) ? Icons.Material.Filled.RadioButtonChecked : Icons.Material.Outlined.RadioButtonUnchecked)" />
+                                        </MudTd>
+                                        <MudTd>
+                                            <MudText Typo="Typo.subtitle2">@context.DisplayName</MudText>
+                                            <MudText Typo="Typo.caption" Color="Color.Secondary">@GetClientSubtitle(context)</MudText>
+                                        </MudTd>
+                                        <MudTd>@context.HostName</MudTd>
+                                        <MudTd>@(context.Online ? "Online" : "Offline")</MudTd>
+                                        <MudTd>@context.OperatingSystem</MudTd>
+                                    </RowTemplate>
+                                </MudTable>
+                            }
+                        </MudPaper>
+
+                        <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
+                            <MudText Typo="Typo.caption">
+                                Showing @((_clients.Count == 0 ? 0 : ((_clientPage - 1) * ClientPageSize) + 1)) -
+                                @(((_clientPage - 1) * ClientPageSize) + _clients.Count) of @_clientTotalCount
+                            </MudText>
+                            <MudStack Row="true" Spacing="1">
+                                <MudButton Variant="Variant.Outlined" OnClick="PreviousClientPage" Disabled="_clientPage <= 1 || _isLoadingClients">Previous</MudButton>
+                                <MudButton Variant="Variant.Outlined" OnClick="NextClientPage" Disabled="!ClientHasNextPage || _isLoadingClients">Next</MudButton>
+                            </MudStack>
+                        </MudStack>
+
+                        @if (_showValidation && _selectedClient is null)
+                        {
+                            <MudText Typo="Typo.caption" Color="Color.Error">Client selection is required.</MudText>
+                        }
+                    </MudStack>
+                </MudStack>
+            </MudPaper>
+        </MudItem>
+
+        <MudItem xs="12" md="7">
+            <MudStack Spacing="3">
+                <MudPaper Class="task-panel pa-4" Elevation="0">
+                    <MudStack Spacing="3">
+                        <MudText Typo="Typo.h6">Execution Payload</MudText>
+
+                        <MudStack Spacing="1">
+                            <MudText Typo="Typo.subtitle2">Task Type</MudText>
+                            <MudChipSet T="string" Mandatory="true" SingleSelection="true" @bind-SelectedValue="TaskTypeSelection">
+                                <MudChip T="string" Value="@TaskKinds.ExecShellCommand">Shell Command</MudChip>
+                                <MudChip T="string" Value="@TaskKinds.ExecLibraryScript">Library Script</MudChip>
+                            </MudChipSet>
+                        </MudStack>
+
+                        @if (_taskType == TaskKinds.ExecShellCommand)
+                        {
+                            <MudTextField T="string"
+                                          @bind-Text="ScriptText"
+                                          Immediate="true"
+                                          Lines="14"
+                                          Label="Command / Script"
+                                          Variant="Variant.Outlined"
+                                          Required="true"
+                                          RequiredError="Script text is required." />
+
+                            @if (_showValidation && string.IsNullOrWhiteSpace(_scriptText))
+                            {
+                                <MudText Typo="Typo.caption" Color="Color.Error">Provide the script or command to execute.</MudText>
+                            }
+                        }
+                        else if (_taskType == TaskKinds.ExecLibraryScript)
+                        {
+                            <MudPaper Class="task-library-card pa-3" Elevation="0">
+                                <MudStack Spacing="2">
+                                    <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
+                                        <MudText Typo="Typo.subtitle1">Script Library</MudText>
+                                        <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.MenuBook" OnClick="OpenScriptDialog" Disabled="_isSubmitting">
+                                            Browse
+                                        </MudButton>
+                                    </MudStack>
+
+                                    @if (_selectedScript is not null)
+                                    {
+                                        var s = _selectedScript;
+                                        <MudStack Spacing="1">
+                                            <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
+                                                <MudText Typo="Typo.h6">@s.Name</MudText>
+                                                <MudChip T="string" Variant="Variant.Outlined" Size="Size.Small">@(!string.IsNullOrWhiteSpace(s.ScriptType) ? s.ScriptType : "script")</MudChip>
+                                                <MudTooltip Text="Clear selection">
+                                                    <MudIconButton Icon="@Icons.Material.Filled.Close" Disabled="_isSubmitting" OnClick="ClearSelectedScript" />
+                                                </MudTooltip>
+                                            </MudStack>
+                                            @if (!string.IsNullOrWhiteSpace(s.Description))
+                                            {
+                                                <MudText Typo="Typo.body2">@s.Description</MudText>
+                                            }
+                                            @if (s.Tags is { Length: > 0 })
+                                            {
+                                                <MudStack Row="true" Spacing="1">
+                                                    @foreach (var tag in s.Tags)
+                                                    {
+                                                        <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">@tag</MudChip>
+                                                    }
+                                                </MudStack>
+                                            }
+                                        </MudStack>
+                                    }
+                                    else
+                                    {
+                                        <MudText Typo="Typo.body2">Select a shared script from the library to execute on the chosen client.</MudText>
+                                    }
+
+                                    @if (_showValidation && _selectedScript is null)
+                                    {
+                                        <MudText Typo="Typo.caption" Color="Color.Error">Select a script from the library.</MudText>
+                                    }
+
+                                    <MudSelect T="ShellExecutor"
+                                               Label="Preferred shell"
+                                               Variant="Variant.Outlined"
+                                               Margin="Margin.Dense"
+                                               @bind-Value="_libraryShellPreference">
+                                        <MudSelectItem Value="@ShellExecutor.Auto">Auto (default)</MudSelectItem>
+                                        <MudSelectItem Value="@ShellExecutor.Pwsh">PowerShell 7 (pwsh)</MudSelectItem>
+                                        <MudSelectItem Value="@ShellExecutor.WindowsPowerShell">Windows PowerShell</MudSelectItem>
+                                    </MudSelect>
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">Auto picks PowerShell 7 when available, otherwise falls back to Windows PowerShell.</MudText>
+                                </MudStack>
+                            </MudPaper>
+                        }
+                    </MudStack>
+                </MudPaper>
+
+                <MudPaper Class="task-panel pa-4" Elevation="0">
+                    <MudStack Spacing="3">
+                        <MudText Typo="Typo.h6">Launch Profile</MudText>
+
+                        <MudStack Spacing="1">
+                            <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
+                                <MudText Typo="Typo.subtitle2">Parameters</MudText>
+                                <MudTooltip Text="Optional key/value inputs passed to the execution payload">
+                                    <MudIcon Icon="@Icons.Material.Filled.Info" Color="Color.Secondary" />
+                                </MudTooltip>
+                            </MudStack>
+
+                            @if (_parameters.Count == 0)
+                            {
+                                <MudText Typo="Typo.caption" Color="Color.Secondary">No parameters added yet.</MudText>
+                            }
+
+                            @foreach (var parameter in _parameters)
+                            {
+                                <MudGrid Spacing="1">
+                                    <MudItem xs="12" md="5">
+                                        <MudTextField @bind-Value="parameter.Key" Label="Key" Immediate="true" Variant="Variant.Outlined" />
+                                    </MudItem>
+                                    <MudItem xs="12" md="6">
+                                        <MudTextField @bind-Value="parameter.Value" Label="Value" Immediate="true" Variant="Variant.Outlined" />
+                                    </MudItem>
+                                    <MudItem xs="12" md="1" Class="d-flex align-center justify-center">
+                                        <MudIconButton Icon="@Icons.Material.Filled.Delete" Color="Color.Error" OnClick="() => RemoveParameter(parameter)" />
+                                    </MudItem>
+                                </MudGrid>
+                            }
+
+                            <MudButton Variant="Variant.Outlined" Color="Color.Primary" OnClick="AddParameter" StartIcon="@Icons.Material.Filled.Add">
+                                Add Parameter
+                            </MudButton>
+                        </MudStack>
+
+                        <MudTextField @bind-Value="_requestId" Label="Request Id (optional)" Immediate="true" Variant="Variant.Outlined" />
+
+                        <MudStack Row="true" Justify="Justify.FlexEnd" Spacing="1">
+                            <MudButton Variant="Variant.Text" Color="Color.Secondary" OnClick="Cancel">Cancel</MudButton>
+                            <MudButton Variant="Variant.Filled"
+                                       Color="Color.Primary"
+                                       Disabled="@(!_canSubmit)"
+                                       OnClick="SubmitAsync"
+                                       StartIcon="@Icons.Material.Filled.RocketLaunch">
+                                @if (_isSubmitting)
+                                {
+                                    <MudProgressCircular Indeterminate="true" Size="Size.Small" Class="me-2" />
+                                }
+                                Submit
+                            </MudButton>
+                        </MudStack>
+                    </MudStack>
+                </MudPaper>
+            </MudStack>
+        </MudItem>
+
+        <MudItem xs="12">
+            <MudPaper Class="task-panel pa-4" Elevation="0">
+                <MudStack Spacing="2">
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
+                        <MudStack Spacing="0">
+                            <MudText Typo="Typo.h6">Recent Task Activity</MudText>
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">Latest ad hoc executions for the selected scope, ready for drill-down and comparison.</MudText>
+                        </MudStack>
+                        <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Refresh" OnClick="RefreshRecentTasksAsync" Disabled="_isLoadingRecentTasks">
+                            Refresh
+                        </MudButton>
+                    </MudStack>
+
+                    @if (_isLoadingRecentTasks)
+                    {
+                        <MudProgressLinear Indeterminate="true" Color="Color.Primary" />
+                    }
+
+                    @if (_recentTasks.Count == 0)
+                    {
+                        <MudPaper Class="task-history-empty pa-4" Elevation="0">
+                            <MudText Typo="Typo.subtitle2">No recent task runs for this scope yet.</MudText>
+                            <MudText Typo="Typo.caption" Color="Color.Secondary">Launch a task or widen the tenant/client selection to build execution history.</MudText>
+                        </MudPaper>
+                    }
+                    else
+                    {
+                        <MudTable T="TaskDto" Items="_recentTasks" Hover="true" Dense="true" Breakpoint="Breakpoint.Md" Class="task-history-table">
+                            <HeaderContent>
+                                <MudTh>Status</MudTh>
+                                <MudTh>Task</MudTh>
+                                <MudTh>Target</MudTh>
+                                <MudTh>Environment</MudTh>
+                                <MudTh>Created</MudTh>
+                                <MudTh>Runtime</MudTh>
+                                <MudTh style="width:72px;"></MudTh>
+                            </HeaderContent>
+                            <RowTemplate>
+                                <MudTd>
+                                    <MudChip T="string" Color="@TaskStatusColor(context.Status)" Variant="Variant.Outlined" Size="Size.Small">@context.Status</MudChip>
+                                </MudTd>
+                                <MudTd>
+                                    <MudText Typo="Typo.subtitle2">@context.TaskType</MudText>
+                                    <MudText Typo="Typo.caption" Color="Color.Secondary">@context.RequestId</MudText>
+                                </MudTd>
+                                <MudTd>
+                                    <MudText Typo="Typo.body2">@GetTaskTargetDisplay(context)</MudText>
+                                    @if (!string.IsNullOrWhiteSpace(GetTaskTargetMeta(context)))
+                                    {
+                                        <MudText Typo="Typo.caption" Color="Color.Secondary">@GetTaskTargetMeta(context)</MudText>
+                                    }
+                                </MudTd>
+                                <MudTd>@context.Environment.ToShortLabel()</MudTd>
+                                <MudTd>@context.Created.ToLocalTime():g</MudTd>
+                                <MudTd>@FormatRuntime(context)</MudTd>
+                                <MudTd Align="Align.Right">
+                                    <MudIconButton Icon="@Icons.Material.Filled.OpenInNew"
+                                                   Color="Color.Primary"
+                                                   Size="Size.Small"
+                                                   Href="@($"/tasks/request/{Uri.EscapeDataString(context.RequestId)}")" />
+                                </MudTd>
+                            </RowTemplate>
+                        </MudTable>
+                    }
+                </MudStack>
+            </MudPaper>
+        </MudItem>
+    </MudGrid>
+</MudStack>
+
+<style>
+  .cursor-pointer { cursor: pointer; }
+  .selected { background-color: rgba(88, 99, 255, 0.14) !important; }
+  .selected > td { color: inherit !important; }
+
+  .task-console {
+      padding-bottom: 1rem;
+  }
+
+  .task-hero,
+  .task-panel,
+  .task-stat-card,
+  .task-library-card,
+  .task-client-surface {
+      border: 1px solid var(--mud-palette-divider);
+      border-radius: var(--netratel-radius-surface, 7px);
+      background: var(--mud-palette-surface);
+  }
+
+  .task-hero {
+      border-left: 3px solid var(--mud-palette-primary);
+  }
+
+  .task-kicker,
+  .task-stat-label {
+      color: var(--mud-palette-primary);
+      font-size: 0.76rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+  }
+
+  .task-subtitle,
+  .task-stat-meta {
+      color: var(--mud-palette-text-secondary);
+  }
+
+  .task-stat-card {
+      height: 100%;
+      padding: 0.25rem;
+  }
+
+  .task-client-surface {
+      overflow: hidden;
+  }
+</style>
+
+@code {
+    private readonly List<TenantDto> _tenants = new();
+    private TenantDto? _selectedTenant;
+    private bool _isLoadingTenants;
+
+    private readonly ClientEnvironment[] _environments = new[] { ClientEnvironment.Dev, ClientEnvironment.Prod };
+    private ClientEnvironment _environment = ClientEnvironment.Dev;
+
+    private readonly List<ClientPresentationModel> _clients = new();
+    private ClientPresentationModel? _selectedClient;
+    private Guid? _selectedAgentId;
+    private string? _clientSearch;
+    private int _clientPage = 1;
+    private int _clientTotalCount;
+    private bool _isLoadingClients;
+
+    private string _taskType = TaskKinds.ExecShellCommand;
+    private ShellExecutor _libraryShellPreference = ShellExecutor.Auto;
+    private string? _scriptText;
+    private ScriptSummaryDto? _selectedScript;
+
+    public sealed class ParameterInput
+    {
+        public string? Key { get; set; }
+        public string? Value { get; set; }
+    }
+
+    private string? _requestId;
+
+    private bool _isSubmitting;
+    private bool _showValidation;
+    private readonly List<TaskDto> _recentTasks = new();
+    private bool _isLoadingRecentTasks;
+
+    private readonly CancellationTokenSource _disposeCts = new();
+    private CancellationTokenSource? _clientsLoadCts;
+
+    private const int ClientPageSize = 25;
+
+    private bool _canSubmit;
+    private bool _gate_isSubmitting, _gate_isLoadingClients, _gate_isLoadingTenants,
+                 _gate_hasTenant, _gate_hasClient, _gate_hasScript, _gate_hasLibrary;
+
+    // Bindable wrappers (avoid duplicate SelectedOptionChanged)
+    private TenantDto? TenantSelection
+    {
+        get => _selectedTenant;
+        set => _ = ChangeTenantAsync(value);
+    }
+
+    private ClientEnvironment EnvironmentSelection
+    {
+        get => _environment;
+        set => _ = ChangeEnvironmentAsync(value);
+    }
+
+    private string TaskTypeSelection
+    {
+        get => _taskType;
+        set
+        {
+            var next = NormalizeTaskKind(value);
+            if (string.Equals(_taskType, next, StringComparison.Ordinal)) return;
+
+            _taskType = next;
+            _ = InvokeAsync(StateHasChanged);
+
+            if (_taskType == TaskKinds.ExecLibraryScript)
+            {
+                _ = OpenScriptDialog();
+            }
+            else
+            {
+                _selectedScript = null;
+                RecomputeCanSubmit();
+                _ = InvokeAsync(StateHasChanged);
+            }
+        }
+    }
+
+    private string? ScriptText
+    {
+        get => _scriptText;
+        set
+        {
+            if (_scriptText == value) return;
+            _scriptText = value;
+            RecomputeCanSubmit();
+            _ = InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private static string NormalizeTaskKind(string? value) => value switch
+    {
+        null or "" => TaskKinds.ExecShellCommand,
+        TaskKinds.ExecShellCommand => TaskKinds.ExecShellCommand,
+        TaskKinds.ExecLibraryScript => TaskKinds.ExecLibraryScript,
+        TaskKinds.Legacy_RunPowerShell => TaskKinds.ExecShellCommand,
+        TaskKinds.Legacy_RunLibraryScript => TaskKinds.ExecLibraryScript,
+        TaskKinds.Legacy_ExecPs => TaskKinds.ExecShellCommand,
+        TaskKinds.Legacy_ExecSh => TaskKinds.ExecShellCommand,
+        _ => TaskKinds.ExecShellCommand
+    };
+
+    private static bool TryParseScriptType(string? value, out ScriptType scriptType)
+    {
+        if (!string.IsNullOrWhiteSpace(value) &&
+            Enum.TryParse(value, ignoreCase: true, out scriptType))
+        {
+            return true;
+        }
+
+        scriptType = default;
+        return false;
+    }
+
+    private bool CanSubmit() =>
+        !_isSubmitting &&
+        !_isLoadingClients &&
+        !_isLoadingTenants &&
+        _selectedTenant is not null &&
+        (_selectedAgentId.HasValue || _selectedClient is not null) &&
+        (_taskType != TaskKinds.ExecShellCommand  || !string.IsNullOrWhiteSpace(_scriptText)) &&
+        (_taskType != TaskKinds.ExecLibraryScript || _selectedScript is not null);
+
+    private string GetTaskModeLabel() => _taskType switch
+    {
+        TaskKinds.ExecLibraryScript => "Library Script",
+        _ => "Shell Command"
+    };
+
+    private string GetTaskModeHint()
+    {
+        if (_taskType == TaskKinds.ExecLibraryScript)
+        {
+            return _selectedScript is not null
+                ? _selectedScript.Name
+                : "Choose from the shared script catalog";
+        }
+
+        return string.IsNullOrWhiteSpace(_scriptText)
+            ? "Inline command, script block, or ad hoc fix"
+            : "Payload ready for direct execution";
+    }
+
+    private string GetReadinessSummary()
+    {
+        if (_isLoadingTenants || _isLoadingClients)
+            return "Loading orchestration context";
+
+        if (_selectedTenant is null)
+            return "Select a tenant scope";
+
+        if (_selectedClient is null && !_selectedAgentId.HasValue)
+            return "Choose a target Agent";
+
+        if (_taskType == TaskKinds.ExecShellCommand && string.IsNullOrWhiteSpace(_scriptText))
+            return "Provide a command or script payload";
+
+        if (_taskType == TaskKinds.ExecLibraryScript && _selectedScript is null)
+            return "Select a library script";
+
+        return "All launch requirements satisfied";
+    }
+
+    private string GetSelectedTargetDisplay(string fallback = "No target")
+        => _selectedClient is null
+            ? fallback
+            : GetClientDisplay(_selectedClient);
+
+    private static string GetClientDisplay(ClientPresentationModel client)
+        => FirstPresent(client.HostName, client.DisplayName) ?? "Agent unavailable";
+
+    private static string GetClientSubtitle(ClientPresentationModel client)
+    {
+        var display = GetClientDisplay(client);
+        var subtitle = FirstPresent(client.OperatingSystem, client.Architecture);
+        return string.IsNullOrWhiteSpace(subtitle) || string.Equals(subtitle, display, StringComparison.OrdinalIgnoreCase)
+            ? (client.Online ? "Online" : "Offline")
+            : subtitle!;
+    }
+
+    private static string GetTaskTargetDisplay(TaskDto task)
+        => FirstPresent(task.ClientHostName, task.ClientDisplayName, task.ClientName) ?? "Client unavailable";
+
+    private static string? GetTaskTargetMeta(TaskDto task)
+        => FirstPresent(task.ClientName, task.ClientDisplayName) is { } meta &&
+           !string.Equals(meta, GetTaskTargetDisplay(task), StringComparison.OrdinalIgnoreCase)
+            ? meta
+            : null;
+
+    private static string? FirstPresent(params string?[] values)
+        => values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadTenantsAsync();
+        await LoadRecentTasksAsync();
+    }
+
+    private void RecomputeCanSubmit()
+    {
+        _gate_isSubmitting      = _isSubmitting;
+        _gate_isLoadingClients  = _isLoadingClients;
+        _gate_isLoadingTenants  = _isLoadingTenants;
+
+        // Some installs end up with _selectedTenant null even though there's only one tenant
+        // (clients load fine, but the autocomplete Value isn't set). Treat exactly one tenant
+        // as a valid selection and normalize it here.
+        if (_selectedTenant is null && _tenants.Count == 1)
+            _selectedTenant = _tenants[0];
+
+        _gate_hasTenant  = _selectedTenant is not null;
+        _gate_hasClient  = _selectedAgentId.HasValue || _selectedClient is not null;
+        _gate_hasScript  = _taskType != TaskKinds.ExecShellCommand   || !string.IsNullOrWhiteSpace(_scriptText);
+        _gate_hasLibrary = _taskType != TaskKinds.ExecLibraryScript || _selectedScript is not null;
+
+        _canSubmit = !_gate_isSubmitting
+                     && !_gate_isLoadingClients
+                     && !_gate_isLoadingTenants
+                     && _gate_hasTenant
+                     && _gate_hasClient
+                     && _gate_hasScript
+                     && _gate_hasLibrary;
+    }
+
+    private async Task LoadTenantsAsync()
+    {
+        _isLoadingTenants = true;
+        try
+        {
+            var tenants = await TenantApi.GetTenantsAsync(_disposeCts.Token).ConfigureAwait(false);
+            _tenants.Clear();
+            _tenants.AddRange(tenants.OrderBy(t => t.Name, StringComparer.OrdinalIgnoreCase));
+
+            if (_selectedTenant is not null)
+            {
+                _selectedTenant = _tenants.FirstOrDefault(t => t.Id == _selectedTenant.Id);
+            }
+
+            if (_selectedTenant is null && _tenants.Count == 1)
+            {
+                _selectedTenant = _tenants[0];
+                await LoadClientsAsync();
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to load tenants: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isLoadingTenants = false;
+            // Re-sync after clients are loaded
+            SyncSelectedClientFromAgentId();
+            RecomputeCanSubmit();
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void OnClientRowClick(TableRowClickEventArgs<ClientPresentationModel> e)
+    {
+        _selectedAgentId = e.Item.AgentId;
+        SyncSelectedClientFromAgentId();
+        RecomputeCanSubmit();
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    private string SelectedRowClassFunc(ClientPresentationModel row, int rowNumber)
+        => IsClientSelected(row) ? "selected" : string.Empty;
+
+    private bool IsClientSelected(ClientPresentationModel c) => _selectedAgentId == c.AgentId;
+
+    private Task<IEnumerable<TenantDto>> SearchTenants(string value, CancellationToken cancellationToken)
+    {
+        _ = cancellationToken;
+        IEnumerable<TenantDto> result = _tenants;
+        if (!string.IsNullOrWhiteSpace(value))
+        {
+            result = result.Where(t => t.Name.Contains(value, StringComparison.OrdinalIgnoreCase));
+        }
+
+        return Task.FromResult(result);
+    }
+
+    private string TenantDisplay(TenantDto? tenant) => tenant?.Name ?? string.Empty;
+
+    private async Task ChangeTenantAsync(TenantDto? tenant)
+    {
+        if (tenant?.Id == _selectedTenant?.Id) return;
+
+        _selectedTenant = tenant;
+        _selectedClient = null;
+        _selectedAgentId = null;
+        _clientPage = 1;
+        _clientTotalCount = 0;
+        _clients.Clear();
+
+        RecomputeCanSubmit();
+
+        if (_selectedTenant is not null)
+        {
+            await LoadClientsAsync();
+            await LoadRecentTasksAsync();
+        }
+        else
+        {
+            await LoadRecentTasksAsync();
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task ChangeEnvironmentAsync(ClientEnvironment environment)
+    {
+        if (_environment == environment) return;
+
+        _environment = environment;
+        _clientPage = 1;
+        _selectedClient = null;
+        _selectedAgentId = null;
+
+        if (_selectedTenant is not null)
+        {
+            await LoadClientsAsync();
+        }
+
+        await LoadRecentTasksAsync();
+    }
+
+    private async Task LoadClientsAsync()
+    {
+        if (_selectedTenant is null) return;
+
+        _clientsLoadCts?.Cancel();
+        _clientsLoadCts?.Dispose();
+        _clientsLoadCts = CancellationTokenSource.CreateLinkedTokenSource(_disposeCts.Token);
+        var ct = _clientsLoadCts.Token;
+
+        _isLoadingClients = true;
+        try
+        {
+            var snapshot = await ClientPresentation.GetClientsAsync(ct).ConfigureAwait(false);
+            var page = snapshot.Clients
+                .Where(agent => agent.TenantId == _selectedTenant.Id && agent.Enabled && agent.Online)
+                .Where(agent => string.IsNullOrWhiteSpace(_clientSearch) || $"{agent.DisplayName} {agent.HostName} {agent.OperatingSystem}".Contains(_clientSearch, StringComparison.OrdinalIgnoreCase))
+                .OrderBy(agent => agent.DisplayName, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            _clients.Clear();
+            _clients.AddRange(page.Skip((_clientPage - 1) * ClientPageSize).Take(ClientPageSize));
+            _clientTotalCount = page.Count;
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to load clients (tenant {_selectedTenant!.Id}, env {_environment.ToShortLabel()}). {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isLoadingClients = false;
+
+            // CRITICAL: Sync after clients load
+            SyncSelectedClientFromAgentId();
+            RecomputeCanSubmit();
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task LoadRecentTasksAsync()
+    {
+        _isLoadingRecentTasks = true;
+        try
+        {
+            var recent = await TaskApi.GetRecentAsync(
+                limit: 12,
+                agentId: _selectedAgentId,
+                tenantId: _selectedTenant?.Id,
+                environment: _environment == ClientEnvironment.None ? null : _environment,
+                cancellationToken: _disposeCts.Token).ConfigureAwait(false) ?? new List<TaskDto>();
+
+            _recentTasks.Clear();
+            _recentTasks.AddRange(recent.OrderByDescending(t => t.Created));
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to load recent tasks: {ex.Message}", Severity.Warning);
+        }
+        finally
+        {
+            _isLoadingRecentTasks = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private Task RefreshRecentTasksAsync() => LoadRecentTasksAsync();
+
+    private void HandleClientSearchKey(KeyboardEventArgs args)
+    {
+        if (string.Equals(args.Key, "Enter", System.StringComparison.OrdinalIgnoreCase))
+        {
+            _ = PerformClientSearch();
+        }
+    }
+
+    private async Task PerformClientSearch()
+    {
+        _clientPage = 1;
+        await LoadClientsAsync();
+    }
+
+    private async Task PreviousClientPage()
+    {
+        if (_clientPage <= 1) return;
+        _clientPage--;
+        await LoadClientsAsync();
+    }
+
+    private async Task NextClientPage()
+    {
+        if (!ClientHasNextPage) return;
+        _clientPage++;
+        await LoadClientsAsync();
+    }
+
+    private bool ClientHasNextPage => _clientPage * ClientPageSize < _clientTotalCount;
+
+    private void SyncSelectedClientFromAgentId()
+    {
+        if (!_selectedAgentId.HasValue)
+        {
+            _selectedClient = null;
+            return;
+        }
+
+        _selectedClient = _clients.FirstOrDefault(c =>
+            c.AgentId == _selectedAgentId.Value);
+    }
+
+    private async Task OpenScriptDialog()
+    {
+        var options = new DialogOptions { CloseButton = true, MaxWidth = MaxWidth.Medium, FullWidth = false };
+        var dialogReference = await DialogService.ShowAsync<ScriptLibraryDialog>("Choose Script", options).ConfigureAwait(false);
+        var result = await dialogReference.Result.ConfigureAwait(false);
+
+        if (!result.Canceled && result.Data is ScriptSummaryDto summary)
+        {
+            _selectedScript = summary;
+            RecomputeCanSubmit();
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void ClearSelectedScript()
+    {
+        _selectedScript = null;
+        RecomputeCanSubmit();
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    private void AddParameter() => _parameters.Add(new ParameterInput());
+
+    private void RemoveParameter(ParameterInput parameter) => _parameters.Remove(parameter);
+
+    private async Task SubmitAsync()
+    {
+        _showValidation = true;
+
+        if (_isSubmitting) return;
+        if (!ValidateForm()) return;
+
+        _isSubmitting = true;
+        try
+        {
+            var parameterPairs = _parameters
+                .Where(p => !string.IsNullOrWhiteSpace(p.Key))
+                .ToDictionary(p => p.Key!.Trim(), p => p.Value ?? string.Empty, StringComparer.OrdinalIgnoreCase);
+
+            var agentId = _selectedClient?.AgentId ?? _selectedAgentId;
+            if (!agentId.HasValue)
+            {
+                Snackbar.Add("Agent target is required.", Severity.Error);
+                return;
+            }
+
+            var request = new TaskCreateRequestDto
+            {
+                TenantId = _selectedTenant?.Id,
+                AgentId = agentId,
+                Environment = _environment,
+                TaskType = _taskType,
+                Preferred = _taskType == TaskKinds.ExecLibraryScript
+                    ? _libraryShellPreference
+                    : ShellExecutor.Auto,
+                RequestId = _requestId,
+                Parameters = parameterPairs.Count > 0
+                    ? new Dictionary<string, string>(parameterPairs, StringComparer.OrdinalIgnoreCase)
+                    : null
+            };
+
+            switch (_taskType)
+            {
+                case TaskKinds.ExecShellCommand:
+                {
+                    var commandText = (_scriptText ?? string.Empty).Trim();
+                    request.ShellCommand = new ExecShellCommandPayload
+                    {
+                        Command = commandText,
+                        Preferred = request.Preferred
+                    };
+                    request.Payload = commandText;
+                    break;
+                }
+
+                case TaskKinds.ExecLibraryScript:
+                {
+                    if (_selectedScript is null)
+                    {
+                        Snackbar.Add("Select a library script before submitting.", Severity.Error);
+                        return;
+                    }
+
+                    if (_selectedScript.Id > int.MaxValue)
+                    {
+                        Snackbar.Add("Script identifier exceeds supported range for client execution.", Severity.Error);
+                        return;
+                    }
+
+                    if (!TryParseScriptType(_selectedScript.ScriptType, out var scriptType))
+                    {
+                        Snackbar.Add("Selected script is missing a valid ScriptType. Edit the script and choose a type.", Severity.Error);
+                        return;
+                    }
+
+                    request.ScriptId = (int)_selectedScript.Id;
+                    request.ScriptType = scriptType;
+                    var libPayload = new ExecLibraryScriptPayload
+                    {
+                        ScriptId = request.ScriptId.Value,
+                        ScriptType = request.ScriptType.Value,
+                        Preferred = request.Preferred,
+                        WorkingDirectory = request.WorkingDirectory,
+                        TimeoutSeconds = request.TimeoutSeconds,
+                        Parameters = parameterPairs.Count > 0
+                            ? new Dictionary<string, string>(parameterPairs, StringComparer.OrdinalIgnoreCase)
+                            : null
+                    };
+                    request.Payload = System.Text.Json.JsonSerializer.Serialize(libPayload);
+                    break;
+                }
+
+                default:
+                    Snackbar.Add($"Unsupported task type '{_taskType}'.", Severity.Error);
+                    return;
+            }
+
+            if (string.IsNullOrWhiteSpace(_requestId))
+            {
+                _requestId = Guid.NewGuid().ToString("N");
+                request.RequestId = _requestId;
+            }
+
+            var (created, accepted) = await TaskApi.CreateAsync(request, _disposeCts.Token).ConfigureAwait(false);
+
+            if (created?.Id > 0)
+            {
+                Snackbar.Add($"Task {created.Id} queued.", Severity.Success);
+                await LoadRecentTasksAsync().ConfigureAwait(false);
+                Navigation.NavigateTo($"/tasks/request/{Uri.EscapeDataString(created.RequestId)}");
+            }
+            else if (accepted)
+            {
+                Snackbar.Add("Task queued. Waiting for ID...", Severity.Success);
+
+                var rid = string.IsNullOrWhiteSpace(request.RequestId) ? null : request.RequestId;
+                if (string.IsNullOrWhiteSpace(rid))
+                {
+                    Snackbar.Add("No request id available to poll for task id.", Severity.Warning);
+                }
+                else
+                {
+                    using var cts = CancellationTokenSource.CreateLinkedTokenSource(_disposeCts.Token);
+                    cts.CancelAfter(TimeSpan.FromSeconds(10));
+
+                    TaskDto? resolved = null;
+                    try
+                    {
+                        for (var i = 0; i < 20; i++)
+                        {
+                            cts.Token.ThrowIfCancellationRequested();
+
+                            resolved = await TaskApi.GetByRequestIdAsync(rid!, cts.Token).ConfigureAwait(false);
+                            if (resolved?.Id > 0)
+                            {
+                                break;
+                            }
+
+                            await Task.Delay(500, cts.Token).ConfigureAwait(false);
+                        }
+                    }
+                    catch (OperationCanceledException)
+                    {
+                    }
+
+                    if (resolved?.Id > 0)
+                    {
+                        Snackbar.Add($"Task {resolved.Id} queued.", Severity.Success);
+                        await LoadRecentTasksAsync().ConfigureAwait(false);
+                        Navigation.NavigateTo($"/tasks/request/{Uri.EscapeDataString(resolved.RequestId)}");
+                        return;
+                    }
+                    else
+                    {
+                        Snackbar.Add("Queued, but no task id yet. It should appear shortly.", Severity.Info);
+                    }
+                }
+            }
+            else
+            {
+                Snackbar.Add("Failed to create task.", Severity.Error);
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Failed to create task: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isSubmitting = false;
+            RecomputeCanSubmit();
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private bool ValidateForm()
+    {
+        if (_selectedTenant is null) return false;
+
+        if (!_selectedAgentId.HasValue && _selectedClient is null) return false;
+
+        if (_taskType == TaskKinds.ExecShellCommand && string.IsNullOrWhiteSpace(_scriptText)) return false;
+        if (_taskType == TaskKinds.ExecLibraryScript && _selectedScript is null) return false;
+
+        return true;
+    }
+
+    private void Cancel() => Navigation.NavigateTo("/");
+
+    private static string EnvironmentLabel(ClientEnvironment value) => value.ToShortLabel();
+
+    private readonly List<ParameterInput> _parameters = new();
+
+    private static Color TaskStatusColor(string? status) => status switch
+    {
+        "Completed" => Color.Success,
+        "Processing" => Color.Info,
+        "Failed" => Color.Error,
+        _ => Color.Default
+    };
+
+    private static string FormatRuntime(TaskDto task)
+    {
+        if (task.StartedAt is null)
+        {
+            return "Queued";
+        }
+
+        var end = task.CompletedAt ?? DateTimeOffset.UtcNow;
+        var duration = end - task.StartedAt.Value;
+        if (duration.TotalHours >= 1) return duration.ToString(@"hh\:mm\:ss");
+        if (duration.TotalMinutes >= 1) return duration.ToString(@"mm\:ss");
+        return $"{Math.Max(0, duration.TotalSeconds):0.0}s";
+    }
+
+    public void Dispose()
+    {
+        _disposeCts.Cancel();
+        _disposeCts.Dispose();
+        _clientsLoadCts?.Cancel();
+        _clientsLoadCts?.Dispose();
+    }
+}

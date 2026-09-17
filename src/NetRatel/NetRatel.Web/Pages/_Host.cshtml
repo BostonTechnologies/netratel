@@ -1,0 +1,31 @@
+@page "/"
+@namespace NetRatel.Web.Pages
+@addTagHelper *, Microsoft.AspNetCore.Mvc.TagHelpers
+@using NetRatel.Web.Components
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <title>NetRatel</title>
+    <base href="~/" />
+    <link href="_content/MudBlazor/MudBlazor.min.css" rel="stylesheet" />
+    <link href="_content/MudBlazor.Extensions/MudBlazor.Extensions.min.css" rel="stylesheet" />
+    <link href="_content/CodeBeam.MudBlazor.Extensions/MudExtensions.min.css" rel="stylesheet" />
+</head>
+<body>
+    <component type="typeof(App)" render-mode="Server" />
+    <script src="_framework/blazor.web.js"></script>
+    <script src="_content/MudBlazor/MudBlazor.min.js?v=8.11.0"></script>
+    <script src="_content/MudBlazor.Extensions/MudBlazor.Extensions.min.js?v=2.2.0"></script>
+    <script src="_content/CodeBeam.MudBlazor.Extensions/MudExtensions.min.js"></script>
+    <script src="js/sse-clients.js"></script>
+    <script src="js/notifications.js"></script>
+    <script src="download.js?v=20260514"></script>
+    <script>
+      window.BlazorDownloadFile = (name, type, bytes) => {
+        const b64 = btoa(String.fromCharCode(...bytes));
+        window.saveFile(name, type, b64);
+      };
+    </script>
+</body>
+</html>

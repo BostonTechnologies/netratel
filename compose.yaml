@@ -1,0 +1,77 @@
+name: netratel
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-netratel}
+      POSTGRES_USER: ${POSTGRES_USER:-netratel}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?copy .env.example to .env and set POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/api/Dockerfile
+    environment:
+      ASPNETCORE_URLS: http://+:9222
+      ConnectionStrings__NetRatelDb: Host=postgres;Port=5432;Database=${POSTGRES_DB:-netratel};Username=${POSTGRES_USER:-netratel};Password=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      DataProtection__KeysDirectory: /var/netratel/keys
+      Authentication__MachineToken__Enabled: "false"
+      Authentication__Oidc__Authority: ${OIDC_AUTHORITY:?set OIDC_AUTHORITY}
+      Authentication__Oidc__Audience: ${OIDC_API_AUDIENCE:?set OIDC_API_AUDIENCE}
+      Authorization__Oidc__AdminGroupId: ${OIDC_ADMIN_GROUP_ID:?set OIDC_ADMIN_GROUP_ID}
+      AgentAuth__PrivateKeyPath: /run/netratel-secrets/agent-auth-private.pem
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
+    volumes:
+      - api-data:/var/netratel
+      - ${NETRATEL_AGENT_AUTH_PRIVATE_KEY:?set NETRATEL_AGENT_AUTH_PRIVATE_KEY to an ES256 private-key file}:/run/netratel-secrets/agent-auth-private.pem:ro
+
+  migrations:
+    build:
+      context: .
+      dockerfile: docker/migrations/Dockerfile
+    environment:
+      ConnectionStrings__NetRatelDb: Host=postgres;Port=5432;Database=${POSTGRES_DB:-netratel};Username=${POSTGRES_USER:-netratel};Password=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    build:
+      context: .
+      dockerfile: docker/web/Dockerfile
+    ports:
+      - "${NETRATEL_WEB_PORT:-8080}:9111"
+    environment:
+      ConnectionStrings__NetRatelDb: Host=postgres;Port=5432;Database=${POSTGRES_DB:-netratel};Username=${POSTGRES_USER:-netratel};Password=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      ApiBaseUrl: http://api:9222
+      NetRatel_KEYS_DIR: /var/netratel/keys
+      Authentication__MachineToken__Enabled: "false"
+      Authentication__Oidc__Authority: ${OIDC_AUTHORITY:?set OIDC_AUTHORITY}
+      Authentication__Oidc__ClientId: ${OIDC_CLIENT_ID:?set OIDC_CLIENT_ID}
+      Authentication__Oidc__ApiScope: ${OIDC_API_SCOPE:?set OIDC_API_SCOPE}
+      Authentication__Oidc__TokenEndpoint: ${OIDC_TOKEN_ENDPOINT:?set OIDC_TOKEN_ENDPOINT}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:?set an OIDC client secret}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      api:
+        condition: service_started
+    volumes:
+      - web-keys:/var/netratel/keys
+
+volumes:
+  postgres-data:
+  api-data:
+  web-keys:

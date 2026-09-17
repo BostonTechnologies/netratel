@@ -1,0 +1,981 @@
+@using XtermBlazor
+@using System.Text
+@using System.Threading.Channels
+@using Microsoft.JSInterop
+@implements IAsyncDisposable
+@inject ITerminalService Term
+@inject IJSRuntime JS
+@inject ILogger<TerminalConsole> Logger
+
+<div @ref="_terminalHost"
+     class="netratel-terminal-console-root netratel-terminal-console-host"
+     style="height:100%; width:100%; min-height:0; min-width:0; overflow:hidden; display:flex; flex:1 1 auto; flex-direction:column;">
+  <Xterm @ref="_terminal"
+         Options="_options"
+         Addons="_addons"
+         Class="netratel-terminal-console"
+         Style="height:100%; width:100%; min-height:0; min-width:0; flex:1 1 auto; background:#111827;"
+         OnFirstRender="HandleFirstRenderAsync"
+         OnData="HandleInputAsync"
+         OnResize="HandleResizeAsync" />
+</div>
+
+@code {
+  [Parameter] public string SessionId { get; set; } = string.Empty;
+  [Parameter] public EventCallback<string?> OnClosed { get; set; }
+  [Parameter] public EventCallback OnReady { get; set; }
+  [Parameter] public EventCallback<TerminalGridSize> OnResized { get; set; }
+  [Parameter] public EventCallback OnResizeApplied { get; set; }
+  [Parameter] public EventCallback<TerminalInputChannelStatus> OnInputChannelStatusChanged { get; set; }
+  [Parameter] public EventCallback<TerminalConsoleStatus> OnConsoleStatusChanged { get; set; }
+  [Parameter] public bool IsInputEnabled { get; set; }
+
+  private const int FitRetryCount = 3;
+  private const int ContainerFitDebounceMs = 50;
+  private const int OutputQueueCapacity = 512;
+  private const int MaxOutputChunkChars = 8192;
+  private const int MaxOutputBatchChars = 32768;
+  private const int InputReconnectInitialDelayMs = 500;
+  private const int InputReconnectMaxDelayMs = 8000;
+  private static readonly TimeSpan OutputFlushDelay = TimeSpan.FromMilliseconds(16);
+  private readonly HashSet<string> _addons = ["addon-fit"];
+  private readonly Channel<string> _outputQueue = Channel.CreateBounded<string>(new BoundedChannelOptions(OutputQueueCapacity)
+  {
+    FullMode = BoundedChannelFullMode.Wait,
+    SingleReader = true,
+    SingleWriter = false
+  });
+  private readonly TerminalOptions _options = new()
+  {
+    CursorBlink = true,
+    CursorStyle = CursorStyle.Bar,
+    ConvertEOL = true,
+    FontFamily = "'Ubuntu Mono', 'Courier New', monospace",
+    FontSize = 14,
+    Theme =
+    {
+      Background = "#111827",
+      Foreground = "#e5e7eb"
+    }
+  };
+
+  private Xterm? _terminal;
+  private ElementReference _terminalHost;
+  private IJSObjectReference? _resizeObserverModule;
+  private DotNetObjectReference<TerminalConsole>? _selfReference;
+  private bool _isReady;
+  private bool _disposed;
+  private bool _hasFittedSurface;
+  private int? _lastCols;
+  private int? _lastRows;
+  private CancellationTokenSource? _resizeDebounceCts;
+  private CancellationTokenSource? _containerFitDebounceCts;
+  private readonly CancellationTokenSource _outputCts = new();
+  private readonly CancellationTokenSource _inputLifecycleCts = new();
+  private readonly CancellationToken _inputLifecycleToken;
+  private readonly SemaphoreSlim _inputChannelLock = new(1, 1);
+  private readonly TaskCompletionSource<bool> _inputChannelOperationsDrained = new(TaskCreationOptions.RunContinuationsAsynchronously);
+  private Task? _outputPumpTask;
+  private Task? _inputReconnectTask;
+  private ITerminalInputChannel? _inputChannel;
+  private string? _inputChannelSessionId;
+  private string? _detachedSessionId;
+  private long _inputChannelGeneration;
+  private int _inputChannelNeedsReconnect;
+  private int _inputChannelOperationCount;
+  private int _inputLifecycleStopping;
+  private long _droppedOutputChunks;
+  private long _droppedOutputChars;
+  private int _outputDropNotificationScheduled;
+
+  private bool IsInputLifecycleStopping => Volatile.Read(ref _inputLifecycleStopping) != 0;
+
+  public TerminalConsole()
+  {
+    _inputLifecycleToken = _inputLifecycleCts.Token;
+  }
+
+  protected override async Task OnParametersSetAsync()
+  {
+    if (_disposed || IsInputLifecycleStopping)
+    {
+      return;
+    }
+
+    _options.DisableStdin = !IsInputEnabled;
+
+    if (_isReady && _terminal is not null)
+    {
+      await _terminal.SetOptions(_options);
+      if (IsInputEnabled && !string.IsNullOrWhiteSpace(SessionId))
+      {
+        await EnsureInputChannelAsync(forceReconnect: InputChannelNeedsReconnect);
+        await FocusAsync();
+      }
+    }
+  }
+
+  private async Task HandleFirstRenderAsync()
+  {
+    if (_terminal is null || IsInputLifecycleStopping)
+    {
+      return;
+    }
+
+    try
+    {
+      Logger.LogInformation(
+        "[Terminal] Xterm first render started session={SessionId} optionsCols={OptionsCols} optionsRows={OptionsRows}",
+        SessionId,
+        _options.Columns,
+        _options.Rows);
+      _isReady = true;
+      _outputPumpTask = Task.Run(() => PumpOutputAsync(_outputCts.Token));
+      await Task.Yield();
+      await FitTerminalSurfaceAsync("first-render");
+      await RegisterResizeObserverAsync();
+      if (IsInputEnabled && !string.IsNullOrWhiteSpace(SessionId))
+      {
+        await EnsureInputChannelAsync();
+      }
+
+      await FocusAsync();
+      await OnReady.InvokeAsync();
+      Logger.LogInformation("[Terminal] Xterm first render completed session={SessionId}", SessionId);
+    }
+    catch (Exception ex) when (!_disposed)
+    {
+      Logger.LogError(ex, "[Terminal] Xterm initialization failed session={SessionId}", SessionId);
+      await ReportConsoleStatusAsync("init-error", ex.Message);
+    }
+  }
+
+  private async Task HandleInputAsync(string data)
+  {
+    if (IsInputLifecycleStopping ||
+        string.IsNullOrEmpty(data) ||
+        !IsInputEnabled ||
+        string.IsNullOrWhiteSpace(SessionId))
+    {
+      return;
+    }
+
+    var inputSessionId = SessionId;
+    try
+    {
+      var channel = await EnsureInputChannelAsync(forceReconnect: InputChannelNeedsReconnect);
+      if (channel is not null && IsInputEnabled && !IsInputLifecycleStopping &&
+          string.Equals(inputSessionId, SessionId, StringComparison.Ordinal) &&
+          !string.Equals(_detachedSessionId, inputSessionId, StringComparison.Ordinal))
+      {
+        var control = DescribeControlInput(data);
+        if (!string.IsNullOrWhiteSpace(control))
+        {
+          Logger.LogInformation(
+            "[Terminal] browser.stdin.{Control} session={SessionId} bytes={Bytes}",
+            control,
+            SessionId,
+            Encoding.UTF8.GetByteCount(data));
+          await channel.SendImmediateAsync(data);
+        }
+        else
+        {
+          await channel.SendAsync(data);
+        }
+      }
+    }
+    catch (Exception ex)
+    {
+      Logger.LogWarning(ex, "[Terminal] Browser stdin dispatch failed session={SessionId}", inputSessionId);
+      if (!IsInputLifecycleStopping && string.Equals(inputSessionId, SessionId, StringComparison.Ordinal) &&
+          !string.Equals(_detachedSessionId, inputSessionId, StringComparison.Ordinal))
+      {
+        await ReportConsoleStatusAsync("stdin-error", ex.Message);
+      }
+    }
+  }
+
+  private async Task<ITerminalInputChannel?> EnsureInputChannelAsync(bool forceReconnect = false)
+  {
+    if (string.Equals(_detachedSessionId, SessionId, StringComparison.Ordinal))
+    {
+      return null;
+    }
+
+    if (!TryEnterInputChannelOperation())
+    {
+      return null;
+    }
+
+    try
+    {
+      if (IsInputLifecycleStopping)
+      {
+        return null;
+      }
+
+      if (_inputChannel is not null &&
+          string.Equals(_inputChannelSessionId, SessionId, StringComparison.Ordinal) &&
+          !forceReconnect)
+      {
+        return _inputChannel;
+      }
+
+      var lockHeld = false;
+      var openingSessionId = SessionId;
+      long? openingGeneration = null;
+
+      try
+      {
+        await _inputChannelLock.WaitAsync(_inputLifecycleToken);
+        lockHeld = true;
+        if (IsInputLifecycleStopping)
+        {
+          return null;
+        }
+
+        var sessionId = SessionId;
+        if (string.IsNullOrWhiteSpace(sessionId) || string.Equals(_detachedSessionId, sessionId, StringComparison.Ordinal))
+        {
+          return null;
+        }
+
+        if (_inputChannel is not null &&
+            string.Equals(_inputChannelSessionId, sessionId, StringComparison.Ordinal) &&
+            !forceReconnect)
+        {
+          return _inputChannel;
+        }
+
+        var generation = Interlocked.Increment(ref _inputChannelGeneration);
+        openingGeneration = generation;
+        if (_inputChannel is not null)
+        {
+          var previousChannel = _inputChannel;
+          _inputChannel = null;
+          _inputChannelSessionId = null;
+          await DisposeInputChannelAsync(previousChannel);
+        }
+
+        if (IsInputLifecycleStopping)
+        {
+          return null;
+        }
+
+        await OnInputChannelStatusChanged.InvokeAsync(TerminalInputChannelStatus.Opening());
+        if (IsInputLifecycleStopping)
+        {
+          return null;
+        }
+
+        Logger.LogInformation("[Terminal] Attempting stdin websocket session={SessionId}", SessionId);
+        using var connectCts = CancellationTokenSource.CreateLinkedTokenSource(_inputLifecycleToken);
+        connectCts.CancelAfter(TimeSpan.FromSeconds(4));
+        var openedChannel = await Term.OpenInputChannelAsync(
+          sessionId,
+          status => QueueInputChannelStatusChanged(status, generation),
+          connectCts.Token);
+
+        // Disposal and parameter changes can happen while the websocket connect
+        // awaits. Never publish a late channel into a component that no longer
+        // owns it; dispose that channel while the lifecycle gate is still held.
+        if (IsInputLifecycleStopping ||
+            generation != Volatile.Read(ref _inputChannelGeneration) ||
+            !string.Equals(sessionId, SessionId, StringComparison.Ordinal))
+        {
+          await DisposeInputChannelAsync(openedChannel);
+          return null;
+        }
+
+        _inputChannel = openedChannel;
+        _inputChannelSessionId = sessionId;
+        return openedChannel;
+      }
+      catch (OperationCanceledException) when (_inputLifecycleToken.IsCancellationRequested)
+      {
+        return null;
+      }
+      catch (Exception ex)
+      {
+        if (!IsInputLifecycleStopping &&
+            string.Equals(openingSessionId, SessionId, StringComparison.Ordinal) &&
+            (openingGeneration is null || openingGeneration == Volatile.Read(ref _inputChannelGeneration)) &&
+            !string.Equals(_detachedSessionId, SessionId, StringComparison.Ordinal))
+        {
+          await OnInputChannelStatusChanged.InvokeAsync(TerminalInputChannelStatus.Failed(ex.Message));
+        }
+
+        return null;
+      }
+      finally
+      {
+        if (lockHeld)
+        {
+          _inputChannelLock.Release();
+        }
+      }
+    }
+    finally
+    {
+      ExitInputChannelOperation();
+    }
+  }
+
+  /// <summary>Drop the old shell's input channel without clearing scrollback.</summary>
+  public async Task DetachInputAsync()
+  {
+    _detachedSessionId = SessionId;
+    Interlocked.Increment(ref _inputChannelGeneration);
+    Volatile.Write(ref _inputChannelNeedsReconnect, 0);
+    if (!TryEnterInputChannelOperation())
+    {
+      return;
+    }
+
+    try
+    {
+      await _inputChannelLock.WaitAsync(_inputLifecycleToken);
+      try
+      {
+        var channel = _inputChannel;
+        _inputChannel = null;
+        _inputChannelSessionId = null;
+        if (channel is not null)
+        {
+          await DisposeInputChannelAsync(channel);
+        }
+      }
+      finally
+      {
+        _inputChannelLock.Release();
+      }
+    }
+    catch (OperationCanceledException) when (_inputLifecycleToken.IsCancellationRequested)
+    {
+      Logger.LogDebug("[Terminal] Input detachment stopped with the console.");
+    }
+    finally
+    {
+      ExitInputChannelOperation();
+    }
+  }
+
+  private bool TryEnterInputChannelOperation()
+  {
+    if (IsInputLifecycleStopping)
+    {
+      return false;
+    }
+
+    Interlocked.Increment(ref _inputChannelOperationCount);
+    if (!IsInputLifecycleStopping)
+    {
+      return true;
+    }
+
+    ExitInputChannelOperation();
+    return false;
+  }
+
+  private void ExitInputChannelOperation()
+  {
+    if (Interlocked.Decrement(ref _inputChannelOperationCount) == 0 &&
+        IsInputLifecycleStopping)
+    {
+      _inputChannelOperationsDrained.TrySetResult(true);
+    }
+  }
+
+  private bool InputChannelNeedsReconnect => Volatile.Read(ref _inputChannelNeedsReconnect) != 0;
+
+  private void QueueInputChannelStatusChanged(TerminalInputChannelStatus status, long generation)
+  {
+    if (IsInputLifecycleStopping)
+    {
+      return;
+    }
+
+    try
+    {
+      _ = InvokeAsync(() => HandleInputChannelStatusChangedAsync(status, generation));
+    }
+    catch (ObjectDisposedException ex) when (IsInputLifecycleStopping)
+    {
+      Logger.LogDebug(ex, "[Terminal] Ignored late stdin channel status session={SessionId}", SessionId);
+    }
+  }
+
+  private async Task HandleInputChannelStatusChangedAsync(TerminalInputChannelStatus status, long generation)
+  {
+    if (IsInputLifecycleStopping ||
+        generation != Volatile.Read(ref _inputChannelGeneration))
+    {
+      return;
+    }
+
+    if (string.Equals(status.State, "reconnecting", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(status.State, "failed", StringComparison.OrdinalIgnoreCase))
+    {
+      Volatile.Write(ref _inputChannelNeedsReconnect, 1);
+      ScheduleInputChannelReconnect();
+    }
+    else if (string.Equals(status.State, "connected", StringComparison.OrdinalIgnoreCase) ||
+             string.Equals(status.State, "rest-fallback", StringComparison.OrdinalIgnoreCase))
+    {
+      Volatile.Write(ref _inputChannelNeedsReconnect, 0);
+    }
+
+    await OnInputChannelStatusChanged.InvokeAsync(status);
+  }
+
+  private void ScheduleInputChannelReconnect()
+  {
+    if (IsInputLifecycleStopping ||
+        _disposed ||
+        string.IsNullOrWhiteSpace(SessionId) ||
+        _inputReconnectTask is { IsCompleted: false })
+    {
+      return;
+    }
+
+    _inputReconnectTask = ReconnectInputChannelAsync(_inputLifecycleToken);
+  }
+
+  private async Task ReconnectInputChannelAsync(CancellationToken ct)
+  {
+    try
+    {
+      var delayMs = InputReconnectInitialDelayMs;
+      while (!ct.IsCancellationRequested && InputChannelNeedsReconnect)
+      {
+        await Task.Delay(delayMs, ct);
+        if (IsInputLifecycleStopping ||
+            _disposed ||
+            !IsInputEnabled ||
+            string.IsNullOrWhiteSpace(SessionId))
+        {
+          return;
+        }
+
+        await EnsureInputChannelAsync(forceReconnect: true);
+        delayMs = Math.Min(delayMs * 2, InputReconnectMaxDelayMs);
+      }
+    }
+    catch (OperationCanceledException) when (ct.IsCancellationRequested)
+    {
+    }
+    catch (Exception ex)
+    {
+      Logger.LogDebug(ex, "[Terminal] Input websocket reconnect attempt failed session={SessionId}", SessionId);
+    }
+  }
+
+  private async Task HandleResizeAsync(ResizeEventArgs args)
+  {
+    if (!_hasFittedSurface)
+    {
+      return;
+    }
+    Logger.LogInformation("[Terminal] Xterm OnResize session={SessionId} cols={Cols} rows={Rows}", SessionId, args.Columns, args.Rows);
+    await ApplyResizeAsync(args.Columns, args.Rows);
+  }
+
+  private async Task ApplyResizeAsync(int cols, int rows)
+  {
+    if (_disposed || !_isReady)
+    {
+      Logger.LogInformation("[Terminal] Skip resize session={SessionId} reason=terminal-not-ready cols={Cols} rows={Rows}", SessionId, cols, rows);
+      return;
+    }
+
+    if (cols <= 0 || rows <= 0)
+    {
+      Logger.LogWarning("[Terminal] Skip resize session={SessionId} reason=invalid-grid cols={Cols} rows={Rows}", SessionId, cols, rows);
+      await ReportConsoleStatusAsync("fit-zero-grid", $"{cols}x{rows}");
+      return;
+    }
+
+    if (_lastCols == cols && _lastRows == rows)
+    {
+      Logger.LogInformation("[Terminal] Skip resize session={SessionId} reason=unchanged cols={Cols} rows={Rows}", SessionId, cols, rows);
+      return;
+    }
+
+    var previousCols = _lastCols;
+    var previousRows = _lastRows;
+    _lastCols = cols;
+    _lastRows = rows;
+    Logger.LogInformation("[Terminal] Xterm fitted session={SessionId} cols={Cols} rows={Rows} previousCols={PreviousCols} previousRows={PreviousRows}", SessionId, cols, rows, previousCols, previousRows);
+    await OnResized.InvokeAsync(new TerminalGridSize(cols, rows));
+    if (!string.IsNullOrWhiteSpace(SessionId))
+    {
+      DebounceResizeDispatch(cols, rows);
+    }
+  }
+
+  private void DebounceResizeDispatch(int cols, int rows)
+  {
+    try { _resizeDebounceCts?.Cancel(); } catch { }
+    _resizeDebounceCts?.Dispose();
+    _resizeDebounceCts = new CancellationTokenSource();
+    var ct = _resizeDebounceCts.Token;
+    Logger.LogInformation("[Terminal] Resize dispatch pending session={SessionId} cols={Cols} rows={Rows}", SessionId, cols, rows);
+    _ = DispatchResizeAfterDelayAsync(cols, rows, ct);
+  }
+
+  private async Task DispatchResizeAfterDelayAsync(int cols, int rows, CancellationToken ct)
+  {
+    try
+    {
+      await Task.Delay(160, ct);
+      Logger.LogInformation("[Terminal] Resize dispatch session={SessionId} cols={Cols} rows={Rows}", SessionId, cols, rows);
+      var result = await Term.ResizeAsync(SessionId, cols, rows, ct);
+      Logger.LogInformation(
+        "[Terminal] Resize dispatch accepted session={SessionId} tracking={TrackingId} cols={Cols} rows={Rows} message={Message}",
+        SessionId,
+        result.TrackingId,
+        cols,
+        rows,
+        result.Message);
+      await OnResizeApplied.InvokeAsync();
+    }
+    catch (OperationCanceledException) when (ct.IsCancellationRequested)
+    {
+      Logger.LogInformation("[Terminal] Skip resize dispatch session={SessionId} reason=resize-already-pending-replaced cols={Cols} rows={Rows}", SessionId, cols, rows);
+    }
+    catch (ObjectDisposedException) when (_disposed)
+    {
+    }
+    catch (Exception ex)
+    {
+      Logger.LogDebug(ex, "[Terminal] Resize dispatch failed session={SessionId}", SessionId);
+    }
+  }
+
+
+  public Task AppendOutputAsync(string data)
+  {
+    if (string.IsNullOrEmpty(data))
+    {
+      return Task.CompletedTask;
+    }
+
+    foreach (var chunk in SplitOutput(data))
+    {
+      if (!_outputQueue.Writer.TryWrite(chunk))
+      {
+        RecordDroppedOutput(chunk.Length);
+      }
+    }
+
+    return Task.CompletedTask;
+  }
+
+  private void RecordDroppedOutput(int chars)
+  {
+    if (_disposed)
+    {
+      return;
+    }
+
+    Interlocked.Increment(ref _droppedOutputChunks);
+    Interlocked.Add(ref _droppedOutputChars, chars);
+    if (Interlocked.Exchange(ref _outputDropNotificationScheduled, 1) != 0)
+    {
+      return;
+    }
+
+    _ = InvokeAsync(ReportDroppedOutputAsync);
+  }
+
+  private async Task ReportDroppedOutputAsync()
+  {
+    try
+    {
+      var chunks = Interlocked.Read(ref _droppedOutputChunks);
+      var chars = Interlocked.Read(ref _droppedOutputChars);
+      await ReportConsoleStatusAsync("output-dropped", $"chunks={chunks}; chars={chars}");
+    }
+    finally
+    {
+      Volatile.Write(ref _outputDropNotificationScheduled, 0);
+    }
+  }
+
+  private async Task PumpOutputAsync(CancellationToken ct)
+  {
+    var batch = new StringBuilder(MaxOutputBatchChars);
+
+    try
+    {
+      while (await _outputQueue.Reader.WaitToReadAsync(ct))
+      {
+        batch.Clear();
+        var started = DateTimeOffset.UtcNow;
+        await Task.Delay(OutputFlushDelay, ct);
+
+        while (batch.Length < MaxOutputBatchChars && _outputQueue.Reader.TryRead(out var next))
+        {
+          batch.Append(next);
+          if (batch.Length >= MaxOutputBatchChars ||
+              DateTimeOffset.UtcNow - started >= OutputFlushDelay)
+          {
+            break;
+          }
+        }
+
+        if (batch.Length == 0)
+        {
+          continue;
+        }
+
+        var output = batch.ToString();
+        await InvokeAsync(() => WriteToTerminalAsync(output, "remote-output"));
+        await Task.Yield();
+      }
+    }
+    catch (OperationCanceledException) when (ct.IsCancellationRequested)
+    {
+    }
+    catch (Exception ex)
+    {
+      Logger.LogError(ex, "[Terminal] Xterm output pump failed session={SessionId}", SessionId);
+      await InvokeAsync(() => ReportConsoleStatusAsync("output-pump-error", ex.Message));
+    }
+  }
+
+  private static IEnumerable<string> SplitOutput(string data)
+  {
+    if (data.Length <= MaxOutputChunkChars)
+    {
+      yield return data;
+      yield break;
+    }
+
+    for (var i = 0; i < data.Length; i += MaxOutputChunkChars)
+    {
+      yield return data.Substring(i, Math.Min(MaxOutputChunkChars, data.Length - i));
+    }
+  }
+
+  private static string? DescribeControlInput(string value)
+  {
+    if (value.Contains('\u0003', StringComparison.Ordinal))
+    {
+      return "ctrl_c";
+    }
+
+    if (value.Contains('\u0004', StringComparison.Ordinal))
+    {
+      return "ctrl_d";
+    }
+
+    if (value.Contains('\u001a', StringComparison.Ordinal))
+    {
+      return "ctrl_z";
+    }
+
+    return null;
+  }
+
+  private async Task WriteToTerminalAsync(string data, string source)
+  {
+    if (!_isReady || _terminal is null || _disposed)
+    {
+      return;
+    }
+
+    try
+    {
+      await _terminal.Write(data);
+      await _terminal.ScrollToBottom();
+    }
+    catch (JSException ex) when (IsDisposedTerminalException(ex))
+    {
+    }
+    catch (Exception ex)
+    {
+      Logger.LogError(ex, "[Terminal] Xterm write failed session={SessionId} source={Source} chars={Chars} bytes={Bytes}", SessionId, source, data.Length, Encoding.UTF8.GetByteCount(data));
+      await ReportConsoleStatusAsync("write-error", $"{source}: {ex.Message}");
+    }
+  }
+
+  public async Task FitAsync()
+  {
+    if (!_isReady || _terminal is null)
+    {
+      return;
+    }
+
+    await FitTerminalSurfaceAsync("manual");
+    await FocusAsync();
+  }
+
+  public async Task ClearAsync()
+  {
+    if (!_isReady || _terminal is null)
+    {
+      return;
+    }
+
+    try
+    {
+      await WriteToTerminalAsync("\u001b[2J\u001b[H", "clear");
+      await FocusAsync();
+    }
+    catch (JSException ex) when (IsDisposedTerminalException(ex))
+    {
+    }
+  }
+
+  public async Task ShowClosedAsync(string? reason)
+  {
+    if (_isReady && _terminal is not null)
+    {
+      try
+      {
+        await WriteToTerminalAsync($"\r\n{reason ?? "Session closed."}\r\n", "closed");
+      }
+      catch (JSException ex) when (IsDisposedTerminalException(ex))
+      {
+      }
+    }
+
+    await OnClosed.InvokeAsync(reason);
+  }
+
+  private async Task FitTerminalSurfaceAsync(string source)
+  {
+    if (_terminal is null || _disposed)
+    {
+      return;
+    }
+
+    try
+    {
+      for (var attempt = 1; attempt <= FitRetryCount; attempt++)
+      {
+        Logger.LogInformation("[Terminal] Xterm addon-fit invoking session={SessionId} source={Source} attempt={Attempt}", SessionId, source, attempt);
+        await _terminal.Addon("addon-fit").InvokeVoidAsync("fit");
+        Logger.LogInformation("[Terminal] Xterm addon-fit completed session={SessionId} source={Source} attempt={Attempt}", SessionId, source, attempt);
+        var cols = await _terminal.GetColumns();
+        var rows = await _terminal.GetRows();
+        var lastCols = _lastCols;
+        var lastRows = _lastRows;
+        Logger.LogInformation(
+          "[Terminal] Xterm fit session={SessionId} source={Source} attempt={Attempt} cols={Cols} rows={Rows} lastCols={LastCols} lastRows={LastRows}",
+          SessionId,
+          source,
+          attempt,
+          cols,
+          rows,
+          lastCols,
+          lastRows);
+
+        if (cols > 0 && rows > 0)
+        {
+          _hasFittedSurface = true;
+          await ApplyResizeAsync(cols, rows);
+          return;
+        }
+
+        await Task.Yield();
+      }
+
+      Logger.LogWarning("[Terminal] Xterm fit returned zero/invalid grid after retries session={SessionId} source={Source}", SessionId, source);
+      await ReportConsoleStatusAsync("fit-zero-grid", source);
+    }
+    catch (JSException ex) when (IsDisposedTerminalException(ex))
+    {
+    }
+    catch (Exception ex)
+    {
+      Logger.LogWarning(ex, "[Terminal] Xterm fit failed session={SessionId}", SessionId);
+      await ReportConsoleStatusAsync("fit-error", ex.Message);
+    }
+  }
+
+  private async Task RegisterResizeObserverAsync()
+  {
+    if (_disposed || _resizeObserverModule is not null)
+    {
+      return;
+    }
+
+    try
+    {
+      _selfReference = DotNetObjectReference.Create(this);
+      _resizeObserverModule = await JS.InvokeAsync<IJSObjectReference>("import", "./js/resizeObserver.js");
+      await _resizeObserverModule.InvokeVoidAsync("observeResize", _terminalHost, _selfReference);
+      Logger.LogInformation("[Terminal] Container resize observer registered session={SessionId}", SessionId);
+    }
+    catch (Exception ex) when (!_disposed)
+    {
+      if (_resizeObserverModule is not null)
+      {
+        try { await _resizeObserverModule.DisposeAsync(); } catch { }
+        _resizeObserverModule = null;
+      }
+      _selfReference?.Dispose();
+      _selfReference = null;
+      Logger.LogWarning(ex, "[Terminal] Failed to register container resize observer session={SessionId}", SessionId);
+      await ReportConsoleStatusAsync("resize-observer-error", ex.Message);
+    }
+  }
+
+  [JSInvokable]
+  public Task OnTerminalResize()
+  {
+    if (_disposed || !_isReady)
+    {
+      return Task.CompletedTask;
+    }
+
+    try { _containerFitDebounceCts?.Cancel(); } catch { }
+    _containerFitDebounceCts?.Dispose();
+    _containerFitDebounceCts = new CancellationTokenSource();
+    _ = FitAfterContainerResizeAsync(_containerFitDebounceCts.Token);
+    return Task.CompletedTask;
+  }
+
+  private async Task FitAfterContainerResizeAsync(CancellationToken ct)
+  {
+    try
+    {
+      await Task.Delay(ContainerFitDebounceMs, ct);
+      await InvokeAsync(() => FitTerminalSurfaceAsync("container-resize"));
+    }
+    catch (OperationCanceledException) when (ct.IsCancellationRequested)
+    {
+    }
+    catch (ObjectDisposedException) when (_disposed)
+    {
+    }
+  }
+
+  private async Task FocusAsync()
+  {
+    if (_terminal is null || _disposed)
+    {
+      return;
+    }
+
+    try
+    {
+      await _terminal.Focus();
+    }
+    catch (JSException ex) when (IsDisposedTerminalException(ex))
+    {
+    }
+    catch (Exception ex)
+    {
+      Logger.LogDebug(ex, "[Terminal] Xterm focus failed session={SessionId}", SessionId);
+      await ReportConsoleStatusAsync("focus-error", ex.Message);
+    }
+  }
+
+  private Task ReportConsoleStatusAsync(string state, string? detail) =>
+    OnConsoleStatusChanged.InvokeAsync(new TerminalConsoleStatus(state, detail));
+
+  private bool IsDisposedTerminalException(JSException ex) =>
+    _disposed ||
+    ex.Message.Contains("not found", StringComparison.OrdinalIgnoreCase) ||
+    ex.Message.Contains("disposed", StringComparison.OrdinalIgnoreCase);
+
+  public async ValueTask DisposeAsync()
+  {
+    if (Interlocked.Exchange(ref _inputLifecycleStopping, 1) != 0)
+    {
+      return;
+    }
+
+    _disposed = true;
+    Interlocked.Increment(ref _inputChannelGeneration);
+    try { _inputLifecycleCts.Cancel(); } catch { }
+    if (Volatile.Read(ref _inputChannelOperationCount) == 0)
+    {
+      _inputChannelOperationsDrained.TrySetResult(true);
+    }
+
+    _isReady = false;
+    _outputQueue.Writer.TryComplete();
+    try { _outputCts.Cancel(); } catch { }
+    if (_outputPumpTask is not null)
+    {
+      try { await _outputPumpTask.WaitAsync(TimeSpan.FromSeconds(1)); } catch { }
+    }
+    _outputCts.Dispose();
+
+    if (_inputReconnectTask is not null)
+    {
+      try { await _inputReconnectTask.WaitAsync(TimeSpan.FromSeconds(1)); } catch { }
+    }
+
+    try { _resizeDebounceCts?.Cancel(); } catch { }
+    _resizeDebounceCts?.Dispose();
+    _resizeDebounceCts = null;
+
+    try { _containerFitDebounceCts?.Cancel(); } catch { }
+    _containerFitDebounceCts?.Dispose();
+    _containerFitDebounceCts = null;
+
+    if (_resizeObserverModule is not null)
+    {
+      try { await _resizeObserverModule.InvokeVoidAsync("unobserveResize", _terminalHost); } catch { }
+      try { await _resizeObserverModule.DisposeAsync(); } catch { }
+      _resizeObserverModule = null;
+    }
+    _selfReference?.Dispose();
+    _selfReference = null;
+
+    // Every admitted initializer observes the lifetime cancellation before it
+    // can publish its channel. Joining them before disposing the gate prevents
+    // a late reconnect from assigning a channel or releasing a disposed lock.
+    await _inputChannelOperationsDrained.Task;
+    ITerminalInputChannel? inputChannel;
+    await _inputChannelLock.WaitAsync();
+    try
+    {
+      inputChannel = _inputChannel;
+      _inputChannel = null;
+      _inputChannelSessionId = null;
+    }
+    finally
+    {
+      _inputChannelLock.Release();
+    }
+
+    if (inputChannel is not null)
+    {
+      await DisposeInputChannelAsync(inputChannel);
+    }
+
+    _inputChannelLock.Dispose();
+    _inputLifecycleCts.Dispose();
+
+    if (_terminal is not null)
+    {
+      try
+      {
+        await _terminal.DisposeAsync();
+      }
+      catch (JSException ex) when (IsDisposedTerminalException(ex))
+      {
+      }
+    }
+  }
+
+  public readonly record struct TerminalGridSize(int Cols, int Rows);
+  public readonly record struct TerminalConsoleStatus(string State, string? Detail);
+
+  private async Task DisposeInputChannelAsync(ITerminalInputChannel channel)
+  {
+    try
+    {
+      await channel.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(2));
+    }
+    catch
+    {
+    }
+  }
+}

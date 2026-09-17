@@ -1,0 +1,161 @@
+@using Microsoft.JSInterop
+@using NetRatel.Web.Components.Dialogs
+@using NetRatel.Web.Models.Clients
+@using NetRatel.Web.Services.Clients
+@using NetRatel.Web.Services.RemoteSupport
+@using NetRatel.Web.Services.Telemetry
+@inject GatewayClientActionApiService GatewayActions
+@inject IDialogService DialogService
+@inject IJSRuntime JsRuntime
+@inject ISnackbar Snackbar
+
+<div class="client-grid-view-shell" data-testid="client-table">
+<MudTable T="ClientPresentationModel"
+          Items="@Clients"
+          Dense="true"
+          Hover="true"
+          Elevation="0"
+          Breakpoint="Breakpoint.Md"
+          RowsPerPage="15"
+          RowsPerPageOptions="new[] { 15, 30, 50 }"
+          Class="client-grid-view">
+    <HeaderContent>
+        <MudTh>Status</MudTh>
+        <MudTh>Client</MudTh>
+        <MudTh>Host / IP</MudTh>
+        <MudTh>Tenant</MudTh>
+        <MudTh>OS</MudTh>
+        <MudTh>Latency</MudTh>
+        <MudTh>Heartbeat</MudTh>
+        <MudTh>Telemetry</MudTh>
+        <MudTh>Version</MudTh>
+        <MudTh Class="text-right">Actions</MudTh>
+    </HeaderContent>
+    <RowTemplate>
+        <MudTd DataLabel="Status">
+            <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="@(context.Online ? Color.Success : Color.Default)">
+                @(context.Online ? "Online" : "Offline")
+            </MudChip>
+        </MudTd>
+        <MudTd DataLabel="Client">
+            <span class="client-table-value" title="@context.DisplayName">@context.DisplayName</span>
+        </MudTd>
+        <MudTd DataLabel="Host / IP">
+            <div class="client-table-host">
+                <div class="client-table-host-line">
+                    <span class="client-table-value" title="@(context.HostName ?? context.DisplayName)">@(context.HostName ?? context.DisplayName)</span>
+                    <MudIconButton Icon="@Icons.Material.Filled.ContentCopy" Size="Size.Small" OnClick="@(() => CopyHostAsync(context))" aria-label="Copy host" />
+                </div>
+                <span class="client-table-secondary">n/a</span>
+            </div>
+        </MudTd>
+        <MudTd DataLabel="Tenant"><span class="client-table-value" title="@context.TenantName">@(context.TenantName ?? $"Tenant {context.TenantId}")</span></MudTd>
+        <MudTd DataLabel="OS"><span class="client-table-value" title="@ClientPresentationFormatting.OperatingSystem(context)">@ClientPresentationFormatting.OperatingSystem(context)</span></MudTd>
+        <MudTd DataLabel="Latency">@FormatLatency(context)</MudTd>
+        <MudTd DataLabel="Heartbeat">@ClientPresentationFormatting.Heartbeat(context.LastHeartbeatUtc)</MudTd>
+        <MudTd DataLabel="Telemetry">@ClientPresentationFormatting.TelemetryAge(context.Telemetry?.ReceivedAtUtc, DateTimeOffset.UtcNow)</MudTd>
+        <MudTd DataLabel="Version">
+            <span class="client-table-value"
+                  data-testid="client-table-version"
+                  title="@ClientPresentationFormatting.VersionTooltip(context.AgentVersion)">@ClientPresentationFormatting.Version(context.AgentVersion)</span>
+        </MudTd>
+        <MudTd DataLabel="Actions" Class="text-right">
+            <MudStack Row="true" Justify="Justify.FlexEnd" AlignItems="AlignItems.Center" Spacing="0" Class="client-grid-actions">
+                <MudTooltip Text="Telemetry"><MudIconButton Icon="@Icons.Material.Filled.Insights" Size="Size.Small" Disabled="@(context.Telemetry is null)" OnClick="@(() => OpenTelemetryAsync(context))" aria-label="Open telemetry" /></MudTooltip>
+                <MudTooltip Text="Terminal">
+                    <MudMenu Dense="true" Disabled="@(!context.CanUseTerminal)">
+                        <ActivatorContent><MudIconButton Icon="@Icons.Material.Filled.Terminal" Size="Size.Small" Disabled="@(!context.CanUseTerminal)" aria-label="Open terminal" /></ActivatorContent>
+                        <ChildContent>
+                            @foreach (var shell in context.AvailableShells)
+                            {
+                                var selectedShell = shell;
+                                <MudMenuItem OnClick="@(() => OpenTerminalAsync(context, selectedShell))">@ClientPresentationFormatting.ShellLabel(selectedShell)</MudMenuItem>
+                            }
+                        </ChildContent>
+                    </MudMenu>
+                </MudTooltip>
+                <MudTooltip Text="@context.FilesystemUnavailableReason"><MudIconButton Icon="@Icons.Material.Filled.FolderOpen" Size="Size.Small" Disabled="@(!context.CanUseFilesystem)" OnClick="@(() => OpenFilesAsync(context))" aria-label="Open file browser" /></MudTooltip>
+                <MudTooltip Text="Remote support"><MudIconButton Icon="@Icons.Material.Filled.SupportAgent" Size="Size.Small" Disabled="@(!context.CanUseRemoteSupport)" OnClick="@(() => OpenRemoteSupportAsync(context))" aria-label="Open remote support" /></MudTooltip>
+                <MudTooltip Text="Ping"><MudIconButton Icon="@Icons.Material.Filled.NetworkPing" Size="Size.Small" Disabled="@(!context.Online)" OnClick="@(() => PingAsync(context))" aria-label="Ping client" /></MudTooltip>
+            </MudStack>
+        </MudTd>
+    </RowTemplate>
+    <NoRecordsContent><MudText Typo="Typo.subtitle1">No clients available.</MudText></NoRecordsContent>
+    <PagerContent><MudTablePager /></PagerContent>
+</MudTable>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public IReadOnlyList<ClientPresentationModel> Clients { get; set; } = [];
+    [Parameter] public EventCallback RefreshRequested { get; set; }
+
+    private readonly Dictionary<(int TenantId, Guid AgentId), double> _latencyByAgent = [];
+
+    private string FormatLatency(ClientPresentationModel client)
+    {
+        var latency = _latencyByAgent.TryGetValue((client.TenantId, client.AgentId), out var measuredLatency)
+            ? measuredLatency
+            : (double?)null;
+        return ClientPresentationFormatting.Latency(client.Online, latency);
+    }
+
+    private async Task CopyHostAsync(ClientPresentationModel client)
+    {
+        await JsRuntime.InvokeVoidAsync("navigator.clipboard.writeText", client.HostName);
+        Snackbar.Add("Host copied.", Severity.Success);
+    }
+
+    private async Task OpenTelemetryAsync(ClientPresentationModel client)
+    {
+        var parameters = new DialogParameters<GatewayTelemetryDialog>
+        {
+            { dialog => dialog.TenantId, client.TenantId }, { dialog => dialog.AgentId, client.AgentId },
+            { dialog => dialog.HostLabel, client.HostName }, { dialog => dialog.TenantLabel, client.TenantName },
+            { dialog => dialog.InitialSnapshot, client.Telemetry }
+        };
+        await DialogService.ShowAsync<GatewayTelemetryDialog>("Telemetry", parameters,
+            new DialogOptions { FullScreen = true, FullWidth = true, CloseOnEscapeKey = true, CloseButton = false });
+    }
+
+    private async Task OpenFilesAsync(ClientPresentationModel client)
+    {
+        var disk = client.Telemetry?.Disks.OrderByDescending(item => item.UsedGb).FirstOrDefault();
+        var parameters = new DialogParameters<ClientFileSystemViewer>
+        {
+            { dialog => dialog.TenantId, client.TenantId }, { dialog => dialog.AgentId, client.AgentId },
+            { dialog => dialog.HostLabel, client.HostName }, { dialog => dialog.InitialPath, disk?.Scope ?? "/" }
+        };
+        await DialogService.ShowAsync<ClientFileSystemViewer>("File Browser", parameters, new DialogOptions { FullScreen = true, CloseOnEscapeKey = true, CloseButton = false });
+    }
+
+    private async Task OpenTerminalAsync(ClientPresentationModel client, string shell)
+    {
+        var parameters = new DialogParameters<ClientTerminalSessionDialog>
+        {
+            { dialog => dialog.TenantId, client.TenantId }, { dialog => dialog.AgentId, client.AgentId },
+            { dialog => dialog.HostLabel, client.HostName }, { dialog => dialog.Shell, shell }
+        };
+        await DialogService.ShowAsync<ClientTerminalSessionDialog>($"{ClientPresentationFormatting.ShellLabel(shell)} terminal", parameters, new DialogOptions { CloseOnEscapeKey = true, FullWidth = true, MaxWidth = MaxWidth.ExtraExtraLarge, CloseButton = false });
+    }
+
+    private async Task OpenRemoteSupportAsync(ClientPresentationModel client)
+    {
+        await DialogService.ShowAsync<GatewayRemoteSupportDialog>("Remote Support",
+            RemoteSupportDialogLauncher.CreateParameters(client), RemoteSupportDialogLauncher.CreateOptions());
+    }
+
+    private async Task PingAsync(ClientPresentationModel client)
+    {
+        try
+        {
+            var result = await GatewayActions.PingAsync(client.TenantId, client.AgentId);
+            _latencyByAgent[(client.TenantId, client.AgentId)] = result.RoundTripMilliseconds;
+            Snackbar.Add($"Ping: {result.RoundTripMilliseconds:0} ms ({result.Authority}).", Severity.Success);
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (Exception exception)
+        {
+            Snackbar.Add($"Ping failed: {exception.Message}", Severity.Error);
+        }
+    }
+}

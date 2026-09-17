@@ -1,0 +1,298 @@
+@using Microsoft.AspNetCore.Components.Web
+@using NetRatel.Application.Notifications
+@using NetRatel.Web.Services.Notifications
+@implements IDisposable
+@inject INetRatelNotificationApiClient NotificationClient
+@inject NetRatelNotificationEventBus NotificationEventBus
+@inject NavigationManager Navigation
+@inject ILogger<NotificationBell> Logger
+
+<div class="notification-bell-anchor"
+     @onmouseenter="OnBellMouseEnter"
+     @onmouseleave="OnBellMouseLeave">
+    <MudBadge
+        Color="Color.Error"
+        Content="@GetBadgeText()"
+        Dot="false"
+        Overlap="true"
+        Visible="@(unreadCount > 0)"
+        Class="notification-badge">
+        <MudIconButton
+            Icon="@Icons.Material.Filled.Notifications"
+            Color="Color.Inherit"
+            Size="Size.Medium"
+            Class="notification-icon"
+            aria-label="Application events"
+            OnClick="TogglePopover" />
+    </MudBadge>
+
+    @if (isOpen)
+    {
+        <div class="notification-popover-overlay" @onclick="ClosePopover"></div>
+    }
+
+    <MudPopover
+        Open="@isOpen"
+        AnchorOrigin="Origin.BottomRight"
+        TransformOrigin="Origin.TopRight"
+        Class="notification-popover">
+        <div @onclick:stopPropagation="true"
+             @onmouseenter="OnPopoverMouseEnter"
+             @onmouseleave="OnPopoverMouseLeave">
+            <MudPaper Class="notification-container" Elevation="8">
+                <div tabindex="0" class="notification-content" @onkeydown="HandlePopoverKeyDown" @onkeydown:stopPropagation="true">
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween" Class="px-3 pt-2 pb-1">
+                        <MudText Typo="Typo.subtitle1">Application Events</MudText>
+                        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
+                            <MudChip T="string" Size="Size.Small" Color="Color.Error" Variant="Variant.Filled">@unreadCount</MudChip>
+                            <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small" OnClick="ClosePopover" aria-label="Close application events" />
+                        </MudStack>
+                    </MudStack>
+
+                    @if (unreadCount > notifications.Count && notifications.Count > 0)
+                    {
+                        <MudText Typo="Typo.caption" Color="Color.Secondary" Class="px-3 pb-1">
+                            Showing latest @MaxItems of @unreadCount events
+                        </MudText>
+                    }
+
+                    <MudDivider />
+
+                    @if (loading)
+                    {
+                        <MudStack AlignItems="AlignItems.Center" Justify="Justify.Center" Class="pa-6">
+                            <MudProgressCircular Size="Size.Small" Indeterminate="true" />
+                        </MudStack>
+                    }
+                    else if (notifications.Count == 0)
+                    {
+                        <MudText Class="pa-3" Typo="Typo.body2" Color="Color.Secondary">No active events.</MudText>
+                    }
+                    else
+                    {
+                        <div class="incident-list-scroll" @onwheel:stopPropagation="true">
+                            <MudList T="NetRatelNotificationDto" Dense="true" Class="px-2 py-1">
+                                @foreach (var notification in notifications)
+                                {
+                                    <MudListItem T="NetRatelNotificationDto" Class="@GetIncidentItemClass(notification.Severity)" OnClick="() => OpenNotification(notification)">
+                                        <MudStack Row="true" AlignItems="AlignItems.Start" Justify="Justify.SpaceBetween" Style="width: 100%;">
+                                            <MudStack Spacing="0" Style="min-width: 0; max-width: 290px;">
+                                                <MudText Typo="Typo.body2" Class="incident-title">@notification.EventType</MudText>
+                                                <MudText Typo="Typo.body2" Class="incident-message">@(notification.Message ?? "-")</MudText>
+                                                <MudText Typo="Typo.caption" Color="Color.Secondary">@notification.OccurredUtc.ToLocalTime().ToString("g")</MudText>
+                                            </MudStack>
+
+                                            <div @onclick:stopPropagation="true">
+                                                <MudIconButton
+                                                    Icon="@Icons.Material.Filled.Done"
+                                                    Size="Size.Small"
+                                                    Color="Color.Primary"
+                                                    Disabled="@markingReadIds.Contains(notification.Id)"
+                                                    OnClick="() => MarkReadAsync(notification)"
+                                                    aria-label="Mark event resolved" />
+                                            </div>
+                                        </MudStack>
+                                    </MudListItem>
+                                }
+                            </MudList>
+                        </div>
+                    }
+
+                    <MudDivider />
+                    <MudButton FullWidth="true" Variant="Variant.Text" OnClick="NavigateToNotifications">
+                        All Notifications
+                    </MudButton>
+                </div>
+            </MudPaper>
+        </div>
+    </MudPopover>
+</div>
+
+@code {
+    private const int MaxItems = 20;
+    private const int HoverOpenDelayMs = 150;
+    private const int HoverCloseDelayMs = 250;
+
+    private readonly HashSet<Guid> markingReadIds = new();
+    private List<NetRatelNotificationDto> notifications = new();
+    private int unreadCount;
+    private bool loading;
+    private bool isOpen;
+    private bool hoverBell;
+    private bool hoverPopover;
+    private int hoverOpenVersion;
+    private int hoverCloseVersion;
+    private bool disposed;
+
+    protected override async Task OnInitializedAsync()
+    {
+        NotificationEventBus.OnNotificationsRead += HandleNotificationsRead;
+        await LoadAsync();
+    }
+
+    public void Dispose()
+    {
+        disposed = true;
+        NotificationEventBus.OnNotificationsRead -= HandleNotificationsRead;
+    }
+
+    private async Task LoadAsync()
+    {
+        loading = true;
+        try
+        {
+            var summaryTask = NotificationClient.GetSummaryAsync();
+            var notificationsTask = NotificationClient.GetUnreadErrorsAsync(MaxItems);
+            await Task.WhenAll(summaryTask, notificationsTask);
+
+            var summary = await summaryTask;
+            unreadCount = summary.UnreadErrorCount;
+            notifications = (await notificationsTask).ToList();
+        }
+        catch (HttpRequestException ex)
+        {
+            unreadCount = 0;
+            notifications = [];
+            Logger.LogWarning(ex, "Notification bell could not reach the NetRatel API. Continuing without unread notifications.");
+        }
+        catch (TaskCanceledException ex)
+        {
+            unreadCount = 0;
+            notifications = [];
+            Logger.LogWarning(ex, "Notification bell timed out while loading notifications. Continuing without unread notifications.");
+        }
+        finally
+        {
+            loading = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private Task TogglePopover()
+    {
+        hoverOpenVersion++;
+        hoverCloseVersion++;
+        isOpen = !isOpen;
+        return Task.CompletedTask;
+    }
+
+    private Task ClosePopover()
+    {
+        hoverOpenVersion++;
+        hoverCloseVersion++;
+        isOpen = false;
+        return Task.CompletedTask;
+    }
+
+    private Task OnBellMouseEnter()
+    {
+        hoverBell = true;
+        hoverCloseVersion++;
+        return OpenAfterDelayAsync();
+    }
+
+    private Task OnBellMouseLeave()
+    {
+        hoverBell = false;
+        return CloseAfterDelayAsync();
+    }
+
+    private Task OnPopoverMouseEnter()
+    {
+        hoverPopover = true;
+        hoverCloseVersion++;
+        return Task.CompletedTask;
+    }
+
+    private Task OnPopoverMouseLeave()
+    {
+        hoverPopover = false;
+        return CloseAfterDelayAsync();
+    }
+
+    private async Task OpenAfterDelayAsync()
+    {
+        var version = ++hoverOpenVersion;
+        await Task.Delay(HoverOpenDelayMs);
+        if (disposed || version != hoverOpenVersion)
+        {
+            return;
+        }
+
+        if ((hoverBell || hoverPopover) && !isOpen)
+        {
+            isOpen = true;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task CloseAfterDelayAsync()
+    {
+        var version = ++hoverCloseVersion;
+        await Task.Delay(HoverCloseDelayMs);
+        if (disposed || version != hoverCloseVersion)
+        {
+            return;
+        }
+
+        if (!hoverBell && !hoverPopover && isOpen)
+        {
+            isOpen = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void HandlePopoverKeyDown(KeyboardEventArgs args)
+    {
+        if (string.Equals(args.Key, "Escape", StringComparison.OrdinalIgnoreCase))
+            _ = ClosePopover();
+    }
+
+    private async Task MarkReadAsync(NetRatelNotificationDto notification)
+    {
+        if (!markingReadIds.Add(notification.Id))
+            return;
+
+        try
+        {
+            var updated = await NotificationClient.MarkReadBulkAsync(new[] { notification.Id });
+            if (updated <= 0)
+                return;
+
+            notifications.RemoveAll(x => x.Id == notification.Id);
+            unreadCount = Math.Max(unreadCount - updated, 0);
+            await NotificationEventBus.NotifyReadAsync(updated);
+            await InvokeAsync(StateHasChanged);
+        }
+        finally
+        {
+            markingReadIds.Remove(notification.Id);
+        }
+    }
+
+    private void HandleNotificationsRead(int count)
+    {
+        unreadCount = Math.Max(unreadCount - count, 0);
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    private void NavigateToNotifications()
+    {
+        isOpen = false;
+        Navigation.NavigateTo("/notifications");
+    }
+
+    private void OpenNotification(NetRatelNotificationDto notification)
+    {
+        isOpen = false;
+        Navigation.NavigateTo($"/notifications?event={notification.Id}");
+    }
+
+    private string GetBadgeText()
+        => unreadCount > 99 ? "99+" : unreadCount.ToString();
+
+    private static string GetIncidentItemClass(NetRatelNotificationSeverity severity)
+        => severity == NetRatelNotificationSeverity.Critical
+            ? "incident-item incident-item--critical"
+            : "incident-item";
+}

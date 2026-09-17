@@ -1,0 +1,123 @@
+@using NetRatel.Web.Themes
+@inject IJSRuntime JS
+
+<MudThemeProvider @ref="_themeProvider"
+                  Theme="_theme"
+                  IsDarkMode="_isDarkMode"
+                  IsDarkModeChanged="OnThemeProviderDarkModeChanged"
+                  ObserveSystemThemeChange="true" />
+
+@if (ChildContent is not null)
+{
+    @ChildContent(this)
+}
+
+@code {
+    [Parameter] public RenderFragment<ThemePreferenceProvider>? ChildContent { get; set; }
+
+    private readonly MudTheme _theme = new NetRatelTheme();
+    private MudThemeProvider? _themeProvider;
+    private ThemePreferenceMode _mode = ThemePreferenceMode.System;
+    private bool _isDarkMode;
+    private bool _systemDarkMode;
+    private bool _initialized;
+
+    public ThemePreferenceMode Mode => _mode;
+    public bool IsDarkMode => _isDarkMode;
+    public string Icon => _mode switch
+    {
+        ThemePreferenceMode.Light => Icons.Material.Outlined.LightMode,
+        ThemePreferenceMode.Dark => Icons.Material.Outlined.DarkMode,
+        _ => Icons.Material.Rounded.AutoMode,
+    };
+
+    public string Label => _mode switch
+    {
+        ThemePreferenceMode.Light => "Light",
+        ThemePreferenceMode.Dark => "Dark",
+        _ => "System",
+    };
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender || _themeProvider is null)
+        {
+            return;
+        }
+
+        _mode = ParseMode(await JS.InvokeAsync<string?>("netratelThemePreference.get"));
+        _systemDarkMode = await _themeProvider.GetSystemDarkModeAsync();
+        _isDarkMode = ResolveDarkMode();
+        _initialized = true;
+
+        await _themeProvider.WatchSystemDarkModeAsync(OnSystemDarkModeChangedAsync);
+        await ApplyDocumentThemeAsync();
+        await InvokeAsync(StateHasChanged);
+    }
+
+    public async Task SetModeAsync(ThemePreferenceMode selectedMode)
+    {
+        _mode = selectedMode;
+
+        if (_mode is ThemePreferenceMode.System && _themeProvider is not null)
+        {
+            _systemDarkMode = await _themeProvider.GetSystemDarkModeAsync();
+        }
+
+        _isDarkMode = ResolveDarkMode();
+        await JS.InvokeVoidAsync("netratelThemePreference.set", ToStorageValue(_mode));
+        await ApplyDocumentThemeAsync();
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task OnSystemDarkModeChangedAsync(bool isSystemDarkMode)
+    {
+        _systemDarkMode = isSystemDarkMode;
+        _isDarkMode = ResolveDarkMode();
+
+        if (_initialized)
+        {
+            await ApplyDocumentThemeAsync();
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task OnThemeProviderDarkModeChanged(bool nextIsDarkMode)
+    {
+        if (_mode is ThemePreferenceMode.System)
+        {
+            _systemDarkMode = nextIsDarkMode;
+        }
+
+        _isDarkMode = ResolveDarkMode();
+
+        if (_initialized)
+        {
+            await ApplyDocumentThemeAsync();
+        }
+    }
+
+    private bool ResolveDarkMode() => _mode switch
+    {
+        ThemePreferenceMode.Light => false,
+        ThemePreferenceMode.Dark => true,
+        _ => _systemDarkMode,
+    };
+
+    private Task ApplyDocumentThemeAsync() =>
+        JS.InvokeVoidAsync("netratelThemePreference.apply", _isDarkMode).AsTask();
+
+    private static ThemePreferenceMode ParseMode(string? value) => value?.Trim().ToLowerInvariant() switch
+    {
+        "light" => ThemePreferenceMode.Light,
+        "dark" => ThemePreferenceMode.Dark,
+        _ => ThemePreferenceMode.System,
+    };
+
+    private static string ToStorageValue(ThemePreferenceMode selectedMode) => selectedMode switch
+    {
+        ThemePreferenceMode.Light => "light",
+        ThemePreferenceMode.Dark => "dark",
+        _ => "system",
+    };
+}

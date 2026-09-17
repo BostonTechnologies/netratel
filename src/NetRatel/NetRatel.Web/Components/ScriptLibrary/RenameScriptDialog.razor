@@ -1,0 +1,19 @@
+@using MudBlazor
+
+@code
+{
+    [CascadingParameter] public IMudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public RenameScriptDialogModel Model { get; set; } = default!;
+}
+
+<MudDialog>
+  <DialogContent>
+    <MudTextField @bind-Value="Model.Name" Label="New name" Required="true" />
+  </DialogContent>
+  <DialogActions>
+    <MudButton Variant="Variant.Text" OnClick="() => MudDialog.Cancel()">Cancel</MudButton>
+    <MudButton Color="Color.Primary"
+               Disabled="@string.IsNullOrWhiteSpace(Model?.Name)"
+               OnClick="() => MudDialog.Close(DialogResult.Ok(true))">Rename</MudButton>
+  </DialogActions>
+</MudDialog>

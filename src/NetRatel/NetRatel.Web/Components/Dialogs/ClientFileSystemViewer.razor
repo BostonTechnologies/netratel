@@ -1,0 +1,419 @@
+@using Microsoft.AspNetCore.Components.Web.Virtualization
+@using NetRatel.Shared.Contracts.FileSystem
+@using NetRatel.Web.Components.Dialogs.FileBrowser
+@using NetRatel.Web.Services.FileSystem
+@implements IDisposable
+
+<MudDialog Class="file-explorer-dialog">
+    <TitleContent>
+        <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween" Class="w-100">
+            <MudStack Spacing="0">
+                <MudText Typo="Typo.h6">File Browser · @HostLabel</MudText>
+                <MudText Typo="Typo.caption">Remote Explorer</MudText>
+            </MudStack>
+            <MudButton Variant="Variant.Text" OnClick="Close">Close</MudButton>
+        </MudStack>
+    </TitleContent>
+    <DialogContent>
+        <div class="file-explorer-content">
+        <section class="file-explorer-shell" data-testid="file-explorer">
+            <MudStack Spacing="1" Class="file-explorer-toolbar">
+                <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center" Class="file-explorer-navigation">
+                    <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.ArrowUpward" OnClick="GoUpAsync" Disabled="_loading || !CanGoUp">Up</MudButton>
+                    <MudTextField @bind-Value="_currentPath" Label="Remote path" Variant="Variant.Outlined" Margin="Margin.Dense" Immediate="true" OnKeyDown="HandlePathKeyDownAsync" Class="flex-grow-1" data-testid="file-explorer-path" />
+                    <MudIconButton Icon="@Icons.Material.Filled.Refresh" Color="Color.Primary" OnClick="RefreshAsync" Disabled="_loading" aria-label="Refresh directory" />
+                    <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.UploadFile" OnClick="ChooseUploadAsync" Disabled="_loading || _uploading">Upload</MudButton>
+                    @if (_uploading)
+                    {
+                        <MudText Typo="Typo.caption">@_uploadState</MudText>
+                        <MudProgressLinear Value="@_uploadPercent" Color="Color.Primary" Class="flex-grow-1" />
+                        <MudButton Variant="Variant.Text" Color="Color.Error" OnClick="CancelUploadAsync">Cancel upload</MudButton>
+                    }
+                    @if (_downloadState is not null)
+                    {
+                        <MudAlert Severity="@DownloadSeverity" Variant="Variant.Outlined" Dense="true" Class="w-100" data-testid="file-explorer-download-state">
+                            <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
+                                <MudText Typo="Typo.caption">@DownloadDetail</MudText>
+                                @if (_downloadExpectedBytes is > 0)
+                                {
+                                    <MudProgressLinear Value="@DownloadPercent" Color="@DownloadColor" Class="flex-grow-1" />
+                                }
+                                @if (_downloadState is "preparing" or "streaming")
+                                {
+                                    <MudButton Variant="Variant.Text" Color="Color.Error" OnClick="CancelDownloadAsync">Cancel download</MudButton>
+                                }
+                            </MudStack>
+                        </MudAlert>
+                    }
+                    <input @ref="_uploadInput" type="file" class="file-explorer-upload-input" @onchange="UploadAsync" />
+                </MudStack>
+                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1" Class="file-explorer-location">
+                    <MudIcon Icon="@Icons.Material.Filled.FolderOpen" />
+                    <MudText Typo="Typo.body2" data-testid="file-explorer-location">@_currentPath</MudText>
+                </MudStack>
+                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
+                    <MudTextField @bind-Value="_filter" Placeholder="Filter files and folders..." Variant="Variant.Outlined" Margin="Margin.Dense" Immediate="true" Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search" Clearable="true" Class="flex-grow-1" data-testid="file-explorer-filter" />
+                    <MudChip T="string" Variant="Variant.Outlined" Size="Size.Small" data-testid="file-explorer-count">@FilteredEntries.Count item@(FilteredEntries.Count == 1 ? string.Empty : "s")</MudChip>
+                </MudStack>
+            </MudStack>
+
+            @if (_loading)
+            {
+                <div class="file-explorer-state" data-testid="file-explorer-loading">
+                    <MudProgressCircular Indeterminate="true" Color="Color.Primary" />
+                    <MudText>Loading remote directory…</MudText>
+                </div>
+            }
+            else if (!string.IsNullOrWhiteSpace(_lastDirectoryError))
+            {
+                <MudAlert Severity="Severity.Error" Variant="Variant.Outlined" data-testid="file-explorer-error">@_lastDirectoryError</MudAlert>
+            }
+            else if (_entries.Count == 0)
+            {
+                <div class="file-explorer-state" data-testid="file-explorer-empty">
+                    <MudIcon Icon="@Icons.Material.Filled.FolderOff" Size="Size.Large" />
+                    <MudText Typo="Typo.subtitle1">This directory is empty.</MudText>
+                </div>
+            }
+            else if (FilteredEntries.Count == 0)
+            {
+                <div class="file-explorer-state" data-testid="file-explorer-no-filter-results">
+                    <MudIcon Icon="@Icons.Material.Filled.SearchOff" Size="Size.Large" />
+                    <MudText Typo="Typo.subtitle1">No files or folders match this filter.</MudText>
+                </div>
+            }
+            else
+            {
+                <div class="file-explorer-list" role="list" data-testid="file-explorer-list">
+                    <div class="file-explorer-row file-explorer-heading" role="presentation">
+                        <span>Name</span>
+                        <span>Type</span>
+                        <span>Size</span>
+                        <span aria-label="Actions"></span>
+                    </div>
+                    <Virtualize Items="FilteredEntries" Context="entry" ItemSize="52" TItem="FileSystemEntryDto">
+                        <div class="file-explorer-row" role="listitem" data-testid="file-explorer-entry">
+                            <MudButton Variant="Variant.Text" Class="file-explorer-name" OnClick="@(() => OpenEntryAsync(entry))">
+                                <MudIcon Icon="@(entry.IsDirectory ? Icons.Material.Filled.Folder : Icons.Material.Filled.Description)" Class="me-2" />
+                                <span>@entry.Name</span>
+                            </MudButton>
+                            <MudText Typo="Typo.body2">@(entry.IsDirectory ? "Folder" : GetFileType(entry.Name))</MudText>
+                            <MudText Typo="Typo.body2">@(entry.IsDirectory ? "—" : FormatBytes(entry.SizeBytes))</MudText>
+                            <MudStack Row="true" Spacing="0" Justify="Justify.FlexEnd">
+                                @if (entry.IsDirectory)
+                                {
+                                    <MudIconButton Icon="@Icons.Material.Filled.FolderOpen" OnClick="@(() => OpenDirectoryAsync(entry.FullPath))" aria-label="Open folder" />
+                                }
+                                else
+                                {
+                                    <MudIconButton Icon="@Icons.Material.Filled.Visibility" OnClick="@(() => OpenFileAsync(entry))" aria-label="Open file viewer" />
+                                    <MudIconButton Icon="@Icons.Material.Filled.Download" OnClick="@(() => DownloadAsync(entry))" aria-label="Download file" />
+                                }
+                                <MudIconButton Icon="@Icons.Material.Filled.ContentCopy" OnClick="@(() => CopyPathAsync(entry.FullPath))" aria-label="Copy remote path" />
+                            </MudStack>
+                        </div>
+                    </Virtualize>
+                </div>
+            }
+        </section>
+        </div>
+    </DialogContent>
+</MudDialog>
+
+<style>
+    .file-explorer-dialog .mud-dialog-content { overflow: hidden; padding: 0; }
+    .file-explorer-dialog .file-explorer-content { height: calc(100dvh - 7.5rem); }
+    .file-explorer-shell { height: 100%; min-height: 0; display: flex; flex-direction: column; gap: 0.75rem; padding: 1rem; }
+    .file-explorer-toolbar { flex: 0 0 auto; position: sticky; top: 0; z-index: 1; padding-bottom: 0.5rem; background: var(--mud-palette-surface); }
+    .file-explorer-navigation { flex-wrap: wrap; }
+    .file-explorer-location { min-width: 0; }
+    .file-explorer-location .mud-typography { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .file-explorer-list { flex: 1 1 auto; min-height: 0; overflow: auto; border: 1px solid rgba(14, 90, 135, 0.16); border-radius: 8px; }
+    .file-explorer-row { display: grid; grid-template-columns: minmax(14rem, 1fr) minmax(6rem, 9rem) minmax(5rem, 8rem) minmax(8rem, auto); align-items: center; gap: 0.75rem; min-height: 3.25rem; padding: 0.25rem 0.5rem; border-bottom: 1px solid rgba(14, 90, 135, 0.08); }
+    .file-explorer-heading { position: sticky; top: 0; z-index: 1; min-height: 2.5rem; font-size: 0.75rem; font-weight: 600; color: var(--mud-palette-text-secondary); background: var(--mud-palette-surface); }
+    .file-explorer-name { min-width: 0; justify-content: flex-start; text-align: left; text-transform: none; }
+    .file-explorer-name span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .file-explorer-upload-input { display: none; }
+    .file-explorer-state { flex: 1 1 auto; min-height: 12rem; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.75rem; color: var(--mud-palette-text-secondary); }
+    @@media (max-width: 600px) {
+        .file-explorer-dialog .file-explorer-content { height: calc(100dvh - 5.5rem); }
+        .file-explorer-shell { padding: 0.75rem; }
+        .file-explorer-row { grid-template-columns: minmax(0, 1fr) auto; gap: 0.25rem 0.5rem; }
+        .file-explorer-row > :nth-child(2), .file-explorer-row > :nth-child(3), .file-explorer-heading { display: none; }
+    }
+</style>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance MudDialog { get; set; } = default!;
+    [Inject] private FileSystemApiService FileSystemApi { get; set; } = default!;
+    [Inject] private GatewayFileSystemApiService GatewayFileSystemApi { get; set; } = default!;
+    [Inject] private IDialogService DialogService { get; set; } = default!;
+    [Inject] private ISnackbar Snackbar { get; set; } = default!;
+    [Inject] private IJSRuntime JSRuntime { get; set; } = default!;
+
+    [Parameter] public string ClientIdentity { get; set; } = string.Empty;
+    [Parameter] public int? TenantId { get; set; }
+    [Parameter] public Guid? AgentId { get; set; }
+    [Parameter] public string HostLabel { get; set; } = "Client";
+    [Parameter] public string InitialPath { get; set; } = "/";
+
+    private readonly List<FileSystemEntryDto> _entries = [];
+    private List<FileSystemEntryDto> _filteredEntries = [];
+    private string _currentPath = string.Empty;
+    private string _filter = string.Empty;
+    private bool _loading;
+    private bool _uploading;
+    private double _uploadPercent;
+    private string _uploadState = "Uploading remote file…";
+    private string? _lastDirectoryError;
+    private ElementReference _uploadInput;
+    private string? _activeUploadId;
+    private DotNetObjectReference<ClientFileSystemViewer>? _uploadCallbacks;
+    private string? _activeDownloadId;
+    private string? _downloadState;
+    private string? _downloadFailure;
+    private long _downloadBytes;
+    private long? _downloadExpectedBytes;
+    private DotNetObjectReference<ClientFileSystemViewer>? _downloadCallbacks;
+
+    private List<FileSystemEntryDto> FilteredEntries { get { ApplyFilter(); return _filteredEntries; } }
+    private bool CanGoUp => RemoteFilePath.TryGetParent(_currentPath, out _);
+    private bool IsGatewayClient => TenantId is not null && AgentId is not null;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _currentPath = RemoteFilePath.TryNormalize(InitialPath, out var initialPath) ? initialPath : "/";
+        await RefreshAsync();
+    }
+
+    private async Task RefreshAsync()
+    {
+        if (!RemoteFilePath.TryNormalize(_currentPath, out var normalizedPath)) { _lastDirectoryError = "Enter an absolute Unix path or Windows drive path."; return; }
+        _currentPath = normalizedPath;
+        _loading = true;
+        _lastDirectoryError = null;
+        try
+        {
+            var response = await ListDirectoryAsync(_currentPath);
+            _entries.Clear();
+            _entries.AddRange(response.Entries.OrderBy(entry => entry.IsDirectory ? 0 : 1).ThenBy(entry => entry.Name, StringComparer.OrdinalIgnoreCase));
+            ApplyFilter();
+        }
+        catch (Exception exception)
+        {
+            _lastDirectoryError = exception.Message;
+            Snackbar.Add($"Failed to list directory: {exception.Message}", Severity.Error);
+        }
+        finally { _loading = false; }
+    }
+
+    private Task HandlePathKeyDownAsync(KeyboardEventArgs args) =>
+        string.Equals(args.Key, "Enter", StringComparison.OrdinalIgnoreCase) && !_loading
+            ? RefreshAsync()
+            : Task.CompletedTask;
+
+    private Task OpenEntryAsync(FileSystemEntryDto entry) => entry.IsDirectory ? OpenDirectoryAsync(entry.FullPath) : OpenFileAsync(entry);
+
+    private async Task OpenDirectoryAsync(string path)
+    {
+        if (!RemoteFilePath.TryNormalize(path, out var normalizedPath)) { _lastDirectoryError = "The selected remote path is invalid."; return; }
+        _currentPath = normalizedPath;
+        await RefreshAsync();
+    }
+
+    private async Task GoUpAsync()
+    {
+        if (RemoteFilePath.TryGetParent(_currentPath, out var parent)) { _currentPath = parent; await RefreshAsync(); }
+    }
+
+    private async Task OpenFileAsync(FileSystemEntryDto entry)
+    {
+        var parameters = new DialogParameters<ClientFileViewer>
+        {
+            { viewer => viewer.File, entry },
+            { viewer => viewer.ClientIdentity, ClientIdentity },
+            { viewer => viewer.TenantId, TenantId },
+            { viewer => viewer.AgentId, AgentId }
+        };
+        var dialog = await DialogService.ShowAsync<ClientFileViewer>(entry.Name, parameters,
+            new DialogOptions { FullScreen = true, CloseOnEscapeKey = true, CloseButton = false });
+        await dialog.Result;
+    }
+
+    private async Task DownloadAsync(FileSystemEntryDto entry)
+    {
+        if (!IsGatewayClient)
+        {
+            Snackbar.Add("Browser-native download requires a gateway-backed client.", Severity.Warning);
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(_activeDownloadId))
+        {
+            await CancelDownloadAsync();
+        }
+
+        _activeDownloadId = Guid.NewGuid().ToString("D");
+        _downloadCallbacks?.Dispose();
+        _downloadCallbacks = DotNetObjectReference.Create(this);
+        _downloadState = "preparing";
+        _downloadFailure = null;
+        _downloadBytes = 0;
+        _downloadExpectedBytes = entry.SizeBytes >= 0 ? entry.SizeBytes : null;
+        var url = $"/file-browser/transfers/download?tenantId={TenantId}&agentId={AgentId:D}&transferId={_activeDownloadId}&expectedBytes={_downloadExpectedBytes}&path={Uri.EscapeDataString(entry.FullPath)}";
+        await JSRuntime.InvokeVoidAsync("netratelDownloads.start", url, _activeDownloadId, _downloadCallbacks);
+    }
+
+    private Task ChooseUploadAsync() => JSRuntime.InvokeVoidAsync("netratelFileTransfers.pick", _uploadInput).AsTask();
+
+    private async Task UploadAsync(ChangeEventArgs args)
+    {
+        if (!IsGatewayClient || string.IsNullOrWhiteSpace(args.Value?.ToString()))
+        {
+            return;
+        }
+
+        var fileName = args.Value.ToString()!.Split('/').Last().Split('\\').Last();
+        if (string.IsNullOrWhiteSpace(fileName) || fileName.IndexOfAny(['/', '\\', '\0']) >= 0)
+        {
+            Snackbar.Add("The upload destination is invalid.", Severity.Error);
+            return;
+        }
+
+        var destination = RemoteFilePath.Join(_currentPath, fileName);
+
+        if (_entries.Any(entry => string.Equals(entry.Name, fileName, StringComparison.OrdinalIgnoreCase)) &&
+            !await JSRuntime.InvokeAsync<bool>("confirm", $"Overwrite remote file '{fileName}'?"))
+        {
+            return;
+        }
+
+        _activeUploadId = Guid.NewGuid().ToString("N");
+        _uploadCallbacks = DotNetObjectReference.Create(this);
+        _uploading = true;
+        _uploadPercent = 0;
+        _uploadState = "Uploading remote file…";
+        try
+        {
+            var url = $"/file-browser/transfers/upload?tenantId={TenantId}&agentId={AgentId:D}&path={Uri.EscapeDataString(destination)}";
+            await JSRuntime.InvokeVoidAsync(
+                "netratelFileTransfers.upload",
+                Timeout.InfiniteTimeSpan,
+                _uploadInput,
+                url,
+                _activeUploadId,
+                _uploadCallbacks);
+            Snackbar.Add($"Uploaded {fileName} through the native streaming transfer.", Severity.Success);
+            await RefreshAsync();
+        }
+        catch (Exception exception)
+        {
+            Snackbar.Add(exception.Message, Severity.Error);
+        }
+        finally
+        {
+            _uploading = false;
+            _activeUploadId = null;
+            _uploadCallbacks?.Dispose();
+            _uploadCallbacks = null;
+        }
+    }
+
+    private Task CancelUploadAsync()
+    {
+        _uploadState = "Cancelling remote upload…";
+        return string.IsNullOrWhiteSpace(_activeUploadId)
+            ? Task.CompletedTask
+            : JSRuntime.InvokeVoidAsync("netratelFileTransfers.cancel", _activeUploadId).AsTask();
+    }
+
+    [JSInvokable]
+    public Task OnUploadProgress(long transferredBytes, long totalBytes)
+    {
+        _uploadPercent = totalBytes <= 0 ? 0 : Math.Clamp(transferredBytes * 100d / totalBytes, 0, 100);
+        return InvokeAsync(StateHasChanged);
+    }
+
+    [JSInvokable]
+    public Task OnUploadRetrying(int attempt, int maximumAttempts)
+    {
+        _uploadState = $"Reconnecting remote upload (attempt {attempt} of {maximumAttempts})…";
+        return InvokeAsync(StateHasChanged);
+    }
+
+    private Task CancelDownloadAsync() => string.IsNullOrWhiteSpace(_activeDownloadId)
+        ? Task.CompletedTask
+        : JSRuntime.InvokeVoidAsync("netratelDownloads.cancel", _activeDownloadId).AsTask();
+
+    [JSInvokable]
+    public Task OnDownloadStatus(string state, long bytesTransferred, long? expectedBytes, string? failureCode)
+    {
+        _downloadState = state;
+        _downloadBytes = Math.Max(0, bytesTransferred);
+        _downloadExpectedBytes = expectedBytes;
+        _downloadFailure = failureCode;
+        if (state is "completed" or "failed" or "cancelled")
+        {
+            _activeDownloadId = null;
+        }
+
+        return InvokeAsync(StateHasChanged);
+    }
+
+    private async Task CopyPathAsync(string path)
+    {
+        try { await JSRuntime.InvokeVoidAsync("navigator.clipboard.writeText", path); Snackbar.Add("Remote path copied to clipboard.", Severity.Success); }
+        catch (Exception exception) { Snackbar.Add($"Failed to copy remote path: {exception.Message}", Severity.Error); }
+    }
+
+    private async Task<FileSystemListResponse> ListDirectoryAsync(string path)
+    {
+        if (!IsGatewayClient) return await FileSystemApi.ListDirectoryAsync(ClientIdentity, path);
+        var response = await GatewayFileSystemApi.ListAsync(TenantId!.Value, AgentId!.Value, path);
+        return new FileSystemListResponse("akka-gateway", response.Path, "completed", null,
+            response.Entries.Select(entry => new FileSystemEntryDto(response.Path, entry.Name, entry.FullPath, entry.IsDirectory, entry.SizeBytes)).ToArray());
+    }
+
+    private void ApplyFilter()
+    {
+        var filter = _filter.Trim();
+        _filteredEntries = string.IsNullOrEmpty(filter) ? [.. _entries] : _entries.Where(entry => entry.Name.Contains(filter, StringComparison.OrdinalIgnoreCase)).ToList();
+    }
+
+    private static string GetFileType(string? fileName)
+    {
+        var fileNameStart = Math.Max(fileName?.LastIndexOf('/') ?? -1, fileName?.LastIndexOf('\\') ?? -1) + 1;
+        var name = (fileName ?? string.Empty)[fileNameStart..];
+        var extensionStart = name.LastIndexOf('.');
+        return extensionStart <= 0 ? "File" : name[(extensionStart + 1)..].ToUpperInvariant();
+    }
+
+    private static string FormatBytes(long sizeBytes) => sizeBytes switch
+    {
+        < 0 => "Unknown",
+        < 1024 => $"{sizeBytes} B",
+        < 1024 * 1024 => $"{sizeBytes / 1024d:F1} KB",
+        < 1024 * 1024 * 1024 => $"{sizeBytes / 1024d / 1024d:F1} MB",
+        _ => $"{sizeBytes / 1024d / 1024d / 1024d:F1} GB"
+    };
+
+    private void Close() => MudDialog.Close();
+
+    private Severity DownloadSeverity => _downloadState is "failed" ? Severity.Error : _downloadState is "cancelled" ? Severity.Warning : Severity.Info;
+    private Color DownloadColor => _downloadState is "failed" or "cancelled" ? Color.Warning : Color.Primary;
+    private double DownloadPercent => _downloadExpectedBytes is > 0 ? Math.Clamp(_downloadBytes * 100d / _downloadExpectedBytes.Value, 0, 100) : 0;
+    private string DownloadDetail => _downloadState switch
+    {
+        "preparing" => "Preparing remote download…",
+        "streaming" => _downloadExpectedBytes is > 0 ? $"Downloading {FormatBytes(_downloadBytes)} / {FormatBytes(_downloadExpectedBytes.Value)}" : $"Downloading {FormatBytes(_downloadBytes)}",
+        "completed" => $"Download completed · {FormatBytes(_downloadBytes)}",
+        "cancelled" => $"Download cancelled after {FormatBytes(_downloadBytes)}",
+        _ => string.IsNullOrWhiteSpace(_downloadFailure) ? "Download failed" : $"Download failed: {_downloadFailure}"
+    };
+
+    public void Dispose()
+    {
+        _uploadCallbacks?.Dispose();
+        _downloadCallbacks?.Dispose();
+    }
+}

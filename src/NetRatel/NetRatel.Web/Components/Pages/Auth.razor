@@ -1,0 +1,114 @@
+﻿@page "/auth"
+@attribute [Authorize]
+
+@using NetRatel.Web.Services.Authentication
+@using System.Security.Claims
+
+@inject ITokenService TokenService
+@inject ISnackbar Snackbar
+@inject IJSRuntime JSRuntime
+
+<PageTitle>Auth Debug</PageTitle>
+
+<MudText Typo="Typo.h4" GutterBottom="true">Authentication Dashboard</MudText>
+<MudText Class="mb-6">This page displays details from your current authenticated session for debugging.</MudText>
+
+<AuthorizeView>
+    <Authorized Context="authContext">
+        <MudGrid Spacing="4">
+            <MudItem xs="12" md="4">
+                <MudPaper Elevation="3" Class="pa-4" Height="100%">
+                    <MudStack AlignItems="AlignItems.Center" Spacing="2">
+                        <MudAvatar Color="Color.Primary" Size="Size.Large" Variant="Variant.Outlined">@GetInitials(authContext.User.Identity?.Name)</MudAvatar>
+                        <MudText Typo="Typo.h6">@authContext.User.Identity?.Name</MudText>
+                        <MudText Typo="Typo.body2">Authenticated via: @authContext.User.Identity?.AuthenticationType</MudText>
+                        <MudText Typo="Typo.caption" Class="mt-2">User ID (sub): @authContext.User.FindFirstValue(ClaimTypes.NameIdentifier)</MudText>
+                    </MudStack>
+                </MudPaper>
+            </MudItem>
+
+            <MudItem xs="12" md="8">
+                <MudPaper Elevation="3" Class="pa-4" Height="100%">
+                    <MudText Typo="Typo.h6" GutterBottom="true">JWT Bearer Token</MudText>
+                    @if (tokenIsLoading)
+                    {
+                        <MudProgressLinear Color="Color.Primary" Indeterminate="true" Class="my-4" />
+                    }
+                    else
+                    {
+                        <MudTextField T="string" @bind-Value="bearerToken"
+                                      Variant="Variant.Outlined"
+                                      Lines="5"
+                                      ReadOnly="true"
+                                      Label="Your Access Token" />
+                        <MudButton Variant="Variant.Filled"
+                                   Color="Color.Primary"
+                                   StartIcon="@Icons.Material.Filled.ContentCopy"
+                                   OnClick="CopyToClipboard"
+                                   FullWidth="true"
+                                   Class="mt-2">
+                            Copy Token to Clipboard
+                        </MudButton>
+                    }
+                </MudPaper>
+            </MudItem>
+
+            <MudItem xs="12">
+                <MudPaper Elevation="3" Class="pa-4">
+                    <MudTable Items="@authContext.User.Claims" Hover="true" Dense="true" Elevation="0">
+                        <HeaderContent>
+                            <MudTh>Claim Type</MudTh>
+                            <MudTh>Claim Value</MudTh>
+                        </HeaderContent>
+                        <RowTemplate Context="claim">
+                            <MudTd DataLabel="Claim Type"><MudText Typo="Typo.body2">@claim.Type</MudText></MudTd>
+                            <MudTd DataLabel="Claim Value"><MudText Typo="Typo.body2" Style="word-break: break-all;">@claim.Value</MudText></MudTd>
+                        </RowTemplate>
+                        <PagerContent>
+                            <MudTablePager />
+                        </PagerContent>
+                    </MudTable>
+                </MudPaper>
+            </MudItem>
+        </MudGrid>
+    </Authorized>
+    <NotAuthorized>
+        <MudAlert Severity="Severity.Warning">You are not authorized. Please sign in with appropriate permissions and try again.</MudAlert>
+    </NotAuthorized>
+</AuthorizeView>
+
+@code {
+    private bool tokenIsLoading = true;
+    private string? bearerToken;
+
+    protected override async Task OnInitializedAsync()
+    {
+        bearerToken = await TokenService.GetValidAccessTokenAsync();
+        tokenIsLoading = false;
+    }
+
+    private async Task CopyToClipboard()
+    {
+        if (!string.IsNullOrEmpty(bearerToken))
+        {
+            await JSRuntime.InvokeVoidAsync("navigator.clipboard.writeText", bearerToken);
+            Snackbar.Add("Token copied to clipboard!", Severity.Success);
+        }
+    }
+
+    private static string GetInitials(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return "?";
+        }
+
+        var parts = name.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length > 1)
+        {
+            return $"{parts[0][0]}{parts[^1][0]}".ToUpperInvariant();
+        }
+
+        return name.Length > 1 ? name[..2].ToUpperInvariant() : name.ToUpperInvariant();
+    }
+}

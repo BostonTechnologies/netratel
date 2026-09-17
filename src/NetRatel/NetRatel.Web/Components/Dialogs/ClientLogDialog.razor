@@ -1,0 +1,223 @@
+@using NetRatel.Shared.Contracts
+@using NetRatel.Web.Services
+@using NetRatel.Web.Services.Clients
+
+@implements IAsyncDisposable
+
+@inject ClientApiService ClientApi
+@inject IHttpClientFactory HttpClientFactory
+@inject ITokenProvider TokenProvider
+@inject ISnackbar Snackbar
+
+<MudDialog Class="client-log-dialog">
+    <DialogContent>
+        <MudStack Spacing="2">
+            <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
+                <MudText Typo="Typo.h6">@Title</MudText>
+                <MudChip T="string" Size="Size.Small" Color="@StatusColor" Variant="Variant.Outlined">
+                    @StatusText
+                </MudChip>
+            </MudStack>
+            @if (!string.IsNullOrWhiteSpace(_error))
+            {
+                <MudAlert Severity="Severity.Error" Dense="true">@_error</MudAlert>
+            }
+            <MudPaper Elevation="0" Class="client-log-surface pa-3">
+                @if (_logs.Count == 0)
+                {
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">@EmptyText</MudText>
+                }
+                else
+                {
+                    @foreach (var line in _logs)
+                    {
+                        <div class="client-log-line">@line</div>
+                    }
+                }
+            </MudPaper>
+        </MudStack>
+    </DialogContent>
+    <DialogActions>
+        <MudButton Variant="Variant.Text" OnClick="CloseAsync">Close</MudButton>
+    </DialogActions>
+</MudDialog>
+
+<style>
+    .client-log-dialog .mud-dialog-content {
+        width: min(960px, calc(100dvw - 32px));
+    }
+
+    .client-log-surface {
+        background: var(--mud-palette-background-gray);
+        color: var(--mud-palette-text-primary);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+        font-size: .82rem;
+        line-height: 1.45;
+        max-height: 62dvh;
+        overflow: auto;
+        white-space: pre-wrap;
+        word-break: break-word;
+    }
+
+    .client-log-line + .client-log-line {
+        margin-top: 2px;
+    }
+</style>
+
+@code {
+    private readonly List<string> _logs = new();
+    private ClientLogStreamService? _stream;
+    private CancellationTokenSource? _cts;
+    private bool _connected;
+    private bool _restoreLogForwarding;
+    private bool _requestedForwarding;
+    private bool _serverForwarding;
+    private bool _initialSnapshotLoaded;
+    private string? _error;
+
+    [CascadingParameter] private IMudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public ClientDto Client { get; set; } = default!;
+
+    private string Title => $"Client Logs - {Client.DisplayName ?? Client.ClientName ?? Client.ShortId}";
+    private string StatusText => _error is not null
+        ? "Error"
+        : !_requestedForwarding
+            ? "Forwarding disabled"
+            : _connected && _logs.Count > 0
+                ? "Connected"
+                : _initialSnapshotLoaded
+                    ? "No log file yet"
+                    : _serverForwarding || _connected
+                        ? "Initial tail requested"
+                        : "Forwarding requested";
+    private Color StatusColor => _error is not null ? Color.Error : _connected ? Color.Success : Color.Default;
+    private string EmptyText => _requestedForwarding
+        ? _initialSnapshotLoaded ? "No log entries are available yet." : "Waiting for initial log tail..."
+        : "Connecting to client log stream...";
+
+    protected override async Task OnInitializedAsync()
+    {
+        _restoreLogForwarding = Client.EnableClientLogForwarding;
+        _logs.AddRange(Client.Logs ?? Array.Empty<string>());
+        _cts = new CancellationTokenSource();
+
+        try
+        {
+            await ClientApi.SetLogStreamingAsync(Client.ClientIdentity, true, _cts.Token);
+            _requestedForwarding = true;
+            _serverForwarding = true;
+
+            var snapshot = await ClientApi.GetClientLogSnapshotAsync(Client.ClientIdentity, 500, _cts.Token);
+            MergeLogs(snapshot.Select(x => x.Line).ToList(), forwardingEnabled: true);
+            _initialSnapshotLoaded = true;
+
+            _stream = new ClientLogStreamService(HttpClientFactory, TokenProvider);
+            await _stream.StartAsync(
+                Client.ClientIdentity,
+                OnClientLogEntryAsync,
+                () => InvokeAsync(() =>
+                {
+                    _connected = true;
+                    StateHasChanged();
+                }),
+                ex => InvokeAsync(() =>
+                {
+                    _error = ex.Message;
+                    StateHasChanged();
+                }),
+                _cts.Token);
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+            Snackbar.Add($"Failed to start client log stream: {ex.Message}", Severity.Error);
+            StateHasChanged();
+        }
+    }
+
+    private Task OnClientLogEntryAsync(ClientLogEntryDto dto)
+    {
+        if (!string.Equals(dto.ClientIdentity, Client.ClientIdentity, StringComparison.OrdinalIgnoreCase) ||
+            string.IsNullOrWhiteSpace(dto.Line))
+        {
+            return Task.CompletedTask;
+        }
+
+        return InvokeAsync(() =>
+        {
+            _connected = true;
+            _serverForwarding = true;
+            MergeLogs(new[] { dto.Line }, forwardingEnabled: true);
+            StateHasChanged();
+        });
+    }
+
+    private void MergeLogs(IReadOnlyList<string> incoming, bool forwardingEnabled)
+    {
+        if (incoming.Count == 0)
+        {
+            if (!forwardingEnabled)
+            {
+                _logs.Clear();
+            }
+
+            return;
+        }
+
+        if (_logs.Count == 0 || incoming.Count > _logs.Count)
+        {
+            _logs.Clear();
+            _logs.AddRange(incoming);
+            return;
+        }
+
+        foreach (var line in incoming)
+        {
+            if (!_logs.Contains(line, StringComparer.Ordinal))
+            {
+                _logs.Add(line);
+            }
+        }
+
+        const int maxDisplayedLines = 1000;
+        if (_logs.Count > maxDisplayedLines)
+        {
+            _logs.RemoveRange(0, _logs.Count - maxDisplayedLines);
+        }
+    }
+
+    private async Task CloseAsync()
+    {
+        await DisposeAsync();
+        MudDialog.Close();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_cts is null)
+        {
+            return;
+        }
+
+        try { _cts.Cancel(); } catch { }
+        if (_stream is not null)
+        {
+            await _stream.DisposeAsync();
+            _stream = null;
+        }
+
+        if (!_restoreLogForwarding && _requestedForwarding)
+        {
+            try
+            {
+                await ClientApi.SetLogStreamingAsync(Client.ClientIdentity, false);
+            }
+            catch
+            {
+            }
+        }
+
+        _cts.Dispose();
+        _cts = null;
+    }
+}
