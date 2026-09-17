@@ -75,7 +75,7 @@ jobs:
           tar -C artifacts/mcp-stdio -czf "artifacts/netratel-mcp-stdio-${version}-linux-x64.tar.gz" netratel-mcp-linux-x64
           cp release/compose.images.yaml release/compose.mcp-http.yaml release/.env.images.example release/release-manifest.json artifacts/release-bundle/
           tar -C artifacts/release-bundle -czf "artifacts/netratel-compose-${version}.tar.gz" .
-      - uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+      - uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
           path: artifacts
           format: spdx-json
@@ -142,7 +142,7 @@ jobs:
               "$directory/NetRatel.Client" --version
               ;;
           esac
-      - uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+      - uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
           path: artifacts
           format: spdx-json
