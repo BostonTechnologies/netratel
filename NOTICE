@@ -1,0 +1,8 @@
+NetRatel
+Copyright 2026 NetRatel contributors
+
+This product is licensed under the Apache License, Version 2.0.
+
+Distributed dependencies retain their own licenses and notices. Dependency
+license review is part of the release-review process; a release must not add
+bundled third-party material without preserving its required attribution.
