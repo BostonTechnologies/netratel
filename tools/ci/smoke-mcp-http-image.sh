@@ -6,6 +6,21 @@ image="${NETRATEL_MCP_HTTP_SMOKE_IMAGE:-}"
 script_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 mcp_config="$script_root/tests/fixtures/mcp-http-smoke-config.json"
 [[ -f "$mcp_config" ]] || { echo "HTTP MCP smoke configuration fixture is missing." >&2; exit 1; }
+certificate_directory="$(mktemp -d)"
+certificate_password="synthetic-mcp-http-smoke-certificate-password"
+certificate_file="$certificate_directory/mcp-http-smoke.pfx"
+
+openssl req -x509 -newkey rsa:2048 -nodes \
+  -keyout "$certificate_directory/mcp-http-smoke.key" \
+  -out "$certificate_directory/mcp-http-smoke.crt" \
+  -subj '/CN=mcp.example.invalid' \
+  -days 1 >/dev/null 2>&1
+openssl pkcs12 -export \
+  -out "$certificate_file" \
+  -inkey "$certificate_directory/mcp-http-smoke.key" \
+  -in "$certificate_directory/mcp-http-smoke.crt" \
+  -passout "pass:${certificate_password}" >/dev/null 2>&1
+chmod 0644 "$certificate_file"
 
 container="netratel-mcp-http-smoke-$$_${RANDOM}"
 oidc_container="${container}-oidc"
@@ -18,6 +33,7 @@ cleanup() {
     fi
     docker rm -f "$container" >/dev/null || true
   fi
+  rm -rf "$certificate_directory"
   exit "$status"
 }
 trap cleanup EXIT
@@ -39,11 +55,14 @@ for _ in $(seq 1 30); do
 done
 curl --resolve "$oidc_resolve" --fail --silent --show-error "${oidc_authority}/isalive" >/dev/null
 
-docker run --detach --name "$container" --publish 127.0.0.1::9224 \
+docker run --detach --name "$container" --no-healthcheck --publish 127.0.0.1::9224 \
   --add-host host.docker.internal:host-gateway \
   --mount "type=bind,source=$mcp_config,target=/run/netratel/mcp-config.json,readonly" \
+  --mount "type=bind,source=$certificate_file,target=/run/netratel/mcp-http-smoke.pfx,readonly" \
   --env ASPNETCORE_ENVIRONMENT=Development \
-  --env ASPNETCORE_FORWARDEDHEADERS_ENABLED=true \
+  --env ASPNETCORE_URLS=https://+:9224 \
+  --env ASPNETCORE_Kestrel__Certificates__Default__Path=/run/netratel/mcp-http-smoke.pfx \
+  --env ASPNETCORE_Kestrel__Certificates__Default__Password="$certificate_password" \
   --env NETRATEL_MCP_CONFIG=/run/netratel/mcp-config.json \
   --env NETRATEL_MCP_INSTANCE=dev \
   --env NETRATEL_MCP_DEV_API_BASE_URL=https://api.example.invalid \
@@ -57,21 +76,21 @@ docker run --detach --name "$container" --publish 127.0.0.1::9224 \
 
 port="$(docker port "$container" 9224/tcp | sed -n '1s/.*://p')"
 [[ -n "$port" ]] || { echo "HTTP MCP smoke container did not expose port 9224." >&2; exit 1; }
-base_url="http://127.0.0.1:${port}"
+base_url="https://127.0.0.1:${port}"
 # The MCP handler binds protected-resource metadata to the public resource host.
-# Preserve that host while routing the disposable container through localhost.
+# Preserve that host while routing the disposable container through loopback.
 mcp_public_request_headers=(
+  --insecure
   --header 'Host: mcp.example.invalid'
-  --header 'X-Forwarded-Proto: https'
 )
 
 for _ in $(seq 1 30); do
-  if curl --fail --silent --show-error "$base_url/health/live" >/dev/null; then
+  if curl --insecure --fail --silent --show-error "$base_url/health/live" >/dev/null; then
     break
   fi
   sleep 1
 done
-curl --fail --silent --show-error "$base_url/health/live" >/dev/null
+curl --insecure --fail --silent --show-error "$base_url/health/live" >/dev/null
 
 resource_metadata="$(curl --fail --silent --show-error "${mcp_public_request_headers[@]}" "$base_url/.well-known/oauth-protected-resource/mcp")"
 jq -e '
