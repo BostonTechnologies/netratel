@@ -165,16 +165,32 @@ wrong_scope_status="$(curl --silent --show-error --output /dev/null --write-out 
   "$base_url/mcp")"
 [[ "$wrong_scope_status" == 403 ]] || { echo "Wrong-scope HTTP MCP bearer token returned $wrong_scope_status instead of 403." >&2; exit 1; }
 
+stage="initializing the authorized HTTP MCP session"
+initialize_response="$(curl --fail --silent --show-error \
+  "${mcp_public_request_headers[@]}" \
+  --header "Authorization: Bearer ${operator_access_token}" \
+  --header 'Content-Type: application/json' \
+  --data '{"jsonrpc":"2.0","id":4,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"netratel-http-smoke","version":"1"}}}' \
+  "$base_url/mcp")"
+jq -e '
+  .jsonrpc == "2.0"
+  and .id == 4
+  and .result.serverInfo.name == "NetRatel.Mcp"
+' <<<"$initialize_response" >/dev/null || {
+  echo "Authorized HTTP MCP initialization did not return the expected server information." >&2
+  exit 1
+}
+
 stage="checking authorized HTTP MCP capability read"
 authorized_response="$(curl --fail --silent --show-error \
   "${mcp_public_request_headers[@]}" \
   --header "Authorization: Bearer ${operator_access_token}" \
   --header 'Content-Type: application/json' \
-  --data '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"netratel_capabilities","arguments":{"operation":"get"}}}' \
+  --data '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"netratel_capabilities","arguments":{"operation":"get"}}}' \
   "$base_url/mcp")"
 jq -e '
   .jsonrpc == "2.0"
-  and .id == 4
+  and .id == 5
   and .result.structuredContent.success == true
 ' <<<"$authorized_response" >/dev/null || {
   echo "Authorized HTTP MCP capability read did not return a successful structured result." >&2
