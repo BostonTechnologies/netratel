@@ -161,8 +161,13 @@ async Task RunClientAsync()
     AppContext.SetData("APP_CONTEXT_BASE_DIRECTORY", runtimeBaseDir);
     AppDomain.CurrentDomain.SetData("APP_CONTEXT_BASE_DIRECTORY", runtimeBaseDir);
 
-    // Provide a stable HOME and user config
-    var home = Path.Combine(appBaseDir, "_psprofile");
+    // Keep PowerShell's mutable profile outside a read-only packaged application
+    // directory when a deployment provides a dedicated state location.
+    var home = Environment.GetEnvironmentVariable("NETRATEL_POWERSHELL_HOME");
+    if (string.IsNullOrWhiteSpace(home))
+    {
+        home = Path.Combine(appBaseDir, "_psprofile");
+    }
     var userConfigDir = Path.Combine(home, "Documents", "PowerShell");
     Directory.CreateDirectory(userConfigDir);
 
