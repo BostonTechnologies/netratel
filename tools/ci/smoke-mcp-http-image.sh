@@ -92,6 +92,7 @@ base_url="https://127.0.0.1:${port}"
 mcp_public_request_headers=(
   --insecure
   --header 'Host: mcp.example.invalid'
+  --header 'Accept: application/json, text/event-stream'
 )
 
 stage="waiting for the HTTPS HTTP MCP health endpoint"
