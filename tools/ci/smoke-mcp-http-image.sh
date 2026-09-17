@@ -189,7 +189,7 @@ initialize_json="$(mcp_response_json "$initialize_response")"
 if ! jq -e '
   .jsonrpc == "2.0"
   and .id == 4
-  and .result.serverInfo.name == "NetRatel.Mcp"
+  and .result.serverInfo.name == "NetRatel.Mcp.Http"
 ' <<<"$initialize_json" >/dev/null; then
   initialize_summary="$(jq -c '{jsonrpc, id, result}' <<<"$initialize_json" 2>/dev/null || printf 'non-JSON response')"
   stage="authorized HTTP MCP initialization response: ${initialize_summary}"
