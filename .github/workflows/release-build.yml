@@ -142,7 +142,14 @@ jobs:
           test -f "artifacts/netratel-client-${{ matrix.runtime }}/netratel-client-manifest.json"
           grep -Fq "\"version\":\"${{ needs.validate.outputs.version }}\"" "artifacts/netratel-client-${{ matrix.runtime }}/netratel-client-manifest.json"
           if [[ "${{ matrix.extension }}" == zip ]]; then
-            (cd artifacts && zip -qr "netratel-client-${{ needs.validate.outputs.version }}-${{ matrix.runtime }}.zip" "netratel-client-${{ matrix.runtime }}")
+            (
+              cd artifacts
+              if command -v zip >/dev/null 2>&1; then
+                zip -qr "netratel-client-${{ needs.validate.outputs.version }}-${{ matrix.runtime }}.zip" "netratel-client-${{ matrix.runtime }}"
+              else
+                pwsh -NoLogo -NoProfile -NonInteractive -Command "Compress-Archive -Path 'netratel-client-${{ matrix.runtime }}' -DestinationPath 'netratel-client-${{ needs.validate.outputs.version }}-${{ matrix.runtime }}.zip' -Force"
+              fi
+            )
           else
             tar -C artifacts -czf "artifacts/netratel-client-${{ needs.validate.outputs.version }}-${{ matrix.runtime }}.tar.gz" "netratel-client-${{ matrix.runtime }}"
           fi
