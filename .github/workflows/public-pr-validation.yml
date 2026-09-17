@@ -24,7 +24,11 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
+      - name: Scan repository with Gitleaks
+        run: >-
+          docker run --rm --volume "$GITHUB_WORKSPACE:/repo:ro" --workdir /repo
+          zricethezav/gitleaks@sha256:e5fa09c73ff086ea57f3731a4e1fb372969fb73314cc932020472eb23a5dfc7e
+          detect --source . --redact --no-banner
       - run: tools/ci/check-public-disclosure.sh
       - run: tools/ci/test-public-disclosure.sh
 
@@ -66,7 +70,7 @@ jobs:
           dotnet restore src/NetRatel/NetRatel.Mcp/NetRatel.Mcp.csproj --runtime linux-x64
           dotnet publish src/NetRatel/NetRatel.Cli/NetRatel.Cli.csproj --configuration Release --no-restore --runtime linux-x64 --self-contained false --output artifacts/cli/netratel-cli-linux-x64
           dotnet publish src/NetRatel/NetRatel.Mcp/NetRatel.Mcp.csproj --configuration Release --no-restore --runtime linux-x64 --self-contained false --output artifacts/mcp-stdio/netratel-mcp-linux-x64
-          dotnet pack src/NetRatel/NetRatel.Cli/NetRatel.Cli.csproj --configuration Release --no-restore --no-build --output artifacts/cli
+          dotnet pack src/NetRatel/NetRatel.Cli/NetRatel.Cli.csproj --configuration Release --no-restore --output artifacts/cli
           tar -C artifacts/cli -czf "artifacts/netratel-cli-${version}-linux-x64.tar.gz" netratel-cli-linux-x64
           tar -C artifacts/mcp-stdio -czf "artifacts/netratel-mcp-stdio-${version}-linux-x64.tar.gz" netratel-mcp-linux-x64
           cp release/compose.images.yaml release/compose.mcp-http.yaml release/.env.images.example release/release-manifest.json artifacts/release-bundle/

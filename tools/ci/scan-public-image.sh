@@ -37,9 +37,21 @@ cleanup() { find "$scan_dir" -depth -delete 2>/dev/null || true; }
 trap cleanup EXIT
 
 docker image save "$image" | tar -xf - -C "$scan_dir"
-if grep -rI -a -q -E -- \
+layer_dir="$scan_dir/layers"
+mkdir -p "$layer_dir"
+layer_index=0
+while IFS= read -r -d '' layer; do
+  layer_index=$((layer_index + 1))
+  extraction_dir="$layer_dir/$layer_index"
+  mkdir "$extraction_dir"
+  tar -xf "$layer" -C "$extraction_dir"
+done < <(find "$scan_dir" -type f -name layer.tar -print0)
+
+# Scan extracted text files rather than serialized image archives. The latter
+# contain arbitrary binary data and can create false positives for key markers.
+if grep -rI -q -E -- \
   '-----BEGIN [A-Z ]*PRIVATE KEY|<key[[:space:]>]|<encryptedKey[[:space:]>]|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9_]{20,}' \
-  "$scan_dir"; then
+  "$layer_dir"; then
   echo "Public image contains potential credential material." >&2
   exit 1
 fi
