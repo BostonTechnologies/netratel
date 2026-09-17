@@ -120,8 +120,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-web_port="${NETRATEL_WEB_PORT:-8080}"
-oidc_port="${NETRATEL_OIDC_TEST_PORT:-8081}"
+web_port="${NETRATEL_WEB_PORT:-8082}"
+oidc_port="${NETRATEL_OIDC_TEST_PORT:-8080}"
+export NETRATEL_WEB_PORT="$web_port"
+export NETRATEL_OIDC_TEST_PORT="$oidc_port"
 web_url="http://127.0.0.1:${web_port}"
 oidc_resolve="host.docker.internal:${oidc_port}:127.0.0.1"
 

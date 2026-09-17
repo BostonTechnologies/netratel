@@ -3,7 +3,7 @@ services:
     image: ghcr.io/navikt/mock-oauth2-server@sha256:ae36f65ca23e07e8786b288e53145e7ffb191c9dccfa9868ed433e7bbacad5db
     hostname: host.docker.internal
     ports:
-      - "${NETRATEL_OIDC_TEST_PORT:-8081}:8080"
+      - "${NETRATEL_OIDC_TEST_PORT:-8080}:8080"
     environment:
       JSON_CONFIG: >-
         {"interactiveLogin":true,"tokenCallbacks":[{"issuerId":"default","requestMappings":[{"requestParam":"code","match":"*","claims":{"preferred_username":"netratel-test-operator@example.test","roles":["Operator"],"aud":["netratel-smoke-client","netratel.api"]}},{"requestParam":"client_id","match":"netratel-cli-smoke-client","claims":{"preferred_username":"netratel-cli-smoke@example.test","roles":["Operator"],"scope":"netratel.api","aud":["netratel.api"]}}]}]}
@@ -21,7 +21,7 @@ services:
       ASPNETCORE_URLS: http://+:9222;https://+:9443
       ASPNETCORE_Kestrel__Certificates__Default__Path: /run/netratel-smoke/tls.pfx
       ASPNETCORE_Kestrel__Certificates__Default__Password: ${NETRATEL_SMOKE_TLS_CERT_PASSWORD:-netratel-compose-only-password}
-      Authentication__Oidc__Authority: http://host.docker.internal:${NETRATEL_OIDC_TEST_PORT:-8081}/default
+      Authentication__Oidc__Authority: http://host.docker.internal:${NETRATEL_OIDC_TEST_PORT:-8080}/default
       Authentication__Oidc__Audience: netratel.api
       # The public runtime defaults these additive migration surfaces off. The
       # disposable smoke enables only the presence, telemetry, and command
@@ -45,10 +45,10 @@ services:
   web:
     environment:
       ASPNETCORE_ENVIRONMENT: Development
-      Authentication__Oidc__Authority: http://host.docker.internal:${NETRATEL_OIDC_TEST_PORT:-8081}/default
+      Authentication__Oidc__Authority: http://host.docker.internal:${NETRATEL_OIDC_TEST_PORT:-8080}/default
       Authentication__Oidc__ClientId: netratel-smoke-client
       Authentication__Oidc__ApiScope: netratel.api
-      Authentication__Oidc__TokenEndpoint: http://host.docker.internal:${NETRATEL_OIDC_TEST_PORT:-8081}/default/token
+      Authentication__Oidc__TokenEndpoint: http://host.docker.internal:${NETRATEL_OIDC_TEST_PORT:-8080}/default/token
       Authentication__Oidc__RequireHttpsMetadata: "false"
       OIDC_CLIENT_SECRET: synthetic-compose-only-secret
     extra_hosts:
