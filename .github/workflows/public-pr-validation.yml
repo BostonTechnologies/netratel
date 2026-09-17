@@ -154,9 +154,9 @@ jobs:
           (
             cd artifacts
             if command -v sha256sum >/dev/null 2>&1; then
-              sha256sum "netratel-client-${version}-${{ matrix.runtime }}.${{ matrix.extension }}" "netratel-client-${{ matrix.runtime }}.spdx.json" > SHA256SUMS
+              sha256sum "netratel-client-${version}-${{ matrix.runtime }}.${{ matrix.extension }}" "netratel-client-${version}-${{ matrix.runtime }}.spdx.json" > SHA256SUMS
             else
-              shasum -a 256 "netratel-client-${version}-${{ matrix.runtime }}.${{ matrix.extension }}" "netratel-client-${{ matrix.runtime }}.spdx.json" > SHA256SUMS
+              shasum -a 256 "netratel-client-${version}-${{ matrix.runtime }}.${{ matrix.extension }}" "netratel-client-${version}-${{ matrix.runtime }}.spdx.json" > SHA256SUMS
             fi
           )
           tools/ci/verify-client-release-artifact.sh \
