@@ -24,6 +24,7 @@ chmod 0644 "$certificate_file"
 
 container="netratel-mcp-http-smoke-$$_${RANDOM}"
 oidc_container="${container}-oidc"
+network="${container}-network"
 stage="initializing disposable HTTP MCP rehearsal"
 cleanup() {
   local status=$?
@@ -37,21 +38,23 @@ cleanup() {
     fi
     docker rm -f "$container" >/dev/null || true
   fi
+  docker network rm "$network" >/dev/null 2>&1 || true
   rm -rf "$certificate_directory"
   exit "$status"
 }
 trap cleanup EXIT
 
 oidc_config='{"interactiveLogin":true,"tokenCallbacks":[{"issuerId":"default","requestMappings":[{"requestParam":"client_id","match":"netratel-mcp-smoke-client","claims":{"preferred_username":"netratel-mcp-smoke@example.test","roles":["netratel-operators"],"groups":["netratel-operators"],"scope":"netratel.mcp.read","aud":["https://mcp.example.invalid/mcp"]}},{"requestParam":"client_id","match":"netratel-mcp-wrong-scope-client","claims":{"preferred_username":"netratel-mcp-wrong-scope@example.test","roles":["netratel-operators"],"groups":["netratel-operators"],"scope":"netratel.mcp.observe","aud":["https://mcp.example.invalid/mcp"]}}]}]}'
+stage="creating the disposable OIDC network"
+docker network create "$network" >/dev/null
 stage="starting the disposable OIDC issuer"
-docker run --detach --name "$oidc_container" --hostname host.docker.internal --publish 127.0.0.1::8080 \
+docker run --detach --name "$oidc_container" --network "$network" --network-alias oidc.smoke.invalid \
+  --hostname oidc.smoke.invalid --publish 127.0.0.1:8080:8080 \
   --env "JSON_CONFIG=${oidc_config}" \
   ghcr.io/navikt/mock-oauth2-server@sha256:ae36f65ca23e07e8786b288e53145e7ffb191c9dccfa9868ed433e7bbacad5db >/dev/null
 
-oidc_port="$(docker port "$oidc_container" 8080/tcp | sed -n '1s/.*://p')"
-[[ -n "$oidc_port" ]] || { echo "Disposable OIDC provider did not expose port 8080." >&2; exit 1; }
-oidc_authority="http://host.docker.internal:${oidc_port}/default"
-oidc_resolve="host.docker.internal:${oidc_port}:127.0.0.1"
+oidc_authority="http://oidc.smoke.invalid:8080/default"
+oidc_resolve="oidc.smoke.invalid:8080:127.0.0.1"
 stage="waiting for the disposable OIDC issuer"
 for _ in $(seq 1 30); do
   if curl --resolve "$oidc_resolve" --fail --silent --show-error "${oidc_authority}/isalive" >/dev/null; then
@@ -63,7 +66,7 @@ curl --resolve "$oidc_resolve" --fail --silent --show-error "${oidc_authority}/i
 
 stage="starting the HTTPS HTTP MCP container"
 docker run --detach --name "$container" --no-healthcheck --publish 127.0.0.1::9224 \
-  --add-host host.docker.internal:host-gateway \
+  --network "$network" \
   --mount "type=bind,source=$mcp_config,target=/run/netratel/mcp-config.json,readonly" \
   --mount "type=bind,source=$certificate_file,target=/run/netratel/mcp-http-smoke.pfx,readonly" \
   --env ASPNETCORE_ENVIRONMENT=Development \
