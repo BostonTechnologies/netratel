@@ -104,6 +104,9 @@ cli_tool_version="$("$cli_tool_extract_dir/netratel" --version)"
   exit 1
 }
 
+mcp_config="$release_extract_dir/mcp-config.json"
+printf '%s\n' '{"apiBaseUrl":"https://netratel.example.invalid","oidcTokenUrl":"https://issuer.example.invalid/connect/token","oidcClientId":"release-artifact-verifier","oidcUsername":"release-artifact-verifier","oidcAppPassword":"synthetic-release-artifact-password","oidcScope":"netratel.api"}' > "$mcp_config"
+
 mcp_initialize_response="$({
   printf '%s\\n' \
     '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"release-artifact-verifier","version":"1"}}}' \
@@ -111,7 +114,7 @@ mcp_initialize_response="$({
     '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
     '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"netratel_capabilities","arguments":{"operation":"get"}}}'
   sleep 1
-} | timeout 10s dotnet "$mcp_assembly" 2>/dev/null)"
+} | NETRATEL_MCP_CONFIG="$mcp_config" timeout 10s dotnet "$mcp_assembly" 2>/dev/null)"
 jq -se '
   length == 3
   and (map(.id) | sort == [1, 2, 3])
