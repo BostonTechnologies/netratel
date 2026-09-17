@@ -91,7 +91,7 @@ mcp_assembly="$release_extract_dir/netratel-mcp-linux-x64/NetRatel.Mcp.dll"
 [[ -f "$mcp_assembly" ]] || { echo "stdio MCP archive assembly is missing." >&2; exit 1; }
 "$cli_executable" --help >/dev/null
 cli_version="$("$cli_executable" --version)"
-[[ "$cli_version" == "$version" ]] || {
+[[ "$cli_version" == "$version" || "$cli_version" == "$version"+* ]] || {
   echo "CLI archive version '$cli_version' does not match release version '$version'." >&2
   exit 1
 }
@@ -99,7 +99,7 @@ cli_version="$("$cli_executable" --version)"
 cli_tool_extract_dir="$release_extract_dir/cli-tool"
 dotnet tool install NetRatel.Cli --tool-path "$cli_tool_extract_dir" --add-source "$artifacts/cli" --version "$version" --ignore-failed-sources >/dev/null
 cli_tool_version="$("$cli_tool_extract_dir/netratel" --version)"
-[[ "$cli_tool_version" == "$version" ]] || {
+[[ "$cli_tool_version" == "$version" || "$cli_tool_version" == "$version"+* ]] || {
   echo "CLI tool package version '$cli_tool_version' does not match release version '$version'." >&2
   exit 1
 }
