@@ -25,6 +25,7 @@ namespace NetRatel.Client.Service.Tasks;
 public sealed class ClientTaskManager : IDisposable
 {
     private const int MaximumGatewayResultBytes = 48 * 1024;
+    private static readonly JsonSerializerOptions GatewayPayloadJsonOptions = new(JsonSerializerDefaults.Web);
     private readonly PowerShellExecutor _powershellExecutor;
     private readonly ExternalShellRunner _shellRunner;
     private readonly bool _useInProcPowerShell;
@@ -381,7 +382,7 @@ public sealed class ClientTaskManager : IDisposable
         ExecShellCommandPayload? payload = null;
         try
         {
-            payload = JsonSerializer.Deserialize<ExecShellCommandPayload>(task.Payload);
+            payload = JsonSerializer.Deserialize<ExecShellCommandPayload>(task.Payload, GatewayPayloadJsonOptions);
         }
         catch (JsonException)
         {
@@ -436,7 +437,7 @@ public sealed class ClientTaskManager : IDisposable
         ExecLibraryScriptPayload? payload = null;
         try
         {
-            payload = JsonSerializer.Deserialize<ExecLibraryScriptPayload>(task.Payload);
+            payload = JsonSerializer.Deserialize<ExecLibraryScriptPayload>(task.Payload, GatewayPayloadJsonOptions);
         }
         catch (JsonException)
         {

@@ -9,6 +9,27 @@ namespace NetRatel.Tests.Client;
 
 public sealed class CommandExitStatusTests
 {
+    [Fact]
+    public async Task Gateway_shell_command_accepts_camel_case_wire_payload()
+    {
+        var completion = new TaskCompletionSource<(string Status, string? Result, int? ExitCode)>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var manager = new ClientTaskManager(false, (_, status, result, code) =>
+        {
+            if (status is "completed" or "failed" or "cancelled") completion.TrySetResult((status, result, code));
+            return Task.CompletedTask;
+        }, _ => { });
+        manager.Start(1, 0);
+
+        const string payload = """{"preferred":3,"command":"printf camel-case-marker","timeoutSeconds":5}""";
+        manager.EnqueueGatewayCommand("camel-case-payload", TaskKinds.ExecShellCommand, payload, 1, 0).Should().BeTrue();
+
+        var result = await completion.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        result.Status.Should().Be("completed");
+        result.ExitCode.Should().Be(0);
+        using var document = JsonDocument.Parse(result.Result!);
+        document.RootElement.GetProperty("stdout").EnumerateArray().Select(line => line.GetString()).Should().Contain("camel-case-marker");
+    }
+
     [Theory]
     [InlineData(0, "completed")]
     [InlineData(7, "failed")]
