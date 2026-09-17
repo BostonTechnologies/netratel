@@ -171,6 +171,7 @@ start_gateway_client() {
     --volume "${client_volume}:/var/lib/netratel" \
     --volume "${tls_certificate_path}:/run/netratel-smoke/tls.crt:ro" \
     --env SSL_CERT_FILE=/run/netratel-smoke/tls.crt \
+    --env NetRatel_CLIENT_LOG_DIR=/var/lib/netratel/logs \
     "$client_image" --api http://api:9222 --Gateway:Endpoint=https://gateway:9443 \
     --Gateway:TelemetryShadowEnabled=true --Gateway:TelemetryAuthorityEnabled=true \
     --Gateway:TelemetryFastIntervalSeconds=1 --Gateway:CommandAuthorityEnabled=true \
@@ -256,7 +257,7 @@ wait_for_command_status() {
   echo "Gateway command ${command_id} did not reach expected lifecycle status ${expected_status}." >&2
   printf 'Last gateway command state: %s\n' "${command_state:-unavailable}" >&2
   docker logs "$gateway_client" >&2 || true
-  docker cp "${gateway_client}:/app/logs" - >&2 || true
+  docker cp "${gateway_client}:/var/lib/netratel/logs" - >&2 || true
   return 1
 }
 
