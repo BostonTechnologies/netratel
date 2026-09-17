@@ -256,6 +256,7 @@ wait_for_command_status() {
   echo "Gateway command ${command_id} did not reach expected lifecycle status ${expected_status}." >&2
   printf 'Last gateway command state: %s\n' "${command_state:-unavailable}" >&2
   docker logs "$gateway_client" >&2 || true
+  docker cp "${gateway_client}:/app/logs" - >&2 || true
   return 1
 }
 
@@ -503,7 +504,10 @@ stage="requesting direct operator token"
 operator_access_token="$(request_operator_access_token)"
 stage="waiting for Client telemetry"
 wait_for_telemetry "$operator_access_token"
-command_payload='{"command":"printf netratel-compose-smoke","timeoutSeconds":10}'
+# The public Linux client image deliberately includes Bash, and the gateway
+# command contract accepts an explicit executor. Do not rely on the image's
+# default /bin/sh implementation for this end-to-end execution assertion.
+command_payload='{"preferred":3,"command":"printf netratel-compose-smoke","timeoutSeconds":10}'
 stage="waiting for disposable command execution"
 command_response="$(curl --silent --show-error --fail \
   --header "Authorization: Bearer ${operator_access_token}" \

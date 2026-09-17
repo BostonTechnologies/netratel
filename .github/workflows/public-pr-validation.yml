@@ -226,6 +226,7 @@ jobs:
           OIDC_CLIENT_SECRET: synthetic-ci-only-oidc-secret
           NETRATEL_AGENT_AUTH_PRIVATE_KEY: ./synthetic-ci-only-agent-auth.pem
           NETRATEL_CLIENT_SMOKE_IMAGE: netratel-client:compose-smoke
+          NETRATEL_GATEWAY_PROXY_CONFIG_PATH: ${{ github.workspace }}/tests/compose/gateway-proxy.nginx.conf
         run: |
           docker compose -f compose.yaml config --quiet
           NETRATEL_CLI_SMOKE_ARCHIVE="review-artifacts/netratel-cli-$(jq -r '.version' release/release-manifest.json)-linux-x64.tar.gz" \
@@ -270,6 +271,7 @@ jobs:
           OIDC_CLIENT_SECRET: synthetic-ci-only-oidc-secret
           NETRATEL_AGENT_AUTH_PRIVATE_KEY: ./synthetic-ci-only-agent-auth.pem
           NETRATEL_CLIENT_SMOKE_IMAGE: netratel-client:release-smoke
+          NETRATEL_GATEWAY_PROXY_CONFIG_PATH: ${{ github.workspace }}/tests/compose/gateway-proxy.nginx.conf
         run: |
           docker compose -f release/compose.images.yaml -f tests/compose/oidc-smoke.compose.yaml config --quiet
           NETRATEL_CLI_SMOKE_ARCHIVE="review-artifacts/netratel-cli-$(jq -r '.version' release/release-manifest.json)-linux-x64.tar.gz" \

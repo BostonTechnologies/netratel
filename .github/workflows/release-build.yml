@@ -254,6 +254,7 @@ jobs:
           OIDC_CLIENT_SECRET: synthetic-release-smoke-oidc-secret
           NETRATEL_AGENT_AUTH_PRIVATE_KEY: ./synthetic-release-smoke-agent-auth.pem
           NETRATEL_CLIENT_SMOKE_IMAGE: netratel-client:${{ needs.validate.outputs.version }}
+          NETRATEL_GATEWAY_PROXY_CONFIG_PATH: ${{ github.workspace }}/tests/compose/gateway-proxy.nginx.conf
           NETRATEL_CLI_SMOKE_ARCHIVE: release-artifacts/netratel-cli-${{ needs.validate.outputs.version }}-linux-x64.tar.gz
           NETRATEL_MCP_STDIO_SMOKE_ARCHIVE: release-artifacts/netratel-mcp-stdio-${{ needs.validate.outputs.version }}-linux-x64.tar.gz
         run: |

@@ -39,7 +39,7 @@ ARG APP_GID=10001
 
 RUN set -eux; \
     apt-get update; \
-    apt-get install -y --no-install-recommends ca-certificates python3; \
+    apt-get install -y --no-install-recommends bash ca-certificates python3; \
     rm -rf /var/lib/apt/lists/*; \
     groupadd --system --gid "${APP_GID}" "${APP_USER}"; \
     useradd --system --uid "${APP_UID}" --gid "${APP_GID}" --home-dir /var/lib/netratel --create-home --shell /usr/sbin/nologin "${APP_USER}"; \
