@@ -185,14 +185,17 @@ if [[ "$initialize_status" != 200 ]]; then
   exit 1
 fi
 stage="validating the authorized HTTP MCP initialization response"
-jq -e '
+initialize_json="$(mcp_response_json "$initialize_response")"
+if ! jq -e '
   .jsonrpc == "2.0"
   and .id == 4
   and .result.serverInfo.name == "NetRatel.Mcp"
-' <<<"$(mcp_response_json "$initialize_response")" >/dev/null || {
+' <<<"$initialize_json" >/dev/null; then
+  initialize_summary="$(jq -c '{jsonrpc, id, result}' <<<"$initialize_json" 2>/dev/null || printf 'non-JSON response')"
+  stage="authorized HTTP MCP initialization response: ${initialize_summary}"
   echo "Authorized HTTP MCP initialization did not return the expected server information." >&2
   exit 1
-}
+fi
 
 stage="checking authorized HTTP MCP capability read"
 authorized_response="$(curl --fail --silent --show-error \
