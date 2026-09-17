@@ -85,35 +85,12 @@ grep -qi '^WWW-Authenticate:.*resource_metadata=' <<<"$headers" || {
 }
 
 request_operator_access_token() {
-  local client_id="$1" requested_scope="$2" redirect_uri authorization_url encoded_scope response callback_location callback_code token_response access_token
-  redirect_uri="http://127.0.0.1:65535/netratel-mcp-smoke-callback"
-  encoded_scope="$(node -e 'process.stdout.write(encodeURIComponent(process.argv[1]))' "openid profile ${requested_scope}")"
-  authorization_url="${oidc_authority}/authorize?response_type=code&client_id=${client_id}&redirect_uri=http%3A%2F%2F127.0.0.1%3A65535%2Fnetratel-mcp-smoke-callback&scope=${encoded_scope}&state=mcp-http-smoke"
-  response="$(curl --silent --show-error --dump-header - --resolve "$oidc_resolve" "$authorization_url")"
-  callback_location="$(awk 'BEGIN { IGNORECASE = 1 } /^location: / { sub(/^[^:]*: /, ""); sub(/\r$/, ""); print; exit }' <<<"$response")"
-
-  if [[ -z "$callback_location" ]]; then
-    response="$(curl --silent --show-error --dump-header - --resolve "$oidc_resolve" \
-      --data-urlencode 'username=netratel-mcp-smoke' "$authorization_url")"
-    callback_location="$(awk 'BEGIN { IGNORECASE = 1 } /^location: / { sub(/^[^:]*: /, ""); sub(/\r$/, ""); print; exit }' <<<"$response")"
-  fi
-
-  [[ -n "$callback_location" ]] || {
-    echo "Disposable OIDC provider did not return an authorization callback." >&2
-    return 1
-  }
-  callback_code="$(node -e 'const callback = new URL(process.argv[1]); process.stdout.write(callback.searchParams.get("code") ?? "")' "$callback_location")"
-  [[ -n "$callback_code" ]] || {
-    echo "Disposable OIDC provider returned a callback without an authorization code." >&2
-    return 1
-  }
-
+  local client_id="$1" requested_scope="$2" token_response access_token
   token_response="$(curl --silent --show-error --fail --resolve "$oidc_resolve" \
-    --data-urlencode 'grant_type=authorization_code' \
+    --data-urlencode 'grant_type=client_credentials' \
     --data-urlencode "client_id=${client_id}" \
     --data-urlencode 'client_secret=synthetic-compose-only-secret' \
-    --data-urlencode "redirect_uri=${redirect_uri}" \
-    --data-urlencode "code=${callback_code}" \
+    --data-urlencode "scope=${requested_scope}" \
     "${oidc_authority}/token")"
   access_token="$(jq -r '.access_token // empty' <<<"$token_response")"
   [[ -n "$access_token" ]] || {
