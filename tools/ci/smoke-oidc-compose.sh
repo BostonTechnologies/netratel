@@ -153,12 +153,14 @@ openssl ecparam -name prime256v1 -genkey -noout -out "$key_path"
 chmod 644 "$key_path"
 export NETRATEL_AGENT_AUTH_PRIVATE_KEY="$key_path"
 export NETRATEL_SMOKE_TLS_CERT_PASSWORD="netratel-compose-only-password"
-openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=api' \
+openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=gateway' \
   -keyout "$tls_key_path" -out "$tls_certificate_path" >/dev/null 2>&1
 openssl pkcs12 -export -out "$tls_bundle_path" -inkey "$tls_key_path" -in "$tls_certificate_path" \
   -passout "pass:${NETRATEL_SMOKE_TLS_CERT_PASSWORD}" >/dev/null 2>&1
 chmod 644 "$tls_certificate_path" "$tls_bundle_path"
 export NETRATEL_SMOKE_TLS_CERT_PATH="$tls_bundle_path"
+export NETRATEL_SMOKE_TLS_CERTIFICATE_PATH="$tls_certificate_path"
+export NETRATEL_SMOKE_TLS_KEY_PATH="$tls_key_path"
 api_port="${NETRATEL_API_TEST_PORT:-9222}"
 api_url="http://127.0.0.1:${api_port}"
 
@@ -168,7 +170,7 @@ start_gateway_client() {
     --volume "${client_volume}:/var/lib/netratel" \
     --volume "${tls_certificate_path}:/run/netratel-smoke/tls.crt:ro" \
     --env SSL_CERT_FILE=/run/netratel-smoke/tls.crt \
-    "$client_image" --api http://api:9222 --Gateway:Endpoint=https://api:9223 \
+    "$client_image" --api http://api:9222 --Gateway:Endpoint=https://gateway:9443 \
     --Gateway:TelemetryShadowEnabled=true --Gateway:TelemetryAuthorityEnabled=true \
     --Gateway:TelemetryFastIntervalSeconds=1 --Gateway:CommandAuthorityEnabled=true \
     --Gateway:JobAuthorityEnabled=false --Gateway:ControlGatewayEnabled=false \

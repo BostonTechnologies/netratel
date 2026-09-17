@@ -49,6 +49,20 @@ services:
       oidc:
         condition: service_healthy
 
+  # The API's dedicated gateway listener is intentionally h2c within the
+  # Compose network. Terminate the disposable test certificate here so the
+  # Client exercises its required HTTPS gateway transport just as it would
+  # behind a deployment ingress.
+  gateway:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./tests/compose/gateway-proxy.nginx.conf:/etc/nginx/nginx.conf:ro
+      - ${NETRATEL_SMOKE_TLS_CERTIFICATE_PATH:-/tmp/netratel-compose-smoke-unavailable.crt}:/run/netratel-smoke/tls.crt:ro
+      - ${NETRATEL_SMOKE_TLS_KEY_PATH:-/tmp/netratel-compose-smoke-unavailable.key}:/run/netratel-smoke/tls.key:ro
+    depends_on:
+      api:
+        condition: service_started
+
   web:
     environment:
       ASPNETCORE_ENVIRONMENT: Development

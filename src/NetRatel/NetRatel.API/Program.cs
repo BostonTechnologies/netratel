@@ -616,14 +616,7 @@ builder.WebHost.ConfigureKestrel(k =>
     {
         k.ListenAnyIP(
             akkaMigration.GatewayGrpcPort,
-            listen =>
-            {
-                listen.Protocols = HttpProtocols.Http2;
-                // Gateway clients require an HTTPS authority for agent
-                // credentials and command traffic; keep the dedicated gRPC
-                // listener aligned with that transport contract.
-                listen.UseHttps();
-            });
+            listen => listen.Protocols = HttpProtocols.Http2);
     }
 
     var hardening = builder.Configuration.GetSection("Security").Get<SecurityHardeningOptions>() ?? new SecurityHardeningOptions();
