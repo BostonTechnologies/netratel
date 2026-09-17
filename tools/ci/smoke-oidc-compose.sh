@@ -161,6 +161,7 @@ chmod 644 "$tls_certificate_path" "$tls_bundle_path"
 export NETRATEL_SMOKE_TLS_CERT_PATH="$tls_bundle_path"
 export NETRATEL_SMOKE_TLS_CERTIFICATE_PATH="$tls_certificate_path"
 export NETRATEL_SMOKE_TLS_KEY_PATH="$tls_key_path"
+export NETRATEL_GATEWAY_PROXY_CONFIG_PATH="$root/tests/compose/gateway-proxy.nginx.conf"
 api_port="${NETRATEL_API_TEST_PORT:-9222}"
 api_url="http://127.0.0.1:${api_port}"
 
@@ -253,6 +254,8 @@ wait_for_command_status() {
   done
 
   echo "Gateway command ${command_id} did not reach expected lifecycle status ${expected_status}." >&2
+  printf 'Last gateway command state: %s\n' "${command_state:-unavailable}" >&2
+  docker logs "$gateway_client" >&2 || true
   return 1
 }
 
@@ -501,6 +504,7 @@ operator_access_token="$(request_operator_access_token)"
 stage="waiting for Client telemetry"
 wait_for_telemetry "$operator_access_token"
 command_payload='{"command":"printf netratel-compose-smoke","timeoutSeconds":10}'
+stage="waiting for disposable command execution"
 command_response="$(curl --silent --show-error --fail \
   --header "Authorization: Bearer ${operator_access_token}" \
   --header 'Content-Type: application/json' \
@@ -514,6 +518,7 @@ command_id="$(jq -r '.commandId // empty' <<<"$command_response")"
 wait_for_command_status "$operator_access_token" "$command_id" 4
 
 cancel_payload='{"command":"sleep 20","timeoutSeconds":30}'
+stage="waiting for disposable command cancellation"
 cancel_response="$(curl --silent --show-error --fail \
   --header "Authorization: Bearer ${operator_access_token}" \
   --header 'Content-Type: application/json' \
