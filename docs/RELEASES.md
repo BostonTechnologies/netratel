@@ -1,7 +1,7 @@
 # Release engineering
 
 All first-party components evaluate from the root product version. The current
-prerelease is `0.1.0-rc.1`; the component inventory is
+prerelease is `0.1.0-rc.2`; the component inventory is
 `release/release-manifest.json`.
 
 `tools/ci/verify-product-version.sh` checks evaluated project metadata against
@@ -36,8 +36,9 @@ all final images, and both image smoke suites to succeed.
 For the native Client, the generated publish directory includes the executable,
 its update manifest, required sidecars, and the Linux PTY helper. Do not
 advertise a runtime until its final archive has been built and smoke-tested.
-NetRatel `0.1.0-rc.1` is a source candidate. No public release images or
-archives have been published yet. The release workflow validates the committed
+NetRatel `0.1.0-rc.1` archives and tag remain published historical release
+artifacts. NetRatel `0.1.0-rc.2` is a source candidate: no rc.2 public images
+or archives have been published yet. The release workflow validates the committed
 version, builds every final runtime container, and packages CLI, stdio MCP, and
 native Client artifacts. Native Client packages are built on their matching
 Linux, Windows, and macOS runners. Publication, signing, package visibility,

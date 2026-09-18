@@ -14,7 +14,8 @@ HTTP MCP requires HTTPS OIDC discovery metadata by default. The
 Development host for disposable local integration tests; it must never be used
 for a deployed instance.
 
-Release archives are not published for `0.1.0-rc.1` yet. Build from reviewed
+Release archives are not published for `0.1.0-rc.2` yet. The rc.1 tag and
+archives are historical artifacts; build from reviewed
 source for evaluation and verify the archive checksum and client manifest once
 a future owner-approved release exists.
 
