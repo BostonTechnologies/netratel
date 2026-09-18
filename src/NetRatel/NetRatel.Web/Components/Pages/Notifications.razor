@@ -148,8 +148,8 @@
                 <div @onclick:stopPropagation="true">
                     <MudCheckBox T="bool"
                                  Disabled="@(UnreadOnPageCount == 0)"
-                                 Checked="AreAllUnreadSelected"
-                                 CheckedChanged="ToggleSelectAllUnread" />
+                                 Value="AreAllUnreadSelected"
+                                 ValueChanged="ToggleSelectAllUnread" />
                 </div>
             </MudTh>
             <MudTh>Severity</MudTh>
@@ -166,8 +166,8 @@
                 <div @onclick:stopPropagation="true">
                     <MudCheckBox T="bool"
                                  Disabled="@context.IsRead"
-                                 Checked="@selectedIds.Contains(context.Id)"
-                                 CheckedChanged="@((bool value) => ToggleSelection(context.Id, value))" />
+                                 Value="@selectedIds.Contains(context.Id)"
+                                 ValueChanged="@((bool value) => ToggleSelection(context.Id, value))" />
                 </div>
             </MudTd>
             <MudTd>
