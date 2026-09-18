@@ -1,5 +1,7 @@
 # NetRatel
 
+![NetRatel — secure, connected automation](docs/assets/netratel/netratel-readme-hero.webp)
+
 NetRatel is a self-hosted application for managing computers and automating
 work across them. Connect machines, view their status, run scripts and jobs,
 open remote terminals, browse files, and inspect logs from one web interface.
@@ -9,7 +11,7 @@ API, command-line tools, a native Client/agent, and optional Model Context
 Protocol (MCP) integrations. AI services are optional and are not required for
 normal operation.
 
-> NetRatel `0.1.0-rc.1` is a prerelease. Do not treat it as a stable release
+> NetRatel `0.1.0-rc.2` is a prerelease. Do not treat it as a stable release
 > channel or use it for unattended fleet updates.
 
 ## Components
@@ -29,9 +31,9 @@ all secrets at deployment time; the tracked configuration contains only
 reserved example values.
 
 Read [self-hosting](docs/SELF_HOSTING.md) before deployment. The public release
-image instructions will be added only after the prerelease artifacts have been
-published and verified. Until then, build from a reviewed source checkout.
-See [supported platforms](docs/SUPPORTED_PLATFORMS.md) for the rc.1 rehearsal
+image instructions are available in [self-hosting](docs/SELF_HOSTING.md), but
+rc.2 images remain unpublished until owner approval. Until then, build from a
+reviewed source checkout. See [supported platforms](docs/SUPPORTED_PLATFORMS.md) for the rc.2 rehearsal
 matrix and its explicit non-goals.
 
 Useful references: [architecture](docs/ARCHITECTURE.md),
