@@ -54,6 +54,34 @@ session roles, and permitted signing algorithms. This is distinct from API M2M
 credentials and native-agent enrollment; do not reuse credentials between
 those trust paths.
 
+The API applies the same enabled/disabled contract. It only selects the
+machine-token scheme when both configured issuer and audience match; human and
+machine audiences can therefore share an issuer. When disabled, retained
+machine settings do not authenticate a machine endpoint or add session roles.
+
+## Reverse-proxy trust
+
+The Web service ignores `X-Forwarded-For`, `X-Forwarded-Host`, and
+`X-Forwarded-Proto` unless the direct peer is loopback or is explicitly listed
+in `ForwardedHeaders:KnownProxies` or `ForwardedHeaders:KnownIPNetworks`.
+Configure the public hostnames expected from that proxy in
+`ForwardedHeaders:AllowedHosts`. For example, a deployment with an internal
+proxy range can use:
+
+```json
+{
+  "ForwardedHeaders": {
+    "KnownProxies": ["203.0.113.10"],
+    "KnownIPNetworks": ["2001:db8:1234::/48"],
+    "AllowedHosts": ["netratel.example.com"]
+  }
+}
+```
+
+Do not add broad private-network ranges unless every sender in that range is a
+trusted proxy. Direct local evaluation needs no configuration beyond the
+loopback default.
+
 ## Health endpoints
 
 `/health/live` and `/health/ready` are protected by the `HealthRead` policy.

@@ -328,15 +328,10 @@ var app = builder.Build();
 
 app.MapDefaultEndpoints();
 
-// Honor forwarded headers for correct scheme/host when behind proxy
-var forwardedHeadersOptions = new ForwardedHeadersOptions
-{
-    ForwardedHeaders = ForwardedHeaders.XForwardedFor |
-                       ForwardedHeaders.XForwardedHost |
-                       ForwardedHeaders.XForwardedProto
-};
-forwardedHeadersOptions.KnownNetworks.Clear();
-forwardedHeadersOptions.KnownProxies.Clear();
+// Forwarded values are accepted only from loopback (the framework default) or
+// explicitly configured proxy addresses/networks. This keeps direct requests
+// from being able to forge an HTTPS origin or client address.
+var forwardedHeadersOptions = ProxyTrustOptions.Create(builder.Configuration);
 app.UseForwardedHeaders(forwardedHeadersOptions);
 
 // Configure the HTTP request pipeline.

@@ -52,7 +52,7 @@ services:
       context: .
       dockerfile: docker/web/Dockerfile
     ports:
-      - "${NETRATEL_WEB_PORT:-8080}:9111"
+      - "${NETRATEL_WEB_BIND_ADDRESS:-127.0.0.1}:${NETRATEL_WEB_PORT:-8080}:9111"
     environment:
       ConnectionStrings__NetRatelDb: Host=postgres;Port=5432;Database=${POSTGRES_DB:-netratel};Username=${POSTGRES_USER:-netratel};Password=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
       ApiBaseUrl: http://api:9222

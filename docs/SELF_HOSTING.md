@@ -29,6 +29,11 @@ only after it succeeds. The stack intentionally does not provide an
 administrator password or an anonymous production mode. Configure a real OIDC
 client before using it beyond startup and connectivity checks.
 
+The Compose Web port is loopback-bound by default. Set
+`NETRATEL_WEB_BIND_ADDRESS` deliberately when a reverse proxy must reach it;
+then configure that proxy's address/range and public host in the Web
+`ForwardedHeaders` settings described in [configuration](CONFIGURATION.md).
+
 ## Disposable generic OIDC evaluation
 
 For a local evaluation of the complete browser sign-in flow, the repository
@@ -77,12 +82,14 @@ session. It is separate from API M2M credentials and native-agent enrollment.
 
 ## Release-image bundle
 
-After an approved public release, download the release Compose bundle, copy
-`release/.env.images.example` to an untracked `.env` file beside it, and replace
-each NetRatel image placeholder with the approved immutable digest from that
-release. Run `docker compose -f release/compose.images.yaml config --quiet`
-before starting the stack. The release bundle never builds application source;
-its migration image runs before API starts.
+After an approved public release, extract the release Compose bundle, copy
+`.env.images.example` to an untracked `.env` file beside the extracted
+`compose.images.yaml`, and replace each NetRatel image placeholder with the
+approved immutable digest from that release. Run `docker compose --env-file .env -f compose.images.yaml config --quiet` before starting the stack. The release
+bundle never builds application source; its migration image runs before API
+starts. Keep the agent key beside the extracted bundle, set
+`NETRATEL_AGENT_AUTH_PRIVATE_KEY=./.netratel-agent-es256-private.pem`, and use
+the same owner-only `600` permissions described above.
 
 The HTTP MCP image is an explicit opt-in overlay. Set its distinct HTTPS OIDC,
 resource URI, audience, API target, group, and scope values, then validate it
@@ -92,6 +99,6 @@ at an internal-only address or reuse Web, API, or native-agent credentials.
 
 ## Prerelease posture
 
-`0.1.0-rc.1` images and release bundles are not published yet. Use a reviewed
-source build for evaluation only. A production rollout requires later
-release-artifact verification and owner approval.
+`0.1.0-rc.1` remains a historical prerelease. `0.1.0-rc.2` images and release
+bundles are not published yet. Use a reviewed source build for evaluation only.
+A production rollout requires release-artifact verification and owner approval.
