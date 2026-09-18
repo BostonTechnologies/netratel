@@ -69,12 +69,16 @@ archive_has_entry() {
   }
 }
 
-[[ -s "$artifacts/cli/$cli_tool" ]] || { echo "Missing CLI tool package: $cli_tool" >&2; exit 1; }
-unzip -l "$artifacts/cli/$cli_tool" | grep -Eq 'tools/net10\.0/any/(netratel|netratel\.dll)$' ||
+[[ -s "$artifacts/$cli_tool" ]] || { echo "Missing staged CLI tool package: $cli_tool" >&2; exit 1; }
+unzip -l "$artifacts/$cli_tool" | grep -Eq 'tools/net10\.0/any/(netratel|netratel\.dll)$' ||
   { echo "CLI tool package does not contain the NetRatel tool entry point." >&2; exit 1; }
 
 archive_has_entry "$cli" '^netratel-cli-linux-x64/(netratel|netratel\.dll)$' "CLI archive does not contain the NetRatel executable."
+archive_has_entry "$cli" '^netratel-cli-linux-x64/LICENSE$' "CLI archive is missing LICENSE."
+archive_has_entry "$cli" '^netratel-cli-linux-x64/NOTICE$' "CLI archive is missing NOTICE."
 archive_has_entry "$mcp" '^netratel-mcp-linux-x64/(NetRatel\.Mcp|NetRatel\.Mcp\.dll)$' "stdio MCP archive does not contain the MCP executable."
+archive_has_entry "$mcp" '^netratel-mcp-linux-x64/LICENSE$' "stdio MCP archive is missing LICENSE."
+archive_has_entry "$mcp" '^netratel-mcp-linux-x64/NOTICE$' "stdio MCP archive is missing NOTICE."
 archive_has_entry "$bundle" '^\./compose\.images\.yaml$' "Release bundle is missing compose.images.yaml."
 archive_has_entry "$bundle" '^\./compose\.mcp-http\.yaml$' "Release bundle is missing compose.mcp-http.yaml."
 archive_has_entry "$bundle" '^\./\.env\.images\.example$' "Release bundle is missing .env.images.example."
@@ -97,7 +101,7 @@ cli_version="$("$cli_executable" --version)"
 }
 
 cli_tool_extract_dir="$release_extract_dir/cli-tool"
-dotnet tool install NetRatel.Cli --tool-path "$cli_tool_extract_dir" --add-source "$artifacts/cli" --version "$version" --ignore-failed-sources >/dev/null
+dotnet tool install NetRatel.Cli --tool-path "$cli_tool_extract_dir" --add-source "$artifacts" --version "$version" --ignore-failed-sources >/dev/null
 cli_tool_version="$("$cli_tool_extract_dir/netratel" --version)"
 [[ "$cli_tool_version" == "$version" || "$cli_tool_version" == "$version"+* ]] || {
   echo "CLI tool package version '$cli_tool_version' does not match release version '$version'." >&2
@@ -150,11 +154,16 @@ grep -Fq 'NetRatel MCP API base URL must be absolute.' <<<"$invalid_mcp_output" 
 }
 
 [[ -s "$artifacts/$sbom" ]] || { echo "Missing SPDX SBOM: $sbom" >&2; exit 1; }
-grep -q '"spdxVersion"' "$artifacts/$sbom" ||
-  { echo "Release SBOM is not SPDX JSON." >&2; exit 1; }
+jq -e '
+  (.spdxVersion | type == "string")
+  and ((.packages | type == "array") and length > 1)
+  and ([.files[]? | .checksums[]? | select(.algorithm == "SHA256") | .checksumValue]
+       | length > 0 and all(test("^0+$") | not))
+' "$artifacts/$sbom" >/dev/null ||
+  { echo "Release SBOM lacks dependency coverage or contains placeholder SHA-256 values." >&2; exit 1; }
 
 [[ -s "$artifacts/SHA256SUMS" ]] || { echo "Missing SHA256SUMS." >&2; exit 1; }
-grep -Fq " cli/$cli_tool" "$artifacts/SHA256SUMS" || {
+grep -Fq " $cli_tool" "$artifacts/SHA256SUMS" || {
   echo "CLI tool package is missing from SHA256SUMS." >&2
   exit 1
 }

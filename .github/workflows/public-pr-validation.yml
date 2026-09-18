@@ -71,13 +71,19 @@ jobs:
           dotnet publish src/NetRatel/NetRatel.Cli/NetRatel.Cli.csproj --configuration Release --no-restore --runtime linux-x64 --self-contained false --output artifacts/cli/netratel-cli-linux-x64
           dotnet publish src/NetRatel/NetRatel.Mcp/NetRatel.Mcp.csproj --configuration Release --no-restore --runtime linux-x64 --self-contained false --output artifacts/mcp-stdio/netratel-mcp-linux-x64
           dotnet pack src/NetRatel/NetRatel.Cli/NetRatel.Cli.csproj --configuration Release --no-restore --output artifacts/cli
+          cp LICENSE NOTICE artifacts/cli/netratel-cli-linux-x64/
+          cp LICENSE NOTICE artifacts/mcp-stdio/netratel-mcp-linux-x64/
+          cp "artifacts/cli/NetRatel.Cli.${version}.nupkg" artifacts/
           tar -C artifacts/cli -czf "artifacts/netratel-cli-${version}-linux-x64.tar.gz" netratel-cli-linux-x64
           tar -C artifacts/mcp-stdio -czf "artifacts/netratel-mcp-stdio-${version}-linux-x64.tar.gz" netratel-mcp-linux-x64
           cp release/compose.images.yaml release/compose.mcp-http.yaml release/.env.images.example release/release-manifest.json artifacts/release-bundle/
           tar -C artifacts/release-bundle -czf "artifacts/netratel-compose-${version}.tar.gz" .
+          mkdir -p artifacts/sbom-input
+          cp -a artifacts/cli/netratel-cli-linux-x64 artifacts/sbom-input/cli
+          cp -a artifacts/mcp-stdio/netratel-mcp-linux-x64 artifacts/sbom-input/mcp-stdio
       - uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
-          path: artifacts
+          path: artifacts/sbom-input
           format: spdx-json
           output-file: artifacts/netratel-${{ github.sha }}.spdx.json
       - run: |
@@ -85,7 +91,7 @@ jobs:
           mv "artifacts/netratel-${GITHUB_SHA}.spdx.json" "artifacts/netratel-${version}.spdx.json"
           (
             cd artifacts
-            sha256sum *.tar.gz "netratel-${version}.spdx.json" cli/*.nupkg > SHA256SUMS
+            sha256sum *.tar.gz "netratel-${version}.spdx.json" *.nupkg > SHA256SUMS
           )
           tools/ci/verify-release-artifacts.sh --artifacts artifacts --version "$version"
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
@@ -123,6 +129,7 @@ jobs:
           directory="artifacts/netratel-client-${{ matrix.runtime }}"
           dotnet restore src/NetRatel/NetRatel.Client/NetRatel.Client.csproj --runtime "${{ matrix.runtime }}"
           dotnet publish src/NetRatel/NetRatel.Client/NetRatel.Client.csproj --configuration Release --no-restore --runtime "${{ matrix.runtime }}" --output "$directory"
+          cp LICENSE NOTICE "$directory/"
           test -f "$directory/netratel-client-manifest.json"
           grep -Fq "\"version\":\"${version}\"" "$directory/netratel-client-manifest.json"
           if [[ "${{ matrix.extension }}" == zip ]]; then
@@ -144,7 +151,7 @@ jobs:
           esac
       - uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
-          path: artifacts
+          path: artifacts/netratel-client-${{ matrix.runtime }}
           format: spdx-json
           output-file: artifacts/netratel-client-${{ matrix.runtime }}.spdx.json
       - shell: bash

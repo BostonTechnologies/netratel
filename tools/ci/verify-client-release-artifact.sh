@@ -27,7 +27,15 @@ manifest="netratel-client-${runtime}/netratel-client-manifest.json"
 
 [[ -s "$artifacts/$archive" ]] || { echo "Missing Client archive: $archive" >&2; exit 1; }
 [[ -s "$artifacts/$sbom" ]] || { echo "Missing Client SBOM: $sbom" >&2; exit 1; }
-grep -q '"spdxVersion"' "$artifacts/$sbom" || { echo "Client SBOM is not SPDX JSON." >&2; exit 1; }
+jq -e '
+  (.spdxVersion | type == "string")
+  and ((.packages | type == "array") and length > 1)
+  and ([.files[]? | .checksums[]? | select(.algorithm == "SHA256") | .checksumValue]
+       | length > 0 and all(test("^0+$") | not))
+' "$artifacts/$sbom" >/dev/null || {
+  echo "Client SBOM lacks dependency coverage or contains placeholder SHA-256 values." >&2
+  exit 1
+}
 
 if [[ "$extension" == zip ]]; then
   entries="$(unzip -Z1 "$artifacts/$archive")"
@@ -41,6 +49,8 @@ if grep -Eq '(^/|(^|/)\.\.(/|$))' <<<"$entries"; then
 fi
 grep -qx "$manifest" <<<"$entries" || { echo "Client archive is missing its manifest." >&2; exit 1; }
 for required_entry in \
+  "netratel-client-${runtime}/LICENSE" \
+  "netratel-client-${runtime}/NOTICE" \
   "netratel-client-${runtime}/appsettings.json" \
   "netratel-client-${runtime}/powershell.config.json" \
   "netratel-client-${runtime}/terminal_pty_helper.py" \
