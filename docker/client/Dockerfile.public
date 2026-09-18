@@ -48,6 +48,7 @@ RUN set -eux; \
 
 WORKDIR /app
 COPY --from=build --chown=netratel:netratel /out ./
+COPY --chown=netratel:netratel LICENSE NOTICE /app/licenses/
 ENV NETRATEL_POWERSHELL_HOME=/var/lib/netratel/powershell
 USER netratel
 ENTRYPOINT ["/app/NetRatel.Client"]

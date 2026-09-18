@@ -51,5 +51,6 @@ WORKDIR /app
 # If COPY --chown is not supported in your Docker, replace with plain COPY + RUN chown
 COPY --chown=${APP_USER}:${APP_USER} --from=publish /app/publish .
 COPY --chown=${APP_USER}:${APP_USER} docker/web/docker-entrypoint.sh /app/docker-entrypoint.sh
+COPY --chown=${APP_USER}:${APP_USER} LICENSE NOTICE /app/licenses/
 RUN chmod +x /app/docker-entrypoint.sh
 ENTRYPOINT ["/app/docker-entrypoint.sh", "dotnet", "NetRatel.Web.dll"]

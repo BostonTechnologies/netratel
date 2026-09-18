@@ -41,5 +41,6 @@ RUN dotnet publish src/NetRatel/NetRatel.Mcp.Http/NetRatel.Mcp.Http.csproj \
 FROM base AS final
 WORKDIR /app
 COPY --from=build --chown=netratel-mcp:netratel-mcp /out ./
+COPY --chown=netratel-mcp:netratel-mcp LICENSE NOTICE /app/licenses/
 USER netratel-mcp
 ENTRYPOINT ["dotnet", "NetRatel.Mcp.Http.dll"]

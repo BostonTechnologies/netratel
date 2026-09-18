@@ -32,6 +32,14 @@ jq -e --arg version "$version" --arg revision "$revision" '
   exit 1
 }
 
+docker run --rm --entrypoint /bin/sh "$image" -c '
+  test -r /app/licenses/LICENSE
+  test -r /app/licenses/NOTICE
+' || {
+  echo "Image is missing its required LICENSE or NOTICE file." >&2
+  exit 1
+}
+
 scan_dir="$(mktemp -d)"
 cleanup() { find "$scan_dir" -depth -delete 2>/dev/null || true; }
 trap cleanup EXIT
@@ -56,4 +64,4 @@ if grep -rI -q -E -- \
   exit 1
 fi
 
-echo "Verified public image metadata and generic credential scan: $image"
+echo "Verified public image metadata, license notices, and generic credential scan: $image"

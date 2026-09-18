@@ -7,4 +7,5 @@ RUN dotnet publish src/NetRatel/NetRatel.Migrations/NetRatel.Migrations.csproj \
 FROM mcr.microsoft.com/dotnet/aspnet:10.0-noble AS final
 WORKDIR /app
 COPY --from=build /out .
+COPY LICENSE NOTICE /app/licenses/
 ENTRYPOINT ["dotnet", "NetRatel.Migrations.dll"]
