@@ -47,6 +47,7 @@ jobs:
           fi
           printf 'value=%s\n' "$version" >> "$GITHUB_OUTPUT"
       - name: Require public main ancestry
+        if: github.ref_type == 'tag'
         run: |
           git fetch --no-tags origin main
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main
