@@ -89,6 +89,21 @@ class DistributionTests(unittest.TestCase):
         self.promotion = module("promote-release")
         self.verifier = module("verify-runtime-sbom")
 
+    def receipt(self, revision="b" * 40):
+        version = "0.1.0-rc.2"
+        return {
+            "repository": self.promotion.REPOSITORY,
+            "workflow": ".github/workflows/release-build.yml",
+            "runId": 1,
+            "attempt": 1,
+            "headSha": revision,
+            "productVersion": version,
+            "files": {
+                name: {"artifact": "release-artifacts", "sha256": "a" * 64}
+                for name in self.promotion.required_artifacts(version)
+            }
+        }
+
     def test_flat_staging_rejects_missing_files_wrong_checksums_and_nested_names(self):
         inputs = self.root / "inputs"
         inputs.mkdir()
@@ -121,19 +136,34 @@ class DistributionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "changed or missing"):
             self.promotion.verify_staged(output, "0.1.0-rc.2")
 
+    def test_staging_rejects_unexpected_output_files(self):
+        output = self.root / "output"
+        output.mkdir()
+        for name in self.promotion.required_artifacts("0.1.0-rc.2"):
+            (output / name).write_bytes(name.encode())
+        self.promotion.checksums(output)
+        (output / "unreviewed-upload.txt").write_text("must not be published")
+        with self.assertRaisesRegex(ValueError, "unexpected files"):
+            self.promotion.verify_staged(output, "0.1.0-rc.2")
+
     def test_partial_resume_preserves_completed_digest_and_rejects_wrong_source_or_digest(self):
         path = self.root / "journal.json"
-        state = self.promotion.resume_state(path, "0.1.0-rc.2", "b" * 40, "public-candidate")
+        receipt = self.receipt()
+        state = self.promotion.resume_state(path, "0.1.0-rc.2", "b" * 40, "public-candidate", receipt)
         reference = "ghcr.io/bostontechnologies/public-candidate-api@sha256:" + "a" * 64
         state["images"]["api"] = reference
         path.write_text(json.dumps(state))
-        self.assertEqual(self.promotion.resume_state(path, "0.1.0-rc.2", "b" * 40, "public-candidate")["images"], {"api": reference})
+        self.assertEqual(self.promotion.resume_state(path, "0.1.0-rc.2", "b" * 40, "public-candidate", receipt)["images"], {"api": reference})
         with self.assertRaisesRegex(ValueError, "different approved"):
-            self.promotion.resume_state(path, "0.1.0-rc.2", "c" * 40, "public-candidate")
+            self.promotion.resume_state(path, "0.1.0-rc.2", "c" * 40, "public-candidate", self.receipt("c" * 40))
+        changed_receipt = self.receipt()
+        changed_receipt["files"][next(iter(changed_receipt["files"]))]["sha256"] = "c" * 64
+        with self.assertRaisesRegex(ValueError, "different approved"):
+            self.promotion.resume_state(path, "0.1.0-rc.2", "b" * 40, "public-candidate", changed_receipt)
         state["images"]["api"] = reference[:-64] + "REPLACE_AFTER_APPROVED_PUBLIC_RELEASE"
         path.write_text(json.dumps(state))
         with self.assertRaisesRegex(ValueError, "invalid digest"):
-            self.promotion.resume_state(path, "0.1.0-rc.2", "b" * 40, "public-candidate")
+            self.promotion.resume_state(path, "0.1.0-rc.2", "b" * 40, "public-candidate", receipt)
 
     def test_partial_or_placeholder_image_sets_cannot_finalize_a_bundle(self):
         with self.assertRaisesRegex(ValueError, "All five"):
@@ -151,13 +181,74 @@ class DistributionTests(unittest.TestCase):
             for name in ("LICENSE", "NOTICE"):
                 target.add(ROOT / name, arcname=name)
         images = {name: f"ghcr.io/example/{name}@sha256:" + "a" * 64 for name in self.promotion.COMPONENTS}
-        self.promotion.finalize_bundle(self.root, version, "b" * 40, images)
+        receipt = self.receipt()
+        self.promotion.finalize_bundle(self.root, version, "b" * 40, images, receipt)
         with tarfile.open(archive) as source:
             text = source.extractfile(".env.images.example").read().decode()
             self.assertNotIn("REPLACE_AFTER_APPROVED_PUBLIC_RELEASE", text)
             self.assertIn(images["api"], text)
             self.assertIn("INSTALL.md", source.getnames())
-        self.assertEqual(json.loads((self.root / "publication.json").read_text())["publicCommit"], "b" * 40)
+        self.assertFalse((self.root / "publication.json").exists())
+        self.assertEqual(json.loads((self.root / "publication.candidate.json").read_text())["publicCommit"], "b" * 40)
+        self.promotion.complete_bundle(self.root)
+        self.assertEqual(json.loads((self.root / "publication.json").read_text())["verification"]["state"], "complete")
+
+    def test_receipt_identity_rejects_wrong_source_missing_files_and_invalid_digest(self):
+        receipt = self.receipt()
+        self.promotion.validate_input_receipt_identity(receipt, "0.1.0-rc.2", "b" * 40)
+        receipt["headSha"] = "c" * 40
+        with self.assertRaisesRegex(ValueError, "approved repository"):
+            self.promotion.validate_input_receipt_identity(receipt, "0.1.0-rc.2", "b" * 40)
+        receipt = self.receipt()
+        receipt["files"].pop(next(iter(receipt["files"])))
+        with self.assertRaisesRegex(ValueError, "every required"):
+            self.promotion.validate_input_receipt_identity(receipt, "0.1.0-rc.2", "b" * 40)
+        receipt = self.receipt()
+        receipt["files"][next(iter(receipt["files"]))]["sha256"] = "not-a-digest"
+        with self.assertRaisesRegex(ValueError, "invalid identity"):
+            self.promotion.validate_input_receipt_identity(receipt, "0.1.0-rc.2", "b" * 40)
+
+    def test_authenticated_receipt_requires_a_successful_run_and_matching_downloaded_bytes(self):
+        version = "0.1.0-rc.2"
+        inputs = self.root / "inputs"
+        inputs.mkdir()
+        receipt = self.receipt()
+        lines = []
+        for name in self.promotion.required_artifacts(version):
+            content = name.encode()
+            (inputs / name).write_bytes(content)
+            digest = hashlib.sha256(content).hexdigest()
+            receipt["files"][name]["sha256"] = digest
+            lines.append(f"{digest}  {name}\n")
+        (inputs / "SHA256SUMS").write_text("".join(lines))
+        receipt_path = self.root / "release-receipt.json"
+        receipt_path.write_text(json.dumps(receipt))
+
+        original_run = self.promotion.run
+        def run_success(*command, env=None):
+            if command[:2] == ("gh", "api"):
+                return json.dumps({"conclusion": "success", "head_sha": "b" * 40,
+                                   "path": ".github/workflows/release-build.yml"})
+            if command[:3] == ("gh", "run", "download"):
+                destination = Path(command[-1])
+                destination.mkdir(parents=True)
+                for source in inputs.iterdir():
+                    if source.is_file() and source.name != "SHA256SUMS":
+                        shutil.copy2(source, destination / source.name)
+                return ""
+            raise AssertionError(command)
+
+        self.promotion.run = run_success
+        try:
+            identity = self.promotion.verified_input_receipt(inputs, receipt_path, version, "b" * 40)
+            self.assertEqual(identity["files"], receipt["files"])
+            self.promotion.run = lambda *command, **kwargs: json.dumps({
+                "conclusion": "failure", "head_sha": "b" * 40,
+                "path": ".github/workflows/release-build.yml"})
+            with self.assertRaisesRegex(ValueError, "not successful"):
+                self.promotion.verified_input_receipt(inputs, receipt_path, version, "b" * 40)
+        finally:
+            self.promotion.run = original_run
 
     def test_directory_only_inventory_and_wrong_file_digests_are_rejected(self):
         with self.assertRaisesRegex(ValueError, "first-party"):

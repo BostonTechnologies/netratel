@@ -72,7 +72,7 @@ def checksums(directory):
     (directory / "SHA256SUMS").write_text("".join(f"{sha256(path)}  {path.name}\n" for path in files))
 
 
-def verify_staged(directory, version):
+def verify_staged(directory, version, allow_candidate=False):
     listed = set()
     for line in (directory / "SHA256SUMS").read_text().splitlines():
         expected, name = line.split(maxsplit=1)
@@ -85,12 +85,91 @@ def verify_staged(directory, version):
         listed.add(name)
     if not set(required_artifacts(version)).issubset(listed):
         raise ValueError("Staged checksums omit required artifacts")
+    allowed = set(required_artifacts(version)) | {"SHA256SUMS"}
+    if allow_candidate:
+        allowed.add("publication.candidate.json")
+    unexpected = {path.name for path in directory.iterdir() if path.is_file()} - allowed
+    if unexpected:
+        raise ValueError(f"Staged output contains unexpected files: {', '.join(sorted(unexpected))}")
+    return {name: sha256(directory / name) for name in required_artifacts(version)}
 
 
-def resume_state(path, version, revision, prefix):
+def validate_input_receipt_identity(receipt, version, revision):
+    expected = required_artifacts(version)
+    if (receipt.get("repository"), receipt.get("workflow"), receipt.get("productVersion"), receipt.get("headSha")) != (
+            REPOSITORY, ".github/workflows/release-build.yml", version, revision):
+        raise ValueError("Input receipt does not identify the approved repository, workflow, version, and commit")
+    if not isinstance(receipt.get("runId"), int) or not isinstance(receipt.get("attempt"), int):
+        raise ValueError("Input receipt must identify a workflow run and attempt")
+    files = receipt.get("files")
+    if not isinstance(files, dict) or set(files) != set(expected):
+        raise ValueError("Input receipt must bind every required artifact exactly once")
+    for name, item in files.items():
+        if not isinstance(item, dict) or not isinstance(item.get("artifact"), str) or \
+                not re.fullmatch("[a-f0-9]{64}", item.get("sha256", "")):
+            raise ValueError(f"Input receipt has an invalid identity for {name}")
+    return files
+
+
+def verified_input_receipt(inputs, receipt_path, version, revision):
+    """Bind local inputs to exact files downloaded from a successful trusted run."""
+    receipt = json.loads(receipt_path.read_text())
+    expected = required_artifacts(version)
+    files = validate_input_receipt_identity(receipt, version, revision)
+
+    # This is authoritative GitHub metadata, rather than a caller-provided
+    # checksum claim. It must succeed before staging, journaling, image builds,
+    # or any registry write.
+    run_details = json.loads(run(
+        "gh", "api", f"repos/{REPOSITORY}/actions/runs/{receipt['runId']}/attempts/{receipt['attempt']}"))
+    if (run_details.get("conclusion"), run_details.get("head_sha"), run_details.get("path")) != (
+            "success", revision, ".github/workflows/release-build.yml"):
+        raise ValueError("Trusted workflow run was not successful for the approved source")
+
+    found = {}
+    for sums in inputs.rglob("SHA256SUMS"):
+        for line in sums.read_text().splitlines():
+            expected_digest, name = line.split(maxsplit=1)
+            name = name.lstrip("*")
+            path = sums.parent / name
+            if name in files and path.is_file() and sha256(path) == expected_digest:
+                found[name] = path
+    if set(found) != set(expected):
+        raise ValueError("Input receipt does not match the supplied flat artifact files")
+
+    downloaded = {}
+    with tempfile.TemporaryDirectory(prefix="netratel-release-receipt-") as temporary:
+        root = Path(temporary)
+        for name in expected:
+            item = files[name]
+            if sha256(found[name]) != item["sha256"]:
+                raise ValueError(f"Supplied input digest differs from its receipt for {name}")
+            downloaded.setdefault(item["artifact"], root / item["artifact"])
+        for artifact, destination in downloaded.items():
+            run("gh", "run", "download", str(receipt["runId"]), "--repo", REPOSITORY,
+                "--name", artifact, "--dir", str(destination))
+        for name in expected:
+            candidates = [path for path in root.rglob(name) if path.is_file()]
+            if len(candidates) != 1 or sha256(candidates[0]) != sha256(found[name]):
+                raise ValueError(f"Authenticated workflow download differs from supplied input: {name}")
+
+    return {
+        "repository": REPOSITORY,
+        "workflow": ".github/workflows/release-build.yml",
+        "runId": receipt["runId"],
+        "attempt": receipt["attempt"],
+        "headSha": revision,
+        "productVersion": version,
+        "files": {name: {"artifact": files[name]["artifact"], "sha256": sha256(found[name])} for name in expected}
+    }
+
+
+def resume_state(path, version, revision, prefix, input_receipt):
     state = json.loads(path.read_text()) if path.exists() else {
-        "version": version, "revision": revision, "packagePrefix": prefix, "images": {}}
-    if (state.get("version"), state.get("revision"), state.get("packagePrefix")) != (version, revision, prefix):
+        "version": version, "revision": revision, "packagePrefix": prefix,
+        "inputReceipt": input_receipt, "images": {}}
+    if (state.get("version"), state.get("revision"), state.get("packagePrefix"), state.get("inputReceipt")) != \
+            (version, revision, prefix, input_receipt):
         raise ValueError("Resume journal belongs to a different approved source or package prefix")
     if not isinstance(state.get("images"), dict) or not set(state["images"]).issubset(COMPONENTS):
         raise ValueError("Resume journal contains unknown components")
@@ -108,11 +187,13 @@ def validate_digests(images):
         raise ValueError("Invalid/unresolved immutable image digest")
 
 
-def finalize_bundle(directory, version, revision, images):
+def finalize_bundle(directory, version, revision, images, input_receipt):
     validate_digests(images)
+    source_archive = directory / f"netratel-compose-{version}.tar.gz"
+    source_archive_digest = sha256(source_archive)
     with tempfile.TemporaryDirectory(prefix="netratel-promoted-bundle-") as temporary:
         bundle = Path(temporary)
-        archive = directory / f"netratel-compose-{version}.tar.gz"
+        archive = source_archive
         with tarfile.open(archive) as source:
             source.extractall(bundle, filter="data")
         for required in ("INSTALL.md", "compose.images.yaml", "compose.mcp-http.yaml", ".env.images.example", "LICENSE", "NOTICE"):
@@ -135,10 +216,43 @@ def finalize_bundle(directory, version, revision, images):
             for path in sorted(bundle.iterdir()):
                 target.add(path, arcname=path.name)
     record = {"productVersion": version, "publicCommit": revision, "images": images,
+              "inputReceipt": input_receipt,
+              "derivedBundle": {
+                  "sourceSha256": source_archive_digest,
+                  "finalSha256": sha256(source_archive),
+                  "transformation": "Inserted verified immutable image digests into .env.images.example."
+              },
+              "verification": {"state": "candidate", "requiredSmokes": ["oidc-compose", "mcp-http-image"]},
               "artifacts": {path.name: sha256(path) for path in sorted(directory.iterdir())
-                            if path.is_file() and path.name not in {"SHA256SUMS", "publication.json"}}}
-    (directory / "publication.json").write_text(json.dumps(record, indent=2) + "\n")
+                            if path.is_file() and path.name not in {"SHA256SUMS", "publication.json", "publication.candidate.json"}}}
+    (directory / "publication.candidate.json").write_text(json.dumps(record, indent=2) + "\n")
     checksums(directory)
+
+
+def complete_bundle(directory):
+    candidate = directory / "publication.candidate.json"
+    final = directory / "publication.json"
+    if not candidate.is_file() or final.exists():
+        raise ValueError("A single uncompleted candidate publication record is required")
+    record = json.loads(candidate.read_text())
+    record["verification"] = {"state": "complete", "requiredSmokes": ["oidc-compose", "mcp-http-image"]}
+    final.write_text(json.dumps(record, indent=2) + "\n")
+    candidate.unlink()
+    checksums(directory)
+
+
+def validate_candidate_bundle(directory, revision, images, input_receipt):
+    candidate = directory / "publication.candidate.json"
+    if not candidate.exists():
+        return False
+    record = json.loads(candidate.read_text())
+    archive = directory / f"netratel-compose-{record.get('productVersion')}.tar.gz"
+    if (record.get("publicCommit"), record.get("images"), record.get("inputReceipt"),
+            record.get("verification", {}).get("state")) != (revision, images, input_receipt, "candidate"):
+        raise ValueError("Candidate publication does not match the approved resumed promotion")
+    if record.get("derivedBundle", {}).get("finalSha256") != sha256(archive):
+        raise ValueError("Candidate publication bundle changed after it was prepared")
+    return True
 
 
 def promote(args):
@@ -154,6 +268,7 @@ def promote(args):
         raise ValueError("Owner-created release tag must already identify the approved commit")
     if not re.fullmatch(r"[a-z0-9-]+", args.package_prefix):
         raise ValueError("Package prefix must be a simple lowercase name")
+    input_receipt = verified_input_receipt(args.inputs, args.receipt, version, revision)
     inventory = json.loads(run("gh", "api", "--paginate", "--slurp",
                               "orgs/BostonTechnologies/packages?package_type=container&per_page=100"))
     inventory = {package["name"]: package for page in inventory for package in page}
@@ -161,12 +276,14 @@ def promote(args):
         existing = inventory.get(f"{args.package_prefix}-{component}")
         if existing and existing["visibility"] != "public":
             raise ValueError("Proposed package name collides with a non-public package; choose a new reviewed prefix")
-    state = resume_state(args.state, version, revision, args.package_prefix)
+    state = resume_state(args.state, version, revision, args.package_prefix, input_receipt)
     if not args.output.exists():
         stage(args.inputs, args.output, version)
     elif not args.state.exists():
         raise ValueError("Existing output requires its matching resume journal")
-    verify_staged(args.output, version)
+    if (args.output / "publication.json").exists():
+        raise ValueError("Promotion output already has a verified completion record")
+    verify_staged(args.output, version, allow_candidate=True)
     args.state.parent.mkdir(parents=True, exist_ok=True)
     args.state.write_text(json.dumps(state, indent=2) + "\n")
     # Each component is journaled only after an immutable digest is obtained.
@@ -199,7 +316,8 @@ def promote(args):
             run("docker", "pull", image, env=anonymous)
             run("bash", "tools/ci/scan-public-image.sh", "--image", image, "--version", version, "--revision", revision)
     # Public access is proven before a consumer bundle can claim usable images.
-    finalize_bundle(args.output, version, revision, state["images"])
+    if not validate_candidate_bundle(args.output, revision, state["images"], input_receipt):
+        finalize_bundle(args.output, version, revision, state["images"], input_receipt)
     environment = {**os.environ, **{IMAGE_VARIABLES[name]: value for name, value in state["images"].items()},
                    "NETRATEL_COMPOSE_SMOKE_MODE": "release-images",
                    "NETRATEL_CLIENT_SMOKE_IMAGE": state["images"]["client"],
@@ -209,6 +327,7 @@ def promote(args):
                    "NETRATEL_COMPOSE_SMOKE_BUNDLE": str(args.output / f"netratel-compose-{version}.tar.gz")}
     run("bash", "tools/ci/smoke-oidc-compose.sh", env=environment)
     run("bash", "tools/ci/smoke-mcp-http-image.sh", env=environment)
+    complete_bundle(args.output)
     print(f"Promotion verified for {version}@{revision}. Flat assets: {args.output}")
     print("Owner may now create the prerelease from these exact assets; no stable/latest alias is produced.")
 
@@ -224,10 +343,12 @@ if __name__ == "__main__":
     promotion.add_argument("--approve", required=True)
     promotion.add_argument("--package-prefix", required=True)
     promotion.add_argument("--inputs", required=True, type=Path)
+    promotion.add_argument("--receipt", required=True, type=Path,
+                           help="Trusted release-workflow receipt; verified against GitHub before writes")
     promotion.add_argument("--output", required=True, type=Path)
     promotion.add_argument("--state", required=True, type=Path)
     args = parser.parse_args()
-    for field in ("inputs", "output", "state"):
+    for field in ("inputs", "output", "state", "receipt"):
         if hasattr(args, field):
             setattr(args, field, getattr(args, field).resolve())
     try:

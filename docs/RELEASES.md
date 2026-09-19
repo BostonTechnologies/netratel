@@ -52,14 +52,22 @@ digests. It is intentionally a deployment bundle, not a source-build recipe.
 PR and release rehearsal workflows never call the promotion command. After
 review and explicit publication approval, use a clean checkout of the merged
 public commit and an owner-created `v0.1.0-rc.2` tag pointing to that commit.
-Download the successful rehearsal's four artifact sets into separate directories
-under `review-inputs`, retaining each set's `SHA256SUMS`.
+Download the successful release-workflow artifact sets into a sibling release
+workspace (not the clean source checkout), retaining each set's `SHA256SUMS`.
+Create `release-receipt.json` beside them with the repository, workflow path,
+successful run ID and attempt, approved commit/version, and—for every required
+file—the GitHub artifact name and SHA-256. Promotion re-reads the run metadata
+and downloads each named artifact through authenticated GitHub CLI access before
+any image build or push; a locally recomputed checksum alone is not provenance.
 
 Prepare and verify the flat downloadable layout without publishing:
 
 ```sh
-python3 tools/ci/promote-release.py stage --inputs review-inputs --output staged-release --version 0.1.0-rc.2
-(cd staged-release && sha256sum -c SHA256SUMS)
+mkdir -p ../netratel-release-work/review-inputs
+python3 tools/ci/promote-release.py stage \
+  --inputs ../netratel-release-work/review-inputs \
+  --output ../netratel-release-work/staged-release --version 0.1.0-rc.2
+(cd ../netratel-release-work/staged-release && sha256sum -c SHA256SUMS)
 ```
 
 Before choosing a package prefix, an authorized operator must list the
@@ -74,12 +82,21 @@ With a separately approved package prefix and registry login, invoke:
 python3 tools/ci/promote-release.py promote \
   --approve "0.1.0-rc.2@$(git rev-parse HEAD)" \
   --package-prefix APPROVED-PUBLIC-PREFIX \
-  --inputs review-inputs --output promoted-release --state promotion-state.json
+  --inputs ../netratel-release-work/review-inputs \
+  --receipt ../netratel-release-work/release-receipt.json \
+  --output ../netratel-release-work/promoted-release \
+  --state ../netratel-release-work/promotion-state.json
 ```
 
 This command **pushes images**. Do not run it as a rehearsal. It uses unique
 version/commit tags and never writes `latest` or stable aliases. Its journal
-allows a partial push to resume without rebuilding completed components.
+allows a partial push to resume without rebuilding completed components. Its
+journal records the verified source receipt and exact input file digests, so a
+retry rejects substitutions even if a new `SHA256SUMS` was generated. The
+modified Compose archive is a derived bundle: its source build digest and final
+digest are both recorded separately in the candidate and final publication
+records. A candidate record is not a completed publication; it becomes
+`publication.json` only after both required image smokes pass.
 A pre-existing tag without a corresponding journal is an error requiring
 explicit digest recovery, not permission to overwrite. Preserve the journal.
 New registry packages may initially be private; a separate owner decision is
