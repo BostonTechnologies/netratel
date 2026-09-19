@@ -108,6 +108,20 @@ public sealed class BrandAssetContractTests
     }
 
     [Fact]
+    public void Canonical_favicon_manifest_matches_its_ICO_frames()
+    {
+        var canonicalDirectory = Path.Combine(RepoRoot, "docs/assets/netratel/brand-pack");
+        var expectedFrames = new (int Width, int Height)[] { (16, 16), (32, 32), (48, 48), (64, 64) };
+        ReadIcoDimensions(Path.Combine(canonicalDirectory, "favicon.ico"))
+            .Should().Equal(expectedFrames);
+
+        using var manifest = JsonDocument.Parse(File.ReadAllText(Path.Combine(canonicalDirectory, "asset-manifest.json")));
+        var favicon = manifest.RootElement.GetProperty("assets").EnumerateArray()
+            .Single(entry => entry.GetProperty("filename").GetString() == "favicon.ico");
+        favicon.GetProperty("dimensions").GetString().Should().Be("16x16, 32x32, 48x48, 64x64");
+    }
+
+    [Fact]
     public void Public_sources_do_not_reference_the_external_brand_source_path()
     {
         var webProject = Path.Combine(RepoRoot, "src/NetRatel/NetRatel.Web");
@@ -129,5 +143,22 @@ public sealed class BrandAssetContractTests
         Encoding.ASCII.GetString(bytes, 0, 16).Should().Contain("RIFF").And.Contain("WEBP");
         Encoding.ASCII.GetString(bytes, 12, 4).Should().Be("VP8 ");
         return ((bytes[26] | (bytes[27] << 8)) & 0x3fff, (bytes[28] | (bytes[29] << 8)) & 0x3fff);
+    }
+
+    private static (int Width, int Height)[] ReadIcoDimensions(string path)
+    {
+        var bytes = File.ReadAllBytes(path);
+        BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(0, 2)).Should().Be(0);
+        BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(2, 2)).Should().Be(1);
+        var imageCount = BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(4, 2));
+        bytes.Length.Should().BeGreaterThanOrEqualTo(6 + imageCount * 16);
+
+        return Enumerable.Range(0, imageCount)
+            .Select(index =>
+            {
+                var offset = 6 + index * 16;
+                return (bytes[offset] is 0 ? 256 : bytes[offset], bytes[offset + 1] is 0 ? 256 : bytes[offset + 1]);
+            })
+            .ToArray();
     }
 }

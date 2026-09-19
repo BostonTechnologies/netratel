@@ -3,7 +3,7 @@
   "source": "Approved NetRatel public brand pack (copied without modification)",
   "assets": [
     { "filename": "apple-touch-icon.png", "role": "Apple touch icon", "dimensions": "180x180", "format": "PNG", "intended_use": "Apple browser/device icon" },
-    { "filename": "favicon.ico", "role": "Browser favicon", "dimensions": "16x16, 32x32", "format": "ICO", "intended_use": "Browser tab icon" },
+    { "filename": "favicon.ico", "role": "Browser favicon", "dimensions": "16x16, 32x32, 48x48, 64x64", "format": "ICO", "intended_use": "Browser tab icon" },
     { "filename": "netratel-email-mark.png", "role": "Email/integration mark", "dimensions": "192x192", "format": "PNG", "intended_use": "Reserved email or integration collateral" },
     { "filename": "netratel-email-wordmark.png", "role": "Email/integration wordmark", "dimensions": "600x200", "format": "PNG", "intended_use": "Reserved email or integration collateral" },
     { "filename": "netratel-mark-32.png", "role": "Small application mark", "dimensions": "32x32", "format": "PNG", "intended_use": "Browser icon" },
