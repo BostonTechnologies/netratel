@@ -4,7 +4,7 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 manifest="$root/release/release-manifest.json"
 
-for required_tool in python3 dotnet jq find; do
+for required_tool in python3 dotnet jq find sort; do
   command -v "$required_tool" >/dev/null 2>&1 || {
     echo "Required release-version tool '$required_tool' is unavailable; cannot verify product version." >&2
     exit 1
@@ -24,12 +24,18 @@ fi
 
 python3 "$root/tools/ci/verify-product-version.py" --root "$root"
 
-mapfile -t projects < <(find "$root/src/NetRatel" -name '*.csproj' -type f -print | sort) || {
+project_list="$(find "$root/src/NetRatel" -name '*.csproj' -type f -print | sort)" || {
   echo "Unable to enumerate NetRatel projects." >&2
   exit 1
 }
-if (( ${#projects[@]} == 0 )); then
+mapfile -t projects <<<"$project_list"
+if [[ -z "$project_list" ]]; then
   echo "No NetRatel projects were found." >&2
+  exit 1
+fi
+
+if [[ "${GITHUB_REF_TYPE:-}" == tag && "${GITHUB_REF_NAME:-}" != "v$version" ]]; then
+  echo "Release tag '${GITHUB_REF_NAME:-}' does not match committed version 'v$version'." >&2
   exit 1
 fi
 
