@@ -27,7 +27,7 @@ EXPOSE 9222 9223
 USER ${APP_USER}
 
 # --- Build/Publish unchanged ...
-FROM mcr.microsoft.com/dotnet/sdk:10.0.302-noble AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0.401-noble AS build
 ARG BUILD_CONFIGURATION=Release
 WORKDIR /src
 COPY ["global.json", "Directory.Build.props", "Directory.Build.targets", "./"]
