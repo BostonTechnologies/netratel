@@ -162,10 +162,15 @@ def validate_input_receipt_identity(receipt, version, revision):
 
 def download_artifact(artifact_id, destination):
     """Download an immutable Actions artifact ZIP without name-based selection."""
-    result = subprocess.run(
-        ("gh", "api", f"repos/{REPOSITORY}/actions/artifacts/{artifact_id}/zip", "--output", str(destination)),
-        cwd=ROOT, check=True, text=True, capture_output=True)
-    return result.stdout.strip()
+    with destination.open("wb") as output:
+        try:
+            subprocess.run(
+                ("gh", "api", f"repos/{REPOSITORY}/actions/artifacts/{artifact_id}/zip"),
+                cwd=ROOT, stdout=output, stderr=subprocess.PIPE, check=True)
+        except subprocess.CalledProcessError as error:
+            detail = (error.stderr or b"").decode(errors="replace").strip()[-1600:]
+            detail = re.sub(r"(?i)(password|secret|token|authorization)([=:]\s*)\S+", r"\1\2[redacted]", detail)
+            raise ValueError(f"Artifact ZIP download failed ({artifact_id}): {detail or 'no captured diagnostics'}") from error
 
 
 def extract_artifact(zip_path, destination):
@@ -218,7 +223,7 @@ def verified_input_receipt(inputs, receipt_path, version, revision):
         raise ValueError("Input receipt does not match the supplied flat artifact files")
 
     artifact_metadata = json.loads(run(
-        "gh", "api", f"repos/{REPOSITORY}/actions/runs/{receipt['runId']}/attempts/{receipt['attempt']}/artifacts?per_page=100"))
+        "gh", "api", f"repos/{REPOSITORY}/actions/runs/{receipt['runId']}/artifacts?per_page=100"))
     artifacts = {item.get("id"): item for item in artifact_metadata.get("artifacts", [])}
     for item in files.values():
         metadata = artifacts.get(item["artifactId"])

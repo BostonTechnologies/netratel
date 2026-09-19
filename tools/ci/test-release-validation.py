@@ -257,7 +257,9 @@ class DistributionTests(unittest.TestCase):
         receipt_path.write_text(json.dumps(receipt))
 
         original_run = self.promotion.run
+        commands = []
         def run_success(*command, env=None):
+            commands.append(command)
             if command[:2] == ("gh", "api") and "/artifacts?" not in command[2]:
                 if "/attempts/2" in command[2]:
                     return json.dumps({"conclusion": "failure", "head_sha": "b" * 40,
@@ -275,6 +277,8 @@ class DistributionTests(unittest.TestCase):
             self.promotion.download_artifact = lambda artifact_id, destination: shutil.copy2(artifact_zip, destination)
             identity = self.promotion.verified_input_receipt(inputs, receipt_path, version, "b" * 40)
             self.assertEqual(identity["files"], receipt["files"])
+            self.assertIn(("gh", "api", "repos/BostonTechnologies/netratel/actions/runs/1/artifacts?per_page=100"), commands)
+            self.assertFalse(any("/attempts/1/artifacts" in command[2] for command in commands if len(command) > 2))
             self.promotion.download_artifact = lambda artifact_id, destination: Path(destination).write_bytes(b"modified ZIP")
             with self.assertRaisesRegex(ValueError, "download digest"):
                 self.promotion.verified_input_receipt(inputs, receipt_path, version, "b" * 40)
@@ -296,6 +300,26 @@ class DistributionTests(unittest.TestCase):
         finally:
             self.promotion.run = original_run
             self.promotion.download_artifact = original_download
+
+    def test_artifact_zip_download_streams_binary_stdout_without_unsupported_output_flag(self):
+        destination = self.root / "artifact.zip"
+        original_run = self.promotion.subprocess.run
+        calls = []
+        def binary_download(command, **kwargs):
+            calls.append((command, kwargs))
+            self.assertEqual(command, ("gh", "api", "repos/BostonTechnologies/netratel/actions/artifacts/77/zip"))
+            self.assertNotIn("text", kwargs)
+            self.assertNotIn("capture_output", kwargs)
+            self.assertNotIn("--output", command)
+            kwargs["stdout"].write(b"ZIP bytes")
+            return subprocess.CompletedProcess(command, 0)
+        self.promotion.subprocess.run = binary_download
+        try:
+            self.promotion.download_artifact(77, destination)
+        finally:
+            self.promotion.subprocess.run = original_run
+        self.assertEqual(destination.read_bytes(), b"ZIP bytes")
+        self.assertEqual(len(calls), 1)
 
     def test_staged_bytes_must_match_receipt_before_and_after_candidate(self):
         version = "0.1.0-rc.2"
