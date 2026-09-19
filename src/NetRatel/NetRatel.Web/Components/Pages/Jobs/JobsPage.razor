@@ -16,7 +16,7 @@
 
 <MudContainer MaxWidth="MaxWidth.False" Class="mt-4 jobs-console">
     <MudStack Spacing="3">
-        <MudGrid Spacing="2" AlignItems="AlignItems.Stretch">
+        <MudGrid Spacing="2">
             <MudItem xs="12" lg="8">
                 <MudPaper Class="jobs-hero jobs-hero-main pa-4">
                     <MudStack Spacing="2">
@@ -112,7 +112,7 @@
                     </div>
                 </MudStack>
 
-                <MudGrid Spacing="2" AlignItems="AlignItems.Center">
+                <MudGrid Spacing="2">
                     <MudItem xs="12" sm="6" md="4">
                         <MudMenu Dense="true"
                                  Variant="Variant.Outlined"
@@ -304,7 +304,7 @@
                     </MudItem>
                 </MudGrid>
 
-                <MudGrid Spacing="2" AlignItems="AlignItems.Center">
+                <MudGrid Spacing="2">
                     <MudItem xs="12" md="4">
                         <MudTextField T="string"
                                       Value="_runSearch"
@@ -716,7 +716,7 @@
 
     private async Task DeleteJobAsync(JobDto job)
     {
-        var confirm = await DialogService.ShowMessageBox(
+        var confirm = await DialogService.ShowMessageBoxAsync(
             "Delete Job",
             $"Are you sure you want to delete job '{job.Name}'?",
             yesText: "Delete",
@@ -898,7 +898,7 @@
 
     private async Task DeleteRunAsync(JobRunDto run)
     {
-        var confirm = await DialogService.ShowMessageBox(
+        var confirm = await DialogService.ShowMessageBoxAsync(
             "Delete Execution",
             $"Delete run #{run.Id} for '{DisplayJobName(run)}'? This removes the execution history entry and its logs.",
             yesText: "Delete",

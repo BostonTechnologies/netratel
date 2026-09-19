@@ -15,9 +15,9 @@
                 <MudSelectItem Value="@("osx-arm64")">macOS (Apple Silicon)</MudSelectItem>
             </MudSelect>
 
-            <MudTextField @bind-Value="_version" Label="Version" Placeholder="1.2.3 or 1.2.3-preview.1" Dense="true" Required="true" Immediate="true" />
+            <MudTextField @bind-Value="_version" Label="Version" Placeholder="1.2.3 or 1.2.3-preview.1" Margin="Margin.Dense" Required="true" Immediate="true" />
 
-            <MudTextField @bind-Value="_notes" Label="Notes" Dense="true" Lines="3" />
+            <MudTextField @bind-Value="_notes" Label="Notes" Margin="Margin.Dense" Lines="3" />
 
             <div class="d-flex flex-column gap-2">
                 <InputFile OnChange="OnFileChanged" accept=".zip,.7z,.tar,.gz" />
@@ -62,7 +62,7 @@
     private async Task Submit()
     {
         _error = null;
-        await _form!.Validate();
+        await _form!.ValidateAsync();
         if (!_form.IsValid)
         {
             _error = "Please correct the highlighted fields.";

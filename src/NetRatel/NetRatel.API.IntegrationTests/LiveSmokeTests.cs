@@ -17,7 +17,7 @@ public class LiveSmokeTests : IClassFixture<ApiFactory>
         _factory = factory;
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task SystemVersion_IsAvailableAnonymously()
     {
         SkipIfApiPrerequisitesAreMissing();
@@ -34,7 +34,7 @@ public class LiveSmokeTests : IClassFixture<ApiFactory>
         version.Environment.Should().NotBeNullOrWhiteSpace();
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task OldUnversionedApiRoute_NoLongerMatches()
     {
         SkipIfApiPrerequisitesAreMissing();
@@ -46,13 +46,13 @@ public class LiveSmokeTests : IClassFixture<ApiFactory>
         oldRoute.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
-    [SkippableFact]
+    [Fact]
     public void HasRequiredEnv()
     {
         SkipIfApiPrerequisitesAreMissing();
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task Health_and_MinimalRoundTrip()
     {
         SkipIfApiPrerequisitesAreMissing();
@@ -80,7 +80,7 @@ public class LiveSmokeTests : IClassFixture<ApiFactory>
         var postgresConnection = EnvConfig.GetConnectionString("DefaultConnection")
             ?? EnvConfig["ConnectionStrings__DefaultConnection"];
         var privateKeyPath = EnvConfig["AgentAuth:PrivateKeyPath"] ?? EnvConfig["AGENTAUTH__PRIVATEKEYPATH"];
-        Skip.If(
+        Assert.SkipWhen(
             string.IsNullOrWhiteSpace(postgresConnection) || string.IsNullOrWhiteSpace(privateKeyPath),
             "ConnectionStrings:DefaultConnection and AgentAuth:PrivateKeyPath must be set to run API integration tests.");
     }

@@ -28,7 +28,7 @@ public sealed class RemoteSupportReplicaSafeClusterPostgresTests : IAsyncLifetim
     private readonly List<ActorSystem> _systems = [];
     private string _connectionString = null!;
 
-    public async Task InitializeAsync()
+    public async ValueTask InitializeAsync()
     {
         await _postgres.StartAsync();
         _connectionString = _postgres.GetConnectionString();
@@ -36,7 +36,7 @@ public sealed class RemoteSupportReplicaSafeClusterPostgresTests : IAsyncLifetim
         await db.Database.MigrateAsync();
     }
 
-    public async Task DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
         foreach (var system in _systems.AsEnumerable().Reverse())
         {

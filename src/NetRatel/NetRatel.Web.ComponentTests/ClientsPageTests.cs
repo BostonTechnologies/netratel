@@ -134,7 +134,6 @@ public sealed class ClientsPageTests : AsyncBunitContext
                 childBuilder.AddAttribute(1, nameof(RouteView.RouteData), routeData);
                 childBuilder.CloseComponent();
             }));
-            builder.AddAttribute(3, nameof(Router.NotFound), (RenderFragment)(childBuilder => childBuilder.AddContent(0, "Not found")));
             builder.CloseComponent();
         });
     }

@@ -5,7 +5,7 @@ namespace NetRatel.Web.ComponentTests;
 
 public abstract class AsyncBunitContext : BunitContext, IAsyncLifetime
 {
-    public Task InitializeAsync() => Task.CompletedTask;
+    public ValueTask InitializeAsync() => ValueTask.CompletedTask;
 
-    async Task IAsyncLifetime.DisposeAsync() => await base.DisposeAsync();
+    async ValueTask IAsyncDisposable.DisposeAsync() => await base.DisposeAsync();
 }

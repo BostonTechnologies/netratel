@@ -41,7 +41,7 @@ public sealed class Net10TargetFrameworkTests
     public void GlobalJson_PinsTheNet10Sdk()
     {
         File.ReadAllText(Path.Combine(GetRepositoryRoot(), "global.json"))
-            .Should().Contain("\"version\": \"10.0.302\"")
+            .Should().Contain("\"version\": \"10.0.401\"")
             .And.Contain("\"rollForward\": \"disable\"");
     }
 
@@ -52,7 +52,7 @@ public sealed class Net10TargetFrameworkTests
     public void DockerBuildStages_PinTheSdkRequiredByGlobalJson(string dockerfile)
     {
         File.ReadAllText(Path.Combine(GetRepositoryRoot(), dockerfile))
-            .Should().Contain("mcr.microsoft.com/dotnet/sdk:10.0.302-noble", dockerfile);
+            .Should().Contain("mcr.microsoft.com/dotnet/sdk:10.0.401-noble", dockerfile);
     }
 
     private static string GetRepositoryRoot() =>

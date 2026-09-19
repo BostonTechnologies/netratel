@@ -436,7 +436,7 @@ public sealed class McpClientSearchPostgresFixture : IAsyncLifetime
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:16-alpine").Build();
     public string ConnectionString => _postgres.GetConnectionString();
 
-    public async Task InitializeAsync()
+    public async ValueTask InitializeAsync()
     {
         await _postgres.StartAsync();
         await using var db = new OrchestratorDbContext(new DbContextOptionsBuilder<OrchestratorDbContext>().UseNpgsql(ConnectionString).Options);
@@ -466,7 +466,7 @@ public sealed class McpClientSearchPostgresFixture : IAsyncLifetime
         await db.SaveChangesAsync();
     }
 
-    public Task DisposeAsync() => _postgres.DisposeAsync().AsTask();
+    public ValueTask DisposeAsync() => _postgres.DisposeAsync();
 
     private static Agent AddAgent(OrchestratorDbContext db, int tenantId, string name, string host, bool profile = true,
         McpOperatorTargetClassification classification = McpOperatorTargetClassification.DevelopmentSafe)

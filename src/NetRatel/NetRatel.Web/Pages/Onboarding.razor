@@ -57,7 +57,7 @@
 
   private async Task Download()
   {
-    await _form!.Validate();
+    await _form!.ValidateAsync();
     if (!_form.IsValid) return;
 
     using var stream = await ClientDl.DownloadAsync(_tenantId, _env, _rid, injectEnrollment: true, validForMinutes: 60, maxUses: 1);

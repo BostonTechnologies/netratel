@@ -85,10 +85,11 @@
                                     <MudTooltip Text="Open interactive terminal">
                                         <MudMenu Dense="true" Disabled="@(!client.CanUseTerminal)"
                                                  AnchorOrigin="Origin.BottomCenter" TransformOrigin="Origin.TopCenter">
-                                            <ActivatorContent>
+                                            <ActivatorContent Context="menuActivator">
                                                 <MudIconButton Icon="@Icons.Material.Filled.Terminal" Color="Color.Primary"
                                                                Size="Size.Small"
                                                                Disabled="@(!client.CanUseTerminal)"
+                                                               OnClick="@menuActivator.ToggleAsync"
                                                                aria-label="Open terminal" />
                                             </ActivatorContent>
                                             <ChildContent>

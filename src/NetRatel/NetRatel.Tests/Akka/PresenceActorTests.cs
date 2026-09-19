@@ -11,13 +11,13 @@ public sealed class PresenceActorTests : IAsyncLifetime
 {
     private ActorSystem _system = null!;
 
-    public Task InitializeAsync()
+    public ValueTask InitializeAsync()
     {
         _system = ActorSystem.Create($"presence-tests-{Guid.NewGuid():N}");
-        return Task.CompletedTask;
+        return ValueTask.CompletedTask;
     }
 
-    public async Task DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
         await _system.Terminate();
     }

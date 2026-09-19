@@ -15,7 +15,7 @@
 
             <MudChart ChartType="ChartType.Line"
                       ChartSeries="@_chartSeries"
-                      XAxisLabels="@_xAxisLabels"
+                      ChartLabels="@_xAxisLabels"
                       ChartOptions="_chartOptions"
                       Width="100%" Height="280px" />
 
@@ -50,10 +50,10 @@
     private double _avg;
     private double _latest;
 
-    private List<ChartSeries> _chartSeries = new();
+    private List<ChartSeries<double>> _chartSeries = new();
     private string[] _xAxisLabels = Array.Empty<string>();
 
-    private readonly ChartOptions _chartOptions = new()
+    private readonly LineChartOptions _chartOptions = new()
     {
         ShowLegend = false,
         InterpolationOption = InterpolationOption.Straight,
@@ -82,7 +82,7 @@
 
         _chartSeries = new()
         {
-            new ChartSeries { Name = "Latency", Data = data }
+            new ChartSeries<double> { Name = "Latency", Data = data }
         };
 
         _xAxisLabels = Enumerable.Range(1, data.Length).Select(_ => string.Empty).ToArray();

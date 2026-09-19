@@ -129,7 +129,7 @@ jobs:
           version="$(jq -r '.version' release/release-manifest.json)"
           directory="artifacts/netratel-client-${{ matrix.runtime }}"
           dotnet restore src/NetRatel/NetRatel.Client/NetRatel.Client.csproj --runtime "${{ matrix.runtime }}"
-          dotnet publish src/NetRatel/NetRatel.Client/NetRatel.Client.csproj --configuration Release --no-restore --runtime "${{ matrix.runtime }}" --output "$directory"
+          dotnet publish src/NetRatel/NetRatel.Client/NetRatel.Client.csproj --configuration Release --no-restore --runtime "${{ matrix.runtime }}" --self-contained true --output "$directory"
           cp LICENSE NOTICE "$directory/"
           python3 tools/ci/generate-runtime-sbom.py \
             --project-assets src/NetRatel/NetRatel.Client/obj/project.assets.json \
@@ -216,7 +216,7 @@ jobs:
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
           global-json-file: global.json
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
           name: pr-netratel-cli-mcp-linux-x64
           path: review-artifacts
@@ -258,7 +258,7 @@ jobs:
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
           global-json-file: global.json
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
           name: pr-netratel-cli-mcp-linux-x64
           path: review-artifacts

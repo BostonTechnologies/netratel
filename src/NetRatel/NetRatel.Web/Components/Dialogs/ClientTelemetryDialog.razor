@@ -54,7 +54,7 @@
                             <MudChart Class="telemetry-chart-compact"
                                       ChartType="ChartType.Line"
                                       ChartSeries="@BuildSeries("CPU", _snapshot.CpuHistory)"
-                                      XAxisLabels="@BuildXAxisLabels(_snapshot.CpuHistory.Count)"
+                                      ChartLabels="@BuildXAxisLabels(_snapshot.CpuHistory.Count)"
                                       ChartOptions="@_singleSeriesChartOptions"
                                       Width="100%"
                                       Height="220px" />
@@ -70,7 +70,7 @@
                             <MudChart Class="telemetry-chart-compact"
                                       ChartType="ChartType.Line"
                                       ChartSeries="@BuildSeries("Memory", _snapshot.MemoryHistory)"
-                                      XAxisLabels="@BuildXAxisLabels(_snapshot.MemoryHistory.Count)"
+                                      ChartLabels="@BuildXAxisLabels(_snapshot.MemoryHistory.Count)"
                                       ChartOptions="@_singleSeriesChartOptions"
                                       Width="100%"
                                       Height="220px" />
@@ -86,7 +86,7 @@
                             <MudChart Class="telemetry-chart-compact"
                                       ChartType="ChartType.Line"
                                       ChartSeries="@BuildNetworkSeries()"
-                                      XAxisLabels="@BuildXAxisLabels(Math.Max(_snapshot.NetworkRxHistory.Count, _snapshot.NetworkTxHistory.Count))"
+                                      ChartLabels="@BuildXAxisLabels(Math.Max(_snapshot.NetworkRxHistory.Count, _snapshot.NetworkTxHistory.Count))"
                                       ChartOptions="@_multiSeriesChartOptions"
                                       Width="100%"
                                       Height="220px" />
@@ -196,7 +196,7 @@
 
     private AgentTelemetrySnapshotDto? _snapshot;
 
-    private readonly ChartOptions _singleSeriesChartOptions = new()
+    private readonly LineChartOptions _singleSeriesChartOptions = new()
     {
         ShowLegend = false,
         InterpolationOption = InterpolationOption.Straight,
@@ -204,7 +204,7 @@
         ChartPalette = new[] { "#1492c8" }
     };
 
-    private readonly ChartOptions _multiSeriesChartOptions = new()
+    private readonly LineChartOptions _multiSeriesChartOptions = new()
     {
         ShowLegend = false,
         InterpolationOption = InterpolationOption.Straight,
@@ -232,17 +232,17 @@
         await TelemetryStream.DisposeAsync();
     }
 
-    private static List<ChartSeries> BuildSeries(string label, IReadOnlyList<AgentTelemetryPointDto> history) =>
+    private static List<ChartSeries<double>> BuildSeries(string label, IReadOnlyList<AgentTelemetryPointDto> history) =>
         new()
         {
-            new ChartSeries
+            new ChartSeries<double>
             {
                 Name = label,
                 Data = history.Select(x => x.Value).ToArray()
             }
         };
 
-    private List<ChartSeries> BuildNetworkSeries()
+    private List<ChartSeries<double>> BuildNetworkSeries()
     {
         var snapshot = _snapshot;
         if (snapshot is null)
@@ -250,7 +250,7 @@
             return new();
         }
 
-        return new List<ChartSeries>
+        return new List<ChartSeries<double>>
         {
             new() { Name = "RX", Data = snapshot.NetworkRxHistory.Select(x => x.Value / 1024d).ToArray() },
             new() { Name = "TX", Data = snapshot.NetworkTxHistory.Select(x => x.Value / 1024d).ToArray() }

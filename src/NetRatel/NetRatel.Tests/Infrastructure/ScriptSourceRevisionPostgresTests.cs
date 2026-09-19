@@ -25,7 +25,7 @@ public sealed class ScriptSourceRevisionPostgresTests : IAsyncLifetime
     private readonly PostgreSqlContainer postgres = new PostgreSqlBuilder("postgres:16-alpine").Build();
     private DbContextOptions<OrchestratorDbContext> options = null!;
 
-    public async Task InitializeAsync()
+    public async ValueTask InitializeAsync()
     {
         await postgres.StartAsync();
         options = new DbContextOptionsBuilder<OrchestratorDbContext>().UseNpgsql(postgres.GetConnectionString()).Options;
@@ -33,7 +33,7 @@ public sealed class ScriptSourceRevisionPostgresTests : IAsyncLifetime
         await db.Database.MigrateAsync();
     }
 
-    public Task DisposeAsync() => postgres.DisposeAsync().AsTask();
+    public ValueTask DisposeAsync() => postgres.DisposeAsync();
 
     [Theory]
     [InlineData(false, false, false)]

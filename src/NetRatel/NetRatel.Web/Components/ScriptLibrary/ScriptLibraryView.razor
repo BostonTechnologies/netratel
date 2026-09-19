@@ -388,7 +388,7 @@
             Capture(item);
         }
 
-        void Capture(TreeItemData<ScriptTreeNode> item)
+        void Capture(ITreeItemData<ScriptTreeNode> item)
         {
             if (item.Value is { } value)
             {
@@ -425,7 +425,7 @@
         return item;
     }
 
-    private static string GetNodeIcon(TreeItemData<ScriptTreeNode> item)
+    private static string GetNodeIcon(ITreeItemData<ScriptTreeNode> item)
     {
         if (item.Value is not { } value)
         {
@@ -442,7 +442,7 @@
         return value.Icon ?? Icons.Material.Filled.InsertDriveFile;
     }
 
-    private static void OnExpandedChanged(TreeItemData<ScriptTreeNode> item, bool expanded)
+    private static void OnExpandedChanged(ITreeItemData<ScriptTreeNode> item, bool expanded)
     {
         item.Expanded = expanded;
         if (item.Value is { } value)
@@ -727,7 +727,7 @@
     }
 
     private Task<bool> Confirm(string title, string message)
-        => Dialogs.ShowMessageBox(title, message, yesText: "Yes", cancelText: "Cancel")
+        => Dialogs.ShowMessageBoxAsync(title, message, yesText: "Yes", cancelText: "Cancel")
                   .ContinueWith(t => t.Result == true);
 
     private StandaloneEditorConstructionOptions EditorOptions(StandaloneCodeEditor _)

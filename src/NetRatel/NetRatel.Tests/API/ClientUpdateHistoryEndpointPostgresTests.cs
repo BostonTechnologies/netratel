@@ -26,7 +26,7 @@ public sealed class ClientUpdateHistoryEndpointPostgresTests : IAsyncLifetime
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:16-alpine").Build();
     private DbContextOptions<OrchestratorDbContext> _options = null!;
 
-    public async Task InitializeAsync()
+    public async ValueTask InitializeAsync()
     {
         await _postgres.StartAsync();
         _options = new DbContextOptionsBuilder<OrchestratorDbContext>()
@@ -36,7 +36,7 @@ public sealed class ClientUpdateHistoryEndpointPostgresTests : IAsyncLifetime
         await db.Database.MigrateAsync();
     }
 
-    public Task DisposeAsync() => _postgres.DisposeAsync().AsTask();
+    public ValueTask DisposeAsync() => _postgres.DisposeAsync();
 
     [Fact]
     public async Task History_UsesPostgresPaginationFiltersAndHostnamePresentation()

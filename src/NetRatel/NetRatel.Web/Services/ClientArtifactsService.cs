@@ -378,7 +378,7 @@ public class ClientArtifactsService : IClientArtifactsService
 
     public async Task DeleteAsync(string rid, string version, CancellationToken ct = default)
     {
-        var confirm = await _dialogService.ShowMessageBox(
+        var confirm = await _dialogService.ShowMessageBoxAsync(
             "Delete Artifact",
             $"Delete artifact {rid} / {version}?",
             yesText: "Delete",

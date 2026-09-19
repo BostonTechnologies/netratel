@@ -1,5 +1,4 @@
 using System.CommandLine;
-using System.CommandLine.Builder;
 using System.CommandLine.Invocation;
 using System.CommandLine.Parsing;
 using System.Globalization;
@@ -20,17 +19,13 @@ internal static class NetRatelCli
     {
         try
         {
-            var parser = new CommandLineBuilder(BuildRoot(runtime))
-                .UseDefaults()
-                .UseExceptionHandler((exception, context) =>
-                {
-                    var (code, message, exitCode, responseBody) = MapException(exception);
-                    runtime.Error.WriteLine(JsonSerializer.Serialize(new { ok = false, error = new { code, message, exitCode, responseBody } }, JsonOptions));
-                    context.ExitCode = exitCode;
-                })
-                .Build();
-
-            return await parser.InvokeAsync(args).ConfigureAwait(false);
+            var invocation = new InvocationConfiguration
+            {
+                EnableDefaultExceptionHandler = false,
+                Output = runtime.Out,
+                Error = runtime.Error
+            };
+            return await BuildRoot(runtime).Parse(args).InvokeAsync(invocation).ConfigureAwait(false);
         }
         catch (CliValidationException ex)
         {
@@ -51,6 +46,12 @@ internal static class NetRatelCli
         {
             await WriteErrorAsync(runtime, "remote_timeout", "Remote request timed out.", CliExitCodes.RemoteError).ConfigureAwait(false);
             return CliExitCodes.RemoteError;
+        }
+        catch (Exception ex)
+        {
+            var (code, message, exitCode, responseBody) = MapException(ex);
+            await WriteErrorAsync(runtime, code, message, exitCode, responseBody).ConfigureAwait(false);
+            return exitCode;
         }
     }
 
@@ -120,7 +121,7 @@ internal static class NetRatelCli
         var executeOptions = AddCommandExecutionOptions(execute);
         var planToken = RequiredOption("--plan-token", "Opaque plan token returned by commands preview.");
         var idempotencyKey = RequiredOption("--idempotency-key", "Opaque idempotency key returned by commands preview.");
-        var confirm = new Option<bool>("--confirm", "Confirm the destructive command dispatch.");
+        var confirm = new Option<bool>("--confirm") { Description = "Confirm the destructive command dispatch." };
         execute.AddOption(planToken);
         execute.AddOption(idempotencyKey);
         execute.AddOption(confirm);
@@ -164,7 +165,7 @@ internal static class NetRatelCli
         var cancel = new Command("cancel", "Request cancellation of one owned command only when --confirm is supplied.");
         var (cancelTenant, cancelAgent) = AddCommandTargetOptions(cancel);
         var cancelCommandId = new Argument<string>("command-id");
-        var cancelConfirm = new Option<bool>("--confirm", "Confirm the cancellation request.");
+        var cancelConfirm = new Option<bool>("--confirm") { Description = "Confirm the cancellation request." };
         cancel.AddArgument(cancelCommandId);
         cancel.AddOption(cancelConfirm);
         cancel.SetHandler(async ctx =>
@@ -190,8 +191,8 @@ internal static class NetRatelCli
 
     private static (Option<int> TenantId, Option<Guid> AgentId) AddCommandTargetOptions(Command command)
     {
-        var tenantId = new Option<int>("--tenant-id", "Exact tenant ID.") { IsRequired = true };
-        var agentId = new Option<Guid>("--agent-id", "Exact V2 agent ID.") { IsRequired = true };
+        var tenantId = new Option<int>("--tenant-id") { Description = "Exact tenant ID.",  Required = true };
+        var agentId = new Option<Guid>("--agent-id") { Description = "Exact V2 agent ID.",  Required = true };
         command.AddOption(tenantId);
         command.AddOption(agentId);
         return (tenantId, agentId);
@@ -292,12 +293,12 @@ internal static class NetRatelCli
         var description = RequiredOption("--description", "Bounded reviewed script description.");
         var shell = RequiredOption("--shell", "Policy-allowlisted runtime: sh, bash, powershell, or pwsh.");
         var content = RequiredOption("--content", "UTF-8 script content. It is sent to the API but never printed by this CLI.");
-        var contentHash = new Option<string?>("--content-hash", "Optional SHA-256 hash of --content. If omitted the CLI calculates it.");
-        var parametersJson = new Option<string>("--parameters-json", () => "[]", "JSON array of typed parameter definitions; secret_reference parameters name references only.");
-        var timeout = new Option<int>("--timeout-seconds", "Policy-bounded timeout in seconds.") { IsRequired = true };
+        var contentHash = new Option<string?>("--content-hash") { Description = "Optional SHA-256 hash of --content. If omitted the CLI calculates it." };
+        var parametersJson = new Option<string>("--parameters-json") { Description = "JSON array of typed parameter definitions; secret_reference parameters name references only.", DefaultValueFactory = _ => "[]" };
+        var timeout = new Option<int>("--timeout-seconds") { Description = "Policy-bounded timeout in seconds.",  Required = true };
         var workingDirectory = RequiredOption("--working-directory", "Exact policy-allowlisted working directory.");
-        var sideEffects = new Option<int[]>("--side-effect", "Reviewed side effect: 1 read_only, 2 filesystem_write, 3 service_control, 4 network_access, 5 process_execution.") { IsRequired = true, Arity = ArgumentArity.OneOrMore };
-        var manifestJson = new Option<string?>("--manifest-json", "Optional JSON object manifest.");
+        var sideEffects = new Option<int[]>("--side-effect") { Description = "Reviewed side effect: 1 read_only, 2 filesystem_write, 3 service_control, 4 network_access, 5 process_execution.",  Required = true, Arity = ArgumentArity.OneOrMore };
+        var manifestJson = new Option<string?>("--manifest-json") { Description = "Optional JSON object manifest." };
         command.AddOption(name); command.AddOption(description); command.AddOption(shell); command.AddOption(content); command.AddOption(contentHash);
         command.AddOption(parametersJson); command.AddOption(timeout); command.AddOption(workingDirectory); command.AddOption(sideEffects); command.AddOption(manifestJson);
         return new ScriptDraftOptions(tenantId, agentId, name, description, shell, content, contentHash, parametersJson, timeout, workingDirectory, sideEffects, manifestJson);
@@ -322,8 +323,8 @@ internal static class NetRatelCli
         Option<long>? expectedVersion = null;
         if (requiresExistingRevision)
         {
-            scriptId = new Option<long>("--script-id", "Owned script ID.") { IsRequired = true };
-            expectedVersion = new Option<long>("--expected-version", "Current ETag version; stale writes are rejected.") { IsRequired = true };
+            scriptId = new Option<long>("--script-id") { Description = "Owned script ID.",  Required = true };
+            expectedVersion = new Option<long>("--expected-version") { Description = "Current ETag version; stale writes are rejected.",  Required = true };
             command.AddOption(scriptId); command.AddOption(expectedVersion);
         }
         Option<string>? manifest = null;
@@ -343,7 +344,7 @@ internal static class NetRatelCli
         Option<bool>? confirm = null;
         if (includeConfirm)
         {
-            confirm = new Option<bool>("--confirm", "Confirm the script mutation.");
+            confirm = new Option<bool>("--confirm") { Description = "Confirm the script mutation." };
             command.AddOption(confirm);
         }
         return new ScriptMutationOptions(tenantId, agentId, draft, scriptId, expectedVersion, manifest, planToken, idempotencyKey, confirm);
@@ -352,10 +353,10 @@ internal static class NetRatelCli
     private static ScriptRunOptions AddScriptRunOptions(Command command, bool includePlanCredentials, bool includeConfirm)
     {
         var (tenantId, agentId) = AddCommandTargetOptions(command);
-        var scriptId = new Option<long>("--script-id", "Owned script ID.") { IsRequired = true };
-        var version = new Option<long>("--version", "Exact current script version.") { IsRequired = true };
+        var scriptId = new Option<long>("--script-id") { Description = "Owned script ID.",  Required = true };
+        var version = new Option<long>("--version") { Description = "Exact current script version.",  Required = true };
         var contentHash = RequiredOption("--content-hash", "Exact current script content SHA-256 hash.");
-        var parametersJson = new Option<string>("--parameters-json", () => "{}", "JSON object of typed parameter values. Secret parameters accept named references only.");
+        var parametersJson = new Option<string>("--parameters-json") { Description = "JSON object of typed parameter values. Secret parameters accept named references only.", DefaultValueFactory = _ => "{}" };
         command.AddOption(scriptId); command.AddOption(version); command.AddOption(contentHash); command.AddOption(parametersJson);
         Option<string>? planToken = null; Option<string>? idempotencyKey = null; Option<bool>? confirm = null;
         if (includePlanCredentials)
@@ -364,11 +365,11 @@ internal static class NetRatelCli
             idempotencyKey = RequiredOption("--idempotency-key", "Opaque idempotency key returned by preview-run.");
             command.AddOption(planToken); command.AddOption(idempotencyKey);
         }
-        if (includeConfirm) { confirm = new Option<bool>("--confirm", "Confirm the script run."); command.AddOption(confirm); }
+        if (includeConfirm) { confirm = new Option<bool>("--confirm") { Description = "Confirm the script run." }; command.AddOption(confirm); }
         return new ScriptRunOptions(tenantId, agentId, scriptId, version, contentHash, parametersJson, planToken, idempotencyKey, confirm);
     }
 
-    private static JsonObject ScriptDraftBody(InvocationContext context, ScriptDraftOptions options)
+    private static JsonObject ScriptDraftBody(CliInvocationContext context, ScriptDraftOptions options)
     {
         var content = context.ParseResult.GetValueForOption(options.Content) ?? throw new CliValidationException("--content is required.");
         var suppliedHash = context.ParseResult.GetValueForOption(options.ContentHash);
@@ -390,7 +391,7 @@ internal static class NetRatelCli
         return body;
     }
 
-    private static JsonObject ScriptMutationBody(InvocationContext context, ScriptMutationOptions options)
+    private static JsonObject ScriptMutationBody(CliInvocationContext context, ScriptMutationOptions options)
     {
         var body = new JsonObject();
         if (options.Draft is { } draft) body["script"] = ScriptDraftBody(context, draft);
@@ -402,7 +403,7 @@ internal static class NetRatelCli
         return body;
     }
 
-    private static JsonObject ScriptRunBody(InvocationContext context, ScriptRunOptions options)
+    private static JsonObject ScriptRunBody(CliInvocationContext context, ScriptRunOptions options)
     {
         var body = new JsonObject
         {
@@ -443,12 +444,10 @@ internal static class NetRatelCli
         var shell = RequiredOption("--shell", "Policy-allowed shell, for example bash or pwsh.");
         var commandText = RequiredOption("--command", "Command text. It is sent only after confirmation and is never included in CLI output.");
         var workingDirectory = RequiredOption("--working-directory", "Policy-allowed working directory.");
-        var environmentReferences = new Option<string[]>("--environment-reference", "Name of an environment value already present on the target; values are never accepted.")
-        {
-            Arity = ArgumentArity.ZeroOrMore
+        var environmentReferences = new Option<string[]>("--environment-reference") { Description = "Name of an environment value already present on the target; values are never accepted.",            Arity = ArgumentArity.ZeroOrMore
         };
-        var timeoutSeconds = new Option<int?>("--timeout-seconds", "Optional timeout constrained by policy.");
-        var maximumOutputBytes = new Option<int?>("--maximum-output-bytes", "Optional output bound constrained by policy.");
+        var timeoutSeconds = new Option<int?>("--timeout-seconds") { Description = "Optional timeout constrained by policy." };
+        var maximumOutputBytes = new Option<int?>("--maximum-output-bytes") { Description = "Optional output bound constrained by policy." };
         command.AddOption(shell);
         command.AddOption(commandText);
         command.AddOption(workingDirectory);
@@ -458,9 +457,9 @@ internal static class NetRatelCli
         return new CommandExecutionOptions(tenantId, agentId, shell, commandText, workingDirectory, environmentReferences, timeoutSeconds, maximumOutputBytes);
     }
 
-    private static Option<string> RequiredOption(string name, string description) => new(name, description) { IsRequired = true };
+    private static Option<string> RequiredOption(string name, string description) => new(name) { Description = description, Required = true };
 
-    private static string CommandExecutionBody(InvocationContext context, CommandExecutionOptions options) => JsonSerializer.Serialize(new
+    private static string CommandExecutionBody(CliInvocationContext context, CommandExecutionOptions options) => JsonSerializer.Serialize(new
     {
         shell = context.ParseResult.GetValueForOption(options.Shell),
         command = context.ParseResult.GetValueForOption(options.Command),
@@ -491,7 +490,7 @@ internal static class NetRatelCli
 
         var get = new Command("get", "Get one owned task with its redacted bounded result summary.");
         var (getTenant, getAgent) = AddCommandTargetOptions(get);
-        var getTask = new Argument<long>("task-id", "Positive owned task ID.");
+        var getTask = new Argument<long>("task-id") { Description = "Positive owned task ID." };
         get.AddArgument(getTask);
         get.SetHandler(ctx => SendAsync(runtime, globals, ctx, HttpMethod.Get,
             TaskV2Path(ctx.ParseResult.GetValueForOption(getTenant), ctx.ParseResult.GetValueForOption(getAgent), $"/{ctx.ParseResult.GetValueForArgument(getTask)}")));
@@ -509,9 +508,9 @@ internal static class NetRatelCli
     {
         var command = new Command(name, description);
         var (tenantId, agentId) = AddCommandTargetOptions(command);
-        var state = new Option<string?>("--state", "Optional exact state: Pending, Processing, CancelRequested, Completed, Failed, or Cancelled.");
-        var since = new Option<DateTimeOffset?>("--since-utc", "Optional inclusive ISO-8601 lower timestamp bound.");
-        var limit = new Option<int?>("--limit", "Optional result limit from 1 through 100.");
+        var state = new Option<string?>("--state") { Description = "Optional exact state: Pending, Processing, CancelRequested, Completed, Failed, or Cancelled." };
+        var since = new Option<DateTimeOffset?>("--since-utc") { Description = "Optional inclusive ISO-8601 lower timestamp bound." };
+        var limit = new Option<int?>("--limit") { Description = "Optional result limit from 1 through 100." };
         command.AddOption(state); command.AddOption(since); command.AddOption(limit);
         command.SetHandler(ctx => SendAsync(runtime, globals, ctx, HttpMethod.Get,
             TaskV2Path(ctx.ParseResult.GetValueForOption(tenantId), ctx.ParseResult.GetValueForOption(agentId), suffix) +
@@ -532,12 +531,12 @@ internal static class NetRatelCli
         }
         else
         {
-            taskId = new Argument<long>("task-id", "Positive owned task ID.");
+            taskId = new Argument<long>("task-id") { Description = "Positive owned task ID." };
             command.AddArgument(taskId);
         }
-        var sinceId = new Option<long?>("--since-id", "Optional exclusive log sequence cursor.");
-        var stream = new Option<string?>("--stream", "Optional stream: all, stdout, or stderr.");
-        var limit = new Option<int?>("--limit", "Optional log limit from 1 through 100.");
+        var sinceId = new Option<long?>("--since-id") { Description = "Optional exclusive log sequence cursor." };
+        var stream = new Option<string?>("--stream") { Description = "Optional stream: all, stdout, or stderr." };
+        var limit = new Option<int?>("--limit") { Description = "Optional log limit from 1 through 100." };
         command.AddOption(sinceId); command.AddOption(stream); command.AddOption(limit);
         command.SetHandler(ctx =>
         {
@@ -564,7 +563,7 @@ internal static class NetRatelCli
         AddOperatorTaskMutationPair(tasks, runtime, globals, "cancel", "cancel", "Preview cancellation of one owned non-terminal task.", "Request cancellation only with --confirm.", AddTaskCancelOptions, TaskCancelBody);
     }
 
-    private static void AddOperatorTaskMutationPair<TOptions>(Command tasks, CliRuntime runtime, GlobalOptions globals, string commandName, string action, string previewDescription, string confirmDescription, Func<Command, bool, TOptions> addOptions, Func<InvocationContext, TOptions, JsonObject> body)
+    private static void AddOperatorTaskMutationPair<TOptions>(Command tasks, CliRuntime runtime, GlobalOptions globals, string commandName, string action, string previewDescription, string confirmDescription, Func<Command, bool, TOptions> addOptions, Func<CliInvocationContext, TOptions, JsonObject> body)
     {
         var preview = new Command($"preview-{commandName}", previewDescription);
         var previewOptions = addOptions(preview, false);
@@ -593,9 +592,9 @@ internal static class NetRatelCli
         var shell = RequiredOption("--shell", "Policy-allowed shell, for example bash or pwsh.");
         var commandText = RequiredOption("--command", "Command text. It is transmitted but never printed by this CLI.");
         var workingDirectory = RequiredOption("--working-directory", "Exact policy-allowed working directory.");
-        var timeoutSeconds = new Option<int>("--timeout-seconds", "Positive timeout constrained by policy.") { IsRequired = true };
-        var maximumOutputBytes = new Option<int>("--maximum-output-bytes", "Positive output bound constrained by policy.") { IsRequired = true };
-        var environmentReferences = new Option<string[]>("--environment-reference", "Name of a target-local environment reference; values are never accepted.") { Arity = ArgumentArity.ZeroOrMore };
+        var timeoutSeconds = new Option<int>("--timeout-seconds") { Description = "Positive timeout constrained by policy.",  Required = true };
+        var maximumOutputBytes = new Option<int>("--maximum-output-bytes") { Description = "Positive output bound constrained by policy.",  Required = true };
+        var environmentReferences = new Option<string[]>("--environment-reference") { Description = "Name of a target-local environment reference; values are never accepted.",  Arity = ArgumentArity.ZeroOrMore };
         command.AddOption(shell); command.AddOption(commandText); command.AddOption(workingDirectory); command.AddOption(timeoutSeconds); command.AddOption(maximumOutputBytes); command.AddOption(environmentReferences);
         var confirmation = AddTaskConfirmationOptions(command, includeConfirmation);
         return new(tenantId, agentId, shell, commandText, workingDirectory, timeoutSeconds, maximumOutputBytes, environmentReferences, confirmation.PlanToken, confirmation.IdempotencyKey, confirmation.Confirm);
@@ -604,10 +603,10 @@ internal static class NetRatelCli
     private static TaskScriptOptions AddTaskScriptOptions(Command command, bool includeConfirmation)
     {
         var (tenantId, agentId) = AddCommandTargetOptions(command);
-        var scriptId = new Option<long>("--script-id", "Owned script ID.") { IsRequired = true };
-        var version = new Option<long>("--version", "Exact current script version.") { IsRequired = true };
+        var scriptId = new Option<long>("--script-id") { Description = "Owned script ID.",  Required = true };
+        var version = new Option<long>("--version") { Description = "Exact current script version.",  Required = true };
         var contentHash = RequiredOption("--content-hash", "Exact current script content SHA-256 hash.");
-        var parameters = new Option<string>("--parameters-json", () => "{}", "JSON object of typed script parameter values; secret values are references only.");
+        var parameters = new Option<string>("--parameters-json") { Description = "JSON object of typed script parameter values; secret values are references only.", DefaultValueFactory = _ => "{}" };
         command.AddOption(scriptId); command.AddOption(version); command.AddOption(contentHash); command.AddOption(parameters);
         var confirmation = AddTaskConfirmationOptions(command, includeConfirmation);
         return new(tenantId, agentId, scriptId, version, contentHash, parameters, confirmation.PlanToken, confirmation.IdempotencyKey, confirmation.Confirm);
@@ -616,7 +615,7 @@ internal static class NetRatelCli
     private static TaskCancelOptions AddTaskCancelOptions(Command command, bool includeConfirmation)
     {
         var (tenantId, agentId) = AddCommandTargetOptions(command);
-        var taskId = new Option<long>("--task-id", "Owned non-terminal task ID.") { IsRequired = true };
+        var taskId = new Option<long>("--task-id") { Description = "Owned non-terminal task ID.",  Required = true };
         command.AddOption(taskId);
         var confirmation = AddTaskConfirmationOptions(command, includeConfirmation);
         return new(tenantId, agentId, taskId, confirmation.PlanToken, confirmation.IdempotencyKey, confirmation.Confirm);
@@ -627,12 +626,12 @@ internal static class NetRatelCli
         if (!includeConfirmation) return (null, null, null);
         var planToken = RequiredOption("--plan-token", "Opaque plan token returned by the matching preview.");
         var idempotencyKey = RequiredOption("--idempotency-key", "Opaque idempotency key returned by the matching preview.");
-        var confirm = new Option<bool>("--confirm", "Confirm this task mutation.");
+        var confirm = new Option<bool>("--confirm") { Description = "Confirm this task mutation." };
         command.AddOption(planToken); command.AddOption(idempotencyKey); command.AddOption(confirm);
         return (planToken, idempotencyKey, confirm);
     }
 
-    private static JsonObject TaskCommandBody(InvocationContext context, TaskCommandOptions options) => TaskMutationBody(context, options, new JsonObject
+    private static JsonObject TaskCommandBody(CliInvocationContext context, TaskCommandOptions options) => TaskMutationBody(context, options, new JsonObject
     {
         ["command"] = new JsonObject
         {
@@ -645,7 +644,7 @@ internal static class NetRatelCli
         }
     });
 
-    private static JsonObject TaskScriptBody(InvocationContext context, TaskScriptOptions options) => TaskMutationBody(context, options, new JsonObject
+    private static JsonObject TaskScriptBody(CliInvocationContext context, TaskScriptOptions options) => TaskMutationBody(context, options, new JsonObject
     {
         ["script"] = new JsonObject
         {
@@ -656,18 +655,18 @@ internal static class NetRatelCli
         }
     });
 
-    private static JsonObject TaskCancelBody(InvocationContext context, TaskCancelOptions options) => TaskMutationBody(context, options, new JsonObject { ["taskId"] = context.ParseResult.GetValueForOption(options.TaskId) });
+    private static JsonObject TaskCancelBody(CliInvocationContext context, TaskCancelOptions options) => TaskMutationBody(context, options, new JsonObject { ["taskId"] = context.ParseResult.GetValueForOption(options.TaskId) });
 
-    private static JsonObject TaskMutationBody<TOptions>(InvocationContext context, TOptions options, JsonObject body)
+    private static JsonObject TaskMutationBody<TOptions>(CliInvocationContext context, TOptions options, JsonObject body)
     {
         if (TaskPlanToken(options) is { } planToken) body["planToken"] = context.ParseResult.GetValueForOption(planToken);
         if (TaskIdempotencyKey(options) is { } idempotencyKey) body["idempotencyKey"] = context.ParseResult.GetValueForOption(idempotencyKey);
         return body;
     }
 
-    private static int TaskTenant<TOptions>(InvocationContext context, TOptions options) => context.ParseResult.GetValueForOption(TaskTarget(options).TenantId);
-    private static Guid TaskAgent<TOptions>(InvocationContext context, TOptions options) => context.ParseResult.GetValueForOption(TaskTarget(options).AgentId);
-    private static bool TaskConfirmed<TOptions>(InvocationContext context, TOptions options) => TaskConfirm(options) is { } confirm && context.ParseResult.GetValueForOption(confirm);
+    private static int TaskTenant<TOptions>(CliInvocationContext context, TOptions options) => context.ParseResult.GetValueForOption(TaskTarget(options).TenantId);
+    private static Guid TaskAgent<TOptions>(CliInvocationContext context, TOptions options) => context.ParseResult.GetValueForOption(TaskTarget(options).AgentId);
+    private static bool TaskConfirmed<TOptions>(CliInvocationContext context, TOptions options) => TaskConfirm(options) is { } confirm && context.ParseResult.GetValueForOption(confirm);
     private static (Option<int> TenantId, Option<Guid> AgentId) TaskTarget<TOptions>(TOptions options) => options switch
     {
         TaskCommandOptions command => (command.TenantId, command.AgentId),
@@ -689,10 +688,10 @@ internal static class NetRatelCli
         var requests = new Command("requests-v2", "Operate caller-owned, job-linked Production requests through preview, confirmation, ETags, idempotency, and bounded owned-result routes.");
         var list = new Command("list", "List only bounded requests owned by the authenticated operator identity.");
         var (listTenant, listAgent) = AddCommandTargetOptions(list);
-        var state = new Option<string?>("--state", "Optional exact state: Pending, Claimed, Completed, Failed, or Cancelled.");
-        var jobId = new Option<long?>("--job-id", "Optional owned job identifier filter.");
-        var since = new Option<DateTimeOffset?>("--since-utc", "Optional inclusive ISO-8601 lower timestamp bound.");
-        var limit = new Option<int?>("--limit", "Optional result limit from 1 through 100.");
+        var state = new Option<string?>("--state") { Description = "Optional exact state: Pending, Claimed, Completed, Failed, or Cancelled." };
+        var jobId = new Option<long?>("--job-id") { Description = "Optional owned job identifier filter." };
+        var since = new Option<DateTimeOffset?>("--since-utc") { Description = "Optional inclusive ISO-8601 lower timestamp bound." };
+        var limit = new Option<int?>("--limit") { Description = "Optional result limit from 1 through 100." };
         list.AddOption(state); list.AddOption(jobId); list.AddOption(since); list.AddOption(limit);
         list.SetHandler(ctx => SendAsync(runtime, globals, ctx, HttpMethod.Get,
             RequestV2Path(ctx.ParseResult.GetValueForOption(listTenant), ctx.ParseResult.GetValueForOption(listAgent), string.Empty) +
@@ -701,7 +700,7 @@ internal static class NetRatelCli
 
         var get = new Command("get", "Get one caller-owned request with its bounded redacted result summary.");
         var (getTenant, getAgent) = AddCommandTargetOptions(get);
-        var requestId = new Argument<int>("request-id", "Positive owned request identifier.");
+        var requestId = new Argument<int>("request-id") { Description = "Positive owned request identifier." };
         get.AddArgument(requestId);
         get.SetHandler(ctx => SendAsync(runtime, globals, ctx, HttpMethod.Get,
             RequestV2Path(ctx.ParseResult.GetValueForOption(getTenant), ctx.ParseResult.GetValueForOption(getAgent), $"/{ctx.ParseResult.GetValueForArgument(requestId)}")));
@@ -742,14 +741,14 @@ internal static class NetRatelCli
         Option<string>? summary = null; Option<string?>? resultSummary = null; Option<string>? claimReference = null;
         if (action == "create")
         {
-            jobId = new Option<long>("--job-id", "Exact caller-owned job identifier.") { IsRequired = true };
+            jobId = new Option<long>("--job-id") { Description = "Exact caller-owned job identifier.",  Required = true };
             summary = RequiredOption("--summary", "Bounded request summary. Secret values are never accepted.");
             command.AddOption(jobId); command.AddOption(summary);
         }
         else
         {
-            requestId = new Option<long>("--request-id", "Positive caller-owned request identifier.") { IsRequired = true };
-            expectedVersion = new Option<long>("--expected-version", "Current ETag revision required for optimistic concurrency.") { IsRequired = true };
+            requestId = new Option<long>("--request-id") { Description = "Positive caller-owned request identifier.",  Required = true };
+            expectedVersion = new Option<long>("--expected-version") { Description = "Current ETag revision required for optimistic concurrency.",  Required = true };
             command.AddOption(requestId); command.AddOption(expectedVersion);
             if (action == "update")
             {
@@ -764,8 +763,8 @@ internal static class NetRatelCli
             else
             {
                 resultSummary = action == "cancel"
-                    ? new Option<string?>("--result-summary", "Optional bounded cancellation summary; it is redacted before persistence.")
-                    : new Option<string?>("--result-summary", "Bounded result summary; it is redacted before persistence.") { IsRequired = true };
+                    ? new Option<string?>("--result-summary") { Description = "Optional bounded cancellation summary; it is redacted before persistence." }
+                    : new Option<string?>("--result-summary") { Description = "Bounded result summary; it is redacted before persistence.",  Required = true };
                 command.AddOption(resultSummary);
             }
         }
@@ -774,13 +773,13 @@ internal static class NetRatelCli
         {
             planToken = RequiredOption("--plan-token", "Opaque plan token returned by the matching preview.");
             idempotencyKey = RequiredOption("--idempotency-key", "Opaque idempotency key returned by the matching preview.");
-            confirm = new Option<bool>("--confirm", "Confirm this request lifecycle mutation.");
+            confirm = new Option<bool>("--confirm") { Description = "Confirm this request lifecycle mutation." };
             command.AddOption(planToken); command.AddOption(idempotencyKey); command.AddOption(confirm);
         }
         return new(tenantId, agentId, requestId, expectedVersion, jobId, summary, resultSummary, claimReference, planToken, idempotencyKey, confirm);
     }
 
-    private static JsonObject RequestMutationBody(InvocationContext context, RequestMutationOptions options)
+    private static JsonObject RequestMutationBody(CliInvocationContext context, RequestMutationOptions options)
     {
         var body = new JsonObject();
         if (options.RequestId is not null) body["requestId"] = context.ParseResult.GetValueForOption(options.RequestId);
@@ -803,15 +802,15 @@ internal static class NetRatelCli
         var tenants = new Command("tenants-v2", "Manage Production tenants through the global control plane, explicit ControlPlane policy, ETags, impact preview, confirmation, idempotency, and audit.");
 
         var list = new Command("list", "List tenants through the authorized control plane.");
-        var cursor = new Option<int?>("--cursor", "Optional non-negative page cursor.");
-        var limit = new Option<int?>("--limit", "Optional result limit from 1 through 100.");
+        var cursor = new Option<int?>("--cursor") { Description = "Optional non-negative page cursor." };
+        var limit = new Option<int?>("--limit") { Description = "Optional result limit from 1 through 100." };
         list.AddOption(cursor); list.AddOption(limit);
         list.SetHandler(ctx => SendAsync(runtime, globals, ctx, HttpMethod.Get,
             TenantV2Path + Query(ctx, (cursor, "cursor"), (limit, "limit"))));
         tenants.AddCommand(list);
 
         var get = new Command("get", "Get one tenant and its current ETag revision.");
-        var tenantId = new Argument<int>("tenant-id", "Positive tenant identifier.");
+        var tenantId = new Argument<int>("tenant-id") { Description = "Positive tenant identifier." };
         get.AddArgument(tenantId);
         get.SetHandler(ctx => SendAsync(runtime, globals, ctx, HttpMethod.Get,
             $"{TenantV2Path}/{ctx.ParseResult.GetValueForArgument(tenantId)}"));
@@ -855,26 +854,26 @@ internal static class NetRatelCli
         {
             if (action == "update")
             {
-                tenantId = new Option<int>("--tenant-id", "Tenant identifier to replace.") { IsRequired = true };
-                expectedVersion = new Option<long>("--expected-version", "Current tenant ETag version; stale writes are rejected.") { IsRequired = true };
+                tenantId = new Option<int>("--tenant-id") { Description = "Tenant identifier to replace.",  Required = true };
+                expectedVersion = new Option<long>("--expected-version") { Description = "Current tenant ETag version; stale writes are rejected.",  Required = true };
                 command.AddOption(tenantId); command.AddOption(expectedVersion);
             }
             name = RequiredOption("--name", "Tenant display name.");
-            domains = new Option<string[]>("--domain", "Tenant domain; repeat this option for more domains.") { Arity = ArgumentArity.ZeroOrMore };
+            domains = new Option<string[]>("--domain") { Description = "Tenant domain; repeat this option for more domains.",  Arity = ArgumentArity.ZeroOrMore };
             autoUpdate = RequiredOption("--auto-update", "Explicit true or false automatic-update setting.");
-            description = new Option<string?>("--description", "Optional bounded tenant description.");
-            location = new Option<string?>("--location", "Optional bounded tenant location.");
-            contactPerson = new Option<string?>("--contact-person", "Optional bounded tenant contact name.");
-            contactEmail = new Option<string?>("--contact-email", "Optional bounded tenant contact email.");
-            autoUpdateChannel = new Option<string?>("--auto-update-channel", "Optional stable or prerelease update channel.");
-            autoUpdateTargetVersion = new Option<string?>("--auto-update-target-version", "Optional target semantic version.");
+            description = new Option<string?>("--description") { Description = "Optional bounded tenant description." };
+            location = new Option<string?>("--location") { Description = "Optional bounded tenant location." };
+            contactPerson = new Option<string?>("--contact-person") { Description = "Optional bounded tenant contact name." };
+            contactEmail = new Option<string?>("--contact-email") { Description = "Optional bounded tenant contact email." };
+            autoUpdateChannel = new Option<string?>("--auto-update-channel") { Description = "Optional stable or prerelease update channel." };
+            autoUpdateTargetVersion = new Option<string?>("--auto-update-target-version") { Description = "Optional target semantic version." };
             command.AddOption(name); command.AddOption(domains); command.AddOption(autoUpdate); command.AddOption(description); command.AddOption(location);
             command.AddOption(contactPerson); command.AddOption(contactEmail); command.AddOption(autoUpdateChannel); command.AddOption(autoUpdateTargetVersion);
         }
         else
         {
-            tenantId = new Option<int>("--tenant-id", "Tenant identifier to delete.") { IsRequired = true };
-            expectedVersion = new Option<long>("--expected-version", "Current tenant ETag version; stale deletes are rejected.") { IsRequired = true };
+            tenantId = new Option<int>("--tenant-id") { Description = "Tenant identifier to delete.",  Required = true };
+            expectedVersion = new Option<long>("--expected-version") { Description = "Current tenant ETag version; stale deletes are rejected.",  Required = true };
             cascade = RequiredOption("--cascade", "Explicit true or false cascade selection. Only false is currently supported.");
             command.AddOption(tenantId); command.AddOption(expectedVersion); command.AddOption(cascade);
         }
@@ -884,13 +883,13 @@ internal static class NetRatelCli
         {
             planToken = RequiredOption("--plan-token", "Opaque plan token returned by the matching preview.");
             idempotencyKey = RequiredOption("--idempotency-key", "Opaque idempotency key returned by the matching preview.");
-            confirm = new Option<bool>("--confirm", "Confirm the tenant mutation.");
+            confirm = new Option<bool>("--confirm") { Description = "Confirm the tenant mutation." };
             command.AddOption(planToken); command.AddOption(idempotencyKey); command.AddOption(confirm);
         }
         return new(tenantId, expectedVersion, name, domains, autoUpdate, description, location, contactPerson, contactEmail, autoUpdateChannel, autoUpdateTargetVersion, cascade, planToken, idempotencyKey, confirm);
     }
 
-    private static JsonObject TenantMutationBody(InvocationContext context, TenantMutationOptions options)
+    private static JsonObject TenantMutationBody(CliInvocationContext context, TenantMutationOptions options)
     {
         var body = new JsonObject();
         if (options.TenantId is not null) body["tenantId"] = context.ParseResult.GetValueForOption(options.TenantId);
@@ -942,9 +941,9 @@ internal static class NetRatelCli
 
         var list = new Command("list", "List only tenant-scoped Production enrollment metadata; no raw code is returned.");
         var listTenant = RequiredTenantIdOption();
-        var status = new Option<string?>("--status", "Optional active, expired, revoked, or all filter.");
-        var cursor = new Option<long?>("--cursor", "Optional non-negative enrollment page cursor.");
-        var limit = new Option<int?>("--limit", "Optional result limit from 1 through 100.");
+        var status = new Option<string?>("--status") { Description = "Optional active, expired, revoked, or all filter." };
+        var cursor = new Option<long?>("--cursor") { Description = "Optional non-negative enrollment page cursor." };
+        var limit = new Option<int?>("--limit") { Description = "Optional result limit from 1 through 100." };
         list.AddOption(listTenant); list.AddOption(status); list.AddOption(cursor); list.AddOption(limit);
         list.SetHandler(ctx => SendAsync(runtime, globals, ctx, HttpMethod.Get,
             OnboardingV2Path(ctx.ParseResult.GetValueForOption(listTenant)) + "/enrollments" + Query(ctx, (status, "status"), (cursor, "cursor"), (limit, "limit"))));
@@ -952,7 +951,7 @@ internal static class NetRatelCli
 
         var get = new Command("get", "Get tenant-scoped enrollment metadata; no raw code is returned.");
         var getTenant = RequiredTenantIdOption();
-        var enrollmentCodeId = new Argument<Guid>("enrollment-code-id", "Enrollment code UUID.");
+        var enrollmentCodeId = new Argument<Guid>("enrollment-code-id") { Description = "Enrollment code UUID." };
         get.AddOption(getTenant); get.AddArgument(enrollmentCodeId);
         get.SetHandler(ctx => SendAsync(runtime, globals, ctx, HttpMethod.Get,
             $"{OnboardingV2Path(ctx.ParseResult.GetValueForOption(getTenant))}/enrollments/{ctx.ParseResult.GetValueForArgument(enrollmentCodeId):D}"));
@@ -1017,15 +1016,15 @@ internal static class NetRatelCli
     {
         var tenantId = RequiredTenantIdOption();
         var runtime = RequiredOption("--runtime", "Installer runtime: linux-x64 or win-x64.");
-        var validForMinutes = new Option<int>("--valid-for-minutes", "Lifetime from 5 through 10 minutes, further bounded by policy.") { IsRequired = true };
-        var maxUses = new Option<int>("--max-uses", "Maximum uses from 1 through 10, further bounded by policy.") { IsRequired = true };
+        var validForMinutes = new Option<int>("--valid-for-minutes") { Description = "Lifetime from 5 through 10 minutes, further bounded by policy.",  Required = true };
+        var maxUses = new Option<int>("--max-uses") { Description = "Maximum uses from 1 through 10, further bounded by policy.",  Required = true };
         command.AddOption(tenantId); command.AddOption(runtime); command.AddOption(validForMinutes); command.AddOption(maxUses);
         Option<string>? planToken = null; Option<string>? idempotencyKey = null; Option<bool>? confirm = null;
         if (includeConfirmation)
         {
             planToken = RequiredOption("--plan-token", "Opaque plan token returned by onboarding-v2 preview-create.");
             idempotencyKey = RequiredOption("--idempotency-key", "Opaque idempotency key returned by onboarding-v2 preview-create.");
-            confirm = new Option<bool>("--confirm", "Confirm issuance of the enrollment code.");
+            confirm = new Option<bool>("--confirm") { Description = "Confirm issuance of the enrollment code." };
             command.AddOption(planToken); command.AddOption(idempotencyKey); command.AddOption(confirm);
         }
         return new(tenantId, runtime, validForMinutes, maxUses, planToken, idempotencyKey, confirm);
@@ -1034,20 +1033,20 @@ internal static class NetRatelCli
     private static OnboardingRevokeOptions AddOnboardingRevokeOptions(Command command, bool includeConfirmation)
     {
         var tenantId = RequiredTenantIdOption();
-        var enrollmentCodeId = new Option<Guid>("--enrollment-code-id", "Enrollment code UUID to revoke.") { IsRequired = true };
+        var enrollmentCodeId = new Option<Guid>("--enrollment-code-id") { Description = "Enrollment code UUID to revoke.",  Required = true };
         command.AddOption(tenantId); command.AddOption(enrollmentCodeId);
         Option<string>? planToken = null; Option<string>? idempotencyKey = null; Option<bool>? confirm = null;
         if (includeConfirmation)
         {
             planToken = RequiredOption("--plan-token", "Opaque plan token returned by onboarding-v2 preview-revoke.");
             idempotencyKey = RequiredOption("--idempotency-key", "Opaque idempotency key returned by onboarding-v2 preview-revoke.");
-            confirm = new Option<bool>("--confirm", "Confirm revocation of the enrollment code.");
+            confirm = new Option<bool>("--confirm") { Description = "Confirm revocation of the enrollment code." };
             command.AddOption(planToken); command.AddOption(idempotencyKey); command.AddOption(confirm);
         }
         return new(tenantId, enrollmentCodeId, planToken, idempotencyKey, confirm);
     }
 
-    private static JsonObject OnboardingCreateBody(InvocationContext context, OnboardingCreateOptions options)
+    private static JsonObject OnboardingCreateBody(CliInvocationContext context, OnboardingCreateOptions options)
     {
         var validForMinutes = context.ParseResult.GetValueForOption(options.ValidForMinutes);
         var maxUses = context.ParseResult.GetValueForOption(options.MaxUses);
@@ -1064,7 +1063,7 @@ internal static class NetRatelCli
         return body;
     }
 
-    private static JsonObject OnboardingRevokeBody(InvocationContext context, OnboardingRevokeOptions options)
+    private static JsonObject OnboardingRevokeBody(CliInvocationContext context, OnboardingRevokeOptions options)
     {
         var enrollmentCodeId = context.ParseResult.GetValueForOption(options.EnrollmentCodeId);
         if (enrollmentCodeId == Guid.Empty) throw new CliValidationException("--enrollment-code-id must be a non-empty UUID.");
@@ -1074,7 +1073,7 @@ internal static class NetRatelCli
         return body;
     }
 
-    private static Option<int> RequiredTenantIdOption() => new("--tenant-id", "Positive tenant identifier.") { IsRequired = true };
+    private static Option<int> RequiredTenantIdOption() => new("--tenant-id") { Description = "Positive tenant identifier.", Required = true };
     private static string RequiredRuntime(string? runtime) => runtime is "linux-x64" or "win-x64"
         ? runtime
         : throw new CliValidationException("--runtime must be linux-x64 or win-x64.");
@@ -1111,7 +1110,7 @@ internal static class NetRatelCli
     {
         var command = new Command(name, description);
         var tenantId = RequiredTenantIdOption();
-        var agentId = new Option<Guid>("--agent-id", "Persisted V2 agent UUID.") { IsRequired = true };
+        var agentId = new Option<Guid>("--agent-id") { Description = "Persisted V2 agent UUID.",  Required = true };
         command.AddOption(tenantId);
         command.AddOption(agentId);
         command.SetHandler(ctx =>
@@ -1128,15 +1127,15 @@ internal static class NetRatelCli
     {
         var command = new Command(name, description);
         var tenantId = RequiredTenantIdOption();
-        var agentId = new Option<Guid>("--agent-id", "Persisted V2 agent UUID.") { IsRequired = true };
+        var agentId = new Option<Guid>("--agent-id") { Description = "Persisted V2 agent UUID.",  Required = true };
         command.AddOption(tenantId);
         command.AddOption(agentId);
         Option<string>? planToken = null;
         Option<string>? idempotencyKey = null;
         if (confirmed)
         {
-            planToken = new Option<string>("--plan-token", "Opaque credential returned by preview-ping.") { IsRequired = true };
-            idempotencyKey = new Option<string>("--idempotency-key", "Opaque credential returned by preview-ping.") { IsRequired = true };
+            planToken = new Option<string>("--plan-token") { Description = "Opaque credential returned by preview-ping.",  Required = true };
+            idempotencyKey = new Option<string>("--idempotency-key") { Description = "Opaque credential returned by preview-ping.",  Required = true };
             command.AddOption(planToken);
             command.AddOption(idempotencyKey);
         }
@@ -1163,15 +1162,15 @@ internal static class NetRatelCli
     {
         var command = new Command(name, description);
         var tenantId = RequiredTenantIdOption();
-        var agentId = new Option<Guid>("--agent-id", "Persisted V2 agent UUID.") { IsRequired = true };
+        var agentId = new Option<Guid>("--agent-id") { Description = "Persisted V2 agent UUID.",  Required = true };
         command.AddOption(tenantId);
         command.AddOption(agentId);
         Option<string>? planToken = null;
         Option<string>? idempotencyKey = null;
         if (confirmed)
         {
-            planToken = new Option<string>("--plan-token", "Opaque credential returned by preview-software-update.") { IsRequired = true };
-            idempotencyKey = new Option<string>("--idempotency-key", "Opaque credential returned by preview-software-update.") { IsRequired = true };
+            planToken = new Option<string>("--plan-token") { Description = "Opaque credential returned by preview-software-update.",  Required = true };
+            idempotencyKey = new Option<string>("--idempotency-key") { Description = "Opaque credential returned by preview-software-update.",  Required = true };
             command.AddOption(planToken);
             command.AddOption(idempotencyKey);
         }
@@ -1198,13 +1197,13 @@ internal static class NetRatelCli
     {
         var command = new Command(name, description);
         var tenantId = RequiredTenantIdOption();
-        var agentId = new Option<Guid>("--agent-id", "Persisted V2 agent UUID.") { IsRequired = true };
+        var agentId = new Option<Guid>("--agent-id") { Description = "Persisted V2 agent UUID.",  Required = true };
         command.AddOption(tenantId);
         command.AddOption(agentId);
         Option<string>? reason = null;
         if (action is "disable" or "delete")
         {
-            reason = new Option<string>("--reason", "Bounded non-secret lifecycle reason.") { IsRequired = true };
+            reason = new Option<string>("--reason") { Description = "Bounded non-secret lifecycle reason.",  Required = true };
             command.AddOption(reason);
         }
 
@@ -1212,8 +1211,8 @@ internal static class NetRatelCli
         Option<string>? idempotencyKey = null;
         if (confirmed)
         {
-            planToken = new Option<string>("--plan-token", $"Opaque credential returned by preview-{action}.") { IsRequired = true };
-            idempotencyKey = new Option<string>("--idempotency-key", $"Opaque credential returned by preview-{action}.") { IsRequired = true };
+            planToken = new Option<string>("--plan-token") { Description = $"Opaque credential returned by preview-{action}.", Required = true };
+            idempotencyKey = new Option<string>("--idempotency-key") { Description = $"Opaque credential returned by preview-{action}.", Required = true };
             command.AddOption(planToken);
             command.AddOption(idempotencyKey);
         }
@@ -1259,7 +1258,7 @@ internal static class NetRatelCli
         notifications.AddCommand(GetListCommand(runtime, globals, "unread-errors", path + "/unread-errors"));
 
         var get = new Command("get", "Get one notification only when it belongs to the signed delegated operator.");
-        var notificationId = new Option<Guid>("--id", "Notification UUID.") { IsRequired = true };
+        var notificationId = new Option<Guid>("--id") { Description = "Notification UUID.",  Required = true };
         get.AddOption(notificationId);
         get.SetHandler(ctx =>
         {
@@ -1278,14 +1277,14 @@ internal static class NetRatelCli
     {
         const string path = "/api/v2/mcp/operator/notifications";
         var command = new Command(name, description);
-        var ids = new Option<string>("--ids", "Comma-separated notification UUIDs (1 through 200).") { IsRequired = true };
+        var ids = new Option<string>("--ids") { Description = "Comma-separated notification UUIDs (1 through 200).",  Required = true };
         command.AddOption(ids);
         Option<string>? planToken = null;
         Option<string>? idempotencyKey = null;
         if (confirmed)
         {
-            planToken = new Option<string>("--plan-token", "Opaque plan token returned by preview-mark-read.") { IsRequired = true };
-            idempotencyKey = new Option<string>("--idempotency-key", "Opaque idempotency key returned by preview-mark-read.") { IsRequired = true };
+            planToken = new Option<string>("--plan-token") { Description = "Opaque plan token returned by preview-mark-read.",  Required = true };
+            idempotencyKey = new Option<string>("--idempotency-key") { Description = "Opaque idempotency key returned by preview-mark-read.",  Required = true };
             command.AddOption(planToken);
             command.AddOption(idempotencyKey);
         }
@@ -1314,7 +1313,7 @@ internal static class NetRatelCli
         events.AddCommand(GetListCommand(runtime, globals, "list", path));
 
         var get = new Command("get", "Get one bounded redacted event summary.");
-        var eventId = new Option<Guid>("--event-id", "Persisted event UUID.") { IsRequired = true };
+        var eventId = new Option<Guid>("--event-id") { Description = "Persisted event UUID.",  Required = true };
         get.AddOption(eventId);
         get.SetHandler(ctx =>
         {
@@ -1334,14 +1333,14 @@ internal static class NetRatelCli
     {
         const string path = "/api/v2/mcp/operator/events";
         var command = new Command(name, description);
-        var eventId = new Option<Guid>("--event-id", "Persisted event UUID.") { IsRequired = true };
+        var eventId = new Option<Guid>("--event-id") { Description = "Persisted event UUID.",  Required = true };
         command.AddOption(eventId);
         Option<string>? planToken = null;
         Option<string>? idempotencyKey = null;
         if (confirmed)
         {
-            planToken = new Option<string>("--plan-token", $"Opaque credential returned by preview-{action}.") { IsRequired = true };
-            idempotencyKey = new Option<string>("--idempotency-key", $"Opaque credential returned by preview-{action}.") { IsRequired = true };
+            planToken = new Option<string>("--plan-token") { Description = $"Opaque credential returned by preview-{action}.", Required = true };
+            idempotencyKey = new Option<string>("--idempotency-key") { Description = $"Opaque credential returned by preview-{action}.", Required = true };
             command.AddOption(planToken);
             command.AddOption(idempotencyKey);
         }
@@ -1374,8 +1373,8 @@ internal static class NetRatelCli
         connectivity.AddCommand(preview);
 
         var confirm = new Command("confirm-test", "Confirm the unchanged server-owned bounded ExternalService M2M probe.");
-        var planToken = new Option<string>("--plan-token", "Opaque credential returned by preview-test.") { IsRequired = true };
-        var idempotencyKey = new Option<string>("--idempotency-key", "Opaque credential returned by preview-test.") { IsRequired = true };
+        var planToken = new Option<string>("--plan-token") { Description = "Opaque credential returned by preview-test.",  Required = true };
+        var idempotencyKey = new Option<string>("--idempotency-key") { Description = "Opaque credential returned by preview-test.",  Required = true };
         confirm.AddOption(planToken);
         confirm.AddOption(idempotencyKey);
         confirm.SetHandler(ctx =>
@@ -1423,7 +1422,7 @@ internal static class NetRatelCli
         var openOptions = AddTerminalOpenOptions(open);
         var openPlanToken = RequiredOption("--plan-token", "Opaque plan token returned by terminal-v2 preview-open.");
         var openIdempotencyKey = RequiredOption("--idempotency-key", "Opaque idempotency key returned by terminal-v2 preview-open.");
-        var openConfirm = new Option<bool>("--confirm", "Confirm the terminal open.");
+        var openConfirm = new Option<bool>("--confirm") { Description = "Confirm the terminal open." };
         open.AddOption(openPlanToken);
         open.AddOption(openIdempotencyKey);
         open.AddOption(openConfirm);
@@ -1448,8 +1447,8 @@ internal static class NetRatelCli
         var stream = new Command("stream-window", "Read one bounded terminal output window.");
         var (streamTenant, streamAgent) = AddCommandTargetOptions(stream);
         var streamSession = new Argument<string>("session-id");
-        var windowSeconds = new Option<int?>("--window-seconds", "Optional 1–15 second output window.");
-        var maxRecords = new Option<int?>("--max-records", "Optional 1–100 record bound.");
+        var windowSeconds = new Option<int?>("--window-seconds") { Description = "Optional 1–15 second output window." };
+        var maxRecords = new Option<int?>("--max-records") { Description = "Optional 1–100 record bound." };
         stream.AddArgument(streamSession);
         stream.AddOption(windowSeconds);
         stream.AddOption(maxRecords);
@@ -1470,8 +1469,8 @@ internal static class NetRatelCli
         var (tenantId, agentId) = AddCommandTargetOptions(command);
         var shell = RequiredOption("--shell", "Policy-allowed terminal shell.");
         var workingDirectory = RequiredOption("--working-directory", "Policy-allowed terminal working directory.");
-        var columns = new Option<int?>("--columns", "Optional terminal columns.");
-        var rows = new Option<int?>("--rows", "Optional terminal rows.");
+        var columns = new Option<int?>("--columns") { Description = "Optional terminal columns." };
+        var rows = new Option<int?>("--rows") { Description = "Optional terminal rows." };
         command.AddOption(shell);
         command.AddOption(workingDirectory);
         command.AddOption(columns);
@@ -1482,7 +1481,7 @@ internal static class NetRatelCli
     private static Task ConfirmTerminalOpenAsync(
         CliRuntime runtime,
         GlobalOptions globals,
-        InvocationContext context,
+        CliInvocationContext context,
         TerminalOpenOptions options,
         Option<string> planToken,
         Option<string> idempotencyKey,
@@ -1527,7 +1526,7 @@ internal static class NetRatelCli
         var command = new Command(name, description);
         var (tenantId, agentId) = AddCommandTargetOptions(command);
         var sessionId = new Argument<string>("session-id");
-        var confirm = new Option<bool>("--confirm", "Confirm the terminal action.");
+        var confirm = new Option<bool>("--confirm") { Description = "Confirm the terminal action." };
         command.AddArgument(sessionId);
         command.AddOption(confirm);
         var options = fields.Select(field => (Option: RequiredOption(field.OptionName, $"Required terminal action field '{field.JsonName}'."), field.JsonName)).ToArray();
@@ -1557,9 +1556,9 @@ internal static class NetRatelCli
         var command = new Command("resize", "Confirm a terminal resize.");
         var (tenantId, agentId) = AddCommandTargetOptions(command);
         var sessionId = new Argument<string>("session-id");
-        var columns = new Option<int>("--columns", "Required terminal columns.") { IsRequired = true };
-        var rows = new Option<int>("--rows", "Required terminal rows.") { IsRequired = true };
-        var confirm = new Option<bool>("--confirm", "Confirm the terminal resize.");
+        var columns = new Option<int>("--columns") { Description = "Required terminal columns.",  Required = true };
+        var rows = new Option<int>("--rows") { Description = "Required terminal rows.",  Required = true };
+        var confirm = new Option<bool>("--confirm") { Description = "Confirm the terminal resize." };
         command.AddArgument(sessionId);
         command.AddOption(columns);
         command.AddOption(rows);
@@ -1584,7 +1583,7 @@ internal static class NetRatelCli
         return command;
     }
 
-    private static string TerminalOpenBody(InvocationContext context, TerminalOpenOptions options) => JsonSerializer.Serialize(new
+    private static string TerminalOpenBody(CliInvocationContext context, TerminalOpenOptions options) => JsonSerializer.Serialize(new
     {
         shell = context.ParseResult.GetValueForOption(options.Shell),
         workingDirectory = context.ParseResult.GetValueForOption(options.WorkingDirectory),
@@ -1704,13 +1703,13 @@ internal static class NetRatelCli
         var logs = new Command("logs", "Search NetRatel API AI-agent operation logs.");
         var search = new Command("search", "Search log entries.");
         var tail = new Command("tail", "Poll log entries repeatedly.");
-        var since = new Option<long?>("--since", "Return logs after this sequence.");
-        var level = new Option<string?>("--level", "Filter by log level.");
-        var contains = new Option<string?>("--contains", "Filter by message text.");
-        var correlationId = new Option<string?>("--correlation-id", "Filter by correlation id.");
-        var limit = new Option<int?>("--limit", "Maximum entries.");
+        var since = new Option<long?>("--since") { Description = "Return logs after this sequence." };
+        var level = new Option<string?>("--level") { Description = "Filter by log level." };
+        var contains = new Option<string?>("--contains") { Description = "Filter by message text." };
+        var correlationId = new Option<string?>("--correlation-id") { Description = "Filter by correlation id." };
+        var limit = new Option<int?>("--limit") { Description = "Maximum entries." };
         foreach (var option in new Option[] { since, level, contains, correlationId, limit }) search.AddOption(option);
-        var raw = new Option<bool>("--raw", "Print the unshaped API response.");
+        var raw = new Option<bool>("--raw") { Description = "Print the unshaped API response." };
         search.AddOption(raw);
         search.SetHandler(async ctx =>
         {
@@ -1725,8 +1724,8 @@ internal static class NetRatelCli
         });
         logs.AddCommand(search);
 
-        var iterations = new Option<int>("--iterations", () => 20, "Poll count.");
-        var delay = new Option<int>("--delay-seconds", () => 3, "Delay between polls.");
+        var iterations = new Option<int>("--iterations") { Description = "Poll count.", DefaultValueFactory = _ => 20 };
+        var delay = new Option<int>("--delay-seconds") { Description = "Delay between polls.", DefaultValueFactory = _ => 3 };
         foreach (var option in new Option[] { since, iterations, delay }) tail.AddOption(option);
         tail.SetHandler(async ctx =>
         {
@@ -1772,8 +1771,8 @@ internal static class NetRatelCli
     private static Command BuildJobsCommand(CliRuntime runtime, GlobalOptions globals)
     {
         var jobs = new Command("jobs", "Inspect job definitions.");
-        var folder = new Option<string?>("--folder", "Filter by folder.");
-        var search = new Option<string?>("--search", "Search jobs.");
+        var folder = new Option<string?>("--folder") { Description = "Filter by folder." };
+        var search = new Option<string?>("--search") { Description = "Search jobs." };
         jobs.AddCommand(GetAgentListCommand(runtime, globals, "list", "/api/v1/jobs/", AgentShape.Jobs, (folder, "folder"), (search, "search")));
         jobs.AddCommand(GetByIdCommand(runtime, globals, "get", "/api/v1/jobs/{id}"));
         jobs.AddCommand(GetByIdCommand(runtime, globals, "details", "/api/v1/jobs/{id}/details"));
@@ -1785,10 +1784,10 @@ internal static class NetRatelCli
     private static Command BuildJobRunsCommand(CliRuntime runtime, GlobalOptions globals)
     {
         var runs = new Command("job-runs", "Start and inspect job runs.");
-        var status = new Option<string?>("--status", "Filter by status.");
-        var jobId = new Option<long?>("--job-id", "Filter by job id.");
-        var tenantId = new Option<int?>("--tenant-id", "Filter by tenant id.");
-        var take = new Option<int?>("--take", "Maximum run count.");
+        var status = new Option<string?>("--status") { Description = "Filter by status." };
+        var jobId = new Option<long?>("--job-id") { Description = "Filter by job id." };
+        var tenantId = new Option<int?>("--tenant-id") { Description = "Filter by tenant id." };
+        var take = new Option<int?>("--take") { Description = "Maximum run count." };
         runs.AddCommand(GetAgentListCommand(runtime, globals, "list", "/api/v1/jobruns/", AgentShape.JobRuns, (status, "status"), (jobId, "jobId"), (tenantId, "tenantId"), (take, "take")));
         runs.AddCommand(GetListCommand(runtime, globals, "query", "/api/v1/jobruns/query", (status, "status"), (jobId, "jobId"), (tenantId, "tenantId")));
         runs.AddCommand(GetByIdCommand(runtime, globals, "get", "/api/v1/jobruns/{id}"));
@@ -1797,7 +1796,7 @@ internal static class NetRatelCli
         runs.AddCommand(BodyCommand(runtime, globals, "cancel", HttpMethod.Post, "/api/v1/jobruns/{id}/cancel"));
         runs.AddCommand(DeleteByIdCommand(runtime, globals, "delete", "/api/v1/jobruns/{id}"));
         var runId = new Argument<long>("id");
-        var ordinal = new Option<int>("--ordinal", () => 1, "Step ordinal.");
+        var ordinal = new Option<int>("--ordinal") { Description = "Step ordinal.", DefaultValueFactory = _ => 1 };
         var logs = new Command("logs", "GET /api/v1/jobruns/{id}/steps/{ordinal}/logs") { runId, ordinal };
         logs.SetHandler(ctx => SendAsync(runtime, globals, ctx, HttpMethod.Get, $"/api/v1/jobruns/{ctx.ParseResult.GetValueForArgument(runId)}/steps/{ctx.ParseResult.GetValueForOption(ordinal)}/logs"));
         runs.AddCommand(logs);
@@ -1807,12 +1806,12 @@ internal static class NetRatelCli
     private static Command BuildTasksCommand(CliRuntime runtime, GlobalOptions globals)
     {
         var tasks = new Command("tasks", "Inspect source-backed V2 agent tasks.");
-        var requestId = new Option<string?>("--request-id", "Request id.");
-        var recentLimit = new Option<int?>("--limit", "Maximum task count.");
-        var agent = new Option<string?>("--agent-id", "Persisted V2 agent identifier.");
-        var tenant = new Option<int?>("--tenant-id", "Tenant id.");
-        var type = new Option<string?>("--task-type", "Task type.");
-        var status = new Option<string?>("--status", "Task status.");
+        var requestId = new Option<string?>("--request-id") { Description = "Request id." };
+        var recentLimit = new Option<int?>("--limit") { Description = "Maximum task count." };
+        var agent = new Option<string?>("--agent-id") { Description = "Persisted V2 agent identifier." };
+        var tenant = new Option<int?>("--tenant-id") { Description = "Tenant id." };
+        var type = new Option<string?>("--task-type") { Description = "Task type." };
+        var status = new Option<string?>("--status") { Description = "Task status." };
         tasks.AddCommand(BuildTasksListCommand(runtime, globals, requestId, recentLimit, agent, tenant, type, status));
         tasks.AddCommand(BuildTasksResultCommand(runtime, globals));
         tasks.AddCommand(GetAgentListCommand(runtime, globals, "recent", "/api/v2/tasks/recent", AgentShape.Tasks, (recentLimit, "limit"), (agent, "agentId"), (tenant, "tenantId"), (type, "taskType"), (status, "status")));
@@ -1832,7 +1831,7 @@ internal static class NetRatelCli
         Option<string?> type,
         Option<string?> status)
     {
-        var raw = new Option<bool>("--raw", "Print the unshaped API response.");
+        var raw = new Option<bool>("--raw") { Description = "Print the unshaped API response." };
         var command = new Command("list", "List recent client tasks, or inspect one request with --request-id.")
         {
             requestId,
@@ -1866,8 +1865,8 @@ internal static class NetRatelCli
 
     private static Command BuildTasksResultCommand(CliRuntime runtime, GlobalOptions globals)
     {
-        var requestId = new Argument<string>("request-id", "Task request id.");
-        var rawLogs = new Option<bool>("--raw-logs", "Include raw task log rows in the result.");
+        var requestId = new Argument<string>("request-id") { Description = "Task request id." };
+        var rawLogs = new Option<bool>("--raw-logs") { Description = "Include raw task log rows in the result." };
         var command = new Command("result", "Fetch task status plus output by request id.") { requestId, rawLogs };
 
         command.SetHandler(async ctx =>
@@ -1889,9 +1888,9 @@ internal static class NetRatelCli
 
     private static Command BuildTaskLogsCommand(CliRuntime runtime, GlobalOptions globals)
     {
-        var id = new Argument<string>("id", "Positive V2 task identifier.");
-        var sinceId = new Option<long?>("--since-id", "Optional exclusive log sequence.");
-        var stream = new Option<string?>("--stream", "Optional log stream: all, stdout, or stderr.");
+        var id = new Argument<string>("id") { Description = "Positive V2 task identifier." };
+        var sinceId = new Option<long?>("--since-id") { Description = "Optional exclusive log sequence." };
+        var stream = new Option<string?>("--stream") { Description = "Optional log stream: all, stdout, or stderr." };
         var command = new Command("logs", "Read bounded logs for a V2 task.") { id, sinceId, stream };
         command.SetHandler(ctx => SendAsync(runtime, globals, ctx, HttpMethod.Get,
             "/api/v2/tasks/" + Escape(ctx.ParseResult.GetValueForArgument(id)) + "/logs" + Query(ctx, (sinceId, "sinceId"), (stream, "stream"))));
@@ -1900,9 +1899,9 @@ internal static class NetRatelCli
 
     private static Command BuildTaskLogsByRequestCommand(CliRuntime runtime, GlobalOptions globals)
     {
-        var requestId = new Argument<string>("request-id", "Task request identifier.");
-        var sinceId = new Option<long?>("--since-id", "Optional exclusive log sequence.");
-        var stream = new Option<string?>("--stream", "Optional log stream: all, stdout, or stderr.");
+        var requestId = new Argument<string>("request-id") { Description = "Task request identifier." };
+        var sinceId = new Option<long?>("--since-id") { Description = "Optional exclusive log sequence." };
+        var stream = new Option<string?>("--stream") { Description = "Optional log stream: all, stdout, or stderr." };
         var command = new Command("logs-by-request", "Read bounded logs for a task request.") { requestId, sinceId, stream };
         command.SetHandler(ctx => SendAsync(runtime, globals, ctx, HttpMethod.Get,
             "/api/v2/tasks/logs" + Query(("requestId", ctx.ParseResult.GetValueForArgument(requestId)), ("sinceId", ctx.ParseResult.GetValueForOption(sinceId)?.ToString(CultureInfo.InvariantCulture)), ("stream", ctx.ParseResult.GetValueForOption(stream)))));
@@ -1916,9 +1915,9 @@ internal static class NetRatelCli
         clients.AddCommand(BuildDevelopmentTelemetryCommand(runtime, globals));
         clients.AddCommand(BuildDevelopmentTelemetryWindowCommand(runtime, globals));
         clients.AddCommand(BuildDevelopmentClientLogsCommand(runtime, globals));
-        var clientIdentity = new Option<string?>("--client-identity", "Optional agent UUID accepted by the source API's legacy-named query parameter.");
-        var releaseId = new Option<int?>("--release-id", "Optional positive update-release identifier.");
-        var status = new Option<string?>("--status", "Optional update-attempt state.");
+        var clientIdentity = new Option<string?>("--client-identity") { Description = "Optional agent UUID accepted by the source API's legacy-named query parameter." };
+        var releaseId = new Option<int?>("--release-id") { Description = "Optional positive update-release identifier." };
+        var status = new Option<string?>("--status") { Description = "Optional update-attempt state." };
         clients.AddCommand(GetListCommand(runtime, globals, "update-attempts", "/api/v1/client-updates/attempts", (clientIdentity, "clientIdentity"), (releaseId, "releaseId"), (status, "status")));
         return clients;
     }
@@ -1943,8 +1942,8 @@ internal static class NetRatelCli
     private static Command BuildDevelopmentTelemetryWindowCommand(CliRuntime runtime, GlobalOptions globals)
     {
         var (tenantId, agentId) = DevelopmentTargetOptions();
-        var windowSeconds = new Option<int?>("--window-seconds", "Bounded telemetry observation window from 1 through 15 seconds.");
-        var maxSamples = new Option<int?>("--max-samples", "Maximum accepted telemetry samples from 1 through 20.");
+        var windowSeconds = new Option<int?>("--window-seconds") { Description = "Bounded telemetry observation window from 1 through 15 seconds." };
+        var maxSamples = new Option<int?>("--max-samples") { Description = "Maximum accepted telemetry samples from 1 through 20." };
         var command = new Command("telemetry-window", "Read a bounded persisted Development target telemetry window.") { tenantId, agentId, windowSeconds, maxSamples };
         command.SetHandler(ctx =>
         {
@@ -1982,13 +1981,13 @@ internal static class NetRatelCli
         logs.AddCommand(sources);
 
         var (historyTenantId, historyAgentId) = DevelopmentTargetOptions();
-        var sourceId = new Option<string>("--source-id", "Advertised client log source identifier.") { IsRequired = true };
-        var cursor = new Option<string?>("--cursor", "Optional opaque exclusive history cursor.");
-        var pageSize = new Option<int?>("--page-size", "Bounded history page size from 1 through 100.");
-        var severity = new Option<string?>("--severity", "Optional exact severity filter advertised by the selected source.");
-        var prefix = new Option<string?>("--prefix", "Optional exact prefix filter advertised by the selected source.");
-        var category = new Option<string?>("--category", "Optional exact category filter advertised by the selected source.");
-        var text = new Option<string?>("--text", "Optional bounded log text filter.");
+        var sourceId = new Option<string>("--source-id") { Description = "Advertised client log source identifier.",  Required = true };
+        var cursor = new Option<string?>("--cursor") { Description = "Optional opaque exclusive history cursor." };
+        var pageSize = new Option<int?>("--page-size") { Description = "Bounded history page size from 1 through 100." };
+        var severity = new Option<string?>("--severity") { Description = "Optional exact severity filter advertised by the selected source." };
+        var prefix = new Option<string?>("--prefix") { Description = "Optional exact prefix filter advertised by the selected source." };
+        var category = new Option<string?>("--category") { Description = "Optional exact category filter advertised by the selected source." };
+        var text = new Option<string?>("--text") { Description = "Optional bounded log text filter." };
         var history = new Command("history", "Read a bounded, cursor-paged Development client log history.") { historyTenantId, historyAgentId, sourceId, cursor, pageSize, severity, prefix, category, text };
         history.SetHandler(ctx =>
         {
@@ -2007,9 +2006,9 @@ internal static class NetRatelCli
         logs.AddCommand(history);
 
         var (tailTenantId, tailAgentId) = DevelopmentTargetOptions();
-        var tailSourceId = new Option<string>("--source-id", "Advertised client log source identifier.") { IsRequired = true };
-        var tailWindowSeconds = new Option<int?>("--window-seconds", "Bounded log observation window from 1 through 15 seconds.");
-        var maxRecords = new Option<int?>("--max-records", "Maximum log records from 1 through 100.");
+        var tailSourceId = new Option<string>("--source-id") { Description = "Advertised client log source identifier.",  Required = true };
+        var tailWindowSeconds = new Option<int?>("--window-seconds") { Description = "Bounded log observation window from 1 through 15 seconds." };
+        var maxRecords = new Option<int?>("--max-records") { Description = "Maximum log records from 1 through 100." };
         var tail = new Command("tail", "Read a bounded live Development client log tail window.") { tailTenantId, tailAgentId, tailSourceId, tailWindowSeconds, maxRecords };
         tail.SetHandler(ctx =>
         {
@@ -2029,8 +2028,8 @@ internal static class NetRatelCli
         logs.AddCommand(tail);
 
         var (resyncTenantId, resyncAgentId) = DevelopmentTargetOptions();
-        var resyncSourceId = new Option<string>("--source-id", "Advertised client log source identifier to refresh through the current gateway.") { IsRequired = true };
-        var confirmResync = new Option<bool>("--confirm", "Confirm the bounded history refresh and gap-clear action.");
+        var resyncSourceId = new Option<string>("--source-id") { Description = "Advertised client log source identifier to refresh through the current gateway.",  Required = true };
+        var confirmResync = new Option<bool>("--confirm") { Description = "Confirm the bounded history refresh and gap-clear action." };
         var resync = new Command("resync", "Confirm a bounded current-history refresh and clear a previously reported log gap only after it succeeds.")
         {
             resyncTenantId,
@@ -2062,12 +2061,12 @@ internal static class NetRatelCli
 
     private static (Option<int> TenantId, Option<string> AgentId) DevelopmentTargetOptions() =>
     (
-        new Option<int>("--tenant-id", "Positive tenant identifier for the persisted Development target.") { IsRequired = true },
-        new Option<string>("--agent-id", "Persisted Development target agent UUID.") { IsRequired = true }
+        new Option<int>("--tenant-id") { Description = "Positive tenant identifier for the persisted Development target.",  Required = true },
+        new Option<string>("--agent-id") { Description = "Persisted Development target agent UUID.",  Required = true }
     );
 
     private static (int TenantId, Guid AgentId) ParseDevelopmentTarget(
-        InvocationContext context,
+        CliInvocationContext context,
         Option<int> tenantId,
         Option<string> agentId)
     {
@@ -2085,7 +2084,7 @@ internal static class NetRatelCli
     {
         var files = new Command("client-files", "Browse and mutate client files.");
         var identity = new Argument<string>("identity");
-        var path = new Option<string>("--path", "Remote path.") { IsRequired = true };
+        var path = new Option<string>("--path") { Description = "Remote path.",  Required = true };
         var browse = new Command("browse", "List a remote directory.") { identity, path };
         browse.SetHandler(ctx => SendAsync(runtime, globals, ctx, HttpMethod.Get, $"/api/v1/clients/{Escape(ctx.ParseResult.GetValueForArgument(identity))}/filesystem?path={Escape(ctx.ParseResult.GetValueForOption(path)!)}"));
         files.AddCommand(browse);
@@ -2133,7 +2132,7 @@ internal static class NetRatelCli
         Option<int?>? pageSize = null;
         if (includePageSize)
         {
-            pageSize = new Option<int?>("--page-size", "Optional page size from 1 through 100.");
+            pageSize = new Option<int?>("--page-size") { Description = "Optional page size from 1 through 100." };
             command.AddOption(pageSize);
         }
 
@@ -2175,7 +2174,7 @@ internal static class NetRatelCli
     {
         var command = new Command(name, description);
         var (tenantId, agentId) = AddCommandTargetOptions(command);
-        var artifactId = new Option<Guid>("--artifact-id", "Caller-owned artifact UUID.") { IsRequired = true };
+        var artifactId = new Option<Guid>("--artifact-id") { Description = "Caller-owned artifact UUID.",  Required = true };
         command.AddOption(artifactId);
         command.SetHandler(ctx =>
         {
@@ -2190,7 +2189,7 @@ internal static class NetRatelCli
     {
         var command = new Command(name, description);
         var (tenantId, agentId) = AddCommandTargetOptions(command);
-        var artifactId = new Option<Guid>("--artifact-id", "Caller-owned artifact UUID.") { IsRequired = true };
+        var artifactId = new Option<Guid>("--artifact-id") { Description = "Caller-owned artifact UUID.",  Required = true };
         command.AddOption(artifactId);
         var confirmation = confirmed ? AddOperatorFileConfirmationOptions(command, name) : null;
         command.SetHandler(async ctx =>
@@ -2285,14 +2284,14 @@ internal static class NetRatelCli
     {
         var planToken = RequiredOption("--plan-token", $"Opaque credential returned by preview-{operation.Replace("confirm-", string.Empty, StringComparison.Ordinal)}.");
         var idempotencyKey = RequiredOption("--idempotency-key", $"Opaque credential returned by preview-{operation.Replace("confirm-", string.Empty, StringComparison.Ordinal)}.");
-        var confirm = new Option<bool>("--confirm", "Confirm this unchanged policy-admitted file mutation.");
+        var confirm = new Option<bool>("--confirm") { Description = "Confirm this unchanged policy-admitted file mutation." };
         command.AddOption(planToken);
         command.AddOption(idempotencyKey);
         command.AddOption(confirm);
         return new FileConfirmationOptions(planToken, idempotencyKey, confirm);
     }
 
-    private static async Task<bool> RequireOperatorFileConfirmationAsync(CliRuntime runtime, InvocationContext context, GlobalOptions globals, FileConfirmationOptions? confirmation, string operation)
+    private static async Task<bool> RequireOperatorFileConfirmationAsync(CliRuntime runtime, CliInvocationContext context, GlobalOptions globals, FileConfirmationOptions? confirmation, string operation)
     {
         if (confirmation is null) return true;
         if (!context.ParseResult.GetValueForOption(confirmation.Confirm))
@@ -2312,7 +2311,7 @@ internal static class NetRatelCli
         return true;
     }
 
-    private static void AddOperatorFileConfirmation(JsonObject body, InvocationContext context, FileConfirmationOptions? confirmation)
+    private static void AddOperatorFileConfirmation(JsonObject body, CliInvocationContext context, FileConfirmationOptions? confirmation)
     {
         if (confirmation is null) return;
         body["planToken"] = context.ParseResult.GetValueForOption(confirmation.PlanToken);
@@ -2387,8 +2386,8 @@ internal static class NetRatelCli
     private static Command BuildTerminalListHostsCommand(CliRuntime runtime, GlobalOptions globals)
     {
         var command = new Command("listhosts", "List clients with terminal-ready host names and shell hints.");
-        var onlineOnly = new Option<bool>("--online-only", "Only include online and enabled clients.");
-        var search = new Option<string?>("--search", "Filter by host, display name, client name, identity, or short id.");
+        var onlineOnly = new Option<bool>("--online-only") { Description = "Only include online and enabled clients." };
+        var search = new Option<string?>("--search") { Description = "Filter by host, display name, client name, identity, or short id." };
         command.AddOption(onlineOnly);
         command.AddOption(search);
         command.SetHandler(async ctx =>
@@ -2427,14 +2426,14 @@ internal static class NetRatelCli
 
     private static Command BuildTerminalCommandCommand(CliRuntime runtime, GlobalOptions globals)
     {
-        var commandText = new Argument<string>("command", "Command text to run.");
-        var host = new Argument<string>("host", "Host name, display name, client name, short id, or full client identity.");
-        var shell = new Option<string?>("--shell", "Preferred shell: auto, powershell, pwsh, cmd, bash, sh, or zsh.");
-        var timeoutSeconds = new Option<int>("--timeout-seconds", () => 120, "Maximum command runtime and CLI wait time.");
-        var workingDirectory = new Option<string?>("--working-directory", "Remote working directory.");
-        var noWait = new Option<bool>("--no-wait", "Submit the command and return request ids without polling.");
-        var pollSeconds = new Option<int>("--poll-seconds", () => 2, "Seconds between status polls while waiting.");
-        var rawLogs = new Option<bool>("--raw-logs", "Include raw task log rows in the result.");
+        var commandText = new Argument<string>("command") { Description = "Command text to run." };
+        var host = new Argument<string>("host") { Description = "Host name, display name, client name, short id, or full client identity." };
+        var shell = new Option<string?>("--shell") { Description = "Preferred shell: auto, powershell, pwsh, cmd, bash, sh, or zsh." };
+        var timeoutSeconds = new Option<int>("--timeout-seconds") { Description = "Maximum command runtime and CLI wait time.", DefaultValueFactory = _ => 120 };
+        var workingDirectory = new Option<string?>("--working-directory") { Description = "Remote working directory." };
+        var noWait = new Option<bool>("--no-wait") { Description = "Submit the command and return request ids without polling." };
+        var pollSeconds = new Option<int>("--poll-seconds") { Description = "Seconds between status polls while waiting.", DefaultValueFactory = _ => 2 };
+        var rawLogs = new Option<bool>("--raw-logs") { Description = "Include raw task log rows in the result." };
 
         var command = new Command("command", "Run a one-shot shell command on a client by host name.") { commandText, host, shell, timeoutSeconds, workingDirectory, noWait, pollSeconds, rawLogs };
         command.SetHandler(async ctx =>
@@ -2523,7 +2522,7 @@ internal static class NetRatelCli
     private static Command BuildSearchCommand(CliRuntime runtime, GlobalOptions globals)
     {
         var search = new Command("search", "Search major NetRatel objects.");
-        var q = new Option<string?>("--query", "Search query.");
+        var q = new Option<string?>("--query") { Description = "Search query." };
         foreach (var item in new[] { "tenants", "scripts", "jobs", "requests", "clients", "tasks" })
         {
             search.AddCommand(GetAgentListCommand(runtime, globals, item, $"/api/v1/global-search/{item}", AgentShape.Search, (q, "q")));
@@ -2579,10 +2578,10 @@ internal static class NetRatelCli
     private static Command BuildRawCommand(CliRuntime runtime, GlobalOptions globals)
     {
         var raw = new Command("raw", "Call an operator-safe API path directly.");
-        var method = new Argument<string>("method", "HTTP method: get, post, put, delete.");
-        var path = new Option<string>("--path", "Operator-safe /api/v1 path.") { IsRequired = true };
-        var body = new Option<string?>("--body", "JSON request body.");
-        var bodyFile = new Option<string?>("--body-file", "Path to JSON request body file.");
+        var method = new Argument<string>("method") { Description = "HTTP method: get, post, put, delete." };
+        var path = new Option<string>("--path") { Description = "Operator-safe /api/v1 path.",  Required = true };
+        var body = new Option<string?>("--body") { Description = "JSON request body." };
+        var bodyFile = new Option<string?>("--body-file") { Description = "Path to JSON request body file." };
         raw.AddArgument(method);
         raw.AddOption(path);
         raw.AddOption(body);
@@ -2602,7 +2601,7 @@ internal static class NetRatelCli
         return raw;
     }
 
-    private static async Task<List<TerminalHostInfo>> FetchTerminalHostsAsync(CliRuntime runtime, GlobalOptions globals, InvocationContext ctx)
+    private static async Task<List<TerminalHostInfo>> FetchTerminalHostsAsync(CliRuntime runtime, GlobalOptions globals, CliInvocationContext ctx)
     {
         var response = await SendStringAsync(runtime, globals, ctx, HttpMethod.Get, "/api/v1/clients/", null).ConfigureAwait(false);
         using var doc = JsonDocument.Parse(response.Body);
@@ -2734,7 +2733,7 @@ internal static class NetRatelCli
             _ => 0
         };
 
-    private static async Task<TerminalTaskSnapshot?> FetchTaskByRequestIdAsync(CliRuntime runtime, GlobalOptions globals, InvocationContext ctx, string requestId)
+    private static async Task<TerminalTaskSnapshot?> FetchTaskByRequestIdAsync(CliRuntime runtime, GlobalOptions globals, CliInvocationContext ctx, string requestId)
     {
         var response = await SendStringAsync(runtime, globals, ctx, HttpMethod.Get, "/api/v2/tasks" + Query(("requestId", requestId)), null).ConfigureAwait(false);
         using var doc = JsonDocument.Parse(response.Body);
@@ -2747,7 +2746,7 @@ internal static class NetRatelCli
         return first.ValueKind == JsonValueKind.Object ? ParseTaskResponse(first) : null;
     }
 
-    private static async Task<TerminalTaskLookup> TryFetchTaskByRequestIdAsync(CliRuntime runtime, GlobalOptions globals, InvocationContext ctx, string requestId)
+    private static async Task<TerminalTaskLookup> TryFetchTaskByRequestIdAsync(CliRuntime runtime, GlobalOptions globals, CliInvocationContext ctx, string requestId)
     {
         try
         {
@@ -2759,7 +2758,7 @@ internal static class NetRatelCli
         }
     }
 
-    private static async Task<TerminalTaskLog[]> FetchTaskLogsAsync(CliRuntime runtime, GlobalOptions globals, InvocationContext ctx, string requestId)
+    private static async Task<TerminalTaskLog[]> FetchTaskLogsAsync(CliRuntime runtime, GlobalOptions globals, CliInvocationContext ctx, string requestId)
     {
         var response = await SendStringAsync(runtime, globals, ctx, HttpMethod.Get, "/api/v2/tasks/logs" + Query(("requestId", requestId), ("sinceId", "0"), ("stream", "all")), null).ConfigureAwait(false);
         using var doc = JsonDocument.Parse(response.Body);
@@ -2775,7 +2774,7 @@ internal static class NetRatelCli
             Seq: GetLong(item, "seq"))).ToArray();
     }
 
-    private static async Task<TerminalTaskLogsLookup> TryFetchTaskLogsAsync(CliRuntime runtime, GlobalOptions globals, InvocationContext ctx, string requestId)
+    private static async Task<TerminalTaskLogsLookup> TryFetchTaskLogsAsync(CliRuntime runtime, GlobalOptions globals, CliInvocationContext ctx, string requestId)
     {
         try
         {
@@ -3057,7 +3056,7 @@ internal static class NetRatelCli
     {
         var command = new Command(name, $"GET {path}");
         foreach (var (option, _) in query) command.AddOption(option);
-        var raw = new Option<bool>("--raw", "Print the unshaped API response.");
+        var raw = new Option<bool>("--raw") { Description = "Print the unshaped API response." };
         command.AddOption(raw);
         command.SetHandler(async ctx =>
         {
@@ -3246,14 +3245,14 @@ internal static class NetRatelCli
         if (idArg is not null) command.AddArgument(idArg);
         if (identityArg is not null) command.AddArgument(identityArg);
 
-        var body = new Option<string?>("--body", "JSON request body. Overrides field flags.");
-        var bodyFile = new Option<string?>("--body-file", "Path to JSON request body file. Overrides field flags.");
+        var body = new Option<string?>("--body") { Description = "JSON request body. Overrides field flags." };
+        var bodyFile = new Option<string?>("--body-file") { Description = "Path to JSON request body file. Overrides field flags." };
         command.AddOption(body);
         command.AddOption(bodyFile);
         var fields = new List<(Option<string?> option, string jsonName)>();
         foreach (var (optionName, jsonName) in bodyOptions)
         {
-            var option = new Option<string?>(optionName, $"JSON field '{jsonName}'.");
+            var option = new Option<string?>(optionName) { Description = $"JSON field '{jsonName}'." };
             command.AddOption(option);
             fields.Add((option, jsonName));
         }
@@ -3271,7 +3270,7 @@ internal static class NetRatelCli
         return command;
     }
 
-    private static async Task SendAsync(CliRuntime runtime, GlobalOptions globals, InvocationContext ctx, HttpMethod method, string path, string? body = null)
+    private static async Task SendAsync(CliRuntime runtime, GlobalOptions globals, CliInvocationContext ctx, HttpMethod method, string path, string? body = null)
     {
         var response = await SendStringAsync(runtime, globals, ctx, method, path, body).ConfigureAwait(false);
         if (!ctx.ParseResult.GetValueForOption(globals.Quiet))
@@ -3280,7 +3279,7 @@ internal static class NetRatelCli
         }
     }
 
-    private static async Task<ApiStringResponse> SendStringAsync(CliRuntime runtime, GlobalOptions globals, InvocationContext ctx, HttpMethod method, string path, string? body)
+    private static async Task<ApiStringResponse> SendStringAsync(CliRuntime runtime, GlobalOptions globals, CliInvocationContext ctx, HttpMethod method, string path, string? body)
     {
         var loaded = LoadConfig(ctx, globals);
         var result = await SendRawAsync(runtime, loaded.Resolved!, method, path, authenticated: true, body, ctx.GetCancellationToken()).ConfigureAwait(false);
@@ -3307,7 +3306,7 @@ internal static class NetRatelCli
         return new ApiStringResponse((int)response.StatusCode, response.IsSuccessStatusCode, await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false));
     }
 
-    private static LoadedConfig LoadConfig(InvocationContext ctx, GlobalOptions globals, bool requireAuth = true)
+    private static LoadedConfig LoadConfig(CliInvocationContext ctx, GlobalOptions globals, bool requireAuth = true)
     {
         var store = new CliConfigStore(ctx.ParseResult.GetValueForOption(globals.ConfigPath));
         var file = store.Load();
@@ -3323,7 +3322,7 @@ internal static class NetRatelCli
         return new LoadedConfig(file, env.Merge(overrides), requireAuth ? merged.Resolve() : null);
     }
 
-    private static async Task WriteResponseBodyAsync(CliRuntime runtime, string body, int statusCode, InvocationContext ctx, GlobalOptions globals)
+    private static async Task WriteResponseBodyAsync(CliRuntime runtime, string body, int statusCode, CliInvocationContext ctx, GlobalOptions globals)
     {
         if (string.IsNullOrWhiteSpace(body))
         {
@@ -3348,7 +3347,7 @@ internal static class NetRatelCli
         }
     }
 
-    private static async Task WriteJsonAsync(CliRuntime runtime, object payload, InvocationContext ctx, GlobalOptions globals)
+    private static async Task WriteJsonAsync(CliRuntime runtime, object payload, CliInvocationContext ctx, GlobalOptions globals)
     {
         if (ctx.ParseResult.GetValueForOption(globals.Output) == "text")
         {
@@ -3371,7 +3370,7 @@ internal static class NetRatelCli
         _ => ("unexpected_error", exception.Message, CliExitCodes.RemoteError, null)
     };
 
-    private static string Query(InvocationContext ctx, params (Option option, string queryName)[] options)
+    private static string Query(CliInvocationContext ctx, params (Option option, string queryName)[] options)
         => Query(options.Select(option => (option.queryName, ValueToString(ctx.ParseResult.GetValueForOption(option.option)))).ToArray());
 
     private static string Query(params (string name, string? value)[] values)
@@ -3380,7 +3379,7 @@ internal static class NetRatelCli
         return items.Length == 0 ? string.Empty : "?" + string.Join("&", items);
     }
 
-    private static string BuildBodyFromOptions(InvocationContext ctx, IEnumerable<(Option<string?> option, string jsonName)> fields)
+    private static string BuildBodyFromOptions(CliInvocationContext ctx, IEnumerable<(Option<string?> option, string jsonName)> fields)
     {
         var obj = new JsonObject();
         foreach (var (option, jsonName) in fields)
@@ -3538,16 +3537,16 @@ internal static class NetRatelCli
 
     private sealed class GlobalOptions
     {
-        public Option<string?> ApiBaseUrl { get; } = new("--api-base-url", "NetRatel API base URL.");
-        public Option<string?> TokenUrl { get; } = new("--token-url", "Oidc token URL.");
-        public Option<string?> ClientId { get; } = new("--client-id", "Oidc client id.");
-        public Option<string?> Username { get; } = new("--username", "Oidc service username.");
-        public Option<string?> AppPassword { get; } = new("--app-password", "Oidc service-user app password.");
-        public Option<string?> Scope { get; } = new("--scope", "Oidc OAuth scope.");
-        public Option<string?> ConfigPath { get; } = new("--config", "CLI config file path.");
-        public Option<string> Output { get; } = new("--output", () => "json", "Output format: json or text.");
-        public Option<bool> Pretty { get; } = new("--pretty", "Pretty-print JSON output.");
-        public Option<bool> Quiet { get; } = new("--quiet", "Suppress normal output.");
+        public Option<string?> ApiBaseUrl { get; } = new("--api-base-url") { Description = "NetRatel API base URL." };
+        public Option<string?> TokenUrl { get; } = new("--token-url") { Description = "Oidc token URL." };
+        public Option<string?> ClientId { get; } = new("--client-id") { Description = "Oidc client id." };
+        public Option<string?> Username { get; } = new("--username") { Description = "Oidc service username." };
+        public Option<string?> AppPassword { get; } = new("--app-password") { Description = "Oidc service-user app password." };
+        public Option<string?> Scope { get; } = new("--scope") { Description = "Oidc OAuth scope." };
+        public Option<string?> ConfigPath { get; } = new("--config") { Description = "CLI config file path." };
+        public Option<string> Output { get; } = new("--output") { Description = "Output format: json or text.", DefaultValueFactory = _ => "json" };
+        public Option<bool> Pretty { get; } = new("--pretty") { Description = "Pretty-print JSON output." };
+        public Option<bool> Quiet { get; } = new("--quiet") { Description = "Suppress normal output." };
 
         public void AddTo(Command command)
         {
