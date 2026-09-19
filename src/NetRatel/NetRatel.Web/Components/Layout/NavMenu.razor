@@ -3,6 +3,10 @@
 @inject AuthenticationStateProvider AuthenticationStateProvider
 
 <MudNavMenu Class="netratel-nav">
+    <a class="netratel-nav-brand" href="/" aria-label="NetRatel home">
+        <img src="brand/netratel-mark-64.png" width="64" height="64" alt="NetRatel" />
+        <span>NetRatel</span>
+    </a>
     <AuthorizeView Context="outerAuthState">
         <Authorized Context="outerAuthState">
             <MudText Typo="Typo.caption" Class="nav-section-label">Command</MudText>

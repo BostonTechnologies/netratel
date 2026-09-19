@@ -1,6 +1,6 @@
 # NetRatel
 
-![NetRatel — secure, connected automation](docs/assets/netratel/netratel-readme-hero.webp)
+<img src="docs/assets/netratel/netratel-readme-hero.webp" width="960" alt="NetRatel — secure, connected automation" />
 
 NetRatel is a self-hosted application for managing computers and automating
 work across them. Connect machines, view their status, run scripts and jobs,
