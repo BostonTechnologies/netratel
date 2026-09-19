@@ -19,6 +19,11 @@ while (( $# > 0 )); do
 done
 
 [[ -n "$image" && -n "$version" && -n "$revision" ]] || usage
+for required_tool in docker jq tar grep find mktemp; do
+  command -v "$required_tool" >/dev/null 2>&1 || {
+    echo "Required image verifier tool '$required_tool' is unavailable." >&2; exit 1;
+  }
+done
 [[ "$revision" =~ ^[0-9a-f]{40}$ ]] || { echo "Image revision must be a public 40-character SHA." >&2; exit 1; }
 
 inspect="$(docker image inspect "$image")"
@@ -35,6 +40,8 @@ jq -e --arg version "$version" --arg revision "$revision" '
 docker run --rm --entrypoint /bin/sh "$image" -c '
   test -r /app/licenses/LICENSE
   test -r /app/licenses/NOTICE
+  test -s /app/THIRD-PARTY-NOTICES.txt
+  test -s /app/runtime.spdx.json
 ' || {
   echo "Image is missing its required LICENSE or NOTICE file." >&2
   exit 1
@@ -62,6 +69,9 @@ if grep -rI -q -E -- \
   "$layer_dir"; then
   echo "Public image contains potential credential material." >&2
   exit 1
+else
+  scan_status=$?
+  [[ "$scan_status" == 1 ]] || { echo "Public image credential scanner failed." >&2; exit 1; }
 fi
 
 echo "Verified public image metadata, license notices, and generic credential scan: $image"

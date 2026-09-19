@@ -33,6 +33,7 @@ cli_extract_dir=""
 mcp_stdio_extract_dir=""
 mcp_stdio_config_path="$(mktemp --suffix=.json)"
 mcp_stdio_error_path="$(mktemp)"
+bundle_extract_dir=""
 client_volume="${project}-client-state"
 gateway_client="${project}-gateway-client"
 stage="initializing Compose OIDC smoke"
@@ -124,9 +125,20 @@ cleanup() {
   fi
   unlink "$mcp_stdio_config_path" 2>/dev/null || true
   unlink "$mcp_stdio_error_path" 2>/dev/null || true
+  if [[ -n "$bundle_extract_dir" ]]; then
+    find "$bundle_extract_dir" -depth -delete 2>/dev/null || true
+  fi
   return "$status"
 }
 trap cleanup EXIT
+
+if [[ "$mode" == release-images && -n "${NETRATEL_COMPOSE_SMOKE_BUNDLE:-}" ]]; then
+  bundle_extract_dir="$(mktemp -d)"
+  tar -xzf "$NETRATEL_COMPOSE_SMOKE_BUNDLE" -C "$bundle_extract_dir"
+  [[ -s "$bundle_extract_dir/INSTALL.md" ]] || { echo "Extracted bundle lacks installation instructions." >&2; exit 1; }
+  compose_args=(--env-file "$bundle_extract_dir/.env.images.example"
+    -f "$bundle_extract_dir/compose.images.yaml" -f "$root/tests/compose/oidc-smoke.compose.yaml")
+fi
 
 web_port="${NETRATEL_WEB_PORT:-8082}"
 oidc_port="${NETRATEL_OIDC_TEST_PORT:-8080}"

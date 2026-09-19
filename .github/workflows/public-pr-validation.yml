@@ -43,6 +43,7 @@ jobs:
           global-json-file: global.json
       - run: dotnet restore NetRatel.sln
       - run: tools/ci/verify-product-version.sh
+      - run: python3 tools/ci/test-release-validation.py
       - run: dotnet build NetRatel.sln --configuration Release --no-restore
       - run: pwsh src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/playwright.ps1 install --with-deps chromium
       - run: dotnet test NetRatel.sln --configuration Release --no-build --filter "category!=compose" --logger "trx;LogFileName=netratel-tests.trx" --results-directory TestResults
@@ -70,14 +71,8 @@ jobs:
           dotnet restore src/NetRatel/NetRatel.Mcp/NetRatel.Mcp.csproj --runtime linux-x64
           dotnet publish src/NetRatel/NetRatel.Cli/NetRatel.Cli.csproj --configuration Release --no-restore --runtime linux-x64 --self-contained false --output artifacts/cli/netratel-cli-linux-x64
           dotnet publish src/NetRatel/NetRatel.Mcp/NetRatel.Mcp.csproj --configuration Release --no-restore --runtime linux-x64 --self-contained false --output artifacts/mcp-stdio/netratel-mcp-linux-x64
-          dotnet pack src/NetRatel/NetRatel.Cli/NetRatel.Cli.csproj --configuration Release --no-restore --output artifacts/cli
           cp LICENSE NOTICE artifacts/cli/netratel-cli-linux-x64/
           cp LICENSE NOTICE artifacts/mcp-stdio/netratel-mcp-linux-x64/
-          cp "artifacts/cli/NetRatel.Cli.${version}.nupkg" artifacts/
-          tar -C artifacts/cli -czf "artifacts/netratel-cli-${version}-linux-x64.tar.gz" netratel-cli-linux-x64
-          tar -C artifacts/mcp-stdio -czf "artifacts/netratel-mcp-stdio-${version}-linux-x64.tar.gz" netratel-mcp-linux-x64
-          cp release/compose.images.yaml release/compose.mcp-http.yaml release/.env.images.example release/release-manifest.json artifacts/release-bundle/
-          tar -C artifacts/release-bundle -czf "artifacts/netratel-compose-${version}.tar.gz" .
           python3 tools/ci/generate-runtime-sbom.py \
             --project-assets src/NetRatel/NetRatel.Cli/obj/project.assets.json \
             --project-assets src/NetRatel/NetRatel.Mcp/obj/project.assets.json \
@@ -87,6 +82,12 @@ jobs:
             --name NetRatel-runtime-tools \
             --version "$version" \
             --output "artifacts/netratel-${version}.spdx.json"
+          dotnet pack src/NetRatel/NetRatel.Cli/NetRatel.Cli.csproj --configuration Release --no-restore --output artifacts/cli -p:PackageNoticeDirectory="$PWD/artifacts/cli/netratel-cli-linux-x64"
+          cp "artifacts/cli/NetRatel.Cli.${version}.nupkg" artifacts/
+          tar -C artifacts/cli -czf "artifacts/netratel-cli-${version}-linux-x64.tar.gz" netratel-cli-linux-x64
+          tar -C artifacts/mcp-stdio -czf "artifacts/netratel-mcp-stdio-${version}-linux-x64.tar.gz" netratel-mcp-linux-x64
+          cp release/compose.images.yaml release/compose.mcp-http.yaml release/.env.images.example release/release-manifest.json release/INSTALL.md LICENSE NOTICE artifacts/release-bundle/
+          tar -C artifacts/release-bundle -czf "artifacts/netratel-compose-${version}.tar.gz" .
       - run: |
           version="$(jq -r '.version' release/release-manifest.json)"
           (
@@ -130,6 +131,13 @@ jobs:
           dotnet restore src/NetRatel/NetRatel.Client/NetRatel.Client.csproj --runtime "${{ matrix.runtime }}"
           dotnet publish src/NetRatel/NetRatel.Client/NetRatel.Client.csproj --configuration Release --no-restore --runtime "${{ matrix.runtime }}" --output "$directory"
           cp LICENSE NOTICE "$directory/"
+          python3 tools/ci/generate-runtime-sbom.py \
+            --project-assets src/NetRatel/NetRatel.Client/obj/project.assets.json \
+            --distribution "$directory" \
+            --runtime "${{ matrix.runtime }}" \
+            --name "NetRatel-Client-${{ matrix.runtime }}" \
+            --version "$version" \
+            --output "artifacts/netratel-client-${version}-${{ matrix.runtime }}.spdx.json"
           test -f "$directory/netratel-client-manifest.json"
           grep -Fq "\"version\":\"${version}\"" "$directory/netratel-client-manifest.json"
           if [[ "${{ matrix.extension }}" == zip ]]; then
@@ -149,13 +157,6 @@ jobs:
               "$directory/NetRatel.Client" --version
               ;;
           esac
-          python3 tools/ci/generate-runtime-sbom.py \
-            --project-assets src/NetRatel/NetRatel.Client/obj/project.assets.json \
-            --distribution "$directory" \
-            --runtime "${{ matrix.runtime }}" \
-            --name "NetRatel-Client-${{ matrix.runtime }}" \
-            --version "$version" \
-            --output "artifacts/netratel-client-${version}-${{ matrix.runtime }}.spdx.json"
       - shell: bash
         run: |
           version="$(jq -r '.version' release/release-manifest.json)"
@@ -240,6 +241,12 @@ jobs:
           NETRATEL_CLI_SMOKE_ARCHIVE="review-artifacts/netratel-cli-$(jq -r '.version' release/release-manifest.json)-linux-x64.tar.gz" \
             NETRATEL_MCP_STDIO_SMOKE_ARCHIVE="review-artifacts/netratel-mcp-stdio-$(jq -r '.version' release/release-manifest.json)-linux-x64.tar.gz" \
             tools/ci/smoke-oidc-compose.sh
+      - if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: branding-${{ github.job }}
+          path: '**/TestResults/branding/*.png'
+          if-no-files-found: error
 
   release-image-compose:
     name: Release-image Compose generic OIDC smoke test
@@ -266,6 +273,7 @@ jobs:
           tools/ci/scan-public-image.sh --image netratel-client:release-smoke --version "$version" --revision "$GITHUB_SHA"
       - env:
           NETRATEL_COMPOSE_SMOKE_MODE: release-images
+          NETRATEL_COMPOSE_SMOKE_BUNDLE: review-artifacts/netratel-compose-0.1.0-rc.2.tar.gz
           NETRATEL_MIGRATIONS_IMAGE: netratel-migrations:release-smoke
           NETRATEL_API_IMAGE: netratel-api:release-smoke
           NETRATEL_WEB_IMAGE: netratel-web:release-smoke
@@ -285,6 +293,12 @@ jobs:
           NETRATEL_CLI_SMOKE_ARCHIVE="review-artifacts/netratel-cli-$(jq -r '.version' release/release-manifest.json)-linux-x64.tar.gz" \
             NETRATEL_MCP_STDIO_SMOKE_ARCHIVE="review-artifacts/netratel-mcp-stdio-$(jq -r '.version' release/release-manifest.json)-linux-x64.tar.gz" \
             tools/ci/smoke-oidc-compose.sh
+      - if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: branding-${{ github.job }}
+          path: '**/TestResults/branding/*.png'
+          if-no-files-found: error
 
   mcp-http-image-smoke:
     name: HTTP MCP image smoke test

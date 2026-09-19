@@ -38,6 +38,9 @@ RUN dotnet publish src/NetRatel/NetRatel.Mcp.Http/NetRatel.Mcp.Http.csproj \
       --output /out \
       /p:UseAppHost=false
 
+RUN apt-get update && apt-get install -y --no-install-recommends python3
+RUN python3 tools/ci/generate-runtime-sbom.py --project-assets src/NetRatel/NetRatel.Mcp.Http/obj/project.assets.json --distribution /out --name NetRatel.Mcp.Http --version "$(dotnet msbuild src/NetRatel/NetRatel.Mcp.Http/NetRatel.Mcp.Http.csproj -nologo -getProperty:Version)" --output /out/runtime.spdx.json
+
 FROM base AS final
 WORKDIR /app
 COPY --from=build --chown=netratel-mcp:netratel-mcp /out ./

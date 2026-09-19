@@ -93,8 +93,8 @@ the same owner-only `600` permissions described above.
 
 The HTTP MCP image is an explicit opt-in overlay. Set its distinct HTTPS OIDC,
 resource URI, audience, API target, group, and scope values, then validate it
-with `docker compose -f release/compose.images.yaml -f
-release/compose.mcp-http.yaml config --quiet` before starting. Do not point it
+with `docker compose --env-file .env -f compose.images.yaml -f
+compose.mcp-http.yaml config --quiet` from the extracted directory before starting. Do not point it
 at an internal-only address or reuse Web, API, or native-agent credentials.
 
 ## Prerelease posture

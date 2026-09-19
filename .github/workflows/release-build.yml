@@ -54,6 +54,7 @@ jobs:
       - run: tools/ci/check-public-disclosure.sh
       - run: tools/ci/test-public-disclosure.sh
       - run: tools/ci/verify-product-version.sh
+      - run: python3 tools/ci/test-release-validation.py
       - run: dotnet restore NetRatel.sln
       - run: dotnet build NetRatel.sln --configuration Release --no-restore
       - run: pwsh src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/playwright.ps1 install --with-deps chromium
@@ -81,14 +82,8 @@ jobs:
           dotnet restore src/NetRatel/NetRatel.Mcp/NetRatel.Mcp.csproj --runtime linux-x64
           dotnet publish src/NetRatel/NetRatel.Cli/NetRatel.Cli.csproj --configuration Release --no-restore --runtime linux-x64 --self-contained false --output artifacts/cli/netratel-cli-linux-x64
           dotnet publish src/NetRatel/NetRatel.Mcp/NetRatel.Mcp.csproj --configuration Release --no-restore --runtime linux-x64 --self-contained false --output artifacts/mcp-stdio/netratel-mcp-linux-x64
-          dotnet pack src/NetRatel/NetRatel.Cli/NetRatel.Cli.csproj --configuration Release --no-restore --output artifacts/cli
           cp LICENSE NOTICE artifacts/cli/netratel-cli-linux-x64/
           cp LICENSE NOTICE artifacts/mcp-stdio/netratel-mcp-linux-x64/
-          cp "artifacts/cli/NetRatel.Cli.${VERSION}.nupkg" artifacts/
-          tar -C artifacts/cli -czf "artifacts/netratel-cli-${VERSION}-linux-x64.tar.gz" netratel-cli-linux-x64
-          tar -C artifacts/mcp-stdio -czf "artifacts/netratel-mcp-stdio-${VERSION}-linux-x64.tar.gz" netratel-mcp-linux-x64
-          cp release/compose.images.yaml release/compose.mcp-http.yaml release/.env.images.example release/release-manifest.json artifacts/release-bundle/
-          tar -C artifacts/release-bundle -czf "artifacts/netratel-compose-${VERSION}.tar.gz" .
           python3 tools/ci/generate-runtime-sbom.py \
             --project-assets src/NetRatel/NetRatel.Cli/obj/project.assets.json \
             --project-assets src/NetRatel/NetRatel.Mcp/obj/project.assets.json \
@@ -98,6 +93,12 @@ jobs:
             --name NetRatel-runtime-tools \
             --version "$VERSION" \
             --output "artifacts/netratel-${VERSION}.spdx.json"
+          dotnet pack src/NetRatel/NetRatel.Cli/NetRatel.Cli.csproj --configuration Release --no-restore --output artifacts/cli -p:PackageNoticeDirectory="$PWD/artifacts/cli/netratel-cli-linux-x64"
+          cp "artifacts/cli/NetRatel.Cli.${VERSION}.nupkg" artifacts/
+          tar -C artifacts/cli -czf "artifacts/netratel-cli-${VERSION}-linux-x64.tar.gz" netratel-cli-linux-x64
+          tar -C artifacts/mcp-stdio -czf "artifacts/netratel-mcp-stdio-${VERSION}-linux-x64.tar.gz" netratel-mcp-linux-x64
+          cp release/compose.images.yaml release/compose.mcp-http.yaml release/.env.images.example release/release-manifest.json release/INSTALL.md LICENSE NOTICE artifacts/release-bundle/
+          tar -C artifacts/release-bundle -czf "artifacts/netratel-compose-${VERSION}.tar.gz" .
       - env:
           VERSION: ${{ needs.validate.outputs.version }}
         run: |
@@ -148,6 +149,13 @@ jobs:
           dotnet restore src/NetRatel/NetRatel.Client/NetRatel.Client.csproj --runtime "${{ matrix.runtime }}"
           dotnet publish src/NetRatel/NetRatel.Client/NetRatel.Client.csproj --configuration Release --no-restore --runtime "${{ matrix.runtime }}" --output "artifacts/netratel-client-${{ matrix.runtime }}"
           cp LICENSE NOTICE "artifacts/netratel-client-${{ matrix.runtime }}/"
+          python3 tools/ci/generate-runtime-sbom.py \
+            --project-assets src/NetRatel/NetRatel.Client/obj/project.assets.json \
+            --distribution "artifacts/netratel-client-${{ matrix.runtime }}" \
+            --runtime "${{ matrix.runtime }}" \
+            --name "NetRatel-Client-${{ matrix.runtime }}" \
+            --version "${{ needs.validate.outputs.version }}" \
+            --output "artifacts/netratel-client-${{ needs.validate.outputs.version }}-${{ matrix.runtime }}.spdx.json"
           test -f "artifacts/netratel-client-${{ matrix.runtime }}/netratel-client-manifest.json"
           grep -Fq "\"version\":\"${{ needs.validate.outputs.version }}\"" "artifacts/netratel-client-${{ matrix.runtime }}/netratel-client-manifest.json"
           if [[ "${{ matrix.extension }}" == zip ]]; then
@@ -173,13 +181,6 @@ jobs:
               "artifacts/netratel-client-${{ matrix.runtime }}/NetRatel.Client" --version
               ;;
           esac
-          python3 tools/ci/generate-runtime-sbom.py \
-            --project-assets src/NetRatel/NetRatel.Client/obj/project.assets.json \
-            --distribution "artifacts/netratel-client-${{ matrix.runtime }}" \
-            --runtime "${{ matrix.runtime }}" \
-            --name "NetRatel-Client-${{ matrix.runtime }}" \
-            --version "${{ needs.validate.outputs.version }}" \
-            --output "artifacts/netratel-client-${{ needs.validate.outputs.version }}-${{ matrix.runtime }}.spdx.json"
       - shell: bash
         run: |
           (
@@ -259,6 +260,7 @@ jobs:
           tools/ci/scan-public-image.sh --image "netratel-client:${VERSION}" --version "$VERSION" --revision "$GITHUB_SHA"
       - env:
           NETRATEL_COMPOSE_SMOKE_MODE: release-images
+          NETRATEL_COMPOSE_SMOKE_BUNDLE: release-artifacts/netratel-compose-${{ needs.validate.outputs.version }}.tar.gz
           NETRATEL_MIGRATIONS_IMAGE: netratel-migrations:${{ needs.validate.outputs.version }}
           NETRATEL_API_IMAGE: netratel-api:${{ needs.validate.outputs.version }}
           NETRATEL_WEB_IMAGE: netratel-web:${{ needs.validate.outputs.version }}
@@ -278,6 +280,12 @@ jobs:
         run: |
           docker compose -f release/compose.images.yaml -f tests/compose/oidc-smoke.compose.yaml config --quiet
           tools/ci/smoke-oidc-compose.sh
+      - if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: branding-${{ github.job }}
+          path: '**/TestResults/branding/*.png'
+          if-no-files-found: error
 
   mcp-http-image-smoke:
     name: Smoke HTTP MCP release-equivalent image

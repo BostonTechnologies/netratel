@@ -46,6 +46,63 @@ and a release tag remain explicit owner actions.
 
 Use `release/compose.images.yaml` only with approved immutable release-image
 digests. It is intentionally a deployment bundle, not a source-build recipe.
+
+## Owner-operated promotion
+
+PR and release rehearsal workflows never call the promotion command. After
+review and explicit publication approval, use a clean checkout of the merged
+public commit and an owner-created `v0.1.0-rc.2` tag pointing to that commit.
+Download the successful rehearsal's four artifact sets into separate directories
+under `review-inputs`, retaining each set's `SHA256SUMS`.
+
+Prepare and verify the flat downloadable layout without publishing:
+
+```sh
+python3 tools/ci/promote-release.py stage --inputs review-inputs --output staged-release --version 0.1.0-rc.2
+(cd staged-release && sha256sum -c SHA256SUMS)
+```
+
+Before choosing a package prefix, an authorized operator must list the
+organization's container packages using a GitHub credential with
+`read:packages`. Public anonymous lookup cannot establish absence of private
+packages. The promotion command repeats this check and rejects names occupied by
+non-public packages. It never changes package visibility.
+
+With a separately approved package prefix and registry login, invoke:
+
+```sh
+python3 tools/ci/promote-release.py promote \
+  --approve "0.1.0-rc.2@$(git rev-parse HEAD)" \
+  --package-prefix APPROVED-PUBLIC-PREFIX \
+  --inputs review-inputs --output promoted-release --state promotion-state.json
+```
+
+This command **pushes images**. Do not run it as a rehearsal. It uses unique
+version/commit tags and never writes `latest` or stable aliases. Its journal
+allows a partial push to resume without rebuilding completed components.
+A pre-existing tag without a corresponding journal is an error requiring
+explicit digest recovery, not permission to overwrite. Preserve the journal.
+New registry packages may initially be private; a separate owner decision is
+required for any visibility change before anonymous verification can succeed.
+
+The command pulls every exact digest using an empty Docker credential directory,
+checks the public source/version labels, then runs the OIDC/enrollment and
+HTTP MCP smokes against those digest references. It finalizes the extracted
+bundle from the returned image digests and records the commit, version, asset
+basenames and hashes in `publication.json`. A failed smoke is not publication
+approval. After the command succeeds, inspect `publication.json`, verify
+`SHA256SUMS` again, and create the prerelease only with explicit owner approval:
+
+```sh
+gh release create v0.1.0-rc.2 promoted-release/* --verify-tag --prerelease \
+  --title "NetRatel 0.1.0-rc.2" --notes-file approved-release-notes.md
+```
+
+The CLI tool is distributed as the downloadable NuGet package; this path does
+not push to NuGet.org. Do not replace rc.1 assets or change its tag. Public
+registry access and owner deployment acceptance are separate from successful
+source checks and non-publishing rehearsal.
+
 ## Release rehearsal validation
 
 The non-publishing release workflow builds the CLI, stdio MCP, all supported

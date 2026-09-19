@@ -17,6 +17,11 @@ while (( $# > 0 )); do
 done
 
 [[ -n "$artifacts" && -n "$version" ]] || usage
+for required_tool in python3 dotnet jq find sort grep tar unzip timeout; do
+  command -v "$required_tool" >/dev/null 2>&1 || {
+    echo "Required artifact verifier tool '$required_tool' is unavailable." >&2; exit 1;
+  }
+done
 [[ -d "$artifacts" ]] || { echo "Artifact directory does not exist: $artifacts" >&2; exit 1; }
 
 temporary_dir="$(mktemp -d)"
@@ -43,6 +48,13 @@ scan_archive_contents() {
     find "$extract_dir" -depth -delete 2>/dev/null || true
     echo "Release archive contains potential key material." >&2
     return 1
+  else
+    local scan_status=$?
+    if [[ "$scan_status" != 1 ]]; then
+      find "$extract_dir" -depth -delete
+      echo "Release archive credential scanner failed." >&2
+      return 1
+    fi
   fi
   find "$extract_dir" -depth -delete 2>/dev/null || true
 }
@@ -72,6 +84,10 @@ archive_has_entry() {
 [[ -s "$artifacts/$cli_tool" ]] || { echo "Missing staged CLI tool package: $cli_tool" >&2; exit 1; }
 unzip -l "$artifacts/$cli_tool" | grep -Eq 'tools/net10\.0/any/(netratel|netratel\.dll)$' ||
   { echo "CLI tool package does not contain the NetRatel tool entry point." >&2; exit 1; }
+for notice in LICENSE NOTICE THIRD-PARTY-NOTICES.txt; do
+  unzip -p "$artifacts/$cli_tool" "$notice" > "$temporary_dir/nuget-$notice"
+  [[ -s "$temporary_dir/nuget-$notice" ]] || { echo "CLI tool package is missing $notice." >&2; exit 1; }
+done
 
 archive_has_entry "$cli" '^netratel-cli-linux-x64/(netratel|netratel\.dll)$' "CLI archive does not contain the NetRatel executable."
 archive_has_entry "$cli" '^netratel-cli-linux-x64/LICENSE$' "CLI archive is missing LICENSE."
@@ -88,6 +104,12 @@ release_extract_dir="$temporary_dir/release"
 mkdir "$release_extract_dir"
 tar -xzf "$artifacts/$cli" -C "$release_extract_dir"
 tar -xzf "$artifacts/$mcp" -C "$release_extract_dir"
+python3 "$(dirname "${BASH_SOURCE[0]}")/verify-runtime-sbom.py" --sbom "$artifacts/$sbom" --root "$release_extract_dir"
+for distribution in netratel-cli-linux-x64 netratel-mcp-linux-x64; do
+  [[ -s "$release_extract_dir/$distribution/THIRD-PARTY-NOTICES.txt" ]] || {
+    echo "Missing third-party distribution notices: $distribution" >&2; exit 1;
+  }
+done
 
 cli_executable="$release_extract_dir/netratel-cli-linux-x64/netratel"
 mcp_assembly="$release_extract_dir/netratel-mcp-linux-x64/NetRatel.Mcp.dll"
