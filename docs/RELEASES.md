@@ -56,8 +56,9 @@ Download the successful release-workflow artifact sets into a sibling release
 workspace (not the clean source checkout), retaining each set's `SHA256SUMS`.
 Create `release-receipt.json` beside them with the repository, workflow path,
 successful run ID and attempt, approved commit/version, and—for every required
-file—the GitHub artifact name and SHA-256. Promotion re-reads the run metadata
-and downloads each named artifact through authenticated GitHub CLI access before
+file—the GitHub artifact name, immutable artifact ID, GitHub ZIP digest,
+explicit artifact-relative path, and file SHA-256. Promotion re-reads the run
+metadata and downloads each identified artifact through authenticated GitHub CLI access before
 any image build or push; a locally recomputed checksum alone is not provenance.
 
 Prepare and verify the flat downloadable layout without publishing:
@@ -68,6 +69,18 @@ python3 tools/ci/promote-release.py stage \
   --inputs ../netratel-release-work/review-inputs \
   --output ../netratel-release-work/staged-release --version 0.1.0-rc.2
 (cd ../netratel-release-work/staged-release && sha256sum -c SHA256SUMS)
+```
+
+Before owner-approved image publication, run the authenticated, non-publishing
+receipt/staging/resume rehearsal against that exact run's downloads and receipt:
+
+```sh
+python3 tools/ci/promote-release.py preflight \
+  --inputs ../netratel-release-work/review-inputs \
+  --receipt ../netratel-release-work/release-receipt.json \
+  --output ../netratel-release-work/preflight-staged \
+  --state ../netratel-release-work/preflight-state.json \
+  --package-prefix reviewed-prefix --version 0.1.0-rc.2
 ```
 
 Before choosing a package prefix, an authorized operator must list the

@@ -55,6 +55,7 @@ jobs:
       - run: tools/ci/test-public-disclosure.sh
       - run: tools/ci/verify-product-version.sh
       - run: python3 tools/ci/test-release-validation.py
+      - run: bash tools/dev/test-oidc-evaluation.sh
       - run: dotnet restore NetRatel.sln
       - run: dotnet build NetRatel.sln --configuration Release --no-restore
       - run: pwsh src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/playwright.ps1 install --with-deps chromium

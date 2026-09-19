@@ -10,6 +10,7 @@ import tempfile
 import unittest
 import hashlib
 import tarfile
+import zipfile
 
 
 def module(name):
@@ -99,10 +100,23 @@ class DistributionTests(unittest.TestCase):
             "headSha": revision,
             "productVersion": version,
             "files": {
-                name: {"artifact": "release-artifacts", "sha256": "a" * 64}
+                name: {"artifact": "release-artifacts", "artifactId": 11,
+                       "artifactDigest": "sha256:" + "c" * 64, "path": name, "sha256": "a" * 64}
                 for name in self.promotion.required_artifacts(version)
             }
         }
+
+    def receipt_for_directory(self, directory, revision="b" * 40):
+        receipt = self.receipt(revision)
+        for name, item in receipt["files"].items():
+            item["sha256"] = hashlib.sha256((directory / name).read_bytes()).hexdigest()
+        return receipt
+
+    def populate_flat_output(self, directory, version="0.1.0-rc.2"):
+        directory.mkdir(parents=True, exist_ok=True)
+        for name in self.promotion.required_artifacts(version):
+            (directory / name).write_bytes(name.encode())
+        self.promotion.checksums(directory)
 
     def test_flat_staging_rejects_missing_files_wrong_checksums_and_nested_names(self):
         inputs = self.root / "inputs"
@@ -138,10 +152,7 @@ class DistributionTests(unittest.TestCase):
 
     def test_staging_rejects_unexpected_output_files(self):
         output = self.root / "output"
-        output.mkdir()
-        for name in self.promotion.required_artifacts("0.1.0-rc.2"):
-            (output / name).write_bytes(name.encode())
-        self.promotion.checksums(output)
+        self.populate_flat_output(output)
         (output / "unreviewed-upload.txt").write_text("must not be published")
         with self.assertRaisesRegex(ValueError, "unexpected files"):
             self.promotion.verify_staged(output, "0.1.0-rc.2")
@@ -174,6 +185,8 @@ class DistributionTests(unittest.TestCase):
 
     def test_promotion_uses_outputs_and_embeds_instructions_without_source_checkout(self):
         version = "0.1.0-rc.2"
+        for name in self.promotion.required_artifacts(version):
+            (self.root / name).write_bytes(name.encode())
         archive = self.root / f"netratel-compose-{version}.tar.gz"
         with tarfile.open(archive, "w:gz") as target:
             for name in ("compose.images.yaml", "compose.mcp-http.yaml", ".env.images.example", "release-manifest.json", "INSTALL.md"):
@@ -181,7 +194,8 @@ class DistributionTests(unittest.TestCase):
             for name in ("LICENSE", "NOTICE"):
                 target.add(ROOT / name, arcname=name)
         images = {name: f"ghcr.io/example/{name}@sha256:" + "a" * 64 for name in self.promotion.COMPONENTS}
-        receipt = self.receipt()
+        self.promotion.checksums(self.root)
+        receipt = self.receipt_for_directory(self.root)
         self.promotion.finalize_bundle(self.root, version, "b" * 40, images, receipt)
         with tarfile.open(archive) as source:
             text = source.extractfile(".env.images.example").read().decode()
@@ -190,7 +204,7 @@ class DistributionTests(unittest.TestCase):
             self.assertIn("INSTALL.md", source.getnames())
         self.assertFalse((self.root / "publication.json").exists())
         self.assertEqual(json.loads((self.root / "publication.candidate.json").read_text())["publicCommit"], "b" * 40)
-        self.promotion.complete_bundle(self.root)
+        self.promotion.complete_bundle(self.root, version, "b" * 40, images, receipt)
         self.assertEqual(json.loads((self.root / "publication.json").read_text())["verification"]["state"], "complete")
 
     def test_receipt_identity_rejects_wrong_source_missing_files_and_invalid_digest(self):
@@ -208,7 +222,7 @@ class DistributionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "invalid identity"):
             self.promotion.validate_input_receipt_identity(receipt, "0.1.0-rc.2", "b" * 40)
 
-    def test_authenticated_receipt_requires_a_successful_run_and_matching_downloaded_bytes(self):
+    def test_authenticated_receipt_accepts_explicit_root_path_with_duplicate_nested_package(self):
         version = "0.1.0-rc.2"
         inputs = self.root / "inputs"
         inputs.mkdir()
@@ -221,27 +235,59 @@ class DistributionTests(unittest.TestCase):
             receipt["files"][name]["sha256"] = digest
             lines.append(f"{digest}  {name}\n")
         (inputs / "SHA256SUMS").write_text("".join(lines))
+        producer = self.root / "producer"
+        producer.mkdir()
+        for source in inputs.iterdir():
+            if source.is_file() and source.name != "SHA256SUMS":
+                shutil.copy2(source, producer / source.name)
+        nested = producer / "cli"
+        nested.mkdir()
+        package = f"NetRatel.Cli.{version}.nupkg"
+        shutil.copy2(producer / package, nested / package)
+        artifact_zip = self.root / "release-artifacts.zip"
+        with zipfile.ZipFile(artifact_zip, "w") as archive:
+            for path in producer.rglob("*"):
+                if path.is_file():
+                    archive.write(path, path.relative_to(producer).as_posix())
+        receipt["files"][package]["path"] = package
+        receipt["files"][package]["artifactDigest"] = "sha256:" + hashlib.sha256(artifact_zip.read_bytes()).hexdigest()
+        for name, item in receipt["files"].items():
+            item["artifactDigest"] = receipt["files"][package]["artifactDigest"]
         receipt_path = self.root / "release-receipt.json"
         receipt_path.write_text(json.dumps(receipt))
 
         original_run = self.promotion.run
         def run_success(*command, env=None):
-            if command[:2] == ("gh", "api"):
+            if command[:2] == ("gh", "api") and "/artifacts?" not in command[2]:
+                if "/attempts/2" in command[2]:
+                    return json.dumps({"conclusion": "failure", "head_sha": "b" * 40,
+                                       "path": ".github/workflows/release-build.yml"})
                 return json.dumps({"conclusion": "success", "head_sha": "b" * 40,
                                    "path": ".github/workflows/release-build.yml"})
-            if command[:3] == ("gh", "run", "download"):
-                destination = Path(command[-1])
-                destination.mkdir(parents=True)
-                for source in inputs.iterdir():
-                    if source.is_file() and source.name != "SHA256SUMS":
-                        shutil.copy2(source, destination / source.name)
-                return ""
+            if command[:2] == ("gh", "api"):
+                return json.dumps({"artifacts": [{"id": 11, "name": "release-artifacts", "expired": False,
+                                                   "digest": receipt["files"][package]["artifactDigest"]}]})
             raise AssertionError(command)
 
         self.promotion.run = run_success
+        original_download = self.promotion.download_artifact
         try:
+            self.promotion.download_artifact = lambda artifact_id, destination: shutil.copy2(artifact_zip, destination)
             identity = self.promotion.verified_input_receipt(inputs, receipt_path, version, "b" * 40)
             self.assertEqual(identity["files"], receipt["files"])
+            self.promotion.download_artifact = lambda artifact_id, destination: Path(destination).write_bytes(b"modified ZIP")
+            with self.assertRaisesRegex(ValueError, "download digest"):
+                self.promotion.verified_input_receipt(inputs, receipt_path, version, "b" * 40)
+            self.promotion.download_artifact = lambda artifact_id, destination: shutil.copy2(artifact_zip, destination)
+            receipt["files"][package]["path"] = "not-the-approved-root/" + package
+            receipt_path.write_text(json.dumps(receipt))
+            with self.assertRaisesRegex(ValueError, "differs"):
+                self.promotion.verified_input_receipt(inputs, receipt_path, version, "b" * 40)
+            receipt["files"][package]["path"] = package
+            receipt["attempt"] = 2
+            receipt_path.write_text(json.dumps(receipt))
+            with self.assertRaisesRegex(ValueError, "not successful"):
+                self.promotion.verified_input_receipt(inputs, receipt_path, version, "b" * 40)
             self.promotion.run = lambda *command, **kwargs: json.dumps({
                 "conclusion": "failure", "head_sha": "b" * 40,
                 "path": ".github/workflows/release-build.yml"})
@@ -249,6 +295,52 @@ class DistributionTests(unittest.TestCase):
                 self.promotion.verified_input_receipt(inputs, receipt_path, version, "b" * 40)
         finally:
             self.promotion.run = original_run
+            self.promotion.download_artifact = original_download
+
+    def test_staged_bytes_must_match_receipt_before_and_after_candidate(self):
+        version = "0.1.0-rc.2"
+        output = self.root / "output"
+        self.populate_flat_output(output, version)
+        receipt = self.receipt_for_directory(output)
+        self.promotion.verify_pristine_staged(output, version, receipt)
+        for name in self.promotion.required_artifacts(version):
+            with self.subTest(name=name):
+                original = (output / name).read_bytes()
+                (output / name).write_bytes(b"substituted-" + name.encode())
+                self.promotion.checksums(output)
+                with self.assertRaisesRegex(ValueError, "artifact map|authenticated input receipt"):
+                    self.promotion.verify_pristine_staged(output, version, receipt)
+                (output / name).write_bytes(original)
+        self.promotion.checksums(output)
+
+    def test_candidate_binds_every_non_derived_artifact(self):
+        version = "0.1.0-rc.2"
+        archive = self.root / f"netratel-compose-{version}.tar.gz"
+        with tarfile.open(archive, "w:gz") as target:
+            for name in ("compose.images.yaml", "compose.mcp-http.yaml", ".env.images.example", "release-manifest.json", "INSTALL.md"):
+                target.add(ROOT / "release" / name, arcname=name)
+            for name in ("LICENSE", "NOTICE"):
+                target.add(ROOT / name, arcname=name)
+        for name in self.promotion.required_artifacts(version):
+            path = self.root / name
+            if not path.exists():
+                path.write_bytes(name.encode())
+        self.promotion.checksums(self.root)
+        receipt = self.receipt_for_directory(self.root)
+        images = {name: f"ghcr.io/example/{name}@sha256:" + "a" * 64 for name in self.promotion.COMPONENTS}
+        self.promotion.finalize_bundle(self.root, version, "b" * 40, images, receipt)
+        self.promotion.validate_candidate_bundle(self.root, version, "b" * 40, images, receipt)
+        for name in self.promotion.required_artifacts(version):
+            if name == archive.name:
+                continue
+            with self.subTest(name=name):
+                original = (self.root / name).read_bytes()
+                (self.root / name).write_bytes(b"substituted")
+                self.promotion.checksums(self.root)
+                with self.assertRaisesRegex(ValueError, "authenticated input receipt"):
+                    self.promotion.validate_candidate_bundle(self.root, version, "b" * 40, images, receipt)
+                (self.root / name).write_bytes(original)
+        self.promotion.checksums(self.root)
 
     def test_directory_only_inventory_and_wrong_file_digests_are_rejected(self):
         with self.assertRaisesRegex(ValueError, "first-party"):

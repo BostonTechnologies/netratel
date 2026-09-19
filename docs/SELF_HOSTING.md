@@ -43,16 +43,20 @@ administrator password. The overlay explicitly disables the otherwise-required
 HTTPS metadata check only for its local HTTP test server.
 
 Use the evaluation launcher from a fresh shell. It creates an isolated sibling
-workspace (not a directory in the Git checkout), generates the disposable agent
-and TLS inputs that the overlay mounts read-only, uses loopback ports 18080,
-18081, and 19222 by default, and leaves the stack running for manual login and
-logout evaluation:
+workspace (not a directory in the Git checkout), persists a private complete
+Compose environment for that instance, and derives a unique Compose project,
+ports, and proxy subnet from its canonical workspace path. Two workspaces can
+therefore be evaluated without sharing volumes or a stop target. The web and API
+ports bind to loopback. The disposable OIDC port intentionally defaults to a
+non-loopback bind because containers must reach it through Docker's host gateway;
+run it only on a trusted evaluation host (or set `NETRATEL_OIDC_TEST_BIND_ADDRESS`
+before the first `start`).
 
 ```sh
 tools/dev/oidc-evaluation.sh start
 ```
 
-Open `http://127.0.0.1:18080/auth/oidc` and use
+Open the loopback URL printed by the launcher and use
 `netratel-test-operator` at the test provider's login form. On Linux hosts
 where Docker does not already resolve it, add the temporary local mapping
 `127.0.0.1 host.docker.internal` before opening the browser. Remove the
