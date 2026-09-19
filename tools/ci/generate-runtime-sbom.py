@@ -115,7 +115,7 @@ def packages_from_assets(assets_path: Path, runtime: str | None, distribution: P
                         "referenceType": "purl",
                         "referenceLocator": f"pkg:nuget/{name}@{version}",
                     }
-                ],
+                ] if library.get("type") == "package" else [],
             }
         )
     (distribution / "THIRD-PARTY-NOTICES.txt").write_text("\n\n".join(notices) + "\n", encoding="utf-8")
@@ -183,7 +183,7 @@ def main() -> int:
         "dataLicense": "CC0-1.0",
         "SPDXID": "SPDXRef-DOCUMENT",
         "name": args.name,
-        "documentNamespace": f"https://github.com/BostonTechnologies/netratel/sbom/{args.version}/{spdx_id(args.name, 'Document')}",
+        "documentNamespace": f"https://github.com/BostonTechnologies/netratel/sbom/{args.version}/{hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()}",
         "creationInfo": {"creators": ["Tool: NetRatel runtime SBOM generator"], "created": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")},
         "packages": [
             {
