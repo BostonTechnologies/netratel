@@ -141,8 +141,7 @@
               Loading="tableLoading"
               RowClassFunc="GetRowClass"
               OnRowClick="OnRowClicked"
-              RowsPerPage="20"
-              RowsPerPageOptions="new int[] { 10, 20, 50, 100 }">
+              RowsPerPage="20">
         <HeaderContent>
             <MudTh>
                 <div @onclick:stopPropagation="true">
@@ -236,7 +235,7 @@
             <MudAlert Severity="Severity.Info" Variant="Variant.Outlined">No notifications found.</MudAlert>
         </NoRecordsContent>
         <PagerContent>
-            <MudTablePager />
+            <MudTablePager PageSizeOptions="new int[] { 10, 20, 50, 100 }" />
         </PagerContent>
     </MudTable>
 </MudPaper>

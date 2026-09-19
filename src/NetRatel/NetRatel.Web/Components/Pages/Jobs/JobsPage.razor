@@ -161,19 +161,19 @@
                 <MudStack Row="true" Spacing="1" Class="flex-wrap">
                     @if (!string.IsNullOrWhiteSpace(_jobSearch))
                     {
-                        <MudChip T="string" Closeable="true" OnClose="@(() => OnJobSearchChanged(null))" Variant="Variant.Outlined" Color="Color.Info">
+                        <MudChip T="string" OnClose="@(() => OnJobSearchChanged(null))" Variant="Variant.Outlined" Color="Color.Info">
                             Search: @_jobSearch
                         </MudChip>
                     }
                     @if (_jobEnvironment.HasValue)
                     {
-                        <MudChip T="string" Closeable="true" OnClose="ClearJobEnvironmentFilter" Variant="Variant.Outlined" Color="Color.Primary">
+                        <MudChip T="string" OnClose="ClearJobEnvironmentFilter" Variant="Variant.Outlined" Color="Color.Primary">
                             Env: @_jobEnvironment.Value.ToShortLabel()
                         </MudChip>
                     }
                     @if (!string.IsNullOrWhiteSpace(_selectedFolder))
                     {
-                        <MudChip T="string" Closeable="true" OnClose="@(() => SelectFolder(null))" Variant="Variant.Outlined" Color="Color.Secondary">
+                        <MudChip T="string" OnClose="@(() => SelectFolder(null))" Variant="Variant.Outlined" Color="Color.Secondary">
                             Folder: @GetFolderDisplay(_selectedFolder)
                         </MudChip>
                     }
@@ -204,7 +204,6 @@
                               OnRowClick="OnJobRowClick"
                               RowStyleFunc="JobRowStyle"
                               RowsPerPage="10"
-                              RowsPerPageOptions="new int[] {10, 20, 50}"
                               Class="jobs-table">
                         <HeaderContent>
                             <MudTh>Tenant</MudTh>
@@ -260,7 +259,7 @@
                             </MudTd>
                         </RowTemplate>
                         <PagerContent>
-                            <MudTablePager />
+                            <MudTablePager PageSizeOptions="new int[] { 10, 20, 50 }" />
                         </PagerContent>
                     </MudTable>
                 }
@@ -357,19 +356,19 @@
                 <MudStack Row="true" Spacing="1" Class="flex-wrap">
                     @if (_selectedJobId.HasValue)
                     {
-                        <MudChip T="string" Closeable="true" OnClose="ClearSelectedJobFilter" Variant="Variant.Outlined" Color="Color.Primary">
+                        <MudChip T="string" OnClose="ClearSelectedJobFilter" Variant="Variant.Outlined" Color="Color.Primary">
                             Job: @_selectedJobName
                         </MudChip>
                     }
                     @if (_runStatus.HasValue)
                     {
-                        <MudChip T="string" Closeable="true" OnClose="ClearRunStatusFilter" Variant="Variant.Outlined" Color="Color.Secondary">
+                        <MudChip T="string" OnClose="ClearRunStatusFilter" Variant="Variant.Outlined" Color="Color.Secondary">
                             Status: @_runStatus.Value
                         </MudChip>
                     }
                     @if (_runEnvironment.HasValue)
                     {
-                        <MudChip T="string" Closeable="true" OnClose="ClearRunEnvironmentFilter" Variant="Variant.Outlined" Color="Color.Info">
+                        <MudChip T="string" OnClose="ClearRunEnvironmentFilter" Variant="Variant.Outlined" Color="Color.Info">
                             Env: @_runEnvironment.Value.ToShortLabel()
                         </MudChip>
                     }
@@ -382,7 +381,6 @@
                           Elevation="0"
                           ServerData="ReloadRunsAsync"
                           RowsPerPage="20"
-                          RowsPerPageOptions="new int[] {10, 20, 50}"
                           OnRowClick="OnRunRowClick"
                           RowStyleFunc="RunRowStyle"
                           Breakpoint="Breakpoint.Md"
@@ -433,7 +431,7 @@
                         </MudTd>
                     </RowTemplate>
                     <PagerContent>
-                        <MudTablePager />
+                        <MudTablePager PageSizeOptions="new int[] { 10, 20, 50 }" />
                     </PagerContent>
                 </MudTable>
             </MudStack>
