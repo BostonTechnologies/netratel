@@ -1273,3 +1273,144 @@ code,
         animation-iteration-count: 1 !important;
     }
 }
+
+/* Public sign-in environment. The approved artwork carries the wide product
+   wordmark; the panel uses the compact mark to avoid competing wordmarks. */
+.netratel-public-layout {
+    position: relative;
+    isolation: isolate;
+    background: #071025 url("brand/netratel-splash-1600.webp") center center / cover no-repeat;
+}
+
+.netratel-public-layout::before,
+.netratel-public-layout::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+}
+
+.netratel-public-layout::before {
+    z-index: -1;
+    background: linear-gradient(90deg, rgba(2, 7, 22, 0.16) 0%, rgba(2, 7, 22, 0.03) 48%, rgba(2, 7, 22, 0.44) 100%);
+}
+
+.netratel-public-layout::after {
+    z-index: -1;
+    background: linear-gradient(180deg, rgba(1, 5, 18, 0.10), rgba(1, 5, 18, 0.26));
+}
+
+.netratel-public-main {
+    position: relative;
+    z-index: 0;
+    background: transparent !important;
+}
+
+.netratel-public-theme-control {
+    border: 1px solid color-mix(in srgb, white 40%, transparent);
+    border-radius: 999px;
+    background: rgba(4, 10, 30, 0.64);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+    color: white;
+}
+
+.netratel-login-page {
+    place-items: center end;
+    padding: clamp(88px, 13vh, 140px) clamp(32px, 7vw, 132px) 32px 16px;
+}
+
+.netratel-login-panel {
+    width: min(100%, 392px);
+    min-height: 0;
+    border: 1px solid rgba(135, 226, 255, 0.22);
+    border-radius: 16px;
+    background: rgba(5, 13, 34, 0.84) !important;
+    box-shadow: 0 18px 52px rgba(0, 0, 0, 0.42), 0 0 28px rgba(0, 217, 255, 0.13);
+    backdrop-filter: blur(14px);
+}
+
+.netratel-login-logo {
+    width: 64px;
+    height: 64px;
+    max-height: none;
+}
+
+.netratel-nav-brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 10px 12px 16px;
+    color: var(--mud-palette-text-primary);
+    font-weight: 800;
+    letter-spacing: 0.025em;
+    text-decoration: none;
+}
+
+.netratel-nav-brand img {
+    width: 32px;
+    height: 32px;
+}
+
+.netratel-nav-brand:focus-visible {
+    border-radius: 6px;
+    outline: 3px solid var(--netratel-focus-ring);
+    outline-offset: 3px;
+}
+
+html[data-netratel-theme="light"] .netratel-public-layout::before {
+    background: linear-gradient(90deg, rgba(229, 244, 255, 0.46) 0%, rgba(230, 244, 255, 0.18) 48%, rgba(229, 244, 255, 0.54) 100%);
+}
+
+html[data-netratel-theme="light"] .netratel-public-layout::after {
+    background: rgba(224, 241, 255, 0.16);
+}
+
+html[data-netratel-theme="light"] .netratel-public-theme-control {
+    border-color: rgba(10, 44, 74, 0.30);
+    background: rgba(250, 253, 255, 0.84);
+    box-shadow: 0 8px 24px rgba(7, 27, 53, 0.20);
+    color: #0b223b;
+}
+
+html[data-netratel-theme="light"] .netratel-login-panel {
+    border-color: rgba(15, 98, 144, 0.24);
+    background: rgba(252, 254, 255, 0.92) !important;
+    box-shadow: 0 18px 52px rgba(7, 27, 53, 0.25), 0 0 28px rgba(0, 178, 255, 0.12);
+}
+
+@media (max-width: 1100px) {
+    .netratel-public-layout {
+        background-image: url("brand/netratel-splash-1280.webp");
+        background-position: 44% center;
+    }
+
+    .netratel-public-layout::before {
+        background: rgba(2, 7, 22, 0.46);
+    }
+
+    html[data-netratel-theme="light"] .netratel-public-layout::before {
+        background: rgba(232, 245, 255, 0.48);
+    }
+
+    .netratel-login-page {
+        place-items: center;
+        padding: clamp(72px, 12vh, 108px) 24px 32px;
+    }
+}
+
+@media (max-width: 599px) {
+    .netratel-public-theme-control {
+        top: max(10px, env(safe-area-inset-top));
+        right: max(10px, env(safe-area-inset-right));
+    }
+
+    .netratel-login-page {
+        align-items: start;
+        padding: 72px 16px max(24px, env(safe-area-inset-bottom));
+    }
+
+    .netratel-login-panel {
+        width: min(100%, 392px);
+        padding: 22px 20px 24px;
+    }
+}
