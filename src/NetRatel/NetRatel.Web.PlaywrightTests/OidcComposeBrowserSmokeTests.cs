@@ -72,7 +72,9 @@ public sealed class OidcComposeBrowserSmokeTests
         foreach (var (width, height, name) in new[] { (1440, 900, "desktop"), (390, 844, "mobile") })
         {
             await page.SetViewportSizeAsync(width, height);
-            await page.Locator("img[src*='brand/']").First.WaitForAsync();
+            await page.Locator("img[src*='brand/']").First.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
+            if (width >= 800 || view == "login")
+                Assert.True(await page.Locator("img[src*='brand/']").First.IsVisibleAsync());
             await page.WaitForFunctionAsync("() => Array.from(document.querySelectorAll('img[src*=\"brand/\"]')).every(image => image.complete && image.naturalWidth > 0)");
             Assert.False(await page.EvaluateAsync<bool>("() => document.documentElement.scrollWidth > innerWidth"),
                 $"{view} overflows the {name} viewport.");
