@@ -5,10 +5,12 @@ namespace NetRatel.Web.PlaywrightTests;
 [Trait("category", "compose")]
 public sealed class OidcComposeBrowserSmokeTests
 {
-    [Fact]
-    public async Task GenericOidcStack_LoadsAssets_Authenticates_And_LogsOut()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task GenericOidcStack_LoadsAssets_Authenticates_And_LogsOut(bool trustedProxy)
     {
-        var webUrl = RequireEnvironmentUri("NETRATEL_BROWSER_SMOKE_WEB_URL");
+        var webUrl = RequireEnvironmentUri(trustedProxy ? "NETRATEL_BROWSER_SMOKE_PROXY_URL" : "NETRATEL_BROWSER_SMOKE_WEB_URL");
         var username = RequireEnvironmentValue("NETRATEL_BROWSER_SMOKE_USERNAME");
 
         using var playwright = await Playwright.CreateAsync();
@@ -19,7 +21,8 @@ public sealed class OidcComposeBrowserSmokeTests
             // Containers and the OIDC issuer use this stable authority hostname.
             Args = ["--host-resolver-rules=MAP host.docker.internal 127.0.0.1"]
         });
-        await using var context = await browser.NewContextAsync();
+        // The HTTPS proxy uses the disposable smoke certificate, never a production certificate.
+        await using var context = await browser.NewContextAsync(new BrowserNewContextOptions { IgnoreHTTPSErrors = trustedProxy });
         var page = await context.NewPageAsync();
         page.SetDefaultTimeout(15_000);
 
@@ -44,7 +47,7 @@ public sealed class OidcComposeBrowserSmokeTests
             Assert.InRange((await response.BodyAsync()).Length, 1, maximumBytes);
         }
         await page.GotoAsync(new Uri(webUrl, "login").ToString());
-        await CaptureBrandingAsync(page, "login");
+        await CaptureBrandingAsync(page, trustedProxy ? "proxy-login" : "login");
 
         var login = await page.GotoAsync(new Uri(webUrl, "auth/oidc?returnUrl=%2Ftenants").ToString(), new PageGotoOptions
         {
@@ -58,7 +61,7 @@ public sealed class OidcComposeBrowserSmokeTests
 
         var authenticatedStatus = await page.EvaluateAsync<int>("async () => (await fetch('/api/v1/tenants')).status");
         Assert.Equal(200, authenticatedStatus);
-        await CaptureBrandingAsync(page, "navbar");
+        await CaptureBrandingAsync(page, trustedProxy ? "proxy-navbar" : "navbar");
 
         await page.GotoAsync(new Uri(webUrl, "auth/logout").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
         var anonymousStatus = await page.EvaluateAsync<int>("async () => (await fetch('/api/v1/tenants')).status");
@@ -73,7 +76,7 @@ public sealed class OidcComposeBrowserSmokeTests
         {
             await page.SetViewportSizeAsync(width, height);
             await page.Locator("img[src*='brand/']").First.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
-            if (width >= 800 || view == "login")
+            if (width >= 800 || view.EndsWith("login", StringComparison.Ordinal))
                 Assert.True(await page.Locator("img[src*='brand/']").First.IsVisibleAsync());
             await page.WaitForFunctionAsync("() => Array.from(document.querySelectorAll('img[src*=\"brand/\"]')).every(image => image.complete && image.naturalWidth > 0)");
             Assert.False(await page.EvaluateAsync<bool>("() => document.documentElement.scrollWidth > innerWidth"),

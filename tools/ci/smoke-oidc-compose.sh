@@ -89,7 +89,8 @@ wait_for_status() {
 }
 
 run_browser_oidc_smoke() {
-  local playwright_script
+  local playwright_script proxy_address
+  proxy_address="$(docker compose --project-name "$project" "${compose_args[@]}" port web-proxy 9444)"
   dotnet restore src/NetRatel/NetRatel.Web.PlaywrightTests/NetRatel.Web.PlaywrightTests.csproj
   dotnet build src/NetRatel/NetRatel.Web.PlaywrightTests/NetRatel.Web.PlaywrightTests.csproj --configuration Release --no-restore
   playwright_script="src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/playwright.ps1"
@@ -99,6 +100,7 @@ run_browser_oidc_smoke() {
   }
   pwsh "$playwright_script" install --with-deps chromium
   NETRATEL_BROWSER_SMOKE_WEB_URL="$web_url" \
+    NETRATEL_BROWSER_SMOKE_PROXY_URL="https://$proxy_address" \
     NETRATEL_BROWSER_SMOKE_USERNAME="netratel-test-operator" \
     dotnet test src/NetRatel/NetRatel.Web.PlaywrightTests/NetRatel.Web.PlaywrightTests.csproj \
       --configuration Release --no-build --filter 'FullyQualifiedName~OidcComposeBrowserSmokeTests'
@@ -174,6 +176,7 @@ export NETRATEL_SMOKE_TLS_CERT_PATH="$tls_bundle_path"
 export NETRATEL_SMOKE_TLS_CERTIFICATE_PATH="$tls_certificate_path"
 export NETRATEL_SMOKE_TLS_KEY_PATH="$tls_key_path"
 export NETRATEL_GATEWAY_PROXY_CONFIG_PATH="$root/tests/compose/gateway-proxy.nginx.conf"
+export NETRATEL_WEB_PROXY_CONFIG_PATH="$root/tests/compose/web-proxy.nginx.conf"
 api_port="${NETRATEL_API_TEST_PORT:-9222}"
 api_url="http://127.0.0.1:${api_port}"
 
