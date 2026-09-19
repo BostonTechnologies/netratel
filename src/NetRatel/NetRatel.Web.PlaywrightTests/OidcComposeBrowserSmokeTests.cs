@@ -55,9 +55,17 @@ public sealed class OidcComposeBrowserSmokeTests
         });
         Assert.NotNull(login);
         await page.Locator("input[name='username']").FillAsync(username);
-        var callback = page.WaitForURLAsync($"{webUrl}**", new PageWaitForURLOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        var callbackResponse = page.WaitForResponseAsync(response =>
+            Uri.TryCreate(response.Url, UriKind.Absolute, out var responseUri)
+            && responseUri.GetLeftPart(UriPartial.Path) == new Uri(webUrl, "signin-oidc").ToString());
         await page.Locator("form").EvaluateAsync("form => form.submit()");
-        await callback;
+        Assert.Equal(302, (await callbackResponse).Status);
+        await page.WaitForURLAsync(new Uri(webUrl, "tenants").ToString(),
+            new PageWaitForURLOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        var sessionCookies = (await context.CookiesAsync()).Where(cookie => cookie.Name.StartsWith(".AspNetCore.Cookies", StringComparison.Ordinal)).ToArray();
+        Assert.NotEmpty(sessionCookies);
+        if (trustedProxy)
+            Assert.All(sessionCookies, cookie => Assert.True(cookie.Secure));
 
         var authenticatedStatus = await page.EvaluateAsync<int>("async () => (await fetch('/api/v1/tenants')).status");
         Assert.Equal(200, authenticatedStatus);
