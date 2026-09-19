@@ -94,6 +94,28 @@ builder.Services
 #region Authentication & Authorization
 // Normalize inbound claims (avoid legacy remapping)
 JwtSecurityTokenHandler.DefaultInboundClaimTypeMap.Clear();
+var machineTokenConfiguration = builder.Configuration.GetSection("Authentication:MachineToken");
+if (!machineTokenConfiguration.Exists())
+{
+    // Kept as a read-only compatibility alias for deployments that have not
+    // migrated their configuration yet. New deployments use MachineToken.
+    machineTokenConfiguration = builder.Configuration.GetSection("Authentication:OidcAiAgent");
+}
+
+var machineTokenOptions = machineTokenConfiguration.Get<MachineTokenAuthenticationOptions>()
+    ?? new MachineTokenAuthenticationOptions();
+machineTokenOptions.Validate();
+if (machineTokenOptions.Enabled)
+{
+    var human = builder.Configuration.GetSection("Authentication:Oidc");
+    if (!human.Exists())
+        human = builder.Configuration.GetSection("Authentication:Azure");
+    var humanAudiences = (human.GetSection("Audiences").Get<string[]>() ?? [])
+        .Concat([human["Audience"], human["ClientId"], builder.Configuration["AzureAd:ClientId"],
+            builder.Configuration["AzureAd:Audience"], builder.Configuration["AzureAd:AppIdUri"]]);
+    if (humanAudiences.Contains(machineTokenOptions.Audience, StringComparer.Ordinal))
+        throw new InvalidOperationException("Machine-token authentication requires a dedicated audience distinct from human OIDC audiences.");
+}
 
 // Multiple JWT bearer schemes:
 builder.Services
@@ -109,13 +131,6 @@ builder.Services
             var authHeader = context.Request.Headers["Authorization"].FirstOrDefault();
             var configuredAgentIssuer = builder.Configuration["AgentAuth:Issuer"]?.TrimEnd('/');
             var configuredSystemIssuer = builder.Configuration["SystemToken:Issuer"]?.TrimEnd('/');
-            var machineTokenConfiguration = builder.Configuration.GetSection("Authentication:MachineToken");
-            if (!machineTokenConfiguration.Exists())
-            {
-                machineTokenConfiguration = builder.Configuration.GetSection("Authentication:OidcAiAgent");
-            }
-
-            var configuredMachineTokenIssuer = machineTokenConfiguration["Authority"]?.TrimEnd('/');
             if (authHeader?.StartsWith("System ", StringComparison.OrdinalIgnoreCase) == true)
             {
                 return "System";
@@ -152,10 +167,7 @@ builder.Services
                         return "Agent";
                     }
 
-                    var isMachineToken =
-                        !string.IsNullOrWhiteSpace(configuredMachineTokenIssuer) &&
-                        string.Equals(issuer.TrimEnd('/'), configuredMachineTokenIssuer, StringComparison.OrdinalIgnoreCase);
-                    if (isMachineToken)
+                    if (MachineTokenAuthentication.IsCandidate(jwt, machineTokenOptions))
                     {
                         return "MachineToken";
                     }
@@ -178,64 +190,7 @@ builder.Services
         };
     })
     .AddJwtBearer("MachineToken", options =>
-    {
-        var machineTokenConfiguration = builder.Configuration.GetSection("Authentication:MachineToken");
-        if (!machineTokenConfiguration.Exists())
-        {
-            machineTokenConfiguration = builder.Configuration.GetSection("Authentication:OidcAiAgent");
-        }
-
-        var authority = machineTokenConfiguration["Authority"];
-        var audience = machineTokenConfiguration["Audience"];
-        options.Authority = authority;
-        options.Audience = audience;
-        options.RequireHttpsMetadata = !builder.Environment.IsDevelopment();
-        options.IncludeErrorDetails = builder.Environment.IsDevelopment();
-        var validMachineTokenIssuers = string.IsNullOrWhiteSpace(authority)
-            ? Array.Empty<string>()
-            : new[] { authority.TrimEnd('/'), $"{authority.TrimEnd('/')}/" };
-
-        options.TokenValidationParameters = new TokenValidationParameters
-        {
-            ValidateIssuer = true,
-            ValidIssuers = validMachineTokenIssuers,
-            ValidateAudience = true,
-            ValidAudience = audience,
-            ValidateIssuerSigningKey = true,
-            RoleClaimType = ClaimTypes.Role,
-            NameClaimType = "preferred_username",
-            ClockSkew = TimeSpan.FromMinutes(10)
-        };
-
-        options.Events = new JwtBearerEvents
-        {
-            OnTokenValidated = context =>
-            {
-                var requiredGroups = machineTokenConfiguration.GetSection("RequiredGroups").Get<string[]>() ?? [];
-                var actualGroups = context.Principal?.FindAll("groups").Select(c => c.Value).ToHashSet(StringComparer.OrdinalIgnoreCase) ?? [];
-                if (requiredGroups.Any(group => !actualGroups.Contains(group)))
-                {
-                    context.Fail("Machine token is missing one or more required groups.");
-                    return Task.CompletedTask;
-                }
-
-                if (context.Principal?.Identity is ClaimsIdentity identity)
-                {
-                    var sessionRoles = machineTokenConfiguration.GetSection("SessionRoles").Get<string[]>() ?? [];
-                    foreach (var role in sessionRoles.Where(role => !string.IsNullOrWhiteSpace(role)).Distinct(StringComparer.OrdinalIgnoreCase))
-                    {
-                        identity.AddClaim(new Claim(ClaimTypes.Role, role));
-                        identity.AddClaim(new Claim("roles", role));
-                    }
-
-                    identity.AddClaim(new Claim("auth_mode", "machine_token"));
-                    identity.AddClaim(new Claim("identity_provider", "oidc_machine_token"));
-                }
-
-                return Task.CompletedTask;
-            }
-        };
-    })
+        MachineTokenAuthentication.Configure(options, machineTokenOptions, builder.Environment.IsDevelopment()))
     .AddJwtBearer("Oidc", options =>
     {
         var oidc = builder.Configuration.GetSection("Authentication:Oidc");
@@ -428,6 +383,7 @@ builder.Services.AddAuthorization(options =>
     {
         policy.AddAuthenticationSchemes("MachineToken");
         policy.RequireAuthenticatedUser();
+        policy.RequireAssertion(_ => machineTokenOptions.Enabled);
         policy.RequireClaim("auth_mode", "machine_token");
     });
 });

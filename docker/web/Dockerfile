@@ -44,6 +44,8 @@ RUN dotnet build "./NetRatel.Web.csproj" -c "$BUILD_CONFIGURATION" -o /app/build
 FROM build AS publish
 ARG BUILD_CONFIGURATION=Release
 RUN dotnet publish "./NetRatel.Web.csproj" -c "$BUILD_CONFIGURATION" -o /app/publish /p:UseAppHost=false
+RUN apt-get update && apt-get install -y --no-install-recommends python3
+RUN python3 /src/tools/ci/generate-runtime-sbom.py --project-assets obj/project.assets.json --distribution /app/publish --name NetRatel.Web --version "$(dotnet msbuild NetRatel.Web.csproj -nologo -getProperty:Version)" --output /app/publish/runtime.spdx.json
 
 # --- Final
 FROM base AS final
@@ -51,5 +53,6 @@ WORKDIR /app
 # If COPY --chown is not supported in your Docker, replace with plain COPY + RUN chown
 COPY --chown=${APP_USER}:${APP_USER} --from=publish /app/publish .
 COPY --chown=${APP_USER}:${APP_USER} docker/web/docker-entrypoint.sh /app/docker-entrypoint.sh
+COPY --chown=${APP_USER}:${APP_USER} LICENSE NOTICE /app/licenses/
 RUN chmod +x /app/docker-entrypoint.sh
 ENTRYPOINT ["/app/docker-entrypoint.sh", "dotnet", "NetRatel.Web.dll"]

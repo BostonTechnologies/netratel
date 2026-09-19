@@ -32,6 +32,9 @@ RUN dotnet publish "src/NetRatel/NetRatel.Client/NetRatel.Client.csproj" \
       --no-restore \
       --output /out
 
+RUN apt-get update && apt-get install -y --no-install-recommends python3
+RUN python3 tools/ci/generate-runtime-sbom.py --project-assets src/NetRatel/NetRatel.Client/obj/project.assets.json --distribution /out --runtime linux-x64 --name NetRatel.Client --version "$(dotnet msbuild src/NetRatel/NetRatel.Client/NetRatel.Client.csproj -nologo -getProperty:Version)" --output /out/runtime.spdx.json
+
 FROM mcr.microsoft.com/dotnet/runtime-deps:10.0-noble AS runtime
 ARG APP_USER=netratel
 ARG APP_UID=10001
@@ -48,6 +51,7 @@ RUN set -eux; \
 
 WORKDIR /app
 COPY --from=build --chown=netratel:netratel /out ./
+COPY --chown=netratel:netratel LICENSE NOTICE /app/licenses/
 ENV NETRATEL_POWERSHELL_HOME=/var/lib/netratel/powershell
 USER netratel
 ENTRYPOINT ["/app/NetRatel.Client"]

@@ -33,6 +33,7 @@ cli_extract_dir=""
 mcp_stdio_extract_dir=""
 mcp_stdio_config_path="$(mktemp --suffix=.json)"
 mcp_stdio_error_path="$(mktemp)"
+bundle_extract_dir=""
 client_volume="${project}-client-state"
 gateway_client="${project}-gateway-client"
 stage="initializing Compose OIDC smoke"
@@ -88,7 +89,8 @@ wait_for_status() {
 }
 
 run_browser_oidc_smoke() {
-  local playwright_script
+  local playwright_script proxy_address
+  proxy_address="$(docker compose --project-name "$project" "${compose_args[@]}" port web-proxy 9444)"
   dotnet restore src/NetRatel/NetRatel.Web.PlaywrightTests/NetRatel.Web.PlaywrightTests.csproj
   dotnet build src/NetRatel/NetRatel.Web.PlaywrightTests/NetRatel.Web.PlaywrightTests.csproj --configuration Release --no-restore
   playwright_script="src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/playwright.ps1"
@@ -98,6 +100,7 @@ run_browser_oidc_smoke() {
   }
   pwsh "$playwright_script" install --with-deps chromium
   NETRATEL_BROWSER_SMOKE_WEB_URL="$web_url" \
+    NETRATEL_BROWSER_SMOKE_PROXY_URL="https://$proxy_address" \
     NETRATEL_BROWSER_SMOKE_USERNAME="netratel-test-operator" \
     dotnet test src/NetRatel/NetRatel.Web.PlaywrightTests/NetRatel.Web.PlaywrightTests.csproj \
       --configuration Release --no-build --filter 'FullyQualifiedName~OidcComposeBrowserSmokeTests'
@@ -124,9 +127,20 @@ cleanup() {
   fi
   unlink "$mcp_stdio_config_path" 2>/dev/null || true
   unlink "$mcp_stdio_error_path" 2>/dev/null || true
+  if [[ -n "$bundle_extract_dir" ]]; then
+    find "$bundle_extract_dir" -depth -delete 2>/dev/null || true
+  fi
   return "$status"
 }
 trap cleanup EXIT
+
+if [[ "$mode" == release-images && -n "${NETRATEL_COMPOSE_SMOKE_BUNDLE:-}" ]]; then
+  bundle_extract_dir="$(mktemp -d)"
+  tar -xzf "$NETRATEL_COMPOSE_SMOKE_BUNDLE" -C "$bundle_extract_dir"
+  [[ -s "$bundle_extract_dir/INSTALL.md" ]] || { echo "Extracted bundle lacks installation instructions." >&2; exit 1; }
+  compose_args=(--env-file "$bundle_extract_dir/.env.images.example"
+    -f "$bundle_extract_dir/compose.images.yaml" -f "$root/tests/compose/oidc-smoke.compose.yaml")
+fi
 
 web_port="${NETRATEL_WEB_PORT:-8082}"
 oidc_port="${NETRATEL_OIDC_TEST_PORT:-8080}"
@@ -162,6 +176,7 @@ export NETRATEL_SMOKE_TLS_CERT_PATH="$tls_bundle_path"
 export NETRATEL_SMOKE_TLS_CERTIFICATE_PATH="$tls_certificate_path"
 export NETRATEL_SMOKE_TLS_KEY_PATH="$tls_key_path"
 export NETRATEL_GATEWAY_PROXY_CONFIG_PATH="$root/tests/compose/gateway-proxy.nginx.conf"
+export NETRATEL_WEB_PROXY_CONFIG_PATH="$root/tests/compose/web-proxy.nginx.conf"
 api_port="${NETRATEL_API_TEST_PORT:-9222}"
 api_url="http://127.0.0.1:${api_port}"
 

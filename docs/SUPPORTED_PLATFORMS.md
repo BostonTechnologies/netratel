@@ -1,6 +1,6 @@
 # Supported platforms
 
-NetRatel `0.1.0-rc.1` is a prerelease. The table below records the targets
+NetRatel `0.1.0-rc.2` is a prerelease. The table below records the targets
 that the non-publishing release rehearsal builds and executes. It is not a
 production certification statement.
 

@@ -1,7 +1,7 @@
 # Release engineering
 
 All first-party components evaluate from the root product version. The current
-prerelease is `0.1.0-rc.1`; the component inventory is
+prerelease is `0.1.0-rc.2`; the component inventory is
 `release/release-manifest.json`.
 
 `tools/ci/verify-product-version.sh` checks evaluated project metadata against
@@ -36,8 +36,9 @@ all final images, and both image smoke suites to succeed.
 For the native Client, the generated publish directory includes the executable,
 its update manifest, required sidecars, and the Linux PTY helper. Do not
 advertise a runtime until its final archive has been built and smoke-tested.
-NetRatel `0.1.0-rc.1` is a source candidate. No public release images or
-archives have been published yet. The release workflow validates the committed
+NetRatel `0.1.0-rc.1` archives and tag remain published historical release
+artifacts. NetRatel `0.1.0-rc.2` is a source candidate: no rc.2 public images
+or archives have been published yet. The release workflow validates the committed
 version, builds every final runtime container, and packages CLI, stdio MCP, and
 native Client artifacts. Native Client packages are built on their matching
 Linux, Windows, and macOS runners. Publication, signing, package visibility,
@@ -45,6 +46,93 @@ and a release tag remain explicit owner actions.
 
 Use `release/compose.images.yaml` only with approved immutable release-image
 digests. It is intentionally a deployment bundle, not a source-build recipe.
+
+## Owner-operated promotion
+
+PR and release rehearsal workflows never call the promotion command. After
+review and explicit publication approval, use a clean checkout of the merged
+public commit and an owner-created `v0.1.0-rc.2` tag pointing to that commit.
+Download the successful release-workflow artifact sets into a sibling release
+workspace (not the clean source checkout), retaining each set's `SHA256SUMS`.
+Create `release-receipt.json` beside them with the repository, workflow path,
+successful run ID and attempt, approved commit/version, and—for every required
+file—the GitHub artifact name, immutable artifact ID, GitHub ZIP digest,
+explicit artifact-relative path, and file SHA-256. Promotion re-reads the run
+metadata and downloads each identified artifact through authenticated GitHub CLI access before
+any image build or push; a locally recomputed checksum alone is not provenance.
+
+Prepare and verify the flat downloadable layout without publishing:
+
+```sh
+mkdir -p ../netratel-release-work/review-inputs
+python3 tools/ci/promote-release.py stage \
+  --inputs ../netratel-release-work/review-inputs \
+  --output ../netratel-release-work/staged-release --version 0.1.0-rc.2
+(cd ../netratel-release-work/staged-release && sha256sum -c SHA256SUMS)
+```
+
+Before owner-approved image publication, run the authenticated, non-publishing
+receipt/staging/resume rehearsal against that exact run's downloads and receipt:
+
+```sh
+python3 tools/ci/promote-release.py preflight \
+  --inputs ../netratel-release-work/review-inputs \
+  --receipt ../netratel-release-work/release-receipt.json \
+  --output ../netratel-release-work/preflight-staged \
+  --state ../netratel-release-work/preflight-state.json \
+  --package-prefix reviewed-prefix --version 0.1.0-rc.2
+```
+
+Before choosing a package prefix, an authorized operator must list the
+organization's container packages using a GitHub credential with
+`read:packages`. Public anonymous lookup cannot establish absence of private
+packages. The promotion command repeats this check and rejects names occupied by
+non-public packages. It never changes package visibility.
+
+With a separately approved package prefix and registry login, invoke:
+
+```sh
+python3 tools/ci/promote-release.py promote \
+  --approve "0.1.0-rc.2@$(git rev-parse HEAD)" \
+  --package-prefix APPROVED-PUBLIC-PREFIX \
+  --inputs ../netratel-release-work/review-inputs \
+  --receipt ../netratel-release-work/release-receipt.json \
+  --output ../netratel-release-work/promoted-release \
+  --state ../netratel-release-work/promotion-state.json
+```
+
+This command **pushes images**. Do not run it as a rehearsal. It uses unique
+version/commit tags and never writes `latest` or stable aliases. Its journal
+allows a partial push to resume without rebuilding completed components. Its
+journal records the verified source receipt and exact input file digests, so a
+retry rejects substitutions even if a new `SHA256SUMS` was generated. The
+modified Compose archive is a derived bundle: its source build digest and final
+digest are both recorded separately in the candidate and final publication
+records. A candidate record is not a completed publication; it becomes
+`publication.json` only after both required image smokes pass.
+A pre-existing tag without a corresponding journal is an error requiring
+explicit digest recovery, not permission to overwrite. Preserve the journal.
+New registry packages may initially be private; a separate owner decision is
+required for any visibility change before anonymous verification can succeed.
+
+The command pulls every exact digest using an empty Docker credential directory,
+checks the public source/version labels, then runs the OIDC/enrollment and
+HTTP MCP smokes against those digest references. It finalizes the extracted
+bundle from the returned image digests and records the commit, version, asset
+basenames and hashes in `publication.json`. A failed smoke is not publication
+approval. After the command succeeds, inspect `publication.json`, verify
+`SHA256SUMS` again, and create the prerelease only with explicit owner approval:
+
+```sh
+gh release create v0.1.0-rc.2 promoted-release/* --verify-tag --prerelease \
+  --title "NetRatel 0.1.0-rc.2" --notes-file approved-release-notes.md
+```
+
+The CLI tool is distributed as the downloadable NuGet package; this path does
+not push to NuGet.org. Do not replace rc.1 assets or change its tag. Public
+registry access and owner deployment acceptance are separate from successful
+source checks and non-publishing rehearsal.
+
 ## Release rehearsal validation
 
 The non-publishing release workflow builds the CLI, stdio MCP, all supported

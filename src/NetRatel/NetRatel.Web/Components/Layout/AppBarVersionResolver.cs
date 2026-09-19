@@ -1,5 +1,4 @@
 using System.Reflection;
-using System.Text.RegularExpressions;
 using Microsoft.Extensions.Configuration;
 
 namespace NetRatel.Web.Components.Layout;
@@ -9,24 +8,19 @@ public static class AppBarVersionResolver
     public static string Resolve(IConfiguration configuration, Assembly? assembly = null)
         => ResolveDetails(configuration, assembly).DisplayVersion;
 
-    public static AppBarVersionDetails ResolveDetails(IConfiguration configuration, Assembly? assembly = null)
+    public static AppBarVersionDetails ResolveDetails(IConfiguration _, Assembly? assembly = null)
     {
         var assemblyVersion = ResolveAssemblyVersion(assembly);
-        var source = FirstNonEmpty(
-            ("DEPLOYMENT_CONTROL_PLANE_BUILD_VERSION", configuration["DEPLOYMENT_CONTROL_PLANE_BUILD_VERSION"]),
-            ("AppBar:BuildVersion", configuration["AppBar:BuildVersion"]),
-            ("BUILD_VERSION", configuration["BUILD_VERSION"]),
-            ("APP_VERSION", configuration["APP_VERSION"]),
-            ("VERSION", configuration["VERSION"]),
-            ("OTEL_SERVICE_VERSION", configuration["OTEL_SERVICE_VERSION"]),
-            ("AssemblyInformationalVersion", assemblyVersion));
-        var value = source.Value ?? "dev";
+        // Product identity is compiled into this application. Deployment counters,
+        // runtime VERSION variables, and telemetry resource attributes describe
+        // their own systems and must never relabel the product in the UI.
+        var value = assemblyVersion ?? "dev";
 
         return new AppBarVersionDetails(
             ServiceName: "NetRatel.Web",
-            DisplayVersion: Format(value),
+            DisplayVersion: FormatProductVersion(value),
             FullVersion: value.Trim(),
-            Source: source.Name ?? "Fallback",
+            Source: assemblyVersion is null ? "Fallback" : "AssemblyInformationalVersion",
             AssemblyVersion: assembly?.GetName().Version?.ToString() ?? "unknown");
     }
 
@@ -46,16 +40,10 @@ public static class AppBarVersionResolver
         return assembly.GetName().Version?.ToString();
     }
 
-    private static string Format(string value)
+    public static string FormatProductVersion(string value)
     {
-        var trimmed = Normalize(value);
-        return trimmed.StartsWith("v", StringComparison.OrdinalIgnoreCase)
-            ? trimmed
-            : $"v{trimmed}";
-    }
+        ArgumentException.ThrowIfNullOrWhiteSpace(value);
 
-    private static string Normalize(string value)
-    {
         var trimmed = value.Trim();
         var metadataStart = trimmed.IndexOf('+', StringComparison.Ordinal);
         if (metadataStart >= 0)
@@ -63,18 +51,9 @@ public static class AppBarVersionResolver
             trimmed = trimmed[..metadataStart];
         }
 
-        var semanticVersion = Regex.Match(trimmed, @"(?<version>\d+\.\d+\.\d+)");
-        return semanticVersion.Success
-            ? semanticVersion.Groups["version"].Value
-            : trimmed;
-    }
-
-    private static (string? Name, string? Value) FirstNonEmpty(params (string Name, string? Value)[] values)
-    {
-        var value = values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value.Value));
-        return string.IsNullOrWhiteSpace(value.Value)
-            ? (null, null)
-            : value;
+        return trimmed.StartsWith("v", StringComparison.OrdinalIgnoreCase)
+            ? trimmed
+            : $"v{trimmed}";
     }
 }
 

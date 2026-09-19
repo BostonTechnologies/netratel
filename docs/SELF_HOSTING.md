@@ -29,36 +29,47 @@ only after it succeeds. The stack intentionally does not provide an
 administrator password or an anonymous production mode. Configure a real OIDC
 client before using it beyond startup and connectivity checks.
 
+The Compose Web port is loopback-bound by default. Set
+`NETRATEL_WEB_BIND_ADDRESS` deliberately when a reverse proxy must reach it;
+then configure that proxy's address/range and public host in the Web
+`ForwardedHeaders` settings described in [configuration](CONFIGURATION.md).
+
 ## Disposable generic OIDC evaluation
 
 For a local evaluation of the complete browser sign-in flow, the repository
 includes a test-only Compose overlay backed by a publicly available generic
 OIDC server. It is not a production identity provider and it creates no
 administrator password. The overlay explicitly disables the otherwise-required
-HTTPS metadata check only for its local HTTP test server. After creating the
-signing key above, run:
+HTTPS metadata check only for its local HTTP test server.
+
+Use the evaluation launcher from a fresh shell. It creates an isolated sibling
+workspace (not a directory in the Git checkout), persists a private complete
+Compose environment for that instance, and derives a unique Compose project,
+ports, and proxy subnet from its canonical workspace path. Two workspaces can
+therefore be evaluated without sharing volumes or a stop target. The web and API
+ports bind to loopback. The disposable OIDC port intentionally defaults to a
+non-loopback bind because containers must reach it through Docker's host gateway;
+run it only on a trusted evaluation host (or set `NETRATEL_OIDC_TEST_BIND_ADDRESS`
+before the first `start`).
 
 ```sh
-POSTGRES_PASSWORD=local-evaluation-only \
-NETRATEL_AGENT_AUTH_PRIVATE_KEY=./.netratel-agent-es256-private.pem \
-OIDC_AUTHORITY=https://unused.example.invalid \
-OIDC_CLIENT_ID=unused-local-evaluation-client \
-OIDC_API_SCOPE=unused-local-evaluation-scope \
-OIDC_API_AUDIENCE=unused-local-evaluation-audience \
-OIDC_TOKEN_ENDPOINT=https://unused.example.invalid/token \
-OIDC_ADMIN_GROUP_ID=unused-local-evaluation-group \
-OIDC_CLIENT_SECRET=unused-local-evaluation-secret \
-docker compose -f compose.yaml -f tests/compose/oidc-smoke.compose.yaml up --build
+tools/dev/oidc-evaluation.sh start
 ```
 
-Open `http://localhost:8080/auth/oidc` and use
+Open the loopback URL printed by the launcher and use
 `netratel-test-operator` at the test provider's login form. On Linux hosts
 where Docker does not already resolve it, add the temporary local mapping
 `127.0.0.1 host.docker.internal` before opening the browser. Remove the
-test stack and its volumes with the corresponding `docker compose ... down
---volumes` command when finished. The automated equivalent is
+test stack and its volumes after verifying logout with:
+
+```sh
+tools/dev/oidc-evaluation.sh stop ../netratel-oidc-evaluation
+```
+
+Pass the same alternate workspace path to both commands when the default
+sibling path is unsuitable. The automated CI smoke remains
 `tools/ci/smoke-oidc-compose.sh`; it creates and removes its own disposable
-resources.
+resources and is not the interactive evaluation path.
 
 ## Configuration
 
@@ -77,21 +88,23 @@ session. It is separate from API M2M credentials and native-agent enrollment.
 
 ## Release-image bundle
 
-After an approved public release, download the release Compose bundle, copy
-`release/.env.images.example` to an untracked `.env` file beside it, and replace
-each NetRatel image placeholder with the approved immutable digest from that
-release. Run `docker compose -f release/compose.images.yaml config --quiet`
-before starting the stack. The release bundle never builds application source;
-its migration image runs before API starts.
+After an approved public release, extract the release Compose bundle, copy
+`.env.images.example` to an untracked `.env` file beside the extracted
+`compose.images.yaml`, and replace each NetRatel image placeholder with the
+approved immutable digest from that release. Run `docker compose --env-file .env -f compose.images.yaml config --quiet` before starting the stack. The release
+bundle never builds application source; its migration image runs before API
+starts. Keep the agent key beside the extracted bundle, set
+`NETRATEL_AGENT_AUTH_PRIVATE_KEY=./.netratel-agent-es256-private.pem`, and use
+the same owner-only `600` permissions described above.
 
 The HTTP MCP image is an explicit opt-in overlay. Set its distinct HTTPS OIDC,
 resource URI, audience, API target, group, and scope values, then validate it
-with `docker compose -f release/compose.images.yaml -f
-release/compose.mcp-http.yaml config --quiet` before starting. Do not point it
+with `docker compose --env-file .env -f compose.images.yaml -f
+compose.mcp-http.yaml config --quiet` from the extracted directory before starting. Do not point it
 at an internal-only address or reuse Web, API, or native-agent credentials.
 
 ## Prerelease posture
 
-`0.1.0-rc.1` images and release bundles are not published yet. Use a reviewed
-source build for evaluation only. A production rollout requires later
-release-artifact verification and owner approval.
+`0.1.0-rc.1` remains a historical prerelease. `0.1.0-rc.2` images and release
+bundles are not published yet. Use a reviewed source build for evaluation only.
+A production rollout requires release-artifact verification and owner approval.

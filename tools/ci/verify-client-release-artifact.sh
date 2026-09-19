@@ -21,13 +21,26 @@ while (( $# > 0 )); do
 done
 
 [[ -n "$artifacts" && -n "$version" && -n "$runtime" && ( "$extension" == zip || "$extension" == tar.gz ) ]] || usage
+for required_tool in python3 jq find grep tar unzip; do
+  command -v "$required_tool" >/dev/null 2>&1 || {
+    echo "Required client artifact verifier tool '$required_tool' is unavailable." >&2; exit 1;
+  }
+done
 archive="netratel-client-${version}-${runtime}.${extension}"
 sbom="netratel-client-${version}-${runtime}.spdx.json"
 manifest="netratel-client-${runtime}/netratel-client-manifest.json"
 
 [[ -s "$artifacts/$archive" ]] || { echo "Missing Client archive: $archive" >&2; exit 1; }
 [[ -s "$artifacts/$sbom" ]] || { echo "Missing Client SBOM: $sbom" >&2; exit 1; }
-grep -q '"spdxVersion"' "$artifacts/$sbom" || { echo "Client SBOM is not SPDX JSON." >&2; exit 1; }
+jq -e '
+  (.spdxVersion | type == "string")
+  and ((.packages | type == "array") and length > 1)
+  and ([.files[]? | .checksums[]? | select(.algorithm == "SHA256") | .checksumValue]
+       | length > 0 and all(test("^0+$") | not))
+' "$artifacts/$sbom" >/dev/null || {
+  echo "Client SBOM lacks dependency coverage or contains placeholder SHA-256 values." >&2
+  exit 1
+}
 
 if [[ "$extension" == zip ]]; then
   entries="$(unzip -Z1 "$artifacts/$archive")"
@@ -41,6 +54,9 @@ if grep -Eq '(^/|(^|/)\.\.(/|$))' <<<"$entries"; then
 fi
 grep -qx "$manifest" <<<"$entries" || { echo "Client archive is missing its manifest." >&2; exit 1; }
 for required_entry in \
+  "netratel-client-${runtime}/LICENSE" \
+  "netratel-client-${runtime}/NOTICE" \
+  "netratel-client-${runtime}/THIRD-PARTY-NOTICES.txt" \
   "netratel-client-${runtime}/appsettings.json" \
   "netratel-client-${runtime}/powershell.config.json" \
   "netratel-client-${runtime}/terminal_pty_helper.py" \
@@ -84,7 +100,12 @@ fi
 if grep -rI -q -E -- '-----BEGIN ([A-Z ]*PRIVATE KEY|CERTIFICATE)|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9_]{20,}' "$extract_dir"; then
   echo "Client archive contains potential key material." >&2
   exit 1
+else
+  scan_status=$?
+  [[ "$scan_status" == 1 ]] || { echo "Client archive credential scanner failed." >&2; exit 1; }
 fi
+
+python3 "$(dirname "${BASH_SOURCE[0]}")/verify-runtime-sbom.py" --sbom "$artifacts/$sbom" --root "$extract_dir"
 
 if [[ "$runtime" == linux-x64 ]]; then
   client="$extract_dir/netratel-client-${runtime}/NetRatel.Client"

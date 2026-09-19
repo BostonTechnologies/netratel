@@ -76,8 +76,8 @@
                                                 @if (type == "bool")
                                                 {
                                                     <MudSwitch T="bool"
-                                                               Checked="@GetBoolValue(p.Name)"
-                                                               CheckedChanged="@((bool value) => SetBoolValue(p.Name, value))" />
+                                                               Value="@GetBoolValue(p.Name)"
+                                                               ValueChanged="@((bool value) => SetBoolValue(p.Name, value))" />
                                                 }
                                                 else if (type == "select")
                                                 {

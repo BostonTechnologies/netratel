@@ -46,6 +46,8 @@ RUN dotnet build "./NetRatel.API.csproj" -c $BUILD_CONFIGURATION -o /app/build
 FROM build AS publish
 ARG BUILD_CONFIGURATION=Release
 RUN dotnet publish "./NetRatel.API.csproj" -c $BUILD_CONFIGURATION -o /app/publish /p:UseAppHost=false
+RUN apt-get update && apt-get install -y --no-install-recommends python3
+RUN python3 /src/tools/ci/generate-runtime-sbom.py --project-assets obj/project.assets.json --distribution /app/publish --name NetRatel.API --version "$(dotnet msbuild NetRatel.API.csproj -nologo -getProperty:Version)" --output /app/publish/runtime.spdx.json
 
 # --- Final
 FROM base AS final
@@ -53,6 +55,7 @@ WORKDIR /app
 # If your Docker supports it, keep --chown; otherwise chown after COPY
 COPY --chown=${APP_USER}:${APP_USER} --from=publish /app/publish .
 COPY --chown=${APP_USER}:${APP_USER} docker/api/docker-entrypoint.sh /app/docker-entrypoint.sh
+COPY --chown=${APP_USER}:${APP_USER} LICENSE NOTICE /app/licenses/
 RUN chmod +x /app/docker-entrypoint.sh
 # RUN chown -R ${APP_USER}:${APP_USER} /app   # <- use this if COPY --chown not supported
 ENTRYPOINT ["/app/docker-entrypoint.sh", "dotnet", "NetRatel.API.dll"]
