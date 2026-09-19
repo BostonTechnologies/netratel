@@ -28,30 +28,30 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Google.Protobuf" Version="3.36.0" />
+    <PackageReference Include="Google.Protobuf" Version="3.36.2" />
     <PackageReference Include="Grpc.Net.Client" Version="2.83.0" />
     <PackageReference Include="mcpdotnet" Version="1.2.0.1" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.11" />
-    <PackageReference Include="Microsoft.Extensions.Configuration.Ini" Version="10.0.11" />
-    <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.11" />
-    <PackageReference Include="Microsoft.Extensions.Hosting.Systemd" Version="10.0.11" />
-    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.11" />
-    <PackageReference Include="Microsoft.PowerShell.Commands.Diagnostics" Version="7.6.5" />
-    <PackageReference Include="Microsoft.PowerShell.Commands.Management" Version="7.6.5" />
-    <PackageReference Include="Microsoft.PowerShell.Commands.Utility" Version="7.6.5" />
-    <PackageReference Include="Microsoft.PowerShell.ConsoleHost" Version="7.6.5" />
-    <PackageReference Include="Microsoft.PowerShell.SDK" Version="7.6.5" />
-    <PackageReference Include="Microsoft.WSMan.Management" Version="7.6.5" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.12" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Ini" Version="10.0.12" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.12" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Systemd" Version="10.0.12" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.12" />
+    <PackageReference Include="Microsoft.PowerShell.Commands.Diagnostics" Version="7.6.6" />
+    <PackageReference Include="Microsoft.PowerShell.Commands.Management" Version="7.6.6" />
+    <PackageReference Include="Microsoft.PowerShell.Commands.Utility" Version="7.6.6" />
+    <PackageReference Include="Microsoft.PowerShell.ConsoleHost" Version="7.6.6" />
+    <PackageReference Include="Microsoft.PowerShell.SDK" Version="7.6.6" />
+    <PackageReference Include="Microsoft.WSMan.Management" Version="7.6.6" />
     <PackageReference Include="NuGet.Versioning" Version="7.9.0" />
     <PackageReference Include="Refit" Version="15.2.0" />
     <PackageReference Include="Rundeck.Api" Version="34.0.60" />
     <PackageReference Include="SIPSorcery" Version="10.0.16" />
     <PackageReference Include="SIPSorceryMedia.Encoders" Version="10.0.4" />
-    <PackageReference Include="System.Security.Cryptography.Xml" Version="10.0.11" />
-    <PackageReference Include="System.ServiceProcess.ServiceController" Version="10.0.11" />
-    <PackageReference Include="System.Diagnostics.PerformanceCounter" Version="10.0.11" />
-    <PackageReference Include="System.Drawing.Common" Version="10.0.11" />
-    <PackageReference Include="System.Management.Automation" Version="7.6.5" />
+    <PackageReference Include="System.Security.Cryptography.Xml" Version="10.0.12" />
+    <PackageReference Include="System.ServiceProcess.ServiceController" Version="10.0.12" />
+    <PackageReference Include="System.Diagnostics.PerformanceCounter" Version="10.0.12" />
+    <PackageReference Include="System.Drawing.Common" Version="10.0.12" />
+    <PackageReference Include="System.Management.Automation" Version="7.6.6" />
   </ItemGroup>
 
   <ItemGroup>
