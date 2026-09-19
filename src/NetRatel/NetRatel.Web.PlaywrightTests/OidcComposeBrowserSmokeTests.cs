@@ -30,6 +30,22 @@ public sealed class OidcComposeBrowserSmokeTests
         var staticAsset = await context.APIRequest.GetAsync(new Uri(webUrl, "_framework/blazor.web.js").ToString());
         Assert.True(staticAsset.Ok, $"The Blazor bootstrap asset returned HTTP {staticAsset.Status}.");
 
+        foreach (var (asset, contentType, maximumBytes) in new[]
+        {
+            ("brand/netratel-wordmark-600.webp", "image/webp", 150_000),
+            ("brand/netratel-mark-32.png", "image/png", 20_000),
+            ("brand/apple-touch-icon.png", "image/png", 150_000),
+            ("favicon.ico", "image/", 150_000)
+        })
+        {
+            var response = await context.APIRequest.GetAsync(new Uri(webUrl, asset).ToString());
+            Assert.True(response.Ok, $"{asset} returned {response.Status}");
+            Assert.StartsWith(contentType, response.Headers["content-type"]);
+            Assert.InRange((await response.BodyAsync()).Length, 1, maximumBytes);
+        }
+        await page.GotoAsync(new Uri(webUrl, "login").ToString());
+        await CaptureBrandingAsync(page, "login");
+
         var login = await page.GotoAsync(new Uri(webUrl, "auth/oidc?returnUrl=%2Ftenants").ToString(), new PageGotoOptions
         {
             WaitUntil = WaitUntilState.DOMContentLoaded
@@ -42,10 +58,26 @@ public sealed class OidcComposeBrowserSmokeTests
 
         var authenticatedStatus = await page.EvaluateAsync<int>("async () => (await fetch('/api/v1/tenants')).status");
         Assert.Equal(200, authenticatedStatus);
+        await CaptureBrandingAsync(page, "navbar");
 
         await page.GotoAsync(new Uri(webUrl, "auth/logout").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
         var anonymousStatus = await page.EvaluateAsync<int>("async () => (await fetch('/api/v1/tenants')).status");
         Assert.Equal(401, anonymousStatus);
+    }
+
+    private static async Task CaptureBrandingAsync(IPage page, string view)
+    {
+        var directory = Path.Combine("TestResults", "branding");
+        Directory.CreateDirectory(directory);
+        foreach (var (width, height, name) in new[] { (1440, 900, "desktop"), (390, 844, "mobile") })
+        {
+            await page.SetViewportSizeAsync(width, height);
+            await page.Locator("img[src*='brand/']").First.WaitForAsync();
+            await page.WaitForFunctionAsync("() => Array.from(document.querySelectorAll('img[src*=\"brand/\"]')).every(image => image.complete && image.naturalWidth > 0)");
+            Assert.False(await page.EvaluateAsync<bool>("() => document.documentElement.scrollWidth > innerWidth"),
+                $"{view} overflows the {name} viewport.");
+            await page.ScreenshotAsync(new PageScreenshotOptions { Path = Path.Combine(directory, $"{view}-{name}.png"), FullPage = true });
+        }
     }
 
     private static Uri RequireEnvironmentUri(string name)
