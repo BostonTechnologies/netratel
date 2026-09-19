@@ -113,9 +113,27 @@ class DistributionTests(unittest.TestCase):
         (inputs / "SHA256SUMS").write_text("".join(lines))
         output = self.root / "flat"
         self.promotion.stage(inputs, output, "0.1.0-rc.2")
+        self.promotion.verify_staged(output, "0.1.0-rc.2")
         self.assertEqual(subprocess.run(["sha256sum", "-c", "SHA256SUMS"], cwd=output, capture_output=True).returncode, 0)
         with self.assertRaisesRegex(ValueError, "new directory"):
             self.promotion.stage(inputs, output, "0.1.0-rc.2")
+        (output / self.promotion.required_artifacts("0.1.0-rc.2")[0]).write_bytes(b"corrupted after staging")
+        with self.assertRaisesRegex(ValueError, "changed or missing"):
+            self.promotion.verify_staged(output, "0.1.0-rc.2")
+
+    def test_partial_resume_preserves_completed_digest_and_rejects_wrong_source_or_digest(self):
+        path = self.root / "journal.json"
+        state = self.promotion.resume_state(path, "0.1.0-rc.2", "b" * 40, "public-candidate")
+        reference = "ghcr.io/bostontechnologies/public-candidate-api@sha256:" + "a" * 64
+        state["images"]["api"] = reference
+        path.write_text(json.dumps(state))
+        self.assertEqual(self.promotion.resume_state(path, "0.1.0-rc.2", "b" * 40, "public-candidate")["images"], {"api": reference})
+        with self.assertRaisesRegex(ValueError, "different approved"):
+            self.promotion.resume_state(path, "0.1.0-rc.2", "c" * 40, "public-candidate")
+        state["images"]["api"] = reference[:-64] + "REPLACE_AFTER_APPROVED_PUBLIC_RELEASE"
+        path.write_text(json.dumps(state))
+        with self.assertRaisesRegex(ValueError, "invalid digest"):
+            self.promotion.resume_state(path, "0.1.0-rc.2", "b" * 40, "public-candidate")
 
     def test_partial_or_placeholder_image_sets_cannot_finalize_a_bundle(self):
         with self.assertRaisesRegex(ValueError, "All five"):

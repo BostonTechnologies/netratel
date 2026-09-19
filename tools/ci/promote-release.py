@@ -72,6 +72,35 @@ def checksums(directory):
     (directory / "SHA256SUMS").write_text("".join(f"{sha256(path)}  {path.name}\n" for path in files))
 
 
+def verify_staged(directory, version):
+    listed = set()
+    for line in (directory / "SHA256SUMS").read_text().splitlines():
+        expected, name = line.split(maxsplit=1)
+        name = name.lstrip("*")
+        if Path(name).name != name or not re.fullmatch("[a-f0-9]{64}", expected) or name in listed:
+            raise ValueError("Malformed staged checksum entry")
+        path = directory / name
+        if not path.is_file() or sha256(path) != expected:
+            raise ValueError(f"Staged artifact changed or missing: {name}")
+        listed.add(name)
+    if not set(required_artifacts(version)).issubset(listed):
+        raise ValueError("Staged checksums omit required artifacts")
+
+
+def resume_state(path, version, revision, prefix):
+    state = json.loads(path.read_text()) if path.exists() else {
+        "version": version, "revision": revision, "packagePrefix": prefix, "images": {}}
+    if (state.get("version"), state.get("revision"), state.get("packagePrefix")) != (version, revision, prefix):
+        raise ValueError("Resume journal belongs to a different approved source or package prefix")
+    if not isinstance(state.get("images"), dict) or not set(state["images"]).issubset(COMPONENTS):
+        raise ValueError("Resume journal contains unknown components")
+    for name, reference in state["images"].items():
+        expected = f"ghcr.io/bostontechnologies/{prefix}-{name}@sha256:"
+        if not reference.startswith(expected) or not re.fullmatch("[a-f0-9]{64}", reference.removeprefix(expected)):
+            raise ValueError("Resume journal contains an invalid digest")
+    return state
+
+
 def validate_digests(images):
     if set(images) != set(COMPONENTS):
         raise ValueError("All five immutable image outputs are required")
@@ -132,13 +161,14 @@ def promote(args):
         existing = inventory.get(f"{args.package_prefix}-{component}")
         if existing and existing["visibility"] != "public":
             raise ValueError("Proposed package name collides with a non-public package; choose a new reviewed prefix")
-    state = json.loads(args.state.read_text()) if args.state.exists() else {"version": version, "revision": revision, "images": {}}
-    if state["version"] != version or state["revision"] != revision:
-        raise ValueError("Resume journal belongs to a different approved source")
+    state = resume_state(args.state, version, revision, args.package_prefix)
     if not args.output.exists():
         stage(args.inputs, args.output, version)
     elif not args.state.exists():
         raise ValueError("Existing output requires its matching resume journal")
+    verify_staged(args.output, version)
+    args.state.parent.mkdir(parents=True, exist_ok=True)
+    args.state.write_text(json.dumps(state, indent=2) + "\n")
     # Each component is journaled only after an immutable digest is obtained.
     for component in COMPONENTS:
         repository = f"ghcr.io/bostontechnologies/{args.package_prefix}-{component}"
