@@ -88,7 +88,7 @@
                      aria-label="More application actions"
                      data-testid="mobile-overflow">
                 <MudMenuItem Icon="@Icons.Material.Filled.Api" Href="/api/docs/">API Docs</MudMenuItem>
-                <MudMenuItem Icon="@Icons.Material.Filled.NewReleases">@_appBarVersion.DisplayVersion</MudMenuItem>
+                <MudMenuItem Icon="@Icons.Material.Filled.NewReleases"><span data-testid="mobile-product-version">@_appBarVersion.DisplayVersion</span></MudMenuItem>
                 <MudMenuItem Icon="@Icons.Material.Filled.Notifications" Href="/notifications">Notifications</MudMenuItem>
                 <MudDivider />
                 <MudMenuItem Icon="@themePreference.Icon" Disabled="true">Theme: @themePreference.Label</MudMenuItem>
@@ -192,6 +192,7 @@
             }
             catch (JSDisconnectedException)
             {
+                _hotkeyRegistrationId = null;
             }
         }
 
