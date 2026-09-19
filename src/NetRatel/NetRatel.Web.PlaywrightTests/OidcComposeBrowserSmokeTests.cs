@@ -89,7 +89,12 @@ public sealed class OidcComposeBrowserSmokeTests
             await page.WaitForFunctionAsync("() => Array.from(document.querySelectorAll('img[src*=\"brand/\"]')).every(image => image.complete && image.naturalWidth > 0)");
             Assert.False(await page.EvaluateAsync<bool>("() => document.documentElement.scrollWidth > innerWidth"),
                 $"{view} overflows the {name} viewport.");
-            await page.ScreenshotAsync(new PageScreenshotOptions { Path = Path.Combine(directory, $"{view}-{name}.png"), FullPage = true });
+            await page.ScreenshotAsync(new PageScreenshotOptions
+            {
+                Path = Path.Combine(directory, $"{view}-{name}.png"),
+                FullPage = true,
+                Animations = ScreenshotAnimations.Disabled
+            });
         }
     }
 
