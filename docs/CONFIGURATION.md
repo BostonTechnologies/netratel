@@ -59,6 +59,13 @@ machine-token scheme when both configured issuer and audience match; human and
 machine audiences can therefore share an issuer. When disabled, retained
 machine settings do not authenticate a machine endpoint or add session roles.
 
+Machine-token credentials require a dedicated audience distinct from the human
+OIDC audience/client ID. The same issuer may serve both audiences; multi-audience
+machine credentials are rejected to avoid ambiguous role augmentation. The
+`Authentication:OidcAiAgent` section remains a compatibility alias only when
+the canonical `Authentication:MachineToken` section is absent. A retained alias
+cannot override a canonical disabled configuration.
+
 ## Reverse-proxy trust
 
 The Web service ignores `X-Forwarded-For`, `X-Forwarded-Host`, and

@@ -158,6 +158,9 @@ if (!machineTokenConfiguration.Exists())
 builder.Services.AddSingleton<IValidateOptions<MachineTokenOptions>, MachineTokenOptionsValidator>();
 builder.Services.AddOptions<MachineTokenOptions>()
     .Bind(machineTokenConfiguration)
+    .Validate(options => !options.Enabled ||
+        !new[] { oidcConfiguration["ClientId"], oidcConfiguration["Audience"] }.Contains(options.Audience, StringComparer.Ordinal),
+        "Machine-token authentication requires a dedicated audience distinct from interactive OIDC.")
     .ValidateOnStart();
 builder.Services.AddSingleton<IMachineTokenValidator, OidcMachineTokenValidator>();
 

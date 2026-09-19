@@ -105,6 +105,17 @@ if (!machineTokenConfiguration.Exists())
 var machineTokenOptions = machineTokenConfiguration.Get<MachineTokenAuthenticationOptions>()
     ?? new MachineTokenAuthenticationOptions();
 machineTokenOptions.Validate();
+if (machineTokenOptions.Enabled)
+{
+    var human = builder.Configuration.GetSection("Authentication:Oidc");
+    if (!human.Exists())
+        human = builder.Configuration.GetSection("Authentication:Azure");
+    var humanAudiences = (human.GetSection("Audiences").Get<string[]>() ?? [])
+        .Concat([human["Audience"], human["ClientId"], builder.Configuration["AzureAd:ClientId"],
+            builder.Configuration["AzureAd:Audience"], builder.Configuration["AzureAd:AppIdUri"]]);
+    if (humanAudiences.Contains(machineTokenOptions.Audience, StringComparer.Ordinal))
+        throw new InvalidOperationException("Machine-token authentication requires a dedicated audience distinct from human OIDC audiences.");
+}
 
 // Multiple JWT bearer schemes:
 builder.Services
@@ -179,60 +190,7 @@ builder.Services
         };
     })
     .AddJwtBearer("MachineToken", options =>
-    {
-        // Registering the scheme keeps the explicit policy's public contract
-        // stable. A disabled scheme intentionally yields no identity, so an
-        // endpoint that explicitly selects it cannot bypass the feature flag.
-        if (!machineTokenOptions.Enabled)
-        {
-            options.Events = new JwtBearerEvents
-            {
-                OnMessageReceived = context =>
-                {
-                    context.NoResult();
-                    return Task.CompletedTask;
-                }
-            };
-            return;
-        }
-
-        var authority = machineTokenOptions.Authority;
-        var audience = machineTokenOptions.Audience;
-        options.Authority = authority;
-        options.Audience = audience;
-        options.RequireHttpsMetadata = !builder.Environment.IsDevelopment();
-        options.IncludeErrorDetails = builder.Environment.IsDevelopment();
-        options.TokenValidationParameters = MachineTokenAuthentication.CreateValidationParameters(machineTokenOptions);
-
-        options.Events = new JwtBearerEvents
-        {
-            OnTokenValidated = context =>
-            {
-                var requiredGroups = machineTokenOptions.RequiredGroups;
-                var actualGroups = context.Principal?.FindAll("groups").Select(c => c.Value).ToHashSet(StringComparer.OrdinalIgnoreCase) ?? [];
-                if (requiredGroups.Any(group => !actualGroups.Contains(group)))
-                {
-                    context.Fail("Machine token is missing one or more required groups.");
-                    return Task.CompletedTask;
-                }
-
-                if (context.Principal?.Identity is ClaimsIdentity identity)
-                {
-                    var sessionRoles = machineTokenOptions.SessionRoles;
-                    foreach (var role in sessionRoles.Where(role => !string.IsNullOrWhiteSpace(role)).Distinct(StringComparer.OrdinalIgnoreCase))
-                    {
-                        identity.AddClaim(new Claim(ClaimTypes.Role, role));
-                        identity.AddClaim(new Claim("roles", role));
-                    }
-
-                    identity.AddClaim(new Claim("auth_mode", "machine_token"));
-                    identity.AddClaim(new Claim("identity_provider", "oidc_machine_token"));
-                }
-
-                return Task.CompletedTask;
-            }
-        };
-    })
+        MachineTokenAuthentication.Configure(options, machineTokenOptions, builder.Environment.IsDevelopment()))
     .AddJwtBearer("Oidc", options =>
     {
         var oidc = builder.Configuration.GetSection("Authentication:Oidc");

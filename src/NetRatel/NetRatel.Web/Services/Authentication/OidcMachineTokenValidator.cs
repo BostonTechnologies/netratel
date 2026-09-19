@@ -66,6 +66,10 @@ public sealed class OidcMachineTokenValidator : IMachineTokenValidator
         }, out var validatedToken);
 
         EnsureRequiredGroups(principal, _options.RequiredGroups);
+        if (principal.FindAll("aud").Select(claim => claim.Value).Distinct().Count() != 1)
+        {
+            throw new SecurityTokenValidationException("Machine tokens require exactly one dedicated audience.");
+        }
 
         var identity = new ClaimsIdentity(
             principal.Claims.Select(claim => new Claim(claim.Type, claim.Value)),
