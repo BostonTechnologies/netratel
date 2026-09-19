@@ -40,30 +40,32 @@ For a local evaluation of the complete browser sign-in flow, the repository
 includes a test-only Compose overlay backed by a publicly available generic
 OIDC server. It is not a production identity provider and it creates no
 administrator password. The overlay explicitly disables the otherwise-required
-HTTPS metadata check only for its local HTTP test server. After creating the
-signing key above, run:
+HTTPS metadata check only for its local HTTP test server.
+
+Use the evaluation launcher from a fresh shell. It creates an isolated sibling
+workspace (not a directory in the Git checkout), generates the disposable agent
+and TLS inputs that the overlay mounts read-only, uses loopback ports 18080,
+18081, and 19222 by default, and leaves the stack running for manual login and
+logout evaluation:
 
 ```sh
-POSTGRES_PASSWORD=local-evaluation-only \
-NETRATEL_AGENT_AUTH_PRIVATE_KEY=./.netratel-agent-es256-private.pem \
-OIDC_AUTHORITY=https://unused.example.invalid \
-OIDC_CLIENT_ID=unused-local-evaluation-client \
-OIDC_API_SCOPE=unused-local-evaluation-scope \
-OIDC_API_AUDIENCE=unused-local-evaluation-audience \
-OIDC_TOKEN_ENDPOINT=https://unused.example.invalid/token \
-OIDC_ADMIN_GROUP_ID=unused-local-evaluation-group \
-OIDC_CLIENT_SECRET=unused-local-evaluation-secret \
-docker compose -f compose.yaml -f tests/compose/oidc-smoke.compose.yaml up --build
+tools/dev/oidc-evaluation.sh start
 ```
 
-Open `http://localhost:8080/auth/oidc` and use
+Open `http://127.0.0.1:18080/auth/oidc` and use
 `netratel-test-operator` at the test provider's login form. On Linux hosts
 where Docker does not already resolve it, add the temporary local mapping
 `127.0.0.1 host.docker.internal` before opening the browser. Remove the
-test stack and its volumes with the corresponding `docker compose ... down
---volumes` command when finished. The automated equivalent is
+test stack and its volumes after verifying logout with:
+
+```sh
+tools/dev/oidc-evaluation.sh stop ../netratel-oidc-evaluation
+```
+
+Pass the same alternate workspace path to both commands when the default
+sibling path is unsuitable. The automated CI smoke remains
 `tools/ci/smoke-oidc-compose.sh`; it creates and removes its own disposable
-resources.
+resources and is not the interactive evaluation path.
 
 ## Configuration
 

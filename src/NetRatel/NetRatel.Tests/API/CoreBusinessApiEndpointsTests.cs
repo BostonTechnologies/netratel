@@ -131,7 +131,7 @@ public sealed class CoreBusinessApiEndpointsTests
         var version = await client.GetFromJsonAsync<SystemVersionResponse>("/api/v1/system/version");
         version.Should().NotBeNull();
         version!.ServiceName.Should().Be("NetRatel.API");
-        version.DisplayVersion.Should().StartWith("v");
+        version.DisplayVersion.Should().Be("v0.1.0-rc.2");
 
         (await client.GetAsync("/api/v1/system/spacetime-health")).StatusCode.Should().Be(HttpStatusCode.NotFound);
         (await client.GetAsync("/api/v1/system/spacetime-connection-debug")).StatusCode.Should().Be(HttpStatusCode.NotFound);

@@ -4,7 +4,6 @@ using System.Reflection;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
-using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Configuration;
@@ -267,12 +266,6 @@ public static class SystemEndpoints
         if (metadataStart >= 0)
         {
             trimmed = trimmed[..metadataStart];
-        }
-
-        var semanticVersion = Regex.Match(trimmed, @"(?<version>\d+\.\d+\.\d+)");
-        if (semanticVersion.Success)
-        {
-            trimmed = semanticVersion.Groups["version"].Value;
         }
 
         return trimmed.StartsWith("v", StringComparison.OrdinalIgnoreCase)

@@ -35,7 +35,7 @@ public class MainLayoutTests : AsyncBunitContext
     }
 
     [Fact]
-    public void MainLayout_RendersApiLinkAndConfiguredVersion()
+    public void MainLayout_RendersApiLinkAndAuthoritativeAssemblyVersion()
     {
         AddConfiguration(new Dictionary<string, string?>
         {
@@ -45,11 +45,11 @@ public class MainLayoutTests : AsyncBunitContext
         var cut = RenderMainLayout();
 
         cut.Find(".netratel-appbar-api-chip[href='/api/docs/']").TextContent.Trim().Should().Be("API");
-        cut.Find(".netratel-appbar-version-chip").TextContent.Trim().Should().Be("v2.2.0");
+        cut.Find(".netratel-appbar-version-chip").TextContent.Trim().Should().Be("v0.1.0-rc.2");
     }
 
     [Fact]
-    public void MainLayout_PrefersDeploymentControlPlaneBuildVersionOverOtelVersion()
+    public void MainLayout_RejectsDeploymentAndTelemetryVersionsAsProductIdentity()
     {
         AddConfiguration(new Dictionary<string, string?>
         {
@@ -59,24 +59,20 @@ public class MainLayoutTests : AsyncBunitContext
 
         var cut = RenderMainLayout();
 
-        cut.Find(".netratel-appbar-version-chip").TextContent.Trim().Should().Be("v2.3.4");
+        cut.Find(".netratel-appbar-version-chip").TextContent.Trim().Should().Be("v0.1.0-rc.2");
     }
 
     [Fact]
-    public void MainLayout_TrimsBuildMetadataFromVersion()
+    public void AppBarVersionResolver_PreservesPrereleaseAndRemovesOnlyBuildMetadata()
     {
-        AddConfiguration(new Dictionary<string, string?>
-        {
-            ["DEPLOYMENT_CONTROL_PLANE_BUILD_VERSION"] = "0.0.125+462a556b738891d440d8b72e61ce361b1656e033"
-        });
-
-        var cut = RenderMainLayout();
-
-        cut.Find(".netratel-appbar-version-chip").TextContent.Trim().Should().Be("v0.0.125");
+        AppBarVersionResolver.FormatProductVersion("0.1.0-rc.2+462a556b738891d440d8b72e61ce361b1656e033")
+            .Should().Be("v0.1.0-rc.2");
+        AppBarVersionResolver.FormatProductVersion("0.1.0")
+            .Should().Be("v0.1.0");
     }
 
     [Fact]
-    public void MainLayout_UsesBuildVersionAliasWhenDeploymentControlPlaneVersionIsMissing()
+    public void MainLayout_RejectsGenericBuildVersionAlias()
     {
         AddConfiguration(new Dictionary<string, string?>
         {
@@ -85,7 +81,7 @@ public class MainLayoutTests : AsyncBunitContext
 
         var cut = RenderMainLayout();
 
-        cut.Find(".netratel-appbar-version-chip").TextContent.Trim().Should().Be("v0.0.125");
+        cut.Find(".netratel-appbar-version-chip").TextContent.Trim().Should().Be("v0.1.0-rc.2");
     }
 
     [Fact]
@@ -109,7 +105,7 @@ public class MainLayoutTests : AsyncBunitContext
         var cut = RenderMainLayout();
 
         cut.Find(".netratel-appbar-api-chip").TextContent.Trim().Should().Be("API");
-        cut.Find(".netratel-appbar-version-chip").TextContent.Trim().Should().Be("v0.0.126");
+        cut.Find(".netratel-appbar-version-chip").TextContent.Trim().Should().Be("v0.1.0-rc.2");
         cut.FindAll(".netratel-appbar-desktop-actions .netratel-appbar-chip").Should().HaveCount(2);
     }
 
@@ -132,7 +128,7 @@ public class MainLayoutTests : AsyncBunitContext
         cut.WaitForAssertion(() =>
         {
             cut.Markup.Should().Contain("API Docs");
-            cut.Markup.Should().Contain("v0.0.126");
+            cut.Markup.Should().Contain("v0.1.0-rc.2");
             cut.Markup.Should().Contain("Notifications");
             cut.Markup.Should().Contain("Theme: System");
             cut.Markup.Should().Contain("System");

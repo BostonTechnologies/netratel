@@ -70,6 +70,7 @@ public sealed class OidcComposeBrowserSmokeTests
         var authenticatedStatus = await page.EvaluateAsync<int>("async () => (await fetch('/api/v1/tenants')).status");
         Assert.Equal(200, authenticatedStatus);
         await CaptureBrandingAsync(page, trustedProxy ? "proxy-navbar" : "navbar");
+        await AssertProductVersionBadgesAsync(page);
 
         await page.GotoAsync(new Uri(webUrl, "auth/logout").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
         var anonymousStatus = await page.EvaluateAsync<int>("async () => (await fetch('/api/v1/tenants')).status");
@@ -96,6 +97,22 @@ public sealed class OidcComposeBrowserSmokeTests
                 Animations = ScreenshotAnimations.Disabled
             });
         }
+    }
+
+    private static async Task AssertProductVersionBadgesAsync(IPage page)
+    {
+        const string expectedVersion = "v0.1.0-rc.2";
+
+        await page.SetViewportSizeAsync(1440, 900);
+        var desktopBadge = page.Locator(".netratel-appbar-version-chip");
+        await desktopBadge.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        Assert.Equal(expectedVersion, (await desktopBadge.InnerTextAsync()).Trim());
+
+        await page.SetViewportSizeAsync(390, 844);
+        await page.GetByTestId("mobile-overflow").ClickAsync();
+        var mobileBadge = page.GetByText(expectedVersion, new PageGetByTextOptions { Exact = true }).Last;
+        await mobileBadge.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        Assert.Equal(expectedVersion, (await mobileBadge.InnerTextAsync()).Trim());
     }
 
     private static Uri RequireEnvironmentUri(string name)
