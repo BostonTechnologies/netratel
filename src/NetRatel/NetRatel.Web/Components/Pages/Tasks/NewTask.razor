@@ -96,7 +96,7 @@
 
                     <MudStack Spacing="1">
                         <MudText Typo="Typo.subtitle2">Environment</MudText>
-                        <MudChipSet T="ClientEnvironment" Mandatory="true" SingleSelection="true" @bind-SelectedValue="EnvironmentSelection">
+                        <MudChipSet T="ClientEnvironment" SelectionMode="SelectionMode.SingleSelection" @bind-SelectedValue="EnvironmentSelection">
                             @foreach (var env in _environments)
                             {
                                 <MudChip T="ClientEnvironment" Value="@env">@env.ToShortLabel()</MudChip>
@@ -210,7 +210,7 @@
 
                         <MudStack Spacing="1">
                             <MudText Typo="Typo.subtitle2">Task Type</MudText>
-                            <MudChipSet T="string" Mandatory="true" SingleSelection="true" @bind-SelectedValue="TaskTypeSelection">
+                            <MudChipSet T="string" SelectionMode="SelectionMode.SingleSelection" @bind-SelectedValue="TaskTypeSelection">
                                 <MudChip T="string" Value="@TaskKinds.ExecShellCommand">Shell Command</MudChip>
                                 <MudChip T="string" Value="@TaskKinds.ExecLibraryScript">Library Script</MudChip>
                             </MudChipSet>
@@ -408,7 +408,7 @@
                                 <MudTd>@context.Environment.ToShortLabel()</MudTd>
                                 <MudTd>@context.Created.ToLocalTime():g</MudTd>
                                 <MudTd>@FormatRuntime(context)</MudTd>
-                                <MudTd Align="Align.Right">
+                                <MudTd Class="text-right">
                                     <MudIconButton Icon="@Icons.Material.Filled.OpenInNew"
                                                    Color="Color.Primary"
                                                    Size="Size.Small"

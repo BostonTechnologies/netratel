@@ -64,14 +64,14 @@ public sealed class ClientsManagementResponsiveTests : IAsyncLifetime
         }
     }
 
-    public async Task InitializeAsync()
+    public async ValueTask InitializeAsync()
     {
         _fixture = await ClientsManagementFixtureHost.StartAsync();
         _playwright = await Playwright.CreateAsync();
         _browser = await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions { Headless = true });
     }
 
-    public async Task DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
         if (_browser is not null) await _browser.DisposeAsync();
         _playwright?.Dispose();

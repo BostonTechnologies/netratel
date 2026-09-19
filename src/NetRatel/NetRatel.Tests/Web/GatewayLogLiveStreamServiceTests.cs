@@ -56,7 +56,7 @@ public sealed class GatewayLogLiveStreamServiceTests : IAsyncLifetime
         (await received.Task.WaitAsync(TimeSpan.FromSeconds(5))).Should().BeEquivalentTo(expectedBatch);
     }
 
-    public async Task InitializeAsync()
+    public async ValueTask InitializeAsync()
     {
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = "Development" });
         builder.WebHost.UseUrls("http://127.0.0.1:0");
@@ -67,7 +67,7 @@ public sealed class GatewayLogLiveStreamServiceTests : IAsyncLifetime
         _baseAddress = new Uri(_application.Urls.Single(url => url.StartsWith("http://127.0.0.1:", StringComparison.Ordinal)));
     }
 
-    public async Task DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
         if (_application is null) return;
         await _application.StopAsync();

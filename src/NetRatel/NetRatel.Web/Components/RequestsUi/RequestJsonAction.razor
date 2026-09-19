@@ -11,10 +11,8 @@
                        OnClick="OpenDialogAsync"
                        aria-label="@Tooltip" />
         <MudPopover Open="_previewOpen"
-                    AnchorReference="AnchorReference.PreviousSibling"
                     AnchorOrigin="Origin.BottomRight"
                     TransformOrigin="Origin.TopRight"
-                    CloseOnOutsideClick="true"
                     Class="request-json-preview-popover pa-3">
             <div @onmouseenter="OpenPreview" @onmouseleave="ClosePreviewAsync">
                 <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="mb-2">

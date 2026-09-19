@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/dotnet/sdk:10.0.302-noble AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0.401-noble AS build
 WORKDIR /src
 COPY . .
 RUN dotnet publish src/NetRatel/NetRatel.Migrations/NetRatel.Migrations.csproj \

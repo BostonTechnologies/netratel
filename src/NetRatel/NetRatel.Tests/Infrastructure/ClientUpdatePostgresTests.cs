@@ -15,7 +15,7 @@ public sealed class ClientUpdatePostgresTests : IAsyncLifetime
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:16-alpine").Build();
     private DbContextOptions<OrchestratorDbContext> _options = null!;
 
-    public async Task InitializeAsync()
+    public async ValueTask InitializeAsync()
     {
         await _postgres.StartAsync();
         _options = new DbContextOptionsBuilder<OrchestratorDbContext>()
@@ -24,7 +24,7 @@ public sealed class ClientUpdatePostgresTests : IAsyncLifetime
         await db.Database.MigrateAsync();
     }
 
-    public Task DisposeAsync() => _postgres.DisposeAsync().AsTask();
+    public ValueTask DisposeAsync() => _postgres.DisposeAsync();
 
     [Fact]
     public async Task Migration_Creates_Update_Authority_And_Enforces_Immutable_Versions()

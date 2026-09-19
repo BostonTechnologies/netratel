@@ -22,7 +22,7 @@
 </MudPaper>
 
 <MudPaper Class="mt-4 pa-3 client-mgmt-surface" Elevation="0">
-    <MudTabs Rounded="true" KeepPanelsAlive="true" ActivePanelIndex="_activeTab" ActivePanelIndexChanged="OnTabChanged" PanelClass="client-mgmt-tab-panel" data-testid="client-management-tabs">
+    <MudTabs Rounded="true" KeepPanelsAlive="true" ActivePanelIndex="_activeTab" ActivePanelIndexChanged="OnTabChanged" TabPanelsClass="client-mgmt-tab-panel" data-testid="client-management-tabs">
         <MudTabPanel Text="Artifacts" Icon="@Icons.Material.Filled.Inventory2">
             @if (_activeTab == 0)
             {

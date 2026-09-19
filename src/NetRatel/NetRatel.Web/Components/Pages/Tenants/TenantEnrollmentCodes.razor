@@ -28,7 +28,7 @@
             <MudSelectItem Value="@("revoked")">Revoked</MudSelectItem>
             <MudSelectItem Value="@("all")">All</MudSelectItem>
         </MudSelect>
-        <MudTextField @bind-Value="_search" @bind-Value:after="OnSearchChangedAsync" Label="Search note/code" Immediate="true" Dense="true" />
+        <MudTextField @bind-Value="_search" @bind-Value:after="OnSearchChangedAsync" Label="Search note/code" Immediate="true" Margin="Margin.Dense" />
     </MudStack>
 
     <MudTable Items="_codes" Dense="true" Hover="true" Loading="_loading" Class="mt-4">

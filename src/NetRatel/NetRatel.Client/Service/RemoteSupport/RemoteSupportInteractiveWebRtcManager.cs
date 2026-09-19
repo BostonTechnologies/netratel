@@ -1,7 +1,7 @@
 using SIPSorcery.Media;
 using SIPSorcery.Net;
 using SIPSorceryMedia.Abstractions;
-using SIPSorceryMedia.Encoders;
+using SIPSorceryMedia.FFmpeg;
 using NetRatel.Client.Service.Logging;
 using NetRatel.Client.Service.RemoteDesktop;
 using NetRatel.Shared.Contracts.RemoteDesktop;
@@ -158,7 +158,7 @@ internal sealed class RemoteSupportInteractiveWebRtcSession : IDisposable
     private readonly InteractiveInputDispatcher? _inputDispatcher;
     private readonly JsonSerializerOptions _json = new(JsonSerializerDefaults.Web);
     private readonly RTCPeerConnection _peerConnection;
-    private readonly VideoEncoderEndPoint _videoSource;
+    private readonly FFmpegVideoEndPoint _videoSource;
     private readonly CancellationTokenSource _videoCancellation = new();
     private readonly AutoResetEvent _captureWake = new(false);
     private readonly object _feedbackSync = new();
@@ -258,7 +258,7 @@ internal sealed class RemoteSupportInteractiveWebRtcSession : IDisposable
         });
         LogManager.WriteLog($"[RemoteSupportWebRTC] ICE servers configured session={_sessionId} count={iceServers?.Count ?? 0} initialProfile={_profile.Name} max={_profile.MaxWidth}x{_profile.MaxHeight} fps={_profile.Fps}");
 
-        _videoSource = new VideoEncoderEndPoint();
+        _videoSource = new FFmpegVideoEndPoint();
         var videoTrack = new MediaStreamTrack(_videoSource.GetVideoSourceFormats(), MediaStreamStatusEnum.SendOnly);
         _peerConnection.addTrack(videoTrack);
 

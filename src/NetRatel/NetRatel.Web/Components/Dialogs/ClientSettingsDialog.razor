@@ -13,7 +13,7 @@
         }
         else
         {
-            <MudTabs Rounded="false" Elevation="0" PanelClass="pt-4">
+            <MudTabs Rounded="false" Elevation="0" TabPanelsClass="pt-4">
                 <MudTabPanel Text="General">
                     <MudTextField T="string" Label="Client Name" @bind-Value="_clientName" Margin="Margin.Dense" Class="mb-3" />
                     <MudSelect T="int?" Label="Assign Tenant" @bind-Value="_selectedTenantId" Clearable="true" AnchorOrigin="Origin.BottomCenter" Margin="Margin.Dense">
