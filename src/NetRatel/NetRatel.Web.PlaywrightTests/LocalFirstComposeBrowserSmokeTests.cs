@@ -201,6 +201,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             await page.GotoAsync(new Uri(webUrl, path).ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.Commit });
             await page.Locator(surfaceSelector).WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
             await page.WaitForFunctionAsync("() => window.__netratelThemeFirstPaint.samples.length > 0");
+            var expectedVisibleSurface = requireApplicationSurfaces ? themeCase.Appbar : themeCase.VisibleSurface;
 
             var firstPaint = await page.EvaluateAsync<string[]>("""
                 () => {
@@ -213,7 +214,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             Assert.Equal(themeCase.Background, firstPaint[2]);
             Assert.Equal(themeCase.Text, firstPaint[3]);
             Assert.Equal(themeCase.Surface, firstPaint[4]);
-            Assert.Equal(themeCase.VisibleSurface, firstPaint[5]);
+            Assert.Equal(expectedVisibleSurface, firstPaint[5]);
             Assert.Equal(themeCase.Input, firstPaint[8]);
             if (requireApplicationSurfaces)
             {
@@ -231,7 +232,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
                         getComputedStyle(surface).backgroundColor === expected.visibleSurface &&
                         document.documentElement.dataset.netratelTheme === expected.theme;
                 }
-                """, new { background = themeCase.Background, surface = themeCase.Surface, visibleSurface = themeCase.VisibleSurface, theme = themeCase.ExpectedTheme });
+                """, new { background = themeCase.Background, surface = themeCase.Surface, visibleSurface = expectedVisibleSurface, theme = themeCase.ExpectedTheme });
         }
         finally
         {
