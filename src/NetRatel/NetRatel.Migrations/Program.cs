@@ -18,5 +18,6 @@ var configuration = new ConfigurationBuilder()
 var services = new ServiceCollection();
 services.AddNetRatelInfrastructure(configuration);
 await using var provider = services.BuildServiceProvider();
+Console.WriteLine("Applying NetRatel application and identity migrations.");
 await provider.MigrateNetRatelInfrastructureAsync();
 Console.WriteLine("NetRatel database migrations completed.");
