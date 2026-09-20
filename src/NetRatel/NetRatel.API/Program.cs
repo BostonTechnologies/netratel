@@ -421,6 +421,24 @@ builder.Services.AddAuthorization(options =>
         policy.AddRequirements(new EffectiveAccessRequirement(NetRatelPermissions.RemoteSupport));
     });
 
+    options.AddPolicy("ScriptEditor", policy =>
+    {
+        policy.RequireAuthenticatedUser();
+        policy.AddRequirements(new EffectiveAccessRequirement(NetRatelPermissions.ScriptEdit));
+    });
+
+    options.AddPolicy("SecretRevealer", policy =>
+    {
+        policy.RequireAuthenticatedUser();
+        policy.AddRequirements(new EffectiveAccessRequirement(NetRatelPermissions.SecretReveal));
+    });
+
+    options.AddPolicy("AuditReader", policy =>
+    {
+        policy.RequireAuthenticatedUser();
+        policy.AddRequirements(new EffectiveAccessRequirement(NetRatelPermissions.AuditRead));
+    });
+
     options.AddPolicy("McpOperatorPolicyAdmin", policy =>
     {
         policy.RequireAuthenticatedUser();

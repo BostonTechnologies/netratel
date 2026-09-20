@@ -13,7 +13,7 @@ public static class NotificationEndpoints
     {
         var userNotifications = app.MapGroup("/api/v1/notifications")
             .WithTags("Notifications")
-            .RequireAuthorization("Operator");
+            .RequireAuthorization("AuditReader");
 
         userNotifications.MapGet("", async (
             HttpContext http,
@@ -112,7 +112,7 @@ public static class NotificationEndpoints
 
         var events = app.MapGroup("/api/v1/events")
             .WithTags("Events")
-            .RequireAuthorization("Operator");
+            .RequireAuthorization("AuditReader");
 
         events.MapGet("", async (
             INetRatelNotificationService notifications,
@@ -235,11 +235,11 @@ public static class NotificationEndpoints
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested || abort.IsCancellationRequested)
         {
-            // Expected when the client navigates away or refreshes.
+            logger.LogDebug("NetRatel notification stream ended after a client cancellation.");
         }
         catch (IOException) when (abort.IsCancellationRequested)
         {
-            // Expected broken pipe / connection reset on client disconnect.
+            logger.LogDebug("NetRatel notification stream ended after a client disconnect.");
         }
         catch (Exception ex)
         {

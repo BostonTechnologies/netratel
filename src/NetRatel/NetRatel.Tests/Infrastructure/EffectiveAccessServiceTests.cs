@@ -28,6 +28,7 @@ public sealed class EffectiveAccessServiceTests
         (await access.AuthorizeAsync(principal, NetRatelPermissions.ScriptEdit, 2)).Should().BeTrue();
         (await access.AuthorizeAsync(principal, NetRatelPermissions.ScriptEdit, 1)).Should().BeFalse();
         (await access.AuthorizeAsync(principal, NetRatelPermissions.TelemetryRead, 2)).Should().BeFalse();
+        (await access.AuthorizeAsync(principal, NetRatelPermissions.ScriptEdit, tenantId: null)).Should().BeFalse();
     }
 
     [Fact]

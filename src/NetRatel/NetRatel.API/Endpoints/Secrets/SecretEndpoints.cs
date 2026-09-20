@@ -10,7 +10,7 @@ public static class SecretEndpoints
     {
         var group = app.MapGroup("/api/v1/secrets")
             .WithTags("Secrets")
-            .RequireAuthorization("Operator");
+            .RequireAuthorization("SecretRevealer");
 
         group.MapGet("/", async (ISecretService secrets, CancellationToken ct) =>
         {

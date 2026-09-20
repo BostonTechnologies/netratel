@@ -37,7 +37,8 @@ subsequent dispatch and target/operation-policy checks use current access.
 MCP target/environment policy, confirmations, and command admission remain
 additional constraints and cannot be bypassed by a role.
 
-The instance-administration API is at `/api/v2/access`. It is protected by an
-instance-administrator check and provides the role catalog, local-account
-listing, and assignment operations. It deliberately has no provider callout:
+The instance-administration API is at `/api/v2/access`; its compact browser
+editor is `/admin/access`. They provide the role catalog, local-account
+listing, and assignment operations. The API is protected by an
+instance-administrator check and deliberately has no provider callout:
 local-user administration does not depend on Authentik or another IdP.

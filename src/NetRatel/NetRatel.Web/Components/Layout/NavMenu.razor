@@ -1,6 +1,7 @@
 ﻿@implements IDisposable
 @inject NavigationManager NavigationManager
 @inject AuthenticationStateProvider AuthenticationStateProvider
+@inject NetRatel.Web.Services.Access.IAccessAdministrationApiService AccessApi
 
 <MudNavMenu Class="netratel-nav">
     <a class="netratel-nav-brand" href="/" aria-label="NetRatel home">
@@ -44,13 +45,16 @@
             <AuthorizeView Roles="Operator" Context="adminAuthState">
                 <Authorized Context="adminAuthState">
                     <MudNavGroup Title="Admin" Expanded="false" Icon="@Icons.Material.Filled.Settings">
-                        <MudNavLink Href="/admin/access" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.AdminPanelSettings">Access</MudNavLink>
                         <MudNavLink Href="/admin/app-settings" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Tune">App Settings</MudNavLink>
                         <MudNavLink Href="/settings/connectivity" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Lan">Connectivity</MudNavLink>
                         <MudNavLink Href="/clients/settings" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Terminal">Client Runtime Settings</MudNavLink>
                     </MudNavGroup>
                 </Authorized>
             </AuthorizeView>
+            @if (canAdministerAccess)
+            {
+                <MudNavLink Href="/admin/access" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.AdminPanelSettings">Access</MudNavLink>
+            }
             <MudNavLink Href="/logout" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Logout">Logout</MudNavLink>
         </Authorized>
         <NotAuthorized>
@@ -63,6 +67,7 @@
 @code {
     private string? currentUrl;
     private string? userName;
+    private bool canAdministerAccess;
 
     protected override async Task OnInitializedAsync()
     {
@@ -71,6 +76,17 @@
 
         var authState = await AuthenticationStateProvider.GetAuthenticationStateAsync();
         userName = authState.User.Identity?.Name;
+        if (authState.User.Identity?.IsAuthenticated == true)
+        {
+            try
+            {
+                canAdministerAccess = (await AccessApi.GetSelfAsync()).IsInstanceAdministrator;
+            }
+            catch (HttpRequestException)
+            {
+                canAdministerAccess = false;
+            }
+        }
     }
 
     private void OnLocationChanged(object? sender, LocationChangedEventArgs e)

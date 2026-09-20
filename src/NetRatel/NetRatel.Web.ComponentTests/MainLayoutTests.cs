@@ -14,6 +14,7 @@ using NetRatel.Web.Components.Layout;
 using NetRatel.Web.Services;
 using NetRatel.Web.Services.Notifications;
 using NetRatel.Web.Services.Search;
+using NetRatel.Web.Services.Access;
 using Xunit;
 
 namespace NetRatel.Web.ComponentTests;
@@ -30,6 +31,7 @@ public class MainLayoutTests : AsyncBunitContext
         Services.AddSingleton<INetRatelNotificationApiClient, StubNotificationApiClient>();
         Services.AddSingleton<IGlobalSearchService, StubGlobalSearchService>();
         Services.AddSingleton<IAppBarVersionApiClient, StubAppBarVersionApiClient>();
+        Services.AddSingleton<IAccessAdministrationApiService, StubAccessAdministrationApiService>();
 
         AddAuthorization();
     }
@@ -332,5 +334,26 @@ public class MainLayoutTests : AsyncBunitContext
                 "0.0.200+api",
                 "0.0.200.0",
                 "Test"));
+    }
+
+    private sealed class StubAccessAdministrationApiService : IAccessAdministrationApiService
+    {
+        public Task<IReadOnlyList<AccessRoleDto>> GetRolesAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<AccessRoleDto>>([]);
+
+        public Task<EffectiveAccessSummaryDto> GetSelfAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(new EffectiveAccessSummaryDto(null, false, []));
+
+        public Task<IReadOnlyList<LocalUserAccessDto>> GetUsersAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<LocalUserAccessDto>>([]);
+
+        public Task<IReadOnlyList<RoleAssignmentDto>> GetAssignmentsAsync(string principalId, CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<RoleAssignmentDto>>([]);
+
+        public Task AssignAsync(string principalId, string roleId, int? tenantId, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public Task RemoveAssignmentAsync(string principalId, string assignmentId, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
     }
 }

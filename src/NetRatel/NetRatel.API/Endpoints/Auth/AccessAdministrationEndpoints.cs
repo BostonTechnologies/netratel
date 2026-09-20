@@ -10,13 +10,25 @@ namespace NetRatel.API.Endpoints.Auth;
 
 /// <summary>
 /// Instance-administrator APIs for role definitions and explicit principal
-/// assignments. Browser editing is added in the guided setup/account phase;
-/// these routes are also the authoritative boundary for it.
+/// assignments. The browser editor consumes these routes, but the API remains
+/// the authoritative boundary for every mutation.
 /// </summary>
 public static class AccessAdministrationEndpoints
 {
     public static IEndpointRouteBuilder MapAccessAdministrationEndpoints(this IEndpointRouteBuilder app)
     {
+        app.MapGet("/api/v2/access/self", async (
+            ClaimsPrincipal principal,
+            IEffectiveAccessService access,
+            CancellationToken ct) =>
+        {
+            var snapshot = await access.GetSnapshotAsync(principal, tenantId: null, ct).ConfigureAwait(false);
+            return Results.Ok(new EffectiveAccessSummary(
+                snapshot.PrincipalId,
+                snapshot.IsInstanceAdministrator || snapshot.IsLegacyOperator,
+                snapshot.Permissions.OrderBy(permission => permission).ToArray()));
+        }).RequireAuthorization();
+
         var group = app.MapGroup("/api/v2/access")
             .WithTags("Access administration")
             .RequireAuthorization("InstanceAdministrator");
@@ -204,6 +216,7 @@ public static class AccessAdministrationEndpoints
         role.DelegationRank, role.Permissions.Select(permission => permission.Permission).OrderBy(permission => permission).ToArray());
 
     public sealed record CreateAccessRoleRequest(string? Name, string? Description, int DelegationRank, int? TenantId, IReadOnlyList<string>? Permissions);
+    public sealed record EffectiveAccessSummary(string? PrincipalId, bool IsInstanceAdministrator, IReadOnlyList<string> Permissions);
     public sealed record AssignRoleRequest(string RoleId, int? TenantId);
     public sealed record AccessRoleResponse(string Id, string Name, string? Description, bool IsBuiltIn, bool IsInstanceAdministratorRole, int DelegationRank, IReadOnlyList<string> Permissions);
     public sealed record RoleAssignmentResponse(string Id, string PrincipalId, string RoleId, string RoleName, int? TenantId, DateTimeOffset CreatedAtUtc);
