@@ -46,7 +46,11 @@ wait_for_migrations() {
     state="$(docker inspect --format '{{.State.Status}}' "$container_id")"
     if [[ "$state" == exited ]]; then
       exit_code="$(docker inspect --format '{{.State.ExitCode}}' "$container_id")"
-      [[ "$exit_code" == 0 ]] || { echo "Migration container exited with ${exit_code}." >&2; return 1; }
+      if [[ "$exit_code" != 0 ]]; then
+        echo "Migration container exited with ${exit_code}." >&2
+        docker logs "$container_id" >&2 || true
+        return 1
+      fi
       return 0
     fi
     sleep 1
