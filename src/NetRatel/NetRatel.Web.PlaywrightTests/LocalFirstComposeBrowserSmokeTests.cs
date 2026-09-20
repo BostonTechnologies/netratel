@@ -107,6 +107,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         var applicationName = page.GetByLabel("Application name");
         await applicationName.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         await applicationName.FillAsync("Browser branding example");
+        await applicationName.PressAsync("Tab");
         await page.GetByTestId("branding-save").ClickAsync();
         await page.GetByText("Branding saved.", new PageGetByTextOptions { Exact = false })
             .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
