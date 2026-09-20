@@ -501,6 +501,11 @@ app.Use(async (ctx, next) =>
         !ctx.Request.Path.StartsWithSegments("/api/docs", StringComparison.OrdinalIgnoreCase) &&
         !ctx.Request.Path.StartsWithSegments("/api/openapi", StringComparison.OrdinalIgnoreCase) &&
         !ctx.Request.Path.StartsWithSegments("/api/v1", StringComparison.OrdinalIgnoreCase) &&
+        // The CLI's tenant-scoped telemetry command is intentionally served
+        // by the same local Web gateway as the existing API surface. The API
+        // remains the authorization boundary: its TelemetryReader policy and
+        // effective credential-grant evaluation decide every request.
+        !ctx.Request.Path.StartsWithSegments("/api/v2/agents", StringComparison.OrdinalIgnoreCase) &&
         !ctx.Request.Path.StartsWithSegments("/api/v2/setup", StringComparison.OrdinalIgnoreCase) &&
         !ctx.Request.Path.StartsWithSegments("/api/v2/local-auth", StringComparison.OrdinalIgnoreCase))
     {

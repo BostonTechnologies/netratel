@@ -63,9 +63,26 @@ public sealed class LocalFirstComposeBrowserSmokeTests
 
         await page.GetByTestId("local-login-password").FillAsync(password);
         await page.GetByTestId("local-login-password").PressAsync("Tab");
+        var signedIn = page.WaitForURLAsync(
+            "**/",
+            new PageWaitForURLOptions { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 60_000 });
         await page.GetByTestId("local-login-submit").ClickAsync();
-        await page.WaitForURLAsync(webUrl.ToString(), new PageWaitForURLOptions { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 30_000 });
-        Assert.Equal(200, await page.EvaluateAsync<int>("async () => (await fetch('/api/v1/tenants')).status"));
+        await signedIn;
+        // The navigation waiter starts before the click so it cannot miss the
+        // force-loaded return to '/'. Confirm the authenticated API boundary too.
+        await page.WaitForFunctionAsync(
+            "async () => (await fetch('/api/v1/tenants')).status === 200",
+            null,
+            new PageWaitForFunctionOptions { Timeout = 60_000 });
+
+        var credentialOutputPath = Environment.GetEnvironmentVariable("NETRATEL_LOCAL_FIRST_INTEGRATION_CREDENTIALS_FILE");
+        if (!string.IsNullOrWhiteSpace(credentialOutputPath))
+        {
+            var permitted = await CreateIntegrationCredentialAsync(page, webUrl, "CI telemetry read", "telemetry.read");
+            var denied = await CreateIntegrationCredentialAsync(page, webUrl, "CI file read", "file.read");
+            await File.WriteAllLinesAsync(credentialOutputPath, [permitted, denied]);
+            if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(credentialOutputPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        }
 
         await page.GotoAsync(new Uri(webUrl, "setup").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
         await page.GetByText("This installation is ready.").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
@@ -80,4 +97,37 @@ public sealed class LocalFirstComposeBrowserSmokeTests
     private static string RequireValue(string name) => Environment.GetEnvironmentVariable(name) is { Length: > 0 } value
         ? value
         : throw new InvalidOperationException($"{name} is required by the local-first Compose browser smoke test.");
+
+    private static async Task<string> CreateIntegrationCredentialAsync(IPage page, Uri webUrl, string name, string permission)
+    {
+        await page.GotoAsync(new Uri(webUrl, "account/integration-credentials").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await page.GetByTestId("integration-credentials-page").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        // The initial page is server prerendered; wait for the InteractiveServer
+        // circuit before relying on component event callbacks.
+        await page.WaitForTimeoutAsync(500);
+        await page.GetByTestId("credential-name").FillAsync(name);
+        await page.GetByTestId("credential-name").PressAsync("Tab");
+        await page.GetByRole(AriaRole.Combobox, new PageGetByRoleOptions { Name = "Permission" }).ClickAsync();
+        await page.GetByRole(AriaRole.Option, new PageGetByRoleOptions { Name = permission, Exact = true }).ClickAsync();
+        await page.WaitForTimeoutAsync(250);
+        await page.GetByTestId("create-credential").ClickAsync();
+        var reveal = page.GetByTestId("credential-one-time-secret");
+        try
+        {
+            await reveal.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        }
+        catch (TimeoutException)
+        {
+            var error = page.GetByTestId("credential-error");
+            throw new InvalidOperationException(await error.CountAsync() == 1
+                ? await error.TextContentAsync()
+                : "Credential creation did not reveal a secret or report a safe error.");
+        }
+        var secret = await reveal.Locator("input").InputValueAsync();
+        Assert.StartsWith("nrt_ic_", secret);
+        await page.GetByText($"1:{permission}", new PageGetByTextOptions { Exact = true })
+            .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        await reveal.GetByText("I stored it safely", new LocatorGetByTextOptions { Exact = true }).ClickAsync();
+        return secret;
+    }
 }

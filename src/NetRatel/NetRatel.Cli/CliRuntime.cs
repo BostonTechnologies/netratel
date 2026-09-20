@@ -25,6 +25,12 @@ internal sealed class CliRuntime
 
     public async Task<string> GetAccessTokenAsync(ResolvedCliConfig config, CancellationToken ct = default)
     {
+        if (config.AuthenticationMode is CliAuthenticationMode.IntegrationCredential)
+        {
+            return config.IntegrationCredential
+                ?? throw new CliValidationException("An integration credential is required for integration credential mode.");
+        }
+
         if (!string.IsNullOrWhiteSpace(_accessToken))
         {
             return _accessToken;

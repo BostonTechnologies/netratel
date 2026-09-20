@@ -48,9 +48,7 @@ The credential cannot exceed the owner’s current tenant permission, is
 rechecked against current membership/role state at use, and stops working on
 expiry, revocation, or local-account disablement. Revoke it from the same
 account page; rotation is create a replacement, update its consumer, then
-revoke the old credential. CLI and stdio configuration support for this mode
-is delivered in P07, so do not place a local credential into the existing OIDC
-fields.
+revoke the old credential.
 
 ## CLI configuration
 
@@ -64,6 +62,18 @@ variables: `NETRATEL_CLI_API_BASE_URL`, `NETRATEL_CLI_OIDC_TOKEN_URL`,
 values. The legacy `BT_*` variable names are compatibility aliases only; new
 automation must use the `NETRATEL_CLI_*` names.
 
+For local API-purpose integration credentials, set exactly one explicit mode:
+`NETRATEL_CLI_API_BASE_URL` plus `NETRATEL_CLI_INTEGRATION_TOKEN` (the
+previously documented `NETRATEL_INTEGRATION_TOKEN` is accepted as a fallback).
+Do not set any `NETRATEL_CLI_OIDC_*` value at the same time; NetRatel rejects
+an ambiguous configuration before making a network request. The CLI never
+falls back to OIDC after a local credential is rejected. `netratel auth
+whoami` shows the chosen mode, target, and a non-secret credential prefix;
+`netratel auth token` deliberately refuses to print an integration credential.
+Avoid `config set` for local credentials because command-line arguments can be
+recorded by a shell. Use environment injection or an owner-readable config
+file instead.
+
 The release rehearsal currently packages and validates Linux x64 for the CLI
 and stdio MCP. Other CLI/MCP runtime archives are not advertised until their
 matching runners build and smoke-test them.
@@ -75,6 +85,21 @@ The stdio MCP server requires an explicit absolute configuration-file path in
 variables. The legacy mixed-case `NetRatel_MCP_CONFIG` name is a
 compatibility-only alias. Keep the JSON configuration file private and provide
 only least-privilege credentials for its target API.
+
+The stdio server remains isolated from CLI and AgentClient environment
+credentials. To use an integration credential, place it only in that explicit
+owner-readable file; omit every `oidc*` field:
+
+```json
+{
+  "apiBaseUrl": "https://netratel.example.invalid",
+  "integrationCredential": "read-from-your-secret-store"
+}
+```
+
+An isolated stdio configuration that contains both `integrationCredential` and
+any `oidc*` value is invalid. The MCP process sends JSON-RPC only on stdout;
+diagnostics remain on stderr and never include the complete credential.
 
 For a machine-to-machine client-credentials flow, create a private file such
 as `/etc/netratel/mcp.json` with deployment-specific values:

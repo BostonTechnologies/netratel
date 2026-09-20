@@ -32,8 +32,8 @@ asset replacement, package-visibility mutation, and repository-rule bypass.
 | P03 | [#33](https://github.com/BostonTechnologies/netratel/issues/33) | [#46](https://github.com/BostonTechnologies/netratel/pull/46) | `1969e9a` | Merged after hosted Public PR validation passed all applicable gates. |
 | P04 | [#34](https://github.com/BostonTechnologies/netratel/issues/34) | [#47](https://github.com/BostonTechnologies/netratel/pull/47) | `e022569` | Merged after exact-head Public PR validation passed, including configured OIDC source/release image Compose smoke. |
 | P05 | [#35](https://github.com/BostonTechnologies/netratel/issues/35) | [#48](https://github.com/BostonTechnologies/netratel/pull/48) | `5de0832` | Merged after exact-head validation passed the full .NET suite, local-first browser Compose, and source/release-image generic OIDC Compose smoke: [run 35509225124](https://github.com/BostonTechnologies/netratel/actions/runs/35509225124). |
-| P06 | [#36](https://github.com/BostonTechnologies/netratel/issues/36) | pending | pending | In progress on `feat/issue-36-integration-credentials`; P03/P04/P05 prerequisites merged. |
-| P07 | [#37](https://github.com/BostonTechnologies/netratel/issues/37) | pending | pending | Blocked by P06 merge. |
+| P06 | [#36](https://github.com/BostonTechnologies/netratel/issues/36) | [#49](https://github.com/BostonTechnologies/netratel/pull/49) | `2bc881d` | Merged after exact-head Public PR validation passed, including the full .NET suite and OIDC Compose protection: [run 35511238938](https://github.com/BostonTechnologies/netratel/actions/runs/35511238938). |
+| P07 | [#37](https://github.com/BostonTechnologies/netratel/issues/37) | pending | pending | In progress on `feat/issue-37-cli-stdio-integration-credentials`; P06 is merged. |
 | P08 | [#38](https://github.com/BostonTechnologies/netratel/issues/38) | pending | pending | Blocked by P06/P07 merges. |
 | P09 | [#39](https://github.com/BostonTechnologies/netratel/issues/39) | pending | pending | Blocked by P03/P05 merges. |
 | P10 | [#40](https://github.com/BostonTechnologies/netratel/issues/40) | pending | pending | Blocked by P09 merge. |
@@ -209,14 +209,14 @@ asset replacement, package-visibility mutation, and repository-rule bypass.
 | `feat/issue-34-sqlite-provider` | `docker compose -f compose.sqlite.yaml config --quiet` | Passed. |
 | `feat/issue-34-sqlite-provider` | disposable current-head SQLite Compose migration/API/Web startup | Passed: migration runner completed, API listened on 9222, Web served the setup shell on 9111, and no PostgreSQL service was present. Test containers, volumes, images, key, and 5.36 GB of build cache were removed afterwards. |
 | `feat/issue-35-guided-setup` | `LocalFirstComposeBrowserSmokeTests` against a disposable Release SQLite Compose build | Passed: cold root redirected to proof-gated setup, the initial administrator/tenant transaction caused API restart, wrong password returned a safe error, local sign-in authorized `/api/v1/tenants`, and ready setup could not replay. |
+| `feat/issue-37-cli-stdio-integration-credentials` | fresh Release SQLite Compose browser, extracted CLI, and isolated stdio MCP smoke | Passed: local setup/login created and displayed distinct `telemetry.read` and `file.read` one-time grants; the extracted CLI reached the authorized missing telemetry target (404) and rejected the out-of-scope credential (403); extracted stdio MCP honored its owner-only isolated integration config despite poisoned ambient OIDC variables. The disposable containers, volumes, images, credentials, and build cache were removed afterwards. |
 
 ## Current checkpoint
 
-Current phase: P05. Branch: `feat/issue-35-guided-setup`. P04 merged as
-`e0225697e0bc21bb8f939ef9595014ee9dc59117` through
-[#47](https://github.com/BostonTechnologies/netratel/pull/47). Next action:
-complete unattended/recovery coverage and source-CI wiring before opening
-P05's CI-gated PR.
+Current phase: P07. Branch: `feat/issue-37-cli-stdio-integration-credentials`.
+P06 merged as `2bc881d9ae4aa9b592de56c49808b7f5a6b7fb6f` through
+[#49](https://github.com/BostonTechnologies/netratel/pull/49). Next action:
+complete the P07 review checks and open its CI-gated PR.
 
 ## Blockers
 

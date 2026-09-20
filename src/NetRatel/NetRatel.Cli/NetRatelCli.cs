@@ -1606,7 +1606,7 @@ internal static class NetRatelCli
 
     private static Command BuildAuthCommand(CliRuntime runtime, GlobalOptions globals)
     {
-        var auth = new Command("auth", "Configure and verify Oidc AI-agent authentication.");
+        var auth = new Command("auth", "Configure and inspect explicit OIDC or integration-credential authentication.");
 
         var configure = new Command("configure", "Persist local CLI authentication settings.");
         configure.SetHandler(async ctx =>
@@ -1622,10 +1622,30 @@ internal static class NetRatelCli
         status.SetHandler(ctx => SendAsync(runtime, globals, ctx, HttpMethod.Get, "/api/v1/auth/ai-agent/status"));
         auth.AddCommand(status);
 
+        var whoami = new Command("whoami", "Show the selected authentication mode without exposing a secret.");
+        whoami.SetHandler(async ctx =>
+        {
+            var resolved = LoadConfig(ctx, globals).Resolved!;
+            await WriteJsonAsync(runtime, new
+            {
+                authenticationMode = resolved.AuthenticationMode.ToString(),
+                apiBaseUrl = resolved.ApiBaseUrl.ToString(),
+                credentialIdentifier = CredentialIdentifier(resolved.IntegrationCredential),
+                scopeSummary = resolved.AuthenticationMode is CliAuthenticationMode.IntegrationCredential
+                    ? "The API evaluates the credential's current persisted grant ceiling on every request."
+                    : "OIDC token scope is controlled by the configured authorization server."
+            }, ctx, globals).ConfigureAwait(false);
+        });
+        auth.AddCommand(whoami);
+
         var token = new Command("token", "Mint and print an Oidc AI-agent bearer token.");
         token.SetHandler(async ctx =>
         {
             var resolved = LoadConfig(ctx, globals).Resolved;
+            if (resolved!.AuthenticationMode is CliAuthenticationMode.IntegrationCredential)
+            {
+                throw new CliValidationException("Integration credentials are supplied directly and are never printed by the CLI.");
+            }
             var accessToken = await runtime.GetAccessTokenAsync(resolved!, ctx.GetCancellationToken()).ConfigureAwait(false);
             if (!ctx.ParseResult.GetValueForOption(globals.Quiet))
             {
@@ -1664,6 +1684,10 @@ internal static class NetRatelCli
         set.SetHandler(async ctx =>
         {
             var store = new CliConfigStore(ctx.ParseResult.GetValueForOption(globals.ConfigPath));
+            if (NormalizeConfigKey(ctx.ParseResult.GetValueForArgument(keyArg)) is "integrationCredential")
+            {
+                throw new CliValidationException("Set an integration credential through NETRATEL_CLI_INTEGRATION_TOKEN or a protected config file, not a command-line argument.");
+            }
             var current = store.Load();
             var updated = SetConfigValue(current, ctx.ParseResult.GetValueForArgument(keyArg), ctx.ParseResult.GetValueForArgument(valueArg));
             store.Save(updated);
@@ -2534,6 +2558,14 @@ internal static class NetRatelCli
     {
         var telemetry = new Command("telemetry", "Inspect client telemetry.");
         telemetry.AddCommand(GetListCommand(runtime, globals, "overview", "/api/v1/telemetry/overview"));
+        var agent = new Command("agent", "Read one tenant-scoped V2 agent telemetry snapshot.");
+        var tenantId = RequiredTenantIdOption();
+        var agentId = new Option<Guid>("--agent-id") { Description = "Agent UUID.", Required = true };
+        agent.AddOption(tenantId);
+        agent.AddOption(agentId);
+        agent.SetHandler(ctx => SendAsync(runtime, globals, ctx, HttpMethod.Get,
+            $"/api/v2/agents/{ctx.ParseResult.GetValueForOption(tenantId)}/{ctx.ParseResult.GetValueForOption(agentId):D}/telemetry"));
+        telemetry.AddCommand(agent);
         telemetry.SetHandler(ctx => SendAsync(runtime, globals, ctx, HttpMethod.Get, "/api/v1/telemetry/overview"));
         return telemetry;
     }
@@ -3493,7 +3525,8 @@ internal static class NetRatelCli
 
     private static CliConfig Redact(CliConfig config) => config with
     {
-        OidcAppPassword = string.IsNullOrWhiteSpace(config.OidcAppPassword) ? null : "***"
+        OidcAppPassword = string.IsNullOrWhiteSpace(config.OidcAppPassword) ? null : "***",
+        IntegrationCredential = string.IsNullOrWhiteSpace(config.IntegrationCredential) ? null : "***"
     };
 
     private static string? GetConfigValue(CliConfig config, string key, bool redact) => NormalizeConfigKey(key) switch
@@ -3504,6 +3537,7 @@ internal static class NetRatelCli
         "oidcUsername" => config.OidcUsername,
         "oidcAppPassword" => redact && !string.IsNullOrWhiteSpace(config.OidcAppPassword) ? "***" : config.OidcAppPassword,
         "oidcScope" => config.OidcScope,
+        "integrationCredential" => redact && !string.IsNullOrWhiteSpace(config.IntegrationCredential) ? "***" : config.IntegrationCredential,
         _ => throw new CliValidationException($"Unknown config key '{key}'.")
     };
 
@@ -3515,6 +3549,7 @@ internal static class NetRatelCli
         "oidcUsername" => config with { OidcUsername = value },
         "oidcAppPassword" => config with { OidcAppPassword = value },
         "oidcScope" => config with { OidcScope = value },
+        "integrationCredential" => config with { IntegrationCredential = value },
         _ => throw new CliValidationException($"Unknown config key '{key}'.")
     };
 
@@ -3526,8 +3561,13 @@ internal static class NetRatelCli
         "oidcusername" or "btoidcusername" => "oidcUsername",
         "oidcapppassword" or "btoidcapppassword" => "oidcAppPassword",
         "oidcscope" or "btoidcscope" => "oidcScope",
+        "integrationcredential" or "integrationtoken" => "integrationCredential",
         _ => key
     };
+
+    private static string? CredentialIdentifier(string? credential) => string.IsNullOrWhiteSpace(credential)
+        ? null
+        : credential[..Math.Min(credential.Length, "nrt_ic_".Length + 8)];
 
     private sealed record LoadedConfig(CliConfig File, CliConfig Overrides, ResolvedCliConfig? Resolved);
     private sealed record ApiStringResponse(int StatusCode, bool IsSuccess, string Body)

@@ -9,6 +9,57 @@ namespace NetRatel.Tests.Cli;
 public sealed class NetRatelCliTests
 {
     [Fact]
+    public void CliConfig_uses_an_explicit_integration_credential_without_oidc_fallback()
+    {
+        var config = new CliConfig("https://api.example", null, null, null, null, null)
+        {
+            IntegrationCredential = "nrt_ic_12345678opaque"
+        };
+
+        var resolved = config.Resolve();
+
+        resolved.AuthenticationMode.Should().Be(CliAuthenticationMode.IntegrationCredential);
+        resolved.IntegrationCredential.Should().Be("nrt_ic_12345678opaque");
+        resolved.OidcTokenUrl.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void CliConfig_rejects_ambiguous_oidc_and_integration_credential_selection()
+    {
+        var config = new CliConfig("https://api.example", "https://auth.example/token", "client", "agent", "secret", "scope")
+        {
+            IntegrationCredential = "nrt_ic_12345678opaque"
+        };
+
+        config.Invoking(value => value.Resolve()).Should().Throw<CliValidationException>()
+            .WithMessage("*cannot be combined*");
+    }
+
+    [Fact]
+    public async Task CliRuntime_sends_an_integration_credential_directly_without_calling_an_oidc_endpoint()
+    {
+        var calls = 0;
+        var runtime = new CliRuntime(() => new RecordingHandler(request =>
+        {
+            calls++;
+            request.RequestUri!.Host.Should().Be("api.example");
+            request.Headers.Authorization!.Scheme.Should().Be("Bearer");
+            request.Headers.Authorization.Parameter.Should().Be("nrt_ic_12345678opaque");
+            return Task.FromResult(Json(HttpStatusCode.Unauthorized, "{\"code\":\"invalid_integration_credential\"}"));
+        }));
+        var config = new CliConfig("https://api.example", null, null, null, null, null)
+        {
+            IntegrationCredential = "nrt_ic_12345678opaque"
+        };
+
+        using var client = await runtime.CreateAuthenticatedClientAsync(config.Resolve());
+        using var response = await client.GetAsync("/api/v2/agents/7/telemetry");
+
+        response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        calls.Should().Be(1, "a rejected integration credential must not fall back to OIDC");
+    }
+
+    [Fact]
     public void CliConfig_Uses_Public_Environment_Names_And_Preserves_Legacy_Aliases()
     {
         var variables = new Dictionary<string, string?>(StringComparer.Ordinal)
