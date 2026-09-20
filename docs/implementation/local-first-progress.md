@@ -145,6 +145,10 @@ asset replacement, package-visibility mutation, and repository-rule bypass.
   a protected cookie revalidated against enabled state, security stamp, and
   authorization revision. P05 will add the browser forms and first-owner flow;
   no anonymous self-registration or reset route is exposed.
+- The Web host recognizes the same protected local-session cookie through a
+  shared deployment key ring and forwards it only on its server-side API hop.
+  The API revalidates enabled state, security stamp, and authorization revision;
+  the Web does not mint an API bearer token or trust an identity header.
 
 ## Commands and validation
 

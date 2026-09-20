@@ -19,7 +19,8 @@ public sealed class UploadsApiClient : IDisposable, IUploadsApiClient
     public UploadsApiClient(
         IConfiguration cfg,
         ITokenService tokenService,
-        ILogger<TokenAuthorizationHandler> tokenLogger)
+        ILogger<TokenAuthorizationHandler> tokenLogger,
+        IHttpContextAccessor httpContextAccessor)
     {
         // Base transport
         var sockets = new SocketsHttpHandler
@@ -37,7 +38,7 @@ public sealed class UploadsApiClient : IDisposable, IUploadsApiClient
         };
 
         // Your token injector
-        var token = new TokenAuthorizationHandler(tokenService, tokenLogger)
+        var token = new TokenAuthorizationHandler(tokenService, tokenLogger, httpContextAccessor, cfg)
         {
             InnerHandler = redirect
         };
