@@ -417,13 +417,17 @@ public static class AgentTaskEndpoints
         if (!string.IsNullOrWhiteSpace(search))
         {
             var like = $"%{search.Trim()}%";
-            query = query.Where(row =>
-                EF.Functions.ILike(row.Activity.RequestId, like) ||
-                EF.Functions.ILike(row.Activity.TaskType, like) ||
-                EF.Functions.ILike(row.Activity.Status, like) ||
-                EF.Functions.ILike(row.Activity.ClientIdentity, like) ||
-                (row.Agent != null && row.Agent.Name != null && EF.Functions.ILike(row.Agent.Name, like)) ||
-                (row.Agent != null && row.Agent.DeviceInfoJson != null && EF.Functions.ILike(row.Agent.DeviceInfoJson, like)));
+            query = db.Database.IsNpgsql()
+                ? query.Where(row =>
+                    EF.Functions.ILike(row.Activity.RequestId, like) || EF.Functions.ILike(row.Activity.TaskType, like) ||
+                    EF.Functions.ILike(row.Activity.Status, like) || EF.Functions.ILike(row.Activity.ClientIdentity, like) ||
+                    (row.Agent != null && row.Agent.Name != null && EF.Functions.ILike(row.Agent.Name, like)) ||
+                    (row.Agent != null && row.Agent.DeviceInfoJson != null && EF.Functions.ILike(row.Agent.DeviceInfoJson, like)))
+                : query.Where(row =>
+                    EF.Functions.Like(row.Activity.RequestId.ToUpper(), like.ToUpper(), "\\") || EF.Functions.Like(row.Activity.TaskType.ToUpper(), like.ToUpper(), "\\") ||
+                    EF.Functions.Like(row.Activity.Status.ToUpper(), like.ToUpper(), "\\") || EF.Functions.Like(row.Activity.ClientIdentity.ToUpper(), like.ToUpper(), "\\") ||
+                    (row.Agent != null && row.Agent.Name != null && EF.Functions.Like(row.Agent.Name.ToUpper(), like.ToUpper(), "\\")) ||
+                    (row.Agent != null && row.Agent.DeviceInfoJson != null && EF.Functions.Like(row.Agent.DeviceInfoJson.ToUpper(), like.ToUpper(), "\\")));
         }
 
         return query

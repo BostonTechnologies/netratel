@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using NetRatel.Application.Operations;
 
 namespace NetRatel.Infrastructure.Persistence;
@@ -1273,5 +1274,16 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
                 .HasForeignKey(x => x.RemoteSupportSessionId)
                 .OnDelete(DeleteBehavior.Restrict);
         });
+
+        if (Database.IsSqlite())
+        {
+            var converter = new DateTimeOffsetToBinaryConverter();
+            foreach (var property in modelBuilder.Model.GetEntityTypes()
+                         .SelectMany(entity => entity.GetProperties())
+                         .Where(property => property.ClrType == typeof(DateTimeOffset) || property.ClrType == typeof(DateTimeOffset?)))
+            {
+                property.SetValueConverter(converter);
+            }
+        }
     }
 }

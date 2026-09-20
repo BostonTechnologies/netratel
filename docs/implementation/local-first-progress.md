@@ -150,6 +150,21 @@ asset replacement, package-visibility mutation, and repository-rule bypass.
   The API revalidates enabled state, security stamp, and authorization revision;
   the Web does not mint an API bearer token or trust an identity header.
 
+## P04 SQLite provider foundation
+
+- Provider selection is explicit and validated. PostgreSQL remains the
+  compatibility default; SQLite requires one instance and an absolute durable
+  path. Connection-string compatibility aliases retain deterministic
+  `NetRatelDb` then `Default` precedence.
+- SQLite has a dedicated, versioned migration assembly for application and
+  identity state. The API and migration runner carry that assembly, and SQLite
+  timestamps use an orderable storage representation so paged search ordering
+  stays database-side.
+- PostgreSQL keeps its `ILIKE` and trigram/GIN path. SQLite uses escaped,
+  case-insensitive `LIKE`; update notifications use their existing bounded
+  polling fallback. The dedicated `compose.sqlite.yaml` profile has no
+  PostgreSQL service dependency and documents its single-node limitation.
+
 ## Commands and validation
 
 | Commit | Command | Result |
@@ -163,14 +178,17 @@ asset replacement, package-visibility mutation, and repository-rule bypass.
 | `feat/issue-31-bootstrap` | fresh API process with no usable database/OIDC configuration | Passed: `/health/live` returned 200, `/health/ready` 503, setup status 200, business route 404; a 64-byte proof claimed once with 202 and replay returned 400. |
 | `feat/issue-31-bootstrap` | fresh API + Web process with no OIDC configuration | Passed: the Web root returned the status-only setup shell and its same-origin setup-status proxy returned API state 200. |
 | `feat/issue-31-bootstrap` | `docker compose --env-file .env.example config --quiet` | Passed with blank OIDC and agent-signing inputs, proving the fresh setup Compose configuration resolves without placeholder identity credentials. |
+| `feat/issue-34-sqlite-provider` | focused `SqliteProviderMigrationTests` | Passed against a real disposable SQLite file: identity/application migrations, restart, persisted directory data, and all global search projections. |
+| `feat/issue-34-sqlite-provider` | `docker compose -f compose.sqlite.yaml config --quiet` | Passed. |
+| `feat/issue-34-sqlite-provider` | disposable SQLite Compose migration/API startup | Passed: migration runner completed and API listened on 9222 with no PostgreSQL service. Test containers, volumes, images, key, and build cache were removed afterwards. |
 
 ## Current checkpoint
 
-Current phase: P03. Branch: `feat/issue-33-scoped-rbac`. P02 merged as
-`bd567c091cc0efe8f4d63d253aaee6180dd01d8f` through
-[#45](https://github.com/BostonTechnologies/netratel/pull/45). Next action:
-implement durable scoped effective access and route/service enforcement without
-removing established OIDC operator compatibility.
+Current phase: P04. Branch: `feat/issue-34-sqlite-provider`. P03 merged as
+`1969e9aea3c9e12aa492120c4b3452f8e9e7bc9c` through
+[#46](https://github.com/BostonTechnologies/netratel/pull/46). Next action:
+complete the PostgreSQL/SQLite persistence-graph and upgrade coverage before
+opening P04's CI-gated PR.
 
 ## Blockers
 

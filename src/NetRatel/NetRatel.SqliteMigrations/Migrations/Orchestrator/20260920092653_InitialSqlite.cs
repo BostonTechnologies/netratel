@@ -18,7 +18,7 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     Id = table.Column<Guid>(type: "TEXT", nullable: false),
                     AgentId = table.Column<Guid>(type: "TEXT", nullable: false),
                     Nonce = table.Column<string>(type: "TEXT", nullable: false),
-                    CreatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false)
+                    CreatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false)
                 },
                 constraints: table =>
                 {
@@ -35,22 +35,22 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     Status = table.Column<short>(type: "INTEGER", nullable: false),
                     IsEnabled = table.Column<bool>(type: "INTEGER", nullable: false, defaultValue: true),
                     DisabledReason = table.Column<string>(type: "TEXT", nullable: true),
-                    CreatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
+                    CreatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
                     CreatedBy = table.Column<string>(type: "TEXT", nullable: true),
-                    LastSeenUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true),
-                    LastTokenIssuedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true),
-                    RevokedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true),
-                    DeletedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true),
+                    LastSeenUtc = table.Column<long>(type: "INTEGER", nullable: true),
+                    LastTokenIssuedAtUtc = table.Column<long>(type: "INTEGER", nullable: true),
+                    RevokedAtUtc = table.Column<long>(type: "INTEGER", nullable: true),
+                    DeletedAtUtc = table.Column<long>(type: "INTEGER", nullable: true),
                     DeletedBy = table.Column<string>(type: "TEXT", nullable: true),
                     PublicKey = table.Column<string>(type: "TEXT", nullable: true),
                     PublicKeyFingerprint = table.Column<string>(type: "TEXT", nullable: true),
                     KeyAlgorithm = table.Column<string>(type: "TEXT", nullable: false, defaultValue: "ecdsa-p256"),
-                    KeyRegisteredAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true),
+                    KeyRegisteredAtUtc = table.Column<long>(type: "INTEGER", nullable: true),
                     AllowedScopesJson = table.Column<string>(type: "TEXT", nullable: true),
                     DeviceInfoJson = table.Column<string>(type: "TEXT", nullable: true),
                     MtlsThumbprint = table.Column<string>(type: "TEXT", nullable: true),
                     SupersededByAgentId = table.Column<Guid>(type: "TEXT", nullable: true),
-                    SupersededAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true)
+                    SupersededAtUtc = table.Column<long>(type: "INTEGER", nullable: true)
                 },
                 constraints: table =>
                 {
@@ -71,7 +71,7 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     TenantId = table.Column<int>(type: "INTEGER", nullable: false),
                     AgentId = table.Column<Guid>(type: "TEXT", nullable: false),
                     EventType = table.Column<string>(type: "TEXT", nullable: false),
-                    CreatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
+                    CreatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
                     Ip = table.Column<string>(type: "TEXT", nullable: true),
                     UserAgent = table.Column<string>(type: "TEXT", nullable: true),
                     DetailsJson = table.Column<string>(type: "TEXT", nullable: true)
@@ -87,7 +87,7 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                 {
                     Id = table.Column<int>(type: "INTEGER", nullable: false),
                     Revision = table.Column<long>(type: "INTEGER", nullable: false),
-                    UpdatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false)
+                    UpdatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false)
                 },
                 constraints: table =>
                 {
@@ -110,9 +110,9 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     SizeBytes = table.Column<long>(type: "INTEGER", nullable: false),
                     ManifestJson = table.Column<string>(type: "jsonb", nullable: false),
                     Enabled = table.Column<bool>(type: "INTEGER", nullable: false),
-                    PublishedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
+                    PublishedAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
                     PublishedBy = table.Column<string>(type: "TEXT", nullable: true),
-                    DisabledAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true),
+                    DisabledAtUtc = table.Column<long>(type: "INTEGER", nullable: true),
                     DisabledBy = table.Column<string>(type: "TEXT", nullable: true)
                 },
                 constraints: table =>
@@ -194,8 +194,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     CorrelationId = table.Column<string>(type: "TEXT", maxLength: 256, nullable: false),
                     Version = table.Column<decimal>(type: "TEXT", precision: 20, scale: 0, nullable: false),
                     Sequence = table.Column<decimal>(type: "TEXT", precision: 20, scale: 0, nullable: false),
-                    FirstReceivedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
-                    LastReceivedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
+                    FirstReceivedAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
+                    LastReceivedAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
                     DuplicateCount = table.Column<long>(type: "INTEGER", nullable: false)
                 },
                 constraints: table =>
@@ -212,14 +212,14 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     ClientId = table.Column<Guid>(type: "TEXT", nullable: false),
                     CommandId = table.Column<string>(type: "TEXT", maxLength: 256, nullable: false),
                     CorrelationId = table.Column<string>(type: "TEXT", maxLength: 256, nullable: false),
-                    RequestTimestamp = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
-                    StatusTimestamp = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
+                    RequestTimestamp = table.Column<long>(type: "INTEGER", nullable: false),
+                    StatusTimestamp = table.Column<long>(type: "INTEGER", nullable: false),
                     Version = table.Column<decimal>(type: "TEXT", precision: 20, scale: 0, nullable: false),
                     Sequence = table.Column<decimal>(type: "TEXT", precision: 20, scale: 0, nullable: false),
                     Status = table.Column<short>(type: "INTEGER", nullable: false),
                     Source = table.Column<string>(type: "TEXT", maxLength: 64, nullable: false),
                     IsAuthoritative = table.Column<bool>(type: "INTEGER", nullable: false),
-                    RecordedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false)
+                    RecordedAtUtc = table.Column<long>(type: "INTEGER", nullable: false)
                 },
                 constraints: table =>
                 {
@@ -235,10 +235,10 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     ClientId = table.Column<Guid>(type: "TEXT", nullable: false),
                     CommandId = table.Column<string>(type: "TEXT", maxLength: 256, nullable: false),
                     CorrelationId = table.Column<string>(type: "TEXT", maxLength: 256, nullable: false),
-                    RequestTimestamp = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
-                    CreatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
-                    LastObservedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
-                    TerminalAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true),
+                    RequestTimestamp = table.Column<long>(type: "INTEGER", nullable: false),
+                    CreatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
+                    LastObservedAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
+                    TerminalAtUtc = table.Column<long>(type: "INTEGER", nullable: true),
                     LastAcceptedVersion = table.Column<decimal>(type: "TEXT", precision: 20, scale: 0, nullable: false),
                     LastAcceptedSequence = table.Column<decimal>(type: "TEXT", precision: 20, scale: 0, nullable: false),
                     CurrentStatus = table.Column<short>(type: "INTEGER", nullable: false),
@@ -258,13 +258,13 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     Id = table.Column<Guid>(type: "TEXT", nullable: false),
                     TenantId = table.Column<int>(type: "INTEGER", nullable: false),
                     Code = table.Column<string>(type: "TEXT", nullable: false),
-                    CreatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false, defaultValueSql: "now()"),
+                    CreatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false, defaultValueSql: "now()"),
                     CreatedBy = table.Column<string>(type: "TEXT", nullable: true),
-                    ValidFromUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
-                    ValidToUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
+                    ValidFromUtc = table.Column<long>(type: "INTEGER", nullable: false),
+                    ValidToUtc = table.Column<long>(type: "INTEGER", nullable: false),
                     MaxUses = table.Column<int>(type: "INTEGER", nullable: true),
                     Uses = table.Column<int>(type: "INTEGER", nullable: false, defaultValue: 0),
-                    RevokedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true),
+                    RevokedAtUtc = table.Column<long>(type: "INTEGER", nullable: true),
                     RevokedBy = table.Column<string>(type: "TEXT", nullable: true),
                     Notes = table.Column<string>(type: "TEXT", nullable: true),
                     DevelopmentMcpTargetAgentId = table.Column<Guid>(type: "TEXT", nullable: true),
@@ -288,8 +288,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     AgentId = table.Column<Guid>(type: "TEXT", nullable: true),
                     ClientIdentity = table.Column<string>(type: "TEXT", nullable: false),
                     OptionsJson = table.Column<string>(type: "text", nullable: true),
-                    CreatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
-                    UpdatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false)
+                    CreatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
+                    UpdatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false)
                 },
                 constraints: table =>
                 {
@@ -311,7 +311,7 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     StartedBy = table.Column<string>(type: "TEXT", maxLength: 256, nullable: true),
                     RunStatus = table.Column<short>(type: "INTEGER", nullable: true),
                     CurrentStepOrdinal = table.Column<int>(type: "INTEGER", nullable: true),
-                    RunCreatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true),
+                    RunCreatedAtUtc = table.Column<long>(type: "INTEGER", nullable: true),
                     JobStepRunId = table.Column<decimal>(type: "TEXT", precision: 20, scale: 0, nullable: true),
                     JobStepId = table.Column<decimal>(type: "TEXT", precision: 20, scale: 0, nullable: true),
                     StepStatus = table.Column<short>(type: "INTEGER", nullable: true),
@@ -319,11 +319,11 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     TaskRequestId = table.Column<string>(type: "TEXT", maxLength: 256, nullable: true),
                     CommandCorrelationStatus = table.Column<short>(type: "INTEGER", nullable: false),
                     CorrelatedCommandStatus = table.Column<short>(type: "INTEGER", nullable: true),
-                    StartedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true),
-                    CompletedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true),
-                    ObservedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
+                    StartedAtUtc = table.Column<long>(type: "INTEGER", nullable: true),
+                    CompletedAtUtc = table.Column<long>(type: "INTEGER", nullable: true),
+                    ObservedAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
                     IsAuthoritative = table.Column<bool>(type: "INTEGER", nullable: false),
-                    RecordedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false)
+                    RecordedAtUtc = table.Column<long>(type: "INTEGER", nullable: false)
                 },
                 constraints: table =>
                 {
@@ -339,7 +339,7 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     RemoteBaseUrl = table.Column<string>(type: "TEXT", nullable: true),
                     RemoteAudience = table.Column<string>(type: "TEXT", nullable: true),
                     RemoteSystemName = table.Column<string>(type: "TEXT", nullable: true),
-                    UpdatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false)
+                    UpdatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false)
                 },
                 constraints: table =>
                 {
@@ -367,9 +367,9 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     ConfirmationClass = table.Column<short>(type: "INTEGER", nullable: false),
                     PayloadHash = table.Column<string>(type: "TEXT", maxLength: 64, nullable: false),
                     IdempotencyKey = table.Column<string>(type: "TEXT", maxLength: 128, nullable: false),
-                    CreatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
-                    ExpiresAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
-                    ConsumedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true),
+                    CreatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
+                    ExpiresAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
+                    ConsumedAtUtc = table.Column<long>(type: "INTEGER", nullable: true),
                     ConsumedIdempotencyId = table.Column<Guid>(type: "TEXT", nullable: true),
                     Version = table.Column<long>(type: "INTEGER", nullable: false)
                 },
@@ -397,8 +397,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     PayloadHash = table.Column<string>(type: "TEXT", maxLength: 64, nullable: false),
                     Outcome = table.Column<short>(type: "INTEGER", nullable: false),
                     ResultReference = table.Column<string>(type: "TEXT", maxLength: 512, nullable: true),
-                    CreatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
-                    CompletedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true),
+                    CreatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
+                    CompletedAtUtc = table.Column<long>(type: "INTEGER", nullable: true),
                     Version = table.Column<long>(type: "INTEGER", nullable: false)
                 },
                 constraints: table =>
@@ -425,11 +425,11 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     OperationFamily = table.Column<int>(type: "INTEGER", nullable: false),
                     Operation = table.Column<string>(type: "TEXT", maxLength: 256, nullable: true),
                     ConstraintsJson = table.Column<string>(type: "jsonb", nullable: false),
-                    CreatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
+                    CreatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
                     CreatedBy = table.Column<string>(type: "TEXT", maxLength: 256, nullable: false),
-                    ExpiresAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true),
-                    ReviewByUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true),
-                    DisabledAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true),
+                    ExpiresAtUtc = table.Column<long>(type: "INTEGER", nullable: true),
+                    ReviewByUtc = table.Column<long>(type: "INTEGER", nullable: true),
+                    DisabledAtUtc = table.Column<long>(type: "INTEGER", nullable: true),
                     DisabledBy = table.Column<string>(type: "TEXT", maxLength: 256, nullable: true),
                     LifecycleState = table.Column<short>(type: "INTEGER", nullable: false, defaultValue: (short)1),
                     Version = table.Column<long>(type: "INTEGER", nullable: false),
@@ -451,7 +451,7 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     TenantId = table.Column<int>(type: "INTEGER", nullable: false),
                     ActorId = table.Column<string>(type: "TEXT", maxLength: 256, nullable: false),
                     Version = table.Column<long>(type: "INTEGER", nullable: false),
-                    OccurredAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false)
+                    OccurredAtUtc = table.Column<long>(type: "INTEGER", nullable: false)
                 },
                 constraints: table =>
                 {
@@ -465,7 +465,7 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     Id = table.Column<Guid>(type: "TEXT", nullable: false),
                     KeyId = table.Column<string>(type: "TEXT", nullable: false),
                     PrivateKeyPem = table.Column<string>(type: "TEXT", nullable: false),
-                    CreatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
+                    CreatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
                     IsActive = table.Column<bool>(type: "INTEGER", nullable: false)
                 },
                 constraints: table =>
@@ -478,7 +478,7 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                 columns: table => new
                 {
                     Id = table.Column<Guid>(type: "TEXT", nullable: false),
-                    OccurredUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
+                    OccurredUtc = table.Column<long>(type: "INTEGER", nullable: false),
                     Type = table.Column<string>(type: "TEXT", nullable: false),
                     PayloadJson = table.Column<string>(type: "TEXT", nullable: false),
                     Source = table.Column<string>(type: "TEXT", nullable: false),
@@ -489,8 +489,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     Message = table.Column<string>(type: "TEXT", nullable: true),
                     Status = table.Column<string>(type: "TEXT", nullable: false),
                     Attempts = table.Column<int>(type: "INTEGER", nullable: false),
-                    NextAttemptUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true),
-                    LockedUntilUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true),
+                    NextAttemptUtc = table.Column<long>(type: "INTEGER", nullable: true),
+                    LockedUntilUtc = table.Column<long>(type: "INTEGER", nullable: true),
                     LockOwner = table.Column<string>(type: "TEXT", nullable: true),
                     LastError = table.Column<string>(type: "TEXT", nullable: true)
                 },
@@ -505,7 +505,7 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                 {
                     EventId = table.Column<Guid>(type: "TEXT", nullable: false),
                     ConsumerName = table.Column<string>(type: "TEXT", nullable: false),
-                    ProcessedUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false)
+                    ProcessedUtc = table.Column<long>(type: "INTEGER", nullable: false)
                 },
                 constraints: table =>
                 {
@@ -518,7 +518,7 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                 {
                     EventId = table.Column<Guid>(type: "TEXT", nullable: false),
                     UserId = table.Column<string>(type: "TEXT", nullable: false),
-                    ReadUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false)
+                    ReadUtc = table.Column<long>(type: "INTEGER", nullable: false)
                 },
                 constraints: table =>
                 {
@@ -543,10 +543,10 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     GrantedCapabilitiesJson = table.Column<string>(type: "TEXT", nullable: false),
                     State = table.Column<string>(type: "TEXT", maxLength: 64, nullable: false),
                     LifecycleRevision = table.Column<decimal>(type: "TEXT", precision: 20, scale: 0, nullable: false),
-                    CreatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
-                    UpdatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
-                    ExpiresAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true),
-                    TerminalAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true),
+                    CreatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
+                    UpdatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
+                    ExpiresAtUtc = table.Column<long>(type: "INTEGER", nullable: true),
+                    TerminalAtUtc = table.Column<long>(type: "INTEGER", nullable: true),
                     TerminalReasonCode = table.Column<string>(type: "TEXT", maxLength: 128, nullable: true)
                 },
                 constraints: table =>
@@ -595,8 +595,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     ResultData = table.Column<string>(type: "TEXT", nullable: true),
                     JobInputs = table.Column<string>(type: "TEXT", nullable: true),
                     Logs = table.Column<string>(type: "text[]", nullable: false),
-                    CreatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
-                    UpdatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false)
+                    CreatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
+                    UpdatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false)
                 },
                 constraints: table =>
                 {
@@ -610,15 +610,15 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     Id = table.Column<long>(type: "INTEGER", nullable: false)
                         .Annotation("Sqlite:Autoincrement", true),
                     SourceRevision = table.Column<long>(type: "INTEGER", nullable: false, defaultValue: 1L),
-                    DeletedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true),
+                    DeletedAtUtc = table.Column<long>(type: "INTEGER", nullable: true),
                     Name = table.Column<string>(type: "TEXT", nullable: false),
                     FolderPath = table.Column<string>(type: "TEXT", nullable: false),
                     Description = table.Column<string>(type: "TEXT", nullable: false),
                     Content = table.Column<string>(type: "TEXT", nullable: false),
                     ManifestJson = table.Column<string>(type: "TEXT", nullable: true),
                     ScriptType = table.Column<string>(type: "TEXT", nullable: false),
-                    CreatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
-                    UpdatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false)
+                    CreatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
+                    UpdatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false)
                 },
                 constraints: table =>
                 {
@@ -635,8 +635,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     ClientIdentity = table.Column<string>(type: "TEXT", nullable: true),
                     Value = table.Column<string>(type: "TEXT", nullable: false),
                     Description = table.Column<string>(type: "TEXT", nullable: true),
-                    CreatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
-                    UpdatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false)
+                    CreatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
+                    UpdatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false)
                 },
                 constraints: table =>
                 {
@@ -658,8 +658,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     AutoUpdate = table.Column<bool>(type: "INTEGER", nullable: false),
                     AutoUpdateChannel = table.Column<string>(type: "TEXT", nullable: false),
                     AutoUpdateTargetVersion = table.Column<string>(type: "TEXT", nullable: true),
-                    CreatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
-                    UpdatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
+                    CreatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
+                    UpdatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
                     Version = table.Column<long>(type: "INTEGER", nullable: false)
                 },
                 constraints: table =>
@@ -673,12 +673,12 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                 {
                     AgentId = table.Column<Guid>(type: "TEXT", nullable: false),
                     TenantId = table.Column<int>(type: "INTEGER", nullable: false),
-                    SuspendedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true),
+                    SuspendedAtUtc = table.Column<long>(type: "INTEGER", nullable: true),
                     SuspensionReason = table.Column<string>(type: "TEXT", maxLength: 256, nullable: true),
                     SuspensionAttemptId = table.Column<Guid>(type: "TEXT", nullable: true),
                     SuppressedReleaseId = table.Column<Guid>(type: "TEXT", nullable: true),
                     PolicyRevision = table.Column<long>(type: "INTEGER", nullable: false),
-                    ResumedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true),
+                    ResumedAtUtc = table.Column<long>(type: "INTEGER", nullable: true),
                     ResumedBy = table.Column<string>(type: "TEXT", nullable: true)
                 },
                 constraints: table =>
@@ -699,10 +699,10 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     Id = table.Column<Guid>(type: "TEXT", nullable: false),
                     AgentId = table.Column<Guid>(type: "TEXT", nullable: false),
                     RefreshTokenHash = table.Column<string>(type: "TEXT", nullable: false),
-                    CreatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
-                    ExpiresAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true),
-                    RevokedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true),
-                    LastUsedUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true)
+                    CreatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
+                    ExpiresAtUtc = table.Column<long>(type: "INTEGER", nullable: true),
+                    RevokedAtUtc = table.Column<long>(type: "INTEGER", nullable: true),
+                    LastUsedUtc = table.Column<long>(type: "INTEGER", nullable: true)
                 },
                 constraints: table =>
                 {
@@ -722,12 +722,12 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     Id = table.Column<Guid>(type: "TEXT", nullable: false),
                     AgentId = table.Column<Guid>(type: "TEXT", nullable: false),
                     TokenHash = table.Column<string>(type: "TEXT", nullable: false),
-                    CreatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
-                    ExpiresAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true),
-                    RevokedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true),
+                    CreatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
+                    ExpiresAtUtc = table.Column<long>(type: "INTEGER", nullable: true),
+                    RevokedAtUtc = table.Column<long>(type: "INTEGER", nullable: true),
                     ReplacedByTokenId = table.Column<Guid>(type: "TEXT", nullable: true),
-                    LastUsedUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true),
-                    RecoveryUsedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true)
+                    LastUsedUtc = table.Column<long>(type: "INTEGER", nullable: true),
+                    RecoveryUsedAtUtc = table.Column<long>(type: "INTEGER", nullable: true)
                 },
                 constraints: table =>
                 {
@@ -752,9 +752,9 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     FileFixtureRoot = table.Column<string>(type: "TEXT", maxLength: 4096, nullable: true),
                     EvidenceReference = table.Column<string>(type: "TEXT", maxLength: 512, nullable: false),
                     GrantedBy = table.Column<string>(type: "TEXT", maxLength: 256, nullable: false),
-                    GrantedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
-                    ExpiresAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
-                    RevokedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true),
+                    GrantedAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
+                    ExpiresAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
+                    RevokedAtUtc = table.Column<long>(type: "INTEGER", nullable: true),
                     RevokedBy = table.Column<string>(type: "TEXT", maxLength: 256, nullable: true),
                     RevocationReason = table.Column<string>(type: "TEXT", maxLength: 256, nullable: true)
                 },
@@ -777,7 +777,7 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     TenantId = table.Column<int>(type: "INTEGER", nullable: false),
                     Classification = table.Column<short>(type: "INTEGER", nullable: false),
                     TagsJson = table.Column<string>(type: "jsonb", nullable: false),
-                    UpdatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
+                    UpdatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
                     UpdatedBy = table.Column<string>(type: "TEXT", maxLength: 256, nullable: false),
                     Version = table.Column<long>(type: "INTEGER", nullable: false)
                 },
@@ -810,10 +810,10 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     GatewayConnectionId = table.Column<Guid>(type: "TEXT", nullable: true),
                     GatewayConnectionEpoch = table.Column<long>(type: "INTEGER", nullable: true),
                     ConfirmationId = table.Column<Guid>(type: "TEXT", nullable: true),
-                    CreatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
-                    UpdatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
-                    ReadmittedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true),
-                    ConfirmedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true),
+                    CreatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
+                    UpdatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
+                    ReadmittedAtUtc = table.Column<long>(type: "INTEGER", nullable: true),
+                    ConfirmedAtUtc = table.Column<long>(type: "INTEGER", nullable: true),
                     FailureCode = table.Column<string>(type: "TEXT", maxLength: 64, nullable: true),
                     Message = table.Column<string>(type: "TEXT", nullable: true)
                 },
@@ -844,11 +844,11 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     EnrollmentCodeId = table.Column<Guid>(type: "TEXT", nullable: true),
                     PrimaryClientIdentity = table.Column<string>(type: "TEXT", nullable: false),
                     Status = table.Column<short>(type: "INTEGER", nullable: false),
-                    CreatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
+                    CreatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
                     CreatedBy = table.Column<string>(type: "TEXT", nullable: false),
-                    BoundAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true),
+                    BoundAtUtc = table.Column<long>(type: "INTEGER", nullable: true),
                     BoundBy = table.Column<string>(type: "TEXT", nullable: true),
-                    RevokedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true),
+                    RevokedAtUtc = table.Column<long>(type: "INTEGER", nullable: true),
                     RevokedBy = table.Column<string>(type: "TEXT", nullable: true),
                     BindingSource = table.Column<string>(type: "TEXT", nullable: false),
                     Notes = table.Column<string>(type: "TEXT", nullable: true),
@@ -908,9 +908,9 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     StartedBy = table.Column<string>(type: "TEXT", nullable: false),
                     Status = table.Column<int>(type: "INTEGER", nullable: false),
                     CurrentStepOrdinal = table.Column<int>(type: "INTEGER", nullable: false),
-                    CreatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
-                    StartedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true),
-                    CompletedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true),
+                    CreatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
+                    StartedAtUtc = table.Column<long>(type: "INTEGER", nullable: true),
+                    CompletedAtUtc = table.Column<long>(type: "INTEGER", nullable: true),
                     Error = table.Column<string>(type: "TEXT", nullable: true),
                     InputsJson = table.Column<string>(type: "TEXT", nullable: true),
                     OptionsJson = table.Column<string>(type: "TEXT", nullable: true)
@@ -975,7 +975,7 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     Operation = table.Column<string>(type: "TEXT", maxLength: 256, nullable: false),
                     CorrelationId = table.Column<string>(type: "TEXT", maxLength: 256, nullable: false),
                     RequestId = table.Column<string>(type: "TEXT", maxLength: 256, nullable: false),
-                    OccurredAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false)
+                    OccurredAtUtc = table.Column<long>(type: "INTEGER", nullable: false)
                 },
                 constraints: table =>
                 {
@@ -1003,9 +1003,9 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     PolicyId = table.Column<Guid>(type: "TEXT", nullable: false),
                     PolicyVersion = table.Column<long>(type: "INTEGER", nullable: false),
                     TargetSetDigest = table.Column<string>(type: "TEXT", maxLength: 64, nullable: false),
-                    CreatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
-                    UpdatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
-                    DeletedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true),
+                    CreatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
+                    UpdatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
+                    DeletedAtUtc = table.Column<long>(type: "INTEGER", nullable: true),
                     Version = table.Column<long>(type: "INTEGER", nullable: false)
                 },
                 constraints: table =>
@@ -1042,7 +1042,7 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     RequestId = table.Column<Guid>(type: "TEXT", nullable: true),
                     Outcome = table.Column<string>(type: "TEXT", maxLength: 64, nullable: false),
                     FailureCode = table.Column<string>(type: "TEXT", maxLength: 128, nullable: true),
-                    OccurredAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false)
+                    OccurredAtUtc = table.Column<long>(type: "INTEGER", nullable: false)
                 },
                 constraints: table =>
                 {
@@ -1077,9 +1077,9 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     TimeoutSeconds = table.Column<int>(type: "INTEGER", nullable: false),
                     WorkingDirectory = table.Column<string>(type: "TEXT", maxLength: 4096, nullable: false),
                     DeclaredSideEffectsJson = table.Column<string>(type: "jsonb", nullable: false),
-                    CreatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
-                    UpdatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
-                    DeletedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true),
+                    CreatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
+                    UpdatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
+                    DeletedAtUtc = table.Column<long>(type: "INTEGER", nullable: true),
                     Version = table.Column<long>(type: "INTEGER", nullable: false)
                 },
                 constraints: table =>
@@ -1137,9 +1137,9 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     Sha256 = table.Column<string>(type: "TEXT", maxLength: 64, nullable: false),
                     MarkerOwned = table.Column<bool>(type: "INTEGER", nullable: false),
                     Content = table.Column<byte[]>(type: "BLOB", nullable: false),
-                    CreatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
-                    ExpiresAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
-                    DeletedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true)
+                    CreatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
+                    ExpiresAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
+                    DeletedAtUtc = table.Column<long>(type: "INTEGER", nullable: true)
                 },
                 constraints: table =>
                 {
@@ -1163,9 +1163,9 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     AgentId = table.Column<Guid>(type: "TEXT", nullable: false),
                     TargetGrantId = table.Column<Guid>(type: "TEXT", nullable: false),
                     Marker = table.Column<string>(type: "TEXT", maxLength: 128, nullable: false),
-                    CreatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
-                    UpdatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
-                    DeletedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true)
+                    CreatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
+                    UpdatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
+                    DeletedAtUtc = table.Column<long>(type: "INTEGER", nullable: true)
                 },
                 constraints: table =>
                 {
@@ -1190,9 +1190,9 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     Marker = table.Column<string>(type: "TEXT", maxLength: 128, nullable: false),
                     Shell = table.Column<string>(type: "TEXT", maxLength: 32, nullable: false),
                     ExecutionMode = table.Column<string>(type: "TEXT", maxLength: 32, nullable: false, defaultValue: "standard"),
-                    CreatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
-                    UpdatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
-                    DeletedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true)
+                    CreatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
+                    UpdatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
+                    DeletedAtUtc = table.Column<long>(type: "INTEGER", nullable: true)
                 },
                 constraints: table =>
                 {
@@ -1216,7 +1216,7 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     Operation = table.Column<short>(type: "INTEGER", nullable: false),
                     ActorId = table.Column<string>(type: "TEXT", maxLength: 256, nullable: false),
                     CorrelationId = table.Column<string>(type: "TEXT", maxLength: 256, nullable: false),
-                    OccurredAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false)
+                    OccurredAtUtc = table.Column<long>(type: "INTEGER", nullable: false)
                 },
                 constraints: table =>
                 {
@@ -1240,8 +1240,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     Ordinal = table.Column<int>(type: "INTEGER", nullable: false),
                     TaskRequestId = table.Column<string>(type: "TEXT", nullable: true),
                     Error = table.Column<string>(type: "TEXT", nullable: true),
-                    StartedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true),
-                    CompletedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true)
+                    StartedAtUtc = table.Column<long>(type: "INTEGER", nullable: true),
+                    CompletedAtUtc = table.Column<long>(type: "INTEGER", nullable: true)
                 },
                 constraints: table =>
                 {
@@ -1275,8 +1275,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     Status = table.Column<string>(type: "TEXT", nullable: false),
                     Error = table.Column<string>(type: "TEXT", nullable: true),
                     ResultJson = table.Column<string>(type: "TEXT", nullable: true),
-                    CreatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
-                    CompletedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true)
+                    CreatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
+                    CompletedAtUtc = table.Column<long>(type: "INTEGER", nullable: true)
                 },
                 constraints: table =>
                 {
@@ -1321,8 +1321,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     MaximumOutputBytes = table.Column<int>(type: "INTEGER", nullable: false),
                     EffectiveConstraintsJson = table.Column<string>(type: "jsonb", nullable: false),
                     State = table.Column<short>(type: "INTEGER", nullable: false),
-                    CreatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
-                    LastUpdatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
+                    CreatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
+                    LastUpdatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
                     FailureCode = table.Column<string>(type: "TEXT", maxLength: 64, nullable: true),
                     OutputJson = table.Column<string>(type: "jsonb", nullable: true),
                     Version = table.Column<long>(type: "INTEGER", nullable: false)
@@ -1375,9 +1375,9 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     Content = table.Column<byte[]>(type: "BLOB", nullable: false),
                     AcceptedAuditId = table.Column<Guid>(type: "TEXT", nullable: false),
                     IdempotencyId = table.Column<Guid>(type: "TEXT", nullable: false),
-                    CreatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
-                    ExpiresAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
-                    DeletedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true)
+                    CreatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
+                    ExpiresAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
+                    DeletedAtUtc = table.Column<long>(type: "INTEGER", nullable: true)
                 },
                 constraints: table =>
                 {
@@ -1425,9 +1425,9 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     Summary = table.Column<string>(type: "TEXT", maxLength: 4096, nullable: false),
                     ResultSummary = table.Column<string>(type: "TEXT", maxLength: 49152, nullable: true),
                     ClaimReferenceHash = table.Column<string>(type: "TEXT", maxLength: 64, nullable: true),
-                    CreatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
-                    UpdatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
-                    CompletedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true),
+                    CreatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
+                    UpdatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
+                    CompletedAtUtc = table.Column<long>(type: "INTEGER", nullable: true),
                     Version = table.Column<long>(type: "INTEGER", nullable: false)
                 },
                 constraints: table =>
@@ -1494,13 +1494,13 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     Rows = table.Column<int>(type: "INTEGER", nullable: false),
                     EffectiveConstraintsJson = table.Column<string>(type: "jsonb", nullable: false),
                     State = table.Column<short>(type: "INTEGER", nullable: false),
-                    CreatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
-                    LastActivityAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
-                    IdleExpiresAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
-                    ExpiresAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
-                    CloseRequestedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true),
+                    CreatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
+                    LastActivityAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
+                    IdleExpiresAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
+                    ExpiresAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
+                    CloseRequestedAtUtc = table.Column<long>(type: "INTEGER", nullable: true),
                     CloseReason = table.Column<string>(type: "TEXT", maxLength: 128, nullable: true),
-                    ClosedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true),
+                    ClosedAtUtc = table.Column<long>(type: "INTEGER", nullable: true),
                     FailureCode = table.Column<string>(type: "TEXT", maxLength: 64, nullable: true),
                     Version = table.Column<long>(type: "INTEGER", nullable: false)
                 },
@@ -1543,7 +1543,7 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     JobVersion = table.Column<long>(type: "INTEGER", nullable: false),
                     Action = table.Column<string>(type: "TEXT", maxLength: 32, nullable: false),
                     AcceptedAuditId = table.Column<Guid>(type: "TEXT", nullable: false),
-                    OccurredAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false)
+                    OccurredAtUtc = table.Column<long>(type: "INTEGER", nullable: false)
                 },
                 constraints: table =>
                 {
@@ -1577,11 +1577,11 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     CorrelationId = table.Column<string>(type: "TEXT", maxLength: 256, nullable: false),
                     TargetSetDigest = table.Column<string>(type: "TEXT", maxLength: 64, nullable: false),
                     CancellationRequested = table.Column<bool>(type: "INTEGER", nullable: false),
-                    CancellationRequestedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true),
-                    DeletedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true),
+                    CancellationRequestedAtUtc = table.Column<long>(type: "INTEGER", nullable: true),
+                    DeletedAtUtc = table.Column<long>(type: "INTEGER", nullable: true),
                     Version = table.Column<long>(type: "INTEGER", nullable: false),
-                    CreatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
-                    UpdatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false)
+                    CreatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
+                    UpdatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false)
                 },
                 constraints: table =>
                 {
@@ -1625,7 +1625,7 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     TimeoutSeconds = table.Column<int>(type: "INTEGER", nullable: false),
                     WorkingDirectory = table.Column<string>(type: "TEXT", maxLength: 4096, nullable: false),
                     DeclaredSideEffectsJson = table.Column<string>(type: "jsonb", nullable: false),
-                    OccurredAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false)
+                    OccurredAtUtc = table.Column<long>(type: "INTEGER", nullable: false)
                 },
                 constraints: table =>
                 {
@@ -1657,7 +1657,7 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     Stream = table.Column<string>(type: "TEXT", nullable: false),
                     Message = table.Column<string>(type: "TEXT", nullable: false),
                     Sequence = table.Column<long>(type: "INTEGER", nullable: false),
-                    TimestampUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false)
+                    TimestampUtc = table.Column<long>(type: "INTEGER", nullable: false)
                 },
                 constraints: table =>
                 {
@@ -1701,10 +1701,10 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     State = table.Column<string>(type: "TEXT", maxLength: 32, nullable: false),
                     ResultSummary = table.Column<string>(type: "TEXT", maxLength: 49152, nullable: true),
                     CancellationRequested = table.Column<bool>(type: "INTEGER", nullable: false),
-                    CancellationRequestedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true),
-                    CreatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
-                    UpdatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
-                    CompletedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true),
+                    CancellationRequestedAtUtc = table.Column<long>(type: "INTEGER", nullable: true),
+                    CreatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
+                    UpdatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
+                    CompletedAtUtc = table.Column<long>(type: "INTEGER", nullable: true),
                     Version = table.Column<long>(type: "INTEGER", nullable: false)
                 },
                 constraints: table =>
@@ -1750,7 +1750,7 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     RequestRecordId = table.Column<Guid>(type: "TEXT", nullable: false),
                     Action = table.Column<string>(type: "TEXT", maxLength: 32, nullable: false),
                     AcceptedAuditId = table.Column<Guid>(type: "TEXT", nullable: false),
-                    OccurredAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false)
+                    OccurredAtUtc = table.Column<long>(type: "INTEGER", nullable: false)
                 },
                 constraints: table =>
                 {
@@ -1781,8 +1781,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     Outcome = table.Column<short>(type: "INTEGER", nullable: false),
                     ResultReference = table.Column<string>(type: "TEXT", maxLength: 128, nullable: true),
                     AcceptedAuditId = table.Column<Guid>(type: "TEXT", nullable: true),
-                    CreatedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false),
-                    CompletedAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: true),
+                    CreatedAtUtc = table.Column<long>(type: "INTEGER", nullable: false),
+                    CompletedAtUtc = table.Column<long>(type: "INTEGER", nullable: true),
                     Version = table.Column<long>(type: "INTEGER", nullable: false)
                 },
                 constraints: table =>
@@ -1811,7 +1811,7 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     State = table.Column<short>(type: "INTEGER", nullable: false),
                     Action = table.Column<string>(type: "TEXT", maxLength: 64, nullable: false),
                     Reason = table.Column<string>(type: "TEXT", maxLength: 128, nullable: true),
-                    OccurredAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false)
+                    OccurredAtUtc = table.Column<long>(type: "INTEGER", nullable: false)
                 },
                 constraints: table =>
                 {
@@ -1832,7 +1832,7 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     JobRunRecordId = table.Column<Guid>(type: "TEXT", nullable: false),
                     Action = table.Column<string>(type: "TEXT", maxLength: 32, nullable: false),
                     AcceptedAuditId = table.Column<Guid>(type: "TEXT", nullable: false),
-                    OccurredAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false)
+                    OccurredAtUtc = table.Column<long>(type: "INTEGER", nullable: false)
                 },
                 constraints: table =>
                 {
@@ -1859,7 +1859,7 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     TaskRecordId = table.Column<Guid>(type: "TEXT", nullable: false),
                     Action = table.Column<string>(type: "TEXT", maxLength: 32, nullable: false),
                     AcceptedAuditId = table.Column<Guid>(type: "TEXT", nullable: false),
-                    OccurredAtUtc = table.Column<DateTimeOffset>(type: "TEXT", nullable: false)
+                    OccurredAtUtc = table.Column<long>(type: "INTEGER", nullable: false)
                 },
                 constraints: table =>
                 {

@@ -29,6 +29,7 @@
   <ItemGroup>
     <ProjectReference Include="..\NetRatel.Application\NetRatel.Application.csproj" />
     <ProjectReference Include="..\NetRatel.Infrastructure\NetRatel.Infrastructure.csproj" />
+    <ProjectReference Include="..\NetRatel.SqliteMigrations\NetRatel.SqliteMigrations.csproj" />
     <ProjectReference Include="..\NetRatel.ServiceDefaults\NetRatel.ServiceDefaults.csproj" />
     <ProjectReference Include="..\NetRatel.Shared\NetRatel.Shared.csproj" />
     <ProjectReference Include="..\NetRatel.AgentGateway.Contracts\NetRatel.AgentGateway.Contracts.csproj" />

@@ -28,14 +28,14 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<string>("AllowedScopesJson")
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset>("CreatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("CreatedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("CreatedBy")
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset?>("DeletedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("DeletedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("DeletedBy")
                         .HasColumnType("TEXT");
@@ -57,14 +57,14 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                         .HasColumnType("TEXT")
                         .HasDefaultValue("ecdsa-p256");
 
-                    b.Property<DateTimeOffset?>("KeyRegisteredAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("KeyRegisteredAtUtc")
+                        .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset?>("LastSeenUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("LastSeenUtc")
+                        .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset?>("LastTokenIssuedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("LastTokenIssuedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("MtlsThumbprint")
                         .HasColumnType("TEXT");
@@ -78,14 +78,14 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<string>("PublicKeyFingerprint")
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset?>("RevokedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("RevokedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<short>("Status")
                         .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset?>("SupersededAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("SupersededAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<Guid?>("SupersededByAgentId")
                         .HasColumnType("TEXT");
@@ -130,8 +130,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<long>("PolicyRevision")
                         .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset?>("ResumedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("ResumedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("ResumedBy")
                         .HasColumnType("TEXT");
@@ -139,8 +139,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<Guid?>("SuppressedReleaseId")
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset?>("SuspendedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("SuspendedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<Guid?>("SuspensionAttemptId")
                         .HasColumnType("TEXT");
@@ -168,21 +168,21 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<Guid>("AgentId")
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset>("CreatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("CreatedAtUtc")
+                        .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset?>("ExpiresAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("ExpiresAtUtc")
+                        .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset?>("LastUsedUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("LastUsedUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("RefreshTokenHash")
                         .IsRequired()
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset?>("RevokedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("RevokedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.HasKey("Id");
 
@@ -203,8 +203,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<Guid>("AgentId")
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset>("CreatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("CreatedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("Nonce")
                         .IsRequired()
@@ -229,23 +229,23 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<Guid>("AgentId")
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset>("CreatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("CreatedAtUtc")
+                        .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset?>("ExpiresAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("ExpiresAtUtc")
+                        .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset?>("LastUsedUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("LastUsedUtc")
+                        .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset?>("RecoveryUsedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("RecoveryUsedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<Guid?>("ReplacedByTokenId")
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset?>("RevokedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("RevokedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("TokenHash")
                         .IsRequired()
@@ -272,8 +272,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<Guid>("AgentId")
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset>("CreatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("CreatedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("DetailsJson")
                         .HasColumnType("TEXT");
@@ -315,11 +315,11 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<Guid?>("ConfirmationId")
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset?>("ConfirmedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("ConfirmedAtUtc")
+                        .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset>("CreatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("CreatedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("FailureCode")
                         .HasMaxLength(64)
@@ -342,8 +342,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<Guid>("PublicId")
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset?>("ReadmittedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("ReadmittedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<int>("ReleaseId")
                         .HasColumnType("INTEGER");
@@ -364,8 +364,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<int>("TenantId")
                         .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset>("UpdatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("UpdatedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.HasKey("Id");
 
@@ -390,8 +390,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<long>("Revision")
                         .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset>("UpdatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("UpdatedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.HasKey("Id");
 
@@ -414,8 +414,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                         .HasMaxLength(16)
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset?>("DisabledAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("DisabledAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("DisabledBy")
                         .HasColumnType("TEXT");
@@ -430,8 +430,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<Guid>("PublicId")
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset>("PublishedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("PublishedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("PublishedBy")
                         .HasColumnType("TEXT");
@@ -663,11 +663,11 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<long>("DuplicateCount")
                         .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset>("FirstReceivedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("FirstReceivedAtUtc")
+                        .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset>("LastReceivedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("LastReceivedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<decimal>("Sequence")
                         .HasPrecision(20)
@@ -714,11 +714,11 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<bool>("IsAuthoritative")
                         .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset>("RecordedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("RecordedAtUtc")
+                        .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset>("RequestTimestamp")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("RequestTimestamp")
+                        .HasColumnType("INTEGER");
 
                     b.Property<decimal>("Sequence")
                         .HasPrecision(20)
@@ -732,8 +732,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<short>("Status")
                         .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset>("StatusTimestamp")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("StatusTimestamp")
+                        .HasColumnType("INTEGER");
 
                     b.Property<int>("TenantId")
                         .HasColumnType("INTEGER");
@@ -773,8 +773,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                         .HasMaxLength(256)
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset>("CreatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("CreatedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<short>("CurrentStatus")
                         .HasColumnType("INTEGER");
@@ -790,8 +790,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                         .HasPrecision(20)
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset>("LastObservedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("LastObservedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("Mode")
                         .IsRequired()
@@ -801,14 +801,14 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<int>("ObservedDispatchCount")
                         .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset>("RequestTimestamp")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("RequestTimestamp")
+                        .HasColumnType("INTEGER");
 
                     b.Property<int>("TenantId")
                         .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset?>("TerminalAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("TerminalAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.HasKey("Id");
 
@@ -836,14 +836,14 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                         .IsRequired()
                         .HasColumnType("BLOB");
 
-                    b.Property<DateTimeOffset>("CreatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("CreatedAtUtc")
+                        .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset?>("DeletedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("DeletedAtUtc")
+                        .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset>("ExpiresAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("ExpiresAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("FileName")
                         .IsRequired()
@@ -885,11 +885,11 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<Guid>("AgentId")
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset>("CreatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("CreatedAtUtc")
+                        .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset?>("DeletedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("DeletedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<long>("JobId")
                         .HasColumnType("INTEGER");
@@ -908,8 +908,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<int>("TenantId")
                         .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset>("UpdatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("UpdatedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.HasKey("Id");
 
@@ -935,11 +935,11 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<Guid>("AgentId")
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset>("CreatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("CreatedAtUtc")
+                        .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset?>("DeletedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("DeletedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("ExecutionMode")
                         .IsRequired()
@@ -967,8 +967,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<int>("TenantId")
                         .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset>("UpdatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("UpdatedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.HasKey("Id");
 
@@ -1001,8 +1001,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                         .HasMaxLength(256)
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset>("OccurredAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("OccurredAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<short>("Operation")
                         .HasColumnType("INTEGER");
@@ -1042,15 +1042,15 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                         .HasMaxLength(512)
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset>("ExpiresAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("ExpiresAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("FileFixtureRoot")
                         .HasMaxLength(4096)
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset>("GrantedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("GrantedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("GrantedBy")
                         .IsRequired()
@@ -1061,8 +1061,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                         .HasMaxLength(256)
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset?>("RevokedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("RevokedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("RevokedBy")
                         .HasMaxLength(256)
@@ -1092,9 +1092,9 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                         .IsRequired()
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                    b.Property<long>("CreatedAtUtc")
                         .ValueGeneratedOnAdd()
-                        .HasColumnType("TEXT")
+                        .HasColumnType("INTEGER")
                         .HasDefaultValueSql("now()");
 
                     b.Property<string>("CreatedBy")
@@ -1112,8 +1112,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<string>("Notes")
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset?>("RevokedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("RevokedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("RevokedBy")
                         .HasColumnType("TEXT");
@@ -1126,11 +1126,11 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                         .HasColumnType("INTEGER")
                         .HasDefaultValue(0);
 
-                    b.Property<DateTimeOffset>("ValidFromUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("ValidFromUtc")
+                        .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset>("ValidToUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("ValidToUtc")
+                        .HasColumnType("INTEGER");
 
                     b.HasKey("Id");
 
@@ -1157,8 +1157,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                         .IsRequired()
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset>("CreatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("CreatedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("Description")
                         .HasColumnType("TEXT");
@@ -1177,8 +1177,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<int?>("TenantId")
                         .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset>("UpdatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("UpdatedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.HasKey("Id");
 
@@ -1243,11 +1243,11 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                         .IsRequired()
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset?>("CompletedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("CompletedAtUtc")
+                        .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset>("CreatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("CreatedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<int>("CurrentStepOrdinal")
                         .HasColumnType("INTEGER");
@@ -1264,8 +1264,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<string>("OptionsJson")
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset?>("StartedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("StartedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("StartedBy")
                         .IsRequired()
@@ -1305,8 +1305,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<short>("CommandCorrelationStatus")
                         .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset?>("CompletedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("CompletedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<short?>("CorrelatedCommandStatus")
                         .HasColumnType("INTEGER");
@@ -1336,14 +1336,14 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<short>("Kind")
                         .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset>("ObservedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("ObservedAtUtc")
+                        .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset>("RecordedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("RecordedAtUtc")
+                        .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset?>("RunCreatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("RunCreatedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<short?>("RunStatus")
                         .HasColumnType("INTEGER");
@@ -1356,8 +1356,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                         .HasMaxLength(64)
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset?>("StartedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("StartedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("StartedBy")
                         .HasMaxLength(256)
@@ -1435,8 +1435,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<long>("Id")
                         .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset?>("CompletedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("CompletedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("Error")
                         .HasColumnType("TEXT");
@@ -1450,8 +1450,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<int>("Ordinal")
                         .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset?>("StartedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("StartedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<int>("Status")
                         .HasColumnType("INTEGER");
@@ -1482,11 +1482,11 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                         .IsRequired()
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset?>("CompletedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("CompletedAtUtc")
+                        .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset>("CreatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("CreatedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("Error")
                         .HasColumnType("TEXT");
@@ -1562,8 +1562,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<int?>("TenantId")
                         .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset>("TimestampUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("TimestampUtc")
+                        .HasColumnType("INTEGER");
 
                     b.HasKey("Id");
 
@@ -1597,8 +1597,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<string>("RemoteSystemName")
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset>("UpdatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("UpdatedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.HasKey("Id");
 
@@ -1642,8 +1642,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                         .HasMaxLength(512)
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset>("OccurredAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("OccurredAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("Operation")
                         .IsRequired()
@@ -1732,8 +1732,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                         .HasMaxLength(128)
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset>("CreatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("CreatedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("EffectiveConstraintsJson")
                         .IsRequired()
@@ -1750,8 +1750,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<Guid?>("IdempotencyId")
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset>("LastUpdatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("LastUpdatedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<int>("MaximumOutputBytes")
                         .HasColumnType("INTEGER");
@@ -1839,20 +1839,20 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<short>("ConfirmationClass")
                         .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset?>("ConsumedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("ConsumedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<Guid?>("ConsumedIdempotencyId")
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset>("CreatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("CreatedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<short>("Environment")
                         .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset>("ExpiresAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("ExpiresAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("IdempotencyKey")
                         .IsRequired()
@@ -1941,14 +1941,14 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                         .IsRequired()
                         .HasColumnType("BLOB");
 
-                    b.Property<DateTimeOffset>("CreatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("CreatedAtUtc")
+                        .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset?>("DeletedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("DeletedAtUtc")
+                        .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset>("ExpiresAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("ExpiresAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("FileName")
                         .IsRequired()
@@ -2022,11 +2022,11 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                         .HasMaxLength(256)
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset?>("CompletedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("CompletedAtUtc")
+                        .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset>("CreatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("CreatedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<short>("Environment")
                         .HasColumnType("INTEGER");
@@ -2112,8 +2112,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<long>("JobVersion")
                         .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset>("OccurredAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("OccurredAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.HasKey("Id");
 
@@ -2141,11 +2141,11 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                         .HasMaxLength(256)
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset>("CreatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("CreatedAtUtc")
+                        .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset?>("DeletedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("DeletedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<long>("JobId")
                         .HasColumnType("INTEGER");
@@ -2179,8 +2179,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<int>("TenantId")
                         .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset>("UpdatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("UpdatedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<long>("Version")
                         .IsConcurrencyToken()
@@ -2215,8 +2215,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<Guid>("JobRunRecordId")
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset>("OccurredAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("OccurredAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.HasKey("Id");
 
@@ -2242,19 +2242,19 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<bool>("CancellationRequested")
                         .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset?>("CancellationRequestedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("CancellationRequestedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("CorrelationId")
                         .IsRequired()
                         .HasMaxLength(256)
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset>("CreatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("CreatedAtUtc")
+                        .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset?>("DeletedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("DeletedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<Guid?>("IdempotencyId")
                         .HasColumnType("TEXT");
@@ -2277,8 +2277,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<int>("TenantId")
                         .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset>("UpdatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("UpdatedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<long>("Version")
                         .IsConcurrencyToken()
@@ -2321,8 +2321,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<Guid?>("AgentId")
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset>("OccurredAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("OccurredAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<Guid?>("PolicyId")
                         .HasColumnType("TEXT");
@@ -2365,16 +2365,16 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                         .IsRequired()
                         .HasColumnType("jsonb");
 
-                    b.Property<DateTimeOffset>("CreatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("CreatedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("CreatedBy")
                         .IsRequired()
                         .HasMaxLength(256)
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset?>("DisabledAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("DisabledAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("DisabledBy")
                         .HasMaxLength(256)
@@ -2386,8 +2386,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<short>("Environment")
                         .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset?>("ExpiresAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("ExpiresAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<short>("LifecycleState")
                         .ValueGeneratedOnAdd()
@@ -2417,8 +2417,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<int>("Priority")
                         .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset?>("ReviewByUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("ReviewByUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<short?>("TargetClassification")
                         .HasColumnType("INTEGER");
@@ -2458,8 +2458,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                         .HasMaxLength(32)
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset>("OccurredAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("OccurredAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<Guid>("RequestRecordId")
                         .HasColumnType("TEXT");
@@ -2494,16 +2494,16 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                         .HasMaxLength(256)
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset?>("CompletedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("CompletedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("CorrelationId")
                         .IsRequired()
                         .HasMaxLength(256)
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset>("CreatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("CreatedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<Guid>("IdempotencyId")
                         .HasColumnType("TEXT");
@@ -2557,8 +2557,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<int>("TenantId")
                         .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset>("UpdatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("UpdatedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<long>("Version")
                         .IsConcurrencyToken()
@@ -2601,15 +2601,15 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                         .HasMaxLength(64)
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset>("CreatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("CreatedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("DeclaredSideEffectsJson")
                         .IsRequired()
                         .HasColumnType("jsonb");
 
-                    b.Property<DateTimeOffset?>("DeletedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("DeletedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("Description")
                         .IsRequired()
@@ -2665,8 +2665,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<int>("TimeoutSeconds")
                         .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset>("UpdatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("UpdatedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<long>("Version")
                         .IsConcurrencyToken()
@@ -2727,8 +2727,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                         .HasMaxLength(120)
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset>("OccurredAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("OccurredAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("ParametersJson")
                         .IsRequired()
@@ -2783,8 +2783,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<int>("TenantId")
                         .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset>("UpdatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("UpdatedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("UpdatedBy")
                         .IsRequired()
@@ -2816,8 +2816,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                         .HasMaxLength(32)
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset>("OccurredAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("OccurredAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<Guid>("TaskRecordId")
                         .HasColumnType("TEXT");
@@ -2846,8 +2846,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<bool>("CancellationRequested")
                         .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset?>("CancellationRequestedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("CancellationRequestedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("ClientId")
                         .IsRequired()
@@ -2866,16 +2866,16 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<int>("CommandLength")
                         .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset?>("CompletedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("CompletedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("CorrelationId")
                         .IsRequired()
                         .HasMaxLength(256)
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset>("CreatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("CreatedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<Guid>("IdempotencyId")
                         .HasColumnType("TEXT");
@@ -2946,8 +2946,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<int>("TimeoutSeconds")
                         .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset>("UpdatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("UpdatedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<long>("Version")
                         .IsConcurrencyToken()
@@ -2984,11 +2984,11 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<Guid?>("AcceptedAuditId")
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset?>("CompletedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("CompletedAtUtc")
+                        .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset>("CreatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("CreatedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("DelegationRequestId")
                         .IsRequired()
@@ -3042,8 +3042,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                         .HasMaxLength(64)
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset>("OccurredAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("OccurredAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("Reason")
                         .HasMaxLength(128)
@@ -3083,24 +3083,24 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                         .HasMaxLength(128)
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset?>("CloseRequestedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("CloseRequestedAtUtc")
+                        .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset?>("ClosedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("ClosedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<int>("Columns")
                         .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset>("CreatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("CreatedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("EffectiveConstraintsJson")
                         .IsRequired()
                         .HasColumnType("jsonb");
 
-                    b.Property<DateTimeOffset>("ExpiresAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("ExpiresAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("FailureCode")
                         .HasMaxLength(64)
@@ -3112,11 +3112,11 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<Guid?>("IdempotencyId")
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset>("IdleExpiresAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("IdleExpiresAtUtc")
+                        .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset>("LastActivityAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("LastActivityAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("McpInstance")
                         .IsRequired()
@@ -3194,8 +3194,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                         .ValueGeneratedOnAdd()
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset>("CreatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("CreatedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<bool>("IsActive")
                         .HasColumnType("INTEGER");
@@ -3240,17 +3240,17 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<string>("LockOwner")
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset?>("LockedUntilUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("LockedUntilUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("Message")
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset?>("NextAttemptUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("NextAttemptUtc")
+                        .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset>("OccurredUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("OccurredUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("PayloadJson")
                         .IsRequired()
@@ -3297,8 +3297,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<string>("ConsumerName")
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset>("ProcessedUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("ProcessedUtc")
+                        .HasColumnType("INTEGER");
 
                     b.HasKey("EventId", "ConsumerName");
 
@@ -3315,8 +3315,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<string>("UserId")
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset>("ReadUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("ReadUtc")
+                        .HasColumnType("INTEGER");
 
                     b.HasKey("EventId", "UserId");
 
@@ -3338,14 +3338,14 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                         .IsRequired()
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset?>("BoundAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("BoundAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("BoundBy")
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset>("CreatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("CreatedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("CreatedBy")
                         .IsRequired()
@@ -3361,8 +3361,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                         .IsRequired()
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset?>("RevokedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("RevokedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("RevokedBy")
                         .HasColumnType("TEXT");
@@ -3434,8 +3434,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                         .HasPrecision(20)
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset>("OccurredAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("OccurredAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("Outcome")
                         .IsRequired()
@@ -3477,11 +3477,11 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                         .HasColumnType("INTEGER")
                         .HasDefaultValue(1);
 
-                    b.Property<DateTimeOffset>("CreatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("CreatedAtUtc")
+                        .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset?>("ExpiresAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("ExpiresAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("GrantedCapabilitiesJson")
                         .IsRequired()
@@ -3527,15 +3527,15 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<int>("TenantId")
                         .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset?>("TerminalAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("TerminalAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("TerminalReasonCode")
                         .HasMaxLength(128)
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset>("UpdatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("UpdatedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.HasKey("Id");
 
@@ -3615,8 +3615,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                         .ValueGeneratedOnAdd()
                         .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset>("CreatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("CreatedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("ExecutionId")
                         .HasColumnType("TEXT")
@@ -3658,8 +3658,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<int?>("TargetTenantId")
                         .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset>("UpdatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("UpdatedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.HasKey("Id");
 
@@ -3686,11 +3686,11 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                         .IsRequired()
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset>("CreatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("CreatedAtUtc")
+                        .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset?>("DeletedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long?>("DeletedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("Description")
                         .IsRequired()
@@ -3717,8 +3717,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                         .HasColumnType("INTEGER")
                         .HasDefaultValue(1L);
 
-                    b.Property<DateTimeOffset>("UpdatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("UpdatedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.HasKey("Id");
 
@@ -3774,8 +3774,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<string>("ClientIdentity")
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset>("CreatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("CreatedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("Description")
                         .HasColumnType("TEXT");
@@ -3783,8 +3783,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<int?>("TenantId")
                         .HasColumnType("INTEGER");
 
-                    b.Property<DateTimeOffset>("UpdatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("UpdatedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("Value")
                         .IsRequired()
@@ -3823,8 +3823,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.Property<string>("ContactPerson")
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset>("CreatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("CreatedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("Description")
                         .HasColumnType("TEXT");
@@ -3840,8 +3840,8 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                         .IsRequired()
                         .HasColumnType("TEXT");
 
-                    b.Property<DateTimeOffset>("UpdatedAtUtc")
-                        .HasColumnType("TEXT");
+                    b.Property<long>("UpdatedAtUtc")
+                        .HasColumnType("INTEGER");
 
                     b.Property<long>("Version")
                         .IsConcurrencyToken()
