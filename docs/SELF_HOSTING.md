@@ -7,9 +7,12 @@ client artifact store together.
 
 ## Local source evaluation
 
-Install Docker Compose, copy `.env.example` to `.env`, replace the PostgreSQL
-password and OIDC client secret with unique values, and create an ES256 signing
-key outside source control:
+Install Docker Compose and copy `.env.example` to `.env`. A fresh P01 source
+evaluation needs a PostgreSQL password; OIDC values may remain unset while the
+restricted setup-status shell is being evaluated. Existing OIDC deployments
+continue to require their configured OIDC settings and a native-agent signing
+key. Create that ES256 key outside source control when exercising operational
+native-agent connectivity:
 
 ```sh
 openssl ecparam -name prime256v1 -genkey -noout -out .netratel-agent-es256-private.pem
@@ -17,17 +20,23 @@ sudo chown 2000:2000 .netratel-agent-es256-private.pem
 sudo chmod 600 .netratel-agent-es256-private.pem
 ```
 
-Set `NETRATEL_AGENT_AUTH_PRIVATE_KEY` in `.env` to that key file, then run
-`docker compose up --build`. The Web application is available at
-`http://localhost:8080`. This source-build stack uses only PostgreSQL and the
-locally built Web/API images; it does not contact any vendor-operated service
-by default. The source image runs as UID/GID `2000`; deployments using a secret
-manager should mount the key read-only with equivalent ownership and mode.
+Set `NETRATEL_AGENT_AUTH_PRIVATE_KEY` in `.env` to that key file before an
+operational run, then run `docker compose up --build`. With OIDC unset, the
+Web application at `http://localhost:8080` shows only setup status and the API
+does not start business endpoints. The private API volume contains the
+one-time bootstrap proof at `/var/netratel/bootstrap/setup-proof`; retrieve it
+only from a trusted operator console. This source-build stack uses only
+PostgreSQL and the locally built Web/API images; it does not contact any
+vendor-operated service by default. The source image runs as UID/GID `2000`;
+deployments using a secret manager should mount the key read-only with
+equivalent ownership and mode.
 
 The `migrations` service is a one-shot explicit migration runner; API starts
 only after it succeeds. The stack intentionally does not provide an
-administrator password or an anonymous production mode. Configure a real OIDC
-client before using it beyond startup and connectivity checks.
+administrator password or anonymous business mode. The P01 shell does not
+complete first-user setup; later setup phases add native identity and guided
+initialization. Configure a real OIDC client before using the retained OIDC
+operational path.
 
 The Compose Web port is loopback-bound by default. Set
 `NETRATEL_WEB_BIND_ADDRESS` deliberately when a reverse proxy must reach it;
