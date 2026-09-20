@@ -156,7 +156,10 @@ public sealed class OidcComposeBrowserSmokeTests
         Assert.Equal(expectedVersion, (await desktopBadge.InnerTextAsync()).Trim());
 
         await page.SetViewportSizeAsync(390, 844);
-        await page.GetByTestId("mobile-overflow").ClickAsync();
+        var mobileOverflow = page.GetByTestId("mobile-overflow");
+        await mobileOverflow.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        await page.WaitForTimeoutAsync(250);
+        await mobileOverflow.ClickAsync();
         var mobileBadge = page.GetByTestId("mobile-product-version");
         await mobileBadge.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         Assert.Equal(expectedVersion, (await mobileBadge.InnerTextAsync()).Trim());
