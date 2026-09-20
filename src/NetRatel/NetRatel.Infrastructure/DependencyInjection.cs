@@ -13,6 +13,7 @@ using NetRatel.Application.Secrets;
 using NetRatel.Application.Scripts;
 using NetRatel.Application.Tenants;
 using NetRatel.Infrastructure.Events;
+using NetRatel.Infrastructure.Identity;
 using NetRatel.Infrastructure.Artifacts;
 using NetRatel.Infrastructure.Notifications;
 using NetRatel.Infrastructure.Persistence;
@@ -39,6 +40,8 @@ public static class DependencyInjection
                 sp.GetRequiredService<DomainEventsToOutboxInterceptor>(),
                 sp.GetRequiredService<DatabaseCommandMetricsInterceptor>());
         });
+        services.AddDbContext<NetRatelIdentityDbContext>(options => options.UseNpgsql(connStr));
+        services.AddScoped<IApplicationPrincipalResolver, ApplicationPrincipalResolver>();
         services.AddNetRatelCommandPersistence();
         services.AddNetRatelJobShadowPersistence();
         services.AddNetRatelRemoteSupportLifecycle();
@@ -94,6 +97,9 @@ public static class DependencyInjection
         await using var scope = services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
         await db.Database.MigrateAsync(ct);
+
+        var identityDb = scope.ServiceProvider.GetRequiredService<NetRatelIdentityDbContext>();
+        await identityDb.Database.MigrateAsync(ct);
 
         if (!await db.M2MConnectivitySettings.AnyAsync(ct))
         {

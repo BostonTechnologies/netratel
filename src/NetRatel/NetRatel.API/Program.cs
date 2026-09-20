@@ -1,5 +1,8 @@
 ﻿using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.Options;
 using Microsoft.Identity.Abstractions;
 using Microsoft.Identity.Web;
@@ -15,6 +18,7 @@ using System.Security.Cryptography;
 using System.Security.Claims;
 using System.Linq;
 using System.IO;
+using System.Threading.RateLimiting;
 using NetRatel.API.Endpoints;
 using NetRatel.Application;
 using NetRatel.Application.Abstractions;
@@ -36,6 +40,7 @@ using NetRatel.Application.Common;
 using NetRatel.Application.Events;
 using NetRatel.Infrastructure.Services;
 using NetRatel.Infrastructure.Events;
+using NetRatel.Infrastructure.Identity;
 using NetRatel.Infrastructure.Startup;
 using Microsoft.OpenApi;
 using NetRatel.API.Services.Orchestration;
@@ -50,6 +55,7 @@ using NetRatel.Akka.Configuration;
 using Microsoft.AspNetCore.Server.Kestrel.Https;
 using HttpProtocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols;
 using NetRatel.API.Bootstrap;
+using NetRatel.API.Security.Local;
 var builder = WebApplication.CreateBuilder(args);
 
 // Bootstrap reconciliation intentionally happens before any operational registration. A fresh or
@@ -108,10 +114,22 @@ builder.Services
     .AllowAnyOrigin()
     .AllowAnyHeader()
     .AllowAnyMethod()));
+builder.Services.AddRateLimiter(rateLimits => rateLimits.AddPolicy("local-login", context =>
+    RateLimitPartition.GetFixedWindowLimiter(
+        context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 10,
+            Window = TimeSpan.FromMinutes(1),
+            QueueLimit = 0,
+            AutoReplenishment = true
+        })));
 
 #region Authentication & Authorization
 // Normalize inbound claims (avoid legacy remapping)
 JwtSecurityTokenHandler.DefaultInboundClaimTypeMap.Clear();
+var localAuthenticationOptions = LocalAuthenticationOptions.FromConfiguration(builder.Configuration);
+builder.Services.AddSingleton(localAuthenticationOptions);
 var machineTokenConfiguration = builder.Configuration.GetSection("Authentication:MachineToken");
 if (!machineTokenConfiguration.Exists())
 {
@@ -147,6 +165,11 @@ builder.Services
         options.ForwardDefaultSelector = context =>
         {
             var authHeader = context.Request.Headers["Authorization"].FirstOrDefault();
+            if (string.IsNullOrWhiteSpace(authHeader) && localAuthenticationOptions.SupportsLocalAccounts &&
+                context.Request.Cookies.ContainsKey(localAuthenticationOptions.CookieName))
+            {
+                return LocalAuthenticationOptions.Scheme;
+            }
             var configuredAgentIssuer = builder.Configuration["AgentAuth:Issuer"]?.TrimEnd('/');
             var configuredSystemIssuer = builder.Configuration["SystemToken:Issuer"]?.TrimEnd('/');
             if (authHeader?.StartsWith("System ", StringComparison.OrdinalIgnoreCase) == true)
@@ -298,6 +321,45 @@ builder.Services
             NameClaimType = "sub",
             RoleClaimType = "role"
         };
+    })
+    .AddCookie(LocalAuthenticationOptions.Scheme, options =>
+    {
+        options.Cookie.Name = localAuthenticationOptions.CookieName;
+        options.Cookie.HttpOnly = true;
+        options.Cookie.Path = "/";
+        options.Cookie.SameSite = SameSiteMode.Lax;
+        options.Cookie.SecurePolicy = localAuthenticationOptions.AllowInsecureLocalhost && builder.Environment.IsDevelopment()
+            ? CookieSecurePolicy.SameAsRequest
+            : CookieSecurePolicy.Always;
+        options.ExpireTimeSpan = TimeSpan.FromHours(8);
+        options.SlidingExpiration = true;
+        options.Events.OnValidatePrincipal = async context =>
+        {
+            var userId = context.Principal?.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (!localAuthenticationOptions.SupportsLocalAccounts || string.IsNullOrWhiteSpace(userId))
+            {
+                context.RejectPrincipal();
+                return;
+            }
+
+            var users = context.HttpContext.RequestServices.GetRequiredService<UserManager<LocalUser>>();
+            var user = await users.FindByIdAsync(userId).ConfigureAwait(false);
+            if (user is null || !LocalSessionValidator.IsValid(context.Principal!, user))
+            {
+                context.RejectPrincipal();
+                await context.HttpContext.SignOutAsync(LocalAuthenticationOptions.Scheme).ConfigureAwait(false);
+            }
+        };
+        options.Events.OnRedirectToLogin = context =>
+        {
+            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            return Task.CompletedTask;
+        };
+        options.Events.OnRedirectToAccessDenied = context =>
+        {
+            context.Response.StatusCode = StatusCodes.Status403Forbidden;
+            return Task.CompletedTask;
+        };
     });
 
 builder.Services.AddAuthorization(options =>
@@ -403,6 +465,12 @@ builder.Services.AddAuthorization(options =>
         policy.RequireAuthenticatedUser();
         policy.RequireAssertion(_ => machineTokenOptions.Enabled);
         policy.RequireClaim("auth_mode", "machine_token");
+    });
+
+    options.AddPolicy(LocalAuthenticationOptions.LocalUserPolicy, policy =>
+    {
+        policy.AddAuthenticationSchemes(LocalAuthenticationOptions.Scheme);
+        policy.RequireAuthenticatedUser();
     });
 });
 
@@ -561,6 +629,24 @@ builder.Services.AddHostedService<OutboxProcessor>();
 builder.Services.AddHostedService<GlobalSearchQueryWarmupService>();
 builder.Services.AddNetRatelApplication();
 builder.Services.AddNetRatelInfrastructure(builder.Configuration);
+builder.Services.AddIdentityCore<LocalUser>(options =>
+    {
+        options.User.RequireUniqueEmail = true;
+        options.SignIn.RequireConfirmedEmail = false;
+        options.Lockout.AllowedForNewUsers = true;
+        options.Lockout.MaxFailedAccessAttempts = 5;
+        options.Lockout.DefaultLockoutTimeSpan = TimeSpan.FromMinutes(15);
+        options.Password.RequiredLength = 15;
+        options.Password.RequiredUniqueChars = 1;
+        options.Password.RequireDigit = false;
+        options.Password.RequireLowercase = false;
+        options.Password.RequireUppercase = false;
+        options.Password.RequireNonAlphanumeric = false;
+    })
+    .AddRoles<IdentityRole>()
+    .AddEntityFrameworkStores<NetRatelIdentityDbContext>()
+    .AddDefaultTokenProviders();
+builder.Services.AddScoped<Microsoft.AspNetCore.Authentication.IClaimsTransformation, LocalPrincipalClaimsTransformation>();
 builder.Services.AddScoped<IM2MConnectivityService, RuntimeM2MConnectivityService>();
 
 // Increase upload limits (for large client artifacts)
@@ -655,6 +741,7 @@ app.UseExceptionHandler(errorApp =>
 app.UseMiddleware<NetRatel.API.Middleware.ExceptionNotificationMiddleware>();
 app.UseHttpsRedirection();
 app.UseCors();
+app.UseRateLimiter();
 app.UseWebSockets();
 app.UseAuthentication();
 app.UseMiddleware<NetRatel.API.Middleware.McpOperatorDelegationMiddleware>();
