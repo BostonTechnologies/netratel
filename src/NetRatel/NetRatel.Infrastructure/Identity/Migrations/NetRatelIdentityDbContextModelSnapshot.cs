@@ -273,6 +273,92 @@ namespace NetRatel.Infrastructure.Identity.Migrations
                     b.ToTable("PrincipalRoleAssignments", (string)null);
                 });
 
+            modelBuilder.Entity("NetRatel.Infrastructure.Identity.IntegrationCredential", b =>
+                {
+                    b.Property<string>("Id")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset>("ExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("LastUsedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<string>("OwnerPrincipalId")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("PublicId")
+                        .IsRequired()
+                        .HasMaxLength(24)
+                        .HasColumnType("character varying(24)");
+
+                    b.Property<int>("Purpose")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Resource")
+                        .HasMaxLength(2048)
+                        .HasColumnType("character varying(2048)");
+
+                    b.Property<DateTimeOffset?>("RevokedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("RevokedByPrincipalId")
+                        .HasColumnType("text");
+
+                    b.Property<string>("SecretHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("TokenPrefix")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("PublicId")
+                        .IsUnique();
+
+                    b.HasIndex("SecretHash")
+                        .IsUnique();
+
+                    b.HasIndex("OwnerPrincipalId", "CreatedAtUtc");
+
+                    b.HasIndex("Purpose", "ExpiresAtUtc", "RevokedAtUtc");
+
+                    b.ToTable("IntegrationCredentials", (string)null);
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Identity.IntegrationCredentialGrant", b =>
+                {
+                    b.Property<string>("CredentialId")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Permission")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.HasKey("CredentialId", "TenantId", "Permission");
+
+                    b.ToTable("IntegrationCredentialGrants", (string)null);
+                });
+
             modelBuilder.Entity("NetRatel.Infrastructure.Identity.LocalUser", b =>
                 {
                     b.Property<string>("Id")
@@ -443,9 +529,25 @@ namespace NetRatel.Infrastructure.Identity.Migrations
                     b.Navigation("Role");
                 });
 
+            modelBuilder.Entity("NetRatel.Infrastructure.Identity.IntegrationCredentialGrant", b =>
+                {
+                    b.HasOne("NetRatel.Infrastructure.Identity.IntegrationCredential", "Credential")
+                        .WithMany("Grants")
+                        .HasForeignKey("CredentialId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Credential");
+                });
+
             modelBuilder.Entity("NetRatel.Infrastructure.Identity.Authorization.AccessRole", b =>
                 {
                     b.Navigation("Permissions");
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Identity.IntegrationCredential", b =>
+                {
+                    b.Navigation("Grants");
                 });
 #pragma warning restore 612, 618
         }

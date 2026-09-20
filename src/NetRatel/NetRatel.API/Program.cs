@@ -57,6 +57,7 @@ using HttpProtocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols;
 using NetRatel.API.Bootstrap;
 using NetRatel.API.Security.Local;
 using NetRatel.API.Security.Authorization;
+using NetRatel.API.Security.Integration;
 using NetRatel.Infrastructure.Identity.Authorization;
 var builder = WebApplication.CreateBuilder(args);
 
@@ -233,6 +234,10 @@ builder.Services
             if (!string.IsNullOrEmpty(authHeader) && authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
             {
                 var token = authHeader.Substring("Bearer ".Length);
+                if (token.StartsWith(IntegrationCredentialService.ApiTokenPrefix, StringComparison.Ordinal))
+                {
+                    return IntegrationCredentialAuthenticationHandler.SchemeName;
+                }
                 var handler = new JwtSecurityTokenHandler();
                 try
                 {
@@ -283,6 +288,8 @@ builder.Services
             return "Oidc";
         };
     })
+    .AddScheme<AuthenticationSchemeOptions, IntegrationCredentialAuthenticationHandler>(
+        IntegrationCredentialAuthenticationHandler.SchemeName, _ => { })
     .AddJwtBearer("MachineToken", options =>
         MachineTokenAuthentication.Configure(options, machineTokenOptions, builder.Environment.IsDevelopment()))
     .AddJwtBearer("Oidc", options =>
@@ -602,6 +609,15 @@ builder.Services.AddAuthorization(options =>
     {
         policy.AddAuthenticationSchemes(LocalAuthenticationOptions.Scheme);
         policy.RequireAuthenticatedUser();
+    });
+
+    options.AddPolicy("InteractiveAccount", policy =>
+    {
+        policy.RequireAuthenticatedUser();
+        policy.RequireAssertion(context =>
+            context.User.Identities.Any(identity => identity.IsAuthenticated &&
+                (string.Equals(identity.AuthenticationType, "Oidc", StringComparison.Ordinal) ||
+                 string.Equals(identity.AuthenticationType, LocalAuthenticationOptions.Scheme, StringComparison.Ordinal))));
     });
 });
 

@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using NetRatel.Infrastructure.Identity;
 
@@ -10,9 +11,11 @@ using NetRatel.Infrastructure.Identity;
 namespace NetRatel.SqliteMigrations.Migrations.Identity
 {
     [DbContext(typeof(NetRatelIdentityDbContext))]
-    partial class NetRatelIdentityDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260920121211_AddIntegrationCredentials")]
+    partial class AddIntegrationCredentials
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "10.0.12");

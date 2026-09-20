@@ -42,6 +42,12 @@ public class TokenAuthorizationHandler : DelegatingHandler
                 // Internal BFF hop only. The API validates this protected
                 // ticket and its current local-account state on every call.
                 request.Headers.TryAddWithoutValidation("Cookie", $"{_localCookieName}={localCookie}");
+                // Blazor's server-side event path is protected by the Web
+                // host antiforgery middleware. A browser cannot add this
+                // non-simple header to a cross-origin API request without an
+                // approved CORS preflight, so the API can reject direct
+                // cookie-originating credential mutations.
+                request.Headers.TryAddWithoutValidation("X-NetRatel-Account-Request", "1");
                 return await base.SendAsync(request, ct);
             }
 

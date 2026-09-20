@@ -30,6 +30,8 @@ public sealed class LocalIdentityPostgresMigrationTests : IAsyncLifetime
             .Should().Contain(migration => migration.EndsWith("AddLocalIdentity", StringComparison.Ordinal));
         (await db.Database.GetAppliedMigrationsAsync())
             .Should().Contain(migration => migration.EndsWith("AddScopedAuthorization", StringComparison.Ordinal));
+        (await db.Database.GetAppliedMigrationsAsync())
+            .Should().Contain(migration => migration.EndsWith("AddIntegrationCredentials", StringComparison.Ordinal));
         var localUser = new LocalUser
         {
             Id = "local-admin",
@@ -49,5 +51,13 @@ public sealed class LocalIdentityPostgresMigrationTests : IAsyncLifetime
         var access = new EffectiveAccessService(db, new ConfigurationBuilder().AddInMemoryCollection().Build());
         await access.ReconcileBuiltInRolesAsync();
         (await db.AccessRoles.CountAsync(role => role.IsBuiltIn)).Should().BeGreaterThan(0);
+
+        var credentials = new IntegrationCredentialService(db);
+        var created = await credentials.CreateAsync(localUser.PrincipalId, new(
+            "Postgres verification",
+            IntegrationCredentialPurpose.Api,
+            DateTimeOffset.UtcNow.AddDays(7),
+            [new(1, NetRatelPermissions.TelemetryRead)]));
+        (await credentials.VerifyAsync(created.Secret, IntegrationCredentialPurpose.Api)).Should().NotBeNull();
     }
 }

@@ -41,6 +41,7 @@ public static class DependencyInjection
         services.AddDbContext<NetRatelIdentityDbContext>(options => ConfigureProvider(options, database));
         services.AddScoped<IApplicationPrincipalResolver, ApplicationPrincipalResolver>();
         services.AddScoped<IEffectiveAccessService, EffectiveAccessService>();
+        services.AddScoped<IIntegrationCredentialService, IntegrationCredentialService>();
         services.AddNetRatelCommandPersistence();
         services.AddNetRatelJobShadowPersistence();
         services.AddNetRatelRemoteSupportLifecycle();

@@ -24,6 +24,8 @@ public interface IEffectiveAccessService
 
 public sealed class EffectiveAccessService(NetRatelIdentityDbContext db, IConfiguration configuration) : IEffectiveAccessService
 {
+    private const string IntegrationCredentialIdClaimType = "netratel_integration_credential_id";
+
     public async Task<bool> AuthorizeAsync(ClaimsPrincipal principal, string permission, int? tenantId, CancellationToken cancellationToken = default)
     {
         if (!NetRatelPermissions.All.Contains(permission))
@@ -46,6 +48,18 @@ public sealed class EffectiveAccessService(NetRatelIdentityDbContext db, IConfig
         if (string.IsNullOrWhiteSpace(principalId))
         {
             return new(null, false, false, new HashSet<string>(StringComparer.Ordinal));
+        }
+
+        var credentialId = principal.FindFirst(IntegrationCredentialIdClaimType)?.Value;
+        var credential = string.IsNullOrWhiteSpace(credentialId) ? null : await db.IntegrationCredentials
+            .Include(candidate => candidate.Grants)
+            .SingleOrDefaultAsync(candidate => candidate.Id == credentialId && candidate.Purpose == IntegrationCredentialPurpose.Api &&
+                candidate.RevokedAtUtc == null, cancellationToken)
+            .ConfigureAwait(false);
+        if (!string.IsNullOrWhiteSpace(credentialId) &&
+            (credential is null || credential.ExpiresAtUtc <= DateTimeOffset.UtcNow || credential.OwnerPrincipalId != principalId))
+        {
+            return new(principalId, false, false, new HashSet<string>(StringComparer.Ordinal));
         }
 
         var localInstanceAdministrator = await db.Users
@@ -72,6 +86,24 @@ public sealed class EffectiveAccessService(NetRatelIdentityDbContext db, IConfig
             .ToHashSet(StringComparer.Ordinal);
         var assignedInstanceAdministrator = assignments.Any(assignment =>
             assignment.TenantId is null && assignment.IsInstanceAdministratorRole);
+
+        if (credential is not null)
+        {
+            if (localInstanceAdministrator || assignedInstanceAdministrator)
+            {
+                permissions = NetRatelPermissions.All.ToHashSet(StringComparer.Ordinal);
+            }
+
+            var granted = credential.Grants
+                .Where(grant => grant.TenantId == tenantId)
+                .Select(grant => grant.Permission)
+                .ToHashSet(StringComparer.Ordinal);
+            permissions.IntersectWith(granted);
+
+            // A bearer credential is always attenuated. It cannot turn the
+            // owner's instance-administrator status into wildcard authority.
+            return new(principalId, false, false, permissions);
+        }
 
         return new(principalId, false, localInstanceAdministrator || assignedInstanceAdministrator, permissions);
     }
