@@ -17,6 +17,8 @@ public sealed class NetRatelIdentityDbContext(DbContextOptions<NetRatelIdentityD
     public DbSet<AccessRole> AccessRoles => Set<AccessRole>();
     public DbSet<AccessRolePermission> AccessRolePermissions => Set<AccessRolePermission>();
     public DbSet<PrincipalRoleAssignment> PrincipalRoleAssignments => Set<PrincipalRoleAssignment>();
+    public DbSet<IntegrationCredential> IntegrationCredentials => Set<IntegrationCredential>();
+    public DbSet<IntegrationCredentialGrant> IntegrationCredentialGrants => Set<IntegrationCredentialGrant>();
 
     protected override void OnModelCreating(ModelBuilder builder)
     {
@@ -83,6 +85,35 @@ public sealed class NetRatelIdentityDbContext(DbContextOptions<NetRatelIdentityD
                 .WithMany()
                 .HasForeignKey(assignment => assignment.RoleId)
                 .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        builder.Entity<IntegrationCredential>(entity =>
+        {
+            entity.ToTable("IntegrationCredentials");
+            entity.HasKey(credential => credential.Id);
+            entity.Property(credential => credential.Id).HasMaxLength(32);
+            entity.Property(credential => credential.PublicId).HasMaxLength(24).IsRequired();
+            entity.Property(credential => credential.TokenPrefix).HasMaxLength(32).IsRequired();
+            entity.Property(credential => credential.SecretHash).HasMaxLength(64).IsRequired();
+            entity.Property(credential => credential.OwnerPrincipalId).HasMaxLength(32).IsRequired();
+            entity.Property(credential => credential.Resource).HasMaxLength(2048);
+            entity.Property(credential => credential.Name).HasMaxLength(128).IsRequired();
+            entity.HasIndex(credential => credential.PublicId).IsUnique();
+            entity.HasIndex(credential => credential.SecretHash).IsUnique();
+            entity.HasIndex(credential => new { credential.OwnerPrincipalId, credential.CreatedAtUtc });
+            entity.HasIndex(credential => new { credential.Purpose, credential.ExpiresAtUtc, credential.RevokedAtUtc });
+        });
+
+        builder.Entity<IntegrationCredentialGrant>(entity =>
+        {
+            entity.ToTable("IntegrationCredentialGrants");
+            entity.HasKey(grant => new { grant.CredentialId, grant.TenantId, grant.Permission });
+            entity.Property(grant => grant.CredentialId).HasMaxLength(32);
+            entity.Property(grant => grant.Permission).HasMaxLength(128).IsRequired();
+            entity.HasOne(grant => grant.Credential)
+                .WithMany(credential => credential.Grants)
+                .HasForeignKey(grant => grant.CredentialId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
     }
 }

@@ -60,6 +60,57 @@ public sealed class EffectiveAccessServiceTests
         (await db.AccessRoles.SingleAsync(role => role.Name == "CustomRead")).IsBuiltIn.Should().BeFalse();
     }
 
+    [Fact]
+    public async Task Integration_credential_is_attenuated_even_when_its_owner_is_an_instance_administrator()
+    {
+        await using var db = CreateDb();
+        db.Users.Add(new LocalUser { Id = "owner", UserName = "owner", PrincipalId = "principal-a", IsEnabled = true, IsInstanceAdministrator = true });
+        db.IntegrationCredentials.Add(new IntegrationCredential
+        {
+            Id = "credential-a",
+            PublicId = "credential-a",
+            TokenPrefix = "nrt_ic_test",
+            SecretHash = "hash",
+            OwnerPrincipalId = "principal-a",
+            Purpose = IntegrationCredentialPurpose.Api,
+            Name = "restricted",
+            ExpiresAtUtc = DateTimeOffset.UtcNow.AddDays(1),
+            Grants = [new IntegrationCredentialGrant { CredentialId = "credential-a", TenantId = 7, Permission = NetRatelPermissions.TelemetryRead }]
+        });
+        await db.SaveChangesAsync();
+        var access = new EffectiveAccessService(db, Configuration());
+        var credentialPrincipal = new ClaimsPrincipal(new ClaimsIdentity(
+            [new Claim("netratel_principal_id", "principal-a"), new Claim("netratel_integration_credential_id", "credential-a")], "IntegrationCredential"));
+
+        (await access.AuthorizeAsync(credentialPrincipal, NetRatelPermissions.TelemetryRead, 7)).Should().BeTrue();
+        (await access.AuthorizeAsync(credentialPrincipal, NetRatelPermissions.ScriptEdit, 7)).Should().BeFalse();
+        (await access.AuthorizeAsync(credentialPrincipal, NetRatelPermissions.TelemetryRead, 8)).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Credentials_issued_before_and_after_role_reduction_lose_removed_authority_immediately()
+    {
+        await using var db = CreateDb();
+        var observer = Role("Observer", NetRatelPermissions.TelemetryRead);
+        db.Users.Add(new LocalUser { Id = "owner", UserName = "owner", PrincipalId = "principal-a", IsEnabled = true });
+        db.AccessRoles.Add(observer);
+        db.PrincipalRoleAssignments.Add(new PrincipalRoleAssignment { PrincipalId = "principal-a", RoleId = observer.Id, TenantId = 7 });
+        db.IntegrationCredentials.AddRange(
+            Credential("credential-before"),
+            Credential("credential-after"));
+        await db.SaveChangesAsync();
+
+        var access = new EffectiveAccessService(db, Configuration());
+        (await access.AuthorizeAsync(CredentialPrincipal("credential-before"), NetRatelPermissions.TelemetryRead, 7)).Should().BeTrue();
+        (await access.AuthorizeAsync(CredentialPrincipal("credential-after"), NetRatelPermissions.TelemetryRead, 7)).Should().BeTrue();
+
+        db.PrincipalRoleAssignments.Remove(db.PrincipalRoleAssignments.Single());
+        await db.SaveChangesAsync();
+
+        (await access.AuthorizeAsync(CredentialPrincipal("credential-before"), NetRatelPermissions.TelemetryRead, 7)).Should().BeFalse();
+        (await access.AuthorizeAsync(CredentialPrincipal("credential-after"), NetRatelPermissions.TelemetryRead, 7)).Should().BeFalse();
+    }
+
     private static NetRatelIdentityDbContext CreateDb() => new(new DbContextOptionsBuilder<NetRatelIdentityDbContext>()
         .UseInMemoryDatabase(Guid.NewGuid().ToString("N"))
         .Options);
@@ -68,6 +119,22 @@ public sealed class EffectiveAccessServiceTests
 
     private static ClaimsPrincipal Principal(string principalId) => new(new ClaimsIdentity(
         [new Claim("netratel_principal_id", principalId)], "local"));
+
+    private static ClaimsPrincipal CredentialPrincipal(string credentialId) => new(new ClaimsIdentity(
+        [new Claim("netratel_principal_id", "principal-a"), new Claim("netratel_integration_credential_id", credentialId)], "IntegrationCredential"));
+
+    private static IntegrationCredential Credential(string id) => new()
+    {
+        Id = id,
+        PublicId = id,
+        TokenPrefix = "nrt_ic_test",
+        SecretHash = $"hash-{id}",
+        OwnerPrincipalId = "principal-a",
+        Purpose = IntegrationCredentialPurpose.Api,
+        Name = id,
+        ExpiresAtUtc = DateTimeOffset.UtcNow.AddDays(1),
+        Grants = [new IntegrationCredentialGrant { CredentialId = id, TenantId = 7, Permission = NetRatelPermissions.TelemetryRead }]
+    };
 
     private static AccessRole Role(string name, params string[] permissions)
     {

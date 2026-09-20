@@ -42,6 +42,7 @@
     <AuthorizeView Context="accountAuthState">
         <Authorized Context="accountAuthState">
             <MudNavLink Href="/auth" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Person">@userName</MudNavLink>
+            <MudNavLink Href="/account/integration-credentials" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Key">Integration credentials</MudNavLink>
             <AuthorizeView Roles="Operator" Context="adminAuthState">
                 <Authorized Context="adminAuthState">
                     <MudNavGroup Title="Admin" Expanded="false" Icon="@Icons.Material.Filled.Settings">

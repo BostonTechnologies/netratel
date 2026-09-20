@@ -19,6 +19,39 @@ archives are historical artifacts; build from reviewed
 source for evaluation and verify the archive checksum and client manifest once
 a future owner-approved release exists.
 
+## Integration credentials
+
+An authenticated operator can create a least-privilege credential at
+`/account/integration-credentials`. Select one tenant and one permission for
+each grant, a bounded expiry, and an explicit purpose. The generated secret
+has the `nrt_ic_` prefix, is displayed once, and must be stored in an
+owner-only secret mechanism; NetRatel retains only a one-way verifier.
+
+`API / CLI / stdio MCP` credentials are accepted by the business API boundary.
+`HTTP MCP` credentials are deliberately not accepted there: P08 pairs them to
+the canonical HTTP MCP gateway and delegation resource. Neither purpose is an
+agent enrollment code, native Client token, browser session, or a substitute
+for an external OIDC credential.
+
+For a current API-purpose credential, use a secret-injection mechanism rather
+than a command-line argument:
+
+```sh
+export NETRATEL_INTEGRATION_TOKEN="read-from-your-secret-store"
+curl --fail-with-body \
+  -H "Authorization: Bearer ${NETRATEL_INTEGRATION_TOKEN}" \
+  https://netratel.example.invalid/api/v2/agents/42/00000000-0000-0000-0000-000000000000/telemetry
+unset NETRATEL_INTEGRATION_TOKEN
+```
+
+The credential cannot exceed the owner’s current tenant permission, is
+rechecked against current membership/role state at use, and stops working on
+expiry, revocation, or local-account disablement. Revoke it from the same
+account page; rotation is create a replacement, update its consumer, then
+revoke the old credential. CLI and stdio configuration support for this mode
+is delivered in P07, so do not place a local credential into the existing OIDC
+fields.
+
 ## CLI configuration
 
 The Linux x64 CLI review archive and the local `NetRatel.Cli` .NET tool package
