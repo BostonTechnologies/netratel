@@ -1,11 +1,14 @@
 @page "/login"
 @attribute [Microsoft.AspNetCore.Authorization.AllowAnonymous]
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
 
 @using Microsoft.AspNetCore.Components.Authorization
 @inject IConfiguration Config
 @inject IHostEnvironment HostEnvironment
 @inject NavigationManager Nav
 @inject AuthenticationStateProvider? AuthStateProvider
+@inject IHttpClientFactory HttpClientFactory
+@inject ILogger<Login> Logger
 
 <PageTitle>Login</PageTitle>
 
@@ -23,19 +26,43 @@
         </MudStack>
 
         <MudStack Spacing="3">
-            <MudText Typo="Typo.body1" Align="Align.Center" Class="netratel-login-copy">
-                Continue to NetRatel by signing in with your organization account.
-            </MudText>
+            @if (SupportsLocalAccounts)
+            {
+                <MudText Typo="Typo.body1" Align="Align.Center" Class="netratel-login-copy">
+                    Sign in with your local NetRatel account.
+                </MudText>
+                @if (_requiresTwoFactor)
+                {
+                    <label for="local-login-two-factor">Authenticator or recovery code</label>
+                    <input id="local-login-two-factor" class="mud-input-slot mud-input-root mud-input-root-text mud-input-root-margin-dense" type="password" autocomplete="one-time-code" required data-testid="local-login-two-factor" />
+                    <button type="button" class="mud-button-root mud-button mud-button-filled mud-button-filled-primary mud-button-filled-size-large mud-ripple" data-netratel-login-action="two-factor" data-testid="local-login-two-factor-submit">Verify and sign in</button>
+                }
+                else
+                {
+                    <label for="local-login-email">Email</label>
+                    <input id="local-login-email" class="mud-input-slot mud-input-root mud-input-root-text mud-input-root-margin-dense" type="email" autocomplete="email" required data-testid="local-login-email" />
+                    <label for="local-login-password">Password</label>
+                    <input id="local-login-password" class="mud-input-slot mud-input-root mud-input-root-text mud-input-root-margin-dense" type="password" autocomplete="current-password" required data-testid="local-login-password" />
+                    <label><input type="checkbox" data-testid="local-login-remember-me" /> Keep me signed in</label>
+                    <button type="button" class="mud-button-root mud-button mud-button-filled mud-button-filled-primary mud-button-filled-size-large mud-ripple" data-netratel-login-action="password" data-testid="local-login-submit">Sign in</button>
+                }
+                <div id="local-login-client-error" role="alert" hidden="hidden"></div>
+            }
 
-            <MudButton Variant="Variant.Filled"
-                       Size="Size.Large"
-                       Color="Color.Primary"
-                       FullWidth="true"
-                       Class="netratel-login-primary-action"
-                       StartIcon="@Icons.Material.Filled.Cloud"
-                       Href="@OidcLoginHref">
-                Sign in
-            </MudButton>
+            @if (UsesOidc)
+            {
+                @if (SupportsLocalAccounts) { <MudDivider Class="my-1" /> }
+                <MudText Typo="Typo.body2" Align="Align.Center" Class="netratel-login-copy">Sign in with your organization account.</MudText>
+                <MudButton Variant="Variant.Outlined"
+                           Size="Size.Large"
+                           Color="Color.Primary"
+                           FullWidth="true"
+                           Class="netratel-login-primary-action"
+                           StartIcon="@Icons.Material.Filled.Cloud"
+                           Href="@OidcLoginHref">
+                    Sign in with your identity provider
+                </MudButton>
+            }
 
             @if (ShowDevelopmentLogin)
             {
@@ -54,12 +81,18 @@
                 </MudButton>
             }
         </MudStack>
+        @if (_interactiveReady)
+        {
+            <span data-testid="local-login-client-ready" hidden="hidden"></span>
+        }
     </MudPaper>
 </section>
 
 @code {
     [SupplyParameterFromQuery(Name = "ReturnUrl")]
     public string? ReturnUrl { get; set; }
+    [SupplyParameterFromQuery(Name = "localMfa")]
+    public bool LocalMfa { get; set; }
 
     private bool ShowDevelopmentLogin =>
         HostEnvironment.IsDevelopment() &&
@@ -70,12 +103,45 @@
             ? label
             : "Development system";
 
+    private string AuthenticationMode => Config["Authentication:Mode"]?.Trim() ?? "Auto";
+    private bool HasOidc => !string.IsNullOrWhiteSpace(Config["Authentication:Oidc:Authority"]) ||
+        !string.IsNullOrWhiteSpace(Config["Authentication:Azure:Authority"]) ||
+        !string.IsNullOrWhiteSpace(Config["AzureAd:TenantId"]);
+    private bool SupportsLocalAccounts => string.Equals(AuthenticationMode, "Local", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(AuthenticationMode, "Hybrid", StringComparison.OrdinalIgnoreCase) ||
+        ((string.Equals(AuthenticationMode, "Auto", StringComparison.OrdinalIgnoreCase) || string.IsNullOrWhiteSpace(Config["Authentication:Mode"])) &&
+         !HasOidc);
+    private bool UsesOidc => string.Equals(AuthenticationMode, "Oidc", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(AuthenticationMode, "Hybrid", StringComparison.OrdinalIgnoreCase) ||
+        (string.Equals(AuthenticationMode, "Auto", StringComparison.OrdinalIgnoreCase) || string.IsNullOrWhiteSpace(Config["Authentication:Mode"])) &&
+        HasOidc;
+    private bool _requiresTwoFactor;
+    private bool _interactiveReady;
+
     private string OidcLoginHref => BuildAuthHref("/auth/oidc");
 
     private string DevelopmentLoginHref => BuildAuthHref("/auth/development");
 
     protected override async Task OnInitializedAsync()
     {
+        _requiresTwoFactor = LocalMfa;
+        try
+        {
+            var setup = await HttpClientFactory.CreateClient("SystemApiNoAuth")
+                .GetFromJsonAsync<SetupStatus>("/api/v2/setup/status");
+            if (setup?.SetupRequired == true || setup?.IsRecoveryRequired == true)
+            {
+                Nav.NavigateTo("/setup", forceLoad: true);
+                return;
+            }
+        }
+        catch (HttpRequestException exception)
+        {
+            // The normal login surface remains available to report an unavailable API rather than
+            // treating a transient Web-to-API error as permission to reopen setup.
+            Logger.LogWarning(exception, "Could not read bootstrap status while loading the login page.");
+        }
+
         if (AuthStateProvider is null)
         {
             return;
@@ -88,6 +154,15 @@
         }
     }
 
+    protected override void OnAfterRender(bool firstRender)
+    {
+        if (firstRender)
+        {
+            _interactiveReady = true;
+            StateHasChanged();
+        }
+    }
+
     private string BuildAuthHref(string path)
     {
         if (string.IsNullOrWhiteSpace(ReturnUrl))
@@ -97,4 +172,6 @@
 
         return $"{path}?returnUrl={Uri.EscapeDataString(ReturnUrl)}";
     }
+
+    private sealed record SetupStatus(bool SetupRequired, bool IsRecoveryRequired);
 }

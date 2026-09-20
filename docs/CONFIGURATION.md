@@ -50,9 +50,12 @@ requests. Leave it explicit for every public browser origin. Direct operator
 and CLI-style requests have no `Origin` header; forwarded headers are not
 trusted unless the host has configured ASP.NET Core trusted proxies.
 
-The setup shell is status-only until later local-identity/setup phases. It
-cannot create an owner, alter database configuration, or expose business APIs.
-An existing PostgreSQL/OIDC deployment is adopted only from durable NetRatel
+Before ready, the API exposes only deliberate bootstrap status and setup
+operations; it cannot expose business APIs or let the browser alter
+deployment-owned provider configuration. The guided setup transaction creates
+the initial local administrator and tenant only after a claimed proof and
+selected-store validation. See [first-run setup](FIRST_RUN_SETUP.md). An
+existing PostgreSQL/OIDC deployment is adopted only from durable NetRatel
 continuity evidence; an unavailable configured store or missing bootstrap key
 material intentionally enters recovery rather than fresh setup.
 
@@ -62,11 +65,12 @@ material intentionally enters recovery rather than fresh setup.
 (the default when unset), a deployment with a configured OIDC authority remains
 OIDC-only, while an installation without OIDC selects local accounts. Set
 `Hybrid` explicitly to offer both mechanisms. `Authentication:Local` controls
-only the local browser-cookie name and an explicitly development-only
-`AllowInsecureLocalhost` escape hatch; production local cookies remain secure,
-HTTP-only, and same-site lax. The P02 API endpoints provide account lifecycle
-and MFA primitives; the user-facing local sign-in and setup flow arrives in
-P05.
+only the local browser-cookie name and the explicit
+`AllowInsecureLocalhost` loopback-only source-evaluation switch. It is not a
+general HTTP production mode: public local cookies remain secure, HTTP-only,
+and same-site lax. Native local sign-in presents password first and MFA only
+for an enrolled account; it never enables self-registration or a default
+administrator.
 
 Configure `Authentication:Oidc` with your OIDC authority, client identifier,
 API scope, and callback paths. The user-facing application requires an

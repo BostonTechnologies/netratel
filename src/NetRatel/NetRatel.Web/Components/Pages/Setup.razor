@@ -1,0 +1,113 @@
+@page "/setup"
+@attribute [Microsoft.AspNetCore.Authorization.AllowAnonymous]
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+
+@using System.Net.Http.Json
+@inject IHttpClientFactory HttpClientFactory
+
+<PageTitle>Set up NetRatel</PageTitle>
+
+<section class="netratel-login-page" data-testid="setup-wizard">
+    <MudPaper Elevation="2" Class="netratel-login-panel">
+        <MudStack Spacing="3">
+            <header>
+                <MudText Typo="Typo.overline">Self-hosted setup</MudText>
+                <MudText Typo="Typo.h4" HtmlTag="h1">Set up NetRatel</MudText>
+                <MudText Typo="Typo.body2">Confirm control of this deployment, then create the first local administrator and tenant.</MudText>
+            </header>
+
+            @if (_loading)
+            {
+                <MudProgressCircular Indeterminate="true" Color="Color.Primary" />
+            }
+            else if (_recovery)
+            {
+                <MudAlert Severity="Severity.Error">This installation needs recovery. Restore the matching database, bootstrap state, and key material before restarting it. Setup will not create a replacement owner.</MudAlert>
+            }
+            else if (_ready)
+            {
+                <MudAlert Severity="Severity.Success">This installation is ready. You can sign in with the administrator account.</MudAlert>
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" Href="/login">Go to sign in</MudButton>
+            }
+            else if (!_claimed)
+            {
+                <MudAlert Severity="Severity.Info">The setup code is deployment-controlled. Retrieve it from the API host; it is never shown in logs or stored by this browser.</MudAlert>
+                <label for="setup-proof">Setup code</label>
+                <input id="setup-proof" class="mud-input-slot mud-input-root mud-input-root-text mud-input-root-adorned-end mud-input-root-margin-dense" type="password" autocomplete="one-time-code" required data-testid="setup-proof" />
+                <button type="button" class="mud-button-root mud-button mud-button-filled mud-button-filled-primary mud-button-filled-size-medium mud-ripple" data-netratel-setup-action="claim" data-testid="setup-claim">Unlock setup</button>
+            }
+            else
+            {
+                <MudAlert Severity="Severity.Info">Storage is selected by this deployment: <strong>@(_provider ?? "the configured provider")</strong>. The wizard validates it but does not change environment variables or start database services.</MudAlert>
+                <label for="setup-tenant">Initial tenant</label>
+                <input id="setup-tenant" class="mud-input-slot mud-input-root mud-input-root-text mud-input-root-margin-dense" type="text" autocomplete="organization" required data-testid="setup-tenant" />
+                <label for="setup-display-name">Administrator name</label>
+                <input id="setup-display-name" class="mud-input-slot mud-input-root mud-input-root-text mud-input-root-margin-dense" type="text" autocomplete="name" required data-testid="setup-display-name" />
+                <label for="setup-email">Administrator email</label>
+                <input id="setup-email" class="mud-input-slot mud-input-root mud-input-root-text mud-input-root-margin-dense" type="email" autocomplete="email" required data-testid="setup-email" />
+                <label for="setup-password">Administrator passphrase</label>
+                <input id="setup-password" class="mud-input-slot mud-input-root mud-input-root-text mud-input-root-margin-dense" type="password" autocomplete="new-password" required aria-describedby="setup-password-help" data-testid="setup-password" />
+                <small id="setup-password-help">Use at least 15 characters.</small>
+                <label for="setup-confirm-password">Confirm passphrase</label>
+                <input id="setup-confirm-password" class="mud-input-slot mud-input-root mud-input-root-text mud-input-root-margin-dense" type="password" autocomplete="new-password" required data-testid="setup-confirm-password" />
+                <button type="button" class="mud-button-root mud-button mud-button-filled mud-button-filled-primary mud-button-filled-size-medium mud-ripple" data-netratel-setup-action="initialize" data-testid="setup-initialize">Initialize NetRatel</button>
+            }
+
+            @if (!string.IsNullOrWhiteSpace(_error))
+            {
+                <div role="alert"><MudAlert Severity="Severity.Error">@_error</MudAlert></div>
+            }
+            <div id="setup-client-error" role="alert" hidden="hidden"></div>
+            @if (_interactiveReady)
+            {
+                <span data-testid="setup-client-ready" hidden="hidden"></span>
+            }
+        </MudStack>
+    </MudPaper>
+</section>
+
+@code {
+    private bool _loading = true;
+    private bool _claimed;
+    private bool _ready;
+    private bool _recovery;
+    private string? _provider;
+    private string? _error;
+    private bool _interactiveReady;
+    protected override async Task OnInitializedAsync() => await RefreshAsync();
+
+    protected override void OnAfterRender(bool firstRender)
+    {
+        if (firstRender)
+        {
+            _interactiveReady = true;
+            StateHasChanged();
+        }
+    }
+
+    private async Task RefreshAsync()
+    {
+        _loading = true;
+        try
+        {
+            var status = await HttpClientFactory.CreateClient("SystemApiNoAuth")
+                .GetFromJsonAsync<SetupStatus>("/api/v2/setup/status");
+            _ready = status?.IsReady == true;
+            _recovery = status?.IsRecoveryRequired == true;
+            _claimed = status?.State == 1;
+            _provider = status?.SelectedProvider;
+        }
+        catch (HttpRequestException)
+        {
+            _error = "NetRatel could not reach its API. Check the API service and selected storage, then retry.";
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    // BootstrapState is intentionally serialized as its stable numeric API value; the Web must
+    // not infer setup eligibility from an empty account table or a presentation-only flag.
+    private sealed record SetupStatus(int State, bool SetupRequired, bool IsReady, bool IsRecoveryRequired, string? SelectedProvider);
+}

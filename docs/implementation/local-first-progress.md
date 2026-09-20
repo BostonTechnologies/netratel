@@ -30,8 +30,8 @@ asset replacement, package-visibility mutation, and repository-rule bypass.
 | P01 | [#31](https://github.com/BostonTechnologies/netratel/issues/31) | [#44](https://github.com/BostonTechnologies/netratel/pull/44) | `fcd202d` | Merged after hosted exact-head validation passed, including source and release-image generic OIDC Compose smoke coverage: [run 35494345483](https://github.com/BostonTechnologies/netratel/actions/runs/35494345483). |
 | P02 | [#32](https://github.com/BostonTechnologies/netratel/issues/32) | [#45](https://github.com/BostonTechnologies/netratel/pull/45) | `bd567c0` | Merged after exact-head Public PR validation passed, including full .NET tests, native packages, public images, HTTP MCP smoke, and source/release-image generic OIDC Compose coverage: [run 35495761003](https://github.com/BostonTechnologies/netratel/actions/runs/35495761003). |
 | P03 | [#33](https://github.com/BostonTechnologies/netratel/issues/33) | [#46](https://github.com/BostonTechnologies/netratel/pull/46) | `1969e9a` | Merged after hosted Public PR validation passed all applicable gates. |
-| P04 | [#34](https://github.com/BostonTechnologies/netratel/issues/34) | pending | pending | In progress on `feat/issue-34-sqlite-provider`; P03 prerequisite merged. |
-| P05 | [#35](https://github.com/BostonTechnologies/netratel/issues/35) | pending | pending | Blocked by P04 merge. |
+| P04 | [#34](https://github.com/BostonTechnologies/netratel/issues/34) | [#47](https://github.com/BostonTechnologies/netratel/pull/47) | `e022569` | Merged after exact-head Public PR validation passed, including configured OIDC source/release image Compose smoke. |
+| P05 | [#35](https://github.com/BostonTechnologies/netratel/issues/35) | pending | pending | In progress on `feat/issue-35-guided-setup`; P04 prerequisite merged. |
 | P06 | [#36](https://github.com/BostonTechnologies/netratel/issues/36) | pending | pending | Blocked by P03/P04/P05 merges. |
 | P07 | [#37](https://github.com/BostonTechnologies/netratel/issues/37) | pending | pending | Blocked by P06 merge. |
 | P08 | [#38](https://github.com/BostonTechnologies/netratel/issues/38) | pending | pending | Blocked by P06/P07 merges. |
@@ -165,6 +165,27 @@ asset replacement, package-visibility mutation, and repository-rule bypass.
   polling fallback. The dedicated `compose.sqlite.yaml` profile has no
   PostgreSQL service dependency and documents its single-node limitation.
 
+## P05 guided setup and local login
+
+- The Web root, sign-in route and protected navigation consult the durable
+  bootstrap status. A fresh or recovery-needed instance reaches the guided
+  setup path; a ready instance exposes status only and never reopens anonymous
+  initialization.
+- The wizard uses only the deployment-selected provider. It accepts a
+  deployment-controlled one-time proof, uses an HTTP-only short-lived setup
+  session, and submits the initial tenant/local-administrator transaction to
+  the restricted API host. The API performs the durable transition then stops
+  for supervisor-managed restart into the operational graph.
+- Setup and local login use labelled, mobile-compatible browser fields whose
+  secret values are posted directly to same-origin endpoints and cleared from
+  the DOM. They are not retained in navigation, browser storage, or bootstrap
+  state. The local sign-in UI handles invalid credentials and conditional MFA
+  without rendering unavailable OIDC controls in local mode.
+- A deployment-only `--initialize-unattended` path reads its passphrase from a
+  file and invokes the same proof claim and transactional initializer. The
+  first-run guide documents operator ownership, recovery and loopback-cookie
+  constraints.
+
 ## Commands and validation
 
 | Commit | Command | Result |
@@ -187,14 +208,15 @@ asset replacement, package-visibility mutation, and repository-rule bypass.
 | `feat/issue-34-sqlite-provider` | EF Core 10 `migrations has-pending-model-changes` for `OrchestratorDbContext` | Passed: the explicit SQLite snapshot exactly matches the runtime model; PostgreSQL-only defaults and array column types do not leak into the SQLite artifact. |
 | `feat/issue-34-sqlite-provider` | `docker compose -f compose.sqlite.yaml config --quiet` | Passed. |
 | `feat/issue-34-sqlite-provider` | disposable current-head SQLite Compose migration/API/Web startup | Passed: migration runner completed, API listened on 9222, Web served the setup shell on 9111, and no PostgreSQL service was present. Test containers, volumes, images, key, and 5.36 GB of build cache were removed afterwards. |
+| `feat/issue-35-guided-setup` | `LocalFirstComposeBrowserSmokeTests` against a disposable Release SQLite Compose build | Passed: cold root redirected to proof-gated setup, the initial administrator/tenant transaction caused API restart, wrong password returned a safe error, local sign-in authorized `/api/v1/tenants`, and ready setup could not replay. |
 
 ## Current checkpoint
 
-Current phase: P04. Branch: `feat/issue-34-sqlite-provider`. P03 merged as
-`1969e9aea3c9e12aa492120c4b3452f8e9e7bc9c` through
-[#46](https://github.com/BostonTechnologies/netratel/pull/46). Next action:
-complete the PostgreSQL/SQLite persistence-graph and upgrade coverage before
-opening P04's CI-gated PR.
+Current phase: P05. Branch: `feat/issue-35-guided-setup`. P04 merged as
+`e0225697e0bc21bb8f939ef9595014ee9dc59117` through
+[#47](https://github.com/BostonTechnologies/netratel/pull/47). Next action:
+complete unattended/recovery coverage and source-CI wiring before opening
+P05's CI-gated PR.
 
 ## Blockers
 

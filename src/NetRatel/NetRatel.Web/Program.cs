@@ -47,15 +47,6 @@ var localAuthenticationCookieName = builder.Configuration["Authentication:Local:
 const string localAuthenticationScheme = "NetRatelLocal";
 const string browserSessionScheme = "NetRatelWebSession";
 
-if (SetupWebApplicationExtensions.RequiresSetupShell(builder.Configuration))
-{
-    builder.Services.AddSetupShell(builder.Configuration);
-    var setupApp = builder.Build();
-    setupApp.MapSetupShell();
-    setupApp.Run();
-    return;
-}
-
 builder.AddServiceDefaults();
 // Add services to the container. Version Bump
 var maxEditorPayloadBytes = builder.Configuration.GetValue(
@@ -182,7 +173,7 @@ builder.Services.AddOptions<MachineTokenOptions>()
 builder.Services.AddSingleton<IMachineTokenValidator, OidcMachineTokenValidator>();
 
 #region Authentication UI
-builder.Services.AddAuthentication(options =>
+var browserAuthentication = builder.Services.AddAuthentication(options =>
 {
     options.DefaultScheme = browserSessionScheme;
     options.DefaultAuthenticateScheme = browserSessionScheme;
@@ -215,8 +206,9 @@ builder.Services.AddAuthentication(options =>
     cookieOptions.Cookie.Name = localAuthenticationCookieName;
     cookieOptions.Cookie.HttpOnly = true;
     cookieOptions.Cookie.SameSite = SameSiteMode.Lax;
-    cookieOptions.Cookie.SecurePolicy = builder.Environment.IsDevelopment() &&
-        builder.Configuration.GetValue<bool>("Authentication:Local:AllowInsecureLocalhost")
+    // This is set only by the loopback-bound local Compose profile. Internet-facing
+    // deployments must keep the default Secure cookie policy.
+    cookieOptions.Cookie.SecurePolicy = builder.Configuration.GetValue<bool>("Authentication:Local:AllowInsecureLocalhost")
         ? CookieSecurePolicy.SameAsRequest
         : CookieSecurePolicy.Always;
     cookieOptions.Events.OnRedirectToLogin = context =>
@@ -229,9 +221,16 @@ builder.Services.AddAuthentication(options =>
         context.Response.StatusCode = StatusCodes.Status403Forbidden;
         return Task.CompletedTask;
     };
-})
-.AddOpenIdConnect("Oidc", options =>
+});
+
+var hasConfiguredOidc = !string.IsNullOrWhiteSpace(oidcConfiguration["Authority"]) ||
+    !string.IsNullOrWhiteSpace(oidcConfiguration["ClientId"]) ||
+    !string.IsNullOrWhiteSpace(builder.Configuration["OIDC_CLIENT_SECRET"]) ||
+    !string.IsNullOrWhiteSpace(builder.Configuration["AZURE_CLIENT_SECRET"]);
+if (hasConfiguredOidc)
 {
+    browserAuthentication.AddOpenIdConnect("Oidc", options =>
+    {
     options.Authority = oidcConfiguration["Authority"];
     options.ClientId = oidcConfiguration["ClientId"];
     options.ClientSecret = builder.Configuration["OIDC_CLIENT_SECRET"]
@@ -270,8 +269,8 @@ builder.Services.AddAuthentication(options =>
     {
         OnRedirectToIdentityProvider = ctx => Task.CompletedTask
     };
-})
-;
+    });
+}
 
 builder.Services.AddAuthorization();
 
@@ -469,9 +468,20 @@ app.Use(async (ctx, next) =>
         ctx.User.Identity?.IsAuthenticated is true &&
         !ctx.Request.Headers.ContainsKey("Authorization"))
     {
-        var tokenService = ctx.RequestServices.GetRequiredService<ITokenService>();
-        var accessToken = await tokenService.GetValidAccessTokenAsync();
-        ctx.Request.Headers.Authorization = $"Bearer {accessToken}";
+        if (ctx.User.HasClaim("auth_mode", "local") &&
+            ctx.Request.Cookies.TryGetValue(localAuthenticationCookieName, out var localCookie) &&
+            !string.IsNullOrWhiteSpace(localCookie))
+        {
+            // The API validates the protected local ticket and current account state. The Web
+            // host only forwards it on this same-server BFF hop; it never mints a bearer token.
+            ctx.Request.Headers.Cookie = $"{localAuthenticationCookieName}={localCookie}";
+        }
+        else
+        {
+            var tokenService = ctx.RequestServices.GetRequiredService<ITokenService>();
+            var accessToken = await tokenService.GetValidAccessTokenAsync();
+            ctx.Request.Headers.Authorization = $"Bearer {accessToken}";
+        }
     }
 
     await next();
@@ -490,7 +500,9 @@ app.Use(async (ctx, next) =>
     if (ctx.Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase) &&
         !ctx.Request.Path.StartsWithSegments("/api/docs", StringComparison.OrdinalIgnoreCase) &&
         !ctx.Request.Path.StartsWithSegments("/api/openapi", StringComparison.OrdinalIgnoreCase) &&
-        !ctx.Request.Path.StartsWithSegments("/api/v1", StringComparison.OrdinalIgnoreCase))
+        !ctx.Request.Path.StartsWithSegments("/api/v1", StringComparison.OrdinalIgnoreCase) &&
+        !ctx.Request.Path.StartsWithSegments("/api/v2/setup", StringComparison.OrdinalIgnoreCase) &&
+        !ctx.Request.Path.StartsWithSegments("/api/v2/local-auth", StringComparison.OrdinalIgnoreCase))
     {
         ctx.Response.StatusCode = StatusCodes.Status404NotFound;
         return;

@@ -11,8 +11,8 @@
                     <RouteView RouteData="routeData" DefaultLayout="typeof(Layout.MainLayout)" />
                 </Authorized>
                 <NotAuthorized>
-                    <!-- Unauthenticated users: only render /login with PublicLayout; otherwise redirect to /login -->
-                    @if (routeData.PageType == typeof(Login))
+                    <!-- Unauthenticated users may use the setup wizard or sign in. -->
+                    @if (routeData.PageType == typeof(Login) || routeData.PageType == typeof(Setup))
                     {
                         <RouteView RouteData="routeData" DefaultLayout="typeof(Layout.PublicLayout)" />
                     }

@@ -11,6 +11,7 @@ public sealed record BootstrapOptions
     public TimeSpan SetupProofLifetime { get; init; } = TimeSpan.FromHours(1);
     public TimeSpan OperationLeaseDuration { get; init; } = TimeSpan.FromMinutes(10);
     public string[] AllowedOrigins { get; init; } = [];
+    public BootstrapUnattendedOptions Unattended { get; init; } = new();
 
     public static BootstrapOptions FromConfiguration(IConfiguration configuration)
     {
@@ -38,4 +39,17 @@ public sealed record BootstrapOptions
                 : Path.GetFullPath(configured.SetupProofPath)
         };
     }
+}
+
+/// <summary>
+/// Deployment-owned, non-interactive first-administrator inputs. The password is intentionally
+/// file-backed so an invocation never needs a password on its command line or in shell history.
+/// </summary>
+public sealed record BootstrapUnattendedOptions
+{
+    public string? PasswordFile { get; init; }
+    public string? DisplayName { get; init; }
+    public string? Email { get; init; }
+    public string? TenantName { get; init; }
+    public string? RecoveryEmail { get; init; }
 }
