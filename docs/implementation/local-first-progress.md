@@ -121,7 +121,9 @@ asset replacement, package-visibility mutation, and repository-rule bypass.
   continuity evidence exists (tenant plus durable agent, signing, outbox, job
   or request evidence) and usable OIDC configuration is present. Empty schema
   is not legacy evidence; unavailable configured storage and incomplete legacy
-  evidence enter recovery.
+  evidence enter recovery. A complete deployment-owned OIDC configuration can
+  explicitly retain the prior operational startup path for compatibility, but
+  this is not legacy-data adoption and creates no inferred application data.
 - Compose now permits missing OIDC values during bootstrap. In that state the
   Web host uses a status-only setup shell that proxies the API setup status;
   configured OIDC deployments retain the existing full Web path. The shell

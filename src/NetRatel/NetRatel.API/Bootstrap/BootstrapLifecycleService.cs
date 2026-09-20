@@ -47,6 +47,25 @@ public sealed class BootstrapLifecycleService
 
         if (probe == LegacyProbeResult.EmptyOrUnknown)
         {
+            // A complete deployment-owned OIDC configuration is an explicit request to retain
+            // the pre-local-first operational mode. This is not legacy-data adoption: no owner,
+            // tenant, or application record is inferred from an empty schema.
+            if (HasConfiguredOidc())
+            {
+                return await _store.UpdateAsync(
+                    current => current with
+                    {
+                        State = BootstrapState.Ready,
+                        SelectedProvider = "PostgreSQL",
+                        ConnectionReference = "ConnectionStrings:NetRatelDb",
+                        OperationId = null,
+                        OperationLeaseExpiresAtUtc = null,
+                        AdoptedExistingInstallation = false
+                    },
+                    "configured-oidc-compatible-startup",
+                    cancellationToken).ConfigureAwait(false);
+            }
+
             return descriptor;
         }
 

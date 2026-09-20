@@ -40,24 +40,33 @@ public sealed class BootstrapLegacyAdoptionPostgresTests : IAsyncLifetime
     [Fact]
     public async Task Empty_schema_is_not_adopted_but_existing_netratel_evidence_is_adopted()
     {
-        var empty = await InitializeAsync("empty_bootstrap");
+        var empty = await InitializeAsync("empty_bootstrap", includeOidc: false);
         empty.State.Should().Be(BootstrapState.Unconfigured);
 
-        var adopted = await InitializeAsync("legacy");
+        var configuredOidc = await InitializeAsync("empty_bootstrap", includeOidc: true);
+        configuredOidc.State.Should().Be(BootstrapState.Ready);
+        configuredOidc.AdoptedExistingInstallation.Should().BeFalse();
+
+        var adopted = await InitializeAsync("legacy", includeOidc: true);
         adopted.State.Should().Be(BootstrapState.Ready);
         adopted.AdoptedExistingInstallation.Should().BeTrue();
         adopted.SelectedProvider.Should().Be("PostgreSQL");
         adopted.ConnectionReference.Should().Be("ConnectionStrings:NetRatelDb");
     }
 
-    private Task<BootstrapDescriptor> InitializeAsync(string schema)
+    private Task<BootstrapDescriptor> InitializeAsync(string schema, bool includeOidc)
     {
+        var values = new Dictionary<string, string?>
+        {
+            ["ConnectionStrings:NetRatelDb"] = _postgres.GetConnectionString() + $";Search Path={schema}"
+        };
+        if (includeOidc)
+        {
+            values["Authentication:Oidc:Authority"] = "https://issuer.example.test";
+        }
+
         var configuration = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?>
-            {
-                ["ConnectionStrings:NetRatelDb"] = _postgres.GetConnectionString() + $";Search Path={schema}",
-                ["Authentication:Oidc:Authority"] = "https://issuer.example.test"
-            })
+            .AddInMemoryCollection(values)
             .Build();
         var options = new BootstrapOptions { StateDirectory = Path.Combine(_stateRoot, schema) };
         return new BootstrapLifecycleService(new BootstrapStateStore(options), configuration).InitializeAsync();
