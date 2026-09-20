@@ -37,8 +37,18 @@ using NetRatel.Web.Configuration;
 using NetRatel.Web.Services.Search;
 using NetRatel.Web.OpenApi;
 using Scalar.AspNetCore;
+using NetRatel.Web.Bootstrap;
 
 var builder = WebApplication.CreateBuilder(args);
+
+if (SetupWebApplicationExtensions.RequiresSetupShell(builder.Configuration))
+{
+    builder.Services.AddSetupShell(builder.Configuration);
+    var setupApp = builder.Build();
+    setupApp.MapSetupShell();
+    setupApp.Run();
+    return;
+}
 
 builder.AddServiceDefaults();
 // Add services to the container. Version Bump

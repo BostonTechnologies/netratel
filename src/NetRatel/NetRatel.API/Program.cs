@@ -49,7 +49,25 @@ using NetRatel.API.Gateway;
 using NetRatel.Akka.Configuration;
 using Microsoft.AspNetCore.Server.Kestrel.Https;
 using HttpProtocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols;
+using NetRatel.API.Bootstrap;
 var builder = WebApplication.CreateBuilder(args);
+
+// Bootstrap reconciliation intentionally happens before any operational registration. A fresh or
+// recovering installation must expose only the setup/liveness surface; it must not initialize a
+// database, OIDC handler, agent gateway, scheduler, outbox, or Akka authority in the background.
+var bootstrapOptions = BootstrapOptions.FromConfiguration(builder.Configuration);
+var bootstrapLifecycle = new BootstrapLifecycleService(new BootstrapStateStore(bootstrapOptions), builder.Configuration);
+var bootstrapDescriptor = await bootstrapLifecycle.InitializeAsync();
+if (bootstrapDescriptor.State != BootstrapState.Ready)
+{
+    builder.Services.AddBootstrapRuntime(bootstrapOptions);
+    builder.ConfigureBootstrapListener();
+    var bootstrapApp = builder.Build();
+    bootstrapApp.UseBootstrapRuntime();
+    bootstrapApp.Run();
+    return;
+}
+
 var akkaMigrationOptions = builder.Configuration.GetSection(NetRatelAkkaMigrationOptions.SectionName).Get<NetRatelAkkaMigrationOptions>() ?? new NetRatelAkkaMigrationOptions();
 var aiAgentOpsLogBuffer = new AiAgentOpsLogBuffer();
 

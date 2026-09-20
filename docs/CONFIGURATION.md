@@ -21,6 +21,35 @@ are not a usable production configuration.
 Back up PostgreSQL and persistent key/artifact volumes together. Replacing a
 Data Protection key ring invalidates cookies and protected state.
 
+## Bootstrap lifecycle
+
+Before an instance is ready, the API keeps its lifecycle descriptor, journal,
+key-material proof, and bootstrap proof under `Bootstrap:StateDirectory`
+(default `/var/netratel/bootstrap`). Mount that directory on persistent
+API-owned storage with owner-only permissions; it is part of the instance
+backup and recovery set, not browser or Web storage.
+
+On a fresh instance the API writes a high-entropy one-time proof to the private
+`setup-proof` file in that directory. Read it only through an operator's local
+or deployment-console access and submit it in the setup request body; never
+put it in a URL, tracked configuration, screenshot, or browser storage. It
+expires after `Bootstrap:SetupProofLifetime` (one hour by default) and a later
+API restart creates a replacement. A deployment may instead mount an explicit
+`Bootstrap:SetupProofPath`; replacing that secret with a different value and
+restarting the API renews it. The API does not generate a replacement into a
+deployment-managed secret mount.
+
+`Bootstrap:AllowedOrigins` is an allow-list for browser-originating setup
+requests. Leave it explicit for every public browser origin. Direct operator
+and CLI-style requests have no `Origin` header; forwarded headers are not
+trusted unless the host has configured ASP.NET Core trusted proxies.
+
+The setup shell is status-only until later local-identity/setup phases. It
+cannot create an owner, alter database configuration, or expose business APIs.
+An existing PostgreSQL/OIDC deployment is adopted only from durable NetRatel
+continuity evidence; an unavailable configured store or missing bootstrap key
+material intentionally enters recovery rather than fresh setup.
+
 ## Interactive browser authentication
 
 Configure `Authentication:Oidc` with your OIDC authority, client identifier,

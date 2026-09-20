@@ -26,8 +26,8 @@ asset replacement, package-visibility mutation, and repository-rule bypass.
 
 | Phase | Issue | PR | Merge SHA | Evidence / current state |
 | --- | --- | --- | --- | --- |
-| P00 | [#30](https://github.com/BostonTechnologies/netratel/issues/30) | [#43](https://github.com/BostonTechnologies/netratel/pull/43) | pending | Inventory and ADRs on `docs/issue-30-local-first-inventory`; local baseline is green; hosted exact-head CI is pending. |
-| P01 | [#31](https://github.com/BostonTechnologies/netratel/issues/31) | pending | pending | Blocked by P00 merge. |
+| P00 | [#30](https://github.com/BostonTechnologies/netratel/issues/30) | [#43](https://github.com/BostonTechnologies/netratel/pull/43) | `35d23b2` | Merged after the hosted Public PR validation run passed all component-image, native package, disclosure and OIDC smoke gates. |
+| P01 | [#31](https://github.com/BostonTechnologies/netratel/issues/31) | pending | pending | Bootstrap descriptor/runtime implementation and focused validation are on `feat/issue-31-bootstrap`; hosted PR evidence is pending. |
 | P02 | [#32](https://github.com/BostonTechnologies/netratel/issues/32) | pending | pending | Blocked by P01 merge. |
 | P03 | [#33](https://github.com/BostonTechnologies/netratel/issues/33) | pending | pending | Blocked by P02 merge. |
 | P04 | [#34](https://github.com/BostonTechnologies/netratel/issues/34) | pending | pending | Blocked by P03 merge. |
@@ -99,6 +99,34 @@ asset replacement, package-visibility mutation, and repository-rule bypass.
 | Branding / configuration | [ADR 0005](../adr/0005-effective-branding-precedence.md) | P09/P10 | options/UI and before-runtime computed-colour tests |
 | Protected routes | [endpoint inventory](local-first-endpoint-permissions.md) | P03 | unmapped-route gate plus target-scope matrix |
 
+## P01 bootstrap runtime
+
+- API startup now reconciles an API-owned descriptor before registering the
+  operational graph. `Unconfigured`, `Configuring`, and `RecoveryRequired`
+  start only the anonymous liveness/readiness/setup-status surface; they do
+  not register PostgreSQL infrastructure, OIDC handlers, agent admission,
+  hosted workers, outbox work, or Akka authority.
+- The descriptor, journal, generated one-time proof, and key-material proof
+  are held in a private bootstrap directory. The descriptor retains only
+  hashes and configuration references. An absent descriptor with remaining
+  state, absent key proof, or an integrity mismatch enters recovery instead of
+  inventing a new installation.
+- A proof claim has a durable operation ID and bounded lease, is rate limited
+  per remote address, performs browser-origin checks when an Origin is sent,
+  and consumes the proof. Generated proofs expire and are renewed only on a
+  later startup; deployment-managed proofs must be replaced by the deployment
+  owner before restart. P01 deliberately stops at `Configuring`: initial
+  local-user creation and provider migration remain P02/P04/P05 work.
+- A configured PostgreSQL store is adopted only when NetRatel-specific
+  continuity evidence exists (tenant plus durable agent, signing, outbox, job
+  or request evidence) and usable OIDC configuration is present. Empty schema
+  is not legacy evidence; unavailable configured storage and incomplete legacy
+  evidence enter recovery.
+- Compose now permits missing OIDC values during bootstrap. In that state the
+  Web host uses a status-only setup shell that proxies the API setup status;
+  configured OIDC deployments retain the existing full Web path. The shell
+  cannot create an account or invoke business APIs.
+
 ## Commands and validation
 
 | Commit | Command | Result |
@@ -107,13 +135,17 @@ asset replacement, package-visibility mutation, and repository-rule bypass.
 | `7ef8680` | `dotnet restore NetRatel.sln` | Passed. Restoring was required because prior ignored local test assets were stale and selected VSTest despite the repository's Microsoft.Testing.Platform setting. |
 | `7ef8680` | `dotnet build NetRatel.sln --configuration Release --no-restore` | Passed: 0 errors, 42 pre-existing warnings. |
 | `7ef8680` | `dotnet test NetRatel.sln --configuration Release --no-build --filter 'category!=compose' -- --report-trx --report-trx-filename 'netratel-p00-{asm}_{tfm}_{arch}.trx'` | Passed: 1,860 succeeded, 4 explicit live-environment skips, 0 failed. TRX is retained only as local CI-style evidence. |
+| `feat/issue-31-bootstrap` | `dotnet build NetRatel.sln --configuration Release --no-restore` | Passed: 0 warnings, 0 errors. |
+| `feat/issue-31-bootstrap` | `dotnet test src/NetRatel/NetRatel.Tests/NetRatel.Tests.csproj --no-restore --filter 'FullyQualifiedName~Bootstrap'` | Passed: bootstrap state, replay/restart, recovery, empty-schema, configured-storage failure, and representative PostgreSQL/OIDC legacy-adoption coverage. |
+| `feat/issue-31-bootstrap` | fresh API process with no usable database/OIDC configuration | Passed: `/health/live` returned 200, `/health/ready` 503, setup status 200, business route 404; a 64-byte proof claimed once with 202 and replay returned 400. |
+| `feat/issue-31-bootstrap` | fresh API + Web process with no OIDC configuration | Passed: the Web root returned the status-only setup shell and its same-origin setup-status proxy returned API state 200. |
+| `feat/issue-31-bootstrap` | `docker compose --env-file .env.example config --quiet` | Passed with blank OIDC and agent-signing inputs, proving the fresh setup Compose configuration resolves without placeholder identity credentials. |
 
 ## Current checkpoint
 
-Current phase: P00. Branch: `docs/issue-30-local-first-inventory`. PR:
-[#43](https://github.com/BostonTechnologies/netratel/pull/43). Next action:
-wait for required checks on the current head, merge through the protected path,
-then update this ledger and begin P01 from refreshed `main`.
+Current phase: P01. Branch: `feat/issue-31-bootstrap`. Next action: complete
+the phase's Compose/legacy-adoption coverage, open its PR, and merge only after
+the hosted exact-head validation gates pass.
 
 ## Blockers
 
