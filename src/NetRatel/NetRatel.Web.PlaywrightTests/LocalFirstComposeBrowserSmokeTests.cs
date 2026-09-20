@@ -25,6 +25,10 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         var response = await page.GotoAsync(webUrl.ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
         Assert.NotNull(response);
         await page.GetByTestId("setup-wizard").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        foreach (var themeCase in FirstPaintCases)
+        {
+            await AssertFirstPaintAsync(browser, webUrl, themeCase, string.Empty, ".netratel-login-panel");
+        }
         await page.GetByTestId("setup-client-ready").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
         Assert.True(await page.EvaluateAsync<bool>("() => typeof window.netratelSetup?.claim === 'function'"));
         Assert.False(await page.EvaluateAsync<bool>("() => document.documentElement.scrollWidth > innerWidth"));
@@ -54,6 +58,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         Assert.True(string.IsNullOrWhiteSpace(initializationError), initializationError);
 
         await page.GetByTestId("local-login-email").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible, Timeout = 30_000 });
+        await AssertFirstPaintAsync(browser, webUrl, FirstPaintCases[1], "login", ".netratel-login-panel");
         await page.GetByTestId("local-login-client-ready").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
         await page.GetByTestId("local-login-email").FillAsync(email);
         await page.GetByTestId("local-login-password").FillAsync("incorrect local passphrase");
@@ -74,6 +79,15 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             "async () => (await fetch('/api/v1/tenants')).status === 200",
             null,
             new PageWaitForFunctionOptions { Timeout = 60_000 });
+
+        await AssertFirstPaintAsync(
+            browser,
+            webUrl,
+            FirstPaintCases[2],
+            string.Empty,
+            ".netratel-app-bar",
+            await context.CookiesAsync(),
+            requireApplicationSurfaces: true);
 
         await VerifyDeploymentBrandingAsync(page, webUrl);
 
@@ -99,6 +113,136 @@ public sealed class LocalFirstComposeBrowserSmokeTests
     private static string RequireValue(string name) => Environment.GetEnvironmentVariable(name) is { Length: > 0 } value
         ? value
         : throw new InvalidOperationException($"{name} is required by the local-first Compose browser smoke test.");
+
+    private static readonly FirstPaintCase[] FirstPaintCases =
+    [
+        new(ColorScheme.Dark, " system ", "dark", "rgb(12, 15, 19)", "rgb(23, 28, 35)", "rgb(21, 25, 31)", "rgb(18, 23, 29)", "rgb(237, 241, 245)"),
+        new(ColorScheme.Light, " DARK ", "dark", "rgb(12, 15, 19)", "rgb(23, 28, 35)", "rgb(21, 25, 31)", "rgb(18, 23, 29)", "rgb(237, 241, 245)"),
+        new(ColorScheme.Dark, " light ", "light", "rgb(245, 247, 250)", "rgb(255, 255, 255)", "rgb(255, 255, 255)", "rgb(255, 255, 255)", "rgb(21, 34, 51)"),
+    ];
+
+    private static async Task AssertFirstPaintAsync(
+        IBrowser browser,
+        Uri webUrl,
+        FirstPaintCase themeCase,
+        string path,
+        string surfaceSelector,
+        IReadOnlyList<BrowserContextCookiesResult>? cookies = null,
+        bool requireApplicationSurfaces = false)
+    {
+        await using var firstPaintContext = await browser.NewContextAsync(new BrowserNewContextOptions
+        {
+            ColorScheme = themeCase.ColorScheme,
+            ViewportSize = new ViewportSize { Width = 1280, Height = 900 },
+        });
+        if (cookies is { Count: > 0 })
+        {
+            await firstPaintContext.AddCookiesAsync(cookies.Select(cookie => new Cookie
+            {
+                Name = cookie.Name,
+                Value = cookie.Value,
+                Domain = cookie.Domain,
+                Path = cookie.Path,
+                Expires = cookie.Expires,
+                HttpOnly = cookie.HttpOnly,
+                Secure = cookie.Secure,
+                SameSite = cookie.SameSite,
+                PartitionKey = cookie.PartitionKey,
+            }));
+        }
+
+        await firstPaintContext.AddInitScriptAsync("""
+            preference => {
+                localStorage.setItem('netratel.theme.preference', preference);
+                const samples = [];
+                let observing = true;
+                const capture = () => {
+                    const body = document.body;
+                    const surface = document.querySelector(window.__netratelThemeFirstPaintSurface);
+                    const heading = document.querySelector('h1');
+                    const appbar = document.querySelector('.netratel-app-bar');
+                    const drawer = document.querySelector('.netratel-app-drawer');
+                    const input = document.querySelector('input');
+                    if (body && surface && surface.getBoundingClientRect().height > 0) {
+                        samples.push({
+                            theme: document.documentElement.dataset.netratelTheme,
+                            scheme: getComputedStyle(document.documentElement).colorScheme,
+                            body: getComputedStyle(body).backgroundColor,
+                            text: heading ? getComputedStyle(heading).color : '',
+                            surface: getComputedStyle(surface).backgroundColor,
+                            appbar: appbar ? getComputedStyle(appbar).backgroundColor : '',
+                            drawer: drawer ? getComputedStyle(drawer).backgroundColor : '',
+                            input: input ? getComputedStyle(input).color : ''
+                        });
+                    }
+                    if (observing) requestAnimationFrame(capture);
+                };
+                window.__netratelThemeFirstPaint = { samples, stop: () => { observing = false; } };
+                requestAnimationFrame(capture);
+            }
+            """, themeCase.Preference);
+        await firstPaintContext.AddInitScriptAsync("selector => { window.__netratelThemeFirstPaintSurface = selector; }", surfaceSelector);
+
+        var releaseRuntime = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await firstPaintContext.RouteAsync("**/_framework/blazor.web.js", async route =>
+        {
+            await releaseRuntime.Task;
+            await route.ContinueAsync();
+        });
+
+        var page = await firstPaintContext.NewPageAsync();
+        page.SetDefaultTimeout(20_000);
+        try
+        {
+            await page.GotoAsync(new Uri(webUrl, path).ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.Commit });
+            await page.Locator(surfaceSelector).WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+            await page.WaitForFunctionAsync("() => window.__netratelThemeFirstPaint.samples.length > 0");
+
+            var firstPaint = await page.EvaluateAsync<string[]>("""
+                () => {
+                    const sample = window.__netratelThemeFirstPaint.samples.at(-1);
+                    return [sample.theme, sample.scheme, sample.body, sample.text, sample.surface, sample.appbar, sample.drawer, sample.input];
+                }
+                """);
+            Assert.Equal(themeCase.ExpectedTheme, firstPaint[0]);
+            Assert.Equal(themeCase.ExpectedTheme, firstPaint[1]);
+            Assert.Equal(themeCase.Background, firstPaint[2]);
+            Assert.Equal(themeCase.Text, firstPaint[3]);
+            Assert.Equal(themeCase.Surface, firstPaint[4]);
+            Assert.Equal(themeCase.Text, firstPaint[7]);
+            if (requireApplicationSurfaces)
+            {
+                Assert.Equal(themeCase.Appbar, firstPaint[5]);
+                Assert.Equal(themeCase.Drawer, firstPaint[6]);
+            }
+
+            releaseRuntime.TrySetResult();
+            await page.WaitForLoadStateAsync(LoadState.DOMContentLoaded);
+            await page.WaitForFunctionAsync("""
+                expected => {
+                    const surface = document.querySelector(window.__netratelThemeFirstPaintSurface);
+                    return surface && getComputedStyle(document.body).backgroundColor === expected.background &&
+                        getComputedStyle(surface).backgroundColor === expected.surface &&
+                        document.documentElement.dataset.netratelTheme === expected.theme;
+                }
+                """, new { background = themeCase.Background, surface = themeCase.Surface, theme = themeCase.ExpectedTheme });
+        }
+        finally
+        {
+            releaseRuntime.TrySetResult();
+            await page.EvaluateAsync("() => window.__netratelThemeFirstPaint?.stop()").ConfigureAwait(false);
+        }
+    }
+
+    private sealed record FirstPaintCase(
+        ColorScheme ColorScheme,
+        string Preference,
+        string ExpectedTheme,
+        string Background,
+        string Surface,
+        string Appbar,
+        string Drawer,
+        string Text);
 
     private static async Task VerifyDeploymentBrandingAsync(IPage page, Uri webUrl)
     {

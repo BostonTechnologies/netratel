@@ -1,6 +1,6 @@
 @page "/setup"
 @attribute [Microsoft.AspNetCore.Authorization.AllowAnonymous]
-@rendermode @(new InteractiveServerRenderMode(prerender: false))
+@rendermode InteractiveServer
 
 @using System.Net.Http.Json
 @inject IHttpClientFactory HttpClientFactory

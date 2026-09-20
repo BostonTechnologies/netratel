@@ -1,64 +1,7 @@
 :root {
-    color-scheme: light;
-    --mud-palette-primary: #b84e2e;
-    --mud-palette-primary-darken: #933b22;
-    --mud-palette-primary-lighten: #d87552;
-    --mud-palette-primary-text: #ffffff;
-    --mud-palette-secondary: #176f6a;
-    --mud-palette-tertiary: #315e9b;
-    --mud-palette-background: #f5f7fa;
-    --mud-palette-surface: #ffffff;
-    --mud-palette-appbar-background: #ffffff;
-    --mud-palette-appbar-text: #152233;
-    --mud-palette-drawer-background: #ffffff;
-    --mud-palette-drawer-text: #263545;
-    --mud-palette-text-primary: #152233;
-    --mud-palette-text-secondary: #5a6979;
-    --mud-palette-info: #3778c2;
-    --mud-palette-lines-default: rgba(21, 34, 51, 0.14);
     --netratel-appbar-height: 56px;
     --netratel-content-gutter: clamp(1rem, 2.4vw, 1.75rem);
     --netratel-focus-ring: color-mix(in srgb, var(--mud-palette-info) 68%, transparent);
-}
-
-@media (prefers-color-scheme: dark) {
-    html:not([data-netratel-theme]) {
-        color-scheme: dark;
-        --mud-palette-primary: #d27655;
-        --mud-palette-primary-darken: #ad593d;
-        --mud-palette-primary-lighten: #e79a7b;
-        --mud-palette-secondary: #55aaa2;
-        --mud-palette-tertiary: #81aee4;
-        --mud-palette-background: #0c0f13;
-        --mud-palette-surface: #171c23;
-        --mud-palette-appbar-background: #15191f;
-        --mud-palette-appbar-text: #edf1f5;
-        --mud-palette-drawer-background: #12171d;
-        --mud-palette-drawer-text: #dce3ea;
-        --mud-palette-text-primary: #edf1f5;
-        --mud-palette-text-secondary: #aeb9c5;
-        --mud-palette-info: #83afe6;
-        --mud-palette-lines-default: rgba(237, 241, 245, 0.14);
-    }
-}
-
-html[data-netratel-theme="dark"] {
-    color-scheme: dark;
-    --mud-palette-primary: #d27655;
-    --mud-palette-primary-darken: #ad593d;
-    --mud-palette-primary-lighten: #e79a7b;
-    --mud-palette-secondary: #55aaa2;
-    --mud-palette-tertiary: #81aee4;
-    --mud-palette-background: #0c0f13;
-    --mud-palette-surface: #171c23;
-    --mud-palette-appbar-background: #15191f;
-    --mud-palette-appbar-text: #edf1f5;
-    --mud-palette-drawer-background: #12171d;
-    --mud-palette-drawer-text: #dce3ea;
-    --mud-palette-text-primary: #edf1f5;
-    --mud-palette-text-secondary: #aeb9c5;
-    --mud-palette-info: #83afe6;
-    --mud-palette-lines-default: rgba(237, 241, 245, 0.14);
 }
 
 html, body {
@@ -67,14 +10,6 @@ html, body {
     margin: 0;
     background: var(--mud-palette-background);
     color: var(--mud-palette-text-primary);
-}
-
-html[data-netratel-theme="light"] {
-    color-scheme: light;
-}
-
-html[data-netratel-theme="dark"] {
-    color-scheme: dark;
 }
 
 a, .btn-link {

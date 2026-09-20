@@ -22,10 +22,11 @@ window.netratelThemePreference = (() => {
         }
     };
 
-    const getResolvedMode = () => {
-        const stored = read();
-        return stored === "system" ? (systemIsDark() ? "dark" : "light") : stored;
-    };
+    const resolve = (preference) => preference === "system"
+        ? (systemIsDark() ? "dark" : "light")
+        : preference;
+
+    const getResolvedMode = () => resolve(read());
 
     const apply = (isDarkMode) => {
         const mode = isDarkMode ? "dark" : "light";
@@ -49,7 +50,9 @@ window.netratelThemePreference = (() => {
                 // Storage is optional presentation state; the current document still updates.
             }
 
-            apply(getResolvedMode() === "dark");
+            // Apply the requested selection directly. A blocked storage write
+            // must not resurrect an older persisted preference in this tab.
+            apply(resolve(mode) === "dark");
         },
         snapshot: () => ({ mode: read(), isDark: getResolvedMode() === "dark" }),
         apply,

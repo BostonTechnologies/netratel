@@ -1,6 +1,6 @@
 @page "/login"
 @attribute [Microsoft.AspNetCore.Authorization.AllowAnonymous]
-@rendermode @(new InteractiveServerRenderMode(prerender: false))
+@rendermode InteractiveServer
 
 @using Microsoft.AspNetCore.Components.Authorization
 @inject IConfiguration Config

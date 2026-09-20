@@ -4,7 +4,9 @@
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
     <base href="/" />
+    <style id="netratel-prepaint-theme">@((MarkupString)NetRatelPrepaintTheme.Css)</style>
     @* Blocking, external pre-paint resolver: it runs before any app-controlled body is parsed. *@
     <script src="/js/theme-preference.js"></script>
     <link rel="stylesheet" href="app-site.css?v=20260920-first-paint" />
