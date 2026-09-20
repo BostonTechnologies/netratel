@@ -1087,9 +1087,7 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                         .HasColumnType("TEXT");
 
                     b.Property<long>("CreatedAtUtc")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("INTEGER")
-                        .HasDefaultValueSql("now()");
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("CreatedBy")
                         .HasColumnType("TEXT");
@@ -3626,7 +3624,7 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
 
                     b.PrimitiveCollection<string>("Logs")
                         .IsRequired()
-                        .HasColumnType("text[]");
+                        .HasColumnType("TEXT");
 
                     b.Property<string>("ResultData")
                         .HasColumnType("TEXT");
@@ -3825,7 +3823,7 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
 
                     b.PrimitiveCollection<string>("Domains")
                         .IsRequired()
-                        .HasColumnType("text[]");
+                        .HasColumnType("TEXT");
 
                     b.Property<string>("Location")
                         .HasColumnType("TEXT");

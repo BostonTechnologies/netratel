@@ -29,8 +29,8 @@ asset replacement, package-visibility mutation, and repository-rule bypass.
 | P00 | [#30](https://github.com/BostonTechnologies/netratel/issues/30) | [#43](https://github.com/BostonTechnologies/netratel/pull/43) | `35d23b2` | Merged after the hosted Public PR validation run passed all component-image, native package, disclosure and OIDC smoke gates. |
 | P01 | [#31](https://github.com/BostonTechnologies/netratel/issues/31) | [#44](https://github.com/BostonTechnologies/netratel/pull/44) | `fcd202d` | Merged after hosted exact-head validation passed, including source and release-image generic OIDC Compose smoke coverage: [run 35494345483](https://github.com/BostonTechnologies/netratel/actions/runs/35494345483). |
 | P02 | [#32](https://github.com/BostonTechnologies/netratel/issues/32) | [#45](https://github.com/BostonTechnologies/netratel/pull/45) | `bd567c0` | Merged after exact-head Public PR validation passed, including full .NET tests, native packages, public images, HTTP MCP smoke, and source/release-image generic OIDC Compose coverage: [run 35495761003](https://github.com/BostonTechnologies/netratel/actions/runs/35495761003). |
-| P03 | [#33](https://github.com/BostonTechnologies/netratel/issues/33) | pending | pending | In progress on `feat/issue-33-scoped-rbac`. |
-| P04 | [#34](https://github.com/BostonTechnologies/netratel/issues/34) | pending | pending | Blocked by P03 merge. |
+| P03 | [#33](https://github.com/BostonTechnologies/netratel/issues/33) | [#46](https://github.com/BostonTechnologies/netratel/pull/46) | `1969e9a` | Merged after hosted Public PR validation passed all applicable gates. |
+| P04 | [#34](https://github.com/BostonTechnologies/netratel/issues/34) | pending | pending | In progress on `feat/issue-34-sqlite-provider`; P03 prerequisite merged. |
 | P05 | [#35](https://github.com/BostonTechnologies/netratel/issues/35) | pending | pending | Blocked by P04 merge. |
 | P06 | [#36](https://github.com/BostonTechnologies/netratel/issues/36) | pending | pending | Blocked by P03/P04/P05 merges. |
 | P07 | [#37](https://github.com/BostonTechnologies/netratel/issues/37) | pending | pending | Blocked by P06 merge. |
@@ -178,7 +178,8 @@ asset replacement, package-visibility mutation, and repository-rule bypass.
 | `feat/issue-31-bootstrap` | fresh API process with no usable database/OIDC configuration | Passed: `/health/live` returned 200, `/health/ready` 503, setup status 200, business route 404; a 64-byte proof claimed once with 202 and replay returned 400. |
 | `feat/issue-31-bootstrap` | fresh API + Web process with no OIDC configuration | Passed: the Web root returned the status-only setup shell and its same-origin setup-status proxy returned API state 200. |
 | `feat/issue-31-bootstrap` | `docker compose --env-file .env.example config --quiet` | Passed with blank OIDC and agent-signing inputs, proving the fresh setup Compose configuration resolves without placeholder identity credentials. |
-| `feat/issue-34-sqlite-provider` | focused `SqliteProviderMigrationTests` | Passed against a real disposable SQLite file: identity/application migrations, restart, persisted directory data, and all global search projections. |
+| `feat/issue-34-sqlite-provider` | focused `SqliteProviderMigrationTests` | Passed against a real disposable SQLite file: identity/application migrations, restart, persisted directory data, all global search projections, and terminal-settings raw-SQL read/write compatibility. |
+| `feat/issue-34-sqlite-provider` | EF Core 10 `migrations has-pending-model-changes` for `OrchestratorDbContext` | Passed: the explicit SQLite snapshot exactly matches the runtime model; PostgreSQL-only defaults and array column types do not leak into the SQLite artifact. |
 | `feat/issue-34-sqlite-provider` | `docker compose -f compose.sqlite.yaml config --quiet` | Passed. |
 | `feat/issue-34-sqlite-provider` | disposable SQLite Compose migration/API startup | Passed: migration runner completed and API listened on 9222 with no PostgreSQL service. Test containers, volumes, images, key, and build cache were removed afterwards. |
 

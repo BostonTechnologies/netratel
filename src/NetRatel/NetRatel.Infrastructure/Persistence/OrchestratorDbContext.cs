@@ -105,7 +105,10 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
             entity.ToTable("EnrollmentCodes");
             entity.HasKey(x => x.Id);
             entity.Property(x => x.Code).IsRequired();
-            entity.Property(x => x.CreatedAtUtc).HasDefaultValueSql("now()");
+            if (Database.IsNpgsql())
+            {
+                entity.Property(x => x.CreatedAtUtc).HasDefaultValueSql("now()");
+            }
             entity.Property(x => x.Uses).HasDefaultValue(0);
             entity.HasIndex(x => x.Code).IsUnique();
             entity.HasIndex(x => new { x.TenantId, x.ValidToUtc });
@@ -849,7 +852,7 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
             entity.ToTable("Tenants");
             entity.HasKey(x => x.Id);
             entity.Property(x => x.Name).IsRequired();
-            entity.Property(x => x.Domains).HasColumnType("text[]");
+            entity.Property(x => x.Domains).HasColumnType(Database.IsNpgsql() ? "text[]" : "TEXT");
             entity.Property(x => x.Version).IsConcurrencyToken();
             entity.HasIndex(x => x.Name).IsUnique();
             entity.HasIndex(x => x.CreatedAtUtc);
@@ -1082,7 +1085,7 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
                 .IsRequired();
             entity.Property(x => x.ExecutionId).HasColumnName("RundeckExecutionId");
             entity.Property(x => x.Status).IsRequired();
-            entity.Property(x => x.Logs).HasColumnType("text[]");
+            entity.Property(x => x.Logs).HasColumnType(Database.IsNpgsql() ? "text[]" : "TEXT");
             entity.HasIndex(x => x.TargetClientIdentity);
             entity.HasIndex(x => x.Status);
             entity.HasIndex(x => x.CreatedAtUtc);

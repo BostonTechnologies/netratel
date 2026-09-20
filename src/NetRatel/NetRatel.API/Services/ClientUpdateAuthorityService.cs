@@ -353,8 +353,11 @@ public sealed class ClientUpdateAuthorityService(
         CancellationToken cancellationToken)
     {
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
-        var attempt = await db.ClientUpdateAttempts.FromSqlInterpolated(
-                $"SELECT * FROM \"ClientUpdateAttempts\" WHERE \"PublicId\" = {attemptId} AND \"TenantId\" = {identity.TenantId} AND \"AgentId\" = {identity.AgentId} FOR UPDATE")
+        var attempt = await (db.Database.IsNpgsql()
+                ? db.ClientUpdateAttempts.FromSqlInterpolated(
+                    $"SELECT * FROM \"ClientUpdateAttempts\" WHERE \"PublicId\" = {attemptId} AND \"TenantId\" = {identity.TenantId} AND \"AgentId\" = {identity.AgentId} FOR UPDATE")
+                : db.ClientUpdateAttempts.Where(candidate =>
+                    candidate.PublicId == attemptId && candidate.TenantId == identity.TenantId && candidate.AgentId == identity.AgentId))
             .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false)
             ?? throw new KeyNotFoundException("Update attempt was not found.");
         if (!IsAllowedTransition(attempt.State, state))

@@ -1,8 +1,11 @@
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
 using NetRatel.API.Endpoints.Search;
+using NetRatel.API.Services.Terminal;
 using NetRatel.Infrastructure.Identity;
 using NetRatel.Infrastructure.Persistence;
+using NetRatel.Shared.Contracts.Terminals;
 using Xunit;
 
 namespace NetRatel.Tests.Infrastructure;
@@ -58,6 +61,14 @@ public sealed class SqliteProviderMigrationTests
                 (await GlobalSearchEndpoints.BuildJobQuery(db, "LINUX").ToListAsync()).Should().BeEmpty();
                 (await GlobalSearchEndpoints.BuildRequestQuery(db, "LINUX").ToListAsync()).Should().BeEmpty();
                 (await GlobalSearchEndpoints.BuildTaskQuery(db, "LINUX").ToListAsync()).Should().BeEmpty();
+
+                var terminalSettings = new ClientTerminalSettingsService(
+                    db,
+                    NullLogger<ClientTerminalSettingsService>.Instance);
+                await terminalSettings.SetOverrideAsync("Field-Linux-Agent", TerminalTransportKind.ApiWebSocket, TestContext.Current.CancellationToken);
+                (await terminalSettings.GetOverridesAsync(["field-linux-agent"], TestContext.Current.CancellationToken))
+                    .Should().ContainSingle()
+                    .Which.Value.Should().Be(TerminalTransportKind.ApiWebSocket);
             }
 
             await using (var restarted = new OrchestratorDbContext(orchestratorOptions))
