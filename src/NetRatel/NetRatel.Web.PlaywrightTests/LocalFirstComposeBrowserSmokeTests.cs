@@ -75,6 +75,8 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             null,
             new PageWaitForFunctionOptions { Timeout = 60_000 });
 
+        await VerifyDeploymentBrandingAsync(page, webUrl);
+
         var credentialOutputPath = Environment.GetEnvironmentVariable("NETRATEL_LOCAL_FIRST_INTEGRATION_CREDENTIALS_FILE");
         if (!string.IsNullOrWhiteSpace(credentialOutputPath))
         {
@@ -97,6 +99,44 @@ public sealed class LocalFirstComposeBrowserSmokeTests
     private static string RequireValue(string name) => Environment.GetEnvironmentVariable(name) is { Length: > 0 } value
         ? value
         : throw new InvalidOperationException($"{name} is required by the local-first Compose browser smoke test.");
+
+    private static async Task VerifyDeploymentBrandingAsync(IPage page, Uri webUrl)
+    {
+        await page.GotoAsync(new Uri(webUrl, "admin/branding").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await page.GetByTestId("deployment-branding-page").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        var applicationName = page.GetByLabel("Application name");
+        await applicationName.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        await applicationName.FillAsync("Browser branding example");
+        await page.GetByTestId("branding-save").ClickAsync();
+        await page.GetByText("Branding saved.", new PageGetByTextOptions { Exact = false })
+            .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+
+        var directory = Path.Combine("TestResults", "branding");
+        Directory.CreateDirectory(directory);
+        foreach (var (theme, width, height, name) in new[]
+                 {
+                     ("light", 1440, 900, "desktop"),
+                     ("dark", 390, 844, "mobile")
+                 })
+        {
+            await page.EvaluateAsync<bool>("mode => { localStorage.setItem('netratel.theme.preference', mode); return true; }", theme);
+            await page.ReloadAsync(new PageReloadOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+            await page.GetByTestId("deployment-branding-page").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+            await page.SetViewportSizeAsync(width, height);
+            var preview = page.GetByTestId("branding-preview");
+            await preview.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+            Assert.Contains("Browser branding example", await preview.InnerTextAsync());
+            await preview.ScreenshotAsync(new LocatorScreenshotOptions
+            {
+                Path = Path.Combine(directory, $"custom-{theme}-{name}.png"),
+                Animations = ScreenshotAnimations.Disabled
+            });
+        }
+
+        await page.GotoAsync(webUrl.ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await page.Locator(".netratel-appbar-brand").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        Assert.Contains("Browser branding example", await page.Locator(".netratel-appbar-brand").InnerTextAsync());
+    }
 
     private static async Task<string> CreateIntegrationCredentialAsync(IPage page, Uri webUrl, string name, string permission)
     {

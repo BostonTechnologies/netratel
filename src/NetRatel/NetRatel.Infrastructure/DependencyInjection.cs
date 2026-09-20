@@ -15,6 +15,7 @@ using NetRatel.Application.Tenants;
 using NetRatel.Infrastructure.Events;
 using NetRatel.Infrastructure.Identity;
 using NetRatel.Infrastructure.Identity.Authorization;
+using NetRatel.Infrastructure.Identity.Branding;
 using NetRatel.Infrastructure.Artifacts;
 using NetRatel.Infrastructure.Notifications;
 using NetRatel.Infrastructure.Persistence;
@@ -43,6 +44,7 @@ public static class DependencyInjection
         services.AddScoped<IEffectiveAccessService, EffectiveAccessService>();
         services.AddScoped<IIntegrationCredentialService, IntegrationCredentialService>();
         services.AddScoped<IIntegrationCredentialCurrentVerifier, IntegrationCredentialService>();
+        services.AddScoped<IDeploymentBrandingService, DeploymentBrandingService>();
         services.AddNetRatelCommandPersistence();
         services.AddNetRatelJobShadowPersistence();
         services.AddNetRatelRemoteSupportLifecycle();

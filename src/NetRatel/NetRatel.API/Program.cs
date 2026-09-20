@@ -59,6 +59,7 @@ using NetRatel.API.Security.Local;
 using NetRatel.API.Security.Authorization;
 using NetRatel.API.Security.Integration;
 using NetRatel.Infrastructure.Identity.Authorization;
+using NetRatel.Infrastructure.Identity.Branding;
 var builder = WebApplication.CreateBuilder(args);
 
 // Bootstrap reconciliation intentionally happens before any operational registration. A fresh or
@@ -722,6 +723,11 @@ builder.Services.Configure<TerminalTransportOptions>(builder.Configuration.GetSe
 builder.Services.Configure<AgentAuthOptions>(builder.Configuration.GetSection("AgentAuth"));
 builder.Services.Configure<SecurityHardeningOptions>(builder.Configuration.GetSection("Security"));
 builder.Services.Configure<StorageOptions>(builder.Configuration.GetSection("StorageOptions"));
+builder.Services.AddOptions<DeploymentBrandingOptions>()
+    .BindConfiguration(DeploymentBrandingOptions.SectionName)
+    .ValidateDataAnnotations()
+    .ValidateOnStart();
+builder.Services.AddSingleton<IValidateOptions<DeploymentBrandingOptions>, DeploymentBrandingOptionsValidator>();
 builder.Services.AddSingleton<StorageInitializer>();
 builder.Services.AddScoped<IClientArtifactsService, ClientArtifactsService>();
 builder.Services.AddScoped<ClientUpdateAuthorityService>();

@@ -1,0 +1,251 @@
+@page "/admin/branding"
+@attribute [Authorize]
+@rendermode InteractiveServer
+@implements IDisposable
+
+@inject IDeploymentBrandingApiService BrandingApi
+@inject ISnackbar Snackbar
+@inject NavigationManager Navigation
+
+<PageTitle>Deployment branding</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.Large" Class="mt-4" data-testid="deployment-branding-page">
+    <MudStack Spacing="3">
+        <MudPaper Class="pa-4">
+            <MudText Typo="Typo.h4">Deployment branding</MudText>
+            <MudText Typo="Typo.body2" Color="Color.Secondary">Deployment configuration takes precedence over administrator overrides. Reset clears only the stored override and always preserves NetRatel product, protocol, package, and security identities.</MudText>
+        </MudPaper>
+
+        @if (_loading)
+        {
+            <MudProgressCircular Indeterminate="true" />
+        }
+        else if (_branding is not null)
+        {
+            <MudGrid Spacing="3">
+                <MudItem xs="12" md="7">
+                    <MudPaper Class="pa-4">
+                        <MudStack Spacing="2">
+                            <MudText Typo="Typo.h6">Visible presentation</MudText>
+                            <MudTextField Label="Application name" @bind-Value="_applicationName" Disabled="@_branding.ApplicationName.IsLocked" HelperText="@SourceText(_branding.ApplicationName)" data-testid="branding-application-name" />
+                            <MudTextField Label="Organization name" @bind-Value="_organizationName" Disabled="@_branding.OrganizationName.IsLocked" HelperText="@SourceText(_branding.OrganizationName)" data-testid="branding-organization-name" />
+                            <MudTextField Label="Tagline" @bind-Value="_tagline" Disabled="@_branding.Tagline.IsLocked" HelperText="@SourceText(_branding.Tagline)" data-testid="branding-tagline" />
+                            <MudTextField Label="Support URL" @bind-Value="_supportUrl" Disabled="@_branding.SupportUrl.IsLocked" HelperText="@SourceText(_branding.SupportUrl)" />
+                            <MudTextField Label="Site URL" @bind-Value="_siteUrl" Disabled="@_branding.SiteUrl.IsLocked" HelperText="@SourceText(_branding.SiteUrl)" />
+                            <MudStack Row="true" Spacing="2">
+                                <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="@(!IsDirty || _saving)" OnClick="SaveAsync" data-testid="branding-save">Save</MudButton>
+                                <MudButton Variant="Variant.Outlined" Disabled="@(!IsDirty || _saving)" OnClick="Discard">Discard</MudButton>
+                                <MudButton Variant="Variant.Text" Color="Color.Warning" Disabled="@_saving" OnClick="ResetEditableAsync">Reset editable overrides</MudButton>
+                            </MudStack>
+                        </MudStack>
+                    </MudPaper>
+                </MudItem>
+                <MudItem xs="12" md="5">
+                    <MudPaper Class="pa-4">
+                        <MudText Typo="Typo.h6">Preview</MudText>
+                        <MudStack AlignItems="AlignItems.Center" Spacing="1" Class="pa-3" Style="border: 1px solid var(--mud-palette-lines-default);" data-testid="branding-preview">
+                            <img src="@_branding.LogoLightUrl.Value" alt="@_applicationName" style="max-width: 260px; max-height: 96px;" />
+                            <MudText Typo="Typo.h5">@_applicationName</MudText>
+                            <MudText Typo="Typo.body2">@_tagline</MudText>
+                        </MudStack>
+                    </MudPaper>
+                </MudItem>
+                <MudItem xs="12">
+                    <MudPaper Class="pa-4">
+                        <MudText Typo="Typo.h6">Managed assets</MudText>
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">Upload PNG, JPEG, or ICO only (16–2048 px, at most 256 KiB). SVG, remote asset fetching, arbitrary filesystem paths, and active content are deliberately unsupported.</MudText>
+                        <MudGrid Class="mt-1">
+                            @foreach (var asset in AssetSlots)
+                            {
+                                <MudItem xs="12" sm="6" md="3">
+                                    <MudStack Spacing="1">
+                                        <MudText Typo="Typo.subtitle2">@asset.Label</MudText>
+                                        <img src="@asset.Url(_branding)" alt="@asset.Label" style="max-width: 180px; max-height: 72px; object-fit: contain;" />
+                                        @if (asset.IsLocked(_branding))
+                                        {
+                                            <MudText Typo="Typo.caption" Color="Color.Warning">Managed by deployment configuration</MudText>
+                                        }
+                                        else
+                                        {
+                                            <InputFile OnChange="@(eventArgs => UploadAsync(asset.Slot, eventArgs.File))" accept="image/png,image/jpeg,image/x-icon,image/vnd.microsoft.icon" />
+                                        }
+                                    </MudStack>
+                                </MudItem>
+                            }
+                        </MudGrid>
+                    </MudPaper>
+                </MudItem>
+            </MudGrid>
+        }
+    </MudStack>
+</MudContainer>
+
+@code {
+    private sealed record AssetSlot(string Slot, string Label, Func<EffectiveDeploymentBranding, string> Url, Func<EffectiveDeploymentBranding, bool> IsLocked);
+    private static readonly IReadOnlyList<AssetSlot> AssetSlots =
+    [
+        new("logo-light", "Light logo", value => value.LogoLightUrl.Value, value => value.LogoLightUrl.IsLocked),
+        new("logo-dark", "Dark logo", value => value.LogoDarkUrl.Value, value => value.LogoDarkUrl.IsLocked),
+        new("compact-logo", "Compact logo", value => value.CompactLogoUrl.Value, value => value.CompactLogoUrl.IsLocked),
+        new("favicon", "Favicon", value => value.FaviconUrl.Value, value => value.FaviconUrl.IsLocked)
+    ];
+
+    private EffectiveDeploymentBranding? _branding;
+    private string? _applicationName;
+    private string? _organizationName;
+    private string? _tagline;
+    private string? _supportUrl;
+    private string? _siteUrl;
+    private bool _loading = true;
+    private bool _saving;
+    private IDisposable? _locationRegistration;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _locationRegistration = Navigation.RegisterLocationChangingHandler(OnLocationChanging);
+        try
+        {
+            await ReloadAsync();
+        }
+        catch (HttpRequestException)
+        {
+            Snackbar.Add("You do not have instance branding administration permission.", Severity.Error);
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private bool IsDirty => _branding is not null &&
+        (_applicationName != _branding.ApplicationName.Value || _organizationName != _branding.OrganizationName.Value ||
+         _tagline != _branding.Tagline.Value || _supportUrl != _branding.SupportUrl.Value || _siteUrl != _branding.SiteUrl.Value);
+
+    private async Task SaveAsync()
+    {
+        if (_branding is null) return;
+        _saving = true;
+        try
+        {
+            var fields = new[]
+            {
+                Update("applicationName", _applicationName, _branding.ApplicationName),
+                Update("organizationName", _organizationName, _branding.OrganizationName),
+                Update("tagline", _tagline, _branding.Tagline),
+                Update("supportUrl", _supportUrl, _branding.SupportUrl),
+                Update("siteUrl", _siteUrl, _branding.SiteUrl)
+            }.Where(value => value is not null).Cast<BrandingFieldUpdate>().ToArray();
+            if (fields.Length > 0)
+            {
+                _branding = await BrandingApi.UpdateAsync(fields);
+                CopyDraft(_branding);
+                Snackbar.Add("Branding saved. Asset URLs include a new version for cache invalidation.", Severity.Success);
+            }
+        }
+        catch (HttpRequestException exception)
+        {
+            Snackbar.Add($"Branding could not be saved: {exception.Message}", Severity.Error);
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private async Task ResetEditableAsync()
+    {
+        if (_branding is null) return;
+        _saving = true;
+        try
+        {
+            var fields = new[] { "applicationName", "organizationName", "tagline", "supportUrl", "siteUrl" }
+                .Where(field => !IsLocked(field))
+                .Select(field => new BrandingFieldUpdate(field, null, true)).ToArray();
+            if (fields.Length > 0)
+            {
+                _branding = await BrandingApi.UpdateAsync(fields);
+                CopyDraft(_branding);
+                Snackbar.Add("Stored overrides were reset; deployment configuration and NetRatel defaults remain in effect.", Severity.Success);
+            }
+        }
+        catch (HttpRequestException exception)
+        {
+            Snackbar.Add($"Branding could not be reset: {exception.Message}", Severity.Error);
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private async Task UploadAsync(string slot, IBrowserFile file)
+    {
+        _saving = true;
+        try
+        {
+            await BrandingApi.UploadAsync(slot, file);
+            await ReloadAsync();
+            Snackbar.Add("Asset uploaded and versioned for browser cache invalidation.", Severity.Success);
+        }
+        catch (Exception exception) when (exception is HttpRequestException or InvalidOperationException)
+        {
+            Snackbar.Add($"Asset upload failed: {exception.Message}", Severity.Error);
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private async Task ReloadAsync()
+    {
+        _branding = await BrandingApi.GetPublicAsync();
+        CopyDraft(_branding);
+    }
+
+    private void Discard()
+    {
+        if (_branding is not null) CopyDraft(_branding);
+    }
+
+    private static BrandingFieldUpdate? Update(string field, string? value, BrandingField current) =>
+        current.IsLocked || value == current.Value ? null : new BrandingFieldUpdate(field, value, false);
+
+    private bool IsLocked(string field) => field switch
+    {
+        "applicationName" => _branding!.ApplicationName.IsLocked,
+        "organizationName" => _branding!.OrganizationName.IsLocked,
+        "tagline" => _branding!.Tagline.IsLocked,
+        "supportUrl" => _branding!.SupportUrl.IsLocked,
+        "siteUrl" => _branding!.SiteUrl.IsLocked,
+        _ => true
+    };
+
+    private void CopyDraft(EffectiveDeploymentBranding value)
+    {
+        _applicationName = value.ApplicationName.Value;
+        _organizationName = value.OrganizationName.Value;
+        _tagline = value.Tagline.Value;
+        _supportUrl = value.SupportUrl.Value;
+        _siteUrl = value.SiteUrl.Value;
+    }
+
+    private ValueTask OnLocationChanging(LocationChangingContext context)
+    {
+        if (IsDirty)
+        {
+            context.PreventNavigation();
+            Snackbar.Add("Discard or save deployment branding changes before leaving this page.", Severity.Warning);
+        }
+        return ValueTask.CompletedTask;
+    }
+
+    private static string SourceText(BrandingField field) => field.Source switch
+    {
+        BrandingValueSource.Deployment => "Managed by deployment configuration",
+        BrandingValueSource.Administrator => "Stored administrator override",
+        _ => "Inherited NetRatel default"
+    };
+
+    public void Dispose() => _locationRegistration?.Dispose();
+}

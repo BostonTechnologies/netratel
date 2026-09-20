@@ -2,6 +2,8 @@
 @implements IAsyncDisposable
 @inject IJSRuntime JS
 @inject Microsoft.Extensions.Configuration.IConfiguration Configuration
+@inject IDeploymentBrandingApiService BrandingApi
+@inject ILogger<MainLayout> Logger
 
 <ThemePreferenceProvider Context="themePreference">
 <MudPopoverProvider />
@@ -18,11 +20,11 @@
                            OnClick="ToggleDrawer"
                            aria-label="Toggle navigation"
                            data-testid="navigation-toggle" />
-            <a class="netratel-appbar-brand" href="/" aria-label="NetRatel home">
-                <img src="brand/netratel-wordmark-600.webp"
+            <a class="netratel-appbar-brand" href="/" aria-label="@($"{ApplicationName} home")">
+                <img src="@LogoUrl(themePreference.IsDarkMode)"
                      width="600"
                      height="200"
-                     alt="NetRatel" />
+                     alt="@ApplicationName" />
             </a>
         </div>
         <div class="netratel-appbar-search-wrap">
@@ -30,9 +32,9 @@
                     class="netratel-appbar-search"
                     @onclick="OpenSearch"
                     data-testid="global-search"
-                    aria-label="Search NetRatel">
+                    aria-label="@($"Search {ApplicationName}")">
                 <MudIcon Icon="@Icons.Material.Filled.Search" Size="Size.Small" />
-                <span>Search NetRatel</span>
+                <span>Search @ApplicationName</span>
                 <kbd>Shift + S</kbd>
             </button>
         </div>
@@ -139,12 +141,27 @@
     private bool _drawerOpen = true;
     private bool _searchOpen;
     private AppBarVersionDetails _appBarVersion = new("NetRatel.Web", "vdev", "dev", "Fallback", "unknown");
+    private EffectiveDeploymentBranding? _branding;
     private DotNetObjectReference<MainLayout>? _dotNetRef;
     private int? _hotkeyRegistrationId;
 
-    protected override void OnInitialized()
+    private string ApplicationName => _branding?.ApplicationName.Value ?? "NetRatel";
+    private string LogoUrl(bool isDarkMode) => isDarkMode
+        ? _branding?.LogoDarkUrl.Value ?? "brand/netratel-wordmark-600.webp"
+        : _branding?.LogoLightUrl.Value ?? "brand/netratel-wordmark-600.webp";
+
+    protected override async Task OnInitializedAsync()
     {
         _appBarVersion = AppBarVersionResolver.ResolveDetails(Configuration, typeof(MainLayout).Assembly);
+        try
+        {
+            _branding = await BrandingApi.GetPublicAsync();
+        }
+        catch (HttpRequestException exception)
+        {
+            // A transient branding read must never hide the authenticated shell.
+            Logger.LogDebug(exception, "Could not read public deployment branding while loading the application shell.");
+        }
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)

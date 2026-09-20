@@ -81,6 +81,7 @@ public static class ApiEndpointRegistrationExtensions
         app.MapLocalAuthenticationEndpoints();
         app.MapIntegrationCredentialEndpoints();
         app.MapMcpLocalDelegationEndpoints();
+        app.MapDeploymentBrandingEndpoints();
         app.MapAccessAdministrationEndpoints();
         app.MapM2MTokenEndpoints();
         app.MapInternalEndpoints();

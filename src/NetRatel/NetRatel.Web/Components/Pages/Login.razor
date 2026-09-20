@@ -9,6 +9,7 @@
 @inject AuthenticationStateProvider? AuthStateProvider
 @inject IHttpClientFactory HttpClientFactory
 @inject ILogger<Login> Logger
+@inject IDeploymentBrandingApiService BrandingApi
 
 <PageTitle>Login</PageTitle>
 
@@ -16,12 +17,12 @@
     <MudPaper Elevation="2" Class="netratel-login-panel">
         <MudStack AlignItems="AlignItems.Center" Spacing="2" Class="netratel-login-header">
             <img class="netratel-login-logo"
-                 src="brand/netratel-mark-64.png"
+                 src="@CompactLogoUrl"
                  width="64"
                  height="64"
-                 alt="NetRatel" />
-            <MudText Typo="Typo.overline" HtmlTag="p" Class="netratel-login-product">Automation Platform</MudText>
-            <MudText Typo="Typo.h4" HtmlTag="h1" Class="netratel-visually-hidden">NetRatel</MudText>
+                 alt="@ApplicationName" />
+            <MudText Typo="Typo.overline" HtmlTag="p" Class="netratel-login-product">@Tagline</MudText>
+            <MudText Typo="Typo.h4" HtmlTag="h1" Class="netratel-visually-hidden">@ApplicationName</MudText>
             <MudText Typo="Typo.body2" HtmlTag="p" Class="netratel-login-environment">@EnvironmentLabel</MudText>
         </MudStack>
 
@@ -117,6 +118,10 @@
         HasOidc;
     private bool _requiresTwoFactor;
     private bool _interactiveReady;
+    private EffectiveDeploymentBranding? _branding;
+    private string ApplicationName => _branding?.ApplicationName.Value ?? "NetRatel";
+    private string Tagline => _branding?.Tagline.Value ?? "Automation Platform";
+    private string CompactLogoUrl => _branding?.CompactLogoUrl.Value ?? "brand/netratel-mark-64.png";
 
     private string OidcLoginHref => BuildAuthHref("/auth/oidc");
 
@@ -125,6 +130,14 @@
     protected override async Task OnInitializedAsync()
     {
         _requiresTwoFactor = LocalMfa;
+        try
+        {
+            _branding = await BrandingApi.GetPublicAsync();
+        }
+        catch (HttpRequestException exception)
+        {
+            Logger.LogDebug(exception, "Could not read public deployment branding while loading login.");
+        }
         try
         {
             var setup = await HttpClientFactory.CreateClient("SystemApiNoAuth")

@@ -198,6 +198,7 @@ public sealed class SqliteProviderMigrationTests
                 await identity.Database.MigrateAsync();
                 (await identity.Database.GetAppliedMigrationsAsync()).Should().Contain("20260920085950_InitialSqlite");
                 (await identity.Database.GetAppliedMigrationsAsync()).Should().Contain("20260920121211_AddIntegrationCredentials");
+                (await identity.Database.GetAppliedMigrationsAsync()).Should().Contain("20260920170708_AddDeploymentBranding");
                 const string backupPrincipalId = "local:backup-admin";
                 identity.Users.Add(new LocalUser
                 {
@@ -225,7 +226,7 @@ public sealed class SqliteProviderMigrationTests
             await using (var db = new OrchestratorDbContext(orchestratorOptions))
             {
                 await db.Database.MigrateAsync();
-                (await db.Database.GetAppliedMigrationsAsync()).Should().HaveCount(3);
+                (await db.Database.GetAppliedMigrationsAsync()).Should().HaveCount(4);
 
                 var tenant = new Tenant { Name = "SQLite Tenant" };
                 db.Tenants.Add(tenant);
