@@ -151,8 +151,12 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             }));
         }
 
-        await firstPaintContext.AddInitScriptAsync("""
-            preference => {
+        var serializedPreference = System.Text.Json.JsonSerializer.Serialize(themeCase.Preference);
+        var serializedSurfaceSelector = System.Text.Json.JsonSerializer.Serialize(surfaceSelector);
+        await firstPaintContext.AddInitScriptAsync($$"""
+            (() => {
+                const preference = {{serializedPreference}};
+                window.__netratelThemeFirstPaintSurface = {{serializedSurfaceSelector}};
                 localStorage.setItem('netratel.theme.preference', preference);
                 const samples = [];
                 let observing = true;
@@ -179,9 +183,8 @@ public sealed class LocalFirstComposeBrowserSmokeTests
                 };
                 window.__netratelThemeFirstPaint = { samples, stop: () => { observing = false; } };
                 requestAnimationFrame(capture);
-            }
-            """, themeCase.Preference);
-        await firstPaintContext.AddInitScriptAsync("selector => { window.__netratelThemeFirstPaintSurface = selector; }", surfaceSelector);
+            })();
+            """);
 
         var releaseRuntime = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         await firstPaintContext.RouteAsync("**/_framework/blazor.web.js", async route =>
