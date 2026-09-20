@@ -17,13 +17,13 @@ public static class TenantEndpoints
         {
             var response = (await tenants.ListAsync(ct)).Select(MapResponse);
             return Results.Ok(response);
-        });
+        }).RequireAuthorization("InstanceAdministrator");
 
         group.MapGet("/{id:int}", async (int id, ITenantService tenants, CancellationToken ct) =>
         {
             var tenant = await tenants.GetAsync(id, ct);
             return tenant is null ? Results.NotFound() : Results.Ok(MapResponse(tenant));
-        });
+        }).RequireAuthorization("TenantAdministrator");
 
         group.MapPost("/", async (
             [FromBody] CreateTenantRequest request,
@@ -81,7 +81,7 @@ public static class TenantEndpoints
                 logger.LogWarning(ex, "CreateTenant rejected for {TenantName}", tenantName);
                 return Results.BadRequest(ex.Message);
             }
-        });
+        }).RequireAuthorization("InstanceAdministrator");
 
         group.MapPut("/{id:int}", async (
             int id,
@@ -153,7 +153,7 @@ public static class TenantEndpoints
             }
 
             return Results.Accepted($"Tenant update request for ID {id} received.");
-        });
+        }).RequireAuthorization("TenantAdministrator");
 
         group.MapDelete("/{id:int}", async (
             int id,
@@ -181,7 +181,7 @@ public static class TenantEndpoints
             }, ct);
 
             return Results.Accepted($"Tenant delete request for ID {id} received.");
-        });
+        }).RequireAuthorization("TenantAdministrator");
 
         return app;
     }

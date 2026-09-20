@@ -24,7 +24,7 @@ public static class AgentRemoteSupportGatewayEndpoints
     {
         var group = app.MapGroup("/api/v2/agents/{tenantId:int}/{agentId:guid}/remote-support")
             .WithTags("Gateway Remote Support")
-            .RequireAuthorization("Operator");
+            .RequireAuthorization("RemoteSupportOperator");
         group.MapPost("/sessions", OpenAsync);
         group.MapGet("/v2/capabilities", GetV2Capabilities);
         group.MapGet("/v2/inventory", GetV2Inventory);

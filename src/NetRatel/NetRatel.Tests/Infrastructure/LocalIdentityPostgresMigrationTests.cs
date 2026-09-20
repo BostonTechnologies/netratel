@@ -1,6 +1,8 @@
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using NetRatel.Infrastructure.Identity;
+using NetRatel.Infrastructure.Identity.Authorization;
 using Testcontainers.PostgreSql;
 using Xunit;
 
@@ -26,6 +28,8 @@ public sealed class LocalIdentityPostgresMigrationTests : IAsyncLifetime
 
         (await db.Database.GetAppliedMigrationsAsync())
             .Should().Contain(migration => migration.EndsWith("AddLocalIdentity", StringComparison.Ordinal));
+        (await db.Database.GetAppliedMigrationsAsync())
+            .Should().Contain(migration => migration.EndsWith("AddScopedAuthorization", StringComparison.Ordinal));
         var localUser = new LocalUser
         {
             Id = "local-admin",
@@ -41,5 +45,9 @@ public sealed class LocalIdentityPostgresMigrationTests : IAsyncLifetime
         await db.SaveChangesAsync();
 
         (await db.Users.SingleAsync()).PrincipalId.Should().Be(localUser.PrincipalId);
+
+        var access = new EffectiveAccessService(db, new ConfigurationBuilder().AddInMemoryCollection().Build());
+        await access.ReconcileBuiltInRolesAsync();
+        (await db.AccessRoles.CountAsync(role => role.IsBuiltIn)).Should().BeGreaterThan(0);
     }
 }

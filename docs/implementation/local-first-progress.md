@@ -28,8 +28,8 @@ asset replacement, package-visibility mutation, and repository-rule bypass.
 | --- | --- | --- | --- | --- |
 | P00 | [#30](https://github.com/BostonTechnologies/netratel/issues/30) | [#43](https://github.com/BostonTechnologies/netratel/pull/43) | `35d23b2` | Merged after the hosted Public PR validation run passed all component-image, native package, disclosure and OIDC smoke gates. |
 | P01 | [#31](https://github.com/BostonTechnologies/netratel/issues/31) | [#44](https://github.com/BostonTechnologies/netratel/pull/44) | `fcd202d` | Merged after hosted exact-head validation passed, including source and release-image generic OIDC Compose smoke coverage: [run 35494345483](https://github.com/BostonTechnologies/netratel/actions/runs/35494345483). |
-| P02 | [#32](https://github.com/BostonTechnologies/netratel/issues/32) | pending | pending | In progress on `feat/issue-32-local-identity`: PostgreSQL-backed local Identity model, stable principal links, protected local-account endpoints, MFA/recovery primitives, and session revalidation. |
-| P03 | [#33](https://github.com/BostonTechnologies/netratel/issues/33) | pending | pending | Blocked by P02 merge. |
+| P02 | [#32](https://github.com/BostonTechnologies/netratel/issues/32) | [#45](https://github.com/BostonTechnologies/netratel/pull/45) | `bd567c0` | Merged after exact-head Public PR validation passed, including full .NET tests, native packages, public images, HTTP MCP smoke, and source/release-image generic OIDC Compose coverage: [run 35495761003](https://github.com/BostonTechnologies/netratel/actions/runs/35495761003). |
+| P03 | [#33](https://github.com/BostonTechnologies/netratel/issues/33) | pending | pending | In progress on `feat/issue-33-scoped-rbac`. |
 | P04 | [#34](https://github.com/BostonTechnologies/netratel/issues/34) | pending | pending | Blocked by P03 merge. |
 | P05 | [#35](https://github.com/BostonTechnologies/netratel/issues/35) | pending | pending | Blocked by P04 merge. |
 | P06 | [#36](https://github.com/BostonTechnologies/netratel/issues/36) | pending | pending | Blocked by P03/P04/P05 merges. |
@@ -166,9 +166,11 @@ asset replacement, package-visibility mutation, and repository-rule bypass.
 
 ## Current checkpoint
 
-Current phase: P01. Branch: `feat/issue-31-bootstrap`. PR:
-[#44](https://github.com/BostonTechnologies/netratel/pull/44). Next action:
-merge only after hosted exact-head validation gates pass.
+Current phase: P03. Branch: `feat/issue-33-scoped-rbac`. P02 merged as
+`bd567c091cc0efe8f4d63d253aaee6180dd01d8f` through
+[#45](https://github.com/BostonTechnologies/netratel/pull/45). Next action:
+implement durable scoped effective access and route/service enforcement without
+removing established OIDC operator compatibility.
 
 ## Blockers
 

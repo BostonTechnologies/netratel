@@ -7,14 +7,19 @@ evidence that the current administrator-group policies meet scoped-RBAC needs.
 
 ## Current boundary
 
-`NetRatel.API/Program.cs` defaults all otherwise-unannotated endpoints to an
-authenticated **Operator** claim (role/group). Explicit policies are
-`Operator`, `McpOperatorPolicyAdmin`, `AkkaShadowAccess`,
+`NetRatel.API/Program.cs` retains the legacy authenticated **Operator**
+compatibility policy for unported routes. Scoped routes use one effective
+access evaluator and the explicit `InstanceAdministrator`,
+`TenantAdministrator`, `ClientManager`, `TelemetryReader`,
+`TerminalOperator`, `RemoteSupportOperator`, and `McpOperatorPolicyAdmin`
+policies. The latter preserves the legacy OIDC `netratel.mcp.admin` scope
+requirement. Other explicit policies are `Operator`, `AkkaShadowAccess`,
 `ClientArtifactsWrite`, `ClientArtifactsUpload`, `ClientArtifactsDownload`,
 `HealthRead`, `M2MOnly`, `AgentAccess`, `AgentGatewayAccess`, and
 `MachineTokenApi`. The API also has OIDC, machine-token, M2M, system and native
-agent schemes. This provides a useful separation of trust paths but does not
-yet provide a durable local principal or a shared tenant/resource evaluator.
+agent schemes. This preserves the existing trust-path separation while
+allowing durable local and external principals to be evaluated with tenant
+scope on the ported routes.
 
 ## Route families and target checks
 
@@ -34,9 +39,10 @@ yet provide a durable local principal or a shared tenant/resource evaluator.
 
 ## P03 enforcement contract
 
-P03 adds a testable endpoint-registration inventory that fails for a protected
-route without an explicit permission mapping or an approved non-business
-exception. It tests direct object reads, lists, counts, search, downloads,
-SSE/WebSocket paths, gateway admission, command dispatch and scheduled or
-background execution. Any existing confirmation, target, environment,
-approval, or idempotency restriction remains an additional constraint.
+P03 maintains a testable endpoint-registration inventory. New or ported
+protected routes must have an explicit permission mapping or an approved
+non-business exception. It covers direct object reads, lists, counts, search,
+downloads, SSE/WebSocket paths, gateway admission, command dispatch and
+scheduled or background execution. Any existing confirmation, target,
+environment, approval, or idempotency restriction remains an additional
+constraint.

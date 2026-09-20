@@ -180,7 +180,7 @@ public static class AuthEndpoints
 
         var adminGroup = app.MapGroup("/api/v1/tenants/{tenantId:int}/agents")
             .WithTags("Agent Admin")
-            .RequireAuthorization("Operator");
+            .RequireAuthorization("ClientManager");
 
         adminGroup.MapGet(string.Empty, async (
             int tenantId,
@@ -249,7 +249,7 @@ public static class AuthEndpoints
 
         var enrollmentGroup = app.MapGroup("/api/v1/tenants/{tenantId:int}/enrollment-codes")
             .WithTags("Enrollment Codes")
-            .RequireAuthorization("Operator");
+            .RequireAuthorization("ClientManager");
 
         enrollmentGroup.MapPost(string.Empty, async (
             int tenantId,
