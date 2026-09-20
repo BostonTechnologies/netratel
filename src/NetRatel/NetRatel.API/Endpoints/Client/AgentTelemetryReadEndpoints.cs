@@ -2,6 +2,7 @@ using NetRatel.Akka.Configuration;
 using NetRatel.API.Gateway;
 using NetRatel.API.Realtime;
 using NetRatel.Application.Telemetry;
+using NetRatel.Infrastructure.Identity.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System.Text.Json;
 using System.Threading.Channels;
@@ -58,10 +59,21 @@ public static class AgentTelemetryReadEndpoints
     private static async Task<IResult> GetAsync(
         int tenantId,
         Guid agentId,
+        HttpContext http,
+        IEffectiveAccessService access,
         NetRatelAkkaMigrationOptions options,
         IServiceProvider services,
         CancellationToken cancellationToken)
     {
+        // Keep the tenant scope enforcement adjacent to this resource as a
+        // defence-in-depth guard. The policy performs the same check, while
+        // this guard ensures a missing telemetry target can never mask an
+        // out-of-scope integration credential as a 404.
+        if (!await access.AuthorizeAsync(http.User, NetRatelPermissions.TelemetryRead, tenantId, cancellationToken).ConfigureAwait(false))
+        {
+            return Results.Forbid();
+        }
+
         if (!options.IsTelemetryAuthorityActive)
         {
             return Results.NotFound();

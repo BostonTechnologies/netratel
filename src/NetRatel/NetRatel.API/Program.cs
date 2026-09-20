@@ -439,6 +439,17 @@ builder.Services.AddAuthorization(options =>
         AccessTokenLifetimeMinutes = 10
     };
 
+    // A bare RequireAuthorization() only proves authentication. Integration
+    // credentials are deliberately attenuated and must therefore use a route
+    // with an explicit EffectiveAccessRequirement; otherwise a newly added
+    // authenticated endpoint could accidentally bypass their stored grant
+    // tuples. Existing OIDC, local, M2M, machine, and native-agent paths keep
+    // the established default policy unchanged.
+    options.DefaultPolicy = new AuthorizationPolicyBuilder("Bearer")
+        .RequireAuthenticatedUser()
+        .RequireAssertion(context => IntegrationCredentialAuthorizationBoundary.AllowsDefaultAuthenticatedRoute(context.User))
+        .Build();
+
     options.AddPolicy("Operator", policy =>
     {
         policy.RequireAuthenticatedUser();

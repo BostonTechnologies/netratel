@@ -80,6 +80,74 @@ public sealed class AgentClientPolicyTests
     }
 
     [Fact]
+    public void Isolated_stdio_configuration_accepts_only_its_explicit_integration_credential_contract()
+    {
+        var configuration = new AgentClientConfiguration("https://isolated-api.example", null, null, null, null, null)
+        {
+            IntegrationCredential = "nrt_ic_12345678opaque"
+        };
+
+        var resolved = configuration.Resolve();
+
+        resolved.AuthenticationMode.Should().Be(AgentClientAuthenticationMode.IntegrationCredential);
+        resolved.IntegrationCredential.Should().Be("nrt_ic_12345678opaque");
+    }
+
+    [Fact]
+    public async Task Agent_client_sends_an_integration_credential_directly_without_oidc_fallback()
+    {
+        var calls = 0;
+        var client = new NetRatelAgentClient(
+            new AgentClientConfiguration("https://api.example", null, null, null, null, null)
+            {
+                IntegrationCredential = "nrt_ic_12345678opaque"
+            },
+            () => new RecordingHandler(request =>
+            {
+                calls++;
+                request.RequestUri!.Host.Should().Be("api.example");
+                request.Headers.Authorization!.Parameter.Should().Be("nrt_ic_12345678opaque");
+                return Task.FromResult(Json(HttpStatusCode.Unauthorized, "{\"code\":\"invalid_integration_credential\"}"));
+            }));
+
+        var action = () => client.GetAsync("/api/v2/agents/7/telemetry");
+
+        await action.Should().ThrowAsync<AgentClientRemoteException>();
+        calls.Should().Be(1, "a rejected integration credential must not fall back to OIDC");
+    }
+
+    [Fact]
+    public async Task Isolated_stdio_api_m2m_mode_remains_explicit_and_uses_the_configured_client_secret_flow()
+    {
+        var calls = 0;
+        var client = new NetRatelAgentClient(
+            new AgentClientConfiguration("https://api.example", null, null, null, null, null)
+            {
+                ApiM2MTokenUrl = "https://api.example/connect/token",
+                ApiM2MClientId = "stdio-client",
+                ApiM2MClientSecret = "synthetic-secret",
+                ApiM2MScope = "netratel.api"
+            },
+            () => new RecordingHandler(async request =>
+            {
+                calls++;
+                if (request.RequestUri!.AbsolutePath == "/connect/token")
+                {
+                    var body = await request.Content!.ReadAsStringAsync();
+                    body.Should().Contain("client_id=stdio-client").And.NotContain("username=");
+                    return Json(HttpStatusCode.OK, "{\"access_token\":\"m2m-token\",\"expires_in\":300}");
+                }
+
+                request.Headers.Authorization!.Parameter.Should().Be("m2m-token");
+                return Json(HttpStatusCode.OK, "[]");
+            }));
+
+        await client.GetAsync("/api/v2/agents/7/telemetry");
+
+        calls.Should().Be(2);
+    }
+
+    [Fact]
     public async Task Isolated_configuration_requires_an_explicit_file()
     {
         var missingPath = Path.Combine(Path.GetTempPath(), $"netratel-mcp-missing-{Guid.NewGuid():N}.json");

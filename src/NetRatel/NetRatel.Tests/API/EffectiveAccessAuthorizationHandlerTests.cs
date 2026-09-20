@@ -14,6 +14,16 @@ namespace NetRatel.Tests.API;
 public sealed class EffectiveAccessAuthorizationHandlerTests
 {
     [Fact]
+    public void Integration_credentials_cannot_use_a_route_with_only_the_default_authenticated_policy()
+    {
+        var integrationCredential = new ClaimsPrincipal(new ClaimsIdentity([new Claim("auth_mode", "integration_credential")], "IntegrationCredential"));
+        var localAccount = new ClaimsPrincipal(new ClaimsIdentity([new Claim("auth_mode", "local")], "NetRatelLocal"));
+
+        IntegrationCredentialAuthorizationBoundary.AllowsDefaultAuthenticatedRoute(integrationCredential).Should().BeFalse();
+        IntegrationCredentialAuthorizationBoundary.AllowsDefaultAuthenticatedRoute(localAccount).Should().BeTrue();
+    }
+
+    [Fact]
     public async Task Tenant_route_authorization_does_not_cross_assignment_scope()
     {
         await using var db = CreateDb();

@@ -28,7 +28,7 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
     }
 
     [Fact]
-    public void Renders_Four_Lazy_Management_Tabs_With_Paging_And_Friendly_Identity()
+    public async Task Renders_Four_Lazy_Management_Tabs_With_Paging_And_Friendly_Identity()
     {
         var cut = Render<ClientsMgmt>();
 
@@ -44,12 +44,12 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
             _artifacts.ReleasePageRequests.Should().Be(0);
         });
 
-        cut.FindAll(".mud-tab").Single(x => x.TextContent.Contains("Auto-update Releases")).Click();
+        await cut.InvokeAsync(() => cut.FindAll(".mud-tab").Single(x => x.TextContent.Contains("Auto-update Releases")).Click());
         cut.WaitForAssertion(() => _artifacts.ReleasePageRequests.Should().BeGreaterThan(0));
-        cut.FindAll("button").Single(x => x.TextContent.Trim() == "Disable").Click();
+        await cut.InvokeAsync(() => cut.FindAll("button").Single(x => x.TextContent.Trim() == "Disable").Click());
         cut.WaitForAssertion(() => _artifacts.DisabledReleaseId.Should().Be(ReleaseId));
 
-        cut.FindAll(".mud-tab").Single(x => x.TextContent.Contains("Update Attempts")).Click();
+        await cut.InvokeAsync(() => cut.FindAll(".mud-tab").Single(x => x.TextContent.Contains("Update Attempts")).Click());
         cut.WaitForAssertion(() =>
         {
             cut.Markup.Should().Contain("All states");
@@ -57,16 +57,16 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
             cut.Markup.Should().Contain("Canary");
             _artifacts.AttemptPageRequests.Should().BeGreaterThan(0);
         });
-        cut.Find("button.mud-table-row-expander").Click();
+        await cut.InvokeAsync(() => cut.Find("button.mud-table-row-expander").Click());
         cut.WaitForAssertion(() =>
         {
             cut.Markup.Should().Contain("activation_timeout");
             cut.Markup.Should().Contain("canary-host");
         });
 
-        cut.FindAll(".mud-tab").Single(x => x.TextContent.Contains("Suspended Agents")).Click();
+        await cut.InvokeAsync(() => cut.FindAll(".mud-tab").Single(x => x.TextContent.Contains("Suspended Agents")).Click());
         cut.WaitForAssertion(() => cut.Markup.Should().Contain("operator-review"));
-        cut.FindAll("button").Single(x => x.TextContent.Trim() == "Resume future updates").Click();
+        await cut.InvokeAsync(() => cut.FindAll("button").Single(x => x.TextContent.Trim() == "Resume future updates").Click());
         cut.WaitForAssertion(() => _artifacts.ResumedAgent.Should().Be((7, AgentId)));
     }
 

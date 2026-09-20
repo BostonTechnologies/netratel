@@ -158,6 +158,12 @@ public sealed class NetRatelAgentClient(AgentClientConfiguration configuration, 
 
     private async Task<string> GetAccessTokenAsync(ResolvedAgentClientConfiguration config, CancellationToken ct)
     {
+        if (config.AuthenticationMode is AgentClientAuthenticationMode.IntegrationCredential)
+        {
+            return config.IntegrationCredential
+                ?? throw new AgentClientValidationException("An integration credential is required for integration credential mode.");
+        }
+
         // Do not reuse an expired access token. Keep a small safety margin so a
         // request cannot begin with a token that expires while it is in flight.
         if (HasUsableAccessToken()) return _accessToken!;
@@ -169,15 +175,27 @@ public sealed class NetRatelAgentClient(AgentClientConfiguration configuration, 
 
             using var client = _handlerFactory is null ? new HttpClient() : new HttpClient(_handlerFactory(), disposeHandler: true);
             client.Timeout = TimeSpan.FromSeconds(30);
-            using var response = await client.PostAsync(config.OidcTokenUrl, new FormUrlEncodedContent(new Dictionary<string, string>
-            {
-                ["grant_type"] = "client_credentials",
-                ["client_id"] = config.OidcClientId,
-                ["client_secret"] = config.OidcAppPassword,
-                ["username"] = config.OidcUsername,
-                ["password"] = config.OidcAppPassword,
-                ["scope"] = config.OidcScope
-            }), ct).ConfigureAwait(false);
+            var tokenUrl = config.AuthenticationMode is AgentClientAuthenticationMode.ApiM2MClientSecret
+                ? config.ApiM2MTokenUrl
+                : config.OidcTokenUrl;
+            var tokenRequest = config.AuthenticationMode is AgentClientAuthenticationMode.ApiM2MClientSecret
+                ? new Dictionary<string, string>
+                {
+                    ["grant_type"] = "client_credentials",
+                    ["client_id"] = config.ApiM2MClientId!,
+                    ["client_secret"] = config.ApiM2MClientSecret!,
+                    ["scope"] = config.ApiM2MScope!
+                }
+                : new Dictionary<string, string>
+                {
+                    ["grant_type"] = "client_credentials",
+                    ["client_id"] = config.OidcClientId,
+                    ["client_secret"] = config.OidcAppPassword,
+                    ["username"] = config.OidcUsername,
+                    ["password"] = config.OidcAppPassword,
+                    ["scope"] = config.OidcScope
+                };
+            using var response = await client.PostAsync(tokenUrl, new FormUrlEncodedContent(tokenRequest), ct).ConfigureAwait(false);
             var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode) throw new AgentClientRemoteException("auth_token_failed", $"Oidc token mint failed with HTTP {(int)response.StatusCode}.", (int)response.StatusCode, body);
             using var document = JsonDocument.Parse(body);
