@@ -206,8 +206,7 @@ public sealed class ClientUpdateAuthorityService(
         {
             await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         }
-        catch (DbUpdateException exception) when (
-            exception.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation })
+        catch (DbUpdateException exception) when (DatabaseExceptionClassifier.IsUniqueViolation(exception))
         {
             db.ChangeTracker.Clear();
             attempt = await db.ClientUpdateAttempts.SingleAsync(
@@ -497,16 +496,28 @@ public sealed class ClientUpdateAuthorityService(
 
     private async Task<long> IncrementRevisionAsync(CancellationToken cancellationToken)
     {
-        await db.Database.ExecuteSqlRawAsync(
-            "INSERT INTO \"ClientUpdateCatalogRevision\" (\"Id\", \"Revision\", \"UpdatedAtUtc\") VALUES (1, 1, now()) " +
-            "ON CONFLICT (\"Id\") DO UPDATE SET \"Revision\" = \"ClientUpdateCatalogRevision\".\"Revision\" + 1, \"UpdatedAtUtc\" = now()",
-            cancellationToken).ConfigureAwait(false);
+        if (string.Equals(db.Database.ProviderName, "Microsoft.EntityFrameworkCore.Sqlite", StringComparison.Ordinal))
+        {
+            await db.Database.ExecuteSqlRawAsync(
+                "INSERT INTO \"ClientUpdateCatalogRevision\" (\"Id\", \"Revision\", \"UpdatedAtUtc\") VALUES (1, 1, CURRENT_TIMESTAMP) " +
+                "ON CONFLICT (\"Id\") DO UPDATE SET \"Revision\" = \"ClientUpdateCatalogRevision\".\"Revision\" + 1, \"UpdatedAtUtc\" = CURRENT_TIMESTAMP",
+                cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            await db.Database.ExecuteSqlRawAsync(
+                "INSERT INTO \"ClientUpdateCatalogRevision\" (\"Id\", \"Revision\", \"UpdatedAtUtc\") VALUES (1, 1, now()) " +
+                "ON CONFLICT (\"Id\") DO UPDATE SET \"Revision\" = \"ClientUpdateCatalogRevision\".\"Revision\" + 1, \"UpdatedAtUtc\" = now()",
+                cancellationToken).ConfigureAwait(false);
+        }
         return await db.ClientUpdateCatalogRevisions.AsNoTracking()
             .Where(x => x.Id == 1).Select(x => x.Revision).SingleAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private Task NotifyAsync(long revision, CancellationToken cancellationToken) =>
-        db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_notify('netratel_client_updates', {revision.ToString()})", cancellationToken);
+        db.Database.IsNpgsql()
+            ? db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_notify('netratel_client_updates', {revision.ToString()})", cancellationToken)
+            : Task.CompletedTask;
 
     private async Task RefreshCatalogSafelyAsync(CancellationToken cancellationToken)
     {

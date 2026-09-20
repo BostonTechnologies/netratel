@@ -1,7 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using NetRatel.Application.Commands;
-using Npgsql;
 
 namespace NetRatel.Infrastructure.Persistence;
 
@@ -133,11 +132,7 @@ public sealed class CommandPersistenceStore(
     }
 
     private static bool IsConcurrentInboxDuplicate(DbUpdateException exception) =>
-        exception.GetBaseException() is PostgresException
-        {
-            SqlState: PostgresErrorCodes.UniqueViolation,
-            ConstraintName: InboxIdempotencyConstraint
-        };
+        DatabaseExceptionClassifier.IsUniqueViolation(exception, InboxIdempotencyConstraint);
 
     private static ulong ReadCounter(ref long counter) =>
         checked((ulong)Math.Max(0, Interlocked.Read(ref counter)));
