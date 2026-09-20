@@ -116,9 +116,9 @@ public sealed class LocalFirstComposeBrowserSmokeTests
 
     private static readonly FirstPaintCase[] FirstPaintCases =
     [
-        new(ColorScheme.Dark, " system ", "dark", "rgb(12, 15, 19)", "rgb(23, 28, 35)", "rgb(21, 25, 31)", "rgb(18, 23, 29)", "rgb(237, 241, 245)"),
-        new(ColorScheme.Light, " DARK ", "dark", "rgb(12, 15, 19)", "rgb(23, 28, 35)", "rgb(21, 25, 31)", "rgb(18, 23, 29)", "rgb(237, 241, 245)"),
-        new(ColorScheme.Dark, " light ", "light", "rgb(245, 247, 250)", "rgb(255, 255, 255)", "rgb(255, 255, 255)", "rgb(255, 255, 255)", "rgb(21, 34, 51)"),
+        new(ColorScheme.Dark, " system ", "dark", "rgb(12, 15, 19)", "rgb(23, 28, 35)", "rgba(5, 13, 34, 0.84)", "rgb(21, 25, 31)", "rgb(18, 23, 29)", "rgb(237, 241, 245)"),
+        new(ColorScheme.Light, " DARK ", "dark", "rgb(12, 15, 19)", "rgb(23, 28, 35)", "rgba(5, 13, 34, 0.84)", "rgb(21, 25, 31)", "rgb(18, 23, 29)", "rgb(237, 241, 245)"),
+        new(ColorScheme.Dark, " light ", "light", "rgb(245, 247, 250)", "rgb(255, 255, 255)", "rgba(252, 254, 255, 0.92)", "rgb(255, 255, 255)", "rgb(255, 255, 255)", "rgb(21, 34, 51)"),
     ];
 
     private static async Task AssertFirstPaintAsync(
@@ -173,7 +173,8 @@ public sealed class LocalFirstComposeBrowserSmokeTests
                             scheme: getComputedStyle(document.documentElement).colorScheme,
                             body: getComputedStyle(body).backgroundColor,
                             text: heading ? getComputedStyle(heading).color : '',
-                            surface: getComputedStyle(surface).backgroundColor,
+                            surface: getComputedStyle(document.documentElement).getPropertyValue('--mud-palette-surface').trim(),
+                            visibleSurface: getComputedStyle(surface).backgroundColor,
                             appbar: appbar ? getComputedStyle(appbar).backgroundColor : '',
                             drawer: drawer ? getComputedStyle(drawer).backgroundColor : '',
                             input: input ? getComputedStyle(input).color : ''
@@ -204,7 +205,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             var firstPaint = await page.EvaluateAsync<string[]>("""
                 () => {
                     const sample = window.__netratelThemeFirstPaint.samples.at(-1);
-                    return [sample.theme, sample.scheme, sample.body, sample.text, sample.surface, sample.appbar, sample.drawer, sample.input];
+                    return [sample.theme, sample.scheme, sample.body, sample.text, sample.surface, sample.visibleSurface, sample.appbar, sample.drawer, sample.input];
                 }
                 """);
             Assert.Equal(themeCase.ExpectedTheme, firstPaint[0]);
@@ -212,11 +213,12 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             Assert.Equal(themeCase.Background, firstPaint[2]);
             Assert.Equal(themeCase.Text, firstPaint[3]);
             Assert.Equal(themeCase.Surface, firstPaint[4]);
-            Assert.Equal(themeCase.Text, firstPaint[7]);
+            Assert.Equal(themeCase.VisibleSurface, firstPaint[5]);
+            Assert.Equal(themeCase.Text, firstPaint[8]);
             if (requireApplicationSurfaces)
             {
-                Assert.Equal(themeCase.Appbar, firstPaint[5]);
-                Assert.Equal(themeCase.Drawer, firstPaint[6]);
+                Assert.Equal(themeCase.Appbar, firstPaint[6]);
+                Assert.Equal(themeCase.Drawer, firstPaint[7]);
             }
 
             releaseRuntime.TrySetResult();
@@ -225,10 +227,11 @@ public sealed class LocalFirstComposeBrowserSmokeTests
                 expected => {
                     const surface = document.querySelector(window.__netratelThemeFirstPaintSurface);
                     return surface && getComputedStyle(document.body).backgroundColor === expected.background &&
-                        getComputedStyle(surface).backgroundColor === expected.surface &&
+                        getComputedStyle(document.documentElement).getPropertyValue('--mud-palette-surface').trim() === expected.surface &&
+                        getComputedStyle(surface).backgroundColor === expected.visibleSurface &&
                         document.documentElement.dataset.netratelTheme === expected.theme;
                 }
-                """, new { background = themeCase.Background, surface = themeCase.Surface, theme = themeCase.ExpectedTheme });
+                """, new { background = themeCase.Background, surface = themeCase.Surface, visibleSurface = themeCase.VisibleSurface, theme = themeCase.ExpectedTheme });
         }
         finally
         {
@@ -243,6 +246,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         string ExpectedTheme,
         string Background,
         string Surface,
+        string VisibleSurface,
         string Appbar,
         string Drawer,
         string Text);
