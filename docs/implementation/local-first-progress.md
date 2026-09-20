@@ -27,7 +27,7 @@ asset replacement, package-visibility mutation, and repository-rule bypass.
 | Phase | Issue | PR | Merge SHA | Evidence / current state |
 | --- | --- | --- | --- | --- |
 | P00 | [#30](https://github.com/BostonTechnologies/netratel/issues/30) | [#43](https://github.com/BostonTechnologies/netratel/pull/43) | `35d23b2` | Merged after the hosted Public PR validation run passed all component-image, native package, disclosure and OIDC smoke gates. |
-| P01 | [#31](https://github.com/BostonTechnologies/netratel/issues/31) | pending | pending | Bootstrap descriptor/runtime implementation and focused validation are on `feat/issue-31-bootstrap`; hosted PR evidence is pending. |
+| P01 | [#31](https://github.com/BostonTechnologies/netratel/issues/31) | [#44](https://github.com/BostonTechnologies/netratel/pull/44) | pending | Bootstrap descriptor/runtime implementation and focused validation are on `feat/issue-31-bootstrap`; hosted exact-head evidence is pending. |
 | P02 | [#32](https://github.com/BostonTechnologies/netratel/issues/32) | pending | pending | Blocked by P01 merge. |
 | P03 | [#33](https://github.com/BostonTechnologies/netratel/issues/33) | pending | pending | Blocked by P02 merge. |
 | P04 | [#34](https://github.com/BostonTechnologies/netratel/issues/34) | pending | pending | Blocked by P03 merge. |
@@ -143,9 +143,9 @@ asset replacement, package-visibility mutation, and repository-rule bypass.
 
 ## Current checkpoint
 
-Current phase: P01. Branch: `feat/issue-31-bootstrap`. Next action: complete
-the phase's Compose/legacy-adoption coverage, open its PR, and merge only after
-the hosted exact-head validation gates pass.
+Current phase: P01. Branch: `feat/issue-31-bootstrap`. PR:
+[#44](https://github.com/BostonTechnologies/netratel/pull/44). Next action:
+merge only after hosted exact-head validation gates pass.
 
 ## Blockers
 
