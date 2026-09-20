@@ -75,6 +75,22 @@ public sealed class SqliteProviderMigrationTests
     }
 
     [Fact]
+    public void Provider_specific_models_do_not_cross_contaminate_a_shared_process()
+    {
+        using var sqlite = new OrchestratorDbContext(new DbContextOptionsBuilder<OrchestratorDbContext>()
+            .UseSqlite("Data Source=/tmp/netratel-model-cache.sqlite", provider =>
+                provider.MigrationsAssembly("NetRatel.SqliteMigrations"))
+            .Options);
+        _ = sqlite.Model;
+
+        using var postgres = new OrchestratorDbContext(new DbContextOptionsBuilder<OrchestratorDbContext>()
+            .UseNpgsql("Host=localhost;Database=netratel_model_cache;Username=test;Password=test")
+            .Options);
+
+        GlobalSearchEndpoints.BuildAgentQuery(postgres, "needle").ToQueryString().Should().Contain("ILIKE");
+    }
+
+    [Fact]
     public async Task Versioned_sqlite_migrations_preserve_identity_and_case_insensitive_directory_search()
     {
         var databasePath = Path.Combine(Path.GetTempPath(), $"netratel-sqlite-{Guid.NewGuid():N}.db");
@@ -127,16 +143,28 @@ public sealed class SqliteProviderMigrationTests
                 db.Tenants.Add(tenant);
                 await db.SaveChangesAsync();
 
+                var createdAtUtc = DateTimeOffset.UtcNow;
+                var earlierAgentId = Guid.NewGuid();
                 var agentId = Guid.NewGuid();
+                db.Agents.Add(new Agent
+                {
+                    Id = earlierAgentId,
+                    TenantId = tenant.Id,
+                    Name = "earlier-field-agent",
+                    CreatedAtUtc = createdAtUtc.AddMinutes(-1)
+                });
                 db.Agents.Add(new Agent
                 {
                     Id = agentId,
                     TenantId = tenant.Id,
                     Name = "field-linux-agent",
                     DeviceInfoJson = """{"os":"Linux"}""",
-                    CreatedAtUtc = DateTimeOffset.UtcNow
+                    CreatedAtUtc = createdAtUtc
                 });
                 await db.SaveChangesAsync();
+
+                (await db.Agents.AsNoTracking().OrderBy(agent => agent.CreatedAtUtc).Take(2)
+                    .Select(agent => agent.Id).ToArrayAsync()).Should().Equal(earlierAgentId, agentId);
 
                 var rows = await GlobalSearchEndpoints.BuildAgentQuery(db, "LINUX").ToListAsync();
                 rows.Should().ContainSingle(row => row.AgentId == agentId);
@@ -159,7 +187,7 @@ public sealed class SqliteProviderMigrationTests
             await using (var restarted = new OrchestratorDbContext(orchestratorOptions))
             {
                 await restarted.Database.MigrateAsync();
-                (await restarted.Agents.CountAsync()).Should().Be(1);
+                (await restarted.Agents.CountAsync()).Should().Be(2);
             }
 
             await using (var backupConnection = new SqliteConnection(connectionString))
@@ -192,7 +220,7 @@ public sealed class SqliteProviderMigrationTests
             await using (var restored = new OrchestratorDbContext(restoredOrchestratorOptions))
             {
                 await restored.Database.MigrateAsync();
-                (await restored.Agents.CountAsync()).Should().Be(1);
+                (await restored.Agents.CountAsync()).Should().Be(2);
                 var enrollment = await new EnrollmentCodeIssueService(restored).IssueAsync(
                     new EnrollmentCodeIssueRequest(1, 60, 1, "backup-admin", "restore verification"),
                     TestContext.Current.CancellationToken);
