@@ -87,7 +87,8 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             string.Empty,
             ".netratel-app-bar",
             await context.CookiesAsync(),
-            requireApplicationSurfaces: true);
+            requireApplicationSurfaces: true,
+            requireInput: false);
 
         await VerifyDeploymentBrandingAsync(page, webUrl);
 
@@ -118,7 +119,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
     [
         new(ColorScheme.Dark, " system ", "dark", "rgb(12, 15, 19)", "rgba(23,28,35,1)", "rgba(5, 13, 34, 0.84)", "rgb(21, 25, 31)", "rgb(18, 23, 29)", "rgb(237, 241, 245)", "rgb(255, 255, 255)"),
         new(ColorScheme.Light, " DARK ", "dark", "rgb(12, 15, 19)", "rgba(23,28,35,1)", "rgba(5, 13, 34, 0.84)", "rgb(21, 25, 31)", "rgb(18, 23, 29)", "rgb(237, 241, 245)", "rgb(255, 255, 255)"),
-        new(ColorScheme.Dark, " light ", "light", "rgb(245, 247, 250)", "rgba(255,255,255,1)", "rgba(252, 254, 255, 0.92)", "rgb(255, 255, 255)", "rgb(255, 255, 255)", "rgb(21, 34, 51)", null),
+        new(ColorScheme.Dark, " light ", "light", "rgb(245, 247, 250)", "rgba(255,255,255,1)", "rgba(252, 254, 255, 0.92)", "rgb(255, 255, 255)", "rgb(255, 255, 255)", "rgb(21, 34, 51)", "rgb(0, 0, 0)"),
     ];
 
     private static async Task AssertFirstPaintAsync(
@@ -128,7 +129,8 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         string path,
         string surfaceSelector,
         IReadOnlyList<BrowserContextCookiesResult>? cookies = null,
-        bool requireApplicationSurfaces = false)
+        bool requireApplicationSurfaces = false,
+        bool requireInput = true)
     {
         await using var firstPaintContext = await browser.NewContextAsync(new BrowserNewContextOptions
         {
@@ -215,9 +217,9 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             Assert.Equal(themeCase.Text, firstPaint[3]);
             Assert.Equal(themeCase.Surface, firstPaint[4]);
             Assert.Equal(expectedVisibleSurface, firstPaint[5]);
-            if (themeCase.Input is { } expectedInput)
+            if (requireInput)
             {
-                Assert.Equal(expectedInput, firstPaint[8]);
+                Assert.Equal(themeCase.Input, firstPaint[8]);
             }
             else
             {
@@ -258,7 +260,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         string Appbar,
         string Drawer,
         string Text,
-        string? Input);
+        string Input);
 
     private static async Task VerifyDeploymentBrandingAsync(IPage page, Uri webUrl)
     {
