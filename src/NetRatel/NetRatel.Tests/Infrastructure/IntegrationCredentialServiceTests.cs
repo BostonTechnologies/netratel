@@ -99,6 +99,28 @@ public sealed class IntegrationCredentialServiceTests
         await unpairedHttp.Should().ThrowAsync<ArgumentException>();
     }
 
+    [Fact]
+    public async Task Current_http_mcp_verification_rechecks_resource_owner_state_and_revocation()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        await using var db = CreateDb(connection);
+        await db.Database.EnsureCreatedAsync();
+        db.Users.Add(new LocalUser { Id = "local-user", PrincipalId = "principal-a", UserName = "owner", IsEnabled = true });
+        await db.SaveChangesAsync();
+        var service = new IntegrationCredentialService(db);
+        var created = await service.CreateAsync("principal-a", new(
+            "Local HTTP MCP", IntegrationCredentialPurpose.HttpMcp, DateTimeOffset.UtcNow.AddDays(7),
+            [new(7, NetRatelPermissions.TelemetryRead)], "https://mcp.example.test/mcp"));
+
+        var current = await service.VerifyCurrentAsync(created.CredentialId, IntegrationCredentialPurpose.HttpMcp);
+        current.Should().NotBeNull();
+        current!.Resource.Should().Be("https://mcp.example.test/mcp");
+
+        await service.RevokeAsync("principal-a", created.CredentialId, "principal-a");
+        (await service.VerifyCurrentAsync(created.CredentialId, IntegrationCredentialPurpose.HttpMcp)).Should().BeNull();
+    }
+
     private static NetRatelIdentityDbContext CreateDb(SqliteConnection connection) => new(
         new DbContextOptionsBuilder<NetRatelIdentityDbContext>().UseSqlite(connection).Options);
 }

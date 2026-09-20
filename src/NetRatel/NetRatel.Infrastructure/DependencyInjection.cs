@@ -42,6 +42,7 @@ public static class DependencyInjection
         services.AddScoped<IApplicationPrincipalResolver, ApplicationPrincipalResolver>();
         services.AddScoped<IEffectiveAccessService, EffectiveAccessService>();
         services.AddScoped<IIntegrationCredentialService, IntegrationCredentialService>();
+        services.AddScoped<IIntegrationCredentialCurrentVerifier, IntegrationCredentialService>();
         services.AddNetRatelCommandPersistence();
         services.AddNetRatelJobShadowPersistence();
         services.AddNetRatelRemoteSupportLifecycle();

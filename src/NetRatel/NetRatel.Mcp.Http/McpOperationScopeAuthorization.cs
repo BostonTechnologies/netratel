@@ -38,6 +38,12 @@ public sealed class McpOperationScopeAuthorization(
         if (!NetRatelMcpCatalog.IsAvailableOverHttpIn(descriptor, hostContext))
             return McpOperationScopeDecision.Denied("operation_not_available_over_http");
 
+        // Local credentials never carry caller-selected OAuth scopes. Their
+        // exact persisted grant and current owner access are evaluated by the
+        // API exchange and again before downstream execution.
+        if (options.LocalCredentialMode && user?.HasClaim("auth_mode", "local_http_mcp") == true)
+            return McpOperationScopeDecision.Permit;
+
         if (string.Equals(hostContext.Target.Instance, "dev", StringComparison.Ordinal) && !hostContext.OperatorSurfaceEnabled)
         {
             if (access.RequiredScope == McpOperationAccessScope.Admin)

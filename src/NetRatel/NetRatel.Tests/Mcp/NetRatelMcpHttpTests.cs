@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
@@ -8,10 +9,15 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using NetRatel.AgentClient;
 using NetRatel.API.Middleware;
+using NetRatel.API.Endpoints.Auth;
+using NetRatel.API.Security.Integration;
+using NetRatel.Infrastructure.Identity;
+using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Mcp.Core;
 using NetRatel.Mcp.Http;
 using NetRatel.Shared.Operations;
@@ -21,6 +27,7 @@ using System.IdentityModel.Tokens.Jwt;
 using System.Net.Http.Json;
 using System.Security.Claims;
 using System.Text;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using Xunit;
 
@@ -251,6 +258,94 @@ public sealed class NetRatelMcpHttpTests
             .And.Contain(NetRatelMcpHttpOptions.OfflineAccessScope)
             .And.Contain("\"openid\"")
             .And.Contain("\"profile\"");
+    }
+
+    [Fact]
+    public async Task Local_credential_mode_starts_without_oidc_configuration_and_does_not_publish_oauth_metadata()
+    {
+        await using var host = await CreateApplicationAsync(localCredentialMode: true);
+        var client = host.Application.GetTestClient();
+
+        (await client.GetAsync("/health/live")).StatusCode.Should().Be(HttpStatusCode.OK);
+        (await client.GetAsync("/.well-known/oauth-protected-resource/mcp")).StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public void Local_execution_assertion_keeps_only_non_secret_credential_identity_and_permission()
+    {
+        var options = new McpOperatorDelegationOptions
+        {
+            Enabled = true,
+            Issuer = "netratel-mcp-dev",
+            Audience = "netratel-api-dev",
+            ServicePrincipal = "netratel-mcp-http-dev",
+            KeyId = "dev-2026-08",
+            SharedKeyBase64 = Convert.ToBase64String(Encoding.UTF8.GetBytes("delegation-test-key-must-be-at-least-32-bytes"))
+        };
+        var tokens = new McpOperatorDelegationTokenService(options);
+        var assertion = tokens.Create(
+            new McpOperatorDelegationIdentity("local-owner", "credential-public-id", "netratel-local-http-mcp", [], ["Operator"], ["netratel.mcp.observe"]),
+            new McpOperatorDelegationRequest("netratel_clients", "presence", "request-123", "https://mcp.dev.example/mcp", "dev", 42, Guid.NewGuid())
+            {
+                IngressCredentialId = "credential-internal-id",
+                IngressPermission = "telemetry.read"
+            });
+
+        assertion.Should().NotContain("nrt_ic_");
+        tokens.TryValidate(assertion, out var delegation).Should().BeTrue();
+        delegation!.IngressCredentialId.Should().Be("credential-internal-id");
+        delegation.IngressPermission.Should().Be("telemetry.read");
+    }
+
+    [Fact]
+    public async Task Local_exchange_requires_a_paired_resource_and_returns_only_a_short_lived_execution_assertion()
+    {
+        var options = DelegationOptions();
+        var tokens = new McpOperatorDelegationTokenService(options);
+        var agentId = Guid.NewGuid();
+        var pairing = tokens.Create(
+            new McpOperatorDelegationIdentity("netratel-local-gateway", "netratel-local-gateway", null, [], [], []),
+            new McpOperatorDelegationRequest("netratel_clients", "presence", "pairing-request", "https://mcp.dev.example/mcp", "dev", 42, agentId));
+        var builder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = Environments.Development });
+        builder.WebHost.UseTestServer();
+        builder.Services.AddAuthentication(IntegrationCredentialAuthenticationHandler.SchemeName)
+            .AddScheme<AuthenticationSchemeOptions, LocalExchangeAuthenticationHandler>(IntegrationCredentialAuthenticationHandler.SchemeName, _ => { });
+        builder.Services.AddAuthorization(options => options.AddPolicy("McpLocalDelegationExchange", policy =>
+        {
+            policy.AddAuthenticationSchemes(IntegrationCredentialAuthenticationHandler.SchemeName);
+            policy.RequireAuthenticatedUser();
+            policy.RequireAssertion(context => context.User.HasClaim("integration_credential_purpose", "http_mcp"));
+        }));
+        builder.Services.AddSingleton(tokens);
+        builder.Services.AddSingleton<IEffectiveAccessService, AllowingEffectiveAccessService>();
+        var app = builder.Build();
+        app.UseAuthentication();
+        app.UseAuthorization();
+        app.MapMcpLocalDelegationEndpoints();
+        await app.StartAsync();
+        try
+        {
+            var client = app.GetTestClient();
+            using var request = new HttpRequestMessage(HttpMethod.Post, McpLocalDelegationEndpoints.ExchangePath);
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "nrt_ic_not-forwarded-to-business-api");
+            request.Headers.Add(McpLocalDelegationEndpoints.PairingHeaderName, pairing);
+
+            using var response = await client.SendAsync(request);
+
+            response.StatusCode.Should().Be(HttpStatusCode.OK);
+            using var payload = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            var assertion = payload.RootElement.GetProperty("assertion").GetString();
+            assertion.Should().NotContain("nrt_ic_");
+            tokens.TryValidate(assertion, out var execution).Should().BeTrue();
+            execution!.Identity.Subject.Should().Be("local-owner");
+            execution.IngressCredentialId.Should().Be("credential-id");
+            execution.IngressPermission.Should().Be(NetRatelPermissions.TelemetryRead);
+            execution.Resource.Should().Be("https://mcp.dev.example/mcp");
+        }
+        finally
+        {
+            await app.DisposeAsync();
+        }
     }
 
     [Fact]
@@ -864,7 +959,7 @@ public sealed class NetRatelMcpHttpTests
         }
     }
 
-    private static async Task<TestApplication> CreateApplicationAsync(bool includeProdApiBaseUrl = true, bool useDeploymentVariables = false)
+    private static async Task<TestApplication> CreateApplicationAsync(bool includeProdApiBaseUrl = true, bool useDeploymentVariables = false, bool localCredentialMode = false)
     {
         var configurationPath = await WriteIsolatedConfigurationAsync("https://api.dev.example");
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = Environments.Development });
@@ -872,12 +967,25 @@ public sealed class NetRatelMcpHttpTests
         var values = new Dictionary<string, string?>
         {
             ["NetRatel:Mcp:Http:PublicResourceUri"] = "https://mcp.dev.example/mcp",
-            ["NetRatel:Mcp:Http:Authority"] = "https://auth.dev.example",
-            ["NetRatel:Mcp:Http:Audience"] = "https://mcp.dev.example/mcp",
-            ["NetRatel:Mcp:Http:RequiredScopes:0"] = "mcp:read",
-            ["NetRatel:Mcp:Http:RequiredGroups:0"] = "netratel-operators",
             ["NetRatel:Mcp:Http:AllowedOrigins:0"] = "https://operator.example"
         };
+        if (localCredentialMode)
+        {
+            values["NetRatel:Mcp:Http:LocalCredentialMode"] = "true";
+            values["NetRatel:Mcp:Delegation:Enabled"] = "true";
+            values["NetRatel:Mcp:Delegation:Issuer"] = "netratel-mcp-dev";
+            values["NetRatel:Mcp:Delegation:Audience"] = "netratel-api-dev";
+            values["NetRatel:Mcp:Delegation:ServicePrincipal"] = "netratel-mcp-http-dev";
+            values["NetRatel:Mcp:Delegation:KeyId"] = "test-2026-09";
+            values["NetRatel:Mcp:Delegation:SharedKeyBase64"] = Convert.ToBase64String(Encoding.UTF8.GetBytes("delegation-test-key-must-be-at-least-32-bytes"));
+        }
+        else
+        {
+            values["NetRatel:Mcp:Http:Authority"] = "https://auth.dev.example";
+            values["NetRatel:Mcp:Http:Audience"] = "https://mcp.dev.example/mcp";
+            values["NetRatel:Mcp:Http:RequiredScopes:0"] = "mcp:read";
+            values["NetRatel:Mcp:Http:RequiredGroups:0"] = "netratel-operators";
+        }
         if (useDeploymentVariables)
         {
             values[NetRatelMcpHttpOptions.InstanceEnvironmentVariable] = "dev";
@@ -999,6 +1107,44 @@ public sealed class NetRatelMcpHttpTests
             expires: DateTime.UtcNow.AddMinutes(5),
             signingCredentials: new SigningCredentials(TestSigningKey, SecurityAlgorithms.HmacSha256));
         return new JwtSecurityTokenHandler().WriteToken(token);
+    }
+
+    private static McpOperatorDelegationOptions DelegationOptions() => new()
+    {
+        Enabled = true,
+        Issuer = "netratel-mcp-dev",
+        Audience = "netratel-api-dev",
+        ServicePrincipal = "netratel-mcp-http-dev",
+        KeyId = "dev-2026-08",
+        SharedKeyBase64 = Convert.ToBase64String(Encoding.UTF8.GetBytes("delegation-test-key-must-be-at-least-32-bytes"))
+    };
+
+    private sealed class LocalExchangeAuthenticationHandler(
+        IOptionsMonitor<AuthenticationSchemeOptions> options,
+        ILoggerFactory logger,
+        UrlEncoder encoder)
+        : AuthenticationHandler<AuthenticationSchemeOptions>(options, logger, encoder)
+    {
+        protected override Task<AuthenticateResult> HandleAuthenticateAsync() => Task.FromResult(AuthenticateResult.Success(
+            new AuthenticationTicket(new ClaimsPrincipal(new ClaimsIdentity(
+            [
+                new Claim("netratel_principal_id", "local-owner"),
+                new Claim(IntegrationCredentialAuthenticationHandler.CredentialIdClaimType, "credential-id"),
+                new Claim("integration_credential_resource", "https://mcp.dev.example/mcp"),
+                new Claim("integration_credential_purpose", "http_mcp")
+            ], Scheme.Name)), Scheme.Name)));
+    }
+
+    private sealed class AllowingEffectiveAccessService : IEffectiveAccessService
+    {
+        public Task<bool> AuthorizeAsync(ClaimsPrincipal principal, string permission, int? tenantId, CancellationToken cancellationToken = default) => Task.FromResult(
+            principal.HasClaim("netratel_principal_id", "local-owner") && permission == NetRatelPermissions.TelemetryRead && tenantId == 42);
+
+        public Task<EffectiveAccessSnapshot> GetSnapshotAsync(ClaimsPrincipal principal, int? tenantId, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new EffectiveAccessSnapshot("local-owner", false, false,
+                new HashSet<string>([NetRatelPermissions.TelemetryRead], StringComparer.Ordinal)));
+
+        public Task ReconcileBuiltInRolesAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
 
     private sealed class TestApplication(WebApplication application, string configurationPath) : IAsyncDisposable

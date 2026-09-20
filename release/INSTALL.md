@@ -55,6 +55,12 @@ Optional HTTP MCP requires its separate OIDC audience, scope, group and target
 API configuration in `.env`. Use both `-f compose.images.yaml -f compose.mcp-http.yaml`
 with `--env-file .env` for config, pull and startup. It is not enabled by default.
 
+An explicit local-credential HTTP MCP alternative is documented in
+`docs/mcp-http/local-credential-mode.md` in the source bundle. It requires a
+canonical HTTPS resource URL and a paired API/MCP delegation key; it does not
+use or emulate an OIDC authority. Do not enable both identity modes for one
+MCP host.
+
 Back up PostgreSQL, signing keys and Data Protection volumes together. Do not
 delete persistent volumes during upgrades. No local administrator credentials or
 identity provider are included.

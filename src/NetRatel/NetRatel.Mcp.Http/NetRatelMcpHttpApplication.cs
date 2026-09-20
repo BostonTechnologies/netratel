@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.Options;
@@ -48,6 +49,11 @@ public static class NetRatelMcpHttpApplication
             throw new InvalidOperationException(
                 "The Production MCP host requires NetRatel:Mcp:Delegation:Enabled=true; any host that publishes V2 operator routes requires the same setting.");
         }
+        if (httpOptions.LocalCredentialMode && !delegationOptions.Enabled)
+        {
+            throw new InvalidOperationException(
+                "Local HTTP MCP credential mode requires NetRatel:Mcp:Delegation:Enabled=true so the paired API exchange remains authenticated.");
+        }
 
         var targetBinding = NetRatelMcpHttpTargetBinding.Resolve(httpOptions);
         var hostContext = new NetRatelMcpHostContext(
@@ -80,12 +86,12 @@ public static class NetRatelMcpHttpApplication
             ScopesSupported = httpOptions.AdvertisedScopes.ToArray(),
             BearerMethodsSupported = ["header"]
         };
-        builder.Services.AddSingleton(new NetRatelMcpHttpRuntimeConfiguration(httpOptions, protectedResourceMetadata));
+        builder.Services.AddSingleton(new NetRatelMcpHttpRuntimeConfiguration(httpOptions, httpOptions.LocalCredentialMode ? null : protectedResourceMetadata));
 
         builder.Services.AddAuthentication(options =>
             {
-                options.DefaultAuthenticateScheme = McpScheme;
-                options.DefaultChallengeScheme = McpScheme;
+                options.DefaultChallengeScheme = httpOptions.LocalCredentialMode ? McpLocalCredentialAuthenticationHandler.SchemeName : McpScheme;
+                options.DefaultAuthenticateScheme = httpOptions.LocalCredentialMode ? McpLocalCredentialAuthenticationHandler.SchemeName : McpScheme;
             })
             .AddJwtBearer(JwtScheme, jwtOptions =>
             {
@@ -111,14 +117,28 @@ public static class NetRatelMcpHttpApplication
                 options.ResourceMetadata = protectedResourceMetadata;
             });
 
+        if (httpOptions.LocalCredentialMode)
+        {
+            builder.Services.AddHttpContextAccessor();
+            builder.Services.AddHttpClient(McpLocalCredentialAuthenticationHandler.ApiHttpClientName, client =>
+            {
+                client.BaseAddress = targetBinding.Target.ApiBaseUri;
+                client.Timeout = TimeSpan.FromSeconds(15);
+            });
+            builder.Services.AddSingleton<McpLocalCredentialPairingService>();
+            builder.Services.AddAuthentication().AddScheme<AuthenticationSchemeOptions, McpLocalCredentialAuthenticationHandler>(
+                McpLocalCredentialAuthenticationHandler.SchemeName, _ => { });
+        }
+
         builder.Services.AddSingleton<IAuthorizationHandler, RequiredMcpClaimsHandler>();
         builder.Services.AddAuthorization(options => options.AddPolicy(PolicyName, policy =>
         {
-            policy.AddAuthenticationSchemes(McpScheme);
+            policy.AddAuthenticationSchemes(httpOptions.LocalCredentialMode ? McpLocalCredentialAuthenticationHandler.SchemeName : McpScheme);
             policy.RequireAuthenticatedUser();
-            policy.Requirements.Add(new RequiredMcpClaimsRequirement(
-                httpOptions.RequiredScopes.ToHashSet(StringComparer.Ordinal),
-                httpOptions.RequiredGroups.ToHashSet(StringComparer.Ordinal)));
+            if (!httpOptions.LocalCredentialMode)
+                policy.Requirements.Add(new RequiredMcpClaimsRequirement(
+                    httpOptions.RequiredScopes.ToHashSet(StringComparer.Ordinal),
+                    httpOptions.RequiredGroups.ToHashSet(StringComparer.Ordinal)));
         }));
         builder.Services.AddRateLimiter(options => options.AddConcurrencyLimiter(RateLimitPolicy, limiter =>
         {
@@ -141,8 +161,9 @@ public static class NetRatelMcpHttpApplication
                     async (nextContext, nextCancellationToken) =>
                     {
                         operationAuthorization.EnsureAuthorized(nextContext.User, nextContext.Params.Name, nextContext.Params.Arguments);
-                        using var delegation = services.GetRequiredService<McpOperatorDelegationPropagation>()
-                            .Begin(nextContext.User, nextContext.Params.Name, nextContext.Params.Arguments);
+                        using var delegation = await services.GetRequiredService<McpOperatorDelegationPropagation>()
+                            .BeginAsync(nextContext.User, nextContext.Params.Name, nextContext.Params.Arguments, nextCancellationToken)
+                            .ConfigureAwait(false);
                         return await next(nextContext, nextCancellationToken).ConfigureAwait(false);
                     },
                     context,
@@ -170,7 +191,8 @@ public static class NetRatelMcpHttpApplication
         app.UseAuthorization();
         app.MapHealthChecks("/health/live", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions { Predicate = check => check.Tags.Contains("live") });
         app.MapHealthChecks("/health/ready");
-        app.MapGet("/.well-known/oauth-protected-resource/mcp", () => Results.Json(runtime.ProtectedResourceMetadata)).AllowAnonymous();
+        if (runtime.ProtectedResourceMetadata is not null)
+            app.MapGet("/.well-known/oauth-protected-resource/mcp", () => Results.Json(runtime.ProtectedResourceMetadata)).AllowAnonymous();
         app.MapMcp("/mcp").RequireAuthorization(PolicyName).RequireRateLimiting(RateLimitPolicy);
     }
 
@@ -182,6 +204,7 @@ public static class NetRatelMcpHttpApplication
         destination.DevApiBaseUrl = source.DevApiBaseUrl;
         destination.ProdApiBaseUrl = source.ProdApiBaseUrl;
         destination.PublicResourceUri = source.PublicResourceUri;
+        destination.LocalCredentialMode = source.LocalCredentialMode;
         destination.Authority = source.Authority;
         destination.RequireHttpsMetadata = source.RequireHttpsMetadata;
         destination.Audience = source.Audience;
@@ -201,4 +224,4 @@ public static class NetRatelMcpHttpApplication
 
 public sealed record NetRatelMcpHttpRuntimeConfiguration(
     NetRatelMcpHttpOptions Options,
-    ProtectedResourceMetadata ProtectedResourceMetadata);
+    ProtectedResourceMetadata? ProtectedResourceMetadata);

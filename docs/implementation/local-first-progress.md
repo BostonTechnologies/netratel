@@ -33,8 +33,8 @@ asset replacement, package-visibility mutation, and repository-rule bypass.
 | P04 | [#34](https://github.com/BostonTechnologies/netratel/issues/34) | [#47](https://github.com/BostonTechnologies/netratel/pull/47) | `e022569` | Merged after exact-head Public PR validation passed, including configured OIDC source/release image Compose smoke. |
 | P05 | [#35](https://github.com/BostonTechnologies/netratel/issues/35) | [#48](https://github.com/BostonTechnologies/netratel/pull/48) | `5de0832` | Merged after exact-head validation passed the full .NET suite, local-first browser Compose, and source/release-image generic OIDC Compose smoke: [run 35509225124](https://github.com/BostonTechnologies/netratel/actions/runs/35509225124). |
 | P06 | [#36](https://github.com/BostonTechnologies/netratel/issues/36) | [#49](https://github.com/BostonTechnologies/netratel/pull/49) | `2bc881d` | Merged after exact-head Public PR validation passed, including the full .NET suite and OIDC Compose protection: [run 35511238938](https://github.com/BostonTechnologies/netratel/actions/runs/35511238938). |
-| P07 | [#37](https://github.com/BostonTechnologies/netratel/issues/37) | pending | pending | In progress on `feat/issue-37-cli-stdio-integration-credentials`; P06 is merged. |
-| P08 | [#38](https://github.com/BostonTechnologies/netratel/issues/38) | pending | pending | Blocked by P06/P07 merges. |
+| P07 | [#37](https://github.com/BostonTechnologies/netratel/issues/37) | [#50](https://github.com/BostonTechnologies/netratel/pull/50) | `863ac40748072b70935483d9f870281db683287e` | Merged after exact-head Public PR validation passed all 16 checks, including full .NET, packages/images, generic OIDC Compose and local-first browser coverage: [run 35521471258](https://github.com/BostonTechnologies/netratel/actions/runs/35521471258). |
+| P08 | [#38](https://github.com/BostonTechnologies/netratel/issues/38) | pending | pending | In progress on `feat/issue-38-http-mcp-local-delegation`; P07 is merged. |
 | P09 | [#39](https://github.com/BostonTechnologies/netratel/issues/39) | pending | pending | Blocked by P03/P05 merges. |
 | P10 | [#40](https://github.com/BostonTechnologies/netratel/issues/40) | pending | pending | Blocked by P09 merge. |
 | P11 | [#41](https://github.com/BostonTechnologies/netratel/issues/41) | pending | pending | Blocked by P07/P08/P10 merges. |
@@ -213,10 +213,10 @@ asset replacement, package-visibility mutation, and repository-rule bypass.
 
 ## Current checkpoint
 
-Current phase: P07. Branch: `feat/issue-37-cli-stdio-integration-credentials`.
-P06 merged as `2bc881d9ae4aa9b592de56c49808b7f5a6b7fb6f` through
-[#49](https://github.com/BostonTechnologies/netratel/pull/49). Next action:
-complete the P07 review checks and open its CI-gated PR.
+Current phase: P08. Branch: `feat/issue-38-http-mcp-local-delegation`.
+P07 merged as `863ac40748072b70935483d9f870281db683287e` through
+[#50](https://github.com/BostonTechnologies/netratel/pull/50). Next action:
+complete API/HTTP MCP local-delegation validation and open its CI-gated PR.
 
 ## Blockers
 

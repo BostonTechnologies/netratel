@@ -34,16 +34,23 @@ public sealed class NetRatelMcpHttpOptions
     public string DevApiBaseUrl { get; set; } = string.Empty;
     public string ProdApiBaseUrl { get; set; } = string.Empty;
     [Required, Url] public string PublicResourceUri { get; set; } = string.Empty;
-    [Required, Url] public string Authority { get; set; } = string.Empty;
+    /// <summary>
+    /// Enables manual, purpose- and resource-bound local integration
+    /// credentials. This is an explicit alternative to OIDC, not an OIDC
+    /// compatibility mode; no authorization-server metadata is contacted or
+    /// advertised when it is selected.
+    /// </summary>
+    public bool LocalCredentialMode { get; set; }
+    public string Authority { get; set; } = string.Empty;
     /// <summary>
     /// Requires HTTPS discovery metadata for the OAuth authority. This remains
     /// enabled by default and may only be disabled by a Development host for an
     /// isolated disposable test authority.
     /// </summary>
     public bool RequireHttpsMetadata { get; set; } = true;
-    [Required] public string Audience { get; set; } = string.Empty;
-    [MinLength(1)] public string[] RequiredGroups { get; set; } = [];
-    [MinLength(1)] public string[] RequiredScopes { get; set; } = [];
+    public string Audience { get; set; } = string.Empty;
+    public string[] RequiredGroups { get; set; } = [];
+    public string[] RequiredScopes { get; set; } = [];
     [Required] public string DevelopmentWriteScope { get; set; } = DefaultDevelopmentWriteScope;
     [Required] public string DevelopmentOnboardingScope { get; set; } = DefaultDevelopmentOnboardingScope;
     [Required] public string ReadScope { get; set; } = DefaultReadScope;
@@ -76,6 +83,7 @@ public sealed class NetRatelMcpHttpOptions
             DevApiBaseUrl = ValueOrConfigured(configuration, DevApiBaseUrlEnvironmentVariable, configured.DevApiBaseUrl),
             ProdApiBaseUrl = ValueOrConfigured(configuration, ProdApiBaseUrlEnvironmentVariable, configured.ProdApiBaseUrl),
             PublicResourceUri = configured.PublicResourceUri,
+            LocalCredentialMode = configured.LocalCredentialMode,
             Authority = configured.Authority,
             RequireHttpsMetadata = configured.RequireHttpsMetadata,
             Audience = configured.Audience,
@@ -144,16 +152,19 @@ public sealed class NetRatelMcpHttpOptionsValidator : IValidateOptions<NetRatelM
             failures.Add("NetRatel:Mcp:Http:DevApiBaseUrl and ProdApiBaseUrl must be distinct.");
         if (!IsCanonicalMcpResource(options.PublicResourceUri))
             failures.Add("NetRatel:Mcp:Http:PublicResourceUri must be an absolute HTTPS /mcp URI.");
-        if (!IsAuthorityUri(options.Authority, options.RequireHttpsMetadata))
+        if (!options.LocalCredentialMode && !IsAuthorityUri(options.Authority, options.RequireHttpsMetadata))
             failures.Add(options.RequireHttpsMetadata
                 ? "NetRatel:Mcp:Http:Authority must be an absolute HTTPS URI."
                 : "NetRatel:Mcp:Http:Authority must be an absolute HTTP or HTTPS URI when RequireHttpsMetadata is false.");
         if (options.MaxRequestBodyBytes is < 1_024 or > 1_048_576)
             failures.Add("NetRatel:Mcp:Http:MaxRequestBodyBytes must be between 1024 and 1048576 bytes.");
-        if (!string.Equals(Normalize(options.Audience), Normalize(options.PublicResourceUri), StringComparison.Ordinal))
+        if (!options.LocalCredentialMode && !string.Equals(Normalize(options.Audience), Normalize(options.PublicResourceUri), StringComparison.Ordinal))
             failures.Add("NetRatel:Mcp:Http:Audience must equal PublicResourceUri.");
-        ValidateValues(options.RequiredScopes, "RequiredScopes", failures);
-        ValidateValues(options.RequiredGroups, "RequiredGroups", failures);
+        if (!options.LocalCredentialMode)
+        {
+            ValidateValues(options.RequiredScopes, "RequiredScopes", failures);
+            ValidateValues(options.RequiredGroups, "RequiredGroups", failures);
+        }
         foreach (var (scopeName, scope) in new[]
                  {
                      (nameof(options.ReadScope), options.ReadScope),
