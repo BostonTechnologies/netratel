@@ -3,6 +3,7 @@ using System.Linq;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text.Json;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -526,21 +527,37 @@ public sealed class AgentTokenService : IAgentTokenService
                 return;
             }
 
-            await _db.Database.ExecuteSqlRawAsync("""
-                CREATE TABLE IF NOT EXISTS "AgentTokenEvents" (
-                    "Id" uuid NOT NULL,
-                    "TenantId" integer NOT NULL,
-                    "AgentId" uuid NOT NULL,
-                    "EventType" text NOT NULL,
-                    "CreatedAtUtc" timestamp with time zone NOT NULL,
-                    "Ip" text NULL,
-                    "UserAgent" text NULL,
-                    "DetailsJson" text NULL,
-                    CONSTRAINT "PK_AgentTokenEvents" PRIMARY KEY ("Id")
-                );
-                CREATE INDEX IF NOT EXISTS "IX_AgentTokenEvents_TenantId_AgentId_CreatedAtUtc"
-                    ON "AgentTokenEvents" ("TenantId", "AgentId", "CreatedAtUtc");
-                """, ct);
+            var createSql = _db.Database.IsNpgsql()
+                ? """
+                    CREATE TABLE IF NOT EXISTS "AgentTokenEvents" (
+                        "Id" uuid NOT NULL,
+                        "TenantId" integer NOT NULL,
+                        "AgentId" uuid NOT NULL,
+                        "EventType" text NOT NULL,
+                        "CreatedAtUtc" timestamp with time zone NOT NULL,
+                        "Ip" text NULL,
+                        "UserAgent" text NULL,
+                        "DetailsJson" text NULL,
+                        CONSTRAINT "PK_AgentTokenEvents" PRIMARY KEY ("Id")
+                    );
+                    CREATE INDEX IF NOT EXISTS "IX_AgentTokenEvents_TenantId_AgentId_CreatedAtUtc"
+                        ON "AgentTokenEvents" ("TenantId", "AgentId", "CreatedAtUtc");
+                    """
+                : """
+                    CREATE TABLE IF NOT EXISTS "AgentTokenEvents" (
+                        "Id" TEXT NOT NULL CONSTRAINT "PK_AgentTokenEvents" PRIMARY KEY,
+                        "TenantId" INTEGER NOT NULL,
+                        "AgentId" TEXT NOT NULL,
+                        "EventType" TEXT NOT NULL,
+                        "CreatedAtUtc" INTEGER NOT NULL,
+                        "Ip" TEXT NULL,
+                        "UserAgent" TEXT NULL,
+                        "DetailsJson" TEXT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS "IX_AgentTokenEvents_TenantId_AgentId_CreatedAtUtc"
+                        ON "AgentTokenEvents" ("TenantId", "AgentId", "CreatedAtUtc");
+                    """;
+            await _db.Database.ExecuteSqlRawAsync(createSql, ct);
             _agentTokenEventsTableEnsured = true;
             _logger.LogInformation("AgentTokenEvents table self-heal completed.");
         }
@@ -552,6 +569,12 @@ public sealed class AgentTokenService : IAgentTokenService
 
     private static bool IsMissingAgentTokenEventsTable(DbUpdateException ex)
     {
+        if (ex.InnerException is SqliteException sqliteEx)
+        {
+            return sqliteEx.SqliteErrorCode == 1 &&
+                   sqliteEx.Message.Contains("AgentTokenEvents", StringComparison.OrdinalIgnoreCase);
+        }
+
         if (ex.InnerException is not PostgresException pgEx)
         {
             return false;
