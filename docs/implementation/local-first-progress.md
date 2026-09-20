@@ -183,7 +183,7 @@ asset replacement, package-visibility mutation, and repository-rule bypass.
 | `feat/issue-34-sqlite-provider` | focused `McpOperatorPolicyFoundationPostgresTests` | Passed against PostgreSQL 16: a historical migration fixture retained its seeded agent/grant, translated the legacy policy, and admitted the intended catalog operations after migration. |
 | `feat/issue-34-sqlite-provider` | EF Core 10 `migrations has-pending-model-changes` for `OrchestratorDbContext` | Passed: the explicit SQLite snapshot exactly matches the runtime model; PostgreSQL-only defaults and array column types do not leak into the SQLite artifact. |
 | `feat/issue-34-sqlite-provider` | `docker compose -f compose.sqlite.yaml config --quiet` | Passed. |
-| `feat/issue-34-sqlite-provider` | disposable SQLite Compose migration/API startup | Passed: migration runner completed and API listened on 9222 with no PostgreSQL service. Test containers, volumes, images, key, and build cache were removed afterwards. |
+| `feat/issue-34-sqlite-provider` | disposable current-head SQLite Compose migration/API/Web startup | Passed: migration runner completed, API listened on 9222, Web served the setup shell on 9111, and no PostgreSQL service was present. Test containers, volumes, images, key, and 5.36 GB of build cache were removed afterwards. |
 
 ## Current checkpoint
 
