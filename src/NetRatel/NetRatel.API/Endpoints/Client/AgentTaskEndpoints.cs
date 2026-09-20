@@ -6,6 +6,7 @@ using NetRatel.API.Services.AgentDirectory;
 using NetRatel.Application.Events;
 using NetRatel.Application.Jobs;
 using NetRatel.Application.Scripts;
+using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Shared;
 using NetRatel.Shared.Contracts.Execution;
@@ -23,15 +24,15 @@ public static class AgentTaskEndpoints
     {
         var group = app.MapGroup("/api/v2/tasks")
             .WithTags("Agent Tasks")
-            .RequireAuthorization("Operator");
+            .RequireAuthorization();
 
-        group.MapGet("", async ([FromQuery] string? requestId, IJobRunService runs, CancellationToken ct) =>
+        group.MapGet("", async ([FromQuery] string? requestId, HttpContext http, [FromServices] IEffectiveAccessService access, IJobRunService runs, CancellationToken ct) =>
         {
             if (string.IsNullOrWhiteSpace(requestId))
                 return Results.StatusCode(StatusCodes.Status410Gone);
 
             var activity = await runs.GetActivityByRequestIdAsync(requestId, ct);
-            return activity is null ? Results.NotFound() : Results.Ok(new[] { Map(activity, null) });
+            return activity is null ? Results.NotFound() : !await CanExecuteAsync(http, access, activity.TenantId, ct) ? Results.Forbid() : Results.Ok(new[] { Map(activity, null) });
         });
 
         group.MapGet("/recent", async (
@@ -40,6 +41,8 @@ public static class AgentTaskEndpoints
             [FromQuery] Guid? agentId,
             [FromQuery] string? taskType,
             [FromQuery] string? status,
+            HttpContext http,
+            [FromServices] IEffectiveAccessService access,
             IJobRunService runs,
             [FromServices] OrchestratorDbContext db,
             CancellationToken ct) =>
@@ -47,7 +50,8 @@ public static class AgentTaskEndpoints
             var agents = await db.Agents.AsNoTracking().ToDictionaryAsync(x => x.Id, ct);
             var activities = await runs.ListTaskActivitiesAsync(ct);
 
-            var payload = activities
+            var visible = await FilterAuthorizedAsync(activities, activity => activity.TenantId, http.User, access, ct);
+            var payload = visible
                 .Where(x => !tenantId.HasValue || x.TenantId == tenantId)
                 .Where(x => !agentId.HasValue || x.AgentId == agentId)
                 .Where(x => string.IsNullOrWhiteSpace(taskType) || string.Equals(x.TaskType, taskType, StringComparison.OrdinalIgnoreCase))
@@ -67,6 +71,8 @@ public static class AgentTaskEndpoints
             [FromQuery] string? taskType,
             [FromQuery] string? status,
             [FromQuery] string? requestId,
+            HttpContext http,
+            [FromServices] IEffectiveAccessService access,
             [FromServices] OrchestratorDbContext db,
             CancellationToken ct) =>
         {
@@ -86,11 +92,12 @@ public static class AgentTaskEndpoints
             }
 
             var query = BuildHistoryQuery(db, search, tenantId, agentId, taskType, status, requestId);
-            var total = await query.CountAsync(ct);
-            var items = await query
+            var visible = await FilterAuthorizedAsync(await query.ToListAsync(ct), row => row.TenantId, http.User, access, ct);
+            var total = visible.Count;
+            var items = visible
                 .Skip(resolvedPage * resolvedPageSize)
                 .Take(resolvedPageSize)
-                .ToListAsync(ct);
+                .ToList();
 
             return Results.Ok(new TaskHistoryPageDto(
                 items.Select(MapHistoryItem).ToList(),
@@ -99,10 +106,11 @@ public static class AgentTaskEndpoints
                 resolvedPageSize));
         });
 
-        group.MapGet("/{id:long}", async (ulong id, IJobRunService runs, [FromServices] OrchestratorDbContext db, CancellationToken ct) =>
+        group.MapGet("/{id:long}", async (ulong id, HttpContext http, [FromServices] IEffectiveAccessService access, IJobRunService runs, [FromServices] OrchestratorDbContext db, CancellationToken ct) =>
         {
             var activity = await runs.GetActivityByIdAsync(id, ct);
             if (activity is null) return Results.NotFound();
+            if (!await CanExecuteAsync(http, access, activity.TenantId, ct)) return Results.Forbid();
             var agent = activity.AgentId is { } agentId
                 ? await db.Agents.AsNoTracking().SingleOrDefaultAsync(x => x.Id == agentId, ct)
                 : null;
@@ -111,6 +119,8 @@ public static class AgentTaskEndpoints
 
         group.MapPost("", async (
             [FromBody] TaskCreateRequestDto request,
+            HttpContext http,
+            [FromServices] IEffectiveAccessService access,
             [FromServices] OrchestratorDbContext db,
             IJobRunService runs,
             IScriptService scripts,
@@ -121,6 +131,7 @@ public static class AgentTaskEndpoints
         {
             if (request.TenantId is null || request.AgentId is null || request.AgentId == Guid.Empty)
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["target"] = ["TenantId and AgentId are required."] });
+            if (!await CanExecuteAsync(http, access, request.TenantId, ct)) return Results.Forbid();
             if (string.IsNullOrWhiteSpace(request.TaskType))
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["taskType"] = ["TaskType is required."] });
 
@@ -156,20 +167,22 @@ public static class AgentTaskEndpoints
             return Results.Created($"/api/v2/tasks/{created.Id}", Map(created, agent));
         });
 
-        group.MapGet("/{id:long}/logs", async (ulong id, [FromQuery] long sinceId, [FromQuery] string? stream, IJobRunService runs, CancellationToken ct) =>
+        group.MapGet("/{id:long}/logs", async (ulong id, [FromQuery] long sinceId, [FromQuery] string? stream, HttpContext http, [FromServices] IEffectiveAccessService access, IJobRunService runs, CancellationToken ct) =>
         {
             var activity = await runs.GetActivityByIdAsync(id, ct);
             if (activity is null) return Results.NotFound();
+            if (!await CanExecuteAsync(http, access, activity.TenantId, ct)) return Results.Forbid();
             return Results.Ok((await runs.GetLogsByRequestIdAsync(activity.RequestId, ct))
                 .Where(x => x.Id > sinceId && (string.IsNullOrWhiteSpace(stream) || stream == "all" || string.Equals(x.Stream, stream, StringComparison.OrdinalIgnoreCase)))
                 .OrderBy(x => x.Id)
                 .Select(x => new TaskLogDto(x.Id, activity.RequestId, activity.ClientIdentity, x.TimestampUtc, x.Stream, x.Message, x.Sequence)));
         });
 
-        group.MapGet("/logs", async ([FromQuery] string requestId, [FromQuery] long sinceId, [FromQuery] string? stream, IJobRunService runs, CancellationToken ct) =>
+        group.MapGet("/logs", async ([FromQuery] string requestId, [FromQuery] long sinceId, [FromQuery] string? stream, HttpContext http, [FromServices] IEffectiveAccessService access, IJobRunService runs, CancellationToken ct) =>
         {
             var activity = await runs.GetActivityByRequestIdAsync(requestId, ct);
             if (activity is null) return Results.NotFound();
+            if (!await CanExecuteAsync(http, access, activity.TenantId, ct)) return Results.Forbid();
             return Results.Ok((await runs.GetLogsByRequestIdAsync(requestId, ct))
                 .Where(x => x.Id > sinceId && (string.IsNullOrWhiteSpace(stream) || stream == "all" || string.Equals(x.Stream, stream, StringComparison.OrdinalIgnoreCase)))
                 .OrderBy(x => x.Id)
@@ -177,6 +190,17 @@ public static class AgentTaskEndpoints
         });
 
         return app;
+    }
+
+    private static Task<bool> CanExecuteAsync(HttpContext http, IEffectiveAccessService access, int? tenantId, CancellationToken ct) =>
+        access.AuthorizeAsync(http.User, NetRatelPermissions.ScriptExecute, tenantId, ct);
+
+    private static async Task<List<T>> FilterAuthorizedAsync<T>(IEnumerable<T> items, Func<T, int?> tenantId, System.Security.Claims.ClaimsPrincipal principal, IEffectiveAccessService access, CancellationToken ct)
+    {
+        var visible = new List<T>();
+        foreach (var item in items)
+            if (await access.AuthorizeAsync(principal, NetRatelPermissions.ScriptExecute, tenantId(item), ct)) visible.Add(item);
+        return visible;
     }
 
     private static async Task<(string? Value, string? Error)> BuildPayloadAsync(TaskCreateRequestDto request, string taskType, IScriptService scripts, CancellationToken ct)

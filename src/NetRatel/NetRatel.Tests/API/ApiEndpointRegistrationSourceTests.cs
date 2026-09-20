@@ -80,7 +80,7 @@ public sealed class ApiEndpointRegistrationSourceTests
         source.Should().Contain("/api/v2/client-presence");
         source.Should().Contain("IClientPresenceReadModel");
         source.Should().Contain("PresenceReadModelEnabled");
-        source.Should().Contain("RequireAuthorization(\"Operator\")");
+        source.Should().Contain("RequireAuthorization(\"InstanceAdministrator\")");
         source.Should().Contain("[FromQuery] int? limit");
         source.Should().Contain(".Take(boundedLimit)");
         source.Should().NotContain("SpacetimeDbService");

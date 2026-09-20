@@ -9,6 +9,7 @@ using NetRatel.Application.Requests;
 using NetRatel.API.Models.RequestModels;
 using NetRatel.API.Services.Requests;
 using NetRatel.API.Services.Jobs;
+using NetRatel.Infrastructure.Identity.Authorization;
 
 namespace NetRatel.API.Endpoints;
 
@@ -20,9 +21,11 @@ public static class RequestEndpoints
     {
         var group = app.MapGroup("/api/v1/requests")
             .WithTags("Requests")
-            .RequireAuthorization("Operator");
+            .RequireAuthorization();
 
         group.MapGet("/", async (
+            HttpContext http,
+            [FromServices] IEffectiveAccessService access,
             IRequestService requests,
             IJobRunService jobRuns,
             IJobDefinitionService jobs,
@@ -31,15 +34,17 @@ public static class RequestEndpoints
             var requestList = await requests.ListAsync(ct);
             var runLookup = (await jobRuns.ListAsync(ct)).ToDictionary(run => run.Id);
             var jobLookup = (await jobs.ListAsync(ct)).ToDictionary(job => job.Id);
-            var payload = requestList.Select(request => MapRequestDto(
-                request,
-                RequestJobRunLinkResolver.Resolve(request, runLookup),
-                jobLookup));
+            var payload = new List<RequestDto>();
+            foreach (var request in requestList)
+                if (await CanManageAsync(http, access, request.TargetTenantId, ct))
+                    payload.Add(MapRequestDto(request, RequestJobRunLinkResolver.Resolve(request, runLookup), jobLookup));
             return Results.Ok(payload);
         });
 
         group.MapGet("/{id:int}", async (
             int id,
+            HttpContext http,
+            [FromServices] IEffectiveAccessService access,
             IRequestService requests,
             IJobRunService jobRuns,
             IJobDefinitionService jobs,
@@ -50,6 +55,7 @@ public static class RequestEndpoints
             {
                 return Results.NotFound();
             }
+            if (!await CanManageAsync(http, access, request.TargetTenantId, ct)) return Results.Forbid();
 
             var run = await ResolveLinkedRunAsync(request, jobRuns, ct);
             var job = run is null ? null : await jobs.GetAsync(run.JobId, ct);
@@ -60,6 +66,8 @@ public static class RequestEndpoints
 
         group.MapPost("/", async (
             SubmitRequestRequest request,
+            HttpContext http,
+            [FromServices] IEffectiveAccessService access,
             IRequestService requests,
             IRequestEventBus requestEvents,
             IJobDefinitionService jobs,
@@ -77,6 +85,7 @@ public static class RequestEndpoints
             {
                 return Results.NotFound(new { code = "job_not_found" });
             }
+            if (!await CanManageAsync(http, access, job.TenantId, ct)) return Results.Forbid();
             if (job.TenantId is null || job.AgentId is null)
                 return Results.Conflict(new { code = "job_target_requires_current_agent" });
             if ((request.TenantId.HasValue && request.TenantId != job.TenantId) ||
@@ -109,10 +118,22 @@ public static class RequestEndpoints
         group.MapPut("/{id:int}", async (
             int id,
             [FromBody] UpdateRequestRequest update,
+            HttpContext http,
+            [FromServices] IEffectiveAccessService access,
             IRequestService requests,
+            IJobDefinitionService jobs,
             IRequestEventBus requestEvents,
             CancellationToken ct) =>
         {
+            var current = await requests.GetAsync(id, ct);
+            if (current is null) return Results.NotFound();
+            if (!await CanManageAsync(http, access, current.TargetTenantId, ct)) return Results.Forbid();
+            if (!string.IsNullOrWhiteSpace(update.JobDefinitionId) && ulong.TryParse(update.JobDefinitionId, out var jobId))
+            {
+                var targetJob = await jobs.GetAsync(jobId, ct);
+                if (targetJob is null) return Results.NotFound(new { code = "job_not_found" });
+                if (!await CanManageAsync(http, access, targetJob.TenantId, ct)) return Results.Forbid();
+            }
             var updated = await requests.UpdateAsync(new UpdateRequestCommand(
                 id,
                 update.SourceSystem,
@@ -137,6 +158,8 @@ public static class RequestEndpoints
         group.MapPut("/{id:int}/claim", async (
             int id,
             ClaimRequestRequest request,
+            HttpContext http,
+            [FromServices] IEffectiveAccessService access,
             IRequestService requests,
             IRequestEventBus requestEvents,
             CancellationToken ct) =>
@@ -146,6 +169,7 @@ public static class RequestEndpoints
             {
                 return Results.NotFound();
             }
+            if (!await CanManageAsync(http, access, current.TargetTenantId, ct)) return Results.Forbid();
 
             var updated = await requests.UpdateAsync(new UpdateRequestCommand(
                 id,
@@ -169,6 +193,8 @@ public static class RequestEndpoints
         group.MapPut("/{id:int}/complete", async (
             int id,
             CompleteRequestRequest request,
+            HttpContext http,
+            [FromServices] IEffectiveAccessService access,
             IRequestService requests,
             IRequestEventBus requestEvents,
             CancellationToken ct) =>
@@ -178,6 +204,7 @@ public static class RequestEndpoints
             {
                 return Results.NotFound();
             }
+            if (!await CanManageAsync(http, access, current.TargetTenantId, ct)) return Results.Forbid();
 
             var updated = await requests.UpdateAsync(new UpdateRequestCommand(
                 id,
@@ -201,6 +228,8 @@ public static class RequestEndpoints
         group.MapPut("/{id:int}/fail", async (
             int id,
             FailRequestRequest request,
+            HttpContext http,
+            [FromServices] IEffectiveAccessService access,
             IRequestService requests,
             IRequestEventBus requestEvents,
             CancellationToken ct) =>
@@ -210,6 +239,7 @@ public static class RequestEndpoints
             {
                 return Results.NotFound();
             }
+            if (!await CanManageAsync(http, access, current.TargetTenantId, ct)) return Results.Forbid();
 
             var updated = await requests.UpdateAsync(new UpdateRequestCommand(
                 id,
@@ -241,6 +271,7 @@ public static class RequestEndpoints
         CancellationToken ct)
     {
         var logger = loggerFactory.CreateLogger("NetRatel.API.Endpoints.RequestStream");
+        var access = http.RequestServices.GetRequiredService<IEffectiveAccessService>();
         http.Response.Headers.Append("Cache-Control", "no-cache");
         http.Response.Headers.Append("Connection", "keep-alive");
         http.Response.Headers.Append("X-Accel-Buffering", "no");
@@ -262,6 +293,10 @@ public static class RequestEndpoints
                 {
                     continue;
                 }
+                if (!await CanManageAsync(http, access, payload.TargetTenantId, token))
+                {
+                    continue;
+                }
 
                 var data = JsonSerializer.Serialize(payload, SseJsonOptions);
                 await http.Response.WriteAsync("event: request-upsert\n", token);
@@ -272,11 +307,11 @@ public static class RequestEndpoints
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested || abort.IsCancellationRequested)
         {
-            // Expected when the browser leaves the page or reconnects.
+            logger.LogDebug("NetRatel request stream cancelled by its client.");
         }
         catch (IOException) when (abort.IsCancellationRequested)
         {
-            // Expected broken pipe / connection reset on client disconnect.
+            logger.LogDebug("NetRatel request stream closed after its client disconnected.");
         }
         catch (Exception ex)
         {
@@ -324,6 +359,9 @@ public static class RequestEndpoints
 
         return null;
     }
+
+    private static Task<bool> CanManageAsync(HttpContext http, IEffectiveAccessService access, int? tenantId, CancellationToken ct) =>
+        access.AuthorizeAsync(http.User, NetRatelPermissions.JobManagement, tenantId, ct);
 
     private static RequestDto MapRequestDto(
         RequestInfo request,
