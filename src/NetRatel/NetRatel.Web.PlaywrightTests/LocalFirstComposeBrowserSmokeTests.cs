@@ -116,9 +116,9 @@ public sealed class LocalFirstComposeBrowserSmokeTests
 
     private static readonly FirstPaintCase[] FirstPaintCases =
     [
-        new(ColorScheme.Dark, " system ", "dark", "rgb(12, 15, 19)", "rgba(23,28,35,1)", "rgba(5, 13, 34, 0.84)", "rgb(21, 25, 31)", "rgb(18, 23, 29)", "rgb(237, 241, 245)"),
-        new(ColorScheme.Light, " DARK ", "dark", "rgb(12, 15, 19)", "rgba(23,28,35,1)", "rgba(5, 13, 34, 0.84)", "rgb(21, 25, 31)", "rgb(18, 23, 29)", "rgb(237, 241, 245)"),
-        new(ColorScheme.Dark, " light ", "light", "rgb(245, 247, 250)", "rgba(255,255,255,1)", "rgba(252, 254, 255, 0.92)", "rgb(255, 255, 255)", "rgb(255, 255, 255)", "rgb(21, 34, 51)"),
+        new(ColorScheme.Dark, " system ", "dark", "rgb(12, 15, 19)", "rgba(23,28,35,1)", "rgba(5, 13, 34, 0.84)", "rgb(21, 25, 31)", "rgb(18, 23, 29)", "rgb(237, 241, 245)", "rgb(255, 255, 255)"),
+        new(ColorScheme.Light, " DARK ", "dark", "rgb(12, 15, 19)", "rgba(23,28,35,1)", "rgba(5, 13, 34, 0.84)", "rgb(21, 25, 31)", "rgb(18, 23, 29)", "rgb(237, 241, 245)", "rgb(255, 255, 255)"),
+        new(ColorScheme.Dark, " light ", "light", "rgb(245, 247, 250)", "rgba(255,255,255,1)", "rgba(252, 254, 255, 0.92)", "rgb(255, 255, 255)", "rgb(255, 255, 255)", "rgb(21, 34, 51)", "rgb(21, 34, 51)"),
     ];
 
     private static async Task AssertFirstPaintAsync(
@@ -214,7 +214,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             Assert.Equal(themeCase.Text, firstPaint[3]);
             Assert.Equal(themeCase.Surface, firstPaint[4]);
             Assert.Equal(themeCase.VisibleSurface, firstPaint[5]);
-            Assert.Equal(themeCase.Text, firstPaint[8]);
+            Assert.Equal(themeCase.Input, firstPaint[8]);
             if (requireApplicationSurfaces)
             {
                 Assert.Equal(themeCase.Appbar, firstPaint[6]);
@@ -249,7 +249,8 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         string VisibleSurface,
         string Appbar,
         string Drawer,
-        string Text);
+        string Text,
+        string Input);
 
     private static async Task VerifyDeploymentBrandingAsync(IPage page, Uri webUrl)
     {
