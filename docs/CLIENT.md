@@ -20,5 +20,6 @@ service.
 The package includes runtime-specific update helpers and a manifest. Preserve
 the existing installation identity and rollback material during an update; do
 not bypass ordinary downgrade protection or point a Client at an unapproved
-feed. The rc.1 release has no published artifacts yet, so this page is a
-package-use reference, not a claim that an update channel is available.
+feed. Rc.1 is historical. Install an rc.2 Client only from the matching
+prerelease asset after verifying its checksum, manifest and supported runtime;
+neither prerelease establishes an unattended update channel.
