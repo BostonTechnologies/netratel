@@ -19,6 +19,25 @@ public sealed class ApiEndpointRegistrationSourceTests
     }
 
     [Fact]
+    public void OpenApi_Uses_Operation_Level_Taxonomy_And_Security_Metadata()
+    {
+        var program = File.ReadAllText(Path.Combine(RepoRoot, "src/NetRatel/NetRatel.API/Program.cs"));
+        var catalog = File.ReadAllText(Path.Combine(RepoRoot, "src/NetRatel/NetRatel.API/OpenApi/NetRatelOpenApiCatalog.cs"));
+
+        program.Should().Contain("options.AddOperationTransformer(NetRatelOpenApiCatalog.TransformOperationAsync);")
+            .And.Contain("SecuritySchemes[\"IntegrationCredential\"]")
+            .And.Contain("SecuritySchemes[\"LocalSession\"]")
+            .And.NotContain("document.Security.Add(");
+        catalog.Should().Contain("operation.OperationId")
+            .And.Contain("IAllowAnonymous")
+            .And.Contain("M2MOnly")
+            .And.Contain("AgentGatewayAccess")
+            .And.Contain("McpLocalDelegationExchange")
+            .And.Contain("Integrations/MCP")
+            .And.Contain("Remote Support");
+    }
+
+    [Fact]
     public void Program_Uses_Only_The_Api_Endpoint_Bootstrap()
     {
         var source = File.ReadAllText(Path.Combine(RepoRoot, "src/NetRatel/NetRatel.API/Program.cs"));

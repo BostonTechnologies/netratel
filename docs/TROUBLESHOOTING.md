@@ -15,6 +15,10 @@ application intentionally has no anonymous Production mode or default admin
 password. Browser sessions, API machine credentials, and agent credentials
 are separate trust paths.
 
+Use `/api/docs/` to confirm the operation's declared credential category. The
+reference cannot make a denied operation public and should never receive a
+deployment secret.
+
 ## stdio MCP exits at startup
 
 Set `NETRATEL_MCP_CONFIG` to an existing absolute configuration-file path. The
