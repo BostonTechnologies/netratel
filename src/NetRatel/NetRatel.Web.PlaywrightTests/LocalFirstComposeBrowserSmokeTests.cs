@@ -128,7 +128,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             var preview = page.GetByTestId("branding-preview");
             await preview.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
             Assert.Contains("Browser branding example", await preview.InnerTextAsync());
-            await preview.ScreenshotAsync(new LocatorScreenshotOptions
+            await page.ScreenshotAsync(new PageScreenshotOptions
             {
                 Path = Path.Combine(directory, $"custom-{theme}-{name}.png"),
                 Animations = ScreenshotAnimations.Disabled
