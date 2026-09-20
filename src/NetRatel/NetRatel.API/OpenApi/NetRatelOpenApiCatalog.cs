@@ -17,7 +17,10 @@ public static class NetRatelOpenApiCatalog
         var tag = Classify(path);
         var document = context.Document ?? throw new InvalidOperationException("OpenAPI operation transformation requires a document.");
         var tags = document.Tags ?? new HashSet<OpenApiTag>();
-        tags.Add(new OpenApiTag { Name = tag });
+        if (!tags.Any(existing => string.Equals(existing.Name, tag, StringComparison.Ordinal)))
+        {
+            tags.Add(new OpenApiTag { Name = tag });
+        }
         document.Tags = tags;
         operation.Tags = new HashSet<OpenApiTagReference> { new(tag, document, null) };
         operation.OperationId = $"{(description.HttpMethod ?? "operation").ToLowerInvariant()}_{Normalize(path)}";
