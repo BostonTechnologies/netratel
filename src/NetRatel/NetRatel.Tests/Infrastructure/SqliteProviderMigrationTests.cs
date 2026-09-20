@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using FluentAssertions;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
@@ -7,6 +8,7 @@ using NetRatel.API.Endpoints.Search;
 using NetRatel.API.Services.Terminal;
 using NetRatel.Application.Agents;
 using NetRatel.Infrastructure.Identity;
+using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.Services;
 using NetRatel.Shared.Contracts.Terminals;
@@ -92,6 +94,7 @@ public sealed class SqliteProviderMigrationTests
             {
                 await identity.Database.MigrateAsync();
                 (await identity.Database.GetAppliedMigrationsAsync()).Should().Contain("20260920085950_InitialSqlite");
+                const string backupPrincipalId = "local:backup-admin";
                 identity.Users.Add(new LocalUser
                 {
                     Id = "backup-admin",
@@ -99,9 +102,18 @@ public sealed class SqliteProviderMigrationTests
                     NormalizedUserName = "BACKUP-ADMIN@EXAMPLE.TEST",
                     Email = "backup-admin@example.test",
                     NormalizedEmail = "BACKUP-ADMIN@EXAMPLE.TEST",
-                    PrincipalId = "local:backup-admin",
+                    PrincipalId = backupPrincipalId,
                     DisplayName = "Backup administrator",
                     SecurityStamp = Guid.NewGuid().ToString("N")
+                });
+                var observer = new AccessRole { Id = "backup-observer", Name = "Backup observer", DelegationRank = 10 };
+                observer.Permissions.Add(new AccessRolePermission { Permission = NetRatelPermissions.TelemetryRead });
+                identity.AccessRoles.Add(observer);
+                identity.PrincipalRoleAssignments.Add(new PrincipalRoleAssignment
+                {
+                    PrincipalId = backupPrincipalId,
+                    RoleId = observer.Id,
+                    TenantId = 1
                 });
                 await identity.SaveChangesAsync();
             }
@@ -170,6 +182,11 @@ public sealed class SqliteProviderMigrationTests
             {
                 await restoredIdentity.Database.MigrateAsync();
                 (await restoredIdentity.Users.SingleAsync()).PrincipalId.Should().Be("local:backup-admin");
+                var access = new EffectiveAccessService(restoredIdentity, new ConfigurationBuilder().Build());
+                var principal = new ClaimsPrincipal(new ClaimsIdentity(
+                    [new Claim("netratel_principal_id", "local:backup-admin")], "local"));
+                (await access.AuthorizeAsync(principal, NetRatelPermissions.TelemetryRead, tenantId: 1)).Should().BeTrue();
+                (await access.AuthorizeAsync(principal, NetRatelPermissions.TelemetryRead, tenantId: 2)).Should().BeFalse();
             }
 
             await using (var restored = new OrchestratorDbContext(restoredOrchestratorOptions))
