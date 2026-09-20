@@ -20,12 +20,11 @@ public static class AgentFileGatewayEndpoints
     public static IEndpointRouteBuilder MapAgentFileGatewayEndpoints(this IEndpointRouteBuilder app)
     {
         var group = app.MapGroup("/api/v2/agents/{tenantId:int}/{agentId:guid}/filesystem")
-            .WithTags("Gateway Filesystem")
-            .RequireAuthorization("Operator");
+            .WithTags("Gateway Filesystem");
 
-        group.MapGet("", ListAsync);
-        group.MapGet("/file", ReadAsync);
-        group.MapPut("/file", WriteAsync);
+        group.MapGet("", ListAsync).RequireAuthorization("FileReader");
+        group.MapGet("/file", ReadAsync).RequireAuthorization("FileReader");
+        group.MapPut("/file", WriteAsync).RequireAuthorization("FileWriter");
         return app;
     }
 

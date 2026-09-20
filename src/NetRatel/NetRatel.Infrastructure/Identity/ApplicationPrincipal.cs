@@ -6,7 +6,9 @@ namespace NetRatel.Infrastructure.Identity;
 /// </summary>
 public sealed class ApplicationPrincipal
 {
-    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+    public string Id { get; set; } = CreateId();
+
+    public static string CreateId() => Guid.NewGuid().ToString("N");
 
     public string? LocalUserId { get; set; }
 

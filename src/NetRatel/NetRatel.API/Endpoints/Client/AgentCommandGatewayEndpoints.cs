@@ -21,7 +21,7 @@ public static class AgentCommandGatewayEndpoints
     {
         var group = app.MapGroup("/api/v2/agents/{tenantId:int}/{agentId:guid}/commands")
             .WithTags("Gateway Commands")
-            .RequireAuthorization("Operator");
+            .RequireAuthorization("CommandOperator");
 
         group.MapPost("", DispatchAsync)
             .Produces<GatewayCommandDispatchResponse>(StatusCodes.Status202Accepted)

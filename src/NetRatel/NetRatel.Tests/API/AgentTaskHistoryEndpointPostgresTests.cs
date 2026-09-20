@@ -18,6 +18,7 @@ using NetRatel.API.Gateway;
 using NetRatel.Application.Events;
 using NetRatel.Application.Jobs;
 using NetRatel.Application.Scripts;
+using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.Services;
 using NetRatel.Shared.Contracts.Tasks;
@@ -108,6 +109,7 @@ public sealed class AgentTaskHistoryEndpointPostgresTests : IAsyncLifetime
                     options.AddPolicy("Operator", policy => policy.RequireAuthenticatedUser()));
                 services.AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(_postgres.GetConnectionString()));
                 services.AddScoped<IJobRunService, JobRunService>();
+                services.AddSingleton<IEffectiveAccessService, AlwaysAllowAccess>();
                 services.AddSingleton<IScriptService>(_ => throw new NotSupportedException());
                 services.AddSingleton<IAgentCommandAuthorityDispatcher>(_ => throw new NotSupportedException());
                 services.AddSingleton<IEventRecorder>(_ => throw new NotSupportedException());
@@ -140,5 +142,13 @@ public sealed class AgentTaskHistoryEndpointPostgresTests : IAsyncLifetime
             var identity = new ClaimsIdentity([new Claim(ClaimTypes.Name, "test-admin")], Scheme.Name);
             return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(new ClaimsPrincipal(identity), Scheme.Name)));
         }
+    }
+
+    private sealed class AlwaysAllowAccess : IEffectiveAccessService
+    {
+        public Task<bool> AuthorizeAsync(ClaimsPrincipal principal, string permission, int? tenantId, CancellationToken cancellationToken = default) => Task.FromResult(true);
+        public Task<EffectiveAccessSnapshot> GetSnapshotAsync(ClaimsPrincipal principal, int? tenantId, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new EffectiveAccessSnapshot("test", false, true, NetRatelPermissions.All));
+        public Task ReconcileBuiltInRolesAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
 }

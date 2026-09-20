@@ -23,7 +23,7 @@ public static class ClientPresenceReadEndpoints
     {
         var group = app.MapGroup("/api/v2/client-presence")
             .WithTags("Client Presence")
-            .RequireAuthorization("Operator");
+            .RequireAuthorization("InstanceAdministrator");
 
         group.MapGet("/", async (
             [FromQuery] int? tenantId,

@@ -46,7 +46,11 @@ wait_for_migrations() {
     state="$(docker inspect --format '{{.State.Status}}' "$container_id")"
     if [[ "$state" == exited ]]; then
       exit_code="$(docker inspect --format '{{.State.ExitCode}}' "$container_id")"
-      [[ "$exit_code" == 0 ]] || { echo "Migration container exited with ${exit_code}." >&2; return 1; }
+      if [[ "$exit_code" != 0 ]]; then
+        echo "Migration container exited with ${exit_code}." >&2
+        docker logs "$container_id" >&2 || true
+        return 1
+      fi
       return 0
     fi
     sleep 1
@@ -381,7 +385,12 @@ verify_mcp_stdio_archive_scoped_read() {
 }
 
 stage="starting disposable Compose services"
-docker compose --project-name "$project" "${compose_args[@]}" up "${compose_up_args[@]}"
+if ! docker compose --project-name "$project" "${compose_args[@]}" up "${compose_up_args[@]}"; then
+  docker compose --project-name "$project" "${compose_args[@]}" ps --all >&2 || true
+  docker compose --project-name "$project" "${compose_args[@]}" \
+    logs --no-color --tail 200 migrations >&2 || true
+  exit 1
+fi
 stage="waiting for migrations"
 wait_for_migrations
 

@@ -20,21 +20,21 @@ public static class AgentTelemetryReadEndpoints
         app.MapGet("/api/v2/agent-telemetry", ListAsync)
             .WithName("AgentTelemetry_List")
             .WithTags("Agent Telemetry")
-            .RequireAuthorization("Operator")
+            .RequireAuthorization("InstanceAdministrator")
             .Produces<IReadOnlyList<AgentTelemetrySnapshotResponse>>(StatusCodes.Status200OK)
             .Produces(StatusCodes.Status404NotFound);
 
         app.MapGet("/api/v2/agents/{tenantId:int}/{agentId:guid}/telemetry", GetAsync)
             .WithName("AgentTelemetry_Get")
             .WithTags("Agent Telemetry")
-            .RequireAuthorization("Operator")
+            .RequireAuthorization("TelemetryReader")
             .Produces<AgentTelemetrySnapshotResponse>(StatusCodes.Status200OK)
             .Produces(StatusCodes.Status404NotFound);
 
         app.MapGet("/api/v2/agents/{tenantId:int}/{agentId:guid}/telemetry/stream", StreamAsync)
             .WithName("AgentTelemetry_Stream")
             .WithTags("Agent Telemetry")
-            .RequireAuthorization("Operator")
+            .RequireAuthorization("TelemetryReader")
             .Produces(StatusCodes.Status200OK);
 
         return app;

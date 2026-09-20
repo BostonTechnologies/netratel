@@ -15,7 +15,7 @@ public static class AgentLogGatewayEndpoints
     {
         var group = app.MapGroup("/api/v2/agents/{tenantId:int}/{agentId:guid}/logs")
             .WithTags("Gateway Logs")
-            .RequireAuthorization("Operator");
+            .RequireAuthorization("TelemetryReader");
 
         group.MapGet("/sources", SourcesAsync);
         group.MapGet("/history", HistoryAsync);

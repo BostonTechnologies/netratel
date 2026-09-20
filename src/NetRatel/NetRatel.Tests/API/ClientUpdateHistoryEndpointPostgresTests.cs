@@ -184,7 +184,10 @@ public sealed class ClientUpdateHistoryEndpointPostgresTests : IAsyncLifetime
                 services.AddAuthentication("Test")
                     .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>("Test", _ => { });
                 services.AddAuthorization(options =>
-                    options.AddPolicy("Operator", policy => policy.RequireAuthenticatedUser()));
+                {
+                    options.AddPolicy("Operator", policy => policy.RequireAuthenticatedUser());
+                    options.AddPolicy("ArtifactPublisher", policy => policy.RequireAuthenticatedUser());
+                });
                 services.AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(_postgres.GetConnectionString()));
                 services.AddSingleton<IClientArtifactsService>(_ => throw new NotSupportedException());
                 services.AddSingleton<IClientUpdatePublisher>(_ => throw new NotSupportedException());

@@ -23,7 +23,7 @@ public static class AgentTerminalGatewayEndpoints
     {
         var agents = app.MapGroup("/api/v2/agents/{tenantId:int}/{agentId:guid}/terminal")
             .WithTags("Gateway Terminal")
-            .RequireAuthorization("Operator");
+            .RequireAuthorization("TerminalOperator");
         agents.MapPost("/sessions", OpenAsync);
 
         var sessions = app.MapGroup("/api/v2/gateway-terminal/{sessionId}")

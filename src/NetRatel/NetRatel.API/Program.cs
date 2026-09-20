@@ -56,6 +56,8 @@ using Microsoft.AspNetCore.Server.Kestrel.Https;
 using HttpProtocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols;
 using NetRatel.API.Bootstrap;
 using NetRatel.API.Security.Local;
+using NetRatel.API.Security.Authorization;
+using NetRatel.Infrastructure.Identity.Authorization;
 var builder = WebApplication.CreateBuilder(args);
 
 // Bootstrap reconciliation intentionally happens before any operational registration. A fresh or
@@ -383,12 +385,88 @@ builder.Services.AddAuthorization(options =>
         policy.RequireAssertion(ctx => HasAdminClaim(ctx.User, ResolveAdminId()));
     });
 
+    options.AddPolicy("InstanceAdministrator", policy =>
+    {
+        policy.RequireAuthenticatedUser();
+        policy.AddRequirements(new EffectiveAccessRequirement(NetRatelPermissions.UserRoleAdministration, instanceScope: true));
+    });
+
+    options.AddPolicy("TenantAdministrator", policy =>
+    {
+        policy.RequireAuthenticatedUser();
+        policy.AddRequirements(new EffectiveAccessRequirement(NetRatelPermissions.TenantAdministration));
+    });
+
+    options.AddPolicy("ClientManager", policy =>
+    {
+        policy.RequireAuthenticatedUser();
+        policy.AddRequirements(new EffectiveAccessRequirement(NetRatelPermissions.ClientManagement));
+    });
+
+    options.AddPolicy("TelemetryReader", policy =>
+    {
+        policy.RequireAuthenticatedUser();
+        policy.AddRequirements(new EffectiveAccessRequirement(NetRatelPermissions.TelemetryRead));
+    });
+
+    options.AddPolicy("TerminalOperator", policy =>
+    {
+        policy.RequireAuthenticatedUser();
+        policy.AddRequirements(new EffectiveAccessRequirement(NetRatelPermissions.TerminalAccess));
+    });
+
+    options.AddPolicy("RemoteSupportOperator", policy =>
+    {
+        policy.RequireAuthenticatedUser();
+        policy.AddRequirements(new EffectiveAccessRequirement(NetRatelPermissions.RemoteSupport));
+    });
+
+    options.AddPolicy("ScriptEditor", policy =>
+    {
+        policy.RequireAuthenticatedUser();
+        policy.AddRequirements(new EffectiveAccessRequirement(NetRatelPermissions.ScriptEdit));
+    });
+
+    options.AddPolicy("SecretRevealer", policy =>
+    {
+        policy.RequireAuthenticatedUser();
+        policy.AddRequirements(new EffectiveAccessRequirement(NetRatelPermissions.SecretReveal));
+    });
+
+    options.AddPolicy("AuditReader", policy =>
+    {
+        policy.RequireAuthenticatedUser();
+        policy.AddRequirements(new EffectiveAccessRequirement(NetRatelPermissions.AuditRead));
+    });
+
+    options.AddPolicy("CommandOperator", policy =>
+    {
+        policy.RequireAuthenticatedUser();
+        policy.AddRequirements(new EffectiveAccessRequirement(NetRatelPermissions.ScriptExecute));
+    });
+
+    options.AddPolicy("FileReader", policy =>
+    {
+        policy.RequireAuthenticatedUser();
+        policy.AddRequirements(new EffectiveAccessRequirement(NetRatelPermissions.FileRead));
+    });
+
+    options.AddPolicy("FileWriter", policy =>
+    {
+        policy.RequireAuthenticatedUser();
+        policy.AddRequirements(new EffectiveAccessRequirement(NetRatelPermissions.FileWrite));
+    });
+
+    options.AddPolicy("ArtifactPublisher", policy =>
+    {
+        policy.RequireAuthenticatedUser();
+        policy.AddRequirements(new EffectiveAccessRequirement(NetRatelPermissions.ArtifactPublication));
+    });
+
     options.AddPolicy("McpOperatorPolicyAdmin", policy =>
     {
         policy.RequireAuthenticatedUser();
-        policy.RequireAssertion(ctx =>
-            HasAdminClaim(ctx.User, ResolveAdminId()) &&
-            HasScope(ctx.User, "netratel.mcp.admin"));
+        policy.AddRequirements(new EffectiveAccessRequirement(NetRatelPermissions.McpPolicyAdministration, legacyRequiredScope: "netratel.mcp.admin"));
     });
 
     options.AddPolicy("AkkaShadowAccess", policy =>
@@ -493,6 +571,7 @@ builder.Services.AddDataProtection()
 #endregion
 
 builder.Services.AddSingleton<IAuthorizationHandler, AllowedClientHandler>();
+builder.Services.AddScoped<IAuthorizationHandler, EffectiveAccessHandler>();
 
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
 builder.Services.AddOpenApi(options =>

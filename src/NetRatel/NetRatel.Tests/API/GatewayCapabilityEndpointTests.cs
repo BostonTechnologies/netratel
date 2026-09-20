@@ -229,7 +229,13 @@ public sealed class GatewayCapabilityEndpointTests
             {
                 services.AddRouting();
                 services.AddAuthentication("Test").AddScheme<AuthenticationSchemeOptions, TestAuthHandler>("Test", _ => { });
-                services.AddAuthorization(policyOptions => policyOptions.AddPolicy("Operator", policy => policy.RequireAuthenticatedUser()));
+                services.AddAuthorization(policyOptions =>
+                {
+                    policyOptions.AddPolicy("Operator", policy => policy.RequireAuthenticatedUser());
+                    policyOptions.AddPolicy("FileReader", policy => policy.RequireAuthenticatedUser());
+                    policyOptions.AddPolicy("FileWriter", policy => policy.RequireAuthenticatedUser());
+                    policyOptions.AddPolicy("RemoteSupportOperator", policy => policy.RequireAuthenticatedUser());
+                });
                 services.AddSingleton(options);
                 services.AddSingleton<FileRegistry>();
                 services.AddSingleton<IAgentFileGatewaySessionRegistry>(provider => provider.GetRequiredService<FileRegistry>());

@@ -217,7 +217,7 @@ public static class LocalAuthenticationEndpoints
             await db.SaveChangesAsync().ConfigureAwait(false);
             var activationToken = await users.GeneratePasswordResetTokenAsync(user).ConfigureAwait(false);
             return Results.Created($"/api/v2/local-auth/users/{user.Id}", new ActivationResponse(user.Id, user.Email!, activationToken));
-        }).RequireAuthorization("Operator");
+        }).RequireAuthorization("InstanceAdministrator");
 
         group.MapPost("/activate", async (
             [FromBody] ActivateLocalAccountRequest request,
@@ -248,8 +248,10 @@ public static class LocalAuthenticationEndpoints
                 return Results.NotFound();
             }
 
-            if (user.IsInstanceAdministrator && user.IsEnabled &&
-                await db.Users.CountAsync(candidate => candidate.IsInstanceAdministrator && candidate.IsEnabled, cancellationToken).ConfigureAwait(false) <= 1)
+            var hasInstanceAdministration = user.IsInstanceAdministrator || await db.PrincipalRoleAssignments
+                .AnyAsync(assignment => assignment.PrincipalId == user.PrincipalId && assignment.TenantId == null && assignment.Role!.IsInstanceAdministratorRole, cancellationToken)
+                .ConfigureAwait(false);
+            if (user.IsEnabled && hasInstanceAdministration && await InstanceAdministratorPrincipalCountAsync(db, cancellationToken).ConfigureAwait(false) <= 1)
             {
                 return Results.Conflict(new { error = "last_instance_administrator" });
             }
@@ -260,7 +262,7 @@ public static class LocalAuthenticationEndpoints
             user.SecurityStamp = Guid.NewGuid().ToString("N");
             await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
             return Results.NoContent();
-        }).RequireAuthorization("Operator");
+        }).RequireAuthorization("InstanceAdministrator");
 
         group.MapPost("/users/{userId}/enable", async (string userId, UserManager<LocalUser> users) =>
         {
@@ -274,7 +276,7 @@ public static class LocalAuthenticationEndpoints
             user.DisabledAtUtc = null;
             await InvalidateSessionsAsync(users, user).ConfigureAwait(false);
             return Results.NoContent();
-        }).RequireAuthorization("Operator");
+        }).RequireAuthorization("InstanceAdministrator");
 
         return app;
     }
@@ -310,6 +312,21 @@ public static class LocalAuthenticationEndpoints
         user.AuthorizationRevision++;
         user.SecurityStamp = Guid.NewGuid().ToString("N");
         await users.UpdateAsync(user).ConfigureAwait(false);
+    }
+
+    private static async Task<int> InstanceAdministratorPrincipalCountAsync(NetRatelIdentityDbContext db, CancellationToken cancellationToken)
+    {
+        var localAdministrators = await db.Users
+            .Where(candidate => candidate.IsEnabled && candidate.IsInstanceAdministrator)
+            .Select(candidate => candidate.PrincipalId)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+        var assignedAdministrators = await db.PrincipalRoleAssignments
+            .Where(assignment => assignment.TenantId == null && assignment.Role!.IsInstanceAdministratorRole)
+            .Select(assignment => assignment.PrincipalId)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+        return localAdministrators.Concat(assignedAdministrators).Distinct(StringComparer.Ordinal).Count();
     }
 
     private static async Task<bool> IsSecondFactorValidAsync(UserManager<LocalUser> users, LocalUser user, string code) =>

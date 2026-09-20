@@ -79,6 +79,7 @@ public static class ApiEndpointRegistrationExtensions
         app.MapNotificationEndpoints();
         app.MapAgentAuthEndpoints();
         app.MapLocalAuthenticationEndpoints();
+        app.MapAccessAdministrationEndpoints();
         app.MapM2MTokenEndpoints();
         app.MapInternalEndpoints();
 

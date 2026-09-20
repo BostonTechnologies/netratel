@@ -16,7 +16,7 @@ public static class ScriptEndpoints
     {
         var group = app.MapGroup("/api/v1/script-library")
             .WithTags("Script Library")
-            .RequireAuthorization("Operator");
+            .RequireAuthorization("ScriptEditor");
 
         group.AddEndpointFilter(async (context, next) =>
         {
