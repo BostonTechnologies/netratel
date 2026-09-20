@@ -28,4 +28,6 @@ HTTP MCP ──separate OAuth/resource policy───────────�
 ```
 
 See [configuration](CONFIGURATION.md) for deployment inputs and
-[self-hosting](SELF_HOSTING.md) for the supported evaluation stack.
+[self-hosting](SELF_HOSTING.md) for the supported evaluation stack. The
+operation and credential boundary is rendered from the running API at
+[`/api/docs/`](API_REFERENCE.md).

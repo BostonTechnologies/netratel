@@ -60,6 +60,7 @@ using NetRatel.API.Security.Authorization;
 using NetRatel.API.Security.Integration;
 using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Infrastructure.Identity.Branding;
+using NetRatel.API.OpenApi;
 var builder = WebApplication.CreateBuilder(args);
 
 // Bootstrap reconciliation intentionally happens before any operational registration. A fresh or
@@ -681,18 +682,16 @@ builder.Services.AddOpenApi(options =>
             Description = "JWT Authorization header using the Bearer scheme"
         };
 
-        document.Security ??= new List<OpenApiSecurityRequirement>();
-        if (!document.Security.Any(requirement =>
-                requirement.Keys.Any(scheme => string.Equals(scheme.Reference?.Id, "Bearer", StringComparison.OrdinalIgnoreCase))))
-        {
-            document.Security.Add(new OpenApiSecurityRequirement
-            {
-                [new OpenApiSecuritySchemeReference("Bearer", document)] = []
-            });
-        }
+        document.Components.SecuritySchemes["M2M"] = new OpenApiSecurityScheme { Type = SecuritySchemeType.Http, Scheme = "Bearer", BearerFormat = "JWT", Description = "Machine-to-machine access token." };
+        document.Components.SecuritySchemes["Agent"] = new OpenApiSecurityScheme { Type = SecuritySchemeType.Http, Scheme = "Bearer", BearerFormat = "JWT", Description = "Native NetRatel Client token." };
+        document.Components.SecuritySchemes["MachineToken"] = new OpenApiSecurityScheme { Type = SecuritySchemeType.Http, Scheme = "Bearer", BearerFormat = "JWT", Description = "Machine-token API credential." };
+        document.Components.SecuritySchemes["IntegrationCredential"] = new OpenApiSecurityScheme { Type = SecuritySchemeType.Http, Scheme = "Bearer", Description = "Opaque API or delegated HTTP-MCP credential." };
+        document.Components.SecuritySchemes["LocalSession"] = new OpenApiSecurityScheme { Type = SecuritySchemeType.ApiKey, In = ParameterLocation.Cookie, Name = localAuthenticationOptions.CookieName, Description = "Local-account browser session cookie." };
 
         return Task.CompletedTask;
     });
+
+    options.AddOperationTransformer(NetRatelOpenApiCatalog.TransformOperationAsync);
 
 });
 

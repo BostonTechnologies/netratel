@@ -40,7 +40,8 @@ Useful references: [architecture](docs/ARCHITECTURE.md),
 [configuration](docs/CONFIGURATION.md), [CLI and MCP](docs/CLI_AND_MCP.md),
 [Native Client](docs/CLIENT.md), [development and testing](docs/DEVELOPMENT.md),
 [troubleshooting](docs/TROUBLESHOOTING.md), and
-[release engineering](docs/RELEASES.md).
+[release engineering](docs/RELEASES.md). The generated [API reference](docs/API_REFERENCE.md)
+is available at `/api/docs/` on a running deployment.
 
 ## Development
 

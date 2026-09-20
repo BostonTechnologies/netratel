@@ -5,6 +5,9 @@ variables, a deployment secret mechanism, or mounted configuration files for
 instance-specific values. The repository examples use reserved placeholders and
 are not a usable production configuration.
 
+The running [API reference](API_REFERENCE.md) identifies the credential scheme
+accepted by each operation; it is a contract viewer, not a secret store.
+
 ## Required persistent state
 
 - `Database__Provider` is explicit: `PostgreSql` (the compatibility default)

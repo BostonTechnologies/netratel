@@ -5,6 +5,10 @@ single-node SQLite profile for smaller local deployments. Run Web and API on a
 private network, expose Web through HTTPS, and retain provider data, the Data
 Protection key ring, agent-signing material, and client artifact store together.
 
+After Web is running, `/api/docs/` exposes the generated same-origin API
+reference. It describes each operation's actual credential boundary but does
+not replace the deployment's OIDC, local-session, M2M, or agent configuration.
+
 ## Local source evaluation
 
 Install Docker Compose and copy `.env.example` to `.env`. A fresh bundled
