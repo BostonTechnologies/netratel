@@ -13,7 +13,7 @@ public static class ClientUpdatesEndpoints
     public static IEndpointRouteBuilder MapClientUpdatesEndpoints(this IEndpointRouteBuilder app)
     {
         var admin = app.MapGroup("/api/v1/client-updates")
-            .RequireAuthorization("Operator")
+            .RequireAuthorization("ArtifactPublisher")
             .WithTags("Client Updates");
 
         admin.MapGet("/releases", async (OrchestratorDbContext db, [FromQuery] string? runtimeId,

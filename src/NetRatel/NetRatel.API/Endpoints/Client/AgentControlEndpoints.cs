@@ -17,7 +17,7 @@ public static class AgentControlEndpoints
         app.MapPost("/api/v2/agents/{tenantId:int}/{agentId:guid}/ping", PingAsync)
             .WithName("AgentControl_Ping")
             .WithTags("Agent Control")
-            .RequireAuthorization("Operator")
+            .RequireAuthorization("ClientManager")
             .Produces<AgentControlPingResponse>(StatusCodes.Status200OK)
             .Produces(StatusCodes.Status404NotFound)
             .Produces(StatusCodes.Status409Conflict)

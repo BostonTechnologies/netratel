@@ -439,6 +439,30 @@ builder.Services.AddAuthorization(options =>
         policy.AddRequirements(new EffectiveAccessRequirement(NetRatelPermissions.AuditRead));
     });
 
+    options.AddPolicy("CommandOperator", policy =>
+    {
+        policy.RequireAuthenticatedUser();
+        policy.AddRequirements(new EffectiveAccessRequirement(NetRatelPermissions.ScriptExecute));
+    });
+
+    options.AddPolicy("FileReader", policy =>
+    {
+        policy.RequireAuthenticatedUser();
+        policy.AddRequirements(new EffectiveAccessRequirement(NetRatelPermissions.FileRead));
+    });
+
+    options.AddPolicy("FileWriter", policy =>
+    {
+        policy.RequireAuthenticatedUser();
+        policy.AddRequirements(new EffectiveAccessRequirement(NetRatelPermissions.FileWrite));
+    });
+
+    options.AddPolicy("ArtifactPublisher", policy =>
+    {
+        policy.RequireAuthenticatedUser();
+        policy.AddRequirements(new EffectiveAccessRequirement(NetRatelPermissions.ArtifactPublication));
+    });
+
     options.AddPolicy("McpOperatorPolicyAdmin", policy =>
     {
         policy.RequireAuthenticatedUser();
