@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using NetRatel.API.Endpoints.Search;
 using NetRatel.API.Services.Terminal;
@@ -15,6 +16,62 @@ namespace NetRatel.Tests.Infrastructure;
 
 public sealed class SqliteProviderMigrationTests
 {
+    [Fact]
+    public void Provider_selection_defaults_to_PostgreSql_and_preserves_connection_alias_precedence()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["ConnectionStrings:NetRatelDb"] = "Host=primary;Database=netratel",
+                ["ConnectionStrings:Default"] = "Host=compatibility;Database=netratel"
+            })
+            .Build();
+
+        var database = NetRatelDatabaseConfigurationResolver.Resolve(configuration);
+
+        database.Provider.Should().Be(NetRatelDatabaseProvider.PostgreSql);
+        database.ConnectionString.Should().Contain("Host=primary");
+    }
+
+    [Theory]
+    [InlineData("Data Source=:memory:", null, "durable")]
+    [InlineData("Data Source=relative.db", null, "absolute")]
+    [InlineData("Data Source=/var/netratel/sqlite/netratel.db", "2", "single")]
+    public void Sqlite_selection_rejects_unsupported_storage_or_topology(string connectionString, string? instanceCount, string expectedMessage)
+    {
+        var settings = new Dictionary<string, string?>
+        {
+            ["Database:Provider"] = "Sqlite",
+            ["ConnectionStrings:NetRatelDb"] = connectionString
+        };
+        if (instanceCount is not null)
+        {
+            settings["Database:InstanceCount"] = instanceCount;
+        }
+
+        var act = () => NetRatelDatabaseConfigurationResolver.Resolve(
+            new ConfigurationBuilder().AddInMemoryCollection(settings).Build());
+
+        act.Should().Throw<InvalidOperationException>().WithMessage($"*{expectedMessage}*");
+    }
+
+    [Fact]
+    public void Sqlite_selection_enforces_a_durable_single_instance_connection()
+    {
+        var database = NetRatelDatabaseConfigurationResolver.Resolve(
+            new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Database:Provider"] = "Sqlite",
+                ["Database:InstanceCount"] = "1",
+                ["ConnectionStrings:Default"] = "Data Source=/var/netratel/sqlite/netratel.db"
+            }).Build());
+
+        database.Provider.Should().Be(NetRatelDatabaseProvider.Sqlite);
+        var sqlite = new SqliteConnectionStringBuilder(database.ConnectionString);
+        sqlite.DataSource.Should().Be("/var/netratel/sqlite/netratel.db");
+        sqlite.ForeignKeys.Should().BeTrue();
+    }
+
     [Fact]
     public async Task Versioned_sqlite_migrations_preserve_identity_and_case_insensitive_directory_search()
     {
