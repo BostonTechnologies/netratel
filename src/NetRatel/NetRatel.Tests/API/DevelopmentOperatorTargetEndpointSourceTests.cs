@@ -48,7 +48,8 @@ public sealed class DevelopmentOperatorTargetEndpointSourceTests
         var repositoryRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../../"));
         var source = File.ReadAllText(Path.Combine(repositoryRoot, "src/NetRatel/NetRatel.API/Endpoints/Jobs/JobRunEndpoints.cs"));
 
-        source.Should().Contain("RequireAuthorization(\"Operator\")");
+        source.Should().Contain("RequireAuthorization()");
+        source.Should().Contain("CanManageAsync");
         source.Should().Contain("authority.StartAsync(jobId, request, ct)");
         source.Should().NotContain("IDevelopmentOperatorTargetAuthority");
         source.Should().NotContain("DevelopmentOperatorTargetGate");
@@ -63,10 +64,10 @@ public sealed class DevelopmentOperatorTargetEndpointSourceTests
         var files = File.ReadAllText(Path.Combine(repositoryRoot, "src/NetRatel/NetRatel.API/Endpoints/Client/AgentFileGatewayEndpoints.cs"));
         var control = File.ReadAllText(Path.Combine(repositoryRoot, "src/NetRatel/NetRatel.API/Endpoints/Client/AgentControlEndpoints.cs"));
 
-        tasks.Should().Contain("RequireAuthorization(\"Operator\")");
-        commands.Should().Contain("RequireAuthorization(\"Operator\")");
-        files.Should().Contain("RequireAuthorization(\"Operator\")");
-        control.Should().Contain("RequireAuthorization(\"Operator\")");
+        tasks.Should().Contain("RequireAuthorization()").And.Contain("CanExecuteAsync");
+        commands.Should().Contain("RequireAuthorization(\"CommandOperator\")");
+        files.Should().Contain("RequireAuthorization(\"FileReader\")");
+        control.Should().Contain("RequireAuthorization(\"ClientManager\")");
         tasks.Should().NotContain("DevelopmentOperatorTargetGate");
         commands.Should().NotContain("DevelopmentOperatorTargetGate");
         files.Should().NotContain("DevelopmentOperatorTargetGate");
@@ -79,7 +80,8 @@ public sealed class DevelopmentOperatorTargetEndpointSourceTests
         var repositoryRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../../"));
         var requests = File.ReadAllText(Path.Combine(repositoryRoot, "src/NetRatel/NetRatel.API/Endpoints/Requests/RequestEndpoints.cs"));
 
-        requests.Should().Contain("RequireAuthorization(\"Operator\")");
+        requests.Should().Contain("RequireAuthorization()");
+        requests.Should().Contain("CanManageAsync");
         requests.Should().NotContain("IDevelopmentOperatorTargetAuthority");
         requests.Should().NotContain("DevelopmentOperatorTargetGate");
     }

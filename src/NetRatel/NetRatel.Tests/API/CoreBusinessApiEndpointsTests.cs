@@ -36,6 +36,7 @@ public sealed class CoreBusinessApiEndpointsTests
     {
         using var app = await BuildAppAsync();
         var client = app.GetTestClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test");
 
         var created = await client.PostAsJsonAsync("/api/v1/tenants", new CreateTenantRequest
         {
@@ -179,6 +180,9 @@ public sealed class CoreBusinessApiEndpointsTests
                 {
                     options.AddPolicy("Operator", policy => policy.RequireAuthenticatedUser());
                     options.AddPolicy("M2MOnly", policy => policy.RequireAuthenticatedUser());
+                    options.AddPolicy("InstanceAdministrator", policy => policy.RequireAuthenticatedUser());
+                    options.AddPolicy("TenantAdministrator", policy => policy.RequireAuthenticatedUser());
+                    options.AddPolicy("ScriptEditor", policy => policy.RequireAuthenticatedUser());
                 });
                 services.AddSingleton<IConfiguration>(configuration);
                 services.AddDbContext<OrchestratorDbContext>(options => options.UseInMemoryDatabase(databaseName));

@@ -163,6 +163,7 @@ public sealed class McpDevelopmentCanonicalScriptTests
         {
             options.AddPolicy("M2MOnly", policy => policy.RequireAuthenticatedUser());
             options.AddPolicy("Operator", policy => policy.RequireAuthenticatedUser());
+            options.AddPolicy("ScriptEditor", policy => policy.RequireAuthenticatedUser());
         });
         var name = "canonical-script-" + Guid.NewGuid();
         builder.Services.AddDbContext<OrchestratorDbContext>(options => options.UseInMemoryDatabase(name));

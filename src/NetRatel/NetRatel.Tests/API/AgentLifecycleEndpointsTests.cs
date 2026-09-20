@@ -314,6 +314,7 @@ public sealed class AgentLifecycleEndpointsTests
                 services.AddAuthorization(options =>
                 {
                     options.AddPolicy("Operator", p => p.RequireAuthenticatedUser());
+                    options.AddPolicy("ClientManager", p => p.RequireAuthenticatedUser());
                 });
 
                 services.AddDbContext<OrchestratorDbContext>(opts =>

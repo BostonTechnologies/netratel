@@ -74,8 +74,8 @@ public sealed class McpOperatorPolicyAdministrationEndpointTests
 
         endpoints.Should().Contain("RequireAuthorization(\"McpOperatorPolicyAdmin\")");
         program.Should().Contain("options.AddPolicy(\"McpOperatorPolicyAdmin\"")
-            .And.Contain("HasAdminClaim(ctx.User, ResolveAdminId())")
-            .And.Contain("HasScope(ctx.User, \"netratel.mcp.admin\")");
+            .And.Contain("EffectiveAccessRequirement")
+            .And.Contain("legacyRequiredScope: \"netratel.mcp.admin\"");
     }
 
     private static McpOperatorPolicyDraft Draft(
