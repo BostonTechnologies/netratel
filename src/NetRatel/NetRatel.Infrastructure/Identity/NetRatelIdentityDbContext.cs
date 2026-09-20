@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
 using NetRatel.Infrastructure.Identity.Authorization;
+using NetRatel.Infrastructure.Identity.Branding;
 
 namespace NetRatel.Infrastructure.Identity;
 
@@ -19,6 +20,8 @@ public sealed class NetRatelIdentityDbContext(DbContextOptions<NetRatelIdentityD
     public DbSet<PrincipalRoleAssignment> PrincipalRoleAssignments => Set<PrincipalRoleAssignment>();
     public DbSet<IntegrationCredential> IntegrationCredentials => Set<IntegrationCredential>();
     public DbSet<IntegrationCredentialGrant> IntegrationCredentialGrants => Set<IntegrationCredentialGrant>();
+    public DbSet<DeploymentBrandingOverride> DeploymentBrandingOverrides => Set<DeploymentBrandingOverride>();
+    public DbSet<DeploymentBrandingAsset> DeploymentBrandingAssets => Set<DeploymentBrandingAsset>();
 
     protected override void OnModelCreating(ModelBuilder builder)
     {
@@ -114,6 +117,33 @@ public sealed class NetRatelIdentityDbContext(DbContextOptions<NetRatelIdentityD
                 .WithMany(credential => credential.Grants)
                 .HasForeignKey(grant => grant.CredentialId)
                 .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        builder.Entity<DeploymentBrandingOverride>(entity =>
+        {
+            entity.ToTable("DeploymentBrandingOverrides");
+            entity.HasKey(value => value.Id);
+            entity.Property(value => value.Id).HasMaxLength(32);
+            entity.Property(value => value.ApplicationName).HasMaxLength(96);
+            entity.Property(value => value.OrganizationName).HasMaxLength(96);
+            entity.Property(value => value.Tagline).HasMaxLength(160);
+            entity.Property(value => value.LogoLightAssetId).HasMaxLength(32);
+            entity.Property(value => value.LogoDarkAssetId).HasMaxLength(32);
+            entity.Property(value => value.CompactLogoAssetId).HasMaxLength(32);
+            entity.Property(value => value.FaviconAssetId).HasMaxLength(32);
+            entity.Property(value => value.SupportUrl).HasMaxLength(2048);
+            entity.Property(value => value.SiteUrl).HasMaxLength(2048);
+            entity.Property(value => value.UpdatedByPrincipalId).HasMaxLength(32);
+        });
+
+        builder.Entity<DeploymentBrandingAsset>(entity =>
+        {
+            entity.ToTable("DeploymentBrandingAssets");
+            entity.HasKey(value => value.Id);
+            entity.Property(value => value.Id).HasMaxLength(32);
+            entity.Property(value => value.ContentType).HasMaxLength(64).IsRequired();
+            entity.Property(value => value.Sha256).HasMaxLength(64).IsRequired();
+            entity.HasIndex(value => value.Sha256).IsUnique();
         });
     }
 }

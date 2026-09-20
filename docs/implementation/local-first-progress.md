@@ -34,8 +34,8 @@ asset replacement, package-visibility mutation, and repository-rule bypass.
 | P05 | [#35](https://github.com/BostonTechnologies/netratel/issues/35) | [#48](https://github.com/BostonTechnologies/netratel/pull/48) | `5de0832` | Merged after exact-head validation passed the full .NET suite, local-first browser Compose, and source/release-image generic OIDC Compose smoke: [run 35509225124](https://github.com/BostonTechnologies/netratel/actions/runs/35509225124). |
 | P06 | [#36](https://github.com/BostonTechnologies/netratel/issues/36) | [#49](https://github.com/BostonTechnologies/netratel/pull/49) | `2bc881d` | Merged after exact-head Public PR validation passed, including the full .NET suite and OIDC Compose protection: [run 35511238938](https://github.com/BostonTechnologies/netratel/actions/runs/35511238938). |
 | P07 | [#37](https://github.com/BostonTechnologies/netratel/issues/37) | [#50](https://github.com/BostonTechnologies/netratel/pull/50) | `863ac40748072b70935483d9f870281db683287e` | Merged after exact-head Public PR validation passed all 16 checks, including full .NET, packages/images, generic OIDC Compose and local-first browser coverage: [run 35521471258](https://github.com/BostonTechnologies/netratel/actions/runs/35521471258). |
-| P08 | [#38](https://github.com/BostonTechnologies/netratel/issues/38) | pending | pending | In progress on `feat/issue-38-http-mcp-local-delegation`; P07 is merged. |
-| P09 | [#39](https://github.com/BostonTechnologies/netratel/issues/39) | pending | pending | Blocked by P03/P05 merges. |
+| P08 | [#38](https://github.com/BostonTechnologies/netratel/issues/38) | [#51](https://github.com/BostonTechnologies/netratel/pull/51) | `ea6d6eeb396af089aa8876cfaee6c6a3f81297d7` | Merged after all 16 exact-head checks passed, including the full Release .NET suite, HTTP MCP image, local-first browser Compose, and source/release-image generic OIDC Compose coverage: [run 35524074101](https://github.com/BostonTechnologies/netratel/actions/runs/35524074101). |
+| P09 | [#39](https://github.com/BostonTechnologies/netratel/issues/39) | pending | pending | In progress on `feat/issue-39-deployment-branding`. |
 | P10 | [#40](https://github.com/BostonTechnologies/netratel/issues/40) | pending | pending | Blocked by P09 merge. |
 | P11 | [#41](https://github.com/BostonTechnologies/netratel/issues/41) | pending | pending | Blocked by P07/P08/P10 merges. |
 | P12 | [#42](https://github.com/BostonTechnologies/netratel/issues/42) | pending | pending | Remains open through verified publication. |
@@ -213,10 +213,11 @@ asset replacement, package-visibility mutation, and repository-rule bypass.
 
 ## Current checkpoint
 
-Current phase: P08. Branch: `feat/issue-38-http-mcp-local-delegation`.
-P07 merged as `863ac40748072b70935483d9f870281db683287e` through
-[#50](https://github.com/BostonTechnologies/netratel/pull/50). Next action:
-complete API/HTTP MCP local-delegation validation and open its CI-gated PR.
+Current phase: P09. Branch: `feat/issue-39-deployment-branding`.
+P08 merged as `ea6d6eeb396af089aa8876cfaee6c6a3f81297d7` through
+[#51](https://github.com/BostonTechnologies/netratel/pull/51). Next action:
+complete effective-branding persistence, public projection, administration UI,
+asset validation, and CI-gated PR validation.
 
 ## Blockers
 

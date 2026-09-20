@@ -2,11 +2,13 @@
 @inject NavigationManager NavigationManager
 @inject AuthenticationStateProvider AuthenticationStateProvider
 @inject NetRatel.Web.Services.Access.IAccessAdministrationApiService AccessApi
+@inject IDeploymentBrandingApiService BrandingApi
+@inject ILogger<NavMenu> Logger
 
 <MudNavMenu Class="netratel-nav">
-    <a class="netratel-nav-brand" href="/" aria-label="NetRatel home">
-        <img src="brand/netratel-mark-64.png" width="64" height="64" alt="NetRatel" />
-        <span>NetRatel</span>
+    <a class="netratel-nav-brand" href="/" aria-label="@($"{ApplicationName} home")">
+        <img src="@CompactLogoUrl" width="64" height="64" alt="@ApplicationName" />
+        <span>@ApplicationName</span>
     </a>
     <AuthorizeView Context="outerAuthState">
         <Authorized Context="outerAuthState">
@@ -55,6 +57,7 @@
             @if (canAdministerAccess)
             {
                 <MudNavLink Href="/admin/access" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.AdminPanelSettings">Access</MudNavLink>
+                <MudNavLink Href="/admin/branding" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.BrandingWatermark">Deployment branding</MudNavLink>
             }
             <MudNavLink Href="/logout" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Logout">Logout</MudNavLink>
         </Authorized>
@@ -69,6 +72,9 @@
     private string? currentUrl;
     private string? userName;
     private bool canAdministerAccess;
+    private EffectiveDeploymentBranding? _branding;
+    private string ApplicationName => _branding?.ApplicationName.Value ?? "NetRatel";
+    private string CompactLogoUrl => _branding?.CompactLogoUrl.Value ?? "brand/netratel-mark-64.png";
 
     protected override async Task OnInitializedAsync()
     {
@@ -87,6 +93,15 @@
             {
                 canAdministerAccess = false;
             }
+        }
+        try
+        {
+            _branding = await BrandingApi.GetPublicAsync();
+        }
+        catch (HttpRequestException exception)
+        {
+            // Preserve approved built-in presentation if the API is temporarily unavailable.
+            Logger.LogDebug(exception, "Could not read public deployment branding while loading navigation.");
         }
     }
 

@@ -33,6 +33,7 @@ scope on the ported routes.
 | Terminals and remote support | `TerminalOperator`, `RemoteSupportOperator`, or `M2MOnly` | Tenant/agent/session ownership; existing transport checks | Terminal and remote-support permissions with current target policy retained |
 | MCP operator client, file, observability, command, script, job, task and request routes | mostly `M2MOnly` | Existing MCP policy/profile, confirmation, idempotency and target checks | Integration-management plus operation-specific effective access; no gateway bypass |
 | MCP policy administration | `McpOperatorPolicyAdmin` | Persisted policy/profile IDs | MCP policy administration and audit; legacy OIDC scope remains required |
+| `/api/v2/branding` and managed branding assets | anonymous effective presentation reads; `InstanceAdministrator` for update/upload | Singleton deployment record and opaque database asset IDs | Global presentation only; no tenant context, arbitrary path/URL fetch, or credential/configuration disclosure |
 | Development MCP/onboarding and operator-target routes | `Operator` | Tenant/agent and grant IDs | Enrollment/client-management and scoped target administration |
 | Agent enrollment, refresh, updates and gateway transport | `AgentAccess` / `AgentGatewayAccess` | Native agent identity and enrollment state | Native Client identity remains separate; no operator credential reuse |
 | Client artifacts and update publication | `ArtifactPublisher` plus explicit artifact policies | Artifact/release ownership | Artifact/update publication; preserve native updater contract |

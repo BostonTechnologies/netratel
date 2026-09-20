@@ -32,6 +32,8 @@ public sealed class LocalIdentityPostgresMigrationTests : IAsyncLifetime
             .Should().Contain(migration => migration.EndsWith("AddScopedAuthorization", StringComparison.Ordinal));
         (await db.Database.GetAppliedMigrationsAsync())
             .Should().Contain(migration => migration.EndsWith("AddIntegrationCredentials", StringComparison.Ordinal));
+        (await db.Database.GetAppliedMigrationsAsync())
+            .Should().Contain(migration => migration.EndsWith("AddDeploymentBranding", StringComparison.Ordinal));
         var localUser = new LocalUser
         {
             Id = "local-admin",
