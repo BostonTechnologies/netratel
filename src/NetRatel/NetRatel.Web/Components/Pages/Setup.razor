@@ -67,7 +67,10 @@
 </section>
 
 @code {
-    private bool _loading = true;
+    // Keep the initial server-rendered frame actionable. The setup status refresh
+    // reconciles this conservative unclaimed state once it completes, but a cold
+    // browser must not see an empty loading card until Blazor hydrates.
+    private bool _loading;
     private bool _claimed;
     private bool _ready;
     private bool _recovery;
@@ -87,7 +90,6 @@
 
     private async Task RefreshAsync()
     {
-        _loading = true;
         try
         {
             var status = await HttpClientFactory.CreateClient("SystemApiNoAuth")
@@ -100,10 +102,6 @@
         catch (HttpRequestException)
         {
             _error = "NetRatel could not reach its API. Check the API service and selected storage, then retry.";
-        }
-        finally
-        {
-            _loading = false;
         }
     }
 
