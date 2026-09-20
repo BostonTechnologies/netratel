@@ -163,16 +163,16 @@ public sealed class LocalFirstComposeBrowserSmokeTests
                 const capture = () => {
                     const body = document.body;
                     const surface = document.querySelector(window.__netratelThemeFirstPaintSurface);
-                    const heading = document.querySelector('h1');
                     const appbar = document.querySelector('.netratel-app-bar');
                     const drawer = document.querySelector('.netratel-app-drawer');
+                    const textSurface = document.querySelector('h1, .netratel-app-bar, .netratel-login-panel');
                     const input = document.querySelector('input');
                     if (body && surface && surface.getBoundingClientRect().height > 0) {
                         samples.push({
                             theme: document.documentElement.dataset.netratelTheme,
                             scheme: getComputedStyle(document.documentElement).colorScheme,
                             body: getComputedStyle(body).backgroundColor,
-                            text: heading ? getComputedStyle(heading).color : '',
+                            text: textSurface ? getComputedStyle(textSurface).color : '',
                             surface: getComputedStyle(document.documentElement).getPropertyValue('--mud-palette-surface').trim(),
                             visibleSurface: getComputedStyle(surface).backgroundColor,
                             appbar: appbar ? getComputedStyle(appbar).backgroundColor : '',
