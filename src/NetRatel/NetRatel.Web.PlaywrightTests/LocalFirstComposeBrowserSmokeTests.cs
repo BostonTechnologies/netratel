@@ -135,8 +135,9 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         }
 
         await page.GotoAsync(webUrl.ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
-        await page.Locator(".netratel-appbar-brand").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
-        Assert.Contains("Browser branding example", await page.Locator(".netratel-appbar-brand").InnerTextAsync());
+        var applicationBrand = page.Locator(".netratel-appbar-brand img");
+        await applicationBrand.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        Assert.Equal("Browser branding example", await applicationBrand.GetAttributeAsync("alt"));
     }
 
     private static async Task<string> CreateIntegrationCredentialAsync(IPage page, Uri webUrl, string name, string permission)
