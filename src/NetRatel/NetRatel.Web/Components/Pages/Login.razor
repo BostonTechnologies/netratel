@@ -21,6 +21,7 @@
                  width="64"
                  height="64"
                  alt="@ApplicationName" />
+            <MudText Typo="Typo.subtitle2" HtmlTag="p" Class="netratel-login-organization">@OrganizationName</MudText>
             <MudText Typo="Typo.overline" HtmlTag="p" Class="netratel-login-product">@Tagline</MudText>
             <MudText Typo="Typo.h4" HtmlTag="h1" Class="netratel-visually-hidden">@ApplicationName</MudText>
             <MudText Typo="Typo.body2" HtmlTag="p" Class="netratel-login-environment">@EnvironmentLabel</MudText>
@@ -120,6 +121,7 @@
     private bool _interactiveReady;
     private EffectiveDeploymentBranding? _branding;
     private string ApplicationName => _branding?.ApplicationName.Value ?? "NetRatel";
+    private string OrganizationName => _branding?.OrganizationName.Value ?? "Automation Platform";
     private string Tagline => _branding?.Tagline.Value ?? "Automation Platform";
     private string CompactLogoUrl => _branding?.CompactLogoUrl.Value ?? "brand/netratel-mark-64.png";
 

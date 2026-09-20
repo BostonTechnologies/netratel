@@ -9,6 +9,7 @@ using System.Net;
 using System.Net.Http.Json;
 using Xunit;
 using NetRatel.Web.Components.Pages;
+using NetRatel.Web.Services.Branding;
 
 namespace NetRatel.Web.ComponentTests;
 
@@ -76,6 +77,7 @@ public class LoginPageTests : AsyncBunitContext
             .Build());
         Services.AddSingleton<IHostEnvironment>(new TestHostEnvironment(environmentName));
         Services.AddSingleton<IHttpClientFactory>(new BootstrapStatusHttpClientFactory());
+        Services.AddSingleton<IDeploymentBrandingApiService, StubDeploymentBrandingApiService>();
 
         AddAuthorization();
 
