@@ -27,21 +27,18 @@ public static class DependencyInjection
 {
     public static IServiceCollection AddNetRatelInfrastructure(this IServiceCollection services, IConfiguration configuration)
     {
-        var connStr = configuration.GetConnectionString("NetRatelDb")
-                      ?? configuration.GetConnectionString("Default")
-                      ?? throw new InvalidOperationException(
-                          "A PostgreSQL connection string is required. Configure ConnectionStrings:NetRatelDb.");
+        var database = NetRatelDatabaseConfigurationResolver.Resolve(configuration);
 
         services.AddScoped<DomainEventsToOutboxInterceptor>();
         services.AddScoped<DatabaseCommandMetricsInterceptor>();
         services.AddDbContext<OrchestratorDbContext>((sp, options) =>
         {
-            options.UseNpgsql(connStr);
+            ConfigureProvider(options, database);
             options.AddInterceptors(
                 sp.GetRequiredService<DomainEventsToOutboxInterceptor>(),
                 sp.GetRequiredService<DatabaseCommandMetricsInterceptor>());
         });
-        services.AddDbContext<NetRatelIdentityDbContext>(options => options.UseNpgsql(connStr));
+        services.AddDbContext<NetRatelIdentityDbContext>(options => ConfigureProvider(options, database));
         services.AddScoped<IApplicationPrincipalResolver, ApplicationPrincipalResolver>();
         services.AddScoped<IEffectiveAccessService, EffectiveAccessService>();
         services.AddNetRatelCommandPersistence();
@@ -92,6 +89,18 @@ public static class DependencyInjection
         services.AddScoped<OidcSigningService>();
 
         return services;
+    }
+
+    private static void ConfigureProvider(DbContextOptionsBuilder options, NetRatelDatabaseConfiguration database)
+    {
+        if (database.Provider is NetRatelDatabaseProvider.Sqlite)
+        {
+            options.UseSqlite(database.ConnectionString, sqlite =>
+                sqlite.MigrationsAssembly("NetRatel.SqliteMigrations"));
+            return;
+        }
+
+        options.UseNpgsql(database.ConnectionString);
     }
 
     public static async Task MigrateNetRatelInfrastructureAsync(this IServiceProvider services, CancellationToken ct = default)

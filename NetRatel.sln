@@ -49,6 +49,8 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "NetRatel", "NetRatel", "{BD
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NetRatel.Migrations", "src\NetRatel\NetRatel.Migrations\NetRatel.Migrations.csproj", "{FFC3B172-17ED-4A9A-A77A-80CEB7781D51}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NetRatel.SqliteMigrations", "src\NetRatel\NetRatel.SqliteMigrations\NetRatel.SqliteMigrations.csproj", "{CF8E8053-4773-4F5A-84E7-00E620213AC0}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -299,6 +301,18 @@ Global
 		{FFC3B172-17ED-4A9A-A77A-80CEB7781D51}.Release|x64.Build.0 = Release|Any CPU
 		{FFC3B172-17ED-4A9A-A77A-80CEB7781D51}.Release|x86.ActiveCfg = Release|Any CPU
 		{FFC3B172-17ED-4A9A-A77A-80CEB7781D51}.Release|x86.Build.0 = Release|Any CPU
+		{CF8E8053-4773-4F5A-84E7-00E620213AC0}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{CF8E8053-4773-4F5A-84E7-00E620213AC0}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{CF8E8053-4773-4F5A-84E7-00E620213AC0}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{CF8E8053-4773-4F5A-84E7-00E620213AC0}.Debug|x64.Build.0 = Debug|Any CPU
+		{CF8E8053-4773-4F5A-84E7-00E620213AC0}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{CF8E8053-4773-4F5A-84E7-00E620213AC0}.Debug|x86.Build.0 = Debug|Any CPU
+		{CF8E8053-4773-4F5A-84E7-00E620213AC0}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{CF8E8053-4773-4F5A-84E7-00E620213AC0}.Release|Any CPU.Build.0 = Release|Any CPU
+		{CF8E8053-4773-4F5A-84E7-00E620213AC0}.Release|x64.ActiveCfg = Release|Any CPU
+		{CF8E8053-4773-4F5A-84E7-00E620213AC0}.Release|x64.Build.0 = Release|Any CPU
+		{CF8E8053-4773-4F5A-84E7-00E620213AC0}.Release|x86.ActiveCfg = Release|Any CPU
+		{CF8E8053-4773-4F5A-84E7-00E620213AC0}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -307,6 +321,7 @@ Global
 		{0FADC451-298B-4813-BD24-3160F35B1DB2} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 		{BDAA438D-2FBC-07AF-F2C4-BB2EA199DBEF} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{FFC3B172-17ED-4A9A-A77A-80CEB7781D51} = {BDAA438D-2FBC-07AF-F2C4-BB2EA199DBEF}
+		{CF8E8053-4773-4F5A-84E7-00E620213AC0} = {BDAA438D-2FBC-07AF-F2C4-BB2EA199DBEF}
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {B74349E3-6740-4DB3-B30C-8979D0411979}
