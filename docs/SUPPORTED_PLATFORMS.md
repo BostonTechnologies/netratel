@@ -1,8 +1,8 @@
 # Supported platforms
 
 NetRatel `0.1.0-rc.2` is a prerelease. The table below records the targets
-that the non-publishing release rehearsal builds and executes. It is not a
-production certification statement.
+that the release workflow builds and executes. It is not a production
+certification statement.
 
 | Component | Release target | Rehearsal evidence | Notes |
 | --- | --- | --- | --- |
@@ -13,10 +13,12 @@ production certification statement.
 | Native Client | Windows x64 | The matching Windows runner publishes the package and runs its executable version probe. | Install only from the approved artifact/manifest once a release exists. |
 | Native Client | macOS arm64 | The matching macOS runner publishes the package and runs its executable version probe. | Install only from the approved artifact/manifest once a release exists. |
 
-The documented stack requires Docker Compose, PostgreSQL, an HTTPS OIDC
-provider for interactive operation, and deployment-managed persistent Data
-Protection and agent-signing material. CLI and stdio MCP archives require the
-.NET 10 runtime.
+The documented stack requires Docker Compose plus either PostgreSQL or the
+supported single-node SQLite profile, and deployment-managed persistent Data
+Protection and agent-signing material. Fresh local-account setup does not
+require OIDC or SMTP; OIDC is required only for a deliberately configured
+OIDC/hybrid deployment or the external-OIDC HTTP MCP mode. CLI and stdio MCP
+archives require the .NET 10 runtime.
 
 Windows/macOS CLI or stdio MCP archives, other native Client runtime IDs,
 multi-architecture server images, distributed topologies, and production

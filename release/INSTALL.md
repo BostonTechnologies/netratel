@@ -4,9 +4,11 @@ This bundle extracts at its archive root. Run commands from that directory.
 Candidate/rehearsal bundles contain image placeholders and cannot be pulled.
 Only an owner-approved promoted bundle includes verified immutable image digests.
 
-Prerequisites: Docker Engine with Compose v2, OpenSSL, a configured HTTPS OIDC
-provider, and a Linux host that supports the published linux/amd64 images.
-The provider must allow the Web callback and logout URLs for your public origin.
+Prerequisites: Docker Engine with Compose v2, OpenSSL, and a Linux host that
+supports the published linux/amd64 images. Fresh local-account setup does not
+need OIDC or SMTP. An optional OIDC or hybrid deployment needs a configured
+HTTPS OIDC provider that allows the Web callback and logout URLs for its public
+origin.
 CLI and stdio MCP linux-x64 archives are framework-dependent and require the
 .NET 10 runtime; the CLI NuGet tool additionally requires the .NET SDK to install.
 Native Client archives are self-contained and platform-specific.
@@ -14,7 +16,9 @@ Native Client archives are self-contained and platform-specific.
 1. Download all assets to one directory and run `sha256sum -c SHA256SUMS`.
 2. Extract `netratel-compose-0.1.0-rc.2.tar.gz` into a new directory and enter it.
 3. Copy `.env.images.example` to `.env`. A promoted bundle supplies image digests;
-   retain these. Replace the database password and OIDC settings with your values.
+   retain these. Replace the database password; leave the OIDC settings empty
+   for local-account mode, or set them for a deliberately configured OIDC or
+   hybrid deployment.
 4. Generate the API signing key in this directory:
 
    ```sh
@@ -51,9 +55,10 @@ Replace both example values with your actual proxy address and public hostname;
 do not trust arbitrary private networks. Include the override with a second
 `-f proxy.override.yaml` on every Compose command.
 
-Optional HTTP MCP requires its separate OIDC audience, scope, group and target
-API configuration in `.env`. Use both `-f compose.images.yaml -f compose.mcp-http.yaml`
-with `--env-file .env` for config, pull and startup. It is not enabled by default.
+Optional HTTP MCP is not enabled by default. Its external-OIDC mode requires
+separate OIDC audience, scope, group and target API configuration in `.env`.
+Use both `-f compose.images.yaml -f compose.mcp-http.yaml` with `--env-file
+.env` for config, pull and startup.
 
 An explicit local-credential HTTP MCP alternative is documented in
 `docs/mcp-http/local-credential-mode.md` in the source bundle. It requires a

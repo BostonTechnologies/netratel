@@ -24,16 +24,18 @@ normal operation.
 
 ## Self-hosting
 
-The documented deployment uses PostgreSQL for durable application data and
-persists Data Protection and agent-signing material outside the container
-filesystem. Configure an HTTPS OIDC provider for interactive login and supply
-all secrets at deployment time; the tracked configuration contains only
-reserved example values.
+The documented deployment supports PostgreSQL for durable multi-instance
+application data and a single-node SQLite profile for smaller local installs.
+Persist Data Protection and agent-signing material outside the container
+filesystem. A fresh local installation can use its built-in local accounts with
+no external identity provider; configure OIDC only for an optional OIDC or
+hybrid deployment. Supply all secrets at deployment time; the tracked
+configuration contains only reserved example values.
 
-Read [self-hosting](docs/SELF_HOSTING.md) before deployment. The public release
-image instructions are available in [self-hosting](docs/SELF_HOSTING.md), but
-rc.2 images remain unpublished until owner approval. Until then, build from a
-reviewed source checkout. See [supported platforms](docs/SUPPORTED_PLATFORMS.md) for the rc.2 rehearsal
+Read [self-hosting](docs/SELF_HOSTING.md) before deployment. Obtain the public
+release bundle only from the matching prerelease and verify its checksums;
+the bundle supplies immutable image digests only after promotion has completed.
+See [supported platforms](docs/SUPPORTED_PLATFORMS.md) for the rc.2 release
 matrix and its explicit non-goals.
 
 Useful references: [architecture](docs/ARCHITECTURE.md),

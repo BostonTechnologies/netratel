@@ -4,6 +4,11 @@ All first-party components evaluate from the root product version. The current
 prerelease is `0.1.0-rc.2`; the component inventory is
 `release/release-manifest.json`.
 
+The reviewed release notes for this candidate are
+[`RELEASE_NOTES.md`](RELEASE_NOTES.md). They are used as the GitHub prerelease
+notes only after the matching tagged workflow, provenance checks and promotion
+record complete.
+
 `tools/ci/verify-product-version.sh` checks evaluated project metadata against
 that manifest. Tag-driven CI requires a `v` tag whose normalized value exactly
 matches the committed manifest before it builds review artifacts.
@@ -22,11 +27,11 @@ also checked for the expected executable, manifest version/runtime, updater and
 terminal support files. Each matching Linux, Windows, and macOS runner executes
 the freshly published Client; the extracted archive is executed again before
 upload (with the Linux archive additionally running its native PTY self-test).
-GitHub Actions creates a
-Sigstore-backed build-provenance attestation for each uploaded release artifact;
-verify it with `gh attestation verify` after it is publicly released. A separate owner decision
-is required before creating a public GitHub release, publishing OCI images or
-packages, or recording immutable artifact digests in the private consumer lock.
+GitHub Actions creates a Sigstore-backed build-provenance attestation for each
+uploaded release artifact; verify it with `gh attestation verify` after it is
+publicly released. A public GitHub prerelease, OCI publication, or recording
+immutable artifact digests requires an explicit authorized promotion decision;
+it is never performed by a PR or release-rehearsal workflow.
 Every final image is built with public OCI source, revision, and product-version
 labels, then its saved layers are scanned for generic credential material before
 the image smoke tests run. Its fail-closed `Release rehearsal` aggregate
@@ -37,12 +42,13 @@ For the native Client, the generated publish directory includes the executable,
 its update manifest, required sidecars, and the Linux PTY helper. Do not
 advertise a runtime until its final archive has been built and smoke-tested.
 NetRatel `0.1.0-rc.1` archives and tag remain published historical release
-artifacts. NetRatel `0.1.0-rc.2` is a source candidate: no rc.2 public images
-or archives have been published yet. The release workflow validates the committed
-version, builds every final runtime container, and packages CLI, stdio MCP, and
-native Client artifacts. Native Client packages are built on their matching
-Linux, Windows, and macOS runners. Publication, signing, package visibility,
-and a release tag remain explicit owner actions.
+artifacts. Release availability for `0.1.0-rc.2` is determined by its matching
+immutable prerelease tag and release record; never infer it from a source
+checkout. The release workflow validates the committed version, builds every
+final runtime container, and packages CLI, stdio MCP, and native Client
+artifacts. Native Client packages are built on their matching Linux, Windows,
+and macOS runners. Publication, signing, package visibility, and a release tag
+remain explicit controlled actions.
 
 Use `release/compose.images.yaml` only with approved immutable release-image
 digests. It is intentionally a deployment bundle, not a source-build recipe.
