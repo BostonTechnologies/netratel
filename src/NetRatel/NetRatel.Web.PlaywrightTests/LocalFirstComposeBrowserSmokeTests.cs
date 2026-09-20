@@ -104,6 +104,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
     {
         await page.GotoAsync(new Uri(webUrl, "admin/branding").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
         await page.GetByTestId("deployment-branding-page").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        await page.WaitForTimeoutAsync(500);
         var applicationName = page.GetByLabel("Application name");
         await applicationName.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         await applicationName.FillAsync("Browser branding example");

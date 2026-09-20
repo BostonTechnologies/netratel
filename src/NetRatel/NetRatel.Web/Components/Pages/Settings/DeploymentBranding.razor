@@ -27,11 +27,11 @@
                     <MudPaper Class="pa-4">
                         <MudStack Spacing="2">
                             <MudText Typo="Typo.h6">Visible presentation</MudText>
-                            <MudTextField Label="Application name" @bind-Value="_applicationName" Disabled="@_branding.ApplicationName.IsLocked" HelperText="@SourceText(_branding.ApplicationName)" data-testid="branding-application-name" />
-                            <MudTextField Label="Organization name" @bind-Value="_organizationName" Disabled="@_branding.OrganizationName.IsLocked" HelperText="@SourceText(_branding.OrganizationName)" data-testid="branding-organization-name" />
-                            <MudTextField Label="Tagline" @bind-Value="_tagline" Disabled="@_branding.Tagline.IsLocked" HelperText="@SourceText(_branding.Tagline)" data-testid="branding-tagline" />
-                            <MudTextField Label="Support URL" @bind-Value="_supportUrl" Disabled="@_branding.SupportUrl.IsLocked" HelperText="@SourceText(_branding.SupportUrl)" />
-                            <MudTextField Label="Site URL" @bind-Value="_siteUrl" Disabled="@_branding.SiteUrl.IsLocked" HelperText="@SourceText(_branding.SiteUrl)" />
+                            <MudTextField Label="Application name" @bind-Value="_applicationName" Immediate="true" Disabled="@_branding.ApplicationName.IsLocked" HelperText="@SourceText(_branding.ApplicationName)" data-testid="branding-application-name" />
+                            <MudTextField Label="Organization name" @bind-Value="_organizationName" Immediate="true" Disabled="@_branding.OrganizationName.IsLocked" HelperText="@SourceText(_branding.OrganizationName)" data-testid="branding-organization-name" />
+                            <MudTextField Label="Tagline" @bind-Value="_tagline" Immediate="true" Disabled="@_branding.Tagline.IsLocked" HelperText="@SourceText(_branding.Tagline)" data-testid="branding-tagline" />
+                            <MudTextField Label="Support URL" @bind-Value="_supportUrl" Immediate="true" Disabled="@_branding.SupportUrl.IsLocked" HelperText="@SourceText(_branding.SupportUrl)" />
+                            <MudTextField Label="Site URL" @bind-Value="_siteUrl" Immediate="true" Disabled="@_branding.SiteUrl.IsLocked" HelperText="@SourceText(_branding.SiteUrl)" />
                             <MudStack Row="true" Spacing="2">
                                 <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="@(!IsDirty || _saving)" OnClick="SaveAsync" data-testid="branding-save">Save</MudButton>
                                 <MudButton Variant="Variant.Outlined" Disabled="@(!IsDirty || _saving)" OnClick="Discard">Discard</MudButton>
