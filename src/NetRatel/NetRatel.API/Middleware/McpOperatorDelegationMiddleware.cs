@@ -2,6 +2,7 @@ using NetRatel.Shared.Operations;
 using NetRatel.Infrastructure.Identity;
 using NetRatel.Infrastructure.Identity.Authorization;
 using System.Security.Claims;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace NetRatel.API.Middleware;
 
@@ -18,10 +19,7 @@ public sealed class McpOperatorDelegationMiddleware(
 {
     public const string HttpContextItemKey = "netratel.mcp.operator.delegation";
 
-    public async Task InvokeAsync(
-        HttpContext context,
-        IIntegrationCredentialCurrentVerifier? currentCredentials = null,
-        IEffectiveAccessService? access = null)
+    public async Task InvokeAsync(HttpContext context)
     {
         if (!options.Enabled)
         {
@@ -47,15 +45,20 @@ public sealed class McpOperatorDelegationMiddleware(
             return;
         }
 
-        if (!await IsCurrentLocalExecutionAsync(delegation!, currentCredentials, access, context.RequestAborted).ConfigureAwait(false))
+        if (!string.IsNullOrWhiteSpace(delegation!.IngressCredentialId))
         {
-            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
-            await context.Response.WriteAsJsonAsync(new
+            var currentCredentials = context.RequestServices.GetService<IIntegrationCredentialCurrentVerifier>();
+            var access = context.RequestServices.GetService<IEffectiveAccessService>();
+            if (!await IsCurrentLocalExecutionAsync(delegation, currentCredentials, access, context.RequestAborted).ConfigureAwait(false))
             {
-                code = "delegated_identity_revoked",
-                layer = "delegation"
-            }, context.RequestAborted);
-            return;
+                context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                await context.Response.WriteAsJsonAsync(new
+                {
+                    code = "delegated_identity_revoked",
+                    layer = "delegation"
+                }, context.RequestAborted);
+                return;
+            }
         }
 
         context.Items[HttpContextItemKey] = delegation;
