@@ -7,7 +7,7 @@
 @inject ISnackbar Snackbar
 @inject ILogger<GatewayRemoteSupportDialog> Logger
 
-<MudDialog MaxWidth="MaxWidth.False" FullWidth="true">
+<MudDialog>
     <TitleContent><MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween" Class="w-100"><MudText Typo="Typo.h6">Remote Support · @HostLabel</MudText><MudChip T="string" Size="Size.Small" Color="@StateColor">@_stateLabel</MudChip></MudStack></TitleContent>
     <DialogContent>
         <MudStack Spacing="2">

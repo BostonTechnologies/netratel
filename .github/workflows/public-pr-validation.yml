@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - name: Scan repository with Gitleaks
@@ -37,7 +37,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
           global-json-file: global.json
@@ -46,9 +46,9 @@ jobs:
       - run: python3 tools/ci/test-release-validation.py
       - run: dotnet build NetRatel.sln --configuration Release --no-restore
       - run: pwsh src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/playwright.ps1 install --with-deps chromium
-      - run: dotnet test NetRatel.sln --configuration Release --no-build --filter "category!=compose" --logger "trx;LogFilePrefix=netratel-tests" --results-directory TestResults
+      - run: dotnet test NetRatel.sln --configuration Release --no-build --filter "category!=compose" --results-directory TestResults -- --report-trx --report-trx-filename "netratel-tests-{asm}_{tfm}_{arch}.trx"
       - if: always()
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: dotnet-test-results
           path: TestResults
@@ -60,7 +60,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
           global-json-file: global.json
@@ -95,7 +95,7 @@ jobs:
             sha256sum *.tar.gz "netratel-${version}.spdx.json" *.nupkg > SHA256SUMS
           )
           tools/ci/verify-release-artifacts.sh --artifacts artifacts --version "$version"
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: pr-netratel-cli-mcp-linux-x64
           path: artifacts
@@ -120,7 +120,7 @@ jobs:
             runner: macos-latest
             extension: tar.gz
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
           global-json-file: global.json
@@ -129,7 +129,7 @@ jobs:
           version="$(jq -r '.version' release/release-manifest.json)"
           directory="artifacts/netratel-client-${{ matrix.runtime }}"
           dotnet restore src/NetRatel/NetRatel.Client/NetRatel.Client.csproj --runtime "${{ matrix.runtime }}"
-          dotnet publish src/NetRatel/NetRatel.Client/NetRatel.Client.csproj --configuration Release --no-restore --runtime "${{ matrix.runtime }}" --output "$directory"
+          dotnet publish src/NetRatel/NetRatel.Client/NetRatel.Client.csproj --configuration Release --no-restore --runtime "${{ matrix.runtime }}" --self-contained true --output "$directory"
           cp LICENSE NOTICE "$directory/"
           python3 tools/ci/generate-runtime-sbom.py \
             --project-assets src/NetRatel/NetRatel.Client/obj/project.assets.json \
@@ -173,7 +173,7 @@ jobs:
             --version "$version" \
             --runtime "${{ matrix.runtime }}" \
             --extension "${{ matrix.extension }}"
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: pr-netratel-client-${{ matrix.runtime }}
           path: artifacts
@@ -199,7 +199,7 @@ jobs:
           - name: client
             dockerfile: docker/client/Dockerfile.public
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: |
           version="$(jq -r '.version' release/release-manifest.json)"
           image="netratel-${{ matrix.name }}:pr-validation"
@@ -212,11 +212,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
           global-json-file: global.json
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: pr-netratel-cli-mcp-linux-x64
           path: review-artifacts
@@ -242,7 +242,7 @@ jobs:
             NETRATEL_MCP_STDIO_SMOKE_ARCHIVE="review-artifacts/netratel-mcp-stdio-$(jq -r '.version' release/release-manifest.json)-linux-x64.tar.gz" \
             tools/ci/smoke-oidc-compose.sh
       - if: always()
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: branding-${{ github.job }}
           path: '**/TestResults/branding/*.png'
@@ -254,11 +254,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
           global-json-file: global.json
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: pr-netratel-cli-mcp-linux-x64
           path: review-artifacts
@@ -294,7 +294,7 @@ jobs:
             NETRATEL_MCP_STDIO_SMOKE_ARCHIVE="review-artifacts/netratel-mcp-stdio-$(jq -r '.version' release/release-manifest.json)-linux-x64.tar.gz" \
             tools/ci/smoke-oidc-compose.sh
       - if: always()
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: branding-${{ github.job }}
           path: '**/TestResults/branding/*.png'
@@ -305,7 +305,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: |
           version="$(jq -r '.version' release/release-manifest.json)"
           tools/ci/build-public-image.sh --dockerfile docker/mcp-http/Dockerfile --image netratel-mcp-http:pr-smoke --version "$version" --revision "$GITHUB_SHA"

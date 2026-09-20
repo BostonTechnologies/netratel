@@ -9,8 +9,8 @@
     <UserSecretsId>c48b7161-2fdc-4687-a9a5-bba1a17dc0c4</UserSecretsId>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="Aspire.Hosting" Version="13.5.2" />
-    <PackageReference Include="MessagePack" Version="3.1.8" />
+    <PackageReference Include="Aspire.Hosting" Version="13.5.4" />
+    <PackageReference Include="MessagePack" Version="3.1.9" />
   </ItemGroup>
 
   <ItemGroup>

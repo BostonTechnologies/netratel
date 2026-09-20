@@ -111,8 +111,7 @@ public static class Extensions
                     .AddMeter(NetRatelFileBrowserMeterName)
                     .AddAspNetCoreInstrumentation()
                     .AddHttpClientInstrumentation()
-                    .AddRuntimeInstrumentation()
-                    .AddProcessInstrumentation();
+                    .AddRuntimeInstrumentation();
 
                 if (useOtlpExporter)
                 {

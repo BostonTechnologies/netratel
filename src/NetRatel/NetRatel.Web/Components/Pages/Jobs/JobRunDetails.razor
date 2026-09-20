@@ -34,7 +34,7 @@
     {
         var timeline = BuildTimeline().ToList();
 
-        <MudGrid Spacing="3" AlignItems="AlignItems.Stretch">
+        <MudGrid Spacing="3">
             <MudItem xs="12" lg="8">
                 <MudPaper Class="job-run-hero pa-5" Elevation="0">
                     <MudStack Spacing="3">
@@ -201,7 +201,6 @@
                         {
                             <MudTimeline TimelineOrientation="TimelineOrientation.Vertical"
                                          TimelinePosition="TimelinePosition.Start"
-                                         Dense="true"
                                          Class="job-run-timeline">
                                 @foreach (var item in timeline)
                                 {
@@ -324,7 +323,7 @@
                                                     }
                                                     else if (state.Log is not null)
                                                     {
-                                                        <MudTabs Rounded="true" PanelClass="job-run-log-tab-panel">
+                                                        <MudTabs Rounded="true" TabPanelsClass="job-run-log-tab-panel">
                                                             <MudTabPanel Text="Console">
                                                                 <div class="job-run-log-html" @onclick:stopPropagation="true" @onmousedown:stopPropagation="true">
                                                                     @((MarkupString)parsedLog!.ConsoleHtml)

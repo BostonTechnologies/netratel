@@ -35,7 +35,7 @@
                 <MudItem xs="12" md="4" Class="d-flex">
                     <MudPaper Elevation="0" Class="pa-4 rounded-lg jobs-editor-panel jobs-editor-sidebar">
                         <MudStack Spacing="2">
-                            <MudTabs Rounded="true" Elevation="0" PanelClass="pt-3" Color="Color.Primary">
+                            <MudTabs Rounded="true" Elevation="0" TabPanelsClass="pt-3" Color="Color.Primary">
                                 <MudTabPanel Text="Definition" Icon="@Icons.Material.Filled.Work">
                                     <MudStack Spacing="2">
                                         <MudText Typo="Typo.caption" Color="Color.Secondary">
@@ -187,7 +187,7 @@
                 </MudItem>
 
                 <MudItem xs="12" md="8" Class="d-flex">
-                    <MudTabs Elevation="2" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pa-0" Color="Color.Primary" Class="flex-grow-1 jobs-editor-tabs">
+                    <MudTabs Elevation="2" Rounded="true" ApplyEffectsToContainer="true" TabPanelsClass="pa-0" Color="Color.Primary" Class="flex-grow-1 jobs-editor-tabs">
 
                 <!-- STEPS TAB -->
                 <MudTabPanel Text="Execution Steps" Icon="@Icons.Material.Filled.PlaylistPlay" BadgeData="@(_steps.Count > 0 ? _steps.Count : null)" BadgeColor="Color.Secondary">

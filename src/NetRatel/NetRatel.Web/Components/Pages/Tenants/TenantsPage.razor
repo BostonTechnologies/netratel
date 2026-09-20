@@ -364,7 +364,7 @@
 
     private async Task ConfirmDeleteAsync(TenantDto tenant)
     {
-        var result = await DialogService.ShowMessageBox(
+        var result = await DialogService.ShowMessageBoxAsync(
             title: "Delete Tenant",
             markupMessage: (MarkupString)$"Delete <b>{tenant.Name}</b> and remove its tenant record?",
             yesText: "Delete",

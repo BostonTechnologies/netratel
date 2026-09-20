@@ -94,7 +94,7 @@
                         : ExecOutputFormatter.ParseExecReturn(finalOutput);
                     var parsed = ParseReturnData(finalOutput);
 
-                    <MudTabs Rounded="true" PanelClass="task-output-tab-panel">
+                    <MudTabs Rounded="true" TabPanelsClass="task-output-tab-panel">
                         <MudTabPanel Text="Console">
                             <MudPaper Class="task-execution-console pa-2">
                                 @if (!string.IsNullOrWhiteSpace(finalOutput))

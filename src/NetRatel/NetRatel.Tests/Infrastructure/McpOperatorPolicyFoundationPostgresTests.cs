@@ -62,7 +62,7 @@ public sealed class McpOperatorPolicyFoundationPostgresTests : IAsyncLifetime
     private DbContextOptions<OrchestratorDbContext> _options = null!;
     private Guid _agentId;
 
-    public async Task InitializeAsync()
+    public async ValueTask InitializeAsync()
     {
         await _postgres.StartAsync();
         _options = new DbContextOptionsBuilder<OrchestratorDbContext>()
@@ -118,7 +118,7 @@ public sealed class McpOperatorPolicyFoundationPostgresTests : IAsyncLifetime
         await migrator.MigrateAsync();
     }
 
-    public Task DisposeAsync() => _postgres.DisposeAsync().AsTask();
+    public ValueTask DisposeAsync() => _postgres.DisposeAsync();
 
     [Fact]
     public async Task Legacy_Dev_grant_is_preserved_as_a_usable_general_compatibility_policy()

@@ -165,7 +165,7 @@ public sealed class TerminalAttachmentHeartbeatTests : IAsyncLifetime
     private Task<int> CountAsync(string method) => _page.EvaluateAsync<int>(
         "method => fixture.calls.filter(call => call[0] === method).length", method);
 
-    public async Task InitializeAsync()
+    public async ValueTask InitializeAsync()
     {
         var script = await File.ReadAllTextAsync(Path.GetFullPath(Path.Combine(
             AppContext.BaseDirectory, "../../../../NetRatel.Web/wwwroot/js/terminalAttachmentHeartbeat.js")));
@@ -227,7 +227,7 @@ public sealed class TerminalAttachmentHeartbeatTests : IAsyncLifetime
             """);
     }
 
-    public async Task DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
         if (_browser is not null) await _browser.DisposeAsync();
         _playwright?.Dispose();

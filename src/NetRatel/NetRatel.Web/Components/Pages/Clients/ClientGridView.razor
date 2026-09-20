@@ -17,7 +17,6 @@
           Elevation="0"
           Breakpoint="Breakpoint.Md"
           RowsPerPage="15"
-          RowsPerPageOptions="new[] { 15, 30, 50 }"
           Class="client-grid-view">
     <HeaderContent>
         <MudTh>Status</MudTh>
@@ -64,7 +63,7 @@
                 <MudTooltip Text="Telemetry"><MudIconButton Icon="@Icons.Material.Filled.Insights" Size="Size.Small" Disabled="@(context.Telemetry is null)" OnClick="@(() => OpenTelemetryAsync(context))" aria-label="Open telemetry" /></MudTooltip>
                 <MudTooltip Text="Terminal">
                     <MudMenu Dense="true" Disabled="@(!context.CanUseTerminal)">
-                        <ActivatorContent><MudIconButton Icon="@Icons.Material.Filled.Terminal" Size="Size.Small" Disabled="@(!context.CanUseTerminal)" aria-label="Open terminal" /></ActivatorContent>
+                        <ActivatorContent Context="menuActivator"><MudIconButton Icon="@Icons.Material.Filled.Terminal" Size="Size.Small" Disabled="@(!context.CanUseTerminal)" OnClick="@menuActivator.ToggleAsync" aria-label="Open terminal" /></ActivatorContent>
                         <ChildContent>
                             @foreach (var shell in context.AvailableShells)
                             {
@@ -81,7 +80,7 @@
         </MudTd>
     </RowTemplate>
     <NoRecordsContent><MudText Typo="Typo.subtitle1">No clients available.</MudText></NoRecordsContent>
-    <PagerContent><MudTablePager /></PagerContent>
+    <PagerContent><MudTablePager PageSizeOptions="new[] { 15, 30, 50 }" /></PagerContent>
 </MudTable>
 </div>
 
