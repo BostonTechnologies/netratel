@@ -30,12 +30,14 @@ notifications fall back to bounded polling because SQLite has no `LISTEN` /
 
 ## Backup and restore
 
-Stop the API and migration runner before copying a SQLite database. Back up the
-database together with the API bootstrap directory, Data Protection key ring,
-agent signing key, and any persisted branding/artifact volumes. Restore all of
-those to a private staging host, retain the original absolute database path or
-update the explicit connection string, run the migration container, and verify
-local identity, bootstrap state, and a synthetic agent enrollment before use.
-Never replace only the database while retaining unrelated keys or bootstrap
-state from another installation. PostgreSQL backup and restore procedures stay
-separate and retain their existing migration history.
+Stop the API and migration runner, then take a consistent SQLite backup; do not
+copy a live `*.db` file or its WAL files. For example, on a trusted operator
+host with the SQLite CLI installed, run `sqlite3 /absolute/netratel.db ".backup '/absolute/backup/netratel.db'"`. Back up that resulting database together
+with the API bootstrap directory, Data Protection key ring, agent signing key,
+and any persisted branding/artifact volumes. Restore all of those to a private
+staging host, retain the original absolute database path or update the explicit
+connection string, run the migration container, and verify local identity,
+bootstrap state, and a synthetic agent enrollment before use. Never replace
+only the database while retaining unrelated keys or bootstrap state from
+another installation. PostgreSQL backup and restore procedures stay separate
+and retain their existing migration history.
