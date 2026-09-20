@@ -37,7 +37,23 @@ public sealed record VerifiedIntegrationCredential(
     string CredentialId,
     string OwnerPrincipalId,
     IntegrationCredentialPurpose Purpose,
-    IReadOnlyList<IntegrationCredentialGrantRequest> Grants);
+    IReadOnlyList<IntegrationCredentialGrantRequest> Grants)
+{
+    public string? Resource { get; init; }
+}
+
+/// <summary>
+/// Revalidates a previously exchanged credential by non-secret identifier.
+/// The API uses this on every local HTTP MCP execution, so revocation,
+/// expiration, account disablement, and grant changes take effect immediately.
+/// </summary>
+public interface IIntegrationCredentialCurrentVerifier
+{
+    Task<VerifiedIntegrationCredential?> VerifyCurrentAsync(
+        string credentialId,
+        IntegrationCredentialPurpose purpose,
+        CancellationToken cancellationToken = default);
+}
 
 public interface IIntegrationCredentialService
 {
@@ -48,7 +64,7 @@ public interface IIntegrationCredentialService
 }
 
 /// <summary>Owns opaque credential generation, one-way verification, and revocation.</summary>
-public sealed class IntegrationCredentialService(NetRatelIdentityDbContext db) : IIntegrationCredentialService
+public sealed class IntegrationCredentialService(NetRatelIdentityDbContext db) : IIntegrationCredentialService, IIntegrationCredentialCurrentVerifier
 {
     public const string ApiTokenPrefix = "nrt_ic_";
     private static readonly TimeSpan MaximumLifetime = TimeSpan.FromDays(365);
@@ -163,7 +179,37 @@ public sealed class IntegrationCredentialService(NetRatelIdentityDbContext db) :
         credential.LastUsedAtUtc = now;
         await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         return new(credential.Id, credential.OwnerPrincipalId, credential.Purpose,
-            credential.Grants.Select(grant => new IntegrationCredentialGrantRequest(grant.TenantId, grant.Permission)).ToArray());
+            credential.Grants.Select(grant => new IntegrationCredentialGrantRequest(grant.TenantId, grant.Permission)).ToArray())
+        {
+            Resource = credential.Resource
+        };
+    }
+
+    public async Task<VerifiedIntegrationCredential?> VerifyCurrentAsync(
+        string credentialId,
+        IntegrationCredentialPurpose purpose,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(credentialId))
+            return null;
+
+        var now = DateTimeOffset.UtcNow;
+        var credential = await db.IntegrationCredentials
+            .Include(candidate => candidate.Grants)
+            .SingleOrDefaultAsync(candidate => candidate.Id == credentialId && candidate.Purpose == purpose &&
+                candidate.RevokedAtUtc == null, cancellationToken).ConfigureAwait(false);
+        if (credential is null || credential.ExpiresAtUtc <= now)
+            return null;
+
+        var localOwner = await db.Users.SingleOrDefaultAsync(user => user.PrincipalId == credential.OwnerPrincipalId, cancellationToken).ConfigureAwait(false);
+        if (localOwner is not null && !localOwner.IsEnabled)
+            return null;
+
+        return new(credential.Id, credential.OwnerPrincipalId, credential.Purpose,
+            credential.Grants.Select(grant => new IntegrationCredentialGrantRequest(grant.TenantId, grant.Permission)).ToArray())
+        {
+            Resource = credential.Resource
+        };
     }
 
     public static string Hash(string secret) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(secret)));

@@ -3,11 +3,16 @@ using System.Text.Encodings.Web;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.Extensions.Options;
 using NetRatel.API.Security.Local;
+using NetRatel.API.Endpoints.Auth;
 using NetRatel.Infrastructure.Identity;
 
 namespace NetRatel.API.Security.Integration;
 
-/// <summary>Authenticates only API-purpose integration credentials.</summary>
+/// <summary>
+/// Authenticates API-purpose credentials, plus HTTP-MCP credentials on the two
+/// dedicated exchange routes. The latter are deliberately never accepted by a
+/// normal business API endpoint.
+/// </summary>
 public sealed class IntegrationCredentialAuthenticationHandler(
     IOptionsMonitor<AuthenticationSchemeOptions> options,
     ILoggerFactory logger,
@@ -26,7 +31,10 @@ public sealed class IntegrationCredentialAuthenticationHandler(
             return AuthenticateResult.NoResult();
         }
 
-        var verified = await credentials.VerifyAsync(header["Bearer ".Length..].Trim(), IntegrationCredentialPurpose.Api, Context.RequestAborted)
+        var purpose = IsLocalDelegationExchangeRoute(Request.Path)
+            ? IntegrationCredentialPurpose.HttpMcp
+            : IntegrationCredentialPurpose.Api;
+        var verified = await credentials.VerifyAsync(header["Bearer ".Length..].Trim(), purpose, Context.RequestAborted)
             .ConfigureAwait(false);
         if (verified is null)
         {
@@ -38,9 +46,15 @@ public sealed class IntegrationCredentialAuthenticationHandler(
             new Claim(LocalPrincipalClaimsTransformation.PrincipalIdClaimType, verified.OwnerPrincipalId),
             new Claim(CredentialIdClaimType, verified.CredentialId),
             new Claim("auth_mode", "integration_credential"),
-            new Claim("integration_credential_purpose", "api")
+            new Claim("integration_credential_purpose", purpose == IntegrationCredentialPurpose.HttpMcp ? "http_mcp" : "api")
         };
+        if (!string.IsNullOrWhiteSpace(verified.Resource))
+            claims = [.. claims, new Claim("integration_credential_resource", verified.Resource)];
         var identity = new ClaimsIdentity(claims, SchemeName, ClaimTypes.Name, ClaimTypes.Role);
         return AuthenticateResult.Success(new AuthenticationTicket(new ClaimsPrincipal(identity), SchemeName));
     }
+
+    private static bool IsLocalDelegationExchangeRoute(PathString path) =>
+        path.StartsWithSegments(McpLocalDelegationEndpoints.AuthenticationPath, StringComparison.Ordinal) ||
+        path.StartsWithSegments(McpLocalDelegationEndpoints.ExchangePath, StringComparison.Ordinal);
 }

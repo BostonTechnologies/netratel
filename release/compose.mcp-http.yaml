@@ -1,9 +1,17 @@
 name: netratel
 
 # Optional HTTP MCP deployment overlay. It is intentionally not included by
-# compose.images.yaml: enable it only when an external HTTPS OIDC/resource
-# configuration has been reviewed for this instance.
+# compose.images.yaml. Select either reviewed external OIDC (the established
+# default) or explicit local credential mode; they are not silently mixed.
 services:
+  api:
+    environment:
+      NetRatel__Mcp__Delegation__Enabled: ${NETRATEL_MCP_DELEGATION_ENABLED:-false}
+      NetRatel__Mcp__Delegation__Issuer: ${NETRATEL_MCP_DELEGATION_ISSUER:-}
+      NetRatel__Mcp__Delegation__Audience: ${NETRATEL_MCP_DELEGATION_AUDIENCE:-}
+      NetRatel__Mcp__Delegation__ServicePrincipal: ${NETRATEL_MCP_DELEGATION_SERVICE_PRINCIPAL:-netratel-mcp-http}
+      NetRatel__Mcp__Delegation__KeyId: ${NETRATEL_MCP_DELEGATION_KEY_ID:-}
+      NetRatel__Mcp__Delegation__SharedKeyBase64: ${NETRATEL_MCP_DELEGATION_KEY_BASE64:-}
   mcp-http:
     image: ${NETRATEL_MCP_HTTP_IMAGE:?set the approved HTTP MCP image digest}
     ports:
@@ -13,7 +21,14 @@ services:
       NETRATEL_MCP_DEV_API_BASE_URL: ${NETRATEL_MCP_DEV_API_BASE_URL:-}
       NETRATEL_MCP_PROD_API_BASE_URL: ${NETRATEL_MCP_PROD_API_BASE_URL:-}
       NetRatel__Mcp__Http__PublicResourceUri: ${NETRATEL_MCP_PUBLIC_RESOURCE_URI:?set the public HTTPS /mcp resource URI}
-      NetRatel__Mcp__Http__Authority: ${NETRATEL_MCP_OIDC_AUTHORITY:?set the HTTPS OIDC authority}
-      NetRatel__Mcp__Http__Audience: ${NETRATEL_MCP_AUDIENCE:?set the MCP audience, equal to the resource URI}
-      NetRatel__Mcp__Http__RequiredGroups__0: ${NETRATEL_MCP_REQUIRED_GROUP:?set the required operator group}
-      NetRatel__Mcp__Http__RequiredScopes__0: ${NETRATEL_MCP_REQUIRED_SCOPE:?set the required MCP read scope}
+      NetRatel__Mcp__Http__LocalCredentialMode: ${NETRATEL_MCP_LOCAL_CREDENTIAL_MODE:-false}
+      NetRatel__Mcp__Http__Authority: ${NETRATEL_MCP_OIDC_AUTHORITY:-}
+      NetRatel__Mcp__Http__Audience: ${NETRATEL_MCP_AUDIENCE:-}
+      NetRatel__Mcp__Http__RequiredGroups__0: ${NETRATEL_MCP_REQUIRED_GROUP:-}
+      NetRatel__Mcp__Http__RequiredScopes__0: ${NETRATEL_MCP_REQUIRED_SCOPE:-}
+      NetRatel__Mcp__Delegation__Enabled: ${NETRATEL_MCP_DELEGATION_ENABLED:-false}
+      NetRatel__Mcp__Delegation__Issuer: ${NETRATEL_MCP_DELEGATION_ISSUER:-}
+      NetRatel__Mcp__Delegation__Audience: ${NETRATEL_MCP_DELEGATION_AUDIENCE:-}
+      NetRatel__Mcp__Delegation__ServicePrincipal: ${NETRATEL_MCP_DELEGATION_SERVICE_PRINCIPAL:-netratel-mcp-http}
+      NetRatel__Mcp__Delegation__KeyId: ${NETRATEL_MCP_DELEGATION_KEY_ID:-}
+      NetRatel__Mcp__Delegation__SharedKeyBase64: ${NETRATEL_MCP_DELEGATION_KEY_BASE64:-}

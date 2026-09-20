@@ -1,4 +1,7 @@
 using NetRatel.Shared.Operations;
+using NetRatel.Infrastructure.Identity;
+using NetRatel.Infrastructure.Identity.Authorization;
+using System.Security.Claims;
 
 namespace NetRatel.API.Middleware;
 
@@ -15,7 +18,10 @@ public sealed class McpOperatorDelegationMiddleware(
 {
     public const string HttpContextItemKey = "netratel.mcp.operator.delegation";
 
-    public async Task InvokeAsync(HttpContext context)
+    public async Task InvokeAsync(
+        HttpContext context,
+        IIntegrationCredentialCurrentVerifier? currentCredentials = null,
+        IEffectiveAccessService? access = null)
     {
         if (!options.Enabled)
         {
@@ -41,8 +47,53 @@ public sealed class McpOperatorDelegationMiddleware(
             return;
         }
 
+        if (!await IsCurrentLocalExecutionAsync(delegation!, currentCredentials, access, context.RequestAborted).ConfigureAwait(false))
+        {
+            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            await context.Response.WriteAsJsonAsync(new
+            {
+                code = "delegated_identity_revoked",
+                layer = "delegation"
+            }, context.RequestAborted);
+            return;
+        }
+
         context.Items[HttpContextItemKey] = delegation;
         await next(context);
+    }
+
+    private static async Task<bool> IsCurrentLocalExecutionAsync(
+        McpOperatorDelegation delegation,
+        IIntegrationCredentialCurrentVerifier? currentCredentials,
+        IEffectiveAccessService? access,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(delegation.IngressCredentialId))
+            return true;
+        if (currentCredentials is null || access is null)
+            return false;
+        if (string.IsNullOrWhiteSpace(delegation.IngressPermission) || delegation.TenantId is not > 0)
+            return false;
+
+        var credential = await currentCredentials.VerifyCurrentAsync(
+            delegation.IngressCredentialId,
+            IntegrationCredentialPurpose.HttpMcp,
+            cancellationToken).ConfigureAwait(false);
+        if (credential is null || credential.OwnerPrincipalId != delegation.Identity.Subject ||
+            !string.Equals(credential.Resource, delegation.Resource, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var principal = new ClaimsPrincipal(new ClaimsIdentity(
+        [
+            new Claim("netratel_principal_id", credential.OwnerPrincipalId),
+            new Claim("netratel_integration_credential_id", credential.CredentialId),
+            new Claim("auth_mode", "integration_credential"),
+            new Claim("integration_credential_purpose", "http_mcp")
+        ], "McpLocalExecution"));
+        return await access.AuthorizeAsync(principal, delegation.IngressPermission, delegation.TenantId, cancellationToken)
+            .ConfigureAwait(false);
     }
 }
 

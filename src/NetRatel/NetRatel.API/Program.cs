@@ -450,6 +450,16 @@ builder.Services.AddAuthorization(options =>
         .RequireAssertion(context => IntegrationCredentialAuthorizationBoundary.AllowsDefaultAuthenticatedRoute(context.User))
         .Build();
 
+    options.AddPolicy("McpLocalDelegationExchange", policy =>
+    {
+        policy.AddAuthenticationSchemes(IntegrationCredentialAuthenticationHandler.SchemeName);
+        policy.RequireAuthenticatedUser();
+        policy.RequireAssertion(context => string.Equals(
+            context.User.FindFirst("integration_credential_purpose")?.Value,
+            "http_mcp",
+            StringComparison.Ordinal));
+    });
+
     options.AddPolicy("Operator", policy =>
     {
         policy.RequireAuthenticatedUser();

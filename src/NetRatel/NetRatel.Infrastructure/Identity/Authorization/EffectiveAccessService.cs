@@ -53,7 +53,8 @@ public sealed class EffectiveAccessService(NetRatelIdentityDbContext db, IConfig
         var credentialId = principal.FindFirst(IntegrationCredentialIdClaimType)?.Value;
         var credential = string.IsNullOrWhiteSpace(credentialId) ? null : await db.IntegrationCredentials
             .Include(candidate => candidate.Grants)
-            .SingleOrDefaultAsync(candidate => candidate.Id == credentialId && candidate.Purpose == IntegrationCredentialPurpose.Api &&
+            .SingleOrDefaultAsync(candidate => candidate.Id == credentialId &&
+                (candidate.Purpose == IntegrationCredentialPurpose.Api || candidate.Purpose == IntegrationCredentialPurpose.HttpMcp) &&
                 candidate.RevokedAtUtc == null, cancellationToken)
             .ConfigureAwait(false);
         if (!string.IsNullOrWhiteSpace(credentialId) &&

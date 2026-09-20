@@ -209,7 +209,18 @@ public sealed record McpOperatorDelegationRequest(
     string? Instance = null,
     int? TenantId = null,
     Guid? AgentId = null,
-    string? CorrelationId = null);
+    string? CorrelationId = null)
+{
+    /// <summary>
+    /// The opaque HTTP-MCP credential identifier after the API has exchanged
+    /// it. This is never the bearer secret and is rechecked by the API before
+    /// every delegated execution.
+    /// </summary>
+    public string? IngressCredentialId { get; init; }
+
+    /// <summary>Server-selected application permission required by local execution.</summary>
+    public string? IngressPermission { get; init; }
+}
 
 /// <summary>Verified, bounded delegation assertion available to an API operation.</summary>
 public sealed record McpOperatorDelegation(
@@ -223,7 +234,14 @@ public sealed record McpOperatorDelegation(
     string? Instance = null,
     int? TenantId = null,
     Guid? AgentId = null,
-    string? CorrelationId = null);
+    string? CorrelationId = null)
+{
+    /// <summary>Non-secret source credential identity for local HTTP MCP execution.</summary>
+    public string? IngressCredentialId { get; init; }
+
+    /// <summary>Server-selected application permission required by local execution.</summary>
+    public string? IngressPermission { get; init; }
+}
 
 /// <summary>
 /// Creates and verifies a short-lived signed assertion. The host keeps using
@@ -278,6 +296,8 @@ public sealed class McpOperatorDelegationTokenService
         AddOptional(claims, "mcp_resource", request.Resource);
         AddOptional(claims, "mcp_instance", request.Instance);
         AddOptional(claims, "mcp_correlation_id", request.CorrelationId);
+        AddOptional(claims, "mcp_ingress_credential_id", request.IngressCredentialId);
+        AddOptional(claims, "mcp_ingress_permission", request.IngressPermission);
         if (request.TenantId is { } tenantId)
             claims.Add(new Claim("mcp_tenant_id", tenantId.ToString(System.Globalization.CultureInfo.InvariantCulture)));
         if (request.AgentId is { } agentId)
@@ -349,7 +369,11 @@ public sealed class McpOperatorDelegationTokenService
                 OptionalClaim(principal, "mcp_instance"),
                 OptionalPositiveIntClaim(principal, "mcp_tenant_id"),
                 OptionalGuidClaim(principal, "mcp_agent_id"),
-                OptionalClaim(principal, "mcp_correlation_id"));
+                OptionalClaim(principal, "mcp_correlation_id"))
+            {
+                IngressCredentialId = OptionalClaim(principal, "mcp_ingress_credential_id"),
+                IngressPermission = OptionalClaim(principal, "mcp_ingress_permission")
+            };
             ValidateRequest(delegationRequest);
             delegation = new McpOperatorDelegation(
                 identity,
@@ -362,7 +386,11 @@ public sealed class McpOperatorDelegationTokenService
                 delegationRequest.Instance,
                 delegationRequest.TenantId,
                 delegationRequest.AgentId,
-                delegationRequest.CorrelationId);
+                delegationRequest.CorrelationId)
+            {
+                IngressCredentialId = delegationRequest.IngressCredentialId,
+                IngressPermission = delegationRequest.IngressPermission
+            };
             return true;
         }
         catch (SecurityTokenException)
@@ -442,6 +470,8 @@ public sealed class McpOperatorDelegationTokenService
         ValidateOptional(request.Resource, nameof(request.Resource));
         ValidateOptional(request.Instance, nameof(request.Instance));
         ValidateOptional(request.CorrelationId, nameof(request.CorrelationId));
+        ValidateOptional(request.IngressCredentialId, nameof(request.IngressCredentialId));
+        ValidateOptional(request.IngressPermission, nameof(request.IngressPermission));
         if (request.TenantId is <= 0)
             throw new InvalidOperationException("Delegation TenantId must be positive when supplied.");
         if (request.AgentId == Guid.Empty)
