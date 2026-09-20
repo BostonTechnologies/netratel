@@ -94,7 +94,10 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        modelBuilder.HasPostgresExtension("pg_trgm");
+        if (Database.IsNpgsql())
+        {
+            modelBuilder.HasPostgresExtension("pg_trgm");
+        }
         modelBuilder.Entity<M2MConnectivitySettings>().ToTable("M2MConnectivitySettings");
 
         modelBuilder.Entity<EnrollmentCode>(entity =>
@@ -1283,6 +1286,18 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
                          .Where(property => property.ClrType == typeof(DateTimeOffset) || property.ClrType == typeof(DateTimeOffset?)))
             {
                 property.SetValueConverter(converter);
+            }
+
+            foreach (var property in modelBuilder.Model.GetEntityTypes().SelectMany(entity => entity.GetProperties())
+                         .Where(property => string.Equals(property.GetColumnType(), "jsonb", StringComparison.OrdinalIgnoreCase)))
+            {
+                property.SetColumnType(null);
+            }
+
+            foreach (var index in modelBuilder.Model.GetEntityTypes().SelectMany(entity => entity.GetIndexes()))
+            {
+                index.RemoveAnnotation("Npgsql:IndexMethod");
+                index.RemoveAnnotation("Npgsql:IndexOperators");
             }
         }
     }

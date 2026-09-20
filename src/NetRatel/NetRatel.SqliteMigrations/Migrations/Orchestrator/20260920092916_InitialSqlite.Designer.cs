@@ -11,16 +11,14 @@ using NetRatel.Infrastructure.Persistence;
 namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
 {
     [DbContext(typeof(OrchestratorDbContext))]
-    [Migration("20260920092653_InitialSqlite")]
+    [Migration("20260920092916_InitialSqlite")]
     partial class InitialSqlite
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
-            modelBuilder
-                .HasAnnotation("Npgsql:PostgresExtension:pg_trgm", ",,")
-                .HasAnnotation("ProductVersion", "10.0.12");
+            modelBuilder.HasAnnotation("ProductVersion", "10.0.12");
 
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.Agent", b =>
                 {
@@ -99,14 +97,10 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                     b.HasKey("Id");
 
                     b.HasIndex("DeviceInfoJson")
-                        .HasDatabaseName("IX_Agents_GlobalSearch_DeviceInfoJson_trgm")
-                        .HasAnnotation("Npgsql:IndexMethod", "gin")
-                        .HasAnnotation("Npgsql:IndexOperators", new[] { "gin_trgm_ops" });
+                        .HasDatabaseName("IX_Agents_GlobalSearch_DeviceInfoJson_trgm");
 
                     b.HasIndex("Name")
-                        .HasDatabaseName("IX_Agents_GlobalSearch_Name_trgm")
-                        .HasAnnotation("Npgsql:IndexMethod", "gin")
-                        .HasAnnotation("Npgsql:IndexOperators", new[] { "gin_trgm_ops" });
+                        .HasDatabaseName("IX_Agents_GlobalSearch_Name_trgm");
 
                     b.HasIndex("Status");
 
@@ -428,7 +422,7 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
 
                     b.Property<string>("ManifestJson")
                         .IsRequired()
-                        .HasColumnType("jsonb");
+                        .HasColumnType("TEXT");
 
                     b.Property<Guid>("PublicId")
                         .HasColumnType("TEXT");
@@ -1635,7 +1629,7 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
 
                     b.Property<string>("GroupsJson")
                         .IsRequired()
-                        .HasColumnType("jsonb");
+                        .HasColumnType("TEXT");
 
                     b.Property<string>("McpInstance")
                         .HasMaxLength(32)
@@ -1666,11 +1660,11 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
 
                     b.Property<string>("RolesJson")
                         .IsRequired()
-                        .HasColumnType("jsonb");
+                        .HasColumnType("TEXT");
 
                     b.Property<string>("ScopesJson")
                         .IsRequired()
-                        .HasColumnType("jsonb");
+                        .HasColumnType("TEXT");
 
                     b.Property<string>("ServicePrincipal")
                         .IsRequired()
@@ -1740,11 +1734,11 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
 
                     b.Property<string>("EffectiveConstraintsJson")
                         .IsRequired()
-                        .HasColumnType("jsonb");
+                        .HasColumnType("TEXT");
 
                     b.Property<string>("EnvironmentReferencesJson")
                         .IsRequired()
-                        .HasColumnType("jsonb");
+                        .HasColumnType("TEXT");
 
                     b.Property<string>("FailureCode")
                         .HasMaxLength(64)
@@ -1770,7 +1764,7 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
                         .HasColumnType("TEXT");
 
                     b.Property<string>("OutputJson")
-                        .HasColumnType("jsonb");
+                        .HasColumnType("TEXT");
 
                     b.Property<Guid>("PolicyId")
                         .HasColumnType("TEXT");
@@ -2366,7 +2360,7 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
 
                     b.Property<string>("ConstraintsJson")
                         .IsRequired()
-                        .HasColumnType("jsonb");
+                        .HasColumnType("TEXT");
 
                     b.Property<long>("CreatedAtUtc")
                         .HasColumnType("INTEGER");
@@ -2609,7 +2603,7 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
 
                     b.Property<string>("DeclaredSideEffectsJson")
                         .IsRequired()
-                        .HasColumnType("jsonb");
+                        .HasColumnType("TEXT");
 
                     b.Property<long?>("DeletedAtUtc")
                         .HasColumnType("INTEGER");
@@ -2641,7 +2635,7 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
 
                     b.Property<string>("ParametersJson")
                         .IsRequired()
-                        .HasColumnType("jsonb");
+                        .HasColumnType("TEXT");
 
                     b.Property<Guid>("PolicyId")
                         .HasColumnType("TEXT");
@@ -2713,7 +2707,7 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
 
                     b.Property<string>("DeclaredSideEffectsJson")
                         .IsRequired()
-                        .HasColumnType("jsonb");
+                        .HasColumnType("TEXT");
 
                     b.Property<string>("Description")
                         .IsRequired()
@@ -2735,7 +2729,7 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
 
                     b.Property<string>("ParametersJson")
                         .IsRequired()
-                        .HasColumnType("jsonb");
+                        .HasColumnType("TEXT");
 
                     b.Property<long>("ScriptId")
                         .HasColumnType("INTEGER");
@@ -2781,7 +2775,7 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
 
                     b.Property<string>("TagsJson")
                         .IsRequired()
-                        .HasColumnType("jsonb");
+                        .HasColumnType("TEXT");
 
                     b.Property<int>("TenantId")
                         .HasColumnType("INTEGER");
@@ -3100,7 +3094,7 @@ namespace NetRatel.SqliteMigrations.Migrations.Orchestrator
 
                     b.Property<string>("EffectiveConstraintsJson")
                         .IsRequired()
-                        .HasColumnType("jsonb");
+                        .HasColumnType("TEXT");
 
                     b.Property<long>("ExpiresAtUtc")
                         .HasColumnType("INTEGER");
