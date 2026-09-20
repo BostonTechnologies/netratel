@@ -385,7 +385,12 @@ verify_mcp_stdio_archive_scoped_read() {
 }
 
 stage="starting disposable Compose services"
-docker compose --project-name "$project" "${compose_args[@]}" up "${compose_up_args[@]}"
+if ! docker compose --project-name "$project" "${compose_args[@]}" up "${compose_up_args[@]}"; then
+  docker compose --project-name "$project" "${compose_args[@]}" ps --all >&2 || true
+  docker compose --project-name "$project" "${compose_args[@]}" \
+    logs --no-color --tail 200 migrations >&2 || true
+  exit 1
+fi
 stage="waiting for migrations"
 wait_for_migrations
 
