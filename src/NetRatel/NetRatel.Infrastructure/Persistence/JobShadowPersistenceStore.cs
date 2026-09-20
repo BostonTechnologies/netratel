@@ -2,7 +2,6 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using NetRatel.Application.Commands;
 using NetRatel.Application.Jobs;
-using Npgsql;
 
 namespace NetRatel.Infrastructure.Persistence;
 
@@ -267,11 +266,7 @@ public sealed class JobShadowPersistenceStore(
     }
 
     private static bool IsConcurrentDuplicate(DbUpdateException exception) =>
-        exception.GetBaseException() is PostgresException
-        {
-            SqlState: PostgresErrorCodes.UniqueViolation,
-            ConstraintName: SourceIdentityConstraint
-        };
+        DatabaseExceptionClassifier.IsUniqueViolation(exception, SourceIdentityConstraint);
 
     private static DateTimeOffset? ToTimestamp(long utcTicks) =>
         utcTicks == 0 ? null : new DateTimeOffset(utcTicks, TimeSpan.Zero);

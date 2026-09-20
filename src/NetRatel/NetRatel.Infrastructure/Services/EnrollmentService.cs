@@ -6,7 +6,6 @@ using System.Linq;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using Npgsql;
 using NetRatel.Application.Agents;
 using NetRatel.Application.Events;
 using NetRatel.Infrastructure.Persistence;
@@ -375,9 +374,7 @@ public sealed class EnrollmentService : IEnrollmentService
     }
 
     private static bool IsInstallationIdentityConflict(DbUpdateException exception) =>
-        exception.InnerException is PostgresException postgres &&
-        postgres.SqlState == PostgresErrorCodes.UniqueViolation &&
-        string.Equals(postgres.ConstraintName, "IX_Agents_TenantId_PublicKeyFingerprint", StringComparison.Ordinal);
+        DatabaseExceptionClassifier.IsUniqueViolation(exception, "IX_Agents_TenantId_PublicKeyFingerprint");
 
     private static string ShortFingerprint(string fingerprint) => fingerprint[..Math.Min(12, fingerprint.Length)];
 

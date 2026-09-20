@@ -3,7 +3,6 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using NetRatel.Application.RemoteSupport;
 using NetRatel.Shared.Contracts.RemoteSupport;
-using Npgsql;
 
 namespace NetRatel.Infrastructure.Persistence;
 
@@ -290,9 +289,5 @@ public sealed class RemoteSupportLifecycleStore(
     private static long ToLong(decimal value) => checked((long)value);
 
     private static bool IsConcurrentOpenDuplicate(DbUpdateException exception) =>
-        exception.GetBaseException() is PostgresException
-        {
-            SqlState: PostgresErrorCodes.UniqueViolation,
-            ConstraintName: OpenRequestConstraint
-        };
+        DatabaseExceptionClassifier.IsUniqueViolation(exception, OpenRequestConstraint);
 }
