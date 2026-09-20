@@ -34,11 +34,21 @@ public sealed class AuthControllerTests
         result.Properties!.RedirectUri.Should().Be("/");
     }
 
-    private static AuthController CreateController()
+    [Fact]
+    public void Oidc_login_is_not_exposed_when_the_deployment_has_no_oidc_configuration()
     {
+        CreateController(oidcConfigured: false).OidcLogin("/clients").Should().BeOfType<NotFoundResult>();
+    }
+
+    private static AuthController CreateController(bool oidcConfigured = true)
+    {
+        var configurationValues = oidcConfigured
+            ? new Dictionary<string, string?> { ["Authentication:Oidc:Authority"] = "https://issuer.example.invalid" }
+            : new Dictionary<string, string?>();
+
         var controller = new AuthController(
             null!,
-            new ConfigurationBuilder().Build(),
+            new ConfigurationBuilder().AddInMemoryCollection(configurationValues).Build(),
             null!,
             Options.Create(new MachineTokenOptions()),
             null!)

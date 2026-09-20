@@ -167,6 +167,33 @@ public sealed class BootstrapStateStore
         await Task.CompletedTask.ConfigureAwait(false);
     }
 
+    public async Task<bool> CompleteSetupAsync(Guid operationId, CancellationToken cancellationToken = default)
+    {
+        await using var lease = await AcquireLeaseAsync(cancellationToken).ConfigureAwait(false);
+        var descriptor = await ReadDescriptorAsync(cancellationToken).ConfigureAwait(false);
+        if (descriptor is null || descriptor.State != BootstrapState.Configuring || descriptor.OperationId != operationId)
+        {
+            return false;
+        }
+
+        descriptor = await ValidateKeyMaterialAsync(descriptor, cancellationToken).ConfigureAwait(false);
+        if (descriptor.State != BootstrapState.Configuring || descriptor.OperationId != operationId)
+        {
+            return false;
+        }
+
+        var completed = descriptor with
+        {
+            State = BootstrapState.Ready,
+            OperationId = null,
+            OperationLeaseExpiresAtUtc = null,
+            UpdatedAtUtc = _timeProvider.GetUtcNow()
+        };
+        await WriteDescriptorAsync(completed, cancellationToken).ConfigureAwait(false);
+        await WriteJournalAsync(completed, "setup-completed", cancellationToken).ConfigureAwait(false);
+        return true;
+    }
+
     private BootstrapDescriptor CreateDescriptor(
         BootstrapState state,
         string? provider,

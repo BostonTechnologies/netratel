@@ -248,6 +248,26 @@ jobs:
           path: '**/TestResults/branding/*.png'
           if-no-files-found: error
 
+  local-first-compose:
+    name: Source Compose local-first browser smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          global-json-file: global.json
+      - run: |
+          docker compose -f compose.sqlite.yaml config --quiet
+          tools/ci/smoke-local-first-compose.sh
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: local-first-${{ github.job }}
+          path: TestResults/local-first
+          if-no-files-found: warn
+          retention-days: 14
+
   release-image-compose:
     name: Release-image Compose generic OIDC smoke test
     needs: review-artifacts
@@ -317,7 +337,7 @@ jobs:
   pr-validation:
     name: PR validation
     if: always()
-    needs: [disclosure, dotnet, review-artifacts, client-packages, images, compose, release-image-compose, mcp-http-image-smoke]
+    needs: [disclosure, dotnet, review-artifacts, client-packages, images, compose, local-first-compose, release-image-compose, mcp-http-image-smoke]
     runs-on: ubuntu-latest
     steps:
       - env:
@@ -327,6 +347,7 @@ jobs:
           CLIENT_PACKAGES_RESULT: ${{ needs.client-packages.result }}
           IMAGES_RESULT: ${{ needs.images.result }}
           COMPOSE_RESULT: ${{ needs.compose.result }}
+          LOCAL_FIRST_COMPOSE_RESULT: ${{ needs.local-first-compose.result }}
           RELEASE_IMAGE_COMPOSE_RESULT: ${{ needs.release-image-compose.result }}
           MCP_HTTP_IMAGE_SMOKE_RESULT: ${{ needs.mcp-http-image-smoke.result }}
         run: |
@@ -336,5 +357,6 @@ jobs:
           [[ "$CLIENT_PACKAGES_RESULT" == success ]]
           [[ "$IMAGES_RESULT" == success ]]
           [[ "$COMPOSE_RESULT" == success ]]
+          [[ "$LOCAL_FIRST_COMPOSE_RESULT" == success ]]
           [[ "$RELEASE_IMAGE_COMPOSE_RESULT" == success ]]
           [[ "$MCP_HTTP_IMAGE_SMOKE_RESULT" == success ]]

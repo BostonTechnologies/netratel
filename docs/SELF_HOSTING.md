@@ -1,18 +1,18 @@
 # Self-hosting NetRatel
 
-NetRatel requires PostgreSQL for durable application data. Run Web, API, and
-PostgreSQL on a private network, expose Web through HTTPS, and retain backups of
-the PostgreSQL database, Data Protection key ring, agent-signing material, and
-client artifact store together.
+NetRatel supports PostgreSQL for durable multi-instance application data and a
+single-node SQLite profile for smaller local deployments. Run Web and API on a
+private network, expose Web through HTTPS, and retain provider data, the Data
+Protection key ring, agent-signing material, and client artifact store together.
 
 ## Local source evaluation
 
-Install Docker Compose and copy `.env.example` to `.env`. A fresh P01 source
-evaluation needs a PostgreSQL password; OIDC values may remain unset while the
-restricted setup-status shell is being evaluated. Existing OIDC deployments
-continue to require their configured OIDC settings and a native-agent signing
-key. Create that ES256 key outside source control when exercising operational
-native-agent connectivity:
+Install Docker Compose and copy `.env.example` to `.env`. A fresh bundled
+PostgreSQL source evaluation needs a PostgreSQL password; OIDC values may
+remain unset because fresh installations use guided local-account setup.
+Existing OIDC deployments retain their configured OIDC settings and a
+native-agent signing key. Create that ES256 key outside source control when
+exercising operational native-agent connectivity:
 
 ```sh
 openssl ecparam -name prime256v1 -genkey -noout -out .netratel-agent-es256-private.pem
@@ -22,21 +22,22 @@ sudo chmod 600 .netratel-agent-es256-private.pem
 
 Set `NETRATEL_AGENT_AUTH_PRIVATE_KEY` in `.env` to that key file before an
 operational run, then run `docker compose up --build`. With OIDC unset, the
-Web application at `http://localhost:8080` shows only setup status and the API
-does not start business endpoints. The private API volume contains the
-one-time bootstrap proof at `/var/netratel/bootstrap/setup-proof`; retrieve it
-only from a trusted operator console. This source-build stack uses only
-PostgreSQL and the locally built Web/API images; it does not contact any
+Web application at `http://localhost:8080` guides a trusted operator through
+proof-gated local setup and then local sign-in. The private API volume contains
+the one-time bootstrap proof at `/var/netratel/bootstrap/setup-proof`; retrieve
+it only from a trusted operator console. This source-build stack uses only
+PostgreSQL and locally built Web/API images; it does not contact a
 vendor-operated service by default. The source image runs as UID/GID `2000`;
 deployments using a secret manager should mount the key read-only with
 equivalent ownership and mode.
 
 The `migrations` service is a one-shot explicit migration runner; API starts
-only after it succeeds. The stack intentionally does not provide an
-administrator password or anonymous business mode. The P01 shell does not
-complete first-user setup; later setup phases add native identity and guided
-initialization. Configure a real OIDC client before using the retained OIDC
-operational path.
+only after it succeeds. The stack intentionally does not provide a default
+administrator password or anonymous business mode. Follow the
+[first-run guide](FIRST_RUN_SETUP.md) to retrieve the private proof and create
+the first local administrator and tenant. Configure an OIDC client only for an
+optional OIDC or hybrid deployment; established OIDC deployments retain their
+existing operational path.
 
 The Compose Web port is loopback-bound by default. Set
 `NETRATEL_WEB_BIND_ADDRESS` deliberately when a reverse proxy must reach it;
@@ -86,9 +87,11 @@ The tracked `appsettings.json` files are examples only. Configure sensitive
 values through your deployment secret mechanism and persistent volumes rather
 than committing them to source control.
 
-At minimum, provide a PostgreSQL connection string, a persistent Data
-Protection directory, unique system-token and agent-signing material, and OIDC
-client settings for interactive browser login.
+At minimum, provide the selected provider connection, a persistent Data
+Protection directory, unique system-token and agent-signing material. OIDC
+client settings are required only for a deliberately configured OIDC or hybrid
+browser-login mode; local-first setup does not require an external identity
+provider or SMTP service.
 
 The optional machine-token bridge is configured under
 `Authentication__MachineToken`. It validates OIDC issuer, audience, signing

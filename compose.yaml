@@ -19,11 +19,17 @@ services:
     build:
       context: .
       dockerfile: docker/api/Dockerfile
+    restart: unless-stopped
     environment:
       ASPNETCORE_URLS: http://+:9222
       ConnectionStrings__NetRatelDb: Host=postgres;Port=5432;Database=${POSTGRES_DB:-netratel};Username=${POSTGRES_USER:-netratel};Password=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
       DataProtection__KeysDirectory: /var/netratel/keys
       Authentication__MachineToken__Enabled: "false"
+      # This source profile binds Web to loopback by default. Production ingress
+      # uses HTTPS and must omit this localhost-only setting.
+      Authentication__Local__AllowInsecureLocalhost: "${NETRATEL_ALLOW_INSECURE_LOCALHOST:-true}"
+      Bootstrap__AllowedOrigins__0: http://127.0.0.1:${NETRATEL_WEB_PORT:-8080}
+      Bootstrap__AllowedOrigins__1: http://localhost:${NETRATEL_WEB_PORT:-8080}
       Authentication__Oidc__Authority: ${OIDC_AUTHORITY:-}
       Authentication__Oidc__Audience: ${OIDC_API_AUDIENCE:-}
       Authorization__Oidc__AdminGroupId: ${OIDC_ADMIN_GROUP_ID:-}
@@ -59,6 +65,7 @@ services:
       ApiBaseUrl: http://api:9222
       NetRatel_KEYS_DIR: /var/netratel/keys
       Authentication__MachineToken__Enabled: "false"
+      Authentication__Local__AllowInsecureLocalhost: "${NETRATEL_ALLOW_INSECURE_LOCALHOST:-true}"
       Authentication__Oidc__Authority: ${OIDC_AUTHORITY:-}
       Authentication__Oidc__ClientId: ${OIDC_CLIENT_ID:-}
       Authentication__Oidc__ApiScope: ${OIDC_API_SCOPE:-}

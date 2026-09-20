@@ -5,6 +5,8 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Hosting;
+using System.Net;
+using System.Net.Http.Json;
 using Xunit;
 using NetRatel.Web.Components.Pages;
 
@@ -68,10 +70,12 @@ public class LoginPageTests : AsyncBunitContext
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["DevelopmentOperator:Enabled"] = developmentOperatorEnabled.ToString(),
-                ["LoginUi:EnvironmentLabel"] = environmentLabel
+                ["LoginUi:EnvironmentLabel"] = environmentLabel,
+                ["Authentication:Oidc:Authority"] = "https://issuer.example.invalid"
             })
             .Build());
         Services.AddSingleton<IHostEnvironment>(new TestHostEnvironment(environmentName));
+        Services.AddSingleton<IHttpClientFactory>(new BootstrapStatusHttpClientFactory());
 
         AddAuthorization();
 
@@ -90,5 +94,24 @@ public class LoginPageTests : AsyncBunitContext
         public string ApplicationName { get; set; } = "NetRatel.Web.ComponentTests";
         public string ContentRootPath { get; set; } = AppContext.BaseDirectory;
         public IFileProvider ContentRootFileProvider { get; set; } = new NullFileProvider();
+    }
+
+    private sealed class BootstrapStatusHttpClientFactory : IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name) => new(new BootstrapStatusHandler())
+        {
+            BaseAddress = new Uri("https://netratel.test/")
+        };
+
+        private sealed class BootstrapStatusHandler : HttpMessageHandler
+        {
+            protected override Task<HttpResponseMessage> SendAsync(
+                HttpRequestMessage request,
+                CancellationToken cancellationToken) =>
+                Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = JsonContent.Create(new { setupRequired = false, isRecoveryRequired = false })
+                });
+        }
     }
 }

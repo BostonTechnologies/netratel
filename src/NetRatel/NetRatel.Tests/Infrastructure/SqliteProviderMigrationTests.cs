@@ -1,9 +1,12 @@
 using System.Security.Claims;
 using FluentAssertions;
 using Microsoft.Data.Sqlite;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
+using NetRatel.API.Bootstrap;
 using NetRatel.API.Endpoints.Search;
 using NetRatel.API.Services.Terminal;
 using NetRatel.Application.Agents;
@@ -18,6 +21,90 @@ namespace NetRatel.Tests.Infrastructure;
 
 public sealed class SqliteProviderMigrationTests
 {
+    [Fact]
+    public async Task Bootstrap_initializer_creates_one_local_administrator_and_tenant_then_rejects_replay()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"netratel-bootstrap-sqlite-{Guid.NewGuid():N}.db");
+        var stateDirectory = Path.Combine(Path.GetTempPath(), "netratel-bootstrap-initialization", Guid.NewGuid().ToString("N"));
+        var connectionString = $"Data Source={databasePath};Foreign Keys=True";
+        try
+        {
+            var applicationOptions = new DbContextOptionsBuilder<OrchestratorDbContext>()
+                .UseSqlite(connectionString, sqlite => sqlite.MigrationsAssembly("NetRatel.SqliteMigrations"))
+                .Options;
+            var identityOptions = new DbContextOptionsBuilder<NetRatelIdentityDbContext>()
+                .UseSqlite(connectionString, sqlite => sqlite.MigrationsAssembly("NetRatel.SqliteMigrations"))
+                .Options;
+            await using (var application = new OrchestratorDbContext(applicationOptions)) await application.Database.MigrateAsync();
+            await using (var identity = new NetRatelIdentityDbContext(identityOptions)) await identity.Database.MigrateAsync();
+
+            var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Database:Provider"] = "Sqlite",
+                ["Database:InstanceCount"] = "1",
+                ["ConnectionStrings:NetRatelDb"] = connectionString
+            }).Build();
+            var store = new BootstrapStateStore(new BootstrapOptions { StateDirectory = stateDirectory });
+            await store.LoadOrCreateAsync();
+            var proof = await File.ReadAllTextAsync(Path.Combine(stateDirectory, "setup-proof"));
+            var claim = await store.ClaimSetupAsync(proof, "SQLite", "ConnectionStrings:NetRatelDb");
+            claim.Succeeded.Should().BeTrue();
+            claim.Descriptor!.OperationId.Should().NotBeNull();
+
+            var initializer = new BootstrapInitializationService(
+                store,
+                configuration,
+                new PasswordHasher<LocalUser>(),
+                Options.Create(new IdentityOptions
+                {
+                    Password =
+                    {
+                        RequiredLength = 15,
+                        RequiredUniqueChars = 1,
+                        RequireDigit = false,
+                        RequireLowercase = false,
+                        RequireUppercase = false,
+                        RequireNonAlphanumeric = false
+                    }
+                }));
+            var initialized = await initializer.InitializeAsync(
+                claim.Descriptor.OperationId!.Value,
+                new BootstrapInitializationRequest("Initial Administrator", "admin@example.test", "a local-first passphrase", "Initial tenant"));
+
+            initialized.Succeeded.Should().BeTrue();
+            (await store.LoadOrCreateAsync()).State.Should().Be(BootstrapState.Ready);
+            (await initializer.InitializeAsync(
+                claim.Descriptor.OperationId.Value,
+                new BootstrapInitializationRequest("Other", "other@example.test", "a local-first passphrase", "Other tenant"))).Succeeded.Should().BeFalse();
+
+            await using var verifyApplication = new OrchestratorDbContext(applicationOptions);
+            await using var verifyIdentity = new NetRatelIdentityDbContext(identityOptions);
+            (await verifyApplication.Tenants.SingleAsync()).Name.Should().Be("Initial tenant");
+            var user = await verifyIdentity.Users.SingleAsync();
+            user.Email.Should().Be("admin@example.test");
+            user.IsInstanceAdministrator.Should().BeTrue();
+            user.PrincipalId.Should().NotBeNullOrWhiteSpace();
+
+            var originalStamp = user.SecurityStamp;
+            var originalRevision = user.AuthorizationRevision;
+            var recovered = await initializer.RecoverAdministratorAsync("admin@example.test", "a recovered local passphrase");
+            recovered.Succeeded.Should().BeTrue();
+
+            await verifyIdentity.Entry(user).ReloadAsync();
+            user.SecurityStamp.Should().NotBe(originalStamp);
+            user.AuthorizationRevision.Should().Be(originalRevision + 1);
+            user.TwoFactorEnabled.Should().BeFalse();
+            new PasswordHasher<LocalUser>().VerifyHashedPassword(user, user.PasswordHash!, "a recovered local passphrase")
+                .Should().Be(PasswordVerificationResult.Success);
+            (await initializer.RecoverAdministratorAsync("not-an-admin@example.test", "another recovered passphrase")).Succeeded.Should().BeFalse();
+        }
+        finally
+        {
+            File.Delete(databasePath);
+            if (Directory.Exists(stateDirectory)) Directory.Delete(stateDirectory, recursive: true);
+        }
+    }
+
     [Fact]
     public void Provider_selection_defaults_to_PostgreSql_and_preserves_connection_alias_precedence()
     {

@@ -66,9 +66,60 @@ var builder = WebApplication.CreateBuilder(args);
 var bootstrapOptions = BootstrapOptions.FromConfiguration(builder.Configuration);
 var bootstrapLifecycle = new BootstrapLifecycleService(new BootstrapStateStore(bootstrapOptions), builder.Configuration);
 var bootstrapDescriptor = await bootstrapLifecycle.InitializeAsync();
+if (args is [UnattendedBootstrapCommand.CommandName])
+{
+    if (bootstrapDescriptor.State != BootstrapState.Unconfigured)
+    {
+        await Console.Error.WriteLineAsync("Unattended initialization is available only for an unconfigured NetRatel instance.");
+        return;
+    }
+
+    var command = new UnattendedBootstrapCommand(
+        bootstrapOptions,
+        bootstrapLifecycle,
+        new BootstrapInitializationService(
+            new BootstrapStateStore(bootstrapOptions),
+            builder.Configuration,
+            new PasswordHasher<LocalUser>(),
+            Options.Create(BootstrapApplicationExtensions.CreateBootstrapIdentityOptions())));
+    var result = await command.InitializeAsync();
+    if (!result.Succeeded)
+    {
+        await Console.Error.WriteLineAsync(result.Error ?? "Unattended initialization could not be completed.");
+        return;
+    }
+
+    await Console.Out.WriteLineAsync("NetRatel initialization completed. Start the API normally to serve the application.");
+    return;
+}
+if (args is [DeploymentLocalAdministratorRecoveryCommand.CommandName])
+{
+    if (bootstrapDescriptor.State != BootstrapState.Ready)
+    {
+        await Console.Error.WriteLineAsync("Deployment-local administrator recovery is available only for a ready NetRatel instance.");
+        return;
+    }
+
+    var command = new DeploymentLocalAdministratorRecoveryCommand(
+        bootstrapOptions,
+        new BootstrapInitializationService(
+            new BootstrapStateStore(bootstrapOptions),
+            builder.Configuration,
+            new PasswordHasher<LocalUser>(),
+            Options.Create(BootstrapApplicationExtensions.CreateBootstrapIdentityOptions())));
+    var result = await command.RecoverAsync();
+    if (!result.Succeeded)
+    {
+        await Console.Error.WriteLineAsync(result.Error ?? "Deployment-local administrator recovery could not be completed.");
+        return;
+    }
+
+    await Console.Out.WriteLineAsync("Local administrator recovery completed. Existing local sessions were invalidated.");
+    return;
+}
 if (bootstrapDescriptor.State != BootstrapState.Ready)
 {
-    builder.Services.AddBootstrapRuntime(bootstrapOptions);
+    builder.Services.AddBootstrapRuntime(bootstrapOptions, builder.Configuration);
     builder.ConfigureBootstrapListener();
     var bootstrapApp = builder.Build();
     bootstrapApp.UseBootstrapRuntime();
@@ -330,7 +381,9 @@ builder.Services
         options.Cookie.HttpOnly = true;
         options.Cookie.Path = "/";
         options.Cookie.SameSite = SameSiteMode.Lax;
-        options.Cookie.SecurePolicy = localAuthenticationOptions.AllowInsecureLocalhost && builder.Environment.IsDevelopment()
+        // The only HTTP profile is an operator-opted-in, loopback-bound Compose evaluation.
+        // Public deployments leave this false and always receive a Secure cookie.
+        options.Cookie.SecurePolicy = localAuthenticationOptions.AllowInsecureLocalhost
             ? CookieSecurePolicy.SameAsRequest
             : CookieSecurePolicy.Always;
         options.ExpireTimeSpan = TimeSpan.FromHours(8);
@@ -783,6 +836,7 @@ app.UseMiddleware<NetRatel.API.Middleware.CorrelationIdMiddleware>();
 app.UseMiddleware<NetRatel.API.Middleware.CorrelationLoggingMiddleware>();
 
 app.MapApiEndpoints();
+app.MapReadyBootstrapStatus(bootstrapDescriptor);
 
 app.UseExceptionHandler(errorApp =>
 {

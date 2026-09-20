@@ -23,6 +23,14 @@ public class AuthController(
     [HttpGet("azure")]
     public IActionResult OidcLogin(string? returnUrl = null)
     {
+        if (string.Equals(configuration["Authentication:Mode"], "Local", StringComparison.OrdinalIgnoreCase) ||
+            (string.IsNullOrWhiteSpace(configuration["Authentication:Oidc:Authority"]) &&
+             string.IsNullOrWhiteSpace(configuration["Authentication:Azure:Authority"]) &&
+             string.IsNullOrWhiteSpace(configuration["AzureAd:TenantId"])))
+        {
+            return NotFound();
+        }
+
         returnUrl = NormalizeLocalRedirect(returnUrl, Url.Content("~/") ?? "/");
         var props = new AuthenticationProperties
         {
@@ -37,6 +45,12 @@ public class AuthController(
     [HttpGet("logout")]
     public async Task<IActionResult> Logout()
     {
+        if (string.Equals(User.FindFirst("auth_mode")?.Value, "local", StringComparison.OrdinalIgnoreCase))
+        {
+            await HttpContext.SignOutAsync("NetRatelLocal");
+            return LocalRedirect(Url.Content("~/login")!);
+        }
+
         if (string.Equals(User.FindFirst("auth_mode")?.Value, "machine_token", StringComparison.OrdinalIgnoreCase))
         {
             await HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
