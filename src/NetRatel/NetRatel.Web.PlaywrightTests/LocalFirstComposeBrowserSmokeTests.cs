@@ -135,6 +135,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             });
         }
 
+        await page.SetViewportSizeAsync(1440, 900);
         await page.GotoAsync(webUrl.ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
         var applicationBrand = page.Locator(".netratel-appbar-brand img");
         await applicationBrand.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
