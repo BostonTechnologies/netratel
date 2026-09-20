@@ -12,14 +12,6 @@ html, body {
     color: var(--mud-palette-text-primary);
 }
 
-html[data-netratel-theme="light"] {
-    color-scheme: light;
-}
-
-html[data-netratel-theme="dark"] {
-    color-scheme: dark;
-}
-
 a, .btn-link {
     color: var(--mud-palette-primary);
 }

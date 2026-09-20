@@ -1,5 +1,6 @@
 @using NetRatel.Web.Themes
 @inject IJSRuntime JS
+@inject ILogger<ThemePreferenceProvider> Logger
 
 <MudThemeProvider @ref="_themeProvider"
                   Theme="_theme"
@@ -21,6 +22,7 @@
     private bool _isDarkMode;
     private bool _systemDarkMode;
     private bool _initialized;
+    private long _selectionVersion;
 
     public ThemePreferenceMode Mode => _mode;
     public bool IsDarkMode => _isDarkMode;
@@ -45,27 +47,43 @@
             return;
         }
 
-        _mode = ParseMode(await JS.InvokeAsync<string?>("netratelThemePreference.get"));
-        _systemDarkMode = await _themeProvider.GetSystemDarkModeAsync();
+        var initializationVersion = _selectionVersion;
+        var persistedMode = await ReadPersistedModeAsync();
+        var initialSystemDarkMode = await ReadSystemDarkModeAsync();
+
+        // A user can select a theme while a delayed browser read is still in
+        // flight. Never let that earlier read replace their newer selection.
+        if (initializationVersion == _selectionVersion)
+        {
+            _mode = persistedMode;
+        }
+
+        _systemDarkMode = initialSystemDarkMode;
         _isDarkMode = ResolveDarkMode();
         _initialized = true;
 
-        await _themeProvider.WatchSystemDarkModeAsync(OnSystemDarkModeChangedAsync);
+        await WatchSystemThemeAsync();
         await ApplyDocumentThemeAsync();
         await InvokeAsync(StateHasChanged);
     }
 
     public async Task SetModeAsync(ThemePreferenceMode selectedMode)
     {
+        var updateVersion = ++_selectionVersion;
         _mode = selectedMode;
 
         if (_mode is ThemePreferenceMode.System && _themeProvider is not null)
         {
-            _systemDarkMode = await _themeProvider.GetSystemDarkModeAsync();
+            _systemDarkMode = await ReadSystemDarkModeAsync();
+        }
+
+        if (updateVersion != _selectionVersion)
+        {
+            return;
         }
 
         _isDarkMode = ResolveDarkMode();
-        await JS.InvokeVoidAsync("netratelThemePreference.set", ToStorageValue(_mode));
+        await PersistModeAsync(_mode);
         await ApplyDocumentThemeAsync();
         await InvokeAsync(StateHasChanged);
     }
@@ -104,8 +122,92 @@
         _ => _systemDarkMode,
     };
 
-    private Task ApplyDocumentThemeAsync() =>
-        JS.InvokeVoidAsync("netratelThemePreference.apply", _isDarkMode).AsTask();
+    private async Task<ThemePreferenceMode> ReadPersistedModeAsync()
+    {
+        try
+        {
+            return ParseMode(await JS.InvokeAsync<string?>("netratelThemePreference.get"));
+        }
+        catch (JSException exception)
+        {
+            Logger.LogDebug(exception, "Theme preference storage is unavailable; using the system preference.");
+            return ThemePreferenceMode.System;
+        }
+        catch (InvalidOperationException exception)
+        {
+            Logger.LogDebug(exception, "Theme preference interop is not available; using the system preference.");
+            return ThemePreferenceMode.System;
+        }
+    }
+
+    private async Task<bool> ReadSystemDarkModeAsync()
+    {
+        try
+        {
+            return _themeProvider is not null && await _themeProvider.GetSystemDarkModeAsync();
+        }
+        catch (JSException exception)
+        {
+            Logger.LogDebug(exception, "System theme detection is unavailable; using the light fallback.");
+            return false;
+        }
+        catch (InvalidOperationException exception)
+        {
+            Logger.LogDebug(exception, "System theme detection is not available; using the light fallback.");
+            return false;
+        }
+    }
+
+    private async Task WatchSystemThemeAsync()
+    {
+        try
+        {
+            if (_themeProvider is not null)
+            {
+                await _themeProvider.WatchSystemDarkModeAsync(OnSystemDarkModeChangedAsync);
+            }
+        }
+        catch (JSException exception)
+        {
+            Logger.LogDebug(exception, "System theme observation is unavailable; retaining the resolved first-paint theme.");
+        }
+        catch (InvalidOperationException exception)
+        {
+            Logger.LogDebug(exception, "System theme observation is not available for this render.");
+        }
+    }
+
+    private async Task PersistModeAsync(ThemePreferenceMode selectedMode)
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("netratelThemePreference.set", ToStorageValue(selectedMode));
+        }
+        catch (JSException exception)
+        {
+            Logger.LogDebug(exception, "Theme preference could not be persisted; retaining the live selection.");
+        }
+        catch (InvalidOperationException exception)
+        {
+            Logger.LogDebug(exception, "Theme preference could not be persisted after interop disconnected.");
+        }
+    }
+
+    private async Task ApplyDocumentThemeAsync()
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("netratelThemePreference.apply", _isDarkMode);
+        }
+        catch (JSException exception)
+        {
+            Logger.LogDebug(exception, "Document theme application is unavailable; retaining the prepaint palette.");
+        }
+        catch (InvalidOperationException exception)
+        {
+            Logger.LogDebug(exception, "Document theme application was interrupted by navigation.");
+        }
+    }
 
     private static ThemePreferenceMode ParseMode(string? value) => value?.Trim().ToLowerInvariant() switch
     {

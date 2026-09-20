@@ -1,14 +1,32 @@
 window.netratelThemePreference = (() => {
     const storageKey = "netratel.theme.preference";
 
-    const getResolvedMode = () => {
-        const stored = window.localStorage.getItem(storageKey);
-        if (stored === "light" || stored === "dark") {
-            return stored;
-        }
-
-        return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    const normalize = (value) => {
+        const mode = typeof value === "string" ? value.trim().toLowerCase() : "";
+        return mode === "light" || mode === "dark" || mode === "system" ? mode : "system";
     };
+
+    const read = () => {
+        try {
+            return normalize(window.localStorage.getItem(storageKey));
+        } catch {
+            return "system";
+        }
+    };
+
+    const systemIsDark = () => {
+        try {
+            return Boolean(window.matchMedia?.("(prefers-color-scheme: dark)").matches);
+        } catch {
+            return false;
+        }
+    };
+
+    const resolve = (preference) => preference === "system"
+        ? (systemIsDark() ? "dark" : "light")
+        : preference;
+
+    const getResolvedMode = () => resolve(read());
 
     const apply = (isDarkMode) => {
         const mode = isDarkMode ? "dark" : "light";
@@ -19,16 +37,24 @@ window.netratelThemePreference = (() => {
     apply(getResolvedMode() === "dark");
 
     return {
-        get: () => window.localStorage.getItem(storageKey),
+        get: read,
         set: (value) => {
-            if (value === "system") {
-                window.localStorage.removeItem(storageKey);
-            } else {
-                window.localStorage.setItem(storageKey, value);
+            const mode = normalize(value);
+            try {
+                if (mode === "system") {
+                    window.localStorage.removeItem(storageKey);
+                } else {
+                    window.localStorage.setItem(storageKey, mode);
+                }
+            } catch {
+                // Storage is optional presentation state; the current document still updates.
             }
 
-            apply(getResolvedMode() === "dark");
+            // Apply the requested selection directly. A blocked storage write
+            // must not resurrect an older persisted preference in this tab.
+            apply(resolve(mode) === "dark");
         },
+        snapshot: () => ({ mode: read(), isDark: getResolvedMode() === "dark" }),
         apply,
     };
 })();
