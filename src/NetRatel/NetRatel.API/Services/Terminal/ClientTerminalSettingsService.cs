@@ -35,15 +35,34 @@ public sealed class ClientTerminalSettingsService
         var result = new Dictionary<string, TerminalTransportKind?>(StringComparer.OrdinalIgnoreCase);
         var conn = _db.Database.GetDbConnection();
         await using var command = conn.CreateCommand();
-        command.CommandText = """
-            select "ClientIdentity", "TerminalTransportOverride"
-            from "ClientTerminalSettings"
-            where "ClientIdentity" = any(@ids)
-            """;
-        var parameter = command.CreateParameter();
-        parameter.ParameterName = "ids";
-        parameter.Value = normalized;
-        command.Parameters.Add(parameter);
+        if (_db.Database.IsNpgsql())
+        {
+            command.CommandText = """
+                select "ClientIdentity", "TerminalTransportOverride"
+                from "ClientTerminalSettings"
+                where "ClientIdentity" = any(@ids)
+                """;
+            var parameter = command.CreateParameter();
+            parameter.ParameterName = "ids";
+            parameter.Value = normalized;
+            command.Parameters.Add(parameter);
+        }
+        else
+        {
+            var parameterNames = normalized.Select((_, index) => $"@id{index}").ToArray();
+            command.CommandText = $"""
+                select "ClientIdentity", "TerminalTransportOverride"
+                from "ClientTerminalSettings"
+                where "ClientIdentity" in ({string.Join(", ", parameterNames)})
+                """;
+            for (var index = 0; index < normalized.Length; index++)
+            {
+                var parameter = command.CreateParameter();
+                parameter.ParameterName = parameterNames[index];
+                parameter.Value = normalized[index];
+                command.Parameters.Add(parameter);
+            }
+        }
 
         if (conn.State != System.Data.ConnectionState.Open)
         {
@@ -72,12 +91,13 @@ public sealed class ClientTerminalSettingsService
         await EnsureTableAsync(ct).ConfigureAwait(false);
         var normalized = NormalizeIdentity(clientIdentity);
         var value = transport?.ToString();
+        var updatedAtUtc = DateTimeOffset.UtcNow;
         await _db.Database.ExecuteSqlInterpolatedAsync($"""
             insert into "ClientTerminalSettings" ("ClientIdentity", "TerminalTransportOverride", "UpdatedAtUtc")
-            values ({normalized}, {value}, now())
+            values ({normalized}, {value}, {updatedAtUtc})
             on conflict ("ClientIdentity") do update set
                 "TerminalTransportOverride" = excluded."TerminalTransportOverride",
-                "UpdatedAtUtc" = now()
+                "UpdatedAtUtc" = {updatedAtUtc}
             """, ct).ConfigureAwait(false);
     }
 
@@ -96,13 +116,22 @@ public sealed class ClientTerminalSettingsService
                 return;
             }
 
-            await _db.Database.ExecuteSqlRawAsync("""
-                create table if not exists "ClientTerminalSettings" (
-                    "ClientIdentity" text primary key,
-                    "TerminalTransportOverride" text null,
-                    "UpdatedAtUtc" timestamp with time zone not null default now()
-                );
-                """, ct).ConfigureAwait(false);
+            var createTable = _db.Database.IsSqlite()
+                ? """
+                    create table if not exists "ClientTerminalSettings" (
+                        "ClientIdentity" text primary key,
+                        "TerminalTransportOverride" text null,
+                        "UpdatedAtUtc" text not null default CURRENT_TIMESTAMP
+                    );
+                    """
+                : """
+                    create table if not exists "ClientTerminalSettings" (
+                        "ClientIdentity" text primary key,
+                        "TerminalTransportOverride" text null,
+                        "UpdatedAtUtc" timestamp with time zone not null default now()
+                    );
+                    """;
+            await _db.Database.ExecuteSqlRawAsync(createTable, ct).ConfigureAwait(false);
             _ensured = true;
         }
         catch (Exception ex)

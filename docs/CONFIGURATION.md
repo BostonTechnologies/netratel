@@ -7,7 +7,12 @@ are not a usable production configuration.
 
 ## Required persistent state
 
-- `ConnectionStrings__NetRatelDb` points to PostgreSQL.
+- `Database__Provider` is explicit: `PostgreSql` (the compatibility default)
+  or `Sqlite`. Existing `ConnectionStrings__NetRatelDb` takes deterministic
+  precedence over the legacy `ConnectionStrings__Default` alias.
+- PostgreSQL remains the supported multi-instance provider. SQLite requires an
+  absolute durable `Data Source` path and `Database__InstanceCount=1`; it is
+  not a shared-volume or cross-host mode. See [SQLite](SQLITE.md).
 - `DataProtection__KeysDirectory` is a persistent writable path for API key
   material. Web uses `NetRatel_KEYS_DIR` when supplied, otherwise its
   `DataProtection:KeysDirectory` value.
@@ -18,8 +23,9 @@ are not a usable production configuration.
   of the repository and ordinary application data volume. Generate a distinct
   key for each instance through your approved secret-management process.
 
-Back up PostgreSQL and persistent key/artifact volumes together. Replacing a
-Data Protection key ring invalidates cookies and protected state.
+Back up the selected provider's data and persistent key/artifact volumes
+together. Replacing a Data Protection key ring invalidates cookies and
+protected state.
 
 ## Bootstrap lifecycle
 

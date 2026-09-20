@@ -1,4 +1,6 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using NetRatel.Application.Operations;
 
 namespace NetRatel.Infrastructure.Persistence;
@@ -64,6 +66,9 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
     public DbSet<RemoteSupportTargetSelectionEvent> RemoteSupportTargetSelectionEvents => Set<RemoteSupportTargetSelectionEvent>();
     public DbSet<RemoteSupportSessionRecord> RemoteSupportSessions => Set<RemoteSupportSessionRecord>();
     public DbSet<RemoteSupportAuditEventRecord> RemoteSupportAuditEvents => Set<RemoteSupportAuditEventRecord>();
+
+    protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder) =>
+        optionsBuilder.ReplaceService<IModelCacheKeyFactory, ProviderAwareModelCacheKeyFactory>();
     public DbSet<ClientUpdateReleaseRecord> ClientUpdateReleases => Set<ClientUpdateReleaseRecord>();
     public DbSet<ClientUpdateAttemptRecord> ClientUpdateAttempts => Set<ClientUpdateAttemptRecord>();
     public DbSet<AgentClientUpdateStateRecord> AgentClientUpdateStates => Set<AgentClientUpdateStateRecord>();
@@ -93,7 +98,10 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        modelBuilder.HasPostgresExtension("pg_trgm");
+        if (Database.IsNpgsql())
+        {
+            modelBuilder.HasPostgresExtension("pg_trgm");
+        }
         modelBuilder.Entity<M2MConnectivitySettings>().ToTable("M2MConnectivitySettings");
 
         modelBuilder.Entity<EnrollmentCode>(entity =>
@@ -101,7 +109,10 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
             entity.ToTable("EnrollmentCodes");
             entity.HasKey(x => x.Id);
             entity.Property(x => x.Code).IsRequired();
-            entity.Property(x => x.CreatedAtUtc).HasDefaultValueSql("now()");
+            if (Database.IsNpgsql())
+            {
+                entity.Property(x => x.CreatedAtUtc).HasDefaultValueSql("now()");
+            }
             entity.Property(x => x.Uses).HasDefaultValue(0);
             entity.HasIndex(x => x.Code).IsUnique();
             entity.HasIndex(x => new { x.TenantId, x.ValidToUtc });
@@ -845,7 +856,7 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
             entity.ToTable("Tenants");
             entity.HasKey(x => x.Id);
             entity.Property(x => x.Name).IsRequired();
-            entity.Property(x => x.Domains).HasColumnType("text[]");
+            entity.Property(x => x.Domains).HasColumnType(Database.IsNpgsql() ? "text[]" : "TEXT");
             entity.Property(x => x.Version).IsConcurrencyToken();
             entity.HasIndex(x => x.Name).IsUnique();
             entity.HasIndex(x => x.CreatedAtUtc);
@@ -1078,7 +1089,7 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
                 .IsRequired();
             entity.Property(x => x.ExecutionId).HasColumnName("RundeckExecutionId");
             entity.Property(x => x.Status).IsRequired();
-            entity.Property(x => x.Logs).HasColumnType("text[]");
+            entity.Property(x => x.Logs).HasColumnType(Database.IsNpgsql() ? "text[]" : "TEXT");
             entity.HasIndex(x => x.TargetClientIdentity);
             entity.HasIndex(x => x.Status);
             entity.HasIndex(x => x.CreatedAtUtc);
@@ -1273,5 +1284,28 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
                 .HasForeignKey(x => x.RemoteSupportSessionId)
                 .OnDelete(DeleteBehavior.Restrict);
         });
+
+        if (Database.IsSqlite())
+        {
+            var converter = new DateTimeOffsetToBinaryConverter();
+            foreach (var property in modelBuilder.Model.GetEntityTypes()
+                         .SelectMany(entity => entity.GetProperties())
+                         .Where(property => property.ClrType == typeof(DateTimeOffset) || property.ClrType == typeof(DateTimeOffset?)))
+            {
+                property.SetValueConverter(converter);
+            }
+
+            foreach (var property in modelBuilder.Model.GetEntityTypes().SelectMany(entity => entity.GetProperties())
+                         .Where(property => string.Equals(property.GetColumnType(), "jsonb", StringComparison.OrdinalIgnoreCase)))
+            {
+                property.SetColumnType(null);
+            }
+
+            foreach (var index in modelBuilder.Model.GetEntityTypes().SelectMany(entity => entity.GetIndexes()))
+            {
+                index.RemoveAnnotation("Npgsql:IndexMethod");
+                index.RemoveAnnotation("Npgsql:IndexOperators");
+            }
+        }
     }
 }

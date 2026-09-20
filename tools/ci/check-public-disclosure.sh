@@ -16,7 +16,7 @@ report() {
 # in the private pre-export review, not in a public repository.
 while IFS= read -r -d '' path; do
   case "$path" in
-    .dockerignore|.env.example|.gitattributes|.gitignore|.gitleaks.toml|CODE_OF_CONDUCT.md|CONTRIBUTING.md|Directory.Build.props|Directory.Build.targets|LICENSE|NetRatel.sln|NOTICE|README.md|SECURITY.md|build-main.ps1|compose.yaml|coverage.runsettings|dotnet-install.sh|dotnet-tools.json|global.json|readme.trustmodel.md|setup-dotnet9.sh|setup.sh|.github/*|docker/*|docs/*|release/*|samples/*|scripts/*|src/NetRatel/*|tests/*|tools/*)
+    .dockerignore|.env.example|.gitattributes|.gitignore|.gitleaks.toml|CODE_OF_CONDUCT.md|CONTRIBUTING.md|Directory.Build.props|Directory.Build.targets|LICENSE|NetRatel.sln|NOTICE|README.md|SECURITY.md|build-main.ps1|compose.sqlite.yaml|compose.yaml|coverage.runsettings|dotnet-install.sh|dotnet-tools.json|global.json|readme.trustmodel.md|setup-dotnet9.sh|setup.sh|.github/*|docker/*|docs/*|release/*|samples/*|scripts/*|src/NetRatel/*|tests/*|tools/*)
       ;;
     *)
       report "Public disclosure gate rejected an unclassified tracked path."

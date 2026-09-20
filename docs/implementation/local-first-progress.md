@@ -29,8 +29,8 @@ asset replacement, package-visibility mutation, and repository-rule bypass.
 | P00 | [#30](https://github.com/BostonTechnologies/netratel/issues/30) | [#43](https://github.com/BostonTechnologies/netratel/pull/43) | `35d23b2` | Merged after the hosted Public PR validation run passed all component-image, native package, disclosure and OIDC smoke gates. |
 | P01 | [#31](https://github.com/BostonTechnologies/netratel/issues/31) | [#44](https://github.com/BostonTechnologies/netratel/pull/44) | `fcd202d` | Merged after hosted exact-head validation passed, including source and release-image generic OIDC Compose smoke coverage: [run 35494345483](https://github.com/BostonTechnologies/netratel/actions/runs/35494345483). |
 | P02 | [#32](https://github.com/BostonTechnologies/netratel/issues/32) | [#45](https://github.com/BostonTechnologies/netratel/pull/45) | `bd567c0` | Merged after exact-head Public PR validation passed, including full .NET tests, native packages, public images, HTTP MCP smoke, and source/release-image generic OIDC Compose coverage: [run 35495761003](https://github.com/BostonTechnologies/netratel/actions/runs/35495761003). |
-| P03 | [#33](https://github.com/BostonTechnologies/netratel/issues/33) | pending | pending | In progress on `feat/issue-33-scoped-rbac`. |
-| P04 | [#34](https://github.com/BostonTechnologies/netratel/issues/34) | pending | pending | Blocked by P03 merge. |
+| P03 | [#33](https://github.com/BostonTechnologies/netratel/issues/33) | [#46](https://github.com/BostonTechnologies/netratel/pull/46) | `1969e9a` | Merged after hosted Public PR validation passed all applicable gates. |
+| P04 | [#34](https://github.com/BostonTechnologies/netratel/issues/34) | pending | pending | In progress on `feat/issue-34-sqlite-provider`; P03 prerequisite merged. |
 | P05 | [#35](https://github.com/BostonTechnologies/netratel/issues/35) | pending | pending | Blocked by P04 merge. |
 | P06 | [#36](https://github.com/BostonTechnologies/netratel/issues/36) | pending | pending | Blocked by P03/P04/P05 merges. |
 | P07 | [#37](https://github.com/BostonTechnologies/netratel/issues/37) | pending | pending | Blocked by P06 merge. |
@@ -150,6 +150,21 @@ asset replacement, package-visibility mutation, and repository-rule bypass.
   The API revalidates enabled state, security stamp, and authorization revision;
   the Web does not mint an API bearer token or trust an identity header.
 
+## P04 SQLite provider foundation
+
+- Provider selection is explicit and validated. PostgreSQL remains the
+  compatibility default; SQLite requires one instance and an absolute durable
+  path. Connection-string compatibility aliases retain deterministic
+  `NetRatelDb` then `Default` precedence.
+- SQLite has a dedicated, versioned migration assembly for application and
+  identity state. The API and migration runner carry that assembly, and SQLite
+  timestamps use an orderable storage representation so paged search ordering
+  stays database-side.
+- PostgreSQL keeps its `ILIKE` and trigram/GIN path. SQLite uses escaped,
+  case-insensitive `LIKE`; update notifications use their existing bounded
+  polling fallback. The dedicated `compose.sqlite.yaml` profile has no
+  PostgreSQL service dependency and documents its single-node limitation.
+
 ## Commands and validation
 
 | Commit | Command | Result |
@@ -163,14 +178,23 @@ asset replacement, package-visibility mutation, and repository-rule bypass.
 | `feat/issue-31-bootstrap` | fresh API process with no usable database/OIDC configuration | Passed: `/health/live` returned 200, `/health/ready` 503, setup status 200, business route 404; a 64-byte proof claimed once with 202 and replay returned 400. |
 | `feat/issue-31-bootstrap` | fresh API + Web process with no OIDC configuration | Passed: the Web root returned the status-only setup shell and its same-origin setup-status proxy returned API state 200. |
 | `feat/issue-31-bootstrap` | `docker compose --env-file .env.example config --quiet` | Passed with blank OIDC and agent-signing inputs, proving the fresh setup Compose configuration resolves without placeholder identity credentials. |
+| `feat/issue-34-sqlite-provider` | focused `SqliteProviderMigrationTests` | Passed against a real disposable SQLite file: identity/application migrations, restart, DateTimeOffset ordering/pagination, persisted directory data, all global search projections, terminal-settings raw-SQL read/write compatibility, and a consistent backup/restore that retained the local administrator, tenant-scoped current access, and agent enrollment path. |
+| `feat/issue-34-sqlite-provider` | provider-selection cases in `SqliteProviderMigrationTests` | Passed: PostgreSQL remains the compatibility default, `NetRatelDb` wins over `Default`, and SQLite rejects memory, relative-path, and multi-instance configurations while enforcing foreign keys. |
+| `feat/issue-34-sqlite-provider` | mixed-provider model-cache case in `SqliteProviderMigrationTests` | Passed: a SQLite model built first cannot suppress PostgreSQL `ILIKE`/trigram model behavior in a later PostgreSQL context in the same process. |
+| `feat/issue-34-sqlite-provider` | focused SQLite `McpOperatorTaskStoreTests` | Passed against a real migrated SQLite file: transactional task creation, duplicate-write replay, lifecycle completion, audit/activity rows, and restart persistence. |
+| `feat/issue-34-sqlite-provider` | focused `McpOperatorPolicyFoundationPostgresTests` | Passed against PostgreSQL 16: a historical migration fixture retained its seeded agent/grant, translated the legacy policy, and admitted the intended catalog operations after migration. |
+| `feat/issue-34-sqlite-provider` | focused PostgreSQL identity and client-update migration suites | Passed six PostgreSQL 16 tests: fresh versioned local-identity schema, built-in access reconciliation, client-update authority schema, immutable releases, connection-fenced concurrent claims, and update recovery flows. |
+| `feat/issue-34-sqlite-provider` | EF Core 10 `migrations has-pending-model-changes` for `OrchestratorDbContext` | Passed: the explicit SQLite snapshot exactly matches the runtime model; PostgreSQL-only defaults and array column types do not leak into the SQLite artifact. |
+| `feat/issue-34-sqlite-provider` | `docker compose -f compose.sqlite.yaml config --quiet` | Passed. |
+| `feat/issue-34-sqlite-provider` | disposable current-head SQLite Compose migration/API/Web startup | Passed: migration runner completed, API listened on 9222, Web served the setup shell on 9111, and no PostgreSQL service was present. Test containers, volumes, images, key, and 5.36 GB of build cache were removed afterwards. |
 
 ## Current checkpoint
 
-Current phase: P03. Branch: `feat/issue-33-scoped-rbac`. P02 merged as
-`bd567c091cc0efe8f4d63d253aaee6180dd01d8f` through
-[#45](https://github.com/BostonTechnologies/netratel/pull/45). Next action:
-implement durable scoped effective access and route/service enforcement without
-removing established OIDC operator compatibility.
+Current phase: P04. Branch: `feat/issue-34-sqlite-provider`. P03 merged as
+`1969e9aea3c9e12aa492120c4b3452f8e9e7bc9c` through
+[#46](https://github.com/BostonTechnologies/netratel/pull/46). Next action:
+complete the PostgreSQL/SQLite persistence-graph and upgrade coverage before
+opening P04's CI-gated PR.
 
 ## Blockers
 

@@ -2,17 +2,8 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using NetRatel.Infrastructure;
 
-var connectionString = Environment.GetEnvironmentVariable("ConnectionStrings__NetRatelDb");
-if (string.IsNullOrWhiteSpace(connectionString))
-{
-    throw new InvalidOperationException("ConnectionStrings__NetRatelDb is required to apply migrations.");
-}
-
 var configuration = new ConfigurationBuilder()
-    .AddInMemoryCollection(new Dictionary<string, string?>
-    {
-        ["ConnectionStrings:NetRatelDb"] = connectionString
-    })
+    .AddEnvironmentVariables()
     .Build();
 
 var services = new ServiceCollection();

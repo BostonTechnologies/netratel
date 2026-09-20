@@ -49,17 +49,25 @@ public static class ClientUpdatesEndpoints
 
             var query = db.ClientUpdateReleases.AsNoTracking().AsQueryable();
             if (!string.IsNullOrWhiteSpace(runtimeId)) query = query.Where(release => release.RuntimeId == runtimeId.Trim());
-            if (!string.IsNullOrWhiteSpace(version)) query = query.Where(release => EF.Functions.ILike(release.Version, ToLikePattern(version)));
+            if (!string.IsNullOrWhiteSpace(version))
+            {
+                var like = ToLikePattern(version);
+                query = db.Database.IsNpgsql()
+                    ? query.Where(release => EF.Functions.ILike(release.Version, like))
+                    : query.Where(release => EF.Functions.Like(release.Version.ToUpper(), like.ToUpper(), "\\"));
+            }
             if (!string.IsNullOrWhiteSpace(channel)) query = query.Where(release => release.Channel == channel.Trim());
             if (enabled.HasValue) query = query.Where(release => release.Enabled == enabled.Value);
             if (!string.IsNullOrWhiteSpace(search))
             {
                 var like = ToLikePattern(search);
-                query = query.Where(release =>
-                    EF.Functions.ILike(release.RuntimeId, like) ||
-                    EF.Functions.ILike(release.Version, like) ||
-                    EF.Functions.ILike(release.Channel, like) ||
-                    EF.Functions.ILike(release.Sha256, like));
+                query = db.Database.IsNpgsql()
+                    ? query.Where(release =>
+                        EF.Functions.ILike(release.RuntimeId, like) || EF.Functions.ILike(release.Version, like) ||
+                        EF.Functions.ILike(release.Channel, like) || EF.Functions.ILike(release.Sha256, like))
+                    : query.Where(release =>
+                        EF.Functions.Like(release.RuntimeId.ToUpper(), like.ToUpper(), "\\") || EF.Functions.Like(release.Version.ToUpper(), like.ToUpper(), "\\") ||
+                        EF.Functions.Like(release.Channel.ToUpper(), like.ToUpper(), "\\") || EF.Functions.Like(release.Sha256.ToUpper(), like.ToUpper(), "\\"));
             }
 
             var total = await query.CountAsync(cancellationToken).ConfigureAwait(false);
@@ -166,11 +174,17 @@ public static class ClientUpdatesEndpoints
             if (!string.IsNullOrWhiteSpace(search))
             {
                 var like = ToLikePattern(search);
-                query = query.Where(row =>
-                    (row.State.SuspensionReason != null && EF.Functions.ILike(row.State.SuspensionReason, like)) ||
-                    (row.Agent != null && row.Agent.Name != null && EF.Functions.ILike(row.Agent.Name, like)) ||
-                    (row.Agent != null && row.Agent.DeviceInfoJson != null && EF.Functions.ILike(row.Agent.DeviceInfoJson, like)) ||
-                    (row.Tenant != null && EF.Functions.ILike(row.Tenant.Name, like)));
+                query = db.Database.IsNpgsql()
+                    ? query.Where(row =>
+                        (row.State.SuspensionReason != null && EF.Functions.ILike(row.State.SuspensionReason, like)) ||
+                        (row.Agent != null && row.Agent.Name != null && EF.Functions.ILike(row.Agent.Name, like)) ||
+                        (row.Agent != null && row.Agent.DeviceInfoJson != null && EF.Functions.ILike(row.Agent.DeviceInfoJson, like)) ||
+                        (row.Tenant != null && EF.Functions.ILike(row.Tenant.Name, like)))
+                    : query.Where(row =>
+                        (row.State.SuspensionReason != null && EF.Functions.Like(row.State.SuspensionReason.ToUpper(), like.ToUpper(), "\\")) ||
+                        (row.Agent != null && row.Agent.Name != null && EF.Functions.Like(row.Agent.Name.ToUpper(), like.ToUpper(), "\\")) ||
+                        (row.Agent != null && row.Agent.DeviceInfoJson != null && EF.Functions.Like(row.Agent.DeviceInfoJson.ToUpper(), like.ToUpper(), "\\")) ||
+                        (row.Tenant != null && EF.Functions.Like(row.Tenant.Name.ToUpper(), like.ToUpper(), "\\")));
             }
 
             var total = await query.CountAsync(cancellationToken).ConfigureAwait(false);
@@ -363,7 +377,10 @@ public static class ClientUpdatesEndpoints
         }
         if (!string.IsNullOrWhiteSpace(version))
         {
-            attempts = attempts.Where(attempt => EF.Functions.ILike(attempt.TargetVersion, ToLikePattern(version)));
+            var like = ToLikePattern(version);
+            attempts = db.Database.IsNpgsql()
+                ? attempts.Where(attempt => EF.Functions.ILike(attempt.TargetVersion, like))
+                : attempts.Where(attempt => EF.Functions.Like(attempt.TargetVersion.ToUpper(), like.ToUpper(), "\\"));
         }
 
         var query = from attempt in attempts
@@ -376,14 +393,21 @@ public static class ClientUpdatesEndpoints
         if (!string.IsNullOrWhiteSpace(search))
         {
             var like = ToLikePattern(search);
-            query = query.Where(row =>
-                EF.Functions.ILike(row.Attempt.RuntimeId, like) ||
-                EF.Functions.ILike(row.Attempt.TargetVersion, like) ||
-                (row.Attempt.FailureCode != null && EF.Functions.ILike(row.Attempt.FailureCode, like)) ||
-                (row.Attempt.Message != null && EF.Functions.ILike(row.Attempt.Message, like)) ||
-                (row.Agent != null && row.Agent.Name != null && EF.Functions.ILike(row.Agent.Name, like)) ||
-                (row.Agent != null && row.Agent.DeviceInfoJson != null && EF.Functions.ILike(row.Agent.DeviceInfoJson, like)) ||
-                (row.Tenant != null && EF.Functions.ILike(row.Tenant.Name, like)));
+            query = db.Database.IsNpgsql()
+                ? query.Where(row =>
+                    EF.Functions.ILike(row.Attempt.RuntimeId, like) || EF.Functions.ILike(row.Attempt.TargetVersion, like) ||
+                    (row.Attempt.FailureCode != null && EF.Functions.ILike(row.Attempt.FailureCode, like)) ||
+                    (row.Attempt.Message != null && EF.Functions.ILike(row.Attempt.Message, like)) ||
+                    (row.Agent != null && row.Agent.Name != null && EF.Functions.ILike(row.Agent.Name, like)) ||
+                    (row.Agent != null && row.Agent.DeviceInfoJson != null && EF.Functions.ILike(row.Agent.DeviceInfoJson, like)) ||
+                    (row.Tenant != null && EF.Functions.ILike(row.Tenant.Name, like)))
+                : query.Where(row =>
+                    EF.Functions.Like(row.Attempt.RuntimeId.ToUpper(), like.ToUpper(), "\\") || EF.Functions.Like(row.Attempt.TargetVersion.ToUpper(), like.ToUpper(), "\\") ||
+                    (row.Attempt.FailureCode != null && EF.Functions.Like(row.Attempt.FailureCode.ToUpper(), like.ToUpper(), "\\")) ||
+                    (row.Attempt.Message != null && EF.Functions.Like(row.Attempt.Message.ToUpper(), like.ToUpper(), "\\")) ||
+                    (row.Agent != null && row.Agent.Name != null && EF.Functions.Like(row.Agent.Name.ToUpper(), like.ToUpper(), "\\")) ||
+                    (row.Agent != null && row.Agent.DeviceInfoJson != null && EF.Functions.Like(row.Agent.DeviceInfoJson.ToUpper(), like.ToUpper(), "\\")) ||
+                    (row.Tenant != null && EF.Functions.Like(row.Tenant.Name.ToUpper(), like.ToUpper(), "\\")));
         }
 
         return query

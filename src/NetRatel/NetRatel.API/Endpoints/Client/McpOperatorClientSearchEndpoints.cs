@@ -104,7 +104,9 @@ public static class McpOperatorClientSearchEndpoints
         {
             var like = $"%{q.Trim().Replace("%", "\\%", StringComparison.Ordinal).Replace("_", "\\_", StringComparison.Ordinal)}%";
             var hasId = int.TryParse(q, out var id);
-            query = query.Where(tenant => EF.Functions.ILike(tenant.Name, like) || (hasId && tenant.Id == id));
+            query = db.Database.IsNpgsql()
+                ? query.Where(tenant => EF.Functions.ILike(tenant.Name, like) || (hasId && tenant.Id == id))
+                : query.Where(tenant => EF.Functions.Like(tenant.Name.ToUpper(), like.ToUpper(), "\\") || (hasId && tenant.Id == id));
         }
         // Discovery exposes only the identifiers and names of already-visible tenants.
         // Administrative contact, domain, and update settings stay behind tenant administration.

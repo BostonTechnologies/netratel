@@ -126,6 +126,46 @@ public sealed class McpOperatorTaskStoreTests
         (await delete()).Should().NotBeNull();
     }
 
+    [Fact]
+    public async Task Sqlite_task_creation_is_idempotent_and_survives_restart()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"netratel-task-store-{Guid.NewGuid():N}.db");
+        var options = new DbContextOptionsBuilder<OrchestratorDbContext>()
+            .UseSqlite($"Data Source={databasePath};Foreign Keys=True", sqlite =>
+                sqlite.MigrationsAssembly("NetRatel.SqliteMigrations"))
+            .Options;
+
+        try
+        {
+            var fixture = CreateFixture();
+            var request = CreateRequest(fixture, Guid.NewGuid());
+            await using (var db = new OrchestratorDbContext(options))
+            {
+                await db.Database.MigrateAsync();
+                await SeedPostgresAsync(db, fixture, [request]);
+                var store = new McpOperatorTaskStore(db);
+
+                var created = await store.CreateOrGetAsync(request, CancellationToken.None);
+                var replay = await store.CreateOrGetAsync(request, CancellationToken.None);
+                await store.RecordLifecycleAsync(created.CommandId, fixture.TenantId, fixture.AgentId,
+                    "Completed", "completed", fixture.Now.AddMinutes(1), CancellationToken.None);
+
+                replay.TaskId.Should().Be(created.TaskId);
+            }
+
+            await using var restarted = new OrchestratorDbContext(options);
+            await restarted.Database.MigrateAsync();
+            (await restarted.McpOperatorTasks.CountAsync()).Should().Be(1);
+            (await restarted.JobTaskActivities.CountAsync()).Should().Be(1);
+            (await restarted.McpOperatorTaskAudits.CountAsync()).Should().Be(1);
+            (await restarted.McpOperatorTasks.SingleAsync()).State.Should().Be("Completed");
+        }
+        finally
+        {
+            File.Delete(databasePath);
+        }
+    }
+
     [Theory]
     [InlineData("Processing", "CancelRequested")]
     [InlineData("Cancelled", "Cancelled")]

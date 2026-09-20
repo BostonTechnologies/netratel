@@ -43,13 +43,21 @@ public static class GlobalSearchEndpoints
         {
             var like = Like(term);
             var hasId = int.TryParse(term, out var id);
-            query = query.Where(tenant =>
-                EF.Functions.ILike(tenant.Name, like) ||
-                (tenant.Description != null && EF.Functions.ILike(tenant.Description, like)) ||
-                (tenant.Location != null && EF.Functions.ILike(tenant.Location, like)) ||
-                (tenant.ContactPerson != null && EF.Functions.ILike(tenant.ContactPerson, like)) ||
-                (tenant.ContactEmail != null && EF.Functions.ILike(tenant.ContactEmail, like)) ||
-                (hasId && tenant.Id == id));
+            query = db.Database.IsNpgsql()
+                ? query.Where(tenant =>
+                    EF.Functions.ILike(tenant.Name, like) ||
+                    (tenant.Description != null && EF.Functions.ILike(tenant.Description, like)) ||
+                    (tenant.Location != null && EF.Functions.ILike(tenant.Location, like)) ||
+                    (tenant.ContactPerson != null && EF.Functions.ILike(tenant.ContactPerson, like)) ||
+                    (tenant.ContactEmail != null && EF.Functions.ILike(tenant.ContactEmail, like)) ||
+                    (hasId && tenant.Id == id))
+                : query.Where(tenant =>
+                    EF.Functions.Like(tenant.Name.ToUpper(), like.ToUpper(), "\\") ||
+                    (tenant.Description != null && EF.Functions.Like(tenant.Description.ToUpper(), like.ToUpper(), "\\")) ||
+                    (tenant.Location != null && EF.Functions.Like(tenant.Location.ToUpper(), like.ToUpper(), "\\")) ||
+                    (tenant.ContactPerson != null && EF.Functions.Like(tenant.ContactPerson.ToUpper(), like.ToUpper(), "\\")) ||
+                    (tenant.ContactEmail != null && EF.Functions.Like(tenant.ContactEmail.ToUpper(), like.ToUpper(), "\\")) ||
+                    (hasId && tenant.Id == id));
         }
 
         var rows = await query
@@ -83,11 +91,17 @@ public static class GlobalSearchEndpoints
         if (term is not null)
         {
             var like = Like(term);
-            query = query.Where(script =>
-                EF.Functions.ILike(script.Name, like) ||
-                EF.Functions.ILike(script.FolderPath, like) ||
-                EF.Functions.ILike(script.Description, like) ||
-                EF.Functions.ILike(script.ScriptType, like));
+            query = db.Database.IsNpgsql()
+                ? query.Where(script =>
+                    EF.Functions.ILike(script.Name, like) ||
+                    EF.Functions.ILike(script.FolderPath, like) ||
+                    EF.Functions.ILike(script.Description, like) ||
+                    EF.Functions.ILike(script.ScriptType, like))
+                : query.Where(script =>
+                    EF.Functions.Like(script.Name.ToUpper(), like.ToUpper(), "\\") ||
+                    EF.Functions.Like(script.FolderPath.ToUpper(), like.ToUpper(), "\\") ||
+                    EF.Functions.Like(script.Description.ToUpper(), like.ToUpper(), "\\") ||
+                    EF.Functions.Like(script.ScriptType.ToUpper(), like.ToUpper(), "\\"));
         }
 
         var rows = await query
@@ -215,10 +229,25 @@ public static class GlobalSearchEndpoints
     {
         var matchingAgents = AgentDirectorySearch.MatchingAgents(db, term);
         var matchingTenantIds = MatchingTenantIds(db, term);
-        var like = term is null ? null : Like(term);
-        var hasId = long.TryParse(term, out var id);
+        var jobs = db.Jobs.AsNoTracking();
+        if (term is not null)
+        {
+            var like = Like(term);
+            var hasId = long.TryParse(term, out var id);
+            jobs = db.Database.IsNpgsql()
+                ? jobs.Where(job =>
+                    EF.Functions.ILike(job.Name, like) || EF.Functions.ILike(job.FolderPath, like) ||
+                    (job.Description != null && EF.Functions.ILike(job.Description, like)) || EF.Functions.ILike(job.ClientIdentity, like) ||
+                    (hasId && job.Id == id) || matchingTenantIds.Any(tenantId => (int?)tenantId == job.TenantId) ||
+                    matchingAgents.Any(match => (int?)match.TenantId == job.TenantId && (Guid?)match.Id == job.AgentId))
+                : jobs.Where(job =>
+                    EF.Functions.Like(job.Name.ToUpper(), like.ToUpper(), "\\") || EF.Functions.Like(job.FolderPath.ToUpper(), like.ToUpper(), "\\") ||
+                    (job.Description != null && EF.Functions.Like(job.Description.ToUpper(), like.ToUpper(), "\\")) || EF.Functions.Like(job.ClientIdentity.ToUpper(), like.ToUpper(), "\\") ||
+                    (hasId && job.Id == id) || matchingTenantIds.Any(tenantId => (int?)tenantId == job.TenantId) ||
+                    matchingAgents.Any(match => (int?)match.TenantId == job.TenantId && (Guid?)match.Id == job.AgentId));
+        }
 
-        return from job in db.Jobs.AsNoTracking()
+        return from job in jobs
                join tenantValue in db.Tenants.AsNoTracking()
                    on job.TenantId equals (int?)tenantValue.Id into tenantJoin
                from tenant in tenantJoin.DefaultIfEmpty()
@@ -226,15 +255,6 @@ public static class GlobalSearchEndpoints
                    on new { job.TenantId, job.AgentId }
                    equals new { TenantId = (int?)agentValue.TenantId, AgentId = (Guid?)agentValue.Id } into agentJoin
                from agent in agentJoin.DefaultIfEmpty()
-               where term == null ||
-                     EF.Functions.ILike(job.Name, like!) ||
-                     EF.Functions.ILike(job.FolderPath, like!) ||
-                     (job.Description != null && EF.Functions.ILike(job.Description!, like!)) ||
-                     (job.ClientIdentity != null && EF.Functions.ILike(job.ClientIdentity, like!)) ||
-                     (hasId && job.Id == id) ||
-                     matchingTenantIds.Any(tenantId => (int?)tenantId == job.TenantId) ||
-                     matchingAgents.Any(match =>
-                         (int?)match.TenantId == job.TenantId && (Guid?)match.Id == job.AgentId)
                orderby job.FolderPath, job.Name, job.Id
                select new JobSearchRow(
                    job.Id,
@@ -250,6 +270,7 @@ public static class GlobalSearchEndpoints
                    agent == null ? null : agent.Name,
                    agent == null ? null : agent.IsEnabled,
                    agent == null ? null : agent.DeviceInfoJson);
+
     }
 
     internal static IQueryable<RequestSearchRow> BuildRequestQuery(OrchestratorDbContext db, string? term)
@@ -257,10 +278,31 @@ public static class GlobalSearchEndpoints
         var matchingAgents = AgentDirectorySearch.MatchingAgents(db, term);
         var matchingTenantIds = MatchingTenantIds(db, term);
         var matchingJobIds = MatchingJobIds(db, term);
-        var like = term is null ? null : Like(term);
-        var hasId = int.TryParse(term, out var id);
+        var requests = db.Requests.AsNoTracking();
+        if (term is not null)
+        {
+            var like = Like(term);
+            var hasId = int.TryParse(term, out var id);
+            requests = db.Database.IsNpgsql()
+                ? requests.Where(request =>
+                    (hasId && request.Id == id) || EF.Functions.ILike(request.SourceSystem, like) || EF.Functions.ILike(request.Status, like) ||
+                    (request.JobDefinitionId != null && EF.Functions.ILike(request.JobDefinitionId, like)) ||
+                    (request.ExecutionId != null && EF.Functions.ILike(request.ExecutionId, like)) ||
+                    (request.ResultMessage != null && EF.Functions.ILike(request.ResultMessage, like)) || EF.Functions.ILike(request.TargetClientIdentity, like) ||
+                    matchingTenantIds.Any(tenantId => (int?)tenantId == request.TargetTenantId) ||
+                    matchingAgents.Any(match => (int?)match.TenantId == request.TargetTenantId && (Guid?)match.Id == request.TargetAgentId) ||
+                    (request.JobDefinitionId != null && matchingJobIds.Any(jobId => jobId.ToString() == request.JobDefinitionId)))
+                : requests.Where(request =>
+                    (hasId && request.Id == id) || EF.Functions.Like(request.SourceSystem.ToUpper(), like.ToUpper(), "\\") || EF.Functions.Like(request.Status.ToUpper(), like.ToUpper(), "\\") ||
+                    (request.JobDefinitionId != null && EF.Functions.Like(request.JobDefinitionId.ToUpper(), like.ToUpper(), "\\")) ||
+                    (request.ExecutionId != null && EF.Functions.Like(request.ExecutionId.ToUpper(), like.ToUpper(), "\\")) ||
+                    (request.ResultMessage != null && EF.Functions.Like(request.ResultMessage.ToUpper(), like.ToUpper(), "\\")) || EF.Functions.Like(request.TargetClientIdentity.ToUpper(), like.ToUpper(), "\\") ||
+                    matchingTenantIds.Any(tenantId => (int?)tenantId == request.TargetTenantId) ||
+                    matchingAgents.Any(match => (int?)match.TenantId == request.TargetTenantId && (Guid?)match.Id == request.TargetAgentId) ||
+                    (request.JobDefinitionId != null && matchingJobIds.Any(jobId => jobId.ToString() == request.JobDefinitionId)));
+        }
 
-        return from request in db.Requests.AsNoTracking()
+        return from request in requests
                join tenantValue in db.Tenants.AsNoTracking()
                    on request.TargetTenantId equals (int?)tenantValue.Id into tenantJoin
                from tenant in tenantJoin.DefaultIfEmpty()
@@ -268,18 +310,6 @@ public static class GlobalSearchEndpoints
                    on new { TenantId = request.TargetTenantId, AgentId = request.TargetAgentId }
                    equals new { TenantId = (int?)agentValue.TenantId, AgentId = (Guid?)agentValue.Id } into agentJoin
                from agent in agentJoin.DefaultIfEmpty()
-               where term == null ||
-                     (hasId && request.Id == id) ||
-                     EF.Functions.ILike(request.SourceSystem, like!) ||
-                     EF.Functions.ILike(request.Status, like!) ||
-                     (request.JobDefinitionId != null && EF.Functions.ILike(request.JobDefinitionId!, like!)) ||
-                     (request.ExecutionId != null && EF.Functions.ILike(request.ExecutionId!, like!)) ||
-                     (request.ResultMessage != null && EF.Functions.ILike(request.ResultMessage!, like!)) ||
-                     (request.TargetClientIdentity != null && EF.Functions.ILike(request.TargetClientIdentity, like!)) ||
-                     matchingTenantIds.Any(tenantId => (int?)tenantId == request.TargetTenantId) ||
-                     matchingAgents.Any(match =>
-                         (int?)match.TenantId == request.TargetTenantId && (Guid?)match.Id == request.TargetAgentId) ||
-                     (request.JobDefinitionId != null && matchingJobIds.Any(jobId => jobId.ToString() == request.JobDefinitionId))
                orderby request.UpdatedAtUtc descending, request.Id descending
                select new RequestSearchRow(
                    request.Id,
@@ -296,30 +326,36 @@ public static class GlobalSearchEndpoints
                    agent == null ? null : agent.Name,
                    agent == null ? null : agent.IsEnabled,
                    agent == null ? null : agent.DeviceInfoJson);
+
     }
 
     internal static IQueryable<TaskSearchRow> BuildTaskQuery(OrchestratorDbContext db, string? term)
     {
         var matchingAgents = AgentDirectorySearch.MatchingAgents(db, term);
         var matchingTenantIds = MatchingTenantIds(db, term);
-        var like = term is null ? null : Like(term);
-        var hasId = long.TryParse(term, out var id);
+        var tasks = db.JobTaskActivities.AsNoTracking();
+        if (term is not null)
+        {
+            var like = Like(term);
+            var hasId = long.TryParse(term, out var id);
+            tasks = db.Database.IsNpgsql()
+                ? tasks.Where(task =>
+                    (hasId && task.Id == id) || EF.Functions.ILike(task.RequestId, like) || EF.Functions.ILike(task.TaskType, like) ||
+                    EF.Functions.ILike(task.Status, like) || (task.Error != null && EF.Functions.ILike(task.Error, like)) ||
+                    EF.Functions.ILike(task.ClientIdentity, like) || matchingTenantIds.Any(tenantId => (int?)tenantId == task.TenantId) ||
+                    matchingAgents.Any(match => (int?)match.TenantId == task.TenantId && (Guid?)match.Id == task.AgentId))
+                : tasks.Where(task =>
+                    (hasId && task.Id == id) || EF.Functions.Like(task.RequestId.ToUpper(), like.ToUpper(), "\\") || EF.Functions.Like(task.TaskType.ToUpper(), like.ToUpper(), "\\") ||
+                    EF.Functions.Like(task.Status.ToUpper(), like.ToUpper(), "\\") || (task.Error != null && EF.Functions.Like(task.Error.ToUpper(), like.ToUpper(), "\\")) ||
+                    EF.Functions.Like(task.ClientIdentity.ToUpper(), like.ToUpper(), "\\") || matchingTenantIds.Any(tenantId => (int?)tenantId == task.TenantId) ||
+                    matchingAgents.Any(match => (int?)match.TenantId == task.TenantId && (Guid?)match.Id == task.AgentId));
+        }
 
-        return from task in db.JobTaskActivities.AsNoTracking()
+        return from task in tasks
                join agentValue in db.Agents.AsNoTracking()
                    on new { task.TenantId, task.AgentId }
                    equals new { TenantId = (int?)agentValue.TenantId, AgentId = (Guid?)agentValue.Id } into agentJoin
                from agent in agentJoin.DefaultIfEmpty()
-               where term == null ||
-                     (hasId && task.Id == id) ||
-                     EF.Functions.ILike(task.RequestId, like!) ||
-                     EF.Functions.ILike(task.TaskType, like!) ||
-                     EF.Functions.ILike(task.Status, like!) ||
-                     (task.Error != null && EF.Functions.ILike(task.Error, like!)) ||
-                     (task.ClientIdentity != null && EF.Functions.ILike(task.ClientIdentity, like!)) ||
-                     matchingTenantIds.Any(tenantId => (int?)tenantId == task.TenantId) ||
-                     matchingAgents.Any(match =>
-                         (int?)match.TenantId == task.TenantId && (Guid?)match.Id == task.AgentId)
                orderby task.CreatedAtUtc descending, task.Id descending
                select new TaskSearchRow(
                    task.Id,
@@ -335,6 +371,7 @@ public static class GlobalSearchEndpoints
                    agent == null ? null : agent.Name,
                    agent == null ? null : agent.IsEnabled,
                    agent == null ? null : agent.DeviceInfoJson);
+
     }
 
     private static IQueryable<int> MatchingTenantIds(OrchestratorDbContext db, string? term)
@@ -343,7 +380,9 @@ public static class GlobalSearchEndpoints
         if (term is not null)
         {
             var like = Like(term);
-            query = query.Where(tenant => EF.Functions.ILike(tenant.Name, like));
+            query = db.Database.IsNpgsql()
+                ? query.Where(tenant => EF.Functions.ILike(tenant.Name, like))
+                : query.Where(tenant => EF.Functions.Like(tenant.Name.ToUpper(), like.ToUpper(), "\\"));
         }
 
         return query.Select(tenant => tenant.Id);
@@ -356,11 +395,17 @@ public static class GlobalSearchEndpoints
         {
             var like = Like(term);
             var hasId = long.TryParse(term, out var id);
-            query = query.Where(job =>
-                EF.Functions.ILike(job.Name, like) ||
-                EF.Functions.ILike(job.FolderPath, like) ||
-                (job.Description != null && EF.Functions.ILike(job.Description, like)) ||
-                (hasId && job.Id == id));
+            query = db.Database.IsNpgsql()
+                ? query.Where(job =>
+                    EF.Functions.ILike(job.Name, like) ||
+                    EF.Functions.ILike(job.FolderPath, like) ||
+                    (job.Description != null && EF.Functions.ILike(job.Description, like)) ||
+                    (hasId && job.Id == id))
+                : query.Where(job =>
+                    EF.Functions.Like(job.Name.ToUpper(), like.ToUpper(), "\\") ||
+                    EF.Functions.Like(job.FolderPath.ToUpper(), like.ToUpper(), "\\") ||
+                    (job.Description != null && EF.Functions.Like(job.Description.ToUpper(), like.ToUpper(), "\\")) ||
+                    (hasId && job.Id == id));
         }
 
         return query.Select(job => job.Id);

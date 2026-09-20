@@ -14,6 +14,7 @@
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.12" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.OpenIdConnect" Version="10.0.12" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.12" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.12" />
     <PackageReference Include="Microsoft.Identity.Web" Version="4.14.2" />
     <PackageReference Include="Microsoft.Identity.Web.DownstreamApi" Version="4.14.2" />
     <PackageReference Include="Microsoft.VisualStudio.Azure.Containers.Tools.Targets" Version="1.23.0" />
@@ -28,6 +29,7 @@
   <ItemGroup>
     <ProjectReference Include="..\NetRatel.Application\NetRatel.Application.csproj" />
     <ProjectReference Include="..\NetRatel.Infrastructure\NetRatel.Infrastructure.csproj" />
+    <ProjectReference Include="..\NetRatel.SqliteMigrations\NetRatel.SqliteMigrations.csproj" />
     <ProjectReference Include="..\NetRatel.ServiceDefaults\NetRatel.ServiceDefaults.csproj" />
     <ProjectReference Include="..\NetRatel.Shared\NetRatel.Shared.csproj" />
     <ProjectReference Include="..\NetRatel.AgentGateway.Contracts\NetRatel.AgentGateway.Contracts.csproj" />

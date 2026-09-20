@@ -105,9 +105,13 @@ public static class McpOperatorSystemObservabilityEndpoints
                     {
                         var like = "%" + term.Replace("%", "\\%", StringComparison.Ordinal).Replace("_", "\\_", StringComparison.Ordinal) + "%";
                         var hasId = long.TryParse(term, out var id);
-                        query = query.Where(script => EF.Functions.ILike(script.Name, like) ||
-                            EF.Functions.ILike(script.FolderPath, like) || EF.Functions.ILike(script.Description, like) ||
-                            EF.Functions.ILike(script.ScriptType, like) || (hasId && script.Id == id));
+                        query = db.Database.IsNpgsql()
+                            ? query.Where(script => EF.Functions.ILike(script.Name, like) ||
+                                EF.Functions.ILike(script.FolderPath, like) || EF.Functions.ILike(script.Description, like) ||
+                                EF.Functions.ILike(script.ScriptType, like) || (hasId && script.Id == id))
+                            : query.Where(script => EF.Functions.Like(script.Name.ToUpper(), like.ToUpper(), "\\") ||
+                                EF.Functions.Like(script.FolderPath.ToUpper(), like.ToUpper(), "\\") || EF.Functions.Like(script.Description.ToUpper(), like.ToUpper(), "\\") ||
+                                EF.Functions.Like(script.ScriptType.ToUpper(), like.ToUpper(), "\\") || (hasId && script.Id == id));
                     }
                     var scripts = await query.OrderBy(script => script.Name).ThenBy(script => script.Id)
                         .Take(limit + 1).Select(script => new { script.Id, script.Name, script.FolderPath })

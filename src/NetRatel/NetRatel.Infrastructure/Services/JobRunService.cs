@@ -1,5 +1,4 @@
 using Microsoft.EntityFrameworkCore;
-using Npgsql;
 using NetRatel.Application.Jobs;
 using NetRatel.Infrastructure.Persistence;
 
@@ -385,7 +384,7 @@ public sealed class JobRunService(OrchestratorDbContext db) : IJobRunService
         => command.ActivityId > 0 ? (long)command.ActivityId : allocatedId;
 
     private static bool IsUniqueViolation(DbUpdateException ex)
-        => ex.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation };
+        => DatabaseExceptionClassifier.IsUniqueViolation(ex);
 
     private static JobRunInfo Map(JobRunRecord row)
         => new(
