@@ -40,6 +40,11 @@ using Scalar.AspNetCore;
 using NetRatel.Web.Bootstrap;
 
 var builder = WebApplication.CreateBuilder(args);
+var localAuthenticationCookieName = builder.Configuration["Authentication:Local:CookieName"]?.Trim() is { Length: > 0 } configuredLocalCookieName
+    ? configuredLocalCookieName
+    : "NetRatel.Local";
+const string localAuthenticationScheme = "NetRatelLocal";
+const string browserSessionScheme = "NetRatelWebSession";
 
 if (SetupWebApplicationExtensions.RequiresSetupShell(builder.Configuration))
 {
@@ -177,9 +182,17 @@ builder.Services.AddSingleton<IMachineTokenValidator, OidcMachineTokenValidator>
 #region Authentication UI
 builder.Services.AddAuthentication(options =>
 {
-    options.DefaultScheme = CookieAuthenticationDefaults.AuthenticationScheme;
+    options.DefaultScheme = browserSessionScheme;
+    options.DefaultAuthenticateScheme = browserSessionScheme;
     options.DefaultSignInScheme = CookieAuthenticationDefaults.AuthenticationScheme;
     options.DefaultChallengeScheme = CookieAuthenticationDefaults.AuthenticationScheme;
+})
+.AddPolicyScheme(browserSessionScheme, browserSessionScheme, options =>
+{
+    options.ForwardDefaultSelector = context =>
+        context.Request.Cookies.ContainsKey(localAuthenticationCookieName)
+            ? localAuthenticationScheme
+            : CookieAuthenticationDefaults.AuthenticationScheme;
 })
 .AddCookie(CookieAuthenticationDefaults.AuthenticationScheme, cookieOptions =>
 {
@@ -194,6 +207,26 @@ builder.Services.AddAuthentication(options =>
     cookieOptions.ExpireTimeSpan = builder.Configuration.GetValue<TimeSpan?>("Authentication:Cookie:ExpireTimeSpan")
         ?? TimeSpan.FromHours(8);
     cookieOptions.EventsType = typeof(CookieOidcSessionEvents);
+})
+.AddCookie(localAuthenticationScheme, cookieOptions =>
+{
+    cookieOptions.Cookie.Name = localAuthenticationCookieName;
+    cookieOptions.Cookie.HttpOnly = true;
+    cookieOptions.Cookie.SameSite = SameSiteMode.Lax;
+    cookieOptions.Cookie.SecurePolicy = builder.Environment.IsDevelopment() &&
+        builder.Configuration.GetValue<bool>("Authentication:Local:AllowInsecureLocalhost")
+        ? CookieSecurePolicy.SameAsRequest
+        : CookieSecurePolicy.Always;
+    cookieOptions.Events.OnRedirectToLogin = context =>
+    {
+        context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+        return Task.CompletedTask;
+    };
+    cookieOptions.Events.OnRedirectToAccessDenied = context =>
+    {
+        context.Response.StatusCode = StatusCodes.Status403Forbidden;
+        return Task.CompletedTask;
+    };
 })
 .AddOpenIdConnect("Oidc", options =>
 {

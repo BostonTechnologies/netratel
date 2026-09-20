@@ -27,8 +27,8 @@ asset replacement, package-visibility mutation, and repository-rule bypass.
 | Phase | Issue | PR | Merge SHA | Evidence / current state |
 | --- | --- | --- | --- | --- |
 | P00 | [#30](https://github.com/BostonTechnologies/netratel/issues/30) | [#43](https://github.com/BostonTechnologies/netratel/pull/43) | `35d23b2` | Merged after the hosted Public PR validation run passed all component-image, native package, disclosure and OIDC smoke gates. |
-| P01 | [#31](https://github.com/BostonTechnologies/netratel/issues/31) | [#44](https://github.com/BostonTechnologies/netratel/pull/44) | pending | Bootstrap descriptor/runtime implementation and focused validation are on `feat/issue-31-bootstrap`; hosted exact-head evidence is pending. |
-| P02 | [#32](https://github.com/BostonTechnologies/netratel/issues/32) | pending | pending | Blocked by P01 merge. |
+| P01 | [#31](https://github.com/BostonTechnologies/netratel/issues/31) | [#44](https://github.com/BostonTechnologies/netratel/pull/44) | `fcd202d` | Merged after hosted exact-head validation passed, including source and release-image generic OIDC Compose smoke coverage: [run 35494345483](https://github.com/BostonTechnologies/netratel/actions/runs/35494345483). |
+| P02 | [#32](https://github.com/BostonTechnologies/netratel/issues/32) | pending | pending | In progress on `feat/issue-32-local-identity`: PostgreSQL-backed local Identity model, stable principal links, protected local-account endpoints, MFA/recovery primitives, and session revalidation. |
 | P03 | [#33](https://github.com/BostonTechnologies/netratel/issues/33) | pending | pending | Blocked by P02 merge. |
 | P04 | [#34](https://github.com/BostonTechnologies/netratel/issues/34) | pending | pending | Blocked by P03 merge. |
 | P05 | [#35](https://github.com/BostonTechnologies/netratel/issues/35) | pending | pending | Blocked by P04 merge. |
@@ -128,6 +128,27 @@ asset replacement, package-visibility mutation, and repository-rule bypass.
   Web host uses a status-only setup shell that proxies the API setup status;
   configured OIDC deployments retain the existing full Web path. The shell
   cannot create an account or invoke business APIs.
+
+## P02 native identity foundation
+
+- A separate, versioned Identity context shares the selected PostgreSQL store
+  without changing existing tenant, agent, OIDC-signing, or native Client data.
+  Local users receive durable NetRatel principal IDs. Verified external users
+  resolve by issuer plus subject only; email is never an account-link key.
+- Authentication mode is explicit when configured. `Auto` (including an absent
+  setting) preserves an already configured OIDC deployment as OIDC-only and
+  selects local mode only when OIDC is absent; `Hybrid` must be selected
+  deliberately. Local accounts receive no broad legacy Operator authority until
+  the P03 effective-access migration is complete.
+- The API local-account surface uses framework password hashing, lockout,
+  time-limited MFA challenge state, authenticator/recovery-code support, and
+  a protected cookie revalidated against enabled state, security stamp, and
+  authorization revision. P05 will add the browser forms and first-owner flow;
+  no anonymous self-registration or reset route is exposed.
+- The Web host recognizes the same protected local-session cookie through a
+  shared deployment key ring and forwards it only on its server-side API hop.
+  The API revalidates enabled state, security stamp, and authorization revision;
+  the Web does not mint an API bearer token or trust an identity header.
 
 ## Commands and validation
 

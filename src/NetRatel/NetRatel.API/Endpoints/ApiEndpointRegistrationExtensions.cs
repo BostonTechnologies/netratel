@@ -1,4 +1,5 @@
 using NetRatel.API.Endpoints.Client;
+using NetRatel.API.Endpoints.Auth;
 using NetRatel.API.Endpoints.Search;
 using NetRatel.API.Endpoints.Systems;
 using NetRatel.API.Gateway;
@@ -77,6 +78,7 @@ public static class ApiEndpointRegistrationExtensions
         app.MapGlobalSearchEndpoints();
         app.MapNotificationEndpoints();
         app.MapAgentAuthEndpoints();
+        app.MapLocalAuthenticationEndpoints();
         app.MapM2MTokenEndpoints();
         app.MapInternalEndpoints();
 

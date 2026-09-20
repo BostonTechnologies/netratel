@@ -35,6 +35,7 @@ services:
         condition: service_completed_successfully
     volumes:
       - api-data:/var/netratel
+      - web-keys:/var/netratel/keys
       - ${NETRATEL_AGENT_AUTH_PRIVATE_KEY:-/dev/null}:/run/netratel-secrets/agent-auth-private.pem:ro
 
   migrations:

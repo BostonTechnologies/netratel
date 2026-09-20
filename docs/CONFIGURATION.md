@@ -52,6 +52,16 @@ material intentionally enters recovery rather than fresh setup.
 
 ## Interactive browser authentication
 
+`Authentication:Mode` may be `Local`, `Oidc`, `Hybrid`, or `Auto`. In `Auto`
+(the default when unset), a deployment with a configured OIDC authority remains
+OIDC-only, while an installation without OIDC selects local accounts. Set
+`Hybrid` explicitly to offer both mechanisms. `Authentication:Local` controls
+only the local browser-cookie name and an explicitly development-only
+`AllowInsecureLocalhost` escape hatch; production local cookies remain secure,
+HTTP-only, and same-site lax. The P02 API endpoints provide account lifecycle
+and MFA primitives; the user-facing local sign-in and setup flow arrives in
+P05.
+
 Configure `Authentication:Oidc` with your OIDC authority, client identifier,
 API scope, and callback paths. The user-facing application requires an
 operator identity; it does not ship a default administrator, password, or
