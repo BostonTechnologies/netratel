@@ -72,7 +72,7 @@ if [[ -n "$mcp_http_image" ]]; then
   export NETRATEL_LOCAL_HTTP_MCP_MCP_PFX="$mcp_pfx"
   export NETRATEL_LOCAL_HTTP_MCP_CONFIG="$mcp_config"
   export NETRATEL_LOCAL_HTTP_MCP_M2M_SECRET="$m2m_secret"
-  export NETRATEL_MCP_HTTP_PORT="${NETRATEL_LOCAL_HTTP_MCP_PORT:-18084}"
+  export NETRATEL_MCP_HTTP_PORT="${NETRATEL_LOCAL_HTTP_MCP_PORT:-$((20000 + RANDOM % 10000))}"
   compose_files+=(-f "$mcp_overlay" -f "$local_http_mcp_overlay")
 fi
 compose=(docker compose --project-name "$project" "${compose_files[@]}")
