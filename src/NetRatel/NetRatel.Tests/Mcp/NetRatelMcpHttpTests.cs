@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Microsoft.Data.Sqlite;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -6,6 +7,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.TestHost;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -29,6 +31,7 @@ using System.Security.Claims;
 using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
+using Testcontainers.PostgreSql;
 using Xunit;
 
 namespace NetRatel.Tests.Mcp;
@@ -452,6 +455,99 @@ public sealed class NetRatelMcpHttpTests
         {
             await app.DisposeAsync();
         }
+    }
+
+    [Fact]
+    public async Task Local_credential_mcp_journey_uses_persisted_authority_and_revokes_an_already_minted_execution()
+    {
+        var tokens = new McpOperatorDelegationTokenService(LocalCredentialDelegationOptions());
+        await using var api = await CreatePersistedLocalCredentialApiAsync(tokens);
+        await using var mcp = await CreateApplicationAsync(
+            localCredentialMode: true,
+            localCredentialApiHandler: api.Application.GetTestServer().CreateHandler());
+        var mcpClient = mcp.Application.GetTestClient();
+
+        using var mcpRequest = McpRequest(8, "tools/call", new
+        {
+            name = "netratel_capabilities",
+            arguments = new { operation = "get" }
+        });
+        mcpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", api.Credential.Secret);
+
+        using var mcpResponse = await mcpClient.SendAsync(mcpRequest);
+
+        mcpResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var mcpPayload = await ReadMcpPayloadAsync(mcpResponse);
+        var mcpResult = mcpPayload.RootElement.GetProperty("result");
+        (!mcpResult.TryGetProperty("isError", out var isError) || !isError.GetBoolean()).Should().BeTrue();
+
+        var pairing = tokens.Create(
+            new McpOperatorDelegationIdentity("netratel-local-gateway", "netratel-local-gateway", null, [], [], []),
+            new McpOperatorDelegationRequest("netratel_capabilities", "get", "persisted-journey", "https://mcp.dev.example/mcp", "dev"));
+        var apiClient = api.Application.GetTestClient();
+        using var exchange = new HttpRequestMessage(HttpMethod.Post, McpLocalDelegationEndpoints.ExchangePath);
+        exchange.Headers.Authorization = new AuthenticationHeaderValue("Bearer", api.Credential.Secret);
+        exchange.Headers.Add(McpLocalDelegationEndpoints.PairingHeaderName, pairing);
+        using var exchangeResponse = await apiClient.SendAsync(exchange);
+
+        exchangeResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var exchangePayload = JsonDocument.Parse(await exchangeResponse.Content.ReadAsStringAsync());
+        var assertion = exchangePayload.RootElement.GetProperty("assertion").GetString();
+        assertion.Should().NotBeNullOrWhiteSpace();
+        assertion.Should().NotContain("nrt_ic_");
+
+        using var acceptedExecution = new HttpRequestMessage(HttpMethod.Get, "/api/test/delegated-execution");
+        acceptedExecution.Headers.Add(McpOperatorDelegationOptions.HeaderName, assertion);
+        (await apiClient.SendAsync(acceptedExecution)).StatusCode.Should().Be(HttpStatusCode.OK);
+
+        await api.RevokeCredentialAsync();
+
+        using var revokedExecution = new HttpRequestMessage(HttpMethod.Get, "/api/test/delegated-execution");
+        revokedExecution.Headers.Add(McpOperatorDelegationOptions.HeaderName, assertion);
+        using var revokedResponse = await apiClient.SendAsync(revokedExecution);
+
+        revokedResponse.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        (await revokedResponse.Content.ReadFromJsonAsync<LocalCredentialFailureResponse>()).Should()
+            .Be(new LocalCredentialFailureResponse("delegated_identity_revoked"));
+    }
+
+    [Fact]
+    public async Task Local_credential_postgres_exchange_isolates_concurrent_callers_and_rechecks_revocation()
+    {
+        await using var postgres = new PostgreSqlBuilder("postgres:16-alpine").Build();
+        await postgres.StartAsync();
+        var tokens = new McpOperatorDelegationTokenService(LocalCredentialDelegationOptions());
+        await using var api = await CreatePersistedLocalCredentialApiAsync(
+            tokens,
+            options => options.UseNpgsql(postgres.GetConnectionString()));
+        var unauthorizedCredential = await api.CreateCredentialAsync(
+            "local-owner-without-discovery",
+            NetRatelPermissions.TelemetryRead);
+        var pairing = tokens.Create(
+            new McpOperatorDelegationIdentity("netratel-local-gateway", "netratel-local-gateway", null, [], [], []),
+            new McpOperatorDelegationRequest("netratel_capabilities", "get", "postgres-concurrent-journey", "https://mcp.dev.example/mcp", "dev"));
+
+        var responses = await Task.WhenAll(
+            api.ExchangeAsync(api.Credential.Secret, pairing),
+            api.ExchangeAsync(unauthorizedCredential.Secret, pairing));
+        using var authorizedExchange = responses[0];
+        using var unauthorizedExchange = responses[1];
+
+        authorizedExchange.StatusCode.Should().Be(HttpStatusCode.OK);
+        unauthorizedExchange.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        using var exchangePayload = JsonDocument.Parse(await authorizedExchange.Content.ReadAsStringAsync());
+        var assertion = exchangePayload.RootElement.GetProperty("assertion").GetString();
+        assertion.Should().NotBeNullOrWhiteSpace();
+
+        using var acceptedExecution = new HttpRequestMessage(HttpMethod.Get, "/api/test/delegated-execution");
+        acceptedExecution.Headers.Add(McpOperatorDelegationOptions.HeaderName, assertion);
+        (await api.Application.GetTestClient().SendAsync(acceptedExecution)).StatusCode.Should().Be(HttpStatusCode.OK);
+
+        await api.RevokeCredentialAsync();
+
+        using var revokedExecution = new HttpRequestMessage(HttpMethod.Get, "/api/test/delegated-execution");
+        revokedExecution.Headers.Add(McpOperatorDelegationOptions.HeaderName, assertion);
+        (await api.Application.GetTestClient().SendAsync(revokedExecution)).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
     }
 
     [Theory]
@@ -1259,7 +1355,11 @@ public sealed class NetRatelMcpHttpTests
         }
     }
 
-    private static async Task<TestApplication> CreateApplicationAsync(bool includeProdApiBaseUrl = true, bool useDeploymentVariables = false, bool localCredentialMode = false)
+    private static async Task<TestApplication> CreateApplicationAsync(
+        bool includeProdApiBaseUrl = true,
+        bool useDeploymentVariables = false,
+        bool localCredentialMode = false,
+        HttpMessageHandler? localCredentialApiHandler = null)
     {
         var configurationPath = await WriteIsolatedConfigurationAsync("https://api.dev.example");
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = Environments.Development });
@@ -1307,6 +1407,11 @@ public sealed class NetRatelMcpHttpTests
         try
         {
             NetRatelMcpHttpApplication.ConfigureServices(builder);
+            if (localCredentialApiHandler is not null)
+            {
+                builder.Services.AddHttpClient(McpLocalCredentialAuthenticationHandler.ApiHttpClientName)
+                    .ConfigurePrimaryHttpMessageHandler(() => localCredentialApiHandler);
+            }
             builder.Services.PostConfigure<JwtBearerOptions>(NetRatelMcpHttpApplication.JwtScheme, options =>
             {
                 options.ConfigurationManager = null;
@@ -1402,6 +1507,88 @@ public sealed class NetRatelMcpHttpTests
         return app;
     }
 
+    private static async Task<PersistedLocalCredentialApiApplication> CreatePersistedLocalCredentialApiAsync(
+        McpOperatorDelegationTokenService tokens)
+    {
+        var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        try
+        {
+            return await CreatePersistedLocalCredentialApiAsync(tokens, options => options.UseSqlite(connection), connection);
+        }
+        catch
+        {
+            await connection.DisposeAsync();
+            throw;
+        }
+    }
+
+    private static async Task<PersistedLocalCredentialApiApplication> CreatePersistedLocalCredentialApiAsync(
+        McpOperatorDelegationTokenService tokens,
+        Action<DbContextOptionsBuilder> configureDatabase,
+        IAsyncDisposable? databaseResource = null)
+    {
+        var builder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = Environments.Development });
+        builder.WebHost.UseTestServer();
+        builder.Services.AddDbContext<NetRatelIdentityDbContext>(configureDatabase);
+        builder.Services.AddScoped<IntegrationCredentialService>();
+        builder.Services.AddScoped<IIntegrationCredentialService>(services => services.GetRequiredService<IntegrationCredentialService>());
+        builder.Services.AddScoped<IIntegrationCredentialCurrentVerifier>(services => services.GetRequiredService<IntegrationCredentialService>());
+        builder.Services.AddScoped<IEffectiveAccessService, EffectiveAccessService>();
+        builder.Services.AddSingleton(tokens);
+        builder.Services.AddSingleton(LocalCredentialDelegationOptions());
+        builder.Services.AddAuthentication(IntegrationCredentialAuthenticationHandler.SchemeName)
+            .AddScheme<AuthenticationSchemeOptions, IntegrationCredentialAuthenticationHandler>(
+                IntegrationCredentialAuthenticationHandler.SchemeName, _ => { });
+        builder.Services.AddAuthorization(options => options.AddPolicy("McpLocalDelegationExchange", policy =>
+        {
+            policy.AddAuthenticationSchemes(IntegrationCredentialAuthenticationHandler.SchemeName);
+            policy.RequireAuthenticatedUser();
+            policy.RequireAssertion(context => context.User.HasClaim("integration_credential_purpose", "http_mcp"));
+        }));
+        var application = builder.Build();
+        application.UseAuthentication();
+        application.UseMiddleware<McpOperatorDelegationMiddleware>();
+        application.UseAuthorization();
+        application.MapMcpLocalDelegationEndpoints();
+        application.MapGet("/api/test/delegated-execution", (HttpContext context) =>
+            context.TryGetMcpOperatorDelegation(out _) ? Results.Ok() : Results.Unauthorized());
+        await application.StartAsync();
+
+        try
+        {
+            await using var scope = application.Services.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<NetRatelIdentityDbContext>();
+            await db.Database.EnsureCreatedAsync();
+            const string ownerPrincipalId = "local-owner";
+            db.Users.Add(new LocalUser
+            {
+                Id = "persisted-local-owner",
+                UserName = ownerPrincipalId,
+                NormalizedUserName = ownerPrincipalId.ToUpperInvariant(),
+                PrincipalId = ownerPrincipalId,
+                IsEnabled = true,
+                IsInstanceAdministrator = true
+            });
+            await db.SaveChangesAsync();
+            var credential = await scope.ServiceProvider.GetRequiredService<IIntegrationCredentialService>().CreateAsync(
+                ownerPrincipalId,
+                new IntegrationCredentialCreateRequest(
+                    "persisted-local-mcp",
+                    IntegrationCredentialPurpose.HttpMcp,
+                    DateTimeOffset.UtcNow.AddHours(1),
+                    [],
+                    "https://mcp.dev.example/mcp",
+                    [NetRatelPermissions.McpDiscoveryRead]));
+            return new PersistedLocalCredentialApiApplication(application, databaseResource, credential, ownerPrincipalId);
+        }
+        catch
+        {
+            await application.DisposeAsync();
+            throw;
+        }
+    }
+
     private static async Task<HttpResponseMessage> SendLocalCredentialRequestAsync(WebApplication app)
     {
         var client = app.GetTestClient();
@@ -1455,6 +1642,16 @@ public sealed class NetRatelMcpHttpTests
         SharedKeyBase64 = Convert.ToBase64String(Encoding.UTF8.GetBytes("delegation-test-key-must-be-at-least-32-bytes"))
     };
 
+    private static McpOperatorDelegationOptions LocalCredentialDelegationOptions() => new()
+    {
+        Enabled = true,
+        Issuer = "netratel-mcp-dev",
+        Audience = "netratel-api-dev",
+        ServicePrincipal = "netratel-mcp-http-dev",
+        KeyId = "test-2026-09",
+        SharedKeyBase64 = Convert.ToBase64String(Encoding.UTF8.GetBytes("delegation-test-key-must-be-at-least-32-bytes"))
+    };
+
     private sealed class LocalExchangeAuthenticationHandler(
         IOptionsMonitor<AuthenticationSchemeOptions> options,
         ILoggerFactory logger,
@@ -1504,6 +1701,64 @@ public sealed class NetRatelMcpHttpTests
     }
 
     private sealed record LocalCredentialFailureResponse(string Code);
+
+    private sealed class PersistedLocalCredentialApiApplication(
+        WebApplication application,
+        IAsyncDisposable? databaseResource,
+        IntegrationCredentialSecret credential,
+        string ownerPrincipalId) : IAsyncDisposable
+    {
+        public WebApplication Application { get; } = application;
+        public IntegrationCredentialSecret Credential { get; } = credential;
+
+        public async Task RevokeCredentialAsync()
+        {
+            await using var scope = Application.Services.CreateAsyncScope();
+            var revoked = await scope.ServiceProvider.GetRequiredService<IIntegrationCredentialService>().RevokeAsync(
+                ownerPrincipalId, Credential.CredentialId, ownerPrincipalId);
+            revoked.Should().BeTrue();
+        }
+
+        public async Task<IntegrationCredentialSecret> CreateCredentialAsync(string principalId, string permission)
+        {
+            await using var scope = Application.Services.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<NetRatelIdentityDbContext>();
+            db.Users.Add(new LocalUser
+            {
+                Id = $"persisted-{principalId}",
+                UserName = principalId,
+                NormalizedUserName = principalId.ToUpperInvariant(),
+                PrincipalId = principalId,
+                IsEnabled = true,
+                IsInstanceAdministrator = true
+            });
+            await db.SaveChangesAsync();
+            return await scope.ServiceProvider.GetRequiredService<IIntegrationCredentialService>().CreateAsync(
+                principalId,
+                new IntegrationCredentialCreateRequest(
+                    $"persisted-{principalId}",
+                    IntegrationCredentialPurpose.HttpMcp,
+                    DateTimeOffset.UtcNow.AddHours(1),
+                    [],
+                    "https://mcp.dev.example/mcp",
+                    [permission]));
+        }
+
+        public async Task<HttpResponseMessage> ExchangeAsync(string secret, string pairing)
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, McpLocalDelegationEndpoints.ExchangePath);
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", secret);
+            request.Headers.Add(McpLocalDelegationEndpoints.PairingHeaderName, pairing);
+            return await Application.GetTestClient().SendAsync(request);
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            await Application.DisposeAsync();
+            if (databaseResource is not null)
+                await databaseResource.DisposeAsync();
+        }
+    }
 
     private sealed class TestApplication(WebApplication application, string configurationPath) : IAsyncDisposable
     {
