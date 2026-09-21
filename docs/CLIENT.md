@@ -20,6 +20,6 @@ service.
 The package includes runtime-specific update helpers and a manifest. Preserve
 the existing installation identity and rollback material during an update; do
 not bypass ordinary downgrade protection or point a Client at an unapproved
-feed. Rc.1 is historical. Install an rc.2 Client only from the matching
+feed. Rc.1 is historical. Install an rc.3 Client only from the matching
 prerelease asset after verifying its checksum, manifest and supported runtime;
 neither prerelease establishes an unattended update channel.

@@ -49,7 +49,7 @@ public class MainLayoutTests : AsyncBunitContext
         var cut = RenderMainLayout();
 
         cut.Find(".netratel-appbar-api-chip[href='/api/docs/']").TextContent.Trim().Should().Be("API");
-        cut.Find(".netratel-appbar-version-chip").TextContent.Trim().Should().Be("v0.1.0-rc.2");
+        cut.Find(".netratel-appbar-version-chip").TextContent.Trim().Should().Be("v0.1.0-rc.3");
     }
 
     [Fact]
@@ -63,14 +63,14 @@ public class MainLayoutTests : AsyncBunitContext
 
         var cut = RenderMainLayout();
 
-        cut.Find(".netratel-appbar-version-chip").TextContent.Trim().Should().Be("v0.1.0-rc.2");
+        cut.Find(".netratel-appbar-version-chip").TextContent.Trim().Should().Be("v0.1.0-rc.3");
     }
 
     [Fact]
     public void AppBarVersionResolver_PreservesPrereleaseAndRemovesOnlyBuildMetadata()
     {
-        AppBarVersionResolver.FormatProductVersion("0.1.0-rc.2+462a556b738891d440d8b72e61ce361b1656e033")
-            .Should().Be("v0.1.0-rc.2");
+        AppBarVersionResolver.FormatProductVersion("0.1.0-rc.3+462a556b738891d440d8b72e61ce361b1656e033")
+            .Should().Be("v0.1.0-rc.3");
         AppBarVersionResolver.FormatProductVersion("0.1.0")
             .Should().Be("v0.1.0");
     }
@@ -85,7 +85,7 @@ public class MainLayoutTests : AsyncBunitContext
 
         var cut = RenderMainLayout();
 
-        cut.Find(".netratel-appbar-version-chip").TextContent.Trim().Should().Be("v0.1.0-rc.2");
+        cut.Find(".netratel-appbar-version-chip").TextContent.Trim().Should().Be("v0.1.0-rc.3");
     }
 
     [Fact]
@@ -109,7 +109,7 @@ public class MainLayoutTests : AsyncBunitContext
         var cut = RenderMainLayout();
 
         cut.Find(".netratel-appbar-api-chip").TextContent.Trim().Should().Be("API");
-        cut.Find(".netratel-appbar-version-chip").TextContent.Trim().Should().Be("v0.1.0-rc.2");
+        cut.Find(".netratel-appbar-version-chip").TextContent.Trim().Should().Be("v0.1.0-rc.3");
         cut.FindAll(".netratel-appbar-desktop-actions .netratel-appbar-chip").Should().HaveCount(2);
     }
 
@@ -132,7 +132,7 @@ public class MainLayoutTests : AsyncBunitContext
         cut.WaitForAssertion(() =>
         {
             cut.Markup.Should().Contain("API Docs");
-            cut.Markup.Should().Contain("v0.1.0-rc.2");
+            cut.Markup.Should().Contain("v0.1.0-rc.3");
             cut.Markup.Should().Contain("Notifications");
             cut.Markup.Should().Contain("Theme: System");
             cut.Markup.Should().Contain("System");

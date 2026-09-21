@@ -38,13 +38,13 @@ asset replacement, package-visibility mutation, and repository-rule bypass.
 | P09 | [#39](https://github.com/BostonTechnologies/netratel/issues/39) | [#52](https://github.com/BostonTechnologies/netratel/pull/52) | `f84732594b168b034d64428a997ab91596da2052` | Merged after all 16 exact-head Public PR validation checks passed, including full .NET, native packages, final component images, HTTP MCP smoke, and source/release-image OIDC Compose coverage: [run 35529053598](https://github.com/BostonTechnologies/netratel/actions/runs/35529053598). |
 | P10 | [#40](https://github.com/BostonTechnologies/netratel/issues/40) | [#53](https://github.com/BostonTechnologies/netratel/pull/53) | `73b579055d8e008cf9603a05f93dd43d276eb5fb` | Merged after all exact-head Public PR validation checks passed, including the first-paint browser matrix and source/release-image OIDC Compose smoke: [run 35535685943](https://github.com/BostonTechnologies/netratel/actions/runs/35535685943). |
 | P11 | [#41](https://github.com/BostonTechnologies/netratel/issues/41) | [#54](https://github.com/BostonTechnologies/netratel/pull/54) | `b942a72c750c037ee6f6ac2d6979616c64b1698a` | Exact-head hosted validation passed all protected checks, including Release .NET, native packages, final images, local-first browser, source/release-image OIDC, and release OIDC/MCP image smoke: [run 35536764306](https://github.com/BostonTechnologies/netratel/actions/runs/35536764306). |
-| P12 | [#42](https://github.com/BostonTechnologies/netratel/issues/42) | pending | pending | Release preparation reconciles no-external-IdP documentation, root rc.2 metadata, integrated validation, receipt-backed promotion and verified prerelease publication. |
+| P12 | [#42](https://github.com/BostonTechnologies/netratel/issues/42) | pending | pending | Release preparation reconciles no-external-IdP documentation, root rc.3 metadata, integrated validation, receipt-backed promotion and verified prerelease publication. |
 
 ## P00 inventory
 
 ### Runtime and persistence
 
-- .NET SDK is pinned to `10.0.401`; root product version is `0.1.0-rc.2` in
+- .NET SDK is pinned to `10.0.401`; root product version is `0.1.0-rc.3` in
   `Directory.Build.props` and `release/release-manifest.json`.
 - `AddNetRatelInfrastructure` currently requires
   `ConnectionStrings:NetRatelDb` or `Default` and unconditionally calls
@@ -76,8 +76,10 @@ asset replacement, package-visibility mutation, and repository-rule bypass.
 
 ### Release and CI baseline
 
-- `v0.1.0-rc.1` is the only remote release tag. `rc.2` is an untagged source
-  candidate and must be re-inventoried in P12 before selecting the final RC.
+- `v0.1.0-rc.1` and `v0.1.0-rc.2` are remote release tags; `rc.2` has no
+  release record because its owner promotion was not completed. `rc.3` is the
+  untagged source candidate and must be re-inventoried in P12 before selecting
+  the final RC.
 - Public PR validation builds/tests, creates final component images and runs
   source/release-image generic OIDC smoke. The non-publishing release workflow
   produces archives, SBOMs, checksums and attestations. Promotion requires an

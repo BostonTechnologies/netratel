@@ -11,7 +11,7 @@ API, command-line tools, a native Client/agent, and optional Model Context
 Protocol (MCP) integrations. AI services are optional and are not required for
 normal operation.
 
-> NetRatel `0.1.0-rc.2` is a prerelease. Do not treat it as a stable release
+> NetRatel `0.1.0-rc.3` is a prerelease. Do not treat it as a stable release
 > channel or use it for unattended fleet updates.
 
 ## Components
@@ -35,7 +35,7 @@ configuration contains only reserved example values.
 Read [self-hosting](docs/SELF_HOSTING.md) before deployment. Obtain the public
 release bundle only from the matching prerelease and verify its checksums;
 the bundle supplies immutable image digests only after promotion has completed.
-See [supported platforms](docs/SUPPORTED_PLATFORMS.md) for the rc.2 release
+See [supported platforms](docs/SUPPORTED_PLATFORMS.md) for the rc.3 release
 matrix and its explicit non-goals.
 
 Useful references: [architecture](docs/ARCHITECTURE.md),

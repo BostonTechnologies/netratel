@@ -28,7 +28,7 @@ public class LiveSmokeTests : IClassFixture<ApiFactory>
 
         version.Should().NotBeNull();
         version!.ServiceName.Should().Be("NetRatel.API");
-        version.DisplayVersion.Should().Be("v0.1.0-rc.2");
+        version.DisplayVersion.Should().Be("v0.1.0-rc.3");
         version.InformationalVersion.Should().NotBeNullOrWhiteSpace();
         version.AssemblyVersion.Should().NotBeNullOrWhiteSpace();
         version.Environment.Should().NotBeNullOrWhiteSpace();
