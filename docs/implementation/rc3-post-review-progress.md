@@ -74,6 +74,18 @@ local-first delivery or `v0.1.0-rc.3`.
 | Merge | PR #75 merged normally as `29a0da1cf48d8a151c85b7fe33694077d8579e46` after the complete hosted image, bundle, OIDC, package, MCP, and browser matrix passed. |
 | Next action | Continue the remaining #64 acceptance. |
 
+## #64 — MFA replacement boundary
+
+| Field | Checkpoint |
+| --- | --- |
+| Branch | `fix/mfa-replacement-semantics` |
+| Reproduction | The enrolled-user setup route accepted the current password, reset the authenticator key, and returned a new secret even while the old factor remained the active authentication mechanism. The response did not set `Cache-Control: no-store`. |
+| Repair | Setup now returns a no-store conflict while two-factor authentication is enabled, preserving the enrolled key. Re-enrollment requires the supported disable flow—current password and current factor—before a new setup. Setup and recovery-code generation responses are explicitly no-store. |
+| Regressions | `LocalTwoFactorEndpointTests` uses the real local-auth route, Identity store, and authorization policy to prove enrolled-key preservation plus no-store behavior for both rejection and new setup. The enrolled case returned `200` before repair. |
+| Local evidence | Targeted Release test: 2 passed. |
+| Provider / auth | In-memory endpoint coverage for local accounts. Browser MFA/recovery-code lifecycle, rate-limit behavior, lockout recovery, and role-assigned administrator recovery remain required #64/#67 acceptance cells. |
+| Next action | Submit for hosted CI, then continue the remaining account-security journey rather than closing V03 on this boundary alone. |
+
 ## #63 — transactional bootstrap completion recovery
 
 | Field | Checkpoint |
