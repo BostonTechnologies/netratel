@@ -32,7 +32,11 @@
                 </MudGrid>
                 @if (_activation is not null)
                 {
-                    <MudAlert Severity="Severity.Warning" Dense="true" Class="mt-2" data-testid="local-user-activation">Share this one-time activation token only with @_activation.Email: @_activation.ActivationToken</MudAlert>
+                    <MudAlert Severity="Severity.Warning" Dense="true" Class="mt-2" data-testid="local-user-activation">
+                        <MudText Typo="Typo.body2">Share this one-time activation token only with @_activation.Email through an approved channel.</MudText>
+                        <label class="mud-typography mud-typography-body2" for="local-user-activation-token">One-time activation token</label>
+                        <input id="local-user-activation-token" class="mud-input-slot mud-input-root mud-input-root-text mud-input-root-margin-dense" type="text" value="@_activation.ActivationToken" readonly data-testid="local-user-activation-token" />
+                    </MudAlert>
                 }
             </MudPaper>
             <MudGrid Spacing="3">

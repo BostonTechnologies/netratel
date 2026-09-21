@@ -42,6 +42,7 @@ public class AuthController(
         return Challenge(props, "Oidc");
     }
 
+    [HttpGet("/logout")]
     [HttpGet("logout")]
     public async Task<IActionResult> Logout()
     {

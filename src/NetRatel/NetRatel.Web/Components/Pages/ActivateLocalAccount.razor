@@ -1,0 +1,70 @@
+@page "/activate"
+@attribute [Microsoft.AspNetCore.Authorization.AllowAnonymous]
+@rendermode InteractiveServer
+
+@using NetRatel.Web.Services.Authentication
+
+@inject ILocalAccountApiService LocalAccountApi
+@inject NavigationManager Navigation
+
+<PageTitle>Activate local account</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.Small" Class="mt-8">
+    <MudPaper Class="pa-5" data-testid="local-account-activation-page">
+        <MudText Typo="Typo.h4">Activate local account</MudText>
+        <MudText Typo="Typo.body2" Color="Color.Secondary" Class="mb-4">
+            Enter the one-time handoff supplied by your administrator, then choose your passphrase. This does not create a new account.
+        </MudText>
+        @if (!string.IsNullOrWhiteSpace(_error))
+        {
+            <MudAlert Severity="Severity.Error" data-testid="local-account-activation-error">@_error</MudAlert>
+        }
+        <MudStack Spacing="2">
+            <MudTextField Label="Email" InputType="InputType.Email" @bind-Value="_email" Required="true" data-testid="activation-email" />
+            <MudTextField Label="Activation token" InputType="InputType.Password" @bind-Value="_activationToken" Required="true" data-testid="activation-token" />
+            <MudTextField Label="New passphrase" InputType="InputType.Password" @bind-Value="_newPassword" Required="true" data-testid="activation-password" />
+            <MudTextField Label="Confirm passphrase" InputType="InputType.Password" @bind-Value="_confirmPassword" Required="true" data-testid="activation-confirm-password" />
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="@(_activating || !CanActivate)" OnClick="ActivateAsync" data-testid="activate-local-account">Activate account</MudButton>
+        </MudStack>
+    </MudPaper>
+</MudContainer>
+
+@code {
+    private string? _email;
+    private string? _activationToken;
+    private string? _newPassword;
+    private string? _confirmPassword;
+    private string? _error;
+    private bool _activating;
+
+    private bool CanActivate => !string.IsNullOrWhiteSpace(_email) && !string.IsNullOrWhiteSpace(_activationToken) &&
+        !string.IsNullOrWhiteSpace(_newPassword) && string.Equals(_newPassword, _confirmPassword, StringComparison.Ordinal);
+
+    private async Task ActivateAsync()
+    {
+        _error = null;
+        if (!CanActivate)
+        {
+            _error = "Provide the activation handoff and matching passphrases.";
+            return;
+        }
+
+        _activating = true;
+        try
+        {
+            await LocalAccountApi.ActivateAsync(new LocalAccountActivationRequest(_email!, _activationToken!, _newPassword!));
+            _activationToken = null;
+            _newPassword = null;
+            _confirmPassword = null;
+            Navigation.NavigateTo("/login", forceLoad: true);
+        }
+        catch (HttpRequestException)
+        {
+            _error = "Activation could not be completed. Check the email and one-time handoff, then try again.";
+        }
+        finally
+        {
+            _activating = false;
+        }
+    }
+}

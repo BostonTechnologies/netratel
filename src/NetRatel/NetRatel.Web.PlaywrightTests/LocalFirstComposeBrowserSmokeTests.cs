@@ -1,3 +1,5 @@
+using System.Buffers.Binary;
+using System.Security.Cryptography;
 using Microsoft.Playwright;
 
 namespace NetRatel.Web.PlaywrightTests;
@@ -54,7 +56,10 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         Assert.Equal(password, await page.GetByTestId("setup-confirm-password").InputValueAsync());
         await page.GetByTestId("setup-initialize").ClickAsync();
         await page.WaitForTimeoutAsync(500);
-        var initializationError = await page.Locator("#setup-client-error").TextContentAsync();
+        var initializationErrorLocator = page.Locator("#setup-client-error");
+        var initializationError = await initializationErrorLocator.CountAsync() == 0
+            ? null
+            : await initializationErrorLocator.TextContentAsync();
         Assert.True(string.IsNullOrWhiteSpace(initializationError), initializationError);
 
         await page.GetByTestId("local-login-email").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible, Timeout = 30_000 });
@@ -91,6 +96,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             requireInput: false);
 
         await VerifyDeploymentBrandingAsync(page, webUrl);
+        await VerifyLocalAccountSecurityJourneyAsync(browser, page, webUrl);
 
         var credentialOutputPath = Environment.GetEnvironmentVariable("NETRATEL_LOCAL_FIRST_INTEGRATION_CREDENTIALS_FILE");
         if (!string.IsNullOrWhiteSpace(credentialOutputPath))
@@ -335,5 +341,153 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         await reveal.GetByText("I stored it safely", new LocatorGetByTextOptions { Exact = true }).ClickAsync();
         return secret;
+    }
+
+    private static async Task VerifyLocalAccountSecurityJourneyAsync(IBrowser browser, IPage page, Uri webUrl)
+    {
+        const string secondUserEmail = "browser-local-operator@example.test";
+        const string secondUserPassword = "browser local operator passphrase";
+
+        await page.GotoAsync(new Uri(webUrl, "admin/access").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await page.GetByTestId("create-local-user").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        await page.WaitForTimeoutAsync(500);
+        await page.GetByTestId("local-user-display-name").FillAsync("Browser local operator");
+        await page.GetByTestId("local-user-display-name").PressAsync("Tab");
+        await page.GetByTestId("local-user-email").FillAsync(secondUserEmail);
+        await page.GetByTestId("local-user-email").PressAsync("Tab");
+        await page.GetByTestId("create-local-user").ClickAsync();
+        var activation = page.GetByTestId("local-user-activation");
+        await activation.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        var activationToken = await page.GetByTestId("local-user-activation-token").InputValueAsync();
+        Assert.False(string.IsNullOrWhiteSpace(activationToken));
+
+        // Simulate a separate browser receiving the handoff. Clearing cookies on the
+        // administrator's page would retain its interactive Blazor circuit.
+        await using var operatorContext = await browser.NewContextAsync();
+        page = await operatorContext.NewPageAsync();
+        page.SetDefaultTimeout(20_000);
+        await page.GotoAsync(new Uri(webUrl, "activate").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await page.GetByTestId("local-account-activation-page").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        await page.WaitForTimeoutAsync(500);
+        await page.GetByTestId("activation-email").FillAsync(secondUserEmail);
+        await page.GetByTestId("activation-email").PressAsync("Tab");
+        await page.GetByTestId("activation-token").FillAsync(activationToken);
+        await page.GetByTestId("activation-token").PressAsync("Tab");
+        await page.GetByTestId("activation-password").FillAsync(secondUserPassword);
+        await page.GetByTestId("activation-password").PressAsync("Tab");
+        await page.GetByTestId("activation-confirm-password").FillAsync(secondUserPassword);
+        await page.GetByTestId("activation-confirm-password").PressAsync("Tab");
+        var activated = page.WaitForURLAsync("**/login", new PageWaitForURLOptions { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 30_000 });
+        await page.GetByTestId("activate-local-account").ClickAsync();
+        await activated;
+
+        await SignInLocallyAsync(page, secondUserEmail, secondUserPassword);
+        await page.GotoAsync(new Uri(webUrl, "account/security").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await page.GetByTestId("account-security-page").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        await page.WaitForTimeoutAsync(500);
+        await page.GetByTestId("mfa-setup-current-password").FillAsync(secondUserPassword);
+        await page.GetByTestId("mfa-setup-current-password").PressAsync("Tab");
+        await page.GetByTestId("begin-mfa-setup").ClickAsync();
+        var enrollmentSecret = page.GetByTestId("mfa-authenticator-secret");
+        await enrollmentSecret.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        var sharedKey = await enrollmentSecret.Locator("input").First.InputValueAsync();
+        var enrollmentCode = CreateTotp(sharedKey);
+        await page.GetByTestId("mfa-enrollment-code").FillAsync(enrollmentCode);
+        await page.GetByTestId("mfa-enrollment-code").PressAsync("Tab");
+        await page.GetByTestId("enable-mfa").ClickAsync();
+        var recoveryCodes = page.GetByTestId("mfa-recovery-codes");
+        await recoveryCodes.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        var recoveryCode = await page.GetByTestId("mfa-recovery-code").First.InnerTextAsync();
+        Assert.False(string.IsNullOrWhiteSpace(recoveryCode));
+        var signedOutAfterEnrollment = page.WaitForURLAsync("**/login", new PageWaitForURLOptions { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 30_000 });
+        await page.GetByTestId("finish-mfa-enrollment").ClickAsync();
+        await signedOutAfterEnrollment;
+
+        await SignInWithSecondFactorAsync(page, secondUserEmail, secondUserPassword, recoveryCode, expectSuccess: true);
+        await page.GotoAsync(new Uri(webUrl, "account/security").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await page.GetByTestId("account-security-page").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        await page.WaitForTimeoutAsync(500);
+        await page.GetByTestId("disable-mfa-current-password").FillAsync(secondUserPassword);
+        await page.GetByTestId("disable-mfa-current-password").PressAsync("Tab");
+        await page.GetByTestId("disable-mfa-code").FillAsync(CreateTotp(sharedKey));
+        await page.GetByTestId("disable-mfa-code").PressAsync("Tab");
+        var signedOutAfterDisable = page.WaitForURLAsync("**/login", new PageWaitForURLOptions { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 30_000 });
+        await page.GetByTestId("disable-mfa").ClickAsync();
+        await signedOutAfterDisable;
+
+        await SignInLocallyAsync(page, secondUserEmail, secondUserPassword);
+    }
+
+    private static async Task SignInLocallyAsync(IPage page, string email, string password)
+    {
+        await page.GotoAsync(new Uri(RequireUri("NETRATEL_LOCAL_FIRST_WEB_URL"), "login").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await page.GetByTestId("local-login-client-ready").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
+        await page.GetByTestId("local-login-email").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        await page.GetByTestId("local-login-email").FillAsync(email);
+        await page.GetByTestId("local-login-email").PressAsync("Tab");
+        await page.GetByTestId("local-login-password").FillAsync(password);
+        await page.GetByTestId("local-login-password").PressAsync("Tab");
+        var signedIn = page.WaitForURLAsync("**/", new PageWaitForURLOptions { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 30_000 });
+        await page.GetByTestId("local-login-submit").ClickAsync();
+        await signedIn;
+    }
+
+    private static async Task SignInWithSecondFactorAsync(IPage page, string email, string password, string code, bool expectSuccess)
+    {
+        await page.GotoAsync(new Uri(RequireUri("NETRATEL_LOCAL_FIRST_WEB_URL"), "login").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await page.GetByTestId("local-login-client-ready").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
+        await page.GetByTestId("local-login-email").FillAsync(email);
+        await page.GetByTestId("local-login-email").PressAsync("Tab");
+        await page.GetByTestId("local-login-password").FillAsync(password);
+        await page.GetByTestId("local-login-password").PressAsync("Tab");
+        await page.GetByTestId("local-login-submit").ClickAsync();
+        await page.GetByTestId("local-login-two-factor").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        await page.GetByTestId("local-login-two-factor").FillAsync(code);
+        await page.GetByTestId("local-login-two-factor").PressAsync("Tab");
+        if (expectSuccess)
+        {
+            var signedIn = page.WaitForURLAsync("**/", new PageWaitForURLOptions { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 30_000 });
+            await page.GetByTestId("local-login-two-factor-submit").ClickAsync();
+            await signedIn;
+            return;
+        }
+
+        await page.GetByTestId("local-login-two-factor-submit").ClickAsync();
+        await page.GetByRole(AriaRole.Alert).WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+    }
+
+    private static string CreateTotp(string base32Secret)
+    {
+        var secret = DecodeBase32(base32Secret);
+        Span<byte> counter = stackalloc byte[8];
+        BinaryPrimitives.WriteInt64BigEndian(counter, DateTimeOffset.UtcNow.ToUnixTimeSeconds() / 30);
+        using var hmac = new HMACSHA1(secret);
+        var hash = hmac.ComputeHash(counter.ToArray());
+        var offset = hash[^1] & 0x0f;
+        var value = BinaryPrimitives.ReadInt32BigEndian(hash.AsSpan(offset, 4)) & 0x7fffffff;
+        return (value % 1_000_000).ToString("D6", System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    private static byte[] DecodeBase32(string value)
+    {
+        var buffer = 0;
+        var bits = 0;
+        var decoded = new List<byte>();
+        foreach (var character in value.Where(character => character is not (' ' or '-')).Select(char.ToUpperInvariant))
+        {
+            var digit = character switch
+            {
+                >= 'A' and <= 'Z' => character - 'A',
+                >= '2' and <= '7' => character - '2' + 26,
+                _ => throw new InvalidOperationException("The authenticator secret was not valid Base32.")
+            };
+            buffer = (buffer << 5) | digit;
+            bits += 5;
+            if (bits < 8) continue;
+            decoded.Add((byte)(buffer >> (bits - 8)));
+            bits -= 8;
+        }
+
+        return decoded.ToArray();
     }
 }

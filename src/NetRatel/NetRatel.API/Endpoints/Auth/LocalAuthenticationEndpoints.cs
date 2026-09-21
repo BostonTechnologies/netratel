@@ -131,6 +131,8 @@ public static class LocalAuthenticationEndpoints
         group.MapPost("/two-factor/setup", async (
             [FromBody] CurrentPasswordRequest request,
             UserManager<LocalUser> users,
+            IUserStore<LocalUser> userStore,
+            NetRatelIdentityDbContext db,
             HttpContext context) =>
         {
             context.Response.Headers.CacheControl = "no-store";
@@ -149,12 +151,19 @@ public static class LocalAuthenticationEndpoints
                 return Results.Conflict(new { error = "two_factor_already_enabled" });
             }
 
-            await users.ResetAuthenticatorKeyAsync(user).ConfigureAwait(false);
-            var key = await users.GetAuthenticatorKeyAsync(user).ConfigureAwait(false);
-            if (string.IsNullOrWhiteSpace(key))
+            // ResetAuthenticatorKeyAsync updates the security stamp. That would
+            // invalidate the authenticated BFF request before it can submit the
+            // code that confirms this newly staged factor. A factor is not active
+            // until /two-factor/enable succeeds, which is where sessions are
+            // deliberately invalidated.
+            var key = GenerateAuthenticatorKey();
+            if (userStore is not IUserAuthenticatorKeyStore<LocalUser> authenticatorKeys)
             {
-                return Results.Problem("The authenticator setup could not be started.", statusCode: StatusCodes.Status409Conflict);
+                return Results.Problem("The configured identity store does not support authenticator keys.", statusCode: StatusCodes.Status409Conflict);
             }
+
+            await authenticatorKeys.SetAuthenticatorKeyAsync(user, key, context.RequestAborted).ConfigureAwait(false);
+            await db.SaveChangesAsync(context.RequestAborted).ConfigureAwait(false);
 
             var accountName = user.Email ?? user.UserName ?? user.Id;
             var issuer = "NetRatel";
@@ -170,7 +179,7 @@ public static class LocalAuthenticationEndpoints
             context.Response.Headers.CacheControl = "no-store";
             var user = await CurrentLocalUserAsync(users, context.User).ConfigureAwait(false);
             if (user is null || !user.IsEnabled ||
-                !await users.VerifyTwoFactorTokenAsync(user, TokenOptions.DefaultAuthenticatorProvider, NormalizeCode(request.Code)).ConfigureAwait(false))
+                !await users.VerifyTwoFactorTokenAsync(user, TokenOptions.DefaultAuthenticatorProvider, NormalizeAuthenticatorCode(request.Code)).ConfigureAwait(false))
             {
                 return Results.BadRequest(new { error = "invalid_authenticator_code" });
             }
@@ -188,7 +197,7 @@ public static class LocalAuthenticationEndpoints
         {
             var user = await CurrentLocalUserAsync(users, context.User).ConfigureAwait(false);
             if (user is null || !user.IsEnabled || !await users.CheckPasswordAsync(user, request.CurrentPassword).ConfigureAwait(false) ||
-                !await users.VerifyTwoFactorTokenAsync(user, TokenOptions.DefaultAuthenticatorProvider, NormalizeCode(request.Code)).ConfigureAwait(false))
+                !await users.VerifyTwoFactorTokenAsync(user, TokenOptions.DefaultAuthenticatorProvider, NormalizeAuthenticatorCode(request.Code)).ConfigureAwait(false))
             {
                 return Results.BadRequest(new { error = "two_factor_disable_failed" });
             }
@@ -326,10 +335,33 @@ public static class LocalAuthenticationEndpoints
     }
 
     private static async Task<bool> IsSecondFactorValidAsync(UserManager<LocalUser> users, LocalUser user, string code) =>
-        await users.VerifyTwoFactorTokenAsync(user, TokenOptions.DefaultAuthenticatorProvider, NormalizeCode(code)).ConfigureAwait(false)
-        || (await users.RedeemTwoFactorRecoveryCodeAsync(user, code.Replace(" ", string.Empty, StringComparison.Ordinal)).ConfigureAwait(false)).Succeeded;
+        await users.VerifyTwoFactorTokenAsync(user, TokenOptions.DefaultAuthenticatorProvider, NormalizeAuthenticatorCode(code)).ConfigureAwait(false)
+        || (await users.RedeemTwoFactorRecoveryCodeAsync(user, code.Trim()).ConfigureAwait(false)).Succeeded;
 
-    private static string NormalizeCode(string code) => code.Replace(" ", string.Empty, StringComparison.Ordinal).Replace("-", string.Empty, StringComparison.Ordinal);
+    private static string GenerateAuthenticatorKey()
+    {
+        const string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+        var bytes = RandomNumberGenerator.GetBytes(20);
+        var result = new char[32];
+        var buffer = 0;
+        var bits = 0;
+        var index = 0;
+
+        foreach (var value in bytes)
+        {
+            buffer = (buffer << 8) | value;
+            bits += 8;
+            while (bits >= 5)
+            {
+                result[index++] = alphabet[(buffer >> (bits - 5)) & 0x1f];
+                bits -= 5;
+            }
+        }
+
+        return new string(result);
+    }
+
+    private static string NormalizeAuthenticatorCode(string code) => code.Replace(" ", string.Empty, StringComparison.Ordinal).Replace("-", string.Empty, StringComparison.Ordinal);
 
     private static LocalLoginChallenge? ReadChallenge(HttpContext context, IDataProtectionProvider protection)
     {

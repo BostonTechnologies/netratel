@@ -139,6 +139,7 @@ builder.Services.AddScoped<ITokenProvider, ServerTokenProvider>();
 builder.Services.AddTransient<TokenAuthorizationHandler>();
 builder.Services.AddTransient<SystemTokenAuthorizationHandler>();
 builder.Services.AddScoped<ITokenService, TokenService>();
+builder.Services.AddScoped<ILocalAccountApiService, LocalAccountApiService>();
 builder.Services.AddScoped<CookieOidcSessionEvents>();
 builder.Services.AddSingleton<ISystemTokenService, SystemTokenService>();
 builder.Services.AddBlazorDownloadFile();
