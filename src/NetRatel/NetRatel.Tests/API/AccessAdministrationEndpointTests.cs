@@ -61,6 +61,21 @@ public sealed class AccessAdministrationEndpointTests
         otherTenant.StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
 
+    [Fact]
+    public async Task Tenant_administrator_discovers_only_its_named_administration_scope()
+    {
+        using var app = await BuildAppAsync();
+        await SeedAsync(app.Services);
+        var client = app.GetTestClient();
+        client.DefaultRequestHeaders.Add("X-NetRatel-Principal", "tenant-admin");
+
+        var response = await client.GetAsync("/api/v2/access/tenants");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, await response.Content.ReadAsStringAsync());
+        var tenants = await response.Content.ReadFromJsonAsync<List<AccessAdministrationEndpoints.AccessTenantResponse>>();
+        tenants.Should().BeEquivalentTo([new AccessAdministrationEndpoints.AccessTenantResponse(1, "Tenant A")]);
+    }
+
     private static async Task<IHost> BuildAppAsync()
     {
         var builder = WebApplication.CreateBuilder();
