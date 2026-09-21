@@ -453,6 +453,21 @@ namespace NetRatel.Infrastructure.Identity.Migrations
                     b.ToTable("IntegrationCredentialGrants", (string)null);
                 });
 
+            modelBuilder.Entity("NetRatel.Infrastructure.Identity.IntegrationCredentialInstanceGrant", b =>
+                {
+                    b.Property<string>("CredentialId")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("Permission")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.HasKey("CredentialId", "Permission");
+
+                    b.ToTable("IntegrationCredentialInstanceGrants", (string)null);
+                });
+
             modelBuilder.Entity("NetRatel.Infrastructure.Identity.LocalUser", b =>
                 {
                     b.Property<string>("Id")
@@ -634,6 +649,17 @@ namespace NetRatel.Infrastructure.Identity.Migrations
                     b.Navigation("Credential");
                 });
 
+            modelBuilder.Entity("NetRatel.Infrastructure.Identity.IntegrationCredentialInstanceGrant", b =>
+                {
+                    b.HasOne("NetRatel.Infrastructure.Identity.IntegrationCredential", "Credential")
+                        .WithMany("InstanceGrants")
+                        .HasForeignKey("CredentialId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Credential");
+                });
+
             modelBuilder.Entity("NetRatel.Infrastructure.Identity.Authorization.AccessRole", b =>
                 {
                     b.Navigation("Permissions");
@@ -642,6 +668,8 @@ namespace NetRatel.Infrastructure.Identity.Migrations
             modelBuilder.Entity("NetRatel.Infrastructure.Identity.IntegrationCredential", b =>
                 {
                     b.Navigation("Grants");
+
+                    b.Navigation("InstanceGrants");
                 });
 #pragma warning restore 612, 618
         }

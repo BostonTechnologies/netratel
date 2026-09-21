@@ -121,6 +121,27 @@ public sealed class IntegrationCredentialServiceTests
         (await service.VerifyCurrentAsync(created.CredentialId, IntegrationCredentialPurpose.HttpMcp)).Should().BeNull();
     }
 
+    [Fact]
+    public async Task Instance_discovery_grant_is_explicit_and_is_returned_by_current_verification()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        await using var db = CreateDb(connection);
+        await db.Database.EnsureCreatedAsync();
+        db.Users.Add(new LocalUser { Id = "local-user", PrincipalId = "principal-a", UserName = "owner", IsEnabled = true });
+        await db.SaveChangesAsync();
+        var service = new IntegrationCredentialService(db);
+
+        var created = await service.CreateAsync("principal-a", new(
+            "Local HTTP MCP discovery", IntegrationCredentialPurpose.HttpMcp, DateTimeOffset.UtcNow.AddDays(7), [],
+            "https://mcp.example.test/mcp", [NetRatelPermissions.McpDiscoveryRead]));
+
+        var current = await service.VerifyCurrentAsync(created.CredentialId, IntegrationCredentialPurpose.HttpMcp);
+        current.Should().NotBeNull();
+        current!.InstancePermissions.Should().ContainSingle().Which.Should().Be(NetRatelPermissions.McpDiscoveryRead);
+        (await service.ListAsync("principal-a")).Single().InstancePermissions.Should().ContainSingle().Which.Should().Be(NetRatelPermissions.McpDiscoveryRead);
+    }
+
     private static NetRatelIdentityDbContext CreateDb(SqliteConnection connection) => new(
         new DbContextOptionsBuilder<NetRatelIdentityDbContext>().UseSqlite(connection).Options);
 }

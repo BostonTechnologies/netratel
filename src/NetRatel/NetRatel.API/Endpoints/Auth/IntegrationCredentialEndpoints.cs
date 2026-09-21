@@ -44,13 +44,15 @@ public static class IntegrationCredentialEndpoints
             }
 
             var grants = request.Grants ?? [];
+            var instancePermissions = request.InstancePermissions ?? [];
             if (!Enum.IsDefined(request.Purpose) ||
                 (request.Purpose == IntegrationCredentialPurpose.HttpMcp && string.IsNullOrWhiteSpace(request.Resource)) ||
-                grants.Count == 0 || grants.Any(grant => grant.TenantId <= 0 || string.IsNullOrWhiteSpace(grant.Permission) ||
+                (grants.Count == 0 && instancePermissions.Count == 0) || grants.Any(grant => grant.TenantId <= 0 || string.IsNullOrWhiteSpace(grant.Permission) ||
                     !NetRatelPermissions.All.Contains(grant.Permission.Trim()) ||
-                    string.Equals(grant.Permission.Trim(), NetRatelPermissions.IntegrationManagement, StringComparison.Ordinal)))
+                    string.Equals(grant.Permission.Trim(), NetRatelPermissions.IntegrationManagement, StringComparison.Ordinal)) ||
+                instancePermissions.Any(permission => !string.Equals(permission?.Trim(), NetRatelPermissions.McpDiscoveryRead, StringComparison.Ordinal)))
             {
-                return Results.ValidationProblem(new Dictionary<string, string[]> { ["grants"] = ["Use explicit tenant permissions; integration.manage cannot be delegated to a credential."] });
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["grants"] = ["Use explicit tenant permissions or the catalogued instance discovery permission; integration.manage cannot be delegated to a credential."] });
             }
 
             var tenantIds = grants.Select(grant => grant.TenantId).Distinct().ToArray();
@@ -67,6 +69,11 @@ public static class IntegrationCredentialEndpoints
                     return Results.Forbid();
                 }
             }
+            foreach (var permission in instancePermissions)
+            {
+                if (!await access.AuthorizeAsync(principal, permission.Trim(), tenantId: null, ct).ConfigureAwait(false))
+                    return Results.Forbid();
+            }
 
             try
             {
@@ -75,7 +82,8 @@ public static class IntegrationCredentialEndpoints
                     request.Purpose,
                     request.ExpiresAtUtc,
                     grants.Select(grant => new IntegrationCredentialGrantRequest(grant.TenantId, grant.Permission)).ToArray(),
-                    request.Resource), ct).ConfigureAwait(false);
+                    request.Resource,
+                    instancePermissions), ct).ConfigureAwait(false);
                 context.Response.Headers.CacheControl = "no-store";
                 return Results.Created($"/api/v2/account/integration-credentials/{created.CredentialId}", created);
             }
@@ -118,5 +126,6 @@ public static class IntegrationCredentialEndpoints
         IntegrationCredentialPurpose Purpose,
         DateTimeOffset ExpiresAtUtc,
         IReadOnlyList<IntegrationCredentialGrantRequest>? Grants,
-        string? Resource = null);
+        string? Resource = null,
+        IReadOnlyList<string>? InstancePermissions = null);
 }

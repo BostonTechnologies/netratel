@@ -10,11 +10,17 @@ namespace NetRatel.API.Security.Integration;
 /// </summary>
 internal static class McpLocalDelegationPermissionMapper
 {
+    public static bool IsInstanceRead(string tool, string operation) =>
+        (tool, operation) is ("netratel_auth", "status") or ("netratel_health", "get") or
+            ("netratel_system", "version") or ("netratel_capabilities", "get");
+
     public static string? RequiredPermission(string tool, string operation)
     {
         var access = McpOperationAccessCatalog.Find(tool, operation);
         if (access is null)
             return null;
+        if (IsInstanceRead(tool, operation))
+            return NetRatelPermissions.McpDiscoveryRead;
 
         return tool switch
         {

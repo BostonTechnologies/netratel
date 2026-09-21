@@ -38,6 +38,7 @@ public sealed class IntegrationCredential
     public string? RevokedByPrincipalId { get; set; }
 
     public List<IntegrationCredentialGrant> Grants { get; set; } = [];
+    public List<IntegrationCredentialInstanceGrant> InstanceGrants { get; set; } = [];
 }
 
 /// <summary>Credential trust boundaries are intentionally purpose-separated.</summary>
@@ -56,5 +57,13 @@ public sealed class IntegrationCredentialGrant
 
     public string Permission { get; set; } = string.Empty;
 
+    public IntegrationCredential? Credential { get; set; }
+}
+
+/// <summary>Explicit non-tenant grant for a catalogued instance-level operation.</summary>
+public sealed class IntegrationCredentialInstanceGrant
+{
+    public string CredentialId { get; set; } = string.Empty;
+    public string Permission { get; set; } = string.Empty;
     public IntegrationCredential? Credential { get; set; }
 }

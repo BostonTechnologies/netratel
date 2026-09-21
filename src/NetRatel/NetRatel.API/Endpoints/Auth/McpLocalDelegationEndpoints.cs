@@ -41,11 +41,14 @@ public static class McpLocalDelegationEndpoints
             IEffectiveAccessService access,
             CancellationToken cancellationToken) =>
         {
-            if (!TryPairing(http, tokens, authenticationOnly: false, out var pairing) || pairing is null ||
-                pairing.TenantId is not > 0 || pairing.AgentId is null)
+            if (!TryPairing(http, tokens, authenticationOnly: false, out var pairing) || pairing is null)
             {
                 return Results.Unauthorized();
             }
+
+            var isInstanceRead = McpLocalDelegationPermissionMapper.IsInstanceRead(pairing.Tool, pairing.Operation);
+            if (isInstanceRead ? pairing.TenantId is not null || pairing.AgentId is not null : pairing.TenantId is not > 0 || pairing.AgentId is null)
+                return Results.Unauthorized();
 
             var credentialId = http.User.FindFirstValue(IntegrationCredentialAuthenticationHandler.CredentialIdClaimType);
             var ownerPrincipalId = http.User.FindFirstValue("netratel_principal_id");
@@ -53,7 +56,7 @@ public static class McpLocalDelegationEndpoints
             var operationAccess = McpOperationAccessCatalog.Find(pairing.Tool, pairing.Operation);
             if (string.IsNullOrWhiteSpace(credentialId) || string.IsNullOrWhiteSpace(ownerPrincipalId) ||
                 string.IsNullOrWhiteSpace(requiredPermission) || operationAccess is null ||
-                !await access.AuthorizeAsync(http.User, requiredPermission, pairing.TenantId, cancellationToken).ConfigureAwait(false))
+                !await access.AuthorizeAsync(http.User, requiredPermission, isInstanceRead ? null : pairing.TenantId, cancellationToken).ConfigureAwait(false))
             {
                 return Results.Forbid();
             }
