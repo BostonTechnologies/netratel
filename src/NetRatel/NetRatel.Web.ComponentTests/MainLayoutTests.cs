@@ -349,6 +349,9 @@ public class MainLayoutTests : AsyncBunitContext
         public Task<IReadOnlyList<LocalUserAccessDto>> GetUsersAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult<IReadOnlyList<LocalUserAccessDto>>([]);
 
+        public Task<LocalAccountActivationDto> CreateLocalUserAsync(string displayName, string email, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new LocalAccountActivationDto("created-user", email, "activation-token"));
+
         public Task<IReadOnlyList<RoleAssignmentDto>> GetAssignmentsAsync(string principalId, CancellationToken cancellationToken = default) =>
             Task.FromResult<IReadOnlyList<RoleAssignmentDto>>([]);
 

@@ -11,6 +11,28 @@ namespace NetRatel.Web.ComponentTests;
 public sealed class AccessAdministrationSelectionTests : AsyncBunitContext
 {
     [Fact]
+    public void Creating_a_local_user_reveals_only_its_activation_handoff_after_success()
+    {
+        JSInterop.Mode = JSRuntimeMode.Loose;
+        Services.AddMudServices(options => options.PopoverOptions.CheckForPopoverProvider = false);
+        var access = new DelayedAccessAdministrationApiService();
+        Services.AddSingleton<IAccessAdministrationApiService>(access);
+
+        var cut = Render<AccessAdministration>();
+        cut.WaitForAssertion(() => cut.FindAll("input").Should().HaveCount(2));
+        var inputs = cut.FindAll("input");
+        inputs[0].Change("Scoped operator");
+        inputs[1].Change("scoped@example.test");
+        cut.FindAll("button").Single(button => button.TextContent.Contains("Create activation handoff", StringComparison.Ordinal)).Click();
+
+        cut.WaitForAssertion(() =>
+        {
+            access.Created.Should().Be(("Scoped operator", "scoped@example.test"));
+            cut.Find("[data-testid='local-user-activation']").TextContent.Should().Contain("activation-token");
+        });
+    }
+
+    [Fact]
     public void Slow_previous_selection_cannot_replace_the_current_users_assignments()
     {
         JSInterop.Mode = JSRuntimeMode.Loose;
@@ -45,6 +67,8 @@ public sealed class AccessAdministrationSelectionTests : AsyncBunitContext
                 ["principal-b"] = new(TaskCreationOptions.RunContinuationsAsynchronously)
             };
 
+        public (string DisplayName, string Email)? Created { get; private set; }
+
         public Task<IReadOnlyList<AccessRoleDto>> GetRolesAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult<IReadOnlyList<AccessRoleDto>>([]);
 
@@ -57,6 +81,12 @@ public sealed class AccessAdministrationSelectionTests : AsyncBunitContext
                 new("user-a", "principal-a", "a@example.test", "User A", true, false),
                 new("user-b", "principal-b", "b@example.test", "User B", true, false)
             ]);
+
+        public Task<LocalAccountActivationDto> CreateLocalUserAsync(string displayName, string email, CancellationToken cancellationToken = default)
+        {
+            Created = (displayName, email);
+            return Task.FromResult(new LocalAccountActivationDto("created-user", email, "activation-token"));
+        }
 
         public Task<IReadOnlyList<RoleAssignmentDto>> GetAssignmentsAsync(string principalId, CancellationToken cancellationToken = default) =>
             _assignments[principalId].Task;
