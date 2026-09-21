@@ -404,9 +404,6 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await signedOutAfterEnrollment;
 
         await SignInWithSecondFactorAsync(page, secondUserEmail, secondUserPassword, recoveryCode, expectSuccess: true);
-        await page.GotoAsync(new Uri(webUrl, "logout").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
-        await SignInWithSecondFactorAsync(page, secondUserEmail, secondUserPassword, recoveryCode, expectSuccess: false);
-        await SignInWithSecondFactorAsync(page, secondUserEmail, secondUserPassword, CreateTotp(sharedKey), expectSuccess: true);
         await page.GotoAsync(new Uri(webUrl, "account/security").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
         await page.GetByTestId("account-security-page").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         await page.WaitForTimeoutAsync(500);
@@ -424,6 +421,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
     private static async Task SignInLocallyAsync(IPage page, string email, string password)
     {
         await page.GotoAsync(new Uri(RequireUri("NETRATEL_LOCAL_FIRST_WEB_URL"), "login").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await page.GetByTestId("local-login-client-ready").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
         await page.GetByTestId("local-login-email").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         await page.GetByTestId("local-login-email").FillAsync(email);
         await page.GetByTestId("local-login-email").PressAsync("Tab");
@@ -437,6 +435,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
     private static async Task SignInWithSecondFactorAsync(IPage page, string email, string password, string code, bool expectSuccess)
     {
         await page.GotoAsync(new Uri(RequireUri("NETRATEL_LOCAL_FIRST_WEB_URL"), "login").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await page.GetByTestId("local-login-client-ready").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
         await page.GetByTestId("local-login-email").FillAsync(email);
         await page.GetByTestId("local-login-email").PressAsync("Tab");
         await page.GetByTestId("local-login-password").FillAsync(password);

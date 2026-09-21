@@ -25,10 +25,17 @@ namespace NetRatel.Tests.API;
 public sealed class LocalTwoFactorEndpointTests
 {
     [Fact]
-    public async Task Setup_returns_a_new_authenticator_secret_only_with_no_store()
+    public async Task Setup_returns_a_new_authenticator_secret_without_invalidating_the_current_session()
     {
         using var app = await BuildAppAsync();
         await SeedUserAsync(app.Services, enrolled: false);
+        string securityStampBefore;
+        await using (var beforeScope = app.Services.CreateAsyncScope())
+        {
+            var beforeUsers = beforeScope.ServiceProvider.GetRequiredService<UserManager<LocalUser>>();
+            securityStampBefore = (await beforeUsers.FindByIdAsync("local-user"))!.SecurityStamp!;
+        }
+
         var client = app.GetTestClient();
         client.DefaultRequestHeaders.Add("X-NetRatel-User", "local-user");
 
@@ -38,6 +45,11 @@ public sealed class LocalTwoFactorEndpointTests
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         response.Headers.CacheControl.Should().NotBeNull();
         response.Headers.CacheControl!.NoStore.Should().BeTrue();
+        await using var scope = app.Services.CreateAsyncScope();
+        var users = scope.ServiceProvider.GetRequiredService<UserManager<LocalUser>>();
+        var user = await users.FindByIdAsync("local-user");
+        user!.SecurityStamp.Should().Be(securityStampBefore);
+        (await users.GetAuthenticatorKeyAsync(user)).Should().NotBeNullOrWhiteSpace();
     }
 
     [Fact]
@@ -60,6 +72,43 @@ public sealed class LocalTwoFactorEndpointTests
         (await users.GetAuthenticatorKeyAsync(user!)).Should().Be(keyBefore);
     }
 
+    [Fact]
+    public async Task Recovery_codes_are_accepted_verbatim_once_by_the_two_factor_login_endpoint()
+    {
+        using var app = await BuildAppAsync();
+        await SeedUserAsync(app.Services, enrolled: true);
+        await using var scope = app.Services.CreateAsyncScope();
+        var users = scope.ServiceProvider.GetRequiredService<UserManager<LocalUser>>();
+        var user = (await users.FindByIdAsync("local-user"))!;
+        var recoveryCode = (await users.GenerateNewTwoFactorRecoveryCodesAsync(user, 1))!.Single();
+        var client = app.GetTestClient();
+
+        await BeginTwoFactorLoginAsync(client);
+        var accepted = await client.PostAsJsonAsync("/api/v2/local-auth/login/two-factor",
+            new LocalAuthenticationEndpoints.CompleteTwoFactorLoginRequest(recoveryCode));
+
+        accepted.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        await BeginTwoFactorLoginAsync(client);
+        var reused = await client.PostAsJsonAsync("/api/v2/local-auth/login/two-factor",
+            new LocalAuthenticationEndpoints.CompleteTwoFactorLoginRequest(recoveryCode));
+
+        reused.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
+    private static async Task BeginTwoFactorLoginAsync(HttpClient client)
+    {
+        var login = await client.PostAsJsonAsync("/api/v2/local-auth/login",
+            new LocalAuthenticationEndpoints.LocalLoginRequest("operator@example.test", "A-strong-local-password-1", false));
+
+        login.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        var challengeCookie = login.Headers.GetValues("Set-Cookie")
+            .Single(cookie => cookie.StartsWith("NetRatel.Local.LoginChallenge=", StringComparison.Ordinal))
+            .Split(';', 2)[0];
+        client.DefaultRequestHeaders.Remove("Cookie");
+        client.DefaultRequestHeaders.TryAddWithoutValidation("Cookie", challengeCookie).Should().BeTrue();
+    }
+
     private static async Task<IHost> BuildAppAsync()
     {
         var builder = WebApplication.CreateBuilder();
@@ -68,7 +117,8 @@ public sealed class LocalTwoFactorEndpointTests
         builder.WebHost.UseTestServer();
         builder.Services.AddDataProtection();
         builder.Services.AddAuthentication(TestAuthenticationHandler.SchemeName)
-            .AddScheme<AuthenticationSchemeOptions, TestAuthenticationHandler>(TestAuthenticationHandler.SchemeName, _ => { });
+            .AddScheme<AuthenticationSchemeOptions, TestAuthenticationHandler>(TestAuthenticationHandler.SchemeName, _ => { })
+            .AddCookie(LocalAuthenticationOptions.Scheme);
         builder.Services.AddAuthorization(options => options.AddPolicy(LocalAuthenticationOptions.LocalUserPolicy, policy =>
         {
             policy.AddAuthenticationSchemes(TestAuthenticationHandler.SchemeName);
