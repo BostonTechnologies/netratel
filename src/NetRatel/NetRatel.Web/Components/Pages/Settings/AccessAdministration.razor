@@ -111,25 +111,37 @@
         _draftRoleId = null;
         _draftTenantId = null;
         var version = ++_selectionVersion;
-        _assignments = await AccessApi.GetAssignmentsAsync(principalId);
+        var assignments = await AccessApi.GetAssignmentsAsync(principalId);
         if (version != _selectionVersion || _selectedPrincipalId != principalId)
         {
             return;
         }
+
+        _assignments = assignments;
     }
 
     private async Task AssignAsync()
     {
-        if (_selectedPrincipalId is null || string.IsNullOrWhiteSpace(_draftRoleId)) return;
-        await AccessApi.AssignAsync(_selectedPrincipalId, _draftRoleId, _draftTenantId);
-        await RefreshAssignmentsAsync(_selectedPrincipalId);
+        var principalId = _selectedPrincipalId;
+        var roleId = _draftRoleId;
+        var tenantId = _draftTenantId;
+        if (principalId is null || string.IsNullOrWhiteSpace(roleId)) return;
+        await AccessApi.AssignAsync(principalId, roleId, tenantId);
+        if (_selectedPrincipalId == principalId)
+        {
+            await RefreshAssignmentsAsync(principalId);
+        }
     }
 
     private async Task RemoveAsync(string assignmentId)
     {
-        if (_selectedPrincipalId is null) return;
-        await AccessApi.RemoveAssignmentAsync(_selectedPrincipalId, assignmentId);
-        await RefreshAssignmentsAsync(_selectedPrincipalId);
+        var principalId = _selectedPrincipalId;
+        if (principalId is null) return;
+        await AccessApi.RemoveAssignmentAsync(principalId, assignmentId);
+        if (_selectedPrincipalId == principalId)
+        {
+            await RefreshAssignmentsAsync(principalId);
+        }
     }
 
     private async Task RefreshAssignmentsAsync(string principalId)
