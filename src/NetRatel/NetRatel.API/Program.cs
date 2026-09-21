@@ -336,6 +336,10 @@ builder.Services
             ValidateAudience = true,
             ValidAudiences = configuredAudiences.Length == 0 ? null : configuredAudiences,
             ValidAudience = configuredAudiences.Length == 0 ? audience : null,
+            // LocalPrincipalClaimsTransformation accepts only the validated
+            // OIDC identity. Keep this explicit rather than depending on the
+            // IdentityModel default authentication type.
+            AuthenticationType = "Oidc",
             RoleClaimType = oidc["RoleClaimType"] ?? "roles",
             NameClaimType = oidc["NameClaimType"] ?? "preferred_username",
             ClockSkew = TimeSpan.FromMinutes(10)

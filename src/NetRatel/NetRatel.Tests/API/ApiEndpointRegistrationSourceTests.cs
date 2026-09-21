@@ -15,6 +15,7 @@ public sealed class ApiEndpointRegistrationSourceTests
         source.Should().Contain(".AddJwtBearer(\"Oidc\"")
             .And.Contain("Authentication:Oidc")
             .And.Contain("Authorization:Oidc:AdminGroupId")
+            .And.Contain("AuthenticationType = \"Oidc\"")
             .And.NotContain(".AddJwtBearer(\"Azure\"");
     }
 
