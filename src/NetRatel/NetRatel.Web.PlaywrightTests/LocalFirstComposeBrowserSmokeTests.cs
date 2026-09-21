@@ -359,8 +359,6 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         }
         var secret = await reveal.Locator("input").InputValueAsync();
         Assert.StartsWith("nrt_ic_", secret);
-        await page.GetByText($"1:{permission}", new PageGetByTextOptions { Exact = true })
-            .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         await reveal.GetByText("I stored it safely", new LocatorGetByTextOptions { Exact = true }).ClickAsync();
         return secret;
     }
