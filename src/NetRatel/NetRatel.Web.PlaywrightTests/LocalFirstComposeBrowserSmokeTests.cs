@@ -336,7 +336,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             await page.GetByRole(AriaRole.Option, new PageGetByRoleOptions { Name = purpose, Exact = true }).ClickAsync();
             await page.GetByTestId("credential-resource").FillAsync(resource ?? throw new InvalidOperationException("An HTTP MCP resource is required."));
         }
-        await page.GetByRole(AriaRole.Combobox, new PageGetByRoleOptions { Name = "Permission" }).ClickAsync();
+        await page.GetByRole(AriaRole.Combobox, new PageGetByRoleOptions { Name = "Permission", Exact = true }).ClickAsync();
         await page.GetByRole(AriaRole.Option, new PageGetByRoleOptions { Name = permission, Exact = true }).ClickAsync();
         if (!string.IsNullOrWhiteSpace(instancePermission))
         {
