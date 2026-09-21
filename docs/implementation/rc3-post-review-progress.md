@@ -76,4 +76,18 @@ local-first delivery or `v0.1.0-rc.3`.
 | Merge | Pending CI-gated PR. |
 | Next action | Open a focused PR and continue the remaining bootstrap interrupted-write and upgrade acceptance cells in #63/#70. |
 
+## #65 — local HTTP MCP target requirements
+
+| Field | Checkpoint |
+| --- | --- |
+| Branch | `fix/issue-65-mcp-target-model` |
+| Reproduction | Local HTTP MCP rejected `netratel_capabilities/get` before tool execution because every exchange demanded both tenant and agent despite discovery operations having no business target. |
+| Repair | A purpose-specific instance discovery permission and a separate instance-grant table preserve existing tenant tuple grants. The exchange and API-side current-access revalidation both allow only the catalogued no-target discovery operations with null tenant/agent and a current explicit grant. |
+| Migrations | Generated PostgreSQL and SQLite identity migrations add `IntegrationCredentialInstanceGrants`; existing grants, verifiers, and credential purposes are unchanged. |
+| Regressions | No-target capabilities exchange asserts no invented tenant/agent and a discovery-only delegation. Service and evaluator tests prove a tenant-only credential cannot obtain discovery authority merely because its owner is an instance administrator. |
+| Local evidence | Focused VSTest suite: 64 passed, including SQLite migration coverage. Slopwatch: 0 findings. |
+| Provider / auth | SQLite and PostgreSQL migration paths generated; local credential exchange remains purpose/resource-bound and OIDC propagation is unchanged. |
+| Merge | Pending CI-gated PR. |
+| Next action | Complete parameterized target/permission classification for every advertised operation and the real joined local HTTP MCP journey before closing #65. |
+
 No credentials, setup proofs, recovery codes, private endpoints, or customer data are recorded here.

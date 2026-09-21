@@ -337,8 +337,9 @@ public sealed class SqliteProviderMigrationTests
             await using (var db = new OrchestratorDbContext(orchestratorOptions))
             {
                 await db.Database.MigrateAsync();
-                (await db.Database.GetAppliedMigrationsAsync()).Should().HaveCount(5)
-                    .And.Contain(migration => migration.EndsWith("AddBootstrapInitializationRecord", StringComparison.Ordinal));
+                (await db.Database.GetAppliedMigrationsAsync()).Should().HaveCount(6)
+                    .And.Contain(migration => migration.EndsWith("AddBootstrapInitializationRecord", StringComparison.Ordinal))
+                    .And.Contain(migration => migration.EndsWith("AddIntegrationCredentialInstanceGrants", StringComparison.Ordinal));
 
                 var tenant = new Tenant { Name = "SQLite Tenant" };
                 db.Tenants.Add(tenant);

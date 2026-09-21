@@ -20,6 +20,7 @@ public sealed class NetRatelIdentityDbContext(DbContextOptions<NetRatelIdentityD
     public DbSet<PrincipalRoleAssignment> PrincipalRoleAssignments => Set<PrincipalRoleAssignment>();
     public DbSet<IntegrationCredential> IntegrationCredentials => Set<IntegrationCredential>();
     public DbSet<IntegrationCredentialGrant> IntegrationCredentialGrants => Set<IntegrationCredentialGrant>();
+    public DbSet<IntegrationCredentialInstanceGrant> IntegrationCredentialInstanceGrants => Set<IntegrationCredentialInstanceGrant>();
     public DbSet<DeploymentBrandingOverride> DeploymentBrandingOverrides => Set<DeploymentBrandingOverride>();
     public DbSet<DeploymentBrandingAsset> DeploymentBrandingAssets => Set<DeploymentBrandingAsset>();
 
@@ -115,6 +116,18 @@ public sealed class NetRatelIdentityDbContext(DbContextOptions<NetRatelIdentityD
             entity.Property(grant => grant.Permission).HasMaxLength(128).IsRequired();
             entity.HasOne(grant => grant.Credential)
                 .WithMany(credential => credential.Grants)
+                .HasForeignKey(grant => grant.CredentialId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        builder.Entity<IntegrationCredentialInstanceGrant>(entity =>
+        {
+            entity.ToTable("IntegrationCredentialInstanceGrants");
+            entity.HasKey(grant => new { grant.CredentialId, grant.Permission });
+            entity.Property(grant => grant.CredentialId).HasMaxLength(32);
+            entity.Property(grant => grant.Permission).HasMaxLength(128).IsRequired();
+            entity.HasOne(grant => grant.Credential)
+                .WithMany(credential => credential.InstanceGrants)
                 .HasForeignKey(grant => grant.CredentialId)
                 .OnDelete(DeleteBehavior.Cascade);
         });

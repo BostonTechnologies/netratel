@@ -21,12 +21,13 @@ public static class NetRatelPermissions
     public const string IntegrationManagement = "integration.manage";
     public const string ArtifactPublication = "artifact.publish";
     public const string McpPolicyAdministration = "mcp.policy.admin";
+    public const string McpDiscoveryRead = "mcp.discovery.read";
 
     public static IReadOnlySet<string> All { get; } = new HashSet<string>(StringComparer.Ordinal)
     {
         TenantAdministration, UserRoleAdministration, ClientManagement,
         TelemetryRead, ScriptEdit, ScriptExecute, JobManagement, TerminalAccess,
         FileRead, FileWrite, FileDelete, RemoteSupport, SecretUse, SecretReveal,
-        AuditRead, IntegrationManagement, ArtifactPublication, McpPolicyAdministration
+        AuditRead, IntegrationManagement, ArtifactPublication, McpPolicyAdministration, McpDiscoveryRead
     };
 }

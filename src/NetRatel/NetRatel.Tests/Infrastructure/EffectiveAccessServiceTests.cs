@@ -85,6 +85,16 @@ public sealed class EffectiveAccessServiceTests
         (await access.AuthorizeAsync(credentialPrincipal, NetRatelPermissions.TelemetryRead, 7)).Should().BeTrue();
         (await access.AuthorizeAsync(credentialPrincipal, NetRatelPermissions.ScriptEdit, 7)).Should().BeFalse();
         (await access.AuthorizeAsync(credentialPrincipal, NetRatelPermissions.TelemetryRead, 8)).Should().BeFalse();
+        (await access.AuthorizeAsync(credentialPrincipal, NetRatelPermissions.McpDiscoveryRead, null)).Should().BeFalse();
+
+        db.IntegrationCredentials.Single().InstanceGrants.Add(new IntegrationCredentialInstanceGrant
+        {
+            CredentialId = "credential-a",
+            Permission = NetRatelPermissions.McpDiscoveryRead
+        });
+        await db.SaveChangesAsync();
+
+        (await access.AuthorizeAsync(credentialPrincipal, NetRatelPermissions.McpDiscoveryRead, null)).Should().BeTrue();
     }
 
     [Fact]

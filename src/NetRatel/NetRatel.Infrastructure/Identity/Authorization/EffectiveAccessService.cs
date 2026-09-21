@@ -53,6 +53,7 @@ public sealed class EffectiveAccessService(NetRatelIdentityDbContext db, IConfig
         var credentialId = principal.FindFirst(IntegrationCredentialIdClaimType)?.Value;
         var credential = string.IsNullOrWhiteSpace(credentialId) ? null : await db.IntegrationCredentials
             .Include(candidate => candidate.Grants)
+            .Include(candidate => candidate.InstanceGrants)
             .SingleOrDefaultAsync(candidate => candidate.Id == credentialId &&
                 (candidate.Purpose == IntegrationCredentialPurpose.Api || candidate.Purpose == IntegrationCredentialPurpose.HttpMcp) &&
                 candidate.RevokedAtUtc == null, cancellationToken)
@@ -95,9 +96,9 @@ public sealed class EffectiveAccessService(NetRatelIdentityDbContext db, IConfig
                 permissions = NetRatelPermissions.All.ToHashSet(StringComparer.Ordinal);
             }
 
-            var granted = credential.Grants
-                .Where(grant => grant.TenantId == tenantId)
-                .Select(grant => grant.Permission)
+            var granted = (tenantId is null
+                    ? credential.InstanceGrants.Select(grant => grant.Permission)
+                    : credential.Grants.Where(grant => grant.TenantId == tenantId).Select(grant => grant.Permission))
                 .ToHashSet(StringComparer.Ordinal);
             permissions.IntersectWith(granted);
 
