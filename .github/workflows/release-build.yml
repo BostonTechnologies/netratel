@@ -313,6 +313,8 @@ jobs:
             tools/ci/build-public-image.sh --dockerfile "docker/${component}/Dockerfile" --image "$image" --version "$VERSION" --revision "$GITHUB_SHA"
             tools/ci/scan-public-image.sh --image "$image" --version "$VERSION" --revision "$GITHUB_SHA"
           done
+          tools/ci/build-public-image.sh --dockerfile docker/mcp-http/Dockerfile --image "netratel-mcp-http:${VERSION}-release-local-first" --version "$VERSION" --revision "$GITHUB_SHA"
+          tools/ci/scan-public-image.sh --image "netratel-mcp-http:${VERSION}-release-local-first" --version "$VERSION" --revision "$GITHUB_SHA"
       - env:
           NETRATEL_LOCAL_FIRST_COMPOSE_BUNDLE: release-artifacts/netratel-compose-${{ needs.validate.outputs.version }}.tar.gz
           NETRATEL_MIGRATIONS_IMAGE: netratel-migrations:${{ needs.validate.outputs.version }}-release-local-first
@@ -320,6 +322,7 @@ jobs:
           NETRATEL_WEB_IMAGE: netratel-web:${{ needs.validate.outputs.version }}-release-local-first
           NETRATEL_CLI_SMOKE_ARCHIVE: release-artifacts/netratel-cli-${{ needs.validate.outputs.version }}-linux-x64.tar.gz
           NETRATEL_MCP_STDIO_SMOKE_ARCHIVE: release-artifacts/netratel-mcp-stdio-${{ needs.validate.outputs.version }}-linux-x64.tar.gz
+          NETRATEL_LOCAL_HTTP_MCP_SMOKE_IMAGE: netratel-mcp-http:${{ needs.validate.outputs.version }}-release-local-first
         run: tools/ci/smoke-local-first-compose.sh
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

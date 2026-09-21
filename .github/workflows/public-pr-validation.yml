@@ -266,9 +266,14 @@ jobs:
           name: pr-netratel-cli-mcp-linux-x64
           path: review-artifacts
       - run: |
+          version="$(jq -r '.version' release/release-manifest.json)"
+          tools/ci/build-public-image.sh --dockerfile docker/mcp-http/Dockerfile --image netratel-mcp-http:local-first-smoke --version "$version" --revision "$GITHUB_SHA"
+          tools/ci/scan-public-image.sh --image netratel-mcp-http:local-first-smoke --version "$version" --revision "$GITHUB_SHA"
+      - run: |
           docker compose -f compose.sqlite.yaml config --quiet
           NETRATEL_CLI_SMOKE_ARCHIVE="review-artifacts/netratel-cli-$(jq -r '.version' release/release-manifest.json)-linux-x64.tar.gz" \
             NETRATEL_MCP_STDIO_SMOKE_ARCHIVE="review-artifacts/netratel-mcp-stdio-$(jq -r '.version' release/release-manifest.json)-linux-x64.tar.gz" \
+            NETRATEL_LOCAL_HTTP_MCP_SMOKE_IMAGE=netratel-mcp-http:local-first-smoke \
             tools/ci/smoke-local-first-compose.sh
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -299,6 +304,8 @@ jobs:
             tools/ci/build-public-image.sh --dockerfile "docker/${component}/Dockerfile" --image "$image" --version "$version" --revision "$GITHUB_SHA"
             tools/ci/scan-public-image.sh --image "$image" --version "$version" --revision "$GITHUB_SHA"
           done
+          tools/ci/build-public-image.sh --dockerfile docker/mcp-http/Dockerfile --image netratel-mcp-http:release-local-first --version "$version" --revision "$GITHUB_SHA"
+          tools/ci/scan-public-image.sh --image netratel-mcp-http:release-local-first --version "$version" --revision "$GITHUB_SHA"
       - env:
           NETRATEL_MIGRATIONS_IMAGE: netratel-migrations:release-local-first
           NETRATEL_API_IMAGE: netratel-api:release-local-first
@@ -308,6 +315,7 @@ jobs:
           NETRATEL_LOCAL_FIRST_COMPOSE_BUNDLE="review-artifacts/netratel-compose-${version}.tar.gz" \
             NETRATEL_CLI_SMOKE_ARCHIVE="review-artifacts/netratel-cli-${version}-linux-x64.tar.gz" \
             NETRATEL_MCP_STDIO_SMOKE_ARCHIVE="review-artifacts/netratel-mcp-stdio-${version}-linux-x64.tar.gz" \
+            NETRATEL_LOCAL_HTTP_MCP_SMOKE_IMAGE=netratel-mcp-http:release-local-first \
             tools/ci/smoke-local-first-compose.sh
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

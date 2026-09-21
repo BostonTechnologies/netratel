@@ -1,0 +1,40 @@
+# Disposable acceptance overlay for the real local HTTP MCP path. It is not a
+# deployment profile: its certificates, API M2M identity, and delegation key
+# are generated per run by smoke-local-first-compose.sh and removed on exit.
+services:
+  api:
+    environment:
+      M2M__Authority: https://gateway:9443
+      M2M__Audience: netratel.api
+      M2M__AllowedCallerClientIds__0: netratel-mcp-http
+      M2MClients__netratel_mcp_http__Secret: ${NETRATEL_LOCAL_HTTP_MCP_M2M_SECRET:?set by smoke-local-first-compose.sh}
+      M2MClients__netratel_mcp_http__AllowedAudiences__0: netratel.api
+      M2MClients__netratel_mcp_http__AllowedScopes__0: netratel.api
+  # The API deliberately owns its h2c/HTTP listeners. Terminate the disposable
+  # test certificate at this internal proxy, as a supported HTTPS deployment
+  # would, then exercise the real REST authority behind it.
+  gateway:
+    image: nginx:1.27-alpine
+    volumes:
+      - ${NETRATEL_LOCAL_HTTP_MCP_GATEWAY_CONFIG:?set by smoke-local-first-compose.sh}:/etc/nginx/nginx.conf:ro
+      - ${NETRATEL_LOCAL_HTTP_MCP_API_CA:?set by smoke-local-first-compose.sh}:/run/netratel-smoke/tls.crt:ro
+      - ${NETRATEL_LOCAL_HTTP_MCP_API_KEY:?set by smoke-local-first-compose.sh}:/run/netratel-smoke/tls.key:ro
+    depends_on:
+      api:
+        condition: service_started
+
+  mcp-http:
+    ports: !reset []
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: https://+:9224
+      ASPNETCORE_Kestrel__Certificates__Default__Path: /run/netratel-smoke/mcp.pfx
+      ASPNETCORE_Kestrel__Certificates__Default__Password: ${NETRATEL_LOCAL_HTTP_MCP_CERT_PASSWORD:?set by smoke-local-first-compose.sh}
+      NETRATEL_MCP_CONFIG: /run/netratel-smoke/mcp-config.json
+      SSL_CERT_FILE: /run/netratel-smoke/api-ca.crt
+    volumes:
+      - ${NETRATEL_LOCAL_HTTP_MCP_CONFIG:?set by smoke-local-first-compose.sh}:/run/netratel-smoke/mcp-config.json:ro
+      - ${NETRATEL_LOCAL_HTTP_MCP_MCP_PFX:?set by smoke-local-first-compose.sh}:/run/netratel-smoke/mcp.pfx:ro
+      - ${NETRATEL_LOCAL_HTTP_MCP_API_CA:?set by smoke-local-first-compose.sh}:/run/netratel-smoke/api-ca.crt:ro
+    healthcheck:
+      disable: true
