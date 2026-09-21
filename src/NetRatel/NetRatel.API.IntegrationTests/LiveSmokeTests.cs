@@ -7,7 +7,8 @@ using NetRatel.Shared.Contracts.Scripts;
 using Xunit;
 
 [Trait("category", "integration")]
-public class LiveSmokeTests : IClassFixture<ApiFactory>
+[Collection(ApiIntegrationCollection.Name)]
+public class LiveSmokeTests
 {
     private static readonly IConfiguration EnvConfig = new ConfigurationBuilder().AddEnvironmentVariables().Build();
     private readonly ApiFactory _factory;

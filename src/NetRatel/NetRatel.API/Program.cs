@@ -684,13 +684,13 @@ builder.Services.AddOpenApi(options =>
             Scheme = "Bearer",
             BearerFormat = "JWT",
             In = ParameterLocation.Header,
-            Description = "JWT Authorization header using the Bearer scheme"
+            Description = "OIDC bearer token. Local browser sessions and opaque API credentials are documented as separate alternatives where supported."
         };
 
         document.Components.SecuritySchemes["M2M"] = new OpenApiSecurityScheme { Type = SecuritySchemeType.Http, Scheme = "Bearer", BearerFormat = "JWT", Description = "Machine-to-machine access token." };
         document.Components.SecuritySchemes["Agent"] = new OpenApiSecurityScheme { Type = SecuritySchemeType.Http, Scheme = "Bearer", BearerFormat = "JWT", Description = "Native NetRatel Client token." };
         document.Components.SecuritySchemes["MachineToken"] = new OpenApiSecurityScheme { Type = SecuritySchemeType.Http, Scheme = "Bearer", BearerFormat = "JWT", Description = "Machine-token API credential." };
-        document.Components.SecuritySchemes["IntegrationCredential"] = new OpenApiSecurityScheme { Type = SecuritySchemeType.Http, Scheme = "Bearer", Description = "Opaque API or delegated HTTP-MCP credential." };
+        document.Components.SecuritySchemes["IntegrationCredential"] = new OpenApiSecurityScheme { Type = SecuritySchemeType.Http, Scheme = "Bearer", Description = "Opaque API credential constrained by its durable grants. Purpose-bound local HTTP-MCP ingress credentials require pairing and are excluded from interactive API documentation." };
         document.Components.SecuritySchemes["LocalSession"] = new OpenApiSecurityScheme { Type = SecuritySchemeType.ApiKey, In = ParameterLocation.Cookie, Name = localAuthenticationOptions.CookieName, Description = "Local-account browser session cookie." };
 
         return Task.CompletedTask;

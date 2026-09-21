@@ -108,4 +108,15 @@ local-first delivery or `v0.1.0-rc.3`.
 | Provider / auth | SQLite and PostgreSQL now cover persisted credential purpose/resource/grant enforcement and current execution recheck. OIDC behavior and native Client compatibility are unchanged; recovery-after-outage remains an acceptance cell in #66/#70. |
 | Next action | Merge only after hosted CI passes, then complete recovery-after-outage and artifact-level acceptance rather than treating these joined regressions as final acceptance. |
 
+## #69 — OpenAPI authentication contract
+
+| Field | Checkpoint |
+| --- | --- |
+| Branch | `fix/openapi-auth-contract` |
+| Reproduction | The operation transformer selected the first named authorization policy and described most routes as only `Bearer`, omitting local-session and grant-constrained integration-credential alternatives. It also advertised the purpose-bound local HTTP MCP exchange as an ordinary bearer flow. |
+| Repair | The catalog now maps each supported policy to its explicit authentication alternatives, intersects requirements when metadata combines policies/schemes, and fails document generation if a newly added named policy has no declared contract. The local HTTP MCP pairing/exchange surface is excluded from interactive documentation; its scheme description explains the additional pairing boundary without disclosing credentials. |
+| Regressions | `ReleaseOpenApiDocumentTests` starts the actual Production API with a bootstrap-ready SQLite local-first fixture, generates `/openapi/v1.json`, verifies every security reference and operation ID, checks anonymous and denied runtime behavior, validates representative local/OIDC/M2M/native alternatives, and confirms the HTTP MCP exchange is absent. |
+| Local evidence | Targeted Release integration test: 1 passed. Source registration suite: 13 passed. Slopwatch on all changed C# and test files: 0 findings. |
+| Next action | Submit for hosted CI, then retain Scalar browser and extracted-image validation as part of the #70 artifact acceptance matrix. |
+
 No credentials, setup proofs, recovery codes, private endpoints, or customer data are recorded here.
