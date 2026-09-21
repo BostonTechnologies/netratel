@@ -7,6 +7,7 @@ public interface IAccessAdministrationApiService
     Task<IReadOnlyList<AccessRoleDto>> GetRolesAsync(CancellationToken cancellationToken = default);
     Task<EffectiveAccessSummaryDto> GetSelfAsync(CancellationToken cancellationToken = default);
     Task<IReadOnlyList<LocalUserAccessDto>> GetUsersAsync(CancellationToken cancellationToken = default);
+    Task<LocalAccountActivationDto> CreateLocalUserAsync(string displayName, string email, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<RoleAssignmentDto>> GetAssignmentsAsync(string principalId, CancellationToken cancellationToken = default);
     Task AssignAsync(string principalId, string roleId, int? tenantId, CancellationToken cancellationToken = default);
     Task RemoveAssignmentAsync(string principalId, string assignmentId, CancellationToken cancellationToken = default);
@@ -25,6 +26,14 @@ public sealed class AccessAdministrationApiService(IHttpClientFactory clients) :
 
     public async Task<IReadOnlyList<LocalUserAccessDto>> GetUsersAsync(CancellationToken cancellationToken = default) =>
         await Client.GetFromJsonAsync<List<LocalUserAccessDto>>("/api/v2/access/users", cancellationToken).ConfigureAwait(false) ?? [];
+
+    public async Task<LocalAccountActivationDto> CreateLocalUserAsync(string displayName, string email, CancellationToken cancellationToken = default)
+    {
+        var response = await Client.PostAsJsonAsync("/api/v2/local-auth/users", new { displayName, email }, cancellationToken).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<LocalAccountActivationDto>(cancellationToken).ConfigureAwait(false)
+            ?? throw new HttpRequestException("The local-account activation handoff was missing from the response.");
+    }
 
     public async Task<IReadOnlyList<RoleAssignmentDto>> GetAssignmentsAsync(string principalId, CancellationToken cancellationToken = default) =>
         await Client.GetFromJsonAsync<List<RoleAssignmentDto>>($"/api/v2/access/principals/{Uri.EscapeDataString(principalId)}/assignments", cancellationToken).ConfigureAwait(false) ?? [];
@@ -46,3 +55,4 @@ public sealed record AccessRoleDto(string Id, string Name, string? Description, 
 public sealed record EffectiveAccessSummaryDto(string? PrincipalId, bool IsInstanceAdministrator, IReadOnlyList<string> Permissions);
 public sealed record RoleAssignmentDto(string Id, string PrincipalId, string RoleId, string RoleName, int? TenantId, DateTimeOffset CreatedAtUtc);
 public sealed record LocalUserAccessDto(string UserId, string PrincipalId, string Email, string DisplayName, bool IsEnabled, bool IsInstanceAdministrator);
+public sealed record LocalAccountActivationDto(string UserId, string Email, string ActivationToken);
