@@ -435,6 +435,39 @@ jobs:
           NETRATEL_RC3_UPGRADE_COMPOSE_BUNDLE="review-artifacts/netratel-compose-${version}.tar.gz" \
             tools/ci/smoke-rc3-local-upgrade.sh
 
+  rc3-postgresql-oidc-upgrade-compose:
+    name: rc.3 PostgreSQL/OIDC upgrade Compose smoke test
+    needs: review-artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          global-json-file: global.json
+      - run: |
+          version="$(jq -r '.version' release/release-manifest.json)"
+          for component in migrations api web; do
+            image="netratel-${component}:rc3-postgresql-oidc-upgrade"
+            tools/ci/build-public-image.sh --dockerfile "docker/${component}/Dockerfile" --image "$image" --version "$version" --revision "$GITHUB_SHA"
+            tools/ci/scan-public-image.sh --image "$image" --version "$version" --revision "$GITHUB_SHA"
+          done
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: pr-netratel-cli-mcp-linux-x64
+          path: review-artifacts
+      - env:
+          NETRATEL_RC3_LEGACY_API_IMAGE: ghcr.io/bostontechnologies/netratel-api:0.1.0-rc.3-1e6a9227375f
+          NETRATEL_RC3_LEGACY_MIGRATIONS_IMAGE: ghcr.io/bostontechnologies/netratel-migrations:0.1.0-rc.3-1e6a9227375f
+          NETRATEL_RC3_LEGACY_WEB_IMAGE: ghcr.io/bostontechnologies/netratel-web:0.1.0-rc.3-1e6a9227375f
+          NETRATEL_RC3_CURRENT_API_IMAGE: netratel-api:rc3-postgresql-oidc-upgrade
+          NETRATEL_RC3_CURRENT_MIGRATIONS_IMAGE: netratel-migrations:rc3-postgresql-oidc-upgrade
+          NETRATEL_RC3_CURRENT_WEB_IMAGE: netratel-web:rc3-postgresql-oidc-upgrade
+        run: |
+          version="$(jq -r '.version' release/release-manifest.json)"
+          NETRATEL_RC3_UPGRADE_COMPOSE_BUNDLE="review-artifacts/netratel-compose-${version}.tar.gz" \
+            tools/ci/smoke-rc3-postgresql-oidc-upgrade.sh
+
   mcp-http-image-smoke:
     name: HTTP MCP image smoke test
     runs-on: ubuntu-latest
@@ -452,7 +485,7 @@ jobs:
   pr-validation:
     name: PR validation
     if: always()
-    needs: [disclosure, dotnet, review-artifacts, client-packages, images, compose, local-first-compose, release-bundle-local-first-compose, release-image-compose, rc3-local-upgrade-compose, mcp-http-image-smoke]
+    needs: [disclosure, dotnet, review-artifacts, client-packages, images, compose, local-first-compose, release-bundle-local-first-compose, release-image-compose, rc3-local-upgrade-compose, rc3-postgresql-oidc-upgrade-compose, mcp-http-image-smoke]
     runs-on: ubuntu-latest
     steps:
       - env:
@@ -466,6 +499,7 @@ jobs:
           RELEASE_BUNDLE_LOCAL_FIRST_COMPOSE_RESULT: ${{ needs.release-bundle-local-first-compose.result }}
           RELEASE_IMAGE_COMPOSE_RESULT: ${{ needs.release-image-compose.result }}
           RC3_LOCAL_UPGRADE_COMPOSE_RESULT: ${{ needs.rc3-local-upgrade-compose.result }}
+          RC3_POSTGRESQL_OIDC_UPGRADE_COMPOSE_RESULT: ${{ needs.rc3-postgresql-oidc-upgrade-compose.result }}
           MCP_HTTP_IMAGE_SMOKE_RESULT: ${{ needs.mcp-http-image-smoke.result }}
         run: |
           [[ "$DISCLOSURE_RESULT" == success ]]
@@ -478,4 +512,5 @@ jobs:
           [[ "$RELEASE_BUNDLE_LOCAL_FIRST_COMPOSE_RESULT" == success ]]
           [[ "$RELEASE_IMAGE_COMPOSE_RESULT" == success ]]
           [[ "$RC3_LOCAL_UPGRADE_COMPOSE_RESULT" == success ]]
+          [[ "$RC3_POSTGRESQL_OIDC_UPGRADE_COMPOSE_RESULT" == success ]]
           [[ "$MCP_HTTP_IMAGE_SMOKE_RESULT" == success ]]
