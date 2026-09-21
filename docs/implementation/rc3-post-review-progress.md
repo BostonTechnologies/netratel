@@ -24,4 +24,16 @@ local-first delivery or `v0.1.0-rc.3`.
 | Merge | Pending CI-gated PR and normal review. |
 | Next action | Open #68 PR, inspect every required job, merge normally only after all checks pass; then extend the artifact matrix in #70. |
 
+## #67 — scoped local account and administration journeys
+
+| Field | Checkpoint |
+| --- | --- |
+| Branch | `fix/issue-67-access-selection-race` |
+| Repair | The A-slow/B-fast assignment response no longer updates the editor after B becomes selected. Assignment/removal requests capture their target before awaiting and only refresh that target while it remains selected. |
+| Regression | `AccessAdministrationSelectionTests.Slow_previous_selection_cannot_replace_the_current_users_assignments`. The test failed against the prior implementation and passes after the repair. |
+| Local evidence | Targeted Release component test: 1 passed. Slopwatch on the changed Razor/test files: 0 findings. |
+| Provider / auth | UI-only deterministic component coverage; broader local lifecycle, delegated administration, scoped-route, and browser matrix cells remain in #67. |
+| Merge | Pending CI-gated PR #73 and normal review. |
+| Next action | Verify the rebased exact PR head in hosted CI, then continue the remaining #67 journeys. |
+
 No credentials, setup proofs, recovery codes, private endpoints, or customer data are recorded here.
