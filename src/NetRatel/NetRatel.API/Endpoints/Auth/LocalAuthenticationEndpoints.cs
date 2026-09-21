@@ -9,6 +9,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using NetRatel.API.Security.Local;
 using NetRatel.Infrastructure.Identity;
+using NetRatel.Infrastructure.Identity.Authorization;
 
 namespace NetRatel.API.Endpoints.Auth;
 
@@ -240,28 +241,27 @@ public static class LocalAuthenticationEndpoints
             return Results.NoContent();
         }).AllowAnonymous().RequireRateLimiting("local-login");
 
-        group.MapPost("/users/{userId}/disable", async (string userId, NetRatelIdentityDbContext db, CancellationToken cancellationToken) =>
+        group.MapPost("/users/{userId}/disable", async (string userId, NetRatelIdentityDbContext db, InstanceAdministratorInvariant administrators, CancellationToken cancellationToken) =>
         {
-            var user = await db.Users.SingleOrDefaultAsync(candidate => candidate.Id == userId, cancellationToken).ConfigureAwait(false);
-            if (user is null)
+            return await administrators.ExecuteDestructiveMutationAsync(async ct =>
             {
-                return Results.NotFound();
-            }
+                var user = await db.Users.SingleOrDefaultAsync(candidate => candidate.Id == userId, ct).ConfigureAwait(false);
+                if (user is null)
+                    return Results.NotFound();
 
-            var hasInstanceAdministration = user.IsInstanceAdministrator || await db.PrincipalRoleAssignments
-                .AnyAsync(assignment => assignment.PrincipalId == user.PrincipalId && assignment.TenantId == null && assignment.Role!.IsInstanceAdministratorRole, cancellationToken)
-                .ConfigureAwait(false);
-            if (user.IsEnabled && hasInstanceAdministration && await InstanceAdministratorPrincipalCountAsync(db, cancellationToken).ConfigureAwait(false) <= 1)
-            {
-                return Results.Conflict(new { error = "last_instance_administrator" });
-            }
+                var hasInstanceAdministration = user.IsInstanceAdministrator || await db.PrincipalRoleAssignments
+                    .AnyAsync(assignment => assignment.PrincipalId == user.PrincipalId && assignment.TenantId == null && assignment.Role!.IsInstanceAdministratorRole, ct)
+                    .ConfigureAwait(false);
+                if (user.IsEnabled && hasInstanceAdministration && await administrators.ViableAdministratorCountAsync(ct).ConfigureAwait(false) <= 1)
+                    return Results.Conflict(new { error = "last_instance_administrator" });
 
-            user.IsEnabled = false;
-            user.DisabledAtUtc = DateTimeOffset.UtcNow;
-            user.AuthorizationRevision++;
-            user.SecurityStamp = Guid.NewGuid().ToString("N");
-            await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-            return Results.NoContent();
+                user.IsEnabled = false;
+                user.DisabledAtUtc = DateTimeOffset.UtcNow;
+                user.AuthorizationRevision++;
+                user.SecurityStamp = Guid.NewGuid().ToString("N");
+                await db.SaveChangesAsync(ct).ConfigureAwait(false);
+                return Results.NoContent();
+            }, cancellationToken).ConfigureAwait(false);
         }).RequireAuthorization("InstanceAdministrator");
 
         group.MapPost("/users/{userId}/enable", async (string userId, UserManager<LocalUser> users) =>
@@ -312,21 +312,6 @@ public static class LocalAuthenticationEndpoints
         user.AuthorizationRevision++;
         user.SecurityStamp = Guid.NewGuid().ToString("N");
         await users.UpdateAsync(user).ConfigureAwait(false);
-    }
-
-    private static async Task<int> InstanceAdministratorPrincipalCountAsync(NetRatelIdentityDbContext db, CancellationToken cancellationToken)
-    {
-        var localAdministrators = await db.Users
-            .Where(candidate => candidate.IsEnabled && candidate.IsInstanceAdministrator)
-            .Select(candidate => candidate.PrincipalId)
-            .ToListAsync(cancellationToken)
-            .ConfigureAwait(false);
-        var assignedAdministrators = await db.PrincipalRoleAssignments
-            .Where(assignment => assignment.TenantId == null && assignment.Role!.IsInstanceAdministratorRole)
-            .Select(assignment => assignment.PrincipalId)
-            .ToListAsync(cancellationToken)
-            .ConfigureAwait(false);
-        return localAdministrators.Concat(assignedAdministrators).Distinct(StringComparer.Ordinal).Count();
     }
 
     private static async Task<bool> IsSecondFactorValidAsync(UserManager<LocalUser> users, LocalUser user, string code) =>
