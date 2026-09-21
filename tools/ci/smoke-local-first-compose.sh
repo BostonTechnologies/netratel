@@ -72,7 +72,6 @@ if [[ -n "$mcp_http_image" ]]; then
   export NETRATEL_LOCAL_HTTP_MCP_MCP_PFX="$mcp_pfx"
   export NETRATEL_LOCAL_HTTP_MCP_CONFIG="$mcp_config"
   export NETRATEL_LOCAL_HTTP_MCP_M2M_SECRET="$m2m_secret"
-  export NETRATEL_MCP_HTTP_PORT="${NETRATEL_LOCAL_HTTP_MCP_PORT:-$((20000 + RANDOM % 10000))}"
   compose_files+=(-f "$mcp_overlay" -f "$local_http_mcp_overlay")
 fi
 compose=(docker compose --project-name "$project" "${compose_files[@]}")
@@ -158,15 +157,15 @@ if [[ -n "$mcp_http_image" ]]; then
   stage="waiting for the paired local HTTP MCP gateway"
   mapfile -t credentials < "$credential_path"
   [[ "${#credentials[@]}" -ge 4 ]] || { echo "Expected HTTP MCP integration credentials from the browser journey." >&2; exit 1; }
-  mcp_url="https://127.0.0.1:${NETRATEL_MCP_HTTP_PORT}"
+  mcp_url="https://127.0.0.1:9224"
   mcp_headers=(--insecure --header 'Host: mcp.local.test' --header 'Accept: application/json, text/event-stream')
   for _ in $(seq 1 90); do
-    if curl --connect-timeout 2 --fail --silent "${mcp_headers[@]}" "$mcp_url/health/live" >/dev/null; then
+    if "${compose[@]}" exec -T mcp-http curl --connect-timeout 2 --fail --silent "${mcp_headers[@]}" "$mcp_url/health/live" >/dev/null; then
       break
     fi
     sleep 1
   done
-  curl --connect-timeout 2 --fail --silent "${mcp_headers[@]}" "$mcp_url/health/live" >/dev/null
+  "${compose[@]}" exec -T mcp-http curl --connect-timeout 2 --fail --silent "${mcp_headers[@]}" "$mcp_url/health/live" >/dev/null
 
   mcp_response_json() {
     local response="$1" sse_payload
@@ -175,7 +174,7 @@ if [[ -n "$mcp_http_image" ]]; then
   }
   mcp_call() {
     local credential="$1" request="$2"
-    curl --fail --silent --show-error "${mcp_headers[@]}" \
+    "${compose[@]}" exec -T mcp-http curl --fail --silent --show-error "${mcp_headers[@]}" \
       --header "Authorization: Bearer ${credential}" \
       --header 'Content-Type: application/json' \
       --data "$request" "$mcp_url/mcp"

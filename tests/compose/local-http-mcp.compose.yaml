@@ -17,8 +17,6 @@ services:
       - ${NETRATEL_LOCAL_HTTP_MCP_API_PFX:?set by smoke-local-first-compose.sh}:/run/netratel-smoke/api.pfx:ro
 
   mcp-http:
-    ports:
-      - "127.0.0.1:${NETRATEL_MCP_HTTP_PORT:?set by smoke-local-first-compose.sh}:9224"
     environment:
       ASPNETCORE_ENVIRONMENT: Development
       ASPNETCORE_URLS: https://+:9224
