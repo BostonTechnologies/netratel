@@ -1,40 +1,28 @@
-name: netratel
+name: netratel-sqlite
 
-# Release bundle recipe. Copy .env.images.example to an untracked .env file and
-# replace every placeholder with an approved immutable image digest.
+# Image-only single-node local-first profile. It is intentionally independent
+# of PostgreSQL and shares the durable SQLite database and Data Protection ring
+# between the components that need them.
 services:
-  postgres:
-    image: postgres:17-alpine
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB:-netratel}
-      POSTGRES_USER: ${POSTGRES_USER:-netratel}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-
   migrations:
     image: ${NETRATEL_MIGRATIONS_IMAGE:?set the approved migrations image digest}
     environment:
-      ConnectionStrings__NetRatelDb: Host=postgres;Port=5432;Database=${POSTGRES_DB:-netratel};Username=${POSTGRES_USER:-netratel};Password=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
-    depends_on:
-      postgres:
-        condition: service_healthy
+      Database__Provider: Sqlite
+      Database__InstanceCount: "1"
+      ConnectionStrings__NetRatelDb: Data Source=/var/netratel/sqlite/netratel.db
+    volumes:
+      - sqlite-data:/var/netratel/sqlite
 
   api:
     image: ${NETRATEL_API_IMAGE:?set the approved API image digest}
     restart: unless-stopped
     environment:
       ASPNETCORE_URLS: http://+:9222
-      ConnectionStrings__NetRatelDb: Host=postgres;Port=5432;Database=${POSTGRES_DB:-netratel};Username=${POSTGRES_USER:-netratel};Password=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      Database__Provider: Sqlite
+      Database__InstanceCount: "1"
+      ConnectionStrings__NetRatelDb: Data Source=/var/netratel/sqlite/netratel.db
       DataProtection__KeysDirectory: /var/netratel/keys
       Authentication__MachineToken__Enabled: "false"
-      # This profile binds Web to loopback by default. Public ingress must use
-      # HTTPS and explicitly disable this localhost-only development switch.
       Authentication__Local__AllowInsecureLocalhost: "${NETRATEL_ALLOW_INSECURE_LOCALHOST:-true}"
       Bootstrap__AllowedOrigins__0: http://127.0.0.1:${NETRATEL_WEB_PORT:-8080}
       Bootstrap__AllowedOrigins__1: http://localhost:${NETRATEL_WEB_PORT:-8080}
@@ -42,20 +30,23 @@ services:
       Authentication__Oidc__Audience: ${OIDC_API_AUDIENCE:-}
       Authorization__Oidc__AdminGroupId: ${OIDC_ADMIN_GROUP_ID:-}
       AgentAuth__PrivateKeyPath: /run/netratel-secrets/agent-auth-private.pem
-    volumes:
-      - api-data:/var/netratel
-      - web-keys:/var/netratel/keys
-      - ${NETRATEL_AGENT_AUTH_PRIVATE_KEY:?set NETRATEL_AGENT_AUTH_PRIVATE_KEY to an ES256 private-key file}:/run/netratel-secrets/agent-auth-private.pem:ro
     depends_on:
       migrations:
         condition: service_completed_successfully
+    volumes:
+      - sqlite-data:/var/netratel/sqlite
+      - api-data:/var/netratel
+      - web-keys:/var/netratel/keys
+      - ${NETRATEL_AGENT_AUTH_PRIVATE_KEY:?set NETRATEL_AGENT_AUTH_PRIVATE_KEY to an ES256 private-key file}:/run/netratel-secrets/agent-auth-private.pem:ro
 
   web:
     image: ${NETRATEL_WEB_IMAGE:?set the approved Web image digest}
     ports:
       - "${NETRATEL_WEB_BIND_ADDRESS:-127.0.0.1}:${NETRATEL_WEB_PORT:-8080}:9111"
     environment:
-      ConnectionStrings__NetRatelDb: Host=postgres;Port=5432;Database=${POSTGRES_DB:-netratel};Username=${POSTGRES_USER:-netratel};Password=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      Database__Provider: Sqlite
+      Database__InstanceCount: "1"
+      ConnectionStrings__NetRatelDb: Data Source=/var/netratel/sqlite/netratel.db
       ApiBaseUrl: http://api:9222
       NetRatel_KEYS_DIR: /var/netratel/keys
       Authentication__MachineToken__Enabled: "false"
@@ -65,13 +56,13 @@ services:
       Authentication__Oidc__ApiScope: ${OIDC_API_SCOPE:-}
       Authentication__Oidc__TokenEndpoint: ${OIDC_TOKEN_ENDPOINT:-}
       OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
-    volumes:
-      - web-keys:/var/netratel/keys
     depends_on:
       api:
         condition: service_started
+    volumes:
+      - web-keys:/var/netratel/keys
 
 volumes:
-  postgres-data:
+  sqlite-data:
   api-data:
   web-keys:

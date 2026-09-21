@@ -197,8 +197,9 @@ class DistributionTests(unittest.TestCase):
             (self.root / name).write_bytes(name.encode())
         archive = self.root / f"netratel-compose-{version}.tar.gz"
         with tarfile.open(archive, "w:gz") as target:
-            for name in ("compose.images.yaml", "compose.mcp-http.yaml", ".env.images.example", "release-manifest.json", "INSTALL.md"):
+            for name in ("compose.images.yaml", "compose.local-sqlite.yaml", "compose.external-postgres.yaml", "compose.mcp-http.yaml", ".env.images.example", "release-manifest.json", "INSTALL.md"):
                 target.add(ROOT / "release" / name, arcname=name)
+            target.add(ROOT / "docs/mcp-http/local-credential-mode.md", arcname="docs/mcp-http/local-credential-mode.md")
             for name in ("LICENSE", "NOTICE"):
                 target.add(ROOT / name, arcname=name)
         images = {name: f"ghcr.io/example/{name}@sha256:" + "a" * 64 for name in self.promotion.COMPONENTS}
@@ -349,8 +350,9 @@ class DistributionTests(unittest.TestCase):
         version = "0.1.0-rc.3"
         archive = self.root / f"netratel-compose-{version}.tar.gz"
         with tarfile.open(archive, "w:gz") as target:
-            for name in ("compose.images.yaml", "compose.mcp-http.yaml", ".env.images.example", "release-manifest.json", "INSTALL.md"):
+            for name in ("compose.images.yaml", "compose.local-sqlite.yaml", "compose.external-postgres.yaml", "compose.mcp-http.yaml", ".env.images.example", "release-manifest.json", "INSTALL.md"):
                 target.add(ROOT / "release" / name, arcname=name)
+            target.add(ROOT / "docs/mcp-http/local-credential-mode.md", arcname="docs/mcp-http/local-credential-mode.md")
             for name in ("LICENSE", "NOTICE"):
                 target.add(ROOT / name, arcname=name)
         for name in self.promotion.required_artifacts(version):

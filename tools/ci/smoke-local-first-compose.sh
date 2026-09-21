@@ -12,7 +12,17 @@ credential_path="$(mktemp)"
 mcp_stdio_config_path="$(mktemp)"
 mcp_stdio_error_path="$(mktemp)"
 stage="initializing local-first Compose smoke"
-compose=(docker compose --project-name "$project" -f compose.sqlite.yaml)
+bundle="${NETRATEL_LOCAL_FIRST_COMPOSE_BUNDLE:-}"
+bundle_extract_dir=""
+compose_file="compose.sqlite.yaml"
+if [[ -n "$bundle" ]]; then
+  [[ -s "$bundle" ]] || { echo "NETRATEL_LOCAL_FIRST_COMPOSE_BUNDLE is missing: $bundle" >&2; exit 1; }
+  bundle_extract_dir="$(mktemp -d)"
+  tar -xzf "$bundle" -C "$bundle_extract_dir"
+  compose_file="$bundle_extract_dir/compose.local-sqlite.yaml"
+  [[ -f "$compose_file" ]] || { echo "Release bundle is missing compose.local-sqlite.yaml." >&2; exit 1; }
+fi
+compose=(docker compose --project-name "$project" -f "$compose_file")
 
 cleanup() {
   local status=$?
@@ -25,6 +35,9 @@ cleanup() {
   unlink "$key_path" 2>/dev/null || true
   unlink "$credential_path" 2>/dev/null || true
   unlink "$mcp_stdio_config_path" 2>/dev/null || true
+  if [[ -n "$bundle_extract_dir" ]]; then
+    find "$bundle_extract_dir" -depth -delete 2>/dev/null || true
+  fi
   unlink "$mcp_stdio_error_path" 2>/dev/null || true
   return "$status"
 }
@@ -37,8 +50,12 @@ chmod 644 "$key_path"
 export NETRATEL_AGENT_AUTH_PRIVATE_KEY="$key_path"
 export NETRATEL_WEB_PORT="$web_port"
 
-stage="building and starting SQLite Compose profile"
-"${compose[@]}" up --build --detach
+stage="starting SQLite Compose profile"
+if [[ -n "$bundle" ]]; then
+  "${compose[@]}" up --detach
+else
+  "${compose[@]}" up --build --detach
+fi
 
 stage="waiting for migration runner"
 migration_id="$("${compose[@]}" ps -a -q migrations)"

@@ -1,0 +1,18 @@
+# Overlay for a deployment-owned PostgreSQL service. Apply after
+# compose.images.yaml; no bundled PostgreSQL container is started.
+services:
+  postgres:
+    profiles: [bundled-postgres]
+
+  migrations:
+    environment:
+      ConnectionStrings__NetRatelDb: ${NETRATEL_EXTERNAL_DATABASE_CONNECTION_STRING:?set NETRATEL_EXTERNAL_DATABASE_CONNECTION_STRING}
+    depends_on: !reset []
+
+  api:
+    environment:
+      ConnectionStrings__NetRatelDb: ${NETRATEL_EXTERNAL_DATABASE_CONNECTION_STRING:?set NETRATEL_EXTERNAL_DATABASE_CONNECTION_STRING}
+
+  web:
+    environment:
+      ConnectionStrings__NetRatelDb: ${NETRATEL_EXTERNAL_DATABASE_CONNECTION_STRING:?set NETRATEL_EXTERNAL_DATABASE_CONNECTION_STRING}

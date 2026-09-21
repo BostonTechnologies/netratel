@@ -96,9 +96,12 @@ archive_has_entry "$mcp" '^netratel-mcp-linux-x64/(NetRatel\.Mcp|NetRatel\.Mcp\.
 archive_has_entry "$mcp" '^netratel-mcp-linux-x64/LICENSE$' "stdio MCP archive is missing LICENSE."
 archive_has_entry "$mcp" '^netratel-mcp-linux-x64/NOTICE$' "stdio MCP archive is missing NOTICE."
 archive_has_entry "$bundle" '^\./compose\.images\.yaml$' "Release bundle is missing compose.images.yaml."
+archive_has_entry "$bundle" '^\./compose\.local-sqlite\.yaml$' "Release bundle is missing compose.local-sqlite.yaml."
+archive_has_entry "$bundle" '^\./compose\.external-postgres\.yaml$' "Release bundle is missing compose.external-postgres.yaml."
 archive_has_entry "$bundle" '^\./compose\.mcp-http\.yaml$' "Release bundle is missing compose.mcp-http.yaml."
 archive_has_entry "$bundle" '^\./\.env\.images\.example$' "Release bundle is missing .env.images.example."
 archive_has_entry "$bundle" '^\./release-manifest\.json$' "Release bundle is missing release-manifest.json."
+archive_has_entry "$bundle" '^\./docs/mcp-http/local-credential-mode\.md$' "Release bundle is missing the local HTTP MCP guide."
 
 release_extract_dir="$temporary_dir/release"
 mkdir "$release_extract_dir"
