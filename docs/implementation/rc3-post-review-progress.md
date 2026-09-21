@@ -170,11 +170,21 @@ local-first delivery or `v0.1.0-rc.3`.
 
 | Field | Checkpoint |
 | --- | --- |
-| Branch | `test/issue-70-rc3-local-upgrade-restore` (pending review). |
+| Branch | `test/issue-70-rc3-local-upgrade-restore`. |
 | Repair | Add a CI-only historical-boundary harness that runs the immutable published `0.1.0-rc.3-1e6a9227375f` API, migrations, and Web images against local SQLite, then replaces them with the current candidate images from the extracted Compose bundle. |
 | Regression | The harness initializes an rc.3 tenant and local administrator, archives SQLite, bootstrap state, and the shared Data Protection key volume, verifies an in-place current-image upgrade, restores that exact rc.3 state into clean volumes, and verifies current-image migration plus authenticated tenant access again. |
-| Local evidence | Shell syntax, workflow YAML, source/extracted-profile Compose interpolation, and Slopwatch passed without starting containers because local host disk capacity remains constrained. |
+| Hosted evidence | PR #91 merged as `c553bab56432e370d6c7114b88a816e78c097fb3`. Exact-head run `35663466193` passed the gate in 5m35s alongside the complete required matrix. |
 | Provider / auth | SQLite local-account continuity is now an explicit historical image-to-extracted-candidate acceptance path. The separate PostgreSQL/OIDC, Client, and other #70 cells remain gated independently. |
-| Next action | Run the complete hosted PR matrix and retain the release workflow rehearsal gate before recording execution evidence. |
+| Next action | Retain the release workflow rehearsal gate and add the historical PostgreSQL/OIDC continuity cell before recording that path as complete. |
+
+## #70 — historical rc.3 PostgreSQL/OIDC continuity gate
+
+| Field | Checkpoint |
+| --- | --- |
+| Branch | `test/issue-70-rc3-postgresql-oidc-upgrade`. |
+| Repair | Add a CI-only historical-boundary harness that starts the immutable published rc.3 API, migrations, Web, and Client images with the disposable OIDC provider and PostgreSQL, then upgrades the same named PostgreSQL, API-key, Web-key, and Client-state volumes with current candidate images selected by the extracted Compose bundle. |
+| Regression | The browser journey authenticates through both the direct and TLS-proxied OIDC paths on rc.3 and after the upgrade. The fixture records an existing external principal using the verified issuer/subject claims from a disposable provider token, then requires the candidate to retain and reuse exactly that mapping. The rc.3 authority creates a tenant and enrolls a published Client; that same persisted Client must authenticate against the upgraded candidate API. |
+| Provider / auth | PostgreSQL/OIDC is distinct from the existing fresh OIDC and local-first matrices. It preserves published external identity, Client enrollment, and signing-key state; the existing independent gates retain CLI, MCP, local-account, and full Client command/telemetry coverage. |
+| Next action | Run the required PR matrix and then keep the equivalent release-rehearsal job as a promotion prerequisite. |
 
 No credentials, setup proofs, recovery codes, private endpoints, or customer data are recorded here.
