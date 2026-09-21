@@ -462,6 +462,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await page.GetByTestId("local-login-password").PressAsync("Tab");
         await page.GetByTestId("local-login-submit").ClickAsync();
         await page.GetByTestId("local-login-two-factor").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        await page.GetByTestId("local-login-client-ready").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
         await page.GetByTestId("local-login-two-factor").FillAsync(code);
         await page.GetByTestId("local-login-two-factor").PressAsync("Tab");
         if (expectSuccess)
