@@ -1,7 +1,10 @@
 using System.Security.Claims;
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Cryptography;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
+using Microsoft.IdentityModel.Tokens;
 using NetRatel.API.Security.Local;
 using NetRatel.Infrastructure.Identity;
 using Xunit;
@@ -45,6 +48,46 @@ public sealed class LocalIdentityFoundationTests
         firstId.Should().NotBeNullOrWhiteSpace();
         secondId.Should().Be(firstId);
         (await db.ApplicationPrincipals.CountAsync()).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Validated_oidc_token_projects_a_stable_application_principal()
+    {
+        using var keyMaterial = RSA.Create(2048);
+        var signingKey = new RsaSecurityKey(keyMaterial);
+        var issuer = "https://issuer.example.test";
+        var subject = "oidc-subject";
+        var token = new JwtSecurityToken(
+            issuer,
+            "netratel-api",
+            [new Claim("sub", subject), new Claim(ClaimTypes.Email, "untrusted-email@example.test")],
+            expires: DateTime.UtcNow.AddMinutes(5),
+            signingCredentials: new SigningCredentials(signingKey, SecurityAlgorithms.RsaSha256));
+        var handler = new JwtSecurityTokenHandler { MapInboundClaims = false };
+        var validated = handler.ValidateToken(handler.WriteToken(token), new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidIssuer = issuer,
+            ValidateAudience = true,
+            ValidAudience = "netratel-api",
+            ValidateLifetime = true,
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = signingKey,
+            AuthenticationType = "Oidc"
+        }, out _);
+        var options = new DbContextOptionsBuilder<NetRatelIdentityDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString("N"))
+            .Options;
+        await using var db = new NetRatelIdentityDbContext(options);
+
+        var transformed = await new LocalPrincipalClaimsTransformation(new ApplicationPrincipalResolver(db))
+            .TransformAsync(validated);
+
+        transformed.Identity!.AuthenticationType.Should().Be("Oidc");
+        var principalId = transformed.FindFirstValue(LocalPrincipalClaimsTransformation.PrincipalIdClaimType);
+        principalId.Should().NotBeNullOrWhiteSpace();
+        (await db.ApplicationPrincipals.SingleAsync()).Should().Match<ApplicationPrincipal>(principal =>
+            principal.Id == principalId && principal.ExternalIssuer == issuer && principal.ExternalSubject == subject);
     }
 
     [Fact]

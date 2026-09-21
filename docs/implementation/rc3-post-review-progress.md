@@ -42,11 +42,24 @@ local-first delivery or `v0.1.0-rc.3`.
 | --- | --- |
 | Branch | `fix/issue-64-viable-admin-invariant` |
 | Reproduction | The previous counters included every instance-admin role assignment, including assignments retained by disabled local users. The A/B sequence could therefore allow removal of the final viable local administrator. |
-| Repair | A shared invariant service counts only durable principals with an enabled local login or a complete external issuer/subject binding. Destructive local-user and instance-admin-assignment mutations run at serializable isolation and take a PostgreSQL transaction advisory lock. |
+| Repair | A shared invariant service counts only durable principals with an enabled local login or a complete external issuer/subject binding. Destructive local-user and instance-admin-assignment mutations use SQLite serializable transactions or PostgreSQL transaction advisory locking. |
 | Regressions | `InstanceAdministratorInvariantTests`: disabled assigned local user, enabled assigned local user, unresolved assignment, and complete external identity binding. `InstanceAdministratorInvariantPostgresTests`: two independent PostgreSQL contexts cannot remove both viable administrators. |
 | Local evidence | Release build discovered the five tests; VSTest executed them: 5 passed. Slopwatch on changed C# files: 0 findings. |
-| Provider / auth | In-memory semantic coverage and PostgreSQL transaction-lock coverage are complete for this invariant. Endpoint/browser lifecycle, lockout, MFA, and OIDC projection cells remain required before #64 can close. |
+| Provider / auth | In-memory semantic coverage and PostgreSQL transaction-lock coverage are complete for this invariant. Endpoint/browser lifecycle, lockout, MFA, and OIDC credential lifecycle cells remain required before #64 can close. |
+| Merge | PR #74 merged normally as `30ebe4641f2935bf97fa9cb4dc42f14541b0326d` after all hosted checks passed. |
+| Next action | Continue account lifecycle, lockout, MFA, and OIDC-created credential acceptance. |
+
+## #64 — verified OIDC principal projection
+
+| Field | Checkpoint |
+| --- | --- |
+| Branch | `fix/issue-64-oidc-principal-projection` |
+| Reproduction | The OIDC JWT configuration left `TokenValidationParameters.AuthenticationType` at IdentityModel's default while principal projection accepts only a validated identity typed `Oidc`. |
+| Repair | The OIDC bearer configuration explicitly sets `AuthenticationType = "Oidc"`; no untrusted application-principal claim is accepted from the token. |
+| Regression | `Validated_oidc_token_projects_a_stable_application_principal` validates an RSA-signed issuer/audience/lifetime/signing-key JWT, runs the transformation, and asserts the durable issuer/subject binding. |
+| Local evidence | Focused VSTest suite: 19 passed. Slopwatch on changed C# files: 0 findings. |
+| Provider / auth | Real JWT validation plus in-memory durable-principal persistence. Credential lifecycle and a disposable external-provider upgrade fixture remain in #64/#70. |
 | Merge | Not opened. |
-| Next action | Add provider-backed concurrent mutation evidence and the lifecycle/lockout/MFA/OIDC projection checks before a focused PR. |
+| Next action | Open a focused CI-gated PR, then continue the remaining #64 acceptance. |
 
 No credentials, setup proofs, recovery codes, private endpoints, or customer data are recorded here.
