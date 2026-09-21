@@ -68,10 +68,15 @@ public static class McpOperationTargetCatalog
         ("netratel_telemetry", "overview") or
         ("netratel_logs", "search") => McpOperationTargetModel.NoBusinessTarget,
 
+        // Policy lifecycle calls contain either an immutable policy reference
+        // or a verified target selector. The receiving authority resolves
+        // that reference and preserves its binding; it is not a global
+        // control-plane fallback.
+        ("netratel_policy", _) => McpOperationTargetModel.ObjectDerived,
+
         // These tools act on server-owned control-plane or caller-owned
         // records. Individual object references are independently validated
         // by their downstream authority, never by an invented agent target.
-        ("netratel_policy", _) or
         ("netratel_tenants", _) or
         ("netratel_notifications", _) or
         ("netratel_connectivity", _) or

@@ -46,8 +46,7 @@ public static class McpLocalDelegationEndpoints
                 return Results.Unauthorized();
             }
 
-            var isInstanceRead = McpLocalDelegationPermissionMapper.IsInstanceRead(pairing.Tool, pairing.Operation);
-            if (isInstanceRead ? pairing.TenantId is not null || pairing.AgentId is not null : pairing.TenantId is not > 0 || pairing.AgentId is null)
+            if (!McpLocalDelegationTargetRequirements.TryGetAuthorizationTenant(pairing, out var authorizationTenantId))
                 return Results.Unauthorized();
 
             var credentialId = http.User.FindFirstValue(IntegrationCredentialAuthenticationHandler.CredentialIdClaimType);
@@ -56,7 +55,7 @@ public static class McpLocalDelegationEndpoints
             var operationAccess = McpOperationAccessCatalog.Find(pairing.Tool, pairing.Operation);
             if (string.IsNullOrWhiteSpace(credentialId) || string.IsNullOrWhiteSpace(ownerPrincipalId) ||
                 string.IsNullOrWhiteSpace(requiredPermission) || operationAccess is null ||
-                !await access.AuthorizeAsync(http.User, requiredPermission, isInstanceRead ? null : pairing.TenantId, cancellationToken).ConfigureAwait(false))
+                !await access.AuthorizeAsync(http.User, requiredPermission, authorizationTenantId, cancellationToken).ConfigureAwait(false))
             {
                 return Results.Forbid();
             }

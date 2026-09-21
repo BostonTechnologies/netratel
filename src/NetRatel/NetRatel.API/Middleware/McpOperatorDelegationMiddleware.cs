@@ -76,9 +76,8 @@ public sealed class McpOperatorDelegationMiddleware(
             return true;
         if (currentCredentials is null || access is null)
             return false;
-        var isInstanceRead = McpLocalDelegationPermissionMapper.IsInstanceRead(delegation.Tool, delegation.Operation);
         if (string.IsNullOrWhiteSpace(delegation.IngressPermission) ||
-            (isInstanceRead ? delegation.TenantId is not null || delegation.AgentId is not null : delegation.TenantId is not > 0 || delegation.AgentId is null))
+            !McpLocalDelegationTargetRequirements.TryGetAuthorizationTenant(delegation, out var authorizationTenantId))
             return false;
 
         var credential = await currentCredentials.VerifyCurrentAsync(
@@ -98,7 +97,7 @@ public sealed class McpOperatorDelegationMiddleware(
             new Claim("auth_mode", "integration_credential"),
             new Claim("integration_credential_purpose", "http_mcp")
         ], "McpLocalExecution"));
-        return await access.AuthorizeAsync(principal, delegation.IngressPermission, isInstanceRead ? null : delegation.TenantId, cancellationToken)
+        return await access.AuthorizeAsync(principal, delegation.IngressPermission, authorizationTenantId, cancellationToken)
             .ConfigureAwait(false);
     }
 }

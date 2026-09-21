@@ -142,6 +142,29 @@ public sealed class IntegrationCredentialServiceTests
         (await service.ListAsync("principal-a")).Single().InstancePermissions.Should().ContainSingle().Which.Should().Be(NetRatelPermissions.McpDiscoveryRead);
     }
 
+    [Fact]
+    public async Task Instance_control_plane_grant_is_explicit_and_excludes_credential_management()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        await using var db = CreateDb(connection);
+        await db.Database.EnsureCreatedAsync();
+        db.Users.Add(new LocalUser { Id = "local-user", PrincipalId = "principal-a", UserName = "owner", IsEnabled = true });
+        await db.SaveChangesAsync();
+        var service = new IntegrationCredentialService(db);
+
+        var created = await service.CreateAsync("principal-a", new(
+            "Local HTTP MCP tenant administration", IntegrationCredentialPurpose.HttpMcp, DateTimeOffset.UtcNow.AddDays(7), [],
+            "https://mcp.example.test/mcp", [NetRatelPermissions.TenantAdministration]));
+
+        (await service.VerifyCurrentAsync(created.CredentialId, IntegrationCredentialPurpose.HttpMcp))!.InstancePermissions
+            .Should().ContainSingle().Which.Should().Be(NetRatelPermissions.TenantAdministration);
+        var managementGrant = () => service.CreateAsync("principal-a", new(
+            "Invalid", IntegrationCredentialPurpose.HttpMcp, DateTimeOffset.UtcNow.AddDays(7), [],
+            "https://mcp.example.test/mcp", [NetRatelPermissions.IntegrationManagement]));
+        await managementGrant.Should().ThrowAsync<ArgumentException>();
+    }
+
     private static NetRatelIdentityDbContext CreateDb(SqliteConnection connection) => new(
         new DbContextOptionsBuilder<NetRatelIdentityDbContext>().UseSqlite(connection).Options);
 }

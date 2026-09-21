@@ -50,9 +50,11 @@ public static class IntegrationCredentialEndpoints
                 (grants.Count == 0 && instancePermissions.Count == 0) || grants.Any(grant => grant.TenantId <= 0 || string.IsNullOrWhiteSpace(grant.Permission) ||
                     !NetRatelPermissions.All.Contains(grant.Permission.Trim()) ||
                     string.Equals(grant.Permission.Trim(), NetRatelPermissions.IntegrationManagement, StringComparison.Ordinal)) ||
-                instancePermissions.Any(permission => !string.Equals(permission?.Trim(), NetRatelPermissions.McpDiscoveryRead, StringComparison.Ordinal)))
+                instancePermissions.Any(permission => string.IsNullOrWhiteSpace(permission) ||
+                    !NetRatelPermissions.All.Contains(permission.Trim()) ||
+                    string.Equals(permission.Trim(), NetRatelPermissions.IntegrationManagement, StringComparison.Ordinal)))
             {
-                return Results.ValidationProblem(new Dictionary<string, string[]> { ["grants"] = ["Use explicit tenant permissions or the catalogued instance discovery permission; integration.manage cannot be delegated to a credential."] });
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["grants"] = ["Use explicit tenant or instance permissions; integration.manage cannot be delegated to a credential."] });
             }
 
             var tenantIds = grants.Select(grant => grant.TenantId).Distinct().ToArray();
