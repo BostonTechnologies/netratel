@@ -166,4 +166,15 @@ local-first delivery or `v0.1.0-rc.3`.
 | Provider / auth | The same browser setup, local credential, extracted CLI/stdio, and HTTP MCP path runs for SQLite, bundled PostgreSQL, and external PostgreSQL with OIDC unset. OIDC runs remain distinct. |
 | Next action | Run the complete hosted PR matrix; record exact job results before claiming the new PostgreSQL cells. |
 
+## #70 — historical rc.3 local upgrade and restore gate
+
+| Field | Checkpoint |
+| --- | --- |
+| Branch | `test/issue-70-rc3-local-upgrade-restore` (pending review). |
+| Repair | Add a CI-only historical-boundary harness that runs the immutable published `0.1.0-rc.3-1e6a9227375f` API, migrations, and Web images against local SQLite, then replaces them with the current candidate images from the extracted Compose bundle. |
+| Regression | The harness initializes an rc.3 tenant and local administrator, archives SQLite, bootstrap state, and the shared Data Protection key volume, verifies an in-place current-image upgrade, restores that exact rc.3 state into clean volumes, and verifies current-image migration plus authenticated tenant access again. |
+| Local evidence | Shell syntax, workflow YAML, source/extracted-profile Compose interpolation, and Slopwatch passed without starting containers because local host disk capacity remains constrained. |
+| Provider / auth | SQLite local-account continuity is now an explicit historical image-to-extracted-candidate acceptance path. The separate PostgreSQL/OIDC, Client, and other #70 cells remain gated independently. |
+| Next action | Run the complete hosted PR matrix and retain the release workflow rehearsal gate before recording execution evidence. |
+
 No credentials, setup proofs, recovery codes, private endpoints, or customer data are recorded here.
