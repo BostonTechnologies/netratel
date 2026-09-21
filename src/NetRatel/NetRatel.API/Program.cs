@@ -478,6 +478,11 @@ builder.Services.AddAuthorization(options =>
         policy.AddRequirements(new EffectiveAccessRequirement(NetRatelPermissions.UserRoleAdministration, instanceScope: true));
     });
 
+    options.AddPolicy("AccessAdministration", policy =>
+    {
+        policy.RequireAuthenticatedUser();
+    });
+
     options.AddPolicy("TenantAdministrator", policy =>
     {
         policy.RequireAuthenticatedUser();
