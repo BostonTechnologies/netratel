@@ -312,9 +312,9 @@ jobs:
             external_init: ''
           - provider: external-postgresql
             bundle_compose_file: compose.images.yaml
-            compose_overlays: ${{ github.workspace }}/release/compose.external-postgres.yaml:${{ github.workspace }}/tests/compose/external-postgres-local-first.compose.yaml
+            compose_overlays: external-postgresql
             external_connection: Host=external-db;Port=5432;Database=netratel;Username=netratel;Password=synthetic-external-application-password
-            external_init: ${{ github.workspace }}/tests/compose/external-postgres-local-first-init.sql
+            external_init: external-postgresql
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
@@ -347,7 +347,12 @@ jobs:
           NETRATEL_LOCAL_FIRST_COMPOSE_OVERLAYS: ${{ matrix.compose_overlays }}
           NETRATEL_EXTERNAL_DATABASE_CONNECTION_STRING: ${{ matrix.external_connection }}
           NETRATEL_LOCAL_FIRST_EXTERNAL_POSTGRES_INIT: ${{ matrix.external_init }}
-        run: tools/ci/smoke-local-first-compose.sh
+        run: |
+          if [[ "${{ matrix.provider }}" == external-postgresql ]]; then
+            export NETRATEL_LOCAL_FIRST_COMPOSE_OVERLAYS="$GITHUB_WORKSPACE/release/compose.external-postgres.yaml:$GITHUB_WORKSPACE/tests/compose/external-postgres-local-first.compose.yaml"
+            export NETRATEL_LOCAL_FIRST_EXTERNAL_POSTGRES_INIT="$GITHUB_WORKSPACE/tests/compose/external-postgres-local-first-init.sql"
+          fi
+          tools/ci/smoke-local-first-compose.sh
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:

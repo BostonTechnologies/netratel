@@ -304,9 +304,9 @@ jobs:
             external_init: ''
           - provider: external-postgresql
             bundle_compose_file: compose.images.yaml
-            compose_overlays: ${{ github.workspace }}/release/compose.external-postgres.yaml:${{ github.workspace }}/tests/compose/external-postgres-local-first.compose.yaml
+            compose_overlays: external-postgresql
             external_connection: Host=external-db;Port=5432;Database=netratel;Username=netratel;Password=synthetic-external-application-password
-            external_init: ${{ github.workspace }}/tests/compose/external-postgres-local-first-init.sql
+            external_init: external-postgresql
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
@@ -336,6 +336,10 @@ jobs:
           NETRATEL_LOCAL_FIRST_EXTERNAL_POSTGRES_INIT: ${{ matrix.external_init }}
         run: |
           version="$(jq -r '.version' release/release-manifest.json)"
+          if [[ "${{ matrix.provider }}" == external-postgresql ]]; then
+            export NETRATEL_LOCAL_FIRST_COMPOSE_OVERLAYS="$GITHUB_WORKSPACE/release/compose.external-postgres.yaml:$GITHUB_WORKSPACE/tests/compose/external-postgres-local-first.compose.yaml"
+            export NETRATEL_LOCAL_FIRST_EXTERNAL_POSTGRES_INIT="$GITHUB_WORKSPACE/tests/compose/external-postgres-local-first-init.sql"
+          fi
           NETRATEL_LOCAL_FIRST_COMPOSE_BUNDLE="review-artifacts/netratel-compose-${version}.tar.gz" \
             NETRATEL_CLI_SMOKE_ARCHIVE="review-artifacts/netratel-cli-${version}-linux-x64.tar.gz" \
             NETRATEL_MCP_STDIO_SMOKE_ARCHIVE="review-artifacts/netratel-mcp-stdio-${version}-linux-x64.tar.gz" \
