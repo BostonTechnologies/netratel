@@ -143,6 +143,21 @@ request_operator_access_token() {
   printf '%s' "$access_token"
 }
 
+seed_historical_oidc_principal() {
+  local access_token issuer subject principal_id
+  access_token="$(request_operator_access_token)"
+  issuer="$(node -e 'const token = process.argv[1]; const payload = token.split(".")[1]; process.stdout.write(JSON.parse(Buffer.from(payload, "base64url").toString("utf8")).iss ?? "")' "$access_token")"
+  subject="$(node -e 'const token = process.argv[1]; const payload = token.split(".")[1]; process.stdout.write(JSON.parse(Buffer.from(payload, "base64url").toString("utf8")).sub ?? "")' "$access_token")"
+  [[ -n "$issuer" && -n "$subject" ]] || {
+    echo "The disposable OIDC token did not contain the verified issuer and subject needed for the historical fixture." >&2
+    return 1
+  }
+  principal_id="$(tr -d '-' </proc/sys/kernel/random/uuid)"
+  "${active_compose[@]}" exec -T postgres psql -v ON_ERROR_STOP=1 -U netratel -d netratel \
+    -v principal_id="$principal_id" -v issuer="$issuer" -v subject="$subject" -qc \
+    'INSERT INTO "ApplicationPrincipals" ("Id", "ExternalIssuer", "ExternalSubject", "CreatedAtUtc") VALUES (:'"'"'principal_id'"'"', :'"'"'issuer'"'"', :'"'"'subject'"'"', CURRENT_TIMESTAMP);'
+}
+
 enroll_legacy_client() {
   local access_token tenant_response tenant_id enrollment_response enrollment_code auth_check_output auth_check_status
   access_token="$(request_operator_access_token)"
@@ -238,8 +253,10 @@ curl --retry 20 --retry-connrefused --fail --silent --show-error "http://127.0.0
 wait_for_web
 stage="authenticating through the published rc.3 OIDC browser journey"
 run_browser_oidc_smoke
+stage="recording an existing rc.3 PostgreSQL OIDC principal fixture"
+seed_historical_oidc_principal
 legacy_principal_count="$(durable_oidc_principal_count)"
-[[ "$legacy_principal_count" =~ ^[1-9][0-9]*$ ]] || { echo "Published rc.3 OIDC login did not persist an external principal." >&2; exit 1; }
+[[ "$legacy_principal_count" == 1 ]] || { echo "The historical PostgreSQL fixture did not retain exactly one external issuer/subject principal." >&2; exit 1; }
 stage="enrolling and authenticating a published rc.3 Client"
 enroll_legacy_client
 
