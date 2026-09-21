@@ -8,18 +8,21 @@ project="netratel-rc3-postgresql-oidc-upgrade-${GITHUB_RUN_ID:-local}-${RANDOM}"
 legacy_api_image="${NETRATEL_RC3_LEGACY_API_IMAGE:?set NETRATEL_RC3_LEGACY_API_IMAGE}"
 legacy_migrations_image="${NETRATEL_RC3_LEGACY_MIGRATIONS_IMAGE:?set NETRATEL_RC3_LEGACY_MIGRATIONS_IMAGE}"
 legacy_web_image="${NETRATEL_RC3_LEGACY_WEB_IMAGE:?set NETRATEL_RC3_LEGACY_WEB_IMAGE}"
+legacy_client_image="${NETRATEL_RC3_LEGACY_CLIENT_IMAGE:?set NETRATEL_RC3_LEGACY_CLIENT_IMAGE}"
 current_api_image="${NETRATEL_RC3_CURRENT_API_IMAGE:?set NETRATEL_RC3_CURRENT_API_IMAGE}"
 current_migrations_image="${NETRATEL_RC3_CURRENT_MIGRATIONS_IMAGE:?set NETRATEL_RC3_CURRENT_MIGRATIONS_IMAGE}"
 current_web_image="${NETRATEL_RC3_CURRENT_WEB_IMAGE:?set NETRATEL_RC3_CURRENT_WEB_IMAGE}"
 bundle="${NETRATEL_RC3_UPGRADE_COMPOSE_BUNDLE:?set NETRATEL_RC3_UPGRADE_COMPOSE_BUNDLE}"
 bundle_extract_directory="$(mktemp -d)"
 agent_key_path="$(mktemp)"
+cookie_jar="$(mktemp)"
 tls_key_path="$(mktemp)"
 tls_certificate_path="$(mktemp)"
 tls_bundle_path="$(mktemp --suffix=.pfx)"
 stage="initializing rc.3 PostgreSQL/OIDC upgrade smoke"
 active_compose=()
 legacy_principal_count=""
+client_volume="${project}-client-state"
 
 [[ -s "$bundle" ]] || { echo "NETRATEL_RC3_UPGRADE_COMPOSE_BUNDLE is missing: $bundle" >&2; exit 1; }
 tar -xzf "$bundle" -C "$bundle_extract_directory"
@@ -41,6 +44,8 @@ cleanup() {
     "${active_compose[@]}" down --volumes --remove-orphans --rmi local >/dev/null 2>&1 || true
   fi
   unlink "$agent_key_path" "$tls_key_path" "$tls_certificate_path" "$tls_bundle_path" 2>/dev/null || true
+  unlink "$cookie_jar" 2>/dev/null || true
+  docker volume rm "$client_volume" >/dev/null 2>&1 || true
   find "$bundle_extract_directory" -depth -delete 2>/dev/null || true
   return "$status"
 }
@@ -94,6 +99,103 @@ durable_oidc_principal_count() {
     'SELECT COUNT(*) FROM "ApplicationPrincipals" WHERE "ExternalIssuer" IS NOT NULL AND "ExternalSubject" IS NOT NULL;'
 }
 
+request_operator_access_token() {
+  local redirect_uri authorization_url response callback_location callback_code token_response access_token
+  redirect_uri="http://127.0.0.1:65535/netratel-smoke-callback"
+  authorization_url="http://host.docker.internal:${NETRATEL_OIDC_TEST_PORT}/default/authorize?response_type=code&client_id=netratel-smoke-client&redirect_uri=http%3A%2F%2F127.0.0.1%3A65535%2Fnetratel-smoke-callback&scope=openid%20netratel.api&state=rc3-postgresql-oidc-upgrade"
+  response="$(curl --silent --show-error --dump-header - --resolve "$oidc_resolve" \
+    --cookie "$cookie_jar" --cookie-jar "$cookie_jar" "$authorization_url")"
+  callback_location="$(awk 'BEGIN { IGNORECASE = 1 } /^location: / { sub(/^[^:]*: /, ""); sub(/\r$/, ""); print; exit }' <<<"$response")"
+
+  if [[ -z "$callback_location" ]]; then
+    response="$(curl --silent --show-error --dump-header - --resolve "$oidc_resolve" \
+      --cookie "$cookie_jar" --cookie-jar "$cookie_jar" \
+      --data-urlencode 'username=netratel-test-operator' "$authorization_url")"
+    callback_location="$(awk 'BEGIN { IGNORECASE = 1 } /^location: / { sub(/^[^:]*: /, ""); sub(/\r$/, ""); print; exit }' <<<"$response")"
+  fi
+
+  if [[ -n "$callback_location" ]]; then
+    [[ "$callback_location" == "${redirect_uri}"* ]] || {
+      echo "The test OIDC provider returned an unexpected direct-token callback." >&2
+      return 1
+    }
+    callback_code="$(node -e 'const callback = new URL(process.argv[1]); process.stdout.write(callback.searchParams.get("code") ?? "")' "$callback_location")"
+  else
+    callback_code="$(sed -n 's/.*name="code" value="\([^"]*\)".*/\1/p' <<<"$response" | head -n 1)"
+  fi
+
+  [[ -n "$callback_code" ]] || {
+    echo "The test OIDC provider did not return an authorization code for direct API verification." >&2
+    return 1
+  }
+  token_response="$(curl --silent --show-error --fail --resolve "$oidc_resolve" \
+    --data-urlencode 'grant_type=authorization_code' \
+    --data-urlencode 'client_id=netratel-smoke-client' \
+    --data-urlencode 'client_secret=synthetic-compose-only-secret' \
+    --data-urlencode "redirect_uri=${redirect_uri}" \
+    --data-urlencode "code=${callback_code}" \
+    "http://host.docker.internal:${NETRATEL_OIDC_TEST_PORT}/default/token")"
+  access_token="$(jq -r '.access_token // empty' <<<"$token_response")"
+  [[ -n "$access_token" ]] || {
+    echo "The test OIDC provider did not issue a direct API access token." >&2
+    return 1
+  }
+  printf '%s' "$access_token"
+}
+
+enroll_legacy_client() {
+  local access_token tenant_response tenant_id enrollment_response enrollment_code auth_check_output auth_check_status
+  access_token="$(request_operator_access_token)"
+  tenant_response="$(curl --silent --show-error --fail \
+    --header "Authorization: Bearer ${access_token}" --header 'Content-Type: application/json' \
+    --data '{"name":"rc3-postgresql-oidc-upgrade","description":"Disposable historical upgrade tenant","location":"test","domains":[],"autoUpdate":false}' \
+    "${api_url}/api/v1/tenants/")"
+  tenant_id="$(jq -r '.tenantId // empty' <<<"$tenant_response")"
+  [[ "$tenant_id" =~ ^[1-9][0-9]*$ ]] || {
+    echo "Published rc.3 OIDC authority could not create the historical tenant." >&2
+    return 1
+  }
+  enrollment_response="$(curl --silent --show-error --fail \
+    --header "Authorization: Bearer ${access_token}" --header 'Content-Type: application/json' \
+    --data '{"validForMinutes":5,"maxUses":1,"note":"Disposable rc.3 PostgreSQL/OIDC upgrade enrollment"}' \
+    "${api_url}/api/v1/tenants/${tenant_id}/enrollment-codes")"
+  enrollment_code="$(jq -r '.enrollmentCode // empty' <<<"$enrollment_response")"
+  [[ -n "$enrollment_code" ]] || {
+    echo "Published rc.3 OIDC authority could not issue a historical Client enrollment code." >&2
+    return 1
+  }
+
+  docker volume create "$client_volume" >/dev/null
+  docker run --rm --user 0:0 --volume "${client_volume}:/var/lib/netratel" \
+    --entrypoint /bin/sh "$legacy_client_image" -c 'chown -R netratel:netratel /var/lib/netratel'
+  docker run --rm --network "${project}_default" --volume "${client_volume}:/var/lib/netratel" \
+    "$legacy_client_image" --api http://api:9222 --enroll "$enrollment_code" >/dev/null
+  set +e
+  auth_check_output="$(docker run --rm --network "${project}_default" --volume "${client_volume}:/var/lib/netratel" \
+    "$legacy_client_image" --api http://api:9222 --auth-check 2>&1)"
+  auth_check_status=$?
+  set -e
+  if (( auth_check_status != 0 )); then
+    echo "Published rc.3 Client authentication failed immediately after enrollment." >&2
+    grep -E '^.*\[Auth(Check)?\]' <<<"$auth_check_output" | tail -n 1 >&2 || true
+    return 1
+  fi
+}
+
+verify_legacy_client_after_upgrade() {
+  local auth_check_output auth_check_status
+  set +e
+  auth_check_output="$(docker run --rm --network "${project}_default" --volume "${client_volume}:/var/lib/netratel" \
+    "$legacy_client_image" --api http://api:9222 --auth-check 2>&1)"
+  auth_check_status=$?
+  set -e
+  if (( auth_check_status != 0 )); then
+    echo "The persisted rc.3 Client could not authenticate against the upgraded candidate API." >&2
+    grep -E '^.*\[Auth(Check)?\]' <<<"$auth_check_output" | tail -n 1 >&2 || true
+    return 1
+  fi
+}
+
 export POSTGRES_PASSWORD=synthetic-rc3-upgrade-postgres-password
 export OIDC_AUTHORITY=https://issuer.example.invalid
 export OIDC_CLIENT_ID=synthetic-rc3-upgrade-client
@@ -112,6 +214,8 @@ export NETRATEL_SMOKE_TLS_CERT_PATH="$tls_bundle_path"
 export NETRATEL_SMOKE_TLS_CERTIFICATE_PATH="$tls_certificate_path"
 export NETRATEL_SMOKE_TLS_KEY_PATH="$tls_key_path"
 web_url="http://127.0.0.1:${NETRATEL_WEB_PORT}"
+api_url="http://127.0.0.1:${NETRATEL_API_TEST_PORT:-9222}"
+oidc_resolve="host.docker.internal:${NETRATEL_OIDC_TEST_PORT}:127.0.0.1"
 
 openssl ecparam -name prime256v1 -genkey -noout -out "$agent_key_path"
 openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=gateway' \
@@ -136,6 +240,8 @@ stage="authenticating through the published rc.3 OIDC browser journey"
 run_browser_oidc_smoke
 legacy_principal_count="$(durable_oidc_principal_count)"
 [[ "$legacy_principal_count" =~ ^[1-9][0-9]*$ ]] || { echo "Published rc.3 OIDC login did not persist an external principal." >&2; exit 1; }
+stage="enrolling and authenticating a published rc.3 Client"
+enroll_legacy_client
 
 stage="upgrading the published PostgreSQL/OIDC state with extracted candidate images"
 "${active_compose[@]}" down --remove-orphans
@@ -151,3 +257,5 @@ run_browser_oidc_smoke
   echo "The upgraded PostgreSQL/OIDC stack did not retain the durable rc.3 external principal set." >&2
   exit 1
 }
+stage="authenticating the persisted published rc.3 Client against candidate images"
+verify_legacy_client_after_upgrade

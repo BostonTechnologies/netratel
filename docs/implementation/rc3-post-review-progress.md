@@ -182,9 +182,9 @@ local-first delivery or `v0.1.0-rc.3`.
 | Field | Checkpoint |
 | --- | --- |
 | Branch | `test/issue-70-rc3-postgresql-oidc-upgrade`. |
-| Repair | Add a CI-only historical-boundary harness that starts the immutable published rc.3 API, migrations, and Web images with the disposable OIDC provider and PostgreSQL, then upgrades the same named volumes with current candidate images selected by the extracted Compose bundle. |
-| Regression | The browser journey authenticates through both the direct and TLS-proxied OIDC paths on rc.3 and after the upgrade. It requires a durable external issuer/subject principal after rc.3 login and asserts that the exact principal count is retained after the candidate migration. |
-| Provider / auth | PostgreSQL/OIDC is distinct from the existing fresh OIDC and local-first matrices. It preserves the published external-identity state, and does not alter native Client, CLI, MCP, local-account, or branding coverage. |
+| Repair | Add a CI-only historical-boundary harness that starts the immutable published rc.3 API, migrations, Web, and Client images with the disposable OIDC provider and PostgreSQL, then upgrades the same named PostgreSQL, API-key, Web-key, and Client-state volumes with current candidate images selected by the extracted Compose bundle. |
+| Regression | The browser journey authenticates through both the direct and TLS-proxied OIDC paths on rc.3 and after the upgrade. It requires a durable external issuer/subject principal after rc.3 login and asserts that the exact principal count is retained after the candidate migration. The rc.3 authority creates a tenant and enrolls a published Client; that same persisted Client must authenticate against the upgraded candidate API. |
+| Provider / auth | PostgreSQL/OIDC is distinct from the existing fresh OIDC and local-first matrices. It preserves published external identity, Client enrollment, and signing-key state; the existing independent gates retain CLI, MCP, local-account, and full Client command/telemetry coverage. |
 | Next action | Run the required PR matrix and then keep the equivalent release-rehearsal job as a promotion prerequisite. |
 
 No credentials, setup proofs, recovery codes, private endpoints, or customer data are recorded here.

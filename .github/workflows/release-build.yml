@@ -434,6 +434,7 @@ jobs:
           NETRATEL_RC3_LEGACY_API_IMAGE: ghcr.io/bostontechnologies/netratel-api:0.1.0-rc.3-1e6a9227375f
           NETRATEL_RC3_LEGACY_MIGRATIONS_IMAGE: ghcr.io/bostontechnologies/netratel-migrations:0.1.0-rc.3-1e6a9227375f
           NETRATEL_RC3_LEGACY_WEB_IMAGE: ghcr.io/bostontechnologies/netratel-web:0.1.0-rc.3-1e6a9227375f
+          NETRATEL_RC3_LEGACY_CLIENT_IMAGE: ghcr.io/bostontechnologies/netratel-client:0.1.0-rc.3-1e6a9227375f
           NETRATEL_RC3_CURRENT_API_IMAGE: netratel-api:${{ needs.validate.outputs.version }}-rc3-postgresql-oidc-upgrade
           NETRATEL_RC3_CURRENT_MIGRATIONS_IMAGE: netratel-migrations:${{ needs.validate.outputs.version }}-rc3-postgresql-oidc-upgrade
           NETRATEL_RC3_CURRENT_WEB_IMAGE: netratel-web:${{ needs.validate.outputs.version }}-rc3-postgresql-oidc-upgrade
