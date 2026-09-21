@@ -49,7 +49,7 @@
                             }
                             @foreach (var tenant in _tenants)
                             {
-                                <MudSelectItem T="int?" Value="@((int?)tenant.TenantId)" data-testid="access-scope-tenant-@tenant.TenantId">@tenant.Name</MudSelectItem>
+                                <MudSelectItem T="int?" Value="@((int?)tenant.TenantId)" data-testid="@($"access-scope-tenant-{tenant.TenantId}")">@tenant.Name</MudSelectItem>
                             }
                         </MudSelect>
                         @if (!_isInstanceAdministrator && _tenants.Count == 0)
@@ -60,7 +60,7 @@
                         <MudList T="LocalUserAccessDto" Dense="true">
                             @foreach (var user in _users)
                             {
-                                <MudListItem Value="user" OnClick="@(() => SelectUserAsync(user.PrincipalId))" data-testid="access-user-@user.PrincipalId">
+                                <MudListItem Value="user" OnClick="@(() => SelectUserAsync(user.PrincipalId))" data-testid="@($"access-user-{user.PrincipalId}")">
                                     <MudText>@user.DisplayName</MudText>
                                     <MudText Typo="Typo.caption" Color="Color.Secondary">@user.Email · @(user.IsEnabled ? "enabled" : "disabled")</MudText>
                                 </MudListItem>
@@ -97,7 +97,7 @@
                                 <HeaderContent><MudTh>Role</MudTh><MudTh>Scope</MudTh><MudTh></MudTh></HeaderContent>
                                 <RowTemplate>
                                     <MudTd DataLabel="Role">@context.RoleName</MudTd>
-                                    <MudTd DataLabel="Scope" data-testid="access-assignment-scope-@context.Id">@ScopeName(context.TenantId)</MudTd>
+                                    <MudTd DataLabel="Scope" data-testid="@($"access-assignment-scope-assignment-{context.Id}")">@ScopeName(context.TenantId)</MudTd>
                                     <MudTd><MudButton Variant="Variant.Text" Color="Color.Error" OnClick="@(() => RemoveAsync(context.Id))">Remove</MudButton></MudTd>
                                 </RowTemplate>
                             </MudTable>
