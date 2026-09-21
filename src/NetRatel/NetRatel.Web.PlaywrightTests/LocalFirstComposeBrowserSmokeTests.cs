@@ -103,7 +103,11 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         {
             var permitted = await CreateIntegrationCredentialAsync(page, webUrl, "CI telemetry read", "telemetry.read");
             var denied = await CreateIntegrationCredentialAsync(page, webUrl, "CI file read", "file.read");
-            await File.WriteAllLinesAsync(credentialOutputPath, [permitted, denied]);
+            var httpMcpPermitted = await CreateIntegrationCredentialAsync(
+                page, webUrl, "CI HTTP MCP discovery", "telemetry.read", "HTTP MCP gateway", "https://mcp.local.test/mcp", "mcp.discovery.read");
+            var httpMcpDenied = await CreateIntegrationCredentialAsync(
+                page, webUrl, "CI HTTP MCP denied discovery", "telemetry.read", "HTTP MCP gateway", "https://mcp.local.test/mcp");
+            await File.WriteAllLinesAsync(credentialOutputPath, [permitted, denied, httpMcpPermitted, httpMcpDenied]);
             if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(credentialOutputPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
         }
 
@@ -310,7 +314,14 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         Assert.Equal("Browser branding example", await applicationBrand.GetAttributeAsync("alt"));
     }
 
-    private static async Task<string> CreateIntegrationCredentialAsync(IPage page, Uri webUrl, string name, string permission)
+    private static async Task<string> CreateIntegrationCredentialAsync(
+        IPage page,
+        Uri webUrl,
+        string name,
+        string permission,
+        string? purpose = null,
+        string? resource = null,
+        string? instancePermission = null)
     {
         await page.GotoAsync(new Uri(webUrl, "account/integration-credentials").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
         await page.GetByTestId("integration-credentials-page").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
@@ -319,8 +330,19 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await page.WaitForTimeoutAsync(500);
         await page.GetByTestId("credential-name").FillAsync(name);
         await page.GetByTestId("credential-name").PressAsync("Tab");
+        if (!string.IsNullOrWhiteSpace(purpose))
+        {
+            await page.GetByRole(AriaRole.Combobox, new PageGetByRoleOptions { Name = "Purpose" }).ClickAsync();
+            await page.GetByRole(AriaRole.Option, new PageGetByRoleOptions { Name = purpose, Exact = true }).ClickAsync();
+            await page.GetByTestId("credential-resource").FillAsync(resource ?? throw new InvalidOperationException("An HTTP MCP resource is required."));
+        }
         await page.GetByRole(AriaRole.Combobox, new PageGetByRoleOptions { Name = "Permission" }).ClickAsync();
         await page.GetByRole(AriaRole.Option, new PageGetByRoleOptions { Name = permission, Exact = true }).ClickAsync();
+        if (!string.IsNullOrWhiteSpace(instancePermission))
+        {
+            await page.GetByRole(AriaRole.Combobox, new PageGetByRoleOptions { Name = "Optional instance permission" }).ClickAsync();
+            await page.GetByRole(AriaRole.Option, new PageGetByRoleOptions { Name = instancePermission, Exact = true }).ClickAsync();
+        }
         await page.WaitForTimeoutAsync(250);
         await page.GetByTestId("create-credential").ClickAsync();
         var reveal = page.GetByTestId("credential-one-time-secret");
