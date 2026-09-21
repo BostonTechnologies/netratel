@@ -31,10 +31,13 @@ public static class AccessAdministrationEndpoints
 
         var group = app.MapGroup("/api/v2/access")
             .WithTags("Access administration")
-            .RequireAuthorization("InstanceAdministrator");
+            .RequireAuthorization("AccessAdministration");
 
-        group.MapGet("/roles", async (NetRatelIdentityDbContext db, CancellationToken ct) =>
+        group.MapGet("/roles", async (int? tenantId, ClaimsPrincipal actor, NetRatelIdentityDbContext db, IEffectiveAccessService access, CancellationToken ct) =>
         {
+            if (!await CanManageAssignmentsAsync(actor, role: null, tenantId, db, access, ct).ConfigureAwait(false))
+                return Results.Forbid();
+
             var roles = await db.AccessRoles.AsNoTracking()
                 .OrderByDescending(role => role.IsBuiltIn)
                 .ThenByDescending(role => role.DelegationRank)
@@ -49,7 +52,26 @@ public static class AccessAdministrationEndpoints
                     role.Permissions.OrderBy(permission => permission.Permission).Select(permission => permission.Permission).ToArray()))
                 .ToListAsync(ct)
                 .ConfigureAwait(false);
-            return Results.Ok(roles);
+            if (await IsInstanceAdministratorAsync(actor, access, ct).ConfigureAwait(false))
+                return Results.Ok(roles);
+
+            var assignable = new List<AccessRoleResponse>();
+            foreach (var role in roles)
+            {
+                var candidate = new AccessRole
+                {
+                    Id = role.Id,
+                    Name = role.Name,
+                    DelegationRank = role.DelegationRank,
+                    IsInstanceAdministratorRole = role.IsInstanceAdministratorRole
+                };
+                foreach (var permission in role.Permissions)
+                    candidate.Permissions.Add(new AccessRolePermission { Permission = permission });
+                if (await CanManageAssignmentsAsync(actor, candidate, tenantId, db, access, ct).ConfigureAwait(false))
+                    assignable.Add(role);
+            }
+
+            return Results.Ok(assignable);
         });
 
         group.MapPost("/roles", async (
@@ -59,6 +81,9 @@ public static class AccessAdministrationEndpoints
             IEffectiveAccessService access,
             CancellationToken ct) =>
         {
+            if (!await IsInstanceAdministratorAsync(actor, access, ct).ConfigureAwait(false))
+                return Results.Forbid();
+
             var name = request.Name?.Trim();
             var permissions = (request.Permissions ?? [])
                 .Where(permission => !string.IsNullOrWhiteSpace(permission))
@@ -98,10 +123,14 @@ public static class AccessAdministrationEndpoints
             return Results.Created($"/api/v2/access/roles/{role.Id}", ToResponse(role));
         });
 
-        group.MapGet("/principals/{principalId}/assignments", async (string principalId, NetRatelIdentityDbContext db, CancellationToken ct) =>
+        group.MapGet("/principals/{principalId}/assignments", async (string principalId, int? tenantId, ClaimsPrincipal actor, NetRatelIdentityDbContext db, IEffectiveAccessService access, CancellationToken ct) =>
         {
+            if (!await CanManageAssignmentsAsync(actor, role: null, tenantId, db, access, ct).ConfigureAwait(false))
+                return Results.Forbid();
+
             var assignments = await db.PrincipalRoleAssignments.AsNoTracking()
-                .Where(assignment => assignment.PrincipalId == principalId)
+                .Where(assignment => assignment.PrincipalId == principalId &&
+                    (!tenantId.HasValue || assignment.TenantId == tenantId))
                 .OrderBy(assignment => assignment.TenantId)
                 .Select(assignment => new RoleAssignmentResponse(
                     assignment.Id,
@@ -121,6 +150,7 @@ public static class AccessAdministrationEndpoints
             ClaimsPrincipal actor,
             NetRatelIdentityDbContext identityDb,
             OrchestratorDbContext appDb,
+            IEffectiveAccessService access,
             CancellationToken ct) =>
         {
             if (!await identityDb.ApplicationPrincipals.AnyAsync(principal => principal.Id == principalId, ct).ConfigureAwait(false))
@@ -128,7 +158,8 @@ public static class AccessAdministrationEndpoints
                 return Results.NotFound();
             }
 
-            var role = await identityDb.AccessRoles.SingleOrDefaultAsync(candidate => candidate.Id == request.RoleId, ct).ConfigureAwait(false);
+            var role = await identityDb.AccessRoles.Include(candidate => candidate.Permissions)
+                .SingleOrDefaultAsync(candidate => candidate.Id == request.RoleId, ct).ConfigureAwait(false);
             if (role is null)
             {
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["roleId"] = ["The role does not exist."] });
@@ -138,6 +169,9 @@ public static class AccessAdministrationEndpoints
             {
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["tenantId"] = ["The tenant does not exist."] });
             }
+
+            if (!await CanManageAssignmentsAsync(actor, role, request.TenantId, identityDb, access, ct).ConfigureAwait(false))
+                return Results.Forbid();
 
             if (await identityDb.PrincipalRoleAssignments.AnyAsync(assignment => assignment.PrincipalId == principalId && assignment.RoleId == role.Id && assignment.TenantId == request.TenantId, ct).ConfigureAwait(false))
             {
@@ -160,8 +194,10 @@ public static class AccessAdministrationEndpoints
         group.MapDelete("/principals/{principalId}/assignments/{assignmentId}", async (
             string principalId,
             string assignmentId,
+            ClaimsPrincipal actor,
             NetRatelIdentityDbContext db,
             InstanceAdministratorInvariant administrators,
+            IEffectiveAccessService access,
             CancellationToken ct) =>
         {
             return await administrators.ExecuteDestructiveMutationAsync(async cancellationToken =>
@@ -173,6 +209,9 @@ public static class AccessAdministrationEndpoints
                 if (assignment is null)
                     return Results.NotFound();
 
+                if (!await CanManageAssignmentsAsync(actor, assignment.Role, assignment.TenantId, db, access, cancellationToken).ConfigureAwait(false))
+                    return Results.Forbid();
+
                 if (assignment.TenantId is null && assignment.Role!.IsInstanceAdministratorRole &&
                     await administrators.ViableAdministratorCountAsync(cancellationToken).ConfigureAwait(false) <= 1)
                     return Results.Conflict(new { error = "last_instance_administrator" });
@@ -183,14 +222,26 @@ public static class AccessAdministrationEndpoints
             }, ct).ConfigureAwait(false);
         });
 
-        group.MapGet("/users", async (UserManager<LocalUser> users, CancellationToken ct) =>
+        group.MapGet("/users", async (int? tenantId, ClaimsPrincipal actor, UserManager<LocalUser> users, NetRatelIdentityDbContext db, IEffectiveAccessService access, CancellationToken ct) =>
         {
-            var response = await users.Users.AsNoTracking()
+            if (!await CanManageAssignmentsAsync(actor, role: null, tenantId, db, access, ct).ConfigureAwait(false))
+                return Results.Forbid();
+
+            var response = users.Users.AsNoTracking();
+            if (tenantId is not null && !await IsInstanceAdministratorAsync(actor, access, ct).ConfigureAwait(false))
+            {
+                var memberPrincipalIds = db.PrincipalRoleAssignments.AsNoTracking()
+                    .Where(assignment => assignment.TenantId == tenantId)
+                    .Select(assignment => assignment.PrincipalId);
+                response = response.Where(user => memberPrincipalIds.Contains(user.PrincipalId));
+            }
+
+            var result = await response
                 .OrderBy(user => user.Email)
                 .Select(user => new LocalUserAccessResponse(user.Id, user.PrincipalId, user.Email!, user.DisplayName, user.IsEnabled, user.IsInstanceAdministrator))
                 .ToListAsync(ct)
                 .ConfigureAwait(false);
-            return Results.Ok(response);
+            return Results.Ok(result);
         });
 
         return app;
@@ -199,6 +250,51 @@ public static class AccessAdministrationEndpoints
     private static AccessRoleResponse ToResponse(AccessRole role) => new(
         role.Id, role.Name, role.Description, role.IsBuiltIn, role.IsInstanceAdministratorRole,
         role.DelegationRank, role.Permissions.Select(permission => permission.Permission).OrderBy(permission => permission).ToArray());
+
+    private static async Task<bool> IsInstanceAdministratorAsync(
+        ClaimsPrincipal actor,
+        IEffectiveAccessService access,
+        CancellationToken ct)
+    {
+        var snapshot = await access.GetSnapshotAsync(actor, tenantId: null, ct).ConfigureAwait(false);
+        return snapshot.IsLegacyOperator || snapshot.IsInstanceAdministrator;
+    }
+
+    private static async Task<bool> CanManageAssignmentsAsync(
+        ClaimsPrincipal actor,
+        AccessRole? role,
+        int? tenantId,
+        NetRatelIdentityDbContext db,
+        IEffectiveAccessService access,
+        CancellationToken ct)
+    {
+        if (await IsInstanceAdministratorAsync(actor, access, ct).ConfigureAwait(false))
+            return true;
+
+        if (tenantId is not int scopedTenantId)
+            return false;
+
+        var actorId = actor.FindFirst("netratel_principal_id")?.Value;
+        if (string.IsNullOrWhiteSpace(actorId))
+            return false;
+
+        var snapshot = await access.GetSnapshotAsync(actor, scopedTenantId, ct).ConfigureAwait(false);
+        if (!snapshot.Permissions.Contains(NetRatelPermissions.UserRoleAdministration))
+            return false;
+
+        if (role is null)
+            return true;
+
+        if (role.IsInstanceAdministratorRole || !role.Permissions.Select(permission => permission.Permission).ToHashSet(StringComparer.Ordinal).IsSubsetOf(snapshot.Permissions))
+            return false;
+
+        var ceiling = await db.PrincipalRoleAssignments.AsNoTracking()
+            .Where(assignment => assignment.PrincipalId == actorId && assignment.TenantId == scopedTenantId)
+            .Select(assignment => (int?)assignment.Role!.DelegationRank)
+            .MaxAsync(ct)
+            .ConfigureAwait(false);
+        return ceiling is not null && role.DelegationRank < ceiling.Value;
+    }
 
     public sealed record CreateAccessRoleRequest(string? Name, string? Description, int DelegationRank, int? TenantId, IReadOnlyList<string>? Permissions);
     public sealed record EffectiveAccessSummary(string? PrincipalId, bool IsInstanceAdministrator, IReadOnlyList<string> Permissions);

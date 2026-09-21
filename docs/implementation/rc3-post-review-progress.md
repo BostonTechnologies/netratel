@@ -36,6 +36,18 @@ local-first delivery or `v0.1.0-rc.3`.
 | Merge | PR #73 merged normally as `f10bab2a750a404260e80eaac608f162a7b3c7d2` after all hosted checks passed. |
 | Next action | Continue the remaining lifecycle, delegated administration, scoped-route, and browser matrix cells in #67. |
 
+## #67 — delegated tenant-administration boundary
+
+| Field | Checkpoint |
+| --- | --- |
+| Branch | `fix/delegated-tenant-access-administration` |
+| Reproduction | A principal with tenant-scoped `identity.admin` could not assign a lower-ranked role in that tenant because all access-administration routes required instance administration. |
+| Repair | Authenticated access administration now permits a tenant administrator only for an explicit tenant scope. The server requires `identity.admin`, a strictly lower role rank, and a role permission set already held by the acting principal. Instance roles and instance scope remain instance-administrator-only; tenant user and assignment queries are filtered to the selected tenant. |
+| Regressions | `AccessAdministrationEndpointTests` exercises an allowed lower-rank Tenant A grant and rejects both an at-ceiling grant and Tenant B assignment. The first case returned `403` before the repair. |
+| Local evidence | Targeted Release test: 2 passed. Slopwatch on changed C# and test files: 0 findings. |
+| Provider / auth | In-memory HTTP endpoint coverage with authenticated durable-principal role assignments. Browser tenant selection, lifecycle/MFA/recovery, scoped route/search, and final artifact acceptance remain required #67/#70 cells. |
+| Next action | Submit for hosted CI; retain this as partial #67 progress until the remaining acceptance journeys are completed. |
+
 ## #64 — viable administrator identity continuity
 
 | Field | Checkpoint |
@@ -117,6 +129,6 @@ local-first delivery or `v0.1.0-rc.3`.
 | Repair | The catalog now maps each supported policy to its explicit authentication alternatives, intersects requirements when metadata combines policies/schemes, and fails document generation if a newly added named policy has no declared contract. The local HTTP MCP pairing/exchange surface is excluded from interactive documentation; its scheme description explains the additional pairing boundary without disclosing credentials. |
 | Regressions | `ReleaseOpenApiDocumentTests` starts the actual Production API with a bootstrap-ready SQLite local-first fixture, generates `/openapi/v1.json`, verifies every security reference and operation ID, checks anonymous and denied runtime behavior, validates representative local/OIDC/M2M/native alternatives, and confirms the HTTP MCP exchange is absent. |
 | Local evidence | Targeted Release integration test: 1 passed. Source registration suite: 13 passed. Slopwatch on all changed C# and test files: 0 findings. |
-| Next action | Submit for hosted CI, then retain Scalar browser and extracted-image validation as part of the #70 artifact acceptance matrix. |
+| Next action | PR #84 merged normally as `3e589c94dcafb4da89e8b5fc6a5856bb9863eca9` after the complete hosted validation workflow passed. Retain Scalar browser and extracted-image validation as part of the #70 artifact acceptance matrix. |
 
 No credentials, setup proofs, recovery codes, private endpoints, or customer data are recorded here.
