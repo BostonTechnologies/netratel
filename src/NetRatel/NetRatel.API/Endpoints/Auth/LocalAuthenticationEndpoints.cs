@@ -133,10 +133,20 @@ public static class LocalAuthenticationEndpoints
             UserManager<LocalUser> users,
             HttpContext context) =>
         {
+            context.Response.Headers.CacheControl = "no-store";
             var user = await CurrentLocalUserAsync(users, context.User).ConfigureAwait(false);
             if (user is null || !user.IsEnabled || !await users.CheckPasswordAsync(user, request.CurrentPassword).ConfigureAwait(false))
             {
                 return Results.BadRequest(new { error = "authenticator_setup_failed" });
+            }
+
+            // Replacing an enrolled factor must be an explicit recovery-safe
+            // transition: disable it with the current factor first. Resetting
+            // here would invalidate the existing authenticator before the new
+            // one has been verified and persisted.
+            if (await users.GetTwoFactorEnabledAsync(user).ConfigureAwait(false))
+            {
+                return Results.Conflict(new { error = "two_factor_already_enabled" });
             }
 
             await users.ResetAuthenticatorKeyAsync(user).ConfigureAwait(false);
@@ -157,6 +167,7 @@ public static class LocalAuthenticationEndpoints
             UserManager<LocalUser> users,
             HttpContext context) =>
         {
+            context.Response.Headers.CacheControl = "no-store";
             var user = await CurrentLocalUserAsync(users, context.User).ConfigureAwait(false);
             if (user is null || !user.IsEnabled ||
                 !await users.VerifyTwoFactorTokenAsync(user, TokenOptions.DefaultAuthenticatorProvider, NormalizeCode(request.Code)).ConfigureAwait(false))
