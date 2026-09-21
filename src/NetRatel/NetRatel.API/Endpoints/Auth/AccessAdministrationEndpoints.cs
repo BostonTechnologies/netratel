@@ -53,11 +53,13 @@ public static class AccessAdministrationEndpoints
             if (string.IsNullOrWhiteSpace(actorId))
                 return Results.Forbid();
 
-            var managedTenantIds = identityDb.PrincipalRoleAssignments.AsNoTracking()
+            var managedTenantIds = await identityDb.PrincipalRoleAssignments.AsNoTracking()
                 .Where(assignment => assignment.PrincipalId == actorId && assignment.TenantId != null)
                 .Where(assignment => assignment.Role!.Permissions.Any(permission => permission.Permission == NetRatelPermissions.UserRoleAdministration))
                 .Select(assignment => assignment.TenantId!.Value)
-                .Distinct();
+                .Distinct()
+                .ToArrayAsync(ct)
+                .ConfigureAwait(false);
             return Results.Ok(await appDb.Tenants.AsNoTracking()
                 .Where(tenant => managedTenantIds.Contains(tenant.Id))
                 .OrderBy(tenant => tenant.Name)
