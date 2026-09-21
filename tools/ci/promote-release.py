@@ -28,6 +28,20 @@ def run(*command, env=None):
         raise ValueError(f"Command failed ({' '.join(command[:3])}, exit {error.returncode}): {detail or 'no captured diagnostics'}") from error
 
 
+def json_pages(value):
+    """Parse the consecutive JSON values emitted by ``gh api --paginate``."""
+    decoder = json.JSONDecoder()
+    pages = []
+    remaining = value.lstrip()
+    while remaining:
+        page, end = decoder.raw_decode(remaining)
+        if not isinstance(page, list):
+            raise ValueError("Paginated GitHub API response must contain JSON arrays")
+        pages.append(page)
+        remaining = remaining[end:].lstrip()
+    return pages
+
+
 def sha256(path):
     digest = hashlib.sha256()
     with path.open("rb") as source:
@@ -368,8 +382,8 @@ def validate_candidate_bundle(directory, version, revision, images, input_receip
 def promote(args):
     version = json.loads((ROOT / "release/release-manifest.json").read_text())["version"]
     revision = run("git", "rev-parse", "HEAD")
-    if version != "0.1.0-rc.2" or args.approve != f"{version}@{revision}":
-        raise ValueError("Explicit --approve VERSION@PUBLIC_SHA for rc.2 is required")
+    if version != "0.1.0-rc.3" or args.approve != f"{version}@{revision}":
+        raise ValueError("Explicit --approve VERSION@PUBLIC_SHA for rc.3 is required")
     if run("git", "status", "--porcelain"):
         raise ValueError("Promotion requires a clean checkout")
     run("git", "fetch", "origin", "main")
@@ -379,7 +393,7 @@ def promote(args):
     if not re.fullmatch(r"[a-z0-9-]+", args.package_prefix):
         raise ValueError("Package prefix must be a simple lowercase name")
     input_receipt = verified_input_receipt(args.inputs, args.receipt, version, revision)
-    inventory = json.loads(run("gh", "api", "--paginate", "--slurp",
+    inventory = json_pages(run("gh", "api", "--paginate",
                               "orgs/BostonTechnologies/packages?package_type=container&per_page=100"))
     inventory = {package["name"]: package for page in inventory for package in page}
     for component in COMPONENTS:
@@ -413,7 +427,7 @@ def promote(args):
             tag = f"{repository}:{version}-{revision[:12]}"
             existing = inventory.get(f"{args.package_prefix}-{component}")
             if existing:
-                versions = json.loads(run("gh", "api", "--paginate", "--slurp",
+                versions = json_pages(run("gh", "api", "--paginate",
                     f"orgs/BostonTechnologies/packages/container/{args.package_prefix}-{component}/versions?per_page=100"))
                 if any(tag.rsplit(":", 1)[1] in item["metadata"]["container"]["tags"] for page in versions for item in page):
                     raise ValueError("Tag already exists without this journal; inspect and recover its digest explicitly, never overwrite it")

@@ -12,7 +12,7 @@ public sealed class ClientUpdateVersioningTests
     [InlineData("0.4.10", "0.4.10", false)]
     [InlineData("0.4.9", "0.4.10", false)]
     [InlineData("0.4.102", "0.4.102-rc.1", true)]
-    [InlineData("0.4.102-rc.2", "0.4.102-rc.1", true)]
+    [InlineData("0.4.102-rc.3", "0.4.102-rc.1", true)]
     [InlineData("0.4.102-rc.1", "0.4.102", false)]
     [InlineData("0.1.0-rc.1", "0.5.6-rc.5", false)]
     [InlineData("not-a-version", "0.4.10", false)]

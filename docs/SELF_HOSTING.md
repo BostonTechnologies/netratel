@@ -121,7 +121,7 @@ at an internal-only address or reuse Web, API, or native-agent credentials.
 
 ## Prerelease posture
 
-`0.1.0-rc.1` remains a historical prerelease. Obtain `0.1.0-rc.2` only from
+`0.1.0-rc.1` remains a historical prerelease. Obtain `0.1.0-rc.3` only from
 its matching prerelease after its immutable tag, assets and image digests have
 been verified. A production rollout remains a separate operator decision; do
 not use a prerelease for unattended fleet updates.

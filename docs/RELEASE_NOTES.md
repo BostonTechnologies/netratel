@@ -1,6 +1,6 @@
-# NetRatel 0.1.0-rc.2
+# NetRatel 0.1.0-rc.3
 
-`0.1.0-rc.2` is a prerelease for evaluation and integration testing. It is not
+`0.1.0-rc.3` is a prerelease for evaluation and integration testing. It is not
 a stable release channel and must not be used for unattended fleet updates.
 
 ## Local-first operation

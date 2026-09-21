@@ -14,7 +14,7 @@ CLI and stdio MCP linux-x64 archives are framework-dependent and require the
 Native Client archives are self-contained and platform-specific.
 
 1. Download all assets to one directory and run `sha256sum -c SHA256SUMS`.
-2. Extract `netratel-compose-0.1.0-rc.2.tar.gz` into a new directory and enter it.
+2. Extract `netratel-compose-0.1.0-rc.3.tar.gz` into a new directory and enter it.
 3. Copy `.env.images.example` to `.env`. A promoted bundle supplies image digests;
    retain these. Replace the database password; leave the OIDC settings empty
    for local-account mode, or set them for a deliberately configured OIDC or
