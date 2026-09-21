@@ -155,4 +155,15 @@ local-first delivery or `v0.1.0-rc.3`.
 | Local evidence | Targeted Release integration test: 1 passed. Source registration suite: 13 passed. Slopwatch on all changed C# and test files: 0 findings. |
 | Next action | PR #84 merged normally as `3e589c94dcafb4da89e8b5fc6a5856bb9863eca9` after the complete hosted validation workflow passed. Retain Scalar browser and extracted-image validation as part of the #70 artifact acceptance matrix. |
 
+## #70 — packaged PostgreSQL local-first acceptance
+
+| Field | Checkpoint |
+| --- | --- |
+| Branch | `test/issue-70-postgres-artifact-acceptance` |
+| Repair | Extend the existing extracted-bundle local-first journey to the bundled PostgreSQL recipe and the external PostgreSQL overlay, while retaining the existing SQLite cell and separate OIDC matrix. |
+| Regression | The shared artifact harness selects an extracted Compose recipe and explicit test-only overlays. The external fixture creates a database owned by the application role, which is `NOSUPERUSER`, so migrations cannot accidentally depend on bundled bootstrap-superuser privileges. |
+| Local evidence | Shell syntax, YAML parsing, and bundled/external PostgreSQL Compose interpolation passed without starting containers. Hosted source and release candidate evidence remains pending. |
+| Provider / auth | The same browser setup, local credential, extracted CLI/stdio, and HTTP MCP path runs for SQLite, bundled PostgreSQL, and external PostgreSQL with OIDC unset. OIDC runs remain distinct. |
+| Next action | Run the complete hosted PR matrix; record exact job results before claiming the new PostgreSQL cells. |
+
 No credentials, setup proofs, recovery codes, private endpoints, or customer data are recorded here.

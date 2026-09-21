@@ -14,18 +14,27 @@ mcp_stdio_error_path="$(mktemp)"
 stage="initializing local-first Compose smoke"
 bundle="${NETRATEL_LOCAL_FIRST_COMPOSE_BUNDLE:-}"
 bundle_extract_dir=""
-compose_file="compose.sqlite.yaml"
+source_compose_file="${NETRATEL_LOCAL_FIRST_SOURCE_COMPOSE_FILE:-compose.sqlite.yaml}"
+bundle_compose_file="${NETRATEL_LOCAL_FIRST_BUNDLE_COMPOSE_FILE:-compose.local-sqlite.yaml}"
+compose_file="$source_compose_file"
 mcp_http_image="${NETRATEL_LOCAL_HTTP_MCP_SMOKE_IMAGE:-}"
 local_http_mcp_directory=""
 if [[ -n "$bundle" ]]; then
   [[ -s "$bundle" ]] || { echo "NETRATEL_LOCAL_FIRST_COMPOSE_BUNDLE is missing: $bundle" >&2; exit 1; }
   bundle_extract_dir="$(mktemp -d)"
   tar -xzf "$bundle" -C "$bundle_extract_dir"
-  compose_file="$bundle_extract_dir/compose.local-sqlite.yaml"
-  [[ -f "$compose_file" ]] || { echo "Release bundle is missing compose.local-sqlite.yaml." >&2; exit 1; }
+  compose_file="$bundle_extract_dir/$bundle_compose_file"
+  [[ -f "$compose_file" ]] || { echo "Release bundle is missing $bundle_compose_file." >&2; exit 1; }
 fi
 
 compose_files=(-f "$compose_file")
+if [[ -n "${NETRATEL_LOCAL_FIRST_COMPOSE_OVERLAYS:-}" ]]; then
+  IFS=':' read -r -a acceptance_overlays <<<"$NETRATEL_LOCAL_FIRST_COMPOSE_OVERLAYS"
+  for acceptance_overlay in "${acceptance_overlays[@]}"; do
+    [[ -f "$acceptance_overlay" ]] || { echo "Local-first acceptance overlay is missing: $acceptance_overlay" >&2; exit 1; }
+    compose_files+=(-f "$acceptance_overlay")
+  done
+fi
 if [[ -n "$mcp_http_image" ]]; then
   local_http_mcp_directory="$(mktemp -d)"
   local_http_mcp_overlay="$root/tests/compose/local-http-mcp.compose.yaml"
@@ -104,7 +113,7 @@ chmod 644 "$key_path"
 export NETRATEL_AGENT_AUTH_PRIVATE_KEY="$key_path"
 export NETRATEL_WEB_PORT="$web_port"
 
-stage="starting SQLite Compose profile"
+stage="starting selected local-first Compose profile"
 if [[ -n "$bundle" ]]; then
   "${compose[@]}" up --detach
 else
