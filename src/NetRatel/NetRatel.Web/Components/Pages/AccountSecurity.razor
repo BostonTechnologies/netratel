@@ -1,0 +1,207 @@
+@page "/account/security"
+@attribute [Microsoft.AspNetCore.Authorization.Authorize]
+@rendermode InteractiveServer
+
+@using Microsoft.AspNetCore.Components.Authorization
+@using NetRatel.Web.Services.Authentication
+
+@inject AuthenticationStateProvider AuthenticationStateProvider
+@inject ILocalAccountApiService LocalAccountApi
+@inject NavigationManager Navigation
+
+<PageTitle>Account security</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.Medium" Class="mt-4" data-testid="account-security-page">
+    @if (!_isLocalAccount)
+    {
+        <MudAlert Severity="Severity.Info" data-testid="account-security-managed">This account is managed by your organization identity provider. Use that provider to change its sign-in settings.</MudAlert>
+    }
+    else
+    {
+        <MudStack Spacing="3">
+            <MudPaper Class="pa-4">
+                <MudText Typo="Typo.h4">Account security</MudText>
+                <MudText Typo="Typo.body2" Color="Color.Secondary">Use your current passphrase when changing sensitive local-account settings. Password and MFA changes invalidate existing sessions.</MudText>
+            </MudPaper>
+
+            @if (!string.IsNullOrWhiteSpace(_error))
+            {
+                <MudAlert Severity="Severity.Error" data-testid="account-security-error">@_error</MudAlert>
+            }
+
+            @if (_recoveryCodes is { Count: > 0 })
+            {
+                <MudAlert Severity="Severity.Warning" Variant="Variant.Filled" data-testid="mfa-recovery-codes">
+                    <MudText Typo="Typo.h6">Store these recovery codes now</MudText>
+                    <MudText Typo="Typo.body2">Each code works once. They will not be shown again.</MudText>
+                    <MudList T="string" Dense="true">
+                        @foreach (var recoveryCode in _recoveryCodes)
+                        {
+                            <MudListItem T="string" Value="@recoveryCode" data-testid="mfa-recovery-code">@recoveryCode</MudListItem>
+                        }
+                    </MudList>
+                    <MudButton Variant="Variant.Filled" OnClick="FinishEnrollment" data-testid="finish-mfa-enrollment">I stored the recovery codes</MudButton>
+                </MudAlert>
+            }
+            else
+            {
+                <MudPaper Class="pa-4">
+                    <MudText Typo="Typo.h6">Change passphrase</MudText>
+                    <MudGrid Spacing="2" Class="mt-1">
+                        <MudItem xs="12" md="4"><MudTextField Label="Current passphrase" InputType="InputType.Password" @bind-Value="_passwordCurrent" data-testid="change-password-current" /></MudItem>
+                        <MudItem xs="12" md="4"><MudTextField Label="New passphrase" InputType="InputType.Password" @bind-Value="_passwordNew" data-testid="change-password-new" /></MudItem>
+                        <MudItem xs="12" md="4"><MudTextField Label="Confirm new passphrase" InputType="InputType.Password" @bind-Value="_passwordConfirm" data-testid="change-password-confirm" /></MudItem>
+                    </MudGrid>
+                    <MudButton Class="mt-2" Variant="Variant.Filled" Disabled="@(_busy || !CanChangePassword)" OnClick="ChangePasswordAsync" data-testid="change-local-password">Change passphrase</MudButton>
+                </MudPaper>
+
+                <MudPaper Class="pa-4">
+                    <MudText Typo="Typo.h6">Authenticator app</MudText>
+                    @if (_authenticatorSetup is null)
+                    {
+                        <MudText Typo="Typo.body2" Color="Color.Secondary">Enroll an authenticator app. An existing authenticator must be disabled with its current code before a replacement can be enrolled.</MudText>
+                        <MudTextField Class="mt-2" Label="Current passphrase" InputType="InputType.Password" @bind-Value="_setupCurrentPassword" data-testid="mfa-setup-current-password" />
+                        <MudButton Class="mt-2" Variant="Variant.Filled" Disabled="@(_busy || string.IsNullOrWhiteSpace(_setupCurrentPassword))" OnClick="BeginMfaSetupAsync" data-testid="begin-mfa-setup">Show authenticator setup</MudButton>
+                    }
+                    else
+                    {
+                        <MudAlert Severity="Severity.Warning" data-testid="mfa-authenticator-secret">
+                            <MudText Typo="Typo.body2">Add this key to your authenticator app. It is shown only for this enrollment.</MudText>
+                            <MudTextField Value="_authenticatorSetup.SharedKey" ReadOnly="true" Label="Authenticator key" />
+                            <MudTextField Value="_authenticatorSetup.AuthenticatorUri" ReadOnly="true" Label="Authenticator URI" />
+                        </MudAlert>
+                        <MudTextField Class="mt-2" Label="Authenticator code" InputType="InputType.Password" @bind-Value="_enrollmentCode" data-testid="mfa-enrollment-code" />
+                        <MudButton Class="mt-2" Variant="Variant.Filled" Disabled="@(_busy || string.IsNullOrWhiteSpace(_enrollmentCode))" OnClick="EnableMfaAsync" data-testid="enable-mfa">Enable authenticator</MudButton>
+                    }
+                </MudPaper>
+
+                <MudPaper Class="pa-4">
+                    <MudText Typo="Typo.h6">Disable authenticator</MudText>
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">Use this only while you still have the current authenticator. You will be signed out when it is disabled.</MudText>
+                    <MudGrid Spacing="2" Class="mt-1">
+                        <MudItem xs="12" md="6"><MudTextField Label="Current passphrase" InputType="InputType.Password" @bind-Value="_disableCurrentPassword" data-testid="disable-mfa-current-password" /></MudItem>
+                        <MudItem xs="12" md="6"><MudTextField Label="Current authenticator code" InputType="InputType.Password" @bind-Value="_disableCode" data-testid="disable-mfa-code" /></MudItem>
+                    </MudGrid>
+                    <MudButton Class="mt-2" Variant="Variant.Outlined" Color="Color.Error" Disabled="@(_busy || string.IsNullOrWhiteSpace(_disableCurrentPassword) || string.IsNullOrWhiteSpace(_disableCode))" OnClick="DisableMfaAsync" data-testid="disable-mfa">Disable authenticator</MudButton>
+                </MudPaper>
+            }
+        </MudStack>
+    }
+</MudContainer>
+
+@code {
+    private bool _isLocalAccount;
+    private bool _busy;
+    private string? _error;
+    private string? _passwordCurrent;
+    private string? _passwordNew;
+    private string? _passwordConfirm;
+    private string? _setupCurrentPassword;
+    private string? _enrollmentCode;
+    private string? _disableCurrentPassword;
+    private string? _disableCode;
+    private AuthenticatorSetup? _authenticatorSetup;
+    private IReadOnlyList<string>? _recoveryCodes;
+
+    private bool CanChangePassword => !string.IsNullOrWhiteSpace(_passwordCurrent) && !string.IsNullOrWhiteSpace(_passwordNew) &&
+        string.Equals(_passwordNew, _passwordConfirm, StringComparison.Ordinal);
+
+    protected override async Task OnInitializedAsync()
+    {
+        var authentication = await AuthenticationStateProvider.GetAuthenticationStateAsync();
+        _isLocalAccount = authentication.User.HasClaim("auth_mode", "local");
+    }
+
+    private async Task ChangePasswordAsync()
+    {
+        _error = null;
+        if (!CanChangePassword)
+        {
+            _error = "Enter the current passphrase and matching new passphrases.";
+            return;
+        }
+
+        _busy = true;
+        try
+        {
+            await LocalAccountApi.ChangePasswordAsync(new LocalPasswordChangeRequest(_passwordCurrent!, _passwordNew!));
+            Navigation.NavigateTo("/logout", forceLoad: true);
+        }
+        catch (HttpRequestException)
+        {
+            _error = "The passphrase could not be changed. Your entries were kept so you can correct them and retry.";
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task BeginMfaSetupAsync()
+    {
+        _error = null;
+        _busy = true;
+        try
+        {
+            _authenticatorSetup = await LocalAccountApi.BeginTwoFactorSetupAsync(_setupCurrentPassword!);
+            _setupCurrentPassword = null;
+        }
+        catch (HttpRequestException exception) when (exception.StatusCode == System.Net.HttpStatusCode.Conflict)
+        {
+            _error = "An authenticator is already enrolled. Disable it with its current code before enrolling a replacement.";
+        }
+        catch (HttpRequestException)
+        {
+            _error = "Authenticator setup could not be started. Check your current passphrase and retry.";
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task EnableMfaAsync()
+    {
+        _error = null;
+        _busy = true;
+        try
+        {
+            _recoveryCodes = await LocalAccountApi.EnableTwoFactorAsync(_enrollmentCode!);
+            _authenticatorSetup = null;
+            _enrollmentCode = null;
+        }
+        catch (HttpRequestException)
+        {
+            _error = "The authenticator code was not accepted. The enrollment key remains available so you can try again.";
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task DisableMfaAsync()
+    {
+        _error = null;
+        _busy = true;
+        try
+        {
+            await LocalAccountApi.DisableTwoFactorAsync(new LocalTwoFactorDisableRequest(_disableCurrentPassword!, _disableCode!));
+            Navigation.NavigateTo("/logout", forceLoad: true);
+        }
+        catch (HttpRequestException)
+        {
+            _error = "The authenticator could not be disabled. Check the current passphrase and code, then retry.";
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private void FinishEnrollment()
+    {
+        _recoveryCodes = null;
+        Navigation.NavigateTo("/logout", forceLoad: true);
+    }
+}

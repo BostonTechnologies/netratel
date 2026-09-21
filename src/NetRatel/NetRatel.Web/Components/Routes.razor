@@ -12,7 +12,7 @@
                 </Authorized>
                 <NotAuthorized>
                     <!-- Unauthenticated users may use the setup wizard or sign in. -->
-                    @if (routeData.PageType == typeof(Login) || routeData.PageType == typeof(Setup))
+                    @if (routeData.PageType == typeof(Login) || routeData.PageType == typeof(Setup) || routeData.PageType == typeof(ActivateLocalAccount))
                     {
                         <RouteView RouteData="routeData" DefaultLayout="typeof(Layout.PublicLayout)" />
                     }

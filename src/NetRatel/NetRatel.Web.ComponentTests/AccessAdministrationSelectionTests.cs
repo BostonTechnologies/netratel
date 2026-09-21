@@ -28,7 +28,7 @@ public sealed class AccessAdministrationSelectionTests : AsyncBunitContext
         cut.WaitForAssertion(() =>
         {
             access.Created.Should().Be(("Scoped operator", "scoped@example.test"));
-            cut.Find("[data-testid='local-user-activation']").TextContent.Should().Contain("activation-token");
+            cut.Find("[data-testid='local-user-activation-token']").GetAttribute("value").Should().Be("activation-token");
         });
     }
 

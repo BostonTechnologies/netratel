@@ -86,6 +86,18 @@ local-first delivery or `v0.1.0-rc.3`.
 | Provider / auth | In-memory endpoint coverage for local accounts. Browser MFA/recovery-code lifecycle, rate-limit behavior, lockout recovery, and role-assigned administrator recovery remain required #64/#67 acceptance cells. |
 | Next action | Submit for hosted CI, then continue the remaining account-security journey rather than closing V03 on this boundary alone. |
 
+## #64 / #67 — browser local-account security journey
+
+| Field | Checkpoint |
+| --- | --- |
+| Branch | `feat/local-account-security-journey` |
+| Reproduction | The local-account API exposed activation, password change, authenticator enrollment, recovery-code generation, and explicit disablement, but the Web application had no supported browser path for an operator to perform those lifecycle actions. |
+| Repair | The Web application now has an anonymous activation page for an administrator-provided one-time handoff and a local-account security page for password changes, authenticator enrollment, one-time recovery-code acknowledgement, and current-factor disablement. The account navigation points to this supported surface. Secrets remain transient UI state and are not included in the ledger. |
+| Regression | `LocalFirstComposeBrowserSmokeTests` extends the real local Compose journey: an administrator creates a disabled user, that user activates the account in the browser, enrolls an authenticator, uses one recovery code once, and disables the authenticator with a current code. |
+| Local evidence | Release Web and Playwright test projects compile. Docker-backed execution is pending the hosted exact-head matrix. |
+| Provider / auth | Browser flow uses the existing local cookie/BFF boundary and local Identity APIs. OIDC pages continue to state that their provider manages sign-in settings. Rate-limit/recent-auth, lockout/role-admin recovery, scoped-route/search, and final artifact matrix cells remain required. |
+| Next action | Run the complete hosted source/extracted-bundle local-first and OIDC matrix, then continue the remaining #64/#67 acceptance without closing either issue on this slice alone. |
+
 ## #63 — transactional bootstrap completion recovery
 
 | Field | Checkpoint |
