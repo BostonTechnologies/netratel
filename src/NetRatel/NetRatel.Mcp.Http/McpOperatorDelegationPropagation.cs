@@ -2,7 +2,6 @@ using System.Security.Claims;
 using System.Diagnostics;
 using System.Text.Json;
 using System.Net.Http.Headers;
-using System.Net.Http.Json;
 using NetRatel.Mcp.Core;
 using NetRatel.Shared.Operations;
 
@@ -85,15 +84,37 @@ public sealed class McpOperatorDelegationPropagation(
             AgentIdFor(target?.Model, arguments),
             hostContext.OperatorSurfaceEnabled ? ObjectReferenceFor(target, arguments) : null,
             hostContext.OperatorSurfaceEnabled));
-        using var response = await httpClients.CreateClient(McpLocalCredentialAuthenticationHandler.ApiHttpClientName)
-            .SendAsync(request, cancellationToken).ConfigureAwait(false);
-        if (!response.IsSuccessStatusCode)
-            throw new InvalidOperationException($"Local HTTP MCP credential exchange was rejected with HTTP {(int)response.StatusCode}.");
+        try
+        {
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            deadline.CancelAfter(TimeSpan.FromSeconds(15));
+            using var response = await httpClients.CreateClient(McpLocalCredentialAuthenticationHandler.ApiHttpClientName)
+                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+                throw new McpLocalCredentialExchangeException(McpLocalCredentialExchangeFailure.FromResponse(response));
 
-        var execution = await response.Content.ReadFromJsonAsync<McpLocalExecutionResponse>(cancellationToken: cancellationToken).ConfigureAwait(false);
-        if (execution is null || string.IsNullOrWhiteSpace(execution.Assertion))
-            throw new InvalidOperationException("Local HTTP MCP credential exchange returned an invalid response.");
-        return context.Begin(execution.Assertion);
+            var execution = await McpLocalCredentialExchangeResponse
+                .ReadJsonAsync<McpLocalExecutionResponse>(response.Content, deadline.Token).ConfigureAwait(false);
+            if (execution is null || string.IsNullOrWhiteSpace(execution.Assertion))
+                throw new McpLocalCredentialExchangeException(McpLocalCredentialExchangeFailure.ProtocolError);
+            return context.Begin(execution.Assertion);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            throw new McpLocalCredentialExchangeException(McpLocalCredentialExchangeFailure.TimedOut);
+        }
+        catch (HttpRequestException)
+        {
+            throw new McpLocalCredentialExchangeException(McpLocalCredentialExchangeFailure.DependencyUnavailable);
+        }
+        catch (IOException)
+        {
+            throw new McpLocalCredentialExchangeException(McpLocalCredentialExchangeFailure.DependencyUnavailable);
+        }
     }
 
     private static McpOperatorDelegationIdentity IdentityFrom(ClaimsPrincipal user)

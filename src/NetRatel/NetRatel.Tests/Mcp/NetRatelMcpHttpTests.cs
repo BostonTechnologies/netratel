@@ -295,6 +295,87 @@ public sealed class NetRatelMcpHttpTests
         (await client.GetAsync("/.well-known/oauth-protected-resource/mcp")).StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
+    [Theory]
+    [InlineData(HttpStatusCode.Unauthorized, HttpStatusCode.Unauthorized, null)]
+    [InlineData(HttpStatusCode.Forbidden, HttpStatusCode.Forbidden, "local_credential_forbidden")]
+    [InlineData(HttpStatusCode.TooManyRequests, HttpStatusCode.TooManyRequests, "local_credential_throttled")]
+    [InlineData(HttpStatusCode.InternalServerError, HttpStatusCode.ServiceUnavailable, "local_credential_exchange_unavailable")]
+    [InlineData(HttpStatusCode.BadRequest, HttpStatusCode.BadGateway, "local_credential_exchange_protocol_error")]
+    public async Task Local_credential_authentication_preserves_safe_upstream_failure_classification(
+        HttpStatusCode upstreamStatus,
+        HttpStatusCode expectedStatus,
+        string? expectedCode)
+    {
+        using var response = new HttpResponseMessage(upstreamStatus);
+        if (upstreamStatus == HttpStatusCode.TooManyRequests)
+            response.Headers.RetryAfter = new RetryConditionHeaderValue(TimeSpan.FromSeconds(17));
+        await using var app = await CreateLocalCredentialFailureApplicationAsync(new StaticHttpMessageHandler(response));
+
+        using var result = await SendLocalCredentialRequestAsync(app);
+
+        var payload = await result.Content.ReadAsStringAsync();
+        result.StatusCode.Should().Be(expectedStatus, payload);
+        if (expectedCode is null)
+            payload.Should().BeEmpty();
+        else
+            JsonSerializer.Deserialize<LocalCredentialFailureResponse>(payload, new JsonSerializerOptions(JsonSerializerDefaults.Web))
+                .Should().Be(new LocalCredentialFailureResponse(expectedCode));
+        if (expectedStatus == HttpStatusCode.TooManyRequests)
+            result.Headers.RetryAfter!.Delta.Should().Be(TimeSpan.FromSeconds(17));
+    }
+
+    [Theory]
+    [InlineData(false, HttpStatusCode.ServiceUnavailable, "local_credential_exchange_unavailable")]
+    [InlineData(true, HttpStatusCode.GatewayTimeout, "local_credential_exchange_timed_out")]
+    public async Task Local_credential_authentication_classifies_transport_failures_without_transport_detail(
+        bool timedOut,
+        HttpStatusCode expectedStatus,
+        string expectedCode)
+    {
+        Exception exception = timedOut
+            ? new TaskCanceledException("upstream timeout detail must not be returned")
+            : new HttpRequestException("upstream address detail must not be returned");
+        await using var app = await CreateLocalCredentialFailureApplicationAsync(new ThrowingHttpMessageHandler(exception));
+
+        using var result = await SendLocalCredentialRequestAsync(app);
+
+        result.StatusCode.Should().Be(expectedStatus);
+        (await result.Content.ReadFromJsonAsync<LocalCredentialFailureResponse>()).Should().Be(new LocalCredentialFailureResponse(expectedCode));
+        (await result.Content.ReadAsStringAsync()).Should().NotContain("detail");
+    }
+
+    [Fact]
+    public async Task Local_credential_authentication_treats_malformed_success_payload_as_a_safe_gateway_failure()
+    {
+        using var response = new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = JsonContent.Create(new { ownerPrincipalId = "owner-only" })
+        };
+        await using var app = await CreateLocalCredentialFailureApplicationAsync(new StaticHttpMessageHandler(response));
+
+        using var result = await SendLocalCredentialRequestAsync(app);
+
+        result.StatusCode.Should().Be(HttpStatusCode.BadGateway);
+        (await result.Content.ReadFromJsonAsync<LocalCredentialFailureResponse>()).Should()
+            .Be(new LocalCredentialFailureResponse("local_credential_exchange_protocol_error"));
+    }
+
+    [Fact]
+    public async Task Local_credential_authentication_rejects_an_oversized_success_payload_without_reading_a_gateway_error()
+    {
+        using var response = new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(new string('x', 17 * 1024), Encoding.UTF8, "application/json")
+        };
+        await using var app = await CreateLocalCredentialFailureApplicationAsync(new StaticHttpMessageHandler(response));
+
+        using var result = await SendLocalCredentialRequestAsync(app);
+
+        result.StatusCode.Should().Be(HttpStatusCode.BadGateway);
+        (await result.Content.ReadFromJsonAsync<LocalCredentialFailureResponse>()).Should()
+            .Be(new LocalCredentialFailureResponse("local_credential_exchange_protocol_error"));
+    }
+
     [Fact]
     public void Local_execution_assertion_keeps_only_non_secret_credential_identity_and_permission()
     {
@@ -1293,6 +1374,42 @@ public sealed class NetRatelMcpHttpTests
         return path;
     }
 
+    private static async Task<WebApplication> CreateLocalCredentialFailureApplicationAsync(HttpMessageHandler credentialHandler)
+    {
+        var builder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = Environments.Development });
+        builder.WebHost.UseTestServer();
+        var options = ValidOptions();
+        var tokens = new McpOperatorDelegationTokenService(DelegationOptions());
+        builder.Services.AddSingleton(tokens);
+        builder.Services.AddSingleton(HostContext("dev"));
+        builder.Services.AddSingleton(options);
+        builder.Services.AddSingleton<McpLocalCredentialPairingService>();
+        builder.Services.AddHttpClient(McpLocalCredentialAuthenticationHandler.ApiHttpClientName, client => client.BaseAddress = new Uri("https://api.test/"))
+            .ConfigurePrimaryHttpMessageHandler(() => credentialHandler);
+        builder.Services.AddAuthentication(McpLocalCredentialAuthenticationHandler.SchemeName)
+            .AddScheme<AuthenticationSchemeOptions, McpLocalCredentialAuthenticationHandler>(McpLocalCredentialAuthenticationHandler.SchemeName, _ => { });
+        builder.Services.AddAuthorization(options => options.AddPolicy("local-credential", policy =>
+        {
+            policy.AddAuthenticationSchemes(McpLocalCredentialAuthenticationHandler.SchemeName);
+            policy.RequireAuthenticatedUser();
+        }));
+        var app = builder.Build();
+        app.Use((context, next) => McpLocalCredentialExchangeFailureResponses.InvokeAsync(context, next));
+        app.UseAuthentication();
+        app.UseAuthorization();
+        app.MapGet("/protected", () => Results.Ok()).RequireAuthorization("local-credential");
+        await app.StartAsync();
+        return app;
+    }
+
+    private static async Task<HttpResponseMessage> SendLocalCredentialRequestAsync(WebApplication app)
+    {
+        var client = app.GetTestClient();
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/protected");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "nrt_ic_test_credential");
+        return await client.SendAsync(request);
+    }
+
     private static HttpRequestMessage McpRequest(int id, string method, object parameters)
     {
         var request = new HttpRequestMessage(HttpMethod.Post, "/mcp")
@@ -1373,6 +1490,20 @@ public sealed class NetRatelMcpHttpTests
     {
         public Task<bool> MatchesDelegationAsync(McpOperatorDelegation delegation, CancellationToken cancellationToken) => Task.FromResult(false);
     }
+
+    private sealed class StaticHttpMessageHandler(HttpResponseMessage response) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            => Task.FromResult(response);
+    }
+
+    private sealed class ThrowingHttpMessageHandler(Exception exception) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            => Task.FromException<HttpResponseMessage>(exception);
+    }
+
+    private sealed record LocalCredentialFailureResponse(string Code);
 
     private sealed class TestApplication(WebApplication application, string configurationPath) : IAsyncDisposable
     {
