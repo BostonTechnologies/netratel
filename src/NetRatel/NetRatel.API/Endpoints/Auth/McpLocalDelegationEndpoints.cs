@@ -22,6 +22,9 @@ public static class McpLocalDelegationEndpoints
     {
         var group = app.MapGroup("/api/v2/mcp/local-delegation")
             .WithTags("MCP local delegation")
+            // This purpose-bound exchange also requires a short-lived pairing
+            // assertion. It is deliberately not a general API credential flow.
+            .ExcludeFromDescription()
             .RequireAuthorization("McpLocalDelegationExchange");
 
         group.MapPost("/authenticate", (

@@ -7,6 +7,52 @@ namespace NetRatel.API.OpenApi;
 /// <summary>Applies stable, consumer-facing taxonomy and security metadata to generated API operations.</summary>
 public static class NetRatelOpenApiCatalog
 {
+    private static readonly HashSet<string> DefaultAuthenticatedSchemes = ["Bearer", "LocalSession", "IntegrationCredential"];
+    private static readonly HashSet<string> InteractiveAccountSchemes = ["Bearer", "LocalSession"];
+    private static readonly HashSet<string> M2MSchemes = ["M2M"];
+    private static readonly HashSet<string> AgentSchemes = ["Agent"];
+    private static readonly HashSet<string> MachineTokenSchemes = ["MachineToken"];
+    private static readonly HashSet<string> LocalSessionSchemes = ["LocalSession"];
+    private static readonly HashSet<string> ArtifactUploadSchemes = ["Bearer", "LocalSession", "M2M"];
+    private static readonly HashSet<string> ArtifactDownloadSchemes = ["Bearer", "LocalSession", "M2M", "Agent"];
+    private static readonly IReadOnlyDictionary<string, HashSet<string>> PolicySchemes =
+        new Dictionary<string, HashSet<string>>(StringComparer.Ordinal)
+        {
+            ["M2MOnly"] = M2MSchemes,
+            ["AgentAccess"] = AgentSchemes,
+            ["AgentGatewayAccess"] = AgentSchemes,
+            ["MachineTokenApi"] = MachineTokenSchemes,
+            ["LocalUser"] = LocalSessionSchemes,
+            ["InteractiveAccount"] = InteractiveAccountSchemes,
+            ["ClientArtifactsUpload"] = ArtifactUploadSchemes,
+            ["HealthRead"] = ArtifactUploadSchemes,
+            ["ClientArtifactsDownload"] = ArtifactDownloadSchemes,
+
+            // These policies use the default selector and an effective-access
+            // requirement. An opaque API credential is therefore an intentional
+            // alternative, constrained by its durable grant tuple.
+            ["InstanceAdministrator"] = DefaultAuthenticatedSchemes,
+            ["TenantAdministrator"] = DefaultAuthenticatedSchemes,
+            ["ClientManager"] = DefaultAuthenticatedSchemes,
+            ["TelemetryReader"] = DefaultAuthenticatedSchemes,
+            ["TerminalOperator"] = DefaultAuthenticatedSchemes,
+            ["RemoteSupportOperator"] = DefaultAuthenticatedSchemes,
+            ["ScriptEditor"] = DefaultAuthenticatedSchemes,
+            ["SecretRevealer"] = DefaultAuthenticatedSchemes,
+            ["AuditReader"] = DefaultAuthenticatedSchemes,
+            ["CommandOperator"] = DefaultAuthenticatedSchemes,
+            ["FileReader"] = DefaultAuthenticatedSchemes,
+            ["FileWriter"] = DefaultAuthenticatedSchemes,
+            ["ArtifactPublisher"] = DefaultAuthenticatedSchemes,
+            ["McpOperatorPolicyAdmin"] = DefaultAuthenticatedSchemes,
+
+            // Administrative assertions deliberately do not accept a delegated
+            // integration credential, even though they use the default selector.
+            ["Operator"] = InteractiveAccountSchemes,
+            ["AkkaShadowAccess"] = InteractiveAccountSchemes,
+            ["ClientArtifactsWrite"] = InteractiveAccountSchemes
+        };
+
     public static Task TransformOperationAsync(
         OpenApiOperation operation,
         OpenApiOperationTransformerContext context,
@@ -32,26 +78,56 @@ public static class NetRatelOpenApiCatalog
             return Task.CompletedTask;
         }
 
-        var policy = metadata?.OfType<IAuthorizeData>().Select(item => item.Policy).FirstOrDefault(name => !string.IsNullOrWhiteSpace(name));
-        var scheme = policy switch
+        var authorization = metadata?.OfType<IAuthorizeData>().ToArray() ?? [];
+        var supportedSchemes = ResolveSupportedSchemes(authorization);
+        operation.Security = supportedSchemes.Select(scheme => new OpenApiSecurityRequirement
         {
-            "M2MOnly" => "M2M",
-            "AgentAccess" or "AgentGatewayAccess" => "Agent",
-            "MachineTokenApi" => "MachineToken",
-            "LocalUser" => "LocalSession",
-            "McpLocalDelegationExchange" => "IntegrationCredential",
-            _ => "Bearer"
-        };
-
-        operation.Security =
-        [
-            new OpenApiSecurityRequirement
-            {
-                [new OpenApiSecuritySchemeReference(scheme, document)] = []
-            }
-        ];
+            [new OpenApiSecuritySchemeReference(scheme, document)] = []
+        }).ToList();
         return Task.CompletedTask;
     }
+
+    private static IReadOnlyList<string> ResolveSupportedSchemes(IReadOnlyCollection<IAuthorizeData> authorization)
+    {
+        if (authorization.Count == 0)
+        {
+            // The fallback policy is administrator-only and does not establish
+            // the effective-access boundary required for delegated credentials.
+            return Ordered(InteractiveAccountSchemes);
+        }
+
+        HashSet<string>? intersection = null;
+        foreach (var requirement in authorization)
+        {
+            var allowed = string.IsNullOrWhiteSpace(requirement.Policy)
+                ? DefaultAuthenticatedSchemes
+                : PolicySchemes.TryGetValue(requirement.Policy, out var schemes)
+                    ? schemes
+                    : throw new InvalidOperationException($"OpenAPI security metadata has no contract for authorization policy '{requirement.Policy}'.");
+
+            if (!string.IsNullOrWhiteSpace(requirement.AuthenticationSchemes))
+            {
+                allowed = allowed.Intersect(
+                    requirement.AuthenticationSchemes.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries),
+                    StringComparer.Ordinal).ToHashSet(StringComparer.Ordinal);
+            }
+
+            intersection = intersection is null
+                ? new HashSet<string>(allowed, StringComparer.Ordinal)
+                : intersection.Intersect(allowed, StringComparer.Ordinal).ToHashSet(StringComparer.Ordinal);
+        }
+
+        if (intersection is null || intersection.Count == 0)
+        {
+            throw new InvalidOperationException("OpenAPI security metadata has no authentication scheme that satisfies every authorization requirement.");
+        }
+
+        return Ordered(intersection);
+    }
+
+    private static IReadOnlyList<string> Ordered(IEnumerable<string> schemes) => schemes
+        .OrderBy(scheme => scheme, StringComparer.Ordinal)
+        .ToArray();
 
     private static string Classify(string path) => path.ToLowerInvariant() switch
     {

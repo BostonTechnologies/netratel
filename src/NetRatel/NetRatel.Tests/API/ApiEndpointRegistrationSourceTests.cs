@@ -33,7 +33,8 @@ public sealed class ApiEndpointRegistrationSourceTests
             .And.Contain("IAllowAnonymous")
             .And.Contain("M2MOnly")
             .And.Contain("AgentGatewayAccess")
-            .And.Contain("McpLocalDelegationExchange")
+            .And.Contain("DefaultAuthenticatedSchemes")
+            .And.Contain("ResolveSupportedSchemes")
             .And.Contain("Integrations/MCP")
             .And.Contain("Remote Support");
     }
