@@ -1,5 +1,8 @@
+using System.Data.Common;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
+using NetRatel.Infrastructure.Identity;
 using NetRatel.Infrastructure.Persistence;
 using Npgsql;
 
@@ -23,11 +26,6 @@ public sealed class BootstrapLifecycleService
     public async Task<BootstrapDescriptor> InitializeAsync(CancellationToken cancellationToken = default)
     {
         var descriptor = await _store.LoadOrCreateAsync(cancellationToken).ConfigureAwait(false);
-        if (descriptor.State != BootstrapState.Unconfigured)
-        {
-            return descriptor;
-        }
-
         var connectionString = _configuration.GetConnectionString("NetRatelDb") ?? _configuration.GetConnectionString("Default");
         if (IsPlaceholder(connectionString))
         {
@@ -35,6 +33,42 @@ public sealed class BootstrapLifecycleService
         }
 
         var database = NetRatelDatabaseConfigurationResolver.Resolve(_configuration);
+
+        if (CanReconcileCompletedInitialization(descriptor))
+        {
+            try
+            {
+                if (await HasCompletedInitializationAsync(database, descriptor, cancellationToken).ConfigureAwait(false))
+                {
+                    return await _store.UpdateAsync(
+                        current => current with
+                        {
+                            State = BootstrapState.Ready,
+                            SelectedProvider = ProviderName(database.Provider),
+                            ConnectionReference = "ConnectionStrings:NetRatelDb",
+                            OperationId = null,
+                            OperationLeaseExpiresAtUtc = null,
+                            RecoveryReason = null,
+                            AdoptedExistingInstallation = false
+                        },
+                        "initialization-commit-reconciled",
+                        cancellationToken).ConfigureAwait(false);
+                }
+            }
+            catch (Exception ex) when (ex is NpgsqlException or SqliteException or TimeoutException or InvalidOperationException)
+            {
+                // An unavailable database cannot establish completed initialization evidence.
+                // Preserve the restricted bootstrap state and retry reconciliation on startup.
+                return descriptor;
+            }
+
+            return descriptor;
+        }
+
+        if (descriptor.State != BootstrapState.Unconfigured)
+        {
+            return descriptor;
+        }
 
         LegacyProbeResult probe;
         try
@@ -44,7 +78,7 @@ public sealed class BootstrapLifecycleService
         catch (Exception ex) when (ex is NpgsqlException or SqliteException or TimeoutException or InvalidOperationException)
         {
             return await _store.UpdateAsync(
-                current => current with { State = BootstrapState.RecoveryRequired, OperationId = null, OperationLeaseExpiresAtUtc = null },
+                current => current with { State = BootstrapState.RecoveryRequired, OperationId = null, OperationLeaseExpiresAtUtc = null, RecoveryReason = "configured-storage-unavailable" },
                 "configured-storage-unavailable",
                 cancellationToken).ConfigureAwait(false);
         }
@@ -64,6 +98,7 @@ public sealed class BootstrapLifecycleService
                         ConnectionReference = "ConnectionStrings:NetRatelDb",
                         OperationId = null,
                         OperationLeaseExpiresAtUtc = null,
+                        RecoveryReason = null,
                         AdoptedExistingInstallation = false
                     },
                     "configured-oidc-compatible-startup",
@@ -76,7 +111,7 @@ public sealed class BootstrapLifecycleService
         if (probe == LegacyProbeResult.RequiresRecovery || !HasConfiguredOidc())
         {
             return await _store.UpdateAsync(
-                current => current with { State = BootstrapState.RecoveryRequired, OperationId = null, OperationLeaseExpiresAtUtc = null },
+                current => current with { State = BootstrapState.RecoveryRequired, OperationId = null, OperationLeaseExpiresAtUtc = null, RecoveryReason = "legacy-continuity-insufficient" },
                 "legacy-continuity-insufficient",
                 cancellationToken).ConfigureAwait(false);
         }
@@ -89,6 +124,7 @@ public sealed class BootstrapLifecycleService
                 ConnectionReference = "ConnectionStrings:NetRatelDb",
                 OperationId = null,
                 OperationLeaseExpiresAtUtc = null,
+                RecoveryReason = null,
                 AdoptedExistingInstallation = true
             },
             "legacy-installation-adopted",
@@ -178,6 +214,60 @@ public sealed class BootstrapLifecycleService
             if (await hasRowsAsync(table).ConfigureAwait(false)) return LegacyProbeResult.Adoptable;
 
         return LegacyProbeResult.RequiresRecovery;
+    }
+
+    private static bool CanReconcileCompletedInitialization(BootstrapDescriptor descriptor) =>
+        descriptor.State == BootstrapState.Configuring ||
+        (descriptor.State == BootstrapState.RecoveryRequired &&
+         string.Equals(descriptor.RecoveryReason, "configuration-lease-expired", StringComparison.Ordinal));
+
+    private static async Task<bool> HasCompletedInitializationAsync(
+        NetRatelDatabaseConfiguration database,
+        BootstrapDescriptor descriptor,
+        CancellationToken cancellationToken)
+    {
+        await using DbConnection connection = database.Provider is NetRatelDatabaseProvider.Sqlite
+            ? new SqliteConnection(database.ConnectionString)
+            : new NpgsqlConnection(database.ConnectionString);
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+
+        var applicationOptions = new DbContextOptionsBuilder<OrchestratorDbContext>();
+        var identityOptions = new DbContextOptionsBuilder<NetRatelIdentityDbContext>();
+        if (database.Provider is NetRatelDatabaseProvider.Sqlite)
+        {
+            applicationOptions.UseSqlite(connection, sqlite => sqlite.MigrationsAssembly("NetRatel.SqliteMigrations"));
+            identityOptions.UseSqlite(connection, sqlite => sqlite.MigrationsAssembly("NetRatel.SqliteMigrations"));
+        }
+        else
+        {
+            applicationOptions.UseNpgsql(connection, postgres => postgres.MigrationsAssembly("NetRatel.Migrations"));
+            identityOptions.UseNpgsql(connection, postgres => postgres.MigrationsAssembly("NetRatel.Migrations"));
+        }
+
+        await using var application = new OrchestratorDbContext(applicationOptions.Options);
+        var initialization = await application.BootstrapInitializations.AsNoTracking()
+            .SingleOrDefaultAsync(record => record.Id == BootstrapInitializationRecord.SingletonId &&
+                                      record.BootstrapInstanceId == descriptor.InstanceId,
+                cancellationToken).ConfigureAwait(false);
+        if (initialization is null ||
+            !await application.Tenants.AsNoTracking().AnyAsync(tenant => tenant.Id == initialization.TenantId, cancellationToken).ConfigureAwait(false))
+        {
+            return false;
+        }
+
+        await using var identity = new NetRatelIdentityDbContext(identityOptions.Options);
+        var administrator = await identity.Users.AsNoTracking()
+            .SingleOrDefaultAsync(user => user.Id == initialization.AdministratorUserId &&
+                                      user.IsEnabled && user.IsInstanceAdministrator,
+                cancellationToken).ConfigureAwait(false);
+        if (administrator is null)
+        {
+            return false;
+        }
+
+        return await identity.ApplicationPrincipals.AsNoTracking().AnyAsync(
+            principal => principal.Id == administrator.PrincipalId && principal.LocalUserId == administrator.Id,
+            cancellationToken).ConfigureAwait(false);
     }
 
     private static string ProviderName(NetRatelDatabaseProvider provider) =>

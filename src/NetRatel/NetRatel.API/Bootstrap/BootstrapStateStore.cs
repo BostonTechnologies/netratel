@@ -137,6 +137,7 @@ public sealed class BootstrapStateStore
         {
             State = BootstrapState.Configuring,
             SetupProofHash = string.Empty,
+            RecoveryReason = null,
             SelectedProvider = selectedProvider,
             ConnectionReference = connectionReference,
             OperationId = operationId,
@@ -187,6 +188,7 @@ public sealed class BootstrapStateStore
             State = BootstrapState.Ready,
             OperationId = null,
             OperationLeaseExpiresAtUtc = null,
+            RecoveryReason = null,
             UpdatedAtUtc = _timeProvider.GetUtcNow()
         };
         await WriteDescriptorAsync(completed, cancellationToken).ConfigureAwait(false);
@@ -282,6 +284,7 @@ public sealed class BootstrapStateStore
             State = BootstrapState.RecoveryRequired,
             OperationId = null,
             OperationLeaseExpiresAtUtc = null,
+            RecoveryReason = eventName,
             UpdatedAtUtc = _timeProvider.GetUtcNow()
         };
         await WriteDescriptorAsync(recovery, cancellationToken).ConfigureAwait(false);

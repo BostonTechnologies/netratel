@@ -3,6 +3,7 @@ using FluentAssertions;
 using Microsoft.Data.Sqlite;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -80,10 +81,14 @@ public sealed class SqliteProviderMigrationTests
             await using var verifyApplication = new OrchestratorDbContext(applicationOptions);
             await using var verifyIdentity = new NetRatelIdentityDbContext(identityOptions);
             (await verifyApplication.Tenants.SingleAsync()).Name.Should().Be("Initial tenant");
+            var initialization = await verifyApplication.BootstrapInitializations.SingleAsync();
+            initialization.Id.Should().Be(BootstrapInitializationRecord.SingletonId);
+            initialization.TenantId.Should().Be((await verifyApplication.Tenants.SingleAsync()).Id);
             var user = await verifyIdentity.Users.SingleAsync();
             user.Email.Should().Be("admin@example.test");
             user.IsInstanceAdministrator.Should().BeTrue();
             user.PrincipalId.Should().NotBeNullOrWhiteSpace();
+            initialization.AdministratorUserId.Should().Be(user.Id);
 
             var originalStamp = user.SecurityStamp;
             var originalRevision = user.AuthorizationRevision;
@@ -97,6 +102,112 @@ public sealed class SqliteProviderMigrationTests
             new PasswordHasher<LocalUser>().VerifyHashedPassword(user, user.PasswordHash!, "a recovered local passphrase")
                 .Should().Be(PasswordVerificationResult.Success);
             (await initializer.RecoverAdministratorAsync("not-an-admin@example.test", "another recovered passphrase")).Succeeded.Should().BeFalse();
+        }
+        finally
+        {
+            File.Delete(databasePath);
+            if (Directory.Exists(stateDirectory)) Directory.Delete(stateDirectory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Restart_reconciles_a_committed_initialization_after_the_descriptor_completion_crash_window()
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"netratel-bootstrap-reconciliation-{Guid.NewGuid():N}.db");
+        var stateDirectory = Path.Combine(Path.GetTempPath(), "netratel-bootstrap-reconciliation", Guid.NewGuid().ToString("N"));
+        var connectionString = $"Data Source={databasePath};Foreign Keys=True";
+        try
+        {
+            var applicationOptions = new DbContextOptionsBuilder<OrchestratorDbContext>()
+                .UseSqlite(connectionString, sqlite => sqlite.MigrationsAssembly("NetRatel.SqliteMigrations"))
+                .Options;
+            var identityOptions = new DbContextOptionsBuilder<NetRatelIdentityDbContext>()
+                .UseSqlite(connectionString, sqlite => sqlite.MigrationsAssembly("NetRatel.SqliteMigrations"))
+                .Options;
+            await using (var application = new OrchestratorDbContext(applicationOptions)) await application.Database.MigrateAsync();
+            await using (var identity = new NetRatelIdentityDbContext(identityOptions)) await identity.Database.MigrateAsync();
+
+            var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Database:Provider"] = "Sqlite",
+                ["Database:InstanceCount"] = "1",
+                ["ConnectionStrings:NetRatelDb"] = connectionString
+            }).Build();
+            var store = new BootstrapStateStore(new BootstrapOptions { StateDirectory = stateDirectory });
+            await store.LoadOrCreateAsync();
+            var proof = await File.ReadAllTextAsync(Path.Combine(stateDirectory, "setup-proof"));
+            var claim = await store.ClaimSetupAsync(proof, "SQLite", "ConnectionStrings:NetRatelDb");
+            claim.Succeeded.Should().BeTrue();
+            var descriptor = claim.Descriptor!;
+
+            // This is the durable state left if the process stops after the shared database
+            // transaction commits and before CompleteSetupAsync can update descriptor.json.
+            await using var connection = new SqliteConnection(connectionString);
+            await connection.OpenAsync();
+            await using var recoveryApplication = new OrchestratorDbContext(new DbContextOptionsBuilder<OrchestratorDbContext>()
+                .UseSqlite(connection, sqlite => sqlite.MigrationsAssembly("NetRatel.SqliteMigrations"))
+                .Options);
+            await using var recoveryIdentity = new NetRatelIdentityDbContext(new DbContextOptionsBuilder<NetRatelIdentityDbContext>()
+                .UseSqlite(connection, sqlite => sqlite.MigrationsAssembly("NetRatel.SqliteMigrations"))
+                .Options);
+            await using var transaction = await recoveryIdentity.Database.BeginTransactionAsync();
+            await recoveryApplication.Database.UseTransactionAsync(transaction.GetDbTransaction());
+
+            var principal = new ApplicationPrincipal { Id = "recovered-bootstrap-principal" };
+            var user = new LocalUser
+            {
+                Id = "recovered-bootstrap-admin",
+                UserName = "admin@example.test",
+                NormalizedUserName = "ADMIN@EXAMPLE.TEST",
+                Email = "admin@example.test",
+                NormalizedEmail = "ADMIN@EXAMPLE.TEST",
+                PrincipalId = principal.Id,
+                DisplayName = "Initial Administrator",
+                IsEnabled = true,
+                IsInstanceAdministrator = true
+            };
+            principal.LocalUserId = user.Id;
+            var tenant = new Tenant
+            {
+                Name = "Initial tenant",
+                ContactPerson = user.DisplayName,
+                ContactEmail = user.Email,
+                CreatedAtUtc = DateTimeOffset.UtcNow,
+                UpdatedAtUtc = DateTimeOffset.UtcNow
+            };
+            recoveryIdentity.ApplicationPrincipals.Add(principal);
+            recoveryIdentity.Users.Add(user);
+            recoveryApplication.Tenants.Add(tenant);
+            await recoveryIdentity.SaveChangesAsync();
+            await recoveryApplication.SaveChangesAsync();
+            recoveryApplication.BootstrapInitializations.Add(new BootstrapInitializationRecord
+            {
+                BootstrapInstanceId = descriptor.InstanceId,
+                OperationId = descriptor.OperationId!.Value,
+                TenantId = tenant.Id,
+                AdministratorUserId = user.Id,
+                CompletedAtUtc = DateTimeOffset.UtcNow
+            });
+            await recoveryApplication.SaveChangesAsync();
+            await transaction.CommitAsync();
+
+            // A later restart can encounter the expired configuration lease before the
+            // descriptor completion write. That recovery reason alone is eligible for the
+            // durable-record reconciliation; key-material and other recovery reasons are not.
+            await store.UpdateAsync(current => current with
+            {
+                State = BootstrapState.RecoveryRequired,
+                OperationId = null,
+                OperationLeaseExpiresAtUtc = null,
+                RecoveryReason = "configuration-lease-expired"
+            }, "configuration-lease-expired");
+
+            var reconciled = await new BootstrapLifecycleService(store, configuration).InitializeAsync();
+
+            reconciled.State.Should().Be(BootstrapState.Ready);
+            reconciled.OperationId.Should().BeNull();
+            reconciled.RecoveryReason.Should().BeNull();
+            (await store.LoadOrCreateAsync()).State.Should().Be(BootstrapState.Ready);
         }
         finally
         {
@@ -226,7 +337,8 @@ public sealed class SqliteProviderMigrationTests
             await using (var db = new OrchestratorDbContext(orchestratorOptions))
             {
                 await db.Database.MigrateAsync();
-                (await db.Database.GetAppliedMigrationsAsync()).Should().HaveCount(4);
+                (await db.Database.GetAppliedMigrationsAsync()).Should().HaveCount(5)
+                    .And.Contain(migration => migration.EndsWith("AddBootstrapInitializationRecord", StringComparison.Ordinal));
 
                 var tenant = new Tenant { Name = "SQLite Tenant" };
                 db.Tenants.Add(tenant);

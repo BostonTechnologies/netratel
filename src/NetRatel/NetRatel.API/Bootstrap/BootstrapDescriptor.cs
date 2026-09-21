@@ -18,7 +18,8 @@ public sealed record BootstrapDescriptor(
     DateTimeOffset? OperationLeaseExpiresAtUtc,
     DateTimeOffset CreatedAtUtc,
     DateTimeOffset UpdatedAtUtc,
-    bool AdoptedExistingInstallation);
+    bool AdoptedExistingInstallation,
+    string? RecoveryReason = null);
 
 public sealed record BootstrapStatus(
     BootstrapState State,

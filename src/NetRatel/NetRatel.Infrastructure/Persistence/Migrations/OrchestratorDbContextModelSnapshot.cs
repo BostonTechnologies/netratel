@@ -18,7 +18,7 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "10.0.11")
+                .HasAnnotation("ProductVersion", "10.0.12")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.HasPostgresExtension(modelBuilder, "pg_trgm");
@@ -303,6 +303,36 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.HasIndex("TenantId", "AgentId", "CreatedAtUtc");
 
                     b.ToTable("AgentTokenEvents", (string)null);
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.BootstrapInitializationRecord", b =>
+                {
+                    b.Property<int>("Id")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("AdministratorUserId")
+                        .IsRequired()
+                        .HasMaxLength(450)
+                        .HasColumnType("character varying(450)");
+
+                    b.Property<Guid>("BootstrapInstanceId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("CompletedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("OperationId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BootstrapInstanceId")
+                        .IsUnique();
+
+                    b.ToTable("BootstrapInitializations", (string)null);
                 });
 
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ClientUpdateAttemptRecord", b =>
