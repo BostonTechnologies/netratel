@@ -212,6 +212,21 @@ public sealed record McpOperatorDelegationRequest(
     string? CorrelationId = null)
 {
     /// <summary>
+    /// A closed-schema durable object identifier carried in a gateway pairing
+    /// proof. The API resolves its ownership; this value is never itself an
+    /// authorization target.
+    /// </summary>
+    public string? ObjectReference { get; init; }
+
+    /// <summary>
+    /// Set only by the configured MCP host when the request used the V2
+    /// operator surface whose object references are owned by this API.
+    /// Development compatibility schemas retain their established pair-based
+    /// route contract.
+    /// </summary>
+    public bool ObjectTargetResolutionEnabled { get; init; }
+
+    /// <summary>
     /// The opaque HTTP-MCP credential identifier after the API has exchanged
     /// it. This is never the bearer secret and is rechecked by the API before
     /// every delegated execution.
@@ -236,6 +251,12 @@ public sealed record McpOperatorDelegation(
     Guid? AgentId = null,
     string? CorrelationId = null)
 {
+    /// <summary>Closed-schema object identifier revalidated by the API for local execution.</summary>
+    public string? ObjectReference { get; init; }
+
+    /// <summary>Whether this assertion requires API-side durable object-owner revalidation.</summary>
+    public bool ObjectTargetResolutionEnabled { get; init; }
+
     /// <summary>Non-secret source credential identity for local HTTP MCP execution.</summary>
     public string? IngressCredentialId { get; init; }
 
@@ -296,6 +317,9 @@ public sealed class McpOperatorDelegationTokenService
         AddOptional(claims, "mcp_resource", request.Resource);
         AddOptional(claims, "mcp_instance", request.Instance);
         AddOptional(claims, "mcp_correlation_id", request.CorrelationId);
+        AddOptional(claims, "mcp_object_reference", request.ObjectReference);
+        if (request.ObjectTargetResolutionEnabled)
+            claims.Add(new Claim("mcp_object_target_resolution", "true"));
         AddOptional(claims, "mcp_ingress_credential_id", request.IngressCredentialId);
         AddOptional(claims, "mcp_ingress_permission", request.IngressPermission);
         if (request.TenantId is { } tenantId)
@@ -371,6 +395,8 @@ public sealed class McpOperatorDelegationTokenService
                 OptionalGuidClaim(principal, "mcp_agent_id"),
                 OptionalClaim(principal, "mcp_correlation_id"))
             {
+                ObjectReference = OptionalClaim(principal, "mcp_object_reference"),
+                ObjectTargetResolutionEnabled = OptionalBooleanClaim(principal, "mcp_object_target_resolution"),
                 IngressCredentialId = OptionalClaim(principal, "mcp_ingress_credential_id"),
                 IngressPermission = OptionalClaim(principal, "mcp_ingress_permission")
             };
@@ -388,6 +414,8 @@ public sealed class McpOperatorDelegationTokenService
                 delegationRequest.AgentId,
                 delegationRequest.CorrelationId)
             {
+                ObjectReference = delegationRequest.ObjectReference,
+                ObjectTargetResolutionEnabled = delegationRequest.ObjectTargetResolutionEnabled,
                 IngressCredentialId = delegationRequest.IngressCredentialId,
                 IngressPermission = delegationRequest.IngressPermission
             };
@@ -445,6 +473,18 @@ public sealed class McpOperatorDelegationTokenService
             : throw new InvalidOperationException($"Delegation assertion has an invalid {type} claim.");
     }
 
+    private static bool OptionalBooleanClaim(ClaimsPrincipal principal, string type)
+    {
+        var value = OptionalClaim(principal, type);
+        return value switch
+        {
+            null => false,
+            "true" => true,
+            "false" => false,
+            _ => throw new InvalidOperationException($"Delegation assertion has an invalid {type} claim.")
+        };
+    }
+
     private static IReadOnlyCollection<string> Values(ClaimsPrincipal principal, string type)
         => principal.FindAll(type).Select(claim => claim.Value).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
 
@@ -470,6 +510,7 @@ public sealed class McpOperatorDelegationTokenService
         ValidateOptional(request.Resource, nameof(request.Resource));
         ValidateOptional(request.Instance, nameof(request.Instance));
         ValidateOptional(request.CorrelationId, nameof(request.CorrelationId));
+        ValidateOptional(request.ObjectReference, nameof(request.ObjectReference));
         ValidateOptional(request.IngressCredentialId, nameof(request.IngressCredentialId));
         ValidateOptional(request.IngressPermission, nameof(request.IngressPermission));
         if (request.TenantId is <= 0)

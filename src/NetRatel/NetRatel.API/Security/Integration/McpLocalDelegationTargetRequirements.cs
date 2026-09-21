@@ -22,20 +22,28 @@ internal static class McpLocalDelegationTargetRequirements
         switch (target.Model)
         {
             case McpOperationTargetModel.NoBusinessTarget:
-                return delegation.TenantId is null && delegation.AgentId is null;
+                return delegation.TenantId is null && delegation.AgentId is null && delegation.ObjectReference is null;
 
             case McpOperationTargetModel.Tenant:
-                if (delegation.TenantId is not > 0 || delegation.AgentId is not null)
+                if (delegation.TenantId is not > 0 || delegation.AgentId is not null || delegation.ObjectReference is not null)
                     return false;
                 authorizationTenantId = delegation.TenantId;
                 return true;
 
             case McpOperationTargetModel.Agent:
+                if (delegation.TenantId is not > 0 || delegation.AgentId is null || delegation.ObjectReference is not null)
+                    return false;
+                authorizationTenantId = delegation.TenantId;
+                return true;
+
             case McpOperationTargetModel.ObjectDerived:
-                // Object-derived routes retain their existing exact-pair
-                // compatibility contract until a persistence-backed resolver
-                // replaces it. They never fall back to a global grant.
                 if (delegation.TenantId is not > 0 || delegation.AgentId is null)
+                    return false;
+                if (!delegation.ObjectTargetResolutionEnabled)
+                    return delegation.ObjectReference is null;
+                if (target.RequiresObjectReference && string.IsNullOrWhiteSpace(delegation.ObjectReference))
+                    return false;
+                if (delegation.ObjectReference is not null && target.ObjectReferenceKind is null)
                     return false;
                 authorizationTenantId = delegation.TenantId;
                 return true;

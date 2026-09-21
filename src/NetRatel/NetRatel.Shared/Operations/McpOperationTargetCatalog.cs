@@ -25,11 +25,38 @@ public enum McpOperationTargetModel
     Agent
 }
 
+/// <summary>
+/// A durable object identifier whose ownership can be resolved by the API
+/// before a locally minted delegation is admitted. The value is never a
+/// caller-supplied substitute for the resolved tenant or agent target.
+/// </summary>
+public enum McpOperationObjectReferenceKind
+{
+    Job,
+    JobRun,
+    Task,
+    Request
+}
+
 /// <summary>Closed target contract for one advertised MCP operation.</summary>
 public sealed record McpOperationTargetDescriptor(
     string ToolName,
     string OperationName,
-    McpOperationTargetModel Model);
+    McpOperationTargetModel Model)
+{
+    /// <summary>
+    /// The closed-schema request property carrying a durable object reference,
+    /// when this operation has one. A null value means the operation's target
+    /// is represented directly by its catalogued target shape.
+    /// </summary>
+    public string? ObjectReferencePropertyName { get; init; }
+
+    /// <summary>The persisted object family represented by the request property.</summary>
+    public McpOperationObjectReferenceKind? ObjectReferenceKind { get; init; }
+
+    /// <summary>Whether the closed request schema requires the object reference.</summary>
+    public bool RequiresObjectReference { get; init; }
+}
 
 /// <summary>
 /// Single source of truth for target requirements of the checked-in MCP
@@ -42,10 +69,19 @@ public static class McpOperationTargetCatalog
 {
     public static IReadOnlyList<McpOperationTargetDescriptor> Operations { get; } =
     [
-        .. McpOperationAccessCatalog.Operations.Select(access => new McpOperationTargetDescriptor(
-            access.ToolName,
-            access.OperationName,
-            TargetFor(access.ToolName, access.OperationName)))
+        .. McpOperationAccessCatalog.Operations.Select(access =>
+        {
+            var objectReference = ObjectReferenceFor(access.ToolName, access.OperationName);
+            return new McpOperationTargetDescriptor(
+                access.ToolName,
+                access.OperationName,
+                TargetFor(access.ToolName, access.OperationName))
+            {
+                ObjectReferencePropertyName = objectReference?.PropertyName,
+                ObjectReferenceKind = objectReference?.Kind,
+                RequiresObjectReference = objectReference?.Required ?? false
+            };
+        })
     ];
 
     public static McpOperationTargetDescriptor? Find(string toolName, string? operationName) =>
@@ -109,5 +145,27 @@ public static class McpOperationTargetCatalog
         ("netratel_remote_support_v2", _) => McpOperationTargetModel.Agent,
 
         _ => throw new InvalidOperationException($"MCP operation '{tool}/{operation}' has no target-model classification.")
+    };
+
+    private static (string PropertyName, McpOperationObjectReferenceKind Kind, bool Required)? ObjectReferenceFor(string tool, string operation) => (tool, operation) switch
+    {
+        ("netratel_jobs", "get" or "details" or "params" or "steps" or "update" or "delete" or
+            "param_add" or "param_update" or "param_delete" or "step_add" or "step_update" or "step_reorder" or "step_delete")
+            => ("jobId", McpOperationObjectReferenceKind.Job, true),
+
+        ("netratel_job_runs", "get" or "steps" or "logs" or "cancel" or "delete")
+            => ("jobRunId", McpOperationObjectReferenceKind.JobRun, true),
+        ("netratel_job_runs", "start" or "list" or "query")
+            => ("jobId", McpOperationObjectReferenceKind.Job, operation == "start"),
+
+        ("netratel_tasks", "get" or "logs" or "cancel")
+            => ("taskId", McpOperationObjectReferenceKind.Task, true),
+
+        ("netratel_requests", "get" or "update" or "claim" or "complete" or "fail" or "cancel")
+            => ("requestId", McpOperationObjectReferenceKind.Request, true),
+        ("netratel_requests", "create" or "list")
+            => ("jobId", McpOperationObjectReferenceKind.Job, operation == "create"),
+
+        _ => null
     };
 }

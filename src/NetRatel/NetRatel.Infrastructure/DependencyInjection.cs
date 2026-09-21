@@ -21,6 +21,7 @@ using NetRatel.Infrastructure.Notifications;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.Requests;
 using NetRatel.Infrastructure.Services;
+using NetRatel.Shared.Operations;
 
 namespace NetRatel.Infrastructure;
 
@@ -44,6 +45,7 @@ public static class DependencyInjection
         services.AddScoped<IEffectiveAccessService, EffectiveAccessService>();
         services.AddScoped<IIntegrationCredentialService, IntegrationCredentialService>();
         services.AddScoped<IIntegrationCredentialCurrentVerifier, IntegrationCredentialService>();
+        services.AddScoped<IMcpOperationObjectTargetResolver, McpOperationObjectTargetResolver>();
         services.AddScoped<IDeploymentBrandingService, DeploymentBrandingService>();
         services.AddNetRatelCommandPersistence();
         services.AddNetRatelJobShadowPersistence();

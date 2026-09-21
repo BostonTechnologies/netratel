@@ -168,6 +168,31 @@ public sealed class NetRatelMcpHttpTests
     }
 
     [Fact]
+    public void Delegation_propagation_carries_only_the_closed_schema_object_reference_for_authoritative_resolution()
+    {
+        var options = DelegationOptions();
+        var tokens = new McpOperatorDelegationTokenService(options);
+        var context = new McpOperatorDelegationContext();
+        var propagation = new McpOperatorDelegationPropagation(options, tokens, context, HostContext("prod"), ValidOptions());
+        var caller = new ClaimsPrincipal(new ClaimsIdentity([new Claim("sub", "operator@example.test")], "test"));
+        var agentId = Guid.NewGuid();
+        var arguments = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+        {
+            ["operation"] = JsonSerializer.SerializeToElement("get"),
+            ["request"] = JsonSerializer.SerializeToElement(new { tenantId = 42, agentId, jobId = "123" })
+        };
+
+        using (propagation.Begin(caller, "netratel_jobs", arguments))
+        {
+            tokens.TryValidate(context.CurrentAssertion!, out var delegation).Should().BeTrue();
+            delegation!.TenantId.Should().Be(42);
+            delegation.AgentId.Should().Be(agentId);
+            delegation.ObjectReference.Should().Be("123");
+            delegation.ObjectTargetResolutionEnabled.Should().BeTrue();
+        }
+    }
+
+    [Fact]
     public void Delegation_assertion_rejects_tampering_and_is_removed_when_its_context_scope_ends()
     {
         var options = new McpOperatorDelegationOptions
@@ -422,6 +447,52 @@ public sealed class NetRatelMcpHttpTests
         }));
         builder.Services.AddSingleton(tokens);
         builder.Services.AddSingleton<IEffectiveAccessService, AllowingEffectiveAccessService>();
+        var app = builder.Build();
+        app.UseAuthentication();
+        app.UseAuthorization();
+        app.MapMcpLocalDelegationEndpoints();
+        await app.StartAsync();
+        try
+        {
+            var client = app.GetTestClient();
+            using var request = new HttpRequestMessage(HttpMethod.Post, McpLocalDelegationEndpoints.ExchangePath);
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "nrt_ic_not-forwarded-to-business-api");
+            request.Headers.Add(McpLocalDelegationEndpoints.PairingHeaderName, pairing);
+
+            (await client.SendAsync(request)).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        }
+        finally
+        {
+            await app.DisposeAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Local_exchange_rejects_an_object_reference_when_its_persisted_owner_does_not_match_the_pairing_target()
+    {
+        var options = DelegationOptions();
+        var tokens = new McpOperatorDelegationTokenService(options);
+        var agentId = Guid.NewGuid();
+        var pairing = tokens.Create(
+            new McpOperatorDelegationIdentity("netratel-local-gateway", "netratel-local-gateway", null, [], [], []),
+            new McpOperatorDelegationRequest("netratel_jobs", "get", "pairing-request", "https://mcp.dev.example/mcp", "dev", 42, agentId)
+            {
+                ObjectReference = "1001",
+                ObjectTargetResolutionEnabled = true
+            });
+        var builder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = Environments.Development });
+        builder.WebHost.UseTestServer();
+        builder.Services.AddAuthentication(IntegrationCredentialAuthenticationHandler.SchemeName)
+            .AddScheme<AuthenticationSchemeOptions, LocalExchangeAuthenticationHandler>(IntegrationCredentialAuthenticationHandler.SchemeName, _ => { });
+        builder.Services.AddAuthorization(options => options.AddPolicy("McpLocalDelegationExchange", policy =>
+        {
+            policy.AddAuthenticationSchemes(IntegrationCredentialAuthenticationHandler.SchemeName);
+            policy.RequireAuthenticatedUser();
+            policy.RequireAssertion(context => context.User.HasClaim("integration_credential_purpose", "http_mcp"));
+        }));
+        builder.Services.AddSingleton(tokens);
+        builder.Services.AddSingleton<IEffectiveAccessService, AllowingEffectiveAccessService>();
+        builder.Services.AddSingleton<IMcpOperationObjectTargetResolver>(new RejectingObjectTargetResolver());
         var app = builder.Build();
         app.UseAuthentication();
         app.UseAuthorization();
@@ -1036,8 +1107,14 @@ public sealed class NetRatelMcpHttpTests
             .Should().Be(McpOperationTargetModel.Tenant);
         McpOperationTargetCatalog.Find("netratel_job_runs", "get")!.Model
             .Should().Be(McpOperationTargetModel.ObjectDerived);
+        var jobRun = McpOperationTargetCatalog.Find("netratel_job_runs", "get")!;
+        jobRun.ObjectReferencePropertyName.Should().Be("jobRunId");
+        jobRun.ObjectReferenceKind.Should().Be(McpOperationObjectReferenceKind.JobRun);
+        jobRun.RequiresObjectReference.Should().BeTrue();
+        McpOperationTargetCatalog.Find("netratel_job_runs", "list")!.RequiresObjectReference.Should().BeFalse();
         McpOperationTargetCatalog.Find("netratel_policy", "confirm_disable")!.Model
             .Should().Be(McpOperationTargetModel.ObjectDerived);
+        McpOperationTargetCatalog.Find("netratel_policy", "confirm_disable")!.ObjectReferenceKind.Should().BeNull();
         McpOperationTargetCatalog.Find("netratel_clients", "get")!.Model
             .Should().Be(McpOperationTargetModel.Agent);
     }
@@ -1290,6 +1367,11 @@ public sealed class NetRatelMcpHttpTests
                 new HashSet<string>([NetRatelPermissions.TelemetryRead, NetRatelPermissions.McpDiscoveryRead, NetRatelPermissions.TenantAdministration], StringComparer.Ordinal)));
 
         public Task ReconcileBuiltInRolesAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+    }
+
+    private sealed class RejectingObjectTargetResolver : IMcpOperationObjectTargetResolver
+    {
+        public Task<bool> MatchesDelegationAsync(McpOperatorDelegation delegation, CancellationToken cancellationToken) => Task.FromResult(false);
     }
 
     private sealed class TestApplication(WebApplication application, string configurationPath) : IAsyncDisposable

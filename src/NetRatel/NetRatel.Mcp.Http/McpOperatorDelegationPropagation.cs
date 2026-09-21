@@ -44,7 +44,11 @@ public sealed class McpOperatorDelegationPropagation(
                 hostContext.Target.Instance,
                 TenantIdFor(targetModel, arguments),
                 AgentIdFor(targetModel, arguments),
-                Activity.Current?.TraceId.ToString()),
+                Activity.Current?.TraceId.ToString())
+            {
+                ObjectReference = hostContext.OperatorSurfaceEnabled ? ObjectReferenceFor(target, arguments) : null,
+                ObjectTargetResolutionEnabled = hostContext.OperatorSurfaceEnabled
+            },
             issuedAtUtc: null);
         return context.Begin(assertion);
     }
@@ -78,7 +82,9 @@ public sealed class McpOperatorDelegationPropagation(
             tool,
             operation,
             TenantIdFor(target?.Model, arguments),
-            AgentIdFor(target?.Model, arguments)));
+            AgentIdFor(target?.Model, arguments),
+            hostContext.OperatorSurfaceEnabled ? ObjectReferenceFor(target, arguments) : null,
+            hostContext.OperatorSurfaceEnabled));
         using var response = await httpClients.CreateClient(McpLocalCredentialAuthenticationHandler.ApiHttpClientName)
             .SendAsync(request, cancellationToken).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
@@ -119,6 +125,25 @@ public sealed class McpOperatorDelegationPropagation(
 
     private static Guid? AgentIdFor(McpOperationTargetModel? targetModel, IDictionary<string, JsonElement>? arguments) =>
         targetModel is McpOperationTargetModel.NoBusinessTarget or McpOperationTargetModel.Tenant ? null : AgentId(arguments);
+
+    private static string? ObjectReferenceFor(McpOperationTargetDescriptor? target, IDictionary<string, JsonElement>? arguments)
+    {
+        if (target?.ObjectReferencePropertyName is not { } propertyName ||
+            !TryRequestProperty(arguments, propertyName, out var value))
+        {
+            return null;
+        }
+
+        return value.ValueKind switch
+        {
+            JsonValueKind.Number when value.TryGetInt64(out var number) && number > 0
+                => number.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            JsonValueKind.String when long.TryParse(value.GetString(), System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture, out var number) && number > 0
+                => number.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            _ => null
+        };
+    }
 
     private static string Token(string? value)
         => string.IsNullOrWhiteSpace(value) || value.Length > 128 || value.Any(char.IsControl) ? "unknown" : value;

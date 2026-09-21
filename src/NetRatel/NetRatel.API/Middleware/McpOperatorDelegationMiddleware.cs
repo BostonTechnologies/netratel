@@ -50,7 +50,8 @@ public sealed class McpOperatorDelegationMiddleware(
         {
             var currentCredentials = context.RequestServices.GetService<IIntegrationCredentialCurrentVerifier>();
             var access = context.RequestServices.GetService<IEffectiveAccessService>();
-            if (!await IsCurrentLocalExecutionAsync(delegation, currentCredentials, access, context.RequestAborted).ConfigureAwait(false))
+            var objectTargets = context.RequestServices.GetService<IMcpOperationObjectTargetResolver>();
+            if (!await IsCurrentLocalExecutionAsync(delegation, currentCredentials, access, objectTargets, context.RequestAborted).ConfigureAwait(false))
             {
                 context.Response.StatusCode = StatusCodes.Status401Unauthorized;
                 await context.Response.WriteAsJsonAsync(new
@@ -70,6 +71,7 @@ public sealed class McpOperatorDelegationMiddleware(
         McpOperatorDelegation delegation,
         IIntegrationCredentialCurrentVerifier? currentCredentials,
         IEffectiveAccessService? access,
+        IMcpOperationObjectTargetResolver? objectTargets,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(delegation.IngressCredentialId))
@@ -78,6 +80,11 @@ public sealed class McpOperatorDelegationMiddleware(
             return false;
         if (string.IsNullOrWhiteSpace(delegation.IngressPermission) ||
             !McpLocalDelegationTargetRequirements.TryGetAuthorizationTenant(delegation, out var authorizationTenantId))
+            return false;
+        if (McpOperationTargetCatalog.Find(delegation.Tool, delegation.Operation)?.Model is McpOperationTargetModel.ObjectDerived &&
+            delegation.ObjectTargetResolutionEnabled &&
+            (objectTargets is null ||
+             !await objectTargets.MatchesDelegationAsync(delegation, cancellationToken).ConfigureAwait(false)))
             return false;
 
         var credential = await currentCredentials.VerifyCurrentAsync(

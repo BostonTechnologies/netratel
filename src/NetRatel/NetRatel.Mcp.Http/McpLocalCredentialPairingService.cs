@@ -17,7 +17,7 @@ public sealed class McpLocalCredentialPairingService(
         "netratel_gateway", "authenticate", Guid.NewGuid().ToString("N"), options.PublicResourceUri.TrimEnd('/'), hostContext.Target.Instance,
         CorrelationId: Activity.Current?.TraceId.ToString()));
 
-    public string CreateExecutionProof(string tool, string operation, int? tenantId, Guid? agentId) => tokens.Create(
+    public string CreateExecutionProof(string tool, string operation, int? tenantId, Guid? agentId, string? objectReference = null, bool objectTargetResolutionEnabled = false) => tokens.Create(
         GatewayIdentity,
         new McpOperatorDelegationRequest(
             tool,
@@ -27,5 +27,9 @@ public sealed class McpLocalCredentialPairingService(
             hostContext.Target.Instance,
             tenantId,
             agentId,
-            Activity.Current?.TraceId.ToString()));
+            Activity.Current?.TraceId.ToString())
+        {
+            ObjectReference = objectReference,
+            ObjectTargetResolutionEnabled = objectTargetResolutionEnabled
+        });
 }
