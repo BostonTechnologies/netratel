@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using Microsoft.Extensions.DependencyInjection;
 using NetRatel.API.Security.Integration;
 using NetRatel.Infrastructure.Identity;
 using NetRatel.Infrastructure.Identity.Authorization;
@@ -48,6 +49,14 @@ public static class McpLocalDelegationEndpoints
 
             if (!McpLocalDelegationTargetRequirements.TryGetAuthorizationTenant(pairing, out var authorizationTenantId))
                 return Results.Unauthorized();
+            var target = McpOperationTargetCatalog.Find(pairing.Tool, pairing.Operation);
+            var objectTargets = http.RequestServices.GetService<IMcpOperationObjectTargetResolver>();
+            if (target?.Model is McpOperationTargetModel.ObjectDerived && pairing.ObjectTargetResolutionEnabled &&
+                (objectTargets is null ||
+                 !await objectTargets.MatchesDelegationAsync(pairing, cancellationToken).ConfigureAwait(false)))
+            {
+                return Results.Unauthorized();
+            }
 
             var credentialId = http.User.FindFirstValue(IntegrationCredentialAuthenticationHandler.CredentialIdClaimType);
             var ownerPrincipalId = http.User.FindFirstValue("netratel_principal_id");
@@ -77,6 +86,8 @@ public static class McpLocalDelegationEndpoints
                 pairing.AgentId,
                 pairing.CorrelationId)
             {
+                ObjectReference = pairing.ObjectReference,
+                ObjectTargetResolutionEnabled = pairing.ObjectTargetResolutionEnabled,
                 IngressCredentialId = credentialId,
                 IngressPermission = requiredPermission
             });
