@@ -73,21 +73,22 @@ local-first delivery or `v0.1.0-rc.3`.
 | Regressions | SQLite and PostgreSQL Testcontainers regressions construct the post-commit/pre-descriptor state, expire the lease, and verify Ready reconciliation. Existing state-store coverage verifies the specific recovery reason. |
 | Local evidence | Focused VSTest suite: 18 passed across SQLite, PostgreSQL, and state-store coverage. Slopwatch: 0 findings. |
 | Provider / auth | SQLite and PostgreSQL migration/application paths are exercised. Reconciliation preserves the restricted state when durable evidence is absent, malformed, mismatched, or inaccessible. |
-| Merge | Pending CI-gated PR. |
+| Merge | PR #76 merged normally as `c05dbb11ee12b5255c737cdcf719df40de534cec` after the complete hosted validation workflow passed. |
 | Next action | Open a focused PR and continue the remaining bootstrap interrupted-write and upgrade acceptance cells in #63/#70. |
 
 ## #65 — local HTTP MCP target requirements
 
 | Field | Checkpoint |
 | --- | --- |
-| Branch | `fix/issue-65-mcp-target-model` |
+| Branch | `fix/issue-65-mcp-target-model`; current target-catalog branch: `fix/issue-65-mcp-target-catalog`. |
 | Reproduction | Local HTTP MCP rejected `netratel_capabilities/get` before tool execution because every exchange demanded both tenant and agent despite discovery operations having no business target. |
 | Repair | A purpose-specific instance discovery permission and a separate instance-grant table preserve existing tenant tuple grants. The exchange and API-side current-access revalidation both allow only the catalogued no-target discovery operations with null tenant/agent and a current explicit grant. |
 | Migrations | Generated PostgreSQL and SQLite identity migrations add `IntegrationCredentialInstanceGrants`; existing grants, verifiers, and credential purposes are unchanged. |
 | Regressions | No-target capabilities exchange asserts no invented tenant/agent and a discovery-only delegation. Service and evaluator tests prove a tenant-only credential cannot obtain discovery authority merely because its owner is an instance administrator. |
 | Local evidence | Focused VSTest suite: 64 passed, including SQLite migration coverage. Slopwatch: 0 findings. |
 | Provider / auth | SQLite and PostgreSQL migration paths generated; local credential exchange remains purpose/resource-bound and OIDC propagation is unchanged. |
-| Merge | Pending CI-gated PR. |
-| Next action | Complete parameterized target/permission classification for every advertised operation and the real joined local HTTP MCP journey before closing #65. |
+| Merge | PR #77 merged normally as `959c3dbb2dc4b08b5cf43b7aefd54f4d666495fe` after the complete hosted validation workflow passed. |
+| Current foundation | Every advertised operation now has fail-closed `NoBusinessTarget`, `Tenant`, `ObjectDerived`, or `Agent` metadata, published through capabilities and covered by catalog regressions. This does not yet authorize object-derived local calls; those must resolve ownership from persistence. |
+| Next action | Connect the target catalog to parameterized local exchange admission, authoritative object resolution, and the real joined local HTTP MCP journey before closing #65. |
 
 No credentials, setup proofs, recovery codes, private endpoints, or customer data are recorded here.

@@ -90,7 +90,9 @@ public sealed class NetRatelMcpCatalogTools(NetRatelMcpHostContext hostContext)
                     operation.AvailableOverHttp,
                     availableIn = NetRatelMcpCatalog.EffectiveAvailableInstances(operation, hostContext),
                     requiredScope = access.RequiredScope.ToString(),
-                    minimumRole = access.MinimumRole.ToString()
+                    minimumRole = access.MinimumRole.ToString(),
+                    targetModel = McpOperationTargetCatalog.Find(tool.Name, operation.Name)?.Model.ToString()
+                        ?? throw new InvalidOperationException($"MCP operation '{tool.Name}/{operation.Name}' has no target-model classification.")
                 };
             })
         };

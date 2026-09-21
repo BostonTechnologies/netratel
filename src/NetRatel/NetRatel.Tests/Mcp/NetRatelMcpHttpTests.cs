@@ -971,6 +971,52 @@ public sealed class NetRatelMcpHttpTests
     }
 
     [Fact]
+    public void Every_catalogued_operation_has_one_explicit_target_model()
+    {
+        McpOperationTargetCatalog.Operations
+            .Select(entry => (entry.ToolName, entry.OperationName))
+            .Should().OnlyHaveUniqueItems();
+
+        foreach (var access in McpOperationAccessCatalog.Operations)
+        {
+            McpOperationTargetCatalog.Find(access.ToolName, access.OperationName)
+                .Should().NotBeNull($"{access.ToolName}/{access.OperationName} is published by the MCP catalog");
+        }
+
+        McpOperationTargetCatalog.Find("netratel_tenants", "list")!.Model
+            .Should().Be(McpOperationTargetModel.NoBusinessTarget);
+        McpOperationTargetCatalog.Find("netratel_onboarding", "create_enrollment")!.Model
+            .Should().Be(McpOperationTargetModel.Tenant);
+        McpOperationTargetCatalog.Find("netratel_job_runs", "get")!.Model
+            .Should().Be(McpOperationTargetModel.ObjectDerived);
+        McpOperationTargetCatalog.Find("netratel_clients", "get")!.Model
+            .Should().Be(McpOperationTargetModel.Agent);
+    }
+
+    [Fact]
+    public void Capabilities_publish_the_closed_target_model_for_every_advertised_operation()
+    {
+        var payload = JsonSerializer.SerializeToElement(NetRatelMcpCatalogTools.CatalogSchema(HostContext("prod")));
+        var advertised = payload.GetProperty("tools").EnumerateArray()
+            .SelectMany(tool => tool.GetProperty("operations").EnumerateArray().Select(operation => new
+            {
+                Tool = tool.GetProperty("Name").GetString(),
+                Operation = operation.GetProperty("Name").GetString(),
+                TargetModel = operation.GetProperty("targetModel").GetString()
+            }))
+            .ToArray();
+
+        advertised.Should().NotBeEmpty();
+        foreach (var entry in advertised)
+        {
+            entry.Tool.Should().NotBeNullOrWhiteSpace();
+            entry.Operation.Should().NotBeNullOrWhiteSpace();
+            McpOperationTargetCatalog.Find(entry.Tool!, entry.Operation!)!.Model.ToString()
+                .Should().Be(entry.TargetModel);
+        }
+    }
+
+    [Fact]
     public async Task Target_binding_fails_closed_when_the_isolated_file_does_not_match_the_selected_environment_allowlist()
     {
         var configurationPath = await WriteIsolatedConfigurationAsync("https://wrong-api.example");
