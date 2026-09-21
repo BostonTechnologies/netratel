@@ -32,6 +32,7 @@ public static class NetRatelOpenApiCatalog
             // requirement. An opaque API credential is therefore an intentional
             // alternative, constrained by its durable grant tuple.
             ["InstanceAdministrator"] = DefaultAuthenticatedSchemes,
+            ["AccessAdministration"] = DefaultAuthenticatedSchemes,
             ["TenantAdministrator"] = DefaultAuthenticatedSchemes,
             ["ClientManager"] = DefaultAuthenticatedSchemes,
             ["TelemetryReader"] = DefaultAuthenticatedSchemes,
