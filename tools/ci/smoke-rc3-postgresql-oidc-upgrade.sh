@@ -154,8 +154,9 @@ seed_historical_oidc_principal() {
   }
   principal_id="$(tr -d '-' </proc/sys/kernel/random/uuid)"
   "${active_compose[@]}" exec -T postgres psql -v ON_ERROR_STOP=1 -U netratel -d netratel \
-    -v principal_id="$principal_id" -v issuer="$issuer" -v subject="$subject" -qc \
-    'INSERT INTO "ApplicationPrincipals" ("Id", "ExternalIssuer", "ExternalSubject", "CreatedAtUtc") VALUES (:'"'"'principal_id'"'"', :'"'"'issuer'"'"', :'"'"'subject'"'"', CURRENT_TIMESTAMP);'
+    -v principal_id="$principal_id" -v issuer="$issuer" -v subject="$subject" -q <<'SQL'
+INSERT INTO "ApplicationPrincipals" ("Id", "ExternalIssuer", "ExternalSubject", "CreatedAtUtc") VALUES (:'principal_id', :'issuer', :'subject', CURRENT_TIMESTAMP);
+SQL
 }
 
 enroll_legacy_client() {
