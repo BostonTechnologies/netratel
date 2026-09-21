@@ -38,7 +38,6 @@ if [[ -n "$mcp_http_image" ]]; then
   certificate_password="local-http-mcp-compose-only-password"
   api_key="$local_http_mcp_directory/api.key"
   api_certificate="$local_http_mcp_directory/api.crt"
-  api_pfx="$local_http_mcp_directory/api.pfx"
   mcp_key="$local_http_mcp_directory/mcp.key"
   mcp_certificate="$local_http_mcp_directory/mcp.crt"
   mcp_pfx="$local_http_mcp_directory/mcp.pfx"
@@ -47,18 +46,17 @@ if [[ -n "$mcp_http_image" ]]; then
   delegation_key="$(openssl rand -base64 48 | tr -d '\n')"
 
   openssl req -x509 -newkey rsa:2048 -nodes -keyout "$api_key" -out "$api_certificate" \
-    -subj '/CN=api' -addext 'subjectAltName=DNS:api' -addext 'basicConstraints=critical,CA:TRUE' -days 1 >/dev/null 2>&1
-  openssl pkcs12 -export -out "$api_pfx" -inkey "$api_key" -in "$api_certificate" -passout "pass:${certificate_password}" >/dev/null 2>&1
+    -subj '/CN=gateway' -addext 'subjectAltName=DNS:api,DNS:gateway' -addext 'basicConstraints=critical,CA:TRUE' -days 1 >/dev/null 2>&1
   openssl req -x509 -newkey rsa:2048 -nodes -keyout "$mcp_key" -out "$mcp_certificate" \
     -subj '/CN=mcp.local.test' -days 1 >/dev/null 2>&1
   openssl pkcs12 -export -out "$mcp_pfx" -inkey "$mcp_key" -in "$mcp_certificate" -passout "pass:${certificate_password}" >/dev/null 2>&1
-  jq -n --arg api_base_url 'https://api:9443' --arg m2m_secret "$m2m_secret" \
+  jq -n --arg api_base_url 'https://gateway:9443' --arg m2m_secret "$m2m_secret" \
     '{apiBaseUrl:$api_base_url,apiM2MTokenUrl:($api_base_url + "/connect/token"),apiM2MClientId:"netratel-mcp-http",apiM2MClientSecret:$m2m_secret,apiM2MScope:"netratel.api"}' > "$mcp_config"
-  chmod 0644 "$api_certificate" "$api_pfx" "$mcp_pfx" "$mcp_config"
+  chmod 0644 "$api_certificate" "$api_key" "$mcp_pfx" "$mcp_config"
 
   export NETRATEL_MCP_HTTP_IMAGE="$mcp_http_image"
   export NETRATEL_MCP_INSTANCE=dev
-  export NETRATEL_MCP_DEV_API_BASE_URL=https://api:9443
+  export NETRATEL_MCP_DEV_API_BASE_URL=https://gateway:9443
   export NETRATEL_MCP_PUBLIC_RESOURCE_URI=https://mcp.local.test/mcp
   export NETRATEL_MCP_LOCAL_CREDENTIAL_MODE=true
   export NETRATEL_MCP_DELEGATION_ENABLED=true
@@ -67,8 +65,9 @@ if [[ -n "$mcp_http_image" ]]; then
   export NETRATEL_MCP_DELEGATION_KEY_ID=netratel-local-http-mcp-ci
   export NETRATEL_MCP_DELEGATION_KEY_BASE64="$delegation_key"
   export NETRATEL_LOCAL_HTTP_MCP_CERT_PASSWORD="$certificate_password"
-  export NETRATEL_LOCAL_HTTP_MCP_API_PFX="$api_pfx"
   export NETRATEL_LOCAL_HTTP_MCP_API_CA="$api_certificate"
+  export NETRATEL_LOCAL_HTTP_MCP_API_KEY="$api_key"
+  export NETRATEL_LOCAL_HTTP_MCP_GATEWAY_CONFIG="$root/tests/compose/local-http-mcp-api-proxy.nginx.conf"
   export NETRATEL_LOCAL_HTTP_MCP_MCP_PFX="$mcp_pfx"
   export NETRATEL_LOCAL_HTTP_MCP_CONFIG="$mcp_config"
   export NETRATEL_LOCAL_HTTP_MCP_M2M_SECRET="$m2m_secret"
