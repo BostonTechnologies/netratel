@@ -1,7 +1,9 @@
 using FluentAssertions;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Options;
 using NetRatel.API.Bootstrap;
 using NetRatel.Infrastructure.Identity;
 using NetRatel.Infrastructure.Persistence;
@@ -148,6 +150,58 @@ public sealed class BootstrapLegacyAdoptionPostgresTests : IAsyncLifetime
         reconciled.OperationId.Should().BeNull();
         reconciled.RecoveryReason.Should().BeNull();
     }
+
+    [Fact]
+    public async Task Completed_initialization_retries_the_same_operation_without_creating_new_ownership()
+    {
+        var connectionString = _postgres.GetConnectionString();
+        var applicationOptions = new DbContextOptionsBuilder<OrchestratorDbContext>().UseNpgsql(connectionString).Options;
+        var identityOptions = new DbContextOptionsBuilder<NetRatelIdentityDbContext>().UseNpgsql(connectionString).Options;
+        await using (var application = new OrchestratorDbContext(applicationOptions)) await application.Database.MigrateAsync();
+        await using (var identity = new NetRatelIdentityDbContext(identityOptions)) await identity.Database.MigrateAsync();
+
+        var stateDirectory = Path.Combine(_stateRoot, "idempotent-retry");
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["ConnectionStrings:NetRatelDb"] = connectionString
+        }).Build();
+        var store = new BootstrapStateStore(new BootstrapOptions { StateDirectory = stateDirectory });
+        await store.LoadOrCreateAsync();
+        var proof = await File.ReadAllTextAsync(Path.Combine(stateDirectory, "setup-proof"));
+        var claim = await store.ClaimSetupAsync(proof, "PostgreSQL", "ConnectionStrings:NetRatelDb");
+        claim.Succeeded.Should().BeTrue();
+        var initializer = CreateInitializer(store, configuration);
+        var completed = await initializer.InitializeAsync(claim.Descriptor!.OperationId!.Value,
+            new BootstrapInitializationRequest("Initial Administrator", "admin@example.test", "a local-first passphrase", "Initial tenant"));
+
+        var retry = await initializer.InitializeAsync(claim.Descriptor.OperationId.Value,
+            new BootstrapInitializationRequest("Other", "other@example.test", "a local-first passphrase", "Other tenant"));
+
+        retry.Succeeded.Should().BeTrue();
+        retry.TenantId.Should().Be(completed.TenantId);
+        retry.UserId.Should().Be(completed.UserId);
+        await using var verificationApplication = new OrchestratorDbContext(applicationOptions);
+        await using var verificationIdentity = new NetRatelIdentityDbContext(identityOptions);
+        (await verificationApplication.Tenants.CountAsync()).Should().Be(1);
+        (await verificationIdentity.Users.CountAsync()).Should().Be(1);
+    }
+
+    private static BootstrapInitializationService CreateInitializer(BootstrapStateStore store, IConfiguration configuration) => new(
+        store,
+        configuration,
+        new PasswordHasher<LocalUser>(),
+        Options.Create(new IdentityOptions
+        {
+            Password =
+            {
+                RequiredLength = 15,
+                RequiredUniqueChars = 1,
+                RequireDigit = false,
+                RequireLowercase = false,
+                RequireUppercase = false,
+                RequireNonAlphanumeric = false
+            }
+        }));
 
     private Task<BootstrapDescriptor> InitializeAsync(string schema, bool includeOidc)
     {

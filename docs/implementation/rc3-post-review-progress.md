@@ -74,7 +74,8 @@ local-first delivery or `v0.1.0-rc.3`.
 | Local evidence | Focused VSTest suite: 18 passed across SQLite, PostgreSQL, and state-store coverage. Slopwatch: 0 findings. |
 | Provider / auth | SQLite and PostgreSQL migration/application paths are exercised. Reconciliation preserves the restricted state when durable evidence is absent, malformed, mismatched, or inaccessible. |
 | Merge | PR #76 merged normally as `c05dbb11ee12b5255c737cdcf719df40de534cec` after the complete hosted validation workflow passed. |
-| Next action | Open a focused PR and continue the remaining bootstrap interrupted-write and upgrade acceptance cells in #63/#70. |
+| Idempotent retry repair | A retry carrying the same completed operation ID now reads the matching singleton marker and returns the original tenant/user identity without inspecting or applying replay form data. A different operation remains rejected; setup is never reopened. SQLite and PostgreSQL container regressions prove the original operation result and exactly one tenant/administrator after a replay with different submitted fields. |
+| Next action | Merge this focused replay repair, then continue the remaining bootstrap interrupted-write and upgrade acceptance cells in #63/#70. |
 
 ## #65 — local HTTP MCP target requirements
 

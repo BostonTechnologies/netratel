@@ -27,6 +27,14 @@ public sealed class BootstrapInitializationService(
         CancellationToken cancellationToken = default)
     {
         var descriptor = await stateStore.LoadOrCreateAsync(cancellationToken).ConfigureAwait(false);
+        var database = NetRatelDatabaseConfigurationResolver.Resolve(configuration);
+        if (descriptor.State == BootstrapState.Ready)
+        {
+            return string.Equals(descriptor.SelectedProvider, ProviderName(database.Provider), StringComparison.Ordinal)
+                ? await CompletedInitializationAsync(database, descriptor.InstanceId, operationId, cancellationToken).ConfigureAwait(false)
+                : BootstrapInitializationResult.Rejected;
+        }
+
         if (descriptor.State != BootstrapState.Configuring || descriptor.OperationId != operationId)
         {
             return BootstrapInitializationResult.Rejected;
@@ -41,7 +49,6 @@ public sealed class BootstrapInitializationService(
             return BootstrapInitializationResult.Invalid("Display name, email, password, and tenant name are required.");
         }
 
-        var database = NetRatelDatabaseConfigurationResolver.Resolve(configuration);
         if (!string.Equals(descriptor.SelectedProvider, ProviderName(database.Provider), StringComparison.Ordinal))
         {
             // The descriptor is the source of truth once setup has been claimed. A configuration
@@ -222,6 +229,31 @@ public sealed class BootstrapInitializationService(
 
     private static string ProviderName(NetRatelDatabaseProvider provider) =>
         provider is NetRatelDatabaseProvider.Sqlite ? "SQLite" : "PostgreSQL";
+
+    private static async Task<BootstrapInitializationResult> CompletedInitializationAsync(
+        NetRatelDatabaseConfiguration database,
+        Guid instanceId,
+        Guid operationId,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = CreateConnection(database);
+        try
+        {
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            await using var application = new OrchestratorDbContext(CreateApplicationOptions(database, connection));
+            var completed = await application.BootstrapInitializations.AsNoTracking().SingleOrDefaultAsync(record =>
+                record.Id == BootstrapInitializationRecord.SingletonId &&
+                record.BootstrapInstanceId == instanceId &&
+                record.OperationId == operationId, cancellationToken).ConfigureAwait(false);
+            return completed is null
+                ? BootstrapInitializationResult.Rejected
+                : BootstrapInitializationResult.Completed(completed.TenantId, completed.AdministratorUserId);
+        }
+        catch (DbException)
+        {
+            return BootstrapInitializationResult.Unavailable;
+        }
+    }
 
     // Identity's built-in password validators only use the manager's Options for this validation.
     // The bootstrap host does not register a mutable UserManager backed by an operational context.
