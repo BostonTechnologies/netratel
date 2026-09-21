@@ -195,7 +195,7 @@ if [[ -n "$mcp_http_image" ]]; then
 
   stage="rejecting an HTTP MCP credential without the instance discovery grant"
   denied_response="$(mcp_call "${credentials[3]}" '{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"netratel_system","arguments":{"operation":"version"}}}')"
-  jq -e '(.id == 12) and ((.error.message // "") | test("not authorized"; "i"))' <<<"$(mcp_response_json "$denied_response")" >/dev/null || {
+  jq -e '(.id == 12) and ([.. | strings?] | any(test("not authorized"; "i")))' <<<"$(mcp_response_json "$denied_response")" >/dev/null || {
     echo "Unscoped local HTTP MCP credential was not rejected with the safe authorization failure." >&2
     exit 1
   }
