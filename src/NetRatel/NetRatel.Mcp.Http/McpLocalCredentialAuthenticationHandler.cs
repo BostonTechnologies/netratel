@@ -1,5 +1,4 @@
 using System.Net.Http.Headers;
-using System.Net.Http.Json;
 using System.Security.Claims;
 using System.Text.Encodings.Web;
 using Microsoft.AspNetCore.Authentication;
@@ -34,13 +33,17 @@ public sealed class McpLocalCredentialAuthenticationHandler(
         request.Headers.TryAddWithoutValidation("X-NetRatel-Mcp-Pairing", pairing.CreateAuthenticationProof());
         try
         {
-            using var response = await clients.CreateClient(ApiHttpClientName).SendAsync(request, Context.RequestAborted).ConfigureAwait(false);
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(Context.RequestAborted);
+            deadline.CancelAfter(TimeSpan.FromSeconds(15));
+            using var response = await clients.CreateClient(ApiHttpClientName)
+                .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
-                return AuthenticateResult.Fail("Invalid local HTTP MCP credential.");
+                return Fail(McpLocalCredentialExchangeFailure.FromResponse(response));
 
-            var result = await response.Content.ReadFromJsonAsync<McpLocalAuthenticationResponse>(cancellationToken: Context.RequestAborted).ConfigureAwait(false);
+            var result = await McpLocalCredentialExchangeResponse
+                .ReadJsonAsync<McpLocalAuthenticationResponse>(response.Content, deadline.Token).ConfigureAwait(false);
             if (result is null || string.IsNullOrWhiteSpace(result.OwnerPrincipalId) || string.IsNullOrWhiteSpace(result.CredentialId))
-                return AuthenticateResult.Fail("Local HTTP MCP credential exchange returned an invalid response.");
+                return Fail(McpLocalCredentialExchangeFailure.ProtocolError);
 
             var identity = new ClaimsIdentity(
             [
@@ -50,14 +53,29 @@ public sealed class McpLocalCredentialAuthenticationHandler(
             ], SchemeName);
             return AuthenticateResult.Success(new AuthenticationTicket(new ClaimsPrincipal(identity), SchemeName));
         }
-        catch (HttpRequestException exception)
+        catch (OperationCanceledException) when (Context.RequestAborted.IsCancellationRequested)
         {
-            return AuthenticateResult.Fail($"Local HTTP MCP credential exchange is unavailable: {exception.Message}");
+            throw;
         }
-        catch (TaskCanceledException) when (!Context.RequestAborted.IsCancellationRequested)
+        catch (OperationCanceledException)
         {
-            return AuthenticateResult.Fail("Local HTTP MCP credential exchange timed out.");
+            return Fail(McpLocalCredentialExchangeFailure.TimedOut);
         }
+        catch (HttpRequestException)
+        {
+            return Fail(McpLocalCredentialExchangeFailure.DependencyUnavailable);
+        }
+        catch (IOException)
+        {
+            return Fail(McpLocalCredentialExchangeFailure.DependencyUnavailable);
+        }
+    }
+
+    private AuthenticateResult Fail(McpLocalCredentialExchangeFailure failure)
+    {
+        return failure.StatusCode == System.Net.HttpStatusCode.Unauthorized
+            ? AuthenticateResult.Fail(failure.Code)
+            : throw new McpLocalCredentialExchangeException(failure);
     }
 
     private sealed record McpLocalAuthenticationResponse(string OwnerPrincipalId, string CredentialId);

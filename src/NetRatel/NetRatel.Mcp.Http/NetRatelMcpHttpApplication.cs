@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
+using ModelContextProtocol;
 using ModelContextProtocol.Authentication;
 using NetRatel.AgentClient;
 using NetRatel.Mcp.Core;
@@ -161,16 +162,35 @@ public static class NetRatelMcpHttpApplication
                     async (nextContext, nextCancellationToken) =>
                     {
                         operationAuthorization.EnsureAuthorized(nextContext.User, nextContext.Params.Name, nextContext.Params.Arguments);
-                        using var delegation = await services.GetRequiredService<McpOperatorDelegationPropagation>()
-                            .BeginAsync(nextContext.User, nextContext.Params.Name, nextContext.Params.Arguments, nextCancellationToken)
-                            .ConfigureAwait(false);
-                        return await next(nextContext, nextCancellationToken).ConfigureAwait(false);
+                        IDisposable delegation;
+                        try
+                        {
+                            delegation = await services.GetRequiredService<McpOperatorDelegationPropagation>()
+                                .BeginAsync(nextContext.User, nextContext.Params.Name, nextContext.Params.Arguments, nextCancellationToken)
+                                .ConfigureAwait(false);
+                        }
+                        catch (McpLocalCredentialExchangeException exception)
+                        {
+                            throw new McpException(McpErrorMessage(exception.Failure));
+                        }
+                        using (delegation)
+                            return await next(nextContext, nextCancellationToken).ConfigureAwait(false);
                     },
                     context,
                     cancellationToken);
             }))
             .AddAuthorizationFilters();
     }
+
+    private static string McpErrorMessage(McpLocalCredentialExchangeFailure failure) => failure.Code switch
+    {
+        "local_credential_invalid" => "The local HTTP MCP credential is invalid or has expired.",
+        "local_credential_forbidden" => "The local HTTP MCP credential is not authorized for this operation.",
+        "local_credential_throttled" => "The local credential service is temporarily throttling requests. Retry after the indicated delay.",
+        "local_credential_exchange_timed_out" => "The local credential service did not respond before the deadline. Retry the operation.",
+        "local_credential_exchange_unavailable" => "The local credential service is temporarily unavailable. Retry the operation.",
+        _ => "The local credential service returned an invalid response. Retry the operation."
+    };
 
     public static void ConfigurePipeline(WebApplication app)
     {
@@ -187,6 +207,8 @@ public static class NetRatelMcpHttpApplication
             await next(context);
         });
         app.UseRateLimiter();
+        if (runtime.Options.LocalCredentialMode)
+            app.Use((context, next) => McpLocalCredentialExchangeFailureResponses.InvokeAsync(context, next));
         app.UseAuthentication();
         app.UseAuthorization();
         app.MapHealthChecks("/health/live", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions { Predicate = check => check.Tags.Contains("live") });

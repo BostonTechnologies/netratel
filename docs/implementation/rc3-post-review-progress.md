@@ -94,4 +94,16 @@ local-first delivery or `v0.1.0-rc.3`.
 | Regressions | `McpOperationObjectTargetResolverTests` cover all four persisted owner projections, wrong-tenant/wrong-agent and family mismatch rejection. `NetRatelMcpHttpTests` covers normalized schema propagation, closed catalog metadata, and exchange rejection for an unresolved owner. Focused VSTest: 57 passed. |
 | Next action | Add the real joined local HTTP MCP journey and remaining object-derived schemas before closing #65. |
 
+## #66 — local HTTP MCP failure classification
+
+| Field | Checkpoint |
+| --- | --- |
+| Branch | `fix/mcp-local-error-classification` |
+| Reproduction | The local credential authentication exchange previously reported every non-success upstream response, including throttling and service failure, as an invalid credential. The execution exchange raised an undifferentiated exception. |
+| Repair | Local authentication and execution exchanges now carry a typed, non-secret failure classification: invalid credential, forbidden, throttled with a 60-second-bounded retry delay, unavailable dependency, deadline exceeded, or malformed response. Both use a 15-second linked deadline and a 16 KiB bounded JSON reader; caller cancellation continues to propagate. The HTTP ingress preserves normal 401 challenge semantics, emits safe JSON only for classified non-authentication failures, and the MCP filter reports the corresponding safe MCP error rather than an upstream detail. |
+| Regressions | `NetRatelMcpHttpTests.Local_credential_authentication_*` covers upstream 401/403/429/500/400, `Retry-After`, connection failure, timeout, malformed payload, and oversized payload. |
+| Local evidence | Release test-project build passed; focused VSTest: 9 passed. Slopwatch on all changed C# and test files: 0 findings. |
+| Provider / auth | This focused repair does not alter OIDC behavior, credential purpose boundaries, or downstream service authority. Joined persisted-grant/current-access coverage, PostgreSQL, and recovery-after-outage cells remain open in #66/#70. |
+| Next action | Merge only after hosted CI passes, then add the real persisted-authority journey and provider matrix rather than treating these deterministic regressions as final acceptance. |
+
 No credentials, setup proofs, recovery codes, private endpoints, or customer data are recorded here.
