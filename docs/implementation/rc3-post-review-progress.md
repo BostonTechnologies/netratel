@@ -21,8 +21,8 @@ local-first delivery or `v0.1.0-rc.3`.
 | Regressions | `tools/ci/verify-release-local-first-profiles.sh`; extracted image-bundle SQLite browser setup/login smoke. |
 | Local evidence | The extracted image bundle completed the existing `LocalFirstComposeBrowserSmokeTests` with OIDC absent; 1 passed. `tools/ci/test-release-validation.py` passed: 17 tests. |
 | Provider / auth | SQLite with local account: exercised locally from an extracted image bundle. Bundled PostgreSQL, external PostgreSQL, and OIDC remain CI/acceptance matrix cells. |
-| Merge | Pending CI-gated PR and normal review. |
-| Next action | Open #68 PR, inspect every required job, merge normally only after all checks pass; then extend the artifact matrix in #70. |
+| Merge | PR #72 merged normally as `df05ef63e38a0ec2fe773d23100c4df399ce63a0` after all hosted checks passed. |
+| Next action | Extend the artifact matrix in #70 without replacing the independent OIDC and PostgreSQL acceptance paths. |
 
 ## #67 — scoped local account and administration journeys
 
@@ -33,7 +33,20 @@ local-first delivery or `v0.1.0-rc.3`.
 | Regression | `AccessAdministrationSelectionTests.Slow_previous_selection_cannot_replace_the_current_users_assignments`. The test failed against the prior implementation and passes after the repair. |
 | Local evidence | Targeted Release component test: 1 passed. Slopwatch on the changed Razor/test files: 0 findings. |
 | Provider / auth | UI-only deterministic component coverage; broader local lifecycle, delegated administration, scoped-route, and browser matrix cells remain in #67. |
-| Merge | Pending CI-gated PR #73 and normal review. |
-| Next action | Verify the rebased exact PR head in hosted CI, then continue the remaining #67 journeys. |
+| Merge | PR #73 merged normally as `f10bab2a750a404260e80eaac608f162a7b3c7d2` after all hosted checks passed. |
+| Next action | Continue the remaining lifecycle, delegated administration, scoped-route, and browser matrix cells in #67. |
+
+## #64 — viable administrator identity continuity
+
+| Field | Checkpoint |
+| --- | --- |
+| Branch | `fix/issue-64-viable-admin-invariant` |
+| Reproduction | The previous counters included every instance-admin role assignment, including assignments retained by disabled local users. The A/B sequence could therefore allow removal of the final viable local administrator. |
+| Repair | A shared invariant service counts only durable principals with an enabled local login or a complete external issuer/subject binding. Destructive local-user and instance-admin-assignment mutations run at serializable isolation and take a PostgreSQL transaction advisory lock. |
+| Regressions | `InstanceAdministratorInvariantTests`: disabled assigned local user, enabled assigned local user, unresolved assignment, and complete external identity binding. `InstanceAdministratorInvariantPostgresTests`: two independent PostgreSQL contexts cannot remove both viable administrators. |
+| Local evidence | Release build discovered the five tests; VSTest executed them: 5 passed. Slopwatch on changed C# files: 0 findings. |
+| Provider / auth | In-memory semantic coverage and PostgreSQL transaction-lock coverage are complete for this invariant. Endpoint/browser lifecycle, lockout, MFA, and OIDC projection cells remain required before #64 can close. |
+| Merge | Not opened. |
+| Next action | Add provider-backed concurrent mutation evidence and the lifecycle/lockout/MFA/OIDC projection checks before a focused PR. |
 
 No credentials, setup proofs, recovery codes, private endpoints, or customer data are recorded here.

@@ -664,6 +664,7 @@ builder.Services.AddDataProtection()
 
 builder.Services.AddSingleton<IAuthorizationHandler, AllowedClientHandler>();
 builder.Services.AddScoped<IAuthorizationHandler, EffectiveAccessHandler>();
+builder.Services.AddScoped<InstanceAdministratorInvariant>();
 
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
 builder.Services.AddOpenApi(options =>

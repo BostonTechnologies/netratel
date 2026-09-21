@@ -161,26 +161,26 @@ public static class AccessAdministrationEndpoints
             string principalId,
             string assignmentId,
             NetRatelIdentityDbContext db,
+            InstanceAdministratorInvariant administrators,
             CancellationToken ct) =>
         {
-            var assignment = await db.PrincipalRoleAssignments
-                .Include(candidate => candidate.Role)
-                .SingleOrDefaultAsync(candidate => candidate.Id == assignmentId && candidate.PrincipalId == principalId, ct)
-                .ConfigureAwait(false);
-            if (assignment is null)
+            return await administrators.ExecuteDestructiveMutationAsync(async cancellationToken =>
             {
-                return Results.NotFound();
-            }
+                var assignment = await db.PrincipalRoleAssignments
+                    .Include(candidate => candidate.Role)
+                    .SingleOrDefaultAsync(candidate => candidate.Id == assignmentId && candidate.PrincipalId == principalId, cancellationToken)
+                    .ConfigureAwait(false);
+                if (assignment is null)
+                    return Results.NotFound();
 
-            if (assignment.TenantId is null && assignment.Role!.IsInstanceAdministratorRole &&
-                await InstanceAdministratorCountAsync(db, ct).ConfigureAwait(false) <= 1)
-            {
-                return Results.Conflict(new { error = "last_instance_administrator" });
-            }
+                if (assignment.TenantId is null && assignment.Role!.IsInstanceAdministratorRole &&
+                    await administrators.ViableAdministratorCountAsync(cancellationToken).ConfigureAwait(false) <= 1)
+                    return Results.Conflict(new { error = "last_instance_administrator" });
 
-            db.PrincipalRoleAssignments.Remove(assignment);
-            await db.SaveChangesAsync(ct).ConfigureAwait(false);
-            return Results.NoContent();
+                db.PrincipalRoleAssignments.Remove(assignment);
+                await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+                return Results.NoContent();
+            }, ct).ConfigureAwait(false);
         });
 
         group.MapGet("/users", async (UserManager<LocalUser> users, CancellationToken ct) =>
@@ -194,21 +194,6 @@ public static class AccessAdministrationEndpoints
         });
 
         return app;
-    }
-
-    private static async Task<int> InstanceAdministratorCountAsync(NetRatelIdentityDbContext db, CancellationToken ct)
-    {
-        var localAdministrators = await db.Users
-            .Where(user => user.IsEnabled && user.IsInstanceAdministrator)
-            .Select(user => user.PrincipalId)
-            .ToListAsync(ct)
-            .ConfigureAwait(false);
-        var assignedAdministrators = await db.PrincipalRoleAssignments
-            .Where(assignment => assignment.TenantId == null && assignment.Role!.IsInstanceAdministratorRole)
-            .Select(assignment => assignment.PrincipalId)
-            .ToListAsync(ct)
-            .ConfigureAwait(false);
-        return localAdministrators.Concat(assignedAdministrators).Distinct(StringComparer.Ordinal).Count();
     }
 
     private static AccessRoleResponse ToResponse(AccessRole role) => new(
