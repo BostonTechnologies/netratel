@@ -74,9 +74,12 @@ public sealed class SqliteProviderMigrationTests
 
             initialized.Succeeded.Should().BeTrue();
             (await store.LoadOrCreateAsync()).State.Should().Be(BootstrapState.Ready);
-            (await initializer.InitializeAsync(
+            var retry = await initializer.InitializeAsync(
                 claim.Descriptor.OperationId.Value,
-                new BootstrapInitializationRequest("Other", "other@example.test", "a local-first passphrase", "Other tenant"))).Succeeded.Should().BeFalse();
+                new BootstrapInitializationRequest("Other", "other@example.test", "a local-first passphrase", "Other tenant"));
+            retry.Succeeded.Should().BeTrue();
+            retry.TenantId.Should().Be(initialized.TenantId);
+            retry.UserId.Should().Be(initialized.UserId);
 
             await using var verifyApplication = new OrchestratorDbContext(applicationOptions);
             await using var verifyIdentity = new NetRatelIdentityDbContext(identityOptions);
