@@ -31,17 +31,19 @@ public sealed class McpOperatorDelegationPropagation(
         if (user?.Identity?.IsAuthenticated is not true)
             throw new InvalidOperationException("An authenticated MCP caller is required for delegated operator identity.");
 
-        var isControlPlaneTenantOperation = string.Equals(Token(tool), "netratel_tenants", StringComparison.Ordinal);
+        var operation = Operation(arguments);
+        var target = McpOperationTargetCatalog.Find(Token(tool), operation);
+        var targetModel = target?.Model;
         var assertion = tokens.Create(
             IdentityFrom(user),
             new McpOperatorDelegationRequest(
                 Token(tool),
-                Operation(arguments),
+                operation,
                 Guid.NewGuid().ToString("N"),
                 httpOptions.PublicResourceUri.TrimEnd('/'),
                 hostContext.Target.Instance,
-                isControlPlaneTenantOperation ? null : TenantId(arguments),
-                isControlPlaneTenantOperation ? null : AgentId(arguments),
+                TenantIdFor(targetModel, arguments),
+                AgentIdFor(targetModel, arguments),
                 Activity.Current?.TraceId.ToString()),
             issuedAtUtc: null);
         return context.Begin(assertion);
@@ -69,9 +71,14 @@ public sealed class McpOperatorDelegationPropagation(
             throw new InvalidOperationException("A local HTTP MCP credential is required.");
 
         var operation = Operation(arguments);
+        var target = McpOperationTargetCatalog.Find(Token(tool), operation);
         using var request = new HttpRequestMessage(HttpMethod.Post, "/api/v2/mcp/local-delegation/exchange");
         request.Headers.Authorization = AuthenticationHeaderValue.Parse(authorization);
-        request.Headers.TryAddWithoutValidation("X-NetRatel-Mcp-Pairing", localPairing.CreateExecutionProof(tool, operation, TenantId(arguments), AgentId(arguments)));
+        request.Headers.TryAddWithoutValidation("X-NetRatel-Mcp-Pairing", localPairing.CreateExecutionProof(
+            tool,
+            operation,
+            TenantIdFor(target?.Model, arguments),
+            AgentIdFor(target?.Model, arguments)));
         using var response = await httpClients.CreateClient(McpLocalCredentialAuthenticationHandler.ApiHttpClientName)
             .SendAsync(request, cancellationToken).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
@@ -106,6 +113,12 @@ public sealed class McpOperatorDelegationPropagation(
                 ? agentId
                 : null
             : null;
+
+    private static int? TenantIdFor(McpOperationTargetModel? targetModel, IDictionary<string, JsonElement>? arguments) =>
+        targetModel == McpOperationTargetModel.NoBusinessTarget ? null : TenantId(arguments);
+
+    private static Guid? AgentIdFor(McpOperationTargetModel? targetModel, IDictionary<string, JsonElement>? arguments) =>
+        targetModel is McpOperationTargetModel.NoBusinessTarget or McpOperationTargetModel.Tenant ? null : AgentId(arguments);
 
     private static string Token(string? value)
         => string.IsNullOrWhiteSpace(value) || value.Length > 128 || value.Any(char.IsControl) ? "unknown" : value;

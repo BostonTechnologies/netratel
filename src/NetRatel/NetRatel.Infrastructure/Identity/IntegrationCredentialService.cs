@@ -96,7 +96,8 @@ public sealed class IntegrationCredentialService(NetRatelIdentityDbContext db) :
             (request.Purpose == IntegrationCredentialPurpose.HttpMcp && string.IsNullOrWhiteSpace(resource)) ||
             request.ExpiresAtUtc <= now || request.ExpiresAtUtc > now.Add(MaximumLifetime) ||
             (grants.Length == 0 && instancePermissions.Length == 0) ||
-            instancePermissions.Any(permission => !string.Equals(permission, NetRatelPermissions.McpDiscoveryRead, StringComparison.Ordinal)))
+            instancePermissions.Any(permission => !NetRatelPermissions.All.Contains(permission) ||
+                string.Equals(permission, NetRatelPermissions.IntegrationManagement, StringComparison.Ordinal)))
         {
             throw new ArgumentException("Credential name, bounded expiry, and at least one explicit permission grant are required.");
         }

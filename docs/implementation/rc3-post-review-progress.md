@@ -80,7 +80,7 @@ local-first delivery or `v0.1.0-rc.3`.
 
 | Field | Checkpoint |
 | --- | --- |
-| Branch | `fix/issue-65-mcp-target-model`; current target-catalog branch: `fix/issue-65-mcp-target-catalog`. |
+| Branch | `fix/issue-65-mcp-target-model`; target catalog: `fix/issue-65-mcp-target-catalog`; current target-admission branch: `fix/issue-65-mcp-target-admission`. |
 | Reproduction | Local HTTP MCP rejected `netratel_capabilities/get` before tool execution because every exchange demanded both tenant and agent despite discovery operations having no business target. |
 | Repair | A purpose-specific instance discovery permission and a separate instance-grant table preserve existing tenant tuple grants. The exchange and API-side current-access revalidation both allow only the catalogued no-target discovery operations with null tenant/agent and a current explicit grant. |
 | Migrations | Generated PostgreSQL and SQLite identity migrations add `IntegrationCredentialInstanceGrants`; existing grants, verifiers, and credential purposes are unchanged. |
@@ -88,7 +88,8 @@ local-first delivery or `v0.1.0-rc.3`.
 | Local evidence | Focused VSTest suite: 64 passed, including SQLite migration coverage. Slopwatch: 0 findings. |
 | Provider / auth | SQLite and PostgreSQL migration paths generated; local credential exchange remains purpose/resource-bound and OIDC propagation is unchanged. |
 | Merge | PR #77 merged normally as `959c3dbb2dc4b08b5cf43b7aefd54f4d666495fe` after the complete hosted validation workflow passed. |
-| Current foundation | Every advertised operation now has fail-closed `NoBusinessTarget`, `Tenant`, `ObjectDerived`, or `Agent` metadata, published through capabilities and covered by catalog regressions. This does not yet authorize object-derived local calls; those must resolve ownership from persistence. |
-| Next action | Connect the target catalog to parameterized local exchange admission, authoritative object resolution, and the real joined local HTTP MCP journey before closing #65. |
+| Current foundation | PR #78 merged normally as `7e38d5a1b7c3b879f6de2e1f951cc43571e48942`: every advertised operation has fail-closed `NoBusinessTarget`, `Tenant`, `ObjectDerived`, or `Agent` metadata, published through capabilities and covered by catalog regressions. |
+| Current admission repair | The local exchange and API current-access recheck now enforce that catalog: no-business-target operations use explicit instance grants with no invented tenant/agent, tenant operations use tenant grants with no agent, and object-derived operations retain their existing strict pair contract pending persistence-backed ownership resolution. Existing OIDC policy-selector delegation remains target-bound. |
+| Next action | Add authoritative object ownership resolution and the real joined local HTTP MCP journey before closing #65. |
 
 No credentials, setup proofs, recovery codes, private endpoints, or customer data are recorded here.

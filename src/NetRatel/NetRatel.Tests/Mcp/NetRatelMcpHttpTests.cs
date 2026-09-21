@@ -348,14 +348,21 @@ public sealed class NetRatelMcpHttpTests
         }
     }
 
-    [Fact]
-    public async Task Local_exchange_allows_only_the_catalogued_instance_discovery_operations_without_an_invented_agent()
+    [Theory]
+    [InlineData("netratel_capabilities", "get", null, NetRatelPermissions.McpDiscoveryRead)]
+    [InlineData("netratel_tenants", "list", null, NetRatelPermissions.TenantAdministration)]
+    [InlineData("netratel_onboarding", "collateral", 42, NetRatelPermissions.TenantAdministration)]
+    public async Task Local_exchange_uses_the_catalogued_no_target_or_tenant_scope_without_an_invented_agent(
+        string tool,
+        string operation,
+        int? tenantId,
+        string expectedPermission)
     {
         var options = DelegationOptions();
         var tokens = new McpOperatorDelegationTokenService(options);
         var pairing = tokens.Create(
             new McpOperatorDelegationIdentity("netratel-local-gateway", "netratel-local-gateway", null, [], [], []),
-            new McpOperatorDelegationRequest("netratel_capabilities", "get", "pairing-request", "https://mcp.dev.example/mcp", "dev", null, null));
+            new McpOperatorDelegationRequest(tool, operation, "pairing-request", "https://mcp.dev.example/mcp", "dev", tenantId, null));
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = Environments.Development });
         builder.WebHost.UseTestServer();
         builder.Services.AddAuthentication(IntegrationCredentialAuthenticationHandler.SchemeName)
@@ -385,9 +392,49 @@ public sealed class NetRatelMcpHttpTests
             response.StatusCode.Should().Be(HttpStatusCode.OK);
             var assertion = (await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync())).RootElement.GetProperty("assertion").GetString();
             tokens.TryValidate(assertion, out var execution).Should().BeTrue();
-            execution!.TenantId.Should().BeNull();
+            execution!.TenantId.Should().Be(tenantId);
             execution.AgentId.Should().BeNull();
-            execution.IngressPermission.Should().Be(NetRatelPermissions.McpDiscoveryRead);
+            execution.IngressPermission.Should().Be(expectedPermission);
+        }
+        finally
+        {
+            await app.DisposeAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Local_exchange_rejects_a_tenant_pair_for_a_no_business_target_operation()
+    {
+        var options = DelegationOptions();
+        var tokens = new McpOperatorDelegationTokenService(options);
+        var pairing = tokens.Create(
+            new McpOperatorDelegationIdentity("netratel-local-gateway", "netratel-local-gateway", null, [], [], []),
+            new McpOperatorDelegationRequest("netratel_tenants", "list", "pairing-request", "https://mcp.dev.example/mcp", "dev", 42, null));
+        var builder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = Environments.Development });
+        builder.WebHost.UseTestServer();
+        builder.Services.AddAuthentication(IntegrationCredentialAuthenticationHandler.SchemeName)
+            .AddScheme<AuthenticationSchemeOptions, LocalExchangeAuthenticationHandler>(IntegrationCredentialAuthenticationHandler.SchemeName, _ => { });
+        builder.Services.AddAuthorization(options => options.AddPolicy("McpLocalDelegationExchange", policy =>
+        {
+            policy.AddAuthenticationSchemes(IntegrationCredentialAuthenticationHandler.SchemeName);
+            policy.RequireAuthenticatedUser();
+            policy.RequireAssertion(context => context.User.HasClaim("integration_credential_purpose", "http_mcp"));
+        }));
+        builder.Services.AddSingleton(tokens);
+        builder.Services.AddSingleton<IEffectiveAccessService, AllowingEffectiveAccessService>();
+        var app = builder.Build();
+        app.UseAuthentication();
+        app.UseAuthorization();
+        app.MapMcpLocalDelegationEndpoints();
+        await app.StartAsync();
+        try
+        {
+            var client = app.GetTestClient();
+            using var request = new HttpRequestMessage(HttpMethod.Post, McpLocalDelegationEndpoints.ExchangePath);
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "nrt_ic_not-forwarded-to-business-api");
+            request.Headers.Add(McpLocalDelegationEndpoints.PairingHeaderName, pairing);
+
+            (await client.SendAsync(request)).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
         }
         finally
         {
@@ -989,6 +1036,8 @@ public sealed class NetRatelMcpHttpTests
             .Should().Be(McpOperationTargetModel.Tenant);
         McpOperationTargetCatalog.Find("netratel_job_runs", "get")!.Model
             .Should().Be(McpOperationTargetModel.ObjectDerived);
+        McpOperationTargetCatalog.Find("netratel_policy", "confirm_disable")!.Model
+            .Should().Be(McpOperationTargetModel.ObjectDerived);
         McpOperationTargetCatalog.Find("netratel_clients", "get")!.Model
             .Should().Be(McpOperationTargetModel.Agent);
     }
@@ -1233,11 +1282,12 @@ public sealed class NetRatelMcpHttpTests
         public Task<bool> AuthorizeAsync(ClaimsPrincipal principal, string permission, int? tenantId, CancellationToken cancellationToken = default) => Task.FromResult(
             principal.HasClaim("netratel_principal_id", "local-owner") &&
             ((permission == NetRatelPermissions.TelemetryRead && tenantId == 42) ||
-             (permission == NetRatelPermissions.McpDiscoveryRead && tenantId is null)));
+             (permission == NetRatelPermissions.McpDiscoveryRead && tenantId is null) ||
+             (permission == NetRatelPermissions.TenantAdministration && tenantId is null or 42)));
 
         public Task<EffectiveAccessSnapshot> GetSnapshotAsync(ClaimsPrincipal principal, int? tenantId, CancellationToken cancellationToken = default) =>
             Task.FromResult(new EffectiveAccessSnapshot("local-owner", false, false,
-                new HashSet<string>([NetRatelPermissions.TelemetryRead, NetRatelPermissions.McpDiscoveryRead], StringComparer.Ordinal)));
+                new HashSet<string>([NetRatelPermissions.TelemetryRead, NetRatelPermissions.McpDiscoveryRead, NetRatelPermissions.TenantAdministration], StringComparer.Ordinal)));
 
         public Task ReconcileBuiltInRolesAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
