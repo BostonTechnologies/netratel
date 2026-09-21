@@ -98,8 +98,11 @@ jobs:
           cp "artifacts/cli/NetRatel.Cli.${VERSION}.nupkg" artifacts/
           tar -C artifacts/cli -czf "artifacts/netratel-cli-${VERSION}-linux-x64.tar.gz" netratel-cli-linux-x64
           tar -C artifacts/mcp-stdio -czf "artifacts/netratel-mcp-stdio-${VERSION}-linux-x64.tar.gz" netratel-mcp-linux-x64
-          cp release/compose.images.yaml release/compose.mcp-http.yaml release/.env.images.example release/release-manifest.json release/INSTALL.md LICENSE NOTICE artifacts/release-bundle/
+          cp release/compose.images.yaml release/compose.local-sqlite.yaml release/compose.external-postgres.yaml release/compose.mcp-http.yaml release/.env.images.example release/release-manifest.json release/INSTALL.md LICENSE NOTICE artifacts/release-bundle/
+          mkdir -p artifacts/release-bundle/docs/mcp-http
+          cp docs/mcp-http/local-credential-mode.md artifacts/release-bundle/docs/mcp-http/
           tar -C artifacts/release-bundle -czf "artifacts/netratel-compose-${VERSION}.tar.gz" .
+          tools/ci/verify-release-local-first-profiles.sh --bundle "artifacts/netratel-compose-${VERSION}.tar.gz"
       - env:
           VERSION: ${{ needs.validate.outputs.version }}
         run: |
@@ -288,6 +291,44 @@ jobs:
           path: '**/TestResults/branding/*.png'
           if-no-files-found: error
 
+  release-bundle-local-first-compose-smoke:
+    name: Smoke extracted release bundle local-first images
+    needs: [validate, package]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          global-json-file: global.json
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: netratel-${{ needs.validate.outputs.version }}-linux-x64
+          path: release-artifacts
+      - env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          for component in migrations api web; do
+            image="netratel-${component}:${VERSION}-release-local-first"
+            tools/ci/build-public-image.sh --dockerfile "docker/${component}/Dockerfile" --image "$image" --version "$VERSION" --revision "$GITHUB_SHA"
+            tools/ci/scan-public-image.sh --image "$image" --version "$VERSION" --revision "$GITHUB_SHA"
+          done
+      - env:
+          NETRATEL_LOCAL_FIRST_COMPOSE_BUNDLE: release-artifacts/netratel-compose-${{ needs.validate.outputs.version }}.tar.gz
+          NETRATEL_MIGRATIONS_IMAGE: netratel-migrations:${{ needs.validate.outputs.version }}-release-local-first
+          NETRATEL_API_IMAGE: netratel-api:${{ needs.validate.outputs.version }}-release-local-first
+          NETRATEL_WEB_IMAGE: netratel-web:${{ needs.validate.outputs.version }}-release-local-first
+          NETRATEL_CLI_SMOKE_ARCHIVE: release-artifacts/netratel-cli-${{ needs.validate.outputs.version }}-linux-x64.tar.gz
+          NETRATEL_MCP_STDIO_SMOKE_ARCHIVE: release-artifacts/netratel-mcp-stdio-${{ needs.validate.outputs.version }}-linux-x64.tar.gz
+        run: tools/ci/smoke-local-first-compose.sh
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: local-first-${{ github.job }}
+          path: TestResults/local-first
+          if-no-files-found: warn
+          retention-days: 14
+
   mcp-http-image-smoke:
     name: Smoke HTTP MCP release-equivalent image
     needs: validate
@@ -308,7 +349,7 @@ jobs:
   release-rehearsal:
     name: Release rehearsal
     if: always()
-    needs: [validate, package, client-packages, images, release-image-compose-smoke, mcp-http-image-smoke]
+    needs: [validate, package, client-packages, images, release-image-compose-smoke, release-bundle-local-first-compose-smoke, mcp-http-image-smoke]
     runs-on: ubuntu-latest
     steps:
       - env:
@@ -317,6 +358,7 @@ jobs:
           CLIENT_PACKAGES_RESULT: ${{ needs.client-packages.result }}
           IMAGES_RESULT: ${{ needs.images.result }}
           RELEASE_IMAGE_COMPOSE_RESULT: ${{ needs.release-image-compose-smoke.result }}
+          RELEASE_BUNDLE_LOCAL_FIRST_COMPOSE_RESULT: ${{ needs.release-bundle-local-first-compose-smoke.result }}
           MCP_HTTP_IMAGE_SMOKE_RESULT: ${{ needs.mcp-http-image-smoke.result }}
         run: |
           [[ "$VALIDATE_RESULT" == success ]]
@@ -324,4 +366,5 @@ jobs:
           [[ "$CLIENT_PACKAGES_RESULT" == success ]]
           [[ "$IMAGES_RESULT" == success ]]
           [[ "$RELEASE_IMAGE_COMPOSE_RESULT" == success ]]
+          [[ "$RELEASE_BUNDLE_LOCAL_FIRST_COMPOSE_RESULT" == success ]]
           [[ "$MCP_HTTP_IMAGE_SMOKE_RESULT" == success ]]

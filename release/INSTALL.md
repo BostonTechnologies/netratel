@@ -14,7 +14,7 @@ CLI and stdio MCP linux-x64 archives are framework-dependent and require the
 Native Client archives are self-contained and platform-specific.
 
 1. Download all assets to one directory and run `sha256sum -c SHA256SUMS`.
-2. Extract `netratel-compose-0.1.0-rc.3.tar.gz` into a new directory and enter it.
+2. Extract the matching `netratel-compose-<version>.tar.gz` into a new directory and enter it.
 3. Copy `.env.images.example` to `.env`. A promoted bundle supplies image digests;
    retain these. Replace the database password; leave the OIDC settings empty
    for local-account mode, or set them for a deliberately configured OIDC or
@@ -51,7 +51,8 @@ services:
       ForwardedHeaders__AllowedHosts__0: "netratel.example.com"
 ```
 
-Replace both example values with your actual proxy address and public hostname;
+Replace both example values with your actual proxy address and public hostname,
+set `NETRATEL_ALLOW_INSECURE_LOCALHOST=false`, and use HTTPS at the proxy.
 do not trust arbitrary private networks. Include the override with a second
 `-f proxy.override.yaml` on every Compose command.
 
@@ -61,7 +62,7 @@ Use both `-f compose.images.yaml -f compose.mcp-http.yaml` with `--env-file
 .env` for config, pull and startup.
 
 An explicit local-credential HTTP MCP alternative is documented in
-`docs/mcp-http/local-credential-mode.md` in the source bundle. It requires a
+`docs/mcp-http/local-credential-mode.md` in this bundle. It requires a
 canonical HTTPS resource URL and a paired API/MCP delegation key; it does not
 use or emulate an OIDC authority. Do not enable both identity modes for one
 MCP host.
@@ -69,3 +70,17 @@ MCP host.
 Back up PostgreSQL, signing keys and Data Protection volumes together. Do not
 delete persistent volumes during upgrades. No local administrator credentials or
 identity provider are included.
+
+## Alternate local data profiles
+
+`compose.images.yaml` is the bundled PostgreSQL profile. For a single-node
+SQLite installation, replace it with `compose.local-sqlite.yaml` in every
+command above. It uses the same image variables, signing-key path, loopback
+defaults, and durable shared key ring; it does not start PostgreSQL.
+
+For a deployment-owned PostgreSQL server, retain `compose.images.yaml` and add
+`-f compose.external-postgres.yaml` to every command. Set
+`NETRATEL_EXTERNAL_DATABASE_CONNECTION_STRING` to the dedicated NetRatel
+database connection string. The override disables the bundled database rather
+than requiring privileges that only its superuser has. Ensure the external
+database is reachable before starting the one-shot migrations service.
