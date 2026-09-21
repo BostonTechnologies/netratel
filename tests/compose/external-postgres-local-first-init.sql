@@ -1,0 +1,2 @@
+CREATE ROLE netratel LOGIN PASSWORD 'synthetic-external-application-password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+CREATE DATABASE netratel OWNER netratel;

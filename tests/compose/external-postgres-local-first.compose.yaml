@@ -1,0 +1,22 @@
+# Test-only external PostgreSQL fixture. The release overlay keeps database
+# ownership external; this fixture proves the application migrates with its
+# own non-superuser role rather than relying on a bundled bootstrap superuser.
+services:
+  external-db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: external-bootstrap
+      POSTGRES_USER: external-bootstrap
+      POSTGRES_PASSWORD: synthetic-external-bootstrap-password
+    volumes:
+      - ${NETRATEL_LOCAL_FIRST_EXTERNAL_POSTGRES_INIT:?set by CI}:/docker-entrypoint-initdb.d/20-create-application-role.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  migrations:
+    depends_on:
+      external-db:
+        condition: service_healthy
