@@ -59,7 +59,21 @@ local-first delivery or `v0.1.0-rc.3`.
 | Regression | `Validated_oidc_token_projects_a_stable_application_principal` validates an RSA-signed issuer/audience/lifetime/signing-key JWT, runs the transformation, and asserts the durable issuer/subject binding. |
 | Local evidence | Focused VSTest suite: 19 passed. Slopwatch on changed C# files: 0 findings. |
 | Provider / auth | Real JWT validation plus in-memory durable-principal persistence. Credential lifecycle and a disposable external-provider upgrade fixture remain in #64/#70. |
-| Merge | Not opened. |
-| Next action | Open a focused CI-gated PR, then continue the remaining #64 acceptance. |
+| Merge | PR #75 merged normally as `29a0da1cf48d8a151c85b7fe33694077d8579e46` after the complete hosted image, bundle, OIDC, package, MCP, and browser matrix passed. |
+| Next action | Continue the remaining #64 acceptance. |
+
+## #63 — transactional bootstrap completion recovery
+
+| Field | Checkpoint |
+| --- | --- |
+| Branch | `fix/issue-63-bootstrap-transaction-recovery` |
+| Reproduction | First-run setup committed the initial administrator and tenant before `descriptor.json` could be marked Ready. A crash in that interval left an expired configuration lease in restricted recovery despite the durable initialization having succeeded. |
+| Repair | The existing cross-context database transaction now commits a singleton initialization record containing the bootstrap instance and operation, tenant, and initial administrator. Startup reconciles only a matching committed record, tenant, enabled instance administrator, and principal binding; only the expired-configuration-lease recovery reason is eligible. |
+| Migrations | Generated PostgreSQL and SQLite migrations create `BootstrapInitializations`; no historical migration was changed. |
+| Regressions | SQLite and PostgreSQL Testcontainers regressions construct the post-commit/pre-descriptor state, expire the lease, and verify Ready reconciliation. Existing state-store coverage verifies the specific recovery reason. |
+| Local evidence | Focused VSTest suite: 18 passed across SQLite, PostgreSQL, and state-store coverage. Slopwatch: 0 findings. |
+| Provider / auth | SQLite and PostgreSQL migration/application paths are exercised. Reconciliation preserves the restricted state when durable evidence is absent, malformed, mismatched, or inaccessible. |
+| Merge | Pending CI-gated PR. |
+| Next action | Open a focused PR and continue the remaining bootstrap interrupted-write and upgrade acceptance cells in #63/#70. |
 
 No credentials, setup proofs, recovery codes, private endpoints, or customer data are recorded here.

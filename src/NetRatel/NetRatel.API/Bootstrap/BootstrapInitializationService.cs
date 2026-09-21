@@ -107,6 +107,15 @@ public sealed class BootstrapInitializationService(
             application.Tenants.Add(tenant);
             await identity.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
             await application.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            application.BootstrapInitializations.Add(new BootstrapInitializationRecord
+            {
+                BootstrapInstanceId = descriptor.InstanceId,
+                OperationId = operationId,
+                TenantId = tenant.Id,
+                AdministratorUserId = user.Id,
+                CompletedAtUtc = now
+            });
+            await application.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
             var completed = await stateStore.CompleteSetupAsync(operationId, cancellationToken).ConfigureAwait(false);

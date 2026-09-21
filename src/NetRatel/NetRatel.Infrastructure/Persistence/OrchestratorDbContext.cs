@@ -7,6 +7,7 @@ namespace NetRatel.Infrastructure.Persistence;
 
 public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> options) : DbContext(options)
 {
+    public DbSet<BootstrapInitializationRecord> BootstrapInitializations => Set<BootstrapInitializationRecord>();
     public DbSet<M2MConnectivitySettings> M2MConnectivitySettings => Set<M2MConnectivitySettings>();
     public DbSet<EnrollmentCode> EnrollmentCodes => Set<EnrollmentCode>();
     public DbSet<Agent> Agents => Set<Agent>();
@@ -102,6 +103,16 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
         {
             modelBuilder.HasPostgresExtension("pg_trgm");
         }
+
+        modelBuilder.Entity<BootstrapInitializationRecord>(entity =>
+        {
+            entity.ToTable("BootstrapInitializations");
+            entity.HasKey(record => record.Id);
+            entity.Property(record => record.Id).ValueGeneratedNever();
+            entity.Property(record => record.AdministratorUserId).HasMaxLength(450).IsRequired();
+            entity.HasIndex(record => record.BootstrapInstanceId).IsUnique();
+        });
+
         modelBuilder.Entity<M2MConnectivitySettings>().ToTable("M2MConnectivitySettings");
 
         modelBuilder.Entity<EnrollmentCode>(entity =>

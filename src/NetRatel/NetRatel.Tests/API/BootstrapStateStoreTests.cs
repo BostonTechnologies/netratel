@@ -111,6 +111,7 @@ public sealed class BootstrapStateStoreTests
         var descriptor = await fixture.Store.LoadOrCreateAsync();
 
         descriptor.State.Should().Be(BootstrapState.RecoveryRequired);
+        descriptor.RecoveryReason.Should().Be("configuration-lease-expired");
     }
 
     private sealed class BootstrapFixture : IAsyncDisposable
