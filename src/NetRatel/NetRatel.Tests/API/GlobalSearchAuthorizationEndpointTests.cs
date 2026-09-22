@@ -8,13 +8,11 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using NetRatel.API.Endpoints.Search;
-using NetRatel.Infrastructure.Identity;
 using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Infrastructure.Persistence;
 using Xunit;
@@ -47,7 +45,7 @@ public sealed class GlobalSearchAuthorizationEndpointTests
     public async Task Tenant_scoped_script_editor_cannot_discover_instance_scoped_script_library()
     {
         using var app = await BuildAppAsync();
-        await SeedAsync(app.Services, includeScopedScriptEditor: true);
+        await SeedAsync(app.Services);
         var client = app.GetTestClient();
         client.DefaultRequestHeaders.Add("X-NetRatel-Principal", "operator-a");
 
@@ -60,7 +58,6 @@ public sealed class GlobalSearchAuthorizationEndpointTests
     private static async Task<IHost> BuildAppAsync()
     {
         var builder = WebApplication.CreateBuilder();
-        var identityRoot = new InMemoryDatabaseRoot();
         var applicationRoot = new InMemoryDatabaseRoot();
         builder.WebHost.UseTestServer();
         builder.Services.AddAuthentication(TestAuthenticationHandler.SchemeName)
@@ -70,13 +67,10 @@ public sealed class GlobalSearchAuthorizationEndpointTests
             policy.AddAuthenticationSchemes(TestAuthenticationHandler.SchemeName);
             policy.RequireAuthenticatedUser();
         }));
-        builder.Services.AddSingleton<IConfiguration>(new ConfigurationBuilder().AddInMemoryCollection().Build());
         builder.Services.AddSingleton<DatabaseCommandMetricsInterceptor>();
-        builder.Services.AddDbContext<NetRatelIdentityDbContext>(options =>
-            options.UseInMemoryDatabase($"search-identity-{Guid.NewGuid():N}", identityRoot));
         builder.Services.AddDbContext<OrchestratorDbContext>(options =>
             options.UseInMemoryDatabase($"search-app-{Guid.NewGuid():N}", applicationRoot));
-        builder.Services.AddScoped<IEffectiveAccessService, EffectiveAccessService>();
+        builder.Services.AddScoped<IEffectiveAccessService, ScopedSearchAccessService>();
 
         var app = builder.Build();
         app.UseAuthentication();
@@ -86,37 +80,10 @@ public sealed class GlobalSearchAuthorizationEndpointTests
         return app;
     }
 
-    private static async Task SeedAsync(IServiceProvider services, bool includeScopedScriptEditor = false)
+    private static async Task SeedAsync(IServiceProvider services)
     {
         await using var scope = services.CreateAsyncScope();
-        var identity = scope.ServiceProvider.GetRequiredService<NetRatelIdentityDbContext>();
         var application = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
-        var permissions = new List<string>
-        {
-            NetRatelPermissions.TenantAdministration,
-            NetRatelPermissions.ClientManagement,
-            NetRatelPermissions.JobManagement
-        };
-        if (includeScopedScriptEditor)
-        {
-            permissions.Add(NetRatelPermissions.ScriptEdit);
-        }
-
-        var role = new AccessRole { Name = "scoped-operator", DelegationRank = 1 };
-        foreach (var permission in permissions)
-        {
-            role.Permissions.Add(new AccessRolePermission { Permission = permission });
-        }
-
-        identity.AccessRoles.Add(role);
-        identity.PrincipalRoleAssignments.Add(new PrincipalRoleAssignment
-        {
-            PrincipalId = "operator-a",
-            RoleId = role.Id,
-            TenantId = 1,
-            Role = role
-        });
-
         var agentA = Guid.Parse("b1f0d95b-2217-4b2e-8df2-6db8bc2c9a91");
         var agentB = Guid.Parse("e9452fe3-df84-49fc-9e94-6fc98aeae215");
         var now = DateTimeOffset.Parse("2026-09-22T08:00:00+00:00");
@@ -136,8 +103,32 @@ public sealed class GlobalSearchAuthorizationEndpointTests
             new JobTaskActivityRecord { Id = 1, TenantId = 1, AgentId = agentA, RequestId = "tenant-a", ClientIdentity = "Tenant A client", TaskType = "Run", Status = "Completed", CreatedAtUtc = now },
             new JobTaskActivityRecord { Id = 2, TenantId = 2, AgentId = agentB, RequestId = "tenant-b", ClientIdentity = "Tenant B client", TaskType = "Run", Status = "Completed", CreatedAtUtc = now });
         application.Scripts.Add(new ScriptDefinition { Id = 1, Name = "Shared script", Description = "Instance library", ScriptType = "PowerShell", CreatedAtUtc = now, UpdatedAtUtc = now });
-        await identity.SaveChangesAsync();
         await application.SaveChangesAsync();
+    }
+
+    private sealed class ScopedSearchAccessService : IEffectiveAccessService
+    {
+        private static readonly HashSet<string> TenantPermissions =
+        [
+            NetRatelPermissions.TenantAdministration,
+            NetRatelPermissions.ClientManagement,
+            NetRatelPermissions.JobManagement,
+            NetRatelPermissions.ScriptEdit
+        ];
+
+        public Task<bool> AuthorizeAsync(ClaimsPrincipal principal, string permission, int? tenantId, CancellationToken cancellationToken = default) =>
+            Task.FromResult(TenantPermissions.Contains(permission) && tenantId == 1);
+
+        public Task<EffectiveAccessSnapshot> GetSnapshotAsync(ClaimsPrincipal principal, int? tenantId, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new EffectiveAccessSnapshot("operator-a", false, false, TenantPermissions));
+
+        public Task<int[]?> GetAuthorizedTenantIdsAsync(ClaimsPrincipal principal, string permission, CancellationToken cancellationToken = default) =>
+            Task.FromResult<int[]?>(TenantPermissions.Contains(permission) ? [1] : []);
+
+        public Task<bool> HasInstancePermissionAsync(ClaimsPrincipal principal, string permission, CancellationToken cancellationToken = default) =>
+            Task.FromResult(false);
+
+        public Task ReconcileBuiltInRolesAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
 
     private sealed class TestAuthenticationHandler(
