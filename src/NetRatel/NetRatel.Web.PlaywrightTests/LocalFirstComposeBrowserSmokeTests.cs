@@ -330,6 +330,8 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await page.WaitForTimeoutAsync(500);
         await page.GetByTestId("credential-name").FillAsync(name);
         await page.GetByTestId("credential-name").PressAsync("Tab");
+        await page.GetByTestId("credential-tenant").ClickAsync();
+        await page.GetByRole(AriaRole.Option, new PageGetByRoleOptions { Name = "Browser smoke tenant", Exact = true }).ClickAsync();
         if (!string.IsNullOrWhiteSpace(purpose))
         {
             await page.GetByRole(AriaRole.Combobox, new PageGetByRoleOptions { Name = "Purpose" }).ClickAsync();

@@ -76,6 +76,21 @@ public sealed class AccessAdministrationEndpointTests
         tenants.Should().BeEquivalentTo([new AccessAdministrationEndpoints.AccessTenantResponse(1, "Tenant A")]);
     }
 
+    [Fact]
+    public async Task Scoped_operator_discovers_only_named_credential_tenant_scopes()
+    {
+        using var app = await BuildAppAsync();
+        await SeedAsync(app.Services);
+        var client = app.GetTestClient();
+        client.DefaultRequestHeaders.Add("X-NetRatel-Principal", "tenant-admin");
+
+        var response = await client.GetAsync("/api/v2/account/integration-credentials/tenant-scopes");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, await response.Content.ReadAsStringAsync());
+        var tenants = await response.Content.ReadFromJsonAsync<List<IntegrationCredentialEndpoints.CredentialTenantScopeResponse>>();
+        tenants.Should().BeEquivalentTo([new IntegrationCredentialEndpoints.CredentialTenantScopeResponse(1, "Tenant A")]);
+    }
+
     private static async Task<IHost> BuildAppAsync()
     {
         var builder = WebApplication.CreateBuilder();
@@ -86,11 +101,19 @@ public sealed class AccessAdministrationEndpointTests
         builder.WebHost.UseTestServer();
         builder.Services.AddAuthentication(TestAuthenticationHandler.SchemeName)
             .AddScheme<AuthenticationSchemeOptions, TestAuthenticationHandler>(TestAuthenticationHandler.SchemeName, _ => { });
-        builder.Services.AddAuthorization(options => options.AddPolicy("AccessAdministration", policy =>
+        builder.Services.AddAuthorization(options =>
         {
-            policy.AddAuthenticationSchemes(TestAuthenticationHandler.SchemeName);
-            policy.RequireAuthenticatedUser();
-        }));
+            options.AddPolicy("AccessAdministration", policy =>
+            {
+                policy.AddAuthenticationSchemes(TestAuthenticationHandler.SchemeName);
+                policy.RequireAuthenticatedUser();
+            });
+            options.AddPolicy("InteractiveAccount", policy =>
+            {
+                policy.AddAuthenticationSchemes(TestAuthenticationHandler.SchemeName);
+                policy.RequireAuthenticatedUser();
+            });
+        });
         builder.Services.AddSingleton<IConfiguration>(new ConfigurationBuilder().AddInMemoryCollection().Build());
         builder.Services.AddDbContext<NetRatelIdentityDbContext>(options => options.UseInMemoryDatabase(identityDatabaseName, identityRoot));
         builder.Services.AddDbContext<OrchestratorDbContext>(options => options.UseInMemoryDatabase(applicationDatabaseName, applicationRoot));
@@ -105,6 +128,7 @@ public sealed class AccessAdministrationEndpointTests
         app.UseAuthentication();
         app.UseAuthorization();
         app.MapAccessAdministrationEndpoints();
+        app.MapIntegrationCredentialEndpoints();
         await app.StartAsync();
         return app;
     }
