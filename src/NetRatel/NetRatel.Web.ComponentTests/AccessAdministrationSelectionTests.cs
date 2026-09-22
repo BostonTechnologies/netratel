@@ -19,16 +19,34 @@ public sealed class AccessAdministrationSelectionTests : AsyncBunitContext
         Services.AddSingleton<IAccessAdministrationApiService>(access);
 
         var cut = Render<AccessAdministration>();
-        cut.WaitForAssertion(() => cut.FindAll("input").Should().HaveCount(2));
-        var inputs = cut.FindAll("input");
-        inputs[0].Change("Scoped operator");
-        inputs[1].Change("scoped@example.test");
+        cut.WaitForAssertion(() => cut.Find("[data-testid='create-local-user']").Should().NotBeNull());
+        cut.Find("[data-testid='local-user-display-name']").Change("Scoped operator");
+        cut.Find("[data-testid='local-user-email']").Change("scoped@example.test");
         cut.FindAll("button").Single(button => button.TextContent.Contains("Create activation handoff", StringComparison.Ordinal)).Click();
 
         cut.WaitForAssertion(() =>
         {
             access.Created.Should().Be(("Scoped operator", "scoped@example.test"));
             cut.Find("[data-testid='local-user-activation-token']").GetAttribute("value").Should().Be("activation-token");
+        });
+    }
+
+    [Fact]
+    public void Delegated_administrator_defaults_to_a_named_permitted_tenant_scope()
+    {
+        JSInterop.Mode = JSRuntimeMode.Loose;
+        Services.AddMudServices(options => options.PopoverOptions.CheckForPopoverProvider = false);
+        var access = new DelayedAccessAdministrationApiService();
+        Services.AddSingleton<IAccessAdministrationApiService>(access);
+
+        var cut = Render<AccessAdministration>();
+
+        cut.WaitForAssertion(() =>
+        {
+            cut.Markup.Should().Contain("Tenant Seven");
+            cut.Markup.Should().NotContain("Tenant ID (blank = instance)");
+            access.LastRoleScope.Should().Be(7);
+            access.LastUserScope.Should().Be(7);
         });
     }
 
@@ -68,19 +86,30 @@ public sealed class AccessAdministrationSelectionTests : AsyncBunitContext
             };
 
         public (string DisplayName, string Email)? Created { get; private set; }
+        public int? LastRoleScope { get; private set; }
+        public int? LastUserScope { get; private set; }
 
-        public Task<IReadOnlyList<AccessRoleDto>> GetRolesAsync(CancellationToken cancellationToken = default) =>
-            Task.FromResult<IReadOnlyList<AccessRoleDto>>([]);
+        public Task<IReadOnlyList<AccessTenantDto>> GetTenantsAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<AccessTenantDto>>([new(7, "Tenant Seven")]);
+
+        public Task<IReadOnlyList<AccessRoleDto>> GetRolesAsync(int? tenantId, CancellationToken cancellationToken = default)
+        {
+            LastRoleScope = tenantId;
+            return Task.FromResult<IReadOnlyList<AccessRoleDto>>([]);
+        }
 
         public Task<EffectiveAccessSummaryDto> GetSelfAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult(new EffectiveAccessSummaryDto(null, false, []));
 
-        public Task<IReadOnlyList<LocalUserAccessDto>> GetUsersAsync(CancellationToken cancellationToken = default) =>
-            Task.FromResult<IReadOnlyList<LocalUserAccessDto>>(
+        public Task<IReadOnlyList<LocalUserAccessDto>> GetUsersAsync(int? tenantId, CancellationToken cancellationToken = default)
+        {
+            LastUserScope = tenantId;
+            return Task.FromResult<IReadOnlyList<LocalUserAccessDto>>(
             [
                 new("user-a", "principal-a", "a@example.test", "User A", true, false),
                 new("user-b", "principal-b", "b@example.test", "User B", true, false)
             ]);
+        }
 
         public Task<LocalAccountActivationDto> CreateLocalUserAsync(string displayName, string email, CancellationToken cancellationToken = default)
         {
@@ -88,7 +117,7 @@ public sealed class AccessAdministrationSelectionTests : AsyncBunitContext
             return Task.FromResult(new LocalAccountActivationDto("created-user", email, "activation-token"));
         }
 
-        public Task<IReadOnlyList<RoleAssignmentDto>> GetAssignmentsAsync(string principalId, CancellationToken cancellationToken = default) =>
+        public Task<IReadOnlyList<RoleAssignmentDto>> GetAssignmentsAsync(string principalId, int? tenantId, CancellationToken cancellationToken = default) =>
             _assignments[principalId].Task;
 
         public Task AssignAsync(string principalId, string roleId, int? tenantId, CancellationToken cancellationToken = default) => Task.CompletedTask;

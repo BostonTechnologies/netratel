@@ -33,6 +33,41 @@ public static class AccessAdministrationEndpoints
             .WithTags("Access administration")
             .RequireAuthorization("AccessAdministration");
 
+        group.MapGet("/tenants", async (
+            ClaimsPrincipal actor,
+            NetRatelIdentityDbContext identityDb,
+            OrchestratorDbContext appDb,
+            IEffectiveAccessService access,
+            CancellationToken ct) =>
+        {
+            if (await IsInstanceAdministratorAsync(actor, access, ct).ConfigureAwait(false))
+            {
+                return Results.Ok(await appDb.Tenants.AsNoTracking()
+                    .OrderBy(tenant => tenant.Name)
+                    .Select(tenant => new AccessTenantResponse(tenant.Id, tenant.Name))
+                    .ToListAsync(ct)
+                    .ConfigureAwait(false));
+            }
+
+            var actorId = actor.FindFirst("netratel_principal_id")?.Value;
+            if (string.IsNullOrWhiteSpace(actorId))
+                return Results.Forbid();
+
+            var managedTenantIds = await identityDb.PrincipalRoleAssignments.AsNoTracking()
+                .Where(assignment => assignment.PrincipalId == actorId && assignment.TenantId != null)
+                .Where(assignment => assignment.Role!.Permissions.Any(permission => permission.Permission == NetRatelPermissions.UserRoleAdministration))
+                .Select(assignment => assignment.TenantId!.Value)
+                .Distinct()
+                .ToArrayAsync(ct)
+                .ConfigureAwait(false);
+            return Results.Ok(await appDb.Tenants.AsNoTracking()
+                .Where(tenant => managedTenantIds.Contains(tenant.Id))
+                .OrderBy(tenant => tenant.Name)
+                .Select(tenant => new AccessTenantResponse(tenant.Id, tenant.Name))
+                .ToListAsync(ct)
+                .ConfigureAwait(false));
+        });
+
         group.MapGet("/roles", async (int? tenantId, ClaimsPrincipal actor, NetRatelIdentityDbContext db, IEffectiveAccessService access, CancellationToken ct) =>
         {
             if (!await CanManageAssignmentsAsync(actor, role: null, tenantId, db, access, ct).ConfigureAwait(false))
@@ -299,6 +334,7 @@ public static class AccessAdministrationEndpoints
     public sealed record CreateAccessRoleRequest(string? Name, string? Description, int DelegationRank, int? TenantId, IReadOnlyList<string>? Permissions);
     public sealed record EffectiveAccessSummary(string? PrincipalId, bool IsInstanceAdministrator, IReadOnlyList<string> Permissions);
     public sealed record AssignRoleRequest(string RoleId, int? TenantId);
+    public sealed record AccessTenantResponse(int TenantId, string Name);
     public sealed record AccessRoleResponse(string Id, string Name, string? Description, bool IsBuiltIn, bool IsInstanceAdministratorRole, int DelegationRank, IReadOnlyList<string> Permissions);
     public sealed record RoleAssignmentResponse(string Id, string PrincipalId, string RoleId, string RoleName, int? TenantId, DateTimeOffset CreatedAtUtc);
     public sealed record LocalUserAccessResponse(string UserId, string PrincipalId, string Email, string DisplayName, bool IsEnabled, bool IsInstanceAdministrator);

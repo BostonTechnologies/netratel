@@ -381,6 +381,20 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         var activationToken = await page.GetByTestId("local-user-activation-token").InputValueAsync();
         Assert.False(string.IsNullOrWhiteSpace(activationToken));
 
+        await page.GetByRole(AriaRole.Combobox, new PageGetByRoleOptions { Name = "Manage tenant", Exact = true }).ClickAsync();
+        await page.GetByRole(AriaRole.Option, new PageGetByRoleOptions { Name = "Browser smoke tenant", Exact = true }).ClickAsync();
+        var localOperator = page.GetByText("Browser local operator", new PageGetByTextOptions { Exact = true });
+        await localOperator.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        await localOperator.ClickAsync();
+        await page.GetByTestId("access-assignment-scope").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        Assert.Equal("Browser smoke tenant", await page.GetByTestId("access-assignment-scope").InnerTextAsync());
+        await page.GetByRole(AriaRole.Combobox, new PageGetByRoleOptions { Name = "Role", Exact = true }).ClickAsync();
+        await page.GetByRole(AriaRole.Option, new PageGetByRoleOptions { Name = "Operator", Exact = true }).ClickAsync();
+        await page.GetByTestId("access-add-assignment").ClickAsync();
+        var assignmentScope = page.Locator("[data-testid^='access-assignment-scope-assignment-']");
+        await assignmentScope.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        Assert.Equal("Browser smoke tenant", await assignmentScope.InnerTextAsync());
+
         // Simulate a separate browser receiving the handoff. Clearing cookies on the
         // administrator's page would retain its interactive Blazor circuit.
         await using var operatorContext = await browser.NewContextAsync();

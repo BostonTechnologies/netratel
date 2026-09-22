@@ -340,19 +340,22 @@ public class MainLayoutTests : AsyncBunitContext
 
     private sealed class StubAccessAdministrationApiService : IAccessAdministrationApiService
     {
-        public Task<IReadOnlyList<AccessRoleDto>> GetRolesAsync(CancellationToken cancellationToken = default) =>
+        public Task<IReadOnlyList<AccessTenantDto>> GetTenantsAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<AccessTenantDto>>([]);
+
+        public Task<IReadOnlyList<AccessRoleDto>> GetRolesAsync(int? tenantId, CancellationToken cancellationToken = default) =>
             Task.FromResult<IReadOnlyList<AccessRoleDto>>([]);
 
         public Task<EffectiveAccessSummaryDto> GetSelfAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult(new EffectiveAccessSummaryDto(null, false, []));
 
-        public Task<IReadOnlyList<LocalUserAccessDto>> GetUsersAsync(CancellationToken cancellationToken = default) =>
+        public Task<IReadOnlyList<LocalUserAccessDto>> GetUsersAsync(int? tenantId, CancellationToken cancellationToken = default) =>
             Task.FromResult<IReadOnlyList<LocalUserAccessDto>>([]);
 
         public Task<LocalAccountActivationDto> CreateLocalUserAsync(string displayName, string email, CancellationToken cancellationToken = default) =>
             Task.FromResult(new LocalAccountActivationDto("created-user", email, "activation-token"));
 
-        public Task<IReadOnlyList<RoleAssignmentDto>> GetAssignmentsAsync(string principalId, CancellationToken cancellationToken = default) =>
+        public Task<IReadOnlyList<RoleAssignmentDto>> GetAssignmentsAsync(string principalId, int? tenantId, CancellationToken cancellationToken = default) =>
             Task.FromResult<IReadOnlyList<RoleAssignmentDto>>([]);
 
         public Task AssignAsync(string principalId, string roleId, int? tenantId, CancellationToken cancellationToken = default) =>

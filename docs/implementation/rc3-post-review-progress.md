@@ -48,6 +48,17 @@ local-first delivery or `v0.1.0-rc.3`.
 | Provider / auth | In-memory HTTP endpoint coverage with authenticated durable-principal role assignments. Browser tenant selection, lifecycle/MFA/recovery, scoped route/search, and final artifact acceptance remain required #67/#70 cells. |
 | Next action | Submit for hosted CI; retain this as partial #67 progress until the remaining acceptance journeys are completed. |
 
+## #67 — named delegated tenant scope editor
+
+| Field | Checkpoint |
+| --- | --- |
+| Branch | `feat/issue-67-scoped-access-editor` |
+| Repair | The access-administration editor discovers only the named tenant scopes that the acting administrator may manage. It replaces free-form numeric scope entry with a named selector and carries that selected scope through role, user, assignment, and mutation requests. Instance-wide administration remains a distinct explicit selection. |
+| Regressions | `AccessAdministrationEndpointTests.Tenant_administrator_discovers_only_its_named_administration_scope`; `AccessAdministrationSelectionTests.Delegated_administrator_defaults_to_a_named_permitted_tenant_scope`; the real Compose browser journey assigns the activated local operator to the setup tenant through the named selector. |
+| Local evidence | `git diff --check`; strict changed-file Slopwatch scan: 0 findings; public-disclosure gate and synthetic tests passed. Full .NET/Compose execution is hosted CI-gated. |
+| Provider / auth | In-memory endpoint/component regressions exercise the durable delegated-role boundary; source and extracted-image Compose browser jobs exercise local-account authorization. Existing OIDC and native Client flows are unchanged. |
+| Next action | PR #93 must complete the full exact-head hosted matrix, then retain #67 for scoped route/search and remaining delegated-journey acceptance. |
+
 ## #64 — viable administrator identity continuity
 
 | Field | Checkpoint |

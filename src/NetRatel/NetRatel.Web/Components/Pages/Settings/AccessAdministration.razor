@@ -42,11 +42,25 @@
             <MudGrid Spacing="3">
                 <MudItem xs="12" md="5">
                     <MudPaper Class="pa-3">
+                        <MudSelect T="int?" Label="Manage tenant" Value="_scopeTenantId" ValueChanged="OnScopeChangedAsync" data-testid="access-scope">
+                            @if (_isInstanceAdministrator)
+                            {
+                                <MudSelectItem T="int?" Value="@((int?)null)">Instance-wide</MudSelectItem>
+                            }
+                            @foreach (var tenant in _tenants)
+                            {
+                                <MudSelectItem T="int?" Value="@((int?)tenant.TenantId)" data-testid="@($"access-scope-tenant-{tenant.TenantId}")">@tenant.Name</MudSelectItem>
+                            }
+                        </MudSelect>
+                        @if (!_isInstanceAdministrator && _tenants.Count == 0)
+                        {
+                            <MudText Color="Color.Secondary">You do not have an access-administration tenant scope.</MudText>
+                        }
                         <MudText Typo="Typo.h6">Local users</MudText>
                         <MudList T="LocalUserAccessDto" Dense="true">
                             @foreach (var user in _users)
                             {
-                                <MudListItem Value="user" OnClick="@(() => SelectUserAsync(user.PrincipalId))">
+                                <MudListItem Value="user" OnClick="@(() => SelectUserAsync(user.PrincipalId))" data-testid="@($"access-user-{user.PrincipalId}")">
                                     <MudText>@user.DisplayName</MudText>
                                     <MudText Typo="Typo.caption" Color="Color.Secondary">@user.Email · @(user.IsEnabled ? "enabled" : "disabled")</MudText>
                                 </MudListItem>
@@ -65,7 +79,7 @@
                         {
                             <MudGrid Spacing="2" Class="mb-3">
                                 <MudItem xs="12" md="6">
-                                    <MudSelect T="string" Label="Role" @bind-Value="_draftRoleId">
+                                    <MudSelect T="string" Label="Role" @bind-Value="_draftRoleId" data-testid="access-assignment-role">
                                         @foreach (var role in _roles)
                                         {
                                             <MudSelectItem Value="@role.Id">@role.Name</MudSelectItem>
@@ -73,17 +87,17 @@
                                     </MudSelect>
                                 </MudItem>
                                 <MudItem xs="12" md="4">
-                                    <MudNumericField T="int?" Label="Tenant ID (blank = instance)" @bind-Value="_draftTenantId" />
+                                    <MudText Typo="Typo.body2" Class="pt-4" data-testid="access-assignment-scope">@ScopeName(_scopeTenantId)</MudText>
                                 </MudItem>
                                 <MudItem xs="12" md="2" Class="d-flex align-end">
-                                    <MudButton Variant="Variant.Filled" Disabled="@string.IsNullOrWhiteSpace(_draftRoleId)" OnClick="AssignAsync">Add</MudButton>
+                                    <MudButton Variant="Variant.Filled" Disabled="@string.IsNullOrWhiteSpace(_draftRoleId)" OnClick="AssignAsync" data-testid="access-add-assignment">Add</MudButton>
                                 </MudItem>
                             </MudGrid>
                             <MudTable Items="_assignments" Dense="true">
                                 <HeaderContent><MudTh>Role</MudTh><MudTh>Scope</MudTh><MudTh></MudTh></HeaderContent>
                                 <RowTemplate>
                                     <MudTd DataLabel="Role">@context.RoleName</MudTd>
-                                    <MudTd DataLabel="Scope">@(context.TenantId?.ToString() ?? "Instance")</MudTd>
+                                    <MudTd DataLabel="Scope" data-testid="@($"access-assignment-scope-assignment-{context.Id}")">@ScopeName(context.TenantId)</MudTd>
                                     <MudTd><MudButton Variant="Variant.Text" Color="Color.Error" OnClick="@(() => RemoveAsync(context.Id))">Remove</MudButton></MudTd>
                                 </RowTemplate>
                             </MudTable>
@@ -98,10 +112,12 @@
 @code {
     private IReadOnlyList<LocalUserAccessDto> _users = [];
     private IReadOnlyList<AccessRoleDto> _roles = [];
+    private IReadOnlyList<AccessTenantDto> _tenants = [];
     private IReadOnlyList<RoleAssignmentDto> _assignments = [];
     private string? _selectedPrincipalId;
     private string? _draftRoleId;
-    private int? _draftTenantId;
+    private int? _scopeTenantId;
+    private bool _isInstanceAdministrator;
     private bool _loading = true;
     private bool _creatingUser;
     private string? _newDisplayName;
@@ -113,8 +129,11 @@
     {
         try
         {
-            _users = await AccessApi.GetUsersAsync();
-            _roles = await AccessApi.GetRolesAsync();
+            var self = await AccessApi.GetSelfAsync();
+            _isInstanceAdministrator = self.IsInstanceAdministrator;
+            _tenants = await AccessApi.GetTenantsAsync();
+            _scopeTenantId = _isInstanceAdministrator ? null : _tenants.FirstOrDefault()?.TenantId;
+            await LoadScopeAsync();
         }
         catch (HttpRequestException)
         {
@@ -130,9 +149,9 @@
     {
         _selectedPrincipalId = principalId;
         _draftRoleId = null;
-        _draftTenantId = null;
         var version = ++_selectionVersion;
-        var assignments = await AccessApi.GetAssignmentsAsync(principalId);
+        var scopeTenantId = _scopeTenantId;
+        var assignments = await AccessApi.GetAssignmentsAsync(principalId, scopeTenantId);
         if (version != _selectionVersion || _selectedPrincipalId != principalId)
         {
             return;
@@ -151,7 +170,7 @@
         try
         {
             _activation = await AccessApi.CreateLocalUserAsync(displayName, email);
-            _users = await AccessApi.GetUsersAsync();
+            _users = await AccessApi.GetUsersAsync(_scopeTenantId);
             _newDisplayName = null;
             _newEmail = null;
             Snackbar.Add("Local user created. Deliver the activation handoff through an approved channel.", Severity.Success);
@@ -170,7 +189,7 @@
     {
         var principalId = _selectedPrincipalId;
         var roleId = _draftRoleId;
-        var tenantId = _draftTenantId;
+        var tenantId = _scopeTenantId;
         if (principalId is null || string.IsNullOrWhiteSpace(roleId)) return;
         await AccessApi.AssignAsync(principalId, roleId, tenantId);
         if (_selectedPrincipalId == principalId)
@@ -193,12 +212,42 @@
     private async Task RefreshAssignmentsAsync(string principalId)
     {
         var version = ++_selectionVersion;
-        var assignments = await AccessApi.GetAssignmentsAsync(principalId);
+        var scopeTenantId = _scopeTenantId;
+        var assignments = await AccessApi.GetAssignmentsAsync(principalId, scopeTenantId);
         if (version == _selectionVersion && _selectedPrincipalId == principalId)
         {
             _assignments = assignments;
             _draftRoleId = null;
-            _draftTenantId = null;
         }
     }
+
+    private async Task OnScopeChangedAsync(int? tenantId)
+    {
+        _scopeTenantId = tenantId;
+        _selectedPrincipalId = null;
+        _assignments = [];
+        _draftRoleId = null;
+        ++_selectionVersion;
+        await LoadScopeAsync();
+    }
+
+    private async Task LoadScopeAsync()
+    {
+        if (!_isInstanceAdministrator && _scopeTenantId is null)
+        {
+            _users = [];
+            _roles = [];
+            return;
+        }
+
+        _users = await AccessApi.GetUsersAsync(_scopeTenantId);
+        _roles = await AccessApi.GetRolesAsync(_scopeTenantId);
+    }
+
+    private string ScopeName(int? tenantId) => tenantId switch
+    {
+        null => "Instance-wide",
+        var id when _tenants.FirstOrDefault(tenant => tenant.TenantId == id) is { } tenant => tenant.Name,
+        _ => "Unavailable tenant"
+    };
 }
