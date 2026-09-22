@@ -1,6 +1,6 @@
-# NetRatel 0.1.0-rc.3
+# NetRatel 0.1.0-rc.4
 
-`0.1.0-rc.3` is a prerelease for evaluation and integration testing. It is not
+`0.1.0-rc.4` is a prerelease for evaluation and integration testing. It is not
 a stable release channel and must not be used for unattended fleet updates.
 
 ## Local-first operation
@@ -14,6 +14,8 @@ a stable release channel and must not be used for unattended fleet updates.
   deployment. External-OIDC HTTP MCP remains available separately.
 - Account administration provides scoped roles, local-account lifecycle and
   recovery controls, and purpose-separated integration credentials.
+- Global search applies the caller's effective tenant scope before querying;
+  scoped local accounts cannot discover other tenants' data.
 
 ## Automation, interface and administration
 

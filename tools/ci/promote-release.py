@@ -382,8 +382,8 @@ def validate_candidate_bundle(directory, version, revision, images, input_receip
 def promote(args):
     version = json.loads((ROOT / "release/release-manifest.json").read_text())["version"]
     revision = run("git", "rev-parse", "HEAD")
-    if version != "0.1.0-rc.3" or args.approve != f"{version}@{revision}":
-        raise ValueError("Explicit --approve VERSION@PUBLIC_SHA for rc.3 is required")
+    if version != "0.1.0-rc.4" or args.approve != f"{version}@{revision}":
+        raise ValueError("Explicit --approve VERSION@PUBLIC_SHA for rc.4 is required")
     if run("git", "status", "--porcelain"):
         raise ValueError("Promotion requires a clean checkout")
     run("git", "fetch", "origin", "main")

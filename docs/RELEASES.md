@@ -1,7 +1,7 @@
 # Release engineering
 
 All first-party components evaluate from the root product version. The current
-prerelease is `0.1.0-rc.3`; the component inventory is
+prerelease is `0.1.0-rc.4`; the component inventory is
 `release/release-manifest.json`.
 
 The reviewed release notes for this candidate are
@@ -42,7 +42,7 @@ For the native Client, the generated publish directory includes the executable,
 its update manifest, required sidecars, and the Linux PTY helper. Do not
 advertise a runtime until its final archive has been built and smoke-tested.
 NetRatel `0.1.0-rc.1` archives and tag remain published historical release
-artifacts. Release availability for `0.1.0-rc.3` is determined by its matching
+artifacts. Release availability for `0.1.0-rc.4` is determined by its matching
 immutable prerelease tag and release record; never infer it from a source
 checkout. The release workflow validates the committed version, builds every
 final runtime container, and packages CLI, stdio MCP, and native Client
@@ -57,7 +57,7 @@ digests. It is intentionally a deployment bundle, not a source-build recipe.
 
 PR and release rehearsal workflows never call the promotion command. After
 review and explicit publication approval, use a clean checkout of the merged
-public commit and an owner-created `v0.1.0-rc.3` tag pointing to that commit.
+public commit and an owner-created `v0.1.0-rc.4` tag pointing to that commit.
 Download the successful release-workflow artifact sets into a sibling release
 workspace (not the clean source checkout), retaining each set's `SHA256SUMS`.
 Create `release-receipt.json` beside them with the repository, workflow path,
@@ -73,7 +73,7 @@ Prepare and verify the flat downloadable layout without publishing:
 mkdir -p ../netratel-release-work/review-inputs
 python3 tools/ci/promote-release.py stage \
   --inputs ../netratel-release-work/review-inputs \
-  --output ../netratel-release-work/staged-release --version 0.1.0-rc.3
+  --output ../netratel-release-work/staged-release --version 0.1.0-rc.4
 (cd ../netratel-release-work/staged-release && sha256sum -c SHA256SUMS)
 ```
 
@@ -86,7 +86,7 @@ python3 tools/ci/promote-release.py preflight \
   --receipt ../netratel-release-work/release-receipt.json \
   --output ../netratel-release-work/preflight-staged \
   --state ../netratel-release-work/preflight-state.json \
-  --package-prefix reviewed-prefix --version 0.1.0-rc.3
+  --package-prefix reviewed-prefix --version 0.1.0-rc.4
 ```
 
 Before choosing a package prefix, an authorized operator must list the
@@ -99,7 +99,7 @@ With a separately approved package prefix and registry login, invoke:
 
 ```sh
 python3 tools/ci/promote-release.py promote \
-  --approve "0.1.0-rc.3@$(git rev-parse HEAD)" \
+  --approve "0.1.0-rc.4@$(git rev-parse HEAD)" \
   --package-prefix APPROVED-PUBLIC-PREFIX \
   --inputs ../netratel-release-work/review-inputs \
   --receipt ../netratel-release-work/release-receipt.json \
@@ -130,8 +130,8 @@ approval. After the command succeeds, inspect `publication.json`, verify
 `SHA256SUMS` again, and create the prerelease only with explicit owner approval:
 
 ```sh
-gh release create v0.1.0-rc.3 promoted-release/* --verify-tag --prerelease \
-  --title "NetRatel 0.1.0-rc.3" --notes-file approved-release-notes.md
+gh release create v0.1.0-rc.4 promoted-release/* --verify-tag --prerelease \
+  --title "NetRatel 0.1.0-rc.4" --notes-file approved-release-notes.md
 ```
 
 The CLI tool is distributed as the downloadable NuGet package; this path does

@@ -85,11 +85,13 @@ wait_for_web() {
 }
 
 run_browser_oidc_smoke() {
+  local expected_version="$1"
   local proxy_address
   proxy_address="$("${active_compose[@]}" port web-proxy 9444)"
   NETRATEL_BROWSER_SMOKE_WEB_URL="$web_url" \
     NETRATEL_BROWSER_SMOKE_PROXY_URL="https://${proxy_address}" \
     NETRATEL_BROWSER_SMOKE_USERNAME=netratel-test-operator \
+    NETRATEL_BROWSER_SMOKE_EXPECTED_VERSION="$expected_version" \
     dotnet test src/NetRatel/NetRatel.Web.PlaywrightTests/NetRatel.Web.PlaywrightTests.csproj \
       --configuration Release --no-build --filter 'FullyQualifiedName~OidcComposeBrowserSmokeTests'
 }
@@ -253,7 +255,7 @@ wait_for_migrations
 curl --retry 20 --retry-connrefused --fail --silent --show-error "http://127.0.0.1:${NETRATEL_OIDC_TEST_PORT}/isalive" >/dev/null
 wait_for_web
 stage="authenticating through the published rc.3 OIDC browser journey"
-run_browser_oidc_smoke
+run_browser_oidc_smoke "v0.1.0-rc.3"
 stage="recording an existing rc.3 PostgreSQL OIDC principal fixture"
 seed_historical_oidc_principal
 legacy_principal_count="$(durable_oidc_principal_count)"
@@ -270,7 +272,7 @@ wait_for_migrations
 curl --retry 20 --retry-connrefused --fail --silent --show-error "http://127.0.0.1:${NETRATEL_OIDC_TEST_PORT}/isalive" >/dev/null
 wait_for_web
 stage="authenticating through the upgraded PostgreSQL/OIDC browser journey"
-run_browser_oidc_smoke
+run_browser_oidc_smoke "v$(jq -r '.version' release/release-manifest.json)"
 [[ "$(durable_oidc_principal_count)" == "$legacy_principal_count" ]] || {
   echo "The upgraded PostgreSQL/OIDC stack did not retain the durable rc.3 external principal set." >&2
   exit 1

@@ -78,9 +78,9 @@ local-first delivery or `v0.1.0-rc.3`.
 | Reproduction | Global search required the legacy `Operator` policy and every section queried all tenants. A local principal with only Tenant A assignments could not use the route without a broad compatibility claim, and granting that claim exposed Tenant B search results. |
 | Repair | Search is now an interactive-account route. Tenant, client, job, request, and task queries resolve the caller's current permission-derived tenant set before composing search, ordering, and pagination. The instance-wide script library is returned only for an instance-level script permission; a tenant-scoped script grant cannot reveal it. |
 | Regressions | `GlobalSearchAuthorizationEndpointTests` seeds Tenant A and Tenant B, assigns the interactive principal only Tenant A permissions, and proves every tenant-backed section omits Tenant B. It also proves a tenant-scoped script editor cannot discover the shared instance library. |
-| Local evidence | `git diff --check`; strict changed-file Slopwatch scan: 0 findings; public-disclosure gate and synthetic tests passed. Hosted .NET compilation and the full image/browser matrix remain required. |
-| Provider / auth | The focused regression uses in-memory durable-role endpoint coverage. Existing OIDC and native Client paths are unchanged; release-bundle acceptance remains separately gated. |
-| Next action | Submit for hosted CI and retain #67 until scoped directory/presence and remaining ordinary-operator journeys are accepted. |
+| Hosted evidence | PR #95 merged as `ec364de` after exact-head run `35678148374` passed full .NET tests, public disclosure, all public images and native Client packages, source and release-image OIDC, rc.3 SQLite and PostgreSQL/OIDC upgrade, and extracted local-first bundle browser journeys for SQLite, bundled PostgreSQL, and external PostgreSQL. |
+| Provider / auth | The focused regression uses in-memory durable-role endpoint coverage; the exact-head matrix independently preserves OIDC and native Client compatibility and runs the bundled artifact journeys. |
+| Next action | Record the closed scoped-search repair in the release preparation and retain the route scope as an enforced CI regression. |
 
 ## #64 — viable administrator identity continuity
 
@@ -196,9 +196,9 @@ local-first delivery or `v0.1.0-rc.3`.
 | Branch | `test/issue-70-postgres-artifact-acceptance` |
 | Repair | Extend the existing extracted-bundle local-first journey to the bundled PostgreSQL recipe and the external PostgreSQL overlay, while retaining the existing SQLite cell and separate OIDC matrix. |
 | Regression | The shared artifact harness selects an extracted Compose recipe and explicit test-only overlays. The external fixture creates a database owned by the application role, which is `NOSUPERUSER`, so migrations cannot accidentally depend on bundled bootstrap-superuser privileges. |
-| Local evidence | Shell syntax, YAML parsing, and bundled/external PostgreSQL Compose interpolation passed without starting containers. Hosted source and release candidate evidence remains pending. |
-| Provider / auth | The same browser setup, local credential, extracted CLI/stdio, and HTTP MCP path runs for SQLite, bundled PostgreSQL, and external PostgreSQL with OIDC unset. OIDC runs remain distinct. |
-| Next action | Run the complete hosted PR matrix; record exact job results before claiming the new PostgreSQL cells. |
+| Hosted evidence | PR #95 exact-head run `35678148374` passed all three extracted-bundle local-first browser cells, each with OIDC unset, after building the candidate images and consuming the generated Compose archive. |
+| Provider / auth | SQLite, bundled PostgreSQL, and an `NOSUPERUSER` external PostgreSQL application role complete the same local-account, credential, CLI/stdio, HTTP MCP, Client, and browser journey. Source and release-image generic OIDC remain distinct and also passed in that run. |
+| Next action | Carry these exact-artifact gates into the rc.4 tag workflow and publish only from its verified accepted commit. |
 
 ## #70 — historical rc.3 local upgrade and restore gate
 
@@ -220,5 +220,14 @@ local-first delivery or `v0.1.0-rc.3`.
 | Regression | The browser journey authenticates through both the direct and TLS-proxied OIDC paths on rc.3 and after the upgrade. The fixture records an existing external principal using the verified issuer/subject claims from a disposable provider token, then requires the candidate to retain and reuse exactly that mapping. The rc.3 authority creates a tenant and enrolls a published Client; that same persisted Client must authenticate against the upgraded candidate API. |
 | Provider / auth | PostgreSQL/OIDC is distinct from the existing fresh OIDC and local-first matrices. It preserves published external identity, Client enrollment, and signing-key state; the existing independent gates retain CLI, MCP, local-account, and full Client command/telemetry coverage. |
 | Next action | Run the required PR matrix and then keep the equivalent release-rehearsal job as a promotion prerequisite. |
+
+## #71 — rc.4 release preparation
+
+| Field | Checkpoint |
+| --- | --- |
+| Version selection | Remote tag and release inventory contains `v0.1.0-rc.1`, `v0.1.0-rc.2`, and `v0.1.0-rc.3` only; `v0.1.0-rc.4` is unused. Historical rc.3 tags, images, and upgrade fixtures remain unchanged. |
+| Candidate | `0.1.0-rc.4` is prepared through the root version authority, release manifest, release workflow dispatch default, public documentation, promotion guard, and version-presentation regressions. |
+| Acceptance baseline | The immediately preceding functional merge, PR #95 at `ec364de`, passed exact-head run `35678148374`, including the complete local-first bundle, OIDC, upgrade, package, image, and disclosure matrix. |
+| Next action | Merge this release-preparation PR, run the exact-head release rehearsal, then tag and promote only the verified rc.4 commit. |
 
 No credentials, setup proofs, recovery codes, private endpoints, or customer data are recorded here.
