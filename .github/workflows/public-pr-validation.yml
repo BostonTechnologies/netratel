@@ -378,7 +378,6 @@ jobs:
           tools/ci/scan-public-image.sh --image netratel-client:release-smoke --version "$version" --revision "$GITHUB_SHA"
       - env:
           NETRATEL_COMPOSE_SMOKE_MODE: release-images
-          NETRATEL_COMPOSE_SMOKE_BUNDLE: review-artifacts/netratel-compose-0.1.0-rc.3.tar.gz
           NETRATEL_MIGRATIONS_IMAGE: netratel-migrations:release-smoke
           NETRATEL_API_IMAGE: netratel-api:release-smoke
           NETRATEL_WEB_IMAGE: netratel-web:release-smoke
@@ -395,7 +394,8 @@ jobs:
           NETRATEL_GATEWAY_PROXY_CONFIG_PATH: ${{ github.workspace }}/tests/compose/gateway-proxy.nginx.conf
         run: |
           docker compose -f release/compose.images.yaml -f tests/compose/oidc-smoke.compose.yaml config --quiet
-          NETRATEL_CLI_SMOKE_ARCHIVE="review-artifacts/netratel-cli-$(jq -r '.version' release/release-manifest.json)-linux-x64.tar.gz" \
+          NETRATEL_COMPOSE_SMOKE_BUNDLE="review-artifacts/netratel-compose-$(jq -r '.version' release/release-manifest.json).tar.gz" \
+            NETRATEL_CLI_SMOKE_ARCHIVE="review-artifacts/netratel-cli-$(jq -r '.version' release/release-manifest.json)-linux-x64.tar.gz" \
             NETRATEL_MCP_STDIO_SMOKE_ARCHIVE="review-artifacts/netratel-mcp-stdio-$(jq -r '.version' release/release-manifest.json)-linux-x64.tar.gz" \
             tools/ci/smoke-oidc-compose.sh
       - if: always()
