@@ -102,19 +102,19 @@ public sealed class GlobalSearchAuthorizationEndpointTests
             permissions.Add(NetRatelPermissions.ScriptEdit);
         }
 
-        var role = new AccessRole { Id = "operator", Name = "operator", DelegationRank = 1 };
+        var role = new AccessRole { Name = "scoped-operator", DelegationRank = 1 };
         foreach (var permission in permissions)
         {
             role.Permissions.Add(new AccessRolePermission { Permission = permission });
         }
 
-        identity.ApplicationPrincipals.Add(new ApplicationPrincipal { Id = "operator-a" });
         identity.AccessRoles.Add(role);
         identity.PrincipalRoleAssignments.Add(new PrincipalRoleAssignment
         {
             PrincipalId = "operator-a",
             RoleId = role.Id,
-            TenantId = 1
+            TenantId = 1,
+            Role = role
         });
 
         var agentA = Guid.Parse("b1f0d95b-2217-4b2e-8df2-6db8bc2c9a91");
