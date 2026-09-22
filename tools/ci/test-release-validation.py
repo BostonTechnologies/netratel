@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Negative release-gate tests using isolated source fixtures."""
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -118,6 +119,20 @@ class DistributionTests(unittest.TestCase):
             (directory / name).write_bytes(name.encode())
         self.promotion.checksums(directory)
 
+    def create_release_bundle(self, version):
+        archive = self.root / f"netratel-compose-{version}.tar.gz"
+        manifest = json.dumps({"version": version}).encode()
+        with tarfile.open(archive, "w:gz") as target:
+            for name in ("compose.images.yaml", "compose.local-sqlite.yaml", "compose.external-postgres.yaml", "compose.mcp-http.yaml", ".env.images.example", "INSTALL.md"):
+                target.add(ROOT / "release" / name, arcname=name)
+            manifest_info = tarfile.TarInfo("release-manifest.json")
+            manifest_info.size = len(manifest)
+            target.addfile(manifest_info, io.BytesIO(manifest))
+            target.add(ROOT / "docs/mcp-http/local-credential-mode.md", arcname="docs/mcp-http/local-credential-mode.md")
+            for name in ("LICENSE", "NOTICE"):
+                target.add(ROOT / name, arcname=name)
+        return archive
+
     def test_paginated_gh_json_is_parsed_without_slurp(self):
         self.assertEqual(
             self.promotion.json_pages('[{"name":"first"}]\n[{"name":"second"}]'),
@@ -195,13 +210,7 @@ class DistributionTests(unittest.TestCase):
         version = "0.1.0-rc.3"
         for name in self.promotion.required_artifacts(version):
             (self.root / name).write_bytes(name.encode())
-        archive = self.root / f"netratel-compose-{version}.tar.gz"
-        with tarfile.open(archive, "w:gz") as target:
-            for name in ("compose.images.yaml", "compose.local-sqlite.yaml", "compose.external-postgres.yaml", "compose.mcp-http.yaml", ".env.images.example", "release-manifest.json", "INSTALL.md"):
-                target.add(ROOT / "release" / name, arcname=name)
-            target.add(ROOT / "docs/mcp-http/local-credential-mode.md", arcname="docs/mcp-http/local-credential-mode.md")
-            for name in ("LICENSE", "NOTICE"):
-                target.add(ROOT / name, arcname=name)
+        archive = self.create_release_bundle(version)
         images = {name: f"ghcr.io/example/{name}@sha256:" + "a" * 64 for name in self.promotion.COMPONENTS}
         self.promotion.checksums(self.root)
         receipt = self.receipt_for_directory(self.root)
@@ -348,13 +357,7 @@ class DistributionTests(unittest.TestCase):
 
     def test_candidate_binds_every_non_derived_artifact(self):
         version = "0.1.0-rc.3"
-        archive = self.root / f"netratel-compose-{version}.tar.gz"
-        with tarfile.open(archive, "w:gz") as target:
-            for name in ("compose.images.yaml", "compose.local-sqlite.yaml", "compose.external-postgres.yaml", "compose.mcp-http.yaml", ".env.images.example", "release-manifest.json", "INSTALL.md"):
-                target.add(ROOT / "release" / name, arcname=name)
-            target.add(ROOT / "docs/mcp-http/local-credential-mode.md", arcname="docs/mcp-http/local-credential-mode.md")
-            for name in ("LICENSE", "NOTICE"):
-                target.add(ROOT / name, arcname=name)
+        archive = self.create_release_bundle(version)
         for name in self.promotion.required_artifacts(version):
             path = self.root / name
             if not path.exists():
