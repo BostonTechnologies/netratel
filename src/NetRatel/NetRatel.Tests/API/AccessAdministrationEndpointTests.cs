@@ -121,6 +121,7 @@ public sealed class AccessAdministrationEndpointTests
             .AddRoles<IdentityRole>()
             .AddEntityFrameworkStores<NetRatelIdentityDbContext>();
         builder.Services.AddScoped<IEffectiveAccessService, EffectiveAccessService>();
+        builder.Services.AddScoped<IIntegrationCredentialService, IntegrationCredentialService>();
         builder.Services.AddScoped<InstanceAdministratorInvariant>();
         builder.Services.AddScoped<IAuthorizationHandler, EffectiveAccessHandler>();
 
