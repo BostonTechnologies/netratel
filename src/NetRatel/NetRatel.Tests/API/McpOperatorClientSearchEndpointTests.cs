@@ -364,6 +364,9 @@ public sealed class McpOperatorClientSearchEndpointTests(McpClientSearchPostgres
                     options.AddPolicy("M2MOnly", policy => policy.AddAuthenticationSchemes("M2M").RequireAuthenticatedUser()
                         .AddRequirements(new AllowedClientRequirement(["mcp-service"])));
                     options.AddPolicy("Operator", policy => policy.RequireAuthenticatedUser().RequireRole("Operator"));
+                    options.AddPolicy("InteractiveAccount", policy => policy.RequireAuthenticatedUser().RequireAssertion(context =>
+                        context.User.Identities.Any(identity => identity.IsAuthenticated &&
+                            string.Equals(identity.AuthenticationType, "Oidc", StringComparison.Ordinal))));
                 });
             });
             web.Configure(app =>

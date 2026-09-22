@@ -59,6 +59,29 @@ local-first delivery or `v0.1.0-rc.3`.
 | Provider / auth | In-memory endpoint/component regressions exercise the durable delegated-role boundary; source and extracted-image Compose browser jobs exercise local-account authorization. Existing OIDC and native Client flows are unchanged. |
 | Next action | PR #93 must complete the full exact-head hosted matrix, then retain #67 for scoped route/search and remaining delegated-journey acceptance. |
 
+## #67 — named integration credential tenant selector
+
+| Field | Checkpoint |
+| --- | --- |
+| Branch | `fix/issue-67-named-credential-tenant-selector` |
+| Repair | Credential creation now uses a server-authorized named tenant selector. Instance administrators receive all tenant names; delegated users receive only tenant-bound roles with at least one delegable non-management permission. The credential endpoint still authorizes every requested permission and tenant tuple at creation time. |
+| Regressions | `AccessAdministrationEndpointTests.Scoped_operator_discovers_only_named_credential_tenant_scopes`; the SQLite, bundled PostgreSQL, and external PostgreSQL browser journeys select the named `Browser smoke tenant` before creating a credential. |
+| Hosted evidence | PR #94 merged as `ad6f9974f2df5b4e64cf159337b562532174efc3` after exact-head PR run `35673971278` and post-merge main run `35674644635` succeeded. The latter retried the unchanged bundled-PostgreSQL browser job after a pre-interaction branding timing failure. |
+| Provider / auth | The selector is interactive-account-only; OIDC and native Client authentication contracts are unchanged. Existing scoped access-administration work merged in PR #93 remains the companion named-scope boundary. |
+| Next action | Complete the remaining scoped route and search mappings plus ordinary-operator browser acceptance before closing #67. |
+
+## #67 — scoped global search
+
+| Field | Checkpoint |
+| --- | --- |
+| Branch | `codex/issue-67-scoped-global-search` |
+| Reproduction | Global search required the legacy `Operator` policy and every section queried all tenants. A local principal with only Tenant A assignments could not use the route without a broad compatibility claim, and granting that claim exposed Tenant B search results. |
+| Repair | Search is now an interactive-account route. Tenant, client, job, request, and task queries resolve the caller's current permission-derived tenant set before composing search, ordering, and pagination. The instance-wide script library is returned only for an instance-level script permission; a tenant-scoped script grant cannot reveal it. |
+| Regressions | `GlobalSearchAuthorizationEndpointTests` seeds Tenant A and Tenant B, assigns the interactive principal only Tenant A permissions, and proves every tenant-backed section omits Tenant B. It also proves a tenant-scoped script editor cannot discover the shared instance library. |
+| Local evidence | `git diff --check`; strict changed-file Slopwatch scan: 0 findings; public-disclosure gate and synthetic tests passed. Hosted .NET compilation and the full image/browser matrix remain required. |
+| Provider / auth | The focused regression uses in-memory durable-role endpoint coverage. Existing OIDC and native Client paths are unchanged; release-bundle acceptance remains separately gated. |
+| Next action | Submit for hosted CI and retain #67 until scoped directory/presence and remaining ordinary-operator journeys are accepted. |
+
 ## #64 — viable administrator identity continuity
 
 | Field | Checkpoint |

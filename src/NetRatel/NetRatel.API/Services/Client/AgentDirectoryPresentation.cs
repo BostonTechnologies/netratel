@@ -87,9 +87,10 @@ internal static class AgentDirectorySearch
 {
     public static IQueryable<AgentDirectoryRow> Query(
         OrchestratorDbContext db,
-        string? term)
+        string? term,
+        int[]? tenantIds = null)
     {
-        var directory = from agent in MatchingAgents(db, term)
+        var directory = from agent in MatchingAgents(db, term, tenantIds)
                         join tenant in db.Tenants.AsNoTracking()
                             on agent.TenantId equals tenant.Id
                         select new { Agent = agent, TenantName = tenant.Name };
@@ -107,9 +108,13 @@ internal static class AgentDirectorySearch
                 row.TenantName));
     }
 
-    public static IQueryable<Agent> MatchingAgents(OrchestratorDbContext db, string? term)
+    public static IQueryable<Agent> MatchingAgents(OrchestratorDbContext db, string? term, int[]? tenantIds = null)
     {
         var agents = db.Agents.AsNoTracking();
+        if (tenantIds is not null)
+        {
+            agents = agents.Where(agent => tenantIds.Contains(agent.TenantId));
+        }
         if (string.IsNullOrWhiteSpace(term))
         {
             return agents;

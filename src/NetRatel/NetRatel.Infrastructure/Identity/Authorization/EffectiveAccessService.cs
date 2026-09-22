@@ -19,6 +19,21 @@ public interface IEffectiveAccessService
 {
     Task<bool> AuthorizeAsync(ClaimsPrincipal principal, string permission, int? tenantId, CancellationToken cancellationToken = default);
     Task<EffectiveAccessSnapshot> GetSnapshotAsync(ClaimsPrincipal principal, int? tenantId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Resolves the caller's complete tenant scope for one permission without
+    /// separating a role's permission from the tenant to which it was granted.
+    /// A null result means unrestricted instance access; an empty result denies
+    /// all tenant-backed data. The fail-closed default preserves compatibility
+    /// for custom evaluators until they implement scoped discovery explicitly.
+    /// </summary>
+    Task<int[]?> GetAuthorizedTenantIdsAsync(ClaimsPrincipal principal, string permission, CancellationToken cancellationToken = default) =>
+        Task.FromResult<int[]?>([]);
+
+    /// <summary>Checks whether a permission has instance-wide authority.</summary>
+    Task<bool> HasInstancePermissionAsync(ClaimsPrincipal principal, string permission, CancellationToken cancellationToken = default) =>
+        Task.FromResult(false);
+
     Task ReconcileBuiltInRolesAsync(CancellationToken cancellationToken = default);
 }
 
@@ -108,6 +123,44 @@ public sealed class EffectiveAccessService(NetRatelIdentityDbContext db, IConfig
         }
 
         return new(principalId, false, localInstanceAdministrator || assignedInstanceAdministrator, permissions);
+    }
+
+    public async Task<int[]?> GetAuthorizedTenantIdsAsync(ClaimsPrincipal principal, string permission, CancellationToken cancellationToken = default)
+    {
+        if (!NetRatelPermissions.All.Contains(permission))
+        {
+            return [];
+        }
+
+        var instance = await GetSnapshotAsync(principal, tenantId: null, cancellationToken).ConfigureAwait(false);
+        if (instance.IsLegacyOperator || instance.IsInstanceAdministrator || instance.Permissions.Contains(permission))
+        {
+            return null;
+        }
+
+        if (string.IsNullOrWhiteSpace(instance.PrincipalId))
+        {
+            return [];
+        }
+
+        return await db.PrincipalRoleAssignments.AsNoTracking()
+            .Where(assignment => assignment.PrincipalId == instance.PrincipalId && assignment.TenantId != null)
+            .Where(assignment => assignment.Role!.Permissions.Any(rolePermission => rolePermission.Permission == permission))
+            .Select(assignment => assignment.TenantId!.Value)
+            .Distinct()
+            .ToArrayAsync(cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    public async Task<bool> HasInstancePermissionAsync(ClaimsPrincipal principal, string permission, CancellationToken cancellationToken = default)
+    {
+        if (!NetRatelPermissions.All.Contains(permission))
+        {
+            return false;
+        }
+
+        var instance = await GetSnapshotAsync(principal, tenantId: null, cancellationToken).ConfigureAwait(false);
+        return instance.IsLegacyOperator || instance.IsInstanceAdministrator || instance.Permissions.Contains(permission);
     }
 
     public async Task ReconcileBuiltInRolesAsync(CancellationToken cancellationToken = default)
