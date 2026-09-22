@@ -130,8 +130,8 @@ public sealed class GlobalSearchAuthorizationEndpointTests
             new JobDefinition { Id = 1, Name = "Tenant A job", TenantId = 1, AgentId = agentA, CreatedAtUtc = now, UpdatedAtUtc = now },
             new JobDefinition { Id = 2, Name = "Tenant B job", TenantId = 2, AgentId = agentB, CreatedAtUtc = now, UpdatedAtUtc = now });
         application.Requests.AddRange(
-            new RequestRecord { Id = 1, TargetTenantId = 1, TargetAgentId = agentA, TargetClientIdentity = "Tenant A client", CreatedAtUtc = now, UpdatedAtUtc = now },
-            new RequestRecord { Id = 2, TargetTenantId = 2, TargetAgentId = agentB, TargetClientIdentity = "Tenant B client", CreatedAtUtc = now, UpdatedAtUtc = now });
+            new RequestRecord { Id = 1, TargetTenantId = 1, TargetAgentId = agentA, TargetClientIdentity = "Tenant A client", JobDefinitionId = "1", CreatedAtUtc = now, UpdatedAtUtc = now },
+            new RequestRecord { Id = 2, TargetTenantId = 2, TargetAgentId = agentB, TargetClientIdentity = "Tenant B client", JobDefinitionId = "2", CreatedAtUtc = now, UpdatedAtUtc = now });
         application.JobTaskActivities.AddRange(
             new JobTaskActivityRecord { Id = 1, TenantId = 1, AgentId = agentA, RequestId = "tenant-a", ClientIdentity = "Tenant A client", TaskType = "Run", Status = "Completed", CreatedAtUtc = now },
             new JobTaskActivityRecord { Id = 2, TenantId = 2, AgentId = agentB, RequestId = "tenant-b", ClientIdentity = "Tenant B client", TaskType = "Run", Status = "Completed", CreatedAtUtc = now });
