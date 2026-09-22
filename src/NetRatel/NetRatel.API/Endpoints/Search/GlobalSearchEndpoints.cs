@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.AspNetCore.Mvc;
@@ -10,6 +11,7 @@ using NetRatel.Shared.Contracts;
 using NetRatel.Shared.Contracts.Jobs;
 using NetRatel.Shared.Contracts.Scripts;
 using NetRatel.Shared.Contracts.Tasks;
+using NetRatel.Infrastructure.Identity.Authorization;
 
 namespace NetRatel.API.Endpoints.Search;
 
@@ -20,7 +22,11 @@ public static class GlobalSearchEndpoints
 
     public static IEndpointRouteBuilder MapGlobalSearchEndpoints(this IEndpointRouteBuilder app)
     {
-        var group = app.MapGroup("/api/v1/global-search").WithTags("Global Search").RequireAuthorization("Operator");
+        // Search is an interactive application feature. The individual
+        // handlers resolve the caller's current tenant permission before
+        // building their database query; an Operator claim is deliberately
+        // not used as a substitute for tenant-scoped visibility.
+        var group = app.MapGroup("/api/v1/global-search").WithTags("Global Search").RequireAuthorization("InteractiveAccount");
         group.MapGet("/tenants", SearchTenantsAsync);
         group.MapGet("/scripts", SearchScriptsAsync);
         group.MapGet("/jobs", SearchJobsAsync);
@@ -32,13 +38,17 @@ public static class GlobalSearchEndpoints
 
     private static async Task<IResult> SearchTenantsAsync(
         [FromServices] OrchestratorDbContext db,
+        [FromServices] IEffectiveAccessService access,
+        ClaimsPrincipal principal,
         [FromQuery] string? q,
         [FromQuery] int pageSize = 6,
         CancellationToken ct = default)
     {
         var term = NormalizeTerm(q);
         var take = NormalizePageSize(pageSize);
-        var query = db.Tenants.AsNoTracking();
+        var tenantIds = await access.GetAuthorizedTenantIdsAsync(principal, NetRatelPermissions.TenantAdministration, ct)
+            .ConfigureAwait(false);
+        var query = ScopedTenants(db, tenantIds);
         if (term is not null)
         {
             var like = Like(term);
@@ -81,12 +91,19 @@ public static class GlobalSearchEndpoints
 
     private static async Task<IResult> SearchScriptsAsync(
         [FromServices] OrchestratorDbContext db,
+        [FromServices] IEffectiveAccessService access,
+        ClaimsPrincipal principal,
         [FromQuery] string? q,
         [FromQuery] int pageSize = 6,
         CancellationToken ct = default)
     {
         var term = NormalizeTerm(q);
         var take = NormalizePageSize(pageSize);
+        if (!await access.HasInstancePermissionAsync(principal, NetRatelPermissions.ScriptEdit, ct).ConfigureAwait(false))
+        {
+            return Results.Ok(Page(Array.Empty<ScriptDto>(), take));
+        }
+
         var query = db.Scripts.AsNoTracking();
         if (term is not null)
         {
@@ -124,6 +141,8 @@ public static class GlobalSearchEndpoints
 
     private static async Task<IResult> SearchAgentsAsync(
         [FromServices] OrchestratorDbContext db,
+        [FromServices] IEffectiveAccessService access,
+        ClaimsPrincipal principal,
         [FromServices] DatabaseCommandMetricsInterceptor commandMetrics,
         ILoggerFactory loggerFactory,
         [FromQuery] string? q,
@@ -132,10 +151,12 @@ public static class GlobalSearchEndpoints
     {
         var term = NormalizeTerm(q);
         var take = NormalizePageSize(pageSize);
+        var tenantIds = await access.GetAuthorizedTenantIdsAsync(principal, NetRatelPermissions.ClientManagement, ct)
+            .ConfigureAwait(false);
         commandMetrics.Reset();
         var started = Stopwatch.GetTimestamp();
         var queryStarted = Stopwatch.GetTimestamp();
-        var rows = await BuildAgentQuery(db, term)
+        var rows = await BuildAgentQuery(db, term, tenantIds)
             .Take(take)
             .ToListAsync(ct)
             .ConfigureAwait(false);
@@ -149,6 +170,8 @@ public static class GlobalSearchEndpoints
 
     private static async Task<IResult> SearchJobsAsync(
         [FromServices] OrchestratorDbContext db,
+        [FromServices] IEffectiveAccessService access,
+        ClaimsPrincipal principal,
         [FromServices] DatabaseCommandMetricsInterceptor commandMetrics,
         ILoggerFactory loggerFactory,
         [FromQuery] string? q,
@@ -157,10 +180,12 @@ public static class GlobalSearchEndpoints
     {
         var term = NormalizeTerm(q);
         var take = NormalizePageSize(pageSize);
+        var tenantIds = await access.GetAuthorizedTenantIdsAsync(principal, NetRatelPermissions.JobManagement, ct)
+            .ConfigureAwait(false);
         commandMetrics.Reset();
         var started = Stopwatch.GetTimestamp();
         var queryStarted = Stopwatch.GetTimestamp();
-        var rows = await BuildJobQuery(db, term)
+        var rows = await BuildJobQuery(db, term, tenantIds)
             .Take(take)
             .ToListAsync(ct)
             .ConfigureAwait(false);
@@ -174,6 +199,8 @@ public static class GlobalSearchEndpoints
 
     private static async Task<IResult> SearchRequestsAsync(
         [FromServices] OrchestratorDbContext db,
+        [FromServices] IEffectiveAccessService access,
+        ClaimsPrincipal principal,
         [FromServices] DatabaseCommandMetricsInterceptor commandMetrics,
         ILoggerFactory loggerFactory,
         [FromQuery] string? q,
@@ -182,10 +209,12 @@ public static class GlobalSearchEndpoints
     {
         var term = NormalizeTerm(q);
         var take = NormalizePageSize(pageSize);
+        var tenantIds = await access.GetAuthorizedTenantIdsAsync(principal, NetRatelPermissions.JobManagement, ct)
+            .ConfigureAwait(false);
         commandMetrics.Reset();
         var started = Stopwatch.GetTimestamp();
         var queryStarted = Stopwatch.GetTimestamp();
-        var rows = await BuildRequestQuery(db, term)
+        var rows = await BuildRequestQuery(db, term, tenantIds)
             .Take(take)
             .ToListAsync(ct)
             .ConfigureAwait(false);
@@ -199,6 +228,8 @@ public static class GlobalSearchEndpoints
 
     private static async Task<IResult> SearchTasksAsync(
         [FromServices] OrchestratorDbContext db,
+        [FromServices] IEffectiveAccessService access,
+        ClaimsPrincipal principal,
         [FromServices] DatabaseCommandMetricsInterceptor commandMetrics,
         ILoggerFactory loggerFactory,
         [FromQuery] string? q,
@@ -207,10 +238,12 @@ public static class GlobalSearchEndpoints
     {
         var term = NormalizeTerm(q);
         var take = NormalizePageSize(pageSize);
+        var tenantIds = await access.GetAuthorizedTenantIdsAsync(principal, NetRatelPermissions.JobManagement, ct)
+            .ConfigureAwait(false);
         commandMetrics.Reset();
         var started = Stopwatch.GetTimestamp();
         var queryStarted = Stopwatch.GetTimestamp();
-        var rows = await BuildTaskQuery(db, term)
+        var rows = await BuildTaskQuery(db, term, tenantIds)
             .Take(take)
             .ToListAsync(ct)
             .ConfigureAwait(false);
@@ -222,14 +255,18 @@ public static class GlobalSearchEndpoints
         return Results.Ok(Page(items, take));
     }
 
-    internal static IQueryable<AgentDirectoryRow> BuildAgentQuery(OrchestratorDbContext db, string? term) =>
-        AgentDirectorySearch.Query(db, term);
+    internal static IQueryable<AgentDirectoryRow> BuildAgentQuery(OrchestratorDbContext db, string? term, int[]? tenantIds = null) =>
+        AgentDirectorySearch.Query(db, term, tenantIds);
 
-    internal static IQueryable<JobSearchRow> BuildJobQuery(OrchestratorDbContext db, string? term)
+    internal static IQueryable<JobSearchRow> BuildJobQuery(OrchestratorDbContext db, string? term, int[]? tenantIds = null)
     {
         var matchingAgents = AgentDirectorySearch.MatchingAgents(db, term);
         var matchingTenantIds = MatchingTenantIds(db, term);
         var jobs = db.Jobs.AsNoTracking();
+        if (tenantIds is not null)
+        {
+            jobs = jobs.Where(job => job.TenantId.HasValue && tenantIds.Contains(job.TenantId.Value));
+        }
         if (term is not null)
         {
             var like = Like(term);
@@ -273,12 +310,16 @@ public static class GlobalSearchEndpoints
 
     }
 
-    internal static IQueryable<RequestSearchRow> BuildRequestQuery(OrchestratorDbContext db, string? term)
+    internal static IQueryable<RequestSearchRow> BuildRequestQuery(OrchestratorDbContext db, string? term, int[]? tenantIds = null)
     {
         var matchingAgents = AgentDirectorySearch.MatchingAgents(db, term);
         var matchingTenantIds = MatchingTenantIds(db, term);
         var matchingJobIds = MatchingJobIds(db, term);
         var requests = db.Requests.AsNoTracking();
+        if (tenantIds is not null)
+        {
+            requests = requests.Where(request => request.TargetTenantId.HasValue && tenantIds.Contains(request.TargetTenantId.Value));
+        }
         if (term is not null)
         {
             var like = Like(term);
@@ -329,11 +370,15 @@ public static class GlobalSearchEndpoints
 
     }
 
-    internal static IQueryable<TaskSearchRow> BuildTaskQuery(OrchestratorDbContext db, string? term)
+    internal static IQueryable<TaskSearchRow> BuildTaskQuery(OrchestratorDbContext db, string? term, int[]? tenantIds = null)
     {
         var matchingAgents = AgentDirectorySearch.MatchingAgents(db, term);
         var matchingTenantIds = MatchingTenantIds(db, term);
         var tasks = db.JobTaskActivities.AsNoTracking();
+        if (tenantIds is not null)
+        {
+            tasks = tasks.Where(task => task.TenantId.HasValue && tenantIds.Contains(task.TenantId.Value));
+        }
         if (term is not null)
         {
             var like = Like(term);
@@ -410,6 +455,11 @@ public static class GlobalSearchEndpoints
 
         return query.Select(job => job.Id);
     }
+
+    private static IQueryable<Tenant> ScopedTenants(OrchestratorDbContext db, int[]? tenantIds) =>
+        tenantIds is null
+            ? db.Tenants.AsNoTracking()
+            : db.Tenants.AsNoTracking().Where(tenant => tenantIds.Contains(tenant.Id));
 
     internal static GlobalSearchAgentDto MapAgent(AgentDirectoryRow row)
     {
