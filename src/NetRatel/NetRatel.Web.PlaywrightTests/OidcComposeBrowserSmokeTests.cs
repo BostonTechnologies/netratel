@@ -147,7 +147,7 @@ public sealed class OidcComposeBrowserSmokeTests
 
     private static async Task AssertProductVersionBadgesAsync(IPage page)
     {
-        const string expectedVersion = "v0.1.0-rc.3";
+        const string expectedVersion = "v0.1.0-rc.4";
 
         await page.ReloadAsync(new PageReloadOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
         await page.SetViewportSizeAsync(1440, 900);

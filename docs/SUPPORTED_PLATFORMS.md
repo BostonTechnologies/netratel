@@ -1,6 +1,6 @@
 # Supported platforms
 
-NetRatel `0.1.0-rc.3` is a prerelease. The table below records the targets
+NetRatel `0.1.0-rc.4` is a prerelease. The table below records the targets
 that the release workflow builds and executes. It is not a production
 certification statement.
 
