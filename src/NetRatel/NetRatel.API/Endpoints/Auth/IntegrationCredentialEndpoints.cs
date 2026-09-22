@@ -16,6 +16,45 @@ public static class IntegrationCredentialEndpoints
             .WithTags("Integration credentials")
             .RequireAuthorization("InteractiveAccount");
 
+        group.MapGet("/tenant-scopes", async (
+            ClaimsPrincipal principal,
+            NetRatelIdentityDbContext identityDb,
+            OrchestratorDbContext applicationDb,
+            IEffectiveAccessService access,
+            CancellationToken ct) =>
+        {
+            var owner = PrincipalId(principal);
+            if (owner is null)
+            {
+                return Results.Forbid();
+            }
+
+            if ((await access.GetSnapshotAsync(principal, tenantId: null, ct).ConfigureAwait(false)).IsInstanceAdministrator)
+            {
+                return Results.Ok(await applicationDb.Tenants.AsNoTracking()
+                    .OrderBy(tenant => tenant.Name)
+                    .Select(tenant => new CredentialTenantScopeResponse(tenant.Id, tenant.Name))
+                    .ToListAsync(ct)
+                    .ConfigureAwait(false));
+            }
+
+            var tenantIds = await identityDb.PrincipalRoleAssignments.AsNoTracking()
+                .Where(assignment => assignment.PrincipalId == owner && assignment.TenantId != null)
+                .Where(assignment => assignment.Role!.Permissions.Any(permission =>
+                    permission.Permission != NetRatelPermissions.IntegrationManagement))
+                .Select(assignment => assignment.TenantId!.Value)
+                .Distinct()
+                .ToArrayAsync(ct)
+                .ConfigureAwait(false);
+
+            return Results.Ok(await applicationDb.Tenants.AsNoTracking()
+                .Where(tenant => tenantIds.Contains(tenant.Id))
+                .OrderBy(tenant => tenant.Name)
+                .Select(tenant => new CredentialTenantScopeResponse(tenant.Id, tenant.Name))
+                .ToListAsync(ct)
+                .ConfigureAwait(false));
+        });
+
         group.MapGet("/", async (ClaimsPrincipal principal, IIntegrationCredentialService credentials, HttpContext context, CancellationToken ct) =>
         {
             var owner = PrincipalId(principal);
@@ -130,4 +169,6 @@ public static class IntegrationCredentialEndpoints
         IReadOnlyList<IntegrationCredentialGrantRequest>? Grants,
         string? Resource = null,
         IReadOnlyList<string>? InstancePermissions = null);
+
+    public sealed record CredentialTenantScopeResponse(int TenantId, string Name);
 }
