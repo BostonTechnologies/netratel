@@ -139,6 +139,11 @@ printf '%s\n' '{"apiBaseUrl":"https://netratel.example.invalid","oidcTokenUrl":"
 coproc MCP_STDIO {
   NETRATEL_MCP_CONFIG="$mcp_config" NETRATEL_MCP_INSTANCE=dev timeout 10s dotnet "$mcp_assembly" 2>/dev/null
 }
+mcp_stdio_pid="${MCP_STDIO_PID:-}"
+[[ -n "$mcp_stdio_pid" ]] || {
+  echo "Could not start the stdio MCP release-artifact verifier." >&2
+  exit 1
+}
 mcp_stdout_fd="${MCP_STDIO[0]}"
 mcp_stdin_fd="${MCP_STDIO[1]}"
 
@@ -154,8 +159,8 @@ mcp_initialize_response="$(mcp_call '{"jsonrpc":"2.0","id":1,"method":"initializ
 printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/initialized"}' >&"$mcp_stdin_fd"
 mcp_tools_response="$(mcp_call '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}')"
 mcp_capabilities_response="$(mcp_call '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"netratel_capabilities","arguments":{"operation":"get"}}}')"
-kill "$MCP_STDIO_PID" 2>/dev/null || true
-wait "$MCP_STDIO_PID" 2>/dev/null || true
+kill "$mcp_stdio_pid" 2>/dev/null || true
+wait "$mcp_stdio_pid" 2>/dev/null || true
 
 if ! printf '%s\n%s\n%s\n' "$mcp_initialize_response" "$mcp_tools_response" "$mcp_capabilities_response" | jq -se '
   length == 3
