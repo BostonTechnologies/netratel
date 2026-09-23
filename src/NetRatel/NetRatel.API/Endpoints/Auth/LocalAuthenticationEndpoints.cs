@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Options;
 using Microsoft.EntityFrameworkCore;
 using NetRatel.API.Security.Local;
 using NetRatel.Infrastructure.Identity;
@@ -104,6 +105,21 @@ public static class LocalAuthenticationEndpoints
             user.FindFirstValue(ClaimTypes.Name) ?? string.Empty,
             user.FindFirstValue(ClaimTypes.Email) ?? string.Empty)))
             .RequireAuthorization(LocalAuthenticationOptions.LocalUserPolicy);
+
+        group.MapGet("/security/status", async (
+            UserManager<LocalUser> users,
+            IOptions<IdentityOptions> identityOptions,
+            HttpContext context) =>
+        {
+            context.Response.Headers.CacheControl = "no-store";
+            var user = await CurrentLocalUserAsync(users, context.User).ConfigureAwait(false);
+            if (user is null || !user.IsEnabled)
+                return Results.Unauthorized();
+
+            return Results.Ok(new LocalSecurityStatusResponse(
+                await users.GetTwoFactorEnabledAsync(user).ConfigureAwait(false),
+                identityOptions.Value.Password.RequiredLength));
+        }).RequireAuthorization(LocalAuthenticationOptions.LocalUserPolicy);
 
         group.MapPost("/change-password", async (
             [FromBody] ChangePasswordRequest request,
@@ -402,6 +418,7 @@ public static class LocalAuthenticationEndpoints
     public sealed record LocalAccountResponse(string UserId, string PrincipalId, string DisplayName, string Email);
     public sealed record ActivationResponse(string UserId, string Email, string ActivationToken);
     public sealed record AuthenticatorSetupResponse(string SharedKey, string AuthenticatorUri);
+    public sealed record LocalSecurityStatusResponse(bool TwoFactorEnabled, int MinimumPassphraseLength);
     public sealed record RecoveryCodesResponse(IReadOnlyList<string> RecoveryCodes);
     private sealed record LocalLoginChallenge(string UserId, string SecurityStamp, long AuthorizationRevision, bool RememberMe);
 }

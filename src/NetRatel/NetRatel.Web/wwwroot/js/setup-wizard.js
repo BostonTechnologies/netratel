@@ -5,23 +5,28 @@ window.netratelSetup = {
         if (input) input.value = "";
     }),
     post: async (url, body) => {
-        const response = await fetch(url, {
-            method: "POST",
-            credentials: "same-origin",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body)
-        });
+        let response;
+        try {
+            response = await fetch(url, {
+                method: "POST",
+                credentials: "same-origin",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(body)
+            });
+        } catch {
+            return { ok: false, payload: null, message: null, status: 0 };
+        }
         if (response.ok) {
             let payload = null;
             try { payload = await response.json(); } catch { }
-            return { ok: true, payload, message: null };
+            return { ok: true, payload, message: null, status: response.status };
         }
         let message = null;
         try {
             const problem = await response.json();
             message = problem?.title || problem?.detail || problem?.errors?.setup?.[0] || null;
         } catch { }
-        return { ok: false, payload: null, message };
+        return { ok: false, payload: null, message, status: response.status };
     },
     showError: (message) => {
         const target = document.getElementById("setup-client-error");
@@ -52,7 +57,12 @@ window.netratelSetup = {
         const result = await window.netratelSetup.post("/api/v2/local-auth/login", { email, password, rememberMe });
         window.netratelSetup.clear("[data-testid='local-login-password']");
         if (!result.ok) {
-            window.netratelSetup.showLoginError("The sign-in details were not accepted. Try again or contact an instance administrator.");
+            const message = result.status === 0 || result.status >= 500
+                ? "Sign-in is temporarily unavailable. Ask an administrator to check the API and shared session-key storage."
+                : result.status === 429
+                    ? "Too many sign-in attempts. Wait a moment before trying again."
+                    : "The sign-in details were not accepted. Try again or contact an instance administrator.";
+            window.netratelSetup.showLoginError(message);
             return;
         }
         if (result.payload?.requiresTwoFactor) {
@@ -70,7 +80,9 @@ window.netratelSetup = {
         const result = await window.netratelSetup.post("/api/v2/local-auth/login/two-factor", { code });
         window.netratelSetup.clear("[data-testid='local-login-two-factor']");
         if (!result.ok) {
-            window.netratelSetup.showLoginError("The authenticator or recovery code was not accepted.");
+            window.netratelSetup.showLoginError(result.status === 0 || result.status >= 500
+                ? "Sign-in is temporarily unavailable. Ask an administrator to check the API and shared session-key storage."
+                : "The authenticator or recovery code was not accepted.");
             return;
         }
         window.location.assign(window.netratelSetup.returnPath());

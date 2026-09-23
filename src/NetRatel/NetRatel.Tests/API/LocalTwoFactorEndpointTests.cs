@@ -24,6 +24,26 @@ namespace NetRatel.Tests.API;
 
 public sealed class LocalTwoFactorEndpointTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Security_status_reports_the_persisted_factor_state_without_exposing_the_key(bool enrolled)
+    {
+        using var app = await BuildAppAsync();
+        await SeedUserAsync(app.Services, enrolled);
+        var client = app.GetTestClient();
+        client.DefaultRequestHeaders.Add("X-NetRatel-User", "local-user");
+
+        var response = await client.GetAsync("/api/v2/local-auth/security/status");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        response.Headers.CacheControl!.NoStore.Should().BeTrue();
+        var status = await response.Content.ReadFromJsonAsync<LocalAuthenticationEndpoints.LocalSecurityStatusResponse>();
+        status!.TwoFactorEnabled.Should().Be(enrolled);
+        status.MinimumPassphraseLength.Should().BeGreaterThan(0);
+        (await response.Content.ReadAsStringAsync()).Should().NotContain("initial-stamp");
+    }
+
     [Fact]
     public async Task Setup_returns_a_new_authenticator_secret_without_invalidating_the_current_session()
     {

@@ -10,6 +10,7 @@ public interface ILocalAccountApiService
 {
     Task ActivateAsync(LocalAccountActivationRequest request, CancellationToken cancellationToken = default);
     Task ChangePasswordAsync(LocalPasswordChangeRequest request, CancellationToken cancellationToken = default);
+    Task<LocalSecurityStatus> GetSecurityStatusAsync(CancellationToken cancellationToken = default);
     Task<AuthenticatorSetup> BeginTwoFactorSetupAsync(string currentPassword, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<string>> EnableTwoFactorAsync(string code, CancellationToken cancellationToken = default);
     Task DisableTwoFactorAsync(LocalTwoFactorDisableRequest request, CancellationToken cancellationToken = default);
@@ -30,6 +31,14 @@ public sealed class LocalAccountApiService(IHttpClientFactory clients) : ILocalA
         using var response = await AuthenticatedClient.PostAsJsonAsync("/api/v2/local-auth/change-password", request, cancellationToken)
             .ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
+    }
+
+    public async Task<LocalSecurityStatus> GetSecurityStatusAsync(CancellationToken cancellationToken = default)
+    {
+        using var response = await AuthenticatedClient.GetAsync("/api/v2/local-auth/security/status", cancellationToken).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<LocalSecurityStatus>(cancellationToken).ConfigureAwait(false)
+            ?? throw new HttpRequestException("The account security status response was missing.");
     }
 
     public async Task<AuthenticatorSetup> BeginTwoFactorSetupAsync(string currentPassword, CancellationToken cancellationToken = default)
@@ -68,3 +77,4 @@ public sealed record LocalAccountActivationRequest(string Email, string Activati
 public sealed record LocalPasswordChangeRequest(string CurrentPassword, string NewPassword);
 public sealed record LocalTwoFactorDisableRequest(string CurrentPassword, string Code);
 public sealed record AuthenticatorSetup(string SharedKey, string AuthenticatorUri);
+public sealed record LocalSecurityStatus(bool TwoFactorEnabled, int MinimumPassphraseLength);
