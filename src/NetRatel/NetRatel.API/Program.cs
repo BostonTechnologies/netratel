@@ -67,6 +67,13 @@ var builder = WebApplication.CreateBuilder(args);
 // recovering installation must expose only the setup/liveness surface; it must not initialize a
 // database, OIDC handler, agent gateway, scheduler, outbox, or Akka authority in the background.
 var bootstrapOptions = BootstrapOptions.FromConfiguration(builder.Configuration);
+if (BootstrapOperatorCommand.IsSupported(args))
+{
+    Environment.ExitCode = await BootstrapOperatorCommand.RunAsync(
+        args[0], bootstrapOptions, Console.Out, Console.Error);
+    return;
+}
+
 var bootstrapLifecycle = new BootstrapLifecycleService(new BootstrapStateStore(bootstrapOptions), builder.Configuration);
 var bootstrapDescriptor = await bootstrapLifecycle.InitializeAsync();
 if (args is [UnattendedBootstrapCommand.CommandName])
