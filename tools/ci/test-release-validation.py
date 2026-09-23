@@ -123,7 +123,7 @@ class DistributionTests(unittest.TestCase):
         archive = self.root / f"netratel-compose-{version}.tar.gz"
         manifest = json.dumps({"version": version}).encode()
         with tarfile.open(archive, "w:gz") as target:
-            for name in ("compose.images.yaml", "compose.external-postgres.yaml", "compose.mcp-http.yaml", ".env.images.example", "INSTALL.md"):
+            for name in ("compose.images.yaml", "compose.external-postgres.yaml", "compose.public-https.yaml", "nginx.public-https.conf", "compose.mcp-http.yaml", ".env.images.example", "INSTALL.md"):
                 target.add(ROOT / "release" / name, arcname=name)
             manifest_info = tarfile.TarInfo("release-manifest.json")
             manifest_info.size = len(manifest)

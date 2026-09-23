@@ -98,10 +98,9 @@ jobs:
           cp "artifacts/cli/NetRatel.Cli.${VERSION}.nupkg" artifacts/
           tar -C artifacts/cli -czf "artifacts/netratel-cli-${VERSION}-linux-x64.tar.gz" netratel-cli-linux-x64
           tar -C artifacts/mcp-stdio -czf "artifacts/netratel-mcp-stdio-${VERSION}-linux-x64.tar.gz" netratel-mcp-linux-x64
-          cp release/compose.images.yaml release/compose.external-postgres.yaml release/compose.mcp-http.yaml release/.env.images.example release/release-manifest.json release/INSTALL.md LICENSE NOTICE artifacts/release-bundle/
-          mkdir -p artifacts/release-bundle/docs/mcp-http
-          cp docs/FIRST_RUN_SETUP.md artifacts/release-bundle/docs/
-          cp docs/mcp-http/local-credential-mode.md artifacts/release-bundle/docs/mcp-http/
+          cp release/compose.images.yaml release/compose.external-postgres.yaml release/compose.public-https.yaml release/nginx.public-https.conf release/compose.mcp-http.yaml release/.env.images.example release/release-manifest.json release/INSTALL.md LICENSE NOTICE artifacts/release-bundle/
+          cp -a docs artifacts/release-bundle/
+          cp README.md artifacts/release-bundle/
           tar -C artifacts/release-bundle -czf "artifacts/netratel-compose-${VERSION}.tar.gz" .
           tools/ci/verify-release-local-first-profiles.sh --bundle "artifacts/netratel-compose-${VERSION}.tar.gz"
       - env:

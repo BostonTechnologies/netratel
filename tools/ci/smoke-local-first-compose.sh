@@ -6,8 +6,14 @@ cd "$root"
 
 project="netratel-local-first-${GITHUB_RUN_ID:-local}-${RANDOM}"
 web_port="${NETRATEL_LOCAL_FIRST_WEB_PORT:-18081}"
-web_url="http://127.0.0.1:${web_port}"
-key_path="$(mktemp)"
+web_url="${NETRATEL_LOCAL_FIRST_WEB_URL:-http://127.0.0.1:${web_port}}"
+curl_tls=()
+if [[ "${NETRATEL_LOCAL_FIRST_IGNORE_HTTPS_ERRORS:-false}" == true ]]; then
+  curl_tls=(--insecure)
+fi
+key_directory="$(mktemp -d)"
+key_path="$key_directory/agent-auth-private.pem"
+chmod 711 "$key_directory"
 credential_path="$(mktemp)"
 mcp_stdio_config_path="$(mktemp)"
 mcp_stdio_error_path="$(mktemp)"
@@ -89,10 +95,13 @@ cleanup() {
   if (( status != 0 )); then
     echo "::error title=Local-first Compose smoke failed::${stage}" >&2
     "${compose[@]}" ps --all >&2 || true
-    "${compose[@]}" logs --no-color --tail 250 migrations api web mcp-http >&2 || true
+    local log_services=(migrations api web)
+    if [[ -n "$mcp_http_image" ]]; then log_services+=(mcp-http); fi
+    "${compose[@]}" logs --no-color --tail 250 "${log_services[@]}" >&2 || true
   fi
   "${compose[@]}" down --volumes --remove-orphans --rmi local >/dev/null 2>&1 || true
-  unlink "$key_path" 2>/dev/null || true
+  docker volume rm "${project}_api-data" "${project}_web-keys" >/dev/null 2>&1 || true
+  find "$key_directory" -depth -delete 2>/dev/null || true
   unlink "$credential_path" 2>/dev/null || true
   unlink "$mcp_stdio_config_path" 2>/dev/null || true
   if [[ -n "$bundle_extract_dir" ]]; then
@@ -107,11 +116,22 @@ cleanup() {
 trap cleanup EXIT
 
 openssl ecparam -name prime256v1 -genkey -noout -out "$key_path"
-# The disposable key is mounted read-only into an unprivileged container and is
-# removed by the trap above. It is never emitted to logs or test output.
-chmod 644 "$key_path"
+# The disposable key matches the documented non-root identity and private
+# mode; its value is never emitted to logs or test output.
+docker run --rm --volume "$key_directory:/keys" alpine:3.22 \
+  sh -ceu 'chown 1654:1654 /keys/agent-auth-private.pem && chmod 600 /keys/agent-auth-private.pem'
 export NETRATEL_AGENT_AUTH_PRIVATE_KEY="$key_path"
 export NETRATEL_WEB_PORT="$web_port"
+
+# Reproduce managed deployments that pre-create an empty root-owned named
+# volume. The stock recipe must repair ownership before either non-root host
+# writes its first Data Protection key; browser sign-in verifies the result.
+stage="preparing root-owned fresh persistent volumes"
+for volume in "${project}_api-data" "${project}_web-keys"; do
+  docker volume create "$volume" >/dev/null
+  docker run --rm --volume "$volume:/target" alpine:3.22 \
+    sh -ceu 'chown 0:0 /target && chmod 700 /target'
+done
 
 stage="starting selected local-first Compose profile"
 if [[ -n "$bundle" ]]; then
@@ -137,12 +157,12 @@ done
 
 stage="waiting for restricted setup surface"
 for _ in $(seq 1 90); do
-  if curl --connect-timeout 2 --fail --silent "$web_url/api/v2/setup/status" >/dev/null; then
+  if curl "${curl_tls[@]}" --connect-timeout 2 --fail --silent "$web_url/api/v2/setup/status" >/dev/null; then
     break
   fi
   sleep 1
 done
-curl --connect-timeout 2 --fail --silent "$web_url/api/v2/setup/status" >/dev/null
+curl "${curl_tls[@]}" --connect-timeout 2 --fail --silent "$web_url/api/v2/setup/status" >/dev/null
 
 stage="building and running Playwright local-first journey"
 dotnet restore src/NetRatel/NetRatel.Web.PlaywrightTests/NetRatel.Web.PlaywrightTests.csproj
@@ -150,7 +170,29 @@ dotnet build src/NetRatel/NetRatel.Web.PlaywrightTests/NetRatel.Web.PlaywrightTe
 playwright_script="src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/playwright.ps1"
 [[ -f "$playwright_script" ]] || { echo "Playwright install script was not produced." >&2; exit 1; }
 pwsh "$playwright_script" install --with-deps chromium
+stage="validating image operator commands and one-time proof rotation"
+"${compose[@]}" exec -T api dotnet NetRatel.API.dll --help | grep -Fq -- '--show-setup-code'
+initial_setup_proof="$("${compose[@]}" exec -T api cat /var/netratel/bootstrap/setup-proof)"
+[[ "$("${compose[@]}" exec -T api dotnet NetRatel.API.dll --show-setup-code)" == "$initial_setup_proof" ]]
+initial_status="$("${compose[@]}" exec -T api dotnet NetRatel.API.dll --setup-status)"
+grep -Fq 'Setup code: Available' <<<"$initial_status"
+[[ "$initial_status" != *"$initial_setup_proof"* ]]
+"${compose[@]}" exec -T api dotnet NetRatel.API.dll --rotate-setup-code >/dev/null
 setup_proof="$("${compose[@]}" exec -T api cat /var/netratel/bootstrap/setup-proof)"
+[[ -n "$setup_proof" && "$setup_proof" != "$initial_setup_proof" ]]
+[[ "$("${compose[@]}" exec -T api dotnet NetRatel.API.dll --show-setup-code)" == "$setup_proof" ]]
+forged_origin_status="$(curl "${curl_tls[@]}" --silent --output /dev/null --write-out '%{http_code}' \
+  --header 'Origin: https://forged.invalid' --header 'Content-Type: application/json' \
+  --data '{"proof":"invalid"}' "$web_url/api/v2/setup/claim")"
+[[ "$forged_origin_status" == 403 ]] || { echo "A forged setup origin was not rejected." >&2; exit 1; }
+if [[ "$web_url" == https://* ]]; then
+  forged_host_status="$(curl "${curl_tls[@]}" --silent --output /dev/null --write-out '%{http_code}' \
+    --header 'Host: forged.invalid' "$web_url/setup")"
+  [[ "$forged_host_status" == 400 ]] || { echo "A forged public Host was not rejected." >&2; exit 1; }
+fi
+unset initial_setup_proof initial_status
+stage="building and running Playwright local-first journey"
+setup_proof_digest="$(printf '%s' "$setup_proof" | sha256sum | cut -d ' ' -f 1)"
 NETRATEL_LOCAL_FIRST_WEB_URL="$web_url" \
 NETRATEL_LOCAL_FIRST_SETUP_PROOF="$setup_proof" \
 NETRATEL_LOCAL_FIRST_ADMIN_EMAIL="browser-admin@example.test" \
@@ -160,6 +202,23 @@ NETRATEL_LOCAL_FIRST_INTEGRATION_CREDENTIALS_FILE="$credential_path" \
     --configuration Release --no-build --filter 'FullyQualifiedName~LocalFirstComposeBrowserSmokeTests' \
     --results-directory TestResults/local-first -- --report-trx --report-trx-filename local-first-browser.trx
 unset setup_proof
+
+stage="verifying Ready operator status and ordinary restart"
+ready_status="$("${compose[@]}" exec -T api dotnet NetRatel.API.dll --setup-status)"
+grep -Fq 'Installation: Ready' <<<"$ready_status"
+grep -Fq 'Setup code: Completed' <<<"$ready_status"
+if "${compose[@]}" exec -T api dotnet NetRatel.API.dll --show-setup-code >/dev/null 2>&1; then
+  echo "A configured installation unexpectedly returned a setup code." >&2
+  exit 1
+fi
+"${compose[@]}" restart api web >/dev/null
+for _ in $(seq 1 90); do
+  if curl "${curl_tls[@]}" --connect-timeout 2 --fail --silent "$web_url/api/v2/setup/status" | jq -e '.isReady == true' >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
+curl "${curl_tls[@]}" --connect-timeout 2 --fail --silent "$web_url/api/v2/setup/status" | jq -e '.isReady == true' >/dev/null
 
 if [[ -n "$mcp_http_image" ]]; then
   stage="waiting for the paired local HTTP MCP gateway"
@@ -281,4 +340,66 @@ if [[ -n "${NETRATEL_MCP_STDIO_SMOKE_ARCHIVE:-}" ]]; then
   ! grep -Fq "${credentials[0]}" <<<"$mcp_response"
   ! grep -Fq "${credentials[0]}" "$mcp_stdio_error_path"
   rm -rf "$mcp_extract_dir"
+fi
+
+if [[ "${NETRATEL_LOCAL_FIRST_STATE_RESET_ACCEPTANCE:-false}" == true ]]; then
+  [[ -z "${NETRATEL_EXTERNAL_DATABASE_CONNECTION_STRING:-}" ]] || {
+    echo "State-reset acceptance requires the disposable bundled PostgreSQL profile." >&2
+    exit 1
+  }
+
+  stage="verifying partial database loss enters recovery"
+  "${compose[@]}" down --remove-orphans >/dev/null
+  docker volume rm "${project}_postgres-data" >/dev/null
+  "${compose[@]}" up --detach >/dev/null
+  recovered=false
+  for _ in $(seq 1 90); do
+    if curl "${curl_tls[@]}" --connect-timeout 2 --fail --silent "$web_url/api/v2/setup/status" \
+      | jq -e '.isRecoveryRequired == true and .isReady == false' >/dev/null 2>&1; then
+      recovered=true
+      break
+    fi
+    sleep 1
+  done
+  [[ "$recovered" == true ]] || { echo "A retained bootstrap descriptor accepted an empty replacement database." >&2; exit 1; }
+  set +e
+  recovery_status="$("${compose[@]}" exec -T api dotnet NetRatel.API.dll --setup-status)"
+  recovery_exit=$?
+  set -e
+  [[ "$recovery_exit" == 5 ]]
+  grep -Fq 'Setup code: Recovery' <<<"$recovery_status"
+
+  stage="verifying a complete disposable reset starts a new installation"
+  "${compose[@]}" down --volumes --remove-orphans >/dev/null
+  for volume in "${project}_postgres-data" "${project}_api-data" "${project}_web-keys"; do
+    if docker volume inspect "$volume" >/dev/null 2>&1; then docker volume rm "$volume" >/dev/null; fi
+  done
+  docker run --rm --volume "$key_directory:/keys" alpine:3.22 \
+    sh -ceu 'unlink /keys/agent-auth-private.pem'
+  openssl ecparam -name prime256v1 -genkey -noout -out "$key_path"
+  docker run --rm --volume "$key_directory:/keys" alpine:3.22 \
+    sh -ceu 'chown 1654:1654 /keys/agent-auth-private.pem && chmod 600 /keys/agent-auth-private.pem'
+  "${compose[@]}" up --detach >/dev/null
+  fresh=false
+  for _ in $(seq 1 90); do
+    if curl "${curl_tls[@]}" --connect-timeout 2 --fail --silent "$web_url/api/v2/setup/status" \
+      | jq -e '.setupRequired == true and .isReady == false' >/dev/null 2>&1; then
+      fresh=true
+      break
+    fi
+    sleep 1
+  done
+  [[ "$fresh" == true ]] || { echo "A full disposable reset did not produce a fresh setup state." >&2; exit 1; }
+  reset_setup_proof="$("${compose[@]}" exec -T api cat /var/netratel/bootstrap/setup-proof)"
+  [[ -n "$reset_setup_proof" && "$(printf '%s' "$reset_setup_proof" | sha256sum | cut -d ' ' -f 1)" != "$setup_proof_digest" ]]
+  NETRATEL_LOCAL_FIRST_WEB_URL="$web_url" \
+  NETRATEL_LOCAL_FIRST_SETUP_PROOF="$reset_setup_proof" \
+  NETRATEL_LOCAL_FIRST_ADMIN_EMAIL="browser-admin@example.test" \
+  NETRATEL_LOCAL_FIRST_ADMIN_PASSWORD="browser smoke local passphrase" \
+  NETRATEL_LOCAL_FIRST_INTEGRATION_CREDENTIALS_FILE="$credential_path" \
+    dotnet test src/NetRatel/NetRatel.Web.PlaywrightTests/NetRatel.Web.PlaywrightTests.csproj \
+      --configuration Release --no-build --filter 'FullyQualifiedName~LocalFirstComposeBrowserSmokeTests' \
+      --results-directory TestResults/local-first -- --report-trx --report-trx-filename local-first-reset-browser.trx
+  unset reset_setup_proof
+  curl "${curl_tls[@]}" --connect-timeout 2 --fail --silent "$web_url/api/v2/setup/status" | jq -e '.isReady == true' >/dev/null
 fi

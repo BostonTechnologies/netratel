@@ -30,6 +30,7 @@ env_file="$temporary_dir/.env.images.example"
 compose() {
   env -u OIDC_AUTHORITY -u OIDC_CLIENT_ID -u OIDC_API_SCOPE -u OIDC_API_AUDIENCE \
     -u OIDC_TOKEN_ENDPOINT -u OIDC_ADMIN_GROUP_ID -u OIDC_CLIENT_SECRET \
+    OIDC_AUTHORITY="${NETRATEL_VALIDATION_OIDC_AUTHORITY:-}" \
     NETRATEL_API_IMAGE=netratel-api:bundle-validation \
     NETRATEL_WEB_IMAGE=netratel-web:bundle-validation \
     NETRATEL_MIGRATIONS_IMAGE=netratel-migrations:bundle-validation \
@@ -40,18 +41,45 @@ compose() {
 # These validations run only against the extracted archive. They prevent a
 # source-only Compose recipe or mandatory OIDC interpolation from reappearing.
 compose -f "$temporary_dir/compose.images.yaml" config --quiet
+compose -f "$temporary_dir/compose.images.yaml" -f "$temporary_dir/compose.public-https.yaml" config --quiet
 NETRATEL_EXTERNAL_DATABASE_CONNECTION_STRING='Host=external-db;Database=netratel;Username=netratel;Password=validation-only' \
   compose -f "$temporary_dir/compose.images.yaml" -f "$temporary_dir/compose.external-postgres.yaml" config --quiet
 
 rendered="$(compose -f "$temporary_dir/compose.images.yaml" config --format json)"
 jq -e '
   .services.api.restart == "unless-stopped"
+  and .services.api.depends_on["volume-init"].condition == "service_completed_successfully"
+  and .services["volume-init"].user == "0:0"
   and ([.services.api.volumes[]?.source] | index("web-keys"))
   and ([.services.web.volumes[]?.source] | index("web-keys"))
   and .services.api.environment.Authentication__Oidc__Authority == ""
   and .services.web.environment.Authentication__Oidc__Authority == ""
 ' <<<"$rendered" >/dev/null || {
   echo "Release PostgreSQL profile does not retain local-first restart, shared-key, and OIDC-optional semantics." >&2
+  exit 1
+}
+
+local_with_stale_oidc="$(NETRATEL_VALIDATION_OIDC_AUTHORITY='https://unused.example.test' NETRATEL_AUTHENTICATION_MODE=Local \
+  compose -f "$temporary_dir/compose.images.yaml" config --format json)"
+jq -e '
+  .services.api.environment.Authentication__Mode == "Local"
+  and .services.web.environment.Authentication__Mode == "Local"
+  and .services.api.environment.Authentication__Oidc__Authority == "https://unused.example.test"
+' <<<"$local_with_stale_oidc" >/dev/null || {
+  echo "Explicit Local mode must reach both hosts even with retained OIDC settings." >&2
+  exit 1
+}
+
+public_rendered="$(compose -f "$temporary_dir/compose.images.yaml" -f "$temporary_dir/compose.public-https.yaml" config --format json)"
+jq -e '
+  .services.api.environment.Bootstrap__AllowedOrigins__0 == "https://netratel.example.com"
+  and .services.api.environment.Authentication__Local__AllowInsecureLocalhost == "false"
+  and .services.web.environment.Authentication__Local__AllowInsecureLocalhost == "false"
+  and .services.web.environment.ForwardedHeaders__KnownProxies__0 == "172.29.20.10"
+  and .services.web.environment.DataProtection__ApplicationName == "NetRatel-Keyring"
+  and .services.ingress.restart == "unless-stopped"
+' <<<"$public_rendered" >/dev/null || {
+  echo "Release HTTPS profile does not retain the public origin, trusted proxy, and secure-cookie contract." >&2
   exit 1
 }
 

@@ -86,10 +86,9 @@ jobs:
           cp "artifacts/cli/NetRatel.Cli.${version}.nupkg" artifacts/
           tar -C artifacts/cli -czf "artifacts/netratel-cli-${version}-linux-x64.tar.gz" netratel-cli-linux-x64
           tar -C artifacts/mcp-stdio -czf "artifacts/netratel-mcp-stdio-${version}-linux-x64.tar.gz" netratel-mcp-linux-x64
-          cp release/compose.images.yaml release/compose.external-postgres.yaml release/compose.mcp-http.yaml release/.env.images.example release/release-manifest.json release/INSTALL.md LICENSE NOTICE artifacts/release-bundle/
-          mkdir -p artifacts/release-bundle/docs/mcp-http
-          cp docs/FIRST_RUN_SETUP.md artifacts/release-bundle/docs/
-          cp docs/mcp-http/local-credential-mode.md artifacts/release-bundle/docs/mcp-http/
+          cp release/compose.images.yaml release/compose.external-postgres.yaml release/compose.public-https.yaml release/nginx.public-https.conf release/compose.mcp-http.yaml release/.env.images.example release/release-manifest.json release/INSTALL.md LICENSE NOTICE artifacts/release-bundle/
+          cp -a docs artifacts/release-bundle/
+          cp README.md artifacts/release-bundle/
           tar -C artifacts/release-bundle -czf "artifacts/netratel-compose-${version}.tar.gz" .
           tools/ci/verify-release-local-first-profiles.sh --bundle "artifacts/netratel-compose-${version}.tar.gz"
       - run: |
@@ -298,11 +297,13 @@ jobs:
             compose_overlays: ''
             external_connection: ''
             external_init: ''
+            reset_acceptance: 'true'
           - provider: external-postgresql
             bundle_compose_file: compose.images.yaml
             compose_overlays: external-postgresql
             external_connection: Host=external-db;Port=5432;Database=netratel;Username=netratel;Password=synthetic-external-application-password
             external_init: external-postgresql
+            reset_acceptance: 'false'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
@@ -330,6 +331,7 @@ jobs:
           NETRATEL_LOCAL_FIRST_COMPOSE_OVERLAYS: ${{ matrix.compose_overlays }}
           NETRATEL_EXTERNAL_DATABASE_CONNECTION_STRING: ${{ matrix.external_connection }}
           NETRATEL_LOCAL_FIRST_EXTERNAL_POSTGRES_INIT: ${{ matrix.external_init }}
+          NETRATEL_LOCAL_FIRST_STATE_RESET_ACCEPTANCE: ${{ matrix.reset_acceptance }}
         run: |
           version="$(jq -r '.version' release/release-manifest.json)"
           if [[ "${{ matrix.provider }}" == external-postgresql ]]; then
@@ -340,6 +342,32 @@ jobs:
             NETRATEL_CLI_SMOKE_ARCHIVE="review-artifacts/netratel-cli-${version}-linux-x64.tar.gz" \
             NETRATEL_MCP_STDIO_SMOKE_ARCHIVE="review-artifacts/netratel-mcp-stdio-${version}-linux-x64.tar.gz" \
             NETRATEL_LOCAL_HTTP_MCP_SMOKE_IMAGE=netratel-mcp-http:release-local-first \
+            tools/ci/smoke-local-first-compose.sh
+      - if: matrix.provider == 'bundled-postgresql'
+        env:
+          NETRATEL_MIGRATIONS_IMAGE: netratel-migrations:release-local-first
+          NETRATEL_API_IMAGE: netratel-api:release-local-first
+          NETRATEL_WEB_IMAGE: netratel-web:release-local-first
+          POSTGRES_PASSWORD: synthetic-ci-only-password
+        run: |
+          version="$(jq -r '.version' release/release-manifest.json)"
+          certificate_dir="$(mktemp -d)"
+          trap 'find "$certificate_dir" -depth -delete' EXIT
+          openssl req -x509 -newkey rsa:2048 -nodes \
+            -keyout "$certificate_dir/tls.key" -out "$certificate_dir/tls.crt" \
+            -subj '/CN=localhost' -addext 'subjectAltName=DNS:localhost' -days 1 >/dev/null 2>&1
+          NETRATEL_LOCAL_FIRST_COMPOSE_BUNDLE="review-artifacts/netratel-compose-${version}.tar.gz" \
+            NETRATEL_LOCAL_FIRST_COMPOSE_OVERLAYS="$GITHUB_WORKSPACE/release/compose.public-https.yaml" \
+            NETRATEL_LOCAL_FIRST_WEB_URL=https://localhost:18443 \
+            NETRATEL_LOCAL_FIRST_IGNORE_HTTPS_ERRORS=true \
+            NETRATEL_AUTHENTICATION_MODE=Local \
+            OIDC_AUTHORITY=https://stale.example.test \
+            NETRATEL_PUBLIC_ORIGIN=https://localhost:18443 \
+            NETRATEL_PUBLIC_HOST=localhost \
+            NETRATEL_HTTPS_BIND_ADDRESS=127.0.0.1 \
+            NETRATEL_HTTPS_PORT=18443 \
+            NETRATEL_HTTPS_CERTIFICATE="$certificate_dir/tls.crt" \
+            NETRATEL_HTTPS_PRIVATE_KEY="$certificate_dir/tls.key" \
             tools/ci/smoke-local-first-compose.sh
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -449,6 +477,72 @@ jobs:
           NETRATEL_RC3_UPGRADE_COMPOSE_BUNDLE="review-artifacts/netratel-compose-${version}.tar.gz" \
             tools/ci/smoke-rc3-postgresql-oidc-upgrade.sh
 
+  rc5-postgresql-oidc-upgrade-compose:
+    name: rc.5 PostgreSQL/OIDC upgrade Compose smoke test
+    needs: review-artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          global-json-file: global.json
+      - run: |
+          version="$(jq -r '.version' release/release-manifest.json)"
+          for component in migrations api web; do
+            image="netratel-${component}:rc5-postgresql-oidc-upgrade"
+            tools/ci/build-public-image.sh --dockerfile "docker/${component}/Dockerfile" --image "$image" --version "$version" --revision "$GITHUB_SHA"
+            tools/ci/scan-public-image.sh --image "$image" --version "$version" --revision "$GITHUB_SHA"
+          done
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: pr-netratel-cli-mcp-linux-x64
+          path: review-artifacts
+      - env:
+          NETRATEL_UPGRADE_LEGACY_VERSION: v0.1.0-rc.5
+          NETRATEL_RC3_LEGACY_API_IMAGE: ghcr.io/bostontechnologies/netratel-api@sha256:45ac6bc1e547ab3651e0a3e1dc7fb88a707126160b2d819450e29464f393ce9a
+          NETRATEL_RC3_LEGACY_MIGRATIONS_IMAGE: ghcr.io/bostontechnologies/netratel-migrations@sha256:42b968a7f660d79255ddb51d0a6f9af14c86be1070e943afec8d3f17c42290f9
+          NETRATEL_RC3_LEGACY_WEB_IMAGE: ghcr.io/bostontechnologies/netratel-web@sha256:ead47327e06e8ed698f673a0ae3176b82297709d025eae193b8121323f0b2cb7
+          NETRATEL_RC3_LEGACY_CLIENT_IMAGE: ghcr.io/bostontechnologies/netratel-client@sha256:f5028da664f6edb2f4ef582c219393f070f4eb79b0faabe1971c1709c2717e91
+          NETRATEL_RC3_CURRENT_API_IMAGE: netratel-api:rc5-postgresql-oidc-upgrade
+          NETRATEL_RC3_CURRENT_MIGRATIONS_IMAGE: netratel-migrations:rc5-postgresql-oidc-upgrade
+          NETRATEL_RC3_CURRENT_WEB_IMAGE: netratel-web:rc5-postgresql-oidc-upgrade
+        run: |
+          version="$(jq -r '.version' release/release-manifest.json)"
+          NETRATEL_RC3_UPGRADE_COMPOSE_BUNDLE="review-artifacts/netratel-compose-${version}.tar.gz" \
+            tools/ci/smoke-rc3-postgresql-oidc-upgrade.sh
+
+  rc5-postgresql-local-upgrade-compose:
+    name: rc.5 PostgreSQL/local upgrade Compose smoke test
+    needs: review-artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: |
+          version="$(jq -r '.version' release/release-manifest.json)"
+          for component in migrations api web; do
+            image="netratel-${component}:rc5-postgresql-local-upgrade"
+            tools/ci/build-public-image.sh --dockerfile "docker/${component}/Dockerfile" --image "$image" --version "$version" --revision "$GITHUB_SHA"
+            tools/ci/scan-public-image.sh --image "$image" --version "$version" --revision "$GITHUB_SHA"
+          done
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: pr-netratel-cli-mcp-linux-x64
+          path: review-artifacts
+      - env:
+          NETRATEL_RC5_LEGACY_API_IMAGE: ghcr.io/bostontechnologies/netratel-api@sha256:45ac6bc1e547ab3651e0a3e1dc7fb88a707126160b2d819450e29464f393ce9a
+          NETRATEL_RC5_LEGACY_MIGRATIONS_IMAGE: ghcr.io/bostontechnologies/netratel-migrations@sha256:42b968a7f660d79255ddb51d0a6f9af14c86be1070e943afec8d3f17c42290f9
+          NETRATEL_RC5_LEGACY_WEB_IMAGE: ghcr.io/bostontechnologies/netratel-web@sha256:ead47327e06e8ed698f673a0ae3176b82297709d025eae193b8121323f0b2cb7
+          NETRATEL_RC5_CURRENT_API_IMAGE: netratel-api:rc5-postgresql-local-upgrade
+          NETRATEL_RC5_CURRENT_MIGRATIONS_IMAGE: netratel-migrations:rc5-postgresql-local-upgrade
+          NETRATEL_RC5_CURRENT_WEB_IMAGE: netratel-web:rc5-postgresql-local-upgrade
+        run: |
+          version="$(jq -r '.version' release/release-manifest.json)"
+          NETRATEL_RC5_LOCAL_COMPOSE_BUNDLE="review-artifacts/netratel-compose-${version}.tar.gz" \
+            NETRATEL_RC5_LOCAL_CLI_ARCHIVE="review-artifacts/netratel-cli-${version}-linux-x64.tar.gz" \
+            tools/ci/smoke-rc5-postgresql-local-upgrade.sh
+
   mcp-http-image-smoke:
     name: HTTP MCP image smoke test
     runs-on: ubuntu-latest
@@ -466,7 +560,7 @@ jobs:
   pr-validation:
     name: PR validation
     if: always()
-    needs: [disclosure, dotnet, review-artifacts, client-packages, images, compose, local-first-compose, release-bundle-local-first-compose, release-image-compose, rc3-local-upgrade-compose, rc3-postgresql-oidc-upgrade-compose, mcp-http-image-smoke]
+    needs: [disclosure, dotnet, review-artifacts, client-packages, images, compose, local-first-compose, release-bundle-local-first-compose, release-image-compose, rc3-local-upgrade-compose, rc3-postgresql-oidc-upgrade-compose, rc5-postgresql-oidc-upgrade-compose, rc5-postgresql-local-upgrade-compose, mcp-http-image-smoke]
     runs-on: ubuntu-latest
     steps:
       - env:
@@ -481,6 +575,8 @@ jobs:
           RELEASE_IMAGE_COMPOSE_RESULT: ${{ needs.release-image-compose.result }}
           RC3_LOCAL_UPGRADE_COMPOSE_RESULT: ${{ needs.rc3-local-upgrade-compose.result }}
           RC3_POSTGRESQL_OIDC_UPGRADE_COMPOSE_RESULT: ${{ needs.rc3-postgresql-oidc-upgrade-compose.result }}
+          RC5_POSTGRESQL_OIDC_UPGRADE_COMPOSE_RESULT: ${{ needs.rc5-postgresql-oidc-upgrade-compose.result }}
+          RC5_POSTGRESQL_LOCAL_UPGRADE_COMPOSE_RESULT: ${{ needs.rc5-postgresql-local-upgrade-compose.result }}
           MCP_HTTP_IMAGE_SMOKE_RESULT: ${{ needs.mcp-http-image-smoke.result }}
         run: |
           [[ "$DISCLOSURE_RESULT" == success ]]
@@ -494,4 +590,6 @@ jobs:
           [[ "$RELEASE_IMAGE_COMPOSE_RESULT" == success ]]
           [[ "$RC3_LOCAL_UPGRADE_COMPOSE_RESULT" == success ]]
           [[ "$RC3_POSTGRESQL_OIDC_UPGRADE_COMPOSE_RESULT" == success ]]
+          [[ "$RC5_POSTGRESQL_OIDC_UPGRADE_COMPOSE_RESULT" == success ]]
+          [[ "$RC5_POSTGRESQL_LOCAL_UPGRADE_COMPOSE_RESULT" == success ]]
           [[ "$MCP_HTTP_IMAGE_SMOKE_RESULT" == success ]]

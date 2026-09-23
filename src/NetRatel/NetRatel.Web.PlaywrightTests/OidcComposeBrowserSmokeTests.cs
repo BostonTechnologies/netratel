@@ -76,6 +76,15 @@ public sealed class OidcComposeBrowserSmokeTests
         Assert.Equal(200, authenticatedStatus);
         await CaptureBrandingAsync(page, "navbar");
         await AssertProductVersionBadgesAsync(page);
+        if (Environment.GetEnvironmentVariable("NETRATEL_BROWSER_SMOKE_EXPECT_CURRENT_SHELL") != "false")
+        {
+            await page.GotoAsync(new Uri(webUrl, "account/security").ToString(),
+                new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+            await page.GetByTestId("account-security-managed").WaitForAsync(
+                new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+            Assert.Equal(0, await page.GetByTestId("open-password-dialog").CountAsync());
+            Assert.Equal(0, await page.GetByTestId("open-mfa-setup").CountAsync());
+        }
 
         await page.GotoAsync(new Uri(webUrl, "auth/logout").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
         var anonymousStatus = await page.EvaluateAsync<int>("async () => (await fetch('/api/v1/tenants')).status");
@@ -84,6 +93,7 @@ public sealed class OidcComposeBrowserSmokeTests
 
     private static async Task CaptureBrandingAsync(IPage page, string view)
     {
+        var expectCurrentShell = Environment.GetEnvironmentVariable("NETRATEL_BROWSER_SMOKE_EXPECT_CURRENT_SHELL") != "false";
         var directory = Path.Combine("TestResults", "branding");
         Directory.CreateDirectory(directory);
         await SetThemeAndReloadAsync(page, "system");
@@ -115,8 +125,9 @@ public sealed class OidcComposeBrowserSmokeTests
                     Assert.True(await signIn.IsVisibleAsync());
                     Assert.True(await signIn.IsEnabledAsync());
                     Assert.True(await page.EvaluateAsync<bool>("() => getComputedStyle(document.querySelector('.netratel-public-layout')).backgroundImage.includes('netratel-splash')"));
-                    Assert.True(await page.EvaluateAsync<bool>("() => { const bounds = document.querySelector('.netratel-login-panel').getBoundingClientRect(); return Math.abs((bounds.left + bounds.right) / 2 - innerWidth / 2) <= 12 && Math.abs((bounds.top + bounds.bottom) / 2 - innerHeight / 2) <= 16; }"),
-                        $"The login panel is not centered in the {name} viewport.");
+                    if (expectCurrentShell)
+                        Assert.True(await page.EvaluateAsync<bool>("() => { const bounds = document.querySelector('.netratel-login-panel').getBoundingClientRect(); return Math.abs((bounds.left + bounds.right) / 2 - innerWidth / 2) <= 12 && Math.abs((bounds.top + bounds.bottom) / 2 - innerHeight / 2) <= 16; }"),
+                            $"The login panel is not centered in the {name} viewport.");
                 }
                 else if (width < 800)
                 {
@@ -124,14 +135,17 @@ public sealed class OidcComposeBrowserSmokeTests
                     if (!await compactBrand.IsVisibleAsync())
                         await page.GetByTestId("navigation-toggle").ClickAsync();
                     await compactBrand.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
-                    Assert.Equal(0, await page.Locator(".netratel-appbar-brand").CountAsync());
+                    if (expectCurrentShell) Assert.Equal(0, await page.Locator(".netratel-appbar-brand").CountAsync());
                 }
                 else
                 {
                     Assert.True(await page.Locator(".netratel-nav-brand img").IsVisibleAsync());
-                    Assert.Equal(0, await page.Locator(".netratel-appbar-brand").CountAsync());
-                    foreach (var heading in new[] { "Command", "Estate", "Signals" })
-                        Assert.True(await page.Locator(".nav-section-heading", new PageLocatorOptions { HasText = heading }).IsVisibleAsync());
+                    if (expectCurrentShell) Assert.Equal(0, await page.Locator(".netratel-appbar-brand").CountAsync());
+                    if (expectCurrentShell)
+                    {
+                        foreach (var heading in new[] { "Command", "Estate", "Signals" })
+                            Assert.True(await page.Locator(".nav-section-heading", new PageLocatorOptions { HasText = heading }).IsVisibleAsync());
+                    }
                 }
 
                 await page.ScreenshotAsync(new PageScreenshotOptions
