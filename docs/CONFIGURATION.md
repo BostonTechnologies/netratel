@@ -10,12 +10,11 @@ accepted by each operation; it is a contract viewer, not a secret store.
 
 ## Required persistent state
 
-- `Database__Provider` is explicit: `PostgreSql` (the compatibility default)
-  or `Sqlite`. Existing `ConnectionStrings__NetRatelDb` takes deterministic
-  precedence over the legacy `ConnectionStrings__Default` alias.
-- PostgreSQL remains the supported multi-instance provider. SQLite requires an
-  absolute durable `Data Source` path and `Database__InstanceCount=1`; it is
-  not a shared-volume or cross-host mode. See [SQLite](SQLITE.md).
+- PostgreSQL is the only supported application and identity database.
+  `Database__Provider` may be omitted or set to `PostgreSql`/`postgres`.
+  Explicit `Sqlite` and unknown values fail before application state is
+  created. `ConnectionStrings__NetRatelDb` takes deterministic precedence
+  over the compatibility `ConnectionStrings__Default` alias.
 - `DataProtection__KeysDirectory` is a persistent writable path for API key
   material. Web uses `NetRatel_KEYS_DIR` when supplied, otherwise its
   `DataProtection:KeysDirectory` value.
@@ -26,7 +25,7 @@ accepted by each operation; it is a contract viewer, not a secret store.
   of the repository and ordinary application data volume. Generate a distinct
   key for each instance through your approved secret-management process.
 
-Back up the selected provider's data and persistent key/artifact volumes
+Back up PostgreSQL and persistent key/artifact volumes
 together. Replacing a Data Protection key ring invalidates cookies and
 protected state.
 
@@ -64,7 +63,8 @@ material intentionally enters recovery rather than fresh setup.
 
 ## Interactive browser authentication
 
-`Authentication:Mode` may be `Local`, `Oidc`, `Hybrid`, or `Auto`. In `Auto`
+`Authentication:Mode` may be `Local`, `Oidc`, `Hybrid`, or `Auto`. The source
+and image Compose recipes expose it as `NETRATEL_AUTHENTICATION_MODE`. In `Auto`
 (the default when unset), a deployment with a configured OIDC authority remains
 OIDC-only, while an installation without OIDC selects local accounts. Set
 `Hybrid` explicitly to offer both mechanisms. `Authentication:Local` controls
@@ -140,6 +140,15 @@ proxy range can use:
 Do not add broad private-network ranges unless every sender in that range is a
 trusted proxy. Direct local evaluation needs no configuration beyond the
 loopback default.
+
+## Integration credential expiry
+
+The Integration editor treats the selected calendar date as a **UTC date**. A
+credential selected for 29 February remains valid through
+`2028-02-29T23:59:59.9999999Z`, regardless of the browser's locale or local
+time zone. Select a later UTC date if the credential must survive into the next
+day. The editor accepts dates from tomorrow through the next year and shows
+the UTC interpretation before creation.
 
 ## Health endpoints
 

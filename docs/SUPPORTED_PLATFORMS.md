@@ -13,8 +13,8 @@ certification statement.
 | Native Client | Windows x64 | The matching Windows runner publishes the package and runs its executable version probe. | Install only from the approved artifact/manifest once a release exists. |
 | Native Client | macOS arm64 | The matching macOS runner publishes the package and runs its executable version probe. | Install only from the approved artifact/manifest once a release exists. |
 
-The documented stack requires Docker Compose plus either PostgreSQL or the
-supported single-node SQLite profile, and deployment-managed persistent Data
+The documented stack requires Docker Compose plus bundled or external
+PostgreSQL, and deployment-managed persistent Data
 Protection and agent-signing material. Fresh local-account setup does not
 require OIDC or SMTP; OIDC is required only for a deliberately configured
 OIDC/hybrid deployment or the external-OIDC HTTP MCP mode. CLI and stdio MCP
