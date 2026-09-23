@@ -29,7 +29,7 @@ public class LiveSmokeTests
 
         version.Should().NotBeNull();
         version!.ServiceName.Should().Be("NetRatel.API");
-        version.DisplayVersion.Should().Be("v0.1.0-rc.4");
+        version.DisplayVersion.Should().Be("v0.1.0-rc.5");
         version.InformationalVersion.Should().NotBeNullOrWhiteSpace();
         version.AssemblyVersion.Should().NotBeNullOrWhiteSpace();
         version.Environment.Should().NotBeNullOrWhiteSpace();
