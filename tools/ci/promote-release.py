@@ -17,6 +17,19 @@ ROOT = Path(__file__).resolve().parents[2]
 REPOSITORY = "BostonTechnologies/netratel"
 COMPONENTS = ("api", "web", "migrations", "mcp-http", "client")
 IMAGE_VARIABLES = {name: "NETRATEL_" + name.upper().replace("-", "_") + "_IMAGE" for name in COMPONENTS}
+# Container package repositories are a public compatibility contract. A release
+# version is represented only by an immutable tag and digest, never by a new
+# package name or a CI/test identity.
+PACKAGE_NAMES = {name: f"netratel-{name}" for name in COMPONENTS}
+IMAGE_REPOSITORIES = {
+    name: f"ghcr.io/bostontechnologies/{package_name}"
+    for name, package_name in PACKAGE_NAMES.items()
+}
+
+
+def release_image_tag(component, version):
+    """Return the sole release tag permitted for an approved image repository."""
+    return f"{IMAGE_REPOSITORIES[component]}:{version}"
 
 
 def run(*command, env=None):
@@ -278,20 +291,33 @@ def verified_input_receipt(inputs, receipt_path, version, revision):
     }
 
 
-def resume_state(path, version, revision, prefix, input_receipt):
+def resume_state(path, version, revision, input_receipt):
     state = json.loads(path.read_text()) if path.exists() else {
-        "version": version, "revision": revision, "packagePrefix": prefix,
+        "version": version, "revision": revision, "packageNames": dict(PACKAGE_NAMES),
         "inputReceipt": input_receipt, "images": {}}
-    if (state.get("version"), state.get("revision"), state.get("packagePrefix"), state.get("inputReceipt")) != \
-            (version, revision, prefix, input_receipt):
-        raise ValueError("Resume journal belongs to a different approved source or package prefix")
+    if (state.get("version"), state.get("revision"), state.get("packageNames"), state.get("inputReceipt")) != \
+            (version, revision, PACKAGE_NAMES, input_receipt):
+        raise ValueError("Resume journal belongs to a different approved source or package contract")
     if not isinstance(state.get("images"), dict) or not set(state["images"]).issubset(COMPONENTS):
         raise ValueError("Resume journal contains unknown components")
     for name, reference in state["images"].items():
-        expected = f"ghcr.io/bostontechnologies/{prefix}-{name}@sha256:"
+        expected = IMAGE_REPOSITORIES[name] + "@sha256:"
         if not reference.startswith(expected) or not re.fullmatch("[a-f0-9]{64}", reference.removeprefix(expected)):
             raise ValueError("Resume journal contains an invalid digest")
     return state
+
+
+def validate_registry_packages(inventory):
+    """Fail closed unless every fixed public package is the linked NetRatel package."""
+    for component, package_name in PACKAGE_NAMES.items():
+        package = inventory.get(package_name)
+        if not package:
+            raise ValueError(f"Approved registry package is missing: {package_name}")
+        if package.get("visibility") != "public":
+            raise ValueError(f"Approved registry package is not public: {package_name}")
+        repository = package.get("repository")
+        if not isinstance(repository, dict) or repository.get("full_name") != REPOSITORY:
+            raise ValueError(f"Approved registry package is not linked to {REPOSITORY}: {package_name}")
 
 
 def validate_digests(images):
@@ -390,17 +416,12 @@ def promote(args):
     run("git", "merge-base", "--is-ancestor", revision, "origin/main")
     if run("git", "rev-list", "-n", "1", "v" + version) != revision:
         raise ValueError("Owner-created release tag must already identify the approved commit")
-    if not re.fullmatch(r"[a-z0-9-]+", args.package_prefix):
-        raise ValueError("Package prefix must be a simple lowercase name")
     input_receipt = verified_input_receipt(args.inputs, args.receipt, version, revision)
-    inventory = json_pages(run("gh", "api", "--paginate",
-                              "orgs/BostonTechnologies/packages?package_type=container&per_page=100"))
+    inventory = json_pages(run("gh", "api",
+                              "orgs/BostonTechnologies/packages?package_type=container&per_page=100", "--paginate"))
     inventory = {package["name"]: package for page in inventory for package in page}
-    for component in COMPONENTS:
-        existing = inventory.get(f"{args.package_prefix}-{component}")
-        if existing and existing["visibility"] != "public":
-            raise ValueError("Proposed package name collides with a non-public package; choose a new reviewed prefix")
-    state = resume_state(args.state, version, revision, args.package_prefix, input_receipt)
+    validate_registry_packages(inventory)
+    state = resume_state(args.state, version, revision, input_receipt)
     if not args.output.exists():
         stage(args.inputs, args.output, version)
     elif not args.state.exists():
@@ -416,7 +437,7 @@ def promote(args):
     atomic_json(args.state, state)
     # Each component is journaled only after an immutable digest is obtained.
     for component in COMPONENTS:
-        repository = f"ghcr.io/bostontechnologies/{args.package_prefix}-{component}"
+        repository = IMAGE_REPOSITORIES[component]
         if component not in state["images"]:
             # Recheck before every registry write; a resumed output is not trusted by
             # its local checksum file alone.
@@ -424,11 +445,11 @@ def promote(args):
                 validate_candidate_bundle(args.output, version, revision, state["images"], input_receipt)
             else:
                 verify_pristine_staged(args.output, version, input_receipt)
-            tag = f"{repository}:{version}-{revision[:12]}"
-            existing = inventory.get(f"{args.package_prefix}-{component}")
+            tag = release_image_tag(component, version)
+            existing = inventory[PACKAGE_NAMES[component]]
             if existing:
-                versions = json_pages(run("gh", "api", "--paginate",
-                    f"orgs/BostonTechnologies/packages/container/{args.package_prefix}-{component}/versions?per_page=100"))
+                versions = json_pages(run("gh", "api",
+                    f"orgs/BostonTechnologies/packages/container/{PACKAGE_NAMES[component]}/versions?per_page=100", "--paginate"))
                 if any(tag.rsplit(":", 1)[1] in item["metadata"]["container"]["tags"] for page in versions for item in page):
                     raise ValueError("Tag already exists without this journal; inspect and recover its digest explicitly, never overwrite it")
             dockerfile = "docker/client/Dockerfile.public" if component == "client" else f"docker/{component}/Dockerfile"
@@ -442,7 +463,7 @@ def promote(args):
             args.state.parent.mkdir(parents=True, exist_ok=True)
             atomic_json(args.state, state)
         elif not state["images"][component].startswith(repository + "@sha256:"):
-            raise ValueError("Resume journal package prefix differs")
+            raise ValueError("Resume journal package contract differs")
     validate_digests(state["images"])
     with tempfile.TemporaryDirectory(prefix="netratel-anonymous-docker-") as temporary:
         anonymous = {**os.environ, "DOCKER_CONFIG": temporary}
@@ -475,10 +496,8 @@ def preflight(args):
     revision = run("git", "rev-parse", "HEAD")
     if version != args.version:
         raise ValueError("Preflight version must match the checked-out release manifest")
-    if not re.fullmatch(r"[a-z0-9-]+", args.package_prefix):
-        raise ValueError("Package prefix must be a simple lowercase name")
     receipt = verified_input_receipt(args.inputs, args.receipt, version, revision)
-    state = resume_state(args.state, version, revision, args.package_prefix, receipt)
+    state = resume_state(args.state, version, revision, receipt)
     if not args.output.exists():
         stage(args.inputs, args.output, version)
     elif not args.state.exists():
@@ -500,11 +519,9 @@ if __name__ == "__main__":
     preflight_parser.add_argument("--receipt", required=True, type=Path)
     preflight_parser.add_argument("--output", required=True, type=Path)
     preflight_parser.add_argument("--state", required=True, type=Path)
-    preflight_parser.add_argument("--package-prefix", required=True)
     preflight_parser.add_argument("--version", required=True)
     promotion = commands.add_parser("promote", help="PUSH images only after explicit owner approval")
     promotion.add_argument("--approve", required=True)
-    promotion.add_argument("--package-prefix", required=True)
     promotion.add_argument("--inputs", required=True, type=Path)
     promotion.add_argument("--receipt", required=True, type=Path,
                            help="Trusted release-workflow receipt; verified against GitHub before writes")

@@ -86,29 +86,33 @@ python3 tools/ci/promote-release.py preflight \
   --receipt ../netratel-release-work/release-receipt.json \
   --output ../netratel-release-work/preflight-staged \
   --state ../netratel-release-work/preflight-state.json \
-  --package-prefix reviewed-prefix --version 0.1.0-rc.4
+  --version 0.1.0-rc.4
 ```
 
-Before choosing a package prefix, an authorized operator must list the
-organization's container packages using a GitHub credential with
-`read:packages`. Public anonymous lookup cannot establish absence of private
-packages. The promotion command repeats this check and rejects names occupied by
-non-public packages. It never changes package visibility.
+The only allowed container package repositories are `netratel-api`,
+`netratel-web`, `netratel-migrations`, `netratel-mcp-http`, and
+`netratel-client`. A release candidate is identified only by its immutable
+image tag (for example `0.1.0-rc.4`) and digest; never create an RC-specific
+package name or CI/test name. Before promotion, an authorized operator must
+list the organization's container packages using a GitHub credential with
+`read:packages`. The promotion command repeats this check and fails closed
+unless each approved package is public and linked to this repository. It never
+changes package visibility.
 
-With a separately approved package prefix and registry login, invoke:
+With registry login, invoke:
 
 ```sh
 python3 tools/ci/promote-release.py promote \
   --approve "0.1.0-rc.4@$(git rev-parse HEAD)" \
-  --package-prefix APPROVED-PUBLIC-PREFIX \
   --inputs ../netratel-release-work/review-inputs \
   --receipt ../netratel-release-work/release-receipt.json \
   --output ../netratel-release-work/promoted-release \
   --state ../netratel-release-work/promotion-state.json
 ```
 
-This command **pushes images**. Do not run it as a rehearsal. It uses unique
-version/commit tags and never writes `latest` or stable aliases. Its journal
+This command **pushes images**. Do not run it as a rehearsal. It uses the exact
+approved product-version tag (for example `0.1.0-rc.4`) in each fixed package
+repository and never writes `latest` or stable aliases. Its journal
 allows a partial push to resume without rebuilding completed components. Its
 journal records the verified source receipt and exact input file digests, so a
 retry rejects substitutions even if a new `SHA256SUMS` was generated. The
@@ -118,8 +122,8 @@ records. A candidate record is not a completed publication; it becomes
 `publication.json` only after both required image smokes pass.
 A pre-existing tag without a corresponding journal is an error requiring
 explicit digest recovery, not permission to overwrite. Preserve the journal.
-New registry packages may initially be private; a separate owner decision is
-required for any visibility change before anonymous verification can succeed.
+The approved packages are already public; a visibility mismatch is a genuine
+external gate, not permission to create a substitute package.
 
 The command pulls every exact digest using an empty Docker credential directory,
 checks the public source/version labels, then runs the OIDC/enrollment and

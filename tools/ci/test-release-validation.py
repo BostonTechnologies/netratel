@@ -180,24 +180,66 @@ class DistributionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unexpected files"):
             self.promotion.verify_staged(output, "0.1.0-rc.3")
 
-    def test_partial_resume_preserves_completed_digest_and_rejects_wrong_source_or_digest(self):
+    def test_partial_resume_preserves_completed_digest_and_rejects_wrong_source_or_package_contract(self):
         path = self.root / "journal.json"
         receipt = self.receipt()
-        state = self.promotion.resume_state(path, "0.1.0-rc.3", "b" * 40, "public-candidate", receipt)
-        reference = "ghcr.io/bostontechnologies/public-candidate-api@sha256:" + "a" * 64
+        state = self.promotion.resume_state(path, "0.1.0-rc.3", "b" * 40, receipt)
+        reference = self.promotion.IMAGE_REPOSITORIES["api"] + "@sha256:" + "a" * 64
         state["images"]["api"] = reference
         path.write_text(json.dumps(state))
-        self.assertEqual(self.promotion.resume_state(path, "0.1.0-rc.3", "b" * 40, "public-candidate", receipt)["images"], {"api": reference})
+        self.assertEqual(self.promotion.resume_state(path, "0.1.0-rc.3", "b" * 40, receipt)["images"], {"api": reference})
         with self.assertRaisesRegex(ValueError, "different approved"):
-            self.promotion.resume_state(path, "0.1.0-rc.3", "c" * 40, "public-candidate", self.receipt("c" * 40))
+            self.promotion.resume_state(path, "0.1.0-rc.3", "c" * 40, self.receipt("c" * 40))
         changed_receipt = self.receipt()
         changed_receipt["files"][next(iter(changed_receipt["files"]))]["sha256"] = "c" * 64
         with self.assertRaisesRegex(ValueError, "different approved"):
-            self.promotion.resume_state(path, "0.1.0-rc.3", "b" * 40, "public-candidate", changed_receipt)
+            self.promotion.resume_state(path, "0.1.0-rc.3", "b" * 40, changed_receipt)
         state["images"]["api"] = reference[:-64] + "REPLACE_AFTER_APPROVED_PUBLIC_RELEASE"
         path.write_text(json.dumps(state))
         with self.assertRaisesRegex(ValueError, "invalid digest"):
-            self.promotion.resume_state(path, "0.1.0-rc.3", "b" * 40, "public-candidate", receipt)
+            self.promotion.resume_state(path, "0.1.0-rc.3", "b" * 40, receipt)
+
+        state["images"] = {"api": reference}
+        state["packageNames"]["api"] = "netratel-rc4-api"
+        path.write_text(json.dumps(state))
+        with self.assertRaisesRegex(ValueError, "package contract"):
+            self.promotion.resume_state(path, "0.1.0-rc.3", "b" * 40, receipt)
+
+    def test_registry_contract_allows_only_the_five_public_linked_packages(self):
+        self.assertEqual(
+            self.promotion.PACKAGE_NAMES,
+            {
+                "api": "netratel-api",
+                "web": "netratel-web",
+                "migrations": "netratel-migrations",
+                "mcp-http": "netratel-mcp-http",
+                "client": "netratel-client",
+            },
+        )
+        self.assertEqual(
+            self.promotion.release_image_tag("api", "0.1.0-rc.4"),
+            "ghcr.io/bostontechnologies/netratel-api:0.1.0-rc.4",
+        )
+        inventory = {
+            package: {"name": package, "visibility": "public",
+                      "repository": {"full_name": self.promotion.REPOSITORY}}
+            for package in self.promotion.PACKAGE_NAMES.values()
+        }
+        self.promotion.validate_registry_packages(inventory)
+        for package in self.promotion.PACKAGE_NAMES.values():
+            with self.subTest(package=package):
+                missing = dict(inventory)
+                missing.pop(package)
+                with self.assertRaisesRegex(ValueError, "missing"):
+                    self.promotion.validate_registry_packages(missing)
+        non_public = dict(inventory)
+        non_public[self.promotion.PACKAGE_NAMES["api"]] = {"visibility": "internal", "repository": {"full_name": self.promotion.REPOSITORY}}
+        with self.assertRaisesRegex(ValueError, "not public"):
+            self.promotion.validate_registry_packages(non_public)
+        unlinked = dict(inventory)
+        unlinked[self.promotion.PACKAGE_NAMES["api"]] = {"visibility": "public", "repository": None}
+        with self.assertRaisesRegex(ValueError, "not linked"):
+            self.promotion.validate_registry_packages(unlinked)
 
     def test_partial_or_placeholder_image_sets_cannot_finalize_a_bundle(self):
         with self.assertRaisesRegex(ValueError, "All five"):
