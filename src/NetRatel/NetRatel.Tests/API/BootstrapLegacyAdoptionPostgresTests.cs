@@ -53,6 +53,12 @@ public sealed class BootstrapLegacyAdoptionPostgresTests : IAsyncLifetime
         configuredOidc.State.Should().Be(BootstrapState.Ready);
         configuredOidc.AdoptedExistingInstallation.Should().BeFalse();
 
+        var localWithStaleOidc = await InitializeAsync("empty_bootstrap", includeOidc: true, mode: "Local");
+        localWithStaleOidc.State.Should().Be(BootstrapState.Unconfigured);
+
+        var freshHybrid = await InitializeAsync("empty_bootstrap", includeOidc: true, mode: "Hybrid");
+        freshHybrid.State.Should().Be(BootstrapState.Unconfigured);
+
         var adopted = await InitializeAsync("legacy", includeOidc: true);
         adopted.State.Should().Be(BootstrapState.Ready);
         adopted.AdoptedExistingInstallation.Should().BeTrue();
@@ -203,7 +209,7 @@ public sealed class BootstrapLegacyAdoptionPostgresTests : IAsyncLifetime
             }
         }));
 
-    private Task<BootstrapDescriptor> InitializeAsync(string schema, bool includeOidc)
+    private Task<BootstrapDescriptor> InitializeAsync(string schema, bool includeOidc, string? mode = null)
     {
         var values = new Dictionary<string, string?>
         {
@@ -212,12 +218,34 @@ public sealed class BootstrapLegacyAdoptionPostgresTests : IAsyncLifetime
         if (includeOidc)
         {
             values["Authentication:Oidc:Authority"] = "https://issuer.example.test";
+            values["Authentication:Oidc:Audience"] = "netratel-api";
         }
+
+        values["Authentication:Mode"] = mode;
 
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(values)
             .Build();
-        var options = new BootstrapOptions { StateDirectory = Path.Combine(_stateRoot, schema) };
+        var options = new BootstrapOptions { StateDirectory = Path.Combine(_stateRoot, $"{schema}-{mode ?? "auto"}-{includeOidc}") };
         return new BootstrapLifecycleService(new BootstrapStateStore(options), configuration).InitializeAsync();
+    }
+
+    [Fact]
+    public async Task Partial_active_oidc_configuration_is_rejected_before_creating_bootstrap_state()
+    {
+        var stateDirectory = Path.Combine(_stateRoot, "partial-oidc");
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Authentication:Mode"] = "Oidc",
+            ["Authentication:Oidc:Authority"] = "https://issuer.example.test",
+            ["ConnectionStrings:NetRatelDb"] = _postgres.GetConnectionString() + ";Search Path=empty_bootstrap"
+        }).Build();
+
+        var action = () => new BootstrapLifecycleService(
+            new BootstrapStateStore(new BootstrapOptions { StateDirectory = stateDirectory }), configuration).InitializeAsync();
+
+        await action.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*Authentication:Oidc:Audience*");
+        Directory.Exists(stateDirectory).Should().BeFalse();
     }
 }

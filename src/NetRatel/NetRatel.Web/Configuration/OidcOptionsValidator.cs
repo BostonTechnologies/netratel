@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Options;
+using NetRatel.Shared.Authentication;
 
 namespace NetRatel.Web.Configuration;
 
@@ -6,15 +7,7 @@ public sealed class OidcOptionsValidator(IConfiguration configuration) : IValida
 {
     public ValidateOptionsResult Validate(string? name, OidcOptions options)
     {
-        var configuredMode = configuration["Authentication:Mode"]?.Trim();
-        var hasOidcSettings = !string.IsNullOrWhiteSpace(options.Authority) ||
-            !string.IsNullOrWhiteSpace(options.ClientId) ||
-            !string.IsNullOrWhiteSpace(configuration["OIDC_CLIENT_SECRET"]) ||
-            !string.IsNullOrWhiteSpace(configuration["AZURE_CLIENT_SECRET"]);
-        var usesOidc = string.Equals(configuredMode, "Oidc", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(configuredMode, "Hybrid", StringComparison.OrdinalIgnoreCase) ||
-            (string.IsNullOrWhiteSpace(configuredMode) || string.Equals(configuredMode, "Auto", StringComparison.OrdinalIgnoreCase)) && hasOidcSettings;
-        if (!usesOidc)
+        if (AuthenticationModeConfiguration.Resolve(configuration) == "Local")
         {
             return ValidateOptionsResult.Success;
         }

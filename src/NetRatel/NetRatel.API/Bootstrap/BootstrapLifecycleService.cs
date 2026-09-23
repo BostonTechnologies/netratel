@@ -4,6 +4,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using NetRatel.Infrastructure.Identity;
 using NetRatel.Infrastructure.Persistence;
+using NetRatel.Shared.Authentication;
 using Npgsql;
 
 namespace NetRatel.API.Bootstrap;
@@ -25,6 +26,12 @@ public sealed class BootstrapLifecycleService
 
     public async Task<BootstrapDescriptor> InitializeAsync(CancellationToken cancellationToken = default)
     {
+        var authenticationMode = AuthenticationModeConfiguration.Resolve(_configuration);
+        if (authenticationMode is "Oidc" or "Hybrid")
+        {
+            ValidateActiveOidcConfiguration();
+        }
+
         var descriptor = await _store.LoadOrCreateAsync(cancellationToken).ConfigureAwait(false);
         var connectionString = _configuration.GetConnectionString("NetRatelDb") ?? _configuration.GetConnectionString("Default");
         if (IsPlaceholder(connectionString))
@@ -88,7 +95,7 @@ public sealed class BootstrapLifecycleService
             // A complete deployment-owned OIDC configuration is an explicit request to retain
             // the pre-local-first operational mode. This is not legacy-data adoption: no owner,
             // tenant, or application record is inferred from an empty schema.
-            if (HasConfiguredOidc())
+            if (authenticationMode == "Oidc")
             {
                 return await _store.UpdateAsync(
                     current => current with
@@ -108,7 +115,7 @@ public sealed class BootstrapLifecycleService
             return descriptor;
         }
 
-        if (probe == LegacyProbeResult.RequiresRecovery || !HasConfiguredOidc())
+        if (probe == LegacyProbeResult.RequiresRecovery || authenticationMode == "Local")
         {
             return await _store.UpdateAsync(
                 current => current with { State = BootstrapState.RecoveryRequired, OperationId = null, OperationLeaseExpiresAtUtc = null, RecoveryReason = "legacy-continuity-insufficient" },
@@ -273,15 +280,33 @@ public sealed class BootstrapLifecycleService
     private static string ProviderName(NetRatelDatabaseProvider provider) =>
         provider is NetRatelDatabaseProvider.Sqlite ? "SQLite" : "PostgreSQL";
 
-    private bool HasConfiguredOidc()
+    private void ValidateActiveOidcConfiguration()
     {
         var oidc = _configuration.GetSection("Authentication:Oidc");
-        if (oidc.Exists() && !IsPlaceholder(oidc["Authority"]))
+        if (!oidc.Exists())
         {
-            return true;
+            oidc = _configuration.GetSection("Authentication:Azure");
         }
 
-        return !IsPlaceholder(_configuration["AzureAd:TenantId"]) && !IsPlaceholder(_configuration["AzureAd:ClientId"]);
+        var authority = oidc["Authority"];
+        var audience = oidc["Audience"] ?? oidc["ClientId"];
+        if (!oidc.Exists())
+        {
+            var tenantId = _configuration["AzureAd:TenantId"];
+            authority = IsPlaceholder(tenantId) ? null : $"https://login.microsoftonline.com/{tenantId}/v2.0";
+            audience = _configuration["AzureAd:ClientId"] ?? _configuration["AzureAd:Audience"];
+        }
+
+        if (IsPlaceholder(authority) || !Uri.TryCreate(authority, UriKind.Absolute, out var uri) ||
+            uri.Scheme is not ("http" or "https") || uri.Host.EndsWith(".invalid", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("Active OIDC mode requires a real absolute Authentication:Oidc:Authority (or complete legacy Azure settings). Set Authentication:Mode=Local to ignore unused OIDC examples.");
+        }
+
+        if (IsPlaceholder(audience))
+        {
+            throw new InvalidOperationException("Active OIDC mode requires Authentication:Oidc:Audience (or a compatible ClientId). Set Authentication:Mode=Local for a local-account installation.");
+        }
     }
 
     private static bool IsPlaceholder(string? value) =>
