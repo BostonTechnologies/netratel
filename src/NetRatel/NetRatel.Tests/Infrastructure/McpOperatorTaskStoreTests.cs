@@ -9,12 +9,12 @@ using NetRatel.Application.Jobs;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.Services;
 using NetRatel.Shared.Contracts.Tasks;
-using Testcontainers.PostgreSql;
 using Xunit;
 
 namespace NetRatel.Tests.Infrastructure;
 
-public sealed class McpOperatorTaskStoreTests
+[Collection(PostgreSqlPersistenceCollection.Name)]
+public sealed class McpOperatorTaskStoreTests(PostgreSqlPersistenceFixture postgres)
 {
     [Fact]
     public async Task Task_creation_is_owner_scoped_idempotent_and_creates_its_activity_atomically()
@@ -78,10 +78,9 @@ public sealed class McpOperatorTaskStoreTests
     [Fact]
     public async Task PostgreSql_task_creation_counts_active_leases_and_releases_capacity_after_completion()
     {
-        await using var postgres = new PostgreSqlBuilder("postgres:16-alpine").Build();
-        await postgres.StartAsync();
+        var connectionString = await postgres.CreateDatabaseAsync();
         await using var db = new OrchestratorDbContext(new DbContextOptionsBuilder<OrchestratorDbContext>()
-            .UseNpgsql(postgres.GetConnectionString()).Options);
+            .UseNpgsql(connectionString).Options);
         await db.Database.MigrateAsync();
         var fixture = CreateFixture();
         var requests = Enumerable.Range(0, 3).Select(_ => CreateRequest(fixture, Guid.NewGuid())).ToArray();
@@ -127,43 +126,35 @@ public sealed class McpOperatorTaskStoreTests
     }
 
     [Fact]
-    public async Task Sqlite_task_creation_is_idempotent_and_survives_restart()
+    public async Task PostgreSql_task_creation_is_idempotent_and_survives_restart()
     {
-        var databasePath = Path.Combine(Path.GetTempPath(), $"netratel-task-store-{Guid.NewGuid():N}.db");
+        var connectionString = await postgres.CreateDatabaseAsync();
         var options = new DbContextOptionsBuilder<OrchestratorDbContext>()
-            .UseSqlite($"Data Source={databasePath};Foreign Keys=True", sqlite =>
-                sqlite.MigrationsAssembly("NetRatel.SqliteMigrations"))
+            .UseNpgsql(connectionString)
             .Options;
 
-        try
+        var fixture = CreateFixture();
+        var request = CreateRequest(fixture, Guid.NewGuid());
+        await using (var db = new OrchestratorDbContext(options))
         {
-            var fixture = CreateFixture();
-            var request = CreateRequest(fixture, Guid.NewGuid());
-            await using (var db = new OrchestratorDbContext(options))
-            {
-                await db.Database.MigrateAsync();
-                await SeedPostgresAsync(db, fixture, [request]);
-                var store = new McpOperatorTaskStore(db);
+            await db.Database.MigrateAsync();
+            await SeedPostgresAsync(db, fixture, [request]);
+            var store = new McpOperatorTaskStore(db);
 
-                var created = await store.CreateOrGetAsync(request, CancellationToken.None);
-                var replay = await store.CreateOrGetAsync(request, CancellationToken.None);
-                await store.RecordLifecycleAsync(created.CommandId, fixture.TenantId, fixture.AgentId,
-                    "Completed", "completed", fixture.Now.AddMinutes(1), CancellationToken.None);
+            var created = await store.CreateOrGetAsync(request, CancellationToken.None);
+            var replay = await store.CreateOrGetAsync(request, CancellationToken.None);
+            await store.RecordLifecycleAsync(created.CommandId, fixture.TenantId, fixture.AgentId,
+                "Completed", "completed", fixture.Now.AddMinutes(1), CancellationToken.None);
 
-                replay.TaskId.Should().Be(created.TaskId);
-            }
-
-            await using var restarted = new OrchestratorDbContext(options);
-            await restarted.Database.MigrateAsync();
-            (await restarted.McpOperatorTasks.CountAsync()).Should().Be(1);
-            (await restarted.JobTaskActivities.CountAsync()).Should().Be(1);
-            (await restarted.McpOperatorTaskAudits.CountAsync()).Should().Be(1);
-            (await restarted.McpOperatorTasks.SingleAsync()).State.Should().Be("Completed");
+            replay.TaskId.Should().Be(created.TaskId);
         }
-        finally
-        {
-            File.Delete(databasePath);
-        }
+
+        await using var restarted = new OrchestratorDbContext(options);
+        await restarted.Database.MigrateAsync();
+        (await restarted.McpOperatorTasks.CountAsync()).Should().Be(1);
+        (await restarted.JobTaskActivities.CountAsync()).Should().Be(1);
+        (await restarted.McpOperatorTaskAudits.CountAsync()).Should().Be(1);
+        (await restarted.McpOperatorTasks.SingleAsync()).State.Should().Be("Completed");
     }
 
     [Theory]
@@ -242,9 +233,7 @@ public sealed class McpOperatorTaskStoreTests
     [Fact]
     public async Task PostgreSql_cancel_races_preserve_terminal_results_and_exactly_one_committed_audit()
     {
-        await using var postgres = new PostgreSqlBuilder("postgres:16-alpine").Build();
-        await postgres.StartAsync();
-        var connection = postgres.GetConnectionString();
+        var connection = await postgres.CreateDatabaseAsync();
         await using var seed = new OrchestratorDbContext(new DbContextOptionsBuilder<OrchestratorDbContext>().UseNpgsql(connection).Options);
         await seed.Database.MigrateAsync();
         var fixture = CreateFixture();

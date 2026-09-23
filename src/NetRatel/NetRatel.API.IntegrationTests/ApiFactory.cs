@@ -10,17 +10,20 @@ using Microsoft.Extensions.Options;
 using NetRatel.API.Bootstrap;
 using NetRatel.Infrastructure.Identity;
 using NetRatel.Infrastructure.Persistence;
+using Testcontainers.PostgreSql;
 using Xunit;
 
-public sealed class ApiFactory : WebApplicationFactory<Program>
+public sealed class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "netratel-api-openapi", Guid.NewGuid().ToString("N"));
-    private readonly IReadOnlyDictionary<string, string?> _settings;
-    private readonly IReadOnlyDictionary<string, string?> _previousEnvironment;
+    private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:16-alpine").Build();
+    private IReadOnlyDictionary<string, string?> _settings = new Dictionary<string, string?>();
+    private IReadOnlyDictionary<string, string?> _previousEnvironment = new Dictionary<string, string?>();
 
-    public ApiFactory()
+    public async ValueTask InitializeAsync()
     {
-        _settings = CreateReadyLocalFirstSettings();
+        await _postgres.StartAsync();
+        _settings = await CreateReadyLocalFirstSettingsAsync();
         _previousEnvironment = _settings.Keys.ToDictionary(
             EnvironmentKey,
             Environment.GetEnvironmentVariable,
@@ -29,6 +32,12 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
         {
             Environment.SetEnvironmentVariable(EnvironmentKey(setting.Key), setting.Value);
         }
+    }
+
+    async ValueTask IAsyncDisposable.DisposeAsync()
+    {
+        Dispose();
+        await _postgres.DisposeAsync();
     }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -58,16 +67,14 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
         }
     }
 
-    private IReadOnlyDictionary<string, string?> CreateReadyLocalFirstSettings()
+    private async Task<IReadOnlyDictionary<string, string?>> CreateReadyLocalFirstSettingsAsync()
     {
         Directory.CreateDirectory(_root);
-        var databasePath = Path.Combine(_root, "netratel.db");
         var stateDirectory = Path.Combine(_root, "bootstrap");
-        var connectionString = $"Data Source={databasePath};Foreign Keys=True";
+        var connectionString = _postgres.GetConnectionString();
         var settings = new Dictionary<string, string?>
         {
-            ["Database:Provider"] = "Sqlite",
-            ["Database:InstanceCount"] = "1",
+            ["Database:Provider"] = "PostgreSql",
             ["ConnectionStrings:NetRatelDb"] = connectionString,
             ["Bootstrap:StateDirectory"] = stateDirectory,
             ["DataProtection:KeysDirectory"] = Path.Combine(_root, "keys"),
@@ -78,20 +85,16 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
         };
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(settings).Build();
 
-        var applicationOptions = new DbContextOptionsBuilder<OrchestratorDbContext>()
-            .UseSqlite(connectionString, sqlite => sqlite.MigrationsAssembly("NetRatel.SqliteMigrations"))
-            .Options;
-        var identityOptions = new DbContextOptionsBuilder<NetRatelIdentityDbContext>()
-            .UseSqlite(connectionString, sqlite => sqlite.MigrationsAssembly("NetRatel.SqliteMigrations"))
-            .Options;
-        using (var application = new OrchestratorDbContext(applicationOptions)) application.Database.Migrate();
-        using (var identity = new NetRatelIdentityDbContext(identityOptions)) identity.Database.Migrate();
+        var applicationOptions = new DbContextOptionsBuilder<OrchestratorDbContext>().UseNpgsql(connectionString).Options;
+        var identityOptions = new DbContextOptionsBuilder<NetRatelIdentityDbContext>().UseNpgsql(connectionString).Options;
+        await using (var application = new OrchestratorDbContext(applicationOptions)) await application.Database.MigrateAsync();
+        await using (var identity = new NetRatelIdentityDbContext(identityOptions)) await identity.Database.MigrateAsync();
 
         var bootstrapOptions = new BootstrapOptions { StateDirectory = stateDirectory };
         var store = new BootstrapStateStore(bootstrapOptions);
-        store.LoadOrCreateAsync().GetAwaiter().GetResult();
-        var proof = File.ReadAllText(Path.Combine(stateDirectory, "setup-proof"));
-        var claim = store.ClaimSetupAsync(proof, "SQLite", "ConnectionStrings:NetRatelDb").GetAwaiter().GetResult();
+        await store.LoadOrCreateAsync();
+        var proof = await File.ReadAllTextAsync(Path.Combine(stateDirectory, "setup-proof"));
+        var claim = await store.ClaimSetupAsync(proof, "PostgreSQL", "ConnectionStrings:NetRatelDb");
         if (!claim.Succeeded || claim.Descriptor?.OperationId is not { } operationId)
         {
             throw new InvalidOperationException("The Release OpenAPI test host could not claim local-first initialization.");
@@ -102,10 +105,9 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
             configuration,
             new PasswordHasher<LocalUser>(),
             Options.Create(new IdentityOptions()));
-        var initialized = initializer.InitializeAsync(
+        var initialized = await initializer.InitializeAsync(
             operationId,
-            new BootstrapInitializationRequest("OpenAPI Administrator", "openapi@example.test", "A1! local-first passphrase", "OpenAPI tenant"))
-            .GetAwaiter().GetResult();
+            new BootstrapInitializationRequest("OpenAPI Administrator", "openapi@example.test", "A1! local-first passphrase", "OpenAPI tenant"));
         if (!initialized.Succeeded)
         {
             throw new InvalidOperationException("The Release OpenAPI test host could not complete local-first initialization.");

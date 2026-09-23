@@ -187,9 +187,6 @@ public sealed class ClientUpdateCatalogRefreshService(
 
     private async Task RunListenerAsync(CancellationToken stoppingToken)
     {
-        if (NetRatelDatabaseConfigurationResolver.Resolve(configuration).Provider is NetRatelDatabaseProvider.Sqlite)
-            return;
-
         var connectionString = configuration.GetConnectionString("NetRatelDb")
             ?? configuration.GetConnectionString("Default");
         if (string.IsNullOrWhiteSpace(connectionString)) return;

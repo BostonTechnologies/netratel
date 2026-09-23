@@ -1,5 +1,4 @@
 using FluentAssertions;
-using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using NetRatel.Infrastructure.Identity;
 using NetRatel.Infrastructure.Identity.Authorization;
@@ -7,15 +6,13 @@ using Xunit;
 
 namespace NetRatel.Tests.Infrastructure;
 
-public sealed class IntegrationCredentialServiceTests
+[Collection(PostgreSqlPersistenceCollection.Name)]
+public sealed class IntegrationCredentialServiceTests(PostgreSqlPersistenceFixture postgres)
 {
     [Fact]
     public async Task Credential_is_one_way_purpose_bound_and_revocable()
     {
-        await using var connection = new SqliteConnection("Data Source=:memory:");
-        await connection.OpenAsync();
-        await using var db = CreateDb(connection);
-        await db.Database.EnsureCreatedAsync();
+        await using var db = await CreateDbAsync();
         db.Users.Add(new LocalUser { Id = "local-user", PrincipalId = "principal-a", UserName = "owner", IsEnabled = true });
         await db.SaveChangesAsync();
         var service = new IntegrationCredentialService(db);
@@ -53,10 +50,7 @@ public sealed class IntegrationCredentialServiceTests
     [Fact]
     public async Task Disabled_local_owner_cannot_use_an_existing_credential()
     {
-        await using var connection = new SqliteConnection("Data Source=:memory:");
-        await connection.OpenAsync();
-        await using var db = CreateDb(connection);
-        await db.Database.EnsureCreatedAsync();
+        await using var db = await CreateDbAsync();
         db.Users.Add(new LocalUser { Id = "local-user", PrincipalId = "principal-a", UserName = "owner", IsEnabled = true });
         await db.SaveChangesAsync();
         var service = new IntegrationCredentialService(db);
@@ -75,10 +69,7 @@ public sealed class IntegrationCredentialServiceTests
     [Fact]
     public async Task Expired_or_unpaired_http_credentials_fail_closed_and_lists_are_chronological()
     {
-        await using var connection = new SqliteConnection("Data Source=:memory:");
-        await connection.OpenAsync();
-        await using var db = CreateDb(connection);
-        await db.Database.EnsureCreatedAsync();
+        await using var db = await CreateDbAsync();
         var service = new IntegrationCredentialService(db);
 
         var first = await service.CreateAsync("principal-a", new(
@@ -102,10 +93,7 @@ public sealed class IntegrationCredentialServiceTests
     [Fact]
     public async Task Current_http_mcp_verification_rechecks_resource_owner_state_and_revocation()
     {
-        await using var connection = new SqliteConnection("Data Source=:memory:");
-        await connection.OpenAsync();
-        await using var db = CreateDb(connection);
-        await db.Database.EnsureCreatedAsync();
+        await using var db = await CreateDbAsync();
         db.Users.Add(new LocalUser { Id = "local-user", PrincipalId = "principal-a", UserName = "owner", IsEnabled = true });
         await db.SaveChangesAsync();
         var service = new IntegrationCredentialService(db);
@@ -124,10 +112,7 @@ public sealed class IntegrationCredentialServiceTests
     [Fact]
     public async Task Instance_discovery_grant_is_explicit_and_is_returned_by_current_verification()
     {
-        await using var connection = new SqliteConnection("Data Source=:memory:");
-        await connection.OpenAsync();
-        await using var db = CreateDb(connection);
-        await db.Database.EnsureCreatedAsync();
+        await using var db = await CreateDbAsync();
         db.Users.Add(new LocalUser { Id = "local-user", PrincipalId = "principal-a", UserName = "owner", IsEnabled = true });
         await db.SaveChangesAsync();
         var service = new IntegrationCredentialService(db);
@@ -145,10 +130,7 @@ public sealed class IntegrationCredentialServiceTests
     [Fact]
     public async Task Instance_control_plane_grant_is_explicit_and_excludes_credential_management()
     {
-        await using var connection = new SqliteConnection("Data Source=:memory:");
-        await connection.OpenAsync();
-        await using var db = CreateDb(connection);
-        await db.Database.EnsureCreatedAsync();
+        await using var db = await CreateDbAsync();
         db.Users.Add(new LocalUser { Id = "local-user", PrincipalId = "principal-a", UserName = "owner", IsEnabled = true });
         await db.SaveChangesAsync();
         var service = new IntegrationCredentialService(db);
@@ -165,6 +147,12 @@ public sealed class IntegrationCredentialServiceTests
         await managementGrant.Should().ThrowAsync<ArgumentException>();
     }
 
-    private static NetRatelIdentityDbContext CreateDb(SqliteConnection connection) => new(
-        new DbContextOptionsBuilder<NetRatelIdentityDbContext>().UseSqlite(connection).Options);
+    private async Task<NetRatelIdentityDbContext> CreateDbAsync()
+    {
+        var connectionString = await postgres.CreateDatabaseAsync();
+        var db = new NetRatelIdentityDbContext(
+            new DbContextOptionsBuilder<NetRatelIdentityDbContext>().UseNpgsql(connectionString).Options);
+        await db.Database.MigrateAsync();
+        return db;
+    }
 }

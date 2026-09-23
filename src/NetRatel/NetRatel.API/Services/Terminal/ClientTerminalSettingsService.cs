@@ -116,21 +116,13 @@ public sealed class ClientTerminalSettingsService
                 return;
             }
 
-            var createTable = _db.Database.IsSqlite()
-                ? """
-                    create table if not exists "ClientTerminalSettings" (
-                        "ClientIdentity" text primary key,
-                        "TerminalTransportOverride" text null,
-                        "UpdatedAtUtc" text not null default CURRENT_TIMESTAMP
-                    );
-                    """
-                : """
-                    create table if not exists "ClientTerminalSettings" (
-                        "ClientIdentity" text primary key,
-                        "TerminalTransportOverride" text null,
-                        "UpdatedAtUtc" timestamp with time zone not null default now()
-                    );
-                    """;
+            const string createTable = """
+                create table if not exists "ClientTerminalSettings" (
+                    "ClientIdentity" text primary key,
+                    "TerminalTransportOverride" text null,
+                    "UpdatedAtUtc" timestamp with time zone not null default now()
+                );
+                """;
             await _db.Database.ExecuteSqlRawAsync(createTable, ct).ConfigureAwait(false);
             _ensured = true;
         }

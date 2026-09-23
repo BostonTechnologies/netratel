@@ -138,11 +138,10 @@ public sealed class IntegrationCredentialService(NetRatelIdentityDbContext db) :
             .Include(credential => credential.Grants)
             .Include(credential => credential.InstanceGrants)
             .Where(credential => credential.OwnerPrincipalId == ownerPrincipalId)
+            .OrderByDescending(credential => credential.CreatedAtUtc)
             .ToListAsync(cancellationToken).ConfigureAwait(false);
 
-        // SQLite cannot order DateTimeOffset values. Fetch this account's
-        // small credential set and apply the chronological view in process.
-        return credentials.OrderByDescending(credential => credential.CreatedAtUtc).Select(credential => new IntegrationCredentialSummary(
+        return credentials.Select(credential => new IntegrationCredentialSummary(
                 credential.Id, credential.PublicId, credential.TokenPrefix, credential.Name, credential.Purpose,
                 credential.Resource, credential.CreatedAtUtc, credential.ExpiresAtUtc, credential.RevokedAtUtc,
                 credential.LastUsedAtUtc,
@@ -185,11 +184,8 @@ public sealed class IntegrationCredentialService(NetRatelIdentityDbContext db) :
             .Include(candidate => candidate.Grants)
             .Include(candidate => candidate.InstanceGrants)
             .SingleOrDefaultAsync(candidate => candidate.SecretHash == Hash(secret) && candidate.Purpose == purpose &&
-                candidate.RevokedAtUtc == null, cancellationToken).ConfigureAwait(false);
-        // SQLite cannot translate a DateTimeOffset comparison. The unique
-        // verifier lookup remains in SQL; expiry is evaluated immediately on
-        // the one candidate and fails closed for both providers.
-        if (credential is null || credential.ExpiresAtUtc <= now)
+                candidate.RevokedAtUtc == null && candidate.ExpiresAtUtc > now, cancellationToken).ConfigureAwait(false);
+        if (credential is null)
         {
             return null;
         }

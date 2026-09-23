@@ -60,8 +60,10 @@ using NetRatel.API.Security.Authorization;
 using NetRatel.API.Security.Integration;
 using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Infrastructure.Identity.Branding;
+using NetRatel.Infrastructure.Persistence;
 using NetRatel.API.OpenApi;
 var builder = WebApplication.CreateBuilder(args);
+NetRatelDatabaseConfigurationResolver.ValidateProvider(builder.Configuration);
 
 // Bootstrap reconciliation intentionally happens before any operational registration. A fresh or
 // recovering installation must expose only the setup/liveness surface; it must not initialize a

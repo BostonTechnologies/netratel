@@ -40,7 +40,6 @@ compose() {
 # These validations run only against the extracted archive. They prevent a
 # source-only Compose recipe or mandatory OIDC interpolation from reappearing.
 compose -f "$temporary_dir/compose.images.yaml" config --quiet
-compose -f "$temporary_dir/compose.local-sqlite.yaml" config --quiet
 NETRATEL_EXTERNAL_DATABASE_CONNECTION_STRING='Host=external-db;Database=netratel;Username=netratel;Password=validation-only' \
   compose -f "$temporary_dir/compose.images.yaml" -f "$temporary_dir/compose.external-postgres.yaml" config --quiet
 

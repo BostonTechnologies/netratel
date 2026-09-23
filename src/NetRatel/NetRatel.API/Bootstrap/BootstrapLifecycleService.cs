@@ -1,6 +1,4 @@
-using System.Data.Common;
 using Microsoft.Extensions.Configuration;
-using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using NetRatel.Infrastructure.Identity;
 using NetRatel.Infrastructure.Persistence;
@@ -26,6 +24,7 @@ public sealed class BootstrapLifecycleService
 
     public async Task<BootstrapDescriptor> InitializeAsync(CancellationToken cancellationToken = default)
     {
+        NetRatelDatabaseConfigurationResolver.ValidateProvider(_configuration);
         var authenticationMode = AuthenticationModeConfiguration.Resolve(_configuration);
         if (authenticationMode is "Oidc" or "Hybrid")
         {
@@ -51,7 +50,7 @@ public sealed class BootstrapLifecycleService
                         current => current with
                         {
                             State = BootstrapState.Ready,
-                            SelectedProvider = ProviderName(database.Provider),
+                            SelectedProvider = "PostgreSQL",
                             ConnectionReference = "ConnectionStrings:NetRatelDb",
                             OperationId = null,
                             OperationLeaseExpiresAtUtc = null,
@@ -62,7 +61,7 @@ public sealed class BootstrapLifecycleService
                         cancellationToken).ConfigureAwait(false);
                 }
             }
-            catch (Exception ex) when (ex is NpgsqlException or SqliteException or TimeoutException or InvalidOperationException)
+            catch (Exception ex) when (ex is NpgsqlException or TimeoutException or InvalidOperationException)
             {
                 // An unavailable database cannot establish completed initialization evidence.
                 // Preserve the restricted bootstrap state and retry reconciliation on startup.
@@ -82,7 +81,7 @@ public sealed class BootstrapLifecycleService
         {
             probe = await ProbeExistingInstallationAsync(database, cancellationToken).ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is NpgsqlException or SqliteException or TimeoutException or InvalidOperationException)
+        catch (Exception ex) when (ex is NpgsqlException or TimeoutException or InvalidOperationException)
         {
             return await _store.UpdateAsync(
                 current => current with { State = BootstrapState.RecoveryRequired, OperationId = null, OperationLeaseExpiresAtUtc = null, RecoveryReason = "configured-storage-unavailable" },
@@ -101,7 +100,7 @@ public sealed class BootstrapLifecycleService
                     current => current with
                     {
                         State = BootstrapState.Ready,
-                        SelectedProvider = ProviderName(database.Provider),
+                        SelectedProvider = "PostgreSQL",
                         ConnectionReference = "ConnectionStrings:NetRatelDb",
                         OperationId = null,
                         OperationLeaseExpiresAtUtc = null,
@@ -127,7 +126,7 @@ public sealed class BootstrapLifecycleService
             current => current with
             {
                 State = BootstrapState.Ready,
-                SelectedProvider = ProviderName(database.Provider),
+                SelectedProvider = "PostgreSQL",
                 ConnectionReference = "ConnectionStrings:NetRatelDb",
                 OperationId = null,
                 OperationLeaseExpiresAtUtc = null,
@@ -141,9 +140,8 @@ public sealed class BootstrapLifecycleService
     public Task<BootstrapClaimResult> ClaimSetupAsync(string proof, CancellationToken cancellationToken = default)
     {
         var hasConfiguredDatabase = !IsPlaceholder(_configuration.GetConnectionString("NetRatelDb") ?? _configuration.GetConnectionString("Default"));
-        var provider = hasConfiguredDatabase
-            ? ProviderName(NetRatelDatabaseConfigurationResolver.Resolve(_configuration).Provider)
-            : null;
+        if (hasConfiguredDatabase) NetRatelDatabaseConfigurationResolver.Resolve(_configuration);
+        var provider = hasConfiguredDatabase ? "PostgreSQL" : null;
         return _store.ClaimSetupAsync(
             proof,
             provider,
@@ -159,12 +157,8 @@ public sealed class BootstrapLifecycleService
         descriptor.SelectedProvider,
         descriptor.OperationId);
 
-    private async Task<LegacyProbeResult> ProbeExistingInstallationAsync(NetRatelDatabaseConfiguration database, CancellationToken cancellationToken)
-    {
-        return database.Provider is NetRatelDatabaseProvider.Sqlite
-            ? await ProbeSqliteAsync(database.ConnectionString, cancellationToken).ConfigureAwait(false)
-            : await ProbePostgreSqlAsync(database.ConnectionString, cancellationToken).ConfigureAwait(false);
-    }
+    private Task<LegacyProbeResult> ProbeExistingInstallationAsync(NetRatelDatabaseConfiguration database, CancellationToken cancellationToken) =>
+        ProbePostgreSqlAsync(database.ConnectionString, cancellationToken);
 
     private static async Task<LegacyProbeResult> ProbePostgreSqlAsync(string connectionString, CancellationToken cancellationToken)
     {
@@ -189,28 +183,6 @@ public sealed class BootstrapLifecycleService
         return (bool)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) ?? false);
     }
 
-    private static async Task<LegacyProbeResult> ProbeSqliteAsync(string connectionString, CancellationToken cancellationToken)
-    {
-        await using var connection = new SqliteConnection(connectionString);
-        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-        var tables = new HashSet<string>(StringComparer.Ordinal);
-        await using (var command = connection.CreateCommand())
-        {
-            command.CommandText = "SELECT name FROM sqlite_master WHERE type = 'table'";
-            await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) tables.Add(reader.GetString(0));
-        }
-
-        return await AssessContinuityAsync(tables, table => HasRowsAsync(connection, table, cancellationToken)).ConfigureAwait(false);
-    }
-
-    private static async Task<bool> HasRowsAsync(SqliteConnection connection, string table, CancellationToken cancellationToken)
-    {
-        await using var command = connection.CreateCommand();
-        command.CommandText = $"SELECT EXISTS (SELECT 1 FROM \"{table}\")";
-        return Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false)) != 0;
-    }
-
     private static async Task<LegacyProbeResult> AssessContinuityAsync(
         ISet<string> tables,
         Func<string, Task<bool>> hasRowsAsync)
@@ -233,23 +205,13 @@ public sealed class BootstrapLifecycleService
         BootstrapDescriptor descriptor,
         CancellationToken cancellationToken)
     {
-        await using DbConnection connection = database.Provider is NetRatelDatabaseProvider.Sqlite
-            ? new SqliteConnection(database.ConnectionString)
-            : new NpgsqlConnection(database.ConnectionString);
+        await using var connection = new NpgsqlConnection(database.ConnectionString);
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
 
         var applicationOptions = new DbContextOptionsBuilder<OrchestratorDbContext>();
         var identityOptions = new DbContextOptionsBuilder<NetRatelIdentityDbContext>();
-        if (database.Provider is NetRatelDatabaseProvider.Sqlite)
-        {
-            applicationOptions.UseSqlite(connection, sqlite => sqlite.MigrationsAssembly("NetRatel.SqliteMigrations"));
-            identityOptions.UseSqlite(connection, sqlite => sqlite.MigrationsAssembly("NetRatel.SqliteMigrations"));
-        }
-        else
-        {
-            applicationOptions.UseNpgsql(connection, postgres => postgres.MigrationsAssembly("NetRatel.Migrations"));
-            identityOptions.UseNpgsql(connection, postgres => postgres.MigrationsAssembly("NetRatel.Migrations"));
-        }
+        applicationOptions.UseNpgsql(connection, postgres => postgres.MigrationsAssembly("NetRatel.Migrations"));
+        identityOptions.UseNpgsql(connection, postgres => postgres.MigrationsAssembly("NetRatel.Migrations"));
 
         await using var application = new OrchestratorDbContext(applicationOptions.Options);
         var initialization = await application.BootstrapInitializations.AsNoTracking()
@@ -276,9 +238,6 @@ public sealed class BootstrapLifecycleService
             principal => principal.Id == administrator.PrincipalId && principal.LocalUserId == administrator.Id,
             cancellationToken).ConfigureAwait(false);
     }
-
-    private static string ProviderName(NetRatelDatabaseProvider provider) =>
-        provider is NetRatelDatabaseProvider.Sqlite ? "SQLite" : "PostgreSQL";
 
     private void ValidateActiveOidcConfiguration()
     {

@@ -43,6 +43,20 @@ The migration service must exit zero before API starts. Web binds to
 `127.0.0.1:8080` by default. For remote use, terminate HTTPS at your reverse proxy,
 choose `NETRATEL_WEB_BIND_ADDRESS` deliberately and provide a Compose override:
 
+Open `http://127.0.0.1:8080` on the Docker host. The first-run wizard asks for a
+one-time setup code. Retrieve it from the running API container:
+
+```sh
+docker compose --env-file .env -f compose.images.yaml exec -T api \
+  cat /var/netratel/bootstrap/setup-proof
+```
+
+Enter the code, choose an administrator email and passphrase, and use those
+details to sign in. There is no default administrator password. From an API
+container console, use `cat /var/netratel/bootstrap/setup-proof` directly.
+Run `dotnet NetRatel.API.dll --setup-status` there if the code is unavailable.
+See [First-run setup](docs/FIRST_RUN_SETUP.md) for recovery cases.
+
 ```yaml
 services:
   web:
@@ -71,14 +85,10 @@ Back up PostgreSQL, signing keys and Data Protection volumes together. Do not
 delete persistent volumes during upgrades. No local administrator credentials or
 identity provider are included.
 
-## Alternate local data profiles
+## External PostgreSQL
 
-`compose.images.yaml` is the bundled PostgreSQL profile. For a single-node
-SQLite installation, replace it with `compose.local-sqlite.yaml` in every
-command above. It uses the same image variables, signing-key path, loopback
-defaults, and durable shared key ring; it does not start PostgreSQL.
-
-For a deployment-owned PostgreSQL server, retain `compose.images.yaml` and add
+`compose.images.yaml` starts bundled PostgreSQL. For a deployment-owned server,
+retain `compose.images.yaml` and add
 `-f compose.external-postgres.yaml` to every command. Set
 `NETRATEL_EXTERNAL_DATABASE_CONNECTION_STRING` to the dedicated NetRatel
 database connection string. The override disables the bundled database rather

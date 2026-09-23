@@ -1,5 +1,4 @@
 using FluentAssertions;
-using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using NetRatel.Infrastructure.Identity;
@@ -8,15 +7,13 @@ using Xunit;
 
 namespace NetRatel.Tests.Infrastructure;
 
-public sealed class DeploymentBrandingServiceTests
+[Collection(PostgreSqlPersistenceCollection.Name)]
+public sealed class DeploymentBrandingServiceTests(PostgreSqlPersistenceFixture postgres)
 {
     [Fact]
     public async Task Defaults_are_inherited_and_a_single_stored_field_can_be_reset_without_writing_defaults()
     {
-        await using var connection = new SqliteConnection("Data Source=:memory:");
-        await connection.OpenAsync();
-        await using var db = CreateDb(connection);
-        await db.Database.EnsureCreatedAsync();
+        await using var db = await CreateDbAsync();
         var service = CreateService(db);
 
         var defaults = await service.GetEffectiveAsync();
@@ -38,10 +35,7 @@ public sealed class DeploymentBrandingServiceTests
     [Fact]
     public async Task Deployment_configuration_wins_per_field_and_is_not_editable_by_an_administrator()
     {
-        await using var connection = new SqliteConnection("Data Source=:memory:");
-        await connection.OpenAsync();
-        await using var db = CreateDb(connection);
-        await db.Database.EnsureCreatedAsync();
+        await using var db = await CreateDbAsync();
         var service = CreateService(db, new DeploymentBrandingOptions { ApplicationName = "Deployment name" });
 
         var effective = await service.GetEffectiveAsync();
@@ -56,10 +50,7 @@ public sealed class DeploymentBrandingServiceTests
     [Fact]
     public async Task Assets_are_content_validated_versioned_and_never_exposed_as_arbitrary_urls()
     {
-        await using var connection = new SqliteConnection("Data Source=:memory:");
-        await connection.OpenAsync();
-        await using var db = CreateDb(connection);
-        await db.Database.EnsureCreatedAsync();
+        await using var db = await CreateDbAsync();
         var service = CreateService(db);
 
         await service.Invoking(value => value.UploadAssetAsync(new("logo-light", "image/svg+xml", "<svg/>"u8.ToArray()), "principal-admin"))
@@ -91,6 +82,12 @@ public sealed class DeploymentBrandingServiceTests
     private static DeploymentBrandingService CreateService(NetRatelIdentityDbContext db, DeploymentBrandingOptions? options = null) =>
         new(db, Options.Create(options ?? new DeploymentBrandingOptions()));
 
-    private static NetRatelIdentityDbContext CreateDb(SqliteConnection connection) => new(
-        new DbContextOptionsBuilder<NetRatelIdentityDbContext>().UseSqlite(connection).Options);
+    private async Task<NetRatelIdentityDbContext> CreateDbAsync()
+    {
+        var connectionString = await postgres.CreateDatabaseAsync();
+        var db = new NetRatelIdentityDbContext(
+            new DbContextOptionsBuilder<NetRatelIdentityDbContext>().UseNpgsql(connectionString).Options);
+        await db.Database.MigrateAsync();
+        return db;
+    }
 }

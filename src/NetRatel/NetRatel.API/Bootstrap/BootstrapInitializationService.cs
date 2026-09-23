@@ -1,6 +1,5 @@
 using System.Data.Common;
 using Microsoft.AspNetCore.Identity;
-using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Options;
@@ -30,7 +29,7 @@ public sealed class BootstrapInitializationService(
         var database = NetRatelDatabaseConfigurationResolver.Resolve(configuration);
         if (descriptor.State == BootstrapState.Ready)
         {
-            return string.Equals(descriptor.SelectedProvider, ProviderName(database.Provider), StringComparison.Ordinal)
+            return string.Equals(descriptor.SelectedProvider, "PostgreSQL", StringComparison.Ordinal)
                 ? await CompletedInitializationAsync(database, descriptor.InstanceId, operationId, cancellationToken).ConfigureAwait(false)
                 : BootstrapInitializationResult.Rejected;
         }
@@ -49,7 +48,7 @@ public sealed class BootstrapInitializationService(
             return BootstrapInitializationResult.Invalid("Display name, email, password, and tenant name are required.");
         }
 
-        if (!string.Equals(descriptor.SelectedProvider, ProviderName(database.Provider), StringComparison.Ordinal))
+        if (!string.Equals(descriptor.SelectedProvider, "PostgreSQL", StringComparison.Ordinal))
         {
             // The descriptor is the source of truth once setup has been claimed. A configuration
             // change at this point is recovery work, never an implicit provider migration.
@@ -60,8 +59,8 @@ public sealed class BootstrapInitializationService(
         try
         {
             await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-            var applicationOptions = CreateApplicationOptions(database, connection);
-            var identityDbOptions = CreateIdentityOptions(database, connection);
+            var applicationOptions = CreateApplicationOptions(connection);
+            var identityDbOptions = CreateIdentityOptions(connection);
             await using var application = new OrchestratorDbContext(applicationOptions);
             await using var identity = new NetRatelIdentityDbContext(identityDbOptions);
             await using var transaction = await identity.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
@@ -157,7 +156,7 @@ public sealed class BootstrapInitializationService(
         try
         {
             await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-            await using var identity = new NetRatelIdentityDbContext(CreateIdentityOptions(database, connection));
+            await using var identity = new NetRatelIdentityDbContext(CreateIdentityOptions(connection));
             var user = await identity.Users.SingleOrDefaultAsync(
                 candidate => candidate.NormalizedEmail == normalizedEmail.ToUpperInvariant(), cancellationToken).ConfigureAwait(false);
             if (user is null || !user.IsInstanceAdministrator)
@@ -189,46 +188,25 @@ public sealed class BootstrapInitializationService(
     }
 
     private static DbConnection CreateConnection(NetRatelDatabaseConfiguration database) =>
-        database.Provider is NetRatelDatabaseProvider.Sqlite
-            ? new SqliteConnection(database.ConnectionString)
-            : new NpgsqlConnection(database.ConnectionString);
+        new NpgsqlConnection(database.ConnectionString);
 
     private static DbContextOptions<OrchestratorDbContext> CreateApplicationOptions(
-        NetRatelDatabaseConfiguration database,
         DbConnection connection)
     {
         var builder = new DbContextOptionsBuilder<OrchestratorDbContext>();
-        if (database.Provider is NetRatelDatabaseProvider.Sqlite)
-        {
-            builder.UseSqlite(connection, sqlite => sqlite.MigrationsAssembly("NetRatel.SqliteMigrations"));
-        }
-        else
-        {
-            builder.UseNpgsql(connection, postgres => postgres.MigrationsAssembly("NetRatel.Migrations"));
-        }
+        builder.UseNpgsql(connection, postgres => postgres.MigrationsAssembly("NetRatel.Migrations"));
 
         return builder.Options;
     }
 
     private static DbContextOptions<NetRatelIdentityDbContext> CreateIdentityOptions(
-        NetRatelDatabaseConfiguration database,
         DbConnection connection)
     {
         var builder = new DbContextOptionsBuilder<NetRatelIdentityDbContext>();
-        if (database.Provider is NetRatelDatabaseProvider.Sqlite)
-        {
-            builder.UseSqlite(connection, sqlite => sqlite.MigrationsAssembly("NetRatel.SqliteMigrations"));
-        }
-        else
-        {
-            builder.UseNpgsql(connection, postgres => postgres.MigrationsAssembly("NetRatel.Migrations"));
-        }
+        builder.UseNpgsql(connection, postgres => postgres.MigrationsAssembly("NetRatel.Migrations"));
 
         return builder.Options;
     }
-
-    private static string ProviderName(NetRatelDatabaseProvider provider) =>
-        provider is NetRatelDatabaseProvider.Sqlite ? "SQLite" : "PostgreSQL";
 
     private static async Task<BootstrapInitializationResult> CompletedInitializationAsync(
         NetRatelDatabaseConfiguration database,
@@ -240,7 +218,7 @@ public sealed class BootstrapInitializationService(
         try
         {
             await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-            await using var application = new OrchestratorDbContext(CreateApplicationOptions(database, connection));
+            await using var application = new OrchestratorDbContext(CreateApplicationOptions(connection));
             var completed = await application.BootstrapInitializations.AsNoTracking().SingleOrDefaultAsync(record =>
                 record.Id == BootstrapInitializationRecord.SingletonId &&
                 record.BootstrapInstanceId == instanceId &&
