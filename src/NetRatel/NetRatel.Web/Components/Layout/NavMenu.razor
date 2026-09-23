@@ -96,12 +96,20 @@
         }
         try
         {
-            _branding = await BrandingApi.GetPublicAsync();
+            ApplyBranding(await BrandingApi.GetPublicAsync());
         }
         catch (HttpRequestException exception)
         {
             // Preserve approved built-in presentation if the API is temporarily unavailable.
             Logger.LogDebug(exception, "Could not read public deployment branding while loading navigation.");
+        }
+    }
+
+    private void ApplyBranding(EffectiveDeploymentBranding candidate)
+    {
+        if (_branding is null || candidate.Version >= _branding.Version)
+        {
+            _branding = candidate;
         }
     }
 

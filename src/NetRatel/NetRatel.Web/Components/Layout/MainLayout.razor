@@ -155,12 +155,24 @@
         _appBarVersion = AppBarVersionResolver.ResolveDetails(Configuration, typeof(MainLayout).Assembly);
         try
         {
-            _branding = await BrandingApi.GetPublicAsync();
+            ApplyBranding(await BrandingApi.GetPublicAsync());
         }
         catch (HttpRequestException exception)
         {
             // A transient branding read must never hide the authenticated shell.
             Logger.LogDebug(exception, "Could not read public deployment branding while loading the application shell.");
+        }
+    }
+
+    private void ApplyBranding(EffectiveDeploymentBranding candidate)
+    {
+        // Interactive rendering can overlap an earlier prerendered public
+        // branding request. The persisted version is monotonic, so an older
+        // response must never replace a name or asset already observed by the
+        // authenticated shell.
+        if (_branding is null || candidate.Version >= _branding.Version)
+        {
+            _branding = candidate;
         }
     }
 

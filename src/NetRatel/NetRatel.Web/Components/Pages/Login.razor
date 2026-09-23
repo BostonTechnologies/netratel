@@ -134,7 +134,7 @@
         _requiresTwoFactor = LocalMfa;
         try
         {
-            _branding = await BrandingApi.GetPublicAsync();
+            ApplyBranding(await BrandingApi.GetPublicAsync());
         }
         catch (HttpRequestException exception)
         {
@@ -166,6 +166,14 @@
         if (authState.User.Identity?.IsAuthenticated == true)
         {
             Nav.NavigateTo("/", forceLoad: true);
+        }
+    }
+
+    private void ApplyBranding(EffectiveDeploymentBranding candidate)
+    {
+        if (_branding is null || candidate.Version >= _branding.Version)
+        {
+            _branding = candidate;
         }
     }
 
