@@ -1395,3 +1395,94 @@ html[data-netratel-theme="light"] .netratel-login-panel {
         padding: 64px 16px max(24px, env(safe-area-inset-bottom));
     }
 }
+
+/* MudBlazor renders its component elements without a Razor CSS isolation
+   attribute. Keep these page-specific classes here so the cards and dialogs
+   are styled in the rendered DOM. */
+.netratel-setup-command code {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    user-select: all;
+}
+
+.security-page {
+    max-width: 1080px;
+    padding-block: 2rem 3rem;
+}
+
+.security-card {
+    min-height: 200px;
+    height: 100%;
+    padding: 1.5rem;
+    border: 1px solid var(--mud-palette-lines-default);
+    border-radius: 12px;
+}
+
+.security-card .mud-stack {
+    height: 100%;
+}
+
+.security-dialog {
+    min-width: min(420px, calc(100vw - 3rem));
+    max-width: 520px;
+}
+
+.security-qr {
+    display: flex;
+    justify-content: center;
+}
+
+.security-qr img {
+    width: min(220px, 100%);
+    aspect-ratio: 1;
+    background: white;
+    padding: .5rem;
+}
+
+.integration-page {
+    max-width: 1100px;
+    padding-block: 2rem 3rem;
+}
+
+.integration-empty,
+.integration-row {
+    border: 1px solid var(--mud-palette-lines-default);
+    border-radius: 12px;
+    padding: 1.25rem 1.5rem;
+}
+
+.integration-empty {
+    padding-block: 3rem;
+    text-align: center;
+}
+
+.integration-dialog {
+    width: min(620px, calc(100vw - 3rem));
+    max-height: min(70vh, 720px);
+    overflow-y: auto;
+}
+
+.integration-access-group {
+    padding: 1rem;
+    border: 1px solid var(--mud-palette-lines-default);
+    border-radius: 8px;
+}
+
+.integration-description {
+    display: block;
+    margin: -.5rem 0 .5rem 2.1rem;
+}
+
+.integration-id {
+    color: var(--mud-palette-text-secondary);
+    overflow-wrap: anywhere;
+}
+
+@media (max-width: 600px) {
+    .integration-header,
+    .integration-row-head {
+        align-items: flex-start !important;
+        flex-direction: column !important;
+        gap: .75rem;
+    }
+}

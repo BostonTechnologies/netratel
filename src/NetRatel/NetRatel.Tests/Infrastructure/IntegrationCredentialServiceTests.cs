@@ -1,5 +1,7 @@
 using FluentAssertions;
+using System.Security.Claims;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using NetRatel.Infrastructure.Identity;
 using NetRatel.Infrastructure.Identity.Authorization;
 using Xunit;
@@ -9,6 +11,57 @@ namespace NetRatel.Tests.Infrastructure;
 [Collection(PostgreSqlPersistenceCollection.Name)]
 public sealed class IntegrationCredentialServiceTests(PostgreSqlPersistenceFixture postgres)
 {
+    [Fact]
+    public async Task One_credential_persists_multiple_independent_tenant_grants_and_discovery_stays_scoped()
+    {
+        await using var db = await CreateDbAsync();
+        db.Users.Add(new LocalUser { Id = "local-owner", UserName = "owner", PrincipalId = "principal-a", IsEnabled = true, IsInstanceAdministrator = true });
+        await db.SaveChangesAsync();
+        var service = new IntegrationCredentialService(db);
+        var created = await service.CreateAsync("principal-a", new(
+            "Scoped automation", IntegrationCredentialPurpose.Api, DateTimeOffset.UtcNow.AddDays(7),
+            [new(7, NetRatelPermissions.TelemetryRead), new(7, NetRatelPermissions.FileRead),
+                new(7, NetRatelPermissions.ScriptExecute), new(8, NetRatelPermissions.FileWrite)]));
+        var principal = new ClaimsPrincipal(new ClaimsIdentity([
+            new Claim("netratel_principal_id", "principal-a"),
+            new Claim("netratel_integration_credential_id", created.CredentialId)], "integration"));
+        var access = new EffectiveAccessService(db, new ConfigurationBuilder().Build());
+
+        (await service.ListAsync("principal-a")).Single().Grants.Should().HaveCount(4);
+        (await access.AuthorizeAsync(principal, NetRatelPermissions.TelemetryRead, 7)).Should().BeTrue();
+        (await access.AuthorizeAsync(principal, NetRatelPermissions.FileRead, 7)).Should().BeTrue();
+        (await access.AuthorizeAsync(principal, NetRatelPermissions.ScriptExecute, 7)).Should().BeTrue();
+        (await access.AuthorizeAsync(principal, NetRatelPermissions.FileWrite, 8)).Should().BeTrue();
+        (await access.AuthorizeAsync(principal, NetRatelPermissions.FileWrite, 7)).Should().BeFalse();
+        (await access.AuthorizeAsync(principal, NetRatelPermissions.TelemetryRead, 8)).Should().BeFalse();
+        (await access.GetAuthorizedTenantIdsAsync(principal, NetRatelPermissions.TelemetryRead)).Should().Equal(7);
+        (await access.GetAuthorizedTenantIdsAsync(principal, NetRatelPermissions.FileWrite)).Should().Equal(8);
+
+        db.Users.Single().IsEnabled = false;
+        await db.SaveChangesAsync();
+        (await access.AuthorizeAsync(principal, NetRatelPermissions.TelemetryRead, 7)).Should().BeFalse();
+        (await access.GetAuthorizedTenantIdsAsync(principal, NetRatelPermissions.TelemetryRead)).Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData("what ?")]
+    [InlineData("/mcp")]
+    [InlineData("http://mcp.example.test/mcp")]
+    [InlineData("https://user:pass@mcp.example.test/mcp")]
+    [InlineData("https://mcp.example.test/mcp?test=1")]
+    [InlineData("https://mcp.example.test/other")]
+    public async Task Invalid_http_mcp_resource_cannot_create_a_credential(string resource)
+    {
+        await using var db = await CreateDbAsync();
+        var service = new IntegrationCredentialService(db);
+        var create = () => service.CreateAsync("principal-a", new(
+            "Invalid URL", IntegrationCredentialPurpose.HttpMcp, DateTimeOffset.UtcNow.AddDays(7),
+            [new(7, NetRatelPermissions.TelemetryRead)], resource));
+
+        await create.Should().ThrowAsync<ArgumentException>();
+        (await db.IntegrationCredentials.CountAsync()).Should().Be(0);
+    }
+
     [Fact]
     public async Task Credential_is_one_way_purpose_bound_and_revocable()
     {

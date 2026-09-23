@@ -109,7 +109,7 @@ public static class McpLocalDelegationEndpoints
             (authenticationOnly && (!string.Equals(candidate.Tool, "netratel_gateway", StringComparison.Ordinal) ||
                                     !string.Equals(candidate.Operation, "authenticate", StringComparison.Ordinal))) ||
             string.IsNullOrWhiteSpace(candidate.Resource) ||
-            !string.Equals(candidate.Resource, http.User.FindFirstValue("integration_credential_resource"), StringComparison.Ordinal))
+            !NetRatel.Shared.Connectivity.McpResourceUri.Equivalent(candidate.Resource, http.User.FindFirstValue("integration_credential_resource")))
         {
             return false;
         }
