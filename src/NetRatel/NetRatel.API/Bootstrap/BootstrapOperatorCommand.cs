@@ -6,13 +6,24 @@ public static class BootstrapOperatorCommand
     public const string ShowCode = "--show-setup-code";
     public const string Status = "--setup-status";
     public const string RotateCode = "--rotate-setup-code";
+    public const string Help = "--help";
 
     public static bool IsSupported(string[] args) =>
-        args is [ShowCode] or [Status] or [RotateCode];
+        args is [ShowCode] or [Status] or [RotateCode] or [Help];
 
     public static async Task<int> RunAsync(string command, BootstrapOptions options, TextWriter output, TextWriter error,
         CancellationToken cancellationToken = default)
     {
+        if (command == Help)
+        {
+            await output.WriteLineAsync("NetRatel API operator commands:").ConfigureAwait(false);
+            await output.WriteLineAsync("  --setup-status       Show lifecycle and code availability without revealing the code.").ConfigureAwait(false);
+            await output.WriteLineAsync("  --show-setup-code    Display the usable one-time setup code to this trusted console.").ConfigureAwait(false);
+            await output.WriteLineAsync("  --rotate-setup-code  Rotate an unclaimed, generated setup code.").ConfigureAwait(false);
+            await output.WriteLineAsync("  --initialize-unattended and --recover-local-admin require protected deployment inputs.").ConfigureAwait(false);
+            return 0;
+        }
+
         var store = new BootstrapStateStore(options);
         if (command == RotateCode)
         {

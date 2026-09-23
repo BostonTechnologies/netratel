@@ -16,11 +16,7 @@
                 <MudText Typo="Typo.body2">Confirm control of this deployment, then create the first local administrator and tenant.</MudText>
             </header>
 
-            @if (_loading)
-            {
-                <MudProgressCircular Indeterminate="true" Color="Color.Primary" />
-            }
-            else if (_recovery)
+            @if (_recovery)
             {
                 <MudAlert Severity="Severity.Error">This installation needs recovery. Restore the matching database, bootstrap state, and key material before restarting it. Setup will not create a replacement owner.</MudAlert>
             }
@@ -32,6 +28,13 @@
             else if (!_claimed)
             {
                 <MudAlert Severity="Severity.Info">The setup code is deployment-controlled. Retrieve it from the API host; it is never shown in logs or stored by this browser.</MudAlert>
+                <MudExpansionPanels Elevation="0"><MudExpansionPanel Text="Where do I get the setup code?">
+                    <MudText Typo="Typo.body2">In the API container console, run:</MudText>
+                    <MudPaper Class="pa-2 my-2 netratel-setup-command"><code>cat /var/netratel/bootstrap/setup-proof</code></MudPaper>
+                    <MudText Typo="Typo.body2">For the extracted image bundle, run this on the Docker host:</MudText>
+                    <MudPaper Class="pa-2 my-2 netratel-setup-command"><code>docker compose --env-file .env -f compose.images.yaml exec -T api cat /var/netratel/bootstrap/setup-proof</code></MudPaper>
+                    <MudText Typo="Typo.caption">The code is used once. Afterwards, sign in with the email and passphrase you choose here. If the file is missing, run <code>dotnet NetRatel.API.dll --setup-status</code> in the API container.</MudText>
+                </MudExpansionPanel></MudExpansionPanels>
                 <label for="setup-proof">Setup code</label>
                 <input id="setup-proof" class="mud-input-slot mud-input-root mud-input-root-text mud-input-root-adorned-end mud-input-root-margin-dense" type="password" autocomplete="one-time-code" required data-testid="setup-proof" />
                 <button type="button" class="mud-button-root mud-button mud-button-filled mud-button-filled-primary mud-button-filled-size-medium mud-ripple" data-netratel-setup-action="claim" data-testid="setup-claim">Unlock setup</button>
@@ -68,9 +71,7 @@
 
 @code {
     // Keep the initial server-rendered frame actionable. The setup status refresh
-    // reconciles this conservative unclaimed state once it completes, but a cold
-    // browser must not see an empty loading card until Blazor hydrates.
-    private bool _loading;
+    // reconciles this conservative unclaimed state once it completes.
     private bool _claimed;
     private bool _ready;
     private bool _recovery;

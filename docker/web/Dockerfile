@@ -1,18 +1,12 @@
 # --- Base runtime image
 FROM mcr.microsoft.com/dotnet/aspnet:10.0-noble AS base
 
-# Stable app user; make creation idempotent so rebuilds don't fail
+# Retain the .NET base image's app UID/GID for rc.5 volume continuity.
 ARG APP_USER=app
-ARG APP_UID=2000
-ARG APP_GID=2000
-RUN set -eux; \
-    if ! getent group "${APP_USER}" >/dev/null; then \
-        groupadd -g "${APP_GID}" "${APP_USER}" || groupadd "${APP_USER}"; \
-    fi; \
-    if ! id -u "${APP_USER}" >/dev/null 2>&1; then \
-        useradd -u "${APP_UID}" -g "${APP_USER}" -s /usr/sbin/nologin -m "${APP_USER}" || \
-        useradd -g "${APP_USER}" -s /usr/sbin/nologin -m "${APP_USER}"; \
-    fi
+ARG APP_UID=1654
+ARG APP_GID=1654
+RUN test "$(id -u "${APP_USER}")" = "${APP_UID}" \
+ && test "$(id -g "${APP_USER}")" = "${APP_GID}"
 
 # DataProtection keys dir. DEV mounts this path as the durable cookie key ring.
 ENV NetRatel_KEYS_DIR=/var/netratel/keys \

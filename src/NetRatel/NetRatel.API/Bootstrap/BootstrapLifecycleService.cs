@@ -35,10 +35,30 @@ public sealed class BootstrapLifecycleService
         var connectionString = _configuration.GetConnectionString("NetRatelDb") ?? _configuration.GetConnectionString("Default");
         if (IsPlaceholder(connectionString))
         {
+            if (descriptor.State == BootstrapState.Ready && !descriptor.AdoptedExistingInstallation && authenticationMode != "Oidc")
+                return await _store.UpdateAsync(current => current with { State = BootstrapState.RecoveryRequired, RecoveryReason = "configured-storage-missing" },
+                    "configured-storage-missing", cancellationToken).ConfigureAwait(false);
             return descriptor;
         }
 
         var database = NetRatelDatabaseConfigurationResolver.Resolve(_configuration);
+
+        if (descriptor.State == BootstrapState.Ready && !descriptor.AdoptedExistingInstallation && authenticationMode != "Oidc")
+        {
+            try
+            {
+                if (await HasCompletedInitializationAsync(database, descriptor, cancellationToken).ConfigureAwait(false))
+                    return descriptor;
+            }
+            catch (Exception ex) when (ex is NpgsqlException or TimeoutException or InvalidOperationException)
+            {
+                return await _store.UpdateAsync(current => current with { State = BootstrapState.RecoveryRequired, RecoveryReason = "configured-storage-unavailable" },
+                    "ready-storage-unavailable", cancellationToken).ConfigureAwait(false);
+            }
+
+            return await _store.UpdateAsync(current => current with { State = BootstrapState.RecoveryRequired, RecoveryReason = "ready-continuity-missing" },
+                "ready-continuity-missing", cancellationToken).ConfigureAwait(false);
+        }
 
         if (CanReconcileCompletedInitialization(descriptor))
         {
@@ -198,7 +218,7 @@ public sealed class BootstrapLifecycleService
     private static bool CanReconcileCompletedInitialization(BootstrapDescriptor descriptor) =>
         descriptor.State == BootstrapState.Configuring ||
         (descriptor.State == BootstrapState.RecoveryRequired &&
-         string.Equals(descriptor.RecoveryReason, "configuration-lease-expired", StringComparison.Ordinal));
+         descriptor.RecoveryReason is "configuration-lease-expired" or "configured-storage-unavailable" or "ready-continuity-missing" or "configured-storage-missing");
 
     private static async Task<bool> HasCompletedInitializationAsync(
         NetRatelDatabaseConfiguration database,

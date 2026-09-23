@@ -15,6 +15,14 @@ services:
       timeout: 5s
       retries: 20
 
+  volume-init:
+    image: alpine:3.22
+    user: "0:0"
+    command: ["sh", "-ceu", "chown -R 1654:1654 /var/netratel && chmod 700 /var/netratel/keys"]
+    volumes:
+      - api-data:/var/netratel
+      - web-keys:/var/netratel/keys
+
   api:
     build:
       context: .
@@ -25,6 +33,7 @@ services:
       ConnectionStrings__NetRatelDb: Host=postgres;Port=5432;Database=${POSTGRES_DB:-netratel};Username=${POSTGRES_USER:-netratel};Password=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
       DataProtection__KeysDirectory: /var/netratel/keys
       Authentication__MachineToken__Enabled: "false"
+      Authentication__Mode: ${NETRATEL_AUTHENTICATION_MODE:-Auto}
       # This source profile binds Web to loopback by default. Production ingress
       # uses HTTPS and must omit this localhost-only setting.
       Authentication__Local__AllowInsecureLocalhost: "${NETRATEL_ALLOW_INSECURE_LOCALHOST:-true}"
@@ -38,6 +47,8 @@ services:
       postgres:
         condition: service_healthy
       migrations:
+        condition: service_completed_successfully
+      volume-init:
         condition: service_completed_successfully
     volumes:
       - api-data:/var/netratel
@@ -65,6 +76,7 @@ services:
       ApiBaseUrl: http://api:9222
       NetRatel_KEYS_DIR: /var/netratel/keys
       Authentication__MachineToken__Enabled: "false"
+      Authentication__Mode: ${NETRATEL_AUTHENTICATION_MODE:-Auto}
       Authentication__Local__AllowInsecureLocalhost: "${NETRATEL_ALLOW_INSECURE_LOCALHOST:-true}"
       Authentication__Oidc__Authority: ${OIDC_AUTHORITY:-}
       Authentication__Oidc__ClientId: ${OIDC_CLIENT_ID:-}

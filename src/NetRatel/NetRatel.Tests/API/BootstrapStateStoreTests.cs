@@ -8,6 +8,19 @@ namespace NetRatel.Tests.API;
 public sealed class BootstrapStateStoreTests
 {
     [Fact]
+    public async Task Operator_help_lists_supported_commands_without_creating_state()
+    {
+        await using var fixture = await BootstrapFixture.CreateAsync();
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+
+        BootstrapOperatorCommand.IsSupported([BootstrapOperatorCommand.Help]).Should().BeTrue();
+        (await BootstrapOperatorCommand.RunAsync(BootstrapOperatorCommand.Help, fixture.Options, output, error)).Should().Be(0);
+        output.ToString().Should().Contain("--setup-status").And.Contain("--show-setup-code").And.Contain("--rotate-setup-code");
+        Directory.Exists(fixture.Options.StateDirectory).Should().BeFalse();
+    }
+
+    [Fact]
     public async Task Operator_status_does_not_create_an_installation_or_disclose_a_code()
     {
         await using var fixture = await BootstrapFixture.CreateAsync();

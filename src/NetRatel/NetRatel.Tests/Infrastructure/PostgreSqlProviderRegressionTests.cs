@@ -68,14 +68,36 @@ public sealed class PostgreSqlProviderRegressionTests(PostgreSqlPersistenceFixtu
 
             var originalStamp = user.SecurityStamp;
             var originalRevision = user.AuthorizationRevision;
+            var credentialService = new IntegrationCredentialService(verifyIdentity);
+            var credential = await credentialService.CreateAsync(user.PrincipalId, new IntegrationCredentialCreateRequest(
+                "Before recovery", IntegrationCredentialPurpose.Api, DateTimeOffset.UtcNow.AddDays(7),
+                [new IntegrationCredentialGrantRequest(initialized.TenantId!.Value, NetRatelPermissions.TelemetryRead)]));
+            (await credentialService.VerifyAsync(credential.Secret, IntegrationCredentialPurpose.Api)).Should().NotBeNull();
+            user.LockoutEnd = DateTimeOffset.UtcNow.AddDays(1);
+            user.AccessFailedCount = 5;
+            user.TwoFactorEnabled = true;
+            await verifyIdentity.SaveChangesAsync();
             (await initializer.RecoverAdministratorAsync("admin@example.test", "a recovered local passphrase")).Succeeded.Should().BeTrue();
             await verifyIdentity.Entry(user).ReloadAsync();
             user.SecurityStamp.Should().NotBe(originalStamp);
             user.AuthorizationRevision.Should().Be(originalRevision + 1);
             user.TwoFactorEnabled.Should().BeFalse();
+            user.LockoutEnd.Should().BeNull();
+            user.AccessFailedCount.Should().Be(0);
+            (await credentialService.VerifyAsync(credential.Secret, IntegrationCredentialPurpose.Api)).Should().BeNull();
+            (await verifyIdentity.IntegrationCredentials.CountAsync(value => value.RevokedAtUtc != null)).Should().Be(1);
             new PasswordHasher<LocalUser>().VerifyHashedPassword(user, user.PasswordHash!, "a recovered local passphrase")
                 .Should().Be(PasswordVerificationResult.Success);
             (await initializer.RecoverAdministratorAsync("not-an-admin@example.test", "another recovered passphrase")).Succeeded.Should().BeFalse();
+
+            var lifecycle = new BootstrapLifecycleService(store, configuration);
+            (await lifecycle.InitializeAsync()).State.Should().Be(BootstrapState.Ready);
+            verifyApplication.BootstrapInitializations.Remove(initialization);
+            await verifyApplication.SaveChangesAsync();
+            var partialReset = await lifecycle.InitializeAsync();
+            partialReset.State.Should().Be(BootstrapState.RecoveryRequired);
+            partialReset.RecoveryReason.Should().Be("ready-continuity-missing");
+            (await lifecycle.ClaimSetupAsync(proof)).Succeeded.Should().BeFalse();
         }
         finally
         {

@@ -138,7 +138,8 @@ public sealed class BootstrapInitializationService(
     /// <summary>
     /// Performs deployment-authorized recovery for an existing instance administrator. This is
     /// deliberately separate from first-run setup: it cannot create an account or change scopes.
-    /// Rotating both session fences makes every prior local browser session fail revalidation.
+    /// Rotating both session fences makes prior local browser sessions fail revalidation;
+    /// credentials owned by that administrator are revoked in the same transaction.
     /// </summary>
     public async Task<BootstrapInitializationResult> RecoverAdministratorAsync(
         string? email,
@@ -157,6 +158,7 @@ public sealed class BootstrapInitializationService(
         {
             await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
             await using var identity = new NetRatelIdentityDbContext(CreateIdentityOptions(connection));
+            await using var transaction = await identity.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
             var user = await identity.Users.SingleOrDefaultAsync(
                 candidate => candidate.NormalizedEmail == normalizedEmail.ToUpperInvariant(), cancellationToken).ConfigureAwait(false);
             if (user is null || !user.IsInstanceAdministrator)
@@ -175,10 +177,18 @@ public sealed class BootstrapInitializationService(
             user.PasswordHash = passwordHasher.HashPassword(user, password);
             user.IsEnabled = true;
             user.DisabledAtUtc = null;
+            user.LockoutEnd = null;
+            user.AccessFailedCount = 0;
             user.TwoFactorEnabled = false;
             user.SecurityStamp = Guid.NewGuid().ToString("N");
             user.AuthorizationRevision++;
             await identity.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            await identity.IntegrationCredentials
+                .Where(credential => credential.OwnerPrincipalId == user.PrincipalId && credential.RevokedAtUtc == null)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(
+                    credential => credential.RevokedAtUtc, DateTimeOffset.UtcNow), cancellationToken)
+                .ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             return BootstrapInitializationResult.Recovered(user.Id);
         }
         catch (DbException)
