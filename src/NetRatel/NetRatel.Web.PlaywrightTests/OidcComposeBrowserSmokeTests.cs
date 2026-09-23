@@ -148,7 +148,7 @@ public sealed class OidcComposeBrowserSmokeTests
     private static async Task AssertProductVersionBadgesAsync(IPage page)
     {
         var expectedVersion = Environment.GetEnvironmentVariable("NETRATEL_BROWSER_SMOKE_EXPECTED_VERSION")
-            ?? "v0.1.0-rc.4";
+            ?? "v0.1.0-rc.5";
 
         await page.ReloadAsync(new PageReloadOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
         await page.SetViewportSizeAsync(1440, 900);

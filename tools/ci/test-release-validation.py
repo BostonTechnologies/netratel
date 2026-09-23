@@ -217,8 +217,8 @@ class DistributionTests(unittest.TestCase):
             },
         )
         self.assertEqual(
-            self.promotion.release_image_tag("api", "0.1.0-rc.4"),
-            "ghcr.io/bostontechnologies/netratel-api:0.1.0-rc.4",
+            self.promotion.release_image_tag("api", "0.1.0-rc.5"),
+            "ghcr.io/bostontechnologies/netratel-api:0.1.0-rc.5",
         )
         inventory = {
             package: {"name": package, "visibility": "public",

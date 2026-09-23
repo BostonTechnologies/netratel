@@ -44,7 +44,7 @@ asset replacement, package-visibility mutation, and repository-rule bypass.
 
 ### Runtime and persistence
 
-- .NET SDK is pinned to `10.0.401`; root product version is `0.1.0-rc.4` in
+- .NET SDK is pinned to `10.0.401`; root product version is `0.1.0-rc.5` in
   `Directory.Build.props` and `release/release-manifest.json`.
 - `AddNetRatelInfrastructure` currently requires
   `ConnectionStrings:NetRatelDb` or `Default` and unconditionally calls
