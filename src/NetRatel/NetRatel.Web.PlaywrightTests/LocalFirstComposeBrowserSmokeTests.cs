@@ -309,13 +309,14 @@ public sealed class LocalFirstComposeBrowserSmokeTests
 
         await page.SetViewportSizeAsync(1440, 900);
         await page.GotoAsync(webUrl.ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
-        var applicationBrand = page.Locator(".netratel-appbar-brand img");
+        var applicationBrand = page.Locator(".netratel-nav-brand img");
         await applicationBrand.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
-        await page.WaitForFunctionAsync("() => document.querySelector('.netratel-appbar-brand img')?.getAttribute('alt') === 'Browser branding example'");
+        await page.WaitForFunctionAsync("() => document.querySelector('.netratel-nav-brand img')?.getAttribute('alt') === 'Browser branding example'");
         // Let any overlapping prerender/interactive branding read complete. A
         // stale response must not revert the accepted persisted presentation.
         await page.WaitForTimeoutAsync(500);
         Assert.Equal("Browser branding example", await applicationBrand.GetAttributeAsync("alt"));
+        Assert.Equal(0, await page.Locator(".netratel-appbar-brand").CountAsync());
     }
 
     private static async Task<string> CreateIntegrationCredentialAsync(

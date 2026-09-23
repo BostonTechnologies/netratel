@@ -91,21 +91,6 @@ a, .btn-link {
     min-width: 0;
 }
 
-.netratel-appbar-brand {
-    display: inline-flex;
-    align-items: center;
-    margin-left: 4px;
-    min-width: 0;
-}
-
-.netratel-appbar-brand img {
-    display: block;
-    width: 132px;
-    height: auto;
-    max-height: 44px;
-    object-fit: contain;
-}
-
 .netratel-appbar-actions {
     justify-content: flex-end;
     gap: 4px;
@@ -226,10 +211,6 @@ a, .btn-link {
         min-width: 0;
         grid-template-columns: auto minmax(0, 1fr);
         padding: 0 10px;
-    }
-
-    .netratel-appbar-brand {
-        display: none;
     }
 
     .netratel-appbar-search span {
@@ -1307,12 +1288,12 @@ code,
 }
 
 .netratel-login-page {
-    place-items: center end;
-    padding: clamp(88px, 13vh, 140px) clamp(32px, 7vw, 132px) 32px 16px;
+    place-items: center;
+    padding: 72px 16px max(72px, env(safe-area-inset-bottom));
 }
 
 .netratel-login-panel {
-    width: min(100%, 392px);
+    width: min(100%, 420px);
     min-height: 0;
     border: 1px solid rgba(135, 226, 255, 0.22);
     border-radius: 16px;
@@ -1387,7 +1368,7 @@ html[data-netratel-theme="light"] .netratel-login-panel {
 
     .netratel-login-page {
         place-items: center;
-        padding: clamp(72px, 12vh, 108px) 24px 32px;
+        padding: 72px 24px;
     }
 }
 
@@ -1398,12 +1379,19 @@ html[data-netratel-theme="light"] .netratel-login-panel {
     }
 
     .netratel-login-page {
-        align-items: start;
-        padding: 72px 16px max(24px, env(safe-area-inset-bottom));
+        align-items: center;
+        padding: 72px 16px max(72px, env(safe-area-inset-bottom));
     }
 
     .netratel-login-panel {
-        width: min(100%, 392px);
+        width: min(100%, 420px);
         padding: 22px 20px 24px;
+    }
+}
+
+@media (max-height: 680px) {
+    .netratel-login-page {
+        align-items: start;
+        padding: 64px 16px max(24px, env(safe-area-inset-bottom));
     }
 }

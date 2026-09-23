@@ -92,7 +92,7 @@ public sealed class OidcComposeBrowserSmokeTests
         foreach (var theme in new[] { "light", "dark" })
         {
             await SetThemeAndReloadAsync(page, theme);
-            foreach (var (width, height, name) in new[] { (1440, 900, "desktop"), (390, 844, "mobile") })
+            foreach (var (width, height, name) in new[] { (1440, 900, "desktop"), (768, 900, "tablet"), (390, 844, "mobile") })
             {
                 await page.SetViewportSizeAsync(width, height);
                 await page.Locator("img[src*='brand/']").First.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
@@ -115,6 +115,8 @@ public sealed class OidcComposeBrowserSmokeTests
                     Assert.True(await signIn.IsVisibleAsync());
                     Assert.True(await signIn.IsEnabledAsync());
                     Assert.True(await page.EvaluateAsync<bool>("() => getComputedStyle(document.querySelector('.netratel-public-layout')).backgroundImage.includes('netratel-splash')"));
+                    Assert.True(await page.EvaluateAsync<bool>("() => { const bounds = document.querySelector('.netratel-login-panel').getBoundingClientRect(); return Math.abs((bounds.left + bounds.right) / 2 - innerWidth / 2) <= 12 && Math.abs((bounds.top + bounds.bottom) / 2 - innerHeight / 2) <= 16; }"),
+                        $"The login panel is not centered in the {name} viewport.");
                 }
                 else if (width < 800)
                 {
@@ -122,10 +124,14 @@ public sealed class OidcComposeBrowserSmokeTests
                     if (!await compactBrand.IsVisibleAsync())
                         await page.GetByTestId("navigation-toggle").ClickAsync();
                     await compactBrand.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+                    Assert.Equal(0, await page.Locator(".netratel-appbar-brand").CountAsync());
                 }
                 else
                 {
-                    Assert.True(await page.Locator(".netratel-appbar-brand img").IsVisibleAsync());
+                    Assert.True(await page.Locator(".netratel-nav-brand img").IsVisibleAsync());
+                    Assert.Equal(0, await page.Locator(".netratel-appbar-brand").CountAsync());
+                    foreach (var heading in new[] { "Command", "Estate", "Signals" })
+                        Assert.True(await page.Locator(".nav-section-heading", new PageLocatorOptions { HasText = heading }).IsVisibleAsync());
                 }
 
                 await page.ScreenshotAsync(new PageScreenshotOptions

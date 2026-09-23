@@ -20,12 +20,6 @@
                            OnClick="ToggleDrawer"
                            aria-label="Toggle navigation"
                            data-testid="navigation-toggle" />
-            <a class="netratel-appbar-brand" href="/" aria-label="@($"{ApplicationName} home")">
-                <img src="@LogoUrl(themePreference.IsDarkMode)"
-                     width="600"
-                     height="200"
-                     alt="@ApplicationName" />
-            </a>
         </div>
         <div class="netratel-appbar-search-wrap">
             <button type="button"
@@ -146,10 +140,6 @@
     private int? _hotkeyRegistrationId;
 
     private string ApplicationName => _branding?.ApplicationName.Value ?? "NetRatel";
-    private string LogoUrl(bool isDarkMode) => isDarkMode
-        ? _branding?.LogoDarkUrl.Value ?? "brand/netratel-wordmark-600.webp"
-        : _branding?.LogoLightUrl.Value ?? "brand/netratel-wordmark-600.webp";
-
     protected override async Task OnInitializedAsync()
     {
         _appBarVersion = AppBarVersionResolver.ResolveDetails(Configuration, typeof(MainLayout).Assembly);

@@ -2,14 +2,24 @@
     padding: 0.75rem 0.65rem 1rem;
 }
 
-.nav-section-label {
-    display: block;
-    margin: 1rem 0 0.35rem 0.75rem;
+.nav-section-heading {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+    margin: 1.1rem 0.75rem 0.4rem;
     color: var(--mud-palette-text-secondary);
     font-size: 0.68rem;
     font-weight: 700;
     letter-spacing: 0.05em;
     text-transform: uppercase;
+}
+
+.nav-section-heading::before,
+.nav-section-heading::after {
+    content: "";
+    flex: 1;
+    min-width: 0;
+    border-top: 1px solid var(--mud-palette-divider);
 }
 
 .nav-account-divider {
