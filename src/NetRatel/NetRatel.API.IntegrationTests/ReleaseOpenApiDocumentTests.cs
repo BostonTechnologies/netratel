@@ -45,6 +45,8 @@ public sealed class ReleaseOpenApiDocumentTests
         SecuritySchemes(document, "/api/v2/account/integration-credentials", "get")
             .Should().BeEquivalentTo(["Bearer", "LocalSession"]);
         SecuritySchemes(document, "/api/v1/client-artifacts", "get")
+            .Should().BeEquivalentTo(["Bearer", "LocalSession"]);
+        SecuritySchemes(document, "/api/v1/client-artifacts/{rid}/{version}/download", "get")
             .Should().BeEquivalentTo(["Agent", "Bearer", "LocalSession", "M2M"]);
         SecuritySchemes(document, "/api/v1/system/version", "get").Should().BeEmpty();
 
