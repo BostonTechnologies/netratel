@@ -9,6 +9,8 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
+from urllib.error import HTTPError
 import hashlib
 import tarfile
 import zipfile
@@ -264,6 +266,16 @@ class DistributionTests(unittest.TestCase):
         unlinked[self.promotion.PACKAGE_NAMES["api"]] = {"visibility": "public", "repository": None}
         with self.assertRaisesRegex(ValueError, "not linked"):
             self.promotion.validate_registry_packages(unlinked)
+
+    def test_public_registry_guard_rejects_existing_release_tag(self):
+        with patch.object(self.promotion, "public_registry_token", return_value=("bostontechnologies/netratel-api", "token")):
+            with patch.object(self.promotion.urllib.request, "urlopen"):
+                with self.assertRaisesRegex(ValueError, "already exists"):
+                    self.promotion.require_unused_release_tag("api", "0.1.0-rc.7")
+            missing = HTTPError("https://ghcr.io", 404, "Not Found", {}, None)
+            with patch.object(self.promotion.urllib.request, "urlopen", side_effect=missing):
+                self.promotion.require_unused_release_tag("api", "0.1.0-rc.7")
+            missing.close()
 
     def test_partial_or_placeholder_image_sets_cannot_finalize_a_bundle(self):
         with self.assertRaisesRegex(ValueError, "All five"):
