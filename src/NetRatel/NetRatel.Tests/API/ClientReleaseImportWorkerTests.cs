@@ -15,7 +15,12 @@ using Microsoft.Extensions.Options;
 using NetRatel.API.Models;
 using NetRatel.API.Services;
 using NetRatel.Akka.Configuration;
+using NetRatel.Application.Agents;
+using NetRatel.Application.Artifacts;
+using NetRatel.Application.Events;
+using NetRatel.Infrastructure.Artifacts;
 using NetRatel.Infrastructure.Persistence;
+using NetRatel.Infrastructure.Services;
 using Testcontainers.PostgreSql;
 using Xunit;
 
@@ -192,14 +197,20 @@ public sealed class ClientReleaseImportWorkerTests : IAsyncLifetime
             ChecksumsAsset = new GitHubReleaseEvidenceAsset(21, "SHA256SUMS",
                 new FileInfo(checksumsPath).Length, "sha256:" + await HashFileAsync(checksumsPath))
         };
-        var store = new RecordingArtifactStore();
         await using var services = new ServiceCollection()
             .AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Warning))
             .AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(_postgres.GetConnectionString()))
             .AddSingleton<TimeProvider>(TimeProvider.System)
             .AddSingleton<IGitHubClientReleaseCatalog>(new FixtureCatalog(release, commit))
-            .AddSingleton<IClientArtifactsService>(store)
+            .AddScoped<IClientArtifactsService, ClientArtifactsService>()
+            .AddScoped<IEnrollmentCodeIssueService, EnrollmentCodeIssueService>()
+            .AddSingleton<IArtifactZipInjectionService, ZipInjectionService>()
+            .AddSingleton<ITenantLookupService>(new FixtureTenantLookup())
+            .AddSingleton<IEventRecorder>(new NoopEventRecorder())
+            .AddSingleton<ICorrelationContext>(new FixtureCorrelationContext())
             .AddSingleton<IWebHostEnvironment>(new FixtureEnvironment(_storage))
+            .AddSingleton<IConfiguration>(new ConfigurationBuilder().Build())
+            .AddSingleton<IOptions<AgentAuthOptions>>(Options.Create(new AgentAuthOptions()))
             .AddSingleton<IOptions<ClientArtifactsOptions>>(Options.Create(new ClientArtifactsOptions { StorageRoot = _storage }))
             .AddScoped<GitHubClientAssetDownloader>(_ => new GitHubClientAssetDownloader(
                 new HttpClient(new FileAssetHandler(sourcePaths)) { Timeout = Timeout.InfiniteTimeSpan },
@@ -235,16 +246,33 @@ public sealed class ClientReleaseImportWorkerTests : IAsyncLifetime
             } while (operation.State is not (ClientReleaseImportState.Imported or ClientReleaseImportState.Failed));
 
             Assert.True(operation.State == ClientReleaseImportState.Imported, operation.Error);
-            Assert.True(store.Visible);
-            Assert.Equal(assets.Select(x => x.RuntimeId).OrderBy(x => x, StringComparer.Ordinal),
-                store.ImportedRuntimes.OrderBy(x => x, StringComparer.Ordinal));
+            await using var inspect = services.CreateAsyncScope();
+            var storedArtifacts = inspect.ServiceProvider.GetRequiredService<IClientArtifactsService>();
+            var visible = await storedArtifacts.ListAsync(null, 0, 20, timeout.Token);
+            Assert.Equal(assets.Count, visible.Items.Count);
             foreach (var asset in operation.Assets)
             {
                 Assert.Equal(ClientReleaseImportAssetState.Imported, asset.State);
-                Assert.Equal(store.Stored[asset.RuntimeId].Sha256, asset.LocalSha256);
-                Assert.Equal(store.Stored[asset.RuntimeId].Size, asset.LocalSizeBytes);
+                var metadata = await storedArtifacts.GetMetadataAsync(asset.RuntimeId, version, timeout.Token);
+                Assert.NotNull(metadata);
+                Assert.Equal(asset.LocalSha256, metadata.Sha256);
+                Assert.Equal(asset.LocalSizeBytes, metadata.Size);
+                var download = await storedArtifacts.DownloadRawAsync(asset.RuntimeId, version, timeout.Token);
+                await using var archive = download.Content;
+                Assert.Equal(asset.LocalSha256,
+                    Convert.ToHexString(await SHA256.HashDataAsync(archive, timeout.Token)).ToLowerInvariant());
                 Assert.Equal(assets.Single(x => x.RuntimeId == asset.RuntimeId).Sha256Digest,
                     "sha256:" + asset.SourceSha256);
+                using var metadataFile = JsonDocument.Parse(await File.ReadAllTextAsync(
+                    Path.Combine(_storage, asset.RuntimeId, version, "metadata.json"), timeout.Token));
+                var provenance = metadataFile.RootElement;
+                Assert.Equal("BostonTechnologies/netratel", provenance.GetProperty("sourceRepository").GetString());
+                Assert.Equal(release.Tag, provenance.GetProperty("sourceTag").GetString());
+                Assert.Equal(asset.SourceName, provenance.GetProperty("sourceAssetName").GetString());
+                Assert.Equal(asset.SourceSha256, provenance.GetProperty("sourceSha256").GetString());
+                Assert.Equal(commit, provenance.GetProperty("sourceCommit").GetString());
+                Assert.Equal(ClientReleaseArchiveAdapter.Contract,
+                    provenance.GetProperty("importAdapterContract").GetString());
             }
             await using var verify = new OrchestratorDbContext(_dbOptions);
             Assert.Empty(await verify.ClientUpdateReleases.ToListAsync());
@@ -372,6 +400,23 @@ public sealed class ClientReleaseImportWorkerTests : IAsyncLifetime
         public string EnvironmentName { get; set; } = "Development";
         public IFileProvider WebRootFileProvider { get; set; } = new NullFileProvider();
         public string WebRootPath { get; set; } = root;
+    }
+
+    private sealed class FixtureTenantLookup : ITenantLookupService
+    {
+        public Task<bool> TenantExistsAsync(int tenantId, CancellationToken ct = default) =>
+            Task.FromResult(tenantId > 0);
+    }
+
+    private sealed class NoopEventRecorder : IEventRecorder
+    {
+        public Task RecordAsync(DomainEvent domainEvent, CancellationToken ct = default) => Task.CompletedTask;
+    }
+
+    private sealed class FixtureCorrelationContext : ICorrelationContext
+    {
+        public string? Current => "published-client-pack";
+        public string GetOrCreate() => Current!;
     }
 
     private sealed class RecordingArtifactStore : IClientArtifactsService

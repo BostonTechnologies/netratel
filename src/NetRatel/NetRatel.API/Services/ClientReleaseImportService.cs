@@ -341,13 +341,17 @@ public sealed class ClientReleaseImportWorker(
                 asset.UpdatedAtUtc = clock.GetUtcNow();
                 await db.SaveChangesAsync(ct);
             }
+            // The terminal state is the browser's signal that every runtime can be
+            // downloaded. Make the pack visible first so an observer cannot see an
+            // imported operation while the visibility marker is still unwritten.
+            await CheckCancellationAsync(db, operation, ct);
+            await artifacts.CompleteImportVisibilityAsync(id, stoppingToken);
             operation.State = ClientReleaseImportState.Imported;
             operation.ImportedAtUtc = clock.GetUtcNow();
             operation.UpdatedAtUtc = operation.ImportedAtUtc.Value;
             operation.LeaseOwner = null;
             operation.LeaseUntilUtc = null;
             await db.SaveChangesAsync(ct);
-            await artifacts.CompleteImportVisibilityAsync(id, stoppingToken);
             Directory.Delete(work, recursive: true);
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)

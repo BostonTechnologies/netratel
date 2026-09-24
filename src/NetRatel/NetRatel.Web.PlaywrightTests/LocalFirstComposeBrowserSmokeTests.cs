@@ -504,6 +504,12 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         }
         await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Next" }).ClickAsync();
         if (name == "CI telemetry read") await AssertDialogLayoutAsync(page, "integration-access", captureSafeContent: true);
+        if (name == "CI telemetry read")
+        {
+            await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Back" }).ClickAsync();
+            Assert.Equal(name, await page.GetByTestId("credential-name").InputValueAsync());
+            await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Next" }).ClickAsync();
+        }
         await page.Locator($"[data-testid^='credential-permission-'][data-testid$='-{permission}']").First.ClickAsync();
         if (name == "CI telemetry read") await CaptureReviewScreenshotAsync(page, "integration-access-mobile");
         if (!string.IsNullOrWhiteSpace(instancePermission))
@@ -622,6 +628,9 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Next" }).ClickAsync();
         await page.GetByTestId("credential-error").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Cancel" }).ClickAsync();
+        await page.GetByTestId("open-create-integration").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        Assert.Equal("open-create-integration", await page.EvaluateAsync<string>(
+            "() => document.activeElement?.closest('[data-testid]')?.getAttribute('data-testid') ?? ''"));
     }
 
     private static async Task VerifyLocalAccountSecurityJourneyAsync(IBrowser browser, IPage page, Uri webUrl)
@@ -698,6 +707,8 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await page.GetByText("The current passphrase was not accepted, or the new one does not meet policy.").WaitForAsync(
             new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Cancel" }).ClickAsync();
+        Assert.Equal("open-password-dialog", await page.EvaluateAsync<string>(
+            "() => document.activeElement?.closest('[data-testid]')?.getAttribute('data-testid') ?? ''"));
         await page.GetByTestId("open-password-dialog").ClickAsync();
         Assert.Equal(string.Empty, await page.GetByTestId("change-password-current").InputValueAsync());
         Assert.Equal(string.Empty, await page.GetByTestId("change-password-new").InputValueAsync());
