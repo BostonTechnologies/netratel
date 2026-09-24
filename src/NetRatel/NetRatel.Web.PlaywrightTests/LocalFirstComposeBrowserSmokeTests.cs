@@ -111,10 +111,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         Assert.True(string.IsNullOrWhiteSpace(initializationError), initializationError);
 
         await page.GetByTestId("local-login-email").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible, Timeout = 30_000 });
-        await page.GetByTestId("local-login-client-ready").WaitForAsync(new LocatorWaitForOptions
-        {
-            State = WaitForSelectorState.Attached, Timeout = 60_000
-        });
+        await WaitForLocalLoginClientAsync(page);
         await CaptureReviewScreenshotAsync(page, "login-mobile");
         await page.SetViewportSizeAsync(1440, 900);
         await CaptureReviewScreenshotAsync(page, "login-desktop");
@@ -128,7 +125,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await page.EvaluateAsync("() => { document.body.style.zoom = ''; }");
         await page.SetViewportSizeAsync(390, 844);
         await AssertFirstPaintAsync(browser, webUrl, FirstPaintCases[1], "login", ".netratel-login-panel");
-        await page.GetByTestId("local-login-client-ready").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
+        await WaitForLocalLoginClientAsync(page);
         await page.GetByTestId("local-login-email").FocusAsync();
         await page.Keyboard.PressAsync("Tab");
         Assert.True(await page.GetByTestId("local-login-password").EvaluateAsync<bool>("input => input === document.activeElement"),
@@ -438,22 +435,25 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         try
         {
             await RunNativeUserManagementAsync("chmod", "755", directory);
+            var trustedCertificate = Path.Combine(directory, "ca.crt");
+            File.Copy(certificate, trustedCertificate);
+            await RunNativeUserManagementAsync("chmod", "644", trustedCertificate);
             await RunNativeUserManagementAsync("useradd", "--system", "--create-home", "--home-dir", home,
                 "--shell", "/usr/sbin/nologin", username);
             userCreated = true;
             var root = Path.Combine(home, "root");
             await RunIsolatedNativeCommandAsync(username, "bash", ["-o", "pipefail", "-c", command], home,
-                certificate, root);
+                trustedCertificate, root);
             var executable = Path.Combine(root, "versions", version, "NetRatel.Client");
             var manifest = Path.Combine(root, "versions", version, "netratel-client-manifest.json");
-            await RunIsolatedNativeCommandAsync(username, "test", ["-s", executable], home, certificate, root);
+            await RunIsolatedNativeCommandAsync(username, "test", ["-s", executable], home, trustedCertificate, root);
             await RunIsolatedNativeCommandAsync(username, "python3",
                 ["-c", "import json,sys; assert json.load(open(sys.argv[1], encoding='utf-8-sig'))['version'] == sys.argv[2]", manifest, version],
-                home, certificate, root);
+                home, trustedCertificate, root);
             await RunIsolatedNativeCommandAsync(username, "test",
-                ["-s", Path.Combine(home, ".local", "share", "netratel", "agent.dat")], home, certificate, root);
+                ["-s", Path.Combine(home, ".local", "share", "netratel", "agent.dat")], home, trustedCertificate, root);
             await RunIsolatedNativeCommandAsync(username, executable,
-                ["--auth-check", "--api", webUrl.GetLeftPart(UriPartial.Authority)], home, certificate, root);
+                ["--auth-check", "--api", webUrl.GetLeftPart(UriPartial.Authority)], home, trustedCertificate, root);
             Assert.Equal(404, (await anonymous.APIRequest.GetAsync(publicUrl)).Status);
         }
         finally
@@ -1012,7 +1012,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
     private static async Task SignInLocallyAsync(IPage page, string email, string password)
     {
         await page.GotoAsync(new Uri(RequireUri("NETRATEL_LOCAL_FIRST_WEB_URL"), "login").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
-        await page.GetByTestId("local-login-client-ready").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
+        await WaitForLocalLoginClientAsync(page);
         await page.GetByTestId("local-login-email").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         await page.GetByTestId("local-login-email").FillAsync(email);
         await page.GetByTestId("local-login-email").PressAsync("Tab");
@@ -1026,14 +1026,14 @@ public sealed class LocalFirstComposeBrowserSmokeTests
     private static async Task SignInWithSecondFactorAsync(IPage page, string email, string password, string code, bool expectSuccess)
     {
         await page.GotoAsync(new Uri(RequireUri("NETRATEL_LOCAL_FIRST_WEB_URL"), "login").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
-        await page.GetByTestId("local-login-client-ready").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
+        await WaitForLocalLoginClientAsync(page);
         await page.GetByTestId("local-login-email").FillAsync(email);
         await page.GetByTestId("local-login-email").PressAsync("Tab");
         await page.GetByTestId("local-login-password").FillAsync(password);
         await page.GetByTestId("local-login-password").PressAsync("Tab");
         await page.GetByTestId("local-login-submit").ClickAsync();
         await page.GetByTestId("local-login-two-factor").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
-        await page.GetByTestId("local-login-client-ready").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
+        await WaitForLocalLoginClientAsync(page);
         await page.GetByTestId("local-login-two-factor").FillAsync(code);
         await page.GetByTestId("local-login-two-factor").PressAsync("Tab");
         if (expectSuccess)
@@ -1047,6 +1047,10 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await page.GetByTestId("local-login-two-factor-submit").ClickAsync();
         await page.GetByRole(AriaRole.Alert).WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
     }
+
+    private static async Task WaitForLocalLoginClientAsync(IPage page) =>
+        await page.WaitForFunctionAsync("() => typeof window.netratelSetup?.localLogin === 'function'",
+            null, new PageWaitForFunctionOptions { Timeout = 60_000 });
 
     private static string CreateTotp(string base32Secret)
     {
