@@ -34,6 +34,8 @@ public sealed class ClientReleaseImportOperation
     public ClientReleaseImportState State { get; set; } = ClientReleaseImportState.Queued;
     public string RequestedBy { get; set; } = string.Empty;
     public bool IsAutomatic { get; set; }
+    public DateTimeOffset? AutomaticPublishAttemptAtUtc { get; set; }
+    public string? AutomaticPublishError { get; set; }
     public bool CancellationRequested { get; set; }
     public DateTimeOffset CreatedAtUtc { get; set; }
     public DateTimeOffset UpdatedAtUtc { get; set; }

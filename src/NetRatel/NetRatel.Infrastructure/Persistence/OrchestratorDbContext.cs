@@ -72,6 +72,7 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
     public DbSet<ClientUpdateCatalogRevision> ClientUpdateCatalogRevisions => Set<ClientUpdateCatalogRevision>();
     public DbSet<ClientReleaseImportOperation> ClientReleaseImportOperations => Set<ClientReleaseImportOperation>();
     public DbSet<ClientReleaseImportAsset> ClientReleaseImportAssets => Set<ClientReleaseImportAsset>();
+    public DbSet<ClientReleaseAutomationSettings> ClientReleaseAutomationSettings => Set<ClientReleaseAutomationSettings>();
     public DbSet<ClientInstallGrant> ClientInstallGrants => Set<ClientInstallGrant>();
 
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
@@ -948,6 +949,7 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
             entity.Property(x => x.PublishedBy).HasMaxLength(256);
             entity.Property(x => x.State).HasConversion<short>();
             entity.Property(x => x.Error).HasMaxLength(2048);
+            entity.Property(x => x.AutomaticPublishError).HasMaxLength(2048);
             entity.HasIndex(x => x.GitHubReleaseId).IsUnique();
             entity.HasIndex(x => new { x.State, x.LeaseUntilUtc, x.CreatedAtUtc });
             entity.HasIndex(x => x.Version);
@@ -968,6 +970,16 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
                 .WithMany(x => x.Assets)
                 .HasForeignKey(x => x.OperationId)
                 .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ClientReleaseAutomationSettings>(entity =>
+        {
+            entity.ToTable("ClientReleaseAutomationSettings");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Id).ValueGeneratedNever();
+            entity.Property(x => x.LastError).HasMaxLength(2048);
+            entity.Property(x => x.UpdatedBy).HasMaxLength(256).IsRequired();
+            entity.Property(x => x.Revision).IsConcurrencyToken();
         });
 
         modelBuilder.Entity<ClientInstallGrant>(entity =>

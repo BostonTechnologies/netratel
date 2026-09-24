@@ -29,6 +29,36 @@
             @if (_activeTab == 0)
             {
                 <MudStack Spacing="2" data-testid="github-release-catalogue">
+                    <MudPaper Class="pa-3 client-github-release" Elevation="0" data-testid="release-automation-settings">
+                        <MudText Typo="Typo.subtitle1">Instance release automation</MudText>
+                        <MudText Typo="Typo.body2">Checks and downloads run on this instance. Deployment only reaches tenants whose existing update policy allows the channel.</MudText>
+                        @if (_automation is null)
+                        {
+                            <MudText Typo="Typo.body2">Loading automation settings…</MudText>
+                        }
+                        else
+                        {
+                            <MudGrid Spacing="2" Class="mt-1">
+                                <MudItem xs="12" sm="6"><MudSelect T="int" @bind-Value="_automation.CheckEveryHours" Label="Automatic checks (UTC)"><MudSelectItem Value="0">Off</MudSelectItem><MudSelectItem Value="24">Daily</MudSelectItem><MudSelectItem Value="12">Twice daily</MudSelectItem></MudSelect></MudItem>
+                                <MudItem xs="12" sm="6"><MudSwitch T="bool" @bind-Value="_automation.DownloadStable" Color="Color.Primary" Label="Download new stable releases" /></MudItem>
+                                <MudItem xs="12" sm="6"><MudSwitch T="bool" @bind-Value="_automation.DownloadPrerelease" Color="Color.Warning" Label="Include prereleases in downloads" /></MudItem>
+                                <MudItem xs="12" sm="6"><MudSwitch T="bool" @bind-Value="_automation.PublishAutomatically" Color="Color.Warning" Label="Publish verified imports automatically" /></MudItem>
+                                <MudItem xs="12"><MudSwitch T="bool" @bind-Value="_automation.DeployPrereleaseAutomatically" Color="Color.Error" Label="Allow automatic prerelease deployment" /></MudItem>
+                            </MudGrid>
+                            <MudAlert Severity="Severity.Warning" Dense="true" Class="mt-2">Automatic prerelease deployment can update enrolled clients on prerelease-enabled tenant policies. It requires both prerelease download and automatic publication. Existing disabled releases and suspended agents remain blocked.</MudAlert>
+                            <MudStack Spacing="0" Class="mt-2">
+                                <MudText Typo="Typo.caption">Last attempt: @UtcTime(_automation.LastAttemptAtUtc) · Last success: @UtcTime(_automation.LastSuccessAtUtc) · Next check: @UtcTime(_automation.NextCheckAtUtc)</MudText>
+                                @if (!string.IsNullOrWhiteSpace(_automation.LastError)) { <MudText Typo="Typo.caption" Color="Color.Error">Last error: @_automation.LastError</MudText> }
+                                @if (_automation.UpdatedAtUtc.HasValue) { <MudText Typo="Typo.caption">Policy updated by @_automation.UpdatedBy at @UtcTime(_automation.UpdatedAtUtc)</MudText> }
+                            </MudStack>
+                            <MudStack Row="true" Class="flex-wrap mt-2" Spacing="1">
+                                <MudButton Color="Color.Primary" Variant="Variant.Filled" Disabled="_automationBusy" OnClick="SaveAutomationAsync">Save automation policy</MudButton>
+                                <MudButton Variant="Variant.Outlined" Disabled="_automationBusy" OnClick="CheckReleasesNowAsync">Check now</MudButton>
+                                <MudButton Variant="Variant.Text" Disabled="_automationBusy" OnClick="LoadAutomationAsync">Refresh status</MudButton>
+                            </MudStack>
+                        }
+                        @if (!string.IsNullOrWhiteSpace(_automationError)) { <MudAlert Severity="Severity.Error" Class="mt-2">@_automationError</MudAlert> }
+                    </MudPaper>
                     <MudStack Row="true" Class="flex-wrap" AlignItems="AlignItems.Center" Spacing="2">
                         <MudSelect T="string" Value="_githubChannel" ValueChanged="OnGitHubChannelChanged" Label="Channel" Style="width: 190px">
                             <MudSelectItem Value="@("all")">Stable and prerelease</MudSelectItem>
@@ -68,6 +98,7 @@
                             {
                                 <MudText Typo="Typo.body2" Class="mt-2">Local state: @(import.PublishedAtUtc.HasValue ? "Published for enabled tenant policies" : ImportState(import.State)) · @FormatBytes(import.DownloadedBytes) / @FormatBytes(import.TotalBytes ?? release.TotalClientBytes)</MudText>
                                 @if (!string.IsNullOrWhiteSpace(import.Error)) { <MudAlert Severity="Severity.Error" Class="mt-2">@import.Error</MudAlert> }
+                                @if (!string.IsNullOrWhiteSpace(import.AutomaticPublishError)) { <MudAlert Severity="Severity.Warning" Class="mt-2">Automatic publication: @import.AutomaticPublishError</MudAlert> }
                                 <MudStack Row="true" Class="flex-wrap mt-2" Spacing="1">
                                     @if (import.State is 6 or 7)
                                     {
@@ -286,6 +317,9 @@
     private IReadOnlyList<TenantDto> _tenants = Array.Empty<TenantDto>();
     private MudTable<ClientArtifactSummaryModel>? _artifactTable;
     private GitHubClientReleasePageModel? _githubPage;
+    private ClientReleaseAutomationModel? _automation;
+    private string? _automationError;
+    private bool _automationBusy;
     private Dictionary<long, ClientReleaseImportModel> _githubImports = [];
     private bool _importActionBusy;
     private readonly CancellationTokenSource _importPolling = new();
@@ -349,6 +383,7 @@
         _tenants = await TenantApi.GetTenantsAsync();
         _selectedTenantId = _tenants.FirstOrDefault()?.TenantId;
         await LoadGitHubAsync(false);
+        await LoadAutomationAsync();
         _importPollingTask = PollImportsAsync(_importPolling.Token);
     }
 
@@ -358,7 +393,7 @@
         await Task.Yield();
         switch (index)
         {
-            case 0: await LoadGitHubAsync(false); break;
+            case 0: await LoadGitHubAsync(false); await LoadAutomationAsync(); break;
             case 1 when _artifactTable is not null: await _artifactTable.ReloadServerData(); break;
             case 2 when _releaseTable is not null: await _releaseTable.ReloadServerData(); break;
             case 3 when _attemptTable is not null: await _attemptTable.ReloadServerData(); break;
@@ -385,6 +420,38 @@
         }
     }
 
+    private async Task LoadAutomationAsync()
+    {
+        _automationError = null;
+        try { _automation = await Artifacts.GetReleaseAutomationAsync(); }
+        catch (HttpRequestException) { _automationError = "Could not load automation settings. Refresh status and try again."; }
+    }
+
+    private async Task SaveAutomationAsync()
+    {
+        if (_automation is null) return;
+        _automationBusy = true;
+        _automationError = null;
+        try { _automation = await Artifacts.SaveReleaseAutomationAsync(_automation); }
+        catch (HttpRequestException)
+        {
+            _automationError = "Could not save the policy. Check the selected options or refresh status if another operator changed it.";
+        }
+        finally { _automationBusy = false; }
+    }
+
+    private async Task CheckReleasesNowAsync()
+    {
+        _automationBusy = true;
+        _automationError = null;
+        try { _automation = await Artifacts.CheckReleasesNowAsync(); }
+        catch (HttpRequestException) { _automationError = "Could not schedule a check. Refresh status and try again."; }
+        finally { _automationBusy = false; }
+    }
+
+    private static string UtcTime(DateTimeOffset? value) =>
+        value.HasValue ? value.Value.ToUniversalTime().ToString("yyyy-MM-dd HH:mm 'UTC'") : "Never";
+
     private async Task OnGitHubChannelChanged(string channel) { _githubChannel = channel; _githubPageNumber = 0; await LoadGitHubAsync(false); }
 
     private async Task RefreshImportsAsync()
@@ -410,7 +477,7 @@
                 await InvokeAsync(async () => { await RefreshImportsAsync(); StateHasChanged(); });
             }
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
     }
 
     private async Task QueueImportAsync(long releaseId)

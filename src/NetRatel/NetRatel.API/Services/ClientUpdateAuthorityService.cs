@@ -47,7 +47,8 @@ public sealed class ClientUpdateAuthorityService(
     private static readonly TimeSpan StaleClaimRecoveryDelay = TimeSpan.FromMinutes(5);
 
     public async Task PublishImportedPackAsync(Guid operationId, IReadOnlyList<ClientPackPublishItem> items,
-        string publishedBy, bool confirmPrerelease, CancellationToken cancellationToken)
+        string publishedBy, bool confirmPrerelease, CancellationToken cancellationToken,
+        bool automatic = false)
     {
         if (items.Count == 0 || items.Select(x => x.Artifact.Rid).Distinct(StringComparer.Ordinal).Count() != items.Count)
             throw new InvalidOperationException("A complete client pack with unique runtimes is required.");
@@ -68,6 +69,27 @@ public sealed class ClientUpdateAuthorityService(
             throw new InvalidOperationException("The imported client pack has an invalid version.");
         if (parsedVersion.IsPrerelease && !confirmPrerelease)
             throw new InvalidOperationException("Prerelease publication requires explicit confirmation.");
+
+        if (automatic)
+        {
+            var policy = (await db.ClientReleaseAutomationSettings
+                .FromSqlRaw("SELECT * FROM \"ClientReleaseAutomationSettings\" WHERE \"Id\" = 1 FOR SHARE")
+                .AsNoTracking().ToListAsync(cancellationToken).ConfigureAwait(false)).SingleOrDefault();
+            if (!options.IsClientUpdateAuthorityActive || policy is null ||
+                !policy.PublishAutomatically || policy.CheckEveryHours == 0 ||
+                parsedVersion.IsPrerelease &&
+                (!policy.DownloadPrerelease || !policy.DeployPrereleaseAutomatically) ||
+                !parsedVersion.IsPrerelease && !policy.DownloadStable)
+                throw new InvalidOperationException("Automatic client publication is disabled by current policy.");
+
+            var runtimeIds = items.Select(item => item.Artifact.Rid).ToArray();
+            var enabledVersions = await db.ClientUpdateReleases.AsNoTracking()
+                .Where(x => x.Enabled && runtimeIds.Contains(x.RuntimeId))
+                .Select(x => x.Version).ToListAsync(cancellationToken).ConfigureAwait(false);
+            if (enabledVersions.Any(value =>
+                    NuGetVersion.TryParse(value, out var prior) && prior >= parsedVersion))
+                throw new InvalidOperationException("Automatic publication cannot replace an equal or newer enabled client release.");
+        }
 
         var existing = await db.ClientUpdateReleases
             .Where(x => x.Version == operation.Version).ToListAsync(cancellationToken).ConfigureAwait(false);
@@ -197,7 +219,7 @@ public sealed class ClientUpdateAuthorityService(
         if (release is null || !tenantEnabled || !agentEnabled || state?.SuspendedAtUtc.HasValue == true ||
             state?.SuppressedReleaseId == releasePublicId ||
             !string.Equals(release.RuntimeId, runtimeId, StringComparison.OrdinalIgnoreCase) ||
-            release.Channel == "prerelease" && !tenantAllowsPrerelease && !exactTenantTarget ||
+            release.Channel == "prerelease" && !tenantAllowsPrerelease ||
             !string.IsNullOrWhiteSpace(tenantPolicy?.AutoUpdateTargetVersion) && !exactTenantTarget ||
             !NuGetVersion.TryParse(currentVersion, out var current) ||
             !NuGetVersion.TryParse(release.Version, out var target) || target <= current)

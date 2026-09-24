@@ -1,4 +1,5 @@
 ﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -20,6 +21,41 @@ public static class ClientArtifactsEndpoints
     {
         var group = app.MapGroup("/api/v1/client-artifacts")
             .WithTags("Client Artifacts");
+
+        group.MapGet("automation", async (
+            [FromServices] ClientReleaseAutomationService automation, CancellationToken ct) =>
+            Results.Ok(await automation.GetAsync(ct)))
+        .RequireAuthorization("ClientArtifactsWrite")
+        .WithName("ClientArtifacts_GetAutomation")
+        .Produces<ClientReleaseAutomationStatus>();
+
+        group.MapPut("automation", async (
+            ClientReleaseAutomationUpdate request, HttpContext context,
+            [FromServices] ClientReleaseAutomationService automation, CancellationToken ct) =>
+        {
+            var actor = context.User.FindFirstValue(ClaimTypes.NameIdentifier) ??
+                context.User.FindFirstValue("sub") ?? context.User.Identity?.Name;
+            if (string.IsNullOrWhiteSpace(actor)) return Results.Forbid();
+            try { return Results.Ok(await automation.UpdateAsync(request, actor, ct)); }
+            catch (ArgumentException exception) { return Results.BadRequest(new { message = exception.Message }); }
+            catch (DbUpdateConcurrencyException exception) { return Results.Conflict(new { message = exception.Message }); }
+        })
+        .RequireAuthorization("ClientArtifactsWrite")
+        .WithName("ClientArtifacts_UpdateAutomation")
+        .Produces<ClientReleaseAutomationStatus>();
+
+        group.MapPost("automation/check-now", async (
+            HttpContext context, [FromServices] ClientReleaseAutomationService automation,
+            CancellationToken ct) =>
+        {
+            var actor = context.User.FindFirstValue(ClaimTypes.NameIdentifier) ??
+                context.User.FindFirstValue("sub") ?? context.User.Identity?.Name;
+            return string.IsNullOrWhiteSpace(actor) ? Results.Forbid() :
+                Results.Accepted(value: await automation.CheckNowAsync(actor, ct));
+        })
+        .RequireAuthorization("ClientArtifactsWrite")
+        .WithName("ClientArtifacts_CheckGitHubNow")
+        .Produces<ClientReleaseAutomationStatus>(StatusCodes.Status202Accepted);
 
         group.MapGet("github-releases", async (
             [FromQuery] string? channel,

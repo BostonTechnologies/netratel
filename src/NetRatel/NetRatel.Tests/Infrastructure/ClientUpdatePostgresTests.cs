@@ -91,6 +91,39 @@ public sealed class ClientUpdatePostgresTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task StableTenantCannotClaimAPinnedPrereleaseBySupplyingItsReleaseId()
+    {
+        var releaseId = Guid.NewGuid();
+        var stableAgent = Guid.NewGuid();
+        var canaryAgent = Guid.NewGuid();
+        const string targetVersion = "0.4.103-rc.1";
+        await using (var seed = new OrchestratorDbContext(_options))
+        {
+            seed.Tenants.AddRange(
+                new Tenant { Id = 76, Name = "Stable pinned", AutoUpdate = true,
+                    AutoUpdateChannel = "stable", AutoUpdateTargetVersion = targetVersion },
+                new Tenant { Id = 77, Name = "Canary pinned", AutoUpdate = true,
+                    AutoUpdateChannel = "prerelease", AutoUpdateTargetVersion = targetVersion });
+            seed.Agents.AddRange(
+                new Agent { Id = stableAgent, TenantId = 76 },
+                new Agent { Id = canaryAgent, TenantId = 77 });
+            var release = CreateRelease(releaseId, 4);
+            release.Version = targetVersion;
+            release.Channel = "prerelease";
+            seed.ClientUpdateReleases.Add(release);
+            await seed.SaveChangesAsync();
+        }
+
+        await using var db = new OrchestratorDbContext(_options);
+        var authority = Authority(db);
+        var nonce = new string('c', 64);
+        (await authority.ClaimAsync(new AuthenticatedAgentIdentity(76, stableAgent), releaseId,
+            "linux-x64", "0.4.102", "prerelease", nonce, CancellationToken.None)).Should().BeNull();
+        (await authority.ClaimAsync(new AuthenticatedAgentIdentity(77, canaryAgent), releaseId,
+            "linux-x64", "0.4.102", "stable", nonce, CancellationToken.None)).Should().NotBeNull();
+    }
+
+    [Fact]
     public async Task Interrupted_Download_Is_Immediately_Reissued_To_A_New_Admission()
     {
         const int tenantId = 74;

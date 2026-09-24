@@ -16,6 +16,12 @@ namespace NetRatel.Web.Services;
 public interface IClientArtifactsService
 {
     Task<GitHubClientReleasePageModel> GetGitHubReleasesAsync(string channel, int page, bool refresh, CancellationToken ct = default);
+    Task<ClientReleaseAutomationModel> GetReleaseAutomationAsync(CancellationToken ct = default) =>
+        throw new NotSupportedException();
+    Task<ClientReleaseAutomationModel> SaveReleaseAutomationAsync(ClientReleaseAutomationModel settings, CancellationToken ct = default) =>
+        throw new NotSupportedException();
+    Task<ClientReleaseAutomationModel> CheckReleasesNowAsync(CancellationToken ct = default) =>
+        throw new NotSupportedException();
     Task<List<ClientReleaseImportModel>> GetReleaseImportsAsync(CancellationToken ct = default) =>
         Task.FromResult(new List<ClientReleaseImportModel>());
     Task<ClientReleaseImportModel> QueueReleaseImportAsync(long releaseId, CancellationToken ct = default) =>
@@ -116,6 +122,26 @@ public class ClientArtifactsService : IClientArtifactsService
         var uri = $"/api/v1/client-artifacts/github-releases?channel={Uri.EscapeDataString(channel)}&page={page}&refresh={refresh.ToString().ToLowerInvariant()}";
         return await _uploads.Http.GetFromJsonAsync<GitHubClientReleasePageModel>(uri, ct)
             ?? throw new HttpRequestException("The GitHub releases response was empty.");
+    }
+
+    public async Task<ClientReleaseAutomationModel> GetReleaseAutomationAsync(CancellationToken ct = default) =>
+        await _uploads.Http.GetFromJsonAsync<ClientReleaseAutomationModel>("/api/v1/client-artifacts/automation", ct)
+        ?? throw new HttpRequestException("The automation settings response was empty.");
+
+    public async Task<ClientReleaseAutomationModel> SaveReleaseAutomationAsync(ClientReleaseAutomationModel settings, CancellationToken ct = default)
+    {
+        using var response = await _uploads.Http.PutAsJsonAsync("/api/v1/client-artifacts/automation", settings, ct);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<ClientReleaseAutomationModel>(cancellationToken: ct)
+            ?? throw new HttpRequestException("The saved automation settings response was empty.");
+    }
+
+    public async Task<ClientReleaseAutomationModel> CheckReleasesNowAsync(CancellationToken ct = default)
+    {
+        using var response = await _uploads.Http.PostAsync("/api/v1/client-artifacts/automation/check-now", null, ct);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<ClientReleaseAutomationModel>(cancellationToken: ct)
+            ?? throw new HttpRequestException("The check status response was empty.");
     }
 
     public async Task<List<ClientReleaseImportModel>> GetReleaseImportsAsync(CancellationToken ct = default) =>
@@ -796,6 +822,22 @@ public sealed class ClientInstallLinkMetadataModel
     public string CreatedBy { get; set; } = string.Empty;
 }
 
+public sealed class ClientReleaseAutomationModel
+{
+    public int CheckEveryHours { get; set; }
+    public bool DownloadStable { get; set; }
+    public bool DownloadPrerelease { get; set; }
+    public bool PublishAutomatically { get; set; }
+    public bool DeployPrereleaseAutomatically { get; set; }
+    public DateTimeOffset? LastAttemptAtUtc { get; set; }
+    public DateTimeOffset? LastSuccessAtUtc { get; set; }
+    public DateTimeOffset? NextCheckAtUtc { get; set; }
+    public string? LastError { get; set; }
+    public long Revision { get; set; }
+    public string? UpdatedBy { get; set; }
+    public DateTimeOffset? UpdatedAtUtc { get; set; }
+}
+
 public sealed class GitHubClientReleasePageModel
 {
     public List<GitHubClientReleaseModel> Items { get; set; } = [];
@@ -842,6 +884,7 @@ public sealed class ClientReleaseImportModel
     public DateTimeOffset CreatedAtUtc { get; set; }
     public DateTimeOffset UpdatedAtUtc { get; set; }
     public DateTimeOffset? PublishedAtUtc { get; set; }
+    public string? AutomaticPublishError { get; set; }
     public List<ClientReleaseImportAssetModel> Assets { get; set; } = [];
 }
 

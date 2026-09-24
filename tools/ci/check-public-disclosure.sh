@@ -43,12 +43,23 @@ done < <(git ls-files -z)
 # without printing matching values. The explicit index scan prevents a staged
 # public candidate from being approved merely because a local worktree changed
 # after staging.
-secret_pattern='-----BEGIN ([A-Z ]*PRIVATE KEY|CERTIFICATE)|<key[[:space:]>]|<encryptedKey[[:space:]>]|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9_]{20,}'
+secret_pattern='-----BEGIN ([A-Z ]*PRIVATE KEY|CERTIFICATE)|<encryptedKey[[:space:]>]|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9_]{20,}'
 if git grep -I -q -E -- "$secret_pattern" --; then
   report "Public disclosure gate found potential key material in the checkout."
 fi
 if git grep --cached -I -q -E -- "$secret_pattern" --; then
   report "Public disclosure gate found potential key material in the staged export."
+fi
+# The macOS installer embeds launchd plist property tags. Scan every
+# other source for XML key elements while still scanning this file for the
+# stronger private-key, certificate, encrypted-key and token signatures above.
+xml_key_pattern='<key[[:space:]>]'
+plist_template='src/NetRatel/NetRatel.Infrastructure/Artifacts/ScriptTemplateService.cs'
+if git grep -I -q -E -- "$xml_key_pattern" -- . ":!$plist_template"; then
+  report "Public disclosure gate found potential XML key material in the checkout."
+fi
+if git grep --cached -I -q -E -- "$xml_key_pattern" -- . ":!$plist_template"; then
+  report "Public disclosure gate found potential XML key material in the staged export."
 fi
 
 # CI runs a pinned Gitleaks action against Git history. Keep its evolving

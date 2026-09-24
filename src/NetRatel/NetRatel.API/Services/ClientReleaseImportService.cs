@@ -11,7 +11,7 @@ public sealed record ClientReleaseImportStatus(
     Guid Id, long GitHubReleaseId, string Tag, string Version, ClientReleaseImportState State,
     long? TotalBytes, long DownloadedBytes, string? Error, DateTimeOffset CreatedAtUtc,
     DateTimeOffset UpdatedAtUtc, DateTimeOffset? PublishedAtUtc,
-    IReadOnlyList<ClientReleaseImportAssetStatus> Assets);
+    IReadOnlyList<ClientReleaseImportAssetStatus> Assets, string? AutomaticPublishError = null);
 
 public sealed record ClientReleaseImportAssetStatus(
     string RuntimeId, string SourceName, ClientReleaseImportAssetState State,
@@ -89,7 +89,8 @@ public sealed class ClientReleaseImportService(
                 .SetProperty(x => x.UpdatedAtUtc, now), ct) > 0;
     }
 
-    public async Task<bool> PublishAsync(Guid id, string publishedBy, bool confirmPrerelease, CancellationToken ct)
+    public async Task<bool> PublishAsync(Guid id, string publishedBy, bool confirmPrerelease, CancellationToken ct,
+        bool automatic = false)
     {
         var operation = await db.ClientReleaseImportOperations.AsNoTracking().Include(x => x.Assets)
             .SingleOrDefaultAsync(x => x.Id == id, ct);
@@ -119,7 +120,7 @@ public sealed class ClientReleaseImportService(
                 throw new InvalidDataException("The imported build manifest differs from the verified source commit.");
             items.Add(new ClientPackPublishItem(metadata, manifestJson));
         }
-        await updates.PublishImportedPackAsync(id, items, publishedBy, confirmPrerelease, ct);
+        await updates.PublishImportedPackAsync(id, items, publishedBy, confirmPrerelease, ct, automatic);
         return true;
     }
 
@@ -131,7 +132,7 @@ public sealed class ClientReleaseImportService(
             operation.Assets.OrderBy(x => x.RuntimeId, StringComparer.Ordinal)
                 .Select(x => new ClientReleaseImportAssetStatus(x.RuntimeId, x.SourceName,
                     x.State, x.SourceSizeBytes, x.DownloadedBytes, x.SourceSha256,
-                    x.LocalSha256, x.Error)).ToArray());
+                    x.LocalSha256, x.Error)).ToArray(), operation.AutomaticPublishError);
 }
 
 public sealed class ClientReleaseImportWorker(

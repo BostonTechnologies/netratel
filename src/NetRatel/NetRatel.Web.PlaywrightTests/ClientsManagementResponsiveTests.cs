@@ -47,6 +47,8 @@ public sealed class ClientsManagementResponsiveTests : IAsyncLifetime
             await page.GetByTestId("client-management-tabs").WaitForAsync();
             Assert.Equal(5, await page.GetByRole(AriaRole.Tab).CountAsync());
             await page.GetByTestId("github-release-catalogue").WaitForAsync();
+            await page.GetByTestId("release-automation-settings").WaitForAsync();
+            await page.GetByText("Automatic prerelease deployment can update enrolled clients", new() { Exact = false }).WaitForAsync();
             await page.GetByText("Fixture GitHub client release", new() { Exact = false }).WaitForAsync();
             await page.GetByRole(AriaRole.Tab, new() { Name = "Artifacts" }).WaitForAsync();
             await page.GetByRole(AriaRole.Tab, new() { Name = "Auto-update Releases" }).WaitForAsync();
@@ -167,6 +169,21 @@ internal sealed class ClientsManagementFixtureHost : IAsyncDisposable
 
 internal sealed class FixtureClientArtifactsService : IClientArtifactsService
 {
+    private ClientReleaseAutomationModel _automation = new();
+    public Task<ClientReleaseAutomationModel> GetReleaseAutomationAsync(CancellationToken ct = default) =>
+        Task.FromResult(_automation);
+    public Task<ClientReleaseAutomationModel> SaveReleaseAutomationAsync(ClientReleaseAutomationModel settings, CancellationToken ct = default)
+    {
+        _automation = settings;
+        _automation.Revision++;
+        return Task.FromResult(_automation);
+    }
+    public Task<ClientReleaseAutomationModel> CheckReleasesNowAsync(CancellationToken ct = default)
+    {
+        _automation.NextCheckAtUtc = DateTimeOffset.UtcNow;
+        return Task.FromResult(_automation);
+    }
+
     public Task<GitHubClientReleasePageModel> GetGitHubReleasesAsync(string channel, int page, bool refresh, CancellationToken ct = default) =>
         Task.FromResult(new GitHubClientReleasePageModel
         {
