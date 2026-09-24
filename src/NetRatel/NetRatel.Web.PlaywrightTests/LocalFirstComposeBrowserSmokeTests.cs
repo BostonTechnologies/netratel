@@ -1031,7 +1031,12 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await page.GetByTestId("local-login-email").PressAsync("Tab");
         await page.GetByTestId("local-login-password").FillAsync(password);
         await page.GetByTestId("local-login-password").PressAsync("Tab");
+        var loginResponse = page.WaitForResponseAsync(response =>
+            response.Request.Method == "POST" &&
+            new Uri(response.Url).AbsolutePath == "/api/v2/local-auth/login");
         await page.GetByTestId("local-login-submit").ClickAsync();
+        Assert.Equal(202, (await loginResponse).Status);
+        await page.WaitForFunctionAsync("() => new URLSearchParams(location.search).get('localMfa') === 'true'");
         await page.GetByTestId("local-login-two-factor").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         await WaitForLocalLoginClientAsync(page);
         await page.GetByTestId("local-login-two-factor").FillAsync(code);
