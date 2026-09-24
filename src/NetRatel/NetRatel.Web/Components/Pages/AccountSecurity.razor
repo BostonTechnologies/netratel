@@ -53,7 +53,7 @@
     }
 </MudContainer>
 
-<MudDialog Visible="_passwordDialog" VisibleChanged="PasswordVisibleChanged" AriaLabel="Change passphrase" Options="@(new DialogOptions { BackdropClick = false, CloseOnEscapeKey = false })">
+<MudDialog Visible="_passwordDialog" VisibleChanged="PasswordVisibleChanged" AriaLabel="Change passphrase" Options="@(new DialogOptions { BackdropClick = false, CloseOnEscapeKey = false, FullWidth = true, MaxWidth = MaxWidth.Medium })">
     <DialogContent><MudStack Spacing="3" Class="security-dialog">
         <MudText Typo="Typo.h6">Change passphrase</MudText>
         <MudText Typo="Typo.body2">Use at least @_status?.MinimumPassphraseLength characters. Existing sessions will end when you save.</MudText>
@@ -66,7 +66,7 @@
     <DialogActions><MudButton OnClick="ClosePassword" Disabled="_busy">Cancel</MudButton><MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="@(_busy || !CanChangePassword)" OnClick="ChangePasswordAsync" data-testid="change-local-password">Change passphrase</MudButton></DialogActions>
 </MudDialog>
 
-<MudDialog Visible="_enrollmentDialog" VisibleChanged="EnrollmentVisibleChanged" AriaLabel="Set up authenticator" Options="@(new DialogOptions { BackdropClick = false, CloseOnEscapeKey = false })">
+<MudDialog Visible="_enrollmentDialog" VisibleChanged="EnrollmentVisibleChanged" AriaLabel="Set up authenticator" Options="@(new DialogOptions { BackdropClick = false, CloseOnEscapeKey = false, FullWidth = true, MaxWidth = MaxWidth.Medium })">
     <DialogContent><MudStack Spacing="3" Class="security-dialog">
         <MudText Typo="Typo.h6">Set up authenticator</MudText>
         @if (_error is not null) { <MudAlert Severity="Severity.Error">@_error</MudAlert> }
@@ -103,7 +103,7 @@
     </DialogActions>
 </MudDialog>
 
-<MudDialog Visible="_disableDialog" VisibleChanged="DisableVisibleChanged" AriaLabel="Disable authenticator" Options="@(new DialogOptions { BackdropClick = false, CloseOnEscapeKey = false })">
+<MudDialog Visible="_disableDialog" VisibleChanged="DisableVisibleChanged" AriaLabel="Disable authenticator" Options="@(new DialogOptions { BackdropClick = false, CloseOnEscapeKey = false, FullWidth = true, MaxWidth = MaxWidth.Medium })">
     <DialogContent><MudStack Spacing="3" Class="security-dialog">
         <MudText Typo="Typo.h6">Disable authenticator</MudText>
         <MudAlert Severity="Severity.Warning">Your account will no longer require an authenticator code. You will sign in again afterwards.</MudAlert>

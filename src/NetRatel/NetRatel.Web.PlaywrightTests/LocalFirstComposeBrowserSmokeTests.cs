@@ -27,6 +27,12 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         var page = await context.NewPageAsync();
         page.SetDefaultTimeout(20_000);
         page.PageError += (_, error) => pageErrors.Add(error);
+        var setupSubmissionCount = 0;
+        page.Request += (_, request) =>
+        {
+            if (request.Method == "POST" && request.Url.Contains("/api/v2/setup/initialize", StringComparison.Ordinal))
+                Interlocked.Increment(ref setupSubmissionCount);
+        };
 
         var response = await page.GotoAsync(webUrl.ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
         Assert.NotNull(response);
@@ -64,8 +70,10 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         Assert.Equal(password, await page.GetByTestId("setup-password").InputValueAsync());
         Assert.Equal(password, await page.GetByTestId("setup-confirm-password").InputValueAsync());
         var initialized = page.WaitForURLAsync("**/login", new PageWaitForURLOptions { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 30_000 });
-        await page.GetByTestId("setup-initialize").ClickAsync();
+        await page.GetByTestId("setup-initialize").EvaluateAsync("button => { button.click(); button.click(); }");
+        await page.GetByTestId("setup-initializing").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         await initialized;
+        Assert.Equal(1, setupSubmissionCount);
         var initializationErrorLocator = page.Locator("#setup-client-error");
         var initializationError = await initializationErrorLocator.CountAsync() == 0
             ? null
