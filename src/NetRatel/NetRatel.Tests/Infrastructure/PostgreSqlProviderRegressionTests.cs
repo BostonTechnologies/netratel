@@ -88,6 +88,53 @@ public sealed class PostgreSqlProviderRegressionTests(PostgreSqlPersistenceFixtu
             (await verifyIdentity.IntegrationCredentials.CountAsync(value => value.RevokedAtUtc != null)).Should().Be(1);
             new PasswordHasher<LocalUser>().VerifyHashedPassword(user, user.PasswordHash!, "a recovered local passphrase")
                 .Should().Be(PasswordVerificationResult.Success);
+
+            var rolePrincipal = new ApplicationPrincipal();
+            var roleUser = new LocalUser
+            {
+                Id = "role-assigned-recovery-admin",
+                UserName = "role-admin@example.test",
+                NormalizedUserName = "ROLE-ADMIN@EXAMPLE.TEST",
+                Email = "role-admin@example.test",
+                NormalizedEmail = "ROLE-ADMIN@EXAMPLE.TEST",
+                PrincipalId = rolePrincipal.Id,
+                IsEnabled = true,
+                IsInstanceAdministrator = false,
+                LockoutEnd = DateTimeOffset.UtcNow.AddDays(1),
+                AccessFailedCount = 5
+            };
+            rolePrincipal.LocalUserId = roleUser.Id;
+            var instanceRole = new AccessRole { Name = "Recovery administrator", IsInstanceAdministratorRole = true };
+            verifyIdentity.AddRange(rolePrincipal, roleUser, instanceRole,
+                new PrincipalRoleAssignment { PrincipalId = rolePrincipal.Id, RoleId = instanceRole.Id });
+            await verifyIdentity.SaveChangesAsync();
+            var roleCredential = await credentialService.CreateAsync(rolePrincipal.Id, new IntegrationCredentialCreateRequest(
+                "Role administrator credential", IntegrationCredentialPurpose.Api, DateTimeOffset.UtcNow.AddDays(7),
+                [new IntegrationCredentialGrantRequest(initialized.TenantId.Value, NetRatelPermissions.TelemetryRead)]));
+            (await initializer.RecoverAdministratorAsync("role-admin@example.test", "role assigned recovered passphrase")).Succeeded.Should().BeTrue();
+            await verifyIdentity.Entry(roleUser).ReloadAsync();
+            roleUser.IsInstanceAdministrator.Should().BeFalse();
+            roleUser.LockoutEnd.Should().BeNull();
+            roleUser.AccessFailedCount.Should().Be(0);
+            new PasswordHasher<LocalUser>().VerifyHashedPassword(roleUser, roleUser.PasswordHash!, "role assigned recovered passphrase")
+                .Should().Be(PasswordVerificationResult.Success);
+            (await credentialService.VerifyAsync(roleCredential.Secret, IntegrationCredentialPurpose.Api)).Should().BeNull();
+
+            var ordinaryPrincipal = new ApplicationPrincipal();
+            var ordinaryUser = new LocalUser
+            {
+                Id = "ordinary-user",
+                UserName = "ordinary@example.test",
+                NormalizedUserName = "ORDINARY@EXAMPLE.TEST",
+                Email = "ordinary@example.test",
+                NormalizedEmail = "ORDINARY@EXAMPLE.TEST",
+                PrincipalId = ordinaryPrincipal.Id,
+                IsEnabled = true
+            };
+            ordinaryPrincipal.LocalUserId = ordinaryUser.Id;
+            verifyIdentity.AddRange(ordinaryPrincipal, ordinaryUser);
+            await verifyIdentity.SaveChangesAsync();
+            (await initializer.RecoverAdministratorAsync("ordinary@example.test", "not an administrator passphrase")).Succeeded.Should().BeFalse();
             (await initializer.RecoverAdministratorAsync("not-an-admin@example.test", "another recovered passphrase")).Succeeded.Should().BeFalse();
 
             var lifecycle = new BootstrapLifecycleService(store, configuration);

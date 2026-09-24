@@ -161,7 +161,18 @@ public sealed class BootstrapInitializationService(
             await using var transaction = await identity.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
             var user = await identity.Users.SingleOrDefaultAsync(
                 candidate => candidate.NormalizedEmail == normalizedEmail.ToUpperInvariant(), cancellationToken).ConfigureAwait(false);
-            if (user is null || !user.IsInstanceAdministrator)
+            if (user is null)
+            {
+                return BootstrapInitializationResult.Rejected;
+            }
+
+            var hasInstanceAdministratorRole = await (
+                from assignment in identity.PrincipalRoleAssignments
+                join role in identity.AccessRoles on assignment.RoleId equals role.Id
+                join principal in identity.ApplicationPrincipals on assignment.PrincipalId equals principal.Id
+                where assignment.PrincipalId == user.PrincipalId && assignment.TenantId == null && role.IsInstanceAdministratorRole
+                select principal.Id).AnyAsync(cancellationToken).ConfigureAwait(false);
+            if (!user.IsInstanceAdministrator && !hasInstanceAdministratorRole)
             {
                 return BootstrapInitializationResult.Rejected;
             }

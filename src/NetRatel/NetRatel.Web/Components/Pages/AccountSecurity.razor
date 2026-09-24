@@ -159,7 +159,15 @@
         if (_busy || !CanChangePassword) return;
         _busy = true; _error = null;
         try { await LocalAccountApi.ChangePasswordAsync(new(_passwordCurrent!, _passwordNew!)); ClosePassword(); Navigation.NavigateTo("/logout", true); }
-        catch (HttpRequestException exception) { _error = exception.StatusCode == System.Net.HttpStatusCode.BadRequest ? "The current passphrase was not accepted, or the new one does not meet policy." : "The account service is unavailable. Your entries remain so you can retry."; }
+        catch (HttpRequestException exception)
+        {
+            _error = exception.StatusCode switch
+            {
+                System.Net.HttpStatusCode.BadRequest => "The current passphrase was not accepted, or the new one does not meet policy.",
+                System.Net.HttpStatusCode.TooManyRequests => "Too many security attempts. Wait a minute before trying again.",
+                _ => "The account service is unavailable. Your entries remain so you can retry."
+            };
+        }
         finally { _busy = false; }
     }
     private async Task BeginMfaSetupAsync()
@@ -174,7 +182,16 @@
             using var data = generator.CreateQrCode(_authenticatorSetup.AuthenticatorUri, QRCodeGenerator.ECCLevel.Q);
             _qrDataUrl = "data:image/svg+xml;base64," + Convert.ToBase64String(Encoding.UTF8.GetBytes(new SvgQRCode(data).GetGraphic(4)));
         }
-        catch (HttpRequestException exception) { _error = exception.StatusCode == System.Net.HttpStatusCode.Conflict ? "An authenticator is already enabled. Disable it with its current code before replacing it." : "The passphrase was not accepted, or the account service is unavailable."; }
+        catch (HttpRequestException exception)
+        {
+            _error = exception.StatusCode switch
+            {
+                System.Net.HttpStatusCode.Conflict => "An authenticator is already enabled. Disable it with its current code before replacing it.",
+                System.Net.HttpStatusCode.BadRequest => "The current passphrase was not accepted.",
+                System.Net.HttpStatusCode.TooManyRequests => "Too many security attempts. Wait a minute before trying again.",
+                _ => "The account service is unavailable. Your passphrase remains here so you can retry."
+            };
+        }
         finally { _busy = false; }
     }
     private async Task EnableMfaAsync()
@@ -182,7 +199,15 @@
         if (_busy || string.IsNullOrWhiteSpace(_enrollmentCode)) return;
         _busy = true; _error = null;
         try { _recoveryCodes = await LocalAccountApi.EnableTwoFactorAsync(_enrollmentCode); _authenticatorSetup = null; _enrollmentCode = _qrDataUrl = null; }
-        catch (HttpRequestException) { _error = "The code was not accepted. Check the authenticator clock and try again."; }
+        catch (HttpRequestException exception)
+        {
+            _error = exception.StatusCode switch
+            {
+                System.Net.HttpStatusCode.BadRequest => "The code was not accepted. Check the authenticator clock and try again.",
+                System.Net.HttpStatusCode.TooManyRequests => "Too many security attempts. Wait a minute before trying again.",
+                _ => "The account service is unavailable. Your enrollment remains here so you can retry."
+            };
+        }
         finally { _busy = false; }
     }
     private async Task DisableMfaAsync()
@@ -190,7 +215,15 @@
         if (_busy || string.IsNullOrWhiteSpace(_disablePassword) || string.IsNullOrWhiteSpace(_disableCode)) return;
         _busy = true; _error = null;
         try { await LocalAccountApi.DisableTwoFactorAsync(new(_disablePassword, _disableCode)); CloseDisable(); Navigation.NavigateTo("/logout", true); }
-        catch (HttpRequestException) { _error = "The passphrase or authenticator code was not accepted, or the account service is unavailable."; }
+        catch (HttpRequestException exception)
+        {
+            _error = exception.StatusCode switch
+            {
+                System.Net.HttpStatusCode.BadRequest => "The passphrase or authenticator code was not accepted.",
+                System.Net.HttpStatusCode.TooManyRequests => "Too many security attempts. Wait a minute before trying again.",
+                _ => "The account service is unavailable. Your entries remain so you can retry."
+            };
+        }
         finally { _busy = false; }
     }
     private void FinishEnrollment() { _recoveryCodes = null; CloseEnrollment(); Navigation.NavigateTo("/logout", true); }

@@ -86,7 +86,8 @@ and public HTTPS profiles.
 
 An established OIDC installation retains issuer/subject mappings and its
 explicit administrator roles. Email similarity does not merge identities.
-If an existing local instance administrator cannot sign in, an authorized
+If an existing local instance administrator (the original owner or a local
+account assigned an instance administrator role) cannot sign in, an authorized
 operator can mount a protected password file and invoke the existing recovery
 command in the API deployment context:
 
@@ -96,7 +97,7 @@ Bootstrap__Unattended__RecoveryEmail='admin@example.test' \
   dotnet NetRatel.API.dll --recover-local-admin
 ```
 
-This updates only the named existing instance administrator, clears its
+This updates only the named existing local instance administrator, clears its
 lockout, disables MFA, invalidates its sessions, and revokes integrations
 owned by that account. Re-enroll MFA and issue replacement integration
 credentials after signing in. It does not create a new owner.

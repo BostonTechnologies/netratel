@@ -179,16 +179,32 @@ builder.Services
     .AllowAnyOrigin()
     .AllowAnyHeader()
     .AllowAnyMethod()));
-builder.Services.AddRateLimiter(rateLimits => rateLimits.AddPolicy("local-login", context =>
-    RateLimitPartition.GetFixedWindowLimiter(
-        context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
-        _ => new FixedWindowRateLimiterOptions
-        {
-            PermitLimit = 10,
-            Window = TimeSpan.FromMinutes(1),
-            QueueLimit = 0,
-            AutoReplenishment = true
-        })));
+builder.Services.AddRateLimiter(rateLimits =>
+{
+    rateLimits.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    rateLimits.AddPolicy("local-login", context =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 10,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0,
+                AutoReplenishment = true
+            }));
+    rateLimits.AddPolicy("local-security", context =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            context.User.FindFirstValue(ClaimTypes.NameIdentifier)
+                ?? context.Connection.RemoteIpAddress?.ToString()
+                ?? "unknown",
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 10,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0,
+                AutoReplenishment = true
+            }));
+});
 
 #region Authentication & Authorization
 // Normalize inbound claims (avoid legacy remapping)
@@ -935,9 +951,9 @@ app.UseExceptionHandler(errorApp =>
 app.UseMiddleware<NetRatel.API.Middleware.ExceptionNotificationMiddleware>();
 app.UseHttpsRedirection();
 app.UseCors();
-app.UseRateLimiter();
 app.UseWebSockets();
 app.UseAuthentication();
+app.UseRateLimiter();
 app.UseMiddleware<NetRatel.API.Middleware.McpOperatorDelegationMiddleware>();
 app.UseAuthorization();
 var applyMigrationsOnStartup = app.Environment.IsDevelopment() ||

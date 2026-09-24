@@ -142,7 +142,7 @@ public static class LocalAuthenticationEndpoints
             await users.UpdateAsync(user).ConfigureAwait(false);
             await context.SignOutAsync(LocalAuthenticationOptions.Scheme).ConfigureAwait(false);
             return Results.NoContent();
-        }).RequireAuthorization(LocalAuthenticationOptions.LocalUserPolicy);
+        }).RequireAuthorization(LocalAuthenticationOptions.LocalUserPolicy).RequireRateLimiting("local-security");
 
         group.MapPost("/two-factor/setup", async (
             [FromBody] CurrentPasswordRequest request,
@@ -185,7 +185,7 @@ public static class LocalAuthenticationEndpoints
             var issuer = "NetRatel";
             var uri = $"otpauth://totp/{Uri.EscapeDataString($"{issuer}:{accountName}")}?secret={Uri.EscapeDataString(key)}&issuer={Uri.EscapeDataString(issuer)}&digits=6";
             return Results.Ok(new AuthenticatorSetupResponse(key, uri));
-        }).RequireAuthorization(LocalAuthenticationOptions.LocalUserPolicy);
+        }).RequireAuthorization(LocalAuthenticationOptions.LocalUserPolicy).RequireRateLimiting("local-security");
 
         group.MapPost("/two-factor/enable", async (
             [FromBody] TwoFactorCodeRequest request,
@@ -204,7 +204,7 @@ public static class LocalAuthenticationEndpoints
             var recoveryCodes = await users.GenerateNewTwoFactorRecoveryCodesAsync(user, 10).ConfigureAwait(false);
             await InvalidateSessionsAsync(users, user).ConfigureAwait(false);
             return Results.Ok(new RecoveryCodesResponse(recoveryCodes?.ToArray() ?? []));
-        }).RequireAuthorization(LocalAuthenticationOptions.LocalUserPolicy);
+        }).RequireAuthorization(LocalAuthenticationOptions.LocalUserPolicy).RequireRateLimiting("local-security");
 
         group.MapPost("/two-factor/disable", async (
             [FromBody] DisableTwoFactorRequest request,
@@ -222,7 +222,7 @@ public static class LocalAuthenticationEndpoints
             await InvalidateSessionsAsync(users, user).ConfigureAwait(false);
             await context.SignOutAsync(LocalAuthenticationOptions.Scheme).ConfigureAwait(false);
             return Results.NoContent();
-        }).RequireAuthorization(LocalAuthenticationOptions.LocalUserPolicy);
+        }).RequireAuthorization(LocalAuthenticationOptions.LocalUserPolicy).RequireRateLimiting("local-security");
 
         group.MapPost("/users", async (
             [FromBody] CreateLocalAccountRequest request,
