@@ -355,6 +355,51 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  postgresql-release-upgrade:
+    name: PostgreSQL previous-release upgrade (${{ matrix.authentication }})
+    needs: [validate, package]
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        authentication: [local, oidc]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          global-json-file: global.json
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: netratel-${{ needs.validate.outputs.version }}-linux-x64
+          path: release-artifacts
+      - env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          for component in migrations api web; do
+            image="netratel-${component}:postgresql-upgrade"
+            tools/ci/build-public-image.sh --dockerfile "docker/${component}/Dockerfile" --image "$image" --version "$VERSION" --revision "$GITHUB_SHA"
+            tools/ci/scan-public-image.sh --image "$image" --version "$VERSION" --revision "$GITHUB_SHA"
+          done
+      - env:
+          NETRATEL_UPGRADE_PRIOR_VERSION: v0.1.0-rc.5
+          NETRATEL_UPGRADE_PRIOR_API_IMAGE: ghcr.io/bostontechnologies/netratel-api@sha256:45ac6bc1e547ab3651e0a3e1dc7fb88a707126160b2d819450e29464f393ce9a
+          NETRATEL_UPGRADE_PRIOR_MIGRATIONS_IMAGE: ghcr.io/bostontechnologies/netratel-migrations@sha256:42b968a7f660d79255ddb51d0a6f9af14c86be1070e943afec8d3f17c42290f9
+          NETRATEL_UPGRADE_PRIOR_WEB_IMAGE: ghcr.io/bostontechnologies/netratel-web@sha256:ead47327e06e8ed698f673a0ae3176b82297709d025eae193b8121323f0b2cb7
+          NETRATEL_UPGRADE_PRIOR_CLIENT_IMAGE: ghcr.io/bostontechnologies/netratel-client@sha256:f5028da664f6edb2f4ef582c219393f070f4eb79b0faabe1971c1709c2717e91
+          NETRATEL_UPGRADE_CURRENT_API_IMAGE: netratel-api:postgresql-upgrade
+          NETRATEL_UPGRADE_CURRENT_MIGRATIONS_IMAGE: netratel-migrations:postgresql-upgrade
+          NETRATEL_UPGRADE_CURRENT_WEB_IMAGE: netratel-web:postgresql-upgrade
+        run: |
+          version="${{ needs.validate.outputs.version }}"
+          export NETRATEL_UPGRADE_COMPOSE_BUNDLE="release-artifacts/netratel-compose-${version}.tar.gz"
+          if [[ "${{ matrix.authentication }}" == local ]]; then
+            export NETRATEL_UPGRADE_CURRENT_CLI_ARCHIVE="release-artifacts/netratel-cli-${version}-linux-x64.tar.gz"
+            tools/ci/smoke-postgresql-local-upgrade.sh
+          else
+            tools/ci/smoke-postgresql-oidc-upgrade.sh
+          fi
+
   mcp-http-image-smoke:
     name: Smoke HTTP MCP release-equivalent image
     needs: validate
@@ -389,7 +434,7 @@ jobs:
   release-rehearsal:
     name: Release rehearsal
     if: always()
-    needs: [validate, package, client-packages, images, release-image-compose-smoke, release-bundle-local-first-compose-smoke, postgresql-regressions, mcp-http-image-smoke]
+    needs: [validate, package, client-packages, images, release-image-compose-smoke, release-bundle-local-first-compose-smoke, postgresql-regressions, postgresql-release-upgrade, mcp-http-image-smoke]
     runs-on: ubuntu-latest
     steps:
       - env:
@@ -400,6 +445,7 @@ jobs:
           RELEASE_IMAGE_COMPOSE_RESULT: ${{ needs.release-image-compose-smoke.result }}
           RELEASE_BUNDLE_LOCAL_FIRST_COMPOSE_RESULT: ${{ needs.release-bundle-local-first-compose-smoke.result }}
           POSTGRESQL_REGRESSIONS_RESULT: ${{ needs.postgresql-regressions.result }}
+          POSTGRESQL_RELEASE_UPGRADE_RESULT: ${{ needs.postgresql-release-upgrade.result }}
           MCP_HTTP_IMAGE_SMOKE_RESULT: ${{ needs.mcp-http-image-smoke.result }}
         run: |
           [[ "$VALIDATE_RESULT" == success ]]
@@ -409,4 +455,5 @@ jobs:
           [[ "$RELEASE_IMAGE_COMPOSE_RESULT" == success ]]
           [[ "$RELEASE_BUNDLE_LOCAL_FIRST_COMPOSE_RESULT" == success ]]
           [[ "$POSTGRESQL_REGRESSIONS_RESULT" == success ]]
+          [[ "$POSTGRESQL_RELEASE_UPGRADE_RESULT" == success ]]
           [[ "$MCP_HTTP_IMAGE_SMOKE_RESULT" == success ]]

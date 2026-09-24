@@ -28,7 +28,7 @@ public sealed class BootstrapLifecycleService
         var authenticationMode = AuthenticationModeConfiguration.Resolve(_configuration);
         if (authenticationMode is "Oidc" or "Hybrid")
         {
-            ValidateActiveOidcConfiguration();
+            OidcApiConfiguration.Resolve(_configuration).ValidateActive();
         }
 
         var descriptor = await _store.LoadOrCreateAsync(cancellationToken).ConfigureAwait(false);
@@ -47,7 +47,7 @@ public sealed class BootstrapLifecycleService
         {
             try
             {
-                if (await HasCompletedInitializationAsync(database, descriptor, cancellationToken).ConfigureAwait(false))
+                if (await HasCompletedInitializationAsync(database, descriptor, requireInitialObjects: false, cancellationToken).ConfigureAwait(false))
                     return descriptor;
             }
             catch (Exception ex) when (ex is NpgsqlException or TimeoutException or InvalidOperationException)
@@ -64,7 +64,12 @@ public sealed class BootstrapLifecycleService
         {
             try
             {
-                if (await HasCompletedInitializationAsync(database, descriptor, cancellationToken).ConfigureAwait(false))
+                // A pending setup still needs its original objects; a previously Ready
+                // installation may legitimately have replaced them before storage recovers.
+                var requireInitialObjects = descriptor.State == BootstrapState.Configuring ||
+                                            descriptor.RecoveryReason == "configuration-lease-expired" ||
+                                            descriptor.OperationId is not null;
+                if (await HasCompletedInitializationAsync(database, descriptor, requireInitialObjects, cancellationToken).ConfigureAwait(false))
                 {
                     return await _store.UpdateAsync(
                         current => current with
@@ -223,6 +228,7 @@ public sealed class BootstrapLifecycleService
     private static async Task<bool> HasCompletedInitializationAsync(
         NetRatelDatabaseConfiguration database,
         BootstrapDescriptor descriptor,
+        bool requireInitialObjects,
         CancellationToken cancellationToken)
     {
         await using var connection = new NpgsqlConnection(database.ConnectionString);
@@ -239,6 +245,20 @@ public sealed class BootstrapLifecycleService
                                       record.BootstrapInstanceId == descriptor.InstanceId,
                 cancellationToken).ConfigureAwait(false);
         if (initialization is null ||
+            (descriptor.OperationId is Guid operationId && initialization.OperationId != operationId))
+        {
+            return false;
+        }
+
+        // The committed marker belongs to this instance. Initial account and tenant records
+        // can change through supported administration after setup, so they are only evidence
+        // while reconciling an unfinished initialization transaction.
+        if (!requireInitialObjects)
+        {
+            return true;
+        }
+
+        if (
             !await application.Tenants.AsNoTracking().AnyAsync(tenant => tenant.Id == initialization.TenantId, cancellationToken).ConfigureAwait(false))
         {
             return false;
@@ -257,35 +277,6 @@ public sealed class BootstrapLifecycleService
         return await identity.ApplicationPrincipals.AsNoTracking().AnyAsync(
             principal => principal.Id == administrator.PrincipalId && principal.LocalUserId == administrator.Id,
             cancellationToken).ConfigureAwait(false);
-    }
-
-    private void ValidateActiveOidcConfiguration()
-    {
-        var oidc = _configuration.GetSection("Authentication:Oidc");
-        if (!oidc.Exists())
-        {
-            oidc = _configuration.GetSection("Authentication:Azure");
-        }
-
-        var authority = oidc["Authority"];
-        var audience = oidc["Audience"] ?? oidc["ClientId"];
-        if (!oidc.Exists())
-        {
-            var tenantId = _configuration["AzureAd:TenantId"];
-            authority = IsPlaceholder(tenantId) ? null : $"https://login.microsoftonline.com/{tenantId}/v2.0";
-            audience = _configuration["AzureAd:ClientId"] ?? _configuration["AzureAd:Audience"];
-        }
-
-        if (IsPlaceholder(authority) || !Uri.TryCreate(authority, UriKind.Absolute, out var uri) ||
-            uri.Scheme is not ("http" or "https") || uri.Host.EndsWith(".invalid", StringComparison.OrdinalIgnoreCase))
-        {
-            throw new InvalidOperationException("Active OIDC mode requires a real absolute Authentication:Oidc:Authority (or complete legacy Azure settings). Set Authentication:Mode=Local to ignore unused OIDC examples.");
-        }
-
-        if (IsPlaceholder(audience))
-        {
-            throw new InvalidOperationException("Active OIDC mode requires Authentication:Oidc:Audience (or a compatible ClientId). Set Authentication:Mode=Local for a local-account installation.");
-        }
     }
 
     private static bool IsPlaceholder(string? value) =>

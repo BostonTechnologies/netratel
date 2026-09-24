@@ -32,6 +32,30 @@ changing the historical rc.5 release record.
 | E06 documentation and issue audit | #107, #22, #60, #61, #62, #64, #71 | README/hosting/first-run/INSTALL rewrites; rc.3 ledger; #22 closure; #71 checkpoint | #22 closed after merged #23/#26; #71 updated with exact rc.5 publication evidence; 18 release-validator tests and extracted bundle profiles passed | PR #108 carries the final hosted package check result. |
 | E07 final acceptance and PR | #107 | PR #108 and release/CI gates | `89a0023`; hosted run 35908712130 passed all 22 jobs, including bundled/external/public-HTTPS browser, native Client, CLI/MCP, and rc.5 upgrades; follow-up Release build passed with 0 errors, 1,993 CI-filtered tests passed with 4 live-environment skips, and fresh source Compose browser passed | A new exact-head hosted run with generic PostgreSQL check names is pending. The version-pinned upgrade jobs and their unused smoke fixtures were removed from active CI. |
 
+## PR #108 review corrections and rc.6 candidate
+
+The reviewed source head was `57602acad7ad2748c31eeafe944e8cb42bec9c38`.
+Its exact-head run `35969316729` passed all 19 generic PR jobs. The reviewer
+identified four remaining defects. The tests below were first run against the
+reviewed behavior and reproduced the failures before the repairs were applied.
+
+| Finding | Reproduction and repair | Local regression evidence | Hosted evidence |
+| --- | --- | --- | --- |
+| R1 administrator handover | PostgreSQL Local/Hybrid restart tests entered RecoveryRequired after initial administrator A was disabled. Ready continuity now uses the matching durable instance marker; interrupted setup still checks the original objects and matching operation when available. The regression uses real local account, role-assignment, disable, login and access endpoints with successor B, checks the final-administrator guard, and removes the original tenant before restart. | Initial Local/Hybrid failures reproduced; repaired endpoint journey passed in `BootstrapLegacyAdoptionPostgresTests`. Marker removal, wrong marker, key-material recovery, post-commit reconciliation and retry remain covered. | Final-head generic PostgreSQL gates pending. |
+| R2 OIDC audiences | Oidc/Hybrid bootstrap rejected plural audiences without a singular value. A shared API OIDC resolver now feeds bootstrap and JWT bearer settings, retaining singular and legacy aliases. | Initial plural failures reproduced; signed listed/unrelated audience fixture and aliases passed in `BootstrapLegacyAdoptionPostgresTests`. | Final-head OIDC Compose gate pending. |
+| R3 one-time results | A pending integration create could be closed and reopened into another draft; MFA setup could be canceled while pending. Both component regressions failed against reviewed behavior. Dialogs now hold in-flight work and acknowledgments, with request generations and disposal guards. | Controlled pending-task integration and account-security component tests passed after repair. | Final-head browser gate pending. |
+| R4 OIDC action | Reviewed `branding-compose` capture `10796305722` showed a blank solid primary button. The login action now uses a filled MudBlazor variant with the palette's contrast text and a visible focus outline. Browser smoke measures label/icon contrast in system/light/dark, checks focus, and activates the named link. | CSS and prepaint theme source reviewed; synthetic replacement captures pending. | Final-head branding artifact pending. |
+
+The remote rc.6 tag, GitHub release, and candidate tags in the five approved
+container repositories were absent when checked. `Directory.Build.props`, the
+release manifest, current notes, owner promotion examples, and active version
+assertions now describe candidate `0.1.0-rc.6` together. rc.5 release notes and
+earlier test fixtures remain historical. PR and release workflows contain a
+generic Local/OIDC PostgreSQL previous-release upgrade matrix using controlled
+published rc.5 image digests; no CI job or package repository is RC-named.
+Neither this ledger nor a candidate version closes #64's external-provider
+credential/identity acceptance or #71's later publication verification.
+
 Historical release notes, migrations, and issue comments remain evidence of their original
 state. This ledger does not treat an open issue as complete based only on a release number.
 

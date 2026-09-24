@@ -538,9 +538,13 @@ a, .btn-link {
 
 .netratel-login-primary-action {
     min-height: 44px;
-    background-color: var(--mud-palette-primary) !important;
     box-shadow: 0 4px 12px color-mix(in srgb, var(--mud-palette-primary) 28%, transparent);
     border-radius: 6px;
+}
+
+.netratel-login-primary-action:focus {
+    outline: 3px solid var(--mud-palette-text-primary);
+    outline-offset: 3px;
 }
 
 .netratel-login-dev-action {

@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Reflection;
 using System.Security.Claims;
 using System.Text.Encodings.Web;
 using FluentAssertions;
@@ -132,7 +133,9 @@ public sealed class CoreBusinessApiEndpointsTests
         var version = await client.GetFromJsonAsync<SystemVersionResponse>("/api/v1/system/version");
         version.Should().NotBeNull();
         version!.ServiceName.Should().Be("NetRatel.API");
-        version.DisplayVersion.Should().Be("v0.1.0-rc.5");
+        var assemblyVersion = typeof(SystemEndpoints).Assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()!.InformationalVersion.Split('+')[0];
+        version.DisplayVersion.Should().Be($"v{assemblyVersion}");
 
         (await client.GetAsync("/api/v1/system/spacetime-health")).StatusCode.Should().Be(HttpStatusCode.NotFound);
         (await client.GetAsync("/api/v1/system/spacetime-connection-debug")).StatusCode.Should().Be(HttpStatusCode.NotFound);

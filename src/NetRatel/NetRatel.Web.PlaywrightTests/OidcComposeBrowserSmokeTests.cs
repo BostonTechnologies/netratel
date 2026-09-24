@@ -1,4 +1,6 @@
 using Microsoft.Playwright;
+using System.Reflection;
+using NetRatel.Web.Components.Layout;
 
 namespace NetRatel.Web.PlaywrightTests;
 
@@ -54,11 +56,10 @@ public sealed class OidcComposeBrowserSmokeTests
         await page.GotoAsync(new Uri(webUrl, "login").ToString());
         await CaptureBrandingAsync(page, "login");
 
-        var login = await page.GotoAsync(new Uri(webUrl, "auth/oidc?returnUrl=%2Ftenants").ToString(), new PageGotoOptions
-        {
-            WaitUntil = WaitUntilState.DOMContentLoaded
-        });
-        Assert.NotNull(login);
+        await page.GotoAsync(new Uri(webUrl, "login?ReturnUrl=%2Ftenants").ToString());
+        var signInAction = page.Locator(".netratel-login-primary-action");
+        Assert.Equal("Sign in with your identity provider", (await signInAction.InnerTextAsync()).Trim());
+        await signInAction.ClickAsync();
         await page.Locator("input[name='username']").FillAsync(username);
         var callbackResponse = page.WaitForResponseAsync(response =>
             Uri.TryCreate(response.Url, UriKind.Absolute, out var responseUri)
@@ -98,6 +99,7 @@ public sealed class OidcComposeBrowserSmokeTests
         Directory.CreateDirectory(directory);
         await SetThemeAndReloadAsync(page, "system");
         Assert.Contains(await page.EvaluateAsync<string>("() => document.documentElement.dataset.netratelTheme"), new[] { "light", "dark" });
+        if (view == "login" && expectCurrentShell) await AssertOidcActionAsync(page);
 
         foreach (var theme in new[] { "light", "dark" })
         {
@@ -124,6 +126,7 @@ public sealed class OidcComposeBrowserSmokeTests
                     var signIn = page.Locator(".netratel-login-primary-action");
                     Assert.True(await signIn.IsVisibleAsync());
                     Assert.True(await signIn.IsEnabledAsync());
+                    if (expectCurrentShell) await AssertOidcActionAsync(page);
                     Assert.True(await page.EvaluateAsync<bool>("() => getComputedStyle(document.querySelector('.netratel-public-layout')).backgroundImage.includes('netratel-splash')"));
                     if (expectCurrentShell)
                         Assert.True(await page.EvaluateAsync<bool>("() => { const bounds = document.querySelector('.netratel-login-panel').getBoundingClientRect(); return Math.abs((bounds.left + bounds.right) / 2 - innerWidth / 2) <= 12 && Math.abs((bounds.top + bounds.bottom) / 2 - innerHeight / 2) <= 16; }"),
@@ -158,6 +161,32 @@ public sealed class OidcComposeBrowserSmokeTests
         }
     }
 
+    private static async Task AssertOidcActionAsync(IPage page)
+    {
+        var action = page.Locator(".netratel-login-primary-action");
+        Assert.True(await action.IsVisibleAsync());
+        Assert.Equal("Sign in with your identity provider", (await action.InnerTextAsync()).Trim());
+        var contrast = await action.EvaluateAsync<double>(@"element => {
+            const rgb = value => value.match(/[\d.]+/g).slice(0, 3).map(Number);
+            const luminance = value => rgb(value).map(channel => {
+                const normalized = channel / 255;
+                return normalized <= 0.04045 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4;
+            }).reduce((sum, channel, index) => sum + channel * [0.2126, 0.7152, 0.0722][index], 0);
+            const style = getComputedStyle(element);
+            const text = luminance(style.color);
+            const background = luminance(style.backgroundColor);
+            return (Math.max(text, background) + 0.05) / (Math.min(text, background) + 0.05);
+        }");
+        Assert.True(contrast >= 4.5, $"OIDC action contrast is {contrast:F2}:1.");
+        var iconColorMatchesText = await action.EvaluateAsync<bool>("element => getComputedStyle(element.querySelector('svg')).color === getComputedStyle(element).color");
+        Assert.True(iconColorMatchesText);
+        await action.FocusAsync();
+        await page.Keyboard.PressAsync("Shift+Tab");
+        await page.Keyboard.PressAsync("Tab");
+        Assert.True(await action.EvaluateAsync<bool>("element => document.activeElement === element"));
+        Assert.True(await action.EvaluateAsync<bool>("element => { const style = getComputedStyle(element); return style.outlineStyle !== 'none' && parseFloat(style.outlineWidth) >= 2; }"));
+    }
+
     private static async Task SetThemeAndReloadAsync(IPage page, string mode)
     {
         await page.EvaluateAsync<bool>("mode => { if (mode === 'system') localStorage.removeItem('netratel.theme.preference'); else localStorage.setItem('netratel.theme.preference', mode); return true; }", mode);
@@ -168,7 +197,8 @@ public sealed class OidcComposeBrowserSmokeTests
     private static async Task AssertProductVersionBadgesAsync(IPage page)
     {
         var expectedVersion = Environment.GetEnvironmentVariable("NETRATEL_BROWSER_SMOKE_EXPECTED_VERSION")
-            ?? "v0.1.0-rc.5";
+            ?? AppBarVersionResolver.FormatProductVersion(typeof(NetRatel.Web.Components.Pages.Login).Assembly
+                .GetCustomAttribute<AssemblyInformationalVersionAttribute>()!.InformationalVersion);
 
         await page.ReloadAsync(new PageReloadOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
         await page.SetViewportSizeAsync(1440, 900);

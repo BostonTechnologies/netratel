@@ -61,17 +61,36 @@ public class LoginPageTests : AsyncBunitContext
         cut.Markup.Should().Contain("href=\"/auth/development?returnUrl=%2Fclients\"");
     }
 
+    [Theory]
+    [InlineData("Local", true, false)]
+    [InlineData("Oidc", false, true)]
+    [InlineData("Hybrid", true, true)]
+    public void LoginPage_Offers_only_the_actions_for_its_authentication_mode(string mode, bool local, bool oidc)
+    {
+        var cut = RenderLogin(authenticationMode: mode);
+
+        cut.FindAll("[data-testid='local-login-submit']").Should().HaveCount(local ? 1 : 0);
+        cut.FindAll(".netratel-login-primary-action").Should().HaveCount(oidc ? 1 : 0);
+        if (oidc)
+        {
+            cut.Find(".netratel-login-primary-action").TextContent.Should().Contain("Sign in with your identity provider");
+            cut.Find(".netratel-login-primary-action").ClassList.Should().Contain("mud-button-filled-primary");
+        }
+    }
+
     private IRenderedComponent<Login> RenderLogin(
         string environmentLabel = "Production system",
         string environmentName = "Production",
         bool developmentOperatorEnabled = false,
-        string? returnUrl = null)
+        string? returnUrl = null,
+        string? authenticationMode = null)
     {
         Services.AddSingleton<IConfiguration>(new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["DevelopmentOperator:Enabled"] = developmentOperatorEnabled.ToString(),
                 ["LoginUi:EnvironmentLabel"] = environmentLabel,
+                ["Authentication:Mode"] = authenticationMode,
                 ["Authentication:Oidc:Authority"] = "https://issuer.example.invalid"
             })
             .Build());

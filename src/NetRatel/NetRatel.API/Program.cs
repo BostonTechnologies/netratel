@@ -321,52 +321,24 @@ builder.Services
         MachineTokenAuthentication.Configure(options, machineTokenOptions, builder.Environment.IsDevelopment()))
     .AddJwtBearer("Oidc", options =>
     {
-        var oidc = builder.Configuration.GetSection("Authentication:Oidc");
-        if (!oidc.Exists())
-        {
-            // Compatibility aliases for deployments not yet migrated to
-            // Authentication:Oidc. New deployments must use the canonical
-            // provider-neutral section.
-            oidc = builder.Configuration.GetSection("Authentication:Azure");
-        }
-
-        var authority = oidc["Authority"];
-        var audience = oidc["Audience"] ?? oidc["ClientId"];
-        var configuredAudiences = oidc.GetSection("Audiences").Get<string[]>() ?? [];
-        var configuredIssuers = oidc.GetSection("ValidIssuers").Get<string[]>() ?? [];
-        if (!oidc.Exists())
-        {
-            var azureAd = builder.Configuration.GetSection("AzureAd");
-            var tenantId = azureAd["TenantId"];
-            var clientId = azureAd["ClientId"] ?? azureAd["Audience"];
-            authority = string.IsNullOrWhiteSpace(tenantId)
-                ? authority
-                : $"https://login.microsoftonline.com/{tenantId}/v2.0";
-            audience = clientId;
-            configuredAudiences = string.IsNullOrWhiteSpace(clientId)
-                ? []
-                : [clientId, azureAd["AppIdUri"] ?? $"api://{clientId}"];
-            configuredIssuers = string.IsNullOrWhiteSpace(tenantId)
-                ? []
-                : [$"https://login.microsoftonline.com/{tenantId}/v2.0", $"https://sts.windows.net/{tenantId}/"];
-        }
+        var oidc = OidcApiConfiguration.Resolve(builder.Configuration);
 
         options.RequireHttpsMetadata = !builder.Environment.IsDevelopment();
-        options.Authority = authority;
+        options.Authority = oidc.Authority;
 
         options.TokenValidationParameters = new TokenValidationParameters
         {
             ValidateIssuer = true,
-            ValidIssuers = configuredIssuers.Length == 0 ? null : configuredIssuers,
+            ValidIssuers = oidc.ValidIssuers.Length == 0 ? null : oidc.ValidIssuers,
             ValidateAudience = true,
-            ValidAudiences = configuredAudiences.Length == 0 ? null : configuredAudiences,
-            ValidAudience = configuredAudiences.Length == 0 ? audience : null,
+            ValidAudiences = oidc.Audiences.Length == 0 ? null : oidc.Audiences,
+            ValidAudience = oidc.Audiences.Length == 0 ? oidc.Audience : null,
             // LocalPrincipalClaimsTransformation accepts only the validated
             // OIDC identity. Keep this explicit rather than depending on the
             // IdentityModel default authentication type.
             AuthenticationType = "Oidc",
-            RoleClaimType = oidc["RoleClaimType"] ?? "roles",
-            NameClaimType = oidc["NameClaimType"] ?? "preferred_username",
+            RoleClaimType = oidc.RoleClaimType,
+            NameClaimType = oidc.NameClaimType,
             ClockSkew = TimeSpan.FromMinutes(10)
         };
         options.MapInboundClaims = false;

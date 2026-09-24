@@ -9,7 +9,7 @@ API, command-line tools, a native Client/agent, and optional Model Context
 Protocol (MCP) integrations. AI services are optional and are not required for
 normal operation.
 
-> NetRatel `0.1.0-rc.5` is a prerelease. Do not treat it as a stable release
+> NetRatel `0.1.0-rc.6` is a prerelease candidate. Do not treat it as a stable release
 > channel or use it for unattended fleet updates.
 
 ## Get started

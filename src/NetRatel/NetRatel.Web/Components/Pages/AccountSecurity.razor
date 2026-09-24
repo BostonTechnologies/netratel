@@ -4,6 +4,7 @@
 @implements IDisposable
 @using System.Text
 @using Microsoft.AspNetCore.Components.Authorization
+@using Microsoft.AspNetCore.Components.Routing
 @using NetRatel.Web.Services.Authentication
 @using QRCoder
 @inject AuthenticationStateProvider AuthenticationStateProvider
@@ -11,6 +12,7 @@
 @inject NavigationManager Navigation
 
 <PageTitle>Account security</PageTitle>
+<NavigationLock OnBeforeInternalNavigation="GuardNavigationAsync" ConfirmExternalNavigation="@(_busy || _recoveryCodes is { Count: > 0 })" />
 <MudContainer MaxWidth="MaxWidth.Large" Class="security-page" data-testid="account-security-page">
     @if (_interactiveReady) { <span hidden data-testid="account-security-client-ready"></span> }
     <MudText Typo="Typo.h4">Account security</MudText>
@@ -51,7 +53,7 @@
     }
 </MudContainer>
 
-<MudDialog Visible="_passwordDialog" VisibleChanged="PasswordVisibleChanged" AriaLabel="Change passphrase">
+<MudDialog Visible="_passwordDialog" VisibleChanged="PasswordVisibleChanged" AriaLabel="Change passphrase" Options="@(new DialogOptions { BackdropClick = false, CloseOnEscapeKey = false })">
     <DialogContent><MudStack Spacing="3" Class="security-dialog">
         <MudText Typo="Typo.h6">Change passphrase</MudText>
         <MudText Typo="Typo.body2">Use at least @_status?.MinimumPassphraseLength characters. Existing sessions will end when you save.</MudText>
@@ -61,7 +63,7 @@
         <MudTextField Label="Confirm new passphrase" Variant="Variant.Outlined" InputType="InputType.Password" @bind-Value="_passwordConfirm" autocomplete="new-password" data-testid="change-password-confirm" />
         @if (!CanChangePassword) { <MudText Typo="Typo.caption">Enter your current passphrase and matching new passphrases of the required length.</MudText> }
     </MudStack></DialogContent>
-    <DialogActions><MudButton OnClick="ClosePassword">Cancel</MudButton><MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="@(_busy || !CanChangePassword)" OnClick="ChangePasswordAsync" data-testid="change-local-password">Change passphrase</MudButton></DialogActions>
+    <DialogActions><MudButton OnClick="ClosePassword" Disabled="_busy">Cancel</MudButton><MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="@(_busy || !CanChangePassword)" OnClick="ChangePasswordAsync" data-testid="change-local-password">Change passphrase</MudButton></DialogActions>
 </MudDialog>
 
 <MudDialog Visible="_enrollmentDialog" VisibleChanged="EnrollmentVisibleChanged" AriaLabel="Set up authenticator" Options="@(new DialogOptions { BackdropClick = false, CloseOnEscapeKey = false })">
@@ -89,10 +91,10 @@
     </MudStack></DialogContent>
     <DialogActions>
         @if (_recoveryCodes is { Count: > 0 })
-        { <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="FinishEnrollment" data-testid="finish-mfa-enrollment">I saved the recovery codes</MudButton> }
+        { <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="FinishEnrollment" Disabled="_busy" data-testid="finish-mfa-enrollment">I saved the recovery codes</MudButton> }
         else
         {
-            <MudButton OnClick="CloseEnrollment">Cancel</MudButton>
+            <MudButton OnClick="CloseEnrollment" Disabled="_busy">Cancel</MudButton>
             @if (_authenticatorSetup is null)
             { <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="@(_busy || string.IsNullOrWhiteSpace(_setupPassword))" OnClick="BeginMfaSetupAsync" data-testid="begin-mfa-setup">Continue</MudButton> }
             else
@@ -101,7 +103,7 @@
     </DialogActions>
 </MudDialog>
 
-<MudDialog Visible="_disableDialog" VisibleChanged="DisableVisibleChanged" AriaLabel="Disable authenticator">
+<MudDialog Visible="_disableDialog" VisibleChanged="DisableVisibleChanged" AriaLabel="Disable authenticator" Options="@(new DialogOptions { BackdropClick = false, CloseOnEscapeKey = false })">
     <DialogContent><MudStack Spacing="3" Class="security-dialog">
         <MudText Typo="Typo.h6">Disable authenticator</MudText>
         <MudAlert Severity="Severity.Warning">Your account will no longer require an authenticator code. You will sign in again afterwards.</MudAlert>
@@ -109,11 +111,13 @@
         <MudTextField Label="Current passphrase" Variant="Variant.Outlined" InputType="InputType.Password" @bind-Value="_disablePassword" autocomplete="current-password" data-testid="disable-mfa-current-password" />
         <MudTextField Label="Current authenticator code" Variant="Variant.Outlined" InputType="InputType.Password" @bind-Value="_disableCode" autocomplete="one-time-code" data-testid="disable-mfa-code" />
     </MudStack></DialogContent>
-    <DialogActions><MudButton OnClick="CloseDisable">Cancel</MudButton><MudButton Variant="Variant.Filled" Color="Color.Error" Disabled="@(_busy || string.IsNullOrWhiteSpace(_disablePassword) || string.IsNullOrWhiteSpace(_disableCode))" OnClick="DisableMfaAsync" data-testid="disable-mfa">Disable authenticator</MudButton></DialogActions>
+    <DialogActions><MudButton OnClick="CloseDisable" Disabled="_busy">Cancel</MudButton><MudButton Variant="Variant.Filled" Color="Color.Error" Disabled="@(_busy || string.IsNullOrWhiteSpace(_disablePassword) || string.IsNullOrWhiteSpace(_disableCode))" OnClick="DisableMfaAsync" data-testid="disable-mfa">Disable authenticator</MudButton></DialogActions>
 </MudDialog>
 
 @code {
     private bool _isLocalAccount, _loading, _busy, _passwordDialog, _enrollmentDialog, _disableDialog, _interactiveReady;
+    private bool _disposed;
+    private int _enrollmentGeneration;
     private string? _error, _passwordCurrent, _passwordNew, _passwordConfirm, _setupPassword, _enrollmentCode, _disablePassword, _disableCode, _qrDataUrl;
     private LocalSecurityStatus? _status;
     private AuthenticatorSetup? _authenticatorSetup;
@@ -128,39 +132,48 @@
     }
     protected override void OnAfterRender(bool firstRender)
     {
-        if (!firstRender) return;
+        if (!firstRender || _disposed) return;
         _interactiveReady = true;
         StateHasChanged();
     }
     private async Task LoadStatusAsync()
     {
+        if (_disposed) return;
         _loading = true;
-        try { _status = await LocalAccountApi.GetSecurityStatusAsync(); }
-        catch (HttpRequestException) { _status = null; }
-        finally { _loading = false; }
+        try { var status = await LocalAccountApi.GetSecurityStatusAsync(); if (!_disposed) _status = status; }
+        catch (HttpRequestException) { if (!_disposed) _status = null; }
+        finally { if (!_disposed) _loading = false; }
     }
-    private void OpenPassword() { _error = null; _passwordDialog = true; }
-    private void OpenEnrollment() { _error = null; _enrollmentDialog = true; }
-    private void OpenDisable() { _error = null; _disableDialog = true; }
+    private void OpenPassword() { if (_busy || _disposed) return; _error = null; _passwordDialog = true; }
+    private void OpenEnrollment() { if (_busy || _disposed || _enrollmentDialog) return; _enrollmentGeneration++; _error = null; _enrollmentDialog = true; }
+    private void OpenDisable() { if (_busy || _disposed) return; _error = null; _disableDialog = true; }
     private void ClosePassword() => PasswordVisibleChanged(false);
     private void CloseEnrollment() => EnrollmentVisibleChanged(false);
     private void CloseDisable() => DisableVisibleChanged(false);
-    private void PasswordVisibleChanged(bool value) { _passwordDialog = value; if (!value) _passwordCurrent = _passwordNew = _passwordConfirm = _error = null; }
+    private void PasswordVisibleChanged(bool value) { if (_busy || _disposed) return; _passwordDialog = value; if (!value) _passwordCurrent = _passwordNew = _passwordConfirm = _error = null; }
     private void EnrollmentVisibleChanged(bool value)
     {
-        if (!value && _recoveryCodes is { Count: > 0 }) return;
+        if (_disposed || !value && (_busy || _recoveryCodes is { Count: > 0 })) return;
         _enrollmentDialog = value;
-        if (!value) { _setupPassword = _enrollmentCode = _qrDataUrl = _error = null; _authenticatorSetup = null; }
+        if (!value) { _enrollmentGeneration++; _setupPassword = _enrollmentCode = _qrDataUrl = _error = null; _authenticatorSetup = null; }
     }
-    private void DisableVisibleChanged(bool value) { _disableDialog = value; if (!value) _disablePassword = _disableCode = _error = null; }
+    private void DisableVisibleChanged(bool value) { if (_busy || _disposed) return; _disableDialog = value; if (!value) _disablePassword = _disableCode = _error = null; }
 
     private async Task ChangePasswordAsync()
     {
         if (_busy || !CanChangePassword) return;
         _busy = true; _error = null;
-        try { await LocalAccountApi.ChangePasswordAsync(new(_passwordCurrent!, _passwordNew!)); ClosePassword(); Navigation.NavigateTo("/logout", true); }
+        try
+        {
+            await LocalAccountApi.ChangePasswordAsync(new(_passwordCurrent!, _passwordNew!));
+            if (_disposed) return;
+            _busy = false;
+            ClosePassword();
+            Navigation.NavigateTo("/logout", true);
+        }
         catch (HttpRequestException exception)
         {
+            if (_disposed) return;
             _error = exception.StatusCode switch
             {
                 System.Net.HttpStatusCode.BadRequest => "The current passphrase was not accepted, or the new one does not meet policy.",
@@ -168,22 +181,27 @@
                 _ => "The account service is unavailable. Your entries remain so you can retry."
             };
         }
-        finally { _busy = false; }
+        finally { if (!_disposed) _busy = false; }
     }
     private async Task BeginMfaSetupAsync()
     {
-        if (_busy || string.IsNullOrWhiteSpace(_setupPassword)) return;
+        if (_busy || !_enrollmentDialog || _disposed || string.IsNullOrWhiteSpace(_setupPassword)) return;
+        var generation = _enrollmentGeneration;
+        var password = _setupPassword;
         _busy = true; _error = null;
         try
         {
-            _authenticatorSetup = await LocalAccountApi.BeginTwoFactorSetupAsync(_setupPassword);
+            var setup = await LocalAccountApi.BeginTwoFactorSetupAsync(password);
+            if (!IsCurrentEnrollment(generation)) return;
+            _authenticatorSetup = setup;
             _setupPassword = null;
             using var generator = new QRCodeGenerator();
-            using var data = generator.CreateQrCode(_authenticatorSetup.AuthenticatorUri, QRCodeGenerator.ECCLevel.Q);
+            using var data = generator.CreateQrCode(setup.AuthenticatorUri, QRCodeGenerator.ECCLevel.Q);
             _qrDataUrl = "data:image/svg+xml;base64," + Convert.ToBase64String(Encoding.UTF8.GetBytes(new SvgQRCode(data).GetGraphic(4)));
         }
         catch (HttpRequestException exception)
         {
+            if (!IsCurrentEnrollment(generation)) return;
             _error = exception.StatusCode switch
             {
                 System.Net.HttpStatusCode.Conflict => "An authenticator is already enabled. Disable it with its current code before replacing it.",
@@ -192,15 +210,25 @@
                 _ => "The account service is unavailable. Your passphrase remains here so you can retry."
             };
         }
-        finally { _busy = false; }
+        finally { if (IsCurrentEnrollment(generation)) _busy = false; }
     }
     private async Task EnableMfaAsync()
     {
-        if (_busy || string.IsNullOrWhiteSpace(_enrollmentCode)) return;
+        if (_busy || !_enrollmentDialog || _disposed || _authenticatorSetup is null || string.IsNullOrWhiteSpace(_enrollmentCode)) return;
+        var generation = _enrollmentGeneration;
+        var code = _enrollmentCode;
         _busy = true; _error = null;
-        try { _recoveryCodes = await LocalAccountApi.EnableTwoFactorAsync(_enrollmentCode); _authenticatorSetup = null; _enrollmentCode = _qrDataUrl = null; }
+        try
+        {
+            var codes = await LocalAccountApi.EnableTwoFactorAsync(code);
+            if (!IsCurrentEnrollment(generation)) return;
+            _recoveryCodes = codes;
+            _authenticatorSetup = null;
+            _enrollmentCode = _qrDataUrl = null;
+        }
         catch (HttpRequestException exception)
         {
+            if (!IsCurrentEnrollment(generation)) return;
             _error = exception.StatusCode switch
             {
                 System.Net.HttpStatusCode.BadRequest => "The code was not accepted. Check the authenticator clock and try again.",
@@ -208,15 +236,29 @@
                 _ => "The account service is unavailable. Your enrollment remains here so you can retry."
             };
         }
-        finally { _busy = false; }
+        finally { if (IsCurrentEnrollment(generation)) _busy = false; }
+    }
+    private bool IsCurrentEnrollment(int generation) => !_disposed && _enrollmentDialog && _enrollmentGeneration == generation;
+    private Task GuardNavigationAsync(LocationChangingContext context)
+    {
+        if (_busy || _recoveryCodes is { Count: > 0 }) context.PreventNavigation();
+        return Task.CompletedTask;
     }
     private async Task DisableMfaAsync()
     {
         if (_busy || string.IsNullOrWhiteSpace(_disablePassword) || string.IsNullOrWhiteSpace(_disableCode)) return;
         _busy = true; _error = null;
-        try { await LocalAccountApi.DisableTwoFactorAsync(new(_disablePassword, _disableCode)); CloseDisable(); Navigation.NavigateTo("/logout", true); }
+        try
+        {
+            await LocalAccountApi.DisableTwoFactorAsync(new(_disablePassword, _disableCode));
+            if (_disposed) return;
+            _busy = false;
+            CloseDisable();
+            Navigation.NavigateTo("/logout", true);
+        }
         catch (HttpRequestException exception)
         {
+            if (_disposed) return;
             _error = exception.StatusCode switch
             {
                 System.Net.HttpStatusCode.BadRequest => "The passphrase or authenticator code was not accepted.",
@@ -224,11 +266,19 @@
                 _ => "The account service is unavailable. Your entries remain so you can retry."
             };
         }
-        finally { _busy = false; }
+        finally { if (!_disposed) _busy = false; }
     }
-    private void FinishEnrollment() { _recoveryCodes = null; CloseEnrollment(); Navigation.NavigateTo("/logout", true); }
+    private void FinishEnrollment()
+    {
+        if (_busy || _disposed || _recoveryCodes is not { Count: > 0 }) return;
+        _recoveryCodes = null;
+        CloseEnrollment();
+        Navigation.NavigateTo("/logout", true);
+    }
     public void Dispose()
     {
+        _disposed = true;
+        _enrollmentGeneration++;
         _passwordCurrent = _passwordNew = _passwordConfirm = _setupPassword = _enrollmentCode = _disablePassword = _disableCode = _qrDataUrl = null;
         _authenticatorSetup = null; _recoveryCodes = null;
     }

@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using System.Reflection;
 using Bunit;
 using FluentAssertions;
 using Microsoft.AspNetCore.Components.Authorization;
@@ -56,6 +57,67 @@ public sealed class AccountSecurityStateTests : AsyncBunitContext
         api.StatusRequested.Should().BeFalse();
     }
 
+    [Fact]
+    public async Task Enrollment_cannot_close_while_setup_is_pending()
+    {
+        var api = Configure(localAccount: true);
+        var page = Render<AccountSecurity>();
+        api.CompleteStatus(new LocalSecurityStatus(false, 15));
+        Call(page.Instance, "OpenEnrollment");
+        Set(page.Instance, "_setupPassword", "a local-first passphrase");
+        var pending = CallAsync(page.Instance, "BeginMfaSetupAsync");
+
+        Call(page.Instance, "CloseEnrollment");
+        CallWithArg(page.Instance, "EnrollmentVisibleChanged", false);
+
+        Field<bool>(page.Instance, "_enrollmentDialog").Should().BeTrue();
+        api.CompleteSetup(new AuthenticatorSetup("SYNTHETICKEY", "otpauth://totp/NetRatel:synthetic?secret=SYNTHETICKEY"));
+        await pending;
+        Field<AuthenticatorSetup>(page.Instance, "_authenticatorSetup").Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task Enablement_keeps_recovery_codes_in_the_open_acknowledgment()
+    {
+        var api = Configure(localAccount: true);
+        var page = Render<AccountSecurity>();
+        api.CompleteStatus(new LocalSecurityStatus(false, 15));
+        Call(page.Instance, "OpenEnrollment");
+        Set(page.Instance, "_setupPassword", "a local-first passphrase");
+        var setup = CallAsync(page.Instance, "BeginMfaSetupAsync");
+        api.CompleteSetup(new AuthenticatorSetup("SYNTHETICKEY", "otpauth://totp/NetRatel:synthetic?secret=SYNTHETICKEY"));
+        await setup;
+        Set(page.Instance, "_enrollmentCode", "123456");
+        var enable = CallAsync(page.Instance, "EnableMfaAsync");
+
+        Call(page.Instance, "CloseEnrollment");
+        Field<bool>(page.Instance, "_enrollmentDialog").Should().BeTrue();
+        api.CompleteEnable(["synthetic-recovery-code"]);
+        await enable;
+        Field<IReadOnlyList<string>>(page.Instance, "_recoveryCodes").Should().ContainSingle()
+            .Which.Should().Be("synthetic-recovery-code");
+        Call(page.Instance, "CloseEnrollment");
+        Field<bool>(page.Instance, "_enrollmentDialog").Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Disposed_enrollment_ignores_late_setup_response()
+    {
+        var api = Configure(localAccount: true);
+        var page = Render<AccountSecurity>();
+        api.CompleteStatus(new LocalSecurityStatus(false, 15));
+        Call(page.Instance, "OpenEnrollment");
+        Set(page.Instance, "_setupPassword", "a local-first passphrase");
+        var pending = CallAsync(page.Instance, "BeginMfaSetupAsync");
+
+        page.Instance.Dispose();
+        api.CompleteSetup(new AuthenticatorSetup("SYNTHETICKEY", "otpauth://totp/NetRatel:synthetic?secret=SYNTHETICKEY"));
+        await pending;
+
+        Field<AuthenticatorSetup?>(page.Instance, "_authenticatorSetup").Should().BeNull();
+        Field<string?>(page.Instance, "_qrDataUrl").Should().BeNull();
+    }
+
     private StubLocalAccountApi Configure(bool localAccount)
     {
         JSInterop.Mode = JSRuntimeMode.Loose;
@@ -66,6 +128,17 @@ public sealed class AccountSecurityStateTests : AsyncBunitContext
         Services.AddSingleton<ILocalAccountApiService>(api);
         return api;
     }
+
+    private static T Field<T>(object instance, string name) =>
+        (T)instance.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(instance)!;
+    private static void Set(object instance, string name, object value) =>
+        instance.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(instance, value);
+    private static void Call(object instance, string name) =>
+        instance.GetType().GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(instance, null);
+    private static void CallWithArg(object instance, string name, object value) =>
+        instance.GetType().GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(instance, [value]);
+    private static Task CallAsync(object instance, string name) =>
+        (Task)instance.GetType().GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(instance, null)!;
 
     private sealed class StaticAuthenticationStateProvider(bool localAccount) : AuthenticationStateProvider
     {
@@ -79,9 +152,13 @@ public sealed class AccountSecurityStateTests : AsyncBunitContext
     private sealed class StubLocalAccountApi : ILocalAccountApiService
     {
         private readonly TaskCompletionSource<LocalSecurityStatus> _status = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource<AuthenticatorSetup> _setup = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource<IReadOnlyList<string>> _enable = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public bool StatusRequested { get; private set; }
         public void CompleteStatus(LocalSecurityStatus value) => _status.SetResult(value);
         public void FailStatus() => _status.SetException(new HttpRequestException("Unavailable"));
+        public void CompleteSetup(AuthenticatorSetup value) => _setup.SetResult(value);
+        public void CompleteEnable(IReadOnlyList<string> codes) => _enable.SetResult(codes);
         public Task<LocalSecurityStatus> GetSecurityStatusAsync(CancellationToken cancellationToken = default)
         {
             StatusRequested = true;
@@ -89,8 +166,8 @@ public sealed class AccountSecurityStateTests : AsyncBunitContext
         }
         public Task ActivateAsync(LocalAccountActivationRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
         public Task ChangePasswordAsync(LocalPasswordChangeRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
-        public Task<AuthenticatorSetup> BeginTwoFactorSetupAsync(string currentPassword, CancellationToken cancellationToken = default) => throw new NotSupportedException();
-        public Task<IReadOnlyList<string>> EnableTwoFactorAsync(string code, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task<AuthenticatorSetup> BeginTwoFactorSetupAsync(string currentPassword, CancellationToken cancellationToken = default) => _setup.Task;
+        public Task<IReadOnlyList<string>> EnableTwoFactorAsync(string code, CancellationToken cancellationToken = default) => _enable.Task;
         public Task DisableTwoFactorAsync(LocalTwoFactorDisableRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
     }
 }
