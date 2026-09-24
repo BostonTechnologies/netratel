@@ -386,25 +386,34 @@ jobs:
           NETRATEL_API_IMAGE: netratel-api:release-local-first
           NETRATEL_WEB_IMAGE: netratel-web:release-local-first
           POSTGRES_PASSWORD: synthetic-ci-only-password
+          GH_TOKEN: ${{ github.token }}
+          NETRATEL_LOCAL_FIRST_GITHUB_TOKEN: ${{ github.token }}
         run: |
           version="$(python3 tools/ci/product-version.py)"
           certificate_dir="$(mktemp -d)"
-          trap 'find "$certificate_dir" -depth -delete' EXIT
+          cp /etc/hosts "$certificate_dir/hosts"
+          trap 'sudo cp "$certificate_dir/hosts" /etc/hosts; find "$certificate_dir" -depth -delete' EXIT
+          printf '127.0.0.1 netratel.example\n' | sudo tee -a /etc/hosts >/dev/null
           openssl req -x509 -newkey rsa:2048 -nodes \
             -keyout "$certificate_dir/tls.key" -out "$certificate_dir/tls.crt" \
-            -subj '/CN=localhost' -addext 'subjectAltName=DNS:localhost' -days 1 >/dev/null 2>&1
+            -subj '/CN=netratel.example' -addext 'subjectAltName=DNS:netratel.example' -days 1 >/dev/null 2>&1
           NETRATEL_LOCAL_FIRST_COMPOSE_BUNDLE="review-artifacts/netratel-compose-${version}.tar.gz" \
             NETRATEL_LOCAL_FIRST_COMPOSE_OVERLAYS="$GITHUB_WORKSPACE/release/compose.public-https.yaml" \
-            NETRATEL_LOCAL_FIRST_WEB_URL=https://localhost:18443 \
+            NETRATEL_LOCAL_FIRST_WEB_URL=https://netratel.example \
             NETRATEL_LOCAL_FIRST_IGNORE_HTTPS_ERRORS=true \
             NETRATEL_AUTHENTICATION_MODE=Local \
             OIDC_AUTHORITY=https://stale.example.test \
-            NETRATEL_PUBLIC_ORIGIN=https://localhost:18443 \
-            NETRATEL_PUBLIC_HOST=localhost \
+            NETRATEL_PUBLIC_ORIGIN=https://netratel.example \
+            NETRATEL_PUBLIC_HOST=netratel.example \
+            NETRATEL_INSTALL_LINK_PUBLIC_ORIGIN=https://netratel.example \
+            NETRATEL_LOCAL_FIRST_NATIVE_INSTALL=true \
+            NETRATEL_LOCAL_FIRST_CA_CERT="$certificate_dir/tls.crt" \
             NETRATEL_HTTPS_BIND_ADDRESS=127.0.0.1 \
-            NETRATEL_HTTPS_PORT=18443 \
+            NETRATEL_HTTPS_PORT=443 \
             NETRATEL_HTTPS_CERTIFICATE="$certificate_dir/tls.crt" \
             NETRATEL_HTTPS_PRIVATE_KEY="$certificate_dir/tls.key" \
+            NO_PROXY=netratel.example,localhost,127.0.0.1 \
+            no_proxy=netratel.example,localhost,127.0.0.1 \
             tools/ci/smoke-local-first-compose.sh
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

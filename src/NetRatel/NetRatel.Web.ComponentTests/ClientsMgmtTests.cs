@@ -264,7 +264,7 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
         public Task DownloadClientPackageAsync(ClientPackageDownloadRequest request, CancellationToken ct = default) => Task.CompletedTask;
         public Task DownloadDeploymentScriptAsync(ClientScriptGenerateRequest request, CancellationToken ct = default) => Task.CompletedTask;
         public Task DeleteAsync(string rid, string version, CancellationToken ct = default) => Task.CompletedTask;
-        public void OpenUploadDialog(string initialRid, Func<Task> onUploaded) { }
+        public Task OpenUploadDialogAsync(string initialRid, Func<Task> onUploaded) => Task.CompletedTask;
         public Task UploadAsync(string rid, string version, string? notes, IBrowserFile file, CancellationToken ct = default) => Task.CompletedTask;
     }
 

@@ -619,7 +619,7 @@
 
     private static TableGroupDefinition<ClientUpdateHistoryItemModel> NewAttemptGroup(string name, Func<ClientUpdateHistoryItemModel, object> selector) => new(selector) { GroupName = name, Expandable = true, IsInitiallyExpanded = false, Indentation = false };
 
-    private Task OpenUpload() { Artifacts.OpenUploadDialog(_artifactRid, OnUploaded); return Task.CompletedTask; }
+    private Task OpenUpload() => Artifacts.OpenUploadDialogAsync(_artifactRid, OnUploaded);
     private async Task OnUploaded() { await ResetAndReloadAsync(_artifactTable); await ResetAndReloadAsync(_releaseTable); }
     private void OpenDownload(ClientArtifactSummaryModel item) { _selectedItem = item; _selectedRuntimeId = item.Rid; _downloadDialogOpen = true; }
     private void CloseDownloadDialog() => _downloadDialogOpen = false;

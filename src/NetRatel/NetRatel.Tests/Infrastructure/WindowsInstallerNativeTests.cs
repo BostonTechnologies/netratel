@@ -59,8 +59,10 @@ public sealed class WindowsInstallerNativeTests
             start.ArgumentList.Add("-NoProfile");
             start.ArgumentList.Add("-File");
             start.ArgumentList.Add(scriptPath);
-            start.Environment["ProgramFiles"] = Path.Combine(root, "ProgramFiles");
-            start.Environment["ProgramData"] = Path.Combine(root, "ProgramData");
+            var installRoot = Path.Combine(root, "client");
+            start.Environment["NetRatel_ROOT"] = installRoot;
+            start.Environment["NetRatel_STATE"] = Path.Combine(root, "state");
+            start.Environment["NetRatel_LOG_DIR"] = Path.Combine(root, "logs");
             start.Environment["TEMP"] = root;
             installerProcess = Process.Start(start)!;
             var output = installerProcess.StandardOutput.ReadToEndAsync(timeout.Token);
@@ -70,7 +72,7 @@ public sealed class WindowsInstallerNativeTests
             Assert.True(installerProcess.ExitCode == 0,
                 $"The Windows installer exited {installerProcess.ExitCode}: {await error}");
             Assert.Contains("NetRatel deployment complete.", await output);
-            var installed = Path.Combine(root, "ProgramFiles", "NetRatel", "Client", "versions", version, "NetRatel.Client.exe");
+            var installed = Path.Combine(installRoot, "versions", version, "NetRatel.Client.exe");
             Assert.True(File.Exists(installed));
             Assert.True(File.Exists(Path.Combine(credentialDirectory, "agent.dat")) ||
                 File.Exists(Path.Combine(root, "ProgramData", "NetRatel", "agent.dat")));

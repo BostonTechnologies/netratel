@@ -83,7 +83,7 @@ public interface IClientArtifactsService
     Task RevokeInstallLinkAsync(Guid id, CancellationToken ct = default) =>
         throw new NotSupportedException();
     Task DeleteAsync(string rid, string version, CancellationToken ct = default);
-    void OpenUploadDialog(string initialRid, Func<Task> onUploaded);
+    Task OpenUploadDialogAsync(string initialRid, Func<Task> onUploaded);
     Task UploadAsync(string rid, string version, string? notes, IBrowserFile file, CancellationToken ct = default);
 }
 
@@ -533,7 +533,7 @@ public class ClientArtifactsService : IClientArtifactsService
         }
     }
 
-    public void OpenUploadDialog(string initialRid, Func<Task> onUploaded)
+    public async Task OpenUploadDialogAsync(string initialRid, Func<Task> onUploaded)
     {
         var parameters = new DialogParameters
         {
@@ -549,7 +549,7 @@ public class ClientArtifactsService : IClientArtifactsService
             FullWidth = true
         };
 
-        _dialogService.ShowAsync<ClientArtifactUploadDialog>("Upload Artifact", parameters, options);
+        await _dialogService.ShowAsync<ClientArtifactUploadDialog>("Upload Artifact", parameters, options);
     }
 
     public async Task UploadAsync(string rid, string version, string? notes, IBrowserFile file, CancellationToken ct = default)

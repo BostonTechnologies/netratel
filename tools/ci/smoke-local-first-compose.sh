@@ -195,7 +195,12 @@ fi
 unset initial_setup_proof initial_status
 stage="building and running Playwright local-first journey"
 setup_proof_digest="$(printf '%s' "$setup_proof" | sha256sum | cut -d ' ' -f 1)"
+published_release_version=""
+if [[ "${NETRATEL_LOCAL_FIRST_NATIVE_INSTALL:-false}" == true ]]; then
+  published_release_version="$(python3 tools/ci/select-prior-release.py | jq -er '.tag | ltrimstr("v")')"
+fi
 NETRATEL_LOCAL_FIRST_WEB_URL="$web_url" \
+NETRATEL_LOCAL_FIRST_PUBLISHED_RELEASE_VERSION="$published_release_version" \
 NETRATEL_LOCAL_FIRST_SETUP_PROOF="$setup_proof" \
 NETRATEL_LOCAL_FIRST_ADMIN_EMAIL="browser-admin@example.test" \
 NETRATEL_LOCAL_FIRST_ADMIN_PASSWORD="browser smoke local passphrase" \

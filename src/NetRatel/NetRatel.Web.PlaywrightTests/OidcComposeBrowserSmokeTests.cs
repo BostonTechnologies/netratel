@@ -194,7 +194,14 @@ public sealed class OidcComposeBrowserSmokeTests
         await page.Keyboard.PressAsync("Shift+Tab");
         await page.Keyboard.PressAsync("Tab");
         Assert.True(await action.EvaluateAsync<bool>("element => document.activeElement === element"));
-        Assert.True(await action.EvaluateAsync<bool>("element => { const style = getComputedStyle(element); return style.outlineStyle !== 'none' && parseFloat(style.outlineWidth) >= 2; }"));
+        await page.WaitForFunctionAsync("""
+            () => {
+                const element = document.querySelector('.netratel-login-primary-action');
+                if (document.activeElement !== element) return false;
+                const style = getComputedStyle(element);
+                return style.outlineStyle !== 'none' && parseFloat(style.outlineWidth) >= 2;
+            }
+            """, null, new PageWaitForFunctionOptions { Timeout = 5_000 });
     }
 
     private static async Task SetThemeAndReloadAsync(IPage page, string mode)

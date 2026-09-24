@@ -178,6 +178,8 @@ public sealed class LocalFirstComposeBrowserSmokeTests
 
         await VerifyDeploymentBrandingAsync(page, webUrl);
         await VerifyDeploymentLinkJourneyAsync(browser, page, webUrl);
+        if (Environment.GetEnvironmentVariable("NETRATEL_LOCAL_FIRST_NATIVE_INSTALL") == "true")
+            await VerifyPublishedClientInstallAsync(browser, page, webUrl);
         await page.SetViewportSizeAsync(1440, 1100);
         await CaptureReviewScreenshotAsync(page, "drawer-desktop");
         await page.SetViewportSizeAsync(390, 844);
@@ -294,11 +296,8 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await page.GotoAsync(new Uri(webUrl, "clients/mgmt").ToString(),
             new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
         await page.GetByRole(AriaRole.Button, new() { Name = "Advanced: upload artifact" }).ClickAsync();
-        var uploadDialog = page.Locator(".mud-dialog:visible").Filter(new()
-        {
-            Has = page.GetByRole(AriaRole.Combobox, new() { Name = "Runtime Identifier" })
-        }).Last;
-        await uploadDialog.GetByRole(AriaRole.Combobox, new() { Name = "Runtime Identifier" }).ClickAsync();
+        var uploadDialog = page.Locator(".mud-dialog:visible").Filter(new() { HasText = "Runtime Identifier" }).Last;
+        await uploadDialog.Locator(".mud-select").First.ClickAsync();
         await page.GetByRole(AriaRole.Option, new() { Name = "Linux (x64)" }).ClickAsync();
         await uploadDialog.GetByRole(AriaRole.Textbox, new() { Name = "Version" }).FillAsync(version);
         using var buffer = new MemoryStream();
@@ -342,7 +341,8 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         Assert.Equal(0, downloads);
         var publicUrl = await page.GetByRole(AriaRole.Textbox, new() { Name = "Public script URL" }).InputValueAsync();
         var command = await page.GetByRole(AriaRole.Textbox, new() { Name = "Install command" }).InputValueAsync();
-        Assert.StartsWith("https://netratel.example/clients/install/", publicUrl);
+        var publicOrigin = Environment.GetEnvironmentVariable("NETRATEL_INSTALL_LINK_PUBLIC_ORIGIN") ?? "https://netratel.example";
+        Assert.StartsWith(publicOrigin + "/clients/install/", publicUrl);
         Assert.Contains(publicUrl, command);
         Assert.Contains(version, await page.GetByLabel("Generated script preview").InnerTextAsync());
         await AssertDialogLayoutAsync(page, "deployment-script-result", captureSafeContent: false);
@@ -381,6 +381,102 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         Assert.Equal(1, downloads);
         await page.GetByLabel("Generate deployment script")
             .GetByRole(AriaRole.Button, new() { Name = "Close", Exact = true }).ClickAsync();
+    }
+
+    private static async Task VerifyPublishedClientInstallAsync(IBrowser browser, IPage page, Uri webUrl)
+    {
+        var version = RequireValue("NETRATEL_LOCAL_FIRST_PUBLISHED_RELEASE_VERSION");
+        var certificate = RequireValue("NETRATEL_LOCAL_FIRST_CA_CERT");
+        Assert.True(File.Exists(certificate));
+        await page.GotoAsync(new Uri(webUrl, "clients/mgmt").ToString(),
+            new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        var release = page.Locator(".client-github-release").Filter(new() { HasText = version });
+        await release.WaitForAsync(new LocatorWaitForOptions { Timeout = 60_000 });
+        Assert.Contains("linux-x64", await release.InnerTextAsync());
+        await release.GetByRole(AriaRole.Button, new() { Name = "Download client pack to this instance" }).ClickAsync();
+        await page.WaitForFunctionAsync("""
+            version => Array.from(document.querySelectorAll('.client-github-release'))
+                .some(item => item.textContent?.includes(version) && item.textContent?.includes('Local state: Imported'))
+            """, version, new PageWaitForFunctionOptions { Timeout = 300_000 });
+
+        await page.GetByRole(AriaRole.Tab, new() { Name = "Artifacts" }).ClickAsync();
+        var artifact = page.GetByTestId("artifact-table").GetByRole(AriaRole.Row)
+            .Filter(new() { HasText = version }).Filter(new() { HasText = "linux-x64" });
+        await artifact.WaitForAsync(new LocatorWaitForOptions { Timeout = 30_000 });
+        await artifact.GetByRole(AriaRole.Button).Last.ClickAsync();
+        await page.GetByRole(AriaRole.Menuitem, new() { Name = "Generate script" }).ClickAsync();
+        var dialog = page.GetByLabel("Generate deployment script");
+        await dialog.GetByRole(AriaRole.Checkbox, new() { Name = "Install as Service" }).UncheckAsync();
+        await dialog.GetByRole(AriaRole.Button, new() { Name = "Generate link" }).ClickAsync();
+        await page.GetByText("Generated install link", new() { Exact = true }).WaitForAsync();
+        var command = await dialog.GetByRole(AriaRole.Textbox, new() { Name = "Install command" }).InputValueAsync();
+        var publicUrl = await dialog.GetByRole(AriaRole.Textbox, new() { Name = "Public script URL" }).InputValueAsync();
+        Assert.StartsWith(webUrl.GetLeftPart(UriPartial.Authority) + "/clients/install/", publicUrl);
+        Assert.Contains(publicUrl, command);
+        Assert.Contains("curl -fsSL", command);
+        Assert.Contains("pipefail", command);
+        await using var anonymous = await browser.NewContextAsync(new BrowserNewContextOptions
+        {
+            IgnoreHTTPSErrors = IgnoreSyntheticHttpsErrors
+        });
+        // This context has no login cookie. The test certificate is trusted by
+        // the native curl and .NET client through the standard CA variables.
+        var directory = Path.Combine(Path.GetTempPath(), "netratel-native-install-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var root = Path.Combine(directory, "root");
+            var home = Path.Combine(directory, "home");
+            Directory.CreateDirectory(home);
+            await RunNativeClientAsync("bash", ["-o", "pipefail", "-c", command], directory, home,
+                certificate, root);
+            var executable = Path.Combine(root, "versions", version, "NetRatel.Client");
+            var manifest = Path.Combine(root, "versions", version, "netratel-client-manifest.json");
+            Assert.True(File.Exists(executable), "The imported client executable was not installed.");
+            Assert.True(File.Exists(manifest), "The normalized package manifest was not installed.");
+            Assert.Contains(version, await File.ReadAllTextAsync(manifest));
+            Assert.True(File.Exists(Path.Combine(home, ".local", "share", "netratel", "agent.dat")),
+                "The native installer did not persist its enrolled client identity.");
+            await RunNativeClientAsync(executable, ["--auth-check", "--api", webUrl.GetLeftPart(UriPartial.Authority)],
+                directory, home, certificate, root);
+            Assert.Equal(404, (await anonymous.APIRequest.GetAsync(publicUrl)).Status);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+        await dialog.GetByRole(AriaRole.Button, new() { Name = "Close", Exact = true }).ClickAsync();
+    }
+
+    private static async Task RunNativeClientAsync(string executable, IReadOnlyList<string> arguments,
+        string directory, string home, string certificate, string root)
+    {
+        var start = new ProcessStartInfo(executable)
+        {
+            WorkingDirectory = directory,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false
+        };
+        foreach (var argument in arguments) start.ArgumentList.Add(argument);
+        start.Environment["HOME"] = home;
+        start.Environment["CURL_CA_BUNDLE"] = certificate;
+        start.Environment["SSL_CERT_FILE"] = certificate;
+        start.Environment["NetRatel_ROOT"] = root;
+        start.Environment["NetRatel_STATE"] = Path.Combine(directory, "state");
+        using var process = Process.Start(start) ?? throw new InvalidOperationException("Native client process did not start.");
+        var output = process.StandardOutput.ReadToEndAsync();
+        var error = process.StandardError.ReadToEndAsync();
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(4));
+        try { await process.WaitForExitAsync(deadline.Token); }
+        catch (OperationCanceledException)
+        {
+            process.Kill(entireProcessTree: true);
+            throw new TimeoutException("Native client install or authentication exceeded four minutes.");
+        }
+        await Task.WhenAll(output, error);
+        Assert.True(process.ExitCode == 0,
+            $"Native client install or authentication failed with exit code {process.ExitCode}. Output is suppressed because it may contain an enrollment capability.");
     }
 
     private static readonly FirstPaintCase[] FirstPaintCases =
