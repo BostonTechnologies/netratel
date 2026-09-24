@@ -166,6 +166,14 @@ public sealed class OidcComposeBrowserSmokeTests
         var action = page.Locator(".netratel-login-primary-action");
         Assert.True(await action.IsVisibleAsync());
         Assert.Equal("Sign in with your identity provider", (await action.InnerTextAsync()).Trim());
+        // DOMContentLoaded can precede the stylesheet on the HTTPS image profile.
+        // Measure the rendered filled button only after both opaque colors resolve.
+        await page.WaitForFunctionAsync(@"() => {
+            const element = document.querySelector('.netratel-login-primary-action');
+            if (!element) return false;
+            const style = getComputedStyle(element);
+            return style.color.startsWith('rgb(') && style.backgroundColor.startsWith('rgb(');
+        }");
         var contrast = await action.EvaluateAsync<double>(@"element => {
             const rgb = value => value.match(/[\d.]+/g).slice(0, 3).map(Number);
             const luminance = value => rgb(value).map(channel => {
