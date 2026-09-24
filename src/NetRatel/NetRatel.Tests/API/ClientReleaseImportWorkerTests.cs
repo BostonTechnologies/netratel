@@ -3,6 +3,7 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
@@ -150,6 +151,114 @@ public sealed class ClientReleaseImportWorkerTests : IAsyncLifetime
         finally { await worker.StopAsync(CancellationToken.None); worker.Dispose(); }
     }
 
+    [Fact]
+    [Trait("category", "hosted")]
+    public async Task PublishedClientPackImportsEveryVerifiedRuntimeWithoutPublishing()
+    {
+        var fixtureDirectory = Environment.GetEnvironmentVariable("NETRATEL_RELEASE_FIXTURE_DIR")
+            ?? throw new InvalidOperationException("NETRATEL_RELEASE_FIXTURE_DIR must contain a completed public release fixture.");
+        using var publication = JsonDocument.Parse(await File.ReadAllTextAsync(
+            Path.Combine(fixtureDirectory, "publication.json")));
+        var root = publication.RootElement;
+        var version = root.GetProperty("productVersion").GetString()!;
+        var commit = root.GetProperty("publicCommit").GetString()!;
+        var pattern = new Regex($"^netratel-client-{Regex.Escape(version)}-(?<rid>[a-z0-9-]+)\\.(?:zip|tar\\.gz)$",
+            RegexOptions.CultureInvariant);
+        var sourcePaths = new Dictionary<long, string>();
+        var assets = new List<GitHubClientAsset>();
+        long assetId = 100;
+        foreach (var file in root.GetProperty("inputReceipt").GetProperty("files").EnumerateObject())
+        {
+            var match = pattern.Match(file.Name);
+            if (!match.Success) continue;
+            var path = Path.Combine(fixtureDirectory, file.Name);
+            Assert.True(File.Exists(path), $"Published client asset is missing: {file.Name}");
+            sourcePaths.Add(++assetId, path);
+            assets.Add(new GitHubClientAsset(assetId, file.Name, match.Groups["rid"].Value,
+                new FileInfo(path).Length, $"sha256:{file.Value.GetProperty("sha256").GetString()}"));
+        }
+        Assert.NotEmpty(assets);
+        var publicationPath = Path.Combine(fixtureDirectory, "publication.json");
+        var checksumsPath = Path.Combine(fixtureDirectory, "SHA256SUMS");
+        sourcePaths.Add(20, publicationPath);
+        sourcePaths.Add(21, checksumsPath);
+        var release = new GitHubClientRelease(1, $"v{version}", version, version,
+            DateTimeOffset.UtcNow, version.Contains('-', StringComparison.Ordinal),
+            $"https://github.com/BostonTechnologies/netratel/releases/tag/v{version}",
+            assets, assets.Sum(x => x.SizeBytes), "verification required")
+        {
+            PublicationAsset = new GitHubReleaseEvidenceAsset(20, "publication.json",
+                new FileInfo(publicationPath).Length, "sha256:" + await HashFileAsync(publicationPath)),
+            ChecksumsAsset = new GitHubReleaseEvidenceAsset(21, "SHA256SUMS",
+                new FileInfo(checksumsPath).Length, "sha256:" + await HashFileAsync(checksumsPath))
+        };
+        var store = new RecordingArtifactStore();
+        await using var services = new ServiceCollection()
+            .AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Warning))
+            .AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(_postgres.GetConnectionString()))
+            .AddSingleton<TimeProvider>(TimeProvider.System)
+            .AddSingleton<IGitHubClientReleaseCatalog>(new FixtureCatalog(release, commit))
+            .AddSingleton<IClientArtifactsService>(store)
+            .AddSingleton<IWebHostEnvironment>(new FixtureEnvironment(_storage))
+            .AddSingleton<IOptions<ClientArtifactsOptions>>(Options.Create(new ClientArtifactsOptions { StorageRoot = _storage }))
+            .AddScoped<GitHubClientAssetDownloader>(_ => new GitHubClientAssetDownloader(
+                new HttpClient(new FileAssetHandler(sourcePaths)) { Timeout = Timeout.InfiniteTimeSpan },
+                new ConfigurationBuilder().Build()))
+            .BuildServiceProvider();
+        var id = Guid.NewGuid();
+        await using (var scope = services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            db.ClientReleaseImportOperations.Add(new ClientReleaseImportOperation
+            {
+                Id = id, GitHubReleaseId = release.Id, Tag = release.Tag,
+                Version = version, RequestedBy = "hosted-fixture",
+                CreatedAtUtc = DateTimeOffset.UtcNow, UpdatedAtUtc = DateTimeOffset.UtcNow
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var worker = ActivatorUtilities.CreateInstance<ClientReleaseImportWorker>(services);
+        await worker.StartAsync(CancellationToken.None);
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+            using var observation = new PeriodicTimer(TimeSpan.FromMilliseconds(100));
+            ClientReleaseImportOperation operation;
+            do
+            {
+                await observation.WaitForNextTickAsync(timeout.Token);
+                await using var scope = services.CreateAsyncScope();
+                operation = await scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>()
+                    .ClientReleaseImportOperations.AsNoTracking().Include(x => x.Assets)
+                    .SingleAsync(x => x.Id == id, timeout.Token);
+            } while (operation.State is not (ClientReleaseImportState.Imported or ClientReleaseImportState.Failed));
+
+            Assert.True(operation.State == ClientReleaseImportState.Imported, operation.Error);
+            Assert.True(store.Visible);
+            Assert.Equal(assets.Select(x => x.RuntimeId).OrderBy(x => x, StringComparer.Ordinal),
+                store.ImportedRuntimes.OrderBy(x => x, StringComparer.Ordinal));
+            foreach (var asset in operation.Assets)
+            {
+                Assert.Equal(ClientReleaseImportAssetState.Imported, asset.State);
+                Assert.Equal(store.Stored[asset.RuntimeId].Sha256, asset.LocalSha256);
+                Assert.Equal(store.Stored[asset.RuntimeId].Size, asset.LocalSizeBytes);
+                Assert.Equal(assets.Single(x => x.RuntimeId == asset.RuntimeId).Sha256Digest,
+                    "sha256:" + asset.SourceSha256);
+            }
+            await using var verify = new OrchestratorDbContext(_dbOptions);
+            Assert.Empty(await verify.ClientUpdateReleases.ToListAsync());
+            Assert.Null(operation.PublishedAtUtc);
+        }
+        finally { await worker.StopAsync(CancellationToken.None); worker.Dispose(); }
+    }
+
+    private static async Task<string> HashFileAsync(string path)
+    {
+        await using var stream = File.OpenRead(path);
+        return Convert.ToHexString(await SHA256.HashDataAsync(stream)).ToLowerInvariant();
+    }
+
     private static Fixture CreateFixture(bool corruptSecondRuntime)
     {
         const string version = "1.2.3";
@@ -243,6 +352,18 @@ public sealed class ClientReleaseImportWorkerTests : IAsyncLifetime
         }
     }
 
+    private sealed class FileAssetHandler(IReadOnlyDictionary<long, string> paths) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var id = long.Parse(request.RequestUri!.Segments[^1]);
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StreamContent(File.OpenRead(paths[id]))
+            });
+        }
+    }
+
     private sealed class FixtureEnvironment(string root) : IWebHostEnvironment
     {
         public string ApplicationName { get; set; } = "NetRatel.Tests";
@@ -256,12 +377,16 @@ public sealed class ClientReleaseImportWorkerTests : IAsyncLifetime
     private sealed class RecordingArtifactStore : IClientArtifactsService
     {
         public List<string> ImportedRuntimes { get; } = [];
+        public Dictionary<string, (long Size, string Sha256)> Stored { get; } = [];
         public bool Visible { get; private set; }
-        public Task<ClientArtifactUploadResultDto> ImportVerifiedAsync(IFormFile file, string rid, string version,
+        public async Task<ClientArtifactUploadResultDto> ImportVerifiedAsync(IFormFile file, string rid, string version,
             ClientArtifactImportProvenance provenance, string? importedBy, CancellationToken ct)
         {
+            using var stream = file.OpenReadStream();
+            var sha256 = Convert.ToHexString(await SHA256.HashDataAsync(stream, ct)).ToLowerInvariant();
+            Stored.Add(rid, (file.Length, sha256));
             ImportedRuntimes.Add(rid);
-            return Task.FromResult(new ClientArtifactUploadResultDto());
+            return new ClientArtifactUploadResultDto();
         }
         public Task CompleteImportVisibilityAsync(Guid operationId, CancellationToken ct)
         {

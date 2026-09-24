@@ -35,6 +35,7 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
         cut.WaitForAssertion(() =>
         {
             cut.Markup.Should().Contain("GitHub releases");
+            cut.Markup.Should().Contain("Instance release automation");
             cut.Markup.Should().Contain("Verification required");
             cut.Markup.Should().Contain("Artifacts");
             cut.Markup.Should().Contain("Auto-update Releases");
@@ -79,6 +80,21 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
 
     private sealed class StubClientArtifactsService : IClientArtifactsService
     {
+        private ClientReleaseAutomationModel _automation = new();
+        public Task<ClientReleaseAutomationModel> GetReleaseAutomationAsync(CancellationToken ct = default) =>
+            Task.FromResult(_automation);
+        public Task<ClientReleaseAutomationModel> SaveReleaseAutomationAsync(ClientReleaseAutomationModel settings, CancellationToken ct = default)
+        {
+            _automation = settings;
+            _automation.Revision++;
+            return Task.FromResult(_automation);
+        }
+        public Task<ClientReleaseAutomationModel> CheckReleasesNowAsync(CancellationToken ct = default)
+        {
+            _automation.NextCheckAtUtc = DateTimeOffset.UtcNow;
+            return Task.FromResult(_automation);
+        }
+
         public Task<GitHubClientReleasePageModel> GetGitHubReleasesAsync(string channel, int page, bool refresh, CancellationToken ct = default) =>
             Task.FromResult(new GitHubClientReleasePageModel { Page = page, Items = [new GitHubClientReleaseModel
             {

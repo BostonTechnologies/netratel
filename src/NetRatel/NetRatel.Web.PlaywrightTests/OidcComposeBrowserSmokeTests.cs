@@ -60,7 +60,8 @@ public sealed class OidcComposeBrowserSmokeTests
         var signInAction = page.Locator(".netratel-login-primary-action");
         Assert.Equal("Sign in with your identity provider", (await signInAction.InnerTextAsync()).Trim());
         await signInAction.ClickAsync();
-        await page.Locator("input[name='username']").FillAsync(username);
+        await page.Locator("input[name='username']").FillAsync(username,
+            new LocatorFillOptions { Timeout = 60_000 });
         var callbackResponse = page.WaitForResponseAsync(response =>
             Uri.TryCreate(response.Url, UriKind.Absolute, out var responseUri)
             && responseUri.GetLeftPart(UriPartial.Path) == new Uri(webUrl, "signin-oidc").ToString());

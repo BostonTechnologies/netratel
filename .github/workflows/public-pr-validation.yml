@@ -58,6 +58,13 @@ jobs:
           dotnet src/NetRatel/NetRatel.Tests/bin/Release/net10.0/NetRatel.Tests.dll
           -method NetRatel.Tests.API.ClientReleaseArchiveAdapterTests.PublishedClientPackMatchesPublicationAndNormalizesForExistingUpdaters
           -noLogo
+      - name: Import the published client pack without publication
+        env:
+          NETRATEL_RELEASE_FIXTURE_DIR: ${{ runner.temp }}/published-client-pack
+        run: >-
+          dotnet src/NetRatel/NetRatel.Tests/bin/Release/net10.0/NetRatel.Tests.dll
+          -method NetRatel.Tests.API.ClientReleaseImportWorkerTests.PublishedClientPackImportsEveryVerifiedRuntimeWithoutPublishing
+          -noLogo
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -295,6 +302,7 @@ jobs:
           NETRATEL_CLI_SMOKE_ARCHIVE="review-artifacts/netratel-cli-$(python3 tools/ci/product-version.py)-linux-x64.tar.gz" \
             NETRATEL_MCP_STDIO_SMOKE_ARCHIVE="review-artifacts/netratel-mcp-stdio-$(python3 tools/ci/product-version.py)-linux-x64.tar.gz" \
             NETRATEL_LOCAL_HTTP_MCP_SMOKE_IMAGE=netratel-mcp-http:local-first-smoke \
+            NETRATEL_LOCAL_FIRST_DROP_SETUP_RESPONSE=true \
             tools/ci/smoke-local-first-compose.sh
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

@@ -72,6 +72,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         Assert.Equal(password, await page.GetByTestId("setup-confirm-password").InputValueAsync());
         var apiContainer = RequireValue("NETRATEL_LOCAL_FIRST_RESTART_API_CONTAINER");
         var webContainer = RequireValue("NETRATEL_LOCAL_FIRST_RESTART_WEB_CONTAINER");
+        var dropCommittedResponse = Environment.GetEnvironmentVariable("NETRATEL_LOCAL_FIRST_DROP_SETUP_RESPONSE") == "true";
         Task restartTask = Task.CompletedTask;
         const string initializeRoute = "**/api/v2/setup/initialize";
         await page.RouteAsync(initializeRoute, async route =>
@@ -91,7 +92,8 @@ public sealed class LocalFirstComposeBrowserSmokeTests
                     await RunDockerAsync("start", apiContainer, webContainer);
                 }
             });
-            await route.FulfillAsync(new RouteFulfillOptions { Response = committed });
+            if (dropCommittedResponse) await route.AbortAsync("failed");
+            else await route.FulfillAsync(new RouteFulfillOptions { Response = committed });
         });
         var initialized = page.WaitForURLAsync("**/login", new PageWaitForURLOptions { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 120_000 });
         await page.GetByTestId("setup-initialize").EvaluateAsync("button => { button.click(); button.click(); }");
@@ -107,7 +109,10 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         Assert.True(string.IsNullOrWhiteSpace(initializationError), initializationError);
 
         await page.GetByTestId("local-login-email").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible, Timeout = 30_000 });
-        await page.GetByTestId("local-login-client-ready").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
+        await page.GetByTestId("local-login-client-ready").WaitForAsync(new LocatorWaitForOptions
+        {
+            State = WaitForSelectorState.Attached, Timeout = 60_000
+        });
         await CaptureReviewScreenshotAsync(page, "login-mobile");
         await page.SetViewportSizeAsync(1440, 900);
         await CaptureReviewScreenshotAsync(page, "login-desktop");
@@ -222,8 +227,9 @@ public sealed class LocalFirstComposeBrowserSmokeTests
 
     private static async Task CaptureReviewScreenshotAsync(IPage page, string name)
     {
-        var directory = Environment.GetEnvironmentVariable("NETRATEL_REVIEW_SCREENSHOT_DIR");
-        if (string.IsNullOrWhiteSpace(directory)) return;
+        var configuredDirectory = Environment.GetEnvironmentVariable("NETRATEL_REVIEW_SCREENSHOT_DIR");
+        var directory = string.IsNullOrWhiteSpace(configuredDirectory)
+            ? Path.Combine("TestResults", "local-first", "screenshots") : configuredDirectory;
         Directory.CreateDirectory(directory);
         await page.ScreenshotAsync(new PageScreenshotOptions
         {
@@ -231,6 +237,52 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             FullPage = true,
             Animations = ScreenshotAnimations.Disabled
         });
+    }
+
+    private static async Task AssertDialogLayoutAsync(IPage page, string name, bool captureSafeContent)
+    {
+        var initial = page.ViewportSize ?? throw new InvalidOperationException("A fixed browser viewport is required.");
+        foreach (var (width, height, label) in new[]
+                 {
+                     (1366, 768, "desktop"),
+                     (1920, 1080, "wide"),
+                     (768, 900, "tablet"),
+                     (390, 844, "phone"),
+                     (320, 640, "small-phone"),
+                     (640, 250, "zoom-200-short")
+                 })
+        {
+            await page.SetViewportSizeAsync(width, height);
+            var dialog = page.Locator(".mud-dialog:visible").Last;
+            await dialog.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+            var fits = await dialog.EvaluateAsync<bool>("""
+                dialog => {
+                    const bounds = dialog.getBoundingClientRect();
+                    return bounds.left >= -2 && bounds.right <= innerWidth + 2 &&
+                           bounds.top >= -2 && bounds.bottom <= innerHeight + 2;
+                }
+                """);
+            Assert.True(fits, $"{name} dialog exceeds the {label} viewport.");
+            var content = dialog.Locator(".mud-dialog-content");
+            Assert.True(await content.EvaluateAsync<bool>("element => element.scrollWidth <= element.clientWidth + 2"),
+                $"{name} dialog content has horizontal overflow at {label}.");
+            var scrolls = await content.EvaluateAsync<bool>("""
+                element => {
+                    if (element.scrollHeight <= element.clientHeight + 2) return true;
+                    element.scrollTop = element.scrollHeight;
+                    return element.scrollTop > 0;
+                }
+                """);
+            Assert.True(scrolls, $"{name} dialog content cannot scroll at {label}.");
+            var actions = dialog.Locator(".mud-dialog-actions");
+            await actions.ScrollIntoViewIfNeededAsync();
+            Assert.True(await actions.EvaluateAsync<bool>("element => { const bounds = element.getBoundingClientRect(); return bounds.bottom <= innerHeight + 2 && bounds.top >= -2; }"),
+                $"{name} dialog actions are unreachable at {label}.");
+            Assert.False(await page.EvaluateAsync<bool>("() => document.documentElement.scrollWidth > innerWidth + 2"),
+                $"{name} dialog widens the page at {label}.");
+            if (captureSafeContent) await CaptureReviewScreenshotAsync(page, $"{name}-{label}");
+        }
+        await page.SetViewportSizeAsync(initial.Width, initial.Height);
     }
 
     private static readonly FirstPaintCase[] FirstPaintCases =
@@ -441,6 +493,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await page.GetByTestId("integration-credentials-page").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         await page.GetByTestId("integration-credentials-client-ready").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
         await page.GetByTestId("open-create-integration").ClickAsync();
+        if (name == "CI telemetry read") await AssertDialogLayoutAsync(page, "integration-connection", captureSafeContent: true);
         await page.GetByTestId("credential-name").FillAsync(name);
         await page.GetByTestId("credential-name").PressAsync("Tab");
         if (!string.IsNullOrWhiteSpace(purpose))
@@ -450,6 +503,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             await page.GetByTestId("credential-resource").FillAsync(resource ?? throw new InvalidOperationException("An HTTP MCP resource is required."));
         }
         await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Next" }).ClickAsync();
+        if (name == "CI telemetry read") await AssertDialogLayoutAsync(page, "integration-access", captureSafeContent: true);
         await page.Locator($"[data-testid^='credential-permission-'][data-testid$='-{permission}']").First.ClickAsync();
         if (name == "CI telemetry read") await CaptureReviewScreenshotAsync(page, "integration-access-mobile");
         if (!string.IsNullOrWhiteSpace(instancePermission))
@@ -458,6 +512,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             await page.GetByTestId($"credential-instance-permission-{instancePermission}").ClickAsync();
         }
         await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Next" }).ClickAsync();
+        if (name == "CI telemetry read") await AssertDialogLayoutAsync(page, "integration-review", captureSafeContent: true);
         await page.GetByTestId("create-credential").ClickAsync();
         var reveal = page.GetByTestId("credential-one-time-secret");
         try
@@ -471,6 +526,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
                 ? await error.TextContentAsync()
                 : "Credential creation did not reveal a secret or report a safe error.");
         }
+        if (name == "CI telemetry read") await AssertDialogLayoutAsync(page, "integration-secret", captureSafeContent: false);
         var secret = await page.GetByLabel("One-time secret").InputValueAsync();
         Assert.StartsWith("nrt_ic_", secret);
         await page.GetByText("I stored the secret", new PageGetByTextOptions { Exact = true }).ClickAsync();
@@ -485,6 +541,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await page.GetByTestId("credential-name").FillAsync("CI multi-grant");
         await page.GetByTestId("credential-name").PressAsync("Tab");
         await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Next" }).ClickAsync();
+        await AssertDialogLayoutAsync(page, "integration-multi-grant-access", captureSafeContent: true);
         foreach (var permission in new[] { "telemetry.read", "file.read", "file.write" })
             await page.GetByTestId($"credential-permission-1-{permission}").ClickAsync();
         var search = page.GetByRole(AriaRole.Textbox, new PageGetByRoleOptions { Name = "Search permissions" });
@@ -630,6 +687,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await page.GetByTestId("account-security-client-ready").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
         await CaptureReviewScreenshotAsync(page, "security-mobile");
         await page.GetByTestId("open-password-dialog").ClickAsync();
+        await AssertDialogLayoutAsync(page, "security-passphrase", captureSafeContent: true);
         await page.GetByTestId("change-password-current").FillAsync("incorrect current passphrase");
         await page.GetByTestId("change-password-current").PressAsync("Tab");
         await page.GetByTestId("change-password-new").FillAsync(changedPassword);
@@ -656,11 +714,13 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await page.GotoAsync(new Uri(webUrl, "account/security").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
         await page.GetByTestId("account-security-client-ready").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
         await page.GetByTestId("open-mfa-setup").ClickAsync();
+        await AssertDialogLayoutAsync(page, "security-mfa-confirm", captureSafeContent: true);
         await page.GetByTestId("mfa-setup-current-password").FillAsync(changedPassword);
         await page.GetByTestId("mfa-setup-current-password").PressAsync("Tab");
         await page.GetByTestId("begin-mfa-setup").ClickAsync();
         var enrollmentSecret = page.GetByTestId("mfa-authenticator-secret");
         await enrollmentSecret.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        await AssertDialogLayoutAsync(page, "security-mfa-qr", captureSafeContent: false);
         var sharedKey = await page.GetByLabel("Manual setup key").InputValueAsync();
         var enrollmentCode = CreateTotp(sharedKey);
         await page.GetByTestId("mfa-enrollment-code").FillAsync(enrollmentCode);
@@ -668,6 +728,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await page.GetByTestId("enable-mfa").ClickAsync();
         var recoveryCodes = page.GetByTestId("mfa-recovery-codes");
         await recoveryCodes.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        await AssertDialogLayoutAsync(page, "security-mfa-recovery", captureSafeContent: false);
         var recoveryCode = await page.GetByTestId("mfa-recovery-code").First.InnerTextAsync();
         Assert.False(string.IsNullOrWhiteSpace(recoveryCode));
         var signedOutAfterEnrollment = page.WaitForURLAsync("**/login", new PageWaitForURLOptions { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 30_000 });
@@ -679,6 +740,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await page.GetByTestId("account-security-page").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         await page.GetByTestId("account-security-client-ready").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
         await page.GetByTestId("manage-mfa").ClickAsync();
+        await AssertDialogLayoutAsync(page, "security-mfa-disable", captureSafeContent: true);
         await page.GetByTestId("disable-mfa-current-password").FillAsync(changedPassword);
         await page.GetByTestId("disable-mfa-current-password").PressAsync("Tab");
         await page.GetByTestId("disable-mfa-code").FillAsync(CreateTotp(sharedKey));
