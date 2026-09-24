@@ -65,6 +65,10 @@ public sealed class SignalRShadowBridgeAndHealthTests
                 .Which.Should().BeOfType<ShadowFanoutEnvelope>()
                 .Which.Should().Match<ShadowFanoutEnvelope>(envelope =>
                     envelope.Sequence == 9 && envelope.IsValid && !envelope.IsAuthoritative);
+            for (var attempt = 0; attempt < 300 && bridge.GetStatus().Published == 0; attempt++)
+            {
+                await Task.Delay(10);
+            }
             bridge.GetStatus().Published.Should().Be(1);
         }
         finally
