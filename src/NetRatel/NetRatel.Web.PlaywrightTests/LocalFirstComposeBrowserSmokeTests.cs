@@ -328,7 +328,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await page.GetByRole(AriaRole.Tab, new() { Name = "Artifacts" }).ClickAsync();
         var artifactRow = page.GetByTestId("artifact-table").GetByRole(AriaRole.Row).Filter(new() { HasText = version });
         await artifactRow.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
-        await artifactRow.GetByRole(AriaRole.Button, new() { Name = "Artifact actions" }).ClickAsync();
+        await artifactRow.GetByRole(AriaRole.Button).Last.ClickAsync();
         await page.GetByRole(AriaRole.Menuitem, new() { Name = "Generate script" }).ClickAsync();
         await AssertDialogLayoutAsync(page, "deployment-script-input", captureSafeContent: true);
 
