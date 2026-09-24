@@ -261,7 +261,16 @@ verify_native_legacy_client_after_upgrade() {
   sudo cp "$agent_path" /var/lib/netratel/agent.dat
   sudo cp "$identity_path" /var/lib/netratel/.netratel-credential-machine-id
   sudo chown -R netratel:netratel /var/lib/netratel
-  machine_identity="$(sudo cat "$identity_path")"
+  machine_identity="$(sudo python3 - "$identity_path" <<'PY'
+from pathlib import Path
+import sys
+print(Path(sys.argv[1]).read_text(encoding="utf-8-sig").strip())
+PY
+)"
+  [[ -n "$machine_identity" ]] || {
+    echo "The persisted client machine identity is empty." >&2
+    return 1
+  }
   if sudo -u netratel env HOME=/var/lib/netratel \
       NETRATEL_POWERSHELL_HOME=/var/lib/netratel/powershell \
       "NetRatel_CREDENTIAL_MACHINE_ID=${machine_identity}" \
