@@ -736,6 +736,23 @@ builder.Services.AddOptions<DeploymentBrandingOptions>()
 builder.Services.AddSingleton<IValidateOptions<DeploymentBrandingOptions>, DeploymentBrandingOptionsValidator>();
 builder.Services.AddSingleton<StorageInitializer>();
 builder.Services.AddScoped<IClientArtifactsService, ClientArtifactsService>();
+builder.Services.AddHttpClient("GitHubClientReleases", http =>
+    {
+        http.BaseAddress = new Uri("https://api.github.com/");
+        http.Timeout = TimeSpan.FromSeconds(15);
+    })
+    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+builder.Services.AddSingleton<IGitHubClientReleaseCatalog>(services =>
+    new GitHubClientReleaseCatalog(
+        services.GetRequiredService<IHttpClientFactory>().CreateClient("GitHubClientReleases"),
+        services.GetRequiredService<IConfiguration>(),
+        services.GetRequiredService<TimeProvider>(),
+        services.GetRequiredService<ILogger<GitHubClientReleaseCatalog>>()));
+builder.Services.AddHttpClient("GitHubClientAssets", http => http.Timeout = Timeout.InfiniteTimeSpan)
+    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+builder.Services.AddScoped(services => new GitHubClientAssetDownloader(
+    services.GetRequiredService<IHttpClientFactory>().CreateClient("GitHubClientAssets"),
+    services.GetRequiredService<IConfiguration>()));
 builder.Services.AddScoped<ClientUpdateAuthorityService>();
 builder.Services.AddScoped<IClientUpdatePublisher>(services => services.GetRequiredService<ClientUpdateAuthorityService>());
 builder.Services.AddScoped<IClientUpdateOperatorAuthority>(services => services.GetRequiredService<ClientUpdateAuthorityService>());

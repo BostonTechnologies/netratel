@@ -14,6 +14,7 @@ namespace NetRatel.Web.Services;
 
 public interface IClientArtifactsService
 {
+    Task<GitHubClientReleasePageModel> GetGitHubReleasesAsync(string channel, int page, bool refresh, CancellationToken ct = default);
     Task<List<ClientArtifactSummaryModel>> ListAsync(string? rid, CancellationToken ct = default);
     Task<ClientArtifactPageModel> GetArtifactsAsync(
         int page,
@@ -87,6 +88,13 @@ public class ClientArtifactsService : IClientArtifactsService
         _logger = logger;
         _uploads = uploads;
         _jsRuntime = jsRuntime;
+    }
+
+    public async Task<GitHubClientReleasePageModel> GetGitHubReleasesAsync(string channel, int page, bool refresh, CancellationToken ct = default)
+    {
+        var uri = $"/api/v1/client-artifacts/github-releases?channel={Uri.EscapeDataString(channel)}&page={page}&refresh={refresh.ToString().ToLowerInvariant()}";
+        return await _uploads.Http.GetFromJsonAsync<GitHubClientReleasePageModel>(uri, ct)
+            ?? throw new HttpRequestException("The GitHub releases response was empty.");
     }
 
 
@@ -660,8 +668,42 @@ public sealed class ClientScriptGenerateRequest
 {
     public int TenantId { get; set; }
     public string RuntimeId { get; set; } = "win-x64";
+    public string? ArtifactVersion { get; set; }
     public int ValidForMinutes { get; set; } = 60;
     public int? MaxUses { get; set; } = 1;
     public bool InstallAsService { get; set; } = true;
     public bool SilentInstall { get; set; } = true;
+}
+
+public sealed class GitHubClientReleasePageModel
+{
+    public List<GitHubClientReleaseModel> Items { get; set; } = [];
+    public int Page { get; set; }
+    public bool HasMore { get; set; }
+    public bool ScanLimitReached { get; set; }
+    public DateTimeOffset RefreshedAtUtc { get; set; }
+    public string? Warning { get; set; }
+}
+
+public sealed class GitHubClientReleaseModel
+{
+    public long Id { get; set; }
+    public string Tag { get; set; } = string.Empty;
+    public string Version { get; set; } = string.Empty;
+    public string Name { get; set; } = string.Empty;
+    public DateTimeOffset PublishedAtUtc { get; set; }
+    public bool IsPrerelease { get; set; }
+    public string DetailsUrl { get; set; } = string.Empty;
+    public List<GitHubClientAssetModel> ClientAssets { get; set; } = [];
+    public long TotalClientBytes { get; set; }
+    public string PublicationState { get; set; } = string.Empty;
+}
+
+public sealed class GitHubClientAssetModel
+{
+    public long Id { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string RuntimeId { get; set; } = string.Empty;
+    public long SizeBytes { get; set; }
+    public string? Sha256Digest { get; set; }
 }

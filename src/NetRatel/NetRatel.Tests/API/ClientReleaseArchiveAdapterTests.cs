@@ -111,27 +111,36 @@ public sealed class ClientReleaseArchiveAdapterTests
         var commit = root.GetProperty("publicCommit").GetString()!;
         Assert.Equal(commit, root.GetProperty("inputReceipt").GetProperty("headSha").GetString());
         var inventory = root.GetProperty("inputReceipt").GetProperty("files");
-        var checksums = (await File.ReadAllLinesAsync(Path.Combine(fixtureDirectory, "SHA256SUMS")))
-            .Select(line => line.Split(' ', StringSplitOptions.RemoveEmptyEntries))
-            .Where(parts => parts.Length == 2)
-            .ToDictionary(parts => parts[1].TrimStart('*'), parts => parts[0], StringComparer.Ordinal);
         var pattern = new Regex($"^netratel-client-{Regex.Escape(version)}-(?<rid>[a-z0-9-]+)\\.(?:zip|tar\\.gz)$",
             RegexOptions.CultureInvariant);
         var assets = inventory.EnumerateObject().Where(file => pattern.IsMatch(file.Name)).ToArray();
         Assert.NotEmpty(assets);
+        var release = new GitHubClientRelease(1, $"v{version}", version, version,
+            DateTimeOffset.UtcNow, version.Contains('-', StringComparison.Ordinal),
+            $"https://github.com/BostonTechnologies/netratel/releases/tag/v{version}",
+            assets.Select((asset, index) => new GitHubClientAsset(index + 1, asset.Name,
+                pattern.Match(asset.Name).Groups["rid"].Value,
+                new FileInfo(Path.Combine(fixtureDirectory, asset.Name)).Length,
+                $"sha256:{asset.Value.GetProperty("sha256").GetString()}"))
+                .ToArray(), 0, "verification required");
+        var verified = await ClientReleasePublicationVerifier.VerifyAsync(release,
+            Path.Combine(fixtureDirectory, "publication.json"), Path.Combine(fixtureDirectory, "SHA256SUMS"),
+            commit, TestContext.Current.CancellationToken);
+        Assert.Equal(assets.Length, verified.Assets.Count);
         var runtimes = new HashSet<string>(StringComparer.Ordinal);
         var work = NewWorkDirectory();
         try
         {
-            foreach (var asset in assets)
+            foreach (var asset in verified.Assets)
             {
-                var rid = pattern.Match(asset.Name).Groups["rid"].Value;
+                var rid = asset.RuntimeId;
                 Assert.True(runtimes.Add(rid), $"Duplicate client runtime {rid} in publication inventory.");
                 var source = Path.Combine(fixtureDirectory, asset.Name);
                 var sourceHash = await HashAsync(source);
-                Assert.Equal(asset.Value.GetProperty("sha256").GetString(), sourceHash);
+                await ClientReleasePublicationVerifier.VerifyDownloadedAssetAsync(source, asset,
+                    TestContext.Current.CancellationToken);
+                Assert.Equal(asset.SourceSha256, sourceHash);
                 Assert.Equal(root.GetProperty("artifacts").GetProperty(asset.Name).GetString(), sourceHash);
-                Assert.Equal(checksums[asset.Name], sourceHash);
                 var output = Path.Combine(work, $"{rid}.zip");
                 var result = await ClientReleaseArchiveAdapter.NormalizeAsync(source, output, rid, version, commit,
                     TestContext.Current.CancellationToken);

@@ -42,6 +42,8 @@ public sealed class ClientUpdateCatalogTests
         stable.Should().NotBeNull();
         stable!.Version.Should().Be("0.4.103-rc.1");
         catalog.GetOffer(74, Guid.NewGuid(), "linux-x64", "0.4.101", "stable")!.Version.Should().Be("0.4.102");
+        catalog.GetOffer(74, Guid.NewGuid(), "linux-x64", "0.4.101", "prerelease")!.Version.Should().Be("0.4.102",
+            "the agent cannot opt a stable tenant into prerelease deployment");
         var prerelease = catalog.GetOffer(tenantId, agentId, "linux-x64", "0.4.102-rc.1", "prerelease");
         prerelease.Should().NotBeNull();
         prerelease!.Version.Should().Be("0.4.103-rc.1");

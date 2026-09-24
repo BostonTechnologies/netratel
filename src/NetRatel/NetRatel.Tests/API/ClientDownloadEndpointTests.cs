@@ -8,6 +8,7 @@ using System.Text.Encodings.Web;
 using System.Text.Json;
 using FluentAssertions;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.TestHost;
@@ -31,6 +32,41 @@ namespace NetRatel.Tests.API;
 
 public sealed class ClientDownloadEndpointTests
 {
+    [Fact]
+    public async Task ConcurrentUploadConflictDoesNotDeleteTheWinningArtifact()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "netratel-tests", Guid.NewGuid().ToString("N"));
+        var storageRoot = Path.Combine(root, "store");
+        Directory.CreateDirectory(root);
+        try
+        {
+            using var app = await BuildAppAsync(storageRoot);
+            await using var scope = app.Services.CreateAsyncScope();
+            var service = scope.ServiceProvider.GetRequiredService<IClientArtifactsService>();
+            var bytes = BuildBaseZip();
+            var winner = new CallbackFormFile(bytes);
+            var loser = new CallbackFormFile(bytes, async () =>
+                await service.UploadAsync(winner, "win-x64", "0.4.6", "winner", "test", CancellationToken.None));
+
+            await FluentActions.Invoking(() => service.UploadAsync(loser, "win-x64", "0.4.6", "loser", "test", CancellationToken.None))
+                .Should().ThrowAsync<ClientArtifactConflictException>();
+
+            var metadata = await service.GetMetadataAsync("win-x64", "0.4.6", CancellationToken.None);
+            metadata.Should().NotBeNull();
+            metadata!.Notes.Should().Be("winner");
+            File.Exists(Path.Combine(storageRoot, "win-x64", "0.4.6", "metadata.json")).Should().BeTrue();
+            var download = await service.DownloadRawAsync("win-x64", "0.4.6", CancellationToken.None);
+            await using var stream = download.Content;
+            using var copy = new MemoryStream();
+            await stream.CopyToAsync(copy);
+            copy.ToArray().Should().Equal(bytes);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     [Fact]
     public async Task PostClientArtifactUpload_StoresVersionedMetadata_AndAllowsIdenticalRepair()
     {
@@ -383,5 +419,22 @@ public sealed class ClientDownloadEndpointTests
     {
         public Task<ClientScriptResult> GenerateAsync(NetRatel.API.Models.ClientScriptRequest request, CancellationToken ct)
             => Task.FromResult(new ClientScriptResult(Array.Empty<byte>(), "text/plain", "noop.ps1"));
+    }
+
+    private sealed class CallbackFormFile(byte[] bytes, Func<Task>? beforeCopy = null) : IFormFile
+    {
+        public string ContentType => "application/zip";
+        public string ContentDisposition => "form-data; name=\"file\"; filename=\"client.zip\"";
+        public IHeaderDictionary Headers { get; } = new HeaderDictionary();
+        public long Length => bytes.Length;
+        public string Name => "file";
+        public string FileName => "client.zip";
+        public Stream OpenReadStream() => new MemoryStream(bytes, writable: false);
+        public void CopyTo(Stream target) => target.Write(bytes);
+        public async Task CopyToAsync(Stream target, CancellationToken cancellationToken = default)
+        {
+            if (beforeCopy is not null) await beforeCopy();
+            await target.WriteAsync(bytes, cancellationToken);
+        }
     }
 }

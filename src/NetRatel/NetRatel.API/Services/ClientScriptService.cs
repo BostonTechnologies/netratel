@@ -49,15 +49,6 @@ public sealed class ClientScriptService : IClientScriptService
             throw new RequestValidationException("tenantId", $"Tenant '{request.TenantId}' does not exist.");
         }
 
-        var issue = await _enrollmentCodeIssueService.IssueAsync(
-            new EnrollmentCodeIssueRequest(
-                request.TenantId,
-                request.ValidForMinutes,
-                request.MaxUses ?? 1,
-                CreatedBy: null,
-                Notes: "script-generated"),
-            ct);
-
         var apiBase = ResolveApiBaseUrl();
         var artifact = string.IsNullOrWhiteSpace(request.ArtifactVersion)
             ? await _artifactsService.GetLatestAsync(request.RuntimeId, ct)
@@ -67,6 +58,16 @@ public sealed class ClientScriptService : IClientScriptService
             var requestedVersion = string.IsNullOrWhiteSpace(request.ArtifactVersion) ? "latest" : request.ArtifactVersion;
             throw new FileNotFoundException($"No stored artifact '{requestedVersion}' found for RID '{request.RuntimeId}'.");
         }
+
+        // Reject an unavailable artifact before creating a redeemable credential.
+        var issue = await _enrollmentCodeIssueService.IssueAsync(
+            new EnrollmentCodeIssueRequest(
+                request.TenantId,
+                request.ValidForMinutes,
+                request.MaxUses ?? 1,
+                CreatedBy: null,
+                Notes: "script-generated"),
+            ct);
 
         var script = _templateService.Build(
             new DeploymentScriptTemplateRequest(

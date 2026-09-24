@@ -129,8 +129,7 @@ public sealed class ClientUpdateAuthorityService(
         if (release is null || !tenantEnabled || !agentEnabled || state?.SuspendedAtUtc.HasValue == true ||
             state?.SuppressedReleaseId == releasePublicId ||
             !string.Equals(release.RuntimeId, runtimeId, StringComparison.OrdinalIgnoreCase) ||
-            release.Channel == "prerelease" &&
-                !string.Equals(channel, "prerelease", StringComparison.OrdinalIgnoreCase) && !tenantAllowsPrerelease && !exactTenantTarget ||
+            release.Channel == "prerelease" && !tenantAllowsPrerelease && !exactTenantTarget ||
             !string.IsNullOrWhiteSpace(tenantPolicy?.AutoUpdateTargetVersion) && !exactTenantTarget ||
             !NuGetVersion.TryParse(currentVersion, out var current) ||
             !NuGetVersion.TryParse(release.Version, out var target) || target <= current)

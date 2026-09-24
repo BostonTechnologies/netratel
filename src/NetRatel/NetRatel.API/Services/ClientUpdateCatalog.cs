@@ -55,8 +55,9 @@ public sealed class ClientUpdateCatalog(IServiceScopeFactory scopes, TimeProvide
             return null;
         }
 
-        var allowPrerelease = string.Equals(channel, "prerelease", StringComparison.OrdinalIgnoreCase) ||
-                              string.Equals(tenantPolicy.Channel, "prerelease", StringComparison.OrdinalIgnoreCase);
+        // The agent's channel is advisory. A legacy or misconfigured agent must not
+        // broaden a stable tenant's deployment policy by requesting prereleases.
+        var allowPrerelease = string.Equals(tenantPolicy.Channel, "prerelease", StringComparison.OrdinalIgnoreCase);
         var releases = allowPrerelease ? state.LatestReleaseByRuntime : state.LatestStableReleaseByRuntime;
         releases.TryGetValue(runtimeId, out var candidate);
         if (!string.IsNullOrWhiteSpace(tenantPolicy.TargetVersion))

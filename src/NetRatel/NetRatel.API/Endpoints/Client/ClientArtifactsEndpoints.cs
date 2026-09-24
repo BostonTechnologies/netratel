@@ -18,6 +18,22 @@ public static class ClientArtifactsEndpoints
         var group = app.MapGroup("/api/v1/client-artifacts")
             .WithTags("Client Artifacts");
 
+        group.MapGet("github-releases", async (
+            [FromQuery] string? channel,
+            [FromQuery] int? page,
+            [FromQuery] bool? refresh,
+            [FromServices] IGitHubClientReleaseCatalog catalog,
+            CancellationToken ct) =>
+        {
+            if (page is < 0 or > 29 || channel is not null && channel is not ("all" or "stable" or "prerelease"))
+                return Results.BadRequest(new { message = "Use page 0-29 and channel all, stable, or prerelease." });
+            return Results.Ok(await catalog.ListAsync(channel ?? "all", page ?? 0, refresh == true, ct));
+        })
+        .RequireAuthorization("ClientArtifactsDownload")
+        .WithName("ClientArtifacts_GitHubReleases")
+        .Produces<GitHubClientReleasePage>(StatusCodes.Status200OK)
+        .ProducesProblem(StatusCodes.Status400BadRequest);
+
         group.MapGet(string.Empty, async (
             [FromQuery] string? rid,
             [FromQuery] int? skip,

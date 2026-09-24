@@ -14,17 +14,65 @@
             <MudText Typo="Typo.h5">Agent Installers &amp; Updates</MudText>
             <MudText Typo="Typo.body2" Color="Color.Secondary">Manage immutable client packages, published auto-update releases, deployment scripts, update activity, and suspended update policy.</MudText>
         </MudStack>
-        <MudButton Color="Color.Primary" Variant="Variant.Filled" StartIcon="@Icons.Material.Filled.Upload" OnClick="OpenUpload">Upload artifact</MudButton>
+        <MudButton Color="Color.Default" Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Upload" OnClick="OpenUpload">Advanced: upload artifact</MudButton>
     </MudStack>
     <MudAlert Dense="true" Severity="Severity.Info" Variant="Variant.Outlined" Class="mt-3 mb-0">
-        Artifacts are downloadable client packages by runtime and version. Uploading a valid immutable artifact normally publishes an update release. Update Attempts records the client rollout lifecycle. Suspended Agents require explicit operator resumption.
+        GitHub releases are the primary client source. Legacy artifact upload remains available for offline use and publishes a valid immutable artifact. Update Attempts records the client rollout lifecycle. Suspended Agents require explicit operator resumption.
     </MudAlert>
 </MudPaper>
 
 <MudPaper Class="mt-4 pa-3 client-mgmt-surface" Elevation="0">
     <MudTabs Rounded="true" KeepPanelsAlive="true" ActivePanelIndex="_activeTab" ActivePanelIndexChanged="OnTabChanged" TabPanelsClass="client-mgmt-tab-panel" data-testid="client-management-tabs">
-        <MudTabPanel Text="Artifacts" Icon="@Icons.Material.Filled.Inventory2">
+        <MudTabPanel Text="GitHub releases" Icon="@Icons.Material.Filled.CloudDownload">
             @if (_activeTab == 0)
+            {
+                <MudStack Spacing="2" data-testid="github-release-catalogue">
+                    <MudStack Row="true" Class="flex-wrap" AlignItems="AlignItems.Center" Spacing="2">
+                        <MudSelect T="string" Value="_githubChannel" ValueChanged="OnGitHubChannelChanged" Label="Channel" Style="width: 190px">
+                            <MudSelectItem Value="@("all")">Stable and prerelease</MudSelectItem>
+                            <MudSelectItem Value="@("stable")">Stable</MudSelectItem>
+                            <MudSelectItem Value="@("prerelease")">Prerelease</MudSelectItem>
+                        </MudSelect>
+                        <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Refresh" Disabled="_githubLoading" OnClick="@(() => LoadGitHubAsync(true))">Refresh</MudButton>
+                        @if (_githubPage is not null && _githubPage.RefreshedAtUtc > DateTimeOffset.MinValue)
+                        {
+                            <MudText Typo="Typo.caption">Checked @_githubPage.RefreshedAtUtc.ToLocalTime().ToString("g")</MudText>
+                        }
+                    </MudStack>
+                    @if (_githubLoading) { <div role="status" aria-label="Loading GitHub releases"><MudProgressLinear Indeterminate="true" /></div> }
+                    @if (!string.IsNullOrWhiteSpace(_githubError)) { <MudAlert Severity="Severity.Error">@_githubError</MudAlert> }
+                    @if (!string.IsNullOrWhiteSpace(_githubPage?.Warning)) { <MudAlert Severity="Severity.Warning">@_githubPage.Warning</MudAlert> }
+                    @if (_githubPage?.Items.Count == 0 && !_githubLoading)
+                    {
+                        <MudText Typo="Typo.body2">No matching releases in the scanned range. Older releases may exist when a scan limit is shown.</MudText>
+                    }
+                    @foreach (var release in _githubPage?.Items ?? [])
+                    {
+                        <MudPaper Class="pa-3 client-github-release" Elevation="0">
+                            <MudStack Row="true" Class="flex-wrap" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
+                                <MudStack Spacing="0">
+                                    <MudText Typo="Typo.subtitle1">@release.Name</MudText>
+                                    <MudText Typo="Typo.caption">@release.Version · @release.PublishedAtUtc.ToLocalTime().ToString("g")</MudText>
+                                </MudStack>
+                                <MudChip T="string" Size="Size.Small" Color="@(release.IsPrerelease ? Color.Warning : Color.Success)">@(release.IsPrerelease ? "Prerelease" : "Stable")</MudChip>
+                            </MudStack>
+                            <MudStack Row="true" Class="flex-wrap mt-2" Spacing="1">
+                                @foreach (var asset in release.ClientAssets) { <MudChip T="string" Size="Size.Small">@asset.RuntimeId</MudChip> }
+                            </MudStack>
+                            <MudText Typo="Typo.body2" Class="mt-2">@release.PublicationState · @FormatBytes(release.TotalClientBytes)</MudText>
+                            <a href="@release.DetailsUrl" target="_blank" rel="noopener noreferrer">Release details</a>
+                        </MudPaper>
+                    }
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                        <MudButton Disabled="@(_githubLoading || _githubPageNumber == 0)" OnClick="PreviousGitHubPage">Previous</MudButton>
+                        <MudText Typo="Typo.body2">Page @(_githubPageNumber + 1)</MudText>
+                        <MudButton Disabled="@(_githubLoading || _githubPage?.HasMore != true)" OnClick="NextGitHubPage">Next</MudButton>
+                    </MudStack>
+                </MudStack>
+            }
+        </MudTabPanel>
+        <MudTabPanel Text="Artifacts" Icon="@Icons.Material.Filled.Inventory2">
+            @if (_activeTab == 1)
             {
                 <MudStack Spacing="2" data-testid="artifact-management-panel">
                     <MudGrid Spacing="2">
@@ -50,14 +98,14 @@
         </MudTabPanel>
 
         <MudTabPanel Text="Auto-update Releases" Icon="@Icons.Material.Filled.SystemUpdateAlt">
-            @if (_activeTab == 1)
+            @if (_activeTab == 2)
             {
                 <MudStack Spacing="2" data-testid="release-management-panel">
                     <MudGrid Spacing="2">
                         <MudItem xs="12" md="4"><MudTextField T="string" Value="_releaseSearch" ValueChanged="OnReleaseSearchChanged" Immediate="true" Label="Search releases" Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search" Clearable="true" data-testid="release-search" /></MudItem>
                         <MudItem xs="12" sm="6" md="2"><MudSelect T="string" Value="_releaseRid" ValueChanged="OnReleaseRidChanged" Label="Runtime"><MudSelectItem Value="@string.Empty">All runtimes</MudSelectItem>@foreach (var runtimeId in RuntimeIds) { <MudSelectItem Value="@runtimeId">@runtimeId</MudSelectItem> }</MudSelect></MudItem>
                         <MudItem xs="12" sm="6" md="2"><MudTextField T="string" Value="_releaseVersion" ValueChanged="OnReleaseVersionChanged" Immediate="true" Label="Version" Clearable="true" /></MudItem>
-                        <MudItem xs="12" sm="6" md="2"><MudSelect T="string" Value="_releaseChannel" ValueChanged="OnReleaseChannelChanged" Label="Channel"><MudSelectItem Value="@string.Empty">All channels</MudSelectItem><MudSelectItem Value="@("stable")">stable</MudSelectItem></MudSelect></MudItem>
+                        <MudItem xs="12" sm="6" md="2"><MudSelect T="string" Value="_releaseChannel" ValueChanged="OnReleaseChannelChanged" Label="Channel"><MudSelectItem Value="@string.Empty">All channels</MudSelectItem><MudSelectItem Value="@("stable")">stable</MudSelectItem><MudSelectItem Value="@("prerelease")">prerelease</MudSelectItem></MudSelect></MudItem>
                         <MudItem xs="12" sm="6" md="2"><MudSelect T="string" Value="_releaseEnabled" ValueChanged="OnReleaseEnabledChanged" Label="Status"><MudSelectItem Value="@string.Empty">All statuses</MudSelectItem><MudSelectItem Value="@("enabled")">Enabled</MudSelectItem><MudSelectItem Value="@("disabled")">Disabled</MudSelectItem></MudSelect></MudItem>
                     </MudGrid>
                     <MudTable T="ClientUpdateReleaseModel" @ref="_releaseTable" ServerData="LoadReleasesAsync" Dense="true" Hover="true" Loading="_releasesLoading" Breakpoint="Breakpoint.Sm" data-testid="release-table">
@@ -77,7 +125,7 @@
         </MudTabPanel>
 
         <MudTabPanel Text="Update Attempts" Icon="@Icons.Material.Filled.History">
-            @if (_activeTab == 2)
+            @if (_activeTab == 3)
             {
                 <MudStack Spacing="2" data-testid="attempt-management-panel">
                     <MudText Typo="Typo.caption" Color="Color.Secondary">Grouping is applied to this server-filtered page; group counts are not global totals.</MudText>
@@ -105,7 +153,7 @@
         </MudTabPanel>
 
         <MudTabPanel Text="Suspended Agents" Icon="@Icons.Material.Filled.PauseCircleOutline">
-            @if (_activeTab == 3)
+            @if (_activeTab == 4)
             {
                 <MudStack Spacing="2" data-testid="suspended-management-panel">
                     <MudText Typo="Typo.body2" Color="Color.Secondary">Resume affects only future automatic updates for the selected suspended client.</MudText>
@@ -126,9 +174,33 @@
     <MudPaper Class="pa-4 mx-auto mt-12" Style="max-width: 520px;"><MudStack Spacing="2"><MudText Typo="Typo.h6">Download Client Package</MudText><MudText Typo="Typo.body2">Installer will auto-enroll on first run; no token is embedded.</MudText><MudSelect T="int?" Label="Tenant" @bind-Value="_selectedTenantId" Required="true">@foreach (var tenant in _tenants) { <MudSelectItem T="int?" Value="@tenant.TenantId">@tenant.Name (@tenant.TenantId)</MudSelectItem> }</MudSelect><MudSelect T="ClientEnvironment" Label="Environment" @bind-Value="_selectedEnvironment"><MudSelectItem T="ClientEnvironment" Value="ClientEnvironment.Dev">Dev</MudSelectItem><MudSelectItem T="ClientEnvironment" Value="ClientEnvironment.Prod">Prod</MudSelectItem><MudSelectItem T="ClientEnvironment" Value="ClientEnvironment.Both">Dev + Prod</MudSelectItem></MudSelect><MudSelect T="string" Label="Runtime" @bind-Value="_selectedRuntimeId">@foreach (var runtimeId in RuntimeIds) { <MudSelectItem Value="@runtimeId">@runtimeId</MudSelectItem> }</MudSelect><MudCheckBox T="bool" Label="Inject enrollment code" @bind-Value="_injectEnrollment" />@if (_injectEnrollment) { <MudSelect T="int?" Label="Validity" @bind-Value="_validityMinutes">@foreach (var preset in _validityPresets) { <MudSelectItem T="int?" Value="@preset.Minutes">@preset.Label</MudSelectItem> }</MudSelect><MudNumericField T="int" Label="Max uses" Min="1" @bind-Value="_maxUses" /> }<MudStack Row="true" Justify="Justify.FlexEnd" Spacing="1"><MudButton Variant="Variant.Text" OnClick="CloseDownloadDialog">Cancel</MudButton><MudButton Color="Color.Primary" Variant="Variant.Filled" Disabled="@(!CanDownload())" OnClick="DownloadSelectedAsync">Download</MudButton></MudStack></MudStack></MudPaper>
 </MudOverlay>
 
-<MudOverlay Visible="_scriptDialogOpen" AutoClose="false" DarkBackground="true">
-    <MudPaper Class="pa-4 mx-auto mt-12" Style="max-width: 520px;"><MudStack Spacing="2"><MudText Typo="Typo.h6">Generate Deployment Script</MudText><MudText Typo="Typo.body2">Script includes a short-lived enrollment code. No JWT is embedded.</MudText><MudSelect T="int?" Label="Tenant" @bind-Value="_selectedTenantId" Required="true">@foreach (var tenant in _tenants) { <MudSelectItem T="int?" Value="@tenant.TenantId">@tenant.Name (@tenant.TenantId)</MudSelectItem> }</MudSelect><MudSelect T="string" Label="Runtime" @bind-Value="_scriptRuntimeId">@foreach (var runtimeId in RuntimeIds) { <MudSelectItem Value="@runtimeId">@runtimeId</MudSelectItem> }</MudSelect><MudSelect T="int?" Label="Validity" @bind-Value="_scriptValidityMinutes">@foreach (var preset in _validityPresets) { <MudSelectItem T="int?" Value="@preset.Minutes">@preset.Label</MudSelectItem> }</MudSelect><MudNumericField T="int" Label="Max uses" Min="1" @bind-Value="_scriptMaxUses" /><MudCheckBox T="bool" Label="Install as Service" @bind-Value="_scriptInstallAsService" /><MudCheckBox T="bool" Label="Silent install" @bind-Value="_scriptSilentInstall" /><MudStack Row="true" Justify="Justify.FlexEnd" Spacing="1"><MudButton Variant="Variant.Text" OnClick="CloseScriptDialog">Cancel</MudButton><MudButton Color="Color.Primary" Variant="Variant.Filled" Disabled="@(!CanGenerateScript())" OnClick="GenerateScriptAsync">Generate Script</MudButton></MudStack></MudStack></MudPaper>
-</MudOverlay>
+<MudDialog Visible="_scriptDialogOpen" VisibleChanged="ScriptVisibleChanged" AriaLabel="Generate deployment script"
+           Class="client-deployment-dialog"
+           Options="@(new DialogOptions { BackdropClick = false, CloseOnEscapeKey = false, FullWidth = true, MaxWidth = MaxWidth.Large })">
+    <TitleContent>Generate deployment script</TitleContent>
+    <DialogContent>
+        <MudStack Spacing="2">
+            <MudText Typo="Typo.body2">Script includes a short-lived enrollment code. No JWT is embedded.</MudText>
+            <MudText Typo="Typo.body2">Selected artifact: @_scriptRuntimeId @(_scriptArtifactVersion ?? "latest")</MudText>
+            <MudSelect T="int?" Label="Tenant" @bind-Value="_selectedTenantId" Required="true">
+                @foreach (var tenant in _tenants) { <MudSelectItem T="int?" Value="@tenant.TenantId">@tenant.Name (@tenant.TenantId)</MudSelectItem> }
+            </MudSelect>
+            <MudSelect T="string" Label="Runtime" Value="_scriptRuntimeId" ValueChanged="OnScriptRuntimeChanged">
+                @foreach (var runtimeId in RuntimeIds) { <MudSelectItem Value="@runtimeId">@runtimeId</MudSelectItem> }
+            </MudSelect>
+            <MudSelect T="int?" Label="Validity" @bind-Value="_scriptValidityMinutes">
+                @foreach (var preset in _validityPresets) { <MudSelectItem T="int?" Value="@preset.Minutes">@preset.Label</MudSelectItem> }
+            </MudSelect>
+            <MudNumericField T="int" Label="Max uses" Min="1" @bind-Value="_scriptMaxUses" />
+            <MudCheckBox T="bool" Label="Install as Service" @bind-Value="_scriptInstallAsService" />
+            <MudCheckBox T="bool" Label="Silent install" @bind-Value="_scriptSilentInstall" />
+        </MudStack>
+    </DialogContent>
+    <DialogActions>
+        <MudButton Variant="Variant.Text" OnClick="CloseScriptDialog">Cancel</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" Disabled="@(!CanGenerateScript())" OnClick="GenerateScriptAsync">Generate script</MudButton>
+    </DialogActions>
+</MudDialog>
 
 @code {
     private static readonly int[] PageSizes = [10, 20, 50, 100];
@@ -137,6 +209,11 @@
     private readonly (string Label, int Minutes)[] _validityPresets = [("1 hour", 60), ("6 hours", 360), ("24 hours", 1440), ("3 days", 4320), ("7 days", 10080)];
     private IReadOnlyList<TenantDto> _tenants = Array.Empty<TenantDto>();
     private MudTable<ClientArtifactSummaryModel>? _artifactTable;
+    private GitHubClientReleasePageModel? _githubPage;
+    private string _githubChannel = "all";
+    private string? _githubError;
+    private int _githubPageNumber;
+    private bool _githubLoading;
     private MudTable<ClientUpdateReleaseModel>? _releaseTable;
     private MudTable<ClientUpdateHistoryItemModel>? _attemptTable;
     private MudTable<AgentClientUpdateStateModel>? _suspendedTable;
@@ -170,6 +247,7 @@
     private int? _validityMinutes = 60;
     private int _maxUses = 1;
     private string _scriptRuntimeId = "win-x64";
+    private string? _scriptArtifactVersion;
     private int? _scriptValidityMinutes = 60;
     private int _scriptMaxUses = 1;
     private bool _scriptInstallAsService = true;
@@ -179,6 +257,7 @@
     {
         _tenants = await TenantApi.GetTenantsAsync();
         _selectedTenantId = _tenants.FirstOrDefault()?.TenantId;
+        await LoadGitHubAsync(false);
     }
 
     private async Task OnTabChanged(int index)
@@ -187,12 +266,35 @@
         await Task.Yield();
         switch (index)
         {
-            case 0 when _artifactTable is not null: await _artifactTable.ReloadServerData(); break;
-            case 1 when _releaseTable is not null: await _releaseTable.ReloadServerData(); break;
-            case 2 when _attemptTable is not null: await _attemptTable.ReloadServerData(); break;
-            case 3 when _suspendedTable is not null: await _suspendedTable.ReloadServerData(); break;
+            case 0: await LoadGitHubAsync(false); break;
+            case 1 when _artifactTable is not null: await _artifactTable.ReloadServerData(); break;
+            case 2 when _releaseTable is not null: await _releaseTable.ReloadServerData(); break;
+            case 3 when _attemptTable is not null: await _attemptTable.ReloadServerData(); break;
+            case 4 when _suspendedTable is not null: await _suspendedTable.ReloadServerData(); break;
         }
     }
+
+    private async Task LoadGitHubAsync(bool refresh)
+    {
+        _githubLoading = true;
+        _githubError = null;
+        try
+        {
+            _githubPage = await Artifacts.GetGitHubReleasesAsync(_githubChannel, _githubPageNumber, refresh);
+        }
+        catch (HttpRequestException)
+        {
+            _githubError = "Could not refresh GitHub releases. Try again; imported artifacts remain available.";
+        }
+        finally
+        {
+            _githubLoading = false;
+        }
+    }
+
+    private async Task OnGitHubChannelChanged(string channel) { _githubChannel = channel; _githubPageNumber = 0; await LoadGitHubAsync(false); }
+    private async Task PreviousGitHubPage() { if (_githubPageNumber > 0) { _githubPageNumber--; await LoadGitHubAsync(false); } }
+    private async Task NextGitHubPage() { if (_githubPage?.HasMore == true) { _githubPageNumber++; await LoadGitHubAsync(false); } }
 
     private async Task<TableData<ClientArtifactSummaryModel>> LoadArtifactsAsync(TableState state, CancellationToken ct)
     {
@@ -277,8 +379,10 @@
     private async Task OnUploaded() { await ResetAndReloadAsync(_artifactTable); await ResetAndReloadAsync(_releaseTable); }
     private void OpenDownload(ClientArtifactSummaryModel item) { _selectedItem = item; _selectedRuntimeId = item.Rid; _downloadDialogOpen = true; }
     private void CloseDownloadDialog() => _downloadDialogOpen = false;
-    private void OpenScript(ClientArtifactSummaryModel item) { _scriptRuntimeId = item.Rid; _scriptDialogOpen = true; }
+    private void OpenScript(ClientArtifactSummaryModel item) { _scriptRuntimeId = item.Rid; _scriptArtifactVersion = item.Version; _scriptDialogOpen = true; }
+    private void OnScriptRuntimeChanged(string runtimeId) { _scriptRuntimeId = runtimeId; _scriptArtifactVersion = null; }
     private void CloseScriptDialog() => _scriptDialogOpen = false;
+    private void ScriptVisibleChanged(bool visible) => _scriptDialogOpen = visible;
 
     private async Task DownloadSelectedAsync()
     {
@@ -293,7 +397,7 @@
     private async Task GenerateScriptAsync()
     {
         if (!_selectedTenantId.HasValue || !_scriptValidityMinutes.HasValue) return;
-        await Artifacts.DownloadDeploymentScriptAsync(new ClientScriptGenerateRequest { TenantId = _selectedTenantId.Value, RuntimeId = _scriptRuntimeId, ValidForMinutes = _scriptValidityMinutes.Value, MaxUses = _scriptMaxUses, InstallAsService = _scriptInstallAsService, SilentInstall = _scriptSilentInstall });
+        await Artifacts.DownloadDeploymentScriptAsync(new ClientScriptGenerateRequest { TenantId = _selectedTenantId.Value, RuntimeId = _scriptRuntimeId, ArtifactVersion = _scriptArtifactVersion, ValidForMinutes = _scriptValidityMinutes.Value, MaxUses = _scriptMaxUses, InstallAsService = _scriptInstallAsService, SilentInstall = _scriptSilentInstall });
         _scriptDialogOpen = false;
     }
 
@@ -304,6 +408,7 @@
     private bool? ParseEnabledFilter() => _releaseEnabled switch { "enabled" => true, "disabled" => false, _ => null };
     private static string? EmptyToNull(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
     private static string ShortHash(string hash) => string.IsNullOrWhiteSpace(hash) ? string.Empty : hash.Length <= 12 ? hash : $"{hash[..12]}…";
+    private static string FormatBytes(long bytes) => bytes < 1024 ? $"{bytes} B" : $"{bytes / 1024d / 1024d:F1} MiB";
     private static string ClientTarget(string? hostName, string? displayName, Guid agentId) => FirstPresent(hostName, displayName) ?? $"Unknown client · {agentId.ToString("N")[..8]}";
     private static string StateTarget(AgentClientUpdateStateModel state) => FirstPresent(state.ClientHostName, state.ClientDisplayName, state.AgentName) ?? $"Unknown client · {state.AgentId.ToString("N")[..8]}";
     private static string DisplaySecondaryName(string? hostName, string? displayName) => !string.IsNullOrWhiteSpace(hostName) && !string.IsNullOrWhiteSpace(displayName) && !string.Equals(hostName, displayName, StringComparison.OrdinalIgnoreCase) ? $" · {displayName}" : string.Empty;
@@ -317,4 +422,8 @@
     .client-mgmt-tab-panel { min-width: 0; overflow-x: hidden; }
     .client-mgmt-clamp { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
     .client-mgmt-surface .mud-table-container { max-width: 100%; overflow-x: auto; }
+    .client-github-release { border: 1px solid var(--mud-palette-divider); overflow-wrap: anywhere; }
+    .client-deployment-dialog { max-width: min(100%, 960px); }
+    .client-deployment-dialog .mud-dialog-content { min-width: 0; max-height: calc(100dvh - 160px); overflow-y: auto; overflow-wrap: anywhere; }
+    .client-deployment-dialog .mud-dialog-actions { flex-wrap: wrap; }
 </style>

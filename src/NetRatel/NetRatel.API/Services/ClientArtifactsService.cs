@@ -222,6 +222,8 @@ public sealed class ClientArtifactsService : IClientArtifactsService
         var tempPath = Path.Combine(versionDir, $".upload-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempPath);
         var tempFile = Path.Combine(tempPath, Path.GetFileName(file.FileName));
+        var movedArtifact = false;
+        var movedMetadata = false;
 
         try
         {
@@ -243,7 +245,15 @@ public sealed class ClientArtifactsService : IClientArtifactsService
                 return new ClientArtifactUploadResultDto { Artifact = existing.ToSummary(), Created = false };
             }
 
-            File.Move(tempFile, artifactPath);
+            try
+            {
+                File.Move(tempFile, artifactPath);
+            }
+            catch (IOException) when (File.Exists(artifactPath))
+            {
+                throw new ClientArtifactConflictException(normalizedRid, normalizedVersion);
+            }
+            movedArtifact = true;
             _logger.LogInformation(
                 "Stored client artifact {Rid}/{Version} at {ArtifactPath}; size={Size}; sha256={Sha256}",
                 normalizedRid,
@@ -272,6 +282,7 @@ public sealed class ClientArtifactsService : IClientArtifactsService
                 await metaStream.FlushAsync(ct);
             }
             File.Move(metadataTemporary, metadataPath);
+            movedMetadata = true;
 
             await _events.RecordAsync(new DomainEvent
             {
@@ -299,10 +310,9 @@ public sealed class ClientArtifactsService : IClientArtifactsService
         }
         catch
         {
-            if (existingArtifact) throw;
             try
             {
-                if (File.Exists(artifactPath)) File.Delete(artifactPath);
+                if (movedArtifact && File.Exists(artifactPath)) File.Delete(artifactPath);
             }
             catch (Exception cleanupException)
             {
@@ -311,7 +321,7 @@ public sealed class ClientArtifactsService : IClientArtifactsService
 
             try
             {
-                if (File.Exists(metadataPath)) File.Delete(metadataPath);
+                if (movedMetadata && File.Exists(metadataPath)) File.Delete(metadataPath);
             }
             catch (Exception cleanupException)
             {
