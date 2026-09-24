@@ -73,6 +73,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         Assert.True(string.IsNullOrWhiteSpace(initializationError), initializationError);
 
         await page.GetByTestId("local-login-email").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible, Timeout = 30_000 });
+        await page.GetByTestId("local-login-client-ready").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
         await CaptureReviewScreenshotAsync(page, "login-mobile");
         await page.SetViewportSizeAsync(1440, 900);
         await CaptureReviewScreenshotAsync(page, "login-desktop");
