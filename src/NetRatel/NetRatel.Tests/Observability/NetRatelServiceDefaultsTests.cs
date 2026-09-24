@@ -2,6 +2,10 @@ using FluentAssertions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
+using Microsoft.AspNetCore.Http;
+using OpenTelemetry.Instrumentation.AspNetCore;
+using OpenTelemetry.Instrumentation.Http;
 using Xunit;
 
 namespace NetRatel.Tests.Observability;
@@ -48,5 +52,26 @@ public sealed class NetRatelServiceDefaultsTests
             typeName.Contains("OpenTelemetry", StringComparison.OrdinalIgnoreCase))
             .Should()
             .BeTrue();
+    }
+
+    [Fact]
+    public void AddServiceDefaults_ExcludesPublicInstallCapabilitiesFromHttpTraces()
+    {
+        var builder = Host.CreateApplicationBuilder();
+        builder.AddServiceDefaults();
+        using var host = builder.Build();
+        _ = host.Services.GetRequiredService<OpenTelemetry.Trace.TracerProvider>();
+        var inbound = host.Services.GetRequiredService<IOptions<AspNetCoreTraceInstrumentationOptions>>().Value;
+        var outbound = host.Services.GetRequiredService<IOptions<HttpClientTraceInstrumentationOptions>>().Value;
+        var context = new DefaultHttpContext();
+        context.Request.Path = "/clients/install/opaque-token.sh";
+
+        Assert.False(inbound.Filter!(context));
+        Assert.False(outbound.FilterHttpRequestMessage!(new HttpRequestMessage(
+            HttpMethod.Get, "https://api.example.test/clients/install/opaque-token.sh")));
+        context.Request.Path = "/api/v1/clients";
+        Assert.True(inbound.Filter(context));
+        Assert.True(outbound.FilterHttpRequestMessage(new HttpRequestMessage(
+            HttpMethod.Get, "https://api.example.test/api/v1/clients")));
     }
 }

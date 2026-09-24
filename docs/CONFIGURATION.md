@@ -52,7 +52,9 @@ your external proxy to forward that path to Web or API, avoid logging the
 capability path or query string, and disable intermediary caching. The
 application sends `Cache-Control: no-store`, `nosniff`, no-referrer, and
 no-index headers. Externally managed proxy logs are outside application
-logging control and require their own redaction rule.
+logging control and require their own redaction rule. The supplied public
+HTTPS Compose ingress suppresses access and error logs for this path; the
+API also redacts its own request log and omits these URL-bearing HTTP spans.
 
 An operator can generate a link from **Clients → Artifacts → Generate script**,
 inspect and copy its script and command, explicitly download the same script,

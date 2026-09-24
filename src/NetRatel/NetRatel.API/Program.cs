@@ -579,16 +579,23 @@ builder.Services.AddAuthorization(options =>
     options.AddPolicy("ClientArtifactsWrite", policy =>
     {
         policy.RequireAuthenticatedUser();
-        policy.RequireAssertion(ctx => HasAdminClaim(ctx.User, ResolveAdminId()));
+        policy.AddRequirements(new EffectiveAccessRequirement(NetRatelPermissions.ClientManagement, instanceScope: true));
     });
 
     options.AddPolicy("ClientArtifactsUpload", policy =>
     {
         policy.AddAuthenticationSchemes("Bearer", "M2M");
         policy.RequireAuthenticatedUser();
-        policy.RequireAssertion(ctx =>
-            HasAdminClaim(ctx.User, ResolveAdminId()) ||
-            HasAllowedM2MClient(ctx.User, m2m.AllowedCallerClientIds, m2m.Audience));
+        policy.RequireAssertion(async ctx =>
+        {
+            if (HasAllowedM2MClient(ctx.User, m2m.AllowedCallerClientIds, m2m.Audience))
+                return true;
+            if (ctx.Resource is not HttpContext http)
+                return false;
+            var access = http.RequestServices.GetRequiredService<IEffectiveAccessService>();
+            var snapshot = await access.GetSnapshotAsync(ctx.User, tenantId: null).ConfigureAwait(false);
+            return snapshot.IsLegacyOperator || snapshot.IsInstanceAdministrator;
+        });
     });
 
     options.AddPolicy("HealthRead", policy =>

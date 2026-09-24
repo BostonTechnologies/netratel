@@ -117,7 +117,7 @@ public sealed class ClientReleaseImportWorkerTests : IAsyncLifetime
                 // A short transfer must leave the verified first runtime reusable, while
                 // retrying the failed second runtime against the same immutable evidence.
                 var secondAsset = fixture.Release.ClientAssets.Single(x => x.RuntimeId == "win-x64");
-                fixture.Bytes[secondAsset.Id] = MakeArchive("win-x64", fixture.Release.Version, fixture.Commit);
+                fixture.Bytes[secondAsset.Id] = fixture.OriginalBytes[secondAsset.Id];
                 await using (var retryScope = services.CreateAsyncScope())
                 {
                     var retryDb = retryScope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
@@ -396,6 +396,7 @@ public sealed class ClientReleaseImportWorkerTests : IAsyncLifetime
         const string version = "1.2.3";
         const string commit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         var source = new Dictionary<long, byte[]>();
+        var original = new Dictionary<long, byte[]>();
         var assets = new List<GitHubClientAsset>();
         var files = new Dictionary<string, object>();
         var artifacts = new Dictionary<string, string>();
@@ -406,6 +407,7 @@ public sealed class ClientReleaseImportWorkerTests : IAsyncLifetime
             var name = $"netratel-client-{version}-{rid}.zip";
             var bytes = MakeArchive(rid, version, commit);
             var hash = Hash(bytes);
+            original[id] = bytes;
             source[id] = corruptSecondRuntime && rid == "win-x64" ? bytes[..^1] : bytes;
             assets.Add(new GitHubClientAsset(id, name, rid, bytes.Length, "sha256:" + hash));
             files[name] = new { sha256 = hash };
@@ -433,7 +435,7 @@ public sealed class ClientReleaseImportWorkerTests : IAsyncLifetime
             ChecksumsAsset = new GitHubReleaseEvidenceAsset(21, "SHA256SUMS", sums.Length,
                 "sha256:" + Hash(sums))
         };
-        return new Fixture(release, commit, source);
+        return new Fixture(release, commit, source, original);
     }
 
     private static byte[] MakeArchive(string runtime, string version, string commit)
@@ -460,7 +462,8 @@ public sealed class ClientReleaseImportWorkerTests : IAsyncLifetime
 
     private static string Hash(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
 
-    private sealed record Fixture(GitHubClientRelease Release, string Commit, Dictionary<long, byte[]> Bytes);
+    private sealed record Fixture(GitHubClientRelease Release, string Commit,
+        Dictionary<long, byte[]> Bytes, Dictionary<long, byte[]> OriginalBytes);
 
     private sealed class FixtureCatalog(GitHubClientRelease release, string commit) : IGitHubClientReleaseCatalog
     {

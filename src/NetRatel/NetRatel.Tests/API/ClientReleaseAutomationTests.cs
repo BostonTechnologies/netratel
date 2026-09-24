@@ -1,7 +1,9 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using NetRatel.API.Models;
 using NetRatel.API.Services;
+using NetRatel.Akka.Configuration;
 using NetRatel.Infrastructure.Persistence;
 using Testcontainers.PostgreSql;
 using Xunit;
@@ -85,8 +87,10 @@ public sealed class ClientReleaseAutomationTests : IAsyncLifetime
             [Release(5, "1.2.1-rc.1", false)], prerelease: false));
     }
 
-    [Fact]
-    public async Task TwoWorkersClaimOnlyOneDueCheckAndPersistFailureForRetry()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task TwoWorkersClaimOnlyOneDueCheckAndPersistFailureForRetry(bool recoverStaleLease)
     {
         var now = new DateTimeOffset(2026, 9, 24, 10, 0, 0, TimeSpan.Zero);
         var clock = new FixedClock(now);
@@ -95,6 +99,12 @@ public sealed class ClientReleaseAutomationTests : IAsyncLifetime
             var policy = new ClientReleaseAutomationService(db, clock);
             await policy.UpdateAsync(new(12, true, false, false, false, 0), "admin", CancellationToken.None);
             await policy.CheckNowAsync("admin", CancellationToken.None);
+            if (recoverStaleLease)
+            {
+                await db.ClientReleaseAutomationSettings.ExecuteUpdateAsync(setters => setters
+                    .SetProperty(x => x.LeaseOwner, Guid.NewGuid())
+                    .SetProperty(x => x.LeaseUntilUtc, now.AddSeconds(-1)));
+            }
         }
         var catalog = new FailingCatalog();
         await using var services = new ServiceCollection()
@@ -117,6 +127,66 @@ public sealed class ClientReleaseAutomationTests : IAsyncLifetime
         Assert.Equal(now.AddMinutes(15), stored.NextCheckAtUtc);
         Assert.Null(stored.LeaseOwner);
         Assert.Null(stored.LeaseUntilUtc);
+    }
+
+    [Fact]
+    public async Task AutomaticPublicationRechecksPrereleasePolicyAfterImportCompletes()
+    {
+        var now = new DateTimeOffset(2026, 9, 24, 10, 0, 0, TimeSpan.Zero);
+        var clock = new FixedClock(now);
+        var id = Guid.NewGuid();
+        const string version = "1.2.3-rc.1";
+        var hash = new string('a', 64);
+        await using (var db = new OrchestratorDbContext(_options))
+        {
+            var policy = new ClientReleaseAutomationService(db, clock);
+            var enabled = await policy.UpdateAsync(new(12, true, true, true, true, 0),
+                "fixture-admin", CancellationToken.None);
+            db.ClientReleaseImportOperations.Add(new ClientReleaseImportOperation
+            {
+                Id = id, GitHubReleaseId = 123, Tag = "v" + version,
+                Version = version, BuildCommit = new string('b', 40),
+                RequestedBy = "client-release-automation", IsAutomatic = true,
+                State = ClientReleaseImportState.Imported, CreatedAtUtc = now, UpdatedAtUtc = now,
+                ImportedAtUtc = now,
+                Assets = [new ClientReleaseImportAsset
+                {
+                    RuntimeId = "linux-x64", GitHubAssetId = 321,
+                    SourceName = "fixture.zip", SourceSha256 = hash, SourceSizeBytes = 1,
+                    LocalSha256 = hash, LocalSizeBytes = 1,
+                    State = ClientReleaseImportAssetState.Imported, UpdatedAtUtc = now
+                }]
+            });
+            await db.SaveChangesAsync();
+            await policy.UpdateAsync(new(12, true, true, true, false, enabled.Revision),
+                "fixture-admin", CancellationToken.None);
+        }
+
+        await using var services = new ServiceCollection()
+            .AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(_postgres.GetConnectionString()))
+            .BuildServiceProvider();
+        await using var scope = services.CreateAsyncScope();
+        var dbForPublish = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+        var options = new NetRatelAkkaMigrationOptions
+        {
+            Enabled = true, PresenceAuthorityEnabled = true,
+            GatewayEnabled = true, ClientUpdatesEnabled = true
+        };
+        var catalog = new ClientUpdateCatalog(services.GetRequiredService<IServiceScopeFactory>(), clock);
+        var authority = new ClientUpdateAuthorityService(dbForPublish, catalog, options,
+            clock, NullLogger<ClientUpdateAuthorityService>.Instance);
+        var item = new ClientPackPublishItem(new ClientArtifactSummaryDto
+        {
+            Rid = "linux-x64", Version = version, FileName = "fixture.zip",
+            Sha256 = hash, Size = 1
+        }, "{}");
+
+        var rejected = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            authority.PublishImportedPackAsync(id, [item], "client-release-automation",
+                confirmPrerelease: true, cancellationToken: CancellationToken.None, automatic: true));
+        Assert.Equal("Automatic client publication is disabled by current policy.", rejected.Message);
+        Assert.Empty(await dbForPublish.ClientUpdateReleases.ToListAsync());
+        Assert.Null((await dbForPublish.ClientReleaseImportOperations.SingleAsync(x => x.Id == id)).PublishedAtUtc);
     }
 
     private static GitHubClientRelease Release(long id, string version, bool prerelease) =>
