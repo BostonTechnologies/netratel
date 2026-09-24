@@ -17,7 +17,7 @@ fi
 
 if rg -n 'compose\.local-sqlite|compose\.sqlite\.yaml|provider: sqlite' \
   .github/workflows release tools/ci \
-  --glob '!check-postgresql-only.sh' --glob '!smoke-rc3-local-upgrade.sh'; then
+  --glob '!check-postgresql-only.sh'; then
   echo "An active SQLite recipe or CI matrix entry remains." >&2
   exit 1
 fi
