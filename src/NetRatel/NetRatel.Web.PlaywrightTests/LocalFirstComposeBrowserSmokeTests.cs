@@ -432,12 +432,16 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         // the native curl and .NET client through the standard CA variables.
         var directory = Path.Combine(Path.GetTempPath(), "netratel-native-install-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
+        var username = "netratelci" + Guid.NewGuid().ToString("N")[..8];
+        var home = Path.Combine(directory, "home");
+        var userCreated = false;
         try
         {
-            var root = Path.Combine(directory, "root");
-            var home = Path.Combine(directory, "home");
-            Directory.CreateDirectory(home);
-            await RunNativeClientAsync("bash", ["-o", "pipefail", "-c", command], directory, home,
+            await RunNativeUserManagementAsync("useradd", "--system", "--create-home", "--home-dir", home,
+                "--shell", "/usr/sbin/nologin", username);
+            userCreated = true;
+            var root = Path.Combine(home, "root");
+            await RunNativeClientAsync(username, "bash", ["-o", "pipefail", "-c", command], home,
                 certificate, root);
             var executable = Path.Combine(root, "versions", version, "NetRatel.Client");
             var manifest = Path.Combine(root, "versions", version, "netratel-client-manifest.json");
@@ -446,33 +450,49 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             Assert.Contains(version, await File.ReadAllTextAsync(manifest));
             Assert.True(File.Exists(Path.Combine(home, ".local", "share", "netratel", "agent.dat")),
                 "The native installer did not persist its enrolled client identity.");
-            await RunNativeClientAsync(executable, ["--auth-check", "--api", webUrl.GetLeftPart(UriPartial.Authority)],
-                directory, home, certificate, root);
+            await RunNativeClientAsync(username, executable,
+                ["--auth-check", "--api", webUrl.GetLeftPart(UriPartial.Authority)], home, certificate, root);
             Assert.Equal(404, (await anonymous.APIRequest.GetAsync(publicUrl)).Status);
         }
         finally
         {
-            Directory.Delete(directory, recursive: true);
+            try
+            {
+                if (userCreated)
+                    await RunNativeUserManagementAsync("userdel", "--remove", username);
+            }
+            finally
+            {
+                Directory.Delete(directory, recursive: true);
+            }
         }
         await dialog.GetByRole(AriaRole.Button, new() { Name = "Close", Exact = true }).ClickAsync();
     }
 
-    private static async Task RunNativeClientAsync(string executable, IReadOnlyList<string> arguments,
-        string directory, string home, string certificate, string root)
+    private static async Task RunNativeClientAsync(string username, string executable, IReadOnlyList<string> arguments,
+        string home, string certificate, string root)
     {
-        var start = new ProcessStartInfo(executable)
+        var start = new ProcessStartInfo("sudo")
         {
-            WorkingDirectory = directory,
+            WorkingDirectory = home,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false
         };
+        start.ArgumentList.Add("-u");
+        start.ArgumentList.Add(username);
+        start.ArgumentList.Add("--");
+        start.ArgumentList.Add("env");
+        start.ArgumentList.Add($"HOME={home}");
+        start.ArgumentList.Add($"CURL_CA_BUNDLE={certificate}");
+        start.ArgumentList.Add($"SSL_CERT_FILE={certificate}");
+        start.ArgumentList.Add($"NetRatel_ROOT={root}");
+        start.ArgumentList.Add($"NetRatel_STATE={Path.Combine(home, "state")}");
+        start.ArgumentList.Add($"NETRATEL_POWERSHELL_HOME={Path.Combine(home, "powershell")}");
+        start.ArgumentList.Add("NO_PROXY=netratel.example,localhost,127.0.0.1");
+        start.ArgumentList.Add("no_proxy=netratel.example,localhost,127.0.0.1");
+        start.ArgumentList.Add(executable);
         foreach (var argument in arguments) start.ArgumentList.Add(argument);
-        start.Environment["HOME"] = home;
-        start.Environment["CURL_CA_BUNDLE"] = certificate;
-        start.Environment["SSL_CERT_FILE"] = certificate;
-        start.Environment["NetRatel_ROOT"] = root;
-        start.Environment["NetRatel_STATE"] = Path.Combine(directory, "state");
         using var process = Process.Start(start) ?? throw new InvalidOperationException("Native client process did not start.");
         var output = process.StandardOutput.ReadToEndAsync();
         var error = process.StandardError.ReadToEndAsync();
@@ -486,6 +506,23 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await Task.WhenAll(output, error);
         Assert.True(process.ExitCode == 0,
             $"Native client install or authentication failed with exit code {process.ExitCode}. Output is suppressed because it may contain an enrollment capability.");
+    }
+
+    private static async Task RunNativeUserManagementAsync(params string[] arguments)
+    {
+        var start = new ProcessStartInfo("sudo")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false
+        };
+        foreach (var argument in arguments) start.ArgumentList.Add(argument);
+        using var process = Process.Start(start) ?? throw new InvalidOperationException("Native test user command did not start.");
+        var output = process.StandardOutput.ReadToEndAsync();
+        var error = process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+        await Task.WhenAll(output, error);
+        Assert.True(process.ExitCode == 0, $"Native test user command failed: {arguments[0]}.");
     }
 
     private static readonly FirstPaintCase[] FirstPaintCases =
