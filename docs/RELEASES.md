@@ -5,13 +5,11 @@ All first-party components evaluate their product version from
 is `release/release-manifest.json`; CI adds the derived version to the bundled
 copy.
 
-The reviewed release notes for the current candidate are
-[`RELEASE_NOTES.md`](RELEASE_NOTES.md). They are used as the GitHub prerelease
-notes only after the matching tagged workflow, provenance checks and promotion
-record complete.
-The [rc.5 notes](RELEASE_NOTES_0.1.0-rc.5.md) remain historical. Each candidate
-is source preparation until the owner merges, tags, publishes the release,
-and verifies the public downloads.
+Review the GitHub release notes for each candidate before publishing its draft.
+The [rc.5 notes](RELEASE_NOTES_0.1.0-rc.5.md) and
+[rc.6 notes](RELEASE_NOTES_0.1.0-rc.6.md) are historical; neither sets the
+product version. Each candidate is source preparation until the owner merges,
+tags, publishes the release, and verifies the public downloads.
 
 `tools/ci/verify-product-version.sh` checks evaluated project metadata against
 `Directory.Build.props`. Tag-driven CI requires a `v` tag whose normalized
