@@ -156,6 +156,72 @@ public sealed class ClientReleaseImportWorkerTests : IAsyncLifetime
         finally { await worker.StopAsync(CancellationToken.None); worker.Dispose(); }
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task TwoWorkersClaimQueuedOrStalePackOnceAndExposeAllRuntimesTogether(bool staleLease)
+    {
+        var fixture = CreateFixture(corruptSecondRuntime: false);
+        var store = new RecordingArtifactStore();
+        await using var services = new ServiceCollection()
+            .AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Warning))
+            .AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(_postgres.GetConnectionString()))
+            .AddSingleton<TimeProvider>(TimeProvider.System)
+            .AddSingleton<IGitHubClientReleaseCatalog>(new FixtureCatalog(fixture.Release, fixture.Commit))
+            .AddSingleton<IClientArtifactsService>(store)
+            .AddSingleton<IWebHostEnvironment>(new FixtureEnvironment(_storage))
+            .AddSingleton<IOptions<ClientArtifactsOptions>>(Options.Create(new ClientArtifactsOptions { StorageRoot = _storage }))
+            .AddScoped<GitHubClientAssetDownloader>(_ => new GitHubClientAssetDownloader(
+                new HttpClient(new AssetHandler(fixture.Bytes)) { Timeout = Timeout.InfiniteTimeSpan },
+                new ConfigurationBuilder().Build()))
+            .BuildServiceProvider();
+        var id = Guid.NewGuid();
+        await using (var scope = services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            db.ClientReleaseImportOperations.Add(new ClientReleaseImportOperation
+            {
+                Id = id, GitHubReleaseId = fixture.Release.Id, Tag = fixture.Release.Tag,
+                Version = fixture.Release.Version, RequestedBy = "fixture-admin",
+                State = staleLease ? ClientReleaseImportState.Importing : ClientReleaseImportState.Queued,
+                LeaseOwner = staleLease ? Guid.NewGuid() : null,
+                LeaseUntilUtc = staleLease ? DateTimeOffset.UtcNow.AddMinutes(-1) : null,
+                AttemptCount = staleLease ? 1 : 0,
+                CreatedAtUtc = DateTimeOffset.UtcNow, UpdatedAtUtc = DateTimeOffset.UtcNow
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var first = ActivatorUtilities.CreateInstance<ClientReleaseImportWorker>(services);
+        var second = ActivatorUtilities.CreateInstance<ClientReleaseImportWorker>(services);
+        await Task.WhenAll(first.StartAsync(CancellationToken.None), second.StartAsync(CancellationToken.None));
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            using var observation = new PeriodicTimer(TimeSpan.FromMilliseconds(100));
+            ClientReleaseImportOperation operation;
+            do
+            {
+                await observation.WaitForNextTickAsync(timeout.Token);
+                await using var scope = services.CreateAsyncScope();
+                operation = await scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>()
+                    .ClientReleaseImportOperations.AsNoTracking().SingleAsync(x => x.Id == id, timeout.Token);
+            } while (operation.State is not (ClientReleaseImportState.Imported or ClientReleaseImportState.Failed));
+
+            Assert.Equal(ClientReleaseImportState.Imported, operation.State);
+            Assert.Equal(staleLease ? 2 : 1, operation.AttemptCount);
+            Assert.True(store.Visible);
+            Assert.Equal(["linux-x64", "win-x64"], store.ImportedRuntimes.OrderBy(x => x, StringComparer.Ordinal));
+            Assert.Null(operation.PublishedAtUtc);
+        }
+        finally
+        {
+            await Task.WhenAll(first.StopAsync(CancellationToken.None), second.StopAsync(CancellationToken.None));
+            first.Dispose();
+            second.Dispose();
+        }
+    }
+
     [Fact]
     [Trait("category", "hosted")]
     public async Task PublishedClientPackImportsEveryVerifiedRuntimeWithoutPublishing()

@@ -35,7 +35,7 @@
             <MudItem xs="12" md="6"><MudPaper Class="security-card" Elevation="1"><MudStack Spacing="2">
                 <MudText Typo="Typo.h6">Passphrase</MudText>
                 <MudText Typo="Typo.body2" Color="Color.Secondary">Change the passphrase for local sign-in. You will sign in again afterwards.</MudText>
-                <MudSpacer /><MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="OpenPassword" data-testid="open-password-dialog">Change passphrase</MudButton>
+                <MudSpacer /><MudButton @ref="_passwordOpener" Variant="Variant.Filled" Color="Color.Primary" OnClick="OpenPassword" data-testid="open-password-dialog">Change passphrase</MudButton>
             </MudStack></MudPaper></MudItem>
             <MudItem xs="12" md="6"><MudPaper Class="security-card" Elevation="1"><MudStack Spacing="2">
                 <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
@@ -45,9 +45,9 @@
                 <MudText Typo="Typo.body2" Color="Color.Secondary">@(_status.TwoFactorEnabled ? "An authenticator code is required at sign-in." : "Add a second step to protect your local account.")</MudText>
                 <MudSpacer />
                 @if (_status.TwoFactorEnabled)
-                { <MudButton Variant="Variant.Outlined" OnClick="OpenDisable" data-testid="manage-mfa">Manage authenticator</MudButton> }
+                { <MudButton @ref="_mfaOpener" Variant="Variant.Outlined" OnClick="OpenDisable" data-testid="manage-mfa">Manage authenticator</MudButton> }
                 else
-                { <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="OpenEnrollment" data-testid="open-mfa-setup">Set up authenticator</MudButton> }
+                { <MudButton @ref="_mfaOpener" Variant="Variant.Filled" Color="Color.Primary" OnClick="OpenEnrollment" data-testid="open-mfa-setup">Set up authenticator</MudButton> }
             </MudStack></MudPaper></MudItem>
         </MudGrid>
     }
@@ -117,6 +117,8 @@
 @code {
     private bool _isLocalAccount, _loading, _busy, _passwordDialog, _enrollmentDialog, _disableDialog, _interactiveReady;
     private bool _disposed;
+    private MudButton? _passwordOpener, _mfaOpener;
+    private MudButton? _pendingFocus;
     private int _enrollmentGeneration;
     private string? _error, _passwordCurrent, _passwordNew, _passwordConfirm, _setupPassword, _enrollmentCode, _disablePassword, _disableCode, _qrDataUrl;
     private LocalSecurityStatus? _status;
@@ -136,6 +138,12 @@
         _interactiveReady = true;
         StateHasChanged();
     }
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_disposed || _pendingFocus is not { } opener) return;
+        _pendingFocus = null;
+        await opener.FocusAsync();
+    }
     private async Task LoadStatusAsync()
     {
         if (_disposed) return;
@@ -150,14 +158,14 @@
     private void ClosePassword() => PasswordVisibleChanged(false);
     private void CloseEnrollment() => EnrollmentVisibleChanged(false);
     private void CloseDisable() => DisableVisibleChanged(false);
-    private void PasswordVisibleChanged(bool value) { if (_busy || _disposed) return; _passwordDialog = value; if (!value) _passwordCurrent = _passwordNew = _passwordConfirm = _error = null; }
+    private void PasswordVisibleChanged(bool value) { if (_busy || _disposed) return; _passwordDialog = value; if (!value) { _passwordCurrent = _passwordNew = _passwordConfirm = _error = null; _pendingFocus = _passwordOpener; } }
     private void EnrollmentVisibleChanged(bool value)
     {
         if (_disposed || !value && (_busy || _recoveryCodes is { Count: > 0 })) return;
         _enrollmentDialog = value;
-        if (!value) { _enrollmentGeneration++; _setupPassword = _enrollmentCode = _qrDataUrl = _error = null; _authenticatorSetup = null; }
+        if (!value) { _enrollmentGeneration++; _setupPassword = _enrollmentCode = _qrDataUrl = _error = null; _authenticatorSetup = null; _pendingFocus = _mfaOpener; }
     }
-    private void DisableVisibleChanged(bool value) { if (_busy || _disposed) return; _disableDialog = value; if (!value) _disablePassword = _disableCode = _error = null; }
+    private void DisableVisibleChanged(bool value) { if (_busy || _disposed) return; _disableDialog = value; if (!value) { _disablePassword = _disableCode = _error = null; _pendingFocus = _mfaOpener; } }
 
     private async Task ChangePasswordAsync()
     {

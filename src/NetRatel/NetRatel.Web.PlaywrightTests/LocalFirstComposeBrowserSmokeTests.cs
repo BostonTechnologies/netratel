@@ -707,6 +707,8 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await page.GetByText("The current passphrase was not accepted, or the new one does not meet policy.").WaitForAsync(
             new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Cancel" }).ClickAsync();
+        await page.WaitForFunctionAsync(
+            "() => document.activeElement?.closest('[data-testid]')?.getAttribute('data-testid') === 'open-password-dialog'");
         Assert.Equal("open-password-dialog", await page.EvaluateAsync<string>(
             "() => document.activeElement?.closest('[data-testid]')?.getAttribute('data-testid') ?? ''"));
         await page.GetByTestId("open-password-dialog").ClickAsync();
