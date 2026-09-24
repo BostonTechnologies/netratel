@@ -149,15 +149,29 @@ def parse(value):
     core = tuple(map(int, value.split('+', 1)[0].split('-', 1)[0].split('.')))
     prerelease = value.split('+', 1)[0].split('-', 1)
     prerelease = () if len(prerelease) == 1 else tuple(prerelease[1].split('.'))
-    # A final release outranks any prerelease of the same core. The remaining
-    # tuple is only used for the simple monotonic check performed locally.
+    if any(part.isdigit() and len(part) > 1 and part.startswith('0') for part in prerelease):
+        raise ValueError("invalid numeric prerelease identifier")
     return core, bool(prerelease), prerelease
+def compare_prerelease(left, right):
+    for a, b in zip(left, right):
+        if a == b:
+            continue
+        a_numeric, b_numeric = a.isdigit(), b.isdigit()
+        if a_numeric and b_numeric:
+            return (int(a) > int(b)) - (int(a) < int(b))
+        if a_numeric != b_numeric:
+            return -1 if a_numeric else 1
+        return (a > b) - (a < b)
+    return (len(left) > len(right)) - (len(left) < len(right))
 try:
     candidate = sys.argv[1]
     current = sys.argv[2]
     candidate_core, candidate_pre, candidate_tag = parse(candidate)
     current_core, current_pre, current_tag = parse(current)
-    if candidate_core < current_core or (candidate_core == current_core and not (not candidate_pre and current_pre)):
+    if candidate_core < current_core or (candidate_core == current_core and (
+        (candidate_pre and not current_pre) or
+        (candidate_pre and current_pre and compare_prerelease(candidate_tag, current_tag) <= 0) or
+        (candidate_pre == current_pre and not candidate_pre))):
         raise ValueError("candidate is not newer")
 except Exception:
     raise SystemExit(1)
