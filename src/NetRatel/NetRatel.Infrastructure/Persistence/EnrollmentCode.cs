@@ -5,6 +5,7 @@ public sealed class EnrollmentCode
     public Guid Id { get; set; }
     public int TenantId { get; set; }
     public string Code { get; set; } = string.Empty;
+    public string? CodeHash { get; set; }
     public DateTimeOffset CreatedAtUtc { get; set; }
     public string? CreatedBy { get; set; }
     public DateTimeOffset ValidFromUtc { get; set; }

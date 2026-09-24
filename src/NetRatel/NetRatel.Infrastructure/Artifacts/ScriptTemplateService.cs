@@ -6,13 +6,16 @@ public sealed class ScriptTemplateService : IScriptTemplateService
 {
     public string Build(DeploymentScriptTemplateRequest request)
     {
-        return request.RuntimeId.StartsWith("linux-", StringComparison.OrdinalIgnoreCase)
-            ? BuildBash(request)
-            : BuildPowerShell(request);
+        if (request.RuntimeId.StartsWith("linux-", StringComparison.OrdinalIgnoreCase))
+            return BuildBash(request);
+        if (request.RuntimeId.StartsWith("osx-", StringComparison.OrdinalIgnoreCase))
+            return BuildMacBash(request);
+        return BuildPowerShell(request);
     }
 
     public string GetFileExtension(string runtimeId)
-        => runtimeId.StartsWith("linux-", StringComparison.OrdinalIgnoreCase) ? "sh" : "ps1";
+        => runtimeId.StartsWith("linux-", StringComparison.OrdinalIgnoreCase) ||
+           runtimeId.StartsWith("osx-", StringComparison.OrdinalIgnoreCase) ? "sh" : "ps1";
 
     private static string BuildPowerShell(DeploymentScriptTemplateRequest request)
     {
@@ -347,6 +350,28 @@ finally {
             """
             : string.Empty;
 
+        var requiredCommands = request.InstallAsService
+            ? "curl unzip sha256sum systemctl flock python3 install"
+            : "curl unzip sha256sum flock python3";
+        var privilegeCheck = request.InstallAsService ? """
+            if [ "${EUID}" -ne 0 ] && [ "${NetRatel_TEST_ALLOW_NONROOT:-false}" != "true" ]; then
+              echo "This NetRatel systemd installer must be run as root." >&2
+              exit 1
+            fi
+            """ : string.Empty;
+        var activationBlock = request.InstallAsService ? """
+            if systemctl is-active --quiet netratel-client.service; then
+              systemctl stop netratel-client.service
+              if systemctl is-active --quiet netratel-client.service; then
+                echo "NetRatel client service did not stop; no files were activated." >&2
+                exit 1
+              fi
+            fi
+            mv "${STAGE_DIR}" "${TARGET_DIR}"
+            """ : "mv \"${STAGE_DIR}\" \"${TARGET_DIR}\"";
+        var defaultRoot = request.InstallAsService ? "/opt/netratel/client" : "${HOME}/.local/share/netratel/client";
+        var defaultState = request.InstallAsService ? "/var/lib/netratel/update" : "${HOME}/.local/state/netratel/update";
+
         return $$"""
 #!/usr/bin/env bash
 set -euo pipefail
@@ -358,19 +383,16 @@ RUNTIME="{{request.RuntimeId}}"
 VERSION="{{(string.IsNullOrWhiteSpace(request.ArtifactVersion) ? "latest" : request.ArtifactVersion)}}"
 EXPECTED_SHA="{{(string.IsNullOrWhiteSpace(request.ArtifactSha256) ? string.Empty : request.ArtifactSha256)}}"
 TMP_DIR=$(mktemp -d)
-ROOT_DIR="${NetRatel_ROOT:-/opt/netratel/client}"
-STATE_DIR="${NetRatel_STATE:-/var/lib/netratel/update}"
+ROOT_DIR="${NetRatel_ROOT:-{{defaultRoot}}}"
+STATE_DIR="${NetRatel_STATE:-{{defaultState}}}"
 SYSTEMD_UNIT_DIR="${NetRatel_SYSTEMD_UNIT_DIR:-/etc/systemd/system}"
 UPDATER_DIR="${ROOT_DIR}/updater"
 VERSIONS_DIR="${ROOT_DIR}/versions"
 STAGING_DIR="${ROOT_DIR}/staging"
 FAILED_DIR="${ROOT_DIR}/failed"
 
-if [ "${EUID}" -ne 0 ] && [ "${NetRatel_TEST_ALLOW_NONROOT:-false}" != "true" ]; then
-  echo "This NetRatel systemd installer must be run as root." >&2
-  exit 1
-fi
-for REQUIRED_COMMAND in curl unzip sha256sum systemctl flock python3 install; do
+{{privilegeCheck}}
+for REQUIRED_COMMAND in {{requiredCommands}}; do
   if ! command -v "${REQUIRED_COMMAND}" >/dev/null 2>&1; then
     echo "Required command is unavailable: ${REQUIRED_COMMAND}" >&2
     exit 1
@@ -397,7 +419,8 @@ if [ -n "${EXPECTED_SHA}" ]; then
   fi
 fi
 
-mkdir -p "${ROOT_DIR}" "${STATE_DIR}" "${UPDATER_DIR}" "${VERSIONS_DIR}" "${STAGING_DIR}" "${FAILED_DIR}" "${SYSTEMD_UNIT_DIR}"
+mkdir -p "${ROOT_DIR}" "${STATE_DIR}" "${UPDATER_DIR}" "${VERSIONS_DIR}" "${STAGING_DIR}" "${FAILED_DIR}"
+{{(request.InstallAsService ? "mkdir -p \"${SYSTEMD_UNIT_DIR}\"" : string.Empty)}}
 chmod 0700 "${STATE_DIR}"
 exec 9>"${STATE_DIR}/update.lock"
 if ! flock -n 9; then
@@ -442,11 +465,11 @@ rollback_install() {
   status=$?
   trap - EXIT
   if [ "$status" -ne 0 ] && [ "$ACTIVATED" = true ]; then
-    systemctl stop netratel-client.service || true
+    {{(request.InstallAsService ? "systemctl stop netratel-client.service || true" : ":")}}
     if [ -n "${PREVIOUS_TARGET}" ] && [ -d "${PREVIOUS_TARGET}" ]; then
       ln -sfn "${PREVIOUS_TARGET}" "${ROOT_DIR}/current.rollback"
       mv -Tf "${ROOT_DIR}/current.rollback" "${ROOT_DIR}/current"
-      systemctl start netratel-client.service || true
+      {{(request.InstallAsService ? "systemctl start netratel-client.service || true" : ":")}}
     else
       rm -f "${ROOT_DIR}/current"
     fi
@@ -454,18 +477,139 @@ rollback_install() {
   exit "$status"
 }
 trap rollback_install EXIT
-if systemctl is-active --quiet netratel-client.service; then
-  systemctl stop netratel-client.service
-  if systemctl is-active --quiet netratel-client.service; then
-    echo "NetRatel client service did not stop; no files were activated." >&2
-    exit 1
-  fi
-fi
-mv "${STAGE_DIR}" "${TARGET_DIR}"
+{{activationBlock}}
 
 {{serviceBlock}}
 
 echo "NetRatel deployment complete."
+""";
+    }
+
+    private static string BuildMacBash(DeploymentScriptTemplateRequest request)
+    {
+        var silentArg = request.SilentInstall ? "--silent" : string.Empty;
+        var defaultRoot = request.InstallAsService ? "/opt/netratel/client" : "${HOME}/Library/Application Support/NetRatel/Client";
+        var serviceBlock = request.InstallAsService ? """
+            PLIST_PATH="${NetRatel_LAUNCHD_PLIST:-/Library/LaunchDaemons/co.za.netratel.client.plist}"
+            LABEL="co.za.netratel.client"
+            cat > "${PLIST_PATH}.new" <<PLIST
+            <?xml version="1.0" encoding="UTF-8"?>
+            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+            <plist version="1.0"><dict>
+              <key>Label</key><string>${LABEL}</string>
+              <key>ProgramArguments</key><array><string>${ROOT_DIR}/current/NetRatel.Client</string><string>--service</string></array>
+              <key>WorkingDirectory</key><string>${ROOT_DIR}/current</string>
+              <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
+              <key>EnvironmentVariables</key><dict>
+                <key>NetRatelCLIENT__Transport__Mode</key><string>AkkaPresence</string>
+                <key>NetRatelCLIENT__Gateway__Endpoint</key><string>${API_BASE}</string>
+                <key>NetRatelCLIENT__Gateway__RequiredPresenceAuthority</key><string>akka</string>
+                <key>NetRatelCLIENT__Gateway__TelemetryAuthorityEnabled</key><string>true</string>
+                <key>NetRatelCLIENT__Gateway__CommandAuthorityEnabled</key><string>true</string>
+                <key>NetRatelCLIENT__Gateway__JobAuthorityEnabled</key><string>true</string>
+                <key>NetRatelCLIENT__Gateway__FileGatewayEnabled</key><string>true</string>
+                <key>NetRatelCLIENT__Gateway__LogGatewayEnabled</key><string>true</string>
+                <key>NetRatelCLIENT__Gateway__RemoteSupportGatewayEnabled</key><string>true</string>
+                <key>NetRatelCLIENT__Gateway__TerminalGatewayEnabled</key><string>true</string>
+                <key>NetRatelCLIENT__Gateway__TerminalAuthorityEnabled</key><string>true</string>
+              </dict>
+            </dict></plist>
+            PLIST
+            chmod 0644 "${PLIST_PATH}.new"
+            launchctl bootout "system/${LABEL}" >/dev/null 2>&1 || true
+            mv -f "${PLIST_PATH}.new" "${PLIST_PATH}"
+            ln -s "${TARGET_DIR}" "${ROOT_DIR}/current.next"
+            mv -f "${ROOT_DIR}/current.next" "${ROOT_DIR}/current"
+            ACTIVATED=true
+            launchctl bootstrap system "${PLIST_PATH}"
+            launchctl print "system/${LABEL}" >/dev/null
+            """ : string.Empty;
+        var rootCheck = request.InstallAsService ? """
+            if [ "${EUID}" -ne 0 ] && [ "${NetRatel_TEST_ALLOW_NONROOT:-false}" != "true" ]; then
+              echo "A macOS launch daemon installation requires root. Inspect the script, then run it with sudo." >&2
+              exit 1
+            fi
+            command -v launchctl >/dev/null || { echo "launchctl is required for a macOS service installation." >&2; exit 1; }
+            """ : string.Empty;
+        var rollback = request.InstallAsService ? """
+            if [ "${ACTIVATED}" = true ]; then
+              launchctl bootout "system/${LABEL}" >/dev/null 2>&1 || true
+              if [ -n "${PREVIOUS_TARGET}" ]; then
+                ln -s "${PREVIOUS_TARGET}" "${ROOT_DIR}/current.rollback"
+                mv -f "${ROOT_DIR}/current.rollback" "${ROOT_DIR}/current"
+                launchctl bootstrap system "${PLIST_PATH}" || true
+              else
+                rm -f "${ROOT_DIR}/current"
+              fi
+            fi
+            """ : string.Empty;
+
+        return $$"""
+#!/usr/bin/env bash
+set -euo pipefail
+API_BASE="{{request.ApiBaseUrl}}"
+TENANT_ID={{request.TenantId}}
+ENROLLMENT_CODE="{{request.EnrollmentCode}}"
+RUNTIME="{{request.RuntimeId}}"
+VERSION="{{request.ArtifactVersion}}"
+EXPECTED_SHA="{{request.ArtifactSha256}}"
+ROOT_DIR="${NetRatel_ROOT:-{{defaultRoot}}}"
+TMP_DIR=$(mktemp -d)
+{{rootCheck}}
+for required in curl unzip shasum python3; do
+  command -v "${required}" >/dev/null || { echo "Required command is unavailable: ${required}" >&2; exit 1; }
+done
+cleanup() { rm -rf "${TMP_DIR}"; }
+trap cleanup EXIT
+if ! [[ "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
+  echo "An immutable client version is required." >&2; exit 1
+fi
+if [ ! -d "${ROOT_DIR}" ]; then mkdir -p "${ROOT_DIR}"; fi
+VERSIONS_DIR="${ROOT_DIR}/versions"
+STAGING_DIR="${ROOT_DIR}/staging"
+mkdir -p "${VERSIONS_DIR}" "${STAGING_DIR}"
+TARGET_DIR="${VERSIONS_DIR}/${VERSION}"
+if [ -e "${TARGET_DIR}" ]; then echo "Immutable target version already exists." >&2; exit 1; fi
+curl -fL --retry 3 --retry-delay 2 \
+  -H "X-NetRatel-Tenant-Id: ${TENANT_ID}" \
+  -H "X-NetRatel-Enrollment-Code: ${ENROLLMENT_CODE}" \
+  -o "${TMP_DIR}/netratel.zip" \
+  "${API_BASE}/api/v1/client-artifacts/${RUNTIME}/${VERSION}/onboarding-download"
+test -s "${TMP_DIR}/netratel.zip"
+ACTUAL_SHA=$(shasum -a 256 "${TMP_DIR}/netratel.zip" | awk '{print $1}')
+if [ "${ACTUAL_SHA}" != "${EXPECTED_SHA}" ]; then
+  echo "Downloaded client package failed SHA-256 verification." >&2; exit 1
+fi
+STAGE_DIR=$(mktemp -d "${STAGING_DIR}/.${VERSION}.XXXXXX")
+unzip -q "${TMP_DIR}/netratel.zip" -d "${STAGE_DIR}"
+python3 - "${STAGE_DIR}/netratel-client-manifest.json" "${VERSION}" "${RUNTIME}" <<'PY'
+import json, os, sys
+with open(sys.argv[1], encoding='utf-8-sig') as file: manifest=json.load(file)
+if (manifest.get('schema') != 'netratel.client.manifest.v1' or
+    manifest.get('product') != 'NetRatel.Client' or
+    manifest.get('version') != sys.argv[2] or
+    manifest.get('runtimeId') != sys.argv[3] or
+    manifest.get('executable') != 'NetRatel.Client' or
+    not os.path.isfile(os.path.join(os.path.dirname(sys.argv[1]), 'NetRatel.Client'))):
+    raise SystemExit('Client package manifest does not match the requested runtime and version.')
+PY
+chmod 0755 "${STAGE_DIR}/NetRatel.Client"
+"${STAGE_DIR}/NetRatel.Client" --enroll "${ENROLLMENT_CODE}" --api "${API_BASE}" {{silentArg}}
+PREVIOUS_TARGET=""
+if [ -L "${ROOT_DIR}/current" ]; then PREVIOUS_TARGET=$(readlink "${ROOT_DIR}/current"); fi
+ACTIVATED=false
+rollback() {
+  status=$?
+  if [ "$status" -ne 0 ]; then
+    {{rollback}}
+  fi
+  rm -rf "${TMP_DIR}"
+  exit "$status"
+}
+trap rollback EXIT
+mv "${STAGE_DIR}" "${TARGET_DIR}"
+{{serviceBlock}}
+echo "NetRatel macOS client installation complete."
 """;
     }
 }

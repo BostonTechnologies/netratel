@@ -43,7 +43,7 @@ public sealed class EnrollmentService : IEnrollmentService
             throw new AgentAuthException(400, "Enrollment code is required.");
         }
 
-        var normalizedCode = request.EnrollmentCode.Trim().ToUpperInvariant();
+        var normalizedCode = EnrollmentCodeLookup.Normalize(request.EnrollmentCode);
         var installation = AgentInstallationIdentity.Parse(request.PublicKey, request.KeyAlgorithm);
         var enrollmentGate = EnrollmentGates[GetEnrollmentGateIndex(installation.Fingerprint)];
         await enrollmentGate.WaitAsync(ct).ConfigureAwait(false);
@@ -162,7 +162,21 @@ public sealed class EnrollmentService : IEnrollmentService
 
     private async Task<EnrollmentCode> LoadActiveCodeAsync(string normalizedCode, DateTimeOffset now, CancellationToken ct)
     {
-        var code = await _db.EnrollmentCodes.FirstOrDefaultAsync(candidate => candidate.Code == normalizedCode, ct).ConfigureAwait(false);
+        var hash = EnrollmentCodeLookup.Hash(normalizedCode);
+        EnrollmentCode? code;
+        if (_db.Database.ProviderName == "Npgsql.EntityFrameworkCore.PostgreSQL")
+        {
+            // Serialize redemption of a shared grant across API replicas. The surrounding
+            // enrollment transaction holds this row lock until Uses is committed.
+            code = (await _db.EnrollmentCodes.FromSqlInterpolated(
+                    $"SELECT * FROM \"EnrollmentCodes\" WHERE \"Code\" = {normalizedCode} OR \"CodeHash\" = {hash} FOR UPDATE")
+                .ToListAsync(ct).ConfigureAwait(false)).SingleOrDefault();
+        }
+        else
+        {
+            code = await _db.EnrollmentCodes.FirstOrDefaultAsync(candidate =>
+                candidate.Code == normalizedCode || candidate.CodeHash == hash, ct).ConfigureAwait(false);
+        }
         if (code is null)
         {
             throw new AgentAuthException(400, "Enrollment code is invalid.");

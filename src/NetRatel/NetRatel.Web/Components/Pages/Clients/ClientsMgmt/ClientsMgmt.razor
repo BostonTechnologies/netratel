@@ -209,7 +209,9 @@
     <TitleContent>Generate deployment script</TitleContent>
     <DialogContent>
         <MudStack Spacing="2">
-            <MudText Typo="Typo.body2">Script includes a short-lived enrollment code. No JWT is embedded.</MudText>
+            @if (_scriptResult is null || _scriptEditing)
+            {
+            <MudText Typo="Typo.body2">The public install URL can be used by anyone holding it until the enrollment allowance expires or is revoked.</MudText>
             <MudText Typo="Typo.body2">Selected artifact: @_scriptRuntimeId @(_scriptArtifactVersion ?? "latest")</MudText>
             <MudSelect T="int?" Label="Tenant" @bind-Value="_selectedTenantId" Required="true">
                 @foreach (var tenant in _tenants) { <MudSelectItem T="int?" Value="@tenant.TenantId">@tenant.Name (@tenant.TenantId)</MudSelectItem> }
@@ -223,11 +225,56 @@
             <MudNumericField T="int" Label="Max uses" Min="1" @bind-Value="_scriptMaxUses" />
             <MudCheckBox T="bool" Label="Install as Service" @bind-Value="_scriptInstallAsService" />
             <MudCheckBox T="bool" Label="Silent install" @bind-Value="_scriptSilentInstall" />
+            }
+            @if (_scriptGenerating) { <div role="status"><MudProgressLinear Indeterminate="true" /><MudText>Generating protected install link…</MudText></div> }
+            @if (!string.IsNullOrWhiteSpace(_scriptError)) { <MudAlert Severity="Severity.Error">@_scriptError</MudAlert> }
+            @if (_scriptResult is not null)
+            {
+                @if (ScriptResultIsStale()) { <MudAlert Severity="Severity.Warning">Options changed. Generate a new link for these selections.</MudAlert> }
+                @if (_scriptResultRevoked) { <MudAlert Severity="Severity.Warning">This link has been revoked. Existing enrolled clients remain active.</MudAlert> }
+                <MudText Typo="Typo.subtitle1">Generated install link</MudText>
+                <MudText Typo="Typo.body2">Tenant @_scriptResult.TenantId · @_scriptResult.RuntimeId · @_scriptResult.ArtifactVersion</MudText>
+                <MudText Typo="Typo.body2">Expires @_scriptResult.ExpiresAtUtc.UtcDateTime.ToString("u") UTC (@_scriptResult.ExpiresAtUtc.ToLocalTime().ToString("g") local). @_scriptResult.RemainingUses of @_scriptResult.MaxUses enrollments remain.</MudText>
+                <MudButton Size="Size.Small" Variant="Variant.Text" OnClick="RefreshGeneratedLinkAsync">Refresh status</MudButton>
+                <MudText Typo="Typo.caption">Fetching, previewing, copying, and downloading the script do not spend an enrollment use. Service installation may require administrator or root privileges.</MudText>
+                <MudTextField T="string" Label="Install command" Value="_scriptResult.InstallCommand" ReadOnly="true" Lines="2" Class="client-script-output" />
+                <MudButton Size="Size.Small" Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.ContentCopy" OnClick="@(() => CopyInstallTextAsync(_scriptResult.InstallCommand))">Copy command</MudButton>
+                <MudTextField T="string" Label="Public script URL" Value="_scriptResult.PublicUrl" ReadOnly="true" Lines="2" Class="client-script-output" />
+                <MudButton Size="Size.Small" Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.ContentCopy" OnClick="@(() => CopyInstallTextAsync(_scriptResult.PublicUrl))">Copy URL</MudButton>
+                @if (!string.IsNullOrWhiteSpace(_scriptCopyMessage)) { <MudText Typo="Typo.caption" role="status">@_scriptCopyMessage</MudText> }
+                <MudText Typo="Typo.subtitle2">Script preview</MudText>
+                <pre class="client-script-preview" aria-label="Generated script preview">@_scriptResult.Script</pre>
+                <MudStack Row="true" Class="flex-wrap" Spacing="1">
+                    <MudChip T="string" OnClick="DownloadGeneratedScriptAsync" Icon="@Icons.Material.Filled.Download" Color="Color.Primary">Download script</MudChip>
+                    <MudButton Size="Size.Small" Variant="Variant.Outlined" Color="Color.Error" Disabled="_scriptResultRevoked" OnClick="RevokeGeneratedLinkAsync">Revoke link</MudButton>
+                </MudStack>
+            }
+            <MudButton Size="Size.Small" Variant="Variant.Text" Disabled="_scriptLinksLoading" OnClick="LoadInstallLinksAsync">Manage recent links</MudButton>
+            @if (_scriptLinks is not null)
+            {
+                @foreach (var link in _scriptLinks)
+                {
+                    <MudPaper Class="pa-2" Outlined="true">
+                        <MudStack Row="true" AlignItems="AlignItems.Center" Class="flex-wrap">
+                            <MudText Typo="Typo.body2">Tenant @link.TenantId · @link.RuntimeId @link.ArtifactVersion · @(Math.Max(0, link.MaxUses - link.Uses))/@link.MaxUses uses · @(link.IsActive ? "Active" : "Inactive") · expires @link.ExpiresAtUtc.UtcDateTime.ToString("u") UTC</MudText>
+                            <MudButton Size="Size.Small" Color="Color.Error" Disabled="@(!link.IsActive)" OnClick="@(() => RevokeManagedLinkAsync(link.Id))">Revoke</MudButton>
+                        </MudStack>
+                    </MudPaper>
+                }
+                @if (_scriptLinks.Count == 0) { <MudText Typo="Typo.caption">No recent links for this tenant.</MudText> }
+            }
         </MudStack>
     </DialogContent>
     <DialogActions>
-        <MudButton Variant="Variant.Text" OnClick="CloseScriptDialog">Cancel</MudButton>
-        <MudButton Color="Color.Primary" Variant="Variant.Filled" Disabled="@(!CanGenerateScript())" OnClick="GenerateScriptAsync">Generate script</MudButton>
+        <MudButton Variant="Variant.Text" OnClick="CloseScriptDialog">Close</MudButton>
+        @if (_scriptResult is not null && !_scriptEditing)
+        {
+            <MudButton Variant="Variant.Outlined" OnClick="@(() => _scriptEditing = true)">Edit options</MudButton>
+        }
+        @if (_scriptResult is null || _scriptEditing)
+        {
+            <MudButton Color="Color.Primary" Variant="Variant.Filled" Disabled="@(!CanGenerateScript() || _scriptGenerating)" OnClick="GenerateScriptAsync">Generate link</MudButton>
+        }
     </DialogActions>
 </MudDialog>
 
@@ -285,6 +332,17 @@
     private int _scriptMaxUses = 1;
     private bool _scriptInstallAsService = true;
     private bool _scriptSilentInstall = true;
+    private ClientInstallLinkResultModel? _scriptResult;
+    private string? _scriptResultFingerprint;
+    private string? _scriptRequestFingerprint;
+    private string? _scriptRequestKey;
+    private string? _scriptError;
+    private string? _scriptCopyMessage;
+    private bool _scriptGenerating;
+    private bool _scriptEditing;
+    private bool _scriptResultRevoked;
+    private List<ClientInstallLinkMetadataModel>? _scriptLinks;
+    private bool _scriptLinksLoading;
 
     protected override async Task OnInitializedAsync()
     {
@@ -498,7 +556,21 @@
     private async Task OnUploaded() { await ResetAndReloadAsync(_artifactTable); await ResetAndReloadAsync(_releaseTable); }
     private void OpenDownload(ClientArtifactSummaryModel item) { _selectedItem = item; _selectedRuntimeId = item.Rid; _downloadDialogOpen = true; }
     private void CloseDownloadDialog() => _downloadDialogOpen = false;
-    private void OpenScript(ClientArtifactSummaryModel item) { _scriptRuntimeId = item.Rid; _scriptArtifactVersion = item.Version; _scriptDialogOpen = true; }
+    private void OpenScript(ClientArtifactSummaryModel item)
+    {
+        _scriptRuntimeId = item.Rid;
+        _scriptArtifactVersion = item.Version;
+        _scriptResult = null;
+        _scriptResultFingerprint = null;
+        _scriptRequestFingerprint = null;
+        _scriptRequestKey = null;
+        _scriptError = null;
+        _scriptCopyMessage = null;
+        _scriptEditing = true;
+        _scriptResultRevoked = false;
+        _scriptLinks = null;
+        _scriptDialogOpen = true;
+    }
     private void OnScriptRuntimeChanged(string runtimeId) { _scriptRuntimeId = runtimeId; _scriptArtifactVersion = null; }
     private void CloseScriptDialog() => _scriptDialogOpen = false;
     private void ScriptVisibleChanged(bool visible) => _scriptDialogOpen = visible;
@@ -516,8 +588,86 @@
     private async Task GenerateScriptAsync()
     {
         if (!_selectedTenantId.HasValue || !_scriptValidityMinutes.HasValue) return;
-        await Artifacts.DownloadDeploymentScriptAsync(new ClientScriptGenerateRequest { TenantId = _selectedTenantId.Value, RuntimeId = _scriptRuntimeId, ArtifactVersion = _scriptArtifactVersion, ValidForMinutes = _scriptValidityMinutes.Value, MaxUses = _scriptMaxUses, InstallAsService = _scriptInstallAsService, SilentInstall = _scriptSilentInstall });
-        _scriptDialogOpen = false;
+        var fingerprint = ScriptInputFingerprint();
+        if (_scriptRequestFingerprint != fingerprint)
+        {
+            _scriptRequestFingerprint = fingerprint;
+            _scriptRequestKey = Guid.NewGuid().ToString("D");
+        }
+        _scriptGenerating = true;
+        _scriptError = null;
+        try
+        {
+            _scriptResult = await Artifacts.GenerateInstallLinkAsync(new ClientScriptGenerateRequest
+            {
+                TenantId = _selectedTenantId.Value, RuntimeId = _scriptRuntimeId,
+                ArtifactVersion = _scriptArtifactVersion, ValidForMinutes = _scriptValidityMinutes.Value,
+                MaxUses = _scriptMaxUses, InstallAsService = _scriptInstallAsService,
+                SilentInstall = _scriptSilentInstall, IdempotencyKey = _scriptRequestKey!
+            });
+            _scriptResultFingerprint = fingerprint;
+            _scriptEditing = false;
+            _scriptResultRevoked = false;
+        }
+        catch (HttpRequestException exception) { _scriptError = exception.Message; }
+        finally { _scriptGenerating = false; }
+    }
+
+    private string ScriptInputFingerprint() => string.Join('|', _selectedTenantId, _scriptRuntimeId,
+        _scriptArtifactVersion, _scriptValidityMinutes, _scriptMaxUses,
+        _scriptInstallAsService, _scriptSilentInstall);
+    private bool ScriptResultIsStale() => _scriptResult is not null &&
+        _scriptResultFingerprint != ScriptInputFingerprint();
+
+    private async Task CopyInstallTextAsync(string value)
+    {
+        try { await JsRuntime.InvokeVoidAsync("navigator.clipboard.writeText", value); _scriptCopyMessage = "Copied to clipboard."; }
+        catch (JSException) { _scriptCopyMessage = "Clipboard unavailable. Select and copy the text above."; }
+    }
+
+    private async Task DownloadGeneratedScriptAsync()
+    {
+        if (_scriptResult is not null) await Artifacts.DownloadGeneratedInstallScriptAsync(_scriptResult);
+    }
+
+    private async Task RevokeGeneratedLinkAsync()
+    {
+        if (_scriptResult is null) return;
+        try { await Artifacts.RevokeInstallLinkAsync(_scriptResult.Id); _scriptResultRevoked = true; }
+        catch (HttpRequestException) { _scriptError = "Could not revoke this link. Try again or use install-link management."; }
+    }
+
+    private async Task RefreshGeneratedLinkAsync()
+    {
+        if (_scriptResult is null) return;
+        try
+        {
+            var metadata = await Artifacts.GetInstallLinkAsync(_scriptResult.Id);
+            if (metadata is null) { _scriptError = "This link could not be found."; return; }
+            _scriptResult.RemainingUses = Math.Max(0, metadata.MaxUses - metadata.Uses);
+            _scriptResultRevoked = metadata.RevokedAtUtc.HasValue;
+        }
+        catch (HttpRequestException) { _scriptError = "Could not refresh link status. Try again."; }
+    }
+
+    private async Task LoadInstallLinksAsync()
+    {
+        if (!_selectedTenantId.HasValue) return;
+        _scriptLinksLoading = true;
+        try { _scriptLinks = await Artifacts.GetInstallLinksAsync(_selectedTenantId.Value); }
+        catch (HttpRequestException) { _scriptError = "Could not load recent links. Try again."; }
+        finally { _scriptLinksLoading = false; }
+    }
+
+    private async Task RevokeManagedLinkAsync(Guid id)
+    {
+        try
+        {
+            await Artifacts.RevokeInstallLinkAsync(id);
+            if (_scriptResult?.Id == id) _scriptResultRevoked = true;
+            await LoadInstallLinksAsync();
+        }
+        catch (HttpRequestException) { _scriptError = "Could not revoke this link. Try again."; }
     }
 
     private async Task Delete(ClientArtifactSummaryModel item) { await Artifacts.DeleteAsync(item.Rid, item.Version); await ResetAndReloadAsync(_artifactTable); }
@@ -545,4 +695,6 @@
     .client-deployment-dialog { max-width: min(100%, 960px); }
     .client-deployment-dialog .mud-dialog-content { min-width: 0; max-height: calc(100dvh - 160px); overflow-y: auto; overflow-wrap: anywhere; }
     .client-deployment-dialog .mud-dialog-actions { flex-wrap: wrap; }
+    .client-script-output { min-width: 0; overflow-wrap: anywhere; }
+    .client-script-preview { max-width: 100%; max-height: 240px; overflow: auto; padding: 0.75rem; border: 1px solid var(--mud-palette-divider); white-space: pre-wrap; overflow-wrap: anywhere; }
 </style>

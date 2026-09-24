@@ -50,6 +50,32 @@ an HTTP-MCP credential, and the HTTP-MCP exchange routes remain the only
 place the delegated credential is accepted. Do not paste deployment secrets
 into the reference UI.
 
+## Client install link contract
+
+`POST /api/v1/client-install-links` creates an idempotent, protected grant for
+an existing verified local client artifact. Its JSON request names `tenantId`,
+`runtimeId`, optional `artifactVersion`, `validForMinutes`, `maxUses`,
+`installAsService`, `silentInstall`, and a caller-generated GUID
+`idempotencyKey`. The JSON result includes the management `id`, selected
+version and SHA256, expiry, remaining uses, public URL, install command, and
+script preview. Repeating the same key and inputs returns the same grant;
+changing inputs with that key is rejected. The route requires the
+`ClientArtifactsWrite` operator policy.
+
+`GET /api/v1/client-install-links` lists recent grant metadata, optionally
+filtered by `tenantId`; `GET /api/v1/client-install-links/{id}` reads metadata;
+and `POST /api/v1/client-install-links/{id}/revoke` revokes a grant and its
+underlying enrollment code. These routes have the same operator policy.
+Management responses should be handled as sensitive because creation returns
+the protected script and capability URL.
+
+Anonymous `GET` and `HEAD` on `/clients/install/{token}.sh` or `.ps1` return
+raw script content only while the grant is active. Invalid, expired, revoked,
+exhausted, extension-mismatched, and query-overridden requests fail. Fetches
+do not consume enrollment uses. Clients should treat the URL as a bearer
+capability and must not log it. The prior client-script file-response route
+retains its existing response type for compatibility.
+
 ## Release verification
 
 The protected release and PR workflows validate the generated surface with

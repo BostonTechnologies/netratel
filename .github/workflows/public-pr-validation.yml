@@ -172,6 +172,13 @@ jobs:
               "$directory/NetRatel.Client" --version
               ;;
           esac
+      - name: Exercise macOS installer on native runner
+        if: matrix.runtime == 'osx-arm64'
+        shell: bash
+        run: |
+          dotnet build src/NetRatel/NetRatel.Tests/NetRatel.Tests.csproj --configuration Release
+          dotnet src/NetRatel/NetRatel.Tests/bin/Release/net10.0/NetRatel.Tests.dll \
+            -method NetRatel.Tests.Infrastructure.ScriptTemplateServiceTests.Build_MacOS_InstallsExactPackageWithoutServiceOnNativeRunner
       - shell: bash
         run: |
           version="$(python3 tools/ci/product-version.py)"

@@ -70,6 +70,7 @@ public static class ApiEndpointRegistrationExtensions
         app.MapAgentTerminalGatewayEndpoints();
 
         app.MapClientArtifactsEndpoints();
+        app.MapClientInstallLinkEndpoints();
         app.MapClientUpdatesEndpoints();
         app.MapAgentTaskEndpoints();
         app.MapRequestEndpoints();

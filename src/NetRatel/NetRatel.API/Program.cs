@@ -63,6 +63,8 @@ using NetRatel.Infrastructure.Identity.Branding;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.API.OpenApi;
 var builder = WebApplication.CreateBuilder(args);
+// Public install URLs are bearer capabilities; framework request-start logs include raw paths.
+builder.Logging.AddFilter("Microsoft.AspNetCore.Hosting.Diagnostics", LogLevel.Warning);
 NetRatelDatabaseConfigurationResolver.ValidateProvider(builder.Configuration);
 
 // Bootstrap reconciliation intentionally happens before any operational registration. A fresh or
@@ -200,6 +202,16 @@ builder.Services.AddRateLimiter(rateLimits =>
             _ => new FixedWindowRateLimiterOptions
             {
                 PermitLimit = 10,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0,
+                AutoReplenishment = true
+            }));
+    rateLimits.AddPolicy("public-client-install", context =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 60,
                 Window = TimeSpan.FromMinutes(1),
                 QueueLimit = 0,
                 AutoReplenishment = true
@@ -736,6 +748,7 @@ builder.Services.AddOptions<DeploymentBrandingOptions>()
 builder.Services.AddSingleton<IValidateOptions<DeploymentBrandingOptions>, DeploymentBrandingOptionsValidator>();
 builder.Services.AddSingleton<StorageInitializer>();
 builder.Services.AddScoped<IClientArtifactsService, ClientArtifactsService>();
+builder.Services.AddScoped<ClientInstallLinkService>();
 builder.Services.AddHttpClient("GitHubClientReleases", http =>
     {
         http.BaseAddress = new Uri("https://api.github.com/");

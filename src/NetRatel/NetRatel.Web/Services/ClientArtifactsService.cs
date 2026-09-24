@@ -4,6 +4,7 @@ using NetRatel.Web.Components.Dialogs;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Text;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Forms;
 using MudBlazor;
@@ -65,6 +66,16 @@ public interface IClientArtifactsService
     Task DownloadAsync(string rid, string version, CancellationToken ct = default);
     Task DownloadClientPackageAsync(ClientPackageDownloadRequest request, CancellationToken ct = default);
     Task DownloadDeploymentScriptAsync(ClientScriptGenerateRequest request, CancellationToken ct = default);
+    Task<ClientInstallLinkResultModel> GenerateInstallLinkAsync(ClientScriptGenerateRequest request, CancellationToken ct = default) =>
+        throw new NotSupportedException();
+    Task DownloadGeneratedInstallScriptAsync(ClientInstallLinkResultModel result, CancellationToken ct = default) =>
+        throw new NotSupportedException();
+    Task<List<ClientInstallLinkMetadataModel>> GetInstallLinksAsync(int? tenantId, CancellationToken ct = default) =>
+        Task.FromResult(new List<ClientInstallLinkMetadataModel>());
+    Task<ClientInstallLinkMetadataModel?> GetInstallLinkAsync(Guid id, CancellationToken ct = default) =>
+        Task.FromResult<ClientInstallLinkMetadataModel?>(null);
+    Task RevokeInstallLinkAsync(Guid id, CancellationToken ct = default) =>
+        throw new NotSupportedException();
     Task DeleteAsync(string rid, string version, CancellationToken ct = default);
     void OpenUploadDialog(string initialRid, Func<Task> onUploaded);
     Task UploadAsync(string rid, string version, string? notes, IBrowserFile file, CancellationToken ct = default);
@@ -392,6 +403,41 @@ public class ClientArtifactsService : IClientArtifactsService
         _snackbar.Add($"Deployment script generated for tenant {request.TenantId}.", Severity.Success);
     }
 
+    public async Task<ClientInstallLinkResultModel> GenerateInstallLinkAsync(
+        ClientScriptGenerateRequest request, CancellationToken ct = default)
+    {
+        using var response = await _uploads.Http.PostAsJsonAsync("/api/v1/client-install-links", request, ct);
+        if (!response.IsSuccessStatusCode)
+            throw new HttpRequestException(await TryReadProblemAsync(response, ct)
+                ?? $"Install link generation failed with HTTP {(int)response.StatusCode}.");
+        return await response.Content.ReadFromJsonAsync<ClientInstallLinkResultModel>(cancellationToken: ct)
+            ?? throw new HttpRequestException("The install link response was empty.");
+    }
+
+    public async Task DownloadGeneratedInstallScriptAsync(ClientInstallLinkResultModel result, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        var extension = result.RuntimeId.StartsWith("win-", StringComparison.Ordinal) ? "ps1" : "sh";
+        await _downloader.DownloadFile($"netratel-install-{result.TenantId}-{result.RuntimeId}.{extension}",
+            Encoding.UTF8.GetBytes(result.Script), "text/plain");
+    }
+
+    public async Task<List<ClientInstallLinkMetadataModel>> GetInstallLinksAsync(int? tenantId, CancellationToken ct = default)
+    {
+        var url = "/api/v1/client-install-links" + (tenantId.HasValue ? $"?tenantId={tenantId.Value}" : string.Empty);
+        return await _uploads.Http.GetFromJsonAsync<List<ClientInstallLinkMetadataModel>>(url, ct) ?? [];
+    }
+
+    public async Task<ClientInstallLinkMetadataModel?> GetInstallLinkAsync(Guid id, CancellationToken ct = default)
+        => await _uploads.Http.GetFromJsonAsync<ClientInstallLinkMetadataModel>(
+            $"/api/v1/client-install-links/{id}", ct);
+
+    public async Task RevokeInstallLinkAsync(Guid id, CancellationToken ct = default)
+    {
+        using var response = await _uploads.Http.PostAsync($"/api/v1/client-install-links/{id}/revoke", null, ct);
+        response.EnsureSuccessStatusCode();
+    }
+
     private async Task StartBrowserDownloadAsync(string url, CancellationToken ct)
     {
         try
@@ -714,6 +760,40 @@ public sealed class ClientScriptGenerateRequest
     public int? MaxUses { get; set; } = 1;
     public bool InstallAsService { get; set; } = true;
     public bool SilentInstall { get; set; } = true;
+    public string IdempotencyKey { get; set; } = string.Empty;
+}
+
+public sealed class ClientInstallLinkResultModel
+{
+    public Guid Id { get; set; }
+    public int TenantId { get; set; }
+    public string RuntimeId { get; set; } = string.Empty;
+    public string ArtifactVersion { get; set; } = string.Empty;
+    public string ArtifactSha256 { get; set; } = string.Empty;
+    public DateTimeOffset ExpiresAtUtc { get; set; }
+    public int MaxUses { get; set; }
+    public int RemainingUses { get; set; }
+    public bool InstallAsService { get; set; }
+    public bool SilentInstall { get; set; }
+    public string PublicUrl { get; set; } = string.Empty;
+    public string InstallCommand { get; set; } = string.Empty;
+    public string Script { get; set; } = string.Empty;
+    public bool Replay { get; set; }
+}
+
+public sealed class ClientInstallLinkMetadataModel
+{
+    public Guid Id { get; set; }
+    public int TenantId { get; set; }
+    public string RuntimeId { get; set; } = string.Empty;
+    public string ArtifactVersion { get; set; } = string.Empty;
+    public DateTimeOffset CreatedAtUtc { get; set; }
+    public DateTimeOffset ExpiresAtUtc { get; set; }
+    public int MaxUses { get; set; }
+    public int Uses { get; set; }
+    public bool IsActive { get; set; }
+    public DateTimeOffset? RevokedAtUtc { get; set; }
+    public string CreatedBy { get; set; } = string.Empty;
 }
 
 public sealed class GitHubClientReleasePageModel
