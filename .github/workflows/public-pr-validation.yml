@@ -46,7 +46,18 @@ jobs:
       - run: python3 tools/ci/test-release-validation.py
       - run: dotnet build NetRatel.sln --configuration Release --no-restore
       - run: pwsh src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/playwright.ps1 install --with-deps chromium
-      - run: dotnet test NetRatel.sln --configuration Release --no-build --filter "category!=compose" --results-directory TestResults -- --report-trx --report-trx-filename "netratel-tests-{asm}_{tfm}_{arch}.trx"
+      - run: dotnet test NetRatel.sln --configuration Release --no-build --filter "category!=compose&category!=hosted" --results-directory TestResults -- --report-trx --report-trx-filename "netratel-tests-{asm}_{tfm}_{arch}.trx"
+      - name: Fetch latest completed public client pack
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/ci/fetch-published-client-pack.py --output "$RUNNER_TEMP/published-client-pack"
+      - name: Verify published client pack with the existing updater contract
+        env:
+          NETRATEL_RELEASE_FIXTURE_DIR: ${{ runner.temp }}/published-client-pack
+        run: >-
+          dotnet src/NetRatel/NetRatel.Tests/bin/Release/net10.0/NetRatel.Tests.dll
+          -method NetRatel.Tests.API.ClientReleaseArchiveAdapterTests.PublishedClientPackMatchesPublicationAndNormalizesForExistingUpdaters
+          -noLogo
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

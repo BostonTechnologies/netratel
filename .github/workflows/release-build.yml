@@ -58,7 +58,7 @@ jobs:
       - run: dotnet restore NetRatel.sln
       - run: dotnet build NetRatel.sln --configuration Release --no-restore
       - run: pwsh src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/playwright.ps1 install --with-deps chromium
-      - run: dotnet test NetRatel.sln --configuration Release --no-build --filter "category!=compose"
+      - run: dotnet test NetRatel.sln --configuration Release --no-build --filter "category!=compose&category!=hosted"
 
   package:
     name: Build distributable artifacts
