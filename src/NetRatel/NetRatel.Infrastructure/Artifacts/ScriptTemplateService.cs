@@ -24,7 +24,7 @@ public sealed class ScriptTemplateService : IScriptTemplateService
             ? string.Empty
             : $$"""
 
-    & $exe --enroll $EnrollmentCode {{silentArg}}
+    & $exe --enroll $EnrollmentCode --api $ApiBase {{silentArg}}
     if ($LASTEXITCODE -ne 0) {
         throw "Enrollment failed with exit code $LASTEXITCODE."
     }

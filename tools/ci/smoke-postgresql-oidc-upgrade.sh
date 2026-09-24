@@ -337,4 +337,4 @@ stage="authenticating the persisted published ${legacy_version} Client against c
 verify_legacy_client_after_upgrade
 stage="authenticating the published ${legacy_version} Client natively with its persisted identity"
 verify_native_legacy_client_after_upgrade
-echo "Published ${legacy_version} PostgreSQL/OIDC and native Client upgrade continuity passed."
+echo "Published ${legacy_version} PostgreSQL/OIDC and persisted Client authentication continuity passed."

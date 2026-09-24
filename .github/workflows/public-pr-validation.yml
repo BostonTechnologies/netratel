@@ -186,6 +186,14 @@ jobs:
           dotnet build src/NetRatel/NetRatel.Tests/NetRatel.Tests.csproj --configuration Release
           dotnet src/NetRatel/NetRatel.Tests/bin/Release/net10.0/NetRatel.Tests.dll \
             -method NetRatel.Tests.Infrastructure.ScriptTemplateServiceTests.Build_MacOS_InstallsExactPackageWithoutServiceOnUnixHost
+      - name: Exercise Windows installer on native runner
+        if: matrix.runtime == 'win-x64'
+        shell: bash
+        run: |
+          dotnet build src/NetRatel/NetRatel.Tests/NetRatel.Tests.csproj --configuration Release
+          NETRATEL_NATIVE_CLIENT_DIRECTORY="$PWD/artifacts/netratel-client-win-x64" \
+            dotnet src/NetRatel/NetRatel.Tests/bin/Release/net10.0/NetRatel.Tests.dll \
+              -method NetRatel.Tests.Infrastructure.WindowsInstallerNativeTests.GeneratedPowerShellInstallerDownloadsVerifiesAndEnrollsNativePackage
       - shell: bash
         run: |
           version="$(python3 tools/ci/product-version.py)"

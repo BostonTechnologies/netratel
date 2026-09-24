@@ -112,7 +112,7 @@ public sealed class ScriptTemplateServiceTests
             SilentInstall: true));
 
         script.Should().NotContain("New-Service");
-        script.Should().Contain("--enroll");
+        script.Should().Contain("--enroll $EnrollmentCode --api $ApiBase");
     }
 
     [Fact]
