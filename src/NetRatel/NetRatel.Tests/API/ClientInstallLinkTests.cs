@@ -15,6 +15,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using NetRatel.API.Models;
 using NetRatel.API.Endpoints;
+using NetRatel.API.Middleware;
 using NetRatel.API.Services;
 using NetRatel.Application.Agents;
 using NetRatel.Application.Artifacts;
@@ -46,6 +47,28 @@ public sealed class ClientInstallLinkTests : IAsyncLifetime
     {
         await _postgres.DisposeAsync();
         if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true);
+    }
+
+    [Fact]
+    public async Task CorrelationLogsRedactTheBearerPathInMessagesAndScopes()
+    {
+        var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
+        var context = new DefaultHttpContext();
+        context.Request.Method = HttpMethods.Get;
+        context.Request.Path = $"/clients/install/{token}.sh";
+        var logger = new CapturingLogger();
+        var middleware = new CorrelationLoggingMiddleware(
+            _ => Task.CompletedTask, logger);
+
+        await middleware.Invoke(context);
+
+        Assert.Equal(2, logger.Messages.Count);
+        Assert.All(logger.Messages, message =>
+        {
+            Assert.Contains("/clients/install/{capability}", message);
+            Assert.DoesNotContain(token, message);
+        });
+        Assert.Equal("/clients/install/{capability}", logger.RequestPath);
     }
 
     [Fact]
@@ -311,6 +334,31 @@ public sealed class ClientInstallLinkTests : IAsyncLifetime
     {
         public Task<bool> TenantExistsAsync(int tenantId, CancellationToken ct = default) =>
             Task.FromResult(tenantId == 21);
+    }
+
+    private sealed class CapturingLogger : ILogger<CorrelationLoggingMiddleware>
+    {
+        public List<string> Messages { get; } = [];
+        public string? RequestPath { get; private set; }
+
+        public IDisposable BeginScope<TState>(TState state) where TState : notnull
+        {
+            if (state is IReadOnlyDictionary<string, object> values &&
+                values.TryGetValue("request_path", out var path)) RequestPath = path.ToString();
+            return NoopScope.Instance;
+        }
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state,
+            Exception? exception, Func<TState, Exception?, string> formatter) =>
+            Messages.Add(formatter(state, exception));
+
+        private sealed class NoopScope : IDisposable
+        {
+            public static readonly NoopScope Instance = new();
+            public void Dispose() { }
+        }
     }
 
     private sealed class FixtureArtifacts(byte[] archive) : IClientArtifactsService

@@ -1,4 +1,5 @@
 using System.IO.Compression;
+using System.Collections.Concurrent;
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
@@ -55,6 +56,7 @@ public sealed class ClientReleaseImportWorkerTests : IAsyncLifetime
     {
         var fixture = CreateFixture(corruptSecondRuntime);
         var store = new RecordingArtifactStore();
+        var assetRequests = new ConcurrentDictionary<long, int>();
         await using var services = new ServiceCollection()
             .AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Warning))
             .AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(_postgres.GetConnectionString()))
@@ -68,7 +70,7 @@ public sealed class ClientReleaseImportWorkerTests : IAsyncLifetime
             .AddSingleton<IWebHostEnvironment>(new FixtureEnvironment(_storage))
             .AddSingleton<IOptions<ClientArtifactsOptions>>(Options.Create(new ClientArtifactsOptions { StorageRoot = _storage }))
             .AddScoped<GitHubClientAssetDownloader>(_ => new GitHubClientAssetDownloader(
-                new HttpClient(new AssetHandler(fixture.Bytes)) { Timeout = Timeout.InfiniteTimeSpan },
+                new HttpClient(new AssetHandler(fixture.Bytes, id => assetRequests.AddOrUpdate(id, 1, (_, count) => count + 1))) { Timeout = Timeout.InfiniteTimeSpan },
                 new ConfigurationBuilder().Build()))
             .BuildServiceProvider();
 
@@ -107,6 +109,42 @@ public sealed class ClientReleaseImportWorkerTests : IAsyncLifetime
                 Assert.Equal(ClientReleaseImportState.Failed, operation.State);
                 Assert.Empty(store.ImportedRuntimes);
                 Assert.False(store.Visible);
+                var firstAsset = fixture.Release.ClientAssets.Single(x => x.RuntimeId == "linux-x64");
+                var stagedFirstAsset = Path.Combine(_storage, ".import-work", id.ToString("N"), firstAsset.Name);
+                Assert.True(File.Exists(stagedFirstAsset));
+                Assert.Equal(1, assetRequests[firstAsset.Id]);
+
+                // A short transfer must leave the verified first runtime reusable, while
+                // retrying the failed second runtime against the same immutable evidence.
+                var secondAsset = fixture.Release.ClientAssets.Single(x => x.RuntimeId == "win-x64");
+                fixture.Bytes[secondAsset.Id] = MakeArchive("win-x64", fixture.Release.Version, fixture.Commit);
+                await using (var retryScope = services.CreateAsyncScope())
+                {
+                    var retryDb = retryScope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+                    await retryDb.ClientReleaseImportOperations.Where(x => x.Id == id)
+                        .ExecuteUpdateAsync(setters => setters
+                            .SetProperty(x => x.State, ClientReleaseImportState.Queued)
+                            .SetProperty(x => x.Error, (string?)null), timeout.Token);
+                }
+                do
+                {
+                    await observation.WaitForNextTickAsync(timeout.Token);
+                    await using var retryScope = services.CreateAsyncScope();
+                    operation = await retryScope.ServiceProvider.GetRequiredService<OrchestratorDbContext>()
+                        .ClientReleaseImportOperations.AsNoTracking().Include(x => x.Assets)
+                        .SingleAsync(x => x.Id == id, timeout.Token);
+                } while (operation.State is not (ClientReleaseImportState.Imported or ClientReleaseImportState.Failed));
+
+                Assert.True(operation.State == ClientReleaseImportState.Imported, operation.Error);
+                Assert.Equal(2, operation.AttemptCount);
+                Assert.Equal(1, assetRequests[firstAsset.Id]);
+                Assert.Equal(2, assetRequests[secondAsset.Id]);
+                Assert.True(store.Visible);
+                Assert.Equal(2, store.ImportedRuntimes.Count);
+                Assert.Null(operation.PublishedAtUtc);
+                await using var verifyScope = services.CreateAsyncScope();
+                Assert.Empty(await verifyScope.ServiceProvider.GetRequiredService<OrchestratorDbContext>()
+                    .ClientUpdateReleases.ToListAsync(timeout.Token));
             }
             else
             {
@@ -434,11 +472,12 @@ public sealed class ClientReleaseImportWorkerTests : IAsyncLifetime
             Task.FromResult(commit);
     }
 
-    private sealed class AssetHandler(Dictionary<long, byte[]> bytes) : HttpMessageHandler
+    private sealed class AssetHandler(Dictionary<long, byte[]> bytes, Action<long>? onRequest = null) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             var id = long.Parse(request.RequestUri!.Segments[^1]);
+            onRequest?.Invoke(id);
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new ByteArrayContent(bytes[id])

@@ -42,6 +42,7 @@ if [[ -n "${NETRATEL_LOCAL_FIRST_COMPOSE_OVERLAYS:-}" ]]; then
     compose_files+=(-f "$acceptance_overlay")
   done
 fi
+compose_files+=(-f "$root/tests/compose/local-first-install-links.compose.yaml")
 if [[ -n "$mcp_http_image" ]]; then
   local_http_mcp_directory="$(mktemp -d)"
   local_http_mcp_overlay="$root/tests/compose/local-http-mcp.compose.yaml"

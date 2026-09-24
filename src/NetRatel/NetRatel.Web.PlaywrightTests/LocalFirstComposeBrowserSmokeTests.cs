@@ -1,6 +1,8 @@
 using System.Buffers.Binary;
 using System.Diagnostics;
+using System.IO.Compression;
 using System.Security.Cryptography;
+using System.Text;
 using Microsoft.Playwright;
 
 namespace NetRatel.Web.PlaywrightTests;
@@ -175,6 +177,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             requireInput: false);
 
         await VerifyDeploymentBrandingAsync(page, webUrl);
+        await VerifyDeploymentLinkJourneyAsync(browser, page, webUrl);
         await page.SetViewportSizeAsync(1440, 1100);
         await CaptureReviewScreenshotAsync(page, "drawer-desktop");
         await page.SetViewportSizeAsync(390, 844);
@@ -283,6 +286,88 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             if (captureSafeContent) await CaptureReviewScreenshotAsync(page, $"{name}-{label}");
         }
         await page.SetViewportSizeAsync(initial.Width, initial.Height);
+    }
+
+    private static async Task VerifyDeploymentLinkJourneyAsync(IBrowser browser, IPage page, Uri webUrl)
+    {
+        const string version = "9.8.7";
+        await page.GotoAsync(new Uri(webUrl, "clients/mgmt").ToString(),
+            new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await page.GetByRole(AriaRole.Button, new() { Name = "Advanced: upload artifact" }).ClickAsync();
+        var uploadDialog = page.Locator(".mud-dialog:visible").Last;
+        await uploadDialog.GetByRole(AriaRole.Combobox, new() { Name = "Runtime Identifier" }).ClickAsync();
+        await page.GetByRole(AriaRole.Option, new() { Name = "Linux (x64)" }).ClickAsync();
+        await uploadDialog.GetByRole(AriaRole.Textbox, new() { Name = "Version" }).FillAsync(version);
+        using var buffer = new MemoryStream();
+        using (var zip = new ZipArchive(buffer, ZipArchiveMode.Create, leaveOpen: true))
+        {
+            const string prefix = "netratel-client-linux-x64/";
+            var manifest = zip.CreateEntry(prefix + "netratel-client-manifest.json");
+            await using (var writer = new StreamWriter(manifest.Open(), new UTF8Encoding(false)))
+                await writer.WriteAsync("{\"schema\":\"netratel.client.manifest.v1\",\"product\":\"NetRatel.Client\",\"version\":\"9.8.7\",\"runtimeId\":\"linux-x64\",\"commitSha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"executable\":\"NetRatel.Client\"}");
+            var executable = zip.CreateEntry(prefix + "NetRatel.Client");
+            await using var content = new StreamWriter(executable.Open(), Encoding.UTF8);
+            await content.WriteAsync("disposable manifest fixture; never execute");
+        }
+        await uploadDialog.Locator("input[type=file]").SetInputFilesAsync(new FilePayload
+        {
+            Name = "fixture-client.zip", MimeType = "application/zip", Buffer = buffer.ToArray()
+        });
+        await uploadDialog.GetByRole(AriaRole.Button, new() { Name = "Upload", Exact = true }).ClickAsync();
+        await uploadDialog.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Hidden });
+
+        await page.GetByRole(AriaRole.Tab, new() { Name = "Artifacts" }).ClickAsync();
+        var artifactRow = page.GetByTestId("artifact-table").GetByRole(AriaRole.Row).Filter(new() { HasText = version });
+        await artifactRow.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        await artifactRow.GetByRole(AriaRole.Button, new() { Name = "Artifact actions" }).ClickAsync();
+        await page.GetByRole(AriaRole.Menuitem, new() { Name = "Generate script" }).ClickAsync();
+        await AssertDialogLayoutAsync(page, "deployment-script-input", captureSafeContent: true);
+
+        var downloads = 0;
+        page.Download += (_, _) => Interlocked.Increment(ref downloads);
+        await page.GetByRole(AriaRole.Button, new() { Name = "Generate link" }).ClickAsync();
+        await page.GetByText("Generated install link", new() { Exact = true }).WaitForAsync();
+        Assert.Equal(0, downloads);
+        var publicUrl = await page.GetByRole(AriaRole.Textbox, new() { Name = "Public script URL" }).InputValueAsync();
+        var command = await page.GetByRole(AriaRole.Textbox, new() { Name = "Install command" }).InputValueAsync();
+        Assert.StartsWith("https://netratel.example/clients/install/", publicUrl);
+        Assert.Contains(publicUrl, command);
+        Assert.Contains(version, await page.GetByLabel("Generated script preview").InnerTextAsync());
+        await AssertDialogLayoutAsync(page, "deployment-script-result", captureSafeContent: false);
+
+        await using var anonymous = await browser.NewContextAsync(new BrowserNewContextOptions
+        {
+            IgnoreHTTPSErrors = IgnoreSyntheticHttpsErrors
+        });
+        var path = new Uri(publicUrl).PathAndQuery;
+        var routedUrl = new Uri(webUrl, path).ToString();
+        var firstFetch = await anonymous.APIRequest.GetAsync(routedUrl);
+        Assert.True(firstFetch.Ok, "The public script must be reachable through Web routing without an authentication cookie.");
+        var fetchedScript = await firstFetch.TextAsync();
+        Assert.StartsWith("#!/usr/bin/env bash", fetchedScript);
+        Assert.Contains("no-store", firstFetch.Headers["cache-control"]);
+        var head = await anonymous.APIRequest.HeadAsync(routedUrl);
+        Assert.True(head.Ok);
+        Assert.Empty(await head.BodyAsync());
+        var secondFetch = await anonymous.APIRequest.GetAsync(routedUrl);
+        Assert.True(secondFetch.Ok);
+        var explicitDownload = await page.RunAndWaitForDownloadAsync(
+            () => page.GetByText("Download script", new() { Exact = true }).ClickAsync());
+        await using (var downloaded = await explicitDownload.CreateReadStreamAsync())
+        using (var reader = new StreamReader(downloaded, Encoding.UTF8))
+            Assert.Equal(fetchedScript, await reader.ReadToEndAsync());
+        Assert.Equal(1, downloads);
+        await page.GetByRole(AriaRole.Button, new() { Name = "Copy URL" }).ClickAsync();
+        var copyStatus = page.GetByRole(AriaRole.Status).Last;
+        await copyStatus.WaitForAsync();
+        Assert.Contains("copy", (await copyStatus.InnerTextAsync()).ToLowerInvariant());
+        await page.GetByRole(AriaRole.Button, new() { Name = "Refresh status" }).ClickAsync();
+        await page.GetByText("1 of 1 enrollments remain.", new() { Exact = false }).WaitForAsync();
+        await page.GetByRole(AriaRole.Button, new() { Name = "Revoke link" }).ClickAsync();
+        await page.GetByText("This link has been revoked.", new() { Exact = false }).WaitForAsync();
+        Assert.Equal(404, (await anonymous.APIRequest.GetAsync(routedUrl)).Status);
+        Assert.Equal(1, downloads);
+        await page.GetByRole(AriaRole.Button, new() { Name = "Close", Exact = true }).ClickAsync();
     }
 
     private static readonly FirstPaintCase[] FirstPaintCases =
@@ -629,6 +714,8 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await page.GetByTestId("credential-error").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Cancel" }).ClickAsync();
         await page.GetByTestId("open-create-integration").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        await page.WaitForFunctionAsync(
+            "() => document.activeElement?.closest('[data-testid]')?.getAttribute('data-testid') === 'open-create-integration'");
         Assert.Equal("open-create-integration", await page.EvaluateAsync<string>(
             "() => document.activeElement?.closest('[data-testid]')?.getAttribute('data-testid') ?? ''"));
     }

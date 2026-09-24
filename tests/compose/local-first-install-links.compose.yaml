@@ -1,0 +1,7 @@
+services:
+  api:
+    environment:
+      # Disposable origin for protected-link creation. The browser test fetches
+      # the issued path through the actual Web listener on its isolated port.
+      PublicUrls__WebBaseUrl: https://netratel.example
+      PublicUrls__ApiBaseUrl: https://netratel.example
