@@ -314,6 +314,15 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             Name = "fixture-client.zip", MimeType = "application/zip", Buffer = buffer.ToArray()
         });
         await uploadDialog.GetByRole(AriaRole.Button, new() { Name = "Upload", Exact = true }).ClickAsync();
+        await page.WaitForFunctionAsync("""
+            () => {
+                const dialog = document.querySelector('.mud-dialog');
+                return !dialog || dialog.getClientRects().length === 0 || !!dialog.querySelector('.mud-alert-error');
+            }
+            """);
+        var uploadError = uploadDialog.Locator(".mud-alert-error");
+        if (await uploadError.CountAsync() > 0)
+            Assert.Fail($"Disposable artifact upload failed: {await uploadError.InnerTextAsync()}");
         await uploadDialog.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Hidden });
 
         await page.GetByRole(AriaRole.Tab, new() { Name = "Artifacts" }).ClickAsync();

@@ -93,6 +93,21 @@ public sealed class GitHubClientAssetDownloaderTests
         }
     }
 
+    [Fact]
+    public async Task ShortStreamDeletesItsPartiallyWrittenStagingFile()
+    {
+        using var client = Client(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StreamContent(new NonSeekableStream(Encoding.UTF8.GetBytes("short")))
+        });
+        var path = Path.Combine(Path.GetTempPath(), $"netratel-asset-{Guid.NewGuid():N}");
+
+        await Assert.ThrowsAsync<InvalidDataException>(() => Downloader(client).DownloadAsync(
+            5, 10, null, path, TestContext.Current.CancellationToken));
+
+        Assert.False(File.Exists(path));
+    }
+
     private static GitHubClientAssetDownloader Downloader(HttpClient client) => new(client,
         new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
@@ -106,5 +121,10 @@ public sealed class GitHubClientAssetDownloaderTests
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
             Task.FromResult(callback(request));
+    }
+
+    private sealed class NonSeekableStream(byte[] bytes) : MemoryStream(bytes)
+    {
+        public override bool CanSeek => false;
     }
 }

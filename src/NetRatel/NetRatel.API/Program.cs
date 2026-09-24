@@ -590,11 +590,7 @@ builder.Services.AddAuthorization(options =>
         {
             if (HasAllowedM2MClient(ctx.User, m2m.AllowedCallerClientIds, m2m.Audience))
                 return true;
-            if (ctx.Resource is not HttpContext http)
-                return false;
-            var access = http.RequestServices.GetRequiredService<IEffectiveAccessService>();
-            var snapshot = await access.GetSnapshotAsync(ctx.User, tenantId: null).ConfigureAwait(false);
-            return snapshot.IsLegacyOperator || snapshot.IsInstanceAdministrator;
+            return await HasInstanceArtifactAuthorityAsync(ctx).ConfigureAwait(false);
         });
     });
 
@@ -611,10 +607,10 @@ builder.Services.AddAuthorization(options =>
     {
         policy.AddAuthenticationSchemes("Bearer", "M2M", "Agent");
         policy.RequireAuthenticatedUser();
-        policy.RequireAssertion(ctx =>
-            HasAdminClaim(ctx.User, ResolveAdminId()) ||
+        policy.RequireAssertion(async ctx =>
             HasAllowedM2MClient(ctx.User, m2m.AllowedCallerClientIds, m2m.Audience) ||
-            (IsAgentPrincipal(ctx.User) && HasScope(ctx.User, "netratel:connect")));
+            (IsAgentPrincipal(ctx.User) && HasScope(ctx.User, "netratel:connect")) ||
+            await HasInstanceArtifactAuthorityAsync(ctx).ConfigureAwait(false));
     });
 
     // Require Operator by default (unless [AllowAnonymous])
@@ -1023,6 +1019,14 @@ static bool HasAdminClaim(ClaimsPrincipal user, string? adminGroupId)
         c.Type == "groups" && string.Equals(c.Value, adminGroupId, StringComparison.OrdinalIgnoreCase));
 
     return hasRole || hasGroupByName || hasGroupById;
+}
+
+static async Task<bool> HasInstanceArtifactAuthorityAsync(AuthorizationHandlerContext context)
+{
+    if (context.Resource is not HttpContext http) return false;
+    var access = http.RequestServices.GetRequiredService<IEffectiveAccessService>();
+    var snapshot = await access.GetSnapshotAsync(context.User, tenantId: null).ConfigureAwait(false);
+    return snapshot.IsLegacyOperator || snapshot.IsInstanceAdministrator;
 }
 
 static bool HasAllowedM2MClient(ClaimsPrincipal user, IEnumerable<string> allowedClientIds, string? requiredScope)

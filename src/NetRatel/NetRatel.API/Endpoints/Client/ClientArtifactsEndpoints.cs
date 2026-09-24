@@ -155,6 +155,7 @@ public static class ClientArtifactsEndpoints
             var result = await service.ListAsync(rid, skip ?? 0, take ?? 50, search, ct);
             return Results.Ok(result);
         })
+        .RequireAuthorization("ClientArtifactsWrite")
         .WithName("ClientArtifacts_List")
         .Produces<ClientArtifactListDto>(StatusCodes.Status200OK)
         .ProducesProblem(StatusCodes.Status400BadRequest)
@@ -413,6 +414,7 @@ public static class ClientArtifactsEndpoints
                 return Results.BadRequest(new { message = ex.Message });
             }
         })
+        .RequireAuthorization("ClientArtifactsWrite")
         .WithName("ClientArtifacts_FallbackScan")
         .Produces<FileContentResult>(StatusCodes.Status200OK)
         .ProducesProblem(StatusCodes.Status400BadRequest)
