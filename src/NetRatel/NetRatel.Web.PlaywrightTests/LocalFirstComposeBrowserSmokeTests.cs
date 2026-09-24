@@ -476,7 +476,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
     {
         var start = new ProcessStartInfo("sudo")
         {
-            WorkingDirectory = home,
+            WorkingDirectory = Path.GetDirectoryName(home)!,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false
