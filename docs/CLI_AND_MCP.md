@@ -14,7 +14,7 @@ HTTP MCP requires HTTPS OIDC discovery metadata by default. The
 Development host for disposable local integration tests; it must never be used
 for a deployed instance.
 
-The rc.1 tag and archives are historical artifacts. Obtain rc.3 tooling only
+The rc.1 tag and archives are historical artifacts. Obtain tooling only
 from its matching prerelease, verify `SHA256SUMS` before extraction, and keep
 the archive together with its SBOM and provenance record. A source checkout is
 appropriate for development rather than a substitute for a promoted release
@@ -23,8 +23,9 @@ bundle.
 ## Integration credentials
 
 An authenticated operator can create a least-privilege credential at
-`/account/integration-credentials`. Select one tenant and one permission for
-each grant, a bounded expiry, and an explicit purpose. The generated secret
+`/account/integration-credentials`. Select each required tenant and permission
+individually, a bounded expiry, and an explicit purpose. One credential can
+carry several tenant and server-level grants. The generated secret
 has the `nrt_ic_` prefix, is displayed once, and must be stored in an
 owner-only secret mechanism; NetRatel retains only a one-way verifier.
 

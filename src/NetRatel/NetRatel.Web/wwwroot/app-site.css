@@ -1462,6 +1462,15 @@ html[data-netratel-theme="light"] .netratel-login-panel {
     overflow-y: auto;
 }
 
+.integration-connection-example {
+    padding: .75rem 1rem;
+    border: 1px solid var(--mud-palette-lines-default);
+    border-radius: 8px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font-size: .8rem;
+}
+
 .integration-access-group {
     padding: 1rem;
     border: 1px solid var(--mud-palette-lines-default);

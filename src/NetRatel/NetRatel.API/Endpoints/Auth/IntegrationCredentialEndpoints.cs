@@ -133,23 +133,32 @@ public static class IntegrationCredentialEndpoints
 
             var grants = request.Grants ?? [];
             var instancePermissions = request.InstancePermissions ?? [];
+            if (string.IsNullOrWhiteSpace(request.Name) || request.Name.Trim().Length > 128)
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["name"] = ["Enter an integration name of at most 128 characters."] });
+            if (!Enum.IsDefined(request.Purpose))
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["purpose"] = ["Choose a supported connection type."] });
+            var now = DateTimeOffset.UtcNow;
+            if (request.ExpiresAtUtc <= now || request.ExpiresAtUtc > now.AddDays(365))
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["expiresAtUtc"] = ["Choose an expiry after now and within one year."] });
             if (request.Purpose == IntegrationCredentialPurpose.HttpMcp &&
                 !McpResourceUri.TryNormalize(request.Resource, out _))
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["resource"] = ["Enter the public HTTPS MCP server URL ending in /mcp, without a query, fragment, or user information."] });
             if (request.Purpose == IntegrationCredentialPurpose.Api && !string.IsNullOrWhiteSpace(request.Resource))
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["resource"] = ["API integrations do not use an HTTP MCP server URL."] });
-            if (!Enum.IsDefined(request.Purpose) ||
-                (request.Purpose == IntegrationCredentialPurpose.HttpMcp && string.IsNullOrWhiteSpace(request.Resource)) ||
-                (grants.Count == 0 && instancePermissions.Count == 0) || grants.Count > 64 || instancePermissions.Count > 32 ||
-                grants.Distinct().Count() != grants.Count || instancePermissions.Distinct(StringComparer.Ordinal).Count() != instancePermissions.Count ||
+            if ((grants.Count == 0 && instancePermissions.Count == 0) || grants.Count > 64 ||
+                grants.Distinct().Count() != grants.Count ||
                 grants.Any(grant => grant.TenantId <= 0 || string.IsNullOrWhiteSpace(grant.Permission) ||
                     !NetRatelPermissions.All.Contains(grant.Permission.Trim()) ||
-                    string.Equals(grant.Permission.Trim(), NetRatelPermissions.IntegrationManagement, StringComparison.Ordinal)) ||
+                    string.Equals(grant.Permission.Trim(), NetRatelPermissions.IntegrationManagement, StringComparison.Ordinal)))
+            {
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["grants"] = ["Choose at least one permission, with no duplicate or nondelegable tenant grants."] });
+            }
+            if (instancePermissions.Count > 32 || instancePermissions.Distinct(StringComparer.Ordinal).Count() != instancePermissions.Count ||
                 instancePermissions.Any(permission => string.IsNullOrWhiteSpace(permission) ||
                     !NetRatelPermissions.All.Contains(permission.Trim()) ||
                     string.Equals(permission.Trim(), NetRatelPermissions.IntegrationManagement, StringComparison.Ordinal)))
             {
-                return Results.ValidationProblem(new Dictionary<string, string[]> { ["grants"] = ["Use explicit tenant or instance permissions; integration.manage cannot be delegated to a credential."] });
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["instancePermissions"] = ["Choose distinct, delegable server-level permissions; integration.manage cannot be delegated."] });
             }
 
             var tenantIds = grants.Select(grant => grant.TenantId).Distinct().ToArray();
@@ -186,7 +195,7 @@ public static class IntegrationCredentialEndpoints
             }
             catch (ArgumentException)
             {
-                return Results.ValidationProblem(new Dictionary<string, string[]> { ["credential"] = ["Provide a name, expiry within one year, and at least one explicit tenant permission."] });
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["credential"] = ["Review the credential fields and selected access, then retry."] });
             }
         });
 
