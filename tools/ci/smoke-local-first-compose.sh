@@ -197,6 +197,8 @@ NETRATEL_LOCAL_FIRST_WEB_URL="$web_url" \
 NETRATEL_LOCAL_FIRST_SETUP_PROOF="$setup_proof" \
 NETRATEL_LOCAL_FIRST_ADMIN_EMAIL="browser-admin@example.test" \
 NETRATEL_LOCAL_FIRST_ADMIN_PASSWORD="browser smoke local passphrase" \
+NETRATEL_LOCAL_FIRST_RESTART_API_CONTAINER="$("${compose[@]}" ps -q api)" \
+NETRATEL_LOCAL_FIRST_RESTART_WEB_CONTAINER="$("${compose[@]}" ps -q web)" \
 NETRATEL_LOCAL_FIRST_INTEGRATION_CREDENTIALS_FILE="$credential_path" \
   dotnet test src/NetRatel/NetRatel.Web.PlaywrightTests/NetRatel.Web.PlaywrightTests.csproj \
     --configuration Release --no-build --filter 'FullyQualifiedName~LocalFirstComposeBrowserSmokeTests' \
@@ -409,6 +411,8 @@ if [[ "${NETRATEL_LOCAL_FIRST_STATE_RESET_ACCEPTANCE:-false}" == true ]]; then
   NETRATEL_LOCAL_FIRST_SETUP_PROOF="$reset_setup_proof" \
   NETRATEL_LOCAL_FIRST_ADMIN_EMAIL="browser-admin@example.test" \
   NETRATEL_LOCAL_FIRST_ADMIN_PASSWORD="browser smoke local passphrase" \
+  NETRATEL_LOCAL_FIRST_RESTART_API_CONTAINER="$("${compose[@]}" ps -q api)" \
+  NETRATEL_LOCAL_FIRST_RESTART_WEB_CONTAINER="$("${compose[@]}" ps -q web)" \
   NETRATEL_LOCAL_FIRST_INTEGRATION_CREDENTIALS_FILE="$credential_path" \
     dotnet test src/NetRatel/NetRatel.Web.PlaywrightTests/NetRatel.Web.PlaywrightTests.csproj \
       --configuration Release --no-build --filter 'FullyQualifiedName~LocalFirstComposeBrowserSmokeTests' \

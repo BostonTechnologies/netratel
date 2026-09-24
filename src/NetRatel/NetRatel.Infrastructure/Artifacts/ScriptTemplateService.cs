@@ -542,7 +542,7 @@ echo "NetRatel deployment complete."
                 rm -f "${ROOT_DIR}/current"
               fi
             fi
-            """ : string.Empty;
+            """ : ":";
 
         return $$"""
 #!/usr/bin/env bash

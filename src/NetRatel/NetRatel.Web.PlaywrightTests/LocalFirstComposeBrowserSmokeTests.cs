@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Diagnostics;
 using System.Security.Cryptography;
 using Microsoft.Playwright;
 
@@ -69,10 +70,35 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         Assert.Equal(email, await page.GetByTestId("setup-email").InputValueAsync());
         Assert.Equal(password, await page.GetByTestId("setup-password").InputValueAsync());
         Assert.Equal(password, await page.GetByTestId("setup-confirm-password").InputValueAsync());
-        var initialized = page.WaitForURLAsync("**/login", new PageWaitForURLOptions { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 30_000 });
+        var apiContainer = RequireValue("NETRATEL_LOCAL_FIRST_RESTART_API_CONTAINER");
+        var webContainer = RequireValue("NETRATEL_LOCAL_FIRST_RESTART_WEB_CONTAINER");
+        Task restartTask = Task.CompletedTask;
+        const string initializeRoute = "**/api/v2/setup/initialize";
+        await page.RouteAsync(initializeRoute, async route =>
+        {
+            var committed = await route.FetchAsync();
+            Assert.InRange(committed.Status, 200, 299);
+            await RunDockerAsync("stop", apiContainer, webContainer);
+            restartTask = Task.Run(async () =>
+            {
+                try
+                {
+                    await page.GetByText("Waiting for NetRatel to reconnect.", new() { Exact = true })
+                        .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible, Timeout = 20_000 });
+                }
+                finally
+                {
+                    await RunDockerAsync("start", apiContainer, webContainer);
+                }
+            });
+            await route.FulfillAsync(new RouteFulfillOptions { Response = committed });
+        });
+        var initialized = page.WaitForURLAsync("**/login", new PageWaitForURLOptions { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 120_000 });
         await page.GetByTestId("setup-initialize").EvaluateAsync("button => { button.click(); button.click(); }");
         await page.GetByTestId("setup-initializing").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         await initialized;
+        await restartTask;
+        await page.UnrouteAsync(initializeRoute);
         Assert.Equal(1, setupSubmissionCount);
         var initializationErrorLocator = page.Locator("#setup-client-error");
         var initializationError = await initializationErrorLocator.CountAsync() == 0
@@ -176,6 +202,22 @@ public sealed class LocalFirstComposeBrowserSmokeTests
     private static string RequireValue(string name) => Environment.GetEnvironmentVariable(name) is { Length: > 0 } value
         ? value
         : throw new InvalidOperationException($"{name} is required by the local-first Compose browser smoke test.");
+
+    private static async Task RunDockerAsync(string operation, params string[] containerIds)
+    {
+        var start = new ProcessStartInfo("docker")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false
+        };
+        start.ArgumentList.Add(operation);
+        foreach (var containerId in containerIds) start.ArgumentList.Add(containerId);
+        using var process = Process.Start(start) ?? throw new InvalidOperationException("Docker could not be started.");
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        await process.WaitForExitAsync(deadline.Token);
+        Assert.Equal(0, process.ExitCode);
+    }
     private static bool IgnoreSyntheticHttpsErrors => Environment.GetEnvironmentVariable("NETRATEL_LOCAL_FIRST_IGNORE_HTTPS_ERRORS") == "true";
 
     private static async Task CaptureReviewScreenshotAsync(IPage page, string name)

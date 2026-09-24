@@ -255,7 +255,7 @@ public sealed class ClientInstallLinkTests : IAsyncLifetime
             }
         });
         var outcomes = await Task.WhenAll(attempts);
-        Assert.Single(outcomes.Where(x => x));
+        Assert.Single(outcomes, outcome => outcome);
         await using var finalScope = services.CreateAsyncScope();
         var finalDb = finalScope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
         Assert.Equal(1, (await finalDb.EnrollmentCodes.AsNoTracking().SingleAsync()).Uses);

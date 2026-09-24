@@ -198,9 +198,9 @@ public sealed class ScriptTemplateServiceTests
     }
 
     [Fact]
-    public async Task Build_MacOS_InstallsExactPackageWithoutServiceOnNativeRunner()
+    public async Task Build_MacOS_InstallsExactPackageWithoutServiceOnUnixHost()
     {
-        if (!OperatingSystem.IsMacOS()) return;
+        if (OperatingSystem.IsWindows()) return;
 
         var root = Path.Combine(Path.GetTempPath(), $"netratel-macos-installer-{Guid.NewGuid():N}");
         var bin = Path.Combine(root, "bin");
@@ -230,8 +230,9 @@ public sealed class ScriptTemplateServiceTests
             using var process = Process.Start(start)!;
             await process.WaitForExitAsync();
             process.ExitCode.Should().Be(0, await process.StandardError.ReadToEndAsync());
-            File.Exists(Path.Combine(root, "installed", "versions", "0.4.131-rc.1", "NetRatel.Client"))
-                .Should().BeTrue();
+            var installed = Path.Combine(root, "installed", "versions", "0.4.131-rc.1", "NetRatel.Client");
+            File.Exists(installed).Should().BeTrue($"installer output was expected at {installed}; " +
+                $"available files: {string.Join(", ", Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))}");
         }
         finally { Directory.Delete(root, recursive: true); }
     }
