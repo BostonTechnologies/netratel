@@ -9,7 +9,7 @@ dotnet test NetRatel.sln --configuration Release --no-build
 ```
 
 `tools/ci/verify-product-version.sh` checks that all first-party projects
-evaluate to the version in `release/release-manifest.json`. Run the public
+evaluate to the version in `Directory.Build.props`. Run the public
 disclosure checks before preparing an export:
 
 ```sh

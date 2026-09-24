@@ -1,8 +1,6 @@
 {
   "schemaVersion": 1,
   "product": "NetRatel",
-  "version": "0.1.0-rc.6",
-  "prerelease": true,
   "components": [
     { "name": "web", "distribution": "container" },
     { "name": "api", "distribution": "container" },

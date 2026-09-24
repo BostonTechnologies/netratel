@@ -13,7 +13,7 @@ import tarfile
 import tempfile
 import zipfile
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(os.environ.get("NETRATEL_RELEASE_SOURCE_ROOT", Path(__file__).resolve().parents[2])).resolve()
 REPOSITORY = "BostonTechnologies/netratel"
 COMPONENTS = ("api", "web", "migrations", "mcp-http", "client")
 IMAGE_VARIABLES = {name: "NETRATEL_" + name.upper().replace("-", "_") + "_IMAGE" for name in COMPONENTS}
@@ -30,6 +30,10 @@ IMAGE_REPOSITORIES = {
 def release_image_tag(component, version):
     """Return the sole release tag permitted for an approved image repository."""
     return f"{IMAGE_REPOSITORIES[component]}:{version}"
+
+
+def product_version():
+    return run("python3", str(Path(__file__).with_name("product-version.py")))
 
 
 def run(*command, env=None):
@@ -291,6 +295,47 @@ def verified_input_receipt(inputs, receipt_path, version, revision):
     }
 
 
+def create_input_receipt(inputs, output, run_id, version, revision):
+    """Record the exact successful tag run and its downloaded artifact files."""
+    details = json.loads(run("gh", "api", f"repos/{REPOSITORY}/actions/runs/{run_id}"))
+    if (details.get("conclusion"), details.get("head_sha"), details.get("head_branch"),
+            details.get("event"), details.get("path")) != (
+            "success", revision, f"v{version}", "push", ".github/workflows/release-build.yml"):
+        raise ValueError("Selected run is not the successful tagged release build")
+    attempt = details.get("run_attempt")
+    if not isinstance(attempt, int) or attempt < 1:
+        raise ValueError("Selected run has no valid attempt")
+    metadata = json.loads(run("gh", "api", f"repos/{REPOSITORY}/actions/runs/{run_id}/artifacts?per_page=100"))
+    artifacts = {item.get("name"): item for item in metadata.get("artifacts", [])}
+    required = required_artifacts(version)
+    files = {}
+    for name in required:
+        runtime = re.match(rf"netratel-client-{re.escape(version)}-(linux-x64|win-x64|osx-arm64)", name)
+        artifact_name = (f"netratel-client-{version}-{runtime.group(1)}" if runtime else
+                         f"netratel-{version}-linux-x64")
+        artifact = artifacts.get(artifact_name)
+        if not artifact or artifact.get("expired") or not isinstance(artifact.get("id"), int) or \
+                not re.fullmatch(r"sha256:[a-f0-9]{64}", artifact.get("digest", "")):
+            raise ValueError(f"Missing authenticated workflow artifact: {artifact_name}")
+        directory = inputs / artifact_name
+        path = directory / name
+        sums = directory / "SHA256SUMS"
+        if not path.is_file() or not sums.is_file() or path.is_symlink() or sums.is_symlink():
+            raise ValueError(f"Downloaded artifact is missing or unsafe: {name}")
+        matches = [line.split(maxsplit=1)[0] for line in sums.read_text().splitlines()
+                   if len(line.split(maxsplit=1)) == 2 and line.split(maxsplit=1)[1].lstrip("*") == name]
+        digest = sha256(path)
+        if matches != [digest]:
+            raise ValueError(f"Downloaded artifact checksum differs: {name}")
+        files[name] = {"artifact": artifact_name, "artifactId": artifact["id"],
+                       "artifactDigest": artifact["digest"], "path": name, "sha256": digest}
+    receipt = {"repository": REPOSITORY, "workflow": ".github/workflows/release-build.yml",
+               "runId": run_id, "attempt": attempt, "headSha": revision,
+               "productVersion": version, "files": files}
+    validate_input_receipt_identity(receipt, version, revision)
+    atomic_json(output, receipt)
+
+
 def resume_state(path, version, revision, input_receipt):
     state = json.loads(path.read_text()) if path.exists() else {
         "version": version, "revision": revision, "packageNames": dict(PACKAGE_NAMES),
@@ -406,10 +451,10 @@ def validate_candidate_bundle(directory, version, revision, images, input_receip
 
 
 def promote(args):
-    version = json.loads((ROOT / "release/release-manifest.json").read_text())["version"]
+    version = product_version()
     revision = run("git", "rev-parse", "HEAD")
-    if version != "0.1.0-rc.6" or args.approve != f"{version}@{revision}":
-        raise ValueError("Explicit --approve VERSION@PUBLIC_SHA for rc.6 is required")
+    if args.approve != f"{version}@{revision}":
+        raise ValueError("Explicit --approve VERSION@PUBLIC_SHA is required")
     if run("git", "status", "--porcelain"):
         raise ValueError("Promotion requires a clean checkout")
     run("git", "fetch", "origin", "main")
@@ -492,7 +537,7 @@ def promote(args):
 
 def preflight(args):
     """Rehearse authenticated receipt, flat staging, and resume identity without registry writes."""
-    version = json.loads((ROOT / "release/release-manifest.json").read_text())["version"]
+    version = product_version()
     revision = run("git", "rev-parse", "HEAD")
     if version != args.version:
         raise ValueError("Preflight version must match the checked-out release manifest")
@@ -507,6 +552,48 @@ def preflight(args):
     print(f"Non-publishing receipt/staging/resume preflight passed for {version}@{revision}.")
 
 
+def publish_assets(directory, tag):
+    """Attach a verified publication without replacing any existing release asset."""
+    record = json.loads((directory / "publication.json").read_text())
+    version = record["productVersion"]
+    if tag != f"v{version}" or record.get("verification", {}).get("state") != "complete":
+        raise ValueError("Completed publication record does not match the release tag")
+    expected = set(required_artifacts(version))
+    if set(record.get("artifacts", {})) != expected:
+        raise ValueError("Publication record does not bind every required artifact")
+    listed = {}
+    for line in (directory / "SHA256SUMS").read_text().splitlines():
+        digest, name = line.split(maxsplit=1)
+        if name in listed or not re.fullmatch("[a-f0-9]{64}", digest) or Path(name).name != name:
+            raise ValueError("Malformed publication checksum list")
+        listed[name] = digest
+    if set(listed) != expected | {"publication.json"}:
+        raise ValueError("Publication checksum list is incomplete")
+    for name, digest in listed.items():
+        if sha256(directory / name) != digest:
+            raise ValueError(f"Publication artifact changed: {name}")
+        if name in expected and record["artifacts"][name] != digest:
+            raise ValueError(f"Publication record digest differs: {name}")
+    release = json.loads(run("gh", "api", f"repos/{REPOSITORY}/releases/tags/{tag}"))
+    if release.get("draft") or release.get("tag_name") != tag:
+        raise ValueError("Target release must already be published for the approved tag")
+    for name in sorted(listed | {"SHA256SUMS": sha256(directory / "SHA256SUMS")}):
+        release = json.loads(run("gh", "api", f"repos/{REPOSITORY}/releases/tags/{tag}"))
+        existing = {asset["name"]: asset for asset in release.get("assets", [])}
+        digest = sha256(directory / name)
+        if name in existing:
+            if existing[name].get("digest") != f"sha256:{digest}":
+                raise ValueError(f"Published release asset differs: {name}")
+        else:
+            run("gh", "release", "upload", tag, str(directory / name), "--repo", REPOSITORY)
+    release = json.loads(run("gh", "api", f"repos/{REPOSITORY}/releases/tags/{tag}"))
+    assets = {asset["name"]: asset.get("digest") for asset in release.get("assets", [])}
+    for name in listed | {"SHA256SUMS": sha256(directory / "SHA256SUMS")}:
+        if assets.get(name) != f"sha256:{sha256(directory / name)}":
+            raise ValueError(f"Public asset digest does not match publication: {name}")
+    print(f"Published and verified {len(listed) + 1} release assets for {tag}.")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -514,6 +601,10 @@ if __name__ == "__main__":
     staging.add_argument("--inputs", required=True, type=Path)
     staging.add_argument("--output", required=True, type=Path)
     staging.add_argument("--version", required=True)
+    receipt_parser = commands.add_parser("receipt", help="Create a receipt from a successful tagged workflow run")
+    receipt_parser.add_argument("--inputs", required=True, type=Path)
+    receipt_parser.add_argument("--output", required=True, type=Path)
+    receipt_parser.add_argument("--run-id", required=True, type=int)
     preflight_parser = commands.add_parser("preflight", help="Non-publishing authenticated receipt and staging rehearsal")
     preflight_parser.add_argument("--inputs", required=True, type=Path)
     preflight_parser.add_argument("--receipt", required=True, type=Path)
@@ -527,15 +618,23 @@ if __name__ == "__main__":
                            help="Trusted release-workflow receipt; verified against GitHub before writes")
     promotion.add_argument("--output", required=True, type=Path)
     promotion.add_argument("--state", required=True, type=Path)
+    publication = commands.add_parser("publish", help="Upload missing verified assets to a published release")
+    publication.add_argument("--directory", required=True, type=Path)
+    publication.add_argument("--tag", required=True)
     args = parser.parse_args()
-    for field in ("inputs", "output", "state", "receipt"):
+    for field in ("inputs", "output", "state", "receipt", "directory"):
         if hasattr(args, field):
             setattr(args, field, getattr(args, field).resolve())
     try:
         if args.command == "stage":
             stage(args.inputs, args.output, args.version)
+        elif args.command == "receipt":
+            version = product_version()
+            create_input_receipt(args.inputs, args.output, args.run_id, version, run("git", "rev-parse", "HEAD"))
         elif args.command == "preflight":
             preflight(args)
+        elif args.command == "publish":
+            publish_assets(args.directory, args.tag)
         else:
             promote(args)
     except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:

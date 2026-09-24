@@ -1,20 +1,19 @@
 # Release engineering
 
-All first-party components evaluate from the root product version. The current
-candidate prerelease is `0.1.0-rc.6`; the component inventory is
-`release/release-manifest.json`.
+All first-party components evaluate their product version from
+`Directory.Build.props`. Change the version there only. The component inventory
+is `release/release-manifest.json`; CI adds the derived version to the bundled
+copy.
 
-The reviewed release notes for this candidate are
-[`RELEASE_NOTES.md`](RELEASE_NOTES.md). They are used as the GitHub prerelease
-notes only after the matching tagged workflow, provenance checks and promotion
-record complete.
-The [rc.5 notes](RELEASE_NOTES_0.1.0-rc.5.md) remain historical. The rc.6
-candidate is source preparation until the owner merges, tags, promotes, and
-verifies the public downloads.
+Review the GitHub release notes for each candidate before publishing its draft.
+The [rc.5 notes](RELEASE_NOTES_0.1.0-rc.5.md) and
+[rc.6 notes](RELEASE_NOTES_0.1.0-rc.6.md) are historical; neither sets the
+product version. Each candidate is source preparation until the owner merges,
+tags, publishes the release, and verifies the public downloads.
 
 `tools/ci/verify-product-version.sh` checks evaluated project metadata against
-that manifest. Tag-driven CI requires a `v` tag whose normalized value exactly
-matches the committed manifest before it builds review artifacts.
+`Directory.Build.props`. Tag-driven CI requires a `v` tag whose normalized
+value exactly matches that source version before it builds review artifacts.
 
 The release-build workflow is deliberately non-publishing. It creates a Linux
 CLI archive, a local .NET tool package, a Linux stdio MCP archive, an image-only
@@ -62,99 +61,34 @@ digests. It is intentionally a deployment bundle, not a source-build recipe.
 
 ## Owner-operated promotion
 
-PR and release rehearsal workflows never call the promotion command. After
-review and explicit publication approval, use a clean checkout of the merged
-public commit and an owner-created `v0.1.0-rc.6` tag pointing to that commit.
-Download the successful release-workflow artifact sets into a sibling release
-workspace (not the clean source checkout), retaining each set's `SHA256SUMS`.
-Create `release-receipt.json` beside them with the repository, workflow path,
-successful run ID and attempt, approved commit/version, and—for every required
-file—the GitHub artifact name, immutable artifact ID, GitHub ZIP digest,
-explicit artifact-relative path, and file SHA-256. Promotion re-reads the run
-metadata and downloads each identified artifact through authenticated GitHub CLI access before
-any image build or push; a locally recomputed checksum alone is not provenance.
+Edit `Directory.Build.props` to set the product version, merge the reviewed
+source, and create the matching `v<version>` tag. Wait for the tag-triggered
+`Release build` workflow to pass. It builds and tests the deliverables but does
+not publish them.
 
-Prepare and verify the flat downloadable layout without publishing:
+Publishing the GitHub release starts `Publish release` on GitHub-hosted Actions.
+For a release that was already published before this workflow existed, dispatch
+it manually with the existing tag:
 
 ```sh
-mkdir -p ../netratel-release-work/review-inputs
-python3 tools/ci/promote-release.py stage \
-  --inputs ../netratel-release-work/review-inputs \
-  --output ../netratel-release-work/staged-release --version 0.1.0-rc.6
-(cd ../netratel-release-work/staged-release && sha256sum -c SHA256SUMS)
+gh workflow run release-publish.yml --ref main \
+  -f tag="v$(python3 tools/ci/product-version.py)"
 ```
 
-Before owner-approved image publication, run the authenticated, non-publishing
-receipt/staging/resume rehearsal against that exact run's downloads and receipt:
-
-```sh
-python3 tools/ci/promote-release.py preflight \
-  --inputs ../netratel-release-work/review-inputs \
-  --receipt ../netratel-release-work/release-receipt.json \
-  --output ../netratel-release-work/preflight-staged \
-  --state ../netratel-release-work/preflight-state.json \
-  --version 0.1.0-rc.6
-```
-
-The only allowed container package repositories are `netratel-api`,
-`netratel-web`, `netratel-migrations`, `netratel-mcp-http`, and
-`netratel-client`. A release candidate is identified only by its immutable
-image tag (for example `0.1.0-rc.6`) and digest; never create an RC-specific
-package name or CI/test name. Before promotion, an authorized operator must
-list the organization's container packages using a GitHub credential with
-`read:packages`. The promotion command repeats this check and fails closed
-unless each approved package is public and linked to this repository. It never
-changes package visibility.
-
-With registry login, invoke:
-
-```sh
-python3 tools/ci/promote-release.py promote \
-  --approve "0.1.0-rc.6@$(git rev-parse HEAD)" \
-  --inputs ../netratel-release-work/review-inputs \
-  --receipt ../netratel-release-work/release-receipt.json \
-  --output ../netratel-release-work/promoted-release \
-  --state ../netratel-release-work/promotion-state.json
-```
-
-This command **pushes images**. Do not run it as a rehearsal. It uses the exact
-approved product-version tag (for example `0.1.0-rc.6`) in each fixed package
-repository and never writes `latest` or stable aliases. Its journal
-allows a partial push to resume without rebuilding completed components. Its
-journal records the verified source receipt and exact input file digests, so a
-retry rejects substitutions even if a new `SHA256SUMS` was generated. The
-modified Compose archive is a derived bundle: its source build digest and final
-digest are both recorded separately in the candidate and final publication
-records. A candidate record is not a completed publication; it becomes
-`publication.json` only after both required image smokes pass.
-A pre-existing tag without a corresponding journal is an error requiring
-explicit digest recovery, not permission to overwrite. Preserve the journal.
-The approved packages are already public; a visibility mismatch is a genuine
-external gate, not permission to create a substitute package.
-
-The command pulls every exact digest using an empty Docker credential directory,
-checks the public source/version labels, then runs the OIDC/enrollment and
-HTTP MCP smokes against those digest references. It finalizes the extracted
-bundle from the returned image digests and records the commit, version, asset
-basenames and hashes in `publication.json`. A failed smoke is not publication
-approval. After the command succeeds, inspect `publication.json`, verify
-`SHA256SUMS` again, and create the prerelease only with explicit owner approval:
-
-```sh
-gh release create v0.1.0-rc.6 promoted-release/* --verify-tag --prerelease \
-  --title "NetRatel 0.1.0-rc.6" --notes-file approved-release-notes.md
-```
-
-After publication, download the public release assets into a new empty
-directory, verify its downloaded `SHA256SUMS` against every downloaded asset,
-verify the published attestations and image digests, and record that evidence
-against the accepted merged SHA. Do not mark release issues complete from the
-candidate source version or a successful private staging directory alone.
+The workflow derives the version and commit from the tagged source, finds its
+successful release build, downloads the matching artifacts, and authenticates
+their checksums and GitHub artifact identities before any registry write. Each
+of the five fixed public packages is built, scanned, and pushed by a separate
+GitHub runner. The final job verifies anonymous digest pulls, runs the OIDC
+Compose and HTTP MCP smokes, creates the digest-pinned Compose bundle, and
+uploads the full asset set with checksums and a publication record. Existing
+assets are reused only when their digests match; image tags are never
+silently overwritten. The Actions run is the progress and failure record.
 
 The CLI tool is distributed as the downloadable NuGet package; this path does
-not push to NuGet.org. Do not replace rc.1 assets or change its tag. Public
-registry access and owner deployment acceptance are separate from successful
-source checks and non-publishing rehearsal.
+not push to NuGet.org. Do not move an earlier release tag or replace its assets.
+Keep the release issue open until the public downloads and registry digests are
+verified.
 
 ## Release rehearsal validation
 

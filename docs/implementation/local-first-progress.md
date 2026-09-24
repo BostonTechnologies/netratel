@@ -44,8 +44,8 @@ asset replacement, package-visibility mutation, and repository-rule bypass.
 
 ### Runtime and persistence
 
-- .NET SDK is pinned to `10.0.401`; root product version is `0.1.0-rc.5` in
-  `Directory.Build.props` and `release/release-manifest.json`.
+- .NET SDK is pinned to `10.0.401`; the root product version is controlled by
+  `Directory.Build.props` and written into the distributed manifest by CI.
 - `AddNetRatelInfrastructure` currently requires
   `ConnectionStrings:NetRatelDb` or `Default` and unconditionally calls
   `UseNpgsql`. `OrchestratorDbContext` owns the current EF model/migrations;

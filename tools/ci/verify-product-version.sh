@@ -2,7 +2,6 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-manifest="$root/release/release-manifest.json"
 
 for required_tool in python3 dotnet jq find sort; do
   command -v "$required_tool" >/dev/null 2>&1 || {
@@ -11,8 +10,8 @@ for required_tool in python3 dotnet jq find sort; do
   }
 done
 
-version="$(jq -er '.version | strings | select(length > 0)' "$manifest")" || {
-  echo "Release manifest does not declare a usable product version." >&2
+version="$(python3 "$root/tools/ci/product-version.py")" || {
+  echo "Directory.Build.props does not declare a usable product version." >&2
   exit 1
 }
 

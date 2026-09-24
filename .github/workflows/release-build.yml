@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       expected_version:
-        description: Version declared in release/release-manifest.json
+        description: Version declared in Directory.Build.props
         required: true
 
 permissions:
@@ -37,7 +37,7 @@ jobs:
           global-json-file: global.json
       - id: version
         run: |
-          version="$(jq -r '.version' release/release-manifest.json)"
+          version="$(python3 tools/ci/product-version.py)"
           [[ "$version" != null && -n "$version" ]]
           if [[ "${GITHUB_REF_TYPE}" == tag ]]; then
             [[ "${GITHUB_REF_NAME#v}" == "$version" ]]
@@ -97,7 +97,8 @@ jobs:
           cp "artifacts/cli/NetRatel.Cli.${VERSION}.nupkg" artifacts/
           tar -C artifacts/cli -czf "artifacts/netratel-cli-${VERSION}-linux-x64.tar.gz" netratel-cli-linux-x64
           tar -C artifacts/mcp-stdio -czf "artifacts/netratel-mcp-stdio-${VERSION}-linux-x64.tar.gz" netratel-mcp-linux-x64
-          cp release/compose.images.yaml release/compose.external-postgres.yaml release/compose.public-https.yaml release/nginx.public-https.conf release/compose.mcp-http.yaml release/.env.images.example release/release-manifest.json release/INSTALL.md LICENSE NOTICE artifacts/release-bundle/
+          cp release/compose.images.yaml release/compose.external-postgres.yaml release/compose.public-https.yaml release/nginx.public-https.conf release/compose.mcp-http.yaml release/.env.images.example release/INSTALL.md LICENSE NOTICE artifacts/release-bundle/
+          python3 tools/ci/product-version.py --manifest-output artifacts/release-bundle/release-manifest.json
           cp -a docs artifacts/release-bundle/
           cp README.md artifacts/release-bundle/
           tar -C artifacts/release-bundle -czf "artifacts/netratel-compose-${VERSION}.tar.gz" .
@@ -382,11 +383,7 @@ jobs:
             tools/ci/scan-public-image.sh --image "$image" --version "$VERSION" --revision "$GITHUB_SHA"
           done
       - env:
-          NETRATEL_UPGRADE_PRIOR_VERSION: v0.1.0-rc.5
-          NETRATEL_UPGRADE_PRIOR_API_IMAGE: ghcr.io/bostontechnologies/netratel-api@sha256:45ac6bc1e547ab3651e0a3e1dc7fb88a707126160b2d819450e29464f393ce9a
-          NETRATEL_UPGRADE_PRIOR_MIGRATIONS_IMAGE: ghcr.io/bostontechnologies/netratel-migrations@sha256:42b968a7f660d79255ddb51d0a6f9af14c86be1070e943afec8d3f17c42290f9
-          NETRATEL_UPGRADE_PRIOR_WEB_IMAGE: ghcr.io/bostontechnologies/netratel-web@sha256:ead47327e06e8ed698f673a0ae3176b82297709d025eae193b8121323f0b2cb7
-          NETRATEL_UPGRADE_PRIOR_CLIENT_IMAGE: ghcr.io/bostontechnologies/netratel-client@sha256:f5028da664f6edb2f4ef582c219393f070f4eb79b0faabe1971c1709c2717e91
+          GH_TOKEN: ${{ github.token }}
           NETRATEL_UPGRADE_CURRENT_API_IMAGE: netratel-api:postgresql-upgrade
           NETRATEL_UPGRADE_CURRENT_MIGRATIONS_IMAGE: netratel-migrations:postgresql-upgrade
           NETRATEL_UPGRADE_CURRENT_WEB_IMAGE: netratel-web:postgresql-upgrade
