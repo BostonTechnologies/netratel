@@ -177,9 +177,10 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             requireInput: false);
 
         await VerifyDeploymentBrandingAsync(page, webUrl);
-        await VerifyDeploymentLinkJourneyAsync(browser, page, webUrl);
         if (Environment.GetEnvironmentVariable("NETRATEL_LOCAL_FIRST_NATIVE_INSTALL") == "true")
             await VerifyPublishedClientInstallAsync(browser, page, webUrl);
+        else
+            await VerifyDeploymentLinkJourneyAsync(browser, page, webUrl);
         await page.SetViewportSizeAsync(1440, 1100);
         await CaptureReviewScreenshotAsync(page, "drawer-desktop");
         await page.SetViewportSizeAsync(390, 844);

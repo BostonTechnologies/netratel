@@ -247,6 +247,7 @@ verify_native_legacy_client_after_upgrade() {
   docker cp "${native_image_container}:/app/." "$native_directory/app/"
   docker rm "$native_image_container" >/dev/null
   native_image_container=""
+  sudo chown -R netratel:netratel "$native_directory/app"
   docker run --rm --volume "${client_volume}:/source:ro" \
     --volume "${native_directory}/state:/target" alpine:3.22 \
     sh -ceu 'cp -a /source/. /target/'
@@ -261,7 +262,9 @@ verify_native_legacy_client_after_upgrade() {
   sudo cp "$identity_path" /var/lib/netratel/.netratel-credential-machine-id
   sudo chown -R netratel:netratel /var/lib/netratel
   machine_identity="$(sudo cat "$identity_path")"
-  if sudo -u netratel env "NetRatel_CREDENTIAL_MACHINE_ID=${machine_identity}" \
+  if sudo -u netratel env HOME=/var/lib/netratel \
+      NETRATEL_POWERSHELL_HOME=/var/lib/netratel/powershell \
+      "NetRatel_CREDENTIAL_MACHINE_ID=${machine_identity}" \
       "$native_directory/app/NetRatel.Client" --api "$api_url" --auth-check \
       >"$native_directory/native-auth-check.log" 2>&1; then
     native_status=0
@@ -270,6 +273,22 @@ verify_native_legacy_client_after_upgrade() {
   fi
   if (( native_status != 0 )); then
     echo "Published ${legacy_version} native Client could not authenticate with its existing identity after the candidate API upgrade." >&2
+    python3 - "$native_directory/native-auth-check.log" "$native_status" <<'PY' >&2
+import pathlib, sys
+diagnostics = pathlib.Path(sys.argv[1]).read_text(errors="replace")
+for label, pattern in (
+    ("filesystem permission", "UnauthorizedAccessException"),
+    ("missing runtime dependency", "Failed to create CoreCLR"),
+    ("network or TLS", "HttpRequestException"),
+    ("credential protection", "CryptographicException"),
+    ("native dependency", "cannot open shared object file"),
+):
+    if pattern in diagnostics:
+        print(f"Native authentication diagnostic category: {label}.")
+        break
+else:
+    print(f"Native authentication diagnostic category: other; process exit {sys.argv[2]}.")
+PY
     return 1
   fi
 }

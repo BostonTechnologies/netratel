@@ -67,7 +67,7 @@ does not issue another enrollment code. For Linux or macOS, use the command
 shown for that runtime, for example:
 
 ```sh
-curl -fsSL 'https://netratel.example/clients/install/replace-with-issued-token.sh' | bash
+bash -o pipefail -c "curl -fsSL 'https://netratel.example/clients/install/replace-with-issued-token.sh' | bash"
 ```
 
 For Windows, use the generated PowerShell command:
