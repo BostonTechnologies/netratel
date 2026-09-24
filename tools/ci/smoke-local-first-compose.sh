@@ -234,6 +234,19 @@ if [[ -n "$mcp_http_image" ]]; then
   done
   "${compose[@]}" exec -T mcp-http curl --connect-timeout 2 --fail --silent "${mcp_headers[@]}" "$mcp_url/health/live" >/dev/null
 
+  stage="waiting for the paired local HTTP MCP API gateway after restart"
+  for _ in $(seq 1 90); do
+    if "${compose[@]}" exec -T mcp-http curl --cacert /run/netratel-smoke/api-ca.crt \
+      --connect-timeout 2 --max-time 5 --fail --silent \
+      https://gateway:9443/api/v2/setup/status | jq -e '.isReady == true' >/dev/null 2>&1; then
+      break
+    fi
+    sleep 1
+  done
+  "${compose[@]}" exec -T mcp-http curl --cacert /run/netratel-smoke/api-ca.crt \
+    --connect-timeout 2 --max-time 5 --fail --silent \
+    https://gateway:9443/api/v2/setup/status | jq -e '.isReady == true' >/dev/null
+
   mcp_response_json() {
     local response="$1" sse_payload
     sse_payload="$(sed -n 's/^data: //p' <<<"$response")"
