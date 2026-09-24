@@ -376,7 +376,8 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await page.GetByText("This link has been revoked.", new() { Exact = false }).WaitForAsync();
         Assert.Equal(404, (await anonymous.APIRequest.GetAsync(routedUrl)).Status);
         Assert.Equal(1, downloads);
-        await page.GetByRole(AriaRole.Button, new() { Name = "Close", Exact = true }).ClickAsync();
+        await page.GetByLabel("Generate deployment script")
+            .GetByRole(AriaRole.Button, new() { Name = "Close", Exact = true }).ClickAsync();
     }
 
     private static readonly FirstPaintCase[] FirstPaintCases =
