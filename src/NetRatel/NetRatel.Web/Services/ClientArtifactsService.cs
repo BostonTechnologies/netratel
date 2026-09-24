@@ -15,6 +15,16 @@ namespace NetRatel.Web.Services;
 public interface IClientArtifactsService
 {
     Task<GitHubClientReleasePageModel> GetGitHubReleasesAsync(string channel, int page, bool refresh, CancellationToken ct = default);
+    Task<List<ClientReleaseImportModel>> GetReleaseImportsAsync(CancellationToken ct = default) =>
+        Task.FromResult(new List<ClientReleaseImportModel>());
+    Task<ClientReleaseImportModel> QueueReleaseImportAsync(long releaseId, CancellationToken ct = default) =>
+        throw new NotSupportedException();
+    Task CancelReleaseImportAsync(Guid id, CancellationToken ct = default) =>
+        throw new NotSupportedException();
+    Task RetryReleaseImportAsync(Guid id, CancellationToken ct = default) =>
+        throw new NotSupportedException();
+    Task PublishReleaseImportAsync(Guid id, bool confirmPrerelease, CancellationToken ct = default) =>
+        throw new NotSupportedException();
     Task<List<ClientArtifactSummaryModel>> ListAsync(string? rid, CancellationToken ct = default);
     Task<ClientArtifactPageModel> GetArtifactsAsync(
         int page,
@@ -95,6 +105,37 @@ public class ClientArtifactsService : IClientArtifactsService
         var uri = $"/api/v1/client-artifacts/github-releases?channel={Uri.EscapeDataString(channel)}&page={page}&refresh={refresh.ToString().ToLowerInvariant()}";
         return await _uploads.Http.GetFromJsonAsync<GitHubClientReleasePageModel>(uri, ct)
             ?? throw new HttpRequestException("The GitHub releases response was empty.");
+    }
+
+    public async Task<List<ClientReleaseImportModel>> GetReleaseImportsAsync(CancellationToken ct = default) =>
+        await _uploads.Http.GetFromJsonAsync<List<ClientReleaseImportModel>>("/api/v1/client-artifacts/imports", ct) ?? [];
+
+    public async Task<ClientReleaseImportModel> QueueReleaseImportAsync(long releaseId, CancellationToken ct = default)
+    {
+        using var response = await _uploads.Http.PostAsync($"/api/v1/client-artifacts/github-releases/{releaseId}/imports", null, ct);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<ClientReleaseImportModel>(cancellationToken: ct)
+            ?? throw new HttpRequestException("The import response was empty.");
+    }
+
+    public async Task CancelReleaseImportAsync(Guid id, CancellationToken ct = default)
+    {
+        using var response = await _uploads.Http.PostAsync($"/api/v1/client-artifacts/imports/{id}/cancel", null, ct);
+        response.EnsureSuccessStatusCode();
+    }
+
+    public async Task RetryReleaseImportAsync(Guid id, CancellationToken ct = default)
+    {
+        using var response = await _uploads.Http.PostAsync($"/api/v1/client-artifacts/imports/{id}/retry", null, ct);
+        response.EnsureSuccessStatusCode();
+    }
+
+    public async Task PublishReleaseImportAsync(Guid id, bool confirmPrerelease, CancellationToken ct = default)
+    {
+        using var response = await _uploads.Http.PostAsJsonAsync(
+            $"/api/v1/client-artifacts/imports/{id}/publish",
+            new { ConfirmPrerelease = confirmPrerelease }, ct);
+        response.EnsureSuccessStatusCode();
     }
 
 
@@ -706,4 +747,32 @@ public sealed class GitHubClientAssetModel
     public string RuntimeId { get; set; } = string.Empty;
     public long SizeBytes { get; set; }
     public string? Sha256Digest { get; set; }
+}
+
+public sealed class ClientReleaseImportModel
+{
+    public Guid Id { get; set; }
+    public long GitHubReleaseId { get; set; }
+    public string Tag { get; set; } = string.Empty;
+    public string Version { get; set; } = string.Empty;
+    public int State { get; set; }
+    public long? TotalBytes { get; set; }
+    public long DownloadedBytes { get; set; }
+    public string? Error { get; set; }
+    public DateTimeOffset CreatedAtUtc { get; set; }
+    public DateTimeOffset UpdatedAtUtc { get; set; }
+    public DateTimeOffset? PublishedAtUtc { get; set; }
+    public List<ClientReleaseImportAssetModel> Assets { get; set; } = [];
+}
+
+public sealed class ClientReleaseImportAssetModel
+{
+    public string RuntimeId { get; set; } = string.Empty;
+    public string SourceName { get; set; } = string.Empty;
+    public int State { get; set; }
+    public long SourceSizeBytes { get; set; }
+    public long DownloadedBytes { get; set; }
+    public string? SourceSha256 { get; set; }
+    public string? LocalSha256 { get; set; }
+    public string? Error { get; set; }
 }

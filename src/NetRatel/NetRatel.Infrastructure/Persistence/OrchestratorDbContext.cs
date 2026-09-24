@@ -70,6 +70,8 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
     public DbSet<ClientUpdateAttemptRecord> ClientUpdateAttempts => Set<ClientUpdateAttemptRecord>();
     public DbSet<AgentClientUpdateStateRecord> AgentClientUpdateStates => Set<AgentClientUpdateStateRecord>();
     public DbSet<ClientUpdateCatalogRevision> ClientUpdateCatalogRevisions => Set<ClientUpdateCatalogRevision>();
+    public DbSet<ClientReleaseImportOperation> ClientReleaseImportOperations => Set<ClientReleaseImportOperation>();
+    public DbSet<ClientReleaseImportAsset> ClientReleaseImportAssets => Set<ClientReleaseImportAsset>();
 
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
@@ -927,6 +929,42 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
             entity.ToTable("ClientUpdateCatalogRevision");
             entity.HasKey(x => x.Id);
             entity.Property(x => x.Id).ValueGeneratedNever();
+        });
+
+        modelBuilder.Entity<ClientReleaseImportOperation>(entity =>
+        {
+            entity.ToTable("ClientReleaseImportOperations");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Id).ValueGeneratedNever();
+            entity.Property(x => x.SourceRepository).HasMaxLength(128).IsRequired();
+            entity.Property(x => x.Tag).HasMaxLength(128).IsRequired();
+            entity.Property(x => x.Version).HasMaxLength(64).IsRequired();
+            entity.Property(x => x.BuildCommit).HasMaxLength(40);
+            entity.Property(x => x.PublicationSha256).HasMaxLength(64);
+            entity.Property(x => x.RequestedBy).HasMaxLength(256).IsRequired();
+            entity.Property(x => x.PublishedBy).HasMaxLength(256);
+            entity.Property(x => x.State).HasConversion<short>();
+            entity.Property(x => x.Error).HasMaxLength(2048);
+            entity.HasIndex(x => x.GitHubReleaseId).IsUnique();
+            entity.HasIndex(x => new { x.State, x.LeaseUntilUtc, x.CreatedAtUtc });
+            entity.HasIndex(x => x.Version);
+        });
+
+        modelBuilder.Entity<ClientReleaseImportAsset>(entity =>
+        {
+            entity.ToTable("ClientReleaseImportAssets");
+            entity.HasKey(x => new { x.OperationId, x.RuntimeId });
+            entity.Property(x => x.RuntimeId).HasMaxLength(32).IsRequired();
+            entity.Property(x => x.SourceName).HasMaxLength(256).IsRequired();
+            entity.Property(x => x.SourceSha256).HasMaxLength(64).IsRequired();
+            entity.Property(x => x.LocalSha256).HasMaxLength(64);
+            entity.Property(x => x.ConversionContract).HasMaxLength(128);
+            entity.Property(x => x.State).HasConversion<short>();
+            entity.Property(x => x.Error).HasMaxLength(2048);
+            entity.HasOne(x => x.Operation)
+                .WithMany(x => x.Assets)
+                .HasForeignKey(x => x.OperationId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<SecretRecord>(entity =>

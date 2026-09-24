@@ -33,6 +33,37 @@ namespace NetRatel.Tests.API;
 public sealed class ClientDownloadEndpointTests
 {
     [Fact]
+    public async Task ImportedArtifactIsHiddenUntilTheWholePackCompletes()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "netratel-tests", Guid.NewGuid().ToString("N"));
+        var storageRoot = Path.Combine(root, "store");
+        Directory.CreateDirectory(root);
+        try
+        {
+            using var app = await BuildAppAsync(storageRoot);
+            await using var scope = app.Services.CreateAsyncScope();
+            var service = scope.ServiceProvider.GetRequiredService<IClientArtifactsService>();
+            var operationId = Guid.NewGuid();
+            var provenance = new ClientArtifactImportProvenance(operationId,
+                "BostonTechnologies/netratel", "v0.4.6", 123, "client.zip", new string('a', 64),
+                new string('b', 40), ClientReleaseArchiveAdapter.Contract);
+            await service.ImportVerifiedAsync(new CallbackFormFile(BuildBaseZip()), "win-x64", "0.4.6",
+                provenance, "test", CancellationToken.None);
+
+            (await service.GetMetadataAsync("win-x64", "0.4.6", CancellationToken.None)).Should().BeNull();
+            (await service.ListAsync(null, 0, 20, CancellationToken.None)).Items.Should().BeEmpty();
+            await FluentActions.Invoking(() => service.DownloadRawAsync("win-x64", "0.4.6", CancellationToken.None))
+                .Should().ThrowAsync<FileNotFoundException>();
+
+            await service.CompleteImportVisibilityAsync(operationId, CancellationToken.None);
+            (await service.GetMetadataAsync("win-x64", "0.4.6", CancellationToken.None)).Should().NotBeNull();
+            await FluentActions.Invoking(() => service.DeleteAsync("win-x64", "0.4.6", CancellationToken.None))
+                .Should().ThrowAsync<ClientArtifactConflictException>();
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
     public async Task ConcurrentUploadConflictDoesNotDeleteTheWinningArtifact()
     {
         var root = Path.Combine(Path.GetTempPath(), "netratel-tests", Guid.NewGuid().ToString("N"));

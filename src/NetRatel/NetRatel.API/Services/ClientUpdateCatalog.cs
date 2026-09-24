@@ -64,6 +64,8 @@ public sealed class ClientUpdateCatalog(IServiceScopeFactory scopes, TimeProvide
             candidate = state.ReleaseByRuntimeAndVersion.Values.SingleOrDefault(x =>
                 string.Equals(x.RuntimeId, runtimeId, StringComparison.OrdinalIgnoreCase) &&
                 string.Equals(x.Version.ToNormalizedString(), tenantPolicy.TargetVersion, StringComparison.OrdinalIgnoreCase));
+        if (!allowPrerelease && candidate?.Version.IsPrerelease == true)
+            candidate = null;
         if (candidate is not null &&
             (candidate.Version <= current || agentState?.SuppressedReleaseId == candidate.PublicId))
             candidate = null;

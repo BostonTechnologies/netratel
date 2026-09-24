@@ -31,12 +31,27 @@ public interface IClientArtifactsService
     Task<ClientArtifactSummaryDto?> GetLatestAsync(string rid, CancellationToken ct);
     Task<ClientArtifactSummaryDto?> GetMetadataAsync(string rid, string version, CancellationToken ct);
     Task<ClientArtifactUploadResultDto> UploadAsync(IFormFile file, string rid, string version, string? notes, string? uploadedBy, CancellationToken ct);
+    Task<ClientArtifactUploadResultDto> ImportVerifiedAsync(IFormFile file, string rid, string version,
+        ClientArtifactImportProvenance provenance, string? importedBy, CancellationToken ct) =>
+        throw new NotSupportedException();
+    Task CompleteImportVisibilityAsync(Guid operationId, CancellationToken ct) =>
+        throw new NotSupportedException();
     Task<ClientArtifactDownloadResult> DownloadAsync(string rid, string versionOrLatest, bool allowFallback, CancellationToken ct);
     Task<ClientArtifactDownloadResult> DownloadRawAsync(string rid, string versionOrLatest, CancellationToken ct);
     Task<ClientArtifactDownloadResult> DownloadForClientAsync(ClientDownloadRequest request, CancellationToken ct);
     Task DeleteAsync(string rid, string version, CancellationToken ct);
     Task<ClientArtifactDownloadResult> RunFallbackScanAsync(string rid, string? version, CancellationToken ct);
 }
+
+public sealed record ClientArtifactImportProvenance(
+    Guid OperationId,
+    string Repository,
+    string Tag,
+    long AssetId,
+    string AssetName,
+    string SourceSha256,
+    string BuildCommit,
+    string AdapterContract);
 
 public sealed record ClientArtifactDownloadResult(
     Stream Content,
@@ -191,7 +206,37 @@ public sealed class ClientArtifactsService : IClientArtifactsService
         return metadata?.ToSummary();
     }
 
-    public async Task<ClientArtifactUploadResultDto> UploadAsync(IFormFile file, string rid, string version, string? notes, string? uploadedBy, CancellationToken ct)
+    public Task<ClientArtifactUploadResultDto> UploadAsync(IFormFile file, string rid, string version, string? notes, string? uploadedBy, CancellationToken ct) =>
+        StoreAsync(file, rid, version, notes, uploadedBy, null, ct);
+
+    public Task<ClientArtifactUploadResultDto> ImportVerifiedAsync(IFormFile file, string rid, string version,
+        ClientArtifactImportProvenance provenance, string? importedBy, CancellationToken ct) =>
+        StoreAsync(file, rid, version, $"Imported from GitHub release {provenance.Tag}", importedBy, provenance, ct);
+
+    public async Task CompleteImportVisibilityAsync(Guid operationId, CancellationToken ct)
+    {
+        var marker = ImportMarkerPath(operationId);
+        if (File.Exists(marker)) return;
+        var directory = Path.GetDirectoryName(marker)!;
+        Directory.CreateDirectory(directory);
+        var temporary = Path.Combine(directory, $".{operationId:N}-{Guid.NewGuid():N}.tmp");
+        try
+        {
+            await File.WriteAllTextAsync(temporary, "netratel.client.import-complete.v1\n", ct).ConfigureAwait(false);
+            try { File.Move(temporary, marker); }
+            catch (IOException) when (File.Exists(marker))
+            {
+                _logger.LogDebug("Import visibility marker for operation {OperationId} already exists.", operationId);
+            }
+        }
+        finally
+        {
+            if (File.Exists(temporary)) File.Delete(temporary);
+        }
+    }
+
+    private async Task<ClientArtifactUploadResultDto> StoreAsync(IFormFile file, string rid, string version,
+        string? notes, string? uploadedBy, ClientArtifactImportProvenance? provenance, CancellationToken ct)
     {
         if (file is null or { Length: <= 0 })
         {
@@ -242,6 +287,11 @@ public sealed class ClientArtifactsService : IClientArtifactsService
                 var existing = await ReadMetadataFileAsync(metadataPath, ct);
                 if (!string.Equals(existing.Sha256, sha256, StringComparison.OrdinalIgnoreCase) || existing.Size != size)
                     throw new ClientArtifactConflictException(normalizedRid, normalizedVersion);
+                if (provenance is not null &&
+                    (existing.ImportOperationId != provenance.OperationId ||
+                     !string.Equals(existing.SourceSha256, provenance.SourceSha256, StringComparison.OrdinalIgnoreCase)) ||
+                    provenance is null && existing.ImportOperationId.HasValue && !IsVisible(existing))
+                    throw new ClientArtifactConflictException(normalizedRid, normalizedVersion);
                 return new ClientArtifactUploadResultDto { Artifact = existing.ToSummary(), Created = false };
             }
 
@@ -272,7 +322,15 @@ public sealed class ClientArtifactsService : IClientArtifactsService
                 UploadedAt = DateTimeOffset.UtcNow,
                 UploadedBy = string.IsNullOrWhiteSpace(uploadedBy) ? null : uploadedBy,
                 Notes = string.IsNullOrWhiteSpace(notes) ? null : notes,
-                ContentType = contentType
+                ContentType = contentType,
+                ImportOperationId = provenance?.OperationId,
+                SourceRepository = provenance?.Repository,
+                SourceTag = provenance?.Tag,
+                SourceAssetId = provenance?.AssetId,
+                SourceAssetName = provenance?.AssetName,
+                SourceSha256 = provenance?.SourceSha256,
+                SourceCommit = provenance?.BuildCommit,
+                ImportAdapterContract = provenance?.AdapterContract
             };
 
             var metadataTemporary = Path.Combine(tempPath, "metadata.json");
@@ -508,6 +566,8 @@ public sealed class ClientArtifactsService : IClientArtifactsService
         }
 
         var metadata = await ReadMetadataFileAsync(metadataPath, ct);
+        if (metadata.ImportOperationId.HasValue)
+            throw new ClientArtifactConflictException(normalizedRid, normalizedVersion);
         var artifactPath = Path.Combine(versionDir, metadata.FileName);
 
         if (File.Exists(artifactPath))
@@ -648,6 +708,7 @@ public sealed class ClientArtifactsService : IClientArtifactsService
             }
 
             var metadata = await ReadMetadataFileAsync(metadataPath, ct);
+            if (!IsVisible(metadata)) continue;
             destination.Add(metadata.ToSummary());
         }
     }
@@ -689,8 +750,15 @@ public sealed class ClientArtifactsService : IClientArtifactsService
             return null;
         }
 
-        return await ReadMetadataFileAsync(metadataPath, ct);
+        var metadata = await ReadMetadataFileAsync(metadataPath, ct);
+        return IsVisible(metadata) ? metadata : null;
     }
+
+    private bool IsVisible(ClientArtifactMetadata metadata) =>
+        !metadata.ImportOperationId.HasValue || File.Exists(ImportMarkerPath(metadata.ImportOperationId.Value));
+
+    private string ImportMarkerPath(Guid operationId) =>
+        Path.Combine(EnsureStorageRoot(), ".imports", $"{operationId:N}.complete");
 
     private async Task<ClientArtifactMetadata> ReadMetadataFileAsync(string metadataPath, CancellationToken ct)
     {
@@ -1035,6 +1103,14 @@ public sealed class ClientArtifactsService : IClientArtifactsService
         public string? UploadedBy { get; set; }
         public string? Notes { get; set; }
         public string? ContentType { get; set; }
+        public Guid? ImportOperationId { get; set; }
+        public string? SourceRepository { get; set; }
+        public string? SourceTag { get; set; }
+        public long? SourceAssetId { get; set; }
+        public string? SourceAssetName { get; set; }
+        public string? SourceSha256 { get; set; }
+        public string? SourceCommit { get; set; }
+        public string? ImportAdapterContract { get; set; }
 
         public ClientArtifactSummaryDto ToSummary() => new()
         {

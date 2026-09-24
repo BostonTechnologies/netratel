@@ -7,6 +7,7 @@ using NuGet.Versioning;
 namespace NetRatel.API.Services;
 
 public sealed record GitHubClientAsset(long Id, string Name, string RuntimeId, long SizeBytes, string? Sha256Digest);
+public sealed record GitHubReleaseEvidenceAsset(long Id, string Name, long SizeBytes, string? Sha256Digest);
 
 public sealed record GitHubClientRelease(
     long Id,
@@ -18,7 +19,11 @@ public sealed record GitHubClientRelease(
     string DetailsUrl,
     IReadOnlyList<GitHubClientAsset> ClientAssets,
     long TotalClientBytes,
-    string PublicationState);
+    string PublicationState)
+{
+    public GitHubReleaseEvidenceAsset? PublicationAsset { get; init; }
+    public GitHubReleaseEvidenceAsset? ChecksumsAsset { get; init; }
+}
 
 public sealed record GitHubClientReleasePage(
     IReadOnlyList<GitHubClientRelease> Items,
@@ -32,6 +37,7 @@ public interface IGitHubClientReleaseCatalog
 {
     Task<GitHubClientReleasePage> ListAsync(string channel, int page, bool refresh, CancellationToken cancellationToken);
     Task<GitHubClientRelease?> FindAsync(long releaseId, CancellationToken cancellationToken);
+    Task<string> ResolveTagCommitAsync(string tag, CancellationToken cancellationToken);
 }
 
 /// <summary>
@@ -122,6 +128,30 @@ public sealed class GitHubClientReleaseCatalog(
         {
             _gate.Release();
         }
+    }
+
+    public async Task<string> ResolveTagCommitAsync(string tag, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(tag) || tag.Length > 128 ||
+            !char.IsLetterOrDigit(tag[0]) ||
+            !tag.All(c => char.IsLetterOrDigit(c) || c is '.' or '_' or '-'))
+            throw new ArgumentException("The GitHub release tag is invalid.", nameof(tag));
+        using var request = new HttpRequestMessage(HttpMethod.Get,
+            $"repos/{Repository}/commits/{Uri.EscapeDataString(tag)}");
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
+        request.Headers.Add("X-GitHub-Api-Version", "2022-11-28");
+        request.Headers.UserAgent.ParseAdd("NetRatel-ClientReleaseImporter");
+        var token = configuration["GitHubReleases:ReadOnlyToken"];
+        if (!string.IsNullOrWhiteSpace(token))
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        using var response = await http.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
+        var commit = document.RootElement.GetProperty("sha").GetString();
+        if (commit is null || commit.Length != 40 || !commit.All(Uri.IsHexDigit))
+            throw new InvalidDataException("The GitHub tag did not resolve to a full commit SHA.");
+        return commit;
     }
 
     private async Task<CachedPage?> GetUpstreamPageAsync(int page, bool refresh, CancellationToken cancellationToken)
@@ -249,17 +279,34 @@ public sealed class GitHubClientReleaseCatalog(
                 }
             }
         }
-        var hasPublication = release.GetProperty("assets").EnumerateArray().Any(x => x.GetProperty("name").GetString() == "publication.json");
-        var hasChecksums = release.GetProperty("assets").EnumerateArray().Any(x => x.GetProperty("name").GetString() == "SHA256SUMS");
+        var publicationAsset = ReadEvidenceAsset(release, "publication.json");
+        var checksumsAsset = ReadEvidenceAsset(release, "SHA256SUMS");
         var state = !consistent ? "incompatible prerelease metadata" :
-            !hasPublication || !hasChecksums || assets.Count == 0 ? "incomplete publication evidence" :
+            publicationAsset is null || checksumsAsset is null || assets.Count == 0 ? "incomplete publication evidence" :
             assets.Select(x => x.RuntimeId).Distinct(StringComparer.Ordinal).Count() != assets.Count ? "duplicate runtime assets" :
             "verification required";
         return new GitHubClientRelease(id, tag, version.ToNormalizedString(),
             release.GetProperty("name").GetString() ?? tag,
             published.GetDateTimeOffset(), isPrerelease,
             $"https://github.com/{Repository}/releases/tag/{Uri.EscapeDataString(tag)}",
-            assets, assets.Sum(x => x.SizeBytes), state);
+            assets, assets.Sum(x => x.SizeBytes), state)
+        {
+            PublicationAsset = publicationAsset,
+            ChecksumsAsset = checksumsAsset
+        };
+    }
+
+    private static GitHubReleaseEvidenceAsset? ReadEvidenceAsset(JsonElement release, string name)
+    {
+        var matches = release.GetProperty("assets").EnumerateArray()
+            .Where(asset => asset.GetProperty("name").GetString() == name &&
+                asset.GetProperty("state").GetString() == "uploaded")
+            .ToArray();
+        if (matches.Length != 1) return null;
+        var value = matches[0];
+        return new GitHubReleaseEvidenceAsset(value.GetProperty("id").GetInt64(), name,
+            value.GetProperty("size").GetInt64(),
+            value.TryGetProperty("digest", out var digest) ? digest.GetString() : null);
     }
 
     private sealed record CachedPage(IReadOnlyList<GitHubClientRelease> Releases, bool HasNext, EntityTagHeaderValue? ETag, DateTimeOffset FetchedAtUtc);

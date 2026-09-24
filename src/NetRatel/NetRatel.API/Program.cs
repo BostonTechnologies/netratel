@@ -753,6 +753,8 @@ builder.Services.AddHttpClient("GitHubClientAssets", http => http.Timeout = Time
 builder.Services.AddScoped(services => new GitHubClientAssetDownloader(
     services.GetRequiredService<IHttpClientFactory>().CreateClient("GitHubClientAssets"),
     services.GetRequiredService<IConfiguration>()));
+builder.Services.AddScoped<ClientReleaseImportService>();
+builder.Services.AddHostedService<ClientReleaseImportWorker>();
 builder.Services.AddScoped<ClientUpdateAuthorityService>();
 builder.Services.AddScoped<IClientUpdatePublisher>(services => services.GetRequiredService<ClientUpdateAuthorityService>());
 builder.Services.AddScoped<IClientUpdateOperatorAuthority>(services => services.GetRequiredService<ClientUpdateAuthorityService>());

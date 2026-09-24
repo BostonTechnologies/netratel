@@ -7,6 +7,8 @@
 @inject IClientArtifactsService Artifacts
 @inject ITenantApiService TenantApi
 @inject IJSRuntime JsRuntime
+@inject IDialogService Dialogs
+@implements IAsyncDisposable
 
 <MudPaper Class="client-mgmt-hero pa-4" Elevation="0">
     <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="flex-wrap">
@@ -34,6 +36,7 @@
                             <MudSelectItem Value="@("prerelease")">Prerelease</MudSelectItem>
                         </MudSelect>
                         <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Refresh" Disabled="_githubLoading" OnClick="@(() => LoadGitHubAsync(true))">Refresh</MudButton>
+                        <MudButton Variant="Variant.Text" Disabled="_githubLoading" OnClick="RefreshImportsAsync">Refresh imports</MudButton>
                         @if (_githubPage is not null && _githubPage.RefreshedAtUtc > DateTimeOffset.MinValue)
                         {
                             <MudText Typo="Typo.caption">Checked @_githubPage.RefreshedAtUtc.ToLocalTime().ToString("g")</MudText>
@@ -61,6 +64,32 @@
                             </MudStack>
                             <MudText Typo="Typo.body2" Class="mt-2">@release.PublicationState · @FormatBytes(release.TotalClientBytes)</MudText>
                             <a href="@release.DetailsUrl" target="_blank" rel="noopener noreferrer">Release details</a>
+                            @if (_githubImports.TryGetValue(release.Id, out var import))
+                            {
+                                <MudText Typo="Typo.body2" Class="mt-2">Local state: @(import.PublishedAtUtc.HasValue ? "Published for enabled tenant policies" : ImportState(import.State)) · @FormatBytes(import.DownloadedBytes) / @FormatBytes(import.TotalBytes ?? release.TotalClientBytes)</MudText>
+                                @if (!string.IsNullOrWhiteSpace(import.Error)) { <MudAlert Severity="Severity.Error" Class="mt-2">@import.Error</MudAlert> }
+                                <MudStack Row="true" Class="flex-wrap mt-2" Spacing="1">
+                                    @if (import.State is 6 or 7)
+                                    {
+                                        <MudButton Size="Size.Small" Variant="Variant.Outlined" OnClick="@(() => RetryImportAsync(import.Id))">Retry import</MudButton>
+                                    }
+                                    else if (import.State == 5 && !import.PublishedAtUtc.HasValue)
+                                    {
+                                        <MudButton Size="Size.Small" Color="Color.Warning" Variant="Variant.Filled"
+                                                   OnClick="@(() => PublishImportAsync(import.Id, release.IsPrerelease))">Approve and publish for deployment</MudButton>
+                                    }
+                                    else if (import.State != 5)
+                                    {
+                                        <MudButton Size="Size.Small" Variant="Variant.Outlined" OnClick="@(() => CancelImportAsync(import.Id))">Cancel import</MudButton>
+                                    }
+                                </MudStack>
+                            }
+                            else
+                            {
+                                <MudButton Size="Size.Small" Variant="Variant.Filled" Color="Color.Primary" Class="mt-2"
+                                           Disabled="@(release.PublicationState != "verification required" || _importActionBusy)"
+                                           OnClick="@(() => QueueImportAsync(release.Id))">Download client pack to this instance</MudButton>
+                            }
                         </MudPaper>
                     }
                     <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
@@ -210,6 +239,10 @@
     private IReadOnlyList<TenantDto> _tenants = Array.Empty<TenantDto>();
     private MudTable<ClientArtifactSummaryModel>? _artifactTable;
     private GitHubClientReleasePageModel? _githubPage;
+    private Dictionary<long, ClientReleaseImportModel> _githubImports = [];
+    private bool _importActionBusy;
+    private readonly CancellationTokenSource _importPolling = new();
+    private Task? _importPollingTask;
     private string _githubChannel = "all";
     private string? _githubError;
     private int _githubPageNumber;
@@ -258,6 +291,7 @@
         _tenants = await TenantApi.GetTenantsAsync();
         _selectedTenantId = _tenants.FirstOrDefault()?.TenantId;
         await LoadGitHubAsync(false);
+        _importPollingTask = PollImportsAsync(_importPolling.Token);
     }
 
     private async Task OnTabChanged(int index)
@@ -281,6 +315,7 @@
         try
         {
             _githubPage = await Artifacts.GetGitHubReleasesAsync(_githubChannel, _githubPageNumber, refresh);
+            await RefreshImportsAsync();
         }
         catch (HttpRequestException)
         {
@@ -293,6 +328,90 @@
     }
 
     private async Task OnGitHubChannelChanged(string channel) { _githubChannel = channel; _githubPageNumber = 0; await LoadGitHubAsync(false); }
+
+    private async Task RefreshImportsAsync()
+    {
+        try
+        {
+            _githubImports = (await Artifacts.GetReleaseImportsAsync()).ToDictionary(x => x.GitHubReleaseId);
+        }
+        catch (HttpRequestException)
+        {
+            _githubError = "Could not load local import status. Try Refresh imports.";
+        }
+    }
+
+    private async Task PollImportsAsync(CancellationToken ct)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(4));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(ct))
+            {
+                if (_activeTab != 0 || !_githubImports.Values.Any(x => x.State is >= 0 and <= 4)) continue;
+                await InvokeAsync(async () => { await RefreshImportsAsync(); StateHasChanged(); });
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+    }
+
+    private async Task QueueImportAsync(long releaseId)
+    {
+        _importActionBusy = true;
+        _githubError = null;
+        try
+        {
+            var operation = await Artifacts.QueueReleaseImportAsync(releaseId);
+            _githubImports[releaseId] = operation;
+        }
+        catch (HttpRequestException) { _githubError = "Could not queue the release import. Check the release evidence and try again."; }
+        finally { _importActionBusy = false; }
+    }
+
+    private async Task CancelImportAsync(Guid id)
+    {
+        try { await Artifacts.CancelReleaseImportAsync(id); await RefreshImportsAsync(); }
+        catch (HttpRequestException) { _githubError = "Could not cancel the import. Refresh its status and try again."; }
+    }
+
+    private async Task RetryImportAsync(Guid id)
+    {
+        try { await Artifacts.RetryReleaseImportAsync(id); await RefreshImportsAsync(); }
+        catch (HttpRequestException) { _githubError = "Could not retry the import. Refresh its status and try again."; }
+    }
+
+    private async Task PublishImportAsync(Guid id, bool isPrerelease)
+    {
+        var message = isPrerelease
+            ? "Publish this prerelease pack for tenants whose update policy explicitly allows prereleases? Existing stable tenants remain on stable releases."
+            : "Publish this stable client pack for enabled tenant update policies?";
+        var approved = await Dialogs.ShowMessageBoxAsync("Approve client pack", message,
+            yesText: "Publish", cancelText: "Cancel");
+        if (approved != true) return;
+        try
+        {
+            await Artifacts.PublishReleaseImportAsync(id, isPrerelease);
+            await RefreshImportsAsync();
+            await ResetAndReloadAsync(_releaseTable);
+        }
+        catch (HttpRequestException)
+        {
+            _githubError = "Could not publish the client pack. Refresh its status and inspect the imported artifacts.";
+        }
+    }
+
+    private static string ImportState(int state) => state switch
+    {
+        0 => "Queued", 1 => "Resolving", 2 => "Downloading", 3 => "Verifying",
+        4 => "Importing", 5 => "Imported; awaiting approval", 6 => "Failed", 7 => "Cancelled", _ => "Unknown"
+    };
+
+    public async ValueTask DisposeAsync()
+    {
+        _importPolling.Cancel();
+        if (_importPollingTask is not null) await _importPollingTask;
+        _importPolling.Dispose();
+    }
     private async Task PreviousGitHubPage() { if (_githubPageNumber > 0) { _githubPageNumber--; await LoadGitHubAsync(false); } }
     private async Task NextGitHubPage() { if (_githubPage?.HasMore == true) { _githubPageNumber++; await LoadGitHubAsync(false); } }
 

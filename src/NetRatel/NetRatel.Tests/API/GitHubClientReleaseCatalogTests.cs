@@ -62,6 +62,8 @@ public sealed class GitHubClientReleaseCatalogTests
 
         stale.Items.Should().HaveCount(1);
         stale.Warning.Should().Contain("rate limited");
+        stale.Items[0].PublicationAsset.Should().NotBeNull();
+        stale.Items[0].ChecksumsAsset.Should().NotBeNull();
         (await catalog.ListAsync("all", 0, true, CancellationToken.None)).Items.Should().HaveCount(1);
         calls.Should().Be(3);
     }
@@ -98,6 +100,22 @@ public sealed class GitHubClientReleaseCatalogTests
         stale.Warning.Should().Contain("temporarily unavailable");
         (await catalog.ListAsync("all", 0, true, CancellationToken.None)).Items.Should().HaveCount(1);
         calls.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task ResolvesTheTagToAnImmutableCommitInsteadOfUsingTargetCommitish()
+    {
+        var expected = new string('a', 40);
+        using var client = Client(request =>
+        {
+            request.RequestUri!.AbsolutePath.Should().Be("/repos/BostonTechnologies/netratel/commits/v1.2.3");
+            return Json($"{{\"sha\":\"{expected}\",\"target_commitish\":\"main\"}}");
+        });
+        var catalog = Catalog(client);
+
+        (await catalog.ResolveTagCommitAsync("v1.2.3", CancellationToken.None)).Should().Be(expected);
+        await FluentActions.Invoking(() => catalog.ResolveTagCommitAsync("../admin", CancellationToken.None))
+            .Should().ThrowAsync<ArgumentException>();
     }
 
     private static GitHubClientReleaseCatalog Catalog(HttpClient client) => new(

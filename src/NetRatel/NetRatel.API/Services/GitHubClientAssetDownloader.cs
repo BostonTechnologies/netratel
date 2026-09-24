@@ -21,7 +21,8 @@ public sealed class GitHubClientAssetDownloader(HttpClient http, IConfiguration 
         long expectedSize,
         string? expectedDigest,
         string outputPath,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<long, CancellationToken, ValueTask>? progress = null)
     {
         if (assetId <= 0 || expectedSize is <= 0 or > MaxAssetBytes)
             throw new InvalidDataException("The GitHub asset identity or size is invalid.");
@@ -72,6 +73,7 @@ public sealed class GitHubClientAssetDownloader(HttpClient http, IConfiguration 
                 using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
                 var buffer = new byte[64 * 1024];
                 long total = 0;
+                long lastReported = 0;
                 int count;
                 while ((count = await source.ReadAsync(buffer, token).ConfigureAwait(false)) > 0)
                 {
@@ -80,12 +82,18 @@ public sealed class GitHubClientAssetDownloader(HttpClient http, IConfiguration 
                         throw new InvalidDataException("GitHub asset exceeds its advertised size.");
                     hash.AppendData(buffer, 0, count);
                     await output.WriteAsync(buffer.AsMemory(0, count), token).ConfigureAwait(false);
+                    if (progress is not null && total - lastReported >= 4L * 1024 * 1024)
+                    {
+                        await progress(total, token).ConfigureAwait(false);
+                        lastReported = total;
+                    }
                 }
                 if (total != expectedSize)
                     throw new InvalidDataException("GitHub asset ended before its advertised size.");
                 var actualDigest = Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
                 if (expectedDigest is not null && expectedDigest != "sha256:" + actualDigest)
                     throw new InvalidDataException("GitHub asset digest differs from downloaded bytes.");
+                if (progress is not null) await progress(total, token).ConfigureAwait(false);
                 return new DownloadedGitHubAsset(total, actualDigest);
             }
             catch
