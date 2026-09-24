@@ -234,7 +234,7 @@ verify_legacy_client_after_upgrade() {
 }
 
 verify_native_legacy_client_after_upgrade() {
-  local machine_identity native_status
+  local machine_identity native_status agent_path identity_path
   if id netratel >/dev/null 2>&1 || [[ -e /var/lib/netratel ]]; then
     echo "The disposable runner already has a netratel account or state directory." >&2
     return 1
@@ -250,13 +250,17 @@ verify_native_legacy_client_after_upgrade() {
   docker run --rm --volume "${client_volume}:/source:ro" \
     --volume "${native_directory}/state:/target" alpine:3.22 \
     sh -ceu 'cp -a /source/. /target/'
-  [[ -s "$native_directory/state/agent.dat" && -s "$native_directory/state/.netratel-credential-machine-id" ]] || {
-    echo "The published client did not persist a transferable credential identity." >&2
+  agent_path="$(sudo find "$native_directory/state" -type f -name agent.dat -print -quit)"
+  identity_path="$(sudo find "$native_directory/state" -type f -name .netratel-credential-machine-id -print -quit)"
+  [[ -n "$agent_path" && -n "$identity_path" ]] && sudo test -s "$agent_path" && sudo test -s "$identity_path" || {
+    echo "The published client state lacks an agent credential or persistent machine identity." >&2
+    echo "Credential candidates: $(sudo find "$native_directory/state" -type f -name agent.dat | wc -l); identity candidates: $(sudo find "$native_directory/state" -type f -name .netratel-credential-machine-id | wc -l)." >&2
     return 1
   }
-  sudo cp -a "$native_directory/state/." /var/lib/netratel/
+  sudo cp "$agent_path" /var/lib/netratel/agent.dat
+  sudo cp "$identity_path" /var/lib/netratel/.netratel-credential-machine-id
   sudo chown -R netratel:netratel /var/lib/netratel
-  machine_identity="$(cat "$native_directory/state/.netratel-credential-machine-id")"
+  machine_identity="$(sudo cat "$identity_path")"
   if sudo -u netratel env "NetRatel_CREDENTIAL_MACHINE_ID=${machine_identity}" \
       "$native_directory/app/NetRatel.Client" --api "$api_url" --auth-check \
       >"$native_directory/native-auth-check.log" 2>&1; then
