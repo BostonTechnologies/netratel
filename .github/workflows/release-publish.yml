@@ -44,7 +44,7 @@ jobs:
           ref: ${{ env.RELEASE_TAG }}
           fetch-depth: 0
           path: source
-      - name: Verify tag, release, build run, and package repositories
+      - name: Verify tag, release, build run, and public package repositories
         id: identity
         shell: bash
         run: |
@@ -66,13 +66,8 @@ jobs:
             '[.[] | select(.headSha == $sha and .headBranch == $tag and .event == "push" and .conclusion == "success")][0].databaseId // empty' \
             <<< "$runs")"
           test -n "$run_id"
-          gh api 'orgs/BostonTechnologies/packages?package_type=container&per_page=100' \
-            --paginate --jq '.[] | [.name,.visibility,.repository.full_name] | @tsv' \
-            > "$RUNNER_TEMP/packages.tsv"
-          for component in api web migrations mcp-http client; do
-            grep -Fx $'netratel-'"$component"$'\tpublic\t'"$GITHUB_REPOSITORY" \
-              "$RUNNER_TEMP/packages.tsv"
-          done
+          python3 "$GITHUB_WORKSPACE/tooling/tools/ci/promote-release.py" registry-check \
+            --version "$version"
           printf 'tag=%s\nversion=%s\nrevision=%s\nrun_id=%s\n' \
             "$tag" "$version" "$revision" "$run_id" >> "$GITHUB_OUTPUT"
       - name: Authenticate workflow artifact inputs before image publication
@@ -126,23 +121,26 @@ jobs:
     env:
       VERSION: ${{ needs.verify.outputs.version }}
       REVISION: ${{ needs.verify.outputs.revision }}
+      NETRATEL_RELEASE_SOURCE_ROOT: ${{ github.workspace }}/source
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: main
+          path: tooling
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
           ref: ${{ needs.verify.outputs.tag }}
+          path: source
       - name: Build, scan, and push approved image
         shell: bash
         run: |
           set -euo pipefail
+          cd "$NETRATEL_RELEASE_SOURCE_ROOT"
           test "$(git rev-parse HEAD)" = "$REVISION"
           component='${{ matrix.component }}'
           tag="ghcr.io/bostontechnologies/netratel-${component}:${VERSION}"
-          gh api "orgs/BostonTechnologies/packages/container/netratel-${component}/versions?per_page=100" \
-            --paginate --jq '.[].metadata.container.tags[]' > "$RUNNER_TEMP/tags.txt"
-          if grep -Fxq "$VERSION" "$RUNNER_TEMP/tags.txt"; then
-            echo "Approved tag already exists; refusing to overwrite $tag" >&2
-            exit 1
-          fi
+          python3 "$GITHUB_WORKSPACE/tooling/tools/ci/promote-release.py" registry-check \
+            --version "$VERSION" --component "$component"
           printf '%s' "$GH_TOKEN" | docker login ghcr.io \
             --username "$GITHUB_ACTOR" --password-stdin
           bash tools/ci/build-public-image.sh \

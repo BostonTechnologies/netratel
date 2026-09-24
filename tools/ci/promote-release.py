@@ -11,6 +11,9 @@ import stat
 import subprocess
 import tarfile
 import tempfile
+import urllib.error
+import urllib.parse
+import urllib.request
 import zipfile
 
 ROOT = Path(os.environ.get("NETRATEL_RELEASE_SOURCE_ROOT", Path(__file__).resolve().parents[2])).resolve()
@@ -365,6 +368,57 @@ def validate_registry_packages(inventory):
             raise ValueError(f"Approved registry package is not linked to {REPOSITORY}: {package_name}")
 
 
+def public_registry_token(component):
+    """Authenticate anonymous reads of a fixed GHCR package."""
+    if component not in COMPONENTS:
+        raise ValueError(f"Unknown release component: {component}")
+    repository = f"bostontechnologies/{PACKAGE_NAMES[component]}"
+    query = urllib.parse.urlencode({"scope": f"repository:{repository}:pull", "service": "ghcr.io"})
+    try:
+        with urllib.request.urlopen(f"https://ghcr.io/token?{query}", timeout=20) as response:
+            token = json.load(response)["token"]
+    except (urllib.error.URLError, KeyError, ValueError) as error:
+        raise ValueError(f"Public GHCR package cannot be verified: {repository}") from error
+    return repository, token
+
+
+def public_registry_tags(component):
+    """Read a fixed GHCR package anonymously; Actions tokens cannot list org packages."""
+    repository, token = public_registry_token(component)
+    try:
+        request = urllib.request.Request(
+            f"https://ghcr.io/v2/{repository}/tags/list",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        with urllib.request.urlopen(request, timeout=20) as response:
+            listing = json.load(response)
+    except (urllib.error.URLError, KeyError, ValueError) as error:
+        raise ValueError(f"Public GHCR package cannot be verified: {repository}") from error
+    if listing.get("name") != repository or not isinstance(listing.get("tags"), list):
+        raise ValueError(f"Unexpected public GHCR package response: {repository}")
+    return listing["tags"]
+
+
+def require_unused_release_tag(component, version):
+    repository, token = public_registry_token(component)
+    request = urllib.request.Request(
+        f"https://ghcr.io/v2/{repository}/manifests/{urllib.parse.quote(version, safe='')}",
+        method="HEAD",
+        headers={"Authorization": f"Bearer {token}",
+                 "Accept": "application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, "
+                           "application/vnd.docker.distribution.manifest.list.v2+json, "
+                           "application/vnd.docker.distribution.manifest.v2+json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20):
+            raise ValueError(f"Approved image tag already exists: {release_image_tag(component, version)}")
+    except urllib.error.HTTPError as error:
+        if error.code != 404:
+            raise ValueError(f"Cannot verify unused release tag: {release_image_tag(component, version)}") from error
+    except urllib.error.URLError as error:
+        raise ValueError(f"Cannot verify unused release tag: {release_image_tag(component, version)}") from error
+
+
 def validate_digests(images):
     if set(images) != set(COMPONENTS):
         raise ValueError("All five immutable image outputs are required")
@@ -462,10 +516,8 @@ def promote(args):
     if run("git", "rev-list", "-n", "1", "v" + version) != revision:
         raise ValueError("Owner-created release tag must already identify the approved commit")
     input_receipt = verified_input_receipt(args.inputs, args.receipt, version, revision)
-    inventory = json_pages(run("gh", "api",
-                              "orgs/BostonTechnologies/packages?package_type=container&per_page=100", "--paginate"))
-    inventory = {package["name"]: package for page in inventory for package in page}
-    validate_registry_packages(inventory)
+    for component in COMPONENTS:
+        public_registry_tags(component)
     state = resume_state(args.state, version, revision, input_receipt)
     if not args.output.exists():
         stage(args.inputs, args.output, version)
@@ -491,12 +543,7 @@ def promote(args):
             else:
                 verify_pristine_staged(args.output, version, input_receipt)
             tag = release_image_tag(component, version)
-            existing = inventory[PACKAGE_NAMES[component]]
-            if existing:
-                versions = json_pages(run("gh", "api",
-                    f"orgs/BostonTechnologies/packages/container/{PACKAGE_NAMES[component]}/versions?per_page=100", "--paginate"))
-                if any(tag.rsplit(":", 1)[1] in item["metadata"]["container"]["tags"] for page in versions for item in page):
-                    raise ValueError("Tag already exists without this journal; inspect and recover its digest explicitly, never overwrite it")
+            require_unused_release_tag(component, version)
             dockerfile = "docker/client/Dockerfile.public" if component == "client" else f"docker/{component}/Dockerfile"
             run("bash", "tools/ci/build-public-image.sh", "--dockerfile", dockerfile, "--image", tag, "--version", version, "--revision", revision)
             run("bash", "tools/ci/scan-public-image.sh", "--image", tag, "--version", version, "--revision", revision)
@@ -618,6 +665,9 @@ if __name__ == "__main__":
                            help="Trusted release-workflow receipt; verified against GitHub before writes")
     promotion.add_argument("--output", required=True, type=Path)
     promotion.add_argument("--state", required=True, type=Path)
+    registry_check = commands.add_parser("registry-check", help="Verify public GHCR packages and unused release tags")
+    registry_check.add_argument("--version", required=True)
+    registry_check.add_argument("--component", choices=COMPONENTS)
     publication = commands.add_parser("publish", help="Upload missing verified assets to a published release")
     publication.add_argument("--directory", required=True, type=Path)
     publication.add_argument("--tag", required=True)
@@ -635,6 +685,11 @@ if __name__ == "__main__":
             preflight(args)
         elif args.command == "publish":
             publish_assets(args.directory, args.tag)
+        elif args.command == "registry-check":
+            if args.version != product_version():
+                raise ValueError("Registry check version differs from Directory.Build.props")
+            for component in ((args.component,) if args.component else COMPONENTS):
+                require_unused_release_tag(component, args.version)
         else:
             promote(args)
     except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
