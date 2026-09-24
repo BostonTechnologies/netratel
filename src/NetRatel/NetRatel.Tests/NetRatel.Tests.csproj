@@ -18,7 +18,6 @@
     <PackageReference Include="FluentAssertions" Version="8.11.0" />
     <PackageReference Include="Microsoft.AspNetCore.TestHost" Version="10.0.12" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="10.0.12" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.12" />
     <PackageReference Include="Microsoft.Testing.Extensions.TrxReport" Version="2.4.0" />
     <PackageReference Include="Testcontainers.PostgreSql" Version="4.15.0" />
     <PackageReference Include="xunit.runner.visualstudio" Version="4.0.0">
@@ -40,7 +39,6 @@
     <ProjectReference Include="..\NetRatel.Client\NetRatel.Client.csproj" />
     <ProjectReference Include="..\NetRatel.Cli\NetRatel.Cli.csproj" />
     <ProjectReference Include="..\NetRatel.Infrastructure\NetRatel.Infrastructure.csproj" />
-    <ProjectReference Include="..\NetRatel.SqliteMigrations\NetRatel.SqliteMigrations.csproj" />
     <ProjectReference Include="..\NetRatel.Mcp\NetRatel.Mcp.csproj" />
     <ProjectReference Include="..\NetRatel.ServiceDefaults\NetRatel.ServiceDefaults.csproj" />
     <ProjectReference Include="..\NetRatel.Shared\NetRatel.Shared.csproj" />

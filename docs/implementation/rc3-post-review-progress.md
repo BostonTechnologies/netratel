@@ -4,6 +4,31 @@ This ledger follows [the post-rc.3 correction epic](https://github.com/BostonTec
 It records follow-up work without changing the historical status of the original
 local-first delivery or `v0.1.0-rc.3`.
 
+## R00 finding classification at the rc.5 baseline
+
+The original review's F01–F08 and V01–V03 identifiers are retained here so
+#62 can be read against actual merged repairs. The table distinguishes a
+merged repair from later acceptance work; a green historical run is not
+evidence that a test added afterward ran in that release.
+
+| Finding | Reproduction and merged repair | Remaining owner |
+| --- | --- | --- |
+| F01 image-only local-first recipe | The OIDC-empty bundle config failure was reproduced. #72 repaired image-only profiles, shared keys, and restart; #90 ran extracted bundled/external PostgreSQL journeys. | #60 and the new enhancement PR cover newcomer instructions, public HTTPS, and the fresh key-volume defect. |
+| F02 bootstrap commit boundary | #76 added the durable initialization marker/reconciliation; #83 added same-operation idempotency. PostgreSQL transaction regressions are recorded below. | The new enhancement PR checks Ready-state partial reset and restart. |
+| F03 viable last administrator | #74 centralized the viable definition and PostgreSQL concurrent-removal lock; disabled/unresolvable assignees were tested. | #64 retains full lockout, role-admin, and recovery acceptance. |
+| F04 local HTTP MCP target mapping | #77–#80 catalogued discovery, control-plane, and object target shapes without fake agents. | #65/#70 retain any unresolved end-to-end acceptance. |
+| F05 MCP failure and joined authority | #81 classified exchange failures; #82 tested persisted local authority; #89 exercised the paired HTTP transport. | #66/#70 retain any unresolved end-to-end acceptance. |
+| F06 scoped account/admin UI | #73 fixed stale A/B assignment responses; #85/#86 added activation and bounded delegation; #93–#95 added named scopes, credential tenant selection, and scoped search. | #64/#67 retain complete identity and delegated-browser acceptance. |
+| F07 OpenAPI descriptions | #84 generated and validated the Release OpenAPI document and authentication contracts. | #69 retains any unclosed Scalar/browser acceptance. |
+| F08 downloadable acceptance | #90–#92 added extracted PostgreSQL local-first and rc.3 upgrade gates; the rc.5 release build succeeded on exact tag commit `cd02b362`. | #70/#71 depend on remaining child acceptance; no new release is implied. |
+| V01 OIDC projection and credentials | #75 validates a signed OIDC principal and durable issuer/subject projection; #92 exercises PostgreSQL/OIDC upgrade continuity. | #64 retains real-provider credential lifecycle and identity recovery. |
+| V02 provider/runtime continuity | Historical SQLite coverage was recorded below. The owner's PostgreSQL-only decision now retires active SQLite support without rewriting that evidence. | The new enhancement PR owns PostgreSQL-only regression, refusal, restart, and reset acceptance. |
+| V03 MFA and recovery | #87 prevents silent authenticator replacement; #88 adds activation, security, and browser MFA/recovery flows. | #64 and the new enhancement PR retain status-driven UX, lockout/recent-auth, and recovery acceptance. |
+
+The [rc.5 enhancement ledger](rc5-enhancement-progress.md) tracks the new
+PostgreSQL-only implementation and its exact-head tests. The historical
+checkpoints below remain statements about their original heads.
+
 ## Current baseline
 
 | Item | Evidence |

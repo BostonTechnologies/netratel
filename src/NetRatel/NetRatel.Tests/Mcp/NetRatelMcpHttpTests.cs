@@ -1,5 +1,4 @@
 using FluentAssertions;
-using Microsoft.Data.Sqlite;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -23,6 +22,7 @@ using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Mcp.Core;
 using NetRatel.Mcp.Http;
 using NetRatel.Shared.Operations;
+using NetRatel.Tests.Infrastructure;
 using System.Net;
 using System.Net.Http.Headers;
 using System.IdentityModel.Tokens.Jwt;
@@ -31,12 +31,12 @@ using System.Security.Claims;
 using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
-using Testcontainers.PostgreSql;
 using Xunit;
 
 namespace NetRatel.Tests.Mcp;
 
-public sealed class NetRatelMcpHttpTests
+[Collection(PostgreSqlPersistenceCollection.Name)]
+public sealed class NetRatelMcpHttpTests(PostgreSqlPersistenceFixture postgres)
 {
     private static readonly SymmetricSecurityKey TestSigningKey = new(Encoding.UTF8.GetBytes("netratel-mcp-test-signing-key-for-http-protocol-discovery"));
 
@@ -514,12 +514,11 @@ public sealed class NetRatelMcpHttpTests
     [Fact]
     public async Task Local_credential_postgres_exchange_isolates_concurrent_callers_and_rechecks_revocation()
     {
-        await using var postgres = new PostgreSqlBuilder("postgres:16-alpine").Build();
-        await postgres.StartAsync();
+        var connectionString = await postgres.CreateDatabaseAsync();
         var tokens = new McpOperatorDelegationTokenService(LocalCredentialDelegationOptions());
         await using var api = await CreatePersistedLocalCredentialApiAsync(
             tokens,
-            options => options.UseNpgsql(postgres.GetConnectionString()));
+            options => options.UseNpgsql(connectionString));
         var unauthorizedCredential = await api.CreateCredentialAsync(
             "local-owner-without-discovery",
             NetRatelPermissions.TelemetryRead);
@@ -1507,20 +1506,11 @@ public sealed class NetRatelMcpHttpTests
         return app;
     }
 
-    private static async Task<PersistedLocalCredentialApiApplication> CreatePersistedLocalCredentialApiAsync(
+    private async Task<PersistedLocalCredentialApiApplication> CreatePersistedLocalCredentialApiAsync(
         McpOperatorDelegationTokenService tokens)
     {
-        var connection = new SqliteConnection("Data Source=:memory:");
-        await connection.OpenAsync();
-        try
-        {
-            return await CreatePersistedLocalCredentialApiAsync(tokens, options => options.UseSqlite(connection), connection);
-        }
-        catch
-        {
-            await connection.DisposeAsync();
-            throw;
-        }
+        var connectionString = await postgres.CreateDatabaseAsync();
+        return await CreatePersistedLocalCredentialApiAsync(tokens, options => options.UseNpgsql(connectionString));
     }
 
     private static async Task<PersistedLocalCredentialApiApplication> CreatePersistedLocalCredentialApiAsync(

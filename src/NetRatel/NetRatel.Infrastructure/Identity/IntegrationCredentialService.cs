@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using Microsoft.EntityFrameworkCore;
 using NetRatel.Infrastructure.Identity.Authorization;
+using NetRatel.Shared.Connectivity;
 
 namespace NetRatel.Infrastructure.Identity;
 
@@ -80,12 +81,14 @@ public sealed class IntegrationCredentialService(NetRatelIdentityDbContext db) :
         var name = request.Name?.Trim();
         var resource = request.Resource?.Trim();
         var now = DateTimeOffset.UtcNow;
-        var grants = (request.Grants ?? [])
+        var suppliedGrants = request.Grants ?? [];
+        var suppliedInstancePermissions = request.InstancePermissions ?? [];
+        var grants = suppliedGrants
             .Where(grant => grant.TenantId > 0 && !string.IsNullOrWhiteSpace(grant.Permission))
             .Select(grant => new IntegrationCredentialGrantRequest(grant.TenantId, grant.Permission.Trim()))
             .Distinct()
             .ToArray();
-        var instancePermissions = (request.InstancePermissions ?? [])
+        var instancePermissions = suppliedInstancePermissions
             .Where(permission => !string.IsNullOrWhiteSpace(permission))
             .Select(permission => permission.Trim())
             .Distinct(StringComparer.Ordinal)
@@ -93,14 +96,22 @@ public sealed class IntegrationCredentialService(NetRatelIdentityDbContext db) :
 
         if (string.IsNullOrWhiteSpace(ownerPrincipalId) || string.IsNullOrWhiteSpace(name) || name.Length > 128 ||
             !Enum.IsDefined(request.Purpose) ||
-            (request.Purpose == IntegrationCredentialPurpose.HttpMcp && string.IsNullOrWhiteSpace(resource)) ||
+            (request.Purpose == IntegrationCredentialPurpose.HttpMcp && !McpResourceUri.TryNormalize(resource, out _)) ||
+            (request.Purpose == IntegrationCredentialPurpose.Api && !string.IsNullOrWhiteSpace(resource)) ||
             request.ExpiresAtUtc <= now || request.ExpiresAtUtc > now.Add(MaximumLifetime) ||
             (grants.Length == 0 && instancePermissions.Length == 0) ||
+            suppliedGrants.Count > 64 || suppliedInstancePermissions.Count > 32 ||
+            suppliedGrants.Count != grants.Length || suppliedInstancePermissions.Count != instancePermissions.Length ||
+            grants.Any(grant => !NetRatelPermissions.All.Contains(grant.Permission) ||
+                grant.Permission == NetRatelPermissions.IntegrationManagement) ||
             instancePermissions.Any(permission => !NetRatelPermissions.All.Contains(permission) ||
                 string.Equals(permission, NetRatelPermissions.IntegrationManagement, StringComparison.Ordinal)))
         {
             throw new ArgumentException("Credential name, bounded expiry, and at least one explicit permission grant are required.");
         }
+
+        if (request.Purpose == IntegrationCredentialPurpose.HttpMcp)
+            McpResourceUri.TryNormalize(resource, out resource);
 
         var secret = ApiTokenPrefix + Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
         var publicId = Convert.ToHexString(RandomNumberGenerator.GetBytes(12)).ToLowerInvariant();
@@ -138,11 +149,10 @@ public sealed class IntegrationCredentialService(NetRatelIdentityDbContext db) :
             .Include(credential => credential.Grants)
             .Include(credential => credential.InstanceGrants)
             .Where(credential => credential.OwnerPrincipalId == ownerPrincipalId)
+            .OrderByDescending(credential => credential.CreatedAtUtc)
             .ToListAsync(cancellationToken).ConfigureAwait(false);
 
-        // SQLite cannot order DateTimeOffset values. Fetch this account's
-        // small credential set and apply the chronological view in process.
-        return credentials.OrderByDescending(credential => credential.CreatedAtUtc).Select(credential => new IntegrationCredentialSummary(
+        return credentials.Select(credential => new IntegrationCredentialSummary(
                 credential.Id, credential.PublicId, credential.TokenPrefix, credential.Name, credential.Purpose,
                 credential.Resource, credential.CreatedAtUtc, credential.ExpiresAtUtc, credential.RevokedAtUtc,
                 credential.LastUsedAtUtc,
@@ -185,11 +195,8 @@ public sealed class IntegrationCredentialService(NetRatelIdentityDbContext db) :
             .Include(candidate => candidate.Grants)
             .Include(candidate => candidate.InstanceGrants)
             .SingleOrDefaultAsync(candidate => candidate.SecretHash == Hash(secret) && candidate.Purpose == purpose &&
-                candidate.RevokedAtUtc == null, cancellationToken).ConfigureAwait(false);
-        // SQLite cannot translate a DateTimeOffset comparison. The unique
-        // verifier lookup remains in SQL; expiry is evaluated immediately on
-        // the one candidate and fails closed for both providers.
-        if (credential is null || credential.ExpiresAtUtc <= now)
+                candidate.RevokedAtUtc == null && candidate.ExpiresAtUtc > now, cancellationToken).ConfigureAwait(false);
+        if (credential is null)
         {
             return null;
         }

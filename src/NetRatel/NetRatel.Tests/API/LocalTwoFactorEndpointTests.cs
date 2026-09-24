@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Security.Claims;
 using System.Text.Encodings.Web;
+using System.Threading.RateLimiting;
 using FluentAssertions;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
@@ -24,6 +25,26 @@ namespace NetRatel.Tests.API;
 
 public sealed class LocalTwoFactorEndpointTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Security_status_reports_the_persisted_factor_state_without_exposing_the_key(bool enrolled)
+    {
+        using var app = await BuildAppAsync();
+        await SeedUserAsync(app.Services, enrolled);
+        var client = app.GetTestClient();
+        client.DefaultRequestHeaders.Add("X-NetRatel-User", "local-user");
+
+        var response = await client.GetAsync("/api/v2/local-auth/security/status");
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        response.Headers.CacheControl!.NoStore.Should().BeTrue();
+        var status = await response.Content.ReadFromJsonAsync<LocalAuthenticationEndpoints.LocalSecurityStatusResponse>();
+        status!.TwoFactorEnabled.Should().Be(enrolled);
+        status.MinimumPassphraseLength.Should().BeGreaterThan(0);
+        (await response.Content.ReadAsStringAsync()).Should().NotContain("initial-stamp");
+    }
+
     [Fact]
     public async Task Setup_returns_a_new_authenticator_secret_without_invalidating_the_current_session()
     {
@@ -96,6 +117,39 @@ public sealed class LocalTwoFactorEndpointTests
         reused.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
     }
 
+    [Fact]
+    public async Task Authenticated_factor_mutations_are_throttled_per_account_without_changing_factor_state()
+    {
+        using var app = await BuildAppAsync();
+        await SeedUserAsync(app.Services, enrolled: false);
+        var client = app.GetTestClient();
+        client.DefaultRequestHeaders.Add("X-NetRatel-User", "local-user");
+
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            var invalid = await client.PostAsJsonAsync("/api/v2/local-auth/two-factor/setup",
+                new LocalAuthenticationEndpoints.CurrentPasswordRequest("incorrect passphrase"));
+            invalid.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        }
+
+        var limited = await client.PostAsJsonAsync("/api/v2/local-auth/two-factor/setup",
+            new LocalAuthenticationEndpoints.CurrentPasswordRequest("A-strong-local-password-1"));
+        limited.StatusCode.Should().Be(HttpStatusCode.TooManyRequests);
+        (await client.GetAsync("/api/v2/local-auth/security/status")).StatusCode.Should().Be(HttpStatusCode.OK);
+
+        await SeedUserAsync(app.Services, enrolled: false, userId: "other-local-user");
+        var otherClient = app.GetTestClient();
+        otherClient.DefaultRequestHeaders.Add("X-NetRatel-User", "other-local-user");
+        var otherAccount = await otherClient.PostAsJsonAsync("/api/v2/local-auth/two-factor/setup",
+            new LocalAuthenticationEndpoints.CurrentPasswordRequest("incorrect passphrase"));
+        otherAccount.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        await using var scope = app.Services.CreateAsyncScope();
+        var users = scope.ServiceProvider.GetRequiredService<UserManager<LocalUser>>();
+        var user = await users.FindByIdAsync("local-user");
+        (await users.GetAuthenticatorKeyAsync(user!)).Should().BeNull();
+    }
+
     private static async Task BeginTwoFactorLoginAsync(HttpClient client)
     {
         var login = await client.PostAsJsonAsync("/api/v2/local-auth/login",
@@ -124,11 +178,24 @@ public sealed class LocalTwoFactorEndpointTests
             policy.AddAuthenticationSchemes(TestAuthenticationHandler.SchemeName);
             policy.RequireAuthenticatedUser();
         }));
-        builder.Services.AddRateLimiter(options => options.AddFixedWindowLimiter("local-login", limiter =>
+        builder.Services.AddRateLimiter(options =>
         {
-            limiter.PermitLimit = 10;
-            limiter.Window = TimeSpan.FromMinutes(1);
-        }));
+            options.RejectionStatusCode = 429;
+            options.AddFixedWindowLimiter("local-login", limiter =>
+            {
+                limiter.PermitLimit = 10;
+                limiter.Window = TimeSpan.FromMinutes(1);
+            });
+            options.AddPolicy("local-security", context => RateLimitPartition.GetFixedWindowLimiter(
+                context.User.FindFirstValue(ClaimTypes.NameIdentifier) ?? "anonymous",
+                _ => new FixedWindowRateLimiterOptions
+                {
+                    PermitLimit = 3,
+                    Window = TimeSpan.FromMinutes(1),
+                    QueueLimit = 0,
+                    AutoReplenishment = true
+                }));
+        });
         builder.Services.AddSingleton(new LocalAuthenticationOptions("Local", true, "NetRatel.Local"));
         builder.Services.AddDbContext<NetRatelIdentityDbContext>(options => options.UseInMemoryDatabase(databaseName, root));
         builder.Services.AddIdentityCore<LocalUser>()
@@ -145,16 +212,16 @@ public sealed class LocalTwoFactorEndpointTests
         return app;
     }
 
-    private static async Task<string?> SeedUserAsync(IServiceProvider services, bool enrolled)
+    private static async Task<string?> SeedUserAsync(IServiceProvider services, bool enrolled, string userId = "local-user")
     {
         await using var scope = services.CreateAsyncScope();
         var users = scope.ServiceProvider.GetRequiredService<UserManager<LocalUser>>();
         var user = new LocalUser
         {
-            Id = "local-user",
-            UserName = "operator@example.test",
-            Email = "operator@example.test",
-            PrincipalId = "local-principal",
+            Id = userId,
+            UserName = userId == "local-user" ? "operator@example.test" : $"{userId}@example.test",
+            Email = userId == "local-user" ? "operator@example.test" : $"{userId}@example.test",
+            PrincipalId = $"{userId}-principal",
             SecurityStamp = "initial-stamp"
         };
         (await users.CreateAsync(user, "A-strong-local-password-1")).Succeeded.Should().BeTrue();

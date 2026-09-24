@@ -7,6 +7,7 @@ using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using System.Runtime.CompilerServices;
+using System.Reflection;
 using MudBlazor.Services;
 using NetRatel.Application.Notifications;
 using NetRatel.Shared.Contracts;
@@ -22,6 +23,8 @@ namespace NetRatel.Web.ComponentTests;
 
 public class MainLayoutTests : AsyncBunitContext
 {
+    private static string ExpectedProductVersion => AppBarVersionResolver.FormatProductVersion(
+        typeof(MainLayout).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()!.InformationalVersion);
     public MainLayoutTests()
     {
         JSInterop.Mode = JSRuntimeMode.Loose;
@@ -49,7 +52,7 @@ public class MainLayoutTests : AsyncBunitContext
         var cut = RenderMainLayout();
 
         cut.Find(".netratel-appbar-api-chip[href='/api/docs/']").TextContent.Trim().Should().Be("API");
-        cut.Find(".netratel-appbar-version-chip").TextContent.Trim().Should().Be("v0.1.0-rc.5");
+        cut.Find(".netratel-appbar-version-chip").TextContent.Trim().Should().Be(ExpectedProductVersion);
     }
 
     [Fact]
@@ -63,7 +66,7 @@ public class MainLayoutTests : AsyncBunitContext
 
         var cut = RenderMainLayout();
 
-        cut.Find(".netratel-appbar-version-chip").TextContent.Trim().Should().Be("v0.1.0-rc.5");
+        cut.Find(".netratel-appbar-version-chip").TextContent.Trim().Should().Be(ExpectedProductVersion);
     }
 
     [Fact]
@@ -85,7 +88,7 @@ public class MainLayoutTests : AsyncBunitContext
 
         var cut = RenderMainLayout();
 
-        cut.Find(".netratel-appbar-version-chip").TextContent.Trim().Should().Be("v0.1.0-rc.5");
+        cut.Find(".netratel-appbar-version-chip").TextContent.Trim().Should().Be(ExpectedProductVersion);
     }
 
     [Fact]
@@ -109,7 +112,7 @@ public class MainLayoutTests : AsyncBunitContext
         var cut = RenderMainLayout();
 
         cut.Find(".netratel-appbar-api-chip").TextContent.Trim().Should().Be("API");
-        cut.Find(".netratel-appbar-version-chip").TextContent.Trim().Should().Be("v0.1.0-rc.5");
+        cut.Find(".netratel-appbar-version-chip").TextContent.Trim().Should().Be(ExpectedProductVersion);
         cut.FindAll(".netratel-appbar-desktop-actions .netratel-appbar-chip").Should().HaveCount(2);
     }
 
@@ -132,7 +135,7 @@ public class MainLayoutTests : AsyncBunitContext
         cut.WaitForAssertion(() =>
         {
             cut.Markup.Should().Contain("API Docs");
-            cut.Markup.Should().Contain("v0.1.0-rc.5");
+            cut.Markup.Should().Contain(ExpectedProductVersion);
             cut.Markup.Should().Contain("Notifications");
             cut.Markup.Should().Contain("Theme: System");
             cut.Markup.Should().Contain("System");

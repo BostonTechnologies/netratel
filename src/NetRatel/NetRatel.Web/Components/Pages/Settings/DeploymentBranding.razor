@@ -7,12 +7,13 @@
 @inject ISnackbar Snackbar
 @inject NavigationManager Navigation
 
-<PageTitle>Deployment branding</PageTitle>
+<PageTitle>Branding</PageTitle>
 
 <MudContainer MaxWidth="MaxWidth.Large" Class="mt-4" data-testid="deployment-branding-page">
+    @if (_interactiveReady) { <span hidden data-testid="deployment-branding-client-ready"></span> }
     <MudStack Spacing="3">
         <MudPaper Class="pa-4">
-            <MudText Typo="Typo.h4">Deployment branding</MudText>
+            <MudText Typo="Typo.h4">Branding</MudText>
             <MudText Typo="Typo.body2" Color="Color.Secondary">Deployment configuration takes precedence over administrator overrides. Reset clears only the stored override and always preserves NetRatel product, protocol, package, and security identities.</MudText>
         </MudPaper>
 
@@ -81,6 +82,15 @@
 </MudContainer>
 
 @code {
+    private bool _interactiveReady;
+
+    protected override void OnAfterRender(bool firstRender)
+    {
+        if (!firstRender) return;
+        _interactiveReady = true;
+        StateHasChanged();
+    }
+
     private sealed record AssetSlot(string Slot, string Label, Func<EffectiveDeploymentBranding, string> Url, Func<EffectiveDeploymentBranding, bool> IsLocked);
     private static readonly IReadOnlyList<AssetSlot> AssetSlots =
     [

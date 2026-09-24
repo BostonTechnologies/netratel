@@ -1,6 +1,4 @@
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Infrastructure;
-using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using NetRatel.Application.Operations;
 
 namespace NetRatel.Infrastructure.Persistence;
@@ -68,8 +66,6 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
     public DbSet<RemoteSupportSessionRecord> RemoteSupportSessions => Set<RemoteSupportSessionRecord>();
     public DbSet<RemoteSupportAuditEventRecord> RemoteSupportAuditEvents => Set<RemoteSupportAuditEventRecord>();
 
-    protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder) =>
-        optionsBuilder.ReplaceService<IModelCacheKeyFactory, ProviderAwareModelCacheKeyFactory>();
     public DbSet<ClientUpdateReleaseRecord> ClientUpdateReleases => Set<ClientUpdateReleaseRecord>();
     public DbSet<ClientUpdateAttemptRecord> ClientUpdateAttempts => Set<ClientUpdateAttemptRecord>();
     public DbSet<AgentClientUpdateStateRecord> AgentClientUpdateStates => Set<AgentClientUpdateStateRecord>();
@@ -1296,27 +1292,5 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
                 .OnDelete(DeleteBehavior.Restrict);
         });
 
-        if (Database.IsSqlite())
-        {
-            var converter = new DateTimeOffsetToBinaryConverter();
-            foreach (var property in modelBuilder.Model.GetEntityTypes()
-                         .SelectMany(entity => entity.GetProperties())
-                         .Where(property => property.ClrType == typeof(DateTimeOffset) || property.ClrType == typeof(DateTimeOffset?)))
-            {
-                property.SetValueConverter(converter);
-            }
-
-            foreach (var property in modelBuilder.Model.GetEntityTypes().SelectMany(entity => entity.GetProperties())
-                         .Where(property => string.Equals(property.GetColumnType(), "jsonb", StringComparison.OrdinalIgnoreCase)))
-            {
-                property.SetColumnType(null);
-            }
-
-            foreach (var index in modelBuilder.Model.GetEntityTypes().SelectMany(entity => entity.GetIndexes()))
-            {
-                index.RemoveAnnotation("Npgsql:IndexMethod");
-                index.RemoveAnnotation("Npgsql:IndexOperators");
-            }
-        }
     }
 }

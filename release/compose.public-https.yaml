@@ -1,0 +1,44 @@
+# Add after compose.images.yaml for a public HTTPS deployment. Supply a real
+# certificate/key pair and an unused Docker subnet in the instance .env file.
+services:
+  ingress:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "${NETRATEL_HTTPS_BIND_ADDRESS:-0.0.0.0}:${NETRATEL_HTTPS_PORT:-443}:443"
+    volumes:
+      - ${NETRATEL_HTTPS_CERTIFICATE:?set NETRATEL_HTTPS_CERTIFICATE}:/run/netratel-ingress/tls.crt:ro
+      - ${NETRATEL_HTTPS_PRIVATE_KEY:?set NETRATEL_HTTPS_PRIVATE_KEY}:/run/netratel-ingress/tls.key:ro
+      - ./nginx.public-https.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      public-ingress:
+        ipv4_address: ${NETRATEL_INGRESS_PROXY_IP:-172.29.20.10}
+    depends_on:
+      web:
+        condition: service_started
+
+  web:
+    environment:
+      AllowedHosts: ${NETRATEL_PUBLIC_HOST:?set NETRATEL_PUBLIC_HOST}
+      PublicBaseUrl: ${NETRATEL_PUBLIC_ORIGIN:?set NETRATEL_PUBLIC_ORIGIN}/
+      ForwardedHeaders__KnownProxies__0: ${NETRATEL_INGRESS_PROXY_IP:-172.29.20.10}
+      ForwardedHeaders__AllowedHosts__0: ${NETRATEL_PUBLIC_HOST:?set NETRATEL_PUBLIC_HOST}
+      Authentication__Local__AllowInsecureLocalhost: "false"
+      DataProtection__ApplicationName: NetRatel-Keyring
+    networks:
+      - default
+      - public-ingress
+
+  api:
+    environment:
+      Authentication__Local__AllowInsecureLocalhost: "false"
+      Bootstrap__AllowedOrigins__0: ${NETRATEL_PUBLIC_ORIGIN:?set NETRATEL_PUBLIC_ORIGIN}
+      Bootstrap__AllowedOrigins__1: ${NETRATEL_PUBLIC_ORIGIN:?set NETRATEL_PUBLIC_ORIGIN}
+      DataProtection__ApplicationName: NetRatel-Keyring
+      Integration__HttpMcp__PublicResourceUri: ${NETRATEL_MCP_PUBLIC_RESOURCE_URI:-}
+
+networks:
+  public-ingress:
+    ipam:
+      config:
+        - subnet: ${NETRATEL_INGRESS_SUBNET:-172.29.20.0/24}

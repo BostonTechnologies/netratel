@@ -3,7 +3,6 @@ using System.Linq;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text.Json;
-using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -569,12 +568,6 @@ public sealed class AgentTokenService : IAgentTokenService
 
     private static bool IsMissingAgentTokenEventsTable(DbUpdateException ex)
     {
-        if (ex.InnerException is SqliteException sqliteEx)
-        {
-            return sqliteEx.SqliteErrorCode == 1 &&
-                   sqliteEx.Message.Contains("AgentTokenEvents", StringComparison.OrdinalIgnoreCase);
-        }
-
         if (ex.InnerException is not PostgresException pgEx)
         {
             return false;

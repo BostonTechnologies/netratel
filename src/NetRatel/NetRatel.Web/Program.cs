@@ -40,6 +40,7 @@ using NetRatel.Web.Services.Branding;
 using NetRatel.Web.OpenApi;
 using Scalar.AspNetCore;
 using NetRatel.Web.Bootstrap;
+using NetRatel.Shared.Authentication;
 
 var builder = WebApplication.CreateBuilder(args);
 var localAuthenticationCookieName = builder.Configuration["Authentication:Local:CookieName"]?.Trim() is { Length: > 0 } configuredLocalCookieName
@@ -226,11 +227,7 @@ var browserAuthentication = builder.Services.AddAuthentication(options =>
     };
 });
 
-var hasConfiguredOidc = !string.IsNullOrWhiteSpace(oidcConfiguration["Authority"]) ||
-    !string.IsNullOrWhiteSpace(oidcConfiguration["ClientId"]) ||
-    !string.IsNullOrWhiteSpace(builder.Configuration["OIDC_CLIENT_SECRET"]) ||
-    !string.IsNullOrWhiteSpace(builder.Configuration["AZURE_CLIENT_SECRET"]);
-if (hasConfiguredOidc)
+if (AuthenticationModeConfiguration.Resolve(builder.Configuration) is "Oidc" or "Hybrid")
 {
     browserAuthentication.AddOpenIdConnect("Oidc", options =>
     {

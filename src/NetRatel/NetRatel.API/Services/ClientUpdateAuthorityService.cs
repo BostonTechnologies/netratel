@@ -499,28 +499,16 @@ public sealed class ClientUpdateAuthorityService(
 
     private async Task<long> IncrementRevisionAsync(CancellationToken cancellationToken)
     {
-        if (string.Equals(db.Database.ProviderName, "Microsoft.EntityFrameworkCore.Sqlite", StringComparison.Ordinal))
-        {
-            await db.Database.ExecuteSqlRawAsync(
-                "INSERT INTO \"ClientUpdateCatalogRevision\" (\"Id\", \"Revision\", \"UpdatedAtUtc\") VALUES (1, 1, CURRENT_TIMESTAMP) " +
-                "ON CONFLICT (\"Id\") DO UPDATE SET \"Revision\" = \"ClientUpdateCatalogRevision\".\"Revision\" + 1, \"UpdatedAtUtc\" = CURRENT_TIMESTAMP",
-                cancellationToken).ConfigureAwait(false);
-        }
-        else
-        {
-            await db.Database.ExecuteSqlRawAsync(
-                "INSERT INTO \"ClientUpdateCatalogRevision\" (\"Id\", \"Revision\", \"UpdatedAtUtc\") VALUES (1, 1, now()) " +
-                "ON CONFLICT (\"Id\") DO UPDATE SET \"Revision\" = \"ClientUpdateCatalogRevision\".\"Revision\" + 1, \"UpdatedAtUtc\" = now()",
-                cancellationToken).ConfigureAwait(false);
-        }
+        await db.Database.ExecuteSqlRawAsync(
+            "INSERT INTO \"ClientUpdateCatalogRevision\" (\"Id\", \"Revision\", \"UpdatedAtUtc\") VALUES (1, 1, now()) " +
+            "ON CONFLICT (\"Id\") DO UPDATE SET \"Revision\" = \"ClientUpdateCatalogRevision\".\"Revision\" + 1, \"UpdatedAtUtc\" = now()",
+            cancellationToken).ConfigureAwait(false);
         return await db.ClientUpdateCatalogRevisions.AsNoTracking()
             .Where(x => x.Id == 1).Select(x => x.Revision).SingleAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private Task NotifyAsync(long revision, CancellationToken cancellationToken) =>
-        db.Database.IsNpgsql()
-            ? db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_notify('netratel_client_updates', {revision.ToString()})", cancellationToken)
-            : Task.CompletedTask;
+        db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_notify('netratel_client_updates', {revision.ToString()})", cancellationToken);
 
     private async Task RefreshCatalogSafelyAsync(CancellationToken cancellationToken)
     {

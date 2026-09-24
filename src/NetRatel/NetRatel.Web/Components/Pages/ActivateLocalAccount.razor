@@ -10,6 +10,7 @@
 <PageTitle>Activate local account</PageTitle>
 
 <MudContainer MaxWidth="MaxWidth.Small" Class="mt-8">
+    @if (_interactiveReady) { <span hidden data-testid="local-activation-client-ready"></span> }
     <MudPaper Class="pa-5" data-testid="local-account-activation-page">
         <MudText Typo="Typo.h4">Activate local account</MudText>
         <MudText Typo="Typo.body2" Color="Color.Secondary" Class="mb-4">
@@ -30,6 +31,14 @@
 </MudContainer>
 
 @code {
+    private bool _interactiveReady;
+
+    protected override void OnAfterRender(bool firstRender)
+    {
+        if (!firstRender) return;
+        _interactiveReady = true;
+        StateHasChanged();
+    }
     private string? _email;
     private string? _activationToken;
     private string? _newPassword;

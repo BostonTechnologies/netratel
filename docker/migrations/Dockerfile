@@ -19,7 +19,7 @@ RUN set -eux; \
         useradd -u "${APP_UID}" -g "${APP_USER}" -s /usr/sbin/nologin -m "${APP_USER}" || \
         useradd -g "${APP_USER}" -s /usr/sbin/nologin -m "${APP_USER}"; \
     fi; \
-    mkdir -p /var/netratel/sqlite; \
+    mkdir -p /var/netratel; \
     chown -R "${APP_USER}:${APP_USER}" /var/netratel
 WORKDIR /app
 COPY --from=build /out .

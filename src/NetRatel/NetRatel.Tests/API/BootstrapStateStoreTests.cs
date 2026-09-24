@@ -8,6 +8,87 @@ namespace NetRatel.Tests.API;
 public sealed class BootstrapStateStoreTests
 {
     [Fact]
+    public async Task Operator_help_lists_supported_commands_without_creating_state()
+    {
+        await using var fixture = await BootstrapFixture.CreateAsync();
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+
+        BootstrapOperatorCommand.IsSupported([BootstrapOperatorCommand.Help]).Should().BeTrue();
+        (await BootstrapOperatorCommand.RunAsync(BootstrapOperatorCommand.Help, fixture.Options, output, error)).Should().Be(0);
+        output.ToString().Should().Contain("--setup-status").And.Contain("--show-setup-code").And.Contain("--rotate-setup-code");
+        Directory.Exists(fixture.Options.StateDirectory).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Operator_status_does_not_create_an_installation_or_disclose_a_code()
+    {
+        await using var fixture = await BootstrapFixture.CreateAsync();
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+
+        var missing = await BootstrapOperatorCommand.RunAsync(
+            BootstrapOperatorCommand.Status, fixture.Options, output, error);
+        missing.Should().Be(2);
+        Directory.Exists(fixture.Options.StateDirectory).Should().BeFalse();
+
+        await fixture.Store.LoadOrCreateAsync();
+        var code = await File.ReadAllTextAsync(fixture.SetupProofPath);
+        output.GetStringBuilder().Clear();
+        (await BootstrapOperatorCommand.RunAsync(BootstrapOperatorCommand.Status, fixture.Options, output, error)).Should().Be(0);
+        output.ToString().Should().Contain("Installation: Unconfigured").And.NotContain(code);
+    }
+
+    [Fact]
+    public async Task Operator_rotation_invalidates_only_an_unclaimed_generated_code()
+    {
+        await using var fixture = await BootstrapFixture.CreateAsync();
+        await fixture.Store.LoadOrCreateAsync();
+        var original = await File.ReadAllTextAsync(fixture.SetupProofPath);
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+
+        (await BootstrapOperatorCommand.RunAsync(BootstrapOperatorCommand.ShowCode, fixture.Options, output, error)).Should().Be(0);
+        output.ToString().Trim().Should().Be(original);
+        output.GetStringBuilder().Clear();
+        (await BootstrapOperatorCommand.RunAsync(BootstrapOperatorCommand.RotateCode, fixture.Options, output, error)).Should().Be(0);
+        var replacement = await File.ReadAllTextAsync(fixture.SetupProofPath);
+        replacement.Should().NotBe(original);
+        (await fixture.Store.VerifySetupProofAsync(original)).Should().BeFalse();
+        (await fixture.Store.VerifySetupProofAsync(replacement)).Should().BeTrue();
+
+        (await fixture.Store.ClaimSetupAsync(replacement, "PostgreSQL", "ConnectionStrings:NetRatelDb")).Succeeded.Should().BeTrue();
+        output.GetStringBuilder().Clear();
+        (await BootstrapOperatorCommand.RunAsync(BootstrapOperatorCommand.RotateCode, fixture.Options, output, error)).Should().Be(4);
+        (await BootstrapOperatorCommand.RunAsync(BootstrapOperatorCommand.ShowCode, fixture.Options, output, error)).Should().Be(4);
+        output.ToString().Should().NotContain(replacement);
+    }
+
+    [Fact]
+    public async Task Operator_rotation_never_overwrites_a_deployment_owned_proof()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "netratel-operator-proof-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var proofPath = Path.Combine(root, "deployment-proof");
+        const string proof = "deployment-owned-proof";
+        await File.WriteAllTextAsync(proofPath, proof);
+        try
+        {
+            var options = new BootstrapOptions { StateDirectory = Path.Combine(root, "bootstrap"), SetupProofPath = proofPath };
+            await new BootstrapStateStore(options).LoadOrCreateAsync();
+            using var output = new StringWriter();
+            using var error = new StringWriter();
+
+            (await BootstrapOperatorCommand.RunAsync(BootstrapOperatorCommand.RotateCode, options, output, error)).Should().Be(2);
+            (await File.ReadAllTextAsync(proofPath)).Should().Be(proof);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Claim_is_single_use_across_concurrent_store_instances()
     {
         await using var fixture = await BootstrapFixture.CreateAsync();

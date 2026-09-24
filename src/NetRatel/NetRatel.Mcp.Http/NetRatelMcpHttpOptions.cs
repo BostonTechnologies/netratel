@@ -2,6 +2,7 @@ using System.ComponentModel.DataAnnotations;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
 using NetRatel.Shared.Operations;
+using NetRatel.Shared.Connectivity;
 
 namespace NetRatel.Mcp.Http;
 
@@ -150,8 +151,8 @@ public sealed class NetRatelMcpHttpOptionsValidator : IValidateOptions<NetRatelM
             !string.IsNullOrWhiteSpace(options.ProdApiBaseUrl) &&
             Equivalent(options.DevApiBaseUrl, options.ProdApiBaseUrl))
             failures.Add("NetRatel:Mcp:Http:DevApiBaseUrl and ProdApiBaseUrl must be distinct.");
-        if (!IsCanonicalMcpResource(options.PublicResourceUri))
-            failures.Add("NetRatel:Mcp:Http:PublicResourceUri must be an absolute HTTPS /mcp URI.");
+        if (!McpResourceUri.TryNormalize(options.PublicResourceUri, out _))
+            failures.Add("NetRatel:Mcp:Http:PublicResourceUri must be an absolute HTTPS URI ending in /mcp.");
         if (!options.LocalCredentialMode && !IsAuthorityUri(options.Authority, options.RequireHttpsMetadata))
             failures.Add(options.RequireHttpsMetadata
                 ? "NetRatel:Mcp:Http:Authority must be an absolute HTTPS URI."
@@ -224,13 +225,6 @@ public sealed class NetRatelMcpHttpOptionsValidator : IValidateOptions<NetRatelM
     private static bool IsAuthorityUri(string value, bool requireHttpsMetadata)
         => Uri.TryCreate(value, UriKind.Absolute, out var uri)
            && (uri.Scheme == Uri.UriSchemeHttps || !requireHttpsMetadata && uri.Scheme == Uri.UriSchemeHttp)
-           && string.IsNullOrEmpty(uri.Query)
-           && string.IsNullOrEmpty(uri.Fragment);
-
-    private static bool IsCanonicalMcpResource(string value)
-        => Uri.TryCreate(value, UriKind.Absolute, out var uri)
-           && uri.Scheme == Uri.UriSchemeHttps
-           && string.Equals(uri.AbsolutePath.TrimEnd('/'), "/mcp", StringComparison.Ordinal)
            && string.IsNullOrEmpty(uri.Query)
            && string.IsNullOrEmpty(uri.Fragment);
 

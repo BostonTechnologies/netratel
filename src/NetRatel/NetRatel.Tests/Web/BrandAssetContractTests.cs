@@ -34,12 +34,12 @@ public sealed class BrandAssetContractTests
     {
         var app = File.ReadAllText(Path.Combine(RepoRoot, "src/NetRatel/NetRatel.Web/Components/App.razor"));
         var login = File.ReadAllText(Path.Combine(RepoRoot, "src/NetRatel/NetRatel.Web/Components/Pages/Login.razor"));
-        var layout = File.ReadAllText(Path.Combine(RepoRoot, "src/NetRatel/NetRatel.Web/Components/Layout/MainLayout.razor"));
+        var navigation = File.ReadAllText(Path.Combine(RepoRoot, "src/NetRatel/NetRatel.Web/Components/Layout/NavMenu.razor"));
         var css = File.ReadAllText(Path.Combine(RepoRoot, "src/NetRatel/NetRatel.Web/wwwroot/app-site.css"));
 
         app.Should().Contain("brand/netratel-mark-32.png").And.Contain("brand/apple-touch-icon.png").And.Contain("site.webmanifest");
         login.Should().Contain("brand/netratel-mark-64.png");
-        layout.Should().Contain("brand/netratel-wordmark-600.webp");
+        navigation.Should().Contain("brand/netratel-mark-64.png");
         css.Should().Contain("brand/netratel-splash-1600.webp").And.Contain("brand/netratel-splash-1280.webp");
 
         var manifest = JsonDocument.Parse(File.ReadAllText(Path.Combine(RepoRoot, "src/NetRatel/NetRatel.Web/wwwroot/site.webmanifest")));

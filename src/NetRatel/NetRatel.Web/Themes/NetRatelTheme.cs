@@ -45,8 +45,9 @@ public sealed class NetRatelTheme : MudTheme
         PaletteDark = new PaletteDark
         {
             Primary = "#d27655",
-            PrimaryDarken = "#ad593d",
+            PrimaryDarken = "#c66c4e",
             PrimaryLighten = "#e79a7b",
+            PrimaryContrastText = "#11161c",
             Secondary = "#55aaa2",
             Tertiary = "#81aee4",
             AppbarBackground = "#15191f",

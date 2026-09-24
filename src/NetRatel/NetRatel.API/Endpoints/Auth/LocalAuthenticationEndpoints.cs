@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Options;
 using Microsoft.EntityFrameworkCore;
 using NetRatel.API.Security.Local;
 using NetRatel.Infrastructure.Identity;
@@ -105,6 +106,21 @@ public static class LocalAuthenticationEndpoints
             user.FindFirstValue(ClaimTypes.Email) ?? string.Empty)))
             .RequireAuthorization(LocalAuthenticationOptions.LocalUserPolicy);
 
+        group.MapGet("/security/status", async (
+            UserManager<LocalUser> users,
+            IOptions<IdentityOptions> identityOptions,
+            HttpContext context) =>
+        {
+            context.Response.Headers.CacheControl = "no-store";
+            var user = await CurrentLocalUserAsync(users, context.User).ConfigureAwait(false);
+            if (user is null || !user.IsEnabled)
+                return Results.Unauthorized();
+
+            return Results.Ok(new LocalSecurityStatusResponse(
+                await users.GetTwoFactorEnabledAsync(user).ConfigureAwait(false),
+                identityOptions.Value.Password.RequiredLength));
+        }).RequireAuthorization(LocalAuthenticationOptions.LocalUserPolicy);
+
         group.MapPost("/change-password", async (
             [FromBody] ChangePasswordRequest request,
             UserManager<LocalUser> users,
@@ -126,7 +142,7 @@ public static class LocalAuthenticationEndpoints
             await users.UpdateAsync(user).ConfigureAwait(false);
             await context.SignOutAsync(LocalAuthenticationOptions.Scheme).ConfigureAwait(false);
             return Results.NoContent();
-        }).RequireAuthorization(LocalAuthenticationOptions.LocalUserPolicy);
+        }).RequireAuthorization(LocalAuthenticationOptions.LocalUserPolicy).RequireRateLimiting("local-security");
 
         group.MapPost("/two-factor/setup", async (
             [FromBody] CurrentPasswordRequest request,
@@ -169,7 +185,7 @@ public static class LocalAuthenticationEndpoints
             var issuer = "NetRatel";
             var uri = $"otpauth://totp/{Uri.EscapeDataString($"{issuer}:{accountName}")}?secret={Uri.EscapeDataString(key)}&issuer={Uri.EscapeDataString(issuer)}&digits=6";
             return Results.Ok(new AuthenticatorSetupResponse(key, uri));
-        }).RequireAuthorization(LocalAuthenticationOptions.LocalUserPolicy);
+        }).RequireAuthorization(LocalAuthenticationOptions.LocalUserPolicy).RequireRateLimiting("local-security");
 
         group.MapPost("/two-factor/enable", async (
             [FromBody] TwoFactorCodeRequest request,
@@ -188,7 +204,7 @@ public static class LocalAuthenticationEndpoints
             var recoveryCodes = await users.GenerateNewTwoFactorRecoveryCodesAsync(user, 10).ConfigureAwait(false);
             await InvalidateSessionsAsync(users, user).ConfigureAwait(false);
             return Results.Ok(new RecoveryCodesResponse(recoveryCodes?.ToArray() ?? []));
-        }).RequireAuthorization(LocalAuthenticationOptions.LocalUserPolicy);
+        }).RequireAuthorization(LocalAuthenticationOptions.LocalUserPolicy).RequireRateLimiting("local-security");
 
         group.MapPost("/two-factor/disable", async (
             [FromBody] DisableTwoFactorRequest request,
@@ -206,7 +222,7 @@ public static class LocalAuthenticationEndpoints
             await InvalidateSessionsAsync(users, user).ConfigureAwait(false);
             await context.SignOutAsync(LocalAuthenticationOptions.Scheme).ConfigureAwait(false);
             return Results.NoContent();
-        }).RequireAuthorization(LocalAuthenticationOptions.LocalUserPolicy);
+        }).RequireAuthorization(LocalAuthenticationOptions.LocalUserPolicy).RequireRateLimiting("local-security");
 
         group.MapPost("/users", async (
             [FromBody] CreateLocalAccountRequest request,
@@ -402,6 +418,7 @@ public static class LocalAuthenticationEndpoints
     public sealed record LocalAccountResponse(string UserId, string PrincipalId, string DisplayName, string Email);
     public sealed record ActivationResponse(string UserId, string Email, string ActivationToken);
     public sealed record AuthenticatorSetupResponse(string SharedKey, string AuthenticatorUri);
+    public sealed record LocalSecurityStatusResponse(bool TwoFactorEnabled, int MinimumPassphraseLength);
     public sealed record RecoveryCodesResponse(IReadOnlyList<string> RecoveryCodes);
     private sealed record LocalLoginChallenge(string UserId, string SecurityStamp, long AuthorizationRevision, bool RememberMe);
 }

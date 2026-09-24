@@ -8,7 +8,6 @@ on:
       expected_version:
         description: Version declared in release/release-manifest.json
         required: true
-        default: 0.1.0-rc.5
 
 permissions:
   contents: read
@@ -98,9 +97,9 @@ jobs:
           cp "artifacts/cli/NetRatel.Cli.${VERSION}.nupkg" artifacts/
           tar -C artifacts/cli -czf "artifacts/netratel-cli-${VERSION}-linux-x64.tar.gz" netratel-cli-linux-x64
           tar -C artifacts/mcp-stdio -czf "artifacts/netratel-mcp-stdio-${VERSION}-linux-x64.tar.gz" netratel-mcp-linux-x64
-          cp release/compose.images.yaml release/compose.local-sqlite.yaml release/compose.external-postgres.yaml release/compose.mcp-http.yaml release/.env.images.example release/release-manifest.json release/INSTALL.md LICENSE NOTICE artifacts/release-bundle/
-          mkdir -p artifacts/release-bundle/docs/mcp-http
-          cp docs/mcp-http/local-credential-mode.md artifacts/release-bundle/docs/mcp-http/
+          cp release/compose.images.yaml release/compose.external-postgres.yaml release/compose.public-https.yaml release/nginx.public-https.conf release/compose.mcp-http.yaml release/.env.images.example release/release-manifest.json release/INSTALL.md LICENSE NOTICE artifacts/release-bundle/
+          cp -a docs artifacts/release-bundle/
+          cp README.md artifacts/release-bundle/
           tar -C artifacts/release-bundle -czf "artifacts/netratel-compose-${VERSION}.tar.gz" .
           tools/ci/verify-release-local-first-profiles.sh --bundle "artifacts/netratel-compose-${VERSION}.tar.gz"
       - env:
@@ -300,11 +299,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - provider: sqlite
-            bundle_compose_file: compose.local-sqlite.yaml
-            compose_overlays: ''
-            external_connection: ''
-            external_init: ''
           - provider: bundled-postgresql
             bundle_compose_file: compose.images.yaml
             compose_overlays: ''
@@ -361,6 +355,51 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  postgresql-release-upgrade:
+    name: PostgreSQL previous-release upgrade (${{ matrix.authentication }})
+    needs: [validate, package]
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        authentication: [local, oidc]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          global-json-file: global.json
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: netratel-${{ needs.validate.outputs.version }}-linux-x64
+          path: release-artifacts
+      - env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          for component in migrations api web; do
+            image="netratel-${component}:postgresql-upgrade"
+            tools/ci/build-public-image.sh --dockerfile "docker/${component}/Dockerfile" --image "$image" --version "$VERSION" --revision "$GITHUB_SHA"
+            tools/ci/scan-public-image.sh --image "$image" --version "$VERSION" --revision "$GITHUB_SHA"
+          done
+      - env:
+          NETRATEL_UPGRADE_PRIOR_VERSION: v0.1.0-rc.5
+          NETRATEL_UPGRADE_PRIOR_API_IMAGE: ghcr.io/bostontechnologies/netratel-api@sha256:45ac6bc1e547ab3651e0a3e1dc7fb88a707126160b2d819450e29464f393ce9a
+          NETRATEL_UPGRADE_PRIOR_MIGRATIONS_IMAGE: ghcr.io/bostontechnologies/netratel-migrations@sha256:42b968a7f660d79255ddb51d0a6f9af14c86be1070e943afec8d3f17c42290f9
+          NETRATEL_UPGRADE_PRIOR_WEB_IMAGE: ghcr.io/bostontechnologies/netratel-web@sha256:ead47327e06e8ed698f673a0ae3176b82297709d025eae193b8121323f0b2cb7
+          NETRATEL_UPGRADE_PRIOR_CLIENT_IMAGE: ghcr.io/bostontechnologies/netratel-client@sha256:f5028da664f6edb2f4ef582c219393f070f4eb79b0faabe1971c1709c2717e91
+          NETRATEL_UPGRADE_CURRENT_API_IMAGE: netratel-api:postgresql-upgrade
+          NETRATEL_UPGRADE_CURRENT_MIGRATIONS_IMAGE: netratel-migrations:postgresql-upgrade
+          NETRATEL_UPGRADE_CURRENT_WEB_IMAGE: netratel-web:postgresql-upgrade
+        run: |
+          version="${{ needs.validate.outputs.version }}"
+          export NETRATEL_UPGRADE_COMPOSE_BUNDLE="release-artifacts/netratel-compose-${version}.tar.gz"
+          if [[ "${{ matrix.authentication }}" == local ]]; then
+            export NETRATEL_UPGRADE_CURRENT_CLI_ARCHIVE="release-artifacts/netratel-cli-${version}-linux-x64.tar.gz"
+            tools/ci/smoke-postgresql-local-upgrade.sh
+          else
+            tools/ci/smoke-postgresql-oidc-upgrade.sh
+          fi
+
   mcp-http-image-smoke:
     name: Smoke HTTP MCP release-equivalent image
     needs: validate
@@ -378,74 +417,24 @@ jobs:
           NETRATEL_MCP_HTTP_SMOKE_IMAGE: netratel-mcp-http:${{ needs.validate.outputs.version }}
         run: tools/ci/smoke-mcp-http-image.sh
 
-  rc3-local-upgrade-compose-smoke:
-    name: Smoke rc.3 local upgrade and restore
-    needs: [validate, package]
+  postgresql-regressions:
+    name: PostgreSQL provider and migration regressions
     runs-on: ubuntu-latest
     timeout-minutes: 35
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - env:
-          VERSION: ${{ needs.validate.outputs.version }}
-        run: |
-          for component in migrations api web; do
-            image="netratel-${component}:${VERSION}-rc3-local-upgrade"
-            tools/ci/build-public-image.sh --dockerfile "docker/${component}/Dockerfile" --image "$image" --version "$VERSION" --revision "$GITHUB_SHA"
-            tools/ci/scan-public-image.sh --image "$image" --version "$VERSION" --revision "$GITHUB_SHA"
-          done
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: netratel-${{ needs.validate.outputs.version }}-linux-x64
-          path: release-artifacts
-      - env:
-          NETRATEL_RC3_LEGACY_API_IMAGE: ghcr.io/bostontechnologies/netratel-api:0.1.0-rc.3-1e6a9227375f
-          NETRATEL_RC3_LEGACY_MIGRATIONS_IMAGE: ghcr.io/bostontechnologies/netratel-migrations:0.1.0-rc.3-1e6a9227375f
-          NETRATEL_RC3_LEGACY_WEB_IMAGE: ghcr.io/bostontechnologies/netratel-web:0.1.0-rc.3-1e6a9227375f
-          NETRATEL_RC3_CURRENT_API_IMAGE: netratel-api:${{ needs.validate.outputs.version }}-rc3-local-upgrade
-          NETRATEL_RC3_CURRENT_MIGRATIONS_IMAGE: netratel-migrations:${{ needs.validate.outputs.version }}-rc3-local-upgrade
-          NETRATEL_RC3_CURRENT_WEB_IMAGE: netratel-web:${{ needs.validate.outputs.version }}-rc3-local-upgrade
-        run: |
-          NETRATEL_RC3_UPGRADE_COMPOSE_BUNDLE="release-artifacts/netratel-compose-${{ needs.validate.outputs.version }}.tar.gz" \
-            tools/ci/smoke-rc3-local-upgrade.sh
-
-  rc3-postgresql-oidc-upgrade-compose-smoke:
-    name: Smoke rc.3 PostgreSQL/OIDC upgrade
-    needs: [validate, package]
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
           global-json-file: global.json
-      - env:
-          VERSION: ${{ needs.validate.outputs.version }}
-        run: |
-          for component in migrations api web; do
-            image="netratel-${component}:${VERSION}-rc3-postgresql-oidc-upgrade"
-            tools/ci/build-public-image.sh --dockerfile "docker/${component}/Dockerfile" --image "$image" --version "$VERSION" --revision "$GITHUB_SHA"
-            tools/ci/scan-public-image.sh --image "$image" --version "$VERSION" --revision "$GITHUB_SHA"
-          done
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: netratel-${{ needs.validate.outputs.version }}-linux-x64
-          path: release-artifacts
-      - env:
-          NETRATEL_RC3_LEGACY_API_IMAGE: ghcr.io/bostontechnologies/netratel-api:0.1.0-rc.3-1e6a9227375f
-          NETRATEL_RC3_LEGACY_MIGRATIONS_IMAGE: ghcr.io/bostontechnologies/netratel-migrations:0.1.0-rc.3-1e6a9227375f
-          NETRATEL_RC3_LEGACY_WEB_IMAGE: ghcr.io/bostontechnologies/netratel-web:0.1.0-rc.3-1e6a9227375f
-          NETRATEL_RC3_LEGACY_CLIENT_IMAGE: ghcr.io/bostontechnologies/netratel-client:0.1.0-rc.3-1e6a9227375f
-          NETRATEL_RC3_CURRENT_API_IMAGE: netratel-api:${{ needs.validate.outputs.version }}-rc3-postgresql-oidc-upgrade
-          NETRATEL_RC3_CURRENT_MIGRATIONS_IMAGE: netratel-migrations:${{ needs.validate.outputs.version }}-rc3-postgresql-oidc-upgrade
-          NETRATEL_RC3_CURRENT_WEB_IMAGE: netratel-web:${{ needs.validate.outputs.version }}-rc3-postgresql-oidc-upgrade
-        run: |
-          NETRATEL_RC3_UPGRADE_COMPOSE_BUNDLE="release-artifacts/netratel-compose-${{ needs.validate.outputs.version }}.tar.gz" \
-            tools/ci/smoke-rc3-postgresql-oidc-upgrade.sh
+      - run: |
+          bash tools/ci/check-postgresql-only.sh
+          dotnet test src/NetRatel/NetRatel.Tests/NetRatel.Tests.csproj --configuration Release \
+            --filter 'FullyQualifiedName~PostgreSqlProviderRegressionTests'
 
   release-rehearsal:
     name: Release rehearsal
     if: always()
-    needs: [validate, package, client-packages, images, release-image-compose-smoke, release-bundle-local-first-compose-smoke, rc3-local-upgrade-compose-smoke, rc3-postgresql-oidc-upgrade-compose-smoke, mcp-http-image-smoke]
+    needs: [validate, package, client-packages, images, release-image-compose-smoke, release-bundle-local-first-compose-smoke, postgresql-regressions, postgresql-release-upgrade, mcp-http-image-smoke]
     runs-on: ubuntu-latest
     steps:
       - env:
@@ -455,8 +444,8 @@ jobs:
           IMAGES_RESULT: ${{ needs.images.result }}
           RELEASE_IMAGE_COMPOSE_RESULT: ${{ needs.release-image-compose-smoke.result }}
           RELEASE_BUNDLE_LOCAL_FIRST_COMPOSE_RESULT: ${{ needs.release-bundle-local-first-compose-smoke.result }}
-          RC3_LOCAL_UPGRADE_COMPOSE_RESULT: ${{ needs.rc3-local-upgrade-compose-smoke.result }}
-          RC3_POSTGRESQL_OIDC_UPGRADE_COMPOSE_RESULT: ${{ needs.rc3-postgresql-oidc-upgrade-compose-smoke.result }}
+          POSTGRESQL_REGRESSIONS_RESULT: ${{ needs.postgresql-regressions.result }}
+          POSTGRESQL_RELEASE_UPGRADE_RESULT: ${{ needs.postgresql-release-upgrade.result }}
           MCP_HTTP_IMAGE_SMOKE_RESULT: ${{ needs.mcp-http-image-smoke.result }}
         run: |
           [[ "$VALIDATE_RESULT" == success ]]
@@ -465,6 +454,6 @@ jobs:
           [[ "$IMAGES_RESULT" == success ]]
           [[ "$RELEASE_IMAGE_COMPOSE_RESULT" == success ]]
           [[ "$RELEASE_BUNDLE_LOCAL_FIRST_COMPOSE_RESULT" == success ]]
-          [[ "$RC3_LOCAL_UPGRADE_COMPOSE_RESULT" == success ]]
-          [[ "$RC3_POSTGRESQL_OIDC_UPGRADE_COMPOSE_RESULT" == success ]]
+          [[ "$POSTGRESQL_REGRESSIONS_RESULT" == success ]]
+          [[ "$POSTGRESQL_RELEASE_UPGRADE_RESULT" == success ]]
           [[ "$MCP_HTTP_IMAGE_SMOKE_RESULT" == success ]]

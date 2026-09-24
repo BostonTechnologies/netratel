@@ -1,20 +1,13 @@
 # --- Base runtime image
 FROM mcr.microsoft.com/dotnet/aspnet:10.0-noble AS base
 
-# Prefer stable names; UIDs/GIDs are optional (remove if they collide)
+# The .NET base image's app identity is UID/GID 1654. Keep it stable so
+# existing rc.5 volumes remain readable and mounted owner-only keys work.
 ARG APP_USER=app
-ARG APP_UID=2000
-ARG APP_GID=2000
-
-# Create group/user only if missing (idempotent)
-RUN set -eux; \
-    if ! getent group "${APP_USER}" >/dev/null; then \
-        groupadd -g "${APP_GID}" "${APP_USER}" || groupadd "${APP_USER}"; \
-    fi; \
-    if ! id -u "${APP_USER}" >/dev/null 2>&1; then \
-        useradd -u "${APP_UID}" -g "${APP_USER}" -s /usr/sbin/nologin -m "${APP_USER}" || \
-        useradd -g "${APP_USER}" -s /usr/sbin/nologin -m "${APP_USER}"; \
-    fi
+ARG APP_UID=1654
+ARG APP_GID=1654
+RUN test "$(id -u "${APP_USER}")" = "${APP_UID}" \
+ && test "$(id -g "${APP_USER}")" = "${APP_GID}"
 
 ENV NetRatel_KEYS_DIR=/var/netratel/keys \
     NetRatel_HTTP_PORT=9222
@@ -34,7 +27,6 @@ COPY ["global.json", "Directory.Build.props", "Directory.Build.targets", "./"]
 COPY ["src/NetRatel/NetRatel.API/NetRatel.API.csproj", "src/NetRatel/NetRatel.API/"]
 COPY ["src/NetRatel/NetRatel.Application/NetRatel.Application.csproj", "src/NetRatel/NetRatel.Application/"]
 COPY ["src/NetRatel/NetRatel.Infrastructure/NetRatel.Infrastructure.csproj", "src/NetRatel/NetRatel.Infrastructure/"]
-COPY ["src/NetRatel/NetRatel.SqliteMigrations/NetRatel.SqliteMigrations.csproj", "src/NetRatel/NetRatel.SqliteMigrations/"]
 COPY ["src/NetRatel/NetRatel.ServiceDefaults/NetRatel.ServiceDefaults.csproj", "src/NetRatel/NetRatel.ServiceDefaults/"]
 COPY ["src/NetRatel/NetRatel.Shared/NetRatel.Shared.csproj", "src/NetRatel/NetRatel.Shared/"]
 COPY ["src/NetRatel/NetRatel.AgentGateway.Contracts/NetRatel.AgentGateway.Contracts.csproj", "src/NetRatel/NetRatel.AgentGateway.Contracts/"]

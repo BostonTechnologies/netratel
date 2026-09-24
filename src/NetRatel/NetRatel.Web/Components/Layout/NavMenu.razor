@@ -12,7 +12,7 @@
     </a>
     <AuthorizeView Context="outerAuthState">
         <Authorized Context="outerAuthState">
-            <MudText Typo="Typo.caption" Class="nav-section-label">Command</MudText>
+            <div class="nav-section-heading"><span>Command</span></div>
             <MudNavLink Href="/" Match="NavLinkMatch.All" Icon="@Icons.Material.Filled.Dashboard">Dashboard</MudNavLink>
 
             <MudNavGroup Title="Orchestration" Expanded="true" Icon="@Icons.Material.Filled.Workspaces">
@@ -24,14 +24,14 @@
 
             <MudNavLink Href="/scriptlibrary" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Code">Script Library</MudNavLink>
 
-            <MudText Typo="Typo.caption" Class="nav-section-label">Estate</MudText>
+            <div class="nav-section-heading"><span>Estate</span></div>
             <MudNavGroup Title="Estate Management" Expanded="false" Icon="@Icons.Material.Filled.Business">
                 <MudNavLink Href="/clients" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Devices">Clients</MudNavLink>
                 <MudNavLink Href="/tenants" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.People">Tenants</MudNavLink>
             </MudNavGroup>
             <MudNavLink Href="/clients/mgmt" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.RocketLaunch">Agent Installers</MudNavLink>
 
-            <MudText Typo="Typo.caption" Class="nav-section-label">Signals</MudText>
+            <div class="nav-section-heading"><span>Signals</span></div>
             <MudNavLink Href="/notifications" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Notifications">Notifications</MudNavLink>
             <MudNavGroup Title="AI Ops" Expanded="false">
                 <MudNavLink Href="/ai/ops" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Insights">MCP Tools</MudNavLink>
@@ -44,7 +44,7 @@
     <AuthorizeView Context="accountAuthState">
         <Authorized Context="accountAuthState">
             <MudNavLink Href="/account/security" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Person">@userName</MudNavLink>
-            <MudNavLink Href="/account/integration-credentials" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Key">Integration credentials</MudNavLink>
+            <MudNavLink Href="/account/integration-credentials" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Key">Integration</MudNavLink>
             <AuthorizeView Roles="Operator" Context="adminAuthState">
                 <Authorized Context="adminAuthState">
                     <MudNavGroup Title="Admin" Expanded="false" Icon="@Icons.Material.Filled.Settings">
@@ -57,7 +57,7 @@
             @if (canAdministerAccess)
             {
                 <MudNavLink Href="/admin/access" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.AdminPanelSettings">Access</MudNavLink>
-                <MudNavLink Href="/admin/branding" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.BrandingWatermark">Deployment branding</MudNavLink>
+                <MudNavLink Href="/admin/branding" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.BrandingWatermark">Branding</MudNavLink>
             }
             <MudNavLink Href="/logout" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Logout">Logout</MudNavLink>
         </Authorized>

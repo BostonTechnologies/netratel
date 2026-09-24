@@ -17,6 +17,7 @@ public sealed class LocalIdentityFoundationTests
     [InlineData(null, null, "Local")]
     [InlineData("Oidc", null, "Oidc")]
     [InlineData("Hybrid", "https://issuer.example.test", "Hybrid")]
+    [InlineData("local", "https://issuer.example.test", "Local")]
     public void Authentication_mode_resolves_without_making_oidc_a_local_mode_requirement(string? configuredMode, string? authority, string expectedMode)
     {
         var values = new Dictionary<string, string?>

@@ -7,7 +7,6 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\NetRatel.Infrastructure\NetRatel.Infrastructure.csproj" />
-    <ProjectReference Include="..\NetRatel.SqliteMigrations\NetRatel.SqliteMigrations.csproj" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.12" />

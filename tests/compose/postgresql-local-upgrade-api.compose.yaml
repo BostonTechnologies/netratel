@@ -1,0 +1,6 @@
+services:
+  api:
+    # Acceptance-only loopback access for the prior release account API.
+    # The release Web proxy intentionally exposes only selected API paths.
+    ports:
+      - "127.0.0.1:${NETRATEL_UPGRADE_LOCAL_API_PORT:-18083}:9222"

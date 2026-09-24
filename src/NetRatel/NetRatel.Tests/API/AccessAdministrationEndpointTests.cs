@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Security.Claims;
 using System.Text.Encodings.Web;
+using System.Text.Json;
 using FluentAssertions;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
@@ -89,6 +90,36 @@ public sealed class AccessAdministrationEndpointTests
         response.StatusCode.Should().Be(HttpStatusCode.OK, await response.Content.ReadAsStringAsync());
         var tenants = await response.Content.ReadFromJsonAsync<List<IntegrationCredentialEndpoints.CredentialTenantScopeResponse>>();
         tenants.Should().BeEquivalentTo([new IntegrationCredentialEndpoints.CredentialTenantScopeResponse(1, "Tenant A")]);
+    }
+
+    [Fact]
+    public async Task Credential_creation_reports_the_invalid_field_without_persisting_a_partial_credential()
+    {
+        using var app = await BuildAppAsync();
+        await SeedAsync(app.Services);
+        var client = app.GetTestClient();
+        client.DefaultRequestHeaders.Add("X-NetRatel-Principal", "tenant-admin");
+
+        var validExpiry = DateTimeOffset.UtcNow.AddDays(7);
+        var grant = new IntegrationCredentialGrantRequest(1, NetRatelPermissions.TelemetryRead);
+        await AssertFieldAsync(new(" ", IntegrationCredentialPurpose.Api, validExpiry, [grant]), "name");
+        await AssertFieldAsync(new("Invalid endpoint", IntegrationCredentialPurpose.HttpMcp, validExpiry,
+            [grant], "what ?"), "resource");
+        await AssertFieldAsync(new("Expired", IntegrationCredentialPurpose.Api, DateTimeOffset.UtcNow.AddMinutes(-1),
+            [grant]), "expiresAtUtc");
+
+        await using var scope = app.Services.CreateAsyncScope();
+        (await scope.ServiceProvider.GetRequiredService<NetRatelIdentityDbContext>()
+            .IntegrationCredentials.CountAsync()).Should().Be(0);
+
+        async Task AssertFieldAsync(IntegrationCredentialEndpoints.CreateIntegrationCredentialRequest request, string field)
+        {
+            using var response = await client.PostAsJsonAsync("/api/v2/account/integration-credentials/", request);
+            response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+            using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            body.RootElement.GetProperty("errors").TryGetProperty(field, out var messages).Should().BeTrue();
+            messages.GetArrayLength().Should().BePositive();
+        }
     }
 
     private static async Task<IHost> BuildAppAsync()

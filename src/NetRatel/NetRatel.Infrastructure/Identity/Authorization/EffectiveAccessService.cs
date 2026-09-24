@@ -79,6 +79,12 @@ public sealed class EffectiveAccessService(NetRatelIdentityDbContext db, IConfig
             return new(principalId, false, false, new HashSet<string>(StringComparer.Ordinal));
         }
 
+        if (credential is not null && await db.Users.AsNoTracking().AnyAsync(user =>
+                user.PrincipalId == principalId && !user.IsEnabled, cancellationToken).ConfigureAwait(false))
+        {
+            return new(principalId, false, false, new HashSet<string>(StringComparer.Ordinal));
+        }
+
         var localInstanceAdministrator = await db.Users
             .Where(user => user.PrincipalId == principalId && user.IsEnabled)
             .Select(user => user.IsInstanceAdministrator)
@@ -141,6 +147,24 @@ public sealed class EffectiveAccessService(NetRatelIdentityDbContext db, IConfig
         if (string.IsNullOrWhiteSpace(instance.PrincipalId))
         {
             return [];
+        }
+
+        var credentialId = principal.FindFirst(IntegrationCredentialIdClaimType)?.Value;
+        if (!string.IsNullOrWhiteSpace(credentialId))
+        {
+            var candidateTenantIds = await db.IntegrationCredentialGrants.AsNoTracking()
+                .Where(grant => grant.CredentialId == credentialId && grant.Permission == permission)
+                .Select(grant => grant.TenantId)
+                .Distinct()
+                .ToArrayAsync(cancellationToken)
+                .ConfigureAwait(false);
+            var authorized = new List<int>(candidateTenantIds.Length);
+            foreach (var tenantId in candidateTenantIds)
+            {
+                if (await AuthorizeAsync(principal, permission, tenantId, cancellationToken).ConfigureAwait(false))
+                    authorized.Add(tenantId);
+            }
+            return authorized.ToArray();
         }
 
         return await db.PrincipalRoleAssignments.AsNoTracking()

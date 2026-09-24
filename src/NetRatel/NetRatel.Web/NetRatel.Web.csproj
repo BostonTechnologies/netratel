@@ -8,6 +8,7 @@
     <DockerDefaultTargetOS>Linux</DockerDefaultTargetOS>
     <CompressDiscoveredAssetsDuringBuild>false</CompressDiscoveredAssetsDuringBuild>
     <EnableDefaultCompressedItems>false</EnableDefaultCompressedItems>
+    <!-- slopwatch-ignore: SW005 Existing MudBlazor extension package emits EXTEXP0001; this inherited suppression is unrelated to QRCoder. -->
     <NoWarn>$(NoWarn);EXTEXP0001</NoWarn>
   </PropertyGroup>
 
@@ -28,6 +29,7 @@
       <PackageReference Include="MudBlazor" Version="9.10.0" />
       <PackageReference Include="MudBlazor.Extensions" Version="9.10.0" />
       <PackageReference Include="MudBlazor.ThemeManager" Version="4.0.0" />
+      <PackageReference Include="QRCoder" Version="1.8.0" />
       <PackageReference Include="Scalar.AspNetCore" Version="2.17.6" />
     <PackageReference Include="XtermBlazor" Version="2.4.0" />
     <PackageReference Include="Yarp.ReverseProxy" Version="2.3.0" />

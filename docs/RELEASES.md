@@ -1,13 +1,16 @@
 # Release engineering
 
 All first-party components evaluate from the root product version. The current
-prerelease is `0.1.0-rc.5`; the component inventory is
+candidate prerelease is `0.1.0-rc.6`; the component inventory is
 `release/release-manifest.json`.
 
 The reviewed release notes for this candidate are
 [`RELEASE_NOTES.md`](RELEASE_NOTES.md). They are used as the GitHub prerelease
 notes only after the matching tagged workflow, provenance checks and promotion
 record complete.
+The [rc.5 notes](RELEASE_NOTES_0.1.0-rc.5.md) remain historical. The rc.6
+candidate is source preparation until the owner merges, tags, promotes, and
+verifies the public downloads.
 
 `tools/ci/verify-product-version.sh` checks evaluated project metadata against
 that manifest. Tag-driven CI requires a `v` tag whose normalized value exactly
@@ -36,7 +39,11 @@ Every final image is built with public OCI source, revision, and product-version
 labels, then its saved layers are scanned for generic credential material before
 the image smoke tests run. Its fail-closed `Release rehearsal` aggregate
 requires source validation, archive verification, all native Client packages,
-all final images, and both image smoke suites to succeed.
+all final images, both image smoke suites, and the PostgreSQL previous-release
+upgrade gate to succeed. The generic upgrade gate uses a controlled prior
+version and published image digests, then verifies Local and OIDC continuity
+against the candidate images. Its CI job and package repository names do not
+contain an RC version.
 
 For the native Client, the generated publish directory includes the executable,
 its update manifest, required sidecars, and the Linux PTY helper. Do not
@@ -57,7 +64,7 @@ digests. It is intentionally a deployment bundle, not a source-build recipe.
 
 PR and release rehearsal workflows never call the promotion command. After
 review and explicit publication approval, use a clean checkout of the merged
-public commit and an owner-created `v0.1.0-rc.5` tag pointing to that commit.
+public commit and an owner-created `v0.1.0-rc.6` tag pointing to that commit.
 Download the successful release-workflow artifact sets into a sibling release
 workspace (not the clean source checkout), retaining each set's `SHA256SUMS`.
 Create `release-receipt.json` beside them with the repository, workflow path,
@@ -73,7 +80,7 @@ Prepare and verify the flat downloadable layout without publishing:
 mkdir -p ../netratel-release-work/review-inputs
 python3 tools/ci/promote-release.py stage \
   --inputs ../netratel-release-work/review-inputs \
-  --output ../netratel-release-work/staged-release --version 0.1.0-rc.5
+  --output ../netratel-release-work/staged-release --version 0.1.0-rc.6
 (cd ../netratel-release-work/staged-release && sha256sum -c SHA256SUMS)
 ```
 
@@ -86,13 +93,13 @@ python3 tools/ci/promote-release.py preflight \
   --receipt ../netratel-release-work/release-receipt.json \
   --output ../netratel-release-work/preflight-staged \
   --state ../netratel-release-work/preflight-state.json \
-  --version 0.1.0-rc.5
+  --version 0.1.0-rc.6
 ```
 
 The only allowed container package repositories are `netratel-api`,
 `netratel-web`, `netratel-migrations`, `netratel-mcp-http`, and
 `netratel-client`. A release candidate is identified only by its immutable
-image tag (for example `0.1.0-rc.5`) and digest; never create an RC-specific
+image tag (for example `0.1.0-rc.6`) and digest; never create an RC-specific
 package name or CI/test name. Before promotion, an authorized operator must
 list the organization's container packages using a GitHub credential with
 `read:packages`. The promotion command repeats this check and fails closed
@@ -103,7 +110,7 @@ With registry login, invoke:
 
 ```sh
 python3 tools/ci/promote-release.py promote \
-  --approve "0.1.0-rc.5@$(git rev-parse HEAD)" \
+  --approve "0.1.0-rc.6@$(git rev-parse HEAD)" \
   --inputs ../netratel-release-work/review-inputs \
   --receipt ../netratel-release-work/release-receipt.json \
   --output ../netratel-release-work/promoted-release \
@@ -111,7 +118,7 @@ python3 tools/ci/promote-release.py promote \
 ```
 
 This command **pushes images**. Do not run it as a rehearsal. It uses the exact
-approved product-version tag (for example `0.1.0-rc.5`) in each fixed package
+approved product-version tag (for example `0.1.0-rc.6`) in each fixed package
 repository and never writes `latest` or stable aliases. Its journal
 allows a partial push to resume without rebuilding completed components. Its
 journal records the verified source receipt and exact input file digests, so a
@@ -134,9 +141,15 @@ approval. After the command succeeds, inspect `publication.json`, verify
 `SHA256SUMS` again, and create the prerelease only with explicit owner approval:
 
 ```sh
-gh release create v0.1.0-rc.5 promoted-release/* --verify-tag --prerelease \
-  --title "NetRatel 0.1.0-rc.5" --notes-file approved-release-notes.md
+gh release create v0.1.0-rc.6 promoted-release/* --verify-tag --prerelease \
+  --title "NetRatel 0.1.0-rc.6" --notes-file approved-release-notes.md
 ```
+
+After publication, download the public release assets into a new empty
+directory, verify its downloaded `SHA256SUMS` against every downloaded asset,
+verify the published attestations and image digests, and record that evidence
+against the accepted merged SHA. Do not mark release issues complete from the
+candidate source version or a successful private staging directory alone.
 
 The CLI tool is distributed as the downloadable NuGet package; this path does
 not push to NuGet.org. Do not replace rc.1 assets or change its tag. Public

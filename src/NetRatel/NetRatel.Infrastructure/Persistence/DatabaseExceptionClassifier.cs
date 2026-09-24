@@ -1,4 +1,3 @@
-using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 
@@ -13,7 +12,6 @@ public static class DatabaseExceptionClassifier
         {
             PostgresException { SqlState: PostgresErrorCodes.UniqueViolation, ConstraintName: var constraint }
                 when postgresConstraint is null || string.Equals(constraint, postgresConstraint, StringComparison.Ordinal) => true,
-            SqliteException { SqliteExtendedErrorCode: 1555 or 2067 } => true,
             _ => false
         };
     }

@@ -99,13 +99,6 @@ public static class DependencyInjection
 
     private static void ConfigureProvider(DbContextOptionsBuilder options, NetRatelDatabaseConfiguration database)
     {
-        if (database.Provider is NetRatelDatabaseProvider.Sqlite)
-        {
-            options.UseSqlite(database.ConnectionString, sqlite =>
-                sqlite.MigrationsAssembly("NetRatel.SqliteMigrations"));
-            return;
-        }
-
         options.UseNpgsql(database.ConnectionString);
     }
 

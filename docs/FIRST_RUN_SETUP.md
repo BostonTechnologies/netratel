@@ -1,113 +1,94 @@
 # First-run setup
 
-NetRatel has two supported fresh-install paths: the single-node SQLite profile
-for a small durable installation, and the normal PostgreSQL Compose profile.
-Both use the same persistent bootstrap descriptor, setup proof, local identity
-transaction, and local sign-in flow. The setup browser cannot create database
-containers or rewrite deployment configuration.
+NetRatel uses PostgreSQL for application and identity data. A new Local or
+Hybrid installation opens the proof-gated setup wizard; OIDC is optional.
+Finish the [image-bundle quick start](../README.md#get-started) or the
+[source recipe](SELF_HOSTING.md#source-build-for-development) first. The
+`migrations` container must exit successfully before API and Web can start.
 
-## Before opening the browser
+## Get the one-time setup code
 
-Choose the provider and prepare its persistent storage first. SQLite is only
-for one NetRatel instance with a local durable path; PostgreSQL remains the
-supported provider for multi-instance or scaled deployments. See
-[SQLite](SQLITE.md) for its limits and backup requirements.
-
-For a loopback-only SQLite source evaluation, provide a native-agent signing
-key and start the dedicated profile:
+Open the Web URL (`http://127.0.0.1:8080` in the loopback recipe). The first
+screen asks for a setup code. In the **API container console**, run:
 
 ```sh
-openssl ecparam -name prime256v1 -genkey -noout -out .netratel-agent-es256-private.pem
-chmod 600 .netratel-agent-es256-private.pem
-NETRATEL_AGENT_AUTH_PRIVATE_KEY=./.netratel-agent-es256-private.pem \
-  docker compose -f compose.sqlite.yaml up --build
+cat /var/netratel/bootstrap/setup-proof
 ```
 
-For bundled PostgreSQL, copy `.env.example`, set `POSTGRES_PASSWORD`, create
-the same agent key outside source control, and run `docker compose up --build`.
-For an external PostgreSQL service, supply its connection string and required
-provider settings through the deployment configuration before starting the
-migration runner and API. Migrations must complete before entering a password.
-
-The supplied source profiles bind Web to loopback and explicitly opt into
-insecure local cookies for that loopback evaluation only. Public deployments
-must terminate HTTPS, configure trusted proxy/public-host settings, set
-`Bootstrap:AllowedOrigins` to their real browser origin, and omit
-`Authentication:Local:AllowInsecureLocalhost`.
-
-## Browser wizard
-
-1. Open Web at its configured loopback or public HTTPS address. Fresh `/`,
-   `/login`, and protected application routes lead to `/setup` until the
-   instance is ready.
-2. Retrieve the one-time proof only on the trusted API host, for example:
-
-   ```sh
-   docker compose -f compose.sqlite.yaml exec -T api \
-     cat /var/netratel/bootstrap/setup-proof
-   ```
-
-   Do not put this value in a URL, shell history, screenshot, browser storage,
-   source file, or support bundle.
-3. Enter the proof, confirm the deployment-selected storage shown by the
-   wizard, then provide the initial tenant, administrator name, email and
-   passphrase. The wizard validates the configured provider; it does not
-   change environment variables or provision a database server.
-4. NetRatel atomically creates the local principal, first instance
-   administrator, tenant and ready marker, then deliberately restarts from the
-   restricted bootstrap host into the normal runtime. Sign in with the local
-   account after it returns. An enrolled authenticator prompts for MFA as a
-   separate second step.
-
-The proof is consumed after a claim, and browser setup uses a short-lived,
-HTTP-only same-origin setup session. Passwords and the proof remain transient
-in the form request; they are not retained in the bootstrap descriptor. Once
-ready, `/setup` shows a completion message only and no anonymous caller can
-replay setup.
-
-Display branding, timezone and advanced OIDC/integration configuration are
-deployment or administration concerns. Do not use the first-run form to claim
-that a Docker service, reverse proxy, provider connection string, or secret
-manager value has changed.
-
-## Unattended initialization
-
-Use unattended setup only from deployment-controlled automation with a
-protected password file/secret mount. It accepts the same setup proof,
-validation and transaction as the browser flow, and never places a password on
-the command line.
+From the host running the extracted image bundle:
 
 ```sh
-umask 077
-printf '%s\n' 'replace-with-a-secret-passphrase' > /run/secrets/netratel-admin-password
-
-Bootstrap__Unattended__PasswordFile=/run/secrets/netratel-admin-password \
-Bootstrap__Unattended__DisplayName='Initial administrator' \
-Bootstrap__Unattended__Email='admin@example.test' \
-Bootstrap__Unattended__TenantName='Initial tenant' \
-  dotnet NetRatel.API.dll --initialize-unattended
+docker compose --env-file .env -f compose.images.yaml exec -T api \
+  cat /var/netratel/bootstrap/setup-proof
 ```
 
-Run that command in the same deployment context that owns the bootstrap state,
-proof file, provider configuration and key material. It is rejected after
-setup has been claimed or completed, and must not be retried as a recovery
-mechanism.
+From the repository's source recipe:
 
-## Recovery and existing OIDC installations
+```sh
+docker compose exec -T api cat /var/netratel/bootstrap/setup-proof
+```
 
-If an initialized instance loses its selected store, bootstrap descriptor, or
-matching key material, it enters recovery rather than showing a new-owner
-wizard. Restore the matching provider data, bootstrap directory, Data
-Protection keys, native-agent signing material and other deployment state from
-the same backup set. Do not delete bootstrap state to create a replacement
-administrator.
+A managed-container console is already inside the API container; enter only
+the `cat` command. With Docker without Compose, identify the API container
+with `docker ps`, replace `your-api-container-name` with its actual name, then
+run this on the host:
 
-Existing configured OIDC installations retain their OIDC mode and established
-identities. Do not replace their provider configuration or use the guided
-wizard to merge accounts by email. Administrator-assisted local-account
-recovery requires deployment access and invalidates prior local sessions. To
-reset an existing instance administrator when no normal administrator session
-is available, mount a protected password file and invoke the explicit recovery
+```sh
+API_CONTAINER=your-api-container-name
+docker exec "$API_CONTAINER" cat /var/netratel/bootstrap/setup-proof
+```
+
+The code is not an
+administrator password. Do not put it in a URL, log, support bundle, or
+screenshot.
+
+Paste the code into the wizard. Choose an initial tenant, administrator name,
+email, and passphrase of at least 15 characters. After the API changes from
+the restricted setup host to its operational host, sign in with that email
+and passphrase. NetRatel has no default administrator password. An enrolled
+authenticator later adds a separate sign-in step.
+
+## Inspect or rotate the setup code
+
+The following commands run **inside the API container** (or from the Docker
+host with `docker compose ... exec -T api` before each `dotnet` invocation):
+
+```sh
+dotnet NetRatel.API.dll --setup-status
+dotnet NetRatel.API.dll --show-setup-code
+dotnet NetRatel.API.dll --rotate-setup-code
+```
+
+`--setup-status` reports lifecycle and code availability without printing the
+code or starting services. `--show-setup-code` deliberately prints the still
+usable code to the trusted console. `--rotate-setup-code` invalidates the
+previous code only while the installation is unconfigured and its generated
+proof is under NetRatel's control. It refuses claimed, ready, recovery, and
+deployment-mounted proof states. Each refusal returns a nonzero exit code.
+
+## Troubleshooting
+
+| Symptom | Check | Action |
+| --- | --- | --- |
+| Setup code file missing | `dotnet NetRatel.API.dll --setup-status` and `docker compose ps -a` | Wait for API bootstrap. If status says Recovery, restore its matching state; do not create a new owner. |
+| Code already used or expired | `--setup-status` shows Claimed, Completed, or Expired | Sign in if Ready. For an unclaimed generated code, use `--rotate-setup-code`; a claimed installation needs recovery, not rotation. |
+| Login appears on an empty Local install | Check `Authentication__Mode`, OIDC settings, PostgreSQL data, and `--setup-status` | Set explicit Local mode and correct the deployment configuration. Restore matching state if it previously held an owner. |
+| 403 behind a proxy | Compare the browser's Origin with `Bootstrap__AllowedOrigins__0`; check trusted proxy and public host settings | Set the exact HTTPS public origin in the deployment overlay and restart Web/API. Never trust arbitrary forwarded Host values. |
+| Migration failed | `docker compose logs migrations` | Correct PostgreSQL reachability and credentials, then rerun the one-shot migration service before API. |
+| API stopped after setup | `docker compose ps -a` and `docker compose logs api` | The setup host exits deliberately; the release recipe's `restart: unless-stopped` starts the operational host. Fix any reported startup error. |
+| Partial state reset | Status says Recovery or a ready installation loses its marker/key/database | Restore PostgreSQL, bootstrap state, Data Protection keys, signing key, and storage from the same backup set. Never delete only one component. |
+
+The setup page does not create databases, provision proxies, or rewrite
+deployment settings. [Self-hosting](SELF_HOSTING.md) covers bundled, external,
+and public HTTPS profiles.
+
+## Administrator recovery and existing OIDC identities
+
+An established OIDC installation retains issuer/subject mappings and its
+explicit administrator roles. Email similarity does not merge identities.
+If an existing local instance administrator (the original owner or a local
+account assigned an instance administrator role) cannot sign in, an authorized
+operator can mount a protected password file and invoke the existing recovery
 command in the API deployment context:
 
 ```sh
@@ -116,7 +97,14 @@ Bootstrap__Unattended__RecoveryEmail='admin@example.test' \
   dotnet NetRatel.API.dll --recover-local-admin
 ```
 
-It rejects an unknown or non-instance-administrator account, does not create a
-replacement owner, resets local MFA for that recovered account, and rotates
-the security stamp plus authorization revision. Do not expose this command
-through a browser route, support script, or password-bearing process argument.
+This updates only the named existing local instance administrator, clears its
+lockout, disables MFA, invalidates its sessions, and revokes integrations
+owned by that account. Re-enroll MFA and issue replacement integration
+credentials after signing in. It does not create a new owner.
+For deployment-owned unattended first setup, see [configuration](CONFIGURATION.md).
+
+A **full reset** is appropriate only for a disposable installation whose
+entire isolated Compose project and all its named volumes are intentionally
+being discarded. Back up anything needed first; never use a partial volume
+deletion as a recovery shortcut. Starting a new project with new PostgreSQL,
+bootstrap, and key volumes creates a genuinely new setup code.

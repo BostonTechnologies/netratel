@@ -1,7 +1,9 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Reflection;
 using FluentAssertions;
 using Microsoft.Extensions.Configuration;
+using NetRatel.API.Bootstrap;
 using NetRatel.Shared.Contracts.Scripts;
 
 using Xunit;
@@ -29,7 +31,9 @@ public class LiveSmokeTests
 
         version.Should().NotBeNull();
         version!.ServiceName.Should().Be("NetRatel.API");
-        version.DisplayVersion.Should().Be("v0.1.0-rc.5");
+        var assemblyVersion = typeof(BootstrapLifecycleService).Assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()!.InformationalVersion.Split('+')[0];
+        version.DisplayVersion.Should().Be($"v{assemblyVersion}");
         version.InformationalVersion.Should().NotBeNullOrWhiteSpace();
         version.AssemblyVersion.Should().NotBeNullOrWhiteSpace();
         version.Environment.Should().NotBeNullOrWhiteSpace();

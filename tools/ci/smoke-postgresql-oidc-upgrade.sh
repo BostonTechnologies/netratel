@@ -4,27 +4,28 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$root"
 
-project="netratel-rc3-postgresql-oidc-upgrade-${GITHUB_RUN_ID:-local}-${RANDOM}"
-legacy_api_image="${NETRATEL_RC3_LEGACY_API_IMAGE:?set NETRATEL_RC3_LEGACY_API_IMAGE}"
-legacy_migrations_image="${NETRATEL_RC3_LEGACY_MIGRATIONS_IMAGE:?set NETRATEL_RC3_LEGACY_MIGRATIONS_IMAGE}"
-legacy_web_image="${NETRATEL_RC3_LEGACY_WEB_IMAGE:?set NETRATEL_RC3_LEGACY_WEB_IMAGE}"
-legacy_client_image="${NETRATEL_RC3_LEGACY_CLIENT_IMAGE:?set NETRATEL_RC3_LEGACY_CLIENT_IMAGE}"
-current_api_image="${NETRATEL_RC3_CURRENT_API_IMAGE:?set NETRATEL_RC3_CURRENT_API_IMAGE}"
-current_migrations_image="${NETRATEL_RC3_CURRENT_MIGRATIONS_IMAGE:?set NETRATEL_RC3_CURRENT_MIGRATIONS_IMAGE}"
-current_web_image="${NETRATEL_RC3_CURRENT_WEB_IMAGE:?set NETRATEL_RC3_CURRENT_WEB_IMAGE}"
-bundle="${NETRATEL_RC3_UPGRADE_COMPOSE_BUNDLE:?set NETRATEL_RC3_UPGRADE_COMPOSE_BUNDLE}"
+project="netratel-postgresql-oidc-upgrade-${GITHUB_RUN_ID:-local}-${RANDOM}"
+legacy_api_image="${NETRATEL_UPGRADE_PRIOR_API_IMAGE:?set NETRATEL_UPGRADE_PRIOR_API_IMAGE}"
+legacy_migrations_image="${NETRATEL_UPGRADE_PRIOR_MIGRATIONS_IMAGE:?set NETRATEL_UPGRADE_PRIOR_MIGRATIONS_IMAGE}"
+legacy_web_image="${NETRATEL_UPGRADE_PRIOR_WEB_IMAGE:?set NETRATEL_UPGRADE_PRIOR_WEB_IMAGE}"
+legacy_client_image="${NETRATEL_UPGRADE_PRIOR_CLIENT_IMAGE:?set NETRATEL_UPGRADE_PRIOR_CLIENT_IMAGE}"
+legacy_version="${NETRATEL_UPGRADE_PRIOR_VERSION:?set NETRATEL_UPGRADE_PRIOR_VERSION}"
+current_api_image="${NETRATEL_UPGRADE_CURRENT_API_IMAGE:?set NETRATEL_UPGRADE_CURRENT_API_IMAGE}"
+current_migrations_image="${NETRATEL_UPGRADE_CURRENT_MIGRATIONS_IMAGE:?set NETRATEL_UPGRADE_CURRENT_MIGRATIONS_IMAGE}"
+current_web_image="${NETRATEL_UPGRADE_CURRENT_WEB_IMAGE:?set NETRATEL_UPGRADE_CURRENT_WEB_IMAGE}"
+bundle="${NETRATEL_UPGRADE_COMPOSE_BUNDLE:?set NETRATEL_UPGRADE_COMPOSE_BUNDLE}"
 bundle_extract_directory="$(mktemp -d)"
 agent_key_path="$(mktemp)"
 cookie_jar="$(mktemp)"
 tls_key_path="$(mktemp)"
 tls_certificate_path="$(mktemp)"
 tls_bundle_path="$(mktemp --suffix=.pfx)"
-stage="initializing rc.3 PostgreSQL/OIDC upgrade smoke"
+stage="initializing ${legacy_version} PostgreSQL/OIDC upgrade smoke"
 active_compose=()
 legacy_principal_count=""
 client_volume="${project}-client-state"
 
-[[ -s "$bundle" ]] || { echo "NETRATEL_RC3_UPGRADE_COMPOSE_BUNDLE is missing: $bundle" >&2; exit 1; }
+[[ -s "$bundle" ]] || { echo "NETRATEL_UPGRADE_COMPOSE_BUNDLE is missing: $bundle" >&2; exit 1; }
 tar -xzf "$bundle" -C "$bundle_extract_directory"
 [[ -f "$bundle_extract_directory/compose.images.yaml" ]] || { echo "The extracted release bundle is missing compose.images.yaml." >&2; exit 1; }
 
@@ -34,7 +35,7 @@ current_compose=(docker compose --project-name "$project" -f "$bundle_extract_di
 cleanup() {
   local status=$?
   if (( status != 0 )); then
-    echo "::error title=rc.3 PostgreSQL/OIDC upgrade smoke failed::${stage}" >&2
+    echo "::error title=PostgreSQL/OIDC upgrade smoke failed::${stage}" >&2
     if (( ${#active_compose[@]} > 0 )); then
       "${active_compose[@]}" ps --all >&2 || true
       "${active_compose[@]}" logs --no-color --tail 250 postgres migrations api web oidc >&2 || true
@@ -86,12 +87,14 @@ wait_for_web() {
 
 run_browser_oidc_smoke() {
   local expected_version="$1"
+  local expect_current_shell="$2"
   local proxy_address
   proxy_address="$("${active_compose[@]}" port web-proxy 9444)"
   NETRATEL_BROWSER_SMOKE_WEB_URL="$web_url" \
     NETRATEL_BROWSER_SMOKE_PROXY_URL="https://${proxy_address}" \
     NETRATEL_BROWSER_SMOKE_USERNAME=netratel-test-operator \
     NETRATEL_BROWSER_SMOKE_EXPECTED_VERSION="$expected_version" \
+    NETRATEL_BROWSER_SMOKE_EXPECT_CURRENT_SHELL="$expect_current_shell" \
     dotnet test src/NetRatel/NetRatel.Web.PlaywrightTests/NetRatel.Web.PlaywrightTests.csproj \
       --configuration Release --no-build --filter 'FullyQualifiedName~OidcComposeBrowserSmokeTests'
 }
@@ -104,7 +107,7 @@ durable_oidc_principal_count() {
 request_operator_access_token() {
   local redirect_uri authorization_url response callback_location callback_code token_response access_token
   redirect_uri="http://127.0.0.1:65535/netratel-smoke-callback"
-  authorization_url="http://host.docker.internal:${NETRATEL_OIDC_TEST_PORT}/default/authorize?response_type=code&client_id=netratel-smoke-client&redirect_uri=http%3A%2F%2F127.0.0.1%3A65535%2Fnetratel-smoke-callback&scope=openid%20netratel.api&state=rc3-postgresql-oidc-upgrade"
+  authorization_url="http://host.docker.internal:${NETRATEL_OIDC_TEST_PORT}/default/authorize?response_type=code&client_id=netratel-smoke-client&redirect_uri=http%3A%2F%2F127.0.0.1%3A65535%2Fnetratel-smoke-callback&scope=openid%20netratel.api&state=postgresql-oidc-upgrade"
   response="$(curl --silent --show-error --dump-header - --resolve "$oidc_resolve" \
     --cookie "$cookie_jar" --cookie-jar "$cookie_jar" "$authorization_url")"
   callback_location="$(awk 'BEGIN { IGNORECASE = 1 } /^location: / { sub(/^[^:]*: /, ""); sub(/\r$/, ""); print; exit }' <<<"$response")"
@@ -157,7 +160,11 @@ seed_historical_oidc_principal() {
   principal_id="$(tr -d '-' </proc/sys/kernel/random/uuid)"
   "${active_compose[@]}" exec -T postgres psql -v ON_ERROR_STOP=1 -U netratel -d netratel \
     -v principal_id="$principal_id" -v issuer="$issuer" -v subject="$subject" -q <<'SQL'
-INSERT INTO "ApplicationPrincipals" ("Id", "ExternalIssuer", "ExternalSubject", "CreatedAtUtc") VALUES (:'principal_id', :'issuer', :'subject', CURRENT_TIMESTAMP);
+-- Published prior release already projects the browser identity. Older fixtures may
+-- need the same stable issuer/subject principal seeded explicitly.
+INSERT INTO "ApplicationPrincipals" ("Id", "ExternalIssuer", "ExternalSubject", "CreatedAtUtc")
+VALUES (:'principal_id', :'issuer', :'subject', CURRENT_TIMESTAMP)
+ON CONFLICT ("ExternalIssuer", "ExternalSubject") DO NOTHING;
 SQL
 }
 
@@ -166,20 +173,20 @@ enroll_legacy_client() {
   access_token="$(request_operator_access_token)"
   tenant_response="$(curl --silent --show-error --fail \
     --header "Authorization: Bearer ${access_token}" --header 'Content-Type: application/json' \
-    --data '{"name":"rc3-postgresql-oidc-upgrade","description":"Disposable historical upgrade tenant","location":"test","domains":[],"autoUpdate":false}' \
+    --data '{"name":"postgresql-oidc-upgrade","description":"Disposable historical upgrade tenant","location":"test","domains":[],"autoUpdate":false}' \
     "${api_url}/api/v1/tenants/")"
   tenant_id="$(jq -r '.tenantId // empty' <<<"$tenant_response")"
   [[ "$tenant_id" =~ ^[1-9][0-9]*$ ]] || {
-    echo "Published rc.3 OIDC authority could not create the historical tenant." >&2
+    echo "Published ${legacy_version} OIDC authority could not create the historical tenant." >&2
     return 1
   }
   enrollment_response="$(curl --silent --show-error --fail \
     --header "Authorization: Bearer ${access_token}" --header 'Content-Type: application/json' \
-    --data '{"validForMinutes":5,"maxUses":1,"note":"Disposable rc.3 PostgreSQL/OIDC upgrade enrollment"}' \
+    --data '{"validForMinutes":5,"maxUses":1,"note":"Disposable prior-release PostgreSQL/OIDC upgrade enrollment"}' \
     "${api_url}/api/v1/tenants/${tenant_id}/enrollment-codes")"
   enrollment_code="$(jq -r '.enrollmentCode // empty' <<<"$enrollment_response")"
   [[ -n "$enrollment_code" ]] || {
-    echo "Published rc.3 OIDC authority could not issue a historical Client enrollment code." >&2
+    echo "Published ${legacy_version} OIDC authority could not issue a historical Client enrollment code." >&2
     return 1
   }
 
@@ -194,7 +201,7 @@ enroll_legacy_client() {
   auth_check_status=$?
   set -e
   if (( auth_check_status != 0 )); then
-    echo "Published rc.3 Client authentication failed immediately after enrollment." >&2
+    echo "Published ${legacy_version} Client authentication failed immediately after enrollment." >&2
     grep -E '^.*\[Auth(Check)?\]' <<<"$auth_check_output" | tail -n 1 >&2 || true
     return 1
   fi
@@ -208,24 +215,24 @@ verify_legacy_client_after_upgrade() {
   auth_check_status=$?
   set -e
   if (( auth_check_status != 0 )); then
-    echo "The persisted rc.3 Client could not authenticate against the upgraded candidate API." >&2
+    echo "The persisted ${legacy_version} Client could not authenticate against the upgraded candidate API." >&2
     grep -E '^.*\[Auth(Check)?\]' <<<"$auth_check_output" | tail -n 1 >&2 || true
     return 1
   fi
 }
 
-export POSTGRES_PASSWORD=synthetic-rc3-upgrade-postgres-password
+export POSTGRES_PASSWORD=synthetic-postgresql-oidc-upgrade-postgres-password
 export OIDC_AUTHORITY=https://issuer.example.invalid
-export OIDC_CLIENT_ID=synthetic-rc3-upgrade-client
+export OIDC_CLIENT_ID=synthetic-postgresql-oidc-upgrade-client
 export OIDC_API_SCOPE=netratel.api
 export OIDC_API_AUDIENCE=netratel.api
 export OIDC_TOKEN_ENDPOINT=https://issuer.example.invalid/oauth/token
-export OIDC_ADMIN_GROUP_ID=synthetic-rc3-upgrade-group
-export OIDC_CLIENT_SECRET=synthetic-rc3-upgrade-oidc-secret
-export NETRATEL_WEB_PORT="${NETRATEL_RC3_UPGRADE_WEB_PORT:-18084}"
-export NETRATEL_OIDC_TEST_PORT="${NETRATEL_RC3_UPGRADE_OIDC_PORT:-18085}"
+export OIDC_ADMIN_GROUP_ID=synthetic-postgresql-oidc-upgrade-group
+export OIDC_CLIENT_SECRET=synthetic-postgresql-oidc-upgrade-oidc-secret
+export NETRATEL_WEB_PORT="${NETRATEL_UPGRADE_OIDC_WEB_PORT:-18084}"
+export NETRATEL_OIDC_TEST_PORT="${NETRATEL_UPGRADE_OIDC_PORT:-18085}"
 export NETRATEL_AGENT_AUTH_PRIVATE_KEY="$agent_key_path"
-export NETRATEL_SMOKE_TLS_CERT_PASSWORD=synthetic-rc3-upgrade-certificate-password
+export NETRATEL_SMOKE_TLS_CERT_PASSWORD=synthetic-postgresql-oidc-upgrade-certificate-password
 export NETRATEL_GATEWAY_PROXY_CONFIG_PATH="$root/tests/compose/gateway-proxy.nginx.conf"
 export NETRATEL_WEB_PROXY_CONFIG_PATH="$root/tests/compose/web-proxy.nginx.conf"
 export NETRATEL_SMOKE_TLS_CERT_PATH="$tls_bundle_path"
@@ -247,20 +254,20 @@ dotnet restore src/NetRatel/NetRatel.Web.PlaywrightTests/NetRatel.Web.Playwright
 dotnet build src/NetRatel/NetRatel.Web.PlaywrightTests/NetRatel.Web.PlaywrightTests.csproj --configuration Release --no-restore
 pwsh src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/playwright.ps1 install --with-deps chromium
 
-stage="starting published rc.3 PostgreSQL/OIDC images"
+stage="starting published ${legacy_version} PostgreSQL/OIDC images"
 configure_images "$legacy_api_image" "$legacy_migrations_image" "$legacy_web_image"
 active_compose=("${legacy_compose[@]}")
 "${active_compose[@]}" up --detach
 wait_for_migrations
 curl --retry 20 --retry-connrefused --fail --silent --show-error "http://127.0.0.1:${NETRATEL_OIDC_TEST_PORT}/isalive" >/dev/null
 wait_for_web
-stage="authenticating through the published rc.3 OIDC browser journey"
-run_browser_oidc_smoke "v0.1.0-rc.3"
-stage="recording an existing rc.3 PostgreSQL OIDC principal fixture"
+stage="authenticating through the published ${legacy_version} OIDC browser journey"
+run_browser_oidc_smoke "$legacy_version" false
+stage="recording an existing ${legacy_version} PostgreSQL OIDC principal fixture"
 seed_historical_oidc_principal
 legacy_principal_count="$(durable_oidc_principal_count)"
 [[ "$legacy_principal_count" == 1 ]] || { echo "The historical PostgreSQL fixture did not retain exactly one external issuer/subject principal." >&2; exit 1; }
-stage="enrolling and authenticating a published rc.3 Client"
+stage="enrolling and authenticating a published ${legacy_version} Client"
 enroll_legacy_client
 
 stage="upgrading the published PostgreSQL/OIDC state with extracted candidate images"
@@ -272,10 +279,11 @@ wait_for_migrations
 curl --retry 20 --retry-connrefused --fail --silent --show-error "http://127.0.0.1:${NETRATEL_OIDC_TEST_PORT}/isalive" >/dev/null
 wait_for_web
 stage="authenticating through the upgraded PostgreSQL/OIDC browser journey"
-run_browser_oidc_smoke "v$(jq -r '.version' release/release-manifest.json)"
+run_browser_oidc_smoke "v$(jq -r '.version' release/release-manifest.json)" true
 [[ "$(durable_oidc_principal_count)" == "$legacy_principal_count" ]] || {
-  echo "The upgraded PostgreSQL/OIDC stack did not retain the durable rc.3 external principal set." >&2
+  echo "The upgraded PostgreSQL/OIDC stack did not retain the durable ${legacy_version} external principal set." >&2
   exit 1
 }
-stage="authenticating the persisted published rc.3 Client against candidate images"
+stage="authenticating the persisted published ${legacy_version} Client against candidate images"
 verify_legacy_client_after_upgrade
+echo "Published ${legacy_version} PostgreSQL/OIDC and native Client upgrade continuity passed."

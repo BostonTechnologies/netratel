@@ -122,19 +122,6 @@ internal static class AgentDirectorySearch
 
         var like = Like(term);
         var hasAgentId = Guid.TryParse(term, out var agentId);
-        if (!db.Database.IsNpgsql())
-        {
-            var sqliteLike = like.ToUpperInvariant();
-            var matchingSqliteTenantIds = db.Tenants.AsNoTracking()
-                .Where(tenant => EF.Functions.Like(tenant.Name.ToUpper(), sqliteLike, "\\"))
-                .Select(tenant => tenant.Id);
-            return agents.Where(agent =>
-                (agent.Name != null && EF.Functions.Like(agent.Name.ToUpper(), sqliteLike, "\\")) ||
-                (agent.DeviceInfoJson != null && EF.Functions.Like(agent.DeviceInfoJson.ToUpper(), sqliteLike, "\\")) ||
-                matchingSqliteTenantIds.Contains(agent.TenantId) ||
-                (hasAgentId && agent.Id == agentId));
-        }
-
         var matchingTenantIds = db.Tenants.AsNoTracking()
             .Where(tenant => EF.Functions.ILike(tenant.Name, like))
             .Select(tenant => tenant.Id);

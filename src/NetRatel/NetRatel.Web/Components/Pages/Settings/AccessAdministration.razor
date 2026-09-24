@@ -10,6 +10,7 @@
 <PageTitle>Access administration</PageTitle>
 
 <MudContainer MaxWidth="MaxWidth.False" Class="mt-4">
+    @if (_interactiveReady) { <span hidden data-testid="access-administration-client-ready"></span> }
     <MudStack Spacing="3">
         <MudPaper Class="pa-4">
             <MudText Typo="Typo.h4">Access administration</MudText>
@@ -110,6 +111,14 @@
 </MudContainer>
 
 @code {
+    private bool _interactiveReady;
+
+    protected override void OnAfterRender(bool firstRender)
+    {
+        if (!firstRender) return;
+        _interactiveReady = true;
+        StateHasChanged();
+    }
     private IReadOnlyList<LocalUserAccessDto> _users = [];
     private IReadOnlyList<AccessRoleDto> _roles = [];
     private IReadOnlyList<AccessTenantDto> _tenants = [];

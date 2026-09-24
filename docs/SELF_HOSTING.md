@@ -1,127 +1,184 @@
-# Self-hosting NetRatel
+# Self-host NetRatel
 
-NetRatel supports PostgreSQL for durable multi-instance application data and a
-single-node SQLite profile for smaller local deployments. Run Web and API on a
-private network, expose Web through HTTPS, and retain provider data, the Data
-Protection key ring, agent-signing material, and client artifact store together.
+## 1. Choose PostgreSQL and prepare the host
 
-After Web is running, `/api/docs/` exposes the generated same-origin API
-reference. It describes each operation's actual credential boundary but does
-not replace the deployment's OIDC, local-session, M2M, or agent configuration.
+Use the image bundle with its bundled PostgreSQL service for a normal first
+install. Use an external PostgreSQL service when you already operate one and
+can supply a dedicated database and connection string. Both paths need Docker
+Engine with Compose v2, OpenSSL, a Linux host that supports the published
+linux/amd64 images, persistent volumes, and a browser. Local accounts require
+no OIDC or SMTP configuration.
 
-## Local source evaluation
+Choose a public HTTPS origin before exposing Web beyond loopback. Keep API,
+PostgreSQL, and the agent gateway on a private network. The optional HTTP MCP
+server has its own public resource URL and separate instructions.
 
-Install Docker Compose and copy `.env.example` to `.env`. A fresh bundled
-PostgreSQL source evaluation needs a PostgreSQL password; OIDC values may
-remain unset because fresh installations use guided local-account setup.
-Existing OIDC deployments retain their configured OIDC settings and a
-native-agent signing key. Create that ES256 key outside source control when
-exercising operational native-agent connectivity:
+## 2. Extract the published image bundle
+
+On the [NetRatel releases page](https://github.com/BostonTechnologies/netratel/releases),
+select the intended prerelease and download its matching Compose archive and
+`SHA256SUMS`; do not assume GitHub's stable `/releases/latest` route selects a
+prerelease. Verify the archive, extract it, and work in the extracted directory:
 
 ```sh
+sha256sum -c --ignore-missing SHA256SUMS
+mkdir netratel-instance
+tar -xzf netratel-compose-*.tar.gz -C netratel-instance
+cd netratel-instance
+cp .env.images.example .env
+```
+
+Set a long random `POSTGRES_PASSWORD` in `.env`. A promoted bundle contains
+approved immutable image digests; review the three `NETRATEL_*_IMAGE` values
+and replace placeholders only with the verified digests from that release.
+Leave OIDC entries empty for local accounts.
+If old or example OIDC variables remain in your environment, add
+`NETRATEL_AUTHENTICATION_MODE=Local` to `.env`. To deliberately offer OIDC or
+both sign-in paths, set this value to `Oidc` or `Hybrid` and provide the
+complete OIDC settings described in [configuration](CONFIGURATION.md).
+
+Create the initial ES256 signing key in the instance directory and set its
+`.env` path:
+
+```sh
+umask 077
 openssl ecparam -name prime256v1 -genkey -noout -out .netratel-agent-es256-private.pem
-sudo chown 2000:2000 .netratel-agent-es256-private.pem
+sudo chown 1654:1654 .netratel-agent-es256-private.pem
 sudo chmod 600 .netratel-agent-es256-private.pem
 ```
 
-Set `NETRATEL_AGENT_AUTH_PRIVATE_KEY` in `.env` to that key file before an
-operational run, then run `docker compose up --build`. With OIDC unset, the
-Web application at `http://localhost:8080` guides a trusted operator through
-proof-gated local setup and then local sign-in. The private API volume contains
-the one-time bootstrap proof at `/var/netratel/bootstrap/setup-proof`; retrieve
-it only from a trusted operator console. This source-build stack uses only
-PostgreSQL and locally built Web/API images; it does not contact a
-vendor-operated service by default. The source image runs as UID/GID `2000`;
-deployments using a secret manager should mount the key read-only with
-equivalent ownership and mode.
+Keep `NETRATEL_AGENT_AUTH_PRIVATE_KEY=./.netratel-agent-es256-private.pem`.
+The application containers run as UID/GID 1654; a managed secret mount must
+be readable by that identity without making the private key world-readable.
 
-The `migrations` service is a one-shot explicit migration runner; API starts
-only after it succeeds. The stack intentionally does not provide a default
-administrator password or anonymous business mode. Follow the
-[first-run guide](FIRST_RUN_SETUP.md) to retrieve the private proof and create
-the first local administrator and tenant. Configure an OIDC client only for an
-optional OIDC or hybrid deployment; established OIDC deployments retain their
-existing operational path.
-
-The Compose Web port is loopback-bound by default. Set
-`NETRATEL_WEB_BIND_ADDRESS` deliberately when a reverse proxy must reach it;
-then configure that proxy's address/range and public host in the Web
-`ForwardedHeaders` settings described in [configuration](CONFIGURATION.md).
-
-## Disposable generic OIDC evaluation
-
-For a local evaluation of the complete browser sign-in flow, the repository
-includes a test-only Compose overlay backed by a publicly available generic
-OIDC server. It is not a production identity provider and it creates no
-administrator password. The overlay explicitly disables the otherwise-required
-HTTPS metadata check only for its local HTTP test server.
-
-Use the evaluation launcher from a fresh shell. It creates an isolated sibling
-workspace (not a directory in the Git checkout), persists a private complete
-Compose environment for that instance, and derives a unique Compose project,
-ports, and proxy subnet from its canonical workspace path. Two workspaces can
-therefore be evaluated without sharing volumes or a stop target. The web and API
-ports bind to loopback. The disposable OIDC port intentionally defaults to a
-non-loopback bind because containers must reach it through Docker's host gateway;
-run it only on a trusted evaluation host (or set `NETRATEL_OIDC_TEST_BIND_ADDRESS`
-before the first `start`).
+For external PostgreSQL, also set
+`NETRATEL_EXTERNAL_DATABASE_CONNECTION_STRING` in `.env` to a reachable,
+dedicated PostgreSQL database, then use **both** Compose files in every
+command below:
 
 ```sh
-tools/dev/oidc-evaluation.sh start
+docker compose --env-file .env -f compose.images.yaml -f compose.external-postgres.yaml config --quiet
+docker compose --env-file .env -f compose.images.yaml -f compose.external-postgres.yaml up -d
 ```
 
-Open the loopback URL printed by the launcher and use
-`netratel-test-operator` at the test provider's login form. On Linux hosts
-where Docker does not already resolve it, add the temporary local mapping
-`127.0.0.1 host.docker.internal` before opening the browser. Remove the
-test stack and its volumes after verifying logout with:
+The external overlay disables the bundled database. Ensure the external
+server and credentials are ready before running migrations.
+
+## 3. Start bundled PostgreSQL
+
+For the normal bundled path, run:
 
 ```sh
-tools/dev/oidc-evaluation.sh stop ../netratel-oidc-evaluation
+docker compose --env-file .env -f compose.images.yaml config --quiet
+docker compose --env-file .env -f compose.images.yaml pull
+docker compose --env-file .env -f compose.images.yaml up -d
+docker compose --env-file .env -f compose.images.yaml ps -a
 ```
 
-Pass the same alternate workspace path to both commands when the default
-sibling path is unsuitable. The automated CI smoke remains
-`tools/ci/smoke-oidc-compose.sh`; it creates and removes its own disposable
-resources and is not the interactive evaluation path.
+Expected result: `postgres` is healthy, `migrations` and `volume-init` exited
+with code 0, and `api` and `web` are running. The one-shot `volume-init`
+service prepares only the persistent API and shared-key volumes for the
+non-root UID 1654 application containers. If migration failed, inspect
+`docker compose --env-file .env -f compose.images.yaml logs migrations`
+before retrying. The API intentionally exits once after a successful setup;
+its `restart: unless-stopped` policy starts the operational host.
 
-## Configuration
+## 4. Open Web and create the first administrator
 
-The tracked `appsettings.json` files are examples only. Configure sensitive
-values through your deployment secret mechanism and persistent volumes rather
-than committing them to source control.
+Open **http://127.0.0.1:8080** on the Docker host. The setup wizard asks for
+a one-time code. Retrieve it from the API container:
 
-At minimum, provide the selected provider connection, a persistent Data
-Protection directory, unique system-token and agent-signing material. OIDC
-client settings are required only for a deliberately configured OIDC or hybrid
-browser-login mode; local-first setup does not require an external identity
-provider or SMTP service.
+```sh
+docker compose --env-file .env -f compose.images.yaml exec -T api \
+  cat /var/netratel/bootstrap/setup-proof
+```
 
-The optional machine-token bridge is configured under
-`Authentication__MachineToken`. It validates OIDC issuer, audience, signing
-keys, lifetime, signing algorithm, and required groups before issuing a Web
-session. It is separate from API M2M credentials and native-agent enrollment.
+In the API container console, run only
+`cat /var/netratel/bootstrap/setup-proof`. Paste the code into Web, choose the
+initial tenant, administrator name, email, and passphrase, then sign in with
+that email and passphrase. There is no default administrator password.
+See [first-run setup](FIRST_RUN_SETUP.md) for code status, expiry, and recovery.
+For external PostgreSQL, include `-f compose.external-postgres.yaml` in the
+host-side command too.
 
-## Release-image bundle
+## 5. Public HTTPS and managed containers
 
-After an approved public release, extract the release Compose bundle, copy
-`.env.images.example` to an untracked `.env` file beside the extracted
-`compose.images.yaml`, and replace each NetRatel image placeholder with the
-approved immutable digest from that release. Run `docker compose --env-file .env -f compose.images.yaml config --quiet` before starting the stack. The release
-bundle never builds application source; its migration image runs before API
-starts. Keep the agent key beside the extracted bundle, set
-`NETRATEL_AGENT_AUTH_PRIVATE_KEY=./.netratel-agent-es256-private.pem`, and use
-the same owner-only `600` permissions described above.
+The bundle includes `compose.public-https.yaml` and
+`nginx.public-https.conf`. Put a valid certificate and private key in
+`./tls/fullchain.pem` and `./tls/privkey.pem`, then set these `.env` values to
+your deployment (use a free, non-conflicting Docker subnet):
 
-The HTTP MCP image is an explicit opt-in overlay. Set its distinct HTTPS OIDC,
-resource URI, audience, API target, group, and scope values, then validate it
-with `docker compose --env-file .env -f compose.images.yaml -f
-compose.mcp-http.yaml config --quiet` from the extracted directory before starting. Do not point it
-at an internal-only address or reuse Web, API, or native-agent credentials.
+```dotenv
+NETRATEL_PUBLIC_HOST=netratel.example.com
+NETRATEL_PUBLIC_ORIGIN=https://netratel.example.com
+NETRATEL_HTTPS_CERTIFICATE=./tls/fullchain.pem
+NETRATEL_HTTPS_PRIVATE_KEY=./tls/privkey.pem
+NETRATEL_INGRESS_SUBNET=172.29.20.0/24
+NETRATEL_INGRESS_PROXY_IP=172.29.20.10
+NETRATEL_ALLOW_INSECURE_LOCALHOST=false
+```
 
-## Prerelease posture
+Replace the example host and subnet. The overlay sends Web the real public
+origin, allowed host, and exact trusted proxy address; API receives the exact
+bootstrap origin. It sets secure local cookies and a shared persistent Data
+Protection application identity. The base files already share the key volume,
+use `http://api:9222` internally, and start API after migration completion.
+Start with the overlay on **every** Compose command:
 
-`0.1.0-rc.1`, `0.1.0-rc.3`, and `0.1.0-rc.4` remain historical prereleases. Obtain `0.1.0-rc.5` only from
-its matching prerelease after its immutable tag, assets and image digests have
-been verified. A production rollout remains a separate operator decision; do
-not use a prerelease for unattended fleet updates.
+```sh
+docker compose --env-file .env -f compose.images.yaml -f compose.public-https.yaml config --quiet
+docker compose --env-file .env -f compose.images.yaml -f compose.public-https.yaml up -d
+```
+
+Open `NETRATEL_PUBLIC_ORIGIN`. For external PostgreSQL, include
+`-f compose.external-postgres.yaml` before `-f compose.public-https.yaml`.
+Managed deployments can use equivalent settings with their own HTTPS proxy.
+Use their API **container console** for `cat /var/netratel/bootstrap/setup-proof`;
+do not run Docker commands inside the container. Mount bootstrap state,
+Data Protection keys, application storage, and the signing key durably with
+UID/GID 1654 access. Keep the configured public HTTP MCP URL distinct from
+the internal API URL; see [local HTTP MCP mode](mcp-http/local-credential-mode.md).
+
+## 6. Restart, upgrade, and troubleshoot
+
+For an ordinary restart, run:
+
+```sh
+docker compose --env-file .env -f compose.images.yaml restart
+```
+
+Keep PostgreSQL, API state, the shared key ring,
+storage, and the signing key together. To upgrade, replace only verified image
+digests from the new approved bundle, run the migration service, then restart
+API/Web. Do not delete volumes or claim setup again.
+
+If the setup code is missing, the API returns 403 during setup, login appears
+on a fresh Local install, migrations fail, or API stops after setup, follow the
+specific checks in [first-run troubleshooting](FIRST_RUN_SETUP.md#troubleshooting).
+Use `dotnet NetRatel.API.dll --setup-status` in the API container to distinguish
+Ready, expired, and Recovery state. A partial database/key/bootstrap reset
+requires restoring one matching backup set; it must not create a new owner.
+
+## Alternatives and references
+
+- [Optional OIDC and Hybrid configuration](CONFIGURATION.md)
+- [CLI and MCP](CLI_AND_MCP.md)
+- [Backup, recovery, and first-run commands](FIRST_RUN_SETUP.md)
+- [Source build for development](DEVELOPMENT.md)
+
+### Source build for development
+
+From a source checkout, copy `.env.example` to `.env`, set
+`POSTGRES_PASSWORD` and `NETRATEL_AGENT_AUTH_PRIVATE_KEY`, then run
+`docker compose up --build -d`. Check `docker compose ps -a`, open
+`http://127.0.0.1:8080`, and use
+`docker compose exec -T api cat /var/netratel/bootstrap/setup-proof` to finish
+setup. This builds the source and is a separate path from the published bundle.
+
+### PostgreSQL-only transition
+
+First-party SQLite deployment and migration support ended after rc.5.
+Preserve an rc.5 SQLite installation and its data before changing anything.
+Use an explicit PostgreSQL transition plan; NetRatel does not silently convert
+the file or create a replacement empty installation. Historical release
+records remain available for audit.

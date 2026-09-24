@@ -13,8 +13,9 @@ CLI and stdio MCP linux-x64 archives are framework-dependent and require the
 .NET 10 runtime; the CLI NuGet tool additionally requires the .NET SDK to install.
 Native Client archives are self-contained and platform-specific.
 
-1. Download all assets to one directory and run `sha256sum -c SHA256SUMS`.
-2. Extract the matching `netratel-compose-<version>.tar.gz` into a new directory and enter it.
+1. Download the matching Compose archive and `SHA256SUMS` to one directory.
+   Run `sha256sum -c --ignore-missing SHA256SUMS` there.
+2. Extract that one `netratel-compose-*.tar.gz` into a new directory and enter it.
 3. Copy `.env.images.example` to `.env`. A promoted bundle supplies image digests;
    retain these. Replace the database password; leave the OIDC settings empty
    for local-account mode, or set them for a deliberately configured OIDC or
@@ -24,7 +25,7 @@ Native Client archives are self-contained and platform-specific.
    ```sh
    umask 077
    openssl ecparam -name prime256v1 -genkey -noout -out .netratel-agent-es256-private.pem
-   sudo chown 2000:2000 .netratel-agent-es256-private.pem
+   sudo chown 1654:1654 .netratel-agent-es256-private.pem
    sudo chmod 600 .netratel-agent-es256-private.pem
    ```
 
@@ -39,22 +40,33 @@ Native Client archives are self-contained and platform-specific.
    docker compose --env-file .env -f compose.images.yaml ps -a
    ```
 
-The migration service must exit zero before API starts. Web binds to
-`127.0.0.1:8080` by default. For remote use, terminate HTTPS at your reverse proxy,
-choose `NETRATEL_WEB_BIND_ADDRESS` deliberately and provide a Compose override:
+The migration and volume-init services must exit zero before API starts; the
+one-shot volume helper prepares named storage for the non-root UID 1654 API
+and Web processes. Web binds to
+`127.0.0.1:8080` by default.
 
-```yaml
-services:
-  web:
-    environment:
-      ForwardedHeaders__KnownProxies__0: "203.0.113.10"
-      ForwardedHeaders__AllowedHosts__0: "netratel.example.com"
+Open `http://127.0.0.1:8080` on the Docker host. The first-run wizard asks for a
+one-time setup code. Retrieve it from the running API container:
+
+```sh
+docker compose --env-file .env -f compose.images.yaml exec -T api \
+  cat /var/netratel/bootstrap/setup-proof
 ```
 
-Replace both example values with your actual proxy address and public hostname,
-set `NETRATEL_ALLOW_INSECURE_LOCALHOST=false`, and use HTTPS at the proxy.
-do not trust arbitrary private networks. Include the override with a second
-`-f proxy.override.yaml` on every Compose command.
+Enter the code, choose an administrator email and passphrase, and use those
+details to sign in. There is no default administrator password. From an API
+container console, use `cat /var/netratel/bootstrap/setup-proof` directly.
+Run `dotnet NetRatel.API.dll --setup-status` there if the code is unavailable.
+See [First-run setup](docs/FIRST_RUN_SETUP.md) for recovery cases.
+
+For public HTTPS, use the included `compose.public-https.yaml` and
+`nginx.public-https.conf`. Put a valid certificate and key at the paths in
+`.env`, set the actual public host and HTTPS origin, choose a free Docker
+subnet, and set `NETRATEL_ALLOW_INSECURE_LOCALHOST=false`. Include
+`-f compose.public-https.yaml` after the base file on every Compose command.
+The overlay configures the trusted proxy, allowed host, secure cookies, API's
+exact bootstrap origin, and shared key-ring application identity. Never trust
+arbitrary forwarded hosts.
 
 Optional HTTP MCP is not enabled by default. Its external-OIDC mode requires
 separate OIDC audience, scope, group and target API configuration in `.env`.
@@ -71,16 +83,17 @@ Back up PostgreSQL, signing keys and Data Protection volumes together. Do not
 delete persistent volumes during upgrades. No local administrator credentials or
 identity provider are included.
 
-## Alternate local data profiles
+## External PostgreSQL
 
-`compose.images.yaml` is the bundled PostgreSQL profile. For a single-node
-SQLite installation, replace it with `compose.local-sqlite.yaml` in every
-command above. It uses the same image variables, signing-key path, loopback
-defaults, and durable shared key ring; it does not start PostgreSQL.
-
-For a deployment-owned PostgreSQL server, retain `compose.images.yaml` and add
+`compose.images.yaml` starts bundled PostgreSQL. For a deployment-owned server,
+retain `compose.images.yaml` and add
 `-f compose.external-postgres.yaml` to every command. Set
 `NETRATEL_EXTERNAL_DATABASE_CONNECTION_STRING` to the dedicated NetRatel
 database connection string. The override disables the bundled database rather
 than requiring privileges that only its superuser has. Ensure the external
 database is reachable before starting the one-shot migrations service.
+
+For a missing code, run `dotnet NetRatel.API.dll --setup-status` inside the API
+container. Restore a matching backup set after a partial database, bootstrap,
+or key reset; do not delete one volume to reopen setup. The bundled
+`docs/FIRST_RUN_SETUP.md` has the detailed checks.

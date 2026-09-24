@@ -27,6 +27,86 @@ public sealed class BootstrapStateStore
         _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
+    /// <summary>Inspects existing state for an operator without creating an installation.</summary>
+    public async Task<BootstrapOperatorSnapshot> InspectOperatorAsync(bool revealCode, CancellationToken cancellationToken = default)
+    {
+        if (!File.Exists(PathFor(DescriptorFileName)))
+        {
+            var partial = File.Exists(PathFor(JournalFileName)) || File.Exists(PathFor(KeyMaterialProofFileName));
+            return new BootstrapOperatorSnapshot(partial ? BootstrapState.RecoveryRequired : null,
+                partial ? BootstrapProofState.Recovery : BootstrapProofState.Missing, null, null);
+        }
+
+        await using var lease = await AcquireLeaseAsync(cancellationToken).ConfigureAwait(false);
+        var descriptor = await ReadDescriptorAsync(cancellationToken).ConfigureAwait(false);
+        if (descriptor is null || !await HasMatchingKeyMaterialAsync(descriptor, cancellationToken).ConfigureAwait(false))
+            return new BootstrapOperatorSnapshot(BootstrapState.RecoveryRequired, BootstrapProofState.Recovery, null, null);
+        if (descriptor.State == BootstrapState.Ready)
+            return new BootstrapOperatorSnapshot(descriptor.State, BootstrapProofState.Completed, descriptor.SetupProofExpiresAtUtc, null);
+        if (descriptor.State == BootstrapState.RecoveryRequired)
+            return new BootstrapOperatorSnapshot(descriptor.State, BootstrapProofState.Recovery, descriptor.SetupProofExpiresAtUtc, null);
+        if (descriptor.State == BootstrapState.Configuring)
+            return new BootstrapOperatorSnapshot(descriptor.State, BootstrapProofState.Claimed, descriptor.SetupProofExpiresAtUtc, null);
+        if (descriptor.SetupProofExpiresAtUtc <= _timeProvider.GetUtcNow())
+            return new BootstrapOperatorSnapshot(descriptor.State, BootstrapProofState.Expired, descriptor.SetupProofExpiresAtUtc, null);
+
+        var proofPath = _options.SetupProofPath ?? PathFor(GeneratedSetupProofFileName);
+        if (!File.Exists(proofPath))
+            return new BootstrapOperatorSnapshot(descriptor.State, BootstrapProofState.Missing, descriptor.SetupProofExpiresAtUtc, null);
+
+        var proof = await ReadPrivateFileAsync(proofPath, cancellationToken).ConfigureAwait(false);
+        if (!IsSha256Hash(descriptor.SetupProofHash) ||
+            !CryptographicOperations.FixedTimeEquals(Convert.FromHexString(descriptor.SetupProofHash), Convert.FromHexString(Hash(proof))))
+        {
+            return new BootstrapOperatorSnapshot(descriptor.State, BootstrapProofState.Mismatch, descriptor.SetupProofExpiresAtUtc, null);
+        }
+
+        return new BootstrapOperatorSnapshot(descriptor.State, BootstrapProofState.Available, descriptor.SetupProofExpiresAtUtc,
+            revealCode ? proof : null);
+    }
+
+    /// <summary>Rotates only an unclaimed, generated proof under the same cross-process lease as setup.</summary>
+    public async Task<BootstrapOperatorRotationResult> RotateOperatorProofAsync(CancellationToken cancellationToken = default)
+    {
+        if (!File.Exists(PathFor(DescriptorFileName)))
+            return new(false, await InspectOperatorAsync(false, cancellationToken).ConfigureAwait(false));
+
+        var didRotate = false;
+        await using (var lease = await AcquireLeaseAsync(cancellationToken).ConfigureAwait(false))
+        {
+            var descriptor = await ReadDescriptorAsync(cancellationToken).ConfigureAwait(false);
+            if (descriptor is { State: BootstrapState.Unconfigured } && _options.SetupProofPath is null &&
+                await HasMatchingKeyMaterialAsync(descriptor, cancellationToken).ConfigureAwait(false))
+            {
+                var proofPath = PathFor(GeneratedSetupProofFileName);
+                var temporary = proofPath + ".rotate";
+                await WritePrivateRandomFileAsync(temporary, cancellationToken).ConfigureAwait(false);
+                var proof = await ReadPrivateFileAsync(temporary, cancellationToken).ConfigureAwait(false);
+                File.Move(temporary, proofPath, true);
+                var rotated = descriptor with
+                {
+                    SetupProofHash = Hash(proof),
+                    SetupProofExpiresAtUtc = _timeProvider.GetUtcNow() + _options.SetupProofLifetime,
+                    UpdatedAtUtc = _timeProvider.GetUtcNow()
+                };
+                await WriteDescriptorAsync(rotated, cancellationToken).ConfigureAwait(false);
+                await WriteJournalAsync(rotated, "setup-proof-rotated", cancellationToken).ConfigureAwait(false);
+                didRotate = true;
+            }
+        }
+
+        return new(didRotate, await InspectOperatorAsync(false, cancellationToken).ConfigureAwait(false));
+    }
+
+    private async Task<bool> HasMatchingKeyMaterialAsync(BootstrapDescriptor descriptor, CancellationToken cancellationToken)
+    {
+        var path = PathFor(KeyMaterialProofFileName);
+        if (!File.Exists(path) || !IsSha256Hash(descriptor.KeyMaterialProofHash)) return false;
+        var actual = Hash(await ReadPrivateFileAsync(path, cancellationToken).ConfigureAwait(false));
+        return CryptographicOperations.FixedTimeEquals(
+            Convert.FromHexString(descriptor.KeyMaterialProofHash), Convert.FromHexString(actual));
+    }
+
     public async Task<BootstrapDescriptor> LoadOrCreateAsync(CancellationToken cancellationToken = default)
     {
         await using var lease = await AcquireLeaseAsync(cancellationToken).ConfigureAwait(false);
@@ -449,3 +529,13 @@ public sealed record BootstrapClaimResult(bool Succeeded, BootstrapDescriptor? D
     public static BootstrapClaimResult Accepted(BootstrapDescriptor descriptor) => new(true, descriptor);
     public static BootstrapClaimResult Rejected(BootstrapDescriptor? descriptor = null) => new(false, descriptor);
 }
+
+public enum BootstrapProofState { Missing, Available, Expired, Claimed, Completed, Recovery, Mismatch }
+
+public sealed record BootstrapOperatorSnapshot(
+    BootstrapState? State,
+    BootstrapProofState ProofState,
+    DateTimeOffset? ExpiresAtUtc,
+    string? SetupCode);
+
+public sealed record BootstrapOperatorRotationResult(bool Rotated, BootstrapOperatorSnapshot Snapshot);
