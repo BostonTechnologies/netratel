@@ -76,9 +76,21 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await CaptureReviewScreenshotAsync(page, "login-mobile");
         await page.SetViewportSizeAsync(1440, 900);
         await CaptureReviewScreenshotAsync(page, "login-desktop");
+        await page.SetViewportSizeAsync(1280, 500);
+        await page.EvaluateAsync("() => { document.body.style.zoom = '200%'; }");
+        await page.GetByTestId("local-login-submit").ScrollIntoViewIfNeededAsync();
+        Assert.True(await page.GetByTestId("local-login-submit").IsVisibleAsync());
+        Assert.False(await page.EvaluateAsync<bool>("() => document.documentElement.scrollWidth > innerWidth"),
+            "The login page must reflow without horizontal scrolling at 200% zoom.");
+        await CaptureReviewScreenshotAsync(page, "login-zoom-200-narrow");
+        await page.EvaluateAsync("() => { document.body.style.zoom = ''; }");
         await page.SetViewportSizeAsync(390, 844);
         await AssertFirstPaintAsync(browser, webUrl, FirstPaintCases[1], "login", ".netratel-login-panel");
         await page.GetByTestId("local-login-client-ready").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
+        await page.GetByTestId("local-login-email").FocusAsync();
+        await page.Keyboard.PressAsync("Tab");
+        Assert.True(await page.GetByTestId("local-login-password").EvaluateAsync<bool>("input => input === document.activeElement"),
+            "The login fields must follow keyboard focus order.");
         await page.GetByTestId("local-login-email").FillAsync(email);
         await page.GetByTestId("local-login-password").FillAsync("incorrect local passphrase");
         await page.GetByTestId("local-login-password").PressAsync("Tab");

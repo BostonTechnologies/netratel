@@ -23,14 +23,14 @@ changing the historical rc.5 release record.
 
 | Requirement | Issue | Implementation and tests | Validated SHA / result | Unresolved item / next action |
 | --- | --- | --- | --- | --- |
-| E00 inventory and traceability | #107, #61 | This ledger; source, CI, issue discussions; draft PR #108 | `003da15`, PR #108 opened | Record exact-head hosted checks before review. |
+| E00 inventory and traceability | #107, #61 | This ledger; source, CI, issue discussions; PR #108 | `003da15`, PR #108 opened | Record final exact-head hosted checks before review. |
 | E01 PostgreSQL-only runtime and package | #107 | Provider retirement, migration/test ports, `check-postgresql-only.sh` | `cce277b`; 107 focused PostgreSQL tests, the retirement contract, 1,774 Release project tests, and published rc.5 PostgreSQL/local and OIDC upgrades passed | Hosted package and upgrade gates pending. |
 | E02 first run and deployment | #107, #60, #106 | Local/OIDC selection and recovery, operator commands, root-owned volume init, public HTTPS overlay | `5dfc436`; extracted bundled and external PostgreSQL browser journeys passed; operator commands, restart, partial/full reset, and real public HTTPS ingress passed locally | Hosted exact-head deployment matrix pending. |
-| E03 account security UX | #107, #64 | Protected status endpoint; state-driven MudBlazor cards and dialogs; local SVG QR; browser and API tests | `f119f00`; 1,774 Release project tests and the bundled/external/HTTPS browser passphrase, MFA, recovery, and reauthentication journey passed | Hosted exact-head browser gate pending; #64 retains separate remaining acceptance. |
-| E04 integration UX/grants | #107 | Authority catalog; multi-tenant/multi-grant wizard; URL validation; owner attenuation; PostgreSQL tests | `c7876d5`; focused PostgreSQL scope tests and bundled/external/HTTPS browser multi-grant, multi-tenant, and instance-only journeys passed | Hosted CLI/MCP and exact-head gates pending. |
+| E03 account security UX | #107, #64 | Protected status endpoint; state-driven MudBlazor cards and dialogs; local SVG QR; browser and API tests; role-assigned recovery and account security throttling | `89a0023` passed hosted browser gates; follow-up component tests passed 188/188, PostgreSQL regressions and source Compose browser passed | Hosted final exact-head gates pending. #64 retains separate external-provider acceptance. |
+| E04 integration UX/grants | #107 | Authority catalog; multi-tenant/multi-grant wizard; URL validation; owner attenuation; PostgreSQL tests; field-specific creation errors and connection guidance | `89a0023` passed hosted CLI/MCP and browser gates; follow-up error/guidance review pending | Revalidate final head. |
 | E05 login and shell | #107 | Centered login; drawer-only branding and section rules; labels; Playwright assertions | `6e745ea`; reviewed synthetic desktop/mobile captures; extracted bundle browser journeys passed | Hosted screenshot/browser gate pending. |
 | E06 documentation and issue audit | #107, #22, #60, #61, #62, #64, #71 | README/hosting/first-run/INSTALL rewrites; rc.3 ledger; #22 closure; #71 checkpoint | #22 closed after merged #23/#26; #71 updated with exact rc.5 publication evidence; 18 release-validator tests and extracted bundle profiles passed | PR #108 carries the final hosted package check result. |
-| E07 final acceptance and PR | #107 | PR #108 and release/CI gates | `8e464e5`; full Release solution build passed with 0 errors; 1,989 tests passed, 4 live-environment tests skipped, 0 failed; bundled/external/HTTPS and reset journeys passed; published rc.5 PostgreSQL/local and OIDC upgrades retained the administrator, credential, browser, and native Client continuity | Use PR #108's exact-head hosted checks as the review gate. |
+| E07 final acceptance and PR | #107 | PR #108 and release/CI gates | `89a0023`; hosted run 35908712130 passed all 22 jobs, including bundled/external/public-HTTPS browser, native Client, CLI/MCP, and rc.5 upgrades; follow-up Release build passed with 0 errors, 1,993 CI-filtered tests passed with 4 live-environment skips, and fresh source Compose browser passed | New exact-head hosted run pending. |
 
 Historical release notes, migrations, and issue comments remain evidence of their original
 state. This ledger does not treat an open issue as complete based only on a release number.
@@ -56,7 +56,7 @@ recovery code.
 | Journey | Capture |
 | --- | --- |
 | New owner setup | [Mobile setup](assets/rc5-enhancement/setup-mobile.png) |
-| Centered local sign-in | [Desktop login](assets/rc5-enhancement/login-desktop.png), [mobile login](assets/rc5-enhancement/login-mobile.png) |
+| Centered local sign-in | [Desktop login](assets/rc5-enhancement/login-desktop.png), [mobile login](assets/rc5-enhancement/login-mobile.png), [200% zoom at narrow height](assets/rc5-enhancement/login-zoom-200-narrow.png) |
 | Drawer branding and section rules | [Desktop drawer](assets/rc5-enhancement/drawer-desktop.png) |
 | Local account security | [Mobile security](assets/rc5-enhancement/security-mobile.png) |
 | Granular integration access | [Mobile integration](assets/rc5-enhancement/integration-access-mobile.png) |
@@ -69,6 +69,6 @@ recovery code.
 | #60 | First-run docs and supported operator commands are delivered here; close when PR #108 merges. |
 | #62 | F01–F08 and V01–V03 are classified against merged evidence in the rc.3 ledger; close when PR #108 merges. |
 | #106 | Root-owned key-volume reproduction and repair are delivered here; close when PR #108 merges. |
-| #64 | Retain open for the remaining external-provider credential lifecycle, recent-auth/rate-limit, and identity-continuity acceptance. This PR adds status-driven security UX and PostgreSQL recovery fencing. |
+| #64 | Retain open for remaining external-provider credential lifecycle and identity-continuity acceptance. This PR adds status-driven security UX, PostgreSQL recovery fencing, role-assigned administrator recovery, and account security throttling. |
 | #61 | Retain the epic while its remaining children are open. |
 | #71 | The immutable rc.5 publication evidence was posted to the issue; retain its dependent release-closure scope without publishing from this PR. |
