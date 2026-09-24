@@ -437,20 +437,22 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         var userCreated = false;
         try
         {
+            await RunNativeUserManagementAsync("chmod", "755", directory);
             await RunNativeUserManagementAsync("useradd", "--system", "--create-home", "--home-dir", home,
                 "--shell", "/usr/sbin/nologin", username);
             userCreated = true;
             var root = Path.Combine(home, "root");
-            await RunNativeClientAsync(username, "bash", ["-o", "pipefail", "-c", command], home,
+            await RunIsolatedNativeCommandAsync(username, "bash", ["-o", "pipefail", "-c", command], home,
                 certificate, root);
             var executable = Path.Combine(root, "versions", version, "NetRatel.Client");
             var manifest = Path.Combine(root, "versions", version, "netratel-client-manifest.json");
-            Assert.True(File.Exists(executable), "The imported client executable was not installed.");
-            Assert.True(File.Exists(manifest), "The normalized package manifest was not installed.");
-            Assert.Contains(version, await File.ReadAllTextAsync(manifest));
-            Assert.True(File.Exists(Path.Combine(home, ".local", "share", "netratel", "agent.dat")),
-                "The native installer did not persist its enrolled client identity.");
-            await RunNativeClientAsync(username, executable,
+            await RunIsolatedNativeCommandAsync(username, "test", ["-s", executable], home, certificate, root);
+            await RunIsolatedNativeCommandAsync(username, "python3",
+                ["-c", "import json,sys; assert json.load(open(sys.argv[1], encoding='utf-8-sig'))['version'] == sys.argv[2]", manifest, version],
+                home, certificate, root);
+            await RunIsolatedNativeCommandAsync(username, "test",
+                ["-s", Path.Combine(home, ".local", "share", "netratel", "agent.dat")], home, certificate, root);
+            await RunIsolatedNativeCommandAsync(username, executable,
                 ["--auth-check", "--api", webUrl.GetLeftPart(UriPartial.Authority)], home, certificate, root);
             Assert.Equal(404, (await anonymous.APIRequest.GetAsync(publicUrl)).Status);
         }
@@ -469,7 +471,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await dialog.GetByRole(AriaRole.Button, new() { Name = "Close", Exact = true }).ClickAsync();
     }
 
-    private static async Task RunNativeClientAsync(string username, string executable, IReadOnlyList<string> arguments,
+    private static async Task RunIsolatedNativeCommandAsync(string username, string executable, IReadOnlyList<string> arguments,
         string home, string certificate, string root)
     {
         var start = new ProcessStartInfo("sudo")
@@ -505,7 +507,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         }
         await Task.WhenAll(output, error);
         Assert.True(process.ExitCode == 0,
-            $"Native client install or authentication failed with exit code {process.ExitCode}. Output is suppressed because it may contain an enrollment capability.");
+            $"Isolated native command {Path.GetFileName(executable)} failed with exit code {process.ExitCode}. Output is suppressed because it may contain an enrollment capability.");
     }
 
     private static async Task RunNativeUserManagementAsync(params string[] arguments)
