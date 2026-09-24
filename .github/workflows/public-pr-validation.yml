@@ -65,7 +65,7 @@ jobs:
         with:
           global-json-file: global.json
       - run: |
-          version="$(jq -r '.version' release/release-manifest.json)"
+          version="$(python3 tools/ci/product-version.py)"
           mkdir -p artifacts/cli artifacts/mcp-stdio artifacts/release-bundle
           dotnet restore src/NetRatel/NetRatel.Cli/NetRatel.Cli.csproj --runtime linux-x64
           dotnet restore src/NetRatel/NetRatel.Mcp/NetRatel.Mcp.csproj --runtime linux-x64
@@ -86,13 +86,14 @@ jobs:
           cp "artifacts/cli/NetRatel.Cli.${version}.nupkg" artifacts/
           tar -C artifacts/cli -czf "artifacts/netratel-cli-${version}-linux-x64.tar.gz" netratel-cli-linux-x64
           tar -C artifacts/mcp-stdio -czf "artifacts/netratel-mcp-stdio-${version}-linux-x64.tar.gz" netratel-mcp-linux-x64
-          cp release/compose.images.yaml release/compose.external-postgres.yaml release/compose.public-https.yaml release/nginx.public-https.conf release/compose.mcp-http.yaml release/.env.images.example release/release-manifest.json release/INSTALL.md LICENSE NOTICE artifacts/release-bundle/
+          cp release/compose.images.yaml release/compose.external-postgres.yaml release/compose.public-https.yaml release/nginx.public-https.conf release/compose.mcp-http.yaml release/.env.images.example release/INSTALL.md LICENSE NOTICE artifacts/release-bundle/
+          python3 tools/ci/product-version.py --manifest-output artifacts/release-bundle/release-manifest.json
           cp -a docs artifacts/release-bundle/
           cp README.md artifacts/release-bundle/
           tar -C artifacts/release-bundle -czf "artifacts/netratel-compose-${version}.tar.gz" .
           tools/ci/verify-release-local-first-profiles.sh --bundle "artifacts/netratel-compose-${version}.tar.gz"
       - run: |
-          version="$(jq -r '.version' release/release-manifest.json)"
+          version="$(python3 tools/ci/product-version.py)"
           (
             cd artifacts
             sha256sum *.tar.gz "netratel-${version}.spdx.json" *.nupkg > SHA256SUMS
@@ -129,7 +130,7 @@ jobs:
           global-json-file: global.json
       - shell: bash
         run: |
-          version="$(jq -r '.version' release/release-manifest.json)"
+          version="$(python3 tools/ci/product-version.py)"
           directory="artifacts/netratel-client-${{ matrix.runtime }}"
           dotnet restore src/NetRatel/NetRatel.Client/NetRatel.Client.csproj --runtime "${{ matrix.runtime }}"
           dotnet publish src/NetRatel/NetRatel.Client/NetRatel.Client.csproj --configuration Release --no-restore --runtime "${{ matrix.runtime }}" --self-contained true --output "$directory"
@@ -162,7 +163,7 @@ jobs:
           esac
       - shell: bash
         run: |
-          version="$(jq -r '.version' release/release-manifest.json)"
+          version="$(python3 tools/ci/product-version.py)"
           (
             cd artifacts
             if command -v sha256sum >/dev/null 2>&1; then
@@ -204,7 +205,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: |
-          version="$(jq -r '.version' release/release-manifest.json)"
+          version="$(python3 tools/ci/product-version.py)"
           image="netratel-${{ matrix.name }}:pr-validation"
           tools/ci/build-public-image.sh --dockerfile "${{ matrix.dockerfile }}" --image "$image" --version "$version" --revision "$GITHUB_SHA"
           tools/ci/scan-public-image.sh --image "$image" --version "$version" --revision "$GITHUB_SHA"
@@ -224,7 +225,7 @@ jobs:
           name: pr-netratel-cli-mcp-linux-x64
           path: review-artifacts
       - run: |
-          version="$(jq -r '.version' release/release-manifest.json)"
+          version="$(python3 tools/ci/product-version.py)"
           tools/ci/build-public-image.sh --dockerfile docker/client/Dockerfile.public --image netratel-client:compose-smoke --version "$version" --revision "$GITHUB_SHA"
           tools/ci/scan-public-image.sh --image netratel-client:compose-smoke --version "$version" --revision "$GITHUB_SHA"
       - env:
@@ -241,8 +242,8 @@ jobs:
           NETRATEL_GATEWAY_PROXY_CONFIG_PATH: ${{ github.workspace }}/tests/compose/gateway-proxy.nginx.conf
         run: |
           docker compose -f compose.yaml config --quiet
-          NETRATEL_CLI_SMOKE_ARCHIVE="review-artifacts/netratel-cli-$(jq -r '.version' release/release-manifest.json)-linux-x64.tar.gz" \
-            NETRATEL_MCP_STDIO_SMOKE_ARCHIVE="review-artifacts/netratel-mcp-stdio-$(jq -r '.version' release/release-manifest.json)-linux-x64.tar.gz" \
+          NETRATEL_CLI_SMOKE_ARCHIVE="review-artifacts/netratel-cli-$(python3 tools/ci/product-version.py)-linux-x64.tar.gz" \
+            NETRATEL_MCP_STDIO_SMOKE_ARCHIVE="review-artifacts/netratel-mcp-stdio-$(python3 tools/ci/product-version.py)-linux-x64.tar.gz" \
             tools/ci/smoke-oidc-compose.sh
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -268,13 +269,13 @@ jobs:
           name: pr-netratel-cli-mcp-linux-x64
           path: review-artifacts
       - run: |
-          version="$(jq -r '.version' release/release-manifest.json)"
+          version="$(python3 tools/ci/product-version.py)"
           tools/ci/build-public-image.sh --dockerfile docker/mcp-http/Dockerfile --image netratel-mcp-http:local-first-smoke --version "$version" --revision "$GITHUB_SHA"
           tools/ci/scan-public-image.sh --image netratel-mcp-http:local-first-smoke --version "$version" --revision "$GITHUB_SHA"
       - run: |
           docker compose -f compose.yaml config --quiet
-          NETRATEL_CLI_SMOKE_ARCHIVE="review-artifacts/netratel-cli-$(jq -r '.version' release/release-manifest.json)-linux-x64.tar.gz" \
-            NETRATEL_MCP_STDIO_SMOKE_ARCHIVE="review-artifacts/netratel-mcp-stdio-$(jq -r '.version' release/release-manifest.json)-linux-x64.tar.gz" \
+          NETRATEL_CLI_SMOKE_ARCHIVE="review-artifacts/netratel-cli-$(python3 tools/ci/product-version.py)-linux-x64.tar.gz" \
+            NETRATEL_MCP_STDIO_SMOKE_ARCHIVE="review-artifacts/netratel-mcp-stdio-$(python3 tools/ci/product-version.py)-linux-x64.tar.gz" \
             NETRATEL_LOCAL_HTTP_MCP_SMOKE_IMAGE=netratel-mcp-http:local-first-smoke \
             tools/ci/smoke-local-first-compose.sh
       - if: always()
@@ -316,7 +317,7 @@ jobs:
           name: pr-netratel-cli-mcp-linux-x64
           path: review-artifacts
       - run: |
-          version="$(jq -r '.version' release/release-manifest.json)"
+          version="$(python3 tools/ci/product-version.py)"
           for component in migrations api web; do
             image="netratel-${component}:release-local-first"
             tools/ci/build-public-image.sh --dockerfile "docker/${component}/Dockerfile" --image "$image" --version "$version" --revision "$GITHUB_SHA"
@@ -335,7 +336,7 @@ jobs:
           NETRATEL_LOCAL_FIRST_EXTERNAL_POSTGRES_INIT: ${{ matrix.external_init }}
           NETRATEL_LOCAL_FIRST_STATE_RESET_ACCEPTANCE: ${{ matrix.reset_acceptance }}
         run: |
-          version="$(jq -r '.version' release/release-manifest.json)"
+          version="$(python3 tools/ci/product-version.py)"
           if [[ "${{ matrix.provider }}" == external-postgresql ]]; then
             export NETRATEL_LOCAL_FIRST_COMPOSE_OVERLAYS="$GITHUB_WORKSPACE/release/compose.external-postgres.yaml:$GITHUB_WORKSPACE/tests/compose/external-postgres-local-first.compose.yaml"
             export NETRATEL_LOCAL_FIRST_EXTERNAL_POSTGRES_INIT="$GITHUB_WORKSPACE/tests/compose/external-postgres-local-first-init.sql"
@@ -352,7 +353,7 @@ jobs:
           NETRATEL_WEB_IMAGE: netratel-web:release-local-first
           POSTGRES_PASSWORD: synthetic-ci-only-password
         run: |
-          version="$(jq -r '.version' release/release-manifest.json)"
+          version="$(python3 tools/ci/product-version.py)"
           certificate_dir="$(mktemp -d)"
           trap 'find "$certificate_dir" -depth -delete' EXIT
           openssl req -x509 -newkey rsa:2048 -nodes \
@@ -394,7 +395,7 @@ jobs:
           name: pr-netratel-cli-mcp-linux-x64
           path: review-artifacts
       - run: |
-          version="$(jq -r '.version' release/release-manifest.json)"
+          version="$(python3 tools/ci/product-version.py)"
           for component in migrations api web; do
             image="netratel-${component}:release-smoke"
             tools/ci/build-public-image.sh --dockerfile "docker/${component}/Dockerfile" --image "$image" --version "$version" --revision "$GITHUB_SHA"
@@ -420,9 +421,9 @@ jobs:
           NETRATEL_GATEWAY_PROXY_CONFIG_PATH: ${{ github.workspace }}/tests/compose/gateway-proxy.nginx.conf
         run: |
           docker compose -f release/compose.images.yaml -f tests/compose/oidc-smoke.compose.yaml config --quiet
-          NETRATEL_COMPOSE_SMOKE_BUNDLE="review-artifacts/netratel-compose-$(jq -r '.version' release/release-manifest.json).tar.gz" \
-            NETRATEL_CLI_SMOKE_ARCHIVE="review-artifacts/netratel-cli-$(jq -r '.version' release/release-manifest.json)-linux-x64.tar.gz" \
-            NETRATEL_MCP_STDIO_SMOKE_ARCHIVE="review-artifacts/netratel-mcp-stdio-$(jq -r '.version' release/release-manifest.json)-linux-x64.tar.gz" \
+          NETRATEL_COMPOSE_SMOKE_BUNDLE="review-artifacts/netratel-compose-$(python3 tools/ci/product-version.py).tar.gz" \
+            NETRATEL_CLI_SMOKE_ARCHIVE="review-artifacts/netratel-cli-$(python3 tools/ci/product-version.py)-linux-x64.tar.gz" \
+            NETRATEL_MCP_STDIO_SMOKE_ARCHIVE="review-artifacts/netratel-mcp-stdio-$(python3 tools/ci/product-version.py)-linux-x64.tar.gz" \
             tools/ci/smoke-oidc-compose.sh
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -464,23 +465,19 @@ jobs:
           name: pr-netratel-cli-mcp-linux-x64
           path: review-artifacts
       - run: |
-          version="$(jq -r '.version' release/release-manifest.json)"
+          version="$(python3 tools/ci/product-version.py)"
           for component in migrations api web; do
             image="netratel-${component}:postgresql-upgrade"
             tools/ci/build-public-image.sh --dockerfile "docker/${component}/Dockerfile" --image "$image" --version "$version" --revision "$GITHUB_SHA"
             tools/ci/scan-public-image.sh --image "$image" --version "$version" --revision "$GITHUB_SHA"
           done
       - env:
-          NETRATEL_UPGRADE_PRIOR_VERSION: v0.1.0-rc.5
-          NETRATEL_UPGRADE_PRIOR_API_IMAGE: ghcr.io/bostontechnologies/netratel-api@sha256:45ac6bc1e547ab3651e0a3e1dc7fb88a707126160b2d819450e29464f393ce9a
-          NETRATEL_UPGRADE_PRIOR_MIGRATIONS_IMAGE: ghcr.io/bostontechnologies/netratel-migrations@sha256:42b968a7f660d79255ddb51d0a6f9af14c86be1070e943afec8d3f17c42290f9
-          NETRATEL_UPGRADE_PRIOR_WEB_IMAGE: ghcr.io/bostontechnologies/netratel-web@sha256:ead47327e06e8ed698f673a0ae3176b82297709d025eae193b8121323f0b2cb7
-          NETRATEL_UPGRADE_PRIOR_CLIENT_IMAGE: ghcr.io/bostontechnologies/netratel-client@sha256:f5028da664f6edb2f4ef582c219393f070f4eb79b0faabe1971c1709c2717e91
+          GH_TOKEN: ${{ github.token }}
           NETRATEL_UPGRADE_CURRENT_API_IMAGE: netratel-api:postgresql-upgrade
           NETRATEL_UPGRADE_CURRENT_MIGRATIONS_IMAGE: netratel-migrations:postgresql-upgrade
           NETRATEL_UPGRADE_CURRENT_WEB_IMAGE: netratel-web:postgresql-upgrade
         run: |
-          version="$(jq -r '.version' release/release-manifest.json)"
+          version="$(python3 tools/ci/product-version.py)"
           export NETRATEL_UPGRADE_COMPOSE_BUNDLE="review-artifacts/netratel-compose-${version}.tar.gz"
           if [[ "${{ matrix.authentication }}" == local ]]; then
             export NETRATEL_UPGRADE_CURRENT_CLI_ARCHIVE="review-artifacts/netratel-cli-${version}-linux-x64.tar.gz"
@@ -496,7 +493,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: |
-          version="$(jq -r '.version' release/release-manifest.json)"
+          version="$(python3 tools/ci/product-version.py)"
           tools/ci/build-public-image.sh --dockerfile docker/mcp-http/Dockerfile --image netratel-mcp-http:pr-smoke --version "$version" --revision "$GITHUB_SHA"
           tools/ci/scan-public-image.sh --image netratel-mcp-http:pr-smoke --version "$version" --revision "$GITHUB_SHA"
       - env:

@@ -1,7 +1,7 @@
 # Supported platforms
 
-NetRatel `0.1.0-rc.6` is a prerelease candidate. The table below records the targets
-that the release workflow builds and executes. It is not a production
+The table below records the targets that the release workflow builds and
+executes for the version in `Directory.Build.props`. It is not a production
 certification statement.
 
 | Component | Release target | Rehearsal evidence | Notes |

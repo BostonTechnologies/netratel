@@ -4,6 +4,8 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$root"
 
+source tools/ci/load-prior-release.sh
+
 project="netratel-postgresql-oidc-upgrade-${GITHUB_RUN_ID:-local}-${RANDOM}"
 legacy_api_image="${NETRATEL_UPGRADE_PRIOR_API_IMAGE:?set NETRATEL_UPGRADE_PRIOR_API_IMAGE}"
 legacy_migrations_image="${NETRATEL_UPGRADE_PRIOR_MIGRATIONS_IMAGE:?set NETRATEL_UPGRADE_PRIOR_MIGRATIONS_IMAGE}"
@@ -279,7 +281,7 @@ wait_for_migrations
 curl --retry 20 --retry-connrefused --fail --silent --show-error "http://127.0.0.1:${NETRATEL_OIDC_TEST_PORT}/isalive" >/dev/null
 wait_for_web
 stage="authenticating through the upgraded PostgreSQL/OIDC browser journey"
-run_browser_oidc_smoke "v$(jq -r '.version' release/release-manifest.json)" true
+run_browser_oidc_smoke "v$(python3 tools/ci/product-version.py)" true
 [[ "$(durable_oidc_principal_count)" == "$legacy_principal_count" ]] || {
   echo "The upgraded PostgreSQL/OIDC stack did not retain the durable ${legacy_version} external principal set." >&2
   exit 1

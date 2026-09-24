@@ -12,6 +12,7 @@ import unittest
 import hashlib
 import tarfile
 import zipfile
+import xml.etree.ElementTree as ET
 
 
 def module(name):
@@ -32,16 +33,37 @@ class ProductVersionTests(unittest.TestCase):
         (self.root / "tools/ci").mkdir(parents=True)
         (self.root / "release").mkdir()
         (self.root / "src/NetRatel/Fixture").mkdir(parents=True)
-        for name in ("verify-product-version.py", "verify-product-version.sh"):
+        for name in ("verify-product-version.py", "verify-product-version.sh", "product-version.py"):
             shutil.copy2(ROOT / "tools/ci" / name, self.root / "tools/ci" / name)
         shutil.copy2(ROOT / "Directory.Build.props", self.root / "Directory.Build.props")
         self.project = self.root / "src/NetRatel/Fixture/Fixture.csproj"
         self.project.write_text('<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>')
-        (self.root / "release/release-manifest.json").write_text(json.dumps({"version": "0.1.0-rc.3"}))
+        (self.root / "release/release-manifest.json").write_text(json.dumps({"components": []}))
 
     def run_gate(self, **environment):
         return subprocess.run(["/bin/bash", str(self.root / "tools/ci/verify-product-version.sh")],
                               env={**os.environ, **environment}, capture_output=True, text=True)
+
+    def test_one_props_edit_updates_version_and_bundle_manifest(self):
+        props_path = self.root / "Directory.Build.props"
+        props = ET.parse(props_path)
+        props.find(".//VersionSuffix").text = "rc.999"
+        props.write(props_path)
+        helper = self.root / "tools/ci/product-version.py"
+        version = subprocess.check_output(["python3", str(helper)], text=True).strip()
+        self.assertTrue(version.endswith("-rc.999"))
+        output = self.root / "rendered-manifest.json"
+        subprocess.run(["python3", str(helper), "--manifest-output", str(output)], check=True)
+        manifest = json.loads(output.read_text())
+        self.assertEqual(manifest["version"], version)
+        self.assertTrue(manifest["prerelease"])
+
+        props.find(".//VersionSuffix").text = None
+        props.write(props_path)
+        stable = subprocess.check_output(["python3", str(helper)], text=True).strip()
+        self.assertEqual(stable, version.split("-", 1)[0])
+        subprocess.run(["python3", str(helper), "--manifest-output", str(output)], check=True)
+        self.assertFalse(json.loads(output.read_text())["prerelease"])
 
     def test_conditional_nested_and_malformed_overrides_fail(self):
         for contents in ('<Project><PropertyGroup><Version Condition="true">9.0.0</Version></PropertyGroup></Project>',
@@ -68,6 +90,8 @@ class ProductVersionTests(unittest.TestCase):
         self.assertIn("does not match", result.stderr)
 
     def test_stable_and_candidate_evaluated_composition(self):
+        prefix = subprocess.check_output(["python3", str(ROOT / "tools/ci/product-version.py")],
+                                         text=True).strip().split("-", 1)[0]
         for suffix in ("rc.1", "rc.3", ""):
             with self.subTest(suffix=suffix):
                 result = subprocess.run(["dotnet", "msbuild", str(self.project), "-nologo",
@@ -76,11 +100,11 @@ class ProductVersionTests(unittest.TestCase):
                     capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 properties = json.loads(result.stdout)["Properties"]
-                version = "0.1.0" + ("-" + suffix if suffix else "")
+                version = prefix + ("-" + suffix if suffix else "")
                 for name in ("Version", "PackageVersion", "InformationalVersion"):
                     self.assertEqual(properties[name], version)
-                self.assertEqual(properties["AssemblyVersion"], "0.1.0.0")
-                self.assertEqual(properties["FileVersion"], "0.1.0.0")
+                self.assertEqual(properties["AssemblyVersion"], f"{prefix}.0")
+                self.assertEqual(properties["FileVersion"], f"{prefix}.0")
 
 
 class DistributionTests(unittest.TestCase):
