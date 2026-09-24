@@ -58,6 +58,17 @@ partial publication evidence are shown instead of treating an incomplete pack
 as installable. A client receives updates from its NetRatel instance; it does
 not need direct GitHub access.
 
+### Previously installed prerelease updater
+
+The published `v0.1.0-rc.7` Linux updater rejects a newer prerelease with
+the same `0.1.0` core. The corrected updater in this candidate cannot replace
+the script already running on an installed host. Before an rc.7 Linux client
+can receive rc.8 through the established update flow, an operator must first
+replace that host's installed updater script with the script from a verified,
+owner-approved rc.8 client package. Keep the existing credential, agent state,
+and tenant binding; do not reinstall or re-enroll the client. Do not approve
+this rollout until the owner has accepted and rehearsed that one-time repair.
+
 ## Public install links
 
 An authorized operator can generate a time-limited install link for one tenant,

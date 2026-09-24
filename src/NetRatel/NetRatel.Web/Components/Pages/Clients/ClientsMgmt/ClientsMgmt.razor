@@ -10,13 +10,17 @@
 @inject IDialogService Dialogs
 @implements IAsyncDisposable
 
+@if (_interactiveReady)
+{
+    <span data-testid="clients-mgmt-interactive" hidden></span>
+}
 <MudPaper Class="client-mgmt-hero pa-4" Elevation="0">
     <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="flex-wrap">
         <MudStack Spacing="0">
             <MudText Typo="Typo.h5">Agent Installers &amp; Updates</MudText>
             <MudText Typo="Typo.body2" Color="Color.Secondary">Manage immutable client packages, published auto-update releases, deployment scripts, update activity, and suspended update policy.</MudText>
         </MudStack>
-        <MudButton Color="Color.Default" Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Upload" OnClick="OpenUpload">Advanced: upload artifact</MudButton>
+        <MudButton Color="Color.Default" Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Upload" Disabled="@(!_interactiveReady)" OnClick="OpenUpload">Advanced: upload artifact</MudButton>
     </MudStack>
     <MudAlert Dense="true" Severity="Severity.Info" Variant="Variant.Outlined" Class="mt-3 mb-0">
         GitHub releases are the primary client source. Legacy artifact upload remains available for offline use and publishes a valid immutable artifact. Update Attempts records the client rollout lifecycle. Suspended Agents require explicit operator resumption.
@@ -118,7 +122,7 @@
                             else
                             {
                                 <MudButton Size="Size.Small" Variant="Variant.Filled" Color="Color.Primary" Class="mt-2"
-                                           Disabled="@(release.PublicationState != "verification required" || _importActionBusy)"
+                                           Disabled="@(!_interactiveReady || release.PublicationState != "verification required" || _importActionBusy)"
                                            OnClick="@(() => QueueImportAsync(release.Id))">Download client pack to this instance</MudButton>
                             }
                         </MudPaper>
@@ -377,6 +381,17 @@
     private bool _scriptResultRevoked;
     private List<ClientInstallLinkMetadataModel>? _scriptLinks;
     private bool _scriptLinksLoading;
+    private bool _interactiveReady;
+
+    protected override Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            _interactiveReady = true;
+            StateHasChanged();
+        }
+        return Task.CompletedTask;
+    }
 
     protected override async Task OnInitializedAsync()
     {

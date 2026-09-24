@@ -296,6 +296,10 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         const string version = "9.8.7";
         await page.GotoAsync(new Uri(webUrl, "clients/mgmt").ToString(),
             new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await page.GetByTestId("clients-mgmt-interactive").WaitForAsync(new LocatorWaitForOptions
+        {
+            State = WaitForSelectorState.Attached
+        });
         await page.GetByRole(AriaRole.Button, new() { Name = "Advanced: upload artifact" }).ClickAsync();
         var uploadDialog = page.Locator(".mud-dialog:visible").Filter(new() { HasText = "Runtime Identifier" }).Last;
         await uploadDialog.Locator(".mud-select").First.ClickAsync();
@@ -391,6 +395,10 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         Assert.True(File.Exists(certificate));
         await page.GotoAsync(new Uri(webUrl, "clients/mgmt").ToString(),
             new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await page.GetByTestId("clients-mgmt-interactive").WaitForAsync(new LocatorWaitForOptions
+        {
+            State = WaitForSelectorState.Attached
+        });
         var release = page.Locator(".client-github-release").Filter(new() { HasText = version });
         await release.WaitForAsync(new LocatorWaitForOptions { Timeout = 60_000 });
         Assert.Contains("linux-x64", await release.InnerTextAsync());
