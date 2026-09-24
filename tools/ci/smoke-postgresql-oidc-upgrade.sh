@@ -26,6 +26,9 @@ stage="initializing ${legacy_version} PostgreSQL/OIDC upgrade smoke"
 active_compose=()
 legacy_principal_count=""
 client_volume="${project}-client-state"
+native_directory="$(mktemp -d)"
+native_user_created=false
+native_image_container=""
 
 [[ -s "$bundle" ]] || { echo "NETRATEL_UPGRADE_COMPOSE_BUNDLE is missing: $bundle" >&2; exit 1; }
 tar -xzf "$bundle" -C "$bundle_extract_directory"
@@ -49,6 +52,13 @@ cleanup() {
   unlink "$agent_key_path" "$tls_key_path" "$tls_certificate_path" "$tls_bundle_path" 2>/dev/null || true
   unlink "$cookie_jar" 2>/dev/null || true
   docker volume rm "$client_volume" >/dev/null 2>&1 || true
+  if [[ -n "$native_image_container" ]]; then
+    docker rm "$native_image_container" >/dev/null 2>&1 || true
+  fi
+  if [[ "$native_user_created" == true ]]; then
+    sudo userdel --remove netratel >/dev/null 2>&1 || true
+  fi
+  sudo find "$native_directory" -depth -delete 2>/dev/null || true
   find "$bundle_extract_directory" -depth -delete 2>/dev/null || true
   return "$status"
 }
@@ -223,6 +233,43 @@ verify_legacy_client_after_upgrade() {
   fi
 }
 
+verify_native_legacy_client_after_upgrade() {
+  local machine_identity native_status
+  if id netratel >/dev/null 2>&1 || [[ -e /var/lib/netratel ]]; then
+    echo "The disposable runner already has a netratel account or state directory." >&2
+    return 1
+  fi
+  sudo useradd --system --create-home --home-dir /var/lib/netratel --shell /usr/sbin/nologin netratel
+  native_user_created=true
+  chmod 755 "$native_directory"
+  mkdir -p "$native_directory/app" "$native_directory/state"
+  native_image_container="$(docker create "$legacy_client_image")"
+  docker cp "${native_image_container}:/app/." "$native_directory/app/"
+  docker rm "$native_image_container" >/dev/null
+  native_image_container=""
+  docker run --rm --volume "${client_volume}:/source:ro" \
+    --volume "${native_directory}/state:/target" alpine:3.22 \
+    sh -ceu 'cp -a /source/. /target/'
+  [[ -s "$native_directory/state/agent.dat" && -s "$native_directory/state/.netratel-credential-machine-id" ]] || {
+    echo "The published client did not persist a transferable credential identity." >&2
+    return 1
+  }
+  sudo cp -a "$native_directory/state/." /var/lib/netratel/
+  sudo chown -R netratel:netratel /var/lib/netratel
+  machine_identity="$(cat "$native_directory/state/.netratel-credential-machine-id")"
+  if sudo -u netratel env "NetRatel_CREDENTIAL_MACHINE_ID=${machine_identity}" \
+      "$native_directory/app/NetRatel.Client" --api "$api_url" --auth-check \
+      >"$native_directory/native-auth-check.log" 2>&1; then
+    native_status=0
+  else
+    native_status=$?
+  fi
+  if (( native_status != 0 )); then
+    echo "Published ${legacy_version} native Client could not authenticate with its existing identity after the candidate API upgrade." >&2
+    return 1
+  fi
+}
+
 export POSTGRES_PASSWORD=synthetic-postgresql-oidc-upgrade-postgres-password
 export OIDC_AUTHORITY=https://issuer.example.invalid
 export OIDC_CLIENT_ID=synthetic-postgresql-oidc-upgrade-client
@@ -288,4 +335,6 @@ run_browser_oidc_smoke "v$(python3 tools/ci/product-version.py)" true
 }
 stage="authenticating the persisted published ${legacy_version} Client against candidate images"
 verify_legacy_client_after_upgrade
+stage="authenticating the published ${legacy_version} Client natively with its persisted identity"
+verify_native_legacy_client_after_upgrade
 echo "Published ${legacy_version} PostgreSQL/OIDC and native Client upgrade continuity passed."
