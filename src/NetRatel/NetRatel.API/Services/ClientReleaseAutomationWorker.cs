@@ -132,17 +132,18 @@ public sealed class ClientReleaseAutomationWorker(
                 !prerelease && !policy.DownloadStable) continue;
             var newest = Newest(releases, prerelease);
             if (newest is null) continue;
-            var candidateVersion = NuGetVersion.Parse(newest.Version);
-            var runtimes = newest.ClientAssets.Select(asset => asset.RuntimeId).ToArray();
-            var offeredVersions = await db.ClientUpdateReleases.AsNoTracking()
-                .Where(release => release.Enabled && runtimes.Contains(release.RuntimeId))
-                .Select(release => release.Version).ToListAsync(ct);
-            if (offeredVersions.Any(value => NuGetVersion.TryParse(value, out var offered) &&
-                    offered >= candidateVersion)) continue;
             if (newest.PublicationState != "verification required" ||
                 newest.PublicationAsset is null || newest.ChecksumsAsset is null ||
                 newest.ClientAssets.Count == 0)
                 throw new InvalidDataException($"The newest {Channel(prerelease)} client release has incomplete publication evidence.");
+            var candidateVersion = NuGetVersion.Parse(newest.Version);
+            var runtimes = newest.ClientAssets.Select(asset => asset.RuntimeId).ToArray();
+            var offeredVersions = await db.ClientUpdateReleases.AsNoTracking()
+                .Where(release => release.Enabled && runtimes.Contains(release.RuntimeId))
+                .Select(release => new { release.RuntimeId, release.Channel, release.Version }).ToListAsync(ct);
+            if (AllRuntimesCovered(runtimes,
+                    offeredVersions.Select(value => (value.RuntimeId, value.Channel, value.Version)),
+                    Channel(prerelease), candidateVersion)) continue;
             var existing = await db.ClientReleaseImportOperations.AsNoTracking()
                 .SingleOrDefaultAsync(x => x.GitHubReleaseId == newest.Id, ct);
             if (existing is null)
@@ -180,6 +181,18 @@ public sealed class ClientReleaseAutomationWorker(
     }
 
     private static string Channel(bool prerelease) => prerelease ? "prerelease" : "stable";
+
+    internal static bool AllRuntimesCovered(IEnumerable<string> runtimes,
+        IEnumerable<(string RuntimeId, string Channel, string Version)> offered,
+        string channel, NuGetVersion candidateVersion)
+    {
+        var eligible = offered.Where(value => string.Equals(value.Channel, channel, StringComparison.OrdinalIgnoreCase))
+            .Select(value => (value.RuntimeId, Parsed: NuGetVersion.TryParse(value.Version, out var version) ? version : null))
+            .Where(value => value.Parsed is not null).ToArray();
+        return runtimes.All(runtimeId => eligible.Any(value =>
+            string.Equals(value.RuntimeId, runtimeId, StringComparison.Ordinal) &&
+            value.Parsed! >= candidateVersion));
+    }
 
     internal async Task PublishImportedIfEligibleAsync(CancellationToken ct)
     {

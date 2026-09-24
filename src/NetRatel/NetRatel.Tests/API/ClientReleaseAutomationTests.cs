@@ -5,6 +5,7 @@ using NetRatel.API.Models;
 using NetRatel.API.Services;
 using NetRatel.Akka.Configuration;
 using NetRatel.Infrastructure.Persistence;
+using NuGet.Versioning;
 using Testcontainers.PostgreSql;
 using Xunit;
 
@@ -85,6 +86,24 @@ public sealed class ClientReleaseAutomationTests : IAsyncLifetime
         Assert.Equal(3, ClientReleaseAutomationWorker.Newest(releases, prerelease: false)!.Id);
         Assert.Throws<InvalidDataException>(() => ClientReleaseAutomationWorker.Newest(
             [Release(5, "1.2.1-rc.1", false)], prerelease: false));
+    }
+
+    [Fact]
+    public void AutomaticImportRequiresEveryRuntimeToBeCoveredWithinItsOwnChannel()
+    {
+        var runtimes = new[] { "linux-x64", "win-x64" };
+        var candidate = NuGetVersion.Parse("1.2.0");
+        var offered = new (string RuntimeId, string Channel, string Version)[]
+        {
+            ("linux-x64", "prerelease", "1.3.0-rc.1"),
+            ("win-x64", "stable", "1.2.0")
+        };
+        Assert.False(ClientReleaseAutomationWorker.AllRuntimesCovered(runtimes, offered, "stable", candidate));
+
+        offered = [.. offered, ("linux-x64", "stable", "1.2.1")];
+        Assert.True(ClientReleaseAutomationWorker.AllRuntimesCovered(runtimes, offered, "stable", candidate));
+        Assert.False(ClientReleaseAutomationWorker.AllRuntimesCovered(runtimes, offered, "prerelease",
+            NuGetVersion.Parse("1.3.0-rc.1")));
     }
 
     [Theory]
