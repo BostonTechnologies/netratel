@@ -261,6 +261,99 @@ public sealed class ClientReleaseImportWorkerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task CancellationDuringDownloadCanRetryWithoutPartiallyExposingOrPublishingPack()
+    {
+        var fixture = CreateFixture(corruptSecondRuntime: false);
+        var store = new RecordingArtifactStore();
+        var enteredDownload = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseDownload = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var blocked = 0;
+        await using var services = new ServiceCollection()
+            .AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Warning))
+            .AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(_postgres.GetConnectionString()))
+            .AddSingleton<TimeProvider>(TimeProvider.System)
+            .AddSingleton<IGitHubClientReleaseCatalog>(new FixtureCatalog(fixture.Release, fixture.Commit))
+            .AddSingleton<IClientArtifactsService>(store)
+            .AddSingleton<IWebHostEnvironment>(new FixtureEnvironment(_storage))
+            .AddSingleton<IOptions<ClientArtifactsOptions>>(Options.Create(new ClientArtifactsOptions { StorageRoot = _storage }))
+            .AddScoped<GitHubClientAssetDownloader>(_ => new GitHubClientAssetDownloader(
+                new HttpClient(new AssetHandler(fixture.Bytes, wait: async (assetId, ct) =>
+                {
+                    if (assetId != 11 || Interlocked.Exchange(ref blocked, 1) != 0) return;
+                    enteredDownload.SetResult();
+                    await releaseDownload.Task.WaitAsync(ct);
+                })) { Timeout = Timeout.InfiniteTimeSpan }, new ConfigurationBuilder().Build()))
+            .BuildServiceProvider();
+
+        var id = Guid.NewGuid();
+        await using (var scope = services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            db.ClientReleaseImportOperations.Add(new ClientReleaseImportOperation
+            {
+                Id = id, GitHubReleaseId = fixture.Release.Id, Tag = fixture.Release.Tag,
+                Version = fixture.Release.Version, RequestedBy = "fixture-admin",
+                CreatedAtUtc = DateTimeOffset.UtcNow, UpdatedAtUtc = DateTimeOffset.UtcNow
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var worker = ActivatorUtilities.CreateInstance<ClientReleaseImportWorker>(services);
+        await worker.StartAsync(CancellationToken.None);
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            await enteredDownload.Task.WaitAsync(timeout.Token);
+            await using (var scope = services.CreateAsyncScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+                Assert.Equal(1, await db.ClientReleaseImportOperations.Where(x => x.Id == id)
+                    .ExecuteUpdateAsync(setters => setters.SetProperty(x => x.CancellationRequested, true), timeout.Token));
+            }
+            releaseDownload.SetResult();
+            await WaitForStateAsync(services, id, ClientReleaseImportState.Cancelled, timeout.Token);
+            Assert.False(store.Visible);
+            Assert.Empty(store.ImportedRuntimes);
+
+            await using (var scope = services.CreateAsyncScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+                Assert.Equal(1, await db.ClientReleaseImportOperations.Where(x => x.Id == id && x.State == ClientReleaseImportState.Cancelled)
+                    .ExecuteUpdateAsync(setters => setters
+                        .SetProperty(x => x.State, ClientReleaseImportState.Queued)
+                        .SetProperty(x => x.CancellationRequested, false)
+                        .SetProperty(x => x.Error, (string?)null), timeout.Token));
+            }
+            await WaitForStateAsync(services, id, ClientReleaseImportState.Imported, timeout.Token);
+            Assert.True(store.Visible);
+            Assert.Equal(["linux-x64", "win-x64"], store.ImportedRuntimes.OrderBy(x => x, StringComparer.Ordinal));
+            await using var verifyScope = services.CreateAsyncScope();
+            var verifyDb = verifyScope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            Assert.Null((await verifyDb.ClientReleaseImportOperations.SingleAsync(x => x.Id == id, timeout.Token)).PublishedAtUtc);
+            Assert.Empty(await verifyDb.ClientUpdateReleases.ToListAsync(timeout.Token));
+        }
+        finally
+        {
+            releaseDownload.TrySetResult();
+            await worker.StopAsync(CancellationToken.None);
+            worker.Dispose();
+        }
+    }
+
+    private static async Task WaitForStateAsync(IServiceProvider services, Guid id, ClientReleaseImportState state, CancellationToken ct)
+    {
+        using var observation = new PeriodicTimer(TimeSpan.FromMilliseconds(100));
+        while (await observation.WaitForNextTickAsync(ct))
+        {
+            await using var scope = services.CreateAsyncScope();
+            var current = await scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>()
+                .ClientReleaseImportOperations.AsNoTracking().SingleAsync(x => x.Id == id, ct);
+            if (current.State == state) return;
+            Assert.NotEqual(ClientReleaseImportState.Failed, current.State);
+        }
+    }
+
+    [Fact]
     [Trait("category", "hosted")]
     public async Task PublishedClientPackImportsEveryVerifiedRuntimeWithoutPublishing()
     {
@@ -475,16 +568,18 @@ public sealed class ClientReleaseImportWorkerTests : IAsyncLifetime
             Task.FromResult(commit);
     }
 
-    private sealed class AssetHandler(Dictionary<long, byte[]> bytes, Action<long>? onRequest = null) : HttpMessageHandler
+    private sealed class AssetHandler(Dictionary<long, byte[]> bytes, Action<long>? onRequest = null,
+        Func<long, CancellationToken, Task>? wait = null) : HttpMessageHandler
     {
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             var id = long.Parse(request.RequestUri!.Segments[^1]);
             onRequest?.Invoke(id);
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            if (wait is not null) await wait(id, cancellationToken);
+            return new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new ByteArrayContent(bytes[id])
-            });
+            };
         }
     }
 
