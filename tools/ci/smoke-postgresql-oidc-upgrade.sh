@@ -444,8 +444,9 @@ UNIT
   if [[ ! -s /var/lib/netratel/update/presence.json ]]; then
     echo "The published native Client did not acknowledge gateway presence within one minute." >&2
     echo "Client service state: $(systemctl is-active "$client_unit" 2>/dev/null || true)." >&2
-    python3 - "$native_directory/logs" <<'PY' >&2
-import pathlib, re, sys
+    systemctl show "$client_unit" --property=ExecMainStatus,Result,NRestarts --no-pager >&2 || true
+    python3 - "$native_directory/logs" "$client_unit" <<'PY' >&2
+import pathlib, re, subprocess, sys
 
 logs = pathlib.Path(sys.argv[1])
 lines = []
@@ -454,10 +455,13 @@ for path in logs.glob("*.log"):
 signals = {
     "authentication succeeded": "Access token acquired",
     "authentication failed": "Failed to acquire access token",
+    "enrollment required": "Enrollment is required before starting the service",
+    "API validation failed": "ApiBaseUrl is unreachable",
     "presence started": "Starting authenticated Akka presence",
     "presence admitted": "Presence admitted",
     "gateway session failed": "Gateway session failed",
     "update staging failed": "Akka update staging failed",
+    "fatal startup failure": "[FATAL] Unhandled:",
 }
 for label, marker in signals.items():
     print(f"Native Client {label}: {sum(marker in line for line in lines)}.")
@@ -466,7 +470,13 @@ failures = [re.search(r"Gateway session failed: ([A-Za-z]+)", line)
 types = [match.group(1) for match in failures if match]
 if types:
     print(f"Last gateway exception type: {types[-1]}.")
+exception_types = sorted(set(re.findall(r"(?:System|Microsoft|Grpc)\.[A-Za-z.]*Exception", "\n".join(lines))))
+print(f"Native Client exception types: {', '.join(exception_types[:8]) or 'none'}.")
 print(f"Native Client log files: {len(list(logs.glob('*.log')))}.")
+journal = subprocess.run(["journalctl", "--unit", sys.argv[2], "--no-pager", "--output=cat", "--lines=200"],
+                         capture_output=True, text=True, check=False).stdout
+journal_exceptions = sorted(set(re.findall(r"(?:System|Microsoft|Grpc)\.[A-Za-z.]*Exception", journal)))
+print(f"Native service journal exception types: {', '.join(journal_exceptions[:8]) or 'none'}.")
 PY
     if [[ -e /.dockerenv ]]; then
       echo "The runner has a container marker that disables service auto-update." >&2
