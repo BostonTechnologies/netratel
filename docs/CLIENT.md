@@ -82,13 +82,15 @@ repair. Run the approved update through the ordinary instance policy and
 verify the existing agent ID, tenant binding, reconnect, and update attempt
 result. Restore the backup if the replacement fails before activation.
 
-The hosted previous-release check extracts the actual published Linux updater
-and rehearses this version-gate replacement with disposable client state. On
-the Linux native package runner it then activates the verified candidate
-archive through the repaired updater with simulated service readiness. This
-checks package activation and state preservation; it does not stand in for a
-server-offered, enrolled-client update and reconnect after the owner approves
-the repair path.
+The hosted Linux package check extracts the actual published updater and
+rehearses this version-gate replacement with disposable client state. The
+previous-release OIDC upgrade check then runs the enrolled published client
+under its original credential owner, atomically replaces only the updater
+script, and offers the verified candidate through the upgraded instance's
+normal tenant policy. It checks accepted activation, candidate readmission and
+confirmation, and the same agent ID and tenant binding. This proves the
+technical repair path in a disposable environment; the owner must approve the
+one-time repair before using it on installed hosts.
 
 ## Public install links
 
