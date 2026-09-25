@@ -358,13 +358,54 @@ verify_mcp_stdio_archive_scoped_read() {
   chmod 600 "$mcp_stdio_config_path"
 
   set +e
-  mcp_response="$({
-    printf '%s\n' \
-      '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"compose-archive-smoke","version":"1"}}}' \
-      '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
-      '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"netratel_tenants","arguments":{"operation":"list"}}}'
-    sleep 1
-  } | NETRATEL_MCP_CONFIG="$mcp_stdio_config_path" NETRATEL_MCP_INSTANCE=dev timeout 15s dotnet "$mcp_assembly" 2>"$mcp_stdio_error_path")"
+  mcp_response="$(NETRATEL_MCP_CONFIG="$mcp_stdio_config_path" NETRATEL_MCP_INSTANCE=dev \
+    python3 - "$mcp_assembly" "$mcp_stdio_error_path" <<'PY'
+import json, os, select, subprocess, sys, time
+
+requests = (
+    b'{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"compose-archive-smoke","version":"1"}}}\n',
+    b'{"jsonrpc":"2.0","method":"notifications/initialized"}\n',
+    b'{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"netratel_tenants","arguments":{"operation":"list"}}}\n',
+)
+with open(sys.argv[2], "wb") as errors:
+    process = subprocess.Popen(["dotnet", sys.argv[1]], stdin=subprocess.PIPE,
+                               stdout=subprocess.PIPE, stderr=errors, env=os.environ.copy())
+    for request in requests:
+        process.stdin.write(request)
+    process.stdin.flush()
+    pending = b""
+    responses = []
+    response_ids = set()
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline and response_ids != {1, 2}:
+        readable, _, _ = select.select([process.stdout], [], [], max(0, deadline - time.monotonic()))
+        if not readable:
+            break
+        chunk = os.read(process.stdout.fileno(), 65536)
+        if not chunk:
+            break
+        pending += chunk
+        while b"\n" in pending:
+            line, pending = pending.split(b"\n", 1)
+            if line.strip():
+                responses.append(line.rstrip(b"\r"))
+                try:
+                    response_id = json.loads(line).get("id")
+                except (ValueError, AttributeError):
+                    response_id = None
+                if response_id in (1, 2):
+                    response_ids.add(response_id)
+    process.stdin.close()
+    try:
+        status = process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.terminate()
+        status = process.wait(timeout=5)
+    for response in responses:
+        sys.stdout.buffer.write(response + b"\n")
+    raise SystemExit(status)
+PY
+  )"
   mcp_status=$?
   set -e
   if (( mcp_status != 0 )); then
