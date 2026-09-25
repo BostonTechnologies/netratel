@@ -127,10 +127,15 @@ public static class Extensions
                         tracing.Filter = context =>
                             !context.Request.Path.StartsWithSegments(HealthEndpointPath)
                             && !context.Request.Path.StartsWithSegments(AlivenessEndpointPath)
+                            // Install URLs carry a bearer capability in the path. Do not
+                            // export that path as a server span from either Web or API.
+                            && !context.Request.Path.StartsWithSegments("/clients/install")
                     )
                     // Uncomment the following line to enable gRPC instrumentation (requires the OpenTelemetry.Instrumentation.GrpcNetClient package)
                     //.AddGrpcClientInstrumentation()
-                    .AddHttpClientInstrumentation()
+                    .AddHttpClientInstrumentation(options => options.FilterHttpRequestMessage = request =>
+                        request.RequestUri is null ||
+                        !request.RequestUri.AbsolutePath.StartsWith("/clients/install/", StringComparison.OrdinalIgnoreCase))
                     .AddNpgsql();
 
                 if (useOtlpExporter)

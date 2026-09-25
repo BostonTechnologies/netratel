@@ -27,7 +27,9 @@ public sealed class ClientUpdateCatalogTests
             var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
             db.Tenants.AddRange(
                 new Tenant { Id = tenantId, Name = "Canary", AutoUpdate = true, AutoUpdateChannel = "prerelease", AutoUpdateTargetVersion = "0.4.103-rc.1" },
-                new Tenant { Id = 74, Name = "Stable", AutoUpdate = true });
+                new Tenant { Id = 74, Name = "Stable", AutoUpdate = true },
+                new Tenant { Id = 75, Name = "Stable pinned to prerelease", AutoUpdate = true,
+                    AutoUpdateChannel = "stable", AutoUpdateTargetVersion = "0.4.103-rc.1" });
             db.ClientUpdateCatalogRevisions.Add(new ClientUpdateCatalogRevision { Id = 1, Revision = 9, UpdatedAtUtc = now });
             db.ClientUpdateReleases.AddRange(
                 Release("0.4.102", "stable", 8),
@@ -42,6 +44,10 @@ public sealed class ClientUpdateCatalogTests
         stable.Should().NotBeNull();
         stable!.Version.Should().Be("0.4.103-rc.1");
         catalog.GetOffer(74, Guid.NewGuid(), "linux-x64", "0.4.101", "stable")!.Version.Should().Be("0.4.102");
+        catalog.GetOffer(74, Guid.NewGuid(), "linux-x64", "0.4.101", "prerelease")!.Version.Should().Be("0.4.102",
+            "the agent cannot opt a stable tenant into prerelease deployment");
+        catalog.GetOffer(75, Guid.NewGuid(), "linux-x64", "0.4.101", "stable").Should().BeNull(
+            "a pinned target must not bypass the stable-only policy");
         var prerelease = catalog.GetOffer(tenantId, agentId, "linux-x64", "0.4.102-rc.1", "prerelease");
         prerelease.Should().NotBeNull();
         prerelease!.Version.Should().Be("0.4.103-rc.1");

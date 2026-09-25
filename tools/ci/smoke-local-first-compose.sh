@@ -21,6 +21,7 @@ stage="initializing local-first Compose smoke"
 bundle="${NETRATEL_LOCAL_FIRST_COMPOSE_BUNDLE:-}"
 bundle_extract_dir=""
 source_compose_file="${NETRATEL_LOCAL_FIRST_SOURCE_COMPOSE_FILE:-compose.yaml}"
+export NETRATEL_REVIEW_SCREENSHOT_DIR="${NETRATEL_REVIEW_SCREENSHOT_DIR:-$root/TestResults/local-first/screenshots}"
 bundle_compose_file="${NETRATEL_LOCAL_FIRST_BUNDLE_COMPOSE_FILE:-compose.images.yaml}"
 compose_file="$source_compose_file"
 mcp_http_image="${NETRATEL_LOCAL_HTTP_MCP_SMOKE_IMAGE:-}"
@@ -41,6 +42,7 @@ if [[ -n "${NETRATEL_LOCAL_FIRST_COMPOSE_OVERLAYS:-}" ]]; then
     compose_files+=(-f "$acceptance_overlay")
   done
 fi
+compose_files+=(-f "$root/tests/compose/local-first-install-links.compose.yaml")
 if [[ -n "$mcp_http_image" ]]; then
   local_http_mcp_directory="$(mktemp -d)"
   local_http_mcp_overlay="$root/tests/compose/local-http-mcp.compose.yaml"
@@ -193,10 +195,17 @@ fi
 unset initial_setup_proof initial_status
 stage="building and running Playwright local-first journey"
 setup_proof_digest="$(printf '%s' "$setup_proof" | sha256sum | cut -d ' ' -f 1)"
+published_release_version=""
+if [[ "${NETRATEL_LOCAL_FIRST_NATIVE_INSTALL:-false}" == true ]]; then
+  published_release_version="$(python3 tools/ci/select-prior-release.py | jq -er '.tag | ltrimstr("v")')"
+fi
 NETRATEL_LOCAL_FIRST_WEB_URL="$web_url" \
+NETRATEL_LOCAL_FIRST_PUBLISHED_RELEASE_VERSION="$published_release_version" \
 NETRATEL_LOCAL_FIRST_SETUP_PROOF="$setup_proof" \
 NETRATEL_LOCAL_FIRST_ADMIN_EMAIL="browser-admin@example.test" \
 NETRATEL_LOCAL_FIRST_ADMIN_PASSWORD="browser smoke local passphrase" \
+NETRATEL_LOCAL_FIRST_RESTART_API_CONTAINER="$("${compose[@]}" ps -q api)" \
+NETRATEL_LOCAL_FIRST_RESTART_WEB_CONTAINER="$("${compose[@]}" ps -q web)" \
 NETRATEL_LOCAL_FIRST_INTEGRATION_CREDENTIALS_FILE="$credential_path" \
   dotnet test src/NetRatel/NetRatel.Web.PlaywrightTests/NetRatel.Web.PlaywrightTests.csproj \
     --configuration Release --no-build --filter 'FullyQualifiedName~LocalFirstComposeBrowserSmokeTests' \
@@ -409,6 +418,8 @@ if [[ "${NETRATEL_LOCAL_FIRST_STATE_RESET_ACCEPTANCE:-false}" == true ]]; then
   NETRATEL_LOCAL_FIRST_SETUP_PROOF="$reset_setup_proof" \
   NETRATEL_LOCAL_FIRST_ADMIN_EMAIL="browser-admin@example.test" \
   NETRATEL_LOCAL_FIRST_ADMIN_PASSWORD="browser smoke local passphrase" \
+  NETRATEL_LOCAL_FIRST_RESTART_API_CONTAINER="$("${compose[@]}" ps -q api)" \
+  NETRATEL_LOCAL_FIRST_RESTART_WEB_CONTAINER="$("${compose[@]}" ps -q web)" \
   NETRATEL_LOCAL_FIRST_INTEGRATION_CREDENTIALS_FILE="$credential_path" \
     dotnet test src/NetRatel/NetRatel.Web.PlaywrightTests/NetRatel.Web.PlaywrightTests.csproj \
       --configuration Release --no-build --filter 'FullyQualifiedName~LocalFirstComposeBrowserSmokeTests' \

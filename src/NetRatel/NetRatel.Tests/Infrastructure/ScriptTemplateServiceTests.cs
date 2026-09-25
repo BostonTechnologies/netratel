@@ -112,7 +112,7 @@ public sealed class ScriptTemplateServiceTests
             SilentInstall: true));
 
         script.Should().NotContain("New-Service");
-        script.Should().Contain("--enroll");
+        script.Should().Contain("--enroll $EnrollmentCode --api $ApiBase");
     }
 
     [Fact]
@@ -164,11 +164,99 @@ public sealed class ScriptTemplateServiceTests
         script.Should().Contain("install -m 0755");
     }
 
+    [Fact]
+    public void Build_MacOS_UsesShellAndLaunchdForService()
+    {
+        var service = new ScriptTemplateService();
+        var script = service.Build(new DeploymentScriptTemplateRequest(
+            4098, "osx-arm64", "ENR-ABC123", "https://netratel.example.invalid",
+            DateTimeOffset.UtcNow.AddHours(1), true, true, "0.4.131-rc.1", "abcdef"));
+
+        service.GetFileExtension("osx-arm64").Should().Be("sh");
+        script.Should().StartWith("#!/usr/bin/env bash");
+        script.Should().Contain("shasum -a 256");
+        script.Should().Contain("launchctl bootstrap system");
+        script.Should().Contain("/Library/LaunchDaemons/");
+        script.Should().Contain("--enroll");
+        script.Should().NotContain("systemctl");
+        script.Should().NotContain("New-Service");
+        AssertBashSyntax(script);
+    }
+
+    [Fact]
+    public void Build_LinuxWithoutService_DoesNotRequireSystemdOrRoot()
+    {
+        var script = new ScriptTemplateService().Build(new DeploymentScriptTemplateRequest(
+            4098, "linux-x64", "ENR-ABC123", "https://netratel.example.invalid",
+            DateTimeOffset.UtcNow.AddHours(1), false, true, "0.4.131-rc.1", "abcdef"));
+
+        script.Should().Contain("${HOME}/.local/share/netratel/client");
+        script.Should().Contain("--enroll");
+        script.Should().NotContain("This NetRatel systemd installer must be run as root.");
+        script.Should().NotContain("systemctl is-active");
+        AssertBashSyntax(script);
+    }
+
+    [Fact]
+    public async Task Build_MacOS_InstallsExactPackageWithoutServiceOnUnixHost()
+    {
+        if (OperatingSystem.IsWindows()) return;
+
+        var root = Path.Combine(Path.GetTempPath(), $"netratel-macos-installer-{Guid.NewGuid():N}");
+        var bin = Path.Combine(root, "bin");
+        var archivePath = Path.Combine(root, "client.zip");
+        var scriptPath = Path.Combine(root, "install.sh");
+        Directory.CreateDirectory(bin);
+        try
+        {
+            CreateUnixArtifact(archivePath, "0.4.131-rc.1", "osx-arm64");
+            var sha = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                await File.ReadAllBytesAsync(archivePath))).ToLowerInvariant();
+            var script = new ScriptTemplateService().Build(new DeploymentScriptTemplateRequest(
+                4098, "osx-arm64", "ENR-ABC123", "https://example.test",
+                DateTimeOffset.UtcNow.AddHours(1), false, true, "0.4.131-rc.1", sha));
+            await File.WriteAllTextAsync(scriptPath, script);
+            var curl = Path.Combine(bin, "curl");
+            await File.WriteAllTextAsync(curl,
+                "#!/usr/bin/env bash\nwhile [ \"$#\" -gt 0 ]; do if [ \"$1\" = -o ]; then cp \"$FAKE_ARCHIVE\" \"$2\"; exit 0; fi; shift; done\nexit 1\n");
+            File.SetUnixFileMode(curl, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            var start = new ProcessStartInfo("bash", scriptPath)
+            {
+                RedirectStandardError = true, UseShellExecute = false
+            };
+            start.Environment["PATH"] = $"{bin}:{Environment.GetEnvironmentVariable("PATH")}";
+            start.Environment["FAKE_ARCHIVE"] = archivePath;
+            start.Environment["NetRatel_ROOT"] = Path.Combine(root, "installed");
+            using var process = Process.Start(start)!;
+            await process.WaitForExitAsync();
+            process.ExitCode.Should().Be(0, await process.StandardError.ReadToEndAsync());
+            var installed = Path.Combine(root, "installed", "versions", "0.4.131-rc.1", "NetRatel.Client");
+            File.Exists(installed).Should().BeTrue($"installer output was expected at {installed}; " +
+                $"available files: {string.Join(", ", Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))}");
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
     private static void CreateLinuxArtifact(string path, string version)
+        => CreateUnixArtifact(path, version, "linux-x64");
+
+    private static void AssertBashSyntax(string script)
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var start = new ProcessStartInfo("bash") { RedirectStandardError = true, UseShellExecute = false };
+        start.ArgumentList.Add("-n");
+        start.ArgumentList.Add("-c");
+        start.ArgumentList.Add(script);
+        using var process = Process.Start(start)!;
+        process.WaitForExit();
+        process.ExitCode.Should().Be(0, process.StandardError.ReadToEnd());
+    }
+
+    private static void CreateUnixArtifact(string path, string version, string runtimeId)
     {
         using var archive = ZipFile.Open(path, ZipArchiveMode.Create);
         using (var writer = new StreamWriter(archive.CreateEntry("netratel-client-manifest.json").Open()))
-            writer.Write(JsonSerializer.Serialize(new { schema = "netratel.client.manifest.v1", product = "NetRatel.Client", version, runtimeId = "linux-x64", executable = "NetRatel.Client" }));
+            writer.Write(JsonSerializer.Serialize(new { schema = "netratel.client.manifest.v1", product = "NetRatel.Client", version, runtimeId, executable = "NetRatel.Client" }));
         using (var writer = new StreamWriter(archive.CreateEntry("NetRatel.Client").Open()))
             writer.Write("#!/usr/bin/env bash\nexit 0\n");
         using var updater = new StreamWriter(archive.CreateEntry("updater/netratel-update.sh").Open());

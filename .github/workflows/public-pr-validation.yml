@@ -46,7 +46,32 @@ jobs:
       - run: python3 tools/ci/test-release-validation.py
       - run: dotnet build NetRatel.sln --configuration Release --no-restore
       - run: pwsh src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/playwright.ps1 install --with-deps chromium
-      - run: dotnet test NetRatel.sln --configuration Release --no-build --filter "category!=compose" --results-directory TestResults -- --report-trx --report-trx-filename "netratel-tests-{asm}_{tfm}_{arch}.trx"
+      - run: dotnet test NetRatel.sln --configuration Release --no-build --filter "category!=compose&category!=hosted" --results-directory TestResults -- --report-trx --report-trx-filename "netratel-tests-{asm}_{tfm}_{arch}.trx"
+      - name: Fetch latest completed public client pack
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/ci/fetch-published-client-pack.py --output "$RUNNER_TEMP/published-client-pack"
+      - name: Verify published client pack with the existing updater contract
+        env:
+          NETRATEL_RELEASE_FIXTURE_DIR: ${{ runner.temp }}/published-client-pack
+        run: >-
+          dotnet src/NetRatel/NetRatel.Tests/bin/Release/net10.0/NetRatel.Tests.dll
+          -method NetRatel.Tests.API.ClientReleaseArchiveAdapterTests.PublishedClientPackMatchesPublicationAndNormalizesForExistingUpdaters
+          -noLogo
+      - name: Import the published client pack without publication
+        env:
+          NETRATEL_RELEASE_FIXTURE_DIR: ${{ runner.temp }}/published-client-pack
+        run: >-
+          dotnet src/NetRatel/NetRatel.Tests/bin/Release/net10.0/NetRatel.Tests.dll
+          -method NetRatel.Tests.API.ClientReleaseImportWorkerTests.PublishedClientPackImportsEveryVerifiedRuntimeWithoutPublishing
+          -noLogo
+      - name: Observe published Linux updater version gate
+        env:
+          NETRATEL_RELEASE_FIXTURE_DIR: ${{ runner.temp }}/published-client-pack
+        run: >-
+          dotnet src/NetRatel/NetRatel.Tests/bin/Release/net10.0/NetRatel.Tests.dll
+          -method NetRatel.Tests.Client.PublishedPreviousLinuxUpdaterTests.PublishedUpdaterVersionGateIsObservedBeforeRepair
+          -noLogo
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -161,6 +186,21 @@ jobs:
               "$directory/NetRatel.Client" --version
               ;;
           esac
+      - name: Exercise macOS installer on native runner
+        if: matrix.runtime == 'osx-arm64'
+        shell: bash
+        run: |
+          dotnet build src/NetRatel/NetRatel.Tests/NetRatel.Tests.csproj --configuration Release
+          dotnet src/NetRatel/NetRatel.Tests/bin/Release/net10.0/NetRatel.Tests.dll \
+            -method NetRatel.Tests.Infrastructure.ScriptTemplateServiceTests.Build_MacOS_InstallsExactPackageWithoutServiceOnUnixHost
+      - name: Exercise Windows installer on native runner
+        if: matrix.runtime == 'win-x64'
+        shell: bash
+        run: |
+          dotnet build src/NetRatel/NetRatel.Tests/NetRatel.Tests.csproj --configuration Release
+          NETRATEL_NATIVE_CLIENT_DIRECTORY="$PWD/artifacts/netratel-client-win-x64" \
+            dotnet src/NetRatel/NetRatel.Tests/bin/Release/net10.0/NetRatel.Tests.dll \
+              -method NetRatel.Tests.Infrastructure.WindowsInstallerNativeTests.GeneratedPowerShellInstallerDownloadsVerifiesAndEnrollsNativePackage
       - shell: bash
         run: |
           version="$(python3 tools/ci/product-version.py)"
@@ -177,6 +217,20 @@ jobs:
             --version "$version" \
             --runtime "${{ matrix.runtime }}" \
             --extension "${{ matrix.extension }}"
+      - name: Repair published Linux updater and activate verified candidate
+        if: matrix.runtime == 'linux-x64'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(python3 tools/ci/product-version.py)"
+          python3 tools/ci/fetch-published-client-pack.py --output "$RUNNER_TEMP/published-client-pack"
+          dotnet build src/NetRatel/NetRatel.Tests/NetRatel.Tests.csproj --configuration Release
+          NETRATEL_RELEASE_FIXTURE_DIR="$RUNNER_TEMP/published-client-pack" \
+          NETRATEL_CANDIDATE_CLIENT_ARCHIVE="$PWD/artifacts/netratel-client-${version}-linux-x64.tar.gz" \
+            dotnet src/NetRatel/NetRatel.Tests/bin/Release/net10.0/NetRatel.Tests.dll \
+              -method NetRatel.Tests.Client.PublishedPreviousLinuxUpdaterTests.PublishedUpdaterVersionGateAcceptsCandidateAfterVerifiedRepair \
+              -noLogo
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: pr-netratel-client-${{ matrix.runtime }}
@@ -277,6 +331,7 @@ jobs:
           NETRATEL_CLI_SMOKE_ARCHIVE="review-artifacts/netratel-cli-$(python3 tools/ci/product-version.py)-linux-x64.tar.gz" \
             NETRATEL_MCP_STDIO_SMOKE_ARCHIVE="review-artifacts/netratel-mcp-stdio-$(python3 tools/ci/product-version.py)-linux-x64.tar.gz" \
             NETRATEL_LOCAL_HTTP_MCP_SMOKE_IMAGE=netratel-mcp-http:local-first-smoke \
+            NETRATEL_LOCAL_FIRST_DROP_SETUP_RESPONSE=true \
             tools/ci/smoke-local-first-compose.sh
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -352,25 +407,34 @@ jobs:
           NETRATEL_API_IMAGE: netratel-api:release-local-first
           NETRATEL_WEB_IMAGE: netratel-web:release-local-first
           POSTGRES_PASSWORD: synthetic-ci-only-password
+          GH_TOKEN: ${{ github.token }}
+          NETRATEL_LOCAL_FIRST_GITHUB_TOKEN: ${{ github.token }}
         run: |
           version="$(python3 tools/ci/product-version.py)"
           certificate_dir="$(mktemp -d)"
-          trap 'find "$certificate_dir" -depth -delete' EXIT
+          cp /etc/hosts "$certificate_dir/hosts"
+          trap 'sudo cp "$certificate_dir/hosts" /etc/hosts; find "$certificate_dir" -depth -delete' EXIT
+          printf '127.0.0.1 netratel.example\n' | sudo tee -a /etc/hosts >/dev/null
           openssl req -x509 -newkey rsa:2048 -nodes \
             -keyout "$certificate_dir/tls.key" -out "$certificate_dir/tls.crt" \
-            -subj '/CN=localhost' -addext 'subjectAltName=DNS:localhost' -days 1 >/dev/null 2>&1
+            -subj '/CN=netratel.example' -addext 'subjectAltName=DNS:netratel.example' -days 1 >/dev/null 2>&1
           NETRATEL_LOCAL_FIRST_COMPOSE_BUNDLE="review-artifacts/netratel-compose-${version}.tar.gz" \
             NETRATEL_LOCAL_FIRST_COMPOSE_OVERLAYS="$GITHUB_WORKSPACE/release/compose.public-https.yaml" \
-            NETRATEL_LOCAL_FIRST_WEB_URL=https://localhost:18443 \
+            NETRATEL_LOCAL_FIRST_WEB_URL=https://netratel.example \
             NETRATEL_LOCAL_FIRST_IGNORE_HTTPS_ERRORS=true \
             NETRATEL_AUTHENTICATION_MODE=Local \
             OIDC_AUTHORITY=https://stale.example.test \
-            NETRATEL_PUBLIC_ORIGIN=https://localhost:18443 \
-            NETRATEL_PUBLIC_HOST=localhost \
+            NETRATEL_PUBLIC_ORIGIN=https://netratel.example \
+            NETRATEL_PUBLIC_HOST=netratel.example \
+            NETRATEL_INSTALL_LINK_PUBLIC_ORIGIN=https://netratel.example \
+            NETRATEL_LOCAL_FIRST_NATIVE_INSTALL=true \
+            NETRATEL_LOCAL_FIRST_CA_CERT="$certificate_dir/tls.crt" \
             NETRATEL_HTTPS_BIND_ADDRESS=127.0.0.1 \
-            NETRATEL_HTTPS_PORT=18443 \
+            NETRATEL_HTTPS_PORT=443 \
             NETRATEL_HTTPS_CERTIFICATE="$certificate_dir/tls.crt" \
             NETRATEL_HTTPS_PRIVATE_KEY="$certificate_dir/tls.key" \
+            NO_PROXY=netratel.example,localhost,127.0.0.1 \
+            no_proxy=netratel.example,localhost,127.0.0.1 \
             tools/ci/smoke-local-first-compose.sh
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -448,7 +512,7 @@ jobs:
 
   postgresql-release-upgrade:
     name: PostgreSQL previous-release upgrade (${{ matrix.authentication }})
-    needs: review-artifacts
+    needs: [review-artifacts, client-packages]
     runs-on: ubuntu-latest
     timeout-minutes: 55
     strategy:
@@ -464,6 +528,11 @@ jobs:
         with:
           name: pr-netratel-cli-mcp-linux-x64
           path: review-artifacts
+      - if: matrix.authentication == 'oidc'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: pr-netratel-client-linux-x64
+          path: client-artifacts
       - run: |
           version="$(python3 tools/ci/product-version.py)"
           for component in migrations api web; do
@@ -483,6 +552,7 @@ jobs:
             export NETRATEL_UPGRADE_CURRENT_CLI_ARCHIVE="review-artifacts/netratel-cli-${version}-linux-x64.tar.gz"
             tools/ci/smoke-postgresql-local-upgrade.sh
           else
+            export NETRATEL_UPGRADE_CURRENT_CLIENT_ARCHIVE="client-artifacts/netratel-client-${version}-linux-x64.tar.gz"
             tools/ci/smoke-postgresql-oidc-upgrade.sh
           fi
 

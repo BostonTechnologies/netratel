@@ -70,6 +70,10 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
     public DbSet<ClientUpdateAttemptRecord> ClientUpdateAttempts => Set<ClientUpdateAttemptRecord>();
     public DbSet<AgentClientUpdateStateRecord> AgentClientUpdateStates => Set<AgentClientUpdateStateRecord>();
     public DbSet<ClientUpdateCatalogRevision> ClientUpdateCatalogRevisions => Set<ClientUpdateCatalogRevision>();
+    public DbSet<ClientReleaseImportOperation> ClientReleaseImportOperations => Set<ClientReleaseImportOperation>();
+    public DbSet<ClientReleaseImportAsset> ClientReleaseImportAssets => Set<ClientReleaseImportAsset>();
+    public DbSet<ClientReleaseAutomationSettings> ClientReleaseAutomationSettings => Set<ClientReleaseAutomationSettings>();
+    public DbSet<ClientInstallGrant> ClientInstallGrants => Set<ClientInstallGrant>();
 
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
@@ -122,6 +126,8 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
             }
             entity.Property(x => x.Uses).HasDefaultValue(0);
             entity.HasIndex(x => x.Code).IsUnique();
+            entity.Property(x => x.CodeHash).HasMaxLength(64);
+            entity.HasIndex(x => x.CodeHash).IsUnique();
             entity.HasIndex(x => new { x.TenantId, x.ValidToUtc });
             entity.HasIndex(x => new { x.TenantId, x.DevelopmentMcpTargetAgentId, x.DevelopmentMcpMarker });
         });
@@ -927,6 +933,77 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
             entity.ToTable("ClientUpdateCatalogRevision");
             entity.HasKey(x => x.Id);
             entity.Property(x => x.Id).ValueGeneratedNever();
+        });
+
+        modelBuilder.Entity<ClientReleaseImportOperation>(entity =>
+        {
+            entity.ToTable("ClientReleaseImportOperations");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Id).ValueGeneratedNever();
+            entity.Property(x => x.SourceRepository).HasMaxLength(128).IsRequired();
+            entity.Property(x => x.Tag).HasMaxLength(128).IsRequired();
+            entity.Property(x => x.Version).HasMaxLength(64).IsRequired();
+            entity.Property(x => x.BuildCommit).HasMaxLength(40);
+            entity.Property(x => x.PublicationSha256).HasMaxLength(64);
+            entity.Property(x => x.RequestedBy).HasMaxLength(256).IsRequired();
+            entity.Property(x => x.PublishedBy).HasMaxLength(256);
+            entity.Property(x => x.State).HasConversion<short>();
+            entity.Property(x => x.Error).HasMaxLength(2048);
+            entity.Property(x => x.AutomaticPublishError).HasMaxLength(2048);
+            entity.Property(x => x.LeaseOwner).IsConcurrencyToken();
+            entity.Property(x => x.LeaseGeneration).IsConcurrencyToken();
+            entity.HasIndex(x => x.GitHubReleaseId).IsUnique();
+            entity.HasIndex(x => new { x.State, x.LeaseUntilUtc, x.CreatedAtUtc });
+            entity.HasIndex(x => x.Version);
+        });
+
+        modelBuilder.Entity<ClientReleaseImportAsset>(entity =>
+        {
+            entity.ToTable("ClientReleaseImportAssets");
+            entity.HasKey(x => new { x.OperationId, x.RuntimeId });
+            entity.Property(x => x.RuntimeId).HasMaxLength(32).IsRequired();
+            entity.Property(x => x.SourceName).HasMaxLength(256).IsRequired();
+            entity.Property(x => x.SourceSha256).HasMaxLength(64).IsRequired();
+            entity.Property(x => x.LocalSha256).HasMaxLength(64);
+            entity.Property(x => x.ConversionContract).HasMaxLength(128);
+            entity.Property(x => x.State).HasConversion<short>();
+            entity.Property(x => x.Error).HasMaxLength(2048);
+            entity.HasOne(x => x.Operation)
+                .WithMany(x => x.Assets)
+                .HasForeignKey(x => x.OperationId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ClientReleaseAutomationSettings>(entity =>
+        {
+            entity.ToTable("ClientReleaseAutomationSettings");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Id).ValueGeneratedNever();
+            entity.Property(x => x.LastError).HasMaxLength(2048);
+            entity.Property(x => x.UpdatedBy).HasMaxLength(256).IsRequired();
+            entity.Property(x => x.Revision).IsConcurrencyToken();
+        });
+
+        modelBuilder.Entity<ClientInstallGrant>(entity =>
+        {
+            entity.ToTable("ClientInstallGrants");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.Id).ValueGeneratedNever();
+            entity.Property(x => x.TokenHash).HasMaxLength(64).IsRequired();
+            entity.Property(x => x.RequestKey).HasMaxLength(128).IsRequired();
+            entity.Property(x => x.RequestFingerprint).HasMaxLength(64).IsRequired();
+            entity.Property(x => x.RuntimeId).HasMaxLength(32).IsRequired();
+            entity.Property(x => x.ArtifactVersion).HasMaxLength(64).IsRequired();
+            entity.Property(x => x.ArtifactSha256).HasMaxLength(64).IsRequired();
+            entity.Property(x => x.PublicWebBaseUrl).HasMaxLength(2048).IsRequired();
+            entity.Property(x => x.PublicApiBaseUrl).HasMaxLength(2048).IsRequired();
+            entity.Property(x => x.CreatedBy).HasMaxLength(256).IsRequired();
+            entity.Property(x => x.RevokedBy).HasMaxLength(256);
+            entity.HasIndex(x => x.TokenHash).IsUnique();
+            entity.HasIndex(x => x.RequestKey).IsUnique();
+            entity.HasIndex(x => new { x.TenantId, x.CreatedAtUtc });
+            entity.HasOne(x => x.EnrollmentCode).WithMany()
+                .HasForeignKey(x => x.EnrollmentCodeId).OnDelete(DeleteBehavior.Restrict);
         });
 
         modelBuilder.Entity<SecretRecord>(entity =>

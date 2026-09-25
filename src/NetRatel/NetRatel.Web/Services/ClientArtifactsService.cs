@@ -4,6 +4,7 @@ using NetRatel.Web.Components.Dialogs;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Text;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Forms;
 using MudBlazor;
@@ -14,6 +15,23 @@ namespace NetRatel.Web.Services;
 
 public interface IClientArtifactsService
 {
+    Task<GitHubClientReleasePageModel> GetGitHubReleasesAsync(string channel, int page, bool refresh, CancellationToken ct = default);
+    Task<ClientReleaseAutomationModel> GetReleaseAutomationAsync(CancellationToken ct = default) =>
+        throw new NotSupportedException();
+    Task<ClientReleaseAutomationModel> SaveReleaseAutomationAsync(ClientReleaseAutomationModel settings, CancellationToken ct = default) =>
+        throw new NotSupportedException();
+    Task<ClientReleaseAutomationModel> CheckReleasesNowAsync(CancellationToken ct = default) =>
+        throw new NotSupportedException();
+    Task<List<ClientReleaseImportModel>> GetReleaseImportsAsync(CancellationToken ct = default) =>
+        Task.FromResult(new List<ClientReleaseImportModel>());
+    Task<ClientReleaseImportModel> QueueReleaseImportAsync(long releaseId, CancellationToken ct = default) =>
+        throw new NotSupportedException();
+    Task CancelReleaseImportAsync(Guid id, CancellationToken ct = default) =>
+        throw new NotSupportedException();
+    Task RetryReleaseImportAsync(Guid id, CancellationToken ct = default) =>
+        throw new NotSupportedException();
+    Task PublishReleaseImportAsync(Guid id, bool confirmPrerelease, CancellationToken ct = default) =>
+        throw new NotSupportedException();
     Task<List<ClientArtifactSummaryModel>> ListAsync(string? rid, CancellationToken ct = default);
     Task<ClientArtifactPageModel> GetArtifactsAsync(
         int page,
@@ -54,8 +72,18 @@ public interface IClientArtifactsService
     Task DownloadAsync(string rid, string version, CancellationToken ct = default);
     Task DownloadClientPackageAsync(ClientPackageDownloadRequest request, CancellationToken ct = default);
     Task DownloadDeploymentScriptAsync(ClientScriptGenerateRequest request, CancellationToken ct = default);
+    Task<ClientInstallLinkResultModel> GenerateInstallLinkAsync(ClientScriptGenerateRequest request, CancellationToken ct = default) =>
+        throw new NotSupportedException();
+    Task DownloadGeneratedInstallScriptAsync(ClientInstallLinkResultModel result, CancellationToken ct = default) =>
+        throw new NotSupportedException();
+    Task<List<ClientInstallLinkMetadataModel>> GetInstallLinksAsync(int? tenantId, CancellationToken ct = default) =>
+        Task.FromResult(new List<ClientInstallLinkMetadataModel>());
+    Task<ClientInstallLinkMetadataModel?> GetInstallLinkAsync(Guid id, CancellationToken ct = default) =>
+        Task.FromResult<ClientInstallLinkMetadataModel?>(null);
+    Task RevokeInstallLinkAsync(Guid id, CancellationToken ct = default) =>
+        throw new NotSupportedException();
     Task DeleteAsync(string rid, string version, CancellationToken ct = default);
-    void OpenUploadDialog(string initialRid, Func<Task> onUploaded);
+    Task OpenUploadDialogAsync(string initialRid, Func<Task> onUploaded);
     Task UploadAsync(string rid, string version, string? notes, IBrowserFile file, CancellationToken ct = default);
 }
 
@@ -87,6 +115,64 @@ public class ClientArtifactsService : IClientArtifactsService
         _logger = logger;
         _uploads = uploads;
         _jsRuntime = jsRuntime;
+    }
+
+    public async Task<GitHubClientReleasePageModel> GetGitHubReleasesAsync(string channel, int page, bool refresh, CancellationToken ct = default)
+    {
+        var uri = $"/api/v1/client-artifacts/github-releases?channel={Uri.EscapeDataString(channel)}&page={page}&refresh={refresh.ToString().ToLowerInvariant()}";
+        return await _uploads.Http.GetFromJsonAsync<GitHubClientReleasePageModel>(uri, ct)
+            ?? throw new HttpRequestException("The GitHub releases response was empty.");
+    }
+
+    public async Task<ClientReleaseAutomationModel> GetReleaseAutomationAsync(CancellationToken ct = default) =>
+        await _uploads.Http.GetFromJsonAsync<ClientReleaseAutomationModel>("/api/v1/client-artifacts/automation", ct)
+        ?? throw new HttpRequestException("The automation settings response was empty.");
+
+    public async Task<ClientReleaseAutomationModel> SaveReleaseAutomationAsync(ClientReleaseAutomationModel settings, CancellationToken ct = default)
+    {
+        using var response = await _uploads.Http.PutAsJsonAsync("/api/v1/client-artifacts/automation", settings, ct);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<ClientReleaseAutomationModel>(cancellationToken: ct)
+            ?? throw new HttpRequestException("The saved automation settings response was empty.");
+    }
+
+    public async Task<ClientReleaseAutomationModel> CheckReleasesNowAsync(CancellationToken ct = default)
+    {
+        using var response = await _uploads.Http.PostAsync("/api/v1/client-artifacts/automation/check-now", null, ct);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<ClientReleaseAutomationModel>(cancellationToken: ct)
+            ?? throw new HttpRequestException("The check status response was empty.");
+    }
+
+    public async Task<List<ClientReleaseImportModel>> GetReleaseImportsAsync(CancellationToken ct = default) =>
+        await _uploads.Http.GetFromJsonAsync<List<ClientReleaseImportModel>>("/api/v1/client-artifacts/imports", ct) ?? [];
+
+    public async Task<ClientReleaseImportModel> QueueReleaseImportAsync(long releaseId, CancellationToken ct = default)
+    {
+        using var response = await _uploads.Http.PostAsync($"/api/v1/client-artifacts/github-releases/{releaseId}/imports", null, ct);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<ClientReleaseImportModel>(cancellationToken: ct)
+            ?? throw new HttpRequestException("The import response was empty.");
+    }
+
+    public async Task CancelReleaseImportAsync(Guid id, CancellationToken ct = default)
+    {
+        using var response = await _uploads.Http.PostAsync($"/api/v1/client-artifacts/imports/{id}/cancel", null, ct);
+        response.EnsureSuccessStatusCode();
+    }
+
+    public async Task RetryReleaseImportAsync(Guid id, CancellationToken ct = default)
+    {
+        using var response = await _uploads.Http.PostAsync($"/api/v1/client-artifacts/imports/{id}/retry", null, ct);
+        response.EnsureSuccessStatusCode();
+    }
+
+    public async Task PublishReleaseImportAsync(Guid id, bool confirmPrerelease, CancellationToken ct = default)
+    {
+        using var response = await _uploads.Http.PostAsJsonAsync(
+            $"/api/v1/client-artifacts/imports/{id}/publish",
+            new { ConfirmPrerelease = confirmPrerelease }, ct);
+        response.EnsureSuccessStatusCode();
     }
 
 
@@ -343,6 +429,41 @@ public class ClientArtifactsService : IClientArtifactsService
         _snackbar.Add($"Deployment script generated for tenant {request.TenantId}.", Severity.Success);
     }
 
+    public async Task<ClientInstallLinkResultModel> GenerateInstallLinkAsync(
+        ClientScriptGenerateRequest request, CancellationToken ct = default)
+    {
+        using var response = await _uploads.Http.PostAsJsonAsync("/api/v1/client-install-links", request, ct);
+        if (!response.IsSuccessStatusCode)
+            throw new HttpRequestException(await TryReadProblemAsync(response, ct)
+                ?? $"Install link generation failed with HTTP {(int)response.StatusCode}.");
+        return await response.Content.ReadFromJsonAsync<ClientInstallLinkResultModel>(cancellationToken: ct)
+            ?? throw new HttpRequestException("The install link response was empty.");
+    }
+
+    public async Task DownloadGeneratedInstallScriptAsync(ClientInstallLinkResultModel result, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        var extension = result.RuntimeId.StartsWith("win-", StringComparison.Ordinal) ? "ps1" : "sh";
+        await _downloader.DownloadFile($"netratel-install-{result.TenantId}-{result.RuntimeId}.{extension}",
+            Encoding.UTF8.GetBytes(result.Script), "text/plain");
+    }
+
+    public async Task<List<ClientInstallLinkMetadataModel>> GetInstallLinksAsync(int? tenantId, CancellationToken ct = default)
+    {
+        var url = "/api/v1/client-install-links" + (tenantId.HasValue ? $"?tenantId={tenantId.Value}" : string.Empty);
+        return await _uploads.Http.GetFromJsonAsync<List<ClientInstallLinkMetadataModel>>(url, ct) ?? [];
+    }
+
+    public async Task<ClientInstallLinkMetadataModel?> GetInstallLinkAsync(Guid id, CancellationToken ct = default)
+        => await _uploads.Http.GetFromJsonAsync<ClientInstallLinkMetadataModel>(
+            $"/api/v1/client-install-links/{id}", ct);
+
+    public async Task RevokeInstallLinkAsync(Guid id, CancellationToken ct = default)
+    {
+        using var response = await _uploads.Http.PostAsync($"/api/v1/client-install-links/{id}/revoke", null, ct);
+        response.EnsureSuccessStatusCode();
+    }
+
     private async Task StartBrowserDownloadAsync(string url, CancellationToken ct)
     {
         try
@@ -412,7 +533,7 @@ public class ClientArtifactsService : IClientArtifactsService
         }
     }
 
-    public void OpenUploadDialog(string initialRid, Func<Task> onUploaded)
+    public async Task OpenUploadDialogAsync(string initialRid, Func<Task> onUploaded)
     {
         var parameters = new DialogParameters
         {
@@ -428,7 +549,7 @@ public class ClientArtifactsService : IClientArtifactsService
             FullWidth = true
         };
 
-        _dialogService.ShowAsync<ClientArtifactUploadDialog>("Upload Artifact", parameters, options);
+        await _dialogService.ShowAsync<ClientArtifactUploadDialog>("Upload Artifact", parameters, options);
     }
 
     public async Task UploadAsync(string rid, string version, string? notes, IBrowserFile file, CancellationToken ct = default)
@@ -660,8 +781,121 @@ public sealed class ClientScriptGenerateRequest
 {
     public int TenantId { get; set; }
     public string RuntimeId { get; set; } = "win-x64";
+    public string? ArtifactVersion { get; set; }
     public int ValidForMinutes { get; set; } = 60;
     public int? MaxUses { get; set; } = 1;
     public bool InstallAsService { get; set; } = true;
     public bool SilentInstall { get; set; } = true;
+    public string IdempotencyKey { get; set; } = string.Empty;
+}
+
+public sealed class ClientInstallLinkResultModel
+{
+    public Guid Id { get; set; }
+    public int TenantId { get; set; }
+    public string RuntimeId { get; set; } = string.Empty;
+    public string ArtifactVersion { get; set; } = string.Empty;
+    public string ArtifactSha256 { get; set; } = string.Empty;
+    public DateTimeOffset ExpiresAtUtc { get; set; }
+    public int MaxUses { get; set; }
+    public int RemainingUses { get; set; }
+    public bool InstallAsService { get; set; }
+    public bool SilentInstall { get; set; }
+    public string PublicUrl { get; set; } = string.Empty;
+    public string InstallCommand { get; set; } = string.Empty;
+    public string Script { get; set; } = string.Empty;
+    public bool Replay { get; set; }
+}
+
+public sealed class ClientInstallLinkMetadataModel
+{
+    public Guid Id { get; set; }
+    public int TenantId { get; set; }
+    public string RuntimeId { get; set; } = string.Empty;
+    public string ArtifactVersion { get; set; } = string.Empty;
+    public DateTimeOffset CreatedAtUtc { get; set; }
+    public DateTimeOffset ExpiresAtUtc { get; set; }
+    public int MaxUses { get; set; }
+    public int Uses { get; set; }
+    public bool IsActive { get; set; }
+    public DateTimeOffset? RevokedAtUtc { get; set; }
+    public string CreatedBy { get; set; } = string.Empty;
+}
+
+public sealed class ClientReleaseAutomationModel
+{
+    public int CheckEveryHours { get; set; }
+    public bool DownloadStable { get; set; }
+    public bool DownloadPrerelease { get; set; }
+    public bool PublishAutomatically { get; set; }
+    public bool DeployPrereleaseAutomatically { get; set; }
+    public DateTimeOffset? LastAttemptAtUtc { get; set; }
+    public DateTimeOffset? LastSuccessAtUtc { get; set; }
+    public DateTimeOffset? NextCheckAtUtc { get; set; }
+    public string? LastError { get; set; }
+    public long Revision { get; set; }
+    public string? UpdatedBy { get; set; }
+    public DateTimeOffset? UpdatedAtUtc { get; set; }
+}
+
+public sealed class GitHubClientReleasePageModel
+{
+    public List<GitHubClientReleaseModel> Items { get; set; } = [];
+    public int Page { get; set; }
+    public bool HasMore { get; set; }
+    public bool ScanLimitReached { get; set; }
+    public DateTimeOffset RefreshedAtUtc { get; set; }
+    public string? Warning { get; set; }
+}
+
+public sealed class GitHubClientReleaseModel
+{
+    public long Id { get; set; }
+    public string Tag { get; set; } = string.Empty;
+    public string Version { get; set; } = string.Empty;
+    public string Name { get; set; } = string.Empty;
+    public DateTimeOffset PublishedAtUtc { get; set; }
+    public bool IsPrerelease { get; set; }
+    public string DetailsUrl { get; set; } = string.Empty;
+    public List<GitHubClientAssetModel> ClientAssets { get; set; } = [];
+    public long TotalClientBytes { get; set; }
+    public string PublicationState { get; set; } = string.Empty;
+}
+
+public sealed class GitHubClientAssetModel
+{
+    public long Id { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string RuntimeId { get; set; } = string.Empty;
+    public long SizeBytes { get; set; }
+    public string? Sha256Digest { get; set; }
+}
+
+public sealed class ClientReleaseImportModel
+{
+    public Guid Id { get; set; }
+    public long GitHubReleaseId { get; set; }
+    public string Tag { get; set; } = string.Empty;
+    public string Version { get; set; } = string.Empty;
+    public int State { get; set; }
+    public long? TotalBytes { get; set; }
+    public long DownloadedBytes { get; set; }
+    public string? Error { get; set; }
+    public DateTimeOffset CreatedAtUtc { get; set; }
+    public DateTimeOffset UpdatedAtUtc { get; set; }
+    public DateTimeOffset? PublishedAtUtc { get; set; }
+    public string? AutomaticPublishError { get; set; }
+    public List<ClientReleaseImportAssetModel> Assets { get; set; } = [];
+}
+
+public sealed class ClientReleaseImportAssetModel
+{
+    public string RuntimeId { get; set; } = string.Empty;
+    public string SourceName { get; set; } = string.Empty;
+    public int State { get; set; }
+    public long SourceSizeBytes { get; set; }
+    public long DownloadedBytes { get; set; }
+    public string? SourceSha256 { get; set; }
+    public string? LocalSha256 { get; set; }
+    public string? Error { get; set; }
 }

@@ -53,6 +53,34 @@ public sealed class EffectiveAccessAuthorizationHandlerTests
         (await EvaluateAsync(handler, requirement, withScope, 10)).Should().BeTrue();
     }
 
+    [Fact]
+    public async Task Instance_artifact_administration_allows_local_admin_but_not_tenant_manager()
+    {
+        await using var db = CreateDb();
+        db.Users.Add(new LocalUser
+        {
+            Id = "local-admin", PrincipalId = "admin-principal",
+            IsEnabled = true, IsInstanceAdministrator = true
+        });
+        var role = new AccessRole { Name = "Tenant client manager", DelegationRank = 1 };
+        role.Permissions.Add(new AccessRolePermission { Permission = NetRatelPermissions.ClientManagement });
+        db.AccessRoles.Add(role);
+        db.PrincipalRoleAssignments.Add(new PrincipalRoleAssignment
+        {
+            PrincipalId = "tenant-principal", RoleId = role.Id, TenantId = 10
+        });
+        await db.SaveChangesAsync();
+        var handler = new EffectiveAccessHandler(new EffectiveAccessService(db, Configuration()));
+        var requirement = new EffectiveAccessRequirement(NetRatelPermissions.ClientManagement, instanceScope: true);
+        var admin = new ClaimsPrincipal(new ClaimsIdentity([
+            new Claim("netratel_principal_id", "admin-principal")], "local"));
+        var tenantManager = new ClaimsPrincipal(new ClaimsIdentity([
+            new Claim("netratel_principal_id", "tenant-principal")], "local"));
+
+        (await EvaluateAsync(handler, requirement, admin, 10)).Should().BeTrue();
+        (await EvaluateAsync(handler, requirement, tenantManager, 10)).Should().BeFalse();
+    }
+
     private static async Task<bool> EvaluateAsync(EffectiveAccessHandler handler, IAuthorizationRequirement requirement, ClaimsPrincipal principal, int tenantId)
     {
         var http = new DefaultHttpContext { User = principal };

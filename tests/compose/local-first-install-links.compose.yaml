@@ -1,0 +1,8 @@
+services:
+  api:
+    environment:
+      # Disposable origin for protected-link creation. The browser test fetches
+      # the issued path through the actual Web listener on its isolated port.
+      PublicUrls__WebBaseUrl: ${NETRATEL_INSTALL_LINK_PUBLIC_ORIGIN:-https://netratel.example}
+      PublicUrls__ApiBaseUrl: ${NETRATEL_INSTALL_LINK_PUBLIC_ORIGIN:-https://netratel.example}
+      GitHubReleases__ReadOnlyToken: ${NETRATEL_LOCAL_FIRST_GITHUB_TOKEN:-}

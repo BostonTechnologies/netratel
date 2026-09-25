@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using NuGet.Versioning;
@@ -12,6 +13,7 @@ using NetRatel.Application.Artifacts;
 using NetRatel.Application.Events;
 using NetRatel.API.Models;
 using NetRatel.Shared;
+using NetRatel.Infrastructure.Persistence;
 
 namespace NetRatel.API.Services;
 
@@ -21,6 +23,16 @@ public sealed class ClientArtifactsOptions
     public string LegacyRoot { get; set; } = Path.Combine("artifacts", "client");
     public bool EnableFallbackScan { get; set; } = true;
     public string? PublicBaseUrl { get; set; }
+
+    // Test-only crash injection. Normal configuration cannot bind a delegate,
+    // so production paths leave this unset.
+    public Action<ClientArtifactCommitPhase>? TestCommitHook { get; set; }
+}
+
+public enum ClientArtifactCommitPhase
+{
+    AfterAtomicDirectoryMoveBeforeDatabaseCommit,
+    BeforeAtomicDirectoryMove
 }
 
 public interface IClientArtifactsService
@@ -31,12 +43,33 @@ public interface IClientArtifactsService
     Task<ClientArtifactSummaryDto?> GetLatestAsync(string rid, CancellationToken ct);
     Task<ClientArtifactSummaryDto?> GetMetadataAsync(string rid, string version, CancellationToken ct);
     Task<ClientArtifactUploadResultDto> UploadAsync(IFormFile file, string rid, string version, string? notes, string? uploadedBy, CancellationToken ct);
+    Task<ClientArtifactUploadResultDto> ImportVerifiedAsync(IFormFile file, string rid, string version,
+        ClientArtifactImportProvenance provenance, string? importedBy, CancellationToken ct) =>
+        throw new NotSupportedException();
+    async Task CompleteImportVisibilityAsync(Guid operationId, ClientReleaseImportClaim claim, CancellationToken ct)
+    {
+        await CompleteImportVisibilityAsync(operationId, ct).ConfigureAwait(false);
+    }
+    Task CompleteImportVisibilityAsync(Guid operationId, CancellationToken ct) =>
+        throw new NotSupportedException();
     Task<ClientArtifactDownloadResult> DownloadAsync(string rid, string versionOrLatest, bool allowFallback, CancellationToken ct);
     Task<ClientArtifactDownloadResult> DownloadRawAsync(string rid, string versionOrLatest, CancellationToken ct);
     Task<ClientArtifactDownloadResult> DownloadForClientAsync(ClientDownloadRequest request, CancellationToken ct);
     Task DeleteAsync(string rid, string version, CancellationToken ct);
     Task<ClientArtifactDownloadResult> RunFallbackScanAsync(string rid, string? version, CancellationToken ct);
 }
+
+public sealed record ClientArtifactImportProvenance(
+    Guid OperationId,
+    string Repository,
+    string Tag,
+    long AssetId,
+    string AssetName,
+    string SourceSha256,
+    string BuildCommit,
+    string AdapterContract,
+    Guid? LeaseOwner = null,
+    long? LeaseGeneration = null);
 
 public sealed record ClientArtifactDownloadResult(
     Stream Content,
@@ -75,6 +108,8 @@ public sealed class ClientArtifactsService : IClientArtifactsService
     private readonly IArtifactZipInjectionService _zipInjectionService;
     private readonly IEventRecorder _events;
     private readonly ICorrelationContext _correlation;
+    private readonly OrchestratorDbContext _db;
+    private readonly TimeProvider _clock;
 
     public ClientArtifactsService(
         IWebHostEnvironment environment,
@@ -86,7 +121,9 @@ public sealed class ClientArtifactsService : IClientArtifactsService
         IEnrollmentCodeIssueService enrollmentCodeIssueService,
         IArtifactZipInjectionService zipInjectionService,
         IEventRecorder events,
-        ICorrelationContext correlation)
+        ICorrelationContext correlation,
+        OrchestratorDbContext db,
+        TimeProvider clock)
     {
         _environment = environment;
         _configuration = configuration;
@@ -98,6 +135,8 @@ public sealed class ClientArtifactsService : IClientArtifactsService
         _zipInjectionService = zipInjectionService;
         _events = events;
         _correlation = correlation;
+        _db = db;
+        _clock = clock;
     }
 
     public async Task<ClientArtifactListDto> ListAsync(string? rid, int skip, int take, CancellationToken ct)
@@ -116,7 +155,7 @@ public sealed class ClientArtifactsService : IClientArtifactsService
             foreach (var ridDir in Directory.EnumerateDirectories(storageRoot))
             {
                 var ridName = Path.GetFileName(ridDir);
-                if (!string.IsNullOrWhiteSpace(ridName))
+                if (IsCanonicalRidDirectory(ridName, ridDir, storageRoot))
                 {
                     await CollectRidSummariesAsync(ridName, ridDir, summaries, ct);
                 }
@@ -191,66 +230,339 @@ public sealed class ClientArtifactsService : IClientArtifactsService
         return metadata?.ToSummary();
     }
 
-    public async Task<ClientArtifactUploadResultDto> UploadAsync(IFormFile file, string rid, string version, string? notes, string? uploadedBy, CancellationToken ct)
+    public Task<ClientArtifactUploadResultDto> UploadAsync(IFormFile file, string rid, string version, string? notes, string? uploadedBy, CancellationToken ct) =>
+        StoreAsync(file, rid, version, notes, uploadedBy, null, ct);
+
+    public Task<ClientArtifactUploadResultDto> ImportVerifiedAsync(IFormFile file, string rid, string version,
+        ClientArtifactImportProvenance provenance, string? importedBy, CancellationToken ct) =>
+        provenance.LeaseOwner.HasValue || provenance.LeaseGeneration.HasValue
+            ? StoreImportedAsync(file, rid, version, importedBy, provenance, ct)
+            : StoreAsync(file, rid, version, $"Imported from GitHub release {provenance.Tag}", importedBy, provenance, ct);
+
+    public async Task CompleteImportVisibilityAsync(Guid operationId, ClientReleaseImportClaim claim,
+        CancellationToken ct)
+    {
+        if (claim.OperationId != operationId)
+            throw new InvalidOperationException("The import visibility claim does not match the operation.");
+
+        await using var transaction = await _db.Database.BeginTransactionAsync(ct).ConfigureAwait(false);
+        await EnsureImportClaimLockedAsync(claim, ct).ConfigureAwait(false);
+        var hasAssets = await _db.ClientReleaseImportAssets.AsNoTracking()
+            .AnyAsync(x => x.OperationId == operationId, ct).ConfigureAwait(false);
+        var incomplete = await _db.ClientReleaseImportAssets.AsNoTracking()
+            .AnyAsync(x => x.OperationId == operationId &&
+                x.State != ClientReleaseImportAssetState.Imported, ct).ConfigureAwait(false);
+        if (!hasAssets || incomplete)
+            throw new InvalidOperationException("The imported client pack is incomplete.");
+
+        await WriteImportVisibilityMarkerAsync(operationId, ct).ConfigureAwait(false);
+        await transaction.CommitAsync(ct).ConfigureAwait(false);
+    }
+
+    public async Task CompleteImportVisibilityAsync(Guid operationId, CancellationToken ct)
+    {
+        await WriteImportVisibilityMarkerAsync(operationId, ct).ConfigureAwait(false);
+    }
+
+    private async Task WriteImportVisibilityMarkerAsync(Guid operationId, CancellationToken ct)
+    {
+        var marker = ImportMarkerPath(operationId);
+        if (File.Exists(marker)) return;
+        var directory = Path.GetDirectoryName(marker)!;
+        Directory.CreateDirectory(directory);
+        var temporary = Path.Combine(directory, $".{operationId:N}-{Guid.NewGuid():N}.tmp");
+        try
+        {
+            await File.WriteAllTextAsync(temporary, "netratel.client.import-complete.v1\n", ct).ConfigureAwait(false);
+            try { File.Move(temporary, marker); }
+            catch (IOException) when (File.Exists(marker))
+            {
+                _logger.LogDebug("Import visibility marker for operation {OperationId} already exists.", operationId);
+            }
+        }
+        finally
+        {
+            if (File.Exists(temporary)) File.Delete(temporary);
+        }
+    }
+
+    private async Task<ClientArtifactUploadResultDto> StoreImportedAsync(
+        IFormFile file, string rid, string version, string? importedBy,
+        ClientArtifactImportProvenance provenance, CancellationToken ct)
     {
         if (file is null or { Length: <= 0 })
-        {
             throw new RequestValidationException("file", "Upload must include a non-empty file.");
-        }
+        if (!provenance.LeaseOwner.HasValue || !provenance.LeaseGeneration.HasValue)
+            throw new InvalidOperationException("Claim-aware import provenance requires a complete lease claim.");
 
         var normalizedRid = NormalizeRid(rid);
         var normalizedVersion = NormalizeVersion(version);
         var extension = NormalizeExtension(file.FileName);
         if (!AllowedExtensions.Contains(extension, StringComparer.OrdinalIgnoreCase))
-        {
             throw new RequestValidationException("file", "Artifacts must be .zip, .7z, or .tar.gz files.");
+
+        var contentType = ResolveContentType(extension, file.ContentType);
+        var storageRoot = EnsureStorageRoot();
+        var fileName = BuildFileName(normalizedRid, normalizedVersion, extension);
+        var finalDirectory = Path.Combine(storageRoot, normalizedRid, normalizedVersion);
+        var stagingDirectory = Path.Combine(storageRoot, ".import-staging", provenance.OperationId.ToString("N"),
+            $"{provenance.LeaseOwner:N}-{provenance.LeaseGeneration}", normalizedRid, normalizedVersion);
+        Directory.CreateDirectory(stagingDirectory);
+        var stagedArtifact = Path.Combine(stagingDirectory, fileName);
+        var stagedMetadata = Path.Combine(stagingDirectory, "metadata.json");
+
+        try
+        {
+            await using (var destination = new FileStream(stagedArtifact, FileMode.CreateNew, FileAccess.Write,
+                FileShare.None, 64 * 1024, useAsync: true))
+            {
+                await file.CopyToAsync(destination, ct).ConfigureAwait(false);
+                await destination.FlushAsync(ct).ConfigureAwait(false);
+            }
+
+            var sha256 = await ComputeSha256Async(stagedArtifact, ct).ConfigureAwait(false);
+            var size = new FileInfo(stagedArtifact).Length;
+            await ClientArtifactManifestValidator.ValidateFileAsync(
+                stagedArtifact, normalizedRid, normalizedVersion, ct).ConfigureAwait(false);
+            var metadata = new ClientArtifactMetadata
+            {
+                Rid = normalizedRid,
+                Version = normalizedVersion,
+                FileName = fileName,
+                Size = size,
+                Sha256 = sha256,
+                UploadedAt = DateTimeOffset.UtcNow,
+                UploadedBy = string.IsNullOrWhiteSpace(importedBy) ? null : importedBy,
+                Notes = $"Imported from GitHub release {provenance.Tag}",
+                ContentType = contentType,
+                ImportOperationId = provenance.OperationId,
+                SourceRepository = provenance.Repository,
+                SourceTag = provenance.Tag,
+                SourceAssetId = provenance.AssetId,
+                SourceAssetName = provenance.AssetName,
+                SourceSha256 = provenance.SourceSha256,
+                SourceCommit = provenance.BuildCommit,
+                ImportAdapterContract = provenance.AdapterContract
+            };
+            await using (var metadataStream = new FileStream(stagedMetadata, FileMode.CreateNew,
+                FileAccess.Write, FileShare.None, 16 * 1024, useAsync: true))
+            {
+                await JsonSerializer.SerializeAsync(metadataStream, metadata, MetadataSerializerOptions, ct)
+                    .ConfigureAwait(false);
+                await metadataStream.FlushAsync(ct).ConfigureAwait(false);
+            }
+
+            // Keep network/file preparation outside the database transaction. The short
+            // row lock below fences the claim while the same-filesystem directory
+            // rename commits the immutable archive+metadata pair; a takeover cannot
+            // pass the claim check until this filesystem decision is durable.
+            await using var transaction = await _db.Database.BeginTransactionAsync(ct).ConfigureAwait(false);
+            await EnsureImportClaimLockedAsync(new ClientReleaseImportClaim(
+                provenance.OperationId, provenance.LeaseOwner.Value, provenance.LeaseGeneration.Value), ct)
+                .ConfigureAwait(false);
+            var created = await CommitImportedDirectoryAsync(stagingDirectory, finalDirectory, metadata, ct)
+                .ConfigureAwait(false);
+            if (created)
+                _options.TestCommitHook?.Invoke(ClientArtifactCommitPhase.AfterAtomicDirectoryMoveBeforeDatabaseCommit);
+            await transaction.CommitAsync(ct).ConfigureAwait(false);
+
+            if (created)
+            {
+                await _events.RecordAsync(new DomainEvent
+                {
+                    EventType = NetRatelEventTypes.Artifact.Uploaded,
+                    Source = "Api",
+                    CorrelationId = _correlation.Current ?? $"netratel-artifact-{normalizedRid}-{normalizedVersion}",
+                    EntityId = $"{normalizedRid}:{normalizedVersion}",
+                    Severity = "Success",
+                    Message = $"Client artifact imported for {normalizedRid} {normalizedVersion}.",
+                    Payload = new { rid = normalizedRid, version = normalizedVersion, fileName, importedBy, size }
+                }, ct).ConfigureAwait(false);
+            }
+
+            return new ClientArtifactUploadResultDto
+            {
+                Artifact = metadata.ToSummary(),
+                Created = created
+            };
         }
+        finally
+        {
+            try
+            {
+                var claimDirectory = Path.GetDirectoryName(Path.GetDirectoryName(stagingDirectory)!)!;
+                if (Directory.Exists(claimDirectory)) Directory.Delete(claimDirectory, recursive: true);
+            }
+            catch (Exception cleanupException)
+            {
+                _logger.LogWarning(cleanupException,
+                    "Failed to remove claim-specific client import staging directory {StagingDirectory}.", stagingDirectory);
+            }
+        }
+    }
+
+    private async Task<bool> CommitImportedDirectoryAsync(string stagingDirectory, string finalDirectory,
+        ClientArtifactMetadata expected, CancellationToken ct)
+    {
+        var finalArtifact = Path.Combine(finalDirectory, expected.FileName);
+        var finalMetadata = Path.Combine(finalDirectory, "metadata.json");
+        var artifactExists = File.Exists(finalArtifact);
+        var metadataExists = File.Exists(finalMetadata);
+
+        if (artifactExists && metadataExists)
+        {
+            var existing = await ReadMetadataFileAsync(finalMetadata, ct).ConfigureAwait(false);
+            await VerifyImportedPairAsync(finalArtifact, existing, expected, ct).ConfigureAwait(false);
+            return false;
+        }
+
+        if (Directory.Exists(finalDirectory) && Directory.EnumerateFileSystemEntries(finalDirectory).Any())
+        {
+            if (metadataExists)
+            {
+                var existing = await ReadMetadataFileAsync(finalMetadata, ct).ConfigureAwait(false);
+                EnsureMatchingImportedMetadata(existing, expected);
+            }
+            else if (!artifactExists)
+            {
+                throw new ClientArtifactConflictException(expected.Rid, expected.Version);
+            }
+        }
+
+        Directory.CreateDirectory(Path.GetDirectoryName(finalDirectory)!);
+        if (!artifactExists && !metadataExists && !Directory.Exists(finalDirectory))
+        {
+            Directory.Move(stagingDirectory, finalDirectory);
+            return true;
+        }
+
+        Directory.CreateDirectory(finalDirectory);
+        var stagedArtifact = Path.Combine(stagingDirectory, expected.FileName);
+        var stagedMetadata = Path.Combine(stagingDirectory, "metadata.json");
+        if (metadataExists)
+        {
+            var existing = await ReadMetadataFileAsync(finalMetadata, ct).ConfigureAwait(false);
+            EnsureMatchingImportedMetadata(existing, expected);
+        }
+        if (artifactExists)
+        {
+            await VerifyImportedArchiveAsync(finalArtifact, expected, ct).ConfigureAwait(false);
+        }
+        else
+        {
+            File.Move(stagedArtifact, finalArtifact);
+        }
+        if (!metadataExists) File.Move(stagedMetadata, finalMetadata);
+        return true;
+    }
+
+    private async Task VerifyImportedPairAsync(string artifactPath, ClientArtifactMetadata existing,
+        ClientArtifactMetadata expected, CancellationToken ct)
+    {
+        EnsureMatchingImportedMetadata(existing, expected);
+        await VerifyImportedArchiveAsync(artifactPath, expected, ct).ConfigureAwait(false);
+    }
+
+    private async Task VerifyImportedArchiveAsync(string artifactPath, ClientArtifactMetadata expected,
+        CancellationToken ct)
+    {
+        if (new FileInfo(artifactPath).Length != expected.Size ||
+            !string.Equals(await ComputeSha256Async(artifactPath, ct).ConfigureAwait(false), expected.Sha256,
+                StringComparison.OrdinalIgnoreCase))
+            throw new ClientArtifactConflictException(expected.Rid, expected.Version);
+        await ClientArtifactManifestValidator.ValidateFileAsync(
+            artifactPath, expected.Rid, expected.Version, ct).ConfigureAwait(false);
+    }
+
+    private static void EnsureMatchingImportedMetadata(ClientArtifactMetadata actual,
+        ClientArtifactMetadata expected)
+    {
+        if (!string.Equals(actual.Rid, expected.Rid, StringComparison.Ordinal) ||
+            !string.Equals(actual.Version, expected.Version, StringComparison.Ordinal) ||
+            !string.Equals(actual.FileName, expected.FileName, StringComparison.Ordinal) ||
+            actual.Size != expected.Size ||
+            !string.Equals(actual.Sha256, expected.Sha256, StringComparison.OrdinalIgnoreCase) ||
+            actual.ImportOperationId != expected.ImportOperationId ||
+            !string.Equals(actual.SourceRepository, expected.SourceRepository, StringComparison.Ordinal) ||
+            !string.Equals(actual.SourceTag, expected.SourceTag, StringComparison.Ordinal) ||
+            actual.SourceAssetId != expected.SourceAssetId ||
+            !string.Equals(actual.SourceAssetName, expected.SourceAssetName, StringComparison.Ordinal) ||
+            !string.Equals(actual.SourceSha256, expected.SourceSha256, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(actual.SourceCommit, expected.SourceCommit, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(actual.ImportAdapterContract, expected.ImportAdapterContract, StringComparison.Ordinal))
+            throw new ClientArtifactConflictException(expected.Rid, expected.Version);
+    }
+
+    private async Task EnsureImportClaimLockedAsync(ClientReleaseImportClaim claim, CancellationToken ct)
+    {
+        await _db.Database.ExecuteSqlInterpolatedAsync(
+            $"SELECT \"Id\" FROM \"ClientReleaseImportOperations\" WHERE \"Id\" = {claim.OperationId} FOR UPDATE",
+            ct).ConfigureAwait(false);
+        var now = _clock.GetUtcNow();
+        var current = await _db.ClientReleaseImportOperations.AsNoTracking()
+            .SingleOrDefaultAsync(x => x.Id == claim.OperationId, ct).ConfigureAwait(false);
+        if (current is null || current.LeaseOwner != claim.LeaseOwner ||
+            current.LeaseGeneration != claim.LeaseGeneration ||
+            current.LeaseUntilUtc <= now || current.CancellationRequested ||
+            current.State < ClientReleaseImportState.Resolving ||
+            current.State > ClientReleaseImportState.Importing)
+            throw new InvalidOperationException("Client release import lease was lost.");
+    }
+
+    private async Task<ClientArtifactUploadResultDto> StoreAsync(IFormFile file, string rid, string version,
+        string? notes, string? uploadedBy, ClientArtifactImportProvenance? provenance, CancellationToken ct)
+    {
+        if (file is null or { Length: <= 0 })
+            throw new RequestValidationException("file", "Upload must include a non-empty file.");
+
+        var normalizedRid = NormalizeRid(rid);
+        var normalizedVersion = NormalizeVersion(version);
+        var extension = NormalizeExtension(file.FileName);
+        if (!AllowedExtensions.Contains(extension, StringComparer.OrdinalIgnoreCase))
+            throw new RequestValidationException("file", "Artifacts must be .zip, .7z, or .tar.gz files.");
 
         var contentType = ResolveContentType(extension, file.ContentType);
         var storageRoot = EnsureStorageRoot();
         var versionDir = Path.Combine(storageRoot, normalizedRid, normalizedVersion);
-        Directory.CreateDirectory(versionDir);
-
         var fileName = BuildFileName(normalizedRid, normalizedVersion, extension);
         var artifactPath = Path.Combine(versionDir, fileName);
         var metadataPath = Path.Combine(versionDir, "metadata.json");
-
-        var existingArtifact = File.Exists(artifactPath) && File.Exists(metadataPath);
-        if (File.Exists(artifactPath) != File.Exists(metadataPath))
+        var existingArtifact = File.Exists(artifactPath);
+        var existingMetadata = File.Exists(metadataPath);
+        if (existingArtifact != existingMetadata)
             throw new ClientArtifactConflictException(normalizedRid, normalizedVersion);
 
-        var tempPath = Path.Combine(versionDir, $".upload-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(tempPath);
-        var tempFile = Path.Combine(tempPath, Path.GetFileName(file.FileName));
+        var stagingDirectory = Path.Combine(storageRoot, ".upload-staging", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(stagingDirectory);
+        var stagedArtifact = Path.Combine(stagingDirectory, fileName);
+        var stagedMetadata = Path.Combine(stagingDirectory, "metadata.json");
 
         try
         {
-            await using (var destination = new FileStream(tempFile, FileMode.Create, FileAccess.Write, FileShare.None, 64 * 1024, useAsync: true))
+            await using (var destination = new FileStream(stagedArtifact, FileMode.CreateNew, FileAccess.Write,
+                FileShare.None, 64 * 1024, useAsync: true))
             {
-                await file.CopyToAsync(destination, ct);
+                await file.CopyToAsync(destination, ct).ConfigureAwait(false);
+                await destination.FlushAsync(ct).ConfigureAwait(false);
             }
 
-            var sha256 = await ComputeSha256Async(tempFile, ct);
-            var size = new FileInfo(tempFile).Length;
+            var sha256 = await ComputeSha256Async(stagedArtifact, ct).ConfigureAwait(false);
+            var size = new FileInfo(stagedArtifact).Length;
             await ClientArtifactManifestValidator.ValidateFileAsync(
-                tempFile, normalizedRid, normalizedVersion, ct).ConfigureAwait(false);
+                stagedArtifact, normalizedRid, normalizedVersion, ct).ConfigureAwait(false);
 
             if (existingArtifact)
             {
-                var existing = await ReadMetadataFileAsync(metadataPath, ct);
+                var existing = await ReadMetadataFileAsync(metadataPath, ct).ConfigureAwait(false);
                 if (!string.Equals(existing.Sha256, sha256, StringComparison.OrdinalIgnoreCase) || existing.Size != size)
+                    throw new ClientArtifactConflictException(normalizedRid, normalizedVersion);
+                if (provenance is not null &&
+                    (existing.ImportOperationId != provenance.OperationId ||
+                     !string.Equals(existing.SourceSha256, provenance.SourceSha256, StringComparison.OrdinalIgnoreCase)) ||
+                    provenance is null && existing.ImportOperationId.HasValue && !IsVisible(existing))
                     throw new ClientArtifactConflictException(normalizedRid, normalizedVersion);
                 return new ClientArtifactUploadResultDto { Artifact = existing.ToSummary(), Created = false };
             }
-
-            File.Move(tempFile, artifactPath);
-            _logger.LogInformation(
-                "Stored client artifact {Rid}/{Version} at {ArtifactPath}; size={Size}; sha256={Sha256}",
-                normalizedRid,
-                normalizedVersion,
-                artifactPath,
-                size,
-                sha256);
 
             var metadata = new ClientArtifactMetadata
             {
@@ -262,16 +574,42 @@ public sealed class ClientArtifactsService : IClientArtifactsService
                 UploadedAt = DateTimeOffset.UtcNow,
                 UploadedBy = string.IsNullOrWhiteSpace(uploadedBy) ? null : uploadedBy,
                 Notes = string.IsNullOrWhiteSpace(notes) ? null : notes,
-                ContentType = contentType
+                ContentType = contentType,
+                ImportOperationId = provenance?.OperationId,
+                SourceRepository = provenance?.Repository,
+                SourceTag = provenance?.Tag,
+                SourceAssetId = provenance?.AssetId,
+                SourceAssetName = provenance?.AssetName,
+                SourceSha256 = provenance?.SourceSha256,
+                SourceCommit = provenance?.BuildCommit,
+                ImportAdapterContract = provenance?.AdapterContract
             };
 
-            var metadataTemporary = Path.Combine(tempPath, "metadata.json");
-            await using (var metaStream = new FileStream(metadataTemporary, FileMode.CreateNew, FileAccess.Write, FileShare.None, 16 * 1024, useAsync: true))
+            await using (var metaStream = new FileStream(stagedMetadata, FileMode.CreateNew, FileAccess.Write,
+                FileShare.None, 16 * 1024, useAsync: true))
             {
-                await JsonSerializer.SerializeAsync(metaStream, metadata, MetadataSerializerOptions, ct);
-                await metaStream.FlushAsync(ct);
+                await JsonSerializer.SerializeAsync(metaStream, metadata, MetadataSerializerOptions, ct)
+                    .ConfigureAwait(false);
+                await metaStream.FlushAsync(ct).ConfigureAwait(false);
             }
-            File.Move(metadataTemporary, metadataPath);
+
+            _options.TestCommitHook?.Invoke(ClientArtifactCommitPhase.BeforeAtomicDirectoryMove);
+            Directory.CreateDirectory(Path.GetDirectoryName(versionDir)!);
+            try
+            {
+                Directory.Move(stagingDirectory, versionDir);
+            }
+            catch (IOException) when (Directory.Exists(versionDir))
+            {
+                throw new ClientArtifactConflictException(normalizedRid, normalizedVersion);
+            }
+            _logger.LogInformation(
+                "Stored client artifact {Rid}/{Version} at {ArtifactPath}; size={Size}; sha256={Sha256}",
+                normalizedRid,
+                normalizedVersion,
+                artifactPath,
+                size,
+                sha256);
 
             await _events.RecordAsync(new DomainEvent
             {
@@ -297,37 +635,16 @@ public sealed class ClientArtifactsService : IClientArtifactsService
                 Created = true
             };
         }
-        catch
-        {
-            if (existingArtifact) throw;
-            try
-            {
-                if (File.Exists(artifactPath)) File.Delete(artifactPath);
-            }
-            catch (Exception cleanupException)
-            {
-                _logger.LogWarning(cleanupException, "Failed to remove incomplete client artifact {ArtifactPath}.", artifactPath);
-            }
-
-            try
-            {
-                if (File.Exists(metadataPath)) File.Delete(metadataPath);
-            }
-            catch (Exception cleanupException)
-            {
-                _logger.LogWarning(cleanupException, "Failed to remove incomplete client artifact metadata {MetadataPath}.", metadataPath);
-            }
-            throw;
-        }
         finally
         {
             try
             {
-                Directory.Delete(tempPath, recursive: true);
+                if (Directory.Exists(stagingDirectory)) Directory.Delete(stagingDirectory, recursive: true);
             }
             catch (Exception cleanupException)
             {
-                _logger.LogWarning(cleanupException, "Failed to remove temporary client artifact directory {TemporaryPath}.", tempPath);
+                _logger.LogWarning(cleanupException,
+                    "Failed to remove temporary client artifact directory {TemporaryPath}.", stagingDirectory);
             }
         }
     }
@@ -498,6 +815,8 @@ public sealed class ClientArtifactsService : IClientArtifactsService
         }
 
         var metadata = await ReadMetadataFileAsync(metadataPath, ct);
+        if (metadata.ImportOperationId.HasValue)
+            throw new ClientArtifactConflictException(normalizedRid, normalizedVersion);
         var artifactPath = Path.Combine(versionDir, metadata.FileName);
 
         if (File.Exists(artifactPath))
@@ -628,9 +947,19 @@ public sealed class ClientArtifactsService : IClientArtifactsService
 
     private async Task CollectRidSummariesAsync(string rid, string ridDir, List<ClientArtifactSummaryDto> destination, CancellationToken ct)
     {
+        var storageRoot = EnsureStorageRoot();
+        if (!IsCanonicalRidDirectory(rid, ridDir, storageRoot)) return;
+
         foreach (var versionDir in Directory.EnumerateDirectories(ridDir))
         {
             ct.ThrowIfCancellationRequested();
+            var version = Path.GetFileName(versionDir);
+            if (string.IsNullOrWhiteSpace(version) ||
+                (!IsLatest(version) && !SemanticVersion.TryParse(version, out _)))
+            {
+                continue;
+            }
+
             var metadataPath = Path.Combine(versionDir, "metadata.json");
             if (!File.Exists(metadataPath))
             {
@@ -638,9 +967,25 @@ public sealed class ClientArtifactsService : IClientArtifactsService
             }
 
             var metadata = await ReadMetadataFileAsync(metadataPath, ct);
+            if (!string.Equals(metadata.Rid, rid, StringComparison.Ordinal) ||
+                !string.Equals(metadata.Version, version, StringComparison.Ordinal))
+            {
+                continue;
+            }
+            if (!IsVisible(metadata)) continue;
             destination.Add(metadata.ToSummary());
         }
     }
+
+    private static bool IsCanonicalRidDirectory(string? rid, string ridDir, string storageRoot) =>
+        !string.IsNullOrWhiteSpace(rid) &&
+        AllowedRids.Contains(rid) &&
+        string.Equals(rid, rid.ToLowerInvariant(), StringComparison.Ordinal) &&
+        string.Equals(
+            Path.GetFullPath(ridDir).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+            Path.GetFullPath(Path.Combine(storageRoot, rid))
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+            OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
 
     private async Task<ClientArtifactMetadata?> TryResolveMetadataAsync(string rid, string normalizedVersion, CancellationToken ct)
     {
@@ -679,8 +1024,15 @@ public sealed class ClientArtifactsService : IClientArtifactsService
             return null;
         }
 
-        return await ReadMetadataFileAsync(metadataPath, ct);
+        var metadata = await ReadMetadataFileAsync(metadataPath, ct);
+        return IsVisible(metadata) ? metadata : null;
     }
+
+    private bool IsVisible(ClientArtifactMetadata metadata) =>
+        !metadata.ImportOperationId.HasValue || File.Exists(ImportMarkerPath(metadata.ImportOperationId.Value));
+
+    private string ImportMarkerPath(Guid operationId) =>
+        Path.Combine(EnsureStorageRoot(), ".imports", $"{operationId:N}.complete");
 
     private async Task<ClientArtifactMetadata> ReadMetadataFileAsync(string metadataPath, CancellationToken ct)
     {
@@ -1025,6 +1377,14 @@ public sealed class ClientArtifactsService : IClientArtifactsService
         public string? UploadedBy { get; set; }
         public string? Notes { get; set; }
         public string? ContentType { get; set; }
+        public Guid? ImportOperationId { get; set; }
+        public string? SourceRepository { get; set; }
+        public string? SourceTag { get; set; }
+        public long? SourceAssetId { get; set; }
+        public string? SourceAssetName { get; set; }
+        public string? SourceSha256 { get; set; }
+        public string? SourceCommit { get; set; }
+        public string? ImportAdapterContract { get; set; }
 
         public ClientArtifactSummaryDto ToSummary() => new()
         {

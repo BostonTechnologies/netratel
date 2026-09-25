@@ -1427,8 +1427,9 @@ html[data-netratel-theme="light"] .netratel-login-panel {
 }
 
 .security-dialog {
-    min-width: min(420px, calc(100vw - 3rem));
-    max-width: 520px;
+    min-width: 0;
+    width: 100%;
+    overflow-wrap: anywhere;
 }
 
 .security-qr {
@@ -1461,9 +1462,66 @@ html[data-netratel-theme="light"] .netratel-login-panel {
 }
 
 .integration-dialog {
-    width: min(620px, calc(100vw - 3rem));
-    max-height: min(70vh, 720px);
+    min-width: 0;
+    width: 100%;
+    overflow-wrap: anywhere;
+}
+
+.integration-dialog > *,
+.integration-access-group,
+.integration-access-group .mud-stack,
+.security-dialog > * {
+    min-width: 0;
+    max-width: 100%;
+}
+
+.netratel-setup-owner-form {
+    display: grid;
+    gap: .75rem;
+}
+
+.netratel-setup-initializing {
+    position: fixed;
+    inset: 0;
+    z-index: 1400;
+    display: grid;
+    place-items: center;
     overflow-y: auto;
+    padding: 1rem;
+    background: var(--mud-palette-background);
+}
+
+.netratel-setup-initializing[hidden] {
+    display: none;
+}
+
+.netratel-setup-initializing-panel {
+    width: min(100%, 34rem);
+    padding: clamp(1.25rem, 5vw, 3rem);
+    border: 1px solid var(--mud-palette-lines-default);
+    border-radius: 1rem;
+    background: var(--mud-palette-surface);
+    box-shadow: 0 16px 48px color-mix(in srgb, var(--mud-palette-black) 12%, transparent);
+    text-align: center;
+}
+
+.netratel-setup-initializing-eyebrow {
+    margin-top: 1rem;
+    color: var(--mud-palette-primary);
+    font-weight: 700;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+}
+
+#setup-check-again:not([hidden]),
+#setup-review-details:not([hidden]) {
+    margin-top: 1rem;
+    padding: .65rem 1.25rem;
+    border: 0;
+    border-radius: .4rem;
+    background: var(--mud-palette-primary);
+    color: var(--mud-palette-primary-text);
+    cursor: pointer;
 }
 
 .integration-connection-example {

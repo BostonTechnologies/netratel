@@ -41,6 +41,7 @@
             }
             else
             {
+                <div data-testid="setup-owner-form" class="netratel-setup-owner-form">
                 <MudAlert Severity="Severity.Info">Storage is selected by this deployment: <strong>@(_provider ?? "the configured provider")</strong>. The wizard validates it but does not change environment variables or start database services.</MudAlert>
                 <label for="setup-tenant">Initial tenant</label>
                 <input id="setup-tenant" class="mud-input-slot mud-input-root mud-input-root-text mud-input-root-margin-dense" type="text" autocomplete="organization" required data-testid="setup-tenant" />
@@ -54,6 +55,7 @@
                 <label for="setup-confirm-password">Confirm passphrase</label>
                 <input id="setup-confirm-password" class="mud-input-slot mud-input-root mud-input-root-text mud-input-root-margin-dense" type="password" autocomplete="new-password" required data-testid="setup-confirm-password" />
                 <button type="button" class="mud-button-root mud-button mud-button-filled mud-button-filled-primary mud-button-filled-size-medium mud-ripple" data-netratel-setup-action="initialize" data-testid="setup-initialize">Initialize NetRatel</button>
+                </div>
             }
 
             @if (!string.IsNullOrWhiteSpace(_error))
@@ -67,6 +69,18 @@
             }
         </MudStack>
     </MudPaper>
+</section>
+
+<section id="setup-initializing" class="netratel-setup-initializing" data-testid="setup-initializing" hidden aria-labelledby="setup-initializing-title">
+    <div class="netratel-setup-initializing-panel">
+        <img src="/brand/netratel-mark-64.png" alt="" width="64" height="64" />
+        <p class="netratel-setup-initializing-eyebrow">NetRatel first setup</p>
+        <h1 id="setup-initializing-title">Submitting your setup…</h1>
+        <p id="setup-initializing-status" role="status" aria-live="polite">NetRatel is checking your setup request.</p>
+        <p id="setup-initializing-detail">Keep this tab open while NetRatel prepares your instance.</p>
+        <button id="setup-check-again" type="button" hidden>Check again</button>
+        <button id="setup-review-details" type="button" hidden>Review setup details</button>
+    </div>
 </section>
 
 @code {

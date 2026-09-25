@@ -28,20 +28,28 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
     }
 
     [Fact]
-    public async Task Renders_Four_Lazy_Management_Tabs_With_Paging_And_Friendly_Identity()
+    public async Task Renders_GitHub_Catalogue_And_Lazy_Management_Tabs_With_Paging_And_Friendly_Identity()
     {
         var cut = Render<ClientsMgmt>();
 
         cut.WaitForAssertion(() =>
         {
-            cut.Markup.Should().Contain("0.4.102");
+            cut.Markup.Should().Contain("GitHub releases");
+            cut.Markup.Should().Contain("Instance release automation");
+            cut.Markup.Should().Contain("Verification required");
             cut.Markup.Should().Contain("Artifacts");
             cut.Markup.Should().Contain("Auto-update Releases");
             cut.Markup.Should().Contain("Update Attempts");
             cut.Markup.Should().Contain("Suspended Agents");
+            _artifacts.ArtifactPageRequests.Should().Be(0);
+            _artifacts.ReleasePageRequests.Should().Be(0);
+        });
+
+        await cut.InvokeAsync(() => cut.FindAll(".mud-tab").Single(x => x.TextContent.Trim() == "Artifacts").Click());
+        cut.WaitForAssertion(() =>
+        {
             cut.Markup.Should().Contain("Search artifacts");
             _artifacts.ArtifactPageRequests.Should().BeGreaterThan(0);
-            _artifacts.ReleasePageRequests.Should().Be(0);
         });
 
         await cut.InvokeAsync(() => cut.FindAll(".mud-tab").Single(x => x.TextContent.Contains("Auto-update Releases")).Click());
@@ -72,6 +80,32 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
 
     private sealed class StubClientArtifactsService : IClientArtifactsService
     {
+        private ClientReleaseAutomationModel _automation = new();
+        public Task<ClientReleaseAutomationModel> GetReleaseAutomationAsync(CancellationToken ct = default) =>
+            Task.FromResult(_automation);
+        public Task<ClientReleaseAutomationModel> SaveReleaseAutomationAsync(ClientReleaseAutomationModel settings, CancellationToken ct = default)
+        {
+            _automation = settings;
+            _automation.Revision++;
+            return Task.FromResult(_automation);
+        }
+        public Task<ClientReleaseAutomationModel> CheckReleasesNowAsync(CancellationToken ct = default)
+        {
+            _automation.NextCheckAtUtc = DateTimeOffset.UtcNow;
+            return Task.FromResult(_automation);
+        }
+
+        public Task<GitHubClientReleasePageModel> GetGitHubReleasesAsync(string channel, int page, bool refresh, CancellationToken ct = default) =>
+            Task.FromResult(new GitHubClientReleasePageModel { Page = page, Items = [new GitHubClientReleaseModel
+            {
+                Id = 123,
+                Tag = "v0.4.102",
+                Version = "0.4.102",
+                Name = "Fixture release",
+                DetailsUrl = "https://github.com/BostonTechnologies/netratel/releases/tag/v0.4.102",
+                PublicationState = "Verification required",
+                PublishedAtUtc = DateTimeOffset.UtcNow
+            }] });
         private readonly ClientUpdateReleaseModel _release = new()
         {
             ReleaseId = ReleaseId,
@@ -230,7 +264,7 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
         public Task DownloadClientPackageAsync(ClientPackageDownloadRequest request, CancellationToken ct = default) => Task.CompletedTask;
         public Task DownloadDeploymentScriptAsync(ClientScriptGenerateRequest request, CancellationToken ct = default) => Task.CompletedTask;
         public Task DeleteAsync(string rid, string version, CancellationToken ct = default) => Task.CompletedTask;
-        public void OpenUploadDialog(string initialRid, Func<Task> onUploaded) { }
+        public Task OpenUploadDialogAsync(string initialRid, Func<Task> onUploaded) => Task.CompletedTask;
         public Task UploadAsync(string rid, string version, string? notes, IBrowserFile file, CancellationToken ct = default) => Task.CompletedTask;
     }
 

@@ -1,5 +1,8 @@
 using System.Buffers.Binary;
+using System.Diagnostics;
+using System.IO.Compression;
 using System.Security.Cryptography;
+using System.Text;
 using Microsoft.Playwright;
 
 namespace NetRatel.Web.PlaywrightTests;
@@ -27,6 +30,12 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         var page = await context.NewPageAsync();
         page.SetDefaultTimeout(20_000);
         page.PageError += (_, error) => pageErrors.Add(error);
+        var setupSubmissionCount = 0;
+        page.Request += (_, request) =>
+        {
+            if (request.Method == "POST" && request.Url.Contains("/api/v2/setup/initialize", StringComparison.Ordinal))
+                Interlocked.Increment(ref setupSubmissionCount);
+        };
 
         var response = await page.GotoAsync(webUrl.ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
         Assert.NotNull(response);
@@ -63,17 +72,49 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         Assert.Equal(email, await page.GetByTestId("setup-email").InputValueAsync());
         Assert.Equal(password, await page.GetByTestId("setup-password").InputValueAsync());
         Assert.Equal(password, await page.GetByTestId("setup-confirm-password").InputValueAsync());
-        var initialized = page.WaitForURLAsync("**/login", new PageWaitForURLOptions { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 30_000 });
-        await page.GetByTestId("setup-initialize").ClickAsync();
-        await initialized;
+        var apiContainer = RequireValue("NETRATEL_LOCAL_FIRST_RESTART_API_CONTAINER");
+        var webContainer = RequireValue("NETRATEL_LOCAL_FIRST_RESTART_WEB_CONTAINER");
+        var dropCommittedResponse = Environment.GetEnvironmentVariable("NETRATEL_LOCAL_FIRST_DROP_SETUP_RESPONSE") == "true";
+        Task restartTask = Task.CompletedTask;
+        const string initializeRoute = "**/api/v2/setup/initialize";
+        await page.RouteAsync(initializeRoute, async route =>
+        {
+            var committed = await route.FetchAsync();
+            Assert.InRange(committed.Status, 200, 299);
+            await RunDockerAsync("stop", apiContainer, webContainer);
+            restartTask = Task.Run(async () =>
+            {
+                try
+                {
+                    await page.GetByText("Waiting for NetRatel to reconnect.", new() { Exact = true })
+                        .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible, Timeout = 20_000 });
+                }
+                finally
+                {
+                    await RunDockerAsync("start", apiContainer, webContainer);
+                }
+            });
+            if (dropCommittedResponse) await route.AbortAsync("failed");
+            else await route.FulfillAsync(new RouteFulfillOptions { Response = committed });
+        });
+        await page.GetByTestId("setup-initialize").EvaluateAsync("button => { button.click(); button.click(); }");
+        await page.GetByTestId("setup-initializing").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        await restartTask;
+        await page.GetByTestId("local-login-email").WaitForAsync(new LocatorWaitForOptions
+        {
+            State = WaitForSelectorState.Visible,
+            Timeout = 120_000
+        });
+        Assert.Equal("/login", new Uri(page.Url).AbsolutePath);
+        await page.UnrouteAsync(initializeRoute);
+        Assert.Equal(1, setupSubmissionCount);
         var initializationErrorLocator = page.Locator("#setup-client-error");
         var initializationError = await initializationErrorLocator.CountAsync() == 0
             ? null
             : await initializationErrorLocator.TextContentAsync();
         Assert.True(string.IsNullOrWhiteSpace(initializationError), initializationError);
 
-        await page.GetByTestId("local-login-email").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible, Timeout = 30_000 });
-        await page.GetByTestId("local-login-client-ready").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
+        await WaitForLocalLoginClientAsync(page);
         await CaptureReviewScreenshotAsync(page, "login-mobile");
         await page.SetViewportSizeAsync(1440, 900);
         await CaptureReviewScreenshotAsync(page, "login-desktop");
@@ -87,7 +128,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await page.EvaluateAsync("() => { document.body.style.zoom = ''; }");
         await page.SetViewportSizeAsync(390, 844);
         await AssertFirstPaintAsync(browser, webUrl, FirstPaintCases[1], "login", ".netratel-login-panel");
-        await page.GetByTestId("local-login-client-ready").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
+        await WaitForLocalLoginClientAsync(page);
         await page.GetByTestId("local-login-email").FocusAsync();
         await page.Keyboard.PressAsync("Tab");
         Assert.True(await page.GetByTestId("local-login-password").EvaluateAsync<bool>("input => input === document.activeElement"),
@@ -136,6 +177,10 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             requireInput: false);
 
         await VerifyDeploymentBrandingAsync(page, webUrl);
+        if (Environment.GetEnvironmentVariable("NETRATEL_LOCAL_FIRST_NATIVE_INSTALL") == "true")
+            await VerifyPublishedClientInstallAsync(browser, page, webUrl);
+        else
+            await VerifyDeploymentLinkJourneyAsync(browser, page, webUrl);
         await page.SetViewportSizeAsync(1440, 1100);
         await CaptureReviewScreenshotAsync(page, "drawer-desktop");
         await page.SetViewportSizeAsync(390, 844);
@@ -168,12 +213,29 @@ public sealed class LocalFirstComposeBrowserSmokeTests
     private static string RequireValue(string name) => Environment.GetEnvironmentVariable(name) is { Length: > 0 } value
         ? value
         : throw new InvalidOperationException($"{name} is required by the local-first Compose browser smoke test.");
+
+    private static async Task RunDockerAsync(string operation, params string[] containerIds)
+    {
+        var start = new ProcessStartInfo("docker")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false
+        };
+        start.ArgumentList.Add(operation);
+        foreach (var containerId in containerIds) start.ArgumentList.Add(containerId);
+        using var process = Process.Start(start) ?? throw new InvalidOperationException("Docker could not be started.");
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        await process.WaitForExitAsync(deadline.Token);
+        Assert.Equal(0, process.ExitCode);
+    }
     private static bool IgnoreSyntheticHttpsErrors => Environment.GetEnvironmentVariable("NETRATEL_LOCAL_FIRST_IGNORE_HTTPS_ERRORS") == "true";
 
     private static async Task CaptureReviewScreenshotAsync(IPage page, string name)
     {
-        var directory = Environment.GetEnvironmentVariable("NETRATEL_REVIEW_SCREENSHOT_DIR");
-        if (string.IsNullOrWhiteSpace(directory)) return;
+        var configuredDirectory = Environment.GetEnvironmentVariable("NETRATEL_REVIEW_SCREENSHOT_DIR");
+        var directory = string.IsNullOrWhiteSpace(configuredDirectory)
+            ? Path.Combine("TestResults", "local-first", "screenshots") : configuredDirectory;
         Directory.CreateDirectory(directory);
         await page.ScreenshotAsync(new PageScreenshotOptions
         {
@@ -181,6 +243,292 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             FullPage = true,
             Animations = ScreenshotAnimations.Disabled
         });
+    }
+
+    private static async Task AssertDialogLayoutAsync(IPage page, string name, bool captureSafeContent)
+    {
+        var initial = page.ViewportSize ?? throw new InvalidOperationException("A fixed browser viewport is required.");
+        foreach (var (width, height, label) in new[]
+                 {
+                     (1366, 768, "desktop"),
+                     (1920, 1080, "wide"),
+                     (768, 900, "tablet"),
+                     (390, 844, "phone"),
+                     (320, 640, "small-phone"),
+                     (640, 250, "zoom-200-short")
+                 })
+        {
+            await page.SetViewportSizeAsync(width, height);
+            var dialog = page.Locator(".mud-dialog:visible").Last;
+            await dialog.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+            var fits = await dialog.EvaluateAsync<bool>("""
+                dialog => {
+                    const bounds = dialog.getBoundingClientRect();
+                    return bounds.left >= -2 && bounds.right <= innerWidth + 2 &&
+                           bounds.top >= -2 && bounds.bottom <= innerHeight + 2;
+                }
+                """);
+            Assert.True(fits, $"{name} dialog exceeds the {label} viewport.");
+            var content = dialog.Locator(".mud-dialog-content");
+            Assert.True(await content.EvaluateAsync<bool>("element => element.scrollWidth <= element.clientWidth + 2"),
+                $"{name} dialog content has horizontal overflow at {label}.");
+            var scrolls = await content.EvaluateAsync<bool>("""
+                element => {
+                    if (element.scrollHeight <= element.clientHeight + 2) return true;
+                    element.scrollTop = element.scrollHeight;
+                    return element.scrollTop > 0;
+                }
+                """);
+            Assert.True(scrolls, $"{name} dialog content cannot scroll at {label}.");
+            var actions = dialog.Locator(".mud-dialog-actions");
+            await actions.ScrollIntoViewIfNeededAsync();
+            Assert.True(await actions.EvaluateAsync<bool>("element => { const bounds = element.getBoundingClientRect(); return bounds.bottom <= innerHeight + 2 && bounds.top >= -2; }"),
+                $"{name} dialog actions are unreachable at {label}.");
+            Assert.False(await page.EvaluateAsync<bool>("() => document.documentElement.scrollWidth > innerWidth + 2"),
+                $"{name} dialog widens the page at {label}.");
+            if (captureSafeContent) await CaptureReviewScreenshotAsync(page, $"{name}-{label}");
+        }
+        await page.SetViewportSizeAsync(initial.Width, initial.Height);
+    }
+
+    private static async Task VerifyDeploymentLinkJourneyAsync(IBrowser browser, IPage page, Uri webUrl)
+    {
+        const string version = "9.8.7";
+        await page.GotoAsync(new Uri(webUrl, "clients/mgmt").ToString(),
+            new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await page.GetByTestId("clients-mgmt-interactive").WaitForAsync(new LocatorWaitForOptions
+        {
+            State = WaitForSelectorState.Attached
+        });
+        await page.GetByRole(AriaRole.Button, new() { Name = "Advanced: upload artifact" }).ClickAsync();
+        var uploadDialog = page.Locator(".mud-dialog:visible").Filter(new() { HasText = "Runtime Identifier" }).Last;
+        await uploadDialog.Locator(".mud-select").First.ClickAsync();
+        await page.GetByRole(AriaRole.Option, new() { Name = "Linux (x64)" }).ClickAsync();
+        await uploadDialog.GetByRole(AriaRole.Textbox, new() { Name = "Version" }).FillAsync(version);
+        using var buffer = new MemoryStream();
+        using (var zip = new ZipArchive(buffer, ZipArchiveMode.Create, leaveOpen: true))
+        {
+            const string prefix = "netratel-client-linux-x64/";
+            var manifest = zip.CreateEntry(prefix + "netratel-client-manifest.json");
+            await using (var writer = new StreamWriter(manifest.Open(), new UTF8Encoding(false)))
+                await writer.WriteAsync("{\"schema\":\"netratel.client.manifest.v1\",\"product\":\"NetRatel.Client\",\"version\":\"9.8.7\",\"runtimeId\":\"linux-x64\",\"commitSha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"executable\":\"NetRatel.Client\"}");
+            var executable = zip.CreateEntry(prefix + "NetRatel.Client");
+            await using var content = new StreamWriter(executable.Open(), Encoding.UTF8);
+            await content.WriteAsync("disposable manifest fixture; never execute");
+        }
+        await uploadDialog.Locator("input[type=file]").SetInputFilesAsync(new FilePayload
+        {
+            Name = "fixture-client.zip", MimeType = "application/zip", Buffer = buffer.ToArray()
+        });
+        await uploadDialog.GetByRole(AriaRole.Button, new() { Name = "Upload", Exact = true }).ClickAsync();
+        await page.WaitForFunctionAsync("""
+            () => {
+                const dialog = document.querySelector('.mud-dialog');
+                return !dialog || dialog.getClientRects().length === 0 || !!dialog.querySelector('.mud-alert-error');
+            }
+            """);
+        var uploadError = uploadDialog.Locator(".mud-alert-error");
+        if (await uploadError.CountAsync() > 0)
+            Assert.Fail($"Disposable artifact upload failed: {await uploadError.InnerTextAsync()}");
+        await uploadDialog.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Hidden });
+
+        await page.GetByRole(AriaRole.Tab, new() { Name = "Artifacts" }).ClickAsync();
+        var artifactRow = page.GetByTestId("artifact-table").GetByRole(AriaRole.Row).Filter(new() { HasText = version });
+        await artifactRow.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        await artifactRow.GetByRole(AriaRole.Button).Last.ClickAsync();
+        await page.GetByRole(AriaRole.Menuitem, new() { Name = "Generate script" }).ClickAsync();
+        await AssertDialogLayoutAsync(page, "deployment-script-input", captureSafeContent: true);
+
+        var downloads = 0;
+        page.Download += (_, _) => Interlocked.Increment(ref downloads);
+        await page.GetByRole(AriaRole.Button, new() { Name = "Generate link" }).ClickAsync();
+        await page.GetByText("Generated install link", new() { Exact = true }).WaitForAsync();
+        Assert.Equal(0, downloads);
+        var publicUrl = await page.GetByRole(AriaRole.Textbox, new() { Name = "Public script URL" }).InputValueAsync();
+        var command = await page.GetByRole(AriaRole.Textbox, new() { Name = "Install command" }).InputValueAsync();
+        var publicOrigin = Environment.GetEnvironmentVariable("NETRATEL_INSTALL_LINK_PUBLIC_ORIGIN") ?? "https://netratel.example";
+        Assert.StartsWith(publicOrigin + "/clients/install/", publicUrl);
+        Assert.Contains(publicUrl, command);
+        Assert.Contains(version, await page.GetByLabel("Generated script preview").InnerTextAsync());
+        await AssertDialogLayoutAsync(page, "deployment-script-result", captureSafeContent: false);
+
+        await using var anonymous = await browser.NewContextAsync(new BrowserNewContextOptions
+        {
+            IgnoreHTTPSErrors = IgnoreSyntheticHttpsErrors
+        });
+        var path = new Uri(publicUrl).PathAndQuery;
+        var routedUrl = new Uri(webUrl, path).ToString();
+        var firstFetch = await anonymous.APIRequest.GetAsync(routedUrl);
+        Assert.True(firstFetch.Ok, "The public script must be reachable through Web routing without an authentication cookie.");
+        var fetchedScript = await firstFetch.TextAsync();
+        Assert.StartsWith("#!/usr/bin/env bash", fetchedScript);
+        Assert.Contains("no-store", firstFetch.Headers["cache-control"]);
+        var head = await anonymous.APIRequest.HeadAsync(routedUrl);
+        Assert.True(head.Ok);
+        Assert.Empty(await head.BodyAsync());
+        var secondFetch = await anonymous.APIRequest.GetAsync(routedUrl);
+        Assert.True(secondFetch.Ok);
+        var explicitDownload = await page.RunAndWaitForDownloadAsync(
+            () => page.GetByText("Download script", new() { Exact = true }).ClickAsync());
+        await using (var downloaded = await explicitDownload.CreateReadStreamAsync())
+        using (var reader = new StreamReader(downloaded, Encoding.UTF8))
+            Assert.Equal(fetchedScript, await reader.ReadToEndAsync());
+        Assert.Equal(1, downloads);
+        await page.GetByRole(AriaRole.Button, new() { Name = "Copy URL" }).ClickAsync();
+        var copyStatus = page.GetByRole(AriaRole.Status).Last;
+        await copyStatus.WaitForAsync();
+        Assert.Contains("copy", (await copyStatus.InnerTextAsync()).ToLowerInvariant());
+        await page.GetByRole(AriaRole.Button, new() { Name = "Refresh status" }).ClickAsync();
+        await page.GetByText("1 of 1 enrollments remain.", new() { Exact = false }).WaitForAsync();
+        await page.GetByRole(AriaRole.Button, new() { Name = "Revoke link" }).ClickAsync();
+        await page.GetByText("This link has been revoked.", new() { Exact = false }).WaitForAsync();
+        Assert.Equal(404, (await anonymous.APIRequest.GetAsync(routedUrl)).Status);
+        Assert.Equal(1, downloads);
+        await page.GetByLabel("Generate deployment script")
+            .GetByRole(AriaRole.Button, new() { Name = "Close", Exact = true }).ClickAsync();
+    }
+
+    private static async Task VerifyPublishedClientInstallAsync(IBrowser browser, IPage page, Uri webUrl)
+    {
+        var version = RequireValue("NETRATEL_LOCAL_FIRST_PUBLISHED_RELEASE_VERSION");
+        var certificate = RequireValue("NETRATEL_LOCAL_FIRST_CA_CERT");
+        Assert.True(File.Exists(certificate));
+        await page.GotoAsync(new Uri(webUrl, "clients/mgmt").ToString(),
+            new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await page.GetByTestId("clients-mgmt-interactive").WaitForAsync(new LocatorWaitForOptions
+        {
+            State = WaitForSelectorState.Attached
+        });
+        var release = page.Locator(".client-github-release").Filter(new() { HasText = version });
+        await release.WaitForAsync(new LocatorWaitForOptions { Timeout = 60_000 });
+        Assert.Contains("linux-x64", await release.InnerTextAsync());
+        await release.GetByRole(AriaRole.Button, new() { Name = "Download client pack to this instance" }).ClickAsync();
+        await page.WaitForFunctionAsync("""
+            version => Array.from(document.querySelectorAll('.client-github-release'))
+                .some(item => item.textContent?.includes(version) && item.textContent?.includes('Local state: Imported'))
+            """, version, new PageWaitForFunctionOptions { Timeout = 300_000 });
+
+        await page.GetByRole(AriaRole.Tab, new() { Name = "Artifacts" }).ClickAsync();
+        var artifact = page.GetByTestId("artifact-table").GetByRole(AriaRole.Row)
+            .Filter(new() { HasText = version }).Filter(new() { HasText = "linux-x64" });
+        await artifact.WaitForAsync(new LocatorWaitForOptions { Timeout = 30_000 });
+        await artifact.GetByRole(AriaRole.Button).Last.ClickAsync();
+        await page.GetByRole(AriaRole.Menuitem, new() { Name = "Generate script" }).ClickAsync();
+        var dialog = page.GetByLabel("Generate deployment script");
+        await dialog.GetByRole(AriaRole.Checkbox, new() { Name = "Install as Service" }).UncheckAsync();
+        await dialog.GetByRole(AriaRole.Button, new() { Name = "Generate link" }).ClickAsync();
+        await page.GetByText("Generated install link", new() { Exact = true }).WaitForAsync();
+        var command = await dialog.GetByRole(AriaRole.Textbox, new() { Name = "Install command" }).InputValueAsync();
+        var publicUrl = await dialog.GetByRole(AriaRole.Textbox, new() { Name = "Public script URL" }).InputValueAsync();
+        Assert.StartsWith(webUrl.GetLeftPart(UriPartial.Authority) + "/clients/install/", publicUrl);
+        Assert.Contains(publicUrl, command);
+        Assert.Contains("curl -fsSL", command);
+        Assert.Contains("pipefail", command);
+        await using var anonymous = await browser.NewContextAsync(new BrowserNewContextOptions
+        {
+            IgnoreHTTPSErrors = IgnoreSyntheticHttpsErrors
+        });
+        // This context has no login cookie. The test certificate is trusted by
+        // the native curl and .NET client through the standard CA variables.
+        var directory = Path.Combine(Path.GetTempPath(), "netratel-native-install-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var username = "netratelci" + Guid.NewGuid().ToString("N")[..8];
+        const string home = "/var/lib/netratel";
+        var userCreated = false;
+        try
+        {
+            Assert.False(Directory.Exists(home), "The disposable runner already has a NetRatel machine-wide state directory.");
+            await RunNativeUserManagementAsync("chmod", "755", directory);
+            var trustedCertificate = Path.Combine(directory, "ca.crt");
+            File.Copy(certificate, trustedCertificate);
+            await RunNativeUserManagementAsync("chmod", "644", trustedCertificate);
+            await RunNativeUserManagementAsync("useradd", "--system", "--create-home", "--home-dir", home,
+                "--shell", "/usr/sbin/nologin", username);
+            userCreated = true;
+            var root = Path.Combine(home, "root");
+            await RunIsolatedNativeCommandAsync(username, "bash", ["-o", "pipefail", "-c", command], home,
+                trustedCertificate, root);
+            var executable = Path.Combine(root, "versions", version, "NetRatel.Client");
+            var manifest = Path.Combine(root, "versions", version, "netratel-client-manifest.json");
+            await RunIsolatedNativeCommandAsync(username, "test", ["-s", executable], home, trustedCertificate, root);
+            await RunIsolatedNativeCommandAsync(username, "python3",
+                ["-c", "import json,sys; assert json.load(open(sys.argv[1], encoding='utf-8-sig'))['version'] == sys.argv[2]", manifest, version],
+                home, trustedCertificate, root);
+            await RunIsolatedNativeCommandAsync(username, "test",
+                ["-s", Path.Combine(home, "agent.dat")], home, trustedCertificate, root);
+            await RunIsolatedNativeCommandAsync(username, executable,
+                ["--auth-check", "--api", webUrl.GetLeftPart(UriPartial.Authority)], home, trustedCertificate, root);
+            Assert.Equal(404, (await anonymous.APIRequest.GetAsync(publicUrl)).Status);
+        }
+        finally
+        {
+            try
+            {
+                if (userCreated)
+                    await RunNativeUserManagementAsync("userdel", "--remove", username);
+            }
+            finally
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+        await dialog.GetByRole(AriaRole.Button, new() { Name = "Close", Exact = true }).ClickAsync();
+    }
+
+    private static async Task RunIsolatedNativeCommandAsync(string username, string executable, IReadOnlyList<string> arguments,
+        string home, string certificate, string root)
+    {
+        var start = new ProcessStartInfo("sudo")
+        {
+            WorkingDirectory = Path.GetDirectoryName(home)!,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false
+        };
+        start.ArgumentList.Add("-u");
+        start.ArgumentList.Add(username);
+        start.ArgumentList.Add("--");
+        start.ArgumentList.Add("env");
+        start.ArgumentList.Add($"HOME={home}");
+        start.ArgumentList.Add($"CURL_CA_BUNDLE={certificate}");
+        start.ArgumentList.Add($"SSL_CERT_FILE={certificate}");
+        start.ArgumentList.Add($"NetRatel_ROOT={root}");
+        start.ArgumentList.Add($"NetRatel_STATE={Path.Combine(home, "state")}");
+        start.ArgumentList.Add($"NETRATEL_POWERSHELL_HOME={Path.Combine(home, "powershell")}");
+        start.ArgumentList.Add("NO_PROXY=netratel.example,localhost,127.0.0.1");
+        start.ArgumentList.Add("no_proxy=netratel.example,localhost,127.0.0.1");
+        start.ArgumentList.Add(executable);
+        foreach (var argument in arguments) start.ArgumentList.Add(argument);
+        using var process = Process.Start(start) ?? throw new InvalidOperationException("Native client process did not start.");
+        var output = process.StandardOutput.ReadToEndAsync();
+        var error = process.StandardError.ReadToEndAsync();
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(4));
+        try { await process.WaitForExitAsync(deadline.Token); }
+        catch (OperationCanceledException)
+        {
+            process.Kill(entireProcessTree: true);
+            throw new TimeoutException("Native client install or authentication exceeded four minutes.");
+        }
+        await Task.WhenAll(output, error);
+        Assert.True(process.ExitCode == 0,
+            $"Isolated native command {Path.GetFileName(executable)} failed with exit code {process.ExitCode}. Output is suppressed because it may contain an enrollment capability.");
+    }
+
+    private static async Task RunNativeUserManagementAsync(params string[] arguments)
+    {
+        var start = new ProcessStartInfo("sudo")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false
+        };
+        foreach (var argument in arguments) start.ArgumentList.Add(argument);
+        using var process = Process.Start(start) ?? throw new InvalidOperationException("Native test user command did not start.");
+        var output = process.StandardOutput.ReadToEndAsync();
+        var error = process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+        await Task.WhenAll(output, error);
+        Assert.True(process.ExitCode == 0, $"Native test user command failed: {arguments[0]}.");
     }
 
     private static readonly FirstPaintCase[] FirstPaintCases =
@@ -391,6 +739,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await page.GetByTestId("integration-credentials-page").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         await page.GetByTestId("integration-credentials-client-ready").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
         await page.GetByTestId("open-create-integration").ClickAsync();
+        if (name == "CI telemetry read") await AssertDialogLayoutAsync(page, "integration-connection", captureSafeContent: true);
         await page.GetByTestId("credential-name").FillAsync(name);
         await page.GetByTestId("credential-name").PressAsync("Tab");
         if (!string.IsNullOrWhiteSpace(purpose))
@@ -400,6 +749,13 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             await page.GetByTestId("credential-resource").FillAsync(resource ?? throw new InvalidOperationException("An HTTP MCP resource is required."));
         }
         await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Next" }).ClickAsync();
+        if (name == "CI telemetry read") await AssertDialogLayoutAsync(page, "integration-access", captureSafeContent: true);
+        if (name == "CI telemetry read")
+        {
+            await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Back" }).ClickAsync();
+            Assert.Equal(name, await page.GetByTestId("credential-name").InputValueAsync());
+            await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Next" }).ClickAsync();
+        }
         await page.Locator($"[data-testid^='credential-permission-'][data-testid$='-{permission}']").First.ClickAsync();
         if (name == "CI telemetry read") await CaptureReviewScreenshotAsync(page, "integration-access-mobile");
         if (!string.IsNullOrWhiteSpace(instancePermission))
@@ -408,6 +764,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             await page.GetByTestId($"credential-instance-permission-{instancePermission}").ClickAsync();
         }
         await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Next" }).ClickAsync();
+        if (name == "CI telemetry read") await AssertDialogLayoutAsync(page, "integration-review", captureSafeContent: true);
         await page.GetByTestId("create-credential").ClickAsync();
         var reveal = page.GetByTestId("credential-one-time-secret");
         try
@@ -421,6 +778,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
                 ? await error.TextContentAsync()
                 : "Credential creation did not reveal a secret or report a safe error.");
         }
+        if (name == "CI telemetry read") await AssertDialogLayoutAsync(page, "integration-secret", captureSafeContent: false);
         var secret = await page.GetByLabel("One-time secret").InputValueAsync();
         Assert.StartsWith("nrt_ic_", secret);
         await page.GetByText("I stored the secret", new PageGetByTextOptions { Exact = true }).ClickAsync();
@@ -435,6 +793,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await page.GetByTestId("credential-name").FillAsync("CI multi-grant");
         await page.GetByTestId("credential-name").PressAsync("Tab");
         await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Next" }).ClickAsync();
+        await AssertDialogLayoutAsync(page, "integration-multi-grant-access", captureSafeContent: true);
         foreach (var permission in new[] { "telemetry.read", "file.read", "file.write" })
             await page.GetByTestId($"credential-permission-1-{permission}").ClickAsync();
         var search = page.GetByRole(AriaRole.Textbox, new PageGetByRoleOptions { Name = "Search permissions" });
@@ -515,6 +874,11 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Next" }).ClickAsync();
         await page.GetByTestId("credential-error").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Cancel" }).ClickAsync();
+        await page.GetByTestId("open-create-integration").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        await page.WaitForFunctionAsync(
+            "() => document.activeElement?.closest('[data-testid]')?.getAttribute('data-testid') === 'open-create-integration'");
+        Assert.Equal("open-create-integration", await page.EvaluateAsync<string>(
+            "() => document.activeElement?.closest('[data-testid]')?.getAttribute('data-testid') ?? ''"));
     }
 
     private static async Task VerifyLocalAccountSecurityJourneyAsync(IBrowser browser, IPage page, Uri webUrl)
@@ -580,6 +944,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await page.GetByTestId("account-security-client-ready").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
         await CaptureReviewScreenshotAsync(page, "security-mobile");
         await page.GetByTestId("open-password-dialog").ClickAsync();
+        await AssertDialogLayoutAsync(page, "security-passphrase", captureSafeContent: true);
         await page.GetByTestId("change-password-current").FillAsync("incorrect current passphrase");
         await page.GetByTestId("change-password-current").PressAsync("Tab");
         await page.GetByTestId("change-password-new").FillAsync(changedPassword);
@@ -590,6 +955,10 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await page.GetByText("The current passphrase was not accepted, or the new one does not meet policy.").WaitForAsync(
             new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Cancel" }).ClickAsync();
+        await page.WaitForFunctionAsync(
+            "() => document.activeElement?.closest('[data-testid]')?.getAttribute('data-testid') === 'open-password-dialog'");
+        Assert.Equal("open-password-dialog", await page.EvaluateAsync<string>(
+            "() => document.activeElement?.closest('[data-testid]')?.getAttribute('data-testid') ?? ''"));
         await page.GetByTestId("open-password-dialog").ClickAsync();
         Assert.Equal(string.Empty, await page.GetByTestId("change-password-current").InputValueAsync());
         Assert.Equal(string.Empty, await page.GetByTestId("change-password-new").InputValueAsync());
@@ -606,11 +975,13 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await page.GotoAsync(new Uri(webUrl, "account/security").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
         await page.GetByTestId("account-security-client-ready").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
         await page.GetByTestId("open-mfa-setup").ClickAsync();
+        await AssertDialogLayoutAsync(page, "security-mfa-confirm", captureSafeContent: true);
         await page.GetByTestId("mfa-setup-current-password").FillAsync(changedPassword);
         await page.GetByTestId("mfa-setup-current-password").PressAsync("Tab");
         await page.GetByTestId("begin-mfa-setup").ClickAsync();
         var enrollmentSecret = page.GetByTestId("mfa-authenticator-secret");
         await enrollmentSecret.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        await AssertDialogLayoutAsync(page, "security-mfa-qr", captureSafeContent: false);
         var sharedKey = await page.GetByLabel("Manual setup key").InputValueAsync();
         var enrollmentCode = CreateTotp(sharedKey);
         await page.GetByTestId("mfa-enrollment-code").FillAsync(enrollmentCode);
@@ -618,6 +989,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await page.GetByTestId("enable-mfa").ClickAsync();
         var recoveryCodes = page.GetByTestId("mfa-recovery-codes");
         await recoveryCodes.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        await AssertDialogLayoutAsync(page, "security-mfa-recovery", captureSafeContent: false);
         var recoveryCode = await page.GetByTestId("mfa-recovery-code").First.InnerTextAsync();
         Assert.False(string.IsNullOrWhiteSpace(recoveryCode));
         var signedOutAfterEnrollment = page.WaitForURLAsync("**/login", new PageWaitForURLOptions { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 30_000 });
@@ -629,6 +1001,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await page.GetByTestId("account-security-page").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         await page.GetByTestId("account-security-client-ready").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
         await page.GetByTestId("manage-mfa").ClickAsync();
+        await AssertDialogLayoutAsync(page, "security-mfa-disable", captureSafeContent: true);
         await page.GetByTestId("disable-mfa-current-password").FillAsync(changedPassword);
         await page.GetByTestId("disable-mfa-current-password").PressAsync("Tab");
         await page.GetByTestId("disable-mfa-code").FillAsync(CreateTotp(sharedKey));
@@ -643,34 +1016,50 @@ public sealed class LocalFirstComposeBrowserSmokeTests
     private static async Task SignInLocallyAsync(IPage page, string email, string password)
     {
         await page.GotoAsync(new Uri(RequireUri("NETRATEL_LOCAL_FIRST_WEB_URL"), "login").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await WaitForLocalLoginClientAsync(page);
         await page.GetByTestId("local-login-client-ready").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
         await page.GetByTestId("local-login-email").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         await page.GetByTestId("local-login-email").FillAsync(email);
         await page.GetByTestId("local-login-email").PressAsync("Tab");
         await page.GetByTestId("local-login-password").FillAsync(password);
         await page.GetByTestId("local-login-password").PressAsync("Tab");
+        var loginResponse = page.WaitForResponseAsync(response =>
+            response.Request.Method == "POST" &&
+            new Uri(response.Url).AbsolutePath == "/api/v2/local-auth/login");
         var signedIn = page.WaitForURLAsync("**/", new PageWaitForURLOptions { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 30_000 });
         await page.GetByTestId("local-login-submit").ClickAsync();
+        Assert.Equal(204, (await loginResponse).Status);
         await signedIn;
     }
 
     private static async Task SignInWithSecondFactorAsync(IPage page, string email, string password, string code, bool expectSuccess)
     {
         await page.GotoAsync(new Uri(RequireUri("NETRATEL_LOCAL_FIRST_WEB_URL"), "login").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await WaitForLocalLoginClientAsync(page);
         await page.GetByTestId("local-login-client-ready").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
         await page.GetByTestId("local-login-email").FillAsync(email);
         await page.GetByTestId("local-login-email").PressAsync("Tab");
         await page.GetByTestId("local-login-password").FillAsync(password);
         await page.GetByTestId("local-login-password").PressAsync("Tab");
+        var loginResponse = page.WaitForResponseAsync(response =>
+            response.Request.Method == "POST" &&
+            new Uri(response.Url).AbsolutePath == "/api/v2/local-auth/login");
         await page.GetByTestId("local-login-submit").ClickAsync();
+        Assert.Equal(202, (await loginResponse).Status);
+        await page.WaitForFunctionAsync("() => new URLSearchParams(location.search).get('localMfa') === 'true'");
         await page.GetByTestId("local-login-two-factor").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        await WaitForLocalLoginClientAsync(page);
         await page.GetByTestId("local-login-client-ready").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
         await page.GetByTestId("local-login-two-factor").FillAsync(code);
         await page.GetByTestId("local-login-two-factor").PressAsync("Tab");
         if (expectSuccess)
         {
+            var twoFactorResponse = page.WaitForResponseAsync(response =>
+                response.Request.Method == "POST" &&
+                new Uri(response.Url).AbsolutePath == "/api/v2/local-auth/login/two-factor");
             var signedIn = page.WaitForURLAsync("**/", new PageWaitForURLOptions { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 30_000 });
             await page.GetByTestId("local-login-two-factor-submit").ClickAsync();
+            Assert.Equal(204, (await twoFactorResponse).Status);
             await signedIn;
             return;
         }
@@ -678,6 +1067,10 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await page.GetByTestId("local-login-two-factor-submit").ClickAsync();
         await page.GetByRole(AriaRole.Alert).WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
     }
+
+    private static async Task WaitForLocalLoginClientAsync(IPage page) =>
+        await page.WaitForFunctionAsync("() => typeof window.netratelSetup?.localLogin === 'function'",
+            null, new PageWaitForFunctionOptions { Timeout = 60_000 });
 
     private static string CreateTotp(string base32Secret)
     {

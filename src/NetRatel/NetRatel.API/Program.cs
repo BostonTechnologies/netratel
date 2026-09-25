@@ -63,6 +63,8 @@ using NetRatel.Infrastructure.Identity.Branding;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.API.OpenApi;
 var builder = WebApplication.CreateBuilder(args);
+// Public install URLs are bearer capabilities; framework request-start logs include raw paths.
+builder.Logging.AddFilter("Microsoft.AspNetCore.Hosting.Diagnostics", LogLevel.Warning);
 NetRatelDatabaseConfigurationResolver.ValidateProvider(builder.Configuration);
 
 // Bootstrap reconciliation intentionally happens before any operational registration. A fresh or
@@ -200,6 +202,16 @@ builder.Services.AddRateLimiter(rateLimits =>
             _ => new FixedWindowRateLimiterOptions
             {
                 PermitLimit = 10,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0,
+                AutoReplenishment = true
+            }));
+    rateLimits.AddPolicy("public-client-install", context =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 60,
                 Window = TimeSpan.FromMinutes(1),
                 QueueLimit = 0,
                 AutoReplenishment = true
@@ -567,16 +579,19 @@ builder.Services.AddAuthorization(options =>
     options.AddPolicy("ClientArtifactsWrite", policy =>
     {
         policy.RequireAuthenticatedUser();
-        policy.RequireAssertion(ctx => HasAdminClaim(ctx.User, ResolveAdminId()));
+        policy.AddRequirements(new EffectiveAccessRequirement(NetRatelPermissions.ClientManagement, instanceScope: true));
     });
 
     options.AddPolicy("ClientArtifactsUpload", policy =>
     {
         policy.AddAuthenticationSchemes("Bearer", "M2M");
         policy.RequireAuthenticatedUser();
-        policy.RequireAssertion(ctx =>
-            HasAdminClaim(ctx.User, ResolveAdminId()) ||
-            HasAllowedM2MClient(ctx.User, m2m.AllowedCallerClientIds, m2m.Audience));
+        policy.RequireAssertion(async ctx =>
+        {
+            if (HasAllowedM2MClient(ctx.User, m2m.AllowedCallerClientIds, m2m.Audience))
+                return true;
+            return await HasInstanceArtifactAuthorityAsync(ctx).ConfigureAwait(false);
+        });
     });
 
     options.AddPolicy("HealthRead", policy =>
@@ -592,10 +607,10 @@ builder.Services.AddAuthorization(options =>
     {
         policy.AddAuthenticationSchemes("Bearer", "M2M", "Agent");
         policy.RequireAuthenticatedUser();
-        policy.RequireAssertion(ctx =>
-            HasAdminClaim(ctx.User, ResolveAdminId()) ||
+        policy.RequireAssertion(async ctx =>
             HasAllowedM2MClient(ctx.User, m2m.AllowedCallerClientIds, m2m.Audience) ||
-            (IsAgentPrincipal(ctx.User) && HasScope(ctx.User, "netratel:connect")));
+            (IsAgentPrincipal(ctx.User) && HasScope(ctx.User, "netratel:connect")) ||
+            await HasInstanceArtifactAuthorityAsync(ctx).ConfigureAwait(false));
     });
 
     // Require Operator by default (unless [AllowAnonymous])
@@ -736,6 +751,28 @@ builder.Services.AddOptions<DeploymentBrandingOptions>()
 builder.Services.AddSingleton<IValidateOptions<DeploymentBrandingOptions>, DeploymentBrandingOptionsValidator>();
 builder.Services.AddSingleton<StorageInitializer>();
 builder.Services.AddScoped<IClientArtifactsService, ClientArtifactsService>();
+builder.Services.AddScoped<ClientInstallLinkService>();
+builder.Services.AddHttpClient("GitHubClientReleases", http =>
+    {
+        http.BaseAddress = new Uri("https://api.github.com/");
+        http.Timeout = TimeSpan.FromSeconds(15);
+    })
+    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+builder.Services.AddSingleton<IGitHubClientReleaseCatalog>(services =>
+    new GitHubClientReleaseCatalog(
+        services.GetRequiredService<IHttpClientFactory>().CreateClient("GitHubClientReleases"),
+        services.GetRequiredService<IConfiguration>(),
+        services.GetRequiredService<TimeProvider>(),
+        services.GetRequiredService<ILogger<GitHubClientReleaseCatalog>>()));
+builder.Services.AddHttpClient("GitHubClientAssets", http => http.Timeout = Timeout.InfiniteTimeSpan)
+    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+builder.Services.AddScoped(services => new GitHubClientAssetDownloader(
+    services.GetRequiredService<IHttpClientFactory>().CreateClient("GitHubClientAssets"),
+    services.GetRequiredService<IConfiguration>()));
+builder.Services.AddScoped<ClientReleaseImportService>();
+builder.Services.AddScoped<ClientReleaseAutomationService>();
+builder.Services.AddHostedService<ClientReleaseAutomationWorker>();
+builder.Services.AddHostedService<ClientReleaseImportWorker>();
 builder.Services.AddScoped<ClientUpdateAuthorityService>();
 builder.Services.AddScoped<IClientUpdatePublisher>(services => services.GetRequiredService<ClientUpdateAuthorityService>());
 builder.Services.AddScoped<IClientUpdateOperatorAuthority>(services => services.GetRequiredService<ClientUpdateAuthorityService>());
@@ -982,6 +1019,14 @@ static bool HasAdminClaim(ClaimsPrincipal user, string? adminGroupId)
         c.Type == "groups" && string.Equals(c.Value, adminGroupId, StringComparison.OrdinalIgnoreCase));
 
     return hasRole || hasGroupByName || hasGroupById;
+}
+
+static async Task<bool> HasInstanceArtifactAuthorityAsync(AuthorizationHandlerContext context)
+{
+    if (context.Resource is not HttpContext http) return false;
+    var access = http.RequestServices.GetRequiredService<IEffectiveAccessService>();
+    var snapshot = await access.GetSnapshotAsync(context.User, tenantId: null).ConfigureAwait(false);
+    return snapshot.IsLegacyOperator || snapshot.IsInstanceAdministrator;
 }
 
 static bool HasAllowedM2MClient(ClaimsPrincipal user, IEnumerable<string> allowedClientIds, string? requiredScope)

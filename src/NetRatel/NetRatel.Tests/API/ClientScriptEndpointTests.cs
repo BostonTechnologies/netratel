@@ -92,6 +92,26 @@ public sealed class ClientScriptEndpointTests
         script.Should().Contain("EXPECTED_SHA=\"abc123\"");
     }
 
+    [Fact]
+    public async Task MissingArtifact_DoesNotIssueAnEnrollmentCode()
+    {
+        using var app = await BuildAppAsync();
+        await using var scope = app.Services.CreateAsyncScope();
+        var scripts = scope.ServiceProvider.GetRequiredService<IClientScriptService>();
+
+        await FluentActions.Invoking(() => scripts.GenerateAsync(new ClientScriptRequest
+        {
+            TenantId = 4098,
+            RuntimeId = "linux-x64",
+            ArtifactVersion = "missing",
+            ValidForMinutes = 60,
+            MaxUses = 1
+        }, CancellationToken.None)).Should().ThrowAsync<FileNotFoundException>();
+
+        var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+        (await db.EnrollmentCodes.CountAsync()).Should().Be(0);
+    }
+
     private static async Task<IHost> BuildAppAsync()
     {
         var dbName = Guid.NewGuid().ToString("N");
@@ -159,7 +179,7 @@ public sealed class ClientScriptEndpointTests
                 Notes = null
             });
         public Task<ClientArtifactSummaryDto?> GetMetadataAsync(string rid, string version, CancellationToken ct) =>
-            Task.FromResult<ClientArtifactSummaryDto?>(new()
+            version == "missing" ? Task.FromResult<ClientArtifactSummaryDto?>(null) : Task.FromResult<ClientArtifactSummaryDto?>(new()
             {
                 Rid = rid,
                 Version = version,

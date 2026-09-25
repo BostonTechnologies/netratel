@@ -44,4 +44,18 @@ if "$staged_secret_fixture/tools/ci/check-public-disclosure.sh" >/dev/null 2>&1;
   exit 1
 fi
 
+xml_key_fixture="$(new_fixture xml-key)"
+printf '<%s>synthetic</%s>\n' key key > "$xml_key_fixture/README.md"
+git -C "$xml_key_fixture" add README.md
+if "$xml_key_fixture/tools/ci/check-public-disclosure.sh" >/dev/null 2>&1; then
+  echo "Disclosure gate accepted an XML key tag outside the installer plist template." >&2
+  exit 1
+fi
+
+plist_fixture="$(new_fixture plist-template)"
+mkdir -p "$plist_fixture/src/NetRatel/NetRatel.Infrastructure/Artifacts"
+printf '<%s>Label</%s>\n' key key > "$plist_fixture/src/NetRatel/NetRatel.Infrastructure/Artifacts/ScriptTemplateService.cs"
+git -C "$plist_fixture" add src/NetRatel/NetRatel.Infrastructure/Artifacts/ScriptTemplateService.cs
+"$plist_fixture/tools/ci/check-public-disclosure.sh" >/dev/null
+
 echo "Public disclosure gate synthetic tests passed."

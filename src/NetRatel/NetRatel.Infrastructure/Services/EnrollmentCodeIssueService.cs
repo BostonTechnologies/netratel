@@ -173,6 +173,9 @@ public sealed class EnrollmentCodeIssueService : IEnrollmentCodeIssueService
             throw new AgentAuthException(400, "Enrollment code has reached maximum uses.");
         }
 
+        if (code.CodeHash is not null)
+            throw new AgentAuthException(400, "Protected enrollment codes cannot be retrieved by ID.");
+
         return new EnrollmentCodeIssueResult(code.Id, code.TenantId, code.Code, code.CreatedAtUtc, code.ValidToUtc);
     }
 
@@ -213,8 +216,10 @@ public sealed class EnrollmentCodeIssueService : IEnrollmentCodeIssueService
             throw new AgentAuthException(401, "Enrollment code is required.");
         }
 
-        var normalized = enrollmentCode.Trim().ToUpperInvariant();
-        var code = await _db.EnrollmentCodes.AsNoTracking().FirstOrDefaultAsync(x => x.Code == normalized, ct);
+        var normalized = EnrollmentCodeLookup.Normalize(enrollmentCode);
+        var hash = EnrollmentCodeLookup.Hash(normalized);
+        var code = await _db.EnrollmentCodes.AsNoTracking()
+            .FirstOrDefaultAsync(x => x.Code == normalized || x.CodeHash == hash, ct);
         if (code is null)
         {
             throw new AgentAuthException(401, "Enrollment code is invalid.");
@@ -241,7 +246,7 @@ public sealed class EnrollmentCodeIssueService : IEnrollmentCodeIssueService
             throw new AgentAuthException(403, "Enrollment code has reached maximum uses.");
         }
 
-        return new EnrollmentCodeIssueResult(code.Id, code.TenantId, code.Code, code.CreatedAtUtc, code.ValidToUtc);
+        return new EnrollmentCodeIssueResult(code.Id, code.TenantId, normalized, code.CreatedAtUtc, code.ValidToUtc);
     }
 
     public async Task<IReadOnlyList<EnrollmentCodeListItem>> ListAsync(int tenantId, string? status, string? search, CancellationToken ct)
@@ -260,7 +265,7 @@ public sealed class EnrollmentCodeIssueService : IEnrollmentCodeIssueService
         var now = DateTimeOffset.UtcNow;
         var query = _db.EnrollmentCodes
             .AsNoTracking()
-            .Where(x => x.TenantId == tenantId);
+            .Where(x => x.TenantId == tenantId && x.CodeHash == null);
 
         if (!string.IsNullOrWhiteSpace(search))
         {

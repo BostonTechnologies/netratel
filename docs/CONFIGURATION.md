@@ -29,6 +29,61 @@ Back up PostgreSQL and persistent key/artifact volumes
 together. Replacing a Data Protection key ring invalidates cookies and
 protected state.
 
+## Public client install links
+
+Set `PublicUrls__WebBaseUrl` and `PublicUrls__ApiBaseUrl` on the API to the
+canonical public HTTPS bases reachable by a new client. They may differ when
+Web and API use separate public hosts. Include a supported external base path
+when the reverse proxy maps it to the corresponding application routes. The
+API rejects missing, HTTP, localhost, private DNS suffix, credential-bearing,
+query-bearing, or fragment-bearing values before it creates an install grant.
+Do not derive these values from incoming `Host` or forwarded headers.
+
+The API stores each generated script and capability token with ASP.NET Data
+Protection in PostgreSQL; the corresponding key ring in
+`DataProtection__KeysDirectory` must be persistent and shared by all API
+replicas. Keep the key ring and database in the same backup and restore set.
+If a key is lost, public fetch fails closed and an operator must revoke the
+affected grants and issue new links. Never put the key ring in a public webroot.
+
+The Web application proxies `/clients/install/*` to the API so the displayed
+URL returns a raw `.sh` or `.ps1` file without a browser session. Configure
+your external proxy to forward that path to Web or API, avoid logging the
+capability path or query string, and disable intermediary caching. The
+application sends `Cache-Control: no-store`, `nosniff`, no-referrer, and
+no-index headers. Externally managed proxy logs are outside application
+logging control and require their own redaction rule. The supplied public
+HTTPS Compose ingress suppresses access and error logs for this path; the
+API also redacts its own request log and omits these URL-bearing HTTP spans.
+
+An operator can generate a link from **Clients → Artifacts → Generate script**,
+inspect and copy its script and command, explicitly download the same script,
+or revoke it. Management endpoints are under `/api/v1/client-install-links`;
+the previous script file-response API remains available to existing callers.
+Each link binds one tenant, runtime, verified local artifact version and SHA256,
+install options, absolute expiry, and enrollment-use limit. Anyone holding an
+active URL can spend its remaining authorized enrollment allowance. A script
+fetch, HEAD request, preview, copy, or download does not spend a use; a
+successful device enrollment does. Expiry, revocation, tenant deletion, and
+exhaustion are checked on every public request. Revocation also disables the
+underlying enrollment code, including copies of the script downloaded earlier.
+
+Inspect the script before executing. Example commands use a placeholder
+origin; copy the actual command from the generated result:
+
+```bash
+bash -o pipefail -c "curl -fsSL 'https://netratel.example/clients/install/<token>.sh' | bash"
+```
+
+```powershell
+Invoke-WebRequest -UseBasicParsing -ErrorAction Stop 'https://netratel.example/clients/install/<token>.ps1' | Invoke-Expression
+```
+
+The shell command propagates a failed HTTP fetch. Installing a Linux systemd
+service or macOS launch daemon requires root; installing a Windows service
+requires an elevated PowerShell session. The macOS installer uses `launchd`
+and `shasum`, while the Linux installer uses `systemd` and `sha256sum`.
+
 ## Bootstrap lifecycle
 
 Before an instance is ready, the API keeps its lifecycle descriptor, journal,

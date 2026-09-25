@@ -43,6 +43,9 @@ using NetRatel.Web.Bootstrap;
 using NetRatel.Shared.Authentication;
 
 var builder = WebApplication.CreateBuilder(args);
+// Public install URLs are bearer capabilities; suppress raw-path request/forwarder logs.
+builder.Logging.AddFilter("Microsoft.AspNetCore.Hosting.Diagnostics", LogLevel.Warning);
+builder.Logging.AddFilter("Yarp.ReverseProxy", LogLevel.Warning);
 var localAuthenticationCookieName = builder.Configuration["Authentication:Local:CookieName"]?.Trim() is { Length: > 0 } configuredLocalCookieName
     ? configuredLocalCookieName
     : "NetRatel.Local";

@@ -31,7 +31,7 @@ public sealed class ClientsManagementResponsiveTests : IAsyncLifetime
     [Theory]
     [InlineData(1440, 900, "desktop")]
     [InlineData(390, 844, "phone")]
-    public async Task AuthenticatedFixture_RendersFourManagementTabsWithinViewport(int width, int height, string viewportName)
+    public async Task AuthenticatedFixture_RendersFiveManagementTabsWithinViewport(int width, int height, string viewportName)
     {
         var browser = _browser ?? throw new InvalidOperationException("Playwright browser was not initialized.");
         var fixture = _fixture ?? throw new InvalidOperationException("Client management fixture was not initialized.");
@@ -45,8 +45,12 @@ public sealed class ClientsManagementResponsiveTests : IAsyncLifetime
             Assert.True(response.Ok, $"Client-management fixture returned HTTP {response.Status}.");
 
             await page.GetByTestId("client-management-tabs").WaitForAsync();
-            Assert.Equal(4, await page.GetByRole(AriaRole.Tab).CountAsync());
-            await page.GetByTestId("artifact-table").WaitForAsync();
+            Assert.Equal(5, await page.GetByRole(AriaRole.Tab).CountAsync());
+            await page.GetByTestId("github-release-catalogue").WaitForAsync();
+            await page.GetByTestId("release-automation-settings").WaitForAsync();
+            await page.GetByText("Automatic prerelease deployment can update enrolled clients", new() { Exact = false }).WaitForAsync();
+            await page.GetByText("Fixture GitHub client release", new() { Exact = false }).WaitForAsync();
+            await page.GetByRole(AriaRole.Tab, new() { Name = "Artifacts" }).WaitForAsync();
             await page.GetByRole(AriaRole.Tab, new() { Name = "Auto-update Releases" }).WaitForAsync();
             await page.GetByRole(AriaRole.Tab, new() { Name = "Update Attempts" }).WaitForAsync();
             await page.GetByRole(AriaRole.Tab, new() { Name = "Suspended Agents" }).WaitForAsync();
@@ -165,6 +169,41 @@ internal sealed class ClientsManagementFixtureHost : IAsyncDisposable
 
 internal sealed class FixtureClientArtifactsService : IClientArtifactsService
 {
+    private ClientReleaseAutomationModel _automation = new();
+    public Task<ClientReleaseAutomationModel> GetReleaseAutomationAsync(CancellationToken ct = default) =>
+        Task.FromResult(_automation);
+    public Task<ClientReleaseAutomationModel> SaveReleaseAutomationAsync(ClientReleaseAutomationModel settings, CancellationToken ct = default)
+    {
+        _automation = settings;
+        _automation.Revision++;
+        return Task.FromResult(_automation);
+    }
+    public Task<ClientReleaseAutomationModel> CheckReleasesNowAsync(CancellationToken ct = default)
+    {
+        _automation.NextCheckAtUtc = DateTimeOffset.UtcNow;
+        return Task.FromResult(_automation);
+    }
+
+    public Task<GitHubClientReleasePageModel> GetGitHubReleasesAsync(string channel, int page, bool refresh, CancellationToken ct = default) =>
+        Task.FromResult(new GitHubClientReleasePageModel
+        {
+            Page = page,
+            RefreshedAtUtc = new DateTimeOffset(2026, 9, 1, 12, 0, 0, TimeSpan.Zero),
+            Items = [new GitHubClientReleaseModel
+            {
+                Id = 123,
+                Tag = "v0.4.102",
+                Version = "0.4.102",
+                Name = "Fixture GitHub client release",
+                PublishedAtUtc = new DateTimeOffset(2026, 9, 1, 12, 0, 0, TimeSpan.Zero),
+                DetailsUrl = "https://github.com/BostonTechnologies/netratel/releases/tag/v0.4.102",
+                PublicationState = "verification required",
+                TotalClientBytes = 107374182,
+                ClientAssets = [new GitHubClientAssetModel { Id = 1, Name = "linux.tar.gz", RuntimeId = "linux-x64", SizeBytes = 40000000 },
+                    new GitHubClientAssetModel { Id = 2, Name = "win.zip", RuntimeId = "win-x64", SizeBytes = 30000000 },
+                    new GitHubClientAssetModel { Id = 3, Name = "osx.tar.gz", RuntimeId = "osx-arm64", SizeBytes = 37374182 }]
+            }]
+        });
     private static readonly Guid AgentId = Guid.Parse("7b2f5d97-0d1b-4d25-b3ca-b5f58f069abf");
     private static readonly Guid ReleaseId = Guid.Parse("ee60f7aa-d994-455c-a7bd-30d6ebdbebf0");
     private readonly ClientUpdateReleaseModel _release = new()
@@ -214,7 +253,7 @@ internal sealed class FixtureClientArtifactsService : IClientArtifactsService
     public Task DownloadClientPackageAsync(ClientPackageDownloadRequest request, CancellationToken ct = default) => Task.CompletedTask;
     public Task DownloadDeploymentScriptAsync(ClientScriptGenerateRequest request, CancellationToken ct = default) => Task.CompletedTask;
     public Task DeleteAsync(string rid, string version, CancellationToken ct = default) => Task.CompletedTask;
-    public void OpenUploadDialog(string initialRid, Func<Task> onUploaded) { }
+    public Task OpenUploadDialogAsync(string initialRid, Func<Task> onUploaded) => Task.CompletedTask;
     public Task UploadAsync(string rid, string version, string? notes, IBrowserFile file, CancellationToken ct = default) => Task.CompletedTask;
 }
 

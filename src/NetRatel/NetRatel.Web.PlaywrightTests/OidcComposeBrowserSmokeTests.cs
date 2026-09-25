@@ -60,7 +60,8 @@ public sealed class OidcComposeBrowserSmokeTests
         var signInAction = page.Locator(".netratel-login-primary-action");
         Assert.Equal("Sign in with your identity provider", (await signInAction.InnerTextAsync()).Trim());
         await signInAction.ClickAsync();
-        await page.Locator("input[name='username']").FillAsync(username);
+        await page.Locator("input[name='username']").FillAsync(username,
+            new LocatorFillOptions { Timeout = 60_000 });
         var callbackResponse = page.WaitForResponseAsync(response =>
             Uri.TryCreate(response.Url, UriKind.Absolute, out var responseUri)
             && responseUri.GetLeftPart(UriPartial.Path) == new Uri(webUrl, "signin-oidc").ToString());
@@ -163,28 +164,31 @@ public sealed class OidcComposeBrowserSmokeTests
 
     private static async Task AssertOidcActionAsync(IPage page)
     {
+        await page.GetByTestId("local-login-client-ready").WaitForAsync(
+            new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
         var action = page.Locator(".netratel-login-primary-action");
         Assert.True(await action.IsVisibleAsync());
         Assert.Equal("Sign in with your identity provider", (await action.InnerTextAsync()).Trim());
         // DOMContentLoaded can precede the stylesheet on the HTTPS image profile.
         // Measure the rendered filled button only after both opaque colors resolve.
-        await page.WaitForFunctionAsync(@"() => {
+        var contrastHandle = await page.WaitForFunctionAsync(@"() => {
             const element = document.querySelector('.netratel-login-primary-action');
             if (!element) return false;
             const style = getComputedStyle(element);
-            return style.color.startsWith('rgb(') && style.backgroundColor.startsWith('rgb(');
-        }");
-        var contrast = await action.EvaluateAsync<double>(@"element => {
-            const rgb = value => value.match(/[\d.]+/g).slice(0, 3).map(Number);
+            const rgb = value => {
+                const channels = value.match(/[\d.]+/g);
+                return channels?.length >= 3 ? channels.slice(0, 3).map(Number) : null;
+            };
             const luminance = value => rgb(value).map(channel => {
                 const normalized = channel / 255;
                 return normalized <= 0.04045 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4;
             }).reduce((sum, channel, index) => sum + channel * [0.2126, 0.7152, 0.0722][index], 0);
-            const style = getComputedStyle(element);
+            if (!rgb(style.color) || !rgb(style.backgroundColor)) return false;
             const text = luminance(style.color);
             const background = luminance(style.backgroundColor);
             return (Math.max(text, background) + 0.05) / (Math.min(text, background) + 0.05);
         }");
+        var contrast = await contrastHandle.JsonValueAsync<double>();
         Assert.True(contrast >= 4.5, $"OIDC action contrast is {contrast:F2}:1.");
         var iconColorMatchesText = await action.EvaluateAsync<bool>("element => getComputedStyle(element.querySelector('svg')).color === getComputedStyle(element).color");
         Assert.True(iconColorMatchesText);
@@ -192,7 +196,14 @@ public sealed class OidcComposeBrowserSmokeTests
         await page.Keyboard.PressAsync("Shift+Tab");
         await page.Keyboard.PressAsync("Tab");
         Assert.True(await action.EvaluateAsync<bool>("element => document.activeElement === element"));
-        Assert.True(await action.EvaluateAsync<bool>("element => { const style = getComputedStyle(element); return style.outlineStyle !== 'none' && parseFloat(style.outlineWidth) >= 2; }"));
+        await page.WaitForFunctionAsync("""
+            () => {
+                const element = document.querySelector('.netratel-login-primary-action');
+                if (document.activeElement !== element) return false;
+                const style = getComputedStyle(element);
+                return style.outlineStyle !== 'none' && parseFloat(style.outlineWidth) >= 2;
+            }
+            """, null, new PageWaitForFunctionOptions { Timeout = 5_000 });
     }
 
     private static async Task SetThemeAndReloadAsync(IPage page, string mode)

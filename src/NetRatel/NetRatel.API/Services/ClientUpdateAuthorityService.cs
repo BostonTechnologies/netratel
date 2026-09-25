@@ -14,6 +14,7 @@ public sealed record ClientUpdateClaimResult(Guid AttemptId, Guid ReleaseId, str
 public sealed record ClientUpdateActivationResult(bool Accepted, string Reason, Guid? ConfirmationId = null);
 public sealed record ClientUpdateResumeEligibility(bool IsEligible, string? FailureCode, long? PolicyRevision = null);
 public sealed record ClientUpdateResumeResult(bool Resumed, string? FailureCode, long? PolicyRevision = null);
+public sealed record ClientPackPublishItem(ClientArtifactSummaryDto Artifact, string ManifestJson);
 
 public interface IClientUpdatePublisher
 {
@@ -44,6 +45,108 @@ public sealed class ClientUpdateAuthorityService(
     // The same authenticated agent can therefore immediately reclaim Downloading; a fresh
     // Claimed attempt remains fenced briefly, and staged or activating work is never reclaimed.
     private static readonly TimeSpan StaleClaimRecoveryDelay = TimeSpan.FromMinutes(5);
+
+    public async Task PublishImportedPackAsync(Guid operationId, IReadOnlyList<ClientPackPublishItem> items,
+        string publishedBy, bool confirmPrerelease, CancellationToken cancellationToken,
+        bool automatic = false)
+    {
+        if (items.Count == 0 || items.Select(x => x.Artifact.Rid).Distinct(StringComparer.Ordinal).Count() != items.Count)
+            throw new InvalidOperationException("A complete client pack with unique runtimes is required.");
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        // The revision row serializes concurrent publishers before reading operation state.
+        var revision = await IncrementRevisionAsync(cancellationToken).ConfigureAwait(false);
+        var operation = await db.ClientReleaseImportOperations.Include(x => x.Assets)
+            .SingleOrDefaultAsync(x => x.Id == operationId, cancellationToken).ConfigureAwait(false)
+            ?? throw new KeyNotFoundException("Client release import was not found.");
+        if (operation.State != ClientReleaseImportState.Imported || operation.Assets.Count != items.Count ||
+            operation.Assets.Any(x => x.State != ClientReleaseImportAssetState.Imported) ||
+            operation.Assets.Select(x => x.RuntimeId).OrderBy(x => x, StringComparer.Ordinal)
+                .SequenceEqual(items.Select(x => x.Artifact.Rid).OrderBy(x => x, StringComparer.Ordinal)) == false)
+            throw new InvalidOperationException("The client pack is not completely imported.");
+        if (operation.PublishedAtUtc.HasValue) return;
+        if (!NuGetVersion.TryParse(operation.Version, out var parsedVersion) ||
+            parsedVersion.ToNormalizedString() != operation.Version)
+            throw new InvalidOperationException("The imported client pack has an invalid version.");
+        if (parsedVersion.IsPrerelease && !confirmPrerelease)
+            throw new InvalidOperationException("Prerelease publication requires explicit confirmation.");
+
+        var enabledOffers = Array.Empty<(string RuntimeId, string Version)>();
+        if (automatic)
+        {
+            var policy = (await db.ClientReleaseAutomationSettings
+                .FromSqlRaw("SELECT * FROM \"ClientReleaseAutomationSettings\" WHERE \"Id\" = 1 FOR SHARE")
+                .AsNoTracking().ToListAsync(cancellationToken).ConfigureAwait(false)).SingleOrDefault();
+            if (!options.IsClientUpdateAuthorityActive || policy is null ||
+                !policy.PublishAutomatically || policy.CheckEveryHours == 0 ||
+                parsedVersion.IsPrerelease &&
+                (!policy.DownloadPrerelease || !policy.DeployPrereleaseAutomatically) ||
+                !parsedVersion.IsPrerelease && !policy.DownloadStable)
+                throw new InvalidOperationException("Automatic client publication is disabled by current policy.");
+
+            var runtimeIds = items.Select(item => item.Artifact.Rid).ToArray();
+            var channel = parsedVersion.IsPrerelease ? "prerelease" : "stable";
+            enabledOffers = (await db.ClientUpdateReleases.AsNoTracking()
+                .Where(x => x.Enabled && runtimeIds.Contains(x.RuntimeId) && x.Channel == channel)
+                .Select(x => new { x.RuntimeId, x.Version }).ToListAsync(cancellationToken).ConfigureAwait(false))
+                .Select(x => (x.RuntimeId, x.Version)).ToArray();
+
+            // Automatic publication reconciles each runtime independently. A newer
+            // offer already covering one runtime is retained and that runtime is
+            // skipped; missing runtimes can still complete the pack. The exact
+            // version checks below preserve immutable and disabled-record conflicts.
+        }
+
+        var existing = await db.ClientUpdateReleases
+            .Where(x => x.Version == operation.Version).ToListAsync(cancellationToken).ConfigureAwait(false);
+        var added = new List<ClientUpdateReleaseRecord>();
+        foreach (var item in items)
+        {
+            if (item.Artifact.Version != operation.Version)
+                throw new InvalidOperationException("Client pack version changed before publication.");
+            var asset = operation.Assets.Single(x => x.RuntimeId == item.Artifact.Rid);
+            if (asset.LocalSha256 != item.Artifact.Sha256 || asset.LocalSizeBytes != item.Artifact.Size)
+                throw new ClientArtifactConflictException(item.Artifact.Rid, operation.Version);
+            var prior = existing.SingleOrDefault(x => x.RuntimeId == item.Artifact.Rid);
+            if (prior is not null)
+            {
+                if (prior.Sha256 != item.Artifact.Sha256 || !prior.Enabled ||
+                    !string.Equals(prior.Channel, parsedVersion.IsPrerelease ? "prerelease" : "stable",
+                        StringComparison.OrdinalIgnoreCase))
+                    throw new ClientArtifactConflictException(item.Artifact.Rid, operation.Version);
+                continue;
+            }
+
+            if (automatic && enabledOffers.Any(offer =>
+                    string.Equals(offer.RuntimeId, item.Artifact.Rid, StringComparison.Ordinal) &&
+                    NuGetVersion.TryParse(offer.Version, out var priorVersion) && priorVersion > parsedVersion))
+                continue;
+
+            var release = new ClientUpdateReleaseRecord
+            {
+                PublicId = Guid.NewGuid(), RuntimeId = item.Artifact.Rid,
+                Version = operation.Version,
+                Channel = parsedVersion.IsPrerelease ? "prerelease" : "stable",
+                ArtifactKey = $"{item.Artifact.Rid}/{operation.Version}/{item.Artifact.FileName}",
+                Sha256 = item.Artifact.Sha256, SizeBytes = item.Artifact.Size,
+                ManifestJson = item.ManifestJson, Enabled = true,
+                PublishedAtUtc = timeProvider.GetUtcNow(), PublishedBy = publishedBy
+            };
+            db.ClientUpdateReleases.Add(release);
+            added.Add(release);
+        }
+        var lastRevision = revision;
+        for (var index = 0; index < added.Count; index++)
+        {
+            if (index > 0) lastRevision = await IncrementRevisionAsync(cancellationToken).ConfigureAwait(false);
+            added[index].Revision = lastRevision;
+        }
+        operation.PublishedAtUtc = timeProvider.GetUtcNow();
+        operation.PublishedBy = publishedBy;
+        await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        await NotifyAsync(lastRevision, cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        await RefreshCatalogSafelyAsync(cancellationToken).ConfigureAwait(false);
+    }
 
     public async Task<ClientUpdateReleaseRecord> PublishArtifactAsync(
         ClientArtifactSummaryDto artifact,
@@ -129,8 +232,7 @@ public sealed class ClientUpdateAuthorityService(
         if (release is null || !tenantEnabled || !agentEnabled || state?.SuspendedAtUtc.HasValue == true ||
             state?.SuppressedReleaseId == releasePublicId ||
             !string.Equals(release.RuntimeId, runtimeId, StringComparison.OrdinalIgnoreCase) ||
-            release.Channel == "prerelease" &&
-                !string.Equals(channel, "prerelease", StringComparison.OrdinalIgnoreCase) && !tenantAllowsPrerelease && !exactTenantTarget ||
+            release.Channel == "prerelease" && !tenantAllowsPrerelease ||
             !string.IsNullOrWhiteSpace(tenantPolicy?.AutoUpdateTargetVersion) && !exactTenantTarget ||
             !NuGetVersion.TryParse(currentVersion, out var current) ||
             !NuGetVersion.TryParse(release.Version, out var target) || target <= current)

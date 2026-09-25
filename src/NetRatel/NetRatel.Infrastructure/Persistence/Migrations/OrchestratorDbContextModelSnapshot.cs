@@ -335,6 +335,319 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.ToTable("BootstrapInitializations", (string)null);
                 });
 
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ClientInstallGrant", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("ArtifactSha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("ArtifactVersion")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("CreatedBy")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<Guid>("EnrollmentCodeId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("ExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<bool>("InstallAsService")
+                        .HasColumnType("boolean");
+
+                    b.Property<int>("MaxUses")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("ProtectedScript")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("ProtectedToken")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("PublicApiBaseUrl")
+                        .IsRequired()
+                        .HasMaxLength(2048)
+                        .HasColumnType("character varying(2048)");
+
+                    b.Property<string>("PublicWebBaseUrl")
+                        .IsRequired()
+                        .HasMaxLength(2048)
+                        .HasColumnType("character varying(2048)");
+
+                    b.Property<string>("RequestFingerprint")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("RequestKey")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<DateTimeOffset?>("RevokedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("RevokedBy")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<string>("RuntimeId")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<bool>("SilentInstall")
+                        .HasColumnType("boolean");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("TokenHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("EnrollmentCodeId");
+
+                    b.HasIndex("RequestKey")
+                        .IsUnique();
+
+                    b.HasIndex("TokenHash")
+                        .IsUnique();
+
+                    b.HasIndex("TenantId", "CreatedAtUtc");
+
+                    b.ToTable("ClientInstallGrants", (string)null);
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ClientReleaseAutomationSettings", b =>
+                {
+                    b.Property<int>("Id")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("CheckEveryHours")
+                        .HasColumnType("integer");
+
+                    b.Property<bool>("DeployPrereleaseAutomatically")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("DownloadPrerelease")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("DownloadStable")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTimeOffset?>("LastAttemptAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("LastError")
+                        .HasMaxLength(2048)
+                        .HasColumnType("character varying(2048)");
+
+                    b.Property<DateTimeOffset?>("LastSuccessAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("LeaseOwner")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset?>("LeaseUntilUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("NextCheckAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<bool>("PublishAutomatically")
+                        .HasColumnType("boolean");
+
+                    b.Property<long>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("UpdatedBy")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("ClientReleaseAutomationSettings", (string)null);
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ClientReleaseImportAsset", b =>
+                {
+                    b.Property<Guid>("OperationId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("RuntimeId")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("ConversionContract")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<long>("DownloadedBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("Error")
+                        .HasMaxLength(2048)
+                        .HasColumnType("character varying(2048)");
+
+                    b.Property<long>("GitHubAssetId")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("LocalSha256")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<long?>("LocalSizeBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("SourceName")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<string>("SourceSha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<long>("SourceSizeBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<short>("State")
+                        .HasColumnType("smallint");
+
+                    b.Property<DateTimeOffset>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("OperationId", "RuntimeId");
+
+                    b.ToTable("ClientReleaseImportAssets", (string)null);
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ClientReleaseImportOperation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("AttemptCount")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset?>("AutomaticPublishAttemptAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("AutomaticPublishError")
+                        .HasMaxLength(2048)
+                        .HasColumnType("character varying(2048)");
+
+                    b.Property<string>("BuildCommit")
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
+
+                    b.Property<bool>("CancellationRequested")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("DownloadedBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("Error")
+                        .HasMaxLength(2048)
+                        .HasColumnType("character varying(2048)");
+
+                    b.Property<long>("GitHubReleaseId")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset?>("ImportedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<bool>("IsAutomatic")
+                        .HasColumnType("boolean");
+
+                    b.Property<long>("LeaseGeneration")
+                        .HasColumnType("bigint");
+
+                    b.Property<Guid?>("LeaseOwner")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset?>("LeaseUntilUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("PublicationSha256")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<DateTimeOffset?>("PublishedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("PublishedBy")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<string>("RequestedBy")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<string>("SourceRepository")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<short>("State")
+                        .HasColumnType("smallint");
+
+                    b.Property<string>("Tag")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<long?>("TotalBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Version")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("GitHubReleaseId")
+                        .IsUnique();
+
+                    b.HasIndex("Version");
+
+                    b.HasIndex("State", "LeaseUntilUtc", "CreatedAtUtc");
+
+                    b.ToTable("ClientReleaseImportOperations", (string)null);
+                });
+
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ClientUpdateAttemptRecord", b =>
                 {
                     b.Property<int>("Id")
@@ -1133,6 +1446,10 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<string>("CodeHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
                     b.Property<DateTimeOffset>("CreatedAtUtc")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("timestamp with time zone")
@@ -1176,6 +1493,9 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("Code")
+                        .IsUnique();
+
+                    b.HasIndex("CodeHash")
                         .IsUnique();
 
                     b.HasIndex("TenantId", "ValidToUtc");
@@ -3955,6 +4275,28 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.Navigation("Agent");
                 });
 
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ClientInstallGrant", b =>
+                {
+                    b.HasOne("NetRatel.Infrastructure.Persistence.EnrollmentCode", "EnrollmentCode")
+                        .WithMany()
+                        .HasForeignKey("EnrollmentCodeId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("EnrollmentCode");
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ClientReleaseImportAsset", b =>
+                {
+                    b.HasOne("NetRatel.Infrastructure.Persistence.ClientReleaseImportOperation", "Operation")
+                        .WithMany("Assets")
+                        .HasForeignKey("OperationId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Operation");
+                });
+
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ClientUpdateAttemptRecord", b =>
                 {
                     b.HasOne("NetRatel.Infrastructure.Persistence.Agent", null)
@@ -4448,6 +4790,11 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.Navigation("Credentials");
 
                     b.Navigation("RefreshTokens");
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ClientReleaseImportOperation", b =>
+                {
+                    b.Navigation("Assets");
                 });
 
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ClientUpdateReleaseRecord", b =>

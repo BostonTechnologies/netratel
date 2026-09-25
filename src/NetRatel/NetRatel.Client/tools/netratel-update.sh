@@ -62,6 +62,9 @@ temporary = f"{path}.{os.getpid()}.{os.urandom(4).hex()}.tmp"
 with open(temporary, "w", encoding="utf-8") as f:
   json.dump(payload, f, indent=2)
 os.chmod(temporary, 0o600)
+if os.geteuid() == 0:
+  state = os.stat(os.path.dirname(path))
+  os.chown(temporary, state.st_uid, state.st_gid)
 os.replace(temporary, path)
 PY
 }
@@ -149,15 +152,29 @@ def parse(value):
     core = tuple(map(int, value.split('+', 1)[0].split('-', 1)[0].split('.')))
     prerelease = value.split('+', 1)[0].split('-', 1)
     prerelease = () if len(prerelease) == 1 else tuple(prerelease[1].split('.'))
-    # A final release outranks any prerelease of the same core. The remaining
-    # tuple is only used for the simple monotonic check performed locally.
+    if any(part.isdigit() and len(part) > 1 and part.startswith('0') for part in prerelease):
+        raise ValueError("invalid numeric prerelease identifier")
     return core, bool(prerelease), prerelease
+def compare_prerelease(left, right):
+    for a, b in zip(left, right):
+        if a == b:
+            continue
+        a_numeric, b_numeric = a.isdigit(), b.isdigit()
+        if a_numeric and b_numeric:
+            return (int(a) > int(b)) - (int(a) < int(b))
+        if a_numeric != b_numeric:
+            return -1 if a_numeric else 1
+        return (a > b) - (a < b)
+    return (len(left) > len(right)) - (len(left) < len(right))
 try:
     candidate = sys.argv[1]
     current = sys.argv[2]
     candidate_core, candidate_pre, candidate_tag = parse(candidate)
     current_core, current_pre, current_tag = parse(current)
-    if candidate_core < current_core or (candidate_core == current_core and not (not candidate_pre and current_pre)):
+    if candidate_core < current_core or (candidate_core == current_core and (
+        (candidate_pre and not current_pre) or
+        (candidate_pre and current_pre and compare_prerelease(candidate_tag, current_tag) <= 0) or
+        (candidate_pre == current_pre and not candidate_pre))):
         raise ValueError("candidate is not newer")
 except Exception:
     raise SystemExit(1)
@@ -260,6 +277,9 @@ commit=manifest.get("commitSha", "")
 assert len(commit)==40 and all(ch in "0123456789abcdefABCDEF" for ch in commit)
 assert os.path.isfile(os.path.join(os.path.dirname(sys.argv[1]), manifest.get("executable", "")))
 PY
+# mktemp creates the staging directory as 0700. The service account must be
+# able to traverse the verified public package after the root updater moves it.
+chmod 0755 "$EXTRACT_DIR"
 CLIENT_EXE="${EXTRACT_DIR}/NetRatel.Client"
 if [ ! -f "$CLIENT_EXE" ]; then
   CLIENT_EXE="${EXTRACT_DIR}/NetRatel.Client"
@@ -292,10 +312,6 @@ mv -Tf "${CURRENT_LINK}.next" "$CURRENT_LINK"
 ACTIVE_TARGET="$(readlink -f "$CURRENT_LINK" || true)"
 export ACTIVE_TARGET
 systemctl start "$SERVICE_NAME"
-if ! systemctl is-active --quiet "$SERVICE_NAME"; then
-  log "$SERVICE_NAME did not become active after cutover."
-  exit 1
-fi
 log "Started $SERVICE_NAME with NetRatel client update $VERSION; waiting for readiness marker."
 
 write_state "verifying" "$VERSION"

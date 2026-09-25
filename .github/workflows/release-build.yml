@@ -58,7 +58,7 @@ jobs:
       - run: dotnet restore NetRatel.sln
       - run: dotnet build NetRatel.sln --configuration Release --no-restore
       - run: pwsh src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/playwright.ps1 install --with-deps chromium
-      - run: dotnet test NetRatel.sln --configuration Release --no-build --filter "category!=compose"
+      - run: dotnet test NetRatel.sln --configuration Release --no-build --filter "category!=compose&category!=hosted"
 
   package:
     name: Build distributable artifacts
@@ -358,7 +358,7 @@ jobs:
 
   postgresql-release-upgrade:
     name: PostgreSQL previous-release upgrade (${{ matrix.authentication }})
-    needs: [validate, package]
+    needs: [validate, package, client-packages]
     runs-on: ubuntu-latest
     timeout-minutes: 55
     strategy:
@@ -374,6 +374,11 @@ jobs:
         with:
           name: netratel-${{ needs.validate.outputs.version }}-linux-x64
           path: release-artifacts
+      - if: matrix.authentication == 'oidc'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: netratel-client-${{ needs.validate.outputs.version }}-linux-x64
+          path: client-artifacts
       - env:
           VERSION: ${{ needs.validate.outputs.version }}
         run: |
@@ -394,6 +399,7 @@ jobs:
             export NETRATEL_UPGRADE_CURRENT_CLI_ARCHIVE="release-artifacts/netratel-cli-${version}-linux-x64.tar.gz"
             tools/ci/smoke-postgresql-local-upgrade.sh
           else
+            export NETRATEL_UPGRADE_CURRENT_CLIENT_ARCHIVE="client-artifacts/netratel-client-${version}-linux-x64.tar.gz"
             tools/ci/smoke-postgresql-oidc-upgrade.sh
           fi
 

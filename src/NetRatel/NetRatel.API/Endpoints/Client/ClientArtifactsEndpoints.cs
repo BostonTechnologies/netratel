@@ -1,4 +1,5 @@
 ﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -7,9 +8,12 @@ using Microsoft.OpenApi;
 using NetRatel.API.Models;
 using NetRatel.API.Services;
 using NetRatel.Application.Agents;
+using System.Security.Claims;
 using System.Text.Json.Nodes;
 
 namespace NetRatel.API.Endpoints;
+
+public sealed record ClientReleasePublishRequest(bool ConfirmPrerelease);
 
 public static class ClientArtifactsEndpoints
 {
@@ -17,6 +21,128 @@ public static class ClientArtifactsEndpoints
     {
         var group = app.MapGroup("/api/v1/client-artifacts")
             .WithTags("Client Artifacts");
+
+        group.MapGet("automation", async (
+            [FromServices] ClientReleaseAutomationService automation, CancellationToken ct) =>
+            Results.Ok(await automation.GetAsync(ct)))
+        .RequireAuthorization("ClientArtifactsWrite")
+        .WithName("ClientArtifacts_GetAutomation")
+        .Produces<ClientReleaseAutomationStatus>();
+
+        group.MapPut("automation", async (
+            ClientReleaseAutomationUpdate request, HttpContext context,
+            [FromServices] ClientReleaseAutomationService automation, CancellationToken ct) =>
+        {
+            var actor = context.User.FindFirstValue(ClaimTypes.NameIdentifier) ??
+                context.User.FindFirstValue("sub") ?? context.User.Identity?.Name;
+            if (string.IsNullOrWhiteSpace(actor)) return Results.Forbid();
+            try { return Results.Ok(await automation.UpdateAsync(request, actor, ct)); }
+            catch (ArgumentException exception) { return Results.BadRequest(new { message = exception.Message }); }
+            catch (DbUpdateConcurrencyException exception) { return Results.Conflict(new { message = exception.Message }); }
+        })
+        .RequireAuthorization("ClientArtifactsWrite")
+        .WithName("ClientArtifacts_UpdateAutomation")
+        .Produces<ClientReleaseAutomationStatus>();
+
+        group.MapPost("automation/check-now", async (
+            HttpContext context, [FromServices] ClientReleaseAutomationService automation,
+            CancellationToken ct) =>
+        {
+            var actor = context.User.FindFirstValue(ClaimTypes.NameIdentifier) ??
+                context.User.FindFirstValue("sub") ?? context.User.Identity?.Name;
+            return string.IsNullOrWhiteSpace(actor) ? Results.Forbid() :
+                Results.Accepted(value: await automation.CheckNowAsync(actor, ct));
+        })
+        .RequireAuthorization("ClientArtifactsWrite")
+        .WithName("ClientArtifacts_CheckGitHubNow")
+        .Produces<ClientReleaseAutomationStatus>(StatusCodes.Status202Accepted);
+
+        group.MapGet("github-releases", async (
+            [FromQuery] string? channel,
+            [FromQuery] int? page,
+            [FromQuery] bool? refresh,
+            [FromServices] IGitHubClientReleaseCatalog catalog,
+            CancellationToken ct) =>
+        {
+            if (page is < 0 or > 29 || channel is not null && channel is not ("all" or "stable" or "prerelease"))
+                return Results.BadRequest(new { message = "Use page 0-29 and channel all, stable, or prerelease." });
+            return Results.Ok(await catalog.ListAsync(channel ?? "all", page ?? 0, refresh == true, ct));
+        })
+        .RequireAuthorization("ClientArtifactsWrite")
+        .WithName("ClientArtifacts_GitHubReleases")
+        .Produces<GitHubClientReleasePage>(StatusCodes.Status200OK)
+        .ProducesProblem(StatusCodes.Status400BadRequest);
+
+        group.MapPost("github-releases/{releaseId:long}/imports", async (
+            long releaseId,
+            HttpContext context,
+            [FromServices] ClientReleaseImportService imports,
+            CancellationToken ct) =>
+        {
+            var requester = context.User.FindFirstValue(ClaimTypes.NameIdentifier) ??
+                context.User.FindFirstValue("sub") ?? context.User.Identity?.Name;
+            if (string.IsNullOrWhiteSpace(requester)) return Results.Forbid();
+            var operation = await imports.QueueAsync(releaseId, requester, ct);
+            return operation is null ? Results.NotFound() :
+                Results.Accepted($"/api/v1/client-artifacts/imports/{operation.Id}", operation);
+        })
+        .RequireAuthorization("ClientArtifactsWrite")
+        .WithName("ClientArtifacts_QueueGitHubImport")
+        .Produces<ClientReleaseImportStatus>(StatusCodes.Status202Accepted)
+        .ProducesProblem(StatusCodes.Status404NotFound);
+
+        group.MapGet("imports", async (
+            [FromServices] ClientReleaseImportService imports, CancellationToken ct) =>
+            Results.Ok(await imports.ListAsync(ct)))
+        .RequireAuthorization("ClientArtifactsWrite")
+        .WithName("ClientArtifacts_ListImports")
+        .Produces<IReadOnlyList<ClientReleaseImportStatus>>(StatusCodes.Status200OK);
+
+        group.MapGet("imports/{id:guid}", async (
+            Guid id, [FromServices] ClientReleaseImportService imports, CancellationToken ct) =>
+        {
+            var operation = await imports.GetAsync(id, ct);
+            return operation is null ? Results.NotFound() : Results.Ok(operation);
+        })
+        .RequireAuthorization("ClientArtifactsWrite")
+        .WithName("ClientArtifacts_GetImport")
+        .Produces<ClientReleaseImportStatus>(StatusCodes.Status200OK)
+        .ProducesProblem(StatusCodes.Status404NotFound);
+
+        group.MapPost("imports/{id:guid}/cancel", async (
+            Guid id, [FromServices] ClientReleaseImportService imports, CancellationToken ct) =>
+            await imports.CancelAsync(id, ct) ? Results.Accepted() : Results.Conflict())
+        .RequireAuthorization("ClientArtifactsWrite")
+        .WithName("ClientArtifacts_CancelImport");
+
+        group.MapPost("imports/{id:guid}/retry", async (
+            Guid id, [FromServices] ClientReleaseImportService imports, CancellationToken ct) =>
+            await imports.RetryAsync(id, ct) ? Results.Accepted() : Results.Conflict())
+        .RequireAuthorization("ClientArtifactsWrite")
+        .WithName("ClientArtifacts_RetryImport");
+
+        group.MapPost("imports/{id:guid}/publish", async (
+            Guid id, ClientReleasePublishRequest request, HttpContext context,
+            [FromServices] ClientReleaseImportService imports, CancellationToken ct) =>
+        {
+            var publisher = context.User.FindFirstValue(ClaimTypes.NameIdentifier) ??
+                context.User.FindFirstValue("sub") ?? context.User.Identity?.Name;
+            if (string.IsNullOrWhiteSpace(publisher)) return Results.Forbid();
+            try
+            {
+                return await imports.PublishAsync(id, publisher, request.ConfirmPrerelease, ct)
+                    ? Results.NoContent() : Results.NotFound();
+            }
+            catch (Exception exception) when (exception is InvalidOperationException or
+                InvalidDataException or ClientArtifactConflictException)
+            {
+                return Results.Conflict(new { message = exception.Message });
+            }
+        })
+        .RequireAuthorization("ClientArtifactsWrite")
+        .WithName("ClientArtifacts_PublishImportedPack")
+        .Produces(StatusCodes.Status204NoContent)
+        .ProducesProblem(StatusCodes.Status409Conflict);
 
         group.MapGet(string.Empty, async (
             [FromQuery] string? rid,
@@ -29,6 +155,7 @@ public static class ClientArtifactsEndpoints
             var result = await service.ListAsync(rid, skip ?? 0, take ?? 50, search, ct);
             return Results.Ok(result);
         })
+        .RequireAuthorization("ClientArtifactsWrite")
         .WithName("ClientArtifacts_List")
         .Produces<ClientArtifactListDto>(StatusCodes.Status200OK)
         .ProducesProblem(StatusCodes.Status400BadRequest)
@@ -257,7 +384,11 @@ public static class ClientArtifactsEndpoints
             {
                 return Results.Conflict(new { message = "Published client update artifacts are immutable." });
             }
-            await service.DeleteAsync(rid, version, ct);
+            try { await service.DeleteAsync(rid, version, ct); }
+            catch (ClientArtifactConflictException)
+            {
+                return Results.Conflict(new { message = "Imported client packs are managed through their release operation." });
+            }
             return Results.NoContent();
         })
         .RequireAuthorization("ClientArtifactsWrite")
@@ -283,6 +414,7 @@ public static class ClientArtifactsEndpoints
                 return Results.BadRequest(new { message = ex.Message });
             }
         })
+        .RequireAuthorization("ClientArtifactsWrite")
         .WithName("ClientArtifacts_FallbackScan")
         .Produces<FileContentResult>(StatusCodes.Status200OK)
         .ProducesProblem(StatusCodes.Status400BadRequest)

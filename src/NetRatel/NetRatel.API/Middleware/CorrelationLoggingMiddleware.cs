@@ -16,18 +16,19 @@ public sealed class CorrelationLoggingMiddleware(RequestDelegate next, ILogger<C
         var tenant = context.Request.Headers["X-Tenant"].FirstOrDefault() ?? "(none)";
         var traceId = Activity.Current?.TraceId.ToString() ?? context.TraceIdentifier;
         var spanId = Activity.Current?.SpanId.ToString() ?? string.Empty;
+        var path = SafeLogPath(context.Request.Path);
         using var scope = logger.BeginScope(new Dictionary<string, object>
         {
             ["correlation_id"] = corr!,
             ["trace_id"] = traceId,
             ["span_id"] = spanId,
             ["tenant_id"] = tenant,
-            ["request_path"] = context.Request.Path.Value ?? string.Empty
+            ["request_path"] = path
         });
 
         var sw = Stopwatch.StartNew();
         logger.LogInformation("HTTP {Method} {Path} started (tenant={Tenant}, corr={CorrelationId})",
-            context.Request.Method, context.Request.Path, tenant, corr);
+            context.Request.Method, path, tenant, corr);
         try
         {
             await next(context);
@@ -42,7 +43,12 @@ public sealed class CorrelationLoggingMiddleware(RequestDelegate next, ILogger<C
             });
 
             logger.LogInformation("HTTP {Method} {Path} -> {Status} in {Elapsed} ms (corr={CorrelationId})",
-                context.Request.Method, context.Request.Path, context.Response.StatusCode, sw.ElapsedMilliseconds, corr);
+                context.Request.Method, path, context.Response.StatusCode, sw.ElapsedMilliseconds, corr);
         }
     }
+
+    internal static string SafeLogPath(PathString path) =>
+        path.StartsWithSegments("/clients/install", StringComparison.OrdinalIgnoreCase)
+            ? "/clients/install/{capability}"
+            : path.Value ?? string.Empty;
 }
