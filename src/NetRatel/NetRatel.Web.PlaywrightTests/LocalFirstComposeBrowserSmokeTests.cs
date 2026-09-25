@@ -100,7 +100,12 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await page.GetByTestId("setup-initialize").EvaluateAsync("button => { button.click(); button.click(); }");
         await page.GetByTestId("setup-initializing").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         await restartTask;
-        await page.WaitForURLAsync("**/login", new PageWaitForURLOptions { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 120_000 });
+        await page.GetByTestId("local-login-email").WaitForAsync(new LocatorWaitForOptions
+        {
+            State = WaitForSelectorState.Visible,
+            Timeout = 120_000
+        });
+        Assert.Equal("/login", new Uri(page.Url).AbsolutePath);
         await page.UnrouteAsync(initializeRoute);
         Assert.Equal(1, setupSubmissionCount);
         var initializationErrorLocator = page.Locator("#setup-client-error");
@@ -109,7 +114,6 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             : await initializationErrorLocator.TextContentAsync();
         Assert.True(string.IsNullOrWhiteSpace(initializationError), initializationError);
 
-        await page.GetByTestId("local-login-email").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible, Timeout = 30_000 });
         await WaitForLocalLoginClientAsync(page);
         await CaptureReviewScreenshotAsync(page, "login-mobile");
         await page.SetViewportSizeAsync(1440, 900);

@@ -350,11 +350,11 @@ seen = set()
 with tarfile.open(source, "r:gz") as archive, zipfile.ZipFile(target, "w") as output:
     for entry in archive:
         parts = pathlib.PurePosixPath(entry.name).parts
-        if len(parts) < 2 or parts[0] != prefix or ".." in parts:
+        if not parts or parts[0] != prefix or ".." in parts or entry.name.startswith("/"):
             raise SystemExit("Candidate Client archive contains an unsafe path.")
         if entry.isdir():
             continue
-        if not entry.isfile():
+        if len(parts) < 2 or not entry.isfile():
             raise SystemExit("Candidate Client archive contains an unsupported entry.")
         name = "/".join(parts[1:])
         if name in seen:
