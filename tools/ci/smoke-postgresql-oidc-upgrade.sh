@@ -373,7 +373,9 @@ PY
 
   client_root="$native_directory/client-root"
   updater_path="$client_root/updater/netratel-update.sh"
-  mkdir -p "$client_root/updater" "$client_root/versions" "$native_directory/bin"
+  mkdir -p "$client_root/updater" "$client_root/versions" "$native_directory/bin" \
+    "$native_directory/bundle" "$native_directory/logs"
+  sudo chown netratel:netratel "$native_directory/bundle" "$native_directory/logs"
   [[ -s "$native_directory/app/updater/netratel-update.sh" ]] || {
     echo "The published Client image is missing its installed Linux updater." >&2
     return 1
@@ -490,6 +492,14 @@ journal = subprocess.run(["journalctl", "--unit", sys.argv[2], "--no-pager", "--
                          capture_output=True, text=True, check=False).stdout
 journal_exceptions = sorted(set(re.findall(r"(?:System|Microsoft|Grpc)\.[A-Za-z.]*Exception", journal)))
 print(f"Native service journal exception types: {', '.join(journal_exceptions[:8]) or 'none'}.")
+for label, marker in (
+    ("bundle extraction failure", "Failed to extract"),
+    ("runtime initialization failure", "Failed to create CoreCLR"),
+    ("logging permission failure", "[LoggingError]"),
+    ("authentication succeeded", "Access token acquired"),
+    ("authentication failed", "Failed to acquire access token"),
+):
+    print(f"Native service journal {label}: {journal.count(marker)}.")
 PY
     if [[ -e /.dockerenv ]]; then
       echo "The runner has a container marker that disables service auto-update." >&2
