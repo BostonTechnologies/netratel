@@ -204,14 +204,38 @@ public sealed class ClientReleaseAutomationWorker(
         if (policy is null || policy.CheckEveryHours == 0 || !policy.PublishAutomatically) return;
         var now = clock.GetUtcNow();
         var threshold = now.AddHours(-1);
-        var operation = await db.ClientReleaseImportOperations.AsNoTracking()
+        var candidates = await db.ClientReleaseImportOperations.AsNoTracking()
             .Where(x => x.IsAutomatic && x.State == ClientReleaseImportState.Imported &&
                 x.PublishedAtUtc == null &&
                 (x.AutomaticPublishAttemptAtUtc == null || x.AutomaticPublishAttemptAtUtc < threshold))
-            .OrderByDescending(x => x.CreatedAtUtc).FirstOrDefaultAsync(ct);
-        if (operation is null || !NuGetVersion.TryParse(operation.Version, out var version) ||
-            version.IsPrerelease && (!policy.DownloadPrerelease || !policy.DeployPrereleaseAutomatically) ||
-            !version.IsPrerelease && !policy.DownloadStable) return;
+            .OrderByDescending(x => x.CreatedAtUtc).ToListAsync(ct);
+
+        ClientReleaseImportOperation? operation = null;
+        NuGetVersion? version = null;
+        foreach (var candidate in candidates)
+        {
+            if (!NuGetVersion.TryParse(candidate.Version, out var parsed) ||
+                !string.Equals(parsed.ToNormalizedString(), candidate.Version, StringComparison.Ordinal))
+            {
+                logger.LogWarning("Skipping automatic publication candidate {OperationId} with invalid version {Version}.",
+                    candidate.Id, candidate.Version);
+                continue;
+            }
+
+            if (parsed.IsPrerelease && (!policy.DownloadPrerelease || !policy.DeployPrereleaseAutomatically) ||
+                !parsed.IsPrerelease && !policy.DownloadStable)
+            {
+                logger.LogDebug("Skipping automatic publication candidate {OperationId} because its {Channel} channel is not eligible under current policy.",
+                    candidate.Id, parsed.IsPrerelease ? "prerelease" : "stable");
+                continue;
+            }
+
+            operation = candidate;
+            version = parsed;
+            break;
+        }
+
+        if (operation is null || version is null) return;
         var claimed = await db.ClientReleaseImportOperations
             .Where(x => x.Id == operation.Id && x.PublishedAtUtc == null &&
                 (x.AutomaticPublishAttemptAtUtc == null || x.AutomaticPublishAttemptAtUtc < threshold))

@@ -47,5 +47,7 @@
     <ProjectReference Include="..\NetRatel.Akka\NetRatel.Akka.csproj" />
     <ProjectReference Include="..\NetRatel.Mcp.Core\NetRatel.Mcp.Core.csproj" />
     <ProjectReference Include="..\NetRatel.Mcp.Http\NetRatel.Mcp.Http.csproj" />
+    <ProjectReference Include="..\..\..\tools\NetRatel.ClientArtifactCrashProbe\NetRatel.ClientArtifactCrashProbe.csproj"
+                      ReferenceOutputAssembly="false" />
   </ItemGroup>
 </Project>

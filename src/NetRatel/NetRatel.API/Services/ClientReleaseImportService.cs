@@ -7,6 +7,8 @@ using NetRatel.Infrastructure.Persistence;
 
 namespace NetRatel.API.Services;
 
+public sealed record ClientReleaseImportClaim(Guid OperationId, Guid LeaseOwner, long LeaseGeneration);
+
 public sealed record ClientReleaseImportStatus(
     Guid Id, long GitHubReleaseId, string Tag, string Version, ClientReleaseImportState State,
     long? TotalBytes, long DownloadedBytes, string? Error, DateTimeOffset CreatedAtUtc,
@@ -157,8 +159,8 @@ public sealed class ClientReleaseImportWorker(
                     await RepairCompletedVisibilityAsync(stoppingToken);
                     visibilityRepaired = true;
                 }
-                var id = await ClaimNextAsync(stoppingToken);
-                if (id.HasValue) await ProcessAsync(id.Value, stoppingToken);
+                var claim = await ClaimNextAsync(stoppingToken);
+                if (claim is not null) await ProcessAsync(claim, stoppingToken);
                 else await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
@@ -182,7 +184,7 @@ public sealed class ClientReleaseImportWorker(
         foreach (var id in ids) await artifacts.CompleteImportVisibilityAsync(id, ct);
     }
 
-    private async Task<Guid?> ClaimNextAsync(CancellationToken ct)
+    private async Task<ClientReleaseImportClaim?> ClaimNextAsync(CancellationToken ct)
     {
         await using var scope = scopes.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
@@ -205,12 +207,18 @@ public sealed class ClientReleaseImportWorker(
                     .SetProperty(x => x.AttemptCount, x => x.AttemptCount + 1)
                     .SetProperty(x => x.State, ClientReleaseImportState.Resolving)
                     .SetProperty(x => x.UpdatedAtUtc, now), ct);
-            if (updated == 1) return id;
+            if (updated == 1)
+            {
+                var generation = await db.ClientReleaseImportOperations.AsNoTracking()
+                    .Where(x => x.Id == id && x.LeaseOwner == _workerId)
+                    .Select(x => x.LeaseGeneration).SingleAsync(ct);
+                return new ClientReleaseImportClaim(id, _workerId, generation);
+            }
         }
         return null;
     }
 
-    private async Task ProcessAsync(Guid id, CancellationToken stoppingToken)
+    private async Task ProcessAsync(ClientReleaseImportClaim claim, CancellationToken stoppingToken)
     {
         await using var scope = scopes.CreateAsyncScope();
         var services = scope.ServiceProvider;
@@ -219,17 +227,21 @@ public sealed class ClientReleaseImportWorker(
         var downloader = services.GetRequiredService<GitHubClientAssetDownloader>();
         var artifacts = services.GetRequiredService<IClientArtifactsService>();
         var operation = await db.ClientReleaseImportOperations.Include(x => x.Assets)
-            .SingleAsync(x => x.Id == id, stoppingToken);
+            .SingleOrDefaultAsync(x => x.Id == claim.OperationId && x.LeaseOwner == claim.LeaseOwner &&
+                x.LeaseGeneration == claim.LeaseGeneration, stoppingToken);
+        if (operation is null) return;
         using var owned = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
-        var renewal = RenewLeaseAsync(id, owned, stoppingToken);
+        var renewal = RenewLeaseAsync(claim, owned, stoppingToken);
         var root = options.Value.StorageRoot;
         if (!Path.IsPathRooted(root)) root = Path.Combine(environment.ContentRootPath, root);
-        var work = Path.Combine(root, ".import-work", id.ToString("N"));
+        var work = Path.Combine(root, ".import-work", claim.OperationId.ToString("N"),
+            $"{claim.LeaseOwner:N}-{claim.LeaseGeneration}");
         Directory.CreateDirectory(work);
         try
         {
+            await CopyPreviousClaimFilesAsync(root, claim, work, stoppingToken);
             var ct = owned.Token;
-            await CheckCancellationAsync(db, operation, ct);
+            await CheckCancellationAsync(db, claim, ct);
             var release = await catalog.FindAsync(operation.GitHubReleaseId, ct)
                 ?? throw new InvalidDataException("The selected GitHub release is no longer available.");
             if (release.Tag != operation.Tag || release.Version != operation.Version ||
@@ -239,7 +251,7 @@ public sealed class ClientReleaseImportWorker(
             if (operation.BuildCommit is not null && operation.BuildCommit != commit)
                 throw new InvalidDataException("The release tag now resolves to a different commit.");
             operation.BuildCommit = commit;
-            await SetStateAsync(db, operation, ClientReleaseImportState.Downloading, ct);
+            await SetStateAsync(db, operation, claim, ClientReleaseImportState.Downloading, ct);
             var publication = await DownloadEvidenceAsync(downloader, release.PublicationAsset,
                 Path.Combine(work, "publication.json"), ct);
             var checksums = await DownloadEvidenceAsync(downloader, release.ChecksumsAsset,
@@ -247,7 +259,7 @@ public sealed class ClientReleaseImportWorker(
             if (operation.PublicationSha256 is not null && operation.PublicationSha256 != publication.Sha256)
                 throw new InvalidDataException("The release publication record changed during retry.");
             operation.PublicationSha256 = publication.Sha256;
-            await SetStateAsync(db, operation, ClientReleaseImportState.Verifying, ct);
+            await SetStateAsync(db, operation, claim, ClientReleaseImportState.Verifying, ct);
             var verified = await ClientReleasePublicationVerifier.VerifyAsync(release,
                 Path.Combine(work, "publication.json"), Path.Combine(work, "SHA256SUMS"), commit, ct);
             operation.TotalBytes = verified.Assets.Sum(x => x.SizeBytes);
@@ -258,7 +270,7 @@ public sealed class ClientReleaseImportWorker(
                 {
                     existing = new ClientReleaseImportAsset
                     {
-                        OperationId = id, RuntimeId = source.RuntimeId, GitHubAssetId = source.AssetId,
+                        OperationId = claim.OperationId, RuntimeId = source.RuntimeId, GitHubAssetId = source.AssetId,
                         SourceName = source.Name, SourceSha256 = source.SourceSha256,
                         SourceSizeBytes = source.SizeBytes, UpdatedAtUtc = clock.GetUtcNow()
                     };
@@ -270,11 +282,12 @@ public sealed class ClientReleaseImportWorker(
             }
             if (operation.Assets.Count != verified.Assets.Count)
                 throw new InvalidDataException("The client pack inventory changed during retry.");
+            await CheckCancellationAsync(db, claim, ct);
             await db.SaveChangesAsync(ct);
 
             foreach (var source in verified.Assets)
             {
-                await CheckCancellationAsync(db, operation, ct);
+                await CheckCancellationAsync(db, claim, ct);
                 var asset = operation.Assets.Single(x => x.RuntimeId == source.RuntimeId);
                 var sourcePath = Path.Combine(work, source.Name);
                 if (File.Exists(sourcePath))
@@ -287,17 +300,17 @@ public sealed class ClientReleaseImportWorker(
                     asset.State = ClientReleaseImportAssetState.Downloading;
                     asset.DownloadedBytes = 0;
                     operation.DownloadedBytes = operation.Assets.Sum(x => x.DownloadedBytes);
-                    await SetStateAsync(db, operation, ClientReleaseImportState.Downloading, ct);
+                    await SetStateAsync(db, operation, claim, ClientReleaseImportState.Downloading, ct);
                     var result = await downloader.DownloadAsync(source.AssetId, source.SizeBytes,
                         "sha256:" + source.SourceSha256, sourcePath, ct,
-                        (bytes, token) => ReportProgressAsync(id, source.RuntimeId, bytes, token));
+                        (bytes, token) => ReportProgressAsync(claim, source.RuntimeId, bytes, token));
                     if (result.Sha256 != source.SourceSha256)
                         throw new InvalidDataException("Client archive source hash differs from publication.");
                 }
                 asset.State = ClientReleaseImportAssetState.Verified;
                 asset.DownloadedBytes = source.SizeBytes;
                 operation.DownloadedBytes = operation.Assets.Sum(x => x.DownloadedBytes);
-                await SetStateAsync(db, operation, ClientReleaseImportState.Verifying, ct);
+                await SetStateAsync(db, operation, claim, ClientReleaseImportState.Verifying, ct);
                 var localPath = Path.Combine(work, source.RuntimeId + ".zip");
                 if (File.Exists(localPath))
                 {
@@ -319,11 +332,13 @@ public sealed class ClientReleaseImportWorker(
                 }
                 asset.State = ClientReleaseImportAssetState.Normalized;
                 asset.UpdatedAtUtc = clock.GetUtcNow();
+                operation.UpdatedAtUtc = asset.UpdatedAtUtc;
+                await CheckCancellationAsync(db, claim, ct);
                 await db.SaveChangesAsync(ct);
             }
 
-            await CheckCancellationAsync(db, operation, ct);
-            await SetStateAsync(db, operation, ClientReleaseImportState.Importing, ct);
+            await CheckCancellationAsync(db, claim, ct);
+            await SetStateAsync(db, operation, claim, ClientReleaseImportState.Importing, ct);
             foreach (var source in verified.Assets)
             {
                 var asset = operation.Assets.Single(x => x.RuntimeId == source.RuntimeId);
@@ -333,19 +348,22 @@ public sealed class ClientReleaseImportWorker(
                 var file = new FormFile(input, 0, input.Length, "file", Path.GetFileName(localPath))
                 { Headers = new HeaderDictionary(), ContentType = "application/zip" };
                 await artifacts.ImportVerifiedAsync(file, source.RuntimeId, verified.Version,
-                    new ClientArtifactImportProvenance(id, verified.Repository, verified.Tag,
+                    new ClientArtifactImportProvenance(claim.OperationId, verified.Repository, verified.Tag,
                         source.AssetId, source.Name, source.SourceSha256, verified.BuildCommit,
-                        asset.ConversionContract ?? ClientReleaseArchiveAdapter.Contract),
+                        asset.ConversionContract ?? ClientReleaseArchiveAdapter.Contract,
+                        claim.LeaseOwner, claim.LeaseGeneration),
                     operation.RequestedBy, ct);
                 asset.State = ClientReleaseImportAssetState.Imported;
                 asset.UpdatedAtUtc = clock.GetUtcNow();
+                operation.UpdatedAtUtc = asset.UpdatedAtUtc;
+                await CheckCancellationAsync(db, claim, ct);
                 await db.SaveChangesAsync(ct);
             }
             // The terminal state is the browser's signal that every runtime can be
             // downloaded. Make the pack visible first so an observer cannot see an
             // imported operation while the visibility marker is still unwritten.
-            await CheckCancellationAsync(db, operation, ct);
-            await artifacts.CompleteImportVisibilityAsync(id, stoppingToken);
+            await CheckCancellationAsync(db, claim, ct);
+            await artifacts.CompleteImportVisibilityAsync(claim.OperationId, claim, stoppingToken);
             operation.State = ClientReleaseImportState.Imported;
             operation.ImportedAtUtc = clock.GetUtcNow();
             operation.UpdatedAtUtc = operation.ImportedAtUtc.Value;
@@ -357,14 +375,14 @@ public sealed class ClientReleaseImportWorker(
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
             // The lease expires after restart. Verified staged bytes remain available for resume.
-            logger.LogInformation("Client release import {OperationId} will resume after service restart.", id);
+            logger.LogInformation("Client release import {OperationId} will resume after service restart.", claim.OperationId);
         }
         catch (Exception exception)
         {
-            logger.LogWarning(exception, "Client release import {OperationId} stopped", id);
+            logger.LogWarning(exception, "Client release import {OperationId} stopped", claim.OperationId);
             db.ChangeTracker.Clear();
-            var current = await db.ClientReleaseImportOperations.SingleAsync(x => x.Id == id, stoppingToken);
-            if (current.LeaseOwner == _workerId)
+            var current = await db.ClientReleaseImportOperations.SingleAsync(x => x.Id == claim.OperationId, stoppingToken);
+            if (current.LeaseOwner == claim.LeaseOwner && current.LeaseGeneration == claim.LeaseGeneration)
             {
                 current.State = current.CancellationRequested ? ClientReleaseImportState.Cancelled : ClientReleaseImportState.Failed;
                 current.Error = exception is OperationCanceledException ? "Import cancelled." : exception.Message[..Math.Min(exception.Message.Length, 2000)];
@@ -380,12 +398,13 @@ public sealed class ClientReleaseImportWorker(
             try { await renewal; }
             catch (OperationCanceledException)
             {
-                logger.LogDebug("Lease renewal stopped for client release import {OperationId}.", id);
+                logger.LogDebug("Lease renewal stopped for client release import {OperationId}.", claim.OperationId);
             }
         }
     }
 
-    private async Task RenewLeaseAsync(Guid id, CancellationTokenSource owned, CancellationToken stoppingToken)
+    private async Task RenewLeaseAsync(ClientReleaseImportClaim claim, CancellationTokenSource owned,
+        CancellationToken stoppingToken)
     {
         while (!owned.IsCancellationRequested)
         {
@@ -394,11 +413,14 @@ public sealed class ClientReleaseImportWorker(
             var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
             var now = clock.GetUtcNow();
             var current = await db.ClientReleaseImportOperations.AsNoTracking()
-                .Where(x => x.Id == id && x.LeaseOwner == _workerId)
+                .Where(x => x.Id == claim.OperationId && x.LeaseOwner == claim.LeaseOwner &&
+                    x.LeaseGeneration == claim.LeaseGeneration && x.LeaseUntilUtc > now)
                 .Select(x => new { x.CancellationRequested, x.State }).SingleOrDefaultAsync(stoppingToken);
             if (current is null || current.CancellationRequested) { owned.Cancel(); return; }
             var updated = await db.ClientReleaseImportOperations
-                .Where(x => x.Id == id && x.LeaseOwner == _workerId &&
+                .Where(x => x.Id == claim.OperationId && x.LeaseOwner == claim.LeaseOwner &&
+                    x.LeaseGeneration == claim.LeaseGeneration &&
+                    x.LeaseUntilUtc > now &&
                     x.State >= ClientReleaseImportState.Resolving && x.State <= ClientReleaseImportState.Importing)
                 .ExecuteUpdateAsync(setters => setters.SetProperty(x => x.LeaseUntilUtc,
                     now + LeaseLength), stoppingToken);
@@ -413,31 +435,69 @@ public sealed class ClientReleaseImportWorker(
         return await downloader.DownloadAsync(asset.Id, asset.SizeBytes, asset.Sha256Digest, path, ct);
     }
 
-    private async ValueTask ReportProgressAsync(Guid operationId, string runtimeId, long bytes, CancellationToken ct)
+    private static Task CopyPreviousClaimFilesAsync(string root, ClientReleaseImportClaim claim, string work,
+        CancellationToken ct)
+    {
+        var operationRoot = Path.Combine(root, ".import-work", claim.OperationId.ToString("N"));
+        if (!Directory.Exists(operationRoot)) return Task.CompletedTask;
+
+        foreach (var previous in Directory.EnumerateDirectories(operationRoot))
+        {
+            if (string.Equals(previous, work, StringComparison.Ordinal)) continue;
+            foreach (var source in Directory.EnumerateFiles(previous, "*", SearchOption.AllDirectories))
+            {
+                ct.ThrowIfCancellationRequested();
+                var relative = Path.GetRelativePath(previous, source);
+                var destination = Path.Combine(work, relative);
+                if (File.Exists(destination)) continue;
+                Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+                try { File.Copy(source, destination); }
+                catch (IOException) when (File.Exists(destination))
+                {
+                    ct.ThrowIfCancellationRequested();
+                }
+            }
+        }
+        return Task.CompletedTask;
+    }
+
+    private async ValueTask ReportProgressAsync(ClientReleaseImportClaim claim, string runtimeId, long bytes,
+        CancellationToken ct)
     {
         await using var scope = scopes.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
-        await db.ClientReleaseImportAssets
-            .Where(x => x.OperationId == operationId && x.RuntimeId == runtimeId &&
+        var updated = await db.ClientReleaseImportAssets
+            .Where(x => x.OperationId == claim.OperationId && x.RuntimeId == runtimeId &&
+                x.Operation.LeaseOwner == claim.LeaseOwner &&
+                x.Operation.LeaseGeneration == claim.LeaseGeneration &&
+                x.Operation.LeaseUntilUtc > clock.GetUtcNow() &&
                 x.State == ClientReleaseImportAssetState.Downloading)
             .ExecuteUpdateAsync(setters => setters
                 .SetProperty(x => x.DownloadedBytes, bytes)
                 .SetProperty(x => x.UpdatedAtUtc, clock.GetUtcNow()), ct);
+        if (updated != 1)
+            throw new InvalidOperationException("Client release import lease was lost while reporting progress.");
     }
 
     private async Task SetStateAsync(OrchestratorDbContext db, ClientReleaseImportOperation operation,
-        ClientReleaseImportState state, CancellationToken ct)
+        ClientReleaseImportClaim claim, ClientReleaseImportState state, CancellationToken ct)
     {
+        await CheckCancellationAsync(db, claim, ct);
         operation.State = state;
         operation.UpdatedAtUtc = clock.GetUtcNow();
         await db.SaveChangesAsync(ct);
     }
 
-    private static async Task CheckCancellationAsync(OrchestratorDbContext db,
-        ClientReleaseImportOperation operation, CancellationToken ct)
+    private async Task CheckCancellationAsync(OrchestratorDbContext db,
+        ClientReleaseImportClaim claim, CancellationToken ct)
     {
-        var cancelled = await db.ClientReleaseImportOperations.AsNoTracking()
-            .Where(x => x.Id == operation.Id).Select(x => x.CancellationRequested).SingleAsync(ct);
-        if (cancelled) throw new OperationCanceledException("Client release import was cancelled.");
+        var current = await db.ClientReleaseImportOperations.AsNoTracking()
+            .Where(x => x.Id == claim.OperationId && x.LeaseOwner == claim.LeaseOwner &&
+                x.LeaseGeneration == claim.LeaseGeneration)
+            .Select(x => new { x.CancellationRequested, x.LeaseUntilUtc })
+            .SingleOrDefaultAsync(ct);
+        if (current is null || current.LeaseUntilUtc <= clock.GetUtcNow())
+            throw new InvalidOperationException("Client release import lease was lost.");
+        if (current.CancellationRequested) throw new OperationCanceledException("Client release import was cancelled.");
     }
 }

@@ -1,5 +1,6 @@
 using System.IO.Compression;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
@@ -110,8 +111,10 @@ public sealed class ClientReleaseImportWorkerTests : IAsyncLifetime
                 Assert.Empty(store.ImportedRuntimes);
                 Assert.False(store.Visible);
                 var firstAsset = fixture.Release.ClientAssets.Single(x => x.RuntimeId == "linux-x64");
-                var stagedFirstAsset = Path.Combine(_storage, ".import-work", id.ToString("N"), firstAsset.Name);
-                Assert.True(File.Exists(stagedFirstAsset));
+                var stagedFirstAsset = Directory.EnumerateFiles(
+                        Path.Combine(_storage, ".import-work", id.ToString("N")), firstAsset.Name,
+                        SearchOption.AllDirectories).SingleOrDefault();
+                Assert.NotNull(stagedFirstAsset);
                 Assert.Equal(1, assetRequests[firstAsset.Id]);
 
                 // A short transfer must leave the verified first runtime reusable, while
@@ -340,6 +343,231 @@ public sealed class ClientReleaseImportWorkerTests : IAsyncLifetime
         }
     }
 
+    [Fact]
+    public async Task ExpiredWorkerCannotOverwriteSuccessorAfterLeaseGenerationTakeover()
+    {
+        var fixture = CreateFixture(corruptSecondRuntime: false);
+        var clock = new AdjustableTimeProvider(DateTimeOffset.UtcNow);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var resumed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var paused = 0;
+        await using var services = new ServiceCollection()
+            .AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Warning))
+            .AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(_postgres.GetConnectionString()))
+            .AddSingleton<TimeProvider>(clock)
+            .AddSingleton<IGitHubClientReleaseCatalog>(new FixtureCatalog(fixture.Release, fixture.Commit))
+            .AddScoped<IClientArtifactsService, ClientArtifactsService>()
+            .AddScoped<IEnrollmentCodeIssueService, EnrollmentCodeIssueService>()
+            .AddSingleton<IArtifactZipInjectionService, ZipInjectionService>()
+            .AddSingleton<ITenantLookupService>(new FixtureTenantLookup())
+            .AddSingleton<IEventRecorder>(new NoopEventRecorder())
+            .AddSingleton<ICorrelationContext>(new FixtureCorrelationContext())
+            .AddSingleton<IWebHostEnvironment>(new FixtureEnvironment(_storage))
+            .AddSingleton<IConfiguration>(new ConfigurationBuilder().Build())
+            .AddSingleton<IOptions<AgentAuthOptions>>(Options.Create(new AgentAuthOptions()))
+            .AddSingleton<IOptions<ClientArtifactsOptions>>(Options.Create(new ClientArtifactsOptions { StorageRoot = _storage }))
+            .AddScoped<GitHubClientAssetDownloader>(_ => new GitHubClientAssetDownloader(
+                new HttpClient(new AssetHandler(fixture.Bytes, wait: async (assetId, ct) =>
+                {
+                    if (assetId != 10 || Interlocked.Exchange(ref paused, 1) != 0) return;
+                    entered.SetResult();
+                    await release.Task.WaitAsync(ct);
+                    resumed.SetResult();
+                })) { Timeout = Timeout.InfiniteTimeSpan }, new ConfigurationBuilder().Build()))
+            .BuildServiceProvider();
+
+        var id = Guid.NewGuid();
+        await using (var scope = services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            db.ClientReleaseImportOperations.Add(new ClientReleaseImportOperation
+            {
+                Id = id, GitHubReleaseId = fixture.Release.Id, Tag = fixture.Release.Tag,
+                Version = fixture.Release.Version, RequestedBy = "fencing-fixture",
+                CreatedAtUtc = clock.GetUtcNow(), UpdatedAtUtc = clock.GetUtcNow()
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var first = ActivatorUtilities.CreateInstance<ClientReleaseImportWorker>(services);
+        var second = ActivatorUtilities.CreateInstance<ClientReleaseImportWorker>(services);
+        await first.StartAsync(CancellationToken.None);
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+            await entered.Task.WaitAsync(timeout.Token);
+            clock.Advance(TimeSpan.FromMinutes(3));
+            await second.StartAsync(CancellationToken.None);
+            await WaitForStateAsync(services, id, ClientReleaseImportState.Imported, timeout.Token);
+
+            release.SetResult();
+            await resumed.Task.WaitAsync(timeout.Token);
+            await Task.WhenAll(first.StopAsync(CancellationToken.None), second.StopAsync(CancellationToken.None));
+
+            await using var verifyScope = services.CreateAsyncScope();
+            var db = verifyScope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            var operation = await db.ClientReleaseImportOperations.AsNoTracking().Include(x => x.Assets)
+                .SingleAsync(x => x.Id == id, timeout.Token);
+            Assert.Equal(ClientReleaseImportState.Imported, operation.State);
+            Assert.Equal(2, operation.AttemptCount);
+            Assert.Null(operation.LeaseOwner);
+            Assert.Equal(2, operation.Assets.Count);
+            Assert.All(operation.Assets, asset => Assert.Equal(ClientReleaseImportAssetState.Imported, asset.State));
+
+            var artifacts = verifyScope.ServiceProvider.GetRequiredService<IClientArtifactsService>();
+            var visible = await artifacts.ListAsync(null, 0, 20, timeout.Token);
+            Assert.Equal(2, visible.Items.Count);
+            foreach (var asset in operation.Assets)
+            {
+                var download = await artifacts.DownloadRawAsync(asset.RuntimeId, operation.Version, timeout.Token);
+                await using var content = download.Content;
+                Assert.Equal(asset.LocalSha256,
+                    Convert.ToHexString(await SHA256.HashDataAsync(content, timeout.Token)).ToLowerInvariant());
+            }
+        }
+        finally
+        {
+            release.TrySetResult();
+            await Task.WhenAll(first.StopAsync(CancellationToken.None), second.StopAsync(CancellationToken.None));
+            first.Dispose();
+            second.Dispose();
+        }
+    }
+
+    [Fact]
+    public async Task HardStopAfterAtomicArtifactMoveRecoversPairAndRejectsConflictingOrphan()
+    {
+        var fixture = CreateFixture(corruptSecondRuntime: false);
+        var source = fixture.Release.ClientAssets.Single(x => x.RuntimeId == "linux-x64");
+        var operationId = Guid.NewGuid();
+        var leaseOwner = Guid.NewGuid();
+        var now = DateTimeOffset.UtcNow;
+        var archivePath = Path.Combine(_storage, "crash-probe-input.zip");
+        Directory.CreateDirectory(_storage);
+        await File.WriteAllBytesAsync(archivePath, fixture.OriginalBytes[source.Id]);
+
+        await using (var seed = new OrchestratorDbContext(_dbOptions))
+        {
+            seed.ClientReleaseImportOperations.Add(new ClientReleaseImportOperation
+            {
+                Id = operationId, GitHubReleaseId = fixture.Release.Id, Tag = fixture.Release.Tag,
+                Version = fixture.Release.Version, RequestedBy = "crash-probe", State = ClientReleaseImportState.Importing,
+                LeaseOwner = leaseOwner, LeaseGeneration = 1, LeaseUntilUtc = now.AddMinutes(2),
+                CreatedAtUtc = now, UpdatedAtUtc = now,
+                Assets = [new ClientReleaseImportAsset
+                {
+                    OperationId = operationId, RuntimeId = source.RuntimeId, GitHubAssetId = source.Id,
+                    SourceName = source.Name, SourceSha256 = source.Sha256Digest![7..],
+                    SourceSizeBytes = source.SizeBytes, LocalSha256 = Hash(fixture.OriginalBytes[source.Id]),
+                    LocalSizeBytes = fixture.OriginalBytes[source.Id].Length,
+                    ConversionContract = ClientReleaseArchiveAdapter.Contract,
+                    State = ClientReleaseImportAssetState.Imported, UpdatedAtUtc = now
+                }]
+            });
+            await seed.SaveChangesAsync();
+        }
+
+        var repoDirectory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (repoDirectory.Parent is not null &&
+               !Directory.Exists(Path.Combine(repoDirectory.FullName, "tools")))
+            repoDirectory = repoDirectory.Parent;
+        var probe = Path.Combine(repoDirectory.FullName, "tools", "NetRatel.ClientArtifactCrashProbe",
+            "bin", "Debug", "net10.0", "NetRatel.ClientArtifactCrashProbe.dll");
+        Assert.True(File.Exists(probe), $"Crash probe is missing: {probe}");
+        var startInfo = new ProcessStartInfo("dotnet")
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+        foreach (var argument in new[]
+        {
+            _postgres.GetConnectionString(), _storage, operationId.ToString(), leaseOwner.ToString(), "1",
+            source.RuntimeId, fixture.Release.Version, archivePath, fixture.Release.Tag, source.Id.ToString(),
+            source.Name, source.Sha256Digest![7..], fixture.Commit, ClientReleaseArchiveAdapter.Contract
+        }) startInfo.ArgumentList.Add(argument);
+        startInfo.ArgumentList.Insert(0, probe);
+
+        using var child = Process.Start(startInfo)!;
+        var output = child.StandardOutput.ReadToEndAsync();
+        var error = child.StandardError.ReadToEndAsync();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await child.WaitForExitAsync(timeout.Token);
+        var childOutput = await output;
+        var childError = await error;
+        Assert.NotEqual(0, child.ExitCode);
+
+        var versionDirectory = Path.Combine(_storage, source.RuntimeId, fixture.Release.Version);
+        var metadataPath = Path.Combine(versionDirectory, "metadata.json");
+        Assert.True(File.Exists(metadataPath), $"Crash probe output: {childOutput}\n{childError}");
+        Assert.True(File.Exists(Path.Combine(versionDirectory, $"NetRatel.Client-{source.RuntimeId}-{fixture.Release.Version}.zip")));
+
+        await using var services = new ServiceCollection()
+            .AddLogging()
+            .AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(_postgres.GetConnectionString()))
+            .AddSingleton<IOptions<ClientArtifactsOptions>>(Options.Create(new ClientArtifactsOptions
+            {
+                StorageRoot = _storage, EnableFallbackScan = false
+            }))
+            .AddSingleton<IWebHostEnvironment>(new FixtureEnvironment(_storage))
+            .AddSingleton<IConfiguration>(new ConfigurationBuilder().Build())
+            .AddSingleton<IOptions<AgentAuthOptions>>(Options.Create(new AgentAuthOptions()))
+            .AddScoped<IEnrollmentCodeIssueService, EnrollmentCodeIssueService>()
+            .AddSingleton<IArtifactZipInjectionService, ZipInjectionService>()
+            .AddSingleton<ITenantLookupService>(new FixtureTenantLookup())
+            .AddSingleton<IEventRecorder>(new NoopEventRecorder())
+            .AddSingleton<ICorrelationContext>(new FixtureCorrelationContext())
+            .AddScoped<IClientArtifactsService, ClientArtifactsService>()
+            .BuildServiceProvider();
+
+        await using (var scope = services.CreateAsyncScope())
+        {
+            var artifacts = scope.ServiceProvider.GetRequiredService<IClientArtifactsService>();
+            Assert.Null(await artifacts.GetMetadataAsync(source.RuntimeId, fixture.Release.Version, CancellationToken.None));
+            File.Delete(metadataPath);
+
+            var conflictingPath = Path.Combine(_storage, "conflicting.zip");
+            await File.WriteAllBytesAsync(conflictingPath, MakeArchive(source.RuntimeId, fixture.Release.Version,
+                new string('c', 40)));
+            var conflictingHash = Hash(await File.ReadAllBytesAsync(conflictingPath));
+            await using (var conflicting = File.OpenRead(conflictingPath))
+            {
+                var conflictingFile = new FormFile(conflicting, 0, conflicting.Length, "file", source.Name)
+                { Headers = new HeaderDictionary(), ContentType = "application/zip" };
+                await Assert.ThrowsAsync<ClientArtifactConflictException>(() => artifacts.ImportVerifiedAsync(
+                    conflictingFile, source.RuntimeId, fixture.Release.Version,
+                    new ClientArtifactImportProvenance(operationId, "BostonTechnologies/netratel", fixture.Release.Tag,
+                        source.Id, source.Name, conflictingHash, fixture.Commit,
+                        ClientReleaseArchiveAdapter.Contract, leaseOwner, 1), "crash-probe", CancellationToken.None));
+            }
+
+            await using var original = File.OpenRead(archivePath);
+            var originalFile = new FormFile(original, 0, original.Length, "file", source.Name)
+            { Headers = new HeaderDictionary(), ContentType = "application/zip" };
+            await artifacts.ImportVerifiedAsync(originalFile, source.RuntimeId, fixture.Release.Version,
+                new ClientArtifactImportProvenance(operationId, "BostonTechnologies/netratel", fixture.Release.Tag,
+                    source.Id, source.Name, source.Sha256Digest![7..], fixture.Commit,
+                    ClientReleaseArchiveAdapter.Contract, leaseOwner, 1), "crash-probe", CancellationToken.None);
+            await artifacts.CompleteImportVisibilityAsync(operationId,
+                new ClientReleaseImportClaim(operationId, leaseOwner, 1), CancellationToken.None);
+            Assert.NotNull(await artifacts.GetMetadataAsync(source.RuntimeId, fixture.Release.Version, CancellationToken.None));
+
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            await db.ClientReleaseImportOperations.Where(x => x.Id == operationId &&
+                    x.LeaseOwner == leaseOwner && x.LeaseGeneration == 1)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(x => x.State, ClientReleaseImportState.Imported)
+                    .SetProperty(x => x.ImportedAtUtc, now)
+                    .SetProperty(x => x.LeaseOwner, (Guid?)null)
+                    .SetProperty(x => x.LeaseUntilUtc, (DateTimeOffset?)null));
+        }
+
+        await using var verify = new OrchestratorDbContext(_dbOptions);
+        Assert.Equal(ClientReleaseImportState.Imported,
+            (await verify.ClientReleaseImportOperations.SingleAsync(x => x.Id == operationId)).State);
+    }
+
     private static async Task WaitForStateAsync(IServiceProvider services, Guid id, ClientReleaseImportState state, CancellationToken ct)
     {
         using var observation = new PeriodicTimer(TimeSpan.FromMilliseconds(100));
@@ -358,7 +586,9 @@ public sealed class ClientReleaseImportWorkerTests : IAsyncLifetime
     public async Task PublishedClientPackImportsEveryVerifiedRuntimeWithoutPublishing()
     {
         var fixtureDirectory = Environment.GetEnvironmentVariable("NETRATEL_RELEASE_FIXTURE_DIR")
-            ?? throw new InvalidOperationException("NETRATEL_RELEASE_FIXTURE_DIR must contain a completed public release fixture.");
+            ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(fixtureDirectory) || !Directory.Exists(fixtureDirectory))
+            Assert.Skip("NETRATEL_RELEASE_FIXTURE_DIR is required for the hosted public-release fixture.");
         using var publication = JsonDocument.Parse(await File.ReadAllTextAsync(
             Path.Combine(fixtureDirectory, "publication.json")));
         var root = publication.RootElement;
@@ -620,6 +850,16 @@ public sealed class ClientReleaseImportWorkerTests : IAsyncLifetime
     {
         public string? Current => "published-client-pack";
         public string GetOrCreate() => Current!;
+    }
+
+    private sealed class AdjustableTimeProvider(DateTimeOffset initial) : TimeProvider
+    {
+        private long _utcTicks = initial.UtcDateTime.Ticks;
+
+        public override DateTimeOffset GetUtcNow() =>
+            new(Interlocked.Read(ref _utcTicks), TimeSpan.Zero);
+
+        public void Advance(TimeSpan duration) => Interlocked.Add(ref _utcTicks, duration.Ticks);
     }
 
     private sealed class RecordingArtifactStore : IClientArtifactsService

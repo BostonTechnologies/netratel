@@ -950,6 +950,8 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
             entity.Property(x => x.State).HasConversion<short>();
             entity.Property(x => x.Error).HasMaxLength(2048);
             entity.Property(x => x.AutomaticPublishError).HasMaxLength(2048);
+            entity.Property(x => x.LeaseOwner).IsConcurrencyToken();
+            entity.Property(x => x.LeaseGeneration).IsConcurrencyToken();
             entity.HasIndex(x => x.GitHubReleaseId).IsUnique();
             entity.HasIndex(x => new { x.State, x.LeaseUntilUtc, x.CreatedAtUtc });
             entity.HasIndex(x => x.Version);

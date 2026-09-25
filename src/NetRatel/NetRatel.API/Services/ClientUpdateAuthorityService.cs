@@ -70,6 +70,7 @@ public sealed class ClientUpdateAuthorityService(
         if (parsedVersion.IsPrerelease && !confirmPrerelease)
             throw new InvalidOperationException("Prerelease publication requires explicit confirmation.");
 
+        var enabledOffers = Array.Empty<(string RuntimeId, string Version)>();
         if (automatic)
         {
             var policy = (await db.ClientReleaseAutomationSettings
@@ -83,12 +84,16 @@ public sealed class ClientUpdateAuthorityService(
                 throw new InvalidOperationException("Automatic client publication is disabled by current policy.");
 
             var runtimeIds = items.Select(item => item.Artifact.Rid).ToArray();
-            var enabledVersions = await db.ClientUpdateReleases.AsNoTracking()
-                .Where(x => x.Enabled && runtimeIds.Contains(x.RuntimeId))
-                .Select(x => x.Version).ToListAsync(cancellationToken).ConfigureAwait(false);
-            if (enabledVersions.Any(value =>
-                    NuGetVersion.TryParse(value, out var prior) && prior >= parsedVersion))
-                throw new InvalidOperationException("Automatic publication cannot replace an equal or newer enabled client release.");
+            var channel = parsedVersion.IsPrerelease ? "prerelease" : "stable";
+            enabledOffers = (await db.ClientUpdateReleases.AsNoTracking()
+                .Where(x => x.Enabled && runtimeIds.Contains(x.RuntimeId) && x.Channel == channel)
+                .Select(x => new { x.RuntimeId, x.Version }).ToListAsync(cancellationToken).ConfigureAwait(false))
+                .Select(x => (x.RuntimeId, x.Version)).ToArray();
+
+            // Automatic publication reconciles each runtime independently. A newer
+            // offer already covering one runtime is retained and that runtime is
+            // skipped; missing runtimes can still complete the pack. The exact
+            // version checks below preserve immutable and disabled-record conflicts.
         }
 
         var existing = await db.ClientUpdateReleases
@@ -104,10 +109,18 @@ public sealed class ClientUpdateAuthorityService(
             var prior = existing.SingleOrDefault(x => x.RuntimeId == item.Artifact.Rid);
             if (prior is not null)
             {
-                if (prior.Sha256 != item.Artifact.Sha256 || !prior.Enabled)
+                if (prior.Sha256 != item.Artifact.Sha256 || !prior.Enabled ||
+                    !string.Equals(prior.Channel, parsedVersion.IsPrerelease ? "prerelease" : "stable",
+                        StringComparison.OrdinalIgnoreCase))
                     throw new ClientArtifactConflictException(item.Artifact.Rid, operation.Version);
                 continue;
             }
+
+            if (automatic && enabledOffers.Any(offer =>
+                    string.Equals(offer.RuntimeId, item.Artifact.Rid, StringComparison.Ordinal) &&
+                    NuGetVersion.TryParse(offer.Version, out var priorVersion) && priorVersion > parsedVersion))
+                continue;
+
             var release = new ClientUpdateReleaseRecord
             {
                 PublicId = Guid.NewGuid(), RuntimeId = item.Artifact.Rid,
