@@ -43,7 +43,7 @@
     <PackageReference Include="Microsoft.PowerShell.SDK" Version="7.6.6" />
     <PackageReference Include="Microsoft.WSMan.Management" Version="7.6.6" />
     <PackageReference Include="NuGet.Versioning" Version="7.9.0" />
-    <PackageReference Include="Refit" Version="15.2.0" />
+    <PackageReference Include="Refit" Version="16.1.0" />
     <PackageReference Include="Rundeck.Api" Version="34.0.60" />
     <PackageReference Include="SIPSorcery" Version="10.0.16" />
     <PackageReference Include="SIPSorceryMedia.FFmpeg" Version="10.0.16" />
