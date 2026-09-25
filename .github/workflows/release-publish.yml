@@ -50,22 +50,84 @@ jobs:
         run: |
           set -euo pipefail
           cd "$NETRATEL_RELEASE_SOURCE_ROOT"
+
+          fail_verification() {
+            echo "::error title=Release publication blocked::$*" >&2
+            exit 1
+          }
+
           version="$(python3 "$GITHUB_WORKSPACE/tooling/tools/ci/product-version.py")"
           revision="$(git rev-parse HEAD)"
           tag="v${version}"
-          test "$RELEASE_TAG" = "$tag"
-          test "$(git rev-list -n 1 "$tag")" = "$revision"
+
+          if [[ "$RELEASE_TAG" != "$tag" ]]; then
+            fail_verification "The published release tag is '$RELEASE_TAG', but Directory.Build.props requires '$tag'. Create and publish the release as '$tag'; no registry writes were attempted."
+          fi
+
+          tag_revision="$(git rev-parse --verify "refs/tags/$tag^{commit}" 2>/dev/null || true)"
+          if [[ -z "$tag_revision" ]]; then
+            fail_verification "The required release tag '$tag' does not exist in the checked-out repository. Push '$tag' after merging the version change, then publish the GitHub release."
+          fi
+          if [[ "$tag_revision" != "$revision" ]]; then
+            fail_verification "Release tag '$tag' resolves to '$tag_revision', but the checked-out release source is '$revision'. The release tag must identify the exact approved commit."
+          fi
+
           git fetch --no-tags origin main
-          git merge-base --is-ancestor "$revision" origin/main
-          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" \
-            --jq '[.draft,.tag_name] | @tsv' | grep -Fx $'false\t'"$tag"
-          runs="$(gh run list --repo "$GITHUB_REPOSITORY" \
-            --workflow release-build.yml --branch "$tag" --limit 50 \
-            --json databaseId,headSha,headBranch,event,conclusion)"
-          run_id="$(jq -r --arg sha "$revision" --arg tag "$tag" \
-            '[.[] | select(.headSha == $sha and .headBranch == $tag and .event == "push" and .conclusion == "success")][0].databaseId // empty' \
-            <<< "$runs")"
-          test -n "$run_id"
+          if ! git merge-base --is-ancestor "$revision" origin/main; then
+            fail_verification "Release commit '$revision' is not an ancestor of public origin/main; publication is blocked."
+          fi
+
+          release_json="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag")" || \
+            fail_verification "GitHub has no release for the required tag '$tag'. Publish that exact tag after its Release build succeeds."
+          release_draft="$(jq -r '.draft // empty' <<< "$release_json")"
+          release_tag="$(jq -r '.tag_name // empty' <<< "$release_json")"
+          if [[ "$release_draft" != false || "$release_tag" != "$tag" ]]; then
+            fail_verification "GitHub release metadata is invalid for '$tag' (draft=$release_draft, tag_name=$release_tag). The target release must be published and retain the canonical tag."
+          fi
+
+          wait_seconds="${NETRATEL_RELEASE_BUILD_WAIT_SECONDS:-2100}"
+          [[ "$wait_seconds" =~ ^[0-9]+$ ]] && (( wait_seconds > 0 )) || \
+            fail_verification "NETRATEL_RELEASE_BUILD_WAIT_SECONDS must be a positive integer."
+          deadline=$((SECONDS + wait_seconds))
+          run_id=""
+          while (( SECONDS < deadline )); do
+            runs="$(gh run list --repo "$GITHUB_REPOSITORY" \
+              --workflow release-build.yml --branch "$tag" --limit 50 \
+              --json databaseId,headSha,headBranch,event,status,conclusion,url)" || \
+              fail_verification "GitHub could not list Release build runs for '$tag'."
+
+            build_status="$(python3 "$GITHUB_WORKSPACE/tooling/tools/ci/release-build-status.py" \
+              --tag "$tag" --revision "$revision" <<< "$runs")" || \
+              fail_verification "The Release build run response could not be classified for '$tag'."
+            build_state="$(jq -r '.state' <<< "$build_status")"
+            if [[ "$build_state" == success ]]; then
+              run_id="$(jq -r '.run_id // empty' <<< "$build_status")"
+              break
+            fi
+
+            if [[ "$build_state" == failed ]]; then
+              failed_conclusion="$(jq -r '.conclusion' <<< "$build_status")"
+              failed_url="$(jq -r '.url' <<< "$build_status")"
+              failed_id="$(jq -r '.run_id // empty' <<< "$build_status")"
+              fail_verification "Release build run $failed_id for '$tag' concluded '$failed_conclusion'. Inspect $failed_url before publishing."
+            fi
+
+            remaining=$((deadline - SECONDS))
+            if [[ "$build_state" == active ]]; then
+              active_id="$(jq -r '.run_id // empty' <<< "$build_status")"
+              active_status="$(jq -r '.status' <<< "$build_status")"
+              active_url="$(jq -r '.url' <<< "$build_status")"
+              echo "::notice title=Waiting for Release build::Run $active_id is $active_status for '$tag'; waiting ${remaining}s for it to pass. $active_url"
+            else
+              echo "::notice title=Waiting for Release build::No matching Release build has completed for '$tag' yet; waiting ${remaining}s for the tag-triggered build."
+            fi
+            (( remaining > 0 )) || break
+            sleep $(( remaining < 15 ? remaining : 15 ))
+          done
+
+          [[ -n "$run_id" ]] || \
+            fail_verification "No successful tag-triggered Release build for '$tag' and commit '$revision' appeared within ${wait_seconds}s. Push the canonical tag and rerun publication."
+
           python3 "$GITHUB_WORKSPACE/tooling/tools/ci/promote-release.py" registry-check \
             --version "$version"
           printf 'tag=%s\nversion=%s\nrevision=%s\nrun_id=%s\n' \

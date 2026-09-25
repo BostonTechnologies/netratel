@@ -109,6 +109,80 @@ class ProductVersionTests(unittest.TestCase):
                 self.assertEqual(properties["FileVersion"], f"{prefix}.0")
 
 
+class ReleaseBuildStatusTests(unittest.TestCase):
+    def setUp(self):
+        self.selector = module("release-build-status")
+        self.tag = "v0.1.0-rc.9"
+        self.revision = "a" * 40
+
+    def run_status(self, **overrides):
+        run = {
+            "databaseId": 123,
+            "headSha": self.revision,
+            "headBranch": self.tag,
+            "event": "push",
+            "status": "completed",
+            "conclusion": "success",
+            "createdAt": "2026-09-25T20:00:00Z",
+            "url": "https://github.com/example/actions/runs/123",
+        }
+        run.update(overrides)
+        return self.selector.classify_runs([run], self.tag, self.revision)
+
+    def test_successful_matching_run_is_publishable(self):
+        self.assertEqual(self.run_status(), {
+            "state": "success",
+            "run_id": "123",
+            "url": "https://github.com/example/actions/runs/123",
+        })
+
+    def test_active_matching_run_is_waitable(self):
+        self.assertEqual(self.run_status(status="in_progress", conclusion=None), {
+            "state": "active",
+            "run_id": "123",
+            "status": "in_progress",
+            "url": "https://github.com/example/actions/runs/123",
+        })
+
+    def test_failed_matching_run_is_reported(self):
+        self.assertEqual(self.run_status(conclusion="failure"), {
+            "state": "failed",
+            "run_id": "123",
+            "conclusion": "failure",
+            "url": "https://github.com/example/actions/runs/123",
+        })
+
+    def test_wrong_identity_is_ignored(self):
+        self.assertEqual(self.run_status(headSha="b" * 40), {"state": "waiting"})
+        self.assertEqual(self.run_status(headBranch="Netratel-" + self.tag), {"state": "waiting"})
+        self.assertEqual(self.run_status(event="workflow_dispatch"), {"state": "waiting"})
+
+    def test_existing_success_can_be_used_while_a_newer_rerun_is_active(self):
+        runs = [
+            {
+                "databaseId": 456,
+                "headSha": self.revision,
+                "headBranch": self.tag,
+                "event": "push",
+                "status": "in_progress",
+                "conclusion": None,
+                "createdAt": "2026-09-25T20:05:00Z",
+                "url": "https://github.com/example/actions/runs/456",
+            },
+            {
+                "databaseId": 123,
+                "headSha": self.revision,
+                "headBranch": self.tag,
+                "event": "push",
+                "status": "completed",
+                "conclusion": "success",
+                "createdAt": "2026-09-25T20:00:00Z",
+                "url": "https://github.com/example/actions/runs/123",
+            },
+        ]
+        self.assertEqual(self.selector.classify_runs(runs, self.tag, self.revision)["run_id"], "123")
+
+
 class DistributionTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="netratel-distribution-tests-")

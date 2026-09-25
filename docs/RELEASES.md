@@ -62,9 +62,12 @@ digests. It is intentionally a deployment bundle, not a source-build recipe.
 ## Owner-operated promotion
 
 Edit `Directory.Build.props` to set the product version, merge the reviewed
-source, and create the matching `v<version>` tag. Wait for the tag-triggered
-`Release build` workflow to pass. It builds and tests the deliverables but does
-not publish them.
+source, and create the matching `v<version>` tag. The tag-triggered `Release build`
+workflow builds and tests the deliverables but does not publish them.
+The publication workflow waits for that exact tag-triggered build when a
+release is published, so the GitHub release may be published immediately after
+the tag is pushed. The tag must be exactly `v<version>`; a different tag is
+rejected with the required tag and no registry write is attempted.
 
 Publishing the GitHub release starts `Publish release` on GitHub-hosted Actions.
 For a release that was already published before this workflow existed, dispatch
