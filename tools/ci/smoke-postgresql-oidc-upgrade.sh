@@ -573,6 +573,38 @@ PY
     else
       echo "The native Client did not record an acknowledged gateway presence." >&2
     fi
+    systemctl show "$updater_unit" --property=ActiveState,SubState,Result,ExecMainStatus --no-pager >&2 || true
+    sudo python3 - /var/lib/netratel/update "$client_root" "$version" "$updater_unit" <<'PY' >&2
+import json, pathlib, re, subprocess, sys
+
+state, root, version, unit = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), sys.argv[3], sys.argv[4]
+owner = state.stat().st_uid if state.is_dir() else None
+for name in ("request.json", "ready.json", "result.json", "state.json", "activation.json"):
+    path = state / name
+    present = path.is_file()
+    print(f"Native updater {name} exists: {present}; readable by state owner: {present and path.stat().st_uid == owner and bool(path.stat().st_mode & 0o400)}.")
+    if present and name in ("result.json", "state.json", "activation.json"):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
+            for field in ("state", "failureCode", "stage", "errorCode"):
+                value = data.get(field)
+                if isinstance(value, str) and value:
+                    print(f"Native updater {name} {field}: {value if re.fullmatch(r'[A-Za-z0-9_.=-]{1,64}', value) else 'other'}.")
+        except (OSError, ValueError):
+            print(f"Native updater {name} could not be parsed.")
+print(f"Native updater candidate target active: {(root / 'current').resolve() == root / 'versions' / version}.")
+journal = subprocess.run(["journalctl", "--unit", unit, "--no-pager", "--output=cat", "--lines=200"],
+                         capture_output=True, text=True, check=False).stdout
+for label, marker in (
+    ("cutover started", "Cutover starting"),
+    ("candidate service started", "waiting for readiness marker"),
+    ("candidate accepted", "accepted."),
+    ("rollback started", "Rolling back NetRatel client update"),
+    ("activation timed out", "did not become ready"),
+    ("updater failed", "client update failed with exit code"),
+):
+    print(f"Native updater journal {label}: {journal.count(marker)}.")
+PY
     return 1
   }
   attempt_detail="$(curl --silent --show-error --fail \
