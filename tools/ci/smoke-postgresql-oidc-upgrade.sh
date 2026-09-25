@@ -424,6 +424,7 @@ Environment=HOME=/var/lib/netratel
 Environment=PATH=$native_directory/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=NETRATEL_POWERSHELL_HOME=/var/lib/netratel/powershell
 Environment=DOTNET_ENVIRONMENT=Production
+Environment=DOTNET_RUNNING_IN_CONTAINER=false
 Environment=DOTNET_BUNDLE_EXTRACT_BASE_DIR=$native_directory/bundle
 Environment=NetRatel_CREDENTIAL_MACHINE_ID=$upgrade_machine_identity
 Environment=NetRatel_CLIENT_LOG_DIR=$native_directory/logs
@@ -476,6 +477,7 @@ signals = {
     "presence admitted": "Presence admitted",
     "gateway session failed": "Gateway session failed",
     "update staging failed": "Akka update staging failed",
+    "update acknowledgement failed": "Client update acknowledgement was ignored",
     "fatal startup failure": "[FATAL] Unhandled:",
 }
 for label, marker in signals.items():
@@ -488,6 +490,13 @@ if types:
 exception_types = sorted(set(re.findall(r"(?:System|Microsoft|Grpc)\.[A-Za-z.]*Exception", "\n".join(lines))))
 print(f"Native Client exception types: {', '.join(exception_types[:8]) or 'none'}.")
 print(f"Native Client log files: {len(list(logs.glob('*.log')))}.")
+state = pathlib.Path("/var/lib/netratel/update")
+print(f"Native Client update state directory exists: {state.is_dir()}.")
+print(f"Native Client update state entry count: {len(list(state.iterdir())) if state.is_dir() else 0}.")
+ignored = re.findall(r"Client update acknowledgement was ignored[^\n]*?: ([A-Za-z]+Exception):", "\n".join(lines))
+print(f"Native Client update acknowledgement exception types: {', '.join(sorted(set(ignored))) or 'none'}.")
+settings = logs.parent / "app" / "clientsettings.json"
+print(f"Native Client legacy settings override exists: {settings.is_file()}.")
 journal = subprocess.run(["journalctl", "--unit", sys.argv[2], "--no-pager", "--output=cat", "--lines=200"],
                          capture_output=True, text=True, check=False).stdout
 journal_exceptions = sorted(set(re.findall(r"(?:System|Microsoft|Grpc)\.[A-Za-z.]*Exception", journal)))
@@ -498,6 +507,7 @@ for label, marker in (
     ("logging permission failure", "[LoggingError]"),
     ("authentication succeeded", "Access token acquired"),
     ("authentication failed", "Failed to acquire access token"),
+    ("update acknowledgement failed", "Client update acknowledgement was ignored"),
 ):
     print(f"Native service journal {label}: {journal.count(marker)}.")
 PY
