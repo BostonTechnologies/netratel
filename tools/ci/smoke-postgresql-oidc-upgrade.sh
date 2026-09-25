@@ -547,7 +547,7 @@ PY
     --data "$update_request" "${api_url}/api/v1/tenants/${upgrade_tenant_id}" >/dev/null
 
   attempt_id=""
-  for _ in $(seq 1 150); do
+  for _ in $(seq 1 240); do
     attempt_response="$(curl --silent --show-error --fail \
       --header "Authorization: Bearer ${access_token}" \
       "${api_url}/api/v1/client-updates/attempts?clientIdentity=${prior_agent_id}")"
@@ -569,7 +569,7 @@ PY
     sleep 2
   done
   [[ "$attempt_state" == Accepted && -n "$attempt_id" ]] || {
-    echo "The published Client did not accept the server-offered candidate within five minutes." >&2
+    echo "The published Client did not accept the server-offered candidate within eight minutes." >&2
     echo "Last observed server attempt state: ${attempt_state:-none}." >&2
     if sudo test -s /var/lib/netratel/update/presence.json; then
       echo "The native Client recorded an acknowledged gateway presence." >&2

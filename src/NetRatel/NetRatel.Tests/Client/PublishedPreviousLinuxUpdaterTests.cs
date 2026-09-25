@@ -158,6 +158,8 @@ public sealed class PublishedPreviousLinuxUpdaterTests
         Assert.Equal(candidateVersion,
             new FileInfo(Path.Combine(root, "current")).ResolveLinkTarget(true)!.Name);
         Assert.True(File.Exists(Path.Combine(root, "versions", candidateVersion, "NetRatel.Client")));
+        Assert.True((File.GetUnixFileMode(Path.Combine(root, "versions", candidateVersion)) &
+            UnixFileMode.OtherExecute) != 0, "a nonroot Client service must be able to traverse the activated package");
     }
 
     private static async Task ExtractArchiveFileAsync(string archivePath, string destination, string entrySuffix)

@@ -277,6 +277,9 @@ commit=manifest.get("commitSha", "")
 assert len(commit)==40 and all(ch in "0123456789abcdefABCDEF" for ch in commit)
 assert os.path.isfile(os.path.join(os.path.dirname(sys.argv[1]), manifest.get("executable", "")))
 PY
+# mktemp creates the staging directory as 0700. The service account must be
+# able to traverse the verified public package after the root updater moves it.
+chmod 0755 "$EXTRACT_DIR"
 CLIENT_EXE="${EXTRACT_DIR}/NetRatel.Client"
 if [ ! -f "$CLIENT_EXE" ]; then
   CLIENT_EXE="${EXTRACT_DIR}/NetRatel.Client"
