@@ -563,6 +563,9 @@ PY
       echo "The published Client update attempt ended in $attempt_state." >&2
       return 1
     fi
+    if [[ "$attempt_state" == Activating ]] && systemctl is-failed --quiet "$updater_unit"; then
+      break
+    fi
     sleep 2
   done
   [[ "$attempt_state" == Accepted && -n "$attempt_id" ]] || {
@@ -574,6 +577,7 @@ PY
       echo "The native Client did not record an acknowledged gateway presence." >&2
     fi
     systemctl show "$updater_unit" --property=ActiveState,SubState,Result,ExecMainStatus --no-pager >&2 || true
+    systemctl show "$client_unit" --property=ActiveState,SubState,Result,ExecMainStatus,NRestarts --no-pager >&2 || true
     sudo python3 - /var/lib/netratel/update "$client_root" "$version" "$updater_unit" <<'PY' >&2
 import json, pathlib, re, subprocess, sys
 
@@ -597,13 +601,30 @@ journal = subprocess.run(["journalctl", "--unit", unit, "--no-pager", "--output=
                          capture_output=True, text=True, check=False).stdout
 for label, marker in (
     ("cutover started", "Cutover starting"),
+    ("checksum verified", "Checksum verified"),
+    ("client service stop requested", "Stopping netratel-client.service"),
     ("candidate service started", "waiting for readiness marker"),
+    ("candidate service failed to start", "did not become active after cutover"),
     ("candidate accepted", "accepted."),
     ("rollback started", "Rolling back NetRatel client update"),
     ("activation timed out", "did not become ready"),
     ("updater failed", "client update failed with exit code"),
 ):
     print(f"Native updater journal {label}: {journal.count(marker)}.")
+logs = root.parent / "logs"
+lines = [line for path in logs.glob("*.log") for line in path.read_text(errors="replace").splitlines()]
+for label, marker in (
+    ("candidate started", f"Application {version} starting"),
+    ("authentication succeeded", "Access token acquired"),
+    ("authentication failed", "Failed to acquire access token"),
+    ("enrollment required", "Enrollment is required before starting the service"),
+    ("API unavailable", "ApiBaseUrl is unreachable"),
+    ("gateway session failed", "Gateway session failed"),
+    ("fatal startup failure", "[FATAL] Unhandled:"),
+):
+    print(f"Native client log {label}: {sum(marker in line for line in lines)}.")
+exceptions = sorted(set(re.findall(r"(?:System|Microsoft|Grpc)\.[A-Za-z.]*Exception", "\n".join(lines))))
+print(f"Native client log exception types: {', '.join(exceptions[:8]) or 'none'}.")
 PY
     return 1
   }

@@ -62,6 +62,9 @@ temporary = f"{path}.{os.getpid()}.{os.urandom(4).hex()}.tmp"
 with open(temporary, "w", encoding="utf-8") as f:
   json.dump(payload, f, indent=2)
 os.chmod(temporary, 0o600)
+if os.geteuid() == 0:
+  state = os.stat(os.path.dirname(path))
+  os.chown(temporary, state.st_uid, state.st_gid)
 os.replace(temporary, path)
 PY
 }
@@ -306,10 +309,6 @@ mv -Tf "${CURRENT_LINK}.next" "$CURRENT_LINK"
 ACTIVE_TARGET="$(readlink -f "$CURRENT_LINK" || true)"
 export ACTIVE_TARGET
 systemctl start "$SERVICE_NAME"
-if ! systemctl is-active --quiet "$SERVICE_NAME"; then
-  log "$SERVICE_NAME did not become active after cutover."
-  exit 1
-fi
 log "Started $SERVICE_NAME with NetRatel client update $VERSION; waiting for readiness marker."
 
 write_state "verifying" "$VERSION"
