@@ -1014,13 +1014,18 @@ public sealed class LocalFirstComposeBrowserSmokeTests
     {
         await page.GotoAsync(new Uri(RequireUri("NETRATEL_LOCAL_FIRST_WEB_URL"), "login").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
         await WaitForLocalLoginClientAsync(page);
+        await page.GetByTestId("local-login-client-ready").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
         await page.GetByTestId("local-login-email").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         await page.GetByTestId("local-login-email").FillAsync(email);
         await page.GetByTestId("local-login-email").PressAsync("Tab");
         await page.GetByTestId("local-login-password").FillAsync(password);
         await page.GetByTestId("local-login-password").PressAsync("Tab");
+        var loginResponse = page.WaitForResponseAsync(response =>
+            response.Request.Method == "POST" &&
+            new Uri(response.Url).AbsolutePath == "/api/v2/local-auth/login");
         var signedIn = page.WaitForURLAsync("**/", new PageWaitForURLOptions { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 30_000 });
         await page.GetByTestId("local-login-submit").ClickAsync();
+        Assert.Equal(204, (await loginResponse).Status);
         await signedIn;
     }
 
@@ -1028,6 +1033,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
     {
         await page.GotoAsync(new Uri(RequireUri("NETRATEL_LOCAL_FIRST_WEB_URL"), "login").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
         await WaitForLocalLoginClientAsync(page);
+        await page.GetByTestId("local-login-client-ready").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
         await page.GetByTestId("local-login-email").FillAsync(email);
         await page.GetByTestId("local-login-email").PressAsync("Tab");
         await page.GetByTestId("local-login-password").FillAsync(password);
@@ -1040,12 +1046,17 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await page.WaitForFunctionAsync("() => new URLSearchParams(location.search).get('localMfa') === 'true'");
         await page.GetByTestId("local-login-two-factor").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         await WaitForLocalLoginClientAsync(page);
+        await page.GetByTestId("local-login-client-ready").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
         await page.GetByTestId("local-login-two-factor").FillAsync(code);
         await page.GetByTestId("local-login-two-factor").PressAsync("Tab");
         if (expectSuccess)
         {
+            var twoFactorResponse = page.WaitForResponseAsync(response =>
+                response.Request.Method == "POST" &&
+                new Uri(response.Url).AbsolutePath == "/api/v2/local-auth/login/two-factor");
             var signedIn = page.WaitForURLAsync("**/", new PageWaitForURLOptions { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 30_000 });
             await page.GetByTestId("local-login-two-factor-submit").ClickAsync();
+            Assert.Equal(204, (await twoFactorResponse).Status);
             await signedIn;
             return;
         }
