@@ -454,14 +454,14 @@ UNIT
   sudo systemctl daemon-reload
   sudo systemctl start "$client_unit"
   for _ in $(seq 1 60); do
-    if [[ -s /var/lib/netratel/update/presence.json ]]; then break; fi
+    if sudo test -s /var/lib/netratel/update/presence.json; then break; fi
     sleep 1
   done
-  if [[ ! -s /var/lib/netratel/update/presence.json ]]; then
+  if ! sudo test -s /var/lib/netratel/update/presence.json; then
     echo "The published native Client did not acknowledge gateway presence within one minute." >&2
     echo "Client service state: $(systemctl is-active "$client_unit" 2>/dev/null || true)." >&2
     systemctl show "$client_unit" --property=ExecMainStatus,Result,NRestarts --no-pager >&2 || true
-    python3 - "$native_directory/logs" "$client_unit" <<'PY' >&2
+    sudo python3 - "$native_directory/logs" "$client_unit" <<'PY' >&2
 import pathlib, re, subprocess, sys
 
 logs = pathlib.Path(sys.argv[1])
@@ -568,7 +568,7 @@ PY
   [[ "$attempt_state" == Accepted && -n "$attempt_id" ]] || {
     echo "The published Client did not accept the server-offered candidate within five minutes." >&2
     echo "Last observed server attempt state: ${attempt_state:-none}." >&2
-    if [[ -s /var/lib/netratel/update/presence.json ]]; then
+    if sudo test -s /var/lib/netratel/update/presence.json; then
       echo "The native Client recorded an acknowledged gateway presence." >&2
     else
       echo "The native Client did not record an acknowledged gateway presence." >&2
