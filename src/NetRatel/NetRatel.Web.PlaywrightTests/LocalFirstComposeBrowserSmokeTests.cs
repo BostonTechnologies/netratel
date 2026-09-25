@@ -97,11 +97,10 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             if (dropCommittedResponse) await route.AbortAsync("failed");
             else await route.FulfillAsync(new RouteFulfillOptions { Response = committed });
         });
-        var initialized = page.WaitForURLAsync("**/login", new PageWaitForURLOptions { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 120_000 });
         await page.GetByTestId("setup-initialize").EvaluateAsync("button => { button.click(); button.click(); }");
         await page.GetByTestId("setup-initializing").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
-        await initialized;
         await restartTask;
+        await page.WaitForURLAsync("**/login", new PageWaitForURLOptions { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 120_000 });
         await page.UnrouteAsync(initializeRoute);
         Assert.Equal(1, setupSubmissionCount);
         var initializationErrorLocator = page.Locator("#setup-client-error");
