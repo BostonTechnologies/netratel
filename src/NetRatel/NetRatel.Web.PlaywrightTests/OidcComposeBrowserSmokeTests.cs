@@ -164,6 +164,8 @@ public sealed class OidcComposeBrowserSmokeTests
 
     private static async Task AssertOidcActionAsync(IPage page)
     {
+        await page.GetByTestId("local-login-client-ready").WaitForAsync(
+            new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
         var action = page.Locator(".netratel-login-primary-action");
         Assert.True(await action.IsVisibleAsync());
         Assert.Equal("Sign in with your identity provider", (await action.InnerTextAsync()).Trim());
