@@ -69,6 +69,24 @@ owner-approved rc.8 client package. Keep the existing credential, agent state,
 and tenant binding; do not reinstall or re-enroll the client. Do not approve
 this rollout until the owner has accepted and rehearsed that one-time repair.
 
+For an approved repair, first verify the candidate Linux archive against its
+published checksum and manifest. Extract only its `updater/netratel-update.sh`
+to a staging directory. Confirm the installed service's `ExecStart` path with
+`systemctl cat netratel-update.service` (the default is
+`/opt/netratel/client/updater/netratel-update.sh`) and confirm no updater
+attempt is running. Back up that installed script, stage the verified
+replacement beside it with the same ownership and executable mode, then
+atomically rename the staged file over the installed script. Do not alter the
+active client symlink or anything under `/var/lib/netratel` as part of this
+repair. Run the approved update through the ordinary instance policy and
+verify the existing agent ID, tenant binding, reconnect, and update attempt
+result. Restore the backup if the replacement fails before activation.
+
+The hosted previous-release check extracts the actual published Linux updater
+and rehearses this version-gate replacement with a disposable client state. It
+does not stand in for an enrolled-client upgrade after the owner approves the
+repair path.
+
 ## Public install links
 
 An authorized operator can generate a time-limited install link for one tenant,

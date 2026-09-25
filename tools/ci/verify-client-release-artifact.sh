@@ -97,6 +97,15 @@ if [[ "$extension" == zip ]]; then
 else
   tar -xzf "$artifacts/$archive" -C "$extract_dir"
 fi
+python3 - \
+  "$(dirname "${BASH_SOURCE[0]}")/../../src/NetRatel/NetRatel.Client/tools/netratel-update.sh" \
+  "$extract_dir/netratel-client-${runtime}/updater/netratel-update.sh" <<'PY'
+from pathlib import Path
+import sys
+
+if Path(sys.argv[1]).read_bytes() != Path(sys.argv[2]).read_bytes():
+    raise SystemExit("Client archive updater differs from the validated source script.")
+PY
 if grep -rI -q -E -- '-----BEGIN ([A-Z ]*PRIVATE KEY|CERTIFICATE)|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9_]{20,}' "$extract_dir"; then
   echo "Client archive contains potential key material." >&2
   exit 1
