@@ -67,6 +67,12 @@ for required_entry in \
     exit 1
   }
 done
+if [[ "$runtime" == linux-* ]]; then
+  grep -qx "netratel-client-${runtime}/updater/repair-linux-updater.py" <<<"$entries" || {
+    echo "Linux Client archive is missing the updater repair utility." >&2
+    exit 1
+  }
+fi
 if [[ "$runtime" == win-* ]]; then
   grep -Eq "^netratel-client-${runtime}/NetRatel\.Client\.exe$" <<<"$entries" || {
     echo "Windows Client archive is missing its executable." >&2; exit 1;
@@ -106,6 +112,13 @@ import sys
 if Path(sys.argv[1]).read_bytes() != Path(sys.argv[2]).read_bytes():
     raise SystemExit("Client archive updater differs from the validated source script.")
 PY
+if [[ "$runtime" == linux-* ]]; then
+  cmp "$(dirname "${BASH_SOURCE[0]}")/../../src/NetRatel/NetRatel.Client/tools/repair-linux-updater.py" \
+    "$extract_dir/netratel-client-${runtime}/updater/repair-linux-updater.py" || {
+      echo "Client archive repair utility differs from its source." >&2
+      exit 1
+    }
+fi
 if grep -rI -q -E -- '-----BEGIN ([A-Z ]*PRIVATE KEY|CERTIFICATE)|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9_]{20,}' "$extract_dir"; then
   echo "Client archive contains potential key material." >&2
   exit 1

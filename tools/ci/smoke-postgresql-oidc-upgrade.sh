@@ -381,10 +381,14 @@ PY
     return 1
   }
   install -m 0755 "$native_directory/app/updater/netratel-update.sh" "$updater_path"
-  tar -xOzf "$candidate_client_archive" netratel-client-linux-x64/updater/netratel-update.sh \
-    > "$client_root/updater/.netratel-update.sh.replacement"
-  chmod 0755 "$client_root/updater/.netratel-update.sh.replacement"
-  mv -f "$client_root/updater/.netratel-update.sh.replacement" "$updater_path"
+  tar -xOzf "$candidate_client_archive" netratel-client-linux-x64/updater/repair-linux-updater.py \
+    > "$native_directory/repair-linux-updater.py"
+  candidate_sha="$(sha256sum "$candidate_client_archive")"
+  candidate_sha="${candidate_sha%% *}"
+  sudo install -d -o netratel -g netratel /var/lib/netratel/update
+  sudo python3 "$native_directory/repair-linux-updater.py" \
+    --archive "$candidate_client_archive" --sha256 "$candidate_sha" \
+    --updater "$updater_path" --lock /var/lib/netratel/update/update.lock
   ln -s "$native_directory/app" "$client_root/current"
   [[ ! -e /etc/sudoers.d/netratel-upgrade-smoke && ! -L /etc/sudoers.d/netratel-upgrade-smoke &&
      ! -e "/etc/systemd/system/$client_unit" && ! -L "/etc/systemd/system/$client_unit" &&

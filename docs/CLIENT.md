@@ -61,36 +61,46 @@ not need direct GitHub access.
 ### Previously installed prerelease updater
 
 The published `v0.1.0-rc.7` Linux updater rejects a newer prerelease with
-the same `0.1.0` core. The corrected updater in this candidate cannot replace
-the script already running on an installed host. Before an rc.7 Linux client
-can receive rc.8 through the established update flow, an operator must first
-replace that host's installed updater script with the script from a verified,
-owner-approved rc.8 client package. Keep the existing credential, agent state,
-and tenant binding; do not reinstall or re-enroll the client. Do not approve
-this rollout until the owner has accepted and rehearsed that one-time repair.
+the same `0.1.0` core before it can read the candidate package. The generic
+Linux client archive now includes `updater/repair-linux-updater.py` for this
+one-time installed-script repair. It works with any verified candidate Linux
+archive and has no release-version pin. It checks the archive checksum and
+manifest, takes the updater's activation lock, saves the installed script,
+and atomically replaces only that script while preserving ownership and mode.
+It does not install or enroll a Client. The existing agent ID, credential,
+tenant and active Client symlink stay intact.
 
-For an approved repair, first verify the candidate Linux archive against its
-published checksum and manifest. Extract only its `updater/netratel-update.sh`
-to a staging directory. Confirm the installed service's `ExecStart` path with
-`systemctl cat netratel-update.service` (the default is
-`/opt/netratel/client/updater/netratel-update.sh`) and confirm no updater
-attempt is running. Back up that installed script, stage the verified
-replacement beside it with the same ownership and executable mode, then
-atomically rename the staged file over the installed script. Do not alter the
-active client symlink or anything under `/var/lib/netratel` as part of this
-repair. Run the approved update through the ordinary instance policy and
-verify the existing agent ID, tenant binding, reconnect, and update attempt
-result. Restore the backup if the replacement fails before activation.
+On an affected host, download the approved Linux archive and its release
+`SHA256SUMS` from the same completed publication. Verify the checksum before
+extracting and running the utility. Confirm the installed updater's path with
+`systemctl cat netratel-update.service`; its default is
+`/opt/netratel/client/updater/netratel-update.sh`. Then run:
 
-The hosted Linux package check extracts the actual published updater and
-rehearses this version-gate replacement with disposable client state. The
-previous-release OIDC upgrade check then runs the enrolled published client
-under its original credential owner, atomically replaces only the updater
-script, and offers the verified candidate through the upgraded instance's
-normal tenant policy. It checks accepted activation, candidate readmission and
-confirmation, and the same agent ID and tenant binding. This proves the
-technical repair path in a disposable environment; the owner must approve the
-one-time repair before using it on installed hosts.
+```sh
+archive='netratel-client-<approved-version>-linux-x64.tar.gz'
+sha256sum --ignore-missing --check SHA256SUMS
+sha="$(awk -v name="$archive" '$2 == name { print $1 }' SHA256SUMS)"
+test "${#sha}" -eq 64
+tar -xOzf "$archive" netratel-client-linux-x64/updater/repair-linux-updater.py > repair-linux-updater.py
+sudo python3 repair-linux-updater.py --archive "$archive" --sha256 "$sha"
+```
+
+For a nondefault installed updater or state directory, pass `--updater` and
+`--lock` with the paths from that host's service configuration. If an update
+attempt holds the lock, the utility stops without changing the script. A
+repeat against the same candidate reports that the repair is already done.
+After repair, approve the candidate through the ordinary instance policy and
+verify the update attempt, readmission, agent ID and tenant binding. Keep the
+reported backup until that check succeeds; restore it if the replacement
+fails before activation. No Client reinstall or re-enrollment is needed.
+
+Hosted acceptance extracts the actual published updater and records its version
+gate result. For rc.7, that result is rejection. It runs the packaged repair
+utility with the built candidate archive, and then activates that verified
+candidate. The OIDC
+previous-release upgrade also runs the enrolled published Client under its
+original credential owner, repairs its updater, and checks the server-offered
+update, readmission, confirmation, and original identity.
 
 ## Public install links
 

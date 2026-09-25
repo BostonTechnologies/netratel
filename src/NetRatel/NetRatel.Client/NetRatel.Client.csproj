@@ -124,6 +124,12 @@
       <CopyToPublishDirectory>Always</CopyToPublishDirectory>
       <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
     </None>
+    <None Update="tools\repair-linux-updater.py">
+      <Link>updater\repair-linux-updater.py</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>Always</CopyToPublishDirectory>
+      <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+    </None>
     <None Update="tools\netratel-update.ps1">
       <Link>updater\netratel-update.ps1</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>

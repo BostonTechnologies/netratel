@@ -12,7 +12,13 @@ public sealed class PublishedPreviousLinuxUpdaterTests
 {
     [Fact]
     [Trait("category", "hosted")]
-    public async Task PublishedUpdaterVersionGateAcceptsCandidateAfterAtomicScriptReplacement()
+    public Task PublishedUpdaterVersionGateIsObservedBeforeRepair() => VerifyPublishedUpdaterAsync(repair: false);
+
+    [Fact]
+    [Trait("category", "hosted")]
+    public Task PublishedUpdaterVersionGateAcceptsCandidateAfterVerifiedRepair() => VerifyPublishedUpdaterAsync(repair: true);
+
+    private static async Task VerifyPublishedUpdaterAsync(bool repair)
     {
         if (!OperatingSystem.IsLinux()) return;
 
@@ -24,6 +30,8 @@ public sealed class PublishedPreviousLinuxUpdaterTests
         var candidateVersion = typeof(PublishedPreviousLinuxUpdaterTests).Assembly
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()!.InformationalVersion.Split('+')[0];
         var candidateArchive = Environment.GetEnvironmentVariable("NETRATEL_CANDIDATE_CLIENT_ARCHIVE");
+        if (repair && candidateArchive is null)
+            throw new InvalidOperationException("NETRATEL_CANDIDATE_CLIENT_ARCHIVE must contain the candidate package.");
         var archiveBase = $"netratel-client-{previousVersion}-linux-x64";
         var archives = new[] { $"{archiveBase}.tar.gz", $"{archiveBase}.zip" }
             .Select(name => Path.Combine(fixtureDirectory, name)).Where(File.Exists).ToArray();
@@ -67,35 +75,66 @@ public sealed class PublishedPreviousLinuxUpdaterTests
             Assert.True(beforeRepair.FailureCode == "invalid_version" ||
                 beforeRepair.Message.Contains("Staged package was not found", StringComparison.Ordinal),
                 $"Published updater failed for an unexpected reason: {beforeRepair.Message}");
+            Console.WriteLine($"Published {previousVersion} updater rejected candidate {candidateVersion}: " +
+                (beforeRepair.FailureCode == "invalid_version"));
+            if (!repair) return;
+            var verifiedCandidateArchive = candidateArchive!;
 
-            var repositoryRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../../"));
-            var candidateUpdater = Path.Combine(repositoryRoot,
-                "src/NetRatel/NetRatel.Client/tools/netratel-update.sh");
-            var stagedUpdater = Path.Combine(updaterDirectory, ".netratel-update.sh.replacement");
-            File.Copy(candidateUpdater, stagedUpdater);
-            File.SetUnixFileMode(stagedUpdater, File.GetUnixFileMode(installedUpdater));
-            File.Move(stagedUpdater, installedUpdater, overwrite: true);
+            var repairScript = Path.Combine(root, "repair-linux-updater.py");
+            await ExtractArchiveFileAsync(verifiedCandidateArchive, repairScript, "/updater/repair-linux-updater.py");
+            await using var candidateStream = File.OpenRead(verifiedCandidateArchive);
+            var expectedSha = Convert.ToHexString(await System.Security.Cryptography.SHA256.HashDataAsync(
+                candidateStream, TestContext.Current.CancellationToken)).ToLowerInvariant();
+            var originalUpdater = await File.ReadAllBytesAsync(installedUpdater, TestContext.Current.CancellationToken);
+            await RunRepairAsync(repairScript, verifiedCandidateArchive, new string('0', 64), installedUpdater,
+                Path.Combine(state, "update.lock"), expectedExitCode: 1);
+            Assert.Equal(originalUpdater, await File.ReadAllBytesAsync(installedUpdater, TestContext.Current.CancellationToken));
+            await RunRepairAsync(repairScript, verifiedCandidateArchive, expectedSha, installedUpdater,
+                Path.Combine(state, "update.lock"), expectedExitCode: 0);
+            var repairedUpdater = await File.ReadAllBytesAsync(installedUpdater, TestContext.Current.CancellationToken);
+            var expectedUpdater = Path.Combine(root, "expected-candidate-updater.sh");
+            await ExtractArchiveFileAsync(verifiedCandidateArchive, expectedUpdater, "/updater/netratel-update.sh");
+            Assert.Equal(await File.ReadAllBytesAsync(expectedUpdater, TestContext.Current.CancellationToken), repairedUpdater);
+            await RunRepairAsync(repairScript, verifiedCandidateArchive, expectedSha, installedUpdater,
+                Path.Combine(state, "update.lock"), expectedExitCode: 0);
+            Assert.Equal(repairedUpdater, await File.ReadAllBytesAsync(installedUpdater, TestContext.Current.CancellationToken));
+            Assert.Equal(originalUpdater.AsSpan().SequenceEqual(repairedUpdater) ? 0 : 1,
+                Directory.GetFiles(updaterDirectory, "*.before-repair.*").Length);
 
             var afterRepair = await RunUpdaterAsync(installedUpdater, root, state, requestPath);
             Assert.Equal(string.Empty, afterRepair.FailureCode);
             Assert.Contains("Staged package was not found", afterRepair.Message);
             Assert.Equal(previousTarget, new FileInfo(Path.Combine(root, "current")).ResolveLinkTarget(true)!.FullName);
             Assert.Equal(identity, await File.ReadAllTextAsync(identityPath, TestContext.Current.CancellationToken));
-            Console.WriteLine($"Published {previousVersion} updater rejected candidate {candidateVersion}: " +
-                (beforeRepair.FailureCode == "invalid_version") + "; replacement passed the version gate.");
-
-            if (candidateArchive is not null)
-            {
-                await ActivateCandidateArchiveAsync(candidateArchive, root, state, requestPath,
-                    installedUpdater, previousVersion, candidateVersion, attemptId, releaseId);
-                Assert.Equal(identity, await File.ReadAllTextAsync(identityPath, TestContext.Current.CancellationToken));
-                Console.WriteLine($"Candidate {candidateVersion} Linux archive activated from published {previousVersion} state.");
-            }
+            Console.WriteLine($"Verified repair passed the {candidateVersion} version gate.");
+            await ActivateCandidateArchiveAsync(verifiedCandidateArchive, root, state, requestPath,
+                installedUpdater, previousVersion, candidateVersion, attemptId, releaseId);
+            Assert.Equal(identity, await File.ReadAllTextAsync(identityPath, TestContext.Current.CancellationToken));
+            Console.WriteLine($"Candidate {candidateVersion} Linux archive activated from published {previousVersion} state.");
         }
         finally
         {
             Directory.Delete(root, recursive: true);
         }
+    }
+
+    private static async Task RunRepairAsync(string repairScript, string archive, string sha256,
+        string installedUpdater, string lockPath, int expectedExitCode)
+    {
+        var start = new ProcessStartInfo("python3")
+        {
+            RedirectStandardError = true,
+            RedirectStandardOutput = true,
+            UseShellExecute = false
+        };
+        foreach (var argument in new[] { repairScript, "--archive", archive, "--sha256", sha256,
+                     "--updater", installedUpdater, "--lock", lockPath })
+            start.ArgumentList.Add(argument);
+        using var process = Process.Start(start)!;
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(30));
+        await process.WaitForExitAsync(timeout.Token);
+        Assert.Equal(expectedExitCode, process.ExitCode);
     }
 
     private static async Task ActivateCandidateArchiveAsync(

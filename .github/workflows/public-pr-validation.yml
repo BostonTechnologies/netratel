@@ -65,12 +65,12 @@ jobs:
           dotnet src/NetRatel/NetRatel.Tests/bin/Release/net10.0/NetRatel.Tests.dll
           -method NetRatel.Tests.API.ClientReleaseImportWorkerTests.PublishedClientPackImportsEveryVerifiedRuntimeWithoutPublishing
           -noLogo
-      - name: Rehearse published Linux updater version gate
+      - name: Observe published Linux updater version gate
         env:
           NETRATEL_RELEASE_FIXTURE_DIR: ${{ runner.temp }}/published-client-pack
         run: >-
           dotnet src/NetRatel/NetRatel.Tests/bin/Release/net10.0/NetRatel.Tests.dll
-          -method NetRatel.Tests.Client.PublishedPreviousLinuxUpdaterTests.PublishedUpdaterVersionGateAcceptsCandidateAfterAtomicScriptReplacement
+          -method NetRatel.Tests.Client.PublishedPreviousLinuxUpdaterTests.PublishedUpdaterVersionGateIsObservedBeforeRepair
           -noLogo
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -217,7 +217,7 @@ jobs:
             --version "$version" \
             --runtime "${{ matrix.runtime }}" \
             --extension "${{ matrix.extension }}"
-      - name: Activate verified Linux candidate after published updater repair
+      - name: Repair published Linux updater and activate verified candidate
         if: matrix.runtime == 'linux-x64'
         shell: bash
         env:
@@ -229,7 +229,7 @@ jobs:
           NETRATEL_RELEASE_FIXTURE_DIR="$RUNNER_TEMP/published-client-pack" \
           NETRATEL_CANDIDATE_CLIENT_ARCHIVE="$PWD/artifacts/netratel-client-${version}-linux-x64.tar.gz" \
             dotnet src/NetRatel/NetRatel.Tests/bin/Release/net10.0/NetRatel.Tests.dll \
-              -method NetRatel.Tests.Client.PublishedPreviousLinuxUpdaterTests.PublishedUpdaterVersionGateAcceptsCandidateAfterAtomicScriptReplacement \
+              -method NetRatel.Tests.Client.PublishedPreviousLinuxUpdaterTests.PublishedUpdaterVersionGateAcceptsCandidateAfterVerifiedRepair \
               -noLogo
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
