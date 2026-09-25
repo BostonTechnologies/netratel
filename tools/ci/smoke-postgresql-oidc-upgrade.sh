@@ -50,6 +50,7 @@ cleanup() {
     sudo systemctl stop "$client_unit" "$updater_unit" >/dev/null 2>&1 || true
     sudo unlink "/etc/systemd/system/$client_unit" >/dev/null 2>&1 || true
     sudo unlink "/etc/systemd/system/$updater_unit" >/dev/null 2>&1 || true
+    sudo unlink /etc/sudoers.d/netratel-upgrade-smoke >/dev/null 2>&1 || true
     sudo systemctl daemon-reload >/dev/null 2>&1 || true
     sudo systemctl reset-failed "$client_unit" "$updater_unit" >/dev/null 2>&1 || true
   fi
@@ -372,7 +373,7 @@ PY
 
   client_root="$native_directory/client-root"
   updater_path="$client_root/updater/netratel-update.sh"
-  mkdir -p "$client_root/updater" "$client_root/versions"
+  mkdir -p "$client_root/updater" "$client_root/versions" "$native_directory/bin"
   [[ -s "$native_directory/app/updater/netratel-update.sh" ]] || {
     echo "The published Client image is missing its installed Linux updater." >&2
     return 1
@@ -383,7 +384,8 @@ PY
   chmod 0755 "$client_root/updater/.netratel-update.sh.replacement"
   mv -f "$client_root/updater/.netratel-update.sh.replacement" "$updater_path"
   ln -s "$native_directory/app" "$client_root/current"
-  [[ ! -e "/etc/systemd/system/$client_unit" && ! -L "/etc/systemd/system/$client_unit" &&
+  [[ ! -e /etc/sudoers.d/netratel-upgrade-smoke && ! -L /etc/sudoers.d/netratel-upgrade-smoke &&
+     ! -e "/etc/systemd/system/$client_unit" && ! -L "/etc/systemd/system/$client_unit" &&
      ! -e "/etc/systemd/system/$updater_unit" && ! -L "/etc/systemd/system/$updater_unit" ]] &&
     ! systemctl cat "$client_unit" >/dev/null 2>&1 &&
     ! systemctl cat "$updater_unit" >/dev/null 2>&1 || {
@@ -391,6 +393,19 @@ PY
     return 1
   }
   native_services_installed=true
+  cat > "$native_directory/bin/systemctl" <<'SH'
+#!/bin/sh
+if [ "$#" -eq 2 ] && [ "$1" = start ] && [ "$2" = netratel-update.service ]; then
+  exec /usr/bin/sudo -n /usr/bin/systemctl start netratel-update.service
+fi
+exit 1
+SH
+  chmod 0755 "$native_directory/bin/systemctl"
+  sudo tee /etc/sudoers.d/netratel-upgrade-smoke >/dev/null <<'SUDOERS'
+netratel ALL=(root) NOPASSWD: /usr/bin/systemctl start netratel-update.service
+SUDOERS
+  sudo chmod 0440 /etc/sudoers.d/netratel-upgrade-smoke
+  sudo visudo -cf /etc/sudoers.d/netratel-upgrade-smoke >/dev/null
   sudo tee "/etc/systemd/system/$client_unit" >/dev/null <<UNIT
 [Unit]
 Description=Disposable NetRatel published Client upgrade smoke
@@ -398,11 +413,13 @@ After=network-online.target
 
 [Service]
 Type=simple
+User=netratel
 WorkingDirectory=$client_root/current
 ExecStart=$client_root/current/NetRatel.Client --service --api $api_url
 Restart=always
 RestartSec=2
 Environment=HOME=/var/lib/netratel
+Environment=PATH=$native_directory/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=NETRATEL_POWERSHELL_HOME=/var/lib/netratel/powershell
 Environment=DOTNET_ENVIRONMENT=Production
 Environment=DOTNET_BUNDLE_EXTRACT_BASE_DIR=$native_directory/bundle
