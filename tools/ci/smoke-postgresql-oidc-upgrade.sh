@@ -488,6 +488,12 @@ UNIT
   done
   [[ "$attempt_state" == Accepted && -n "$attempt_id" ]] || {
     echo "The published Client did not accept the server-offered candidate within five minutes." >&2
+    echo "Last observed server attempt state: ${attempt_state:-none}." >&2
+    if [[ -s /var/lib/netratel/update/presence.json ]]; then
+      echo "The native Client recorded an acknowledged gateway presence." >&2
+    else
+      echo "The native Client did not record an acknowledged gateway presence." >&2
+    fi
     return 1
   }
   attempt_detail="$(curl --silent --show-error --fail \
@@ -527,6 +533,7 @@ export OIDC_CLIENT_SECRET=synthetic-postgresql-oidc-upgrade-oidc-secret
 export NETRATEL_WEB_PORT="${NETRATEL_UPGRADE_OIDC_WEB_PORT:-18084}"
 export NETRATEL_OIDC_TEST_PORT="${NETRATEL_UPGRADE_OIDC_PORT:-18085}"
 export NETRATEL_GATEWAY_TEST_PORT="${NETRATEL_UPGRADE_GATEWAY_PORT:-19443}"
+export NETRATEL_SMOKE_CLIENT_UPDATES_ENABLED=true
 export NETRATEL_AGENT_AUTH_PRIVATE_KEY="$agent_key_path"
 export NETRATEL_SMOKE_TLS_CERT_PASSWORD=synthetic-postgresql-oidc-upgrade-certificate-password
 export NETRATEL_GATEWAY_PROXY_CONFIG_PATH="$root/tests/compose/gateway-proxy.nginx.conf"

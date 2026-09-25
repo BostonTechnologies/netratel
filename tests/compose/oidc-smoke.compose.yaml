@@ -39,6 +39,7 @@ services:
       NetRatelAkkaMigration__PresenceEnabled: "true"
       NetRatelAkkaMigration__GatewayEnabled: "true"
       NetRatelAkkaMigration__PresenceAuthorityEnabled: "true"
+      NetRatelAkkaMigration__ClientUpdatesEnabled: ${NETRATEL_SMOKE_CLIENT_UPDATES_ENABLED:-false}
       NetRatelAkkaMigration__TelemetryShadowEnabled: "true"
       NetRatelAkkaMigration__TelemetryAuthorityEnabled: "true"
       NetRatelAkkaMigration__CommandShadowEnabled: "true"
