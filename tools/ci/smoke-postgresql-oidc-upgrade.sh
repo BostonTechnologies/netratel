@@ -437,6 +437,42 @@ UNIT
     echo "The published native Client service did not start." >&2
     return 1
   }
+  for _ in $(seq 1 60); do
+    if [[ -s /var/lib/netratel/update/presence.json ]]; then break; fi
+    sleep 1
+  done
+  if [[ ! -s /var/lib/netratel/update/presence.json ]]; then
+    echo "The published native Client did not acknowledge gateway presence within one minute." >&2
+    echo "Client service state: $(systemctl is-active "$client_unit" 2>/dev/null || true)." >&2
+    python3 - "$native_directory/logs" <<'PY' >&2
+import pathlib, re, sys
+
+logs = pathlib.Path(sys.argv[1])
+lines = []
+for path in logs.glob("*.log"):
+    lines.extend(path.read_text(errors="replace").splitlines())
+signals = {
+    "authentication succeeded": "Access token acquired",
+    "authentication failed": "Failed to acquire access token",
+    "presence started": "Starting authenticated Akka presence",
+    "presence admitted": "Presence admitted",
+    "gateway session failed": "Gateway session failed",
+    "update staging failed": "Akka update staging failed",
+}
+for label, marker in signals.items():
+    print(f"Native Client {label}: {sum(marker in line for line in lines)}.")
+failures = [re.search(r"Gateway session failed: ([A-Za-z]+)", line)
+            for line in lines if "Gateway session failed:" in line]
+types = [match.group(1) for match in failures if match]
+if types:
+    print(f"Last gateway exception type: {types[-1]}.")
+print(f"Native Client log files: {len(list(logs.glob('*.log')))}.")
+PY
+    if [[ -e /.dockerenv ]]; then
+      echo "The runner has a container marker that disables service auto-update." >&2
+    fi
+    return 1
+  fi
 
   upload_response="$(curl --silent --show-error --fail-with-body --max-time 300 \
     --header "Authorization: Bearer ${access_token}" \
