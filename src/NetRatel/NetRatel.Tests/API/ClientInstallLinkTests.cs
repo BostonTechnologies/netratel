@@ -20,6 +20,7 @@ using NetRatel.API.Services;
 using NetRatel.Application.Agents;
 using NetRatel.Application.Artifacts;
 using NetRatel.Infrastructure.Artifacts;
+using NetRatel.Infrastructure.Identity.Branding;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.Services;
 using Testcontainers.PostgreSql;
@@ -83,6 +84,8 @@ public sealed class ClientInstallLinkTests : IAsyncLifetime
         var created = await links.CreateAsync(request, "fixture-admin", TestContext.Current.CancellationToken);
         var replay = await links.CreateAsync(request, "fixture-admin", TestContext.Current.CancellationToken);
         Assert.True(replay.Replay);
+        Assert.StartsWith("https://netratel.example/clients/install/", created.PublicUrl);
+        Assert.Contains("API_BASE=\"https://netratel.example\"", created.Script);
         Assert.Equal(created.PublicUrl, replay.PublicUrl);
         Assert.Equal(created.Script, replay.Script);
         Assert.Equal(1, await db.ClientInstallGrants.CountAsync());
@@ -159,7 +162,7 @@ public sealed class ClientInstallLinkTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task MissingProtectionKeyFailsClosedAndBadPublicOriginsIssueNoEnrollmentCode()
+    public async Task MissingProtectionKeyFailsClosedAndInvalidBrandingSiteUrlIssuesNoEnrollmentCode()
     {
         await using (var services = BuildServices(Keys))
         {
@@ -193,8 +196,6 @@ public sealed class ClientInstallLinkTests : IAsyncLifetime
         builder.WebHost.UseTestServer();
         builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
         {
-            ["PublicUrls:WebBaseUrl"] = "https://netratel.example",
-            ["PublicUrls:ApiBaseUrl"] = "https://netratel.example",
             ["DataProtection:KeysDirectory"] = Keys
         });
         builder.Services.AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(_postgres.GetConnectionString()));
@@ -202,6 +203,7 @@ public sealed class ClientInstallLinkTests : IAsyncLifetime
         builder.Services.AddSingleton<ITenantLookupService>(new FixtureTenantLookup());
         builder.Services.AddSingleton<IClientArtifactsService>(new FixtureArtifacts(MakeArchive()));
         builder.Services.AddSingleton<IScriptTemplateService, ScriptTemplateService>();
+        builder.Services.AddSingleton<IDeploymentBrandingService>(new FixtureBranding("https://netratel.example"));
         builder.Services.AddScoped<ClientInstallLinkService>();
         builder.Services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo(Keys))
             .SetApplicationName("NetRatel-Link-Test");
@@ -285,14 +287,12 @@ public sealed class ClientInstallLinkTests : IAsyncLifetime
         Assert.Equal(1, await finalDb.Agents.CountAsync());
     }
 
-    private ServiceProvider BuildServices(string keys, string publicWebBase = "https://netratel.example")
+    private ServiceProvider BuildServices(string keys, string? siteUrl = "https://netratel.example")
     {
         var archive = MakeArchive();
         var artifacts = new FixtureArtifacts(archive);
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
-            ["PublicUrls:WebBaseUrl"] = publicWebBase,
-            ["PublicUrls:ApiBaseUrl"] = "https://netratel.example",
             ["DataProtection:KeysDirectory"] = keys
         }).Build();
         var services = new ServiceCollection()
@@ -304,6 +304,7 @@ public sealed class ClientInstallLinkTests : IAsyncLifetime
             .AddSingleton<ITenantLookupService>(new FixtureTenantLookup())
             .AddSingleton<IClientArtifactsService>(artifacts)
             .AddSingleton<IScriptTemplateService, ScriptTemplateService>()
+            .AddSingleton<IDeploymentBrandingService>(new FixtureBranding(siteUrl))
             .AddScoped<IPrimaryClientAgentBindingService, PrimaryClientAgentBindingService>()
             .AddScoped<EnrollmentService>()
             .AddScoped<ClientInstallLinkService>();
@@ -314,6 +315,34 @@ public sealed class ClientInstallLinkTests : IAsyncLifetime
 
     private static ClientInstallLinkCreateRequest Request() =>
         new(21, "linux-x64", "1.2.3", 60, 2, false, true, Guid.NewGuid().ToString("D"));
+
+    private sealed class FixtureBranding(string? siteUrl) : IDeploymentBrandingService
+    {
+        public Task<EffectiveDeploymentBranding> GetEffectiveAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(new EffectiveDeploymentBranding(
+                new("NetRatel", BrandingValueSource.Default, false),
+                new("NetRatel", BrandingValueSource.Default, false),
+                new("Automation Platform", BrandingValueSource.Default, false),
+                new("brand/netratel-wordmark-600.webp", BrandingValueSource.Default, false),
+                new("brand/netratel-wordmark-600.webp", BrandingValueSource.Default, false),
+                new("brand/netratel-mark-64.png", BrandingValueSource.Default, false),
+                new("favicon.ico", BrandingValueSource.Default, false),
+                new(string.Empty, BrandingValueSource.Default, false),
+                new(siteUrl ?? string.Empty, BrandingValueSource.Administrator, false),
+                1));
+
+        public Task<EffectiveDeploymentBranding> UpdateAsync(UpdateDeploymentBrandingRequest request,
+            string? actorPrincipalId, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<BrandingAssetUploadResult> UploadAssetAsync(BrandingAssetUpload upload,
+            string? actorPrincipalId, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<DeploymentBrandingAsset?> FindAssetAsync(string assetId,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+    }
 
     private static byte[] MakeArchive()
     {

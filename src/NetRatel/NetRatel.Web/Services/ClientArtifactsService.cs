@@ -599,7 +599,8 @@ public class ClientArtifactsService : IClientArtifactsService
                 return null;
             }
 
-            return string.IsNullOrWhiteSpace(problem.Detail) ? problem.Title : problem.Detail;
+            return new[] { problem.Detail, problem.Message, problem.Title }
+                .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
         }
         catch
         {
@@ -653,6 +654,7 @@ public class ClientArtifactsService : IClientArtifactsService
     {
         public string? Title { get; set; }
         public string? Detail { get; set; }
+        public string? Message { get; set; }
         public int? Status { get; set; }
     }
 }

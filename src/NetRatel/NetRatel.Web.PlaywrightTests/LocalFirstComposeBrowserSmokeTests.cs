@@ -346,7 +346,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         Assert.Equal(0, downloads);
         var publicUrl = await page.GetByRole(AriaRole.Textbox, new() { Name = "Public script URL" }).InputValueAsync();
         var command = await page.GetByRole(AriaRole.Textbox, new() { Name = "Install command" }).InputValueAsync();
-        var publicOrigin = Environment.GetEnvironmentVariable("NETRATEL_INSTALL_LINK_PUBLIC_ORIGIN") ?? "https://netratel.example";
+        var publicOrigin = InstallLinkPublicOrigin();
         Assert.StartsWith(publicOrigin + "/clients/install/", publicUrl);
         Assert.Contains(publicUrl, command);
         Assert.Contains(version, await page.GetByLabel("Generated script preview").InnerTextAsync());
@@ -387,6 +387,10 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await page.GetByLabel("Generate deployment script")
             .GetByRole(AriaRole.Button, new() { Name = "Close", Exact = true }).ClickAsync();
     }
+
+    private static string InstallLinkPublicOrigin() =>
+        (Environment.GetEnvironmentVariable("NETRATEL_INSTALL_LINK_PUBLIC_ORIGIN") ?? "https://netratel.example")
+        .TrimEnd('/');
 
     private static async Task VerifyPublishedClientInstallAsync(IBrowser browser, IPage page, Uri webUrl)
     {
@@ -687,6 +691,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         var applicationName = page.GetByLabel("Application name");
         await applicationName.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         await applicationName.FillAsync("Browser branding example");
+        await page.GetByLabel("Site URL").FillAsync(InstallLinkPublicOrigin());
         await applicationName.PressAsync("Tab");
         await page.GetByTestId("branding-save").ClickAsync();
         await page.GetByText("Branding saved.", new PageGetByTextOptions { Exact = false })

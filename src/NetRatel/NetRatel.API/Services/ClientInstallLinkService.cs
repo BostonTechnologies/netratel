@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using NetRatel.API.Models;
 using NetRatel.Application.Artifacts;
+using NetRatel.Infrastructure.Identity.Branding;
 using NetRatel.Infrastructure.Persistence;
 
 namespace NetRatel.API.Services;
@@ -30,6 +31,7 @@ public sealed class ClientInstallLinkService(
     IClientArtifactsService artifacts,
     IScriptTemplateService templates,
     IDataProtectionProvider protection,
+    IDeploymentBrandingService branding,
     IConfiguration configuration,
     TimeProvider clock)
 {
@@ -64,8 +66,8 @@ public sealed class ClientInstallLinkService(
             .SingleOrDefaultAsync(x => x.RequestKey == requestKey, ct);
         if (existing is not null) return ToResult(existing, fingerprint, replay: true);
 
-        var webBase = ValidatedPublicBase(configuration["PublicUrls:WebBaseUrl"], "PublicUrls:WebBaseUrl");
-        var apiBase = ValidatedPublicBase(configuration["PublicUrls:ApiBaseUrl"], "PublicUrls:ApiBaseUrl");
+        var publicBase = ValidatedPublicBase(
+            (await branding.GetEffectiveAsync(ct).ConfigureAwait(false)).SiteUrl.Value);
         var keysDirectory = configuration["DataProtection:KeysDirectory"];
         if (!string.IsNullOrWhiteSpace(keysDirectory) && !Path.IsPathRooted(keysDirectory))
             keysDirectory = Path.Combine(AppContext.BaseDirectory, keysDirectory);
@@ -93,7 +95,7 @@ public sealed class ClientInstallLinkService(
         var extension = templates.GetFileExtension(runtimeId);
         var expires = now.AddMinutes(validated.validForMinutes);
         var script = templates.Build(new DeploymentScriptTemplateRequest(
-            request.TenantId, runtimeId, code, apiBase, expires,
+            request.TenantId, runtimeId, code, publicBase, expires,
             request.InstallAsService, request.SilentInstall,
             artifact.Version, artifact.Sha256));
         var codeId = Guid.NewGuid();
@@ -105,7 +107,7 @@ public sealed class ClientInstallLinkService(
             TenantId = request.TenantId, RuntimeId = runtimeId,
             ArtifactVersion = artifact.Version, ArtifactSha256 = artifact.Sha256,
             InstallAsService = request.InstallAsService, SilentInstall = request.SilentInstall,
-            PublicWebBaseUrl = webBase, PublicApiBaseUrl = apiBase,
+            PublicWebBaseUrl = publicBase, PublicApiBaseUrl = publicBase,
             CreatedBy = createdBy, CreatedAtUtc = now, ExpiresAtUtc = expires,
             MaxUses = validated.maxUses
         };
@@ -221,7 +223,7 @@ public sealed class ClientInstallLinkService(
             (!code.MaxUses.HasValue || code.Uses < code.MaxUses.Value);
     }
 
-    private static string ValidatedPublicBase(string? value, string key)
+    private static string ValidatedPublicBase(string? value)
     {
         if (string.IsNullOrWhiteSpace(value) || !Uri.TryCreate(value, UriKind.Absolute, out var uri) ||
             uri.Scheme != Uri.UriSchemeHttps || uri.Port != 443 || uri.UserInfo.Length != 0 ||
@@ -230,7 +232,8 @@ public sealed class ClientInstallLinkService(
             uri.Host.EndsWith(".local", StringComparison.OrdinalIgnoreCase) ||
             uri.Host.EndsWith(".internal", StringComparison.OrdinalIgnoreCase) ||
             uri.Query.Length != 0 || uri.Fragment.Length != 0)
-            throw new InvalidOperationException($"Configure {key} as a public HTTPS origin before creating install links.");
+            throw new InvalidOperationException(
+                "Set Branding:SiteUrl to a public HTTPS origin before creating install links.");
         return uri.GetLeftPart(UriPartial.Path).TrimEnd('/');
     }
 

@@ -31,13 +31,14 @@ protected state.
 
 ## Public client install links
 
-Set `PublicUrls__WebBaseUrl` and `PublicUrls__ApiBaseUrl` on the API to the
-canonical public HTTPS bases reachable by a new client. They may differ when
-Web and API use separate public hosts. Include a supported external base path
-when the reverse proxy maps it to the corresponding application routes. The
-API rejects missing, HTTP, localhost, private DNS suffix, credential-bearing,
-query-bearing, or fragment-bearing values before it creates an install grant.
-Do not derive these values from incoming `Host` or forwarded headers.
+The API derives both the public install-link Web URL and the client API base
+from the effective administrator `Site URL` under `/admin/branding`. Set that
+value to the canonical public HTTPS origin reachable by a new client. Include a
+supported external base path when the reverse proxy maps it to the corresponding
+application routes. The API rejects a missing, HTTP, localhost, private DNS
+suffix, credential-bearing, query-bearing, or fragment-bearing Site URL before
+it creates an install grant. No separate public URL environment variables are
+required.
 
 The API stores each generated script and capability token with ASP.NET Data
 Protection in PostgreSQL; the corresponding key ring in
