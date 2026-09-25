@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import time
 
 REPOSITORY = "BostonTechnologies/netratel"
 
@@ -20,9 +21,18 @@ def gh(*args):
 
 
 def checked_download(tag, name, asset, directory):
-    gh("release", "download", tag, "--repo", REPOSITORY,
-       "--pattern", name, "--dir", str(directory))
     data = directory / name
+    for attempt in range(4):
+        download = subprocess.run(
+            ("gh", "release", "download", tag, "--repo", REPOSITORY,
+             "--pattern", name, "--dir", str(directory)),
+            capture_output=True, text=True, check=False)
+        if download.returncode == 0:
+            break
+        data.unlink(missing_ok=True)
+        if attempt == 3:
+            raise RuntimeError(f"Published asset download failed after four attempts: {name}")
+        time.sleep(2 ** attempt)
     if not data.is_file() or data.stat().st_size != asset["size"]:
         raise ValueError(f"Published asset size differs: {name}")
     digest = asset.get("digest")
