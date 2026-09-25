@@ -3,6 +3,7 @@ using System.Formats.Tar;
 using System.IO.Compression;
 using System.Reflection;
 using System.Text.Json;
+using NetRatel.API.Services;
 using Xunit;
 
 namespace NetRatel.Tests.Client;
@@ -22,6 +23,7 @@ public sealed class PublishedPreviousLinuxUpdaterTests
         var previousVersion = publication.RootElement.GetProperty("productVersion").GetString()!;
         var candidateVersion = typeof(PublishedPreviousLinuxUpdaterTests).Assembly
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()!.InformationalVersion.Split('+')[0];
+        var candidateArchive = Environment.GetEnvironmentVariable("NETRATEL_CANDIDATE_CLIENT_ARCHIVE");
         var archiveBase = $"netratel-client-{previousVersion}-linux-x64";
         var archives = new[] { $"{archiveBase}.tar.gz", $"{archiveBase}.zip" }
             .Select(name => Path.Combine(fixtureDirectory, name)).Where(File.Exists).ToArray();
@@ -37,7 +39,7 @@ public sealed class PublishedPreviousLinuxUpdaterTests
         try
         {
             var installedUpdater = Path.Combine(updaterDirectory, "netratel-update.sh");
-            await ExtractUpdaterAsync(archivePath, installedUpdater);
+            await ExtractArchiveFileAsync(archivePath, installedUpdater, "/updater/netratel-update.sh");
             File.SetUnixFileMode(installedUpdater, UnixFileMode.UserRead | UnixFileMode.UserWrite |
                 UnixFileMode.UserExecute | UnixFileMode.GroupRead | UnixFileMode.GroupExecute |
                 UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
@@ -47,14 +49,16 @@ public sealed class PublishedPreviousLinuxUpdaterTests
             await File.WriteAllTextAsync(identityPath, identity, TestContext.Current.CancellationToken);
 
             var requestPath = Path.Combine(state, "request.json");
+            var attemptId = Guid.NewGuid();
+            var releaseId = Guid.NewGuid();
             await File.WriteAllTextAsync(requestPath, JsonSerializer.Serialize(new
             {
                 fromVersion = previousVersion,
                 toVersion = candidateVersion,
                 packagePath = Path.Combine(root, "not-yet-downloaded.zip"),
                 sha256 = new string('a', 64),
-                attemptId = Guid.NewGuid(),
-                releaseId = Guid.NewGuid(),
+                attemptId,
+                releaseId,
                 runtimeId = "linux-x64",
                 readyPath = Path.Combine(state, "ready.json")
             }), TestContext.Current.CancellationToken);
@@ -79,6 +83,14 @@ public sealed class PublishedPreviousLinuxUpdaterTests
             Assert.Equal(identity, await File.ReadAllTextAsync(identityPath, TestContext.Current.CancellationToken));
             Console.WriteLine($"Published {previousVersion} updater rejected candidate {candidateVersion}: " +
                 (beforeRepair.FailureCode == "invalid_version") + "; replacement passed the version gate.");
+
+            if (candidateArchive is not null)
+            {
+                await ActivateCandidateArchiveAsync(candidateArchive, root, state, requestPath,
+                    installedUpdater, previousVersion, candidateVersion, attemptId, releaseId);
+                Assert.Equal(identity, await File.ReadAllTextAsync(identityPath, TestContext.Current.CancellationToken));
+                Console.WriteLine($"Candidate {candidateVersion} Linux archive activated from published {previousVersion} state.");
+            }
         }
         finally
         {
@@ -86,14 +98,75 @@ public sealed class PublishedPreviousLinuxUpdaterTests
         }
     }
 
-    private static async Task ExtractUpdaterAsync(string archivePath, string destination)
+    private static async Task ActivateCandidateArchiveAsync(
+        string candidateArchive, string root, string state, string requestPath, string installedUpdater,
+        string previousVersion, string candidateVersion, Guid attemptId, Guid releaseId)
     {
-        const string updaterSuffix = "/updater/netratel-update.sh";
+        if (!OperatingSystem.IsLinux()) throw new PlatformNotSupportedException();
+
+        var manifestPath = Path.Combine(root, "candidate-manifest.json");
+        await ExtractArchiveFileAsync(candidateArchive, manifestPath, "/netratel-client-manifest.json");
+        using var manifest = JsonDocument.Parse(await File.ReadAllTextAsync(
+            manifestPath, TestContext.Current.CancellationToken));
+        Assert.Equal("NetRatel.Client", manifest.RootElement.GetProperty("product").GetString());
+        Assert.Equal("linux-x64", manifest.RootElement.GetProperty("runtimeId").GetString());
+        Assert.Equal(candidateVersion, manifest.RootElement.GetProperty("version").GetString());
+        var commit = manifest.RootElement.GetProperty("commitSha").GetString()!;
+        var packagePath = Path.Combine(root, "candidate.zip");
+        var package = await ClientReleaseArchiveAdapter.NormalizeAsync(candidateArchive, packagePath,
+            "linux-x64", candidateVersion, commit, TestContext.Current.CancellationToken);
+
+        await File.WriteAllTextAsync(requestPath, JsonSerializer.Serialize(new
+        {
+            fromVersion = previousVersion,
+            toVersion = candidateVersion,
+            packagePath,
+            sha256 = package.Sha256,
+            attemptId,
+            releaseId,
+            runtimeId = "linux-x64",
+            readyPath = Path.Combine(state, "ready.json"),
+            presencePath = Path.Combine(state, "presence.json")
+        }), TestContext.Current.CancellationToken);
+
+        var fakeBin = Path.Combine(root, "bin");
+        Directory.CreateDirectory(fakeBin);
+        var fakeSystemctl = Path.Combine(fakeBin, "systemctl");
+        await File.WriteAllTextAsync(fakeSystemctl, """
+            #!/usr/bin/env bash
+            case "$1" in
+              stop) rm -f "$FAKE_SERVICE_STATE" ;;
+              start)
+                touch "$FAKE_SERVICE_STATE"
+                python3 - "$FAKE_REQUEST" "$FAKE_READY" <<'PY'
+            import json, sys
+            with open(sys.argv[1], encoding='utf-8') as source: request = json.load(source)
+            with open(sys.argv[2], 'w', encoding='utf-8') as destination:
+                json.dump({'schema': 'netratel.update.ready.v2', 'attemptId': request['attemptId'],
+                    'releaseId': request['releaseId'], 'version': request['toVersion'],
+                    'confirmationId': '11111111-1111-1111-1111-111111111111'}, destination)
+            PY
+                ;;
+              is-active) test -f "$FAKE_SERVICE_STATE" ;;
+            esac
+            """, TestContext.Current.CancellationToken);
+        File.SetUnixFileMode(fakeSystemctl,
+            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+        var result = await RunUpdaterAsync(installedUpdater, root, state, requestPath, 0, fakeBin);
+        Assert.Equal("Accepted", result.State);
+        Assert.Equal(candidateVersion,
+            new FileInfo(Path.Combine(root, "current")).ResolveLinkTarget(true)!.Name);
+        Assert.True(File.Exists(Path.Combine(root, "versions", candidateVersion, "NetRatel.Client")));
+    }
+
+    private static async Task ExtractArchiveFileAsync(string archivePath, string destination, string entrySuffix)
+    {
         if (archivePath.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
         {
             using var archive = ZipFile.OpenRead(archivePath);
             var entry = Assert.Single(archive.Entries, item =>
-                item.FullName.EndsWith(updaterSuffix, StringComparison.Ordinal));
+                item.FullName.EndsWith(entrySuffix, StringComparison.Ordinal));
             Assert.InRange(entry.Length, 1, 256 * 1024);
             await using var input = entry.Open();
             await using var output = File.Create(destination);
@@ -108,19 +181,19 @@ public sealed class PublishedPreviousLinuxUpdaterTests
         var found = false;
         while ((entryInTar = tar.GetNextEntry()) is not null)
         {
-            if (!entryInTar.Name.EndsWith(updaterSuffix, StringComparison.Ordinal)) continue;
-            Assert.False(found, "Published archive contains more than one Linux updater.");
+            if (!entryInTar.Name.EndsWith(entrySuffix, StringComparison.Ordinal)) continue;
+            Assert.False(found, "Client archive contains the requested entry more than once.");
             Assert.Equal(TarEntryType.RegularFile, entryInTar.EntryType);
             Assert.InRange(entryInTar.Length, 1, 256 * 1024);
             await using var output = File.Create(destination);
             await entryInTar.DataStream!.CopyToAsync(output, TestContext.Current.CancellationToken);
             found = true;
         }
-        Assert.True(found, "Published archive is missing its Linux updater.");
+        Assert.True(found, "Client archive is missing the requested entry.");
     }
 
-    private static async Task<(string FailureCode, string Message)> RunUpdaterAsync(
-        string updater, string root, string state, string request)
+    private static async Task<(string FailureCode, string Message, string State)> RunUpdaterAsync(
+        string updater, string root, string state, string request, int expectedExitCode = 1, string? fakeBin = null)
     {
         var start = new ProcessStartInfo("bash")
         {
@@ -132,14 +205,22 @@ public sealed class PublishedPreviousLinuxUpdaterTests
         start.Environment["NetRatel_UPDATE_ROOT"] = root;
         start.Environment["NetRatel_UPDATE_STATE"] = state;
         start.Environment["NetRatel_UPDATE_REQUEST"] = request;
+        if (fakeBin is not null)
+        {
+            start.Environment["PATH"] = $"{fakeBin}:/usr/bin:/bin";
+            start.Environment["FAKE_SERVICE_STATE"] = Path.Combine(state, "service-running");
+            start.Environment["FAKE_REQUEST"] = request;
+            start.Environment["FAKE_READY"] = Path.Combine(state, "ready.json");
+        }
         using var process = Process.Start(start)!;
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
-        timeout.CancelAfter(TimeSpan.FromSeconds(15));
+        timeout.CancelAfter(TimeSpan.FromSeconds(30));
         await process.WaitForExitAsync(timeout.Token);
-        Assert.Equal(1, process.ExitCode);
+        Assert.Equal(expectedExitCode, process.ExitCode);
         using var result = JsonDocument.Parse(await File.ReadAllTextAsync(
             Path.Combine(state, "result.json"), timeout.Token));
         return (result.RootElement.GetProperty("failureCode").GetString()!,
-            result.RootElement.GetProperty("message").GetString()!);
+            result.RootElement.GetProperty("message").GetString()!,
+            result.RootElement.GetProperty("state").GetString()!);
     }
 }
