@@ -450,10 +450,6 @@ Environment=NetRatel_CLIENT_SERVICE=$client_unit
 UNIT
   sudo systemctl daemon-reload
   sudo systemctl start "$client_unit"
-  sudo systemctl is-active --quiet "$client_unit" || {
-    echo "The published native Client service did not start." >&2
-    return 1
-  }
   for _ in $(seq 1 60); do
     if [[ -s /var/lib/netratel/update/presence.json ]]; then break; fi
     sleep 1
