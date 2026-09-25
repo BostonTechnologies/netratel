@@ -430,10 +430,11 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         var directory = Path.Combine(Path.GetTempPath(), "netratel-native-install-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         var username = "netratelci" + Guid.NewGuid().ToString("N")[..8];
-        var home = Path.Combine(directory, "home");
+        const string home = "/var/lib/netratel";
         var userCreated = false;
         try
         {
+            Assert.False(Directory.Exists(home), "The disposable runner already has a NetRatel machine-wide state directory.");
             await RunNativeUserManagementAsync("chmod", "755", directory);
             var trustedCertificate = Path.Combine(directory, "ca.crt");
             File.Copy(certificate, trustedCertificate);
@@ -451,7 +452,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
                 ["-c", "import json,sys; assert json.load(open(sys.argv[1], encoding='utf-8-sig'))['version'] == sys.argv[2]", manifest, version],
                 home, trustedCertificate, root);
             await RunIsolatedNativeCommandAsync(username, "test",
-                ["-s", Path.Combine(home, ".local", "share", "netratel", "agent.dat")], home, trustedCertificate, root);
+                ["-s", Path.Combine(home, "agent.dat")], home, trustedCertificate, root);
             await RunIsolatedNativeCommandAsync(username, executable,
                 ["--auth-check", "--api", webUrl.GetLeftPart(UriPartial.Authority)], home, trustedCertificate, root);
             Assert.Equal(404, (await anonymous.APIRequest.GetAsync(publicUrl)).Status);
