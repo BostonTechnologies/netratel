@@ -31,7 +31,8 @@ public sealed class ClientArtifactsOptions
 
 public enum ClientArtifactCommitPhase
 {
-    AfterAtomicDirectoryMoveBeforeDatabaseCommit
+    AfterAtomicDirectoryMoveBeforeDatabaseCommit,
+    BeforeAtomicDirectoryMove
 }
 
 public interface IClientArtifactsService
@@ -108,6 +109,7 @@ public sealed class ClientArtifactsService : IClientArtifactsService
     private readonly IEventRecorder _events;
     private readonly ICorrelationContext _correlation;
     private readonly OrchestratorDbContext _db;
+    private readonly TimeProvider _clock;
 
     public ClientArtifactsService(
         IWebHostEnvironment environment,
@@ -120,7 +122,8 @@ public sealed class ClientArtifactsService : IClientArtifactsService
         IArtifactZipInjectionService zipInjectionService,
         IEventRecorder events,
         ICorrelationContext correlation,
-        OrchestratorDbContext db)
+        OrchestratorDbContext db,
+        TimeProvider clock)
     {
         _environment = environment;
         _configuration = configuration;
@@ -133,6 +136,7 @@ public sealed class ClientArtifactsService : IClientArtifactsService
         _events = events;
         _correlation = correlation;
         _db = db;
+        _clock = clock;
     }
 
     public async Task<ClientArtifactListDto> ListAsync(string? rid, int skip, int take, CancellationToken ct)
@@ -151,7 +155,7 @@ public sealed class ClientArtifactsService : IClientArtifactsService
             foreach (var ridDir in Directory.EnumerateDirectories(storageRoot))
             {
                 var ridName = Path.GetFileName(ridDir);
-                if (!string.IsNullOrWhiteSpace(ridName))
+                if (IsCanonicalRidDirectory(ridName, ridDir, storageRoot))
                 {
                     await CollectRidSummariesAsync(ridName, ridDir, summaries, ct);
                 }
@@ -494,10 +498,12 @@ public sealed class ClientArtifactsService : IClientArtifactsService
         await _db.Database.ExecuteSqlInterpolatedAsync(
             $"SELECT \"Id\" FROM \"ClientReleaseImportOperations\" WHERE \"Id\" = {claim.OperationId} FOR UPDATE",
             ct).ConfigureAwait(false);
+        var now = _clock.GetUtcNow();
         var current = await _db.ClientReleaseImportOperations.AsNoTracking()
             .SingleOrDefaultAsync(x => x.Id == claim.OperationId, ct).ConfigureAwait(false);
         if (current is null || current.LeaseOwner != claim.LeaseOwner ||
             current.LeaseGeneration != claim.LeaseGeneration ||
+            current.LeaseUntilUtc <= now || current.CancellationRequested ||
             current.State < ClientReleaseImportState.Resolving ||
             current.State > ClientReleaseImportState.Importing)
             throw new InvalidOperationException("Client release import lease was lost.");
@@ -587,6 +593,7 @@ public sealed class ClientArtifactsService : IClientArtifactsService
                 await metaStream.FlushAsync(ct).ConfigureAwait(false);
             }
 
+            _options.TestCommitHook?.Invoke(ClientArtifactCommitPhase.BeforeAtomicDirectoryMove);
             Directory.CreateDirectory(Path.GetDirectoryName(versionDir)!);
             try
             {
@@ -940,9 +947,19 @@ public sealed class ClientArtifactsService : IClientArtifactsService
 
     private async Task CollectRidSummariesAsync(string rid, string ridDir, List<ClientArtifactSummaryDto> destination, CancellationToken ct)
     {
+        var storageRoot = EnsureStorageRoot();
+        if (!IsCanonicalRidDirectory(rid, ridDir, storageRoot)) return;
+
         foreach (var versionDir in Directory.EnumerateDirectories(ridDir))
         {
             ct.ThrowIfCancellationRequested();
+            var version = Path.GetFileName(versionDir);
+            if (string.IsNullOrWhiteSpace(version) ||
+                (!IsLatest(version) && !SemanticVersion.TryParse(version, out _)))
+            {
+                continue;
+            }
+
             var metadataPath = Path.Combine(versionDir, "metadata.json");
             if (!File.Exists(metadataPath))
             {
@@ -950,10 +967,25 @@ public sealed class ClientArtifactsService : IClientArtifactsService
             }
 
             var metadata = await ReadMetadataFileAsync(metadataPath, ct);
+            if (!string.Equals(metadata.Rid, rid, StringComparison.Ordinal) ||
+                !string.Equals(metadata.Version, version, StringComparison.Ordinal))
+            {
+                continue;
+            }
             if (!IsVisible(metadata)) continue;
             destination.Add(metadata.ToSummary());
         }
     }
+
+    private static bool IsCanonicalRidDirectory(string? rid, string ridDir, string storageRoot) =>
+        !string.IsNullOrWhiteSpace(rid) &&
+        AllowedRids.Contains(rid) &&
+        string.Equals(rid, rid.ToLowerInvariant(), StringComparison.Ordinal) &&
+        string.Equals(
+            Path.GetFullPath(ridDir).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+            Path.GetFullPath(Path.Combine(storageRoot, rid))
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+            OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
 
     private async Task<ClientArtifactMetadata?> TryResolveMetadataAsync(string rid, string normalizedVersion, CancellationToken ct)
     {

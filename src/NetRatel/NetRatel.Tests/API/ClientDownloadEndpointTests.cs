@@ -33,6 +33,126 @@ namespace NetRatel.Tests.API;
 public sealed class ClientDownloadEndpointTests
 {
     [Fact]
+    [Trait("category", "f113-r5")]
+    public async Task AllRuntimeListingIgnoresAbandonedUploadStagingAcrossRestart()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "netratel-tests", Guid.NewGuid().ToString("N"));
+        var storageRoot = Path.Combine(root, "store");
+        Directory.CreateDirectory(root);
+        try
+        {
+            using (var app = await BuildAppAsync(storageRoot))
+            {
+                await using var scope = app.Services.CreateAsyncScope();
+                var service = scope.ServiceProvider.GetRequiredService<IClientArtifactsService>();
+                await service.UploadAsync(new CallbackFormFile(BuildBaseZip()), "win-x64", "0.4.6",
+                    "committed", "test", CancellationToken.None);
+            }
+
+            var stagingRoot = Path.Combine(storageRoot, ".upload-staging");
+            var completeStagingDirectory = Path.Combine(stagingRoot, "abandoned-complete");
+            Directory.CreateDirectory(completeStagingDirectory);
+            await File.WriteAllTextAsync(
+                Path.Combine(completeStagingDirectory, "metadata.json"),
+                JsonSerializer.Serialize(new
+                {
+                    rid = "win-x64",
+                    version = "9.9.9",
+                    fileName = "NetRatel.Client-win-x64-9.9.9.zip",
+                    size = 123L,
+                    sha256 = new string('c', 64),
+                    uploadedAt = DateTimeOffset.UtcNow,
+                    uploadedBy = "staged-upload",
+                    notes = "staged",
+                    contentType = "application/zip"
+                }));
+            var malformedStagingDirectory = Path.Combine(stagingRoot, "abandoned-malformed");
+            Directory.CreateDirectory(malformedStagingDirectory);
+            await File.WriteAllTextAsync(Path.Combine(malformedStagingDirectory, "metadata.json"), "{\"rid\":");
+
+            async Task AssertCatalogueIsolatedAsync(IHost app)
+            {
+                await using var scope = app.Services.CreateAsyncScope();
+                var service = scope.ServiceProvider.GetRequiredService<IClientArtifactsService>();
+
+                var listing = await service.ListAsync(null, 0, 1, CancellationToken.None);
+                listing.Total.Should().Be(1);
+                listing.Items.Should().ContainSingle().Which.Should().Match<ClientArtifactSummaryDto>(item =>
+                    item.Rid == "win-x64" && item.Version == "0.4.6" && item.Notes == "committed");
+                (await service.ListAsync(null, 1, 1, CancellationToken.None)).Items.Should().BeEmpty();
+                (await service.ListAsync(null, 0, 20, "committed", CancellationToken.None)).Total.Should().Be(1);
+                (await service.ListAsync(null, 0, 20, "staged", CancellationToken.None)).Total.Should().Be(0);
+                (await service.ListAsync("win-x64", 0, 20, CancellationToken.None)).Total.Should().Be(1);
+
+                (await service.GetMetadataAsync("win-x64", "9.9.9", CancellationToken.None)).Should().BeNull();
+                await FluentActions.Invoking(() => service.DownloadRawAsync("win-x64", "9.9.9", CancellationToken.None))
+                    .Should().ThrowAsync<FileNotFoundException>();
+            }
+
+            using (var firstRead = await BuildAppAsync(storageRoot))
+            {
+                await AssertCatalogueIsolatedAsync(firstRead);
+            }
+
+            using (var restarted = await BuildAppAsync(storageRoot))
+            {
+                await AssertCatalogueIsolatedAsync(restarted);
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    [Trait("category", "f113-r5")]
+    public async Task OrdinaryUploadIsAbsentFromCatalogueUntilCanonicalDirectoryCommit()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "netratel-tests", Guid.NewGuid().ToString("N"));
+        var storageRoot = Path.Combine(root, "store");
+        Directory.CreateDirectory(root);
+        var metadataWritten = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseCommit = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var hook = new Action<ClientArtifactCommitPhase>(phase =>
+        {
+            if (phase != ClientArtifactCommitPhase.BeforeAtomicDirectoryMove) return;
+            metadataWritten.TrySetResult();
+            releaseCommit.Task.GetAwaiter().GetResult();
+        });
+
+        try
+        {
+            using var app = await BuildAppAsync(storageRoot, hook);
+            await using var scope = app.Services.CreateAsyncScope();
+            var service = scope.ServiceProvider.GetRequiredService<IClientArtifactsService>();
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            var upload = service.UploadAsync(new CallbackFormFile(BuildBaseZip()), "win-x64", "0.4.6",
+                "boundary-upload", "test", timeout.Token);
+
+            await metadataWritten.Task.WaitAsync(timeout.Token);
+            var stagedMetadata = Directory.EnumerateFiles(
+                Path.Combine(storageRoot, ".upload-staging"), "metadata.json", SearchOption.AllDirectories).Single();
+            using (JsonDocument.Parse(await File.ReadAllTextAsync(stagedMetadata, timeout.Token))) { }
+
+            (await service.ListAsync(null, 0, 20, timeout.Token)).Total.Should().Be(0);
+            (await service.ListAsync("win-x64", 0, 20, timeout.Token)).Total.Should().Be(0);
+
+            releaseCommit.TrySetResult();
+            var result = await upload;
+            result.Created.Should().BeTrue();
+            (await service.ListAsync(null, 0, 20, timeout.Token)).Items.Should().ContainSingle()
+                .Which.Version.Should().Be("0.4.6");
+            (await service.ListAsync("win-x64", 0, 20, timeout.Token)).Items.Should().ContainSingle();
+        }
+        finally
+        {
+            releaseCommit.TrySetResult();
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task ImportedArtifactIsHiddenUntilTheWholePackCompletes()
     {
         var root = Path.Combine(Path.GetTempPath(), "netratel-tests", Guid.NewGuid().ToString("N"));
@@ -322,7 +442,8 @@ public sealed class ClientDownloadEndpointTests
         (await client.SendAsync(revoked)).StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
 
-    private static async Task<IHost> BuildAppAsync(string storageRoot)
+    private static async Task<IHost> BuildAppAsync(string storageRoot,
+        Action<ClientArtifactCommitPhase>? testCommitHook = null)
     {
         var builder = Host.CreateDefaultBuilder();
         builder.ConfigureWebHost(web =>
@@ -332,6 +453,7 @@ public sealed class ClientDownloadEndpointTests
             web.ConfigureServices(services =>
             {
                 services.AddRouting();
+                services.AddSingleton(TimeProvider.System);
                 services.AddAuthentication("Test")
                     .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>("Test", _ => { });
                 services.AddAuthorization(options =>
@@ -352,6 +474,7 @@ public sealed class ClientDownloadEndpointTests
                     opts.StorageRoot = storageRoot;
                     opts.LegacyRoot = Path.Combine(storageRoot, "legacy");
                     opts.EnableFallbackScan = false;
+                    opts.TestCommitHook = testCommitHook;
                 });
                 services.Configure<AgentAuthOptions>(opts => opts.Issuer = "https://netratel.example.invalid");
                 services.AddScoped<IClientArtifactsService, ClientArtifactsService>();

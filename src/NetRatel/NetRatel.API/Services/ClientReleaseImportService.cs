@@ -283,7 +283,7 @@ public sealed class ClientReleaseImportWorker(
             if (operation.Assets.Count != verified.Assets.Count)
                 throw new InvalidDataException("The client pack inventory changed during retry.");
             await CheckCancellationAsync(db, claim, ct);
-            await db.SaveChangesAsync(ct);
+            await SaveClaimedMutationAsync(db, claim, ct);
 
             foreach (var source in verified.Assets)
             {
@@ -334,7 +334,7 @@ public sealed class ClientReleaseImportWorker(
                 asset.UpdatedAtUtc = clock.GetUtcNow();
                 operation.UpdatedAtUtc = asset.UpdatedAtUtc;
                 await CheckCancellationAsync(db, claim, ct);
-                await db.SaveChangesAsync(ct);
+                await SaveClaimedMutationAsync(db, claim, ct);
             }
 
             await CheckCancellationAsync(db, claim, ct);
@@ -357,7 +357,7 @@ public sealed class ClientReleaseImportWorker(
                 asset.UpdatedAtUtc = clock.GetUtcNow();
                 operation.UpdatedAtUtc = asset.UpdatedAtUtc;
                 await CheckCancellationAsync(db, claim, ct);
-                await db.SaveChangesAsync(ct);
+                await SaveClaimedMutationAsync(db, claim, ct);
             }
             // The terminal state is the browser's signal that every runtime can be
             // downloaded. Make the pack visible first so an observer cannot see an
@@ -486,6 +486,31 @@ public sealed class ClientReleaseImportWorker(
         operation.State = state;
         operation.UpdatedAtUtc = clock.GetUtcNow();
         await db.SaveChangesAsync(ct);
+    }
+
+    private async Task SaveClaimedMutationAsync(OrchestratorDbContext db,
+        ClientReleaseImportClaim claim, CancellationToken ct)
+    {
+        await using var transaction = await db.Database.BeginTransactionAsync(ct);
+        var now = clock.GetUtcNow();
+        var fenced = await db.ClientReleaseImportOperations
+            .Where(x => x.Id == claim.OperationId &&
+                x.LeaseOwner == claim.LeaseOwner &&
+                x.LeaseGeneration == claim.LeaseGeneration &&
+                x.LeaseUntilUtc > now &&
+                !x.CancellationRequested &&
+                x.State >= ClientReleaseImportState.Resolving &&
+                x.State <= ClientReleaseImportState.Importing)
+            // The self-assignment is intentional. ExecuteUpdate emits a real
+            // parent UPDATE and obtains its row lock even when the pending
+            // mutation contains only dependent asset changes.
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(x => x.UpdatedAtUtc, x => x.UpdatedAtUtc), ct);
+        if (fenced != 1)
+            throw new InvalidOperationException("Client release import lease was lost before persisting asset changes.");
+
+        await db.SaveChangesAsync(ct);
+        await transaction.CommitAsync(ct);
     }
 
     private async Task CheckCancellationAsync(OrchestratorDbContext db,

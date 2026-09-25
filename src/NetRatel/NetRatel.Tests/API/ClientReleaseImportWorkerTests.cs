@@ -1,5 +1,6 @@
 using System.IO.Compression;
 using System.Collections.Concurrent;
+using System.Data.Common;
 using System.Diagnostics;
 using System.Net;
 using System.Security.Cryptography;
@@ -9,6 +10,7 @@ using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.FileProviders;
@@ -344,19 +346,24 @@ public sealed class ClientReleaseImportWorkerTests : IAsyncLifetime
     }
 
     [Fact]
+    [Trait("category", "f113-r1b")]
     public async Task ExpiredWorkerCannotOverwriteSuccessorAfterLeaseGenerationTakeover()
     {
         var fixture = CreateFixture(corruptSecondRuntime: false);
         var clock = new AdjustableTimeProvider(DateTimeOffset.UtcNow);
-        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var resumed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var paused = 0;
+        var fence = new ImportOwnershipFenceInterceptor();
         await using var services = new ServiceCollection()
             .AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Warning))
-            .AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(_postgres.GetConnectionString()))
+            .AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(_postgres.GetConnectionString())
+                .AddInterceptors(fence))
             .AddSingleton<TimeProvider>(clock)
             .AddSingleton<IGitHubClientReleaseCatalog>(new FixtureCatalog(fixture.Release, fixture.Commit))
+            .AddSingleton(new NetRatelAkkaMigrationOptions())
+            .AddSingleton<ClientUpdateCatalog>()
+            .AddSingleton<IClientUpdateCatalog>(provider => provider.GetRequiredService<ClientUpdateCatalog>())
+            .AddScoped<ClientUpdateAuthorityService>()
+            .AddScoped<ClientReleaseImportService>()
+            .AddSingleton(fence)
             .AddScoped<IClientArtifactsService, ClientArtifactsService>()
             .AddScoped<IEnrollmentCodeIssueService, EnrollmentCodeIssueService>()
             .AddSingleton<IArtifactZipInjectionService, ZipInjectionService>()
@@ -368,26 +375,18 @@ public sealed class ClientReleaseImportWorkerTests : IAsyncLifetime
             .AddSingleton<IOptions<AgentAuthOptions>>(Options.Create(new AgentAuthOptions()))
             .AddSingleton<IOptions<ClientArtifactsOptions>>(Options.Create(new ClientArtifactsOptions { StorageRoot = _storage }))
             .AddScoped<GitHubClientAssetDownloader>(_ => new GitHubClientAssetDownloader(
-                new HttpClient(new AssetHandler(fixture.Bytes, wait: async (assetId, ct) =>
-                {
-                    if (assetId != 10 || Interlocked.Exchange(ref paused, 1) != 0) return;
-                    entered.SetResult();
-                    await release.Task.WaitAsync(ct);
-                    resumed.SetResult();
-                })) { Timeout = Timeout.InfiniteTimeSpan }, new ConfigurationBuilder().Build()))
+                new HttpClient(new AssetHandler(fixture.Bytes)) { Timeout = Timeout.InfiniteTimeSpan },
+                new ConfigurationBuilder().Build()))
             .BuildServiceProvider();
 
-        var id = Guid.NewGuid();
+        Guid id;
         await using (var scope = services.CreateAsyncScope())
         {
-            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
-            db.ClientReleaseImportOperations.Add(new ClientReleaseImportOperation
-            {
-                Id = id, GitHubReleaseId = fixture.Release.Id, Tag = fixture.Release.Tag,
-                Version = fixture.Release.Version, RequestedBy = "fencing-fixture",
-                CreatedAtUtc = clock.GetUtcNow(), UpdatedAtUtc = clock.GetUtcNow()
-            });
-            await db.SaveChangesAsync();
+            var queued = await scope.ServiceProvider.GetRequiredService<ClientReleaseImportService>()
+                .QueueAsync(fixture.Release.Id, "fencing-fixture", CancellationToken.None);
+            Assert.NotNull(queued);
+            Assert.Equal(fixture.Release.TotalClientBytes, queued!.TotalBytes);
+            id = queued.Id;
         }
 
         var first = ActivatorUtilities.CreateInstance<ClientReleaseImportWorker>(services);
@@ -395,15 +394,14 @@ public sealed class ClientReleaseImportWorkerTests : IAsyncLifetime
         await first.StartAsync(CancellationToken.None);
         try
         {
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
-            await entered.Task.WaitAsync(timeout.Token);
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            await fence.FirstFenceStarted.Task.WaitAsync(timeout.Token);
             clock.Advance(TimeSpan.FromMinutes(3));
             await second.StartAsync(CancellationToken.None);
             await WaitForStateAsync(services, id, ClientReleaseImportState.Imported, timeout.Token);
 
-            release.SetResult();
-            await resumed.Task.WaitAsync(timeout.Token);
-            await Task.WhenAll(first.StopAsync(CancellationToken.None), second.StopAsync(CancellationToken.None));
+            fence.ReleaseFirstFence();
+            await fence.StaleFenceRejected.Task.WaitAsync(timeout.Token);
 
             await using var verifyScope = services.CreateAsyncScope();
             var db = verifyScope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
@@ -414,6 +412,11 @@ public sealed class ClientReleaseImportWorkerTests : IAsyncLifetime
             Assert.Null(operation.LeaseOwner);
             Assert.Equal(2, operation.Assets.Count);
             Assert.All(operation.Assets, asset => Assert.Equal(ClientReleaseImportAssetState.Imported, asset.State));
+
+            var fenceCommands = fence.Commands.Where(x => x.IsOwnershipFence).ToArray();
+            Assert.NotEmpty(fenceCommands);
+            Assert.All(fenceCommands, command => Assert.True(command.HasTransaction));
+            Assert.Contains(fence.Commands, command => command.IsAssetInsert && command.HasTransaction);
 
             var artifacts = verifyScope.ServiceProvider.GetRequiredService<IClientArtifactsService>();
             var visible = await artifacts.ListAsync(null, 0, 20, timeout.Token);
@@ -428,7 +431,7 @@ public sealed class ClientReleaseImportWorkerTests : IAsyncLifetime
         }
         finally
         {
-            release.TrySetResult();
+            fence.ReleaseFirstFence();
             await Task.WhenAll(first.StopAsync(CancellationToken.None), second.StopAsync(CancellationToken.None));
             first.Dispose();
             second.Dispose();
@@ -506,6 +509,7 @@ public sealed class ClientReleaseImportWorkerTests : IAsyncLifetime
         await using var services = new ServiceCollection()
             .AddLogging()
             .AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(_postgres.GetConnectionString()))
+            .AddSingleton<TimeProvider>(TimeProvider.System)
             .AddSingleton<IOptions<ClientArtifactsOptions>>(Options.Create(new ClientArtifactsOptions
             {
                 StorageRoot = _storage, EnableFallbackScan = false
@@ -860,6 +864,115 @@ public sealed class ClientReleaseImportWorkerTests : IAsyncLifetime
             new(Interlocked.Read(ref _utcTicks), TimeSpan.Zero);
 
         public void Advance(TimeSpan duration) => Interlocked.Add(ref _utcTicks, duration.Ticks);
+    }
+
+    private sealed class ImportOwnershipFenceInterceptor : DbCommandInterceptor
+    {
+        private readonly TaskCompletionSource _releaseFirstFence =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _pausedFirstFence;
+
+        public TaskCompletionSource<CommandObservation> FirstFenceStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource<CommandObservation> StaleFenceRejected { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public ConcurrentQueue<CommandObservation> Commands { get; } = [];
+
+        public void ReleaseFirstFence() => _releaseFirstFence.TrySetResult();
+
+        public override async ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            var observation = Observe(command);
+            if (observation.IsOwnershipFence && Interlocked.Exchange(ref _pausedFirstFence, 1) == 0)
+            {
+                FirstFenceStarted.TrySetResult(observation);
+                await _releaseFirstFence.Task.WaitAsync(cancellationToken);
+            }
+
+            return result;
+        }
+
+        public override InterceptionResult<int> NonQueryExecuting(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<int> result)
+        {
+            Observe(command);
+            return result;
+        }
+
+        public override int NonQueryExecuted(
+            DbCommand command,
+            CommandExecutedEventData eventData,
+            int result)
+        {
+            ObserveFenceOutcome(command, result);
+            return base.NonQueryExecuted(command, eventData, result);
+        }
+
+        public override ValueTask<int> NonQueryExecutedAsync(
+            DbCommand command,
+            CommandExecutedEventData eventData,
+            int result,
+            CancellationToken cancellationToken = default)
+        {
+            ObserveFenceOutcome(command, result);
+            return base.NonQueryExecutedAsync(command, eventData, result, cancellationToken);
+        }
+
+        public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<DbDataReader> result,
+            CancellationToken cancellationToken = default)
+        {
+            Observe(command);
+            return base.ReaderExecutingAsync(command, eventData, result, cancellationToken);
+        }
+
+        private CommandObservation Observe(DbCommand command)
+        {
+            var observation = new CommandObservation(
+                command.CommandText,
+                command.Transaction is not null,
+                IsOwnershipFence(command),
+                IsAssetInsert(command));
+            Commands.Enqueue(observation);
+            return observation;
+        }
+
+        private void ObserveFenceOutcome(DbCommand command, int result)
+        {
+            if (result == 0 && IsOwnershipFence(command))
+            {
+                StaleFenceRejected.TrySetResult(new CommandObservation(
+                    command.CommandText,
+                    command.Transaction is not null,
+                    true,
+                    false));
+            }
+        }
+
+        private static bool IsOwnershipFence(DbCommand command) =>
+            command.CommandText.TrimStart().StartsWith("UPDATE", StringComparison.OrdinalIgnoreCase) &&
+            command.CommandText.Contains("ClientReleaseImportOperations", StringComparison.Ordinal) &&
+            command.CommandText.Split("\"UpdatedAtUtc\"", StringSplitOptions.None).Length > 2;
+
+        private static bool IsAssetInsert(DbCommand command) =>
+            command.CommandText.Contains("ClientReleaseImportAssets", StringComparison.Ordinal) &&
+            command.CommandText.Contains("INSERT", StringComparison.OrdinalIgnoreCase);
+
+        public sealed record CommandObservation(
+            string Text,
+            bool HasTransaction,
+            bool IsOwnershipFence,
+            bool IsAssetInsert);
     }
 
     private sealed class RecordingArtifactStore : IClientArtifactsService

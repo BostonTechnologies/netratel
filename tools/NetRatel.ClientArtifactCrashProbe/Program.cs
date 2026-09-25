@@ -47,6 +47,7 @@ var options = Options.Create(new ClientArtifactsOptions
 await using var services = new ServiceCollection()
     .AddLogging()
     .AddDbContext<OrchestratorDbContext>(builder => builder.UseNpgsql(connectionString))
+    .AddSingleton<TimeProvider>(TimeProvider.System)
     .AddSingleton<IOptions<ClientArtifactsOptions>>(options)
     .AddSingleton<IWebHostEnvironment>(new ProbeEnvironment(storageRoot))
     .AddSingleton<IConfiguration>(new ConfigurationBuilder().Build())
