@@ -15,6 +15,7 @@ legacy_version="${NETRATEL_UPGRADE_PRIOR_VERSION:?set NETRATEL_UPGRADE_PRIOR_VER
 current_api_image="${NETRATEL_UPGRADE_CURRENT_API_IMAGE:?set NETRATEL_UPGRADE_CURRENT_API_IMAGE}"
 current_migrations_image="${NETRATEL_UPGRADE_CURRENT_MIGRATIONS_IMAGE:?set NETRATEL_UPGRADE_CURRENT_MIGRATIONS_IMAGE}"
 current_web_image="${NETRATEL_UPGRADE_CURRENT_WEB_IMAGE:?set NETRATEL_UPGRADE_CURRENT_WEB_IMAGE}"
+candidate_client_archive="${NETRATEL_UPGRADE_CURRENT_CLIENT_ARCHIVE:?set NETRATEL_UPGRADE_CURRENT_CLIENT_ARCHIVE}"
 bundle="${NETRATEL_UPGRADE_COMPOSE_BUNDLE:?set NETRATEL_UPGRADE_COMPOSE_BUNDLE}"
 bundle_extract_directory="$(mktemp -d)"
 agent_key_path="$(mktemp)"
@@ -29,8 +30,14 @@ client_volume="${project}-client-state"
 native_directory="$(mktemp -d)"
 native_user_created=false
 native_image_container=""
+upgrade_tenant_id=""
+upgrade_machine_identity=""
+client_unit="netratel-client.service"
+updater_unit="netratel-update.service"
+native_services_installed=false
 
 [[ -s "$bundle" ]] || { echo "NETRATEL_UPGRADE_COMPOSE_BUNDLE is missing: $bundle" >&2; exit 1; }
+[[ -s "$candidate_client_archive" ]] || { echo "The candidate Linux Client archive is missing." >&2; exit 1; }
 tar -xzf "$bundle" -C "$bundle_extract_directory"
 [[ -f "$bundle_extract_directory/compose.images.yaml" ]] || { echo "The extracted release bundle is missing compose.images.yaml." >&2; exit 1; }
 
@@ -39,6 +46,13 @@ current_compose=(docker compose --project-name "$project" -f "$bundle_extract_di
 
 cleanup() {
   local status=$?
+  if [[ "$native_services_installed" == true ]]; then
+    sudo systemctl stop "$client_unit" "$updater_unit" >/dev/null 2>&1 || true
+    sudo unlink "/etc/systemd/system/$client_unit" >/dev/null 2>&1 || true
+    sudo unlink "/etc/systemd/system/$updater_unit" >/dev/null 2>&1 || true
+    sudo systemctl daemon-reload >/dev/null 2>&1 || true
+    sudo systemctl reset-failed "$client_unit" "$updater_unit" >/dev/null 2>&1 || true
+  fi
   if (( status != 0 )); then
     echo "::error title=PostgreSQL/OIDC upgrade smoke failed::${stage}" >&2
     if (( ${#active_compose[@]} > 0 )); then
@@ -192,6 +206,7 @@ enroll_legacy_client() {
     echo "Published ${legacy_version} OIDC authority could not create the historical tenant." >&2
     return 1
   }
+  upgrade_tenant_id="$tenant_id"
   enrollment_response="$(curl --silent --show-error --fail \
     --header "Authorization: Bearer ${access_token}" --header 'Content-Type: application/json' \
     --data '{"validForMinutes":5,"maxUses":1,"note":"Disposable prior-release PostgreSQL/OIDC upgrade enrollment"}' \
@@ -271,6 +286,7 @@ PY
     echo "The persisted client machine identity is empty." >&2
     return 1
   }
+  upgrade_machine_identity="$machine_identity"
   if sudo -u netratel env HOME=/var/lib/netratel \
       NETRATEL_POWERSHELL_HOME=/var/lib/netratel/powershell \
       "NetRatel_CREDENTIAL_MACHINE_ID=${machine_identity}" \
@@ -302,6 +318,204 @@ PY
   fi
 }
 
+exercise_server_offered_client_update() {
+  local version access_token agents prior_agent_id tenant_response update_request release_response
+  local client_root updater_path candidate_zip attempt_response attempt_id attempt_state attempt_detail
+  version="$(python3 tools/ci/product-version.py)"
+  access_token="$(request_operator_access_token)"
+  agents="$(curl --silent --show-error --fail \
+    --header "Authorization: Bearer ${access_token}" \
+    "${api_url}/api/v1/tenants/${upgrade_tenant_id}/agents")"
+  [[ "$(jq -r '.total' <<<"$agents")" == 1 ]] || {
+    echo "The published client did not retain exactly one enrolled agent before update." >&2
+    return 1
+  }
+  prior_agent_id="$(jq -r '.items[0].agentId // empty' <<<"$agents")"
+  [[ "$prior_agent_id" =~ ^[0-9a-fA-F-]{36}$ ]] || {
+    echo "The published client agent identity is missing before update." >&2
+    return 1
+  }
+
+  (
+    cd "$(dirname "$candidate_client_archive")"
+    sha256sum --check --status SHA256SUMS
+  ) || { echo "The candidate Client archive checksum is invalid." >&2; return 1; }
+  candidate_zip="$native_directory/candidate-update.zip"
+  python3 - "$candidate_client_archive" "$candidate_zip" <<'PY'
+import pathlib, shutil, stat, sys, tarfile, zipfile
+
+source, target = sys.argv[1:]
+prefix = "netratel-client-linux-x64"
+seen = set()
+with tarfile.open(source, "r:gz") as archive, zipfile.ZipFile(target, "w") as output:
+    for entry in archive:
+        parts = pathlib.PurePosixPath(entry.name).parts
+        if len(parts) < 2 or parts[0] != prefix or ".." in parts:
+            raise SystemExit("Candidate Client archive contains an unsafe path.")
+        if entry.isdir():
+            continue
+        if not entry.isfile():
+            raise SystemExit("Candidate Client archive contains an unsupported entry.")
+        name = "/".join(parts[1:])
+        if name in seen:
+            raise SystemExit("Candidate Client archive contains a duplicate entry.")
+        seen.add(name)
+        info = zipfile.ZipInfo(name, (1980, 1, 1, 0, 0, 0))
+        info.create_system = 3
+        info.external_attr = (stat.S_IFREG | (entry.mode & 0o777)) << 16
+        info.compress_type = zipfile.ZIP_DEFLATED
+        with archive.extractfile(entry) as item, output.open(info, "w") as destination:
+            shutil.copyfileobj(item, destination)
+if "netratel-client-manifest.json" not in seen or "NetRatel.Client" not in seen:
+    raise SystemExit("Candidate Client archive is missing its update manifest or executable.")
+PY
+
+  client_root="$native_directory/client-root"
+  updater_path="$client_root/updater/netratel-update.sh"
+  mkdir -p "$client_root/updater" "$client_root/versions"
+  [[ -s "$native_directory/app/updater/netratel-update.sh" ]] || {
+    echo "The published Client image is missing its installed Linux updater." >&2
+    return 1
+  }
+  install -m 0755 "$native_directory/app/updater/netratel-update.sh" "$updater_path"
+  tar -xOzf "$candidate_client_archive" netratel-client-linux-x64/updater/netratel-update.sh \
+    > "$client_root/updater/.netratel-update.sh.replacement"
+  chmod 0755 "$client_root/updater/.netratel-update.sh.replacement"
+  mv -f "$client_root/updater/.netratel-update.sh.replacement" "$updater_path"
+  ln -s "$native_directory/app" "$client_root/current"
+  [[ ! -e "/etc/systemd/system/$client_unit" && ! -L "/etc/systemd/system/$client_unit" &&
+     ! -e "/etc/systemd/system/$updater_unit" && ! -L "/etc/systemd/system/$updater_unit" ]] &&
+    ! systemctl cat "$client_unit" >/dev/null 2>&1 &&
+    ! systemctl cat "$updater_unit" >/dev/null 2>&1 || {
+    echo "The disposable runner already has a NetRatel service unit." >&2
+    return 1
+  }
+  native_services_installed=true
+  sudo tee "/etc/systemd/system/$client_unit" >/dev/null <<UNIT
+[Unit]
+Description=Disposable NetRatel published Client upgrade smoke
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=$client_root/current
+ExecStart=$client_root/current/NetRatel.Client --service --api $api_url
+Restart=always
+RestartSec=2
+Environment=HOME=/var/lib/netratel
+Environment=NETRATEL_POWERSHELL_HOME=/var/lib/netratel/powershell
+Environment=DOTNET_ENVIRONMENT=Production
+Environment=DOTNET_BUNDLE_EXTRACT_BASE_DIR=$native_directory/bundle
+Environment=NetRatel_CREDENTIAL_MACHINE_ID=$upgrade_machine_identity
+Environment=NetRatel_CLIENT_LOG_DIR=$native_directory/logs
+Environment=NetRatelCLIENT__Client__ApiBaseUrl=$api_url
+Environment=NetRatelCLIENT__Client__AutoUpdate__Mode=Service
+Environment=NetRatelCLIENT__Client__AutoUpdate__Channel=Prerelease
+Environment=NetRatelCLIENT__Transport__Mode=AkkaPresence
+Environment=NetRatelCLIENT__Gateway__Endpoint=https://127.0.0.1:$NETRATEL_GATEWAY_TEST_PORT
+Environment=NetRatelCLIENT__Gateway__RequiredPresenceAuthority=akka
+Environment=SSL_CERT_FILE=$tls_certificate_path
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+  sudo tee "/etc/systemd/system/$updater_unit" >/dev/null <<UNIT
+[Unit]
+Description=Disposable NetRatel Client updater smoke
+
+[Service]
+Type=oneshot
+TimeoutStartSec=240
+ExecStart=$updater_path
+Environment=NetRatel_UPDATE_ROOT=$client_root
+Environment=NetRatel_UPDATE_STATE=/var/lib/netratel/update
+Environment=NetRatel_CLIENT_SERVICE=$client_unit
+UNIT
+  sudo systemctl daemon-reload
+  sudo systemctl start "$client_unit"
+  sudo systemctl is-active --quiet "$client_unit" || {
+    echo "The published native Client service did not start." >&2
+    return 1
+  }
+
+  upload_response="$(curl --silent --show-error --fail-with-body --max-time 300 \
+    --header "Authorization: Bearer ${access_token}" \
+    --form rid=linux-x64 --form "version=${version}" \
+    --form "file=@${candidate_zip};type=application/zip" \
+    "${api_url}/api/v1/client-artifacts/upload")"
+  [[ "$(jq -r '.artifact.version // empty' <<<"$upload_response")" == "$version" ]] || {
+    echo "The candidate Client package was not stored and published." >&2
+    return 1
+  }
+  release_response="$(curl --silent --show-error --fail \
+    --header "Authorization: Bearer ${access_token}" \
+    "${api_url}/api/v1/client-updates/releases?runtimeId=linux-x64")"
+  jq -e --arg version "$version" \
+    'any(.[]; .version == $version and .channel == "prerelease" and .enabled == true)' \
+    <<<"$release_response" >/dev/null || {
+      echo "The explicitly uploaded candidate is not a published prerelease update." >&2
+      return 1
+    }
+  tenant_response="$(curl --silent --show-error --fail \
+    --header "Authorization: Bearer ${access_token}" \
+    "${api_url}/api/v1/tenants/${upgrade_tenant_id}")"
+  update_request="$(jq --arg version "$version" \
+    '{name,description,location,domains,contactPerson,contactEmail,
+      autoUpdate:true,autoUpdateChannel:"prerelease",autoUpdateTargetVersion:$version}' \
+    <<<"$tenant_response")"
+  curl --silent --show-error --fail-with-body --request PUT \
+    --header "Authorization: Bearer ${access_token}" --header 'Content-Type: application/json' \
+    --data "$update_request" "${api_url}/api/v1/tenants/${upgrade_tenant_id}" >/dev/null
+
+  attempt_id=""
+  for _ in $(seq 1 150); do
+    attempt_response="$(curl --silent --show-error --fail \
+      --header "Authorization: Bearer ${access_token}" \
+      "${api_url}/api/v1/client-updates/attempts?clientIdentity=${prior_agent_id}")"
+    attempt_id="$(jq -r --arg version "$version" --argjson tenant "$upgrade_tenant_id" \
+      '[.[] | select(.version == $version and .tenantId == $tenant)] | first | .attemptId // empty' \
+      <<<"$attempt_response")"
+    attempt_state="$(jq -r --arg version "$version" --argjson tenant "$upgrade_tenant_id" \
+      '[.[] | select(.version == $version and .tenantId == $tenant)] | first | .status // empty' \
+      <<<"$attempt_response")"
+    if [[ "$attempt_state" == Accepted ]]; then break; fi
+    if [[ "$attempt_state" == FailedPreActivation || "$attempt_state" == RolledBack ||
+          "$attempt_state" == RollbackUnverified ]]; then
+      echo "The published Client update attempt ended in $attempt_state." >&2
+      return 1
+    fi
+    sleep 2
+  done
+  [[ "$attempt_state" == Accepted && -n "$attempt_id" ]] || {
+    echo "The published Client did not accept the server-offered candidate within five minutes." >&2
+    return 1
+  }
+  attempt_detail="$(curl --silent --show-error --fail \
+    --header "Authorization: Bearer ${access_token}" \
+    "${api_url}/api/v1/client-updates/attempts/${attempt_id}")"
+  jq -e --arg version "$version" --arg agent "$prior_agent_id" \
+    --argjson tenant "$upgrade_tenant_id" \
+    '.state == "Accepted" and .targetVersion == $version and .agentId == $agent and
+      .tenantId == $tenant and .readmittedAtUtc != null and .confirmedAtUtc != null' \
+    <<<"$attempt_detail" >/dev/null || {
+      echo "The update attempt lacks same-agent readmission and confirmation." >&2
+      return 1
+    }
+  [[ "$(readlink -f "$client_root/current")" == "$client_root/versions/$version" ]] || {
+    echo "The accepted update did not activate the candidate Client package." >&2
+    return 1
+  }
+  agents="$(curl --silent --show-error --fail \
+    --header "Authorization: Bearer ${access_token}" \
+    "${api_url}/api/v1/tenants/${upgrade_tenant_id}/agents")"
+  [[ "$(jq -r '.total' <<<"$agents")" == 1 &&
+     "$(jq -r '.items[0].agentId' <<<"$agents")" == "$prior_agent_id" ]] || {
+    echo "The accepted update changed the enrolled agent identity or tenant scope." >&2
+    return 1
+  }
+  echo "Published ${legacy_version} Client accepted the server-offered ${version} update with its original tenant and agent identity."
+}
+
 export POSTGRES_PASSWORD=synthetic-postgresql-oidc-upgrade-postgres-password
 export OIDC_AUTHORITY=https://issuer.example.invalid
 export OIDC_CLIENT_ID=synthetic-postgresql-oidc-upgrade-client
@@ -312,6 +526,7 @@ export OIDC_ADMIN_GROUP_ID=synthetic-postgresql-oidc-upgrade-group
 export OIDC_CLIENT_SECRET=synthetic-postgresql-oidc-upgrade-oidc-secret
 export NETRATEL_WEB_PORT="${NETRATEL_UPGRADE_OIDC_WEB_PORT:-18084}"
 export NETRATEL_OIDC_TEST_PORT="${NETRATEL_UPGRADE_OIDC_PORT:-18085}"
+export NETRATEL_GATEWAY_TEST_PORT="${NETRATEL_UPGRADE_GATEWAY_PORT:-19443}"
 export NETRATEL_AGENT_AUTH_PRIVATE_KEY="$agent_key_path"
 export NETRATEL_SMOKE_TLS_CERT_PASSWORD=synthetic-postgresql-oidc-upgrade-certificate-password
 export NETRATEL_GATEWAY_PROXY_CONFIG_PATH="$root/tests/compose/gateway-proxy.nginx.conf"
@@ -325,6 +540,7 @@ oidc_resolve="host.docker.internal:${NETRATEL_OIDC_TEST_PORT}:127.0.0.1"
 
 openssl ecparam -name prime256v1 -genkey -noout -out "$agent_key_path"
 openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=gateway' \
+  -addext 'subjectAltName=DNS:gateway,DNS:localhost,IP:127.0.0.1' \
   -keyout "$tls_key_path" -out "$tls_certificate_path" >/dev/null 2>&1
 openssl pkcs12 -export -out "$tls_bundle_path" -inkey "$tls_key_path" -in "$tls_certificate_path" \
   -passout "pass:${NETRATEL_SMOKE_TLS_CERT_PASSWORD}" >/dev/null 2>&1
@@ -369,4 +585,6 @@ stage="authenticating the persisted published ${legacy_version} Client against c
 verify_legacy_client_after_upgrade
 stage="authenticating the published ${legacy_version} Client natively with its persisted identity"
 verify_native_legacy_client_after_upgrade
+stage="updating the enrolled published Client through the established native updater"
+exercise_server_offered_client_update
 echo "Published ${legacy_version} PostgreSQL/OIDC and persisted Client authentication continuity passed."

@@ -512,7 +512,7 @@ jobs:
 
   postgresql-release-upgrade:
     name: PostgreSQL previous-release upgrade (${{ matrix.authentication }})
-    needs: review-artifacts
+    needs: [review-artifacts, client-packages]
     runs-on: ubuntu-latest
     timeout-minutes: 55
     strategy:
@@ -528,6 +528,11 @@ jobs:
         with:
           name: pr-netratel-cli-mcp-linux-x64
           path: review-artifacts
+      - if: matrix.authentication == 'oidc'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: pr-netratel-client-linux-x64
+          path: client-artifacts
       - run: |
           version="$(python3 tools/ci/product-version.py)"
           for component in migrations api web; do
@@ -547,6 +552,7 @@ jobs:
             export NETRATEL_UPGRADE_CURRENT_CLI_ARCHIVE="review-artifacts/netratel-cli-${version}-linux-x64.tar.gz"
             tools/ci/smoke-postgresql-local-upgrade.sh
           else
+            export NETRATEL_UPGRADE_CURRENT_CLIENT_ARCHIVE="client-artifacts/netratel-client-${version}-linux-x64.tar.gz"
             tools/ci/smoke-postgresql-oidc-upgrade.sh
           fi
 
