@@ -3,7 +3,9 @@ using System.Formats.Tar;
 using System.IO.Compression;
 using System.Reflection;
 using System.Text.Json;
+using Microsoft.Extensions.Configuration;
 using NetRatel.API.Services;
+using NetRatel.Client;
 using Xunit;
 
 namespace NetRatel.Tests.Client;
@@ -108,7 +110,7 @@ public sealed class PublishedPreviousLinuxUpdaterTests
             Assert.Equal(identity, await File.ReadAllTextAsync(identityPath, TestContext.Current.CancellationToken));
             Console.WriteLine($"Verified repair passed the {candidateVersion} version gate.");
             await ActivateCandidateArchiveAsync(verifiedCandidateArchive, root, state, requestPath,
-                installedUpdater, previousVersion, candidateVersion, attemptId, releaseId);
+                installedUpdater, previousVersion, candidateVersion, attemptId, releaseId, identity);
             Assert.Equal(identity, await File.ReadAllTextAsync(identityPath, TestContext.Current.CancellationToken));
             Console.WriteLine($"Candidate {candidateVersion} Linux archive activated from published {previousVersion} state.");
         }
@@ -139,7 +141,7 @@ public sealed class PublishedPreviousLinuxUpdaterTests
 
     private static async Task ActivateCandidateArchiveAsync(
         string candidateArchive, string root, string state, string requestPath, string installedUpdater,
-        string previousVersion, string candidateVersion, Guid attemptId, Guid releaseId)
+        string previousVersion, string candidateVersion, Guid attemptId, Guid releaseId, string expectedIdentity)
     {
         if (!OperatingSystem.IsLinux()) throw new PlatformNotSupportedException();
 
@@ -199,6 +201,26 @@ public sealed class PublishedPreviousLinuxUpdaterTests
         Assert.True(File.Exists(Path.Combine(root, "versions", candidateVersion, "NetRatel.Client")));
         Assert.True((File.GetUnixFileMode(Path.Combine(root, "versions", candidateVersion)) &
             UnixFileMode.OtherExecute) != 0, "a nonroot Client service must be able to traverse the activated package");
+
+        // The updater has now switched the real active target to a candidate archive
+        // containing the shipped placeholder appsettings.json. Load that activated
+        // package through the same startup seam with the explicit service URL that the
+        // installer writes, and verify that the durable installation identity was not
+        // replaced by activation.
+        var activatedOptions = ClientConfigurationLoader.Load(
+            ClientConfigurationLoader.BuildPackagedDefaults(
+                Path.Combine(root, "versions", candidateVersion), environmentName: null),
+            new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["Client:ApiBaseUrl"] = "https://configured-instance.example.invalid"
+                })
+                .Build(),
+            Path.Combine(root, "versions", candidateVersion),
+            []);
+        Assert.Equal("https://configured-instance.example.invalid", activatedOptions.ApiBaseUrl);
+        Assert.Equal(expectedIdentity, await File.ReadAllTextAsync(
+            Path.Combine(root, "agent.dat"), TestContext.Current.CancellationToken));
     }
 
     private static async Task ExtractArchiveFileAsync(string archivePath, string destination, string entrySuffix)

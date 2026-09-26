@@ -7,6 +7,9 @@
 <MudDialog>
     <DialogContent>
         <MudForm @ref="_form" Class="d-flex flex-column gap-4">
+            <MudAlert Severity="Severity.Warning" Dense="true" data-testid="legacy-upload-consequence">
+                Legacy uploads are published immediately after manifest validation. They do not wait for the GitHub verification or saved automation policy; use the GitHub import flow when approval is required.
+            </MudAlert>
             <div data-testid="upload-runtime-selector">
                 <MudSelect @bind-Value="_rid"
                            Label="Runtime Identifier"

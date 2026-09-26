@@ -177,7 +177,9 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             requireInput: false);
 
         await VerifyDeploymentBrandingAsync(page, webUrl);
-        if (Environment.GetEnvironmentVariable("NETRATEL_LOCAL_FIRST_NATIVE_INSTALL") == "true")
+        if (Environment.GetEnvironmentVariable("NETRATEL_LOCAL_FIRST_WINDOWS_INSTALL") == "true")
+            await VerifyWindowsCandidateInstallAsync(browser, page, webUrl);
+        else if (Environment.GetEnvironmentVariable("NETRATEL_LOCAL_FIRST_NATIVE_INSTALL") == "true")
             await VerifyPublishedClientInstallAsync(browser, page, webUrl);
         else
             await VerifyDeploymentLinkJourneyAsync(browser, page, webUrl);
@@ -481,6 +483,265 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             }
         }
         await dialog.GetByRole(AriaRole.Button, new() { Name = "Close", Exact = true }).ClickAsync();
+    }
+
+    private static async Task VerifyWindowsCandidateInstallAsync(IBrowser browser, IPage page, Uri webUrl)
+    {
+        if (!OperatingSystem.IsWindows())
+            throw new InvalidOperationException("The Windows native acceptance must run on a Windows host.");
+
+        var archive = RequireValue("NETRATEL_LOCAL_FIRST_WINDOWS_CLIENT_ARCHIVE");
+        var packageDirectory = RequireValue("NETRATEL_LOCAL_FIRST_WINDOWS_CLIENT_DIRECTORY");
+        var manifestPath = Path.Combine(packageDirectory, "netratel-client-manifest.json");
+        Assert.True(File.Exists(archive), "The final Windows candidate archive is missing.");
+        Assert.True(File.Exists(manifestPath), "The final Windows candidate manifest is missing.");
+        using var manifest = System.Text.Json.JsonDocument.Parse(await File.ReadAllTextAsync(manifestPath));
+        var version = manifest.RootElement.GetProperty("version").GetString()!;
+        Assert.Equal("win-x64", manifest.RootElement.GetProperty("runtimeId").GetString());
+
+        await RemoveWindowsAcceptanceServiceArtifactsAsync();
+        await page.GotoAsync(new Uri(webUrl, "clients/mgmt").ToString(),
+            new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await page.GetByTestId("clients-mgmt-interactive").WaitForAsync(new LocatorWaitForOptions
+        {
+            State = WaitForSelectorState.Attached
+        });
+        await page.GetByRole(AriaRole.Button, new() { Name = "Advanced: upload artifact" }).ClickAsync();
+        await page.GetByRole(AriaRole.Menuitem, new() { Name = "Upload legacy artifact" }).ClickAsync();
+        var uploadDialog = page.Locator(".mud-dialog:visible").Filter(new() { HasText = "Runtime Identifier" }).Last;
+        await uploadDialog.GetByRole(AriaRole.Textbox, new() { Name = "Version" }).FillAsync(version);
+        await uploadDialog.Locator("input[type=file]").SetInputFilesAsync(archive);
+        await uploadDialog.GetByRole(AriaRole.Button, new() { Name = "Upload", Exact = true }).ClickAsync();
+        await page.WaitForFunctionAsync("""
+            () => {
+                const dialog = document.querySelector('.mud-dialog');
+                return !dialog || dialog.getClientRects().length === 0 || !!dialog.querySelector('.mud-alert-error');
+            }
+            """);
+        var uploadError = uploadDialog.Locator(".mud-alert-error");
+        if (await uploadError.CountAsync() > 0)
+            Assert.Fail("The final Windows candidate upload was rejected by the management API.");
+        await uploadDialog.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Hidden });
+
+        await page.GetByRole(AriaRole.Tab, new() { Name = "Packages" }).ClickAsync();
+        var artifact = page.GetByTestId("artifact-table").GetByRole(AriaRole.Row)
+            .Filter(new() { HasText = version }).Filter(new() { HasText = "win-x64" });
+        await artifact.WaitForAsync(new LocatorWaitForOptions { Timeout = 60_000 });
+        await artifact.GetByRole(AriaRole.Button).Last.ClickAsync();
+        await page.GetByRole(AriaRole.Menuitem, new() { Name = "Generate script" }).ClickAsync();
+        var dialog = page.GetByLabel("Generate deployment script");
+        Assert.True(await dialog.GetByRole(AriaRole.Checkbox, new() { Name = "Install as Service" }).IsCheckedAsync());
+        await dialog.GetByRole(AriaRole.Button, new() { Name = "Generate link" }).ClickAsync();
+        await page.GetByText("Generated install link", new() { Exact = true }).WaitForAsync();
+
+        var publicUrl = await dialog.GetByRole(AriaRole.Textbox, new() { Name = "Public script URL" }).InputValueAsync();
+        var command = await dialog.GetByRole(AriaRole.Textbox, new() { Name = "Install command" }).InputValueAsync();
+        Assert.StartsWith(InstallLinkPublicOrigin() + "/clients/install/", publicUrl);
+        Assert.Contains("Invoke-WebRequest", command);
+        Assert.Contains(publicUrl, command);
+
+        await using var anonymous = await browser.NewContextAsync(new BrowserNewContextOptions
+        {
+            IgnoreHTTPSErrors = IgnoreSyntheticHttpsErrors
+        });
+        var routedUrl = new Uri(webUrl, new Uri(publicUrl).PathAndQuery).ToString();
+        var fetchedScript = await anonymous.APIRequest.GetAsync(routedUrl);
+        Assert.True(fetchedScript.Ok, "The generated Windows install link must be reachable without a browser session.");
+        Assert.Contains("New-Service", await fetchedScript.TextAsync());
+
+        var root = Path.Combine(Path.GetTempPath(), "netratel-windows-public-install-" + Guid.NewGuid().ToString("N"));
+        var installRoot = Path.Combine(root, "client");
+        var stateRoot = Path.Combine(root, "state");
+        var logRoot = Path.Combine(root, "logs");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var install = await RunPowerShellAsync(
+                ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command],
+                new Dictionary<string, string>
+                {
+                    ["NetRatel_ROOT"] = installRoot,
+                    ["NetRatel_STATE"] = stateRoot,
+                    ["NetRatel_LOG_DIR"] = logRoot,
+                    ["TEMP"] = root,
+                    ["TMP"] = root
+                },
+                TimeSpan.FromMinutes(5));
+            Assert.True(install.ExitCode == 0, "The supported Windows install command did not complete.");
+
+            var serviceState = await RunPowerShellAsync(
+                ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "(Get-Service -Name 'NetRatel.Client').Status.ToString()"],
+                timeout: TimeSpan.FromSeconds(30));
+            Assert.Equal(0, serviceState.ExitCode);
+            Assert.Equal("Running", serviceState.Output.Trim());
+
+            var installedExecutable = Path.Combine(installRoot, "versions", version, "NetRatel.Client.exe");
+            Assert.True(File.Exists(installedExecutable));
+            Assert.False(File.Exists(Path.Combine(Path.GetDirectoryName(installedExecutable)!, "netratel.enroll.json")),
+                "The one-time enrollment payload must be consumed before the service is accepted.");
+
+            // Leave a stale legacy value in the actual installed package. The
+            // service environment written by the supported installer must retain
+            // the public URL after the next process restart.
+            await File.WriteAllTextAsync(
+                Path.Combine(Path.GetDirectoryName(installedExecutable)!, "clientsettings.json"),
+                "{\"apiBaseUrl\":\"https://stale.invalid\"}");
+
+            var presence = await WaitForWindowsGatewayPresenceAsync(page, TimeSpan.FromMinutes(2));
+            Assert.False(string.IsNullOrWhiteSpace(presence.AgentId));
+            Assert.Equal(1, presence.TenantId);
+            Assert.True(presence.IsAuthoritative);
+            var serviceLog = await WaitForWindowsServiceLogAsync(
+                logRoot,
+                ["[Auth] Access token acquired", "Presence admitted. authority=akka"],
+                TimeSpan.FromSeconds(30));
+            Assert.Contains("[Auth] Access token acquired", serviceLog);
+            Assert.Contains("Presence admitted. authority=akka", serviceLog);
+
+            var serviceEnvironment = await ReadWindowsServiceEnvironmentAsync();
+            Assert.Contains($"NetRatelCLIENT__Client__ApiBaseUrl={InstallLinkPublicOrigin()}", serviceEnvironment);
+            Assert.Contains($"NetRatelCLIENT__Gateway__Endpoint={InstallLinkPublicOrigin()}", serviceEnvironment);
+
+            var restart = await RunPowerShellAsync(
+                ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "Restart-Service -Name 'NetRatel.Client' -Force"],
+                timeout: TimeSpan.FromSeconds(30));
+            Assert.Equal(0, restart.ExitCode);
+
+            var afterRestart = await WaitForWindowsGatewayPresenceAsync(page, TimeSpan.FromMinutes(2));
+            Assert.Equal(presence.AgentId, afterRestart.AgentId);
+            Assert.Equal(presence.TenantId, afterRestart.TenantId);
+            Assert.True(afterRestart.IsAuthoritative);
+            var restartedLog = await WaitForWindowsServiceLogAsync(
+                logRoot,
+                ["[Auth] Access token acquired", "Presence admitted. authority=akka"],
+                TimeSpan.FromSeconds(30));
+            Assert.True(
+                restartedLog.Split("Presence admitted. authority=akka", StringSplitOptions.None).Length >= 3,
+                "The service restart must produce a second admitted gateway session.");
+            Assert.Contains($"NetRatelCLIENT__Client__ApiBaseUrl={InstallLinkPublicOrigin()}",
+                await ReadWindowsServiceEnvironmentAsync());
+
+            await dialog.GetByRole(AriaRole.Button, new() { Name = "Refresh status" }).ClickAsync();
+            await page.GetByText("0 of 1 enrollments remain.", new() { Exact = false })
+                .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        }
+        finally
+        {
+            await RemoveWindowsAcceptanceServiceArtifactsAsync();
+            if (Directory.Exists(root))
+                Directory.Delete(root, recursive: true);
+        }
+
+        await dialog.GetByRole(AriaRole.Button, new() { Name = "Close", Exact = true }).ClickAsync();
+    }
+
+    private sealed record PowerShellResult(int ExitCode, string Output, string Error);
+
+    private sealed record WindowsPresence(int TenantId, string AgentId, bool IsAuthoritative);
+
+    private static async Task<WindowsPresence> WaitForWindowsGatewayPresenceAsync(IPage page, TimeSpan timeout)
+    {
+        var json = await page.WaitForFunctionAsync("""
+            async () => {
+                const response = await fetch('/api/v2/client-presence/?tenantId=1&online=true');
+                if (!response.ok) return null;
+                const payload = await response.json();
+                const item = payload.items?.find(item => item.online === true && item.isAuthoritative === true && item.authority === 'akka');
+                return item ? { tenantId: item.tenantId, agentId: item.agentId, isAuthoritative: item.isAuthoritative } : null;
+            }
+            """, null, new PageWaitForFunctionOptions { Timeout = (float)timeout.TotalMilliseconds });
+        var result = await json.JsonValueAsync<System.Text.Json.JsonElement>();
+        var document = System.Text.Json.JsonDocument.Parse(result.GetRawText());
+        return new WindowsPresence(
+            document.RootElement.GetProperty("tenantId").GetInt32(),
+            document.RootElement.GetProperty("agentId").GetString()!,
+            document.RootElement.GetProperty("isAuthoritative").GetBoolean());
+    }
+
+    private static async Task<string> ReadWindowsServiceEnvironmentAsync()
+    {
+        var result = await RunPowerShellAsync(
+            ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+                "((Get-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\NetRatel.Client' -Name Environment).Environment -join \"`n\")"],
+            timeout: TimeSpan.FromSeconds(30));
+        Assert.Equal(0, result.ExitCode);
+        return result.Output;
+    }
+
+    private static async Task<string> WaitForWindowsServiceLogAsync(
+        string logDirectory, IReadOnlyList<string> markers, TimeSpan timeout)
+    {
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        using var pollTimer = new PeriodicTimer(TimeSpan.FromMilliseconds(250));
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            if (Directory.Exists(logDirectory))
+            {
+                var content = string.Join(
+                    Environment.NewLine,
+                    Directory.EnumerateFiles(logDirectory, "*.log", SearchOption.TopDirectoryOnly)
+                        .Select(File.ReadAllText));
+                if (markers.All(content.Contains)) return content;
+            }
+
+            await pollTimer.WaitForNextTickAsync();
+        }
+
+        throw new TimeoutException("The Windows service did not emit the expected redacted authentication and gateway readiness markers.");
+    }
+
+    private static async Task RemoveWindowsAcceptanceServiceArtifactsAsync()
+    {
+        var credentialPath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "NetRatel", "agent.dat");
+        await RunPowerShellAsync(
+            ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", $$"""
+                foreach ($name in @('NetRatel.Client', 'NetRatel.Update')) {
+                    $service = Get-Service -Name $name -ErrorAction SilentlyContinue
+                    if ($service) {
+                        if ($service.Status -ne 'Stopped') { Stop-Service -Name $name -Force -ErrorAction SilentlyContinue }
+                        sc.exe delete $name | Out-Null
+                    }
+                }
+                Remove-Item -LiteralPath '{{credentialPath.Replace("'", "''")}}' -Force -ErrorAction SilentlyContinue
+                """],
+            timeout: TimeSpan.FromSeconds(30));
+    }
+
+    private static async Task<PowerShellResult> RunPowerShellAsync(
+        IReadOnlyList<string> arguments,
+        IReadOnlyDictionary<string, string>? environment = null,
+        TimeSpan? timeout = null)
+    {
+        var start = new ProcessStartInfo("powershell.exe")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+        foreach (var argument in arguments) start.ArgumentList.Add(argument);
+        if (environment is not null)
+        {
+            foreach (var item in environment)
+                start.Environment[item.Key] = item.Value;
+        }
+
+        using var process = Process.Start(start) ?? throw new InvalidOperationException("PowerShell did not start.");
+        var output = process.StandardOutput.ReadToEndAsync();
+        var error = process.StandardError.ReadToEndAsync();
+        using var deadline = new CancellationTokenSource(timeout ?? TimeSpan.FromMinutes(2));
+        try
+        {
+            await process.WaitForExitAsync(deadline.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            process.Kill(entireProcessTree: true);
+            throw new TimeoutException("The Windows acceptance PowerShell operation timed out.");
+        }
+
+        await Task.WhenAll(output, error);
+        return new PowerShellResult(process.ExitCode, await output, await error);
     }
 
     private static async Task RunIsolatedNativeCommandAsync(string username, string executable, IReadOnlyList<string> arguments,

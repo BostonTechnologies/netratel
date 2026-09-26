@@ -8,6 +8,41 @@ are not a usable production configuration.
 The running [API reference](API_REFERENCE.md) identifies the credential scheme
 accepted by each operation; it is a contract viewer, not a secret store.
 
+## Native Client configuration precedence
+
+The Client reads configuration in this order, from lowest to highest
+precedence:
+
+1. Packaged `appsettings.json` and optional `appsettings.{Environment}.json`.
+2. The installed `clientsettings.json` written by an older supported package.
+3. Explicit deployment values from `NetRatelCLIENT__...` service variables or
+   ordinary `Client__...` environment variables.
+4. Explicit command-line values such as `--api`, `--tenant`, and
+   `--enrollment-code`.
+
+The packaged files are defaults, not deployment choices. An ordinary restart
+therefore keeps a valid installed URL, tenant, identity, and non-default
+behavior when a new package contains placeholder defaults. Service/environment
+values remain authoritative when an operator intentionally changes the
+deployment, and command-line values remain the highest-precedence one-shot
+selection. Enrollment credentials and the installation identity are persisted
+separately; changing a package or repairing its updater does not silently
+reset them.
+
+Windows service, systemd, and launchd templates place the explicit API and
+gateway values in the service environment so an updater can activate a package
+with fresh defaults without repointing an existing installation. If an
+operator intentionally changes the instance URL, verify the tenant and
+issuer/origin contract before restarting the service and retain the existing
+identity unless a deliberate identity reset is required.
+
+The API image also installs `libgssapi-krb5-2` before dropping to its non-root
+runtime user. The release image gate first loads `libgssapi_krb5.so.2` as UID
+1654 and then runs the API assembly's negotiated-authentication smoke path.
+The latter may report `UnknownCredentials` in a credentialless disposable
+container: that result means the native GSSAPI path was reached; missing
+libraries, unsupported negotiation, and unexpected status codes fail the gate.
+
 ## Required persistent state
 
 - PostgreSQL is the only supported application and identity database.
@@ -56,6 +91,16 @@ no-index headers. Externally managed proxy logs are outside application
 logging control and require their own redaction rule. The supplied public
 HTTPS Compose ingress suppresses access and error logs for this path; the
 API also redacts its own request log and omits these URL-bearing HTTP spans.
+
+Generated links contain immutable protected script snapshots. Updating the
+installer template or publishing a replacement package does not rewrite an
+issued script or archive. Revoke a link from the Clients management page (or
+`POST /api/v1/client-install-links/{id}/revoke`) and generate a new link after
+confirming the artifact, tenant, public origin, expiry, and service options.
+Older links remain supported until they expire, are revoked, or exhaust their
+enrollment allowance; an old package can still be recovered by starting a new
+link generation rather than editing the protected URL or manually replacing
+the downloaded script.
 
 An operator can generate a link from **Clients → Artifacts → Generate script**,
 inspect and copy its script and command, explicitly download the same script,

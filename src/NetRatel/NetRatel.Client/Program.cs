@@ -227,21 +227,16 @@ async Task RunClientAsync()
     var dotnetEnvironment = Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT")
         ?? Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT");
 
-    // 1. Build a configuration object from appsettings.json
-    var configurationBuilder = new ConfigurationBuilder()
-        .SetBasePath(appBaseDir)
-        .AddJsonFile("appsettings.json", optional: false, reloadOnChange: false);
-    if (!string.IsNullOrWhiteSpace(dotnetEnvironment))
-    {
-        configurationBuilder.AddJsonFile($"appsettings.{dotnetEnvironment}.json", optional: true, reloadOnChange: false);
-    }
-
-    IConfiguration configuration = configurationBuilder
-        .AddEnvironmentVariables(prefix: "NetRatelCLIENT__")
-        .AddEnvironmentVariables()
+    // Keep packaged defaults separate from explicit deployment configuration. The client
+    // loader uses this distinction to preserve a supported installation's legacy file.
+    var packagedDefaults = ClientConfigurationLoader.BuildPackagedDefaults(appBaseDir, dotnetEnvironment);
+    var deploymentOverrides = ClientConfigurationLoader.BuildDeploymentOverrides();
+    IConfiguration configuration = new ConfigurationBuilder()
+        .AddConfiguration(packagedDefaults)
+        .AddConfiguration(deploymentOverrides)
         .AddCommandLine(cliArgs)
         .Build();
-    var cfg = ClientConfigurationLoader.Load(configuration, appBaseDir, cliArgs);
+    var cfg = ClientConfigurationLoader.Load(packagedDefaults, deploymentOverrides, appBaseDir, cliArgs);
     cfg.ApiBaseUrl = NormalizeApiBaseUrl(cfg.ApiBaseUrl);
     var transportMode = configuration["Transport:Mode"] ?? "AkkaPresence";
     var gatewayOptions = LoadGatewayOptions(configuration, cfg.ApiBaseUrl);

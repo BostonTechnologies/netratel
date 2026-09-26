@@ -46,7 +46,18 @@ jobs:
       - run: python3 tools/ci/test-release-validation.py
       - run: dotnet build NetRatel.sln --configuration Release --no-restore
       - run: pwsh src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/playwright.ps1 install --with-deps chromium
-      - run: dotnet test NetRatel.sln --configuration Release --no-build --filter "category!=compose&category!=hosted" --results-directory TestResults -- --report-trx --report-trx-filename "netratel-tests-{asm}_{tfm}_{arch}.trx"
+      - name: Run generic tests and final-head visual acceptance
+        env:
+          NETRATEL_REVIEW_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          NETRATEL_REVIEW_TEST_MERGE_SHA: ${{ github.sha }}
+        run: dotnet test NetRatel.sln --configuration Release --no-build --filter "category!=compose&category!=hosted" --results-directory TestResults -- --report-trx --report-trx-filename "netratel-tests-{asm}_{tfm}_{arch}.trx"
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pr-clients-management-visual
+          path: TestResults/playwright
+          if-no-files-found: error
+          retention-days: 14
       - name: Fetch latest completed public client pack
         env:
           GH_TOKEN: ${{ github.token }}
@@ -204,6 +215,54 @@ jobs:
           NETRATEL_NATIVE_CLIENT_DIRECTORY="$PWD/artifacts/netratel-client-win-x64" \
             dotnet src/NetRatel/NetRatel.Tests/bin/Release/net10.0/NetRatel.Tests.dll \
               -method NetRatel.Tests.Infrastructure.WindowsInstallerNativeTests.GeneratedPowerShellInstallerPersistsApiConfigurationAcrossWindowsServiceRestart
+      - name: Exercise real public-link Windows service journey
+        if: matrix.runtime == 'win-x64'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          certificate_directory="$RUNNER_TEMP/netratel-windows-public-https"
+          mkdir -p "$certificate_directory"
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+            -subj '/CN=netratel.example' \
+            -addext 'subjectAltName=DNS:netratel.example,IP:127.0.0.1' \
+            -keyout "$certificate_directory/tls.key" \
+            -out "$certificate_directory/tls.crt" >/dev/null 2>&1
+          certificate_path_windows="$(cygpath -w "$certificate_directory/tls.crt")"
+          key_path_windows="$(cygpath -w "$certificate_directory/tls.key")"
+          certificate_thumbprint="$(pwsh -NoLogo -NoProfile -NonInteractive -Command \
+            "(Import-Certificate -FilePath '$certificate_path_windows' -CertStoreLocation Cert:\\LocalMachine\\Root).Thumbprint")"
+          pwsh -NoLogo -NoProfile -NonInteractive -Command \
+            "\$hostsPath = Join-Path \$env:SystemRoot 'System32\\drivers\\etc\\hosts'; if (-not (Select-String -Path \$hostsPath -Pattern '^127\\.0\\.0\\.1\\s+netratel\\.example$' -Quiet)) { Add-Content -Path \$hostsPath -Value '127.0.0.1 netratel.example' }"
+          cleanup() {
+            pwsh -NoLogo -NoProfile -NonInteractive -Command \
+              "Remove-Item -LiteralPath 'Cert:\\LocalMachine\\Root\\$certificate_thumbprint' -Force -ErrorAction SilentlyContinue"
+            pwsh -NoLogo -NoProfile -NonInteractive -Command \
+              "\$hostsPath = Join-Path \$env:SystemRoot 'System32\\drivers\\etc\\hosts'; (Get-Content \$hostsPath) | Where-Object { \$_ -notmatch '^127\\.0\\.0\\.1\\s+netratel\\.example$' } | Set-Content \$hostsPath"
+          }
+          trap cleanup EXIT
+          version="$(python3 tools/ci/product-version.py)"
+          NETRATEL_LOCAL_FIRST_WEB_URL=https://netratel.example \
+          NETRATEL_LOCAL_FIRST_IGNORE_HTTPS_ERRORS=true \
+          NETRATEL_LOCAL_FIRST_WINDOWS_INSTALL=true \
+          NETRATEL_LOCAL_FIRST_WINDOWS_CLIENT_ARCHIVE="$PWD/artifacts/netratel-client-${version}-win-x64.zip" \
+          NETRATEL_LOCAL_FIRST_WINDOWS_CLIENT_DIRECTORY="$PWD/artifacts/netratel-client-win-x64" \
+          NETRATEL_LOCAL_FIRST_COMPOSE_OVERLAYS="release/compose.public-https.yaml:tests/compose/windows-installer-acceptance.compose.yaml" \
+          NETRATEL_AUTHENTICATION_MODE=Local \
+          NETRATEL_PUBLIC_ORIGIN=https://netratel.example \
+          NETRATEL_PUBLIC_HOST=netratel.example \
+          NETRATEL_INSTALL_LINK_PUBLIC_ORIGIN=https://netratel.example \
+          NETRATEL_HTTPS_BIND_ADDRESS=0.0.0.0 \
+          NETRATEL_HTTPS_PORT=443 \
+          NETRATEL_HTTPS_CERTIFICATE="$certificate_path_windows" \
+          NETRATEL_HTTPS_PRIVATE_KEY="$key_path_windows" \
+            tools/ci/smoke-local-first-compose.sh
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pr-windows-installer-acceptance
+          path: TestResults/local-first
+          if-no-files-found: warn
+          retention-days: 14
       - shell: bash
         run: |
           version="$(python3 tools/ci/product-version.py)"
@@ -266,6 +325,8 @@ jobs:
           image="netratel-${{ matrix.name }}:pr-validation"
           tools/ci/build-public-image.sh --dockerfile "${{ matrix.dockerfile }}" --image "$image" --version "$version" --revision "$GITHUB_SHA"
           tools/ci/scan-public-image.sh --image "$image" --version "$version" --revision "$GITHUB_SHA"
+      - if: matrix.name == 'api'
+        run: tools/ci/test-api-runtime-dependency.sh --image "netratel-api:pr-validation"
 
   compose:
     name: Source Compose generic OIDC smoke test

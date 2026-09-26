@@ -39,3 +39,10 @@ docker run --rm \
   --entrypoint /tmp/netratel-load-shared-library \
   "$image" \
   libgssapi_krb5.so.2
+
+echo "Native GSSAPI loader probe passed; exercising the API assembly's negotiated-authentication path."
+docker run --rm \
+  --user 1654:1654 \
+  --entrypoint dotnet \
+  "$image" \
+  NetRatel.API.dll --gssapi-application-smoke

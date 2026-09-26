@@ -200,6 +200,53 @@ jobs:
             --version "${{ needs.validate.outputs.version }}" \
             --runtime "${{ matrix.runtime }}" \
             --extension "${{ matrix.extension }}"
+      - name: Exercise real public-link Windows service journey
+        if: matrix.runtime == 'win-x64'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          certificate_directory="$RUNNER_TEMP/netratel-windows-public-https"
+          mkdir -p "$certificate_directory"
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+            -subj '/CN=netratel.example' \
+            -addext 'subjectAltName=DNS:netratel.example,IP:127.0.0.1' \
+            -keyout "$certificate_directory/tls.key" \
+            -out "$certificate_directory/tls.crt" >/dev/null 2>&1
+          certificate_path_windows="$(cygpath -w "$certificate_directory/tls.crt")"
+          key_path_windows="$(cygpath -w "$certificate_directory/tls.key")"
+          certificate_thumbprint="$(pwsh -NoLogo -NoProfile -NonInteractive -Command \
+            "(Import-Certificate -FilePath '$certificate_path_windows' -CertStoreLocation Cert:\\LocalMachine\\Root).Thumbprint")"
+          pwsh -NoLogo -NoProfile -NonInteractive -Command \
+            "\$hostsPath = Join-Path \$env:SystemRoot 'System32\\drivers\\etc\\hosts'; if (-not (Select-String -Path \$hostsPath -Pattern '^127\\.0\\.0\\.1\\s+netratel\\.example$' -Quiet)) { Add-Content -Path \$hostsPath -Value '127.0.0.1 netratel.example' }"
+          cleanup() {
+            pwsh -NoLogo -NoProfile -NonInteractive -Command \
+              "Remove-Item -LiteralPath 'Cert:\\LocalMachine\\Root\\$certificate_thumbprint' -Force -ErrorAction SilentlyContinue"
+            pwsh -NoLogo -NoProfile -NonInteractive -Command \
+              "\$hostsPath = Join-Path \$env:SystemRoot 'System32\\drivers\\etc\\hosts'; (Get-Content \$hostsPath) | Where-Object { \$_ -notmatch '^127\\.0\\.0\\.1\\s+netratel\\.example$' } | Set-Content \$hostsPath"
+          }
+          trap cleanup EXIT
+          NETRATEL_LOCAL_FIRST_WEB_URL=https://netratel.example \
+          NETRATEL_LOCAL_FIRST_IGNORE_HTTPS_ERRORS=true \
+          NETRATEL_LOCAL_FIRST_WINDOWS_INSTALL=true \
+          NETRATEL_LOCAL_FIRST_WINDOWS_CLIENT_ARCHIVE="$PWD/artifacts/netratel-client-${{ needs.validate.outputs.version }}-win-x64.zip" \
+          NETRATEL_LOCAL_FIRST_WINDOWS_CLIENT_DIRECTORY="$PWD/artifacts/netratel-client-win-x64" \
+          NETRATEL_LOCAL_FIRST_COMPOSE_OVERLAYS="release/compose.public-https.yaml:tests/compose/windows-installer-acceptance.compose.yaml" \
+          NETRATEL_AUTHENTICATION_MODE=Local \
+          NETRATEL_PUBLIC_ORIGIN=https://netratel.example \
+          NETRATEL_PUBLIC_HOST=netratel.example \
+          NETRATEL_INSTALL_LINK_PUBLIC_ORIGIN=https://netratel.example \
+          NETRATEL_HTTPS_BIND_ADDRESS=0.0.0.0 \
+          NETRATEL_HTTPS_PORT=443 \
+          NETRATEL_HTTPS_CERTIFICATE="$certificate_path_windows" \
+          NETRATEL_HTTPS_PRIVATE_KEY="$key_path_windows" \
+            tools/ci/smoke-local-first-compose.sh
+      - if: always() && matrix.runtime == 'win-x64'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: netratel-${{ needs.validate.outputs.version }}-windows-installer-acceptance
+          path: TestResults/local-first
+          if-no-files-found: warn
+          retention-days: 14
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: netratel-client-${{ needs.validate.outputs.version }}-${{ matrix.runtime }}
