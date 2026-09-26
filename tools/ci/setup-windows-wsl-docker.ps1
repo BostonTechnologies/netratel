@@ -3,8 +3,12 @@ $ErrorActionPreference = 'Stop'
 $distribution = "NetRatelDocker-$($env:GITHUB_RUN_ID)"
 $rootfsUrl = 'https://cloud-images.ubuntu.com/wsl/releases/24.04/20240423/ubuntu-noble-wsl-amd64-wsl.rootfs.tar.gz'
 $rootfsSha256 = '8251e27ffff381a4af5f41dcb94d867de3e0d9774a9241908ab34555d99315ea'
+$workspace = $env:GITHUB_WORKSPACE
+if ($workspace -notmatch '^(?<drive>[A-Za-z]):[\\/](?<rest>.*)$') {
+    throw "The GitHub workspace is not a local Windows drive path: $workspace"
+}
 $rootfsPath = Join-Path $env:RUNNER_TEMP 'ubuntu-noble-wsl.rootfs.tar.gz'
-$distributionDirectory = Join-Path $env:RUNNER_TEMP 'netratel-wsl-docker-root'
+$distributionDirectory = Join-Path $workspace '.ci-wsl-docker-root'
 
 New-Item -ItemType Directory -Path $distributionDirectory -Force | Out-Null
 Invoke-WebRequest -Uri $rootfsUrl -OutFile $rootfsPath
@@ -48,10 +52,6 @@ if ($LASTEXITCODE -ne 0) {
     throw "Linux Docker engine setup failed with exit code $LASTEXITCODE."
 }
 
-$workspace = $env:GITHUB_WORKSPACE
-if ($workspace -notmatch '^(?<drive>[A-Za-z]):[\\/](?<rest>.*)$') {
-    throw "The GitHub workspace is not a local Windows drive path: $workspace"
-}
 $workspaceLinux = "/mnt/$($Matches.drive.ToLowerInvariant())/$($Matches.rest -replace '\\', '/')"
 $dockerShim = Join-Path $workspace 'tools\ci\windows-wsl-docker.cmd'
 $wslCommandShim = Join-Path $workspace 'tools\ci\windows-wsl-command.cmd'
@@ -71,6 +71,7 @@ $wslEnvironment = @(
 
 @(
     "NETRATEL_LOCAL_FIRST_WSL_DISTRIBUTION=$distribution"
+    "NETRATEL_LOCAL_FIRST_WSL_INSTALL_DIRECTORY=$distributionDirectory"
     "NETRATEL_LOCAL_FIRST_WSL_WORKSPACE=$workspaceLinux"
     "NETRATEL_LOCAL_FIRST_DOCKER_COMMAND=$dockerShim"
     "NETRATEL_LOCAL_FIRST_WSL_COMMAND=$wslCommandShim"
