@@ -44,9 +44,10 @@ if [[ -n "${NETRATEL_LOCAL_FIRST_WSL_DISTRIBUTION:-}" ]]; then
     echo "The Linux Docker WSL distribution name is empty." >&2
     exit 1
   }
+  wsl_command="${NETRATEL_LOCAL_FIRST_WSL_COMMAND:?Windows WSL command shim path missing}"
   compose_root="$(wsl_path "$root")"
   wsl_run() {
-    wsl.exe --distribution "$wsl_distribution" --user root -- "$@"
+    cmd.exe /d /s /c call "$wsl_command" "$@"
   }
   export MSYS_NO_PATHCONV=1
   export NETRATEL_HTTPS_CERTIFICATE="$(wsl_path "${NETRATEL_HTTPS_CERTIFICATE:?Windows public HTTPS certificate path missing}")"

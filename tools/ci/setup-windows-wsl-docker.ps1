@@ -54,6 +54,7 @@ if ($workspace -notmatch '^(?<drive>[A-Za-z]):[\\/](?<rest>.*)$') {
 }
 $workspaceLinux = "/mnt/$($Matches.drive.ToLowerInvariant())/$($Matches.rest -replace '\\', '/')"
 $dockerShim = Join-Path $workspace 'tools\ci\windows-wsl-docker.cmd'
+$wslCommandShim = Join-Path $workspace 'tools\ci\windows-wsl-command.cmd'
 $wslEnvironment = @(
     'POSTGRES_PASSWORD'
     'NETRATEL_AUTHENTICATION_MODE'
@@ -72,6 +73,7 @@ $wslEnvironment = @(
     "NETRATEL_LOCAL_FIRST_WSL_DISTRIBUTION=$distribution"
     "NETRATEL_LOCAL_FIRST_WSL_WORKSPACE=$workspaceLinux"
     "NETRATEL_LOCAL_FIRST_DOCKER_COMMAND=$dockerShim"
+    "NETRATEL_LOCAL_FIRST_WSL_COMMAND=$wslCommandShim"
     "WSLENV=$wslEnvironment"
 ) | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
