@@ -335,7 +335,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             Assert.Fail($"Disposable artifact upload failed: {await uploadError.InnerTextAsync()}");
         await uploadDialog.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Hidden });
 
-        await page.GetByRole(AriaRole.Tab, new() { Name = "Artifacts" }).ClickAsync();
+        await page.GetByRole(AriaRole.Tab, new() { Name = "Packages" }).ClickAsync();
         var artifactRow = page.GetByTestId("artifact-table").GetByRole(AriaRole.Row).Filter(new() { HasText = version });
         await artifactRow.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         await artifactRow.GetByRole(AriaRole.Button).Last.ClickAsync();
@@ -415,7 +415,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
                 .some(item => item.textContent?.includes(version) && item.textContent?.includes('Local state: Imported'))
             """, version, new PageWaitForFunctionOptions { Timeout = 300_000 });
 
-        await page.GetByRole(AriaRole.Tab, new() { Name = "Artifacts" }).ClickAsync();
+        await page.GetByRole(AriaRole.Tab, new() { Name = "Packages" }).ClickAsync();
         var artifact = page.GetByTestId("artifact-table").GetByRole(AriaRole.Row)
             .Filter(new() { HasText = version }).Filter(new() { HasText = "linux-x64" });
         await artifact.WaitForAsync(new LocatorWaitForOptions { Timeout = 30_000 });
