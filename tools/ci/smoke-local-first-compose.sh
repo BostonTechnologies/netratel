@@ -158,6 +158,7 @@ cleanup() {
     echo "::error title=Local-first Compose smoke failed::${stage}" >&2
     "${compose[@]}" ps --all >&2 || true
     local log_services=(migrations api web)
+    if [[ "$web_url" == https://* ]]; then log_services+=(ingress); fi
     if [[ -n "$mcp_http_image" ]]; then log_services+=(mcp-http); fi
     "${compose[@]}" logs --no-color --tail 250 "${log_services[@]}" >&2 || true
   fi
@@ -222,11 +223,10 @@ exit_code=""
 for _ in $(seq 1 90); do
   running_state="$("$docker_command" inspect --format "{{.State.Running}}" "$migration_id")"
   exit_code="$("$docker_command" inspect --format "{{.State.ExitCode}}" "$migration_id")"
-  running_state="${running_state//$'\r'/}"
-  running_state="${running_state//$'\n'/}"
-  running_state="${running_state,,}"
-  exit_code="${exit_code//$'\r'/}"
-  exit_code="${exit_code//$'\n'/}"
+  # The Windows WSL handoff can add CR/LF, NUL, or console encoding bytes to
+  # short Docker inspect results. Keep only the value before comparing it.
+  running_state="$(printf '%s' "$running_state" | LC_ALL=C tr -cd '[:alpha:]' | LC_ALL=C tr '[:upper:]' '[:lower:]')"
+  exit_code="$(printf '%s' "$exit_code" | LC_ALL=C tr -cd '[:digit:]')"
   if [[ "$running_state" == false && "$exit_code" == 0 ]]; then
     migration_complete=true
     break
@@ -310,14 +310,37 @@ if api_operator dotnet NetRatel.API.dll --show-setup-code >/dev/null 2>&1; then
   echo "A configured installation unexpectedly returned a setup code." >&2
   exit 1
 fi
-"${compose[@]}" restart api web >/dev/null
+restart_services=(api web)
+if [[ "$web_url" == https://* ]]; then
+  # Reset the proxy's upstream connections with the application. Otherwise an
+  # existing HTTPS edge connection can remain pinned to the pre-restart web
+  # process even though the web container is listening again.
+  restart_services+=(ingress)
+fi
+"${compose[@]}" restart "${restart_services[@]}" >/dev/null
+ready_after_restart=false
+ready_response=""
 for _ in $(seq 1 90); do
-  if curl "${curl_tls[@]}" --connect-timeout 2 --fail --silent "$web_url/api/v2/setup/status" | jq -e '.isReady == true' >/dev/null 2>&1; then
+  if ready_response="$(curl "${curl_tls[@]}" --connect-timeout 2 --max-time 5 --fail --silent "$web_url/api/v2/setup/status" 2>/dev/null)" \
+    && jq -e '.isReady == true' <<<"$ready_response" >/dev/null 2>&1; then
+    ready_after_restart=true
     break
   fi
   sleep 1
 done
-curl "${curl_tls[@]}" --connect-timeout 2 --fail --silent "$web_url/api/v2/setup/status" | jq -e '.isReady == true' >/dev/null
+if [[ "$ready_after_restart" != true ]]; then
+  echo "Public setup status did not become ready after the ordinary restart." >&2
+  if [[ -n "$ready_response" ]]; then
+    echo "Last response body:" >&2
+    printf '%s\n' "$ready_response" >&2
+  else
+    echo "Last response body: <empty>" >&2
+  fi
+  echo "Final public probe:" >&2
+  curl "${curl_tls[@]}" --connect-timeout 2 --max-time 5 --fail --silent --show-error --include \
+    "$web_url/api/v2/setup/status" >&2 || true
+  exit 1
+fi
 
 if [[ -n "$mcp_http_image" ]]; then
   stage="waiting for the paired local HTTP MCP gateway"
