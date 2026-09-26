@@ -66,14 +66,18 @@ if [[ "${NETRATEL_LOCAL_FIRST_IGNORE_HTTPS_ERRORS:-false}" == true ]]; then
 fi
 key_directory="$(mktemp -d)"
 key_path="$key_directory/agent-auth-private.pem"
+chmod 711 "$key_directory"
 if [[ -n "${NETRATEL_LOCAL_FIRST_WSL_DISTRIBUTION:-}" ]]; then
-  docker_key_directory="/tmp/${project}-keys"
+  # WSL can recycle its Linux filesystem during the hosted Windows journey.
+  # Keep the disposable key on the runner's persistent Windows temp volume and
+  # translate that path for the Linux Docker daemon, so service restarts keep
+  # seeing the same file bind mount.
+  docker_key_directory="$(wsl_path "$key_directory")"
   wsl_run mkdir -p "$docker_key_directory"
   wsl_run chmod 711 "$docker_key_directory"
 else
   docker_key_directory="$key_directory"
 fi
-chmod 711 "$key_directory"
 credential_path="$(mktemp)"
 mcp_stdio_config_path="$(mktemp)"
 mcp_stdio_error_path="$(mktemp)"
