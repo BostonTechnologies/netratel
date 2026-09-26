@@ -218,12 +218,26 @@ public sealed class LocalFirstComposeBrowserSmokeTests
 
     private static async Task RunDockerAsync(string operation, params string[] containerIds)
     {
-        var start = new ProcessStartInfo("docker")
+        var dockerCommand = Environment.GetEnvironmentVariable("NETRATEL_LOCAL_FIRST_DOCKER_COMMAND") is { Length: > 0 } configuredDockerCommand
+            ? configuredDockerCommand
+            : "docker";
+        var isBatchCommand = dockerCommand.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase)
+            || dockerCommand.EndsWith(".bat", StringComparison.OrdinalIgnoreCase);
+        var start = new ProcessStartInfo(isBatchCommand ? Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe" : dockerCommand)
         {
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false
         };
+        if (isBatchCommand)
+        {
+            start.ArgumentList.Add("/d");
+            start.ArgumentList.Add("/s");
+            start.ArgumentList.Add("/c");
+            start.ArgumentList.Add("call");
+            start.ArgumentList.Add(dockerCommand);
+        }
+
         start.ArgumentList.Add(operation);
         foreach (var containerId in containerIds) start.ArgumentList.Add(containerId);
         using var process = Process.Start(start) ?? throw new InvalidOperationException("Docker could not be started.");

@@ -215,6 +215,10 @@ jobs:
           NETRATEL_NATIVE_CLIENT_DIRECTORY="$PWD/artifacts/netratel-client-win-x64" \
             dotnet src/NetRatel/NetRatel.Tests/bin/Release/net10.0/NetRatel.Tests.dll \
               -method NetRatel.Tests.Infrastructure.WindowsInstallerNativeTests.GeneratedPowerShellInstallerPersistsApiConfigurationAcrossWindowsServiceRestart
+      - name: Configure Linux Docker engine for Windows acceptance
+        if: matrix.runtime == 'win-x64'
+        shell: pwsh
+        run: ./tools/ci/setup-windows-wsl-docker.ps1
       - name: Prepare Windows public HTTPS certificate
         if: matrix.runtime == 'win-x64'
         shell: pwsh
@@ -256,6 +260,7 @@ jobs:
           NETRATEL_LOCAL_FIRST_WINDOWS_CLIENT_DIRECTORY="$PWD/artifacts/netratel-client-win-x64" \
           NETRATEL_LOCAL_FIRST_COMPOSE_OVERLAYS="release/compose.public-https.yaml:tests/compose/windows-installer-acceptance.compose.yaml" \
           NETRATEL_AUTHENTICATION_MODE=Local \
+          POSTGRES_PASSWORD=synthetic-windows-installer-smoke-password \
           NETRATEL_PUBLIC_ORIGIN=https://127.0.0.1 \
           NETRATEL_PUBLIC_HOST=127.0.0.1 \
           NETRATEL_INSTALL_LINK_PUBLIC_ORIGIN=https://127.0.0.1 \
@@ -271,6 +276,14 @@ jobs:
           $ErrorActionPreference = 'Continue'
           if (-not [string]::IsNullOrWhiteSpace($env:NETRATEL_WINDOWS_CERTIFICATE_THUMBPRINT)) {
             Remove-Item -LiteralPath "Cert:\LocalMachine\Root\$($env:NETRATEL_WINDOWS_CERTIFICATE_THUMBPRINT)" -Force -ErrorAction SilentlyContinue
+          }
+      - name: Remove Linux Docker WSL distribution
+        if: always() && matrix.runtime == 'win-x64'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          if (-not [string]::IsNullOrWhiteSpace($env:NETRATEL_LOCAL_FIRST_WSL_DISTRIBUTION)) {
+            wsl.exe --unregister $env:NETRATEL_LOCAL_FIRST_WSL_DISTRIBUTION
           }
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
