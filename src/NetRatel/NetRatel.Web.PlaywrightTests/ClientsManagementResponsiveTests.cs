@@ -63,10 +63,14 @@ public sealed class ClientsManagementResponsiveTests : IAsyncLifetime
             ColorScheme = ColorScheme.Light
         });
         var page = await context.NewPageAsync();
-        page.SetDefaultTimeout(15_000);
+        // The fixture starts a real Interactive Server circuit. Under the full
+        // hosted test matrix the first circuit can take longer than the normal
+        // interaction budget to attach, especially at the tablet case; keep
+        // the visual assertions strict once the shell is available.
+        page.SetDefaultTimeout(30_000);
         try
         {
-            var response = await page.GotoAsync($"{fixture.BaseAddress}/clients/mgmt", new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 10_000 });
+            var response = await page.GotoAsync($"{fixture.BaseAddress}/clients/mgmt", new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 30_000 });
             Assert.NotNull(response);
             Assert.True(response.Ok, $"Client-management fixture returned HTTP {response.Status}.");
 
