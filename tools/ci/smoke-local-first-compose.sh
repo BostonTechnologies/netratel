@@ -259,7 +259,8 @@ playwright_script="src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0
 pwsh "$playwright_script" install --with-deps chromium
 stage="validating image operator commands and one-time proof rotation"
 ensure_runtime_service() {
-  local service="$1" container_id inspect_json running_state
+  local service="$1" container_id inspect_json running_state health_state attempts
+  runtime_service_restarted=false
   container_id="$("${compose[@]}" ps -q "$service")"
   container_id="${container_id//$'\r'/}"
   if [[ -z "$container_id" ]]; then
@@ -276,12 +277,18 @@ ensure_runtime_service() {
   if [[ "$running_state" != true ]]; then
     echo "${service^} container $container_id is not running; attempting one restart." >&2
     "$docker_command" start "$container_id" >/dev/null
+    runtime_service_restarted=true
   fi
 
-  for _ in $(seq 1 30); do
+  attempts=30
+  [[ "$service" == postgres ]] && attempts=90
+  for _ in $(seq 1 "$attempts"); do
     inspect_json="$("$docker_command" inspect "$container_id" | LC_ALL=C tr -d '\000\r')"
     running_state="$(jq -r '.[0].State.Running' <<<"$inspect_json")"
-    [[ "$running_state" == true ]] && return 0
+    health_state="$(jq -r '.[0].State.Health.Status // empty' <<<"$inspect_json")"
+    if [[ "$running_state" == true && ("$service" != postgres || "$health_state" == healthy) ]]; then
+      return 0
+    fi
     sleep 1
   done
 
@@ -299,8 +306,23 @@ refresh_api_container() {
   fi
   [[ -n "$api_container_id" ]] || { echo "API container was not created." >&2; return 1; }
 }
+ensure_runtime_service postgres
+postgres_restarted="$runtime_service_restarted"
 ensure_runtime_service api
 ensure_runtime_service web
+if [[ "$postgres_restarted" == true ]]; then
+  # If WSL recycled the database container, an automatically restarted API can
+  # observe the empty/unavailable database first and enter bootstrap recovery.
+  # Restart dependents only after PostgreSQL reports healthy so the original
+  # bootstrap descriptor, database, and key material are evaluated together.
+  echo "PostgreSQL was recovered; restarting dependent application services." >&2
+  "${compose[@]}" restart api web >/dev/null
+  ensure_runtime_service api
+  ensure_runtime_service web
+  if [[ "$web_url" == https://* ]]; then
+    "${compose[@]}" restart ingress >/dev/null
+  fi
+fi
 refresh_api_container
 api_operator() { "$docker_command" exec "$api_container_id" "$@"; }
 api_operator dotnet NetRatel.API.dll --help | grep -Fq -- '--show-setup-code'
