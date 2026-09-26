@@ -247,16 +247,22 @@ playwright_script="src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0
 [[ -f "$playwright_script" ]] || { echo "Playwright install script was not produced." >&2; exit 1; }
 pwsh "$playwright_script" install --with-deps chromium
 stage="validating image operator commands and one-time proof rotation"
-"${compose[@]}" exec -T api dotnet NetRatel.API.dll --help | grep -Fq -- '--show-setup-code'
-initial_setup_proof="$("${compose[@]}" exec -T api cat /var/netratel/bootstrap/setup-proof)"
-[[ "$("${compose[@]}" exec -T api dotnet NetRatel.API.dll --show-setup-code)" == "$initial_setup_proof" ]]
-initial_status="$("${compose[@]}" exec -T api dotnet NetRatel.API.dll --setup-status)"
+api_container_id="$("${compose[@]}" ps -q api)"
+api_container_id="${api_container_id//$'\r'/}"
+[[ -n "$api_container_id" ]] || { echo "API container was not created." >&2; exit 1; }
+api_operator() { "$docker_command" exec "$api_container_id" "$@"; }
+api_operator dotnet NetRatel.API.dll --help | grep -Fq -- '--show-setup-code'
+initial_setup_proof="$(api_operator cat /var/netratel/bootstrap/setup-proof)"
+initial_setup_proof="${initial_setup_proof//$'\r'/}"
+[[ "$(api_operator dotnet NetRatel.API.dll --show-setup-code)" == "$initial_setup_proof" ]]
+initial_status="$(api_operator dotnet NetRatel.API.dll --setup-status)"
 grep -Fq 'Setup code: Available' <<<"$initial_status"
 [[ "$initial_status" != *"$initial_setup_proof"* ]]
-"${compose[@]}" exec -T api dotnet NetRatel.API.dll --rotate-setup-code >/dev/null
-setup_proof="$("${compose[@]}" exec -T api cat /var/netratel/bootstrap/setup-proof)"
+api_operator dotnet NetRatel.API.dll --rotate-setup-code >/dev/null
+setup_proof="$(api_operator cat /var/netratel/bootstrap/setup-proof)"
+setup_proof="${setup_proof//$'\r'/}"
 [[ -n "$setup_proof" && "$setup_proof" != "$initial_setup_proof" ]]
-[[ "$("${compose[@]}" exec -T api dotnet NetRatel.API.dll --show-setup-code)" == "$setup_proof" ]]
+[[ "$(api_operator dotnet NetRatel.API.dll --show-setup-code)" == "$setup_proof" ]]
 forged_origin_status="$(curl "${curl_tls[@]}" --silent --output /dev/null --write-out '%{http_code}' \
   --header 'Origin: https://forged.invalid' --header 'Content-Type: application/json' \
   --data '{"proof":"invalid"}' "$web_url/api/v2/setup/claim")"
@@ -287,10 +293,10 @@ NETRATEL_LOCAL_FIRST_INTEGRATION_CREDENTIALS_FILE="$credential_path" \
 unset setup_proof
 
 stage="verifying Ready operator status and ordinary restart"
-ready_status="$("${compose[@]}" exec -T api dotnet NetRatel.API.dll --setup-status)"
+ready_status="$(api_operator dotnet NetRatel.API.dll --setup-status)"
 grep -Fq 'Installation: Ready' <<<"$ready_status"
 grep -Fq 'Setup code: Completed' <<<"$ready_status"
-if "${compose[@]}" exec -T api dotnet NetRatel.API.dll --show-setup-code >/dev/null 2>&1; then
+if api_operator dotnet NetRatel.API.dll --show-setup-code >/dev/null 2>&1; then
   echo "A configured installation unexpectedly returned a setup code." >&2
   exit 1
 fi
@@ -459,7 +465,7 @@ if [[ "${NETRATEL_LOCAL_FIRST_STATE_RESET_ACCEPTANCE:-false}" == true ]]; then
   done
   [[ "$recovered" == true ]] || { echo "A retained bootstrap descriptor accepted an empty replacement database." >&2; exit 1; }
   set +e
-  recovery_status="$("${compose[@]}" exec -T api dotnet NetRatel.API.dll --setup-status)"
+  recovery_status="$(api_operator dotnet NetRatel.API.dll --setup-status)"
   recovery_exit=$?
   set -e
   [[ "$recovery_exit" == 5 ]]
@@ -492,7 +498,8 @@ if [[ "${NETRATEL_LOCAL_FIRST_STATE_RESET_ACCEPTANCE:-false}" == true ]]; then
     sleep 1
   done
   [[ "$fresh" == true ]] || { echo "A full disposable reset did not produce a fresh setup state." >&2; exit 1; }
-  reset_setup_proof="$("${compose[@]}" exec -T api cat /var/netratel/bootstrap/setup-proof)"
+  reset_setup_proof="$(api_operator cat /var/netratel/bootstrap/setup-proof)"
+  reset_setup_proof="${reset_setup_proof//$'\r'/}"
   [[ -n "$reset_setup_proof" && "$(printf '%s' "$reset_setup_proof" | sha256sum | cut -d ' ' -f 1)" != "$setup_proof_digest" ]]
   NETRATEL_LOCAL_FIRST_WEB_URL="$web_url" \
   NETRATEL_LOCAL_FIRST_SETUP_PROOF="$reset_setup_proof" \
