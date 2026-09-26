@@ -32,7 +32,7 @@
 </MudPaper>
 
 <MudPaper Class="mt-2 pa-2 client-mgmt-surface" Elevation="0">
-    <MudTabs Rounded="true" KeepPanelsAlive="true" LazyLoadPanels="true" MinimumTabWidth="116px" ActivePanelIndex="_activeTab" ActivePanelIndexChanged="OnTabChanged" TabPanelsClass="client-mgmt-tab-panel" data-testid="client-management-tabs">
+    <MudTabs Rounded="true" KeepPanelsAlive="true" LazyLoadPanels="true" MinimumTabWidth="116px" ActivePanelIndexChanged="OnTabChanged" OnPreviewInteraction="GuardAutomationTabChangeAsync" TabPanelsClass="client-mgmt-tab-panel" data-testid="client-management-tabs">
         <MudTabPanel Text="GitHub releases">
             <MudStack Spacing="1" data-testid="github-release-catalogue">
                 <MudPaper Class="pa-2 client-mgmt-automation-summary" Elevation="0" data-testid="release-automation-settings">
@@ -523,6 +523,19 @@
             case 3 when _attemptTable is not null: await _attemptTable.ReloadServerData(); break;
             case 4 when _suspendedTable is not null: await _suspendedTable.ReloadServerData(); break;
         }
+    }
+
+    private async Task GuardAutomationTabChangeAsync(TabInteractionEventArgs context)
+    {
+        if (!_automationDirty)
+        {
+            return;
+        }
+
+        context.Cancel = true;
+        _automationError = "Save or cancel the automation draft before changing tabs.";
+        _automationDrawerOpen = true;
+        await InvokeAsync(StateHasChanged);
     }
 
     private async Task LoadGitHubAsync(bool refresh)

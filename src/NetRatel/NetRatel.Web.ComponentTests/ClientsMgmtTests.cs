@@ -224,6 +224,13 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
             cut.Find("[data-testid='save-automation-policy']").GetAttribute("disabled").Should().NotBeNull();
         });
 
+        await cut.InvokeAsync(() => cut.FindAll(".mud-tab").Single(tab => tab.TextContent.Trim() == "Packages").Click());
+        cut.WaitForAssertion(() =>
+        {
+            cut.Markup.Should().Contain("Save or cancel the automation draft before changing tabs.");
+            typeof(ClientsMgmt).GetField("_activeTab", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(cut.Instance).Should().Be(0);
+        });
+
         await cut.InvokeAsync(() => cut.Find("[data-testid='close-automation-settings']").Click());
         cut.WaitForAssertion(() => cut.Markup.Should().Contain("Unsaved automation changes are still open"));
 

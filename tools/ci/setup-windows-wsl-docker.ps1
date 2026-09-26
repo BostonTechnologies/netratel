@@ -52,7 +52,9 @@ if ($LASTEXITCODE -ne 0) {
     throw "Linux Docker engine setup failed with exit code $LASTEXITCODE."
 }
 
-$workspaceLinux = "/mnt/$($Matches.drive.ToLowerInvariant())/$($Matches.rest -replace '\\', '/')"
+$workspaceDrive = $Matches.drive
+$workspaceRest = $Matches.rest
+$workspaceLinux = "/mnt/$($workspaceDrive.ToLowerInvariant())/$($workspaceRest -replace '\\', '/')"
 $dockerShim = Join-Path $workspace 'tools\ci\windows-wsl-docker.cmd'
 $wslCommandShim = Join-Path $workspace 'tools\ci\windows-wsl-command.cmd'
 $wslEnvironment = @(
@@ -77,5 +79,12 @@ $wslEnvironment = @(
     "NETRATEL_LOCAL_FIRST_WSL_COMMAND=$wslCommandShim"
     "WSLENV=$wslEnvironment"
 ) | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+$env:NETRATEL_LOCAL_FIRST_WSL_DISTRIBUTION = $distribution
+$env:NETRATEL_LOCAL_FIRST_WSL_INSTALL_DIRECTORY = $distributionDirectory
+$env:NETRATEL_LOCAL_FIRST_WSL_WORKSPACE = $workspaceLinux
+$env:NETRATEL_LOCAL_FIRST_DOCKER_COMMAND = $dockerShim
+$env:NETRATEL_LOCAL_FIRST_WSL_COMMAND = $wslCommandShim
+$env:WSLENV = $wslEnvironment
 
 Write-Host "Configured Linux Docker engine in WSL distribution $distribution."
