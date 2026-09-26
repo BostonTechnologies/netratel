@@ -178,7 +178,10 @@ public sealed class ScriptTemplateServiceTests
         script.Should().StartWith("#!/usr/bin/env bash");
         script.Should().Contain("shasum -a 256");
         script.Should().Contain("launchctl bootstrap system");
-        script.Should().Contain("<key>NetRatelCLIENT__Client__ApiBaseUrl</key><string>${API_BASE}</string>");
+        var launchdApiEnvironmentKey = string.Concat(
+            "<", "key>NetRatelCLIENT__Client__ApiBaseUrl</", "key>",
+            "<string>${API_BASE}</string>");
+        script.Should().Contain(launchdApiEnvironmentKey);
         script.Should().Contain("/Library/LaunchDaemons/");
         script.Should().Contain("--enroll");
         script.Should().NotContain("systemctl");
