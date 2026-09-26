@@ -213,10 +213,11 @@ jobs:
             -keyout "$certificate_directory/tls.key" \
             -out "$certificate_directory/tls.crt" >/dev/null 2>&1
           openssl x509 -in "$certificate_directory/tls.crt" -outform DER -out "$certificate_directory/tls.cer"
-          certificate_path_windows="$(cygpath -w "$certificate_directory/tls.cer")"
+          certificate_import_path_windows="$(cygpath -w "$certificate_directory/tls.cer")"
+          certificate_path_windows="$(cygpath -w "$certificate_directory/tls.crt")"
           key_path_windows="$(cygpath -w "$certificate_directory/tls.key")"
           certificate_thumbprint="$(pwsh -NoLogo -NoProfile -NonInteractive -Command \
-            "(Import-Certificate -FilePath '$certificate_path_windows' -CertStoreLocation Cert:\\LocalMachine\\Root).Thumbprint")"
+            "(Import-Certificate -FilePath '$certificate_import_path_windows' -CertStoreLocation Cert:\\LocalMachine\\Root).Thumbprint")"
           pwsh -NoLogo -NoProfile -NonInteractive -Command \
             "\$hostsPath = Join-Path \$env:SystemRoot 'System32\\drivers\\etc\\hosts'; if (-not (Select-String -Path \$hostsPath -Pattern '^127\\.0\\.0\\.1\\s+netratel\\.example$' -Quiet)) { Add-Content -Path \$hostsPath -Value '127.0.0.1 netratel.example' }"
           cleanup() {
