@@ -216,7 +216,11 @@ jobs:
           certificate_import_path_windows="$(cygpath -w "$certificate_directory/tls.cer")"
           certificate_path_windows="$(cygpath -w "$certificate_directory/tls.crt")"
           key_path_windows="$(cygpath -w "$certificate_directory/tls.key")"
-          certutil.exe -addstore -f Root "$certificate_import_path_windows"
+          if ! certificate_store_output="$(certutil.exe -addstore -f Root "$certificate_import_path_windows" 2>&1)"; then
+            printf '%s\n' "$certificate_store_output" >&2
+            exit 1
+          fi
+          printf '%s\n' "$certificate_store_output"
           certificate_thumbprint="$(openssl x509 -in "$certificate_directory/tls.crt" -noout -fingerprint -sha1 | sed -E 's/^.*=//; s/://g' | tr '[:lower:]' '[:upper:]')"
           cleanup() {
             certutil.exe -delstore Root "$certificate_thumbprint" >/dev/null 2>&1 || true
