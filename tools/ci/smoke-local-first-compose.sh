@@ -218,18 +218,17 @@ migration_id="$("${compose[@]}" ps -a -q migrations)"
 migration_id="${migration_id//$'\r'/}"
 [[ -n "$migration_id" ]] || { echo "Migration container was not created." >&2; exit 1; }
 migration_complete=false
-for _ in $(seq 1 90); do
-  status="$("$docker_command" inspect --format '{{.State.Status}}' "$migration_id")"
-  status="${status//$'\r'/}"
-  if [[ "$status" == exited ]]; then
-    exit_code="$("$docker_command" inspect --format '{{.State.ExitCode}}' "$migration_id")"
-    exit_code="${exit_code//$'\r'/}"
-    [[ "$exit_code" == 0 ]] || exit 1
+if exit_code="$(timeout --foreground 90s "$docker_command" wait "$migration_id")"; then
+  exit_code="${exit_code//$'\r'/}"
+  exit_code="${exit_code//$'\n'/}"
+  if [[ "$exit_code" == 0 ]]; then
     migration_complete=true
-    break
+  else
+    echo "Migration container exited with code $exit_code." >&2
   fi
-  sleep 1
-done
+else
+  echo "Migration container did not exit within 90 seconds." >&2
+fi
 [[ "$migration_complete" == true ]] || { echo "Migration container did not complete within 90 seconds." >&2; exit 1; }
 
 stage="waiting for restricted setup surface"
