@@ -41,6 +41,7 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
             cut.Markup.Should().Contain("Auto-updates");
             cut.Markup.Should().Contain("Activity");
             cut.Markup.Should().Contain("Suspended");
+            cut.Find("button[aria-label='Advanced: upload artifact']").Should().NotBeNull();
             _artifacts.ArtifactPageRequests.Should().Be(0);
             _artifacts.ReleasePageRequests.Should().Be(0);
         });
