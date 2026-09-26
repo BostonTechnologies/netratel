@@ -254,11 +254,49 @@ playwright_script="src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0
 [[ -f "$playwright_script" ]] || { echo "Playwright install script was not produced." >&2; exit 1; }
 pwsh "$playwright_script" install --with-deps chromium
 stage="validating image operator commands and one-time proof rotation"
+ensure_runtime_service() {
+  local service="$1" container_id inspect_json running_state
+  container_id="$("${compose[@]}" ps -q "$service")"
+  container_id="${container_id//$'\r'/}"
+  if [[ -z "$container_id" ]]; then
+    container_id="$("${compose[@]}" ps -a -q "$service")"
+    container_id="${container_id//$'\r'/}"
+  fi
+  [[ -n "$container_id" ]] || {
+    echo "${service^} container was not created." >&2
+    return 1
+  }
+
+  inspect_json="$("$docker_command" inspect "$container_id" | LC_ALL=C tr -d '\000\r')"
+  running_state="$(jq -r '.[0].State.Running' <<<"$inspect_json")"
+  if [[ "$running_state" != true ]]; then
+    echo "${service^} container $container_id is not running; attempting one restart." >&2
+    "$docker_command" start "$container_id" >/dev/null
+  fi
+
+  for _ in $(seq 1 30); do
+    inspect_json="$("$docker_command" inspect "$container_id" | LC_ALL=C tr -d '\000\r')"
+    running_state="$(jq -r '.[0].State.Running' <<<"$inspect_json")"
+    [[ "$running_state" == true ]] && return 0
+    sleep 1
+  done
+
+  echo "${service^} container did not become running after the recovery attempt." >&2
+  jq -c '.[0].State' <<<"$inspect_json" >&2 || true
+  "$docker_command" logs --tail 100 "$container_id" >&2 || true
+  return 1
+}
 refresh_api_container() {
   api_container_id="$("${compose[@]}" ps -q api)"
   api_container_id="${api_container_id//$'\r'/}"
+  if [[ -z "$api_container_id" ]]; then
+    api_container_id="$("${compose[@]}" ps -a -q api)"
+    api_container_id="${api_container_id//$'\r'/}"
+  fi
   [[ -n "$api_container_id" ]] || { echo "API container was not created." >&2; return 1; }
 }
+ensure_runtime_service api
+ensure_runtime_service web
 refresh_api_container
 api_operator() { "$docker_command" exec "$api_container_id" "$@"; }
 api_operator dotnet NetRatel.API.dll --help | grep -Fq -- '--show-setup-code'
@@ -532,6 +570,8 @@ if [[ "${NETRATEL_LOCAL_FIRST_STATE_RESET_ACCEPTANCE:-false}" == true ]]; then
     sleep 1
   done
   [[ "$fresh" == true ]] || { echo "A full disposable reset did not produce a fresh setup state." >&2; exit 1; }
+  ensure_runtime_service api
+  ensure_runtime_service web
   refresh_api_container
   reset_setup_proof="$(api_operator cat /var/netratel/bootstrap/setup-proof)"
   reset_setup_proof="${reset_setup_proof//$'\r'/}"
