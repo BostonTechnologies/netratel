@@ -14,18 +14,16 @@ if ([string]::IsNullOrWhiteSpace($env:NETRATEL_LOCAL_FIRST_WSL_WORKSPACE)) {
     Write-Error 'NETRATEL_LOCAL_FIRST_WSL_WORKSPACE is required for the Windows WSL Docker shim.'
     exit 2
 }
-
-$wslPath = Join-Path $env:SystemRoot 'System32\wsl.exe'
-function ConvertTo-BashArgument {
-    param([AllowEmptyString()][string] $Value)
-
-    $singleQuote = [string][char]39
-    $escaped = $Value.Replace($singleQuote, $singleQuote + [char]92 + $singleQuote + [char]92 + $singleQuote)
-    return '{0}{1}{0}' -f $singleQuote, $escaped
+if ($Arguments.Count -eq 0) {
+    Write-Error 'At least one Docker command argument is required for the Windows WSL Docker shim.'
+    exit 2
 }
 
-$quotedArguments = @($Arguments | ForEach-Object { ConvertTo-BashArgument $_ })
-$command = "docker $($quotedArguments -join ' ')"
+$wslPath = Join-Path $env:SystemRoot 'System32\wsl.exe'
+$dockerArguments = @('docker') + @($Arguments)
+$env:NETRATEL_LOCAL_FIRST_WSL_ARGUMENTS = @($dockerArguments | ForEach-Object {
+        [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($_))
+    }) -join ' '
 $wslArguments = @(
     '--distribution'
     $env:NETRATEL_LOCAL_FIRST_WSL_DISTRIBUTION
@@ -35,8 +33,7 @@ $wslArguments = @(
     $env:NETRATEL_LOCAL_FIRST_WSL_WORKSPACE
     '--'
     'bash'
-    '-lc'
-    $command
+    "$env:NETRATEL_LOCAL_FIRST_WSL_WORKSPACE/tools/ci/windows-wsl-dispatch.sh"
 )
 
 & $wslPath @wslArguments
