@@ -36,6 +36,9 @@ services:
       Bootstrap__AllowedOrigins__1: ${NETRATEL_PUBLIC_ORIGIN:?set NETRATEL_PUBLIC_ORIGIN}
       DataProtection__ApplicationName: NetRatel-Keyring
       Integration__HttpMcp__PublicResourceUri: ${NETRATEL_MCP_PUBLIC_RESOURCE_URI:-}
+    networks:
+      - default
+      - public-ingress
 
 networks:
   public-ingress:

@@ -1,0 +1,16 @@
+services:
+  api:
+    environment:
+      # This acceptance profile exercises the same authenticated gateway
+      # authority used by the packaged Client service.
+      NetRatelAkkaMigration__Enabled: "true"
+      NetRatelAkkaMigration__PresenceEnabled: "true"
+      NetRatelAkkaMigration__GatewayEnabled: "true"
+      NetRatelAkkaMigration__PresenceAuthorityEnabled: "true"
+      NetRatelAkkaMigration__PresenceReadModelEnabled: "true"
+      NetRatelAkkaMigration__TelemetryShadowEnabled: "true"
+      NetRatelAkkaMigration__TelemetryAuthorityEnabled: "true"
+      NetRatelAkkaMigration__CommandShadowEnabled: "true"
+      NetRatelAkkaMigration__CommandAuthorityEnabled: "true"
+      NetRatelAkkaMigration__JobShadowEnabled: "true"
+      NetRatelAkkaMigration__JobAuthorityEnabled: "true"

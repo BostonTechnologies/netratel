@@ -35,7 +35,10 @@ archive SHA256 and local normalized artifact SHA256 can differ; each is checked
 at its own boundary. Importing leaves the currently offered update releases
 unchanged. The separate **Approve and publish for deployment** action records
 the operator and offers the pack only through existing enabled tenant update
-policies. Legacy offline upload remains available.
+policies. Legacy offline upload remains available, but it publishes immediately
+after manifest validation and bypasses GitHub publication verification and the
+saved automation policy. Use GitHub import when those checks and the
+instance-wide automation controls are required.
 
 Automation is instance-wide and starts **off**. Choose 12-hour or 24-hour UTC
 checks, then opt in to stable downloads. Prerelease downloads, automatic
@@ -128,5 +131,11 @@ stops being served when the grant expires, is revoked or is exhausted. Revoking
 also blocks enrollment from previously downloaded copies while leaving already
 enrolled machines intact. Configure a trusted HTTPS public Web origin and the
 public API/download origins before generating a link; a missing or unsafe
-public URL is reported as a configuration error. Keep capability URLs and
-generated script contents out of external reverse-proxy access logs.
+public URL is reported as a configuration error. Issued scripts are protected
+snapshots: a later template or package change does not rewrite an old link or
+archive. For recovery, revoke the old link from the management page (or the
+management revoke endpoint), confirm the tenant/runtime/origin/options, and
+generate a new link. Old packages remain supported until their link expires,
+is revoked, or is exhausted; do not edit a capability URL or downloaded script.
+Keep capability URLs and generated script contents out of external reverse-proxy
+access logs.

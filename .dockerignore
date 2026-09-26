@@ -21,6 +21,7 @@
 **/obj
 **/secrets.dev.yaml
 **/values.dev.yaml
+/.ci-wsl-docker-root
 README.md
 !**/.gitignore
 !.git/HEAD

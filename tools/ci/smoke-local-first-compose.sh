@@ -4,6 +4,59 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$root"
 
+docker_command="${NETRATEL_LOCAL_FIRST_DOCKER_COMMAND:-docker}"
+compose_root="$root"
+docker_key_directory=""
+if [[ -n "${NETRATEL_LOCAL_FIRST_WSL_DISTRIBUTION:-}" ]]; then
+  # GitHub's Windows-hosted Docker daemon is a Windows-container engine. The
+  # Windows acceptance still has to run natively, so this mode routes only
+  # Docker through the disposable WSL Linux engine configured by the workflow.
+  # Keep the test process and its Windows paths on the host; only paths handed
+  # to the Linux daemon are converted to /mnt/<drive>/... paths.
+  wsl_path() {
+    local candidate="$1" windows_path drive rest
+    if [[ "$candidate" =~ ^([[:alpha:]]):[\\/](.*)$ ]]; then
+      drive="${BASH_REMATCH[1],,}"
+      rest="${BASH_REMATCH[2]}"
+    else
+      windows_path="$(cygpath -w "$candidate")"
+      [[ "$windows_path" =~ ^([[:alpha:]]):[\\/](.*)$ ]] || {
+        echo "Cannot translate host path for WSL Docker: $candidate" >&2
+        exit 1
+      }
+      drive="${BASH_REMATCH[1],,}"
+      rest="${BASH_REMATCH[2]}"
+    fi
+    rest="${rest//\\//}"
+    printf '/mnt/%s/%s' "$drive" "$rest"
+  }
+
+  [[ "$(command -v cygpath || true)" != "" ]] || {
+    echo "cygpath is required for Windows WSL Docker path translation." >&2
+    exit 1
+  }
+  if [[ "$docker_command" =~ ^([[:alpha:]]):[\\/].* ]]; then
+    docker_command="$(cygpath -u "$docker_command")"
+  fi
+  wsl_distribution="${NETRATEL_LOCAL_FIRST_WSL_DISTRIBUTION//$'\r'/}"
+  wsl_distribution="${wsl_distribution//$'\n'/}"
+  [[ -n "$wsl_distribution" ]] || {
+    echo "The Linux Docker WSL distribution name is empty." >&2
+    exit 1
+  }
+  wsl_command="${NETRATEL_LOCAL_FIRST_WSL_COMMAND:?Windows WSL command shim path missing}"
+  compose_root="$(wsl_path "$root")"
+  wsl_run() {
+    cmd.exe /d /s /c call "$wsl_command" "$@"
+  }
+  export MSYS_NO_PATHCONV=1
+  export NETRATEL_HTTPS_CERTIFICATE="$(wsl_path "${NETRATEL_HTTPS_CERTIFICATE:?Windows public HTTPS certificate path missing}")"
+  export NETRATEL_HTTPS_PRIVATE_KEY="$(wsl_path "${NETRATEL_HTTPS_PRIVATE_KEY:?Windows public HTTPS private key path missing}")"
+else
+  wsl_path() { printf '%s' "$1"; }
+  wsl_run() { "$@"; }
+fi
+
 project="netratel-local-first-${GITHUB_RUN_ID:-local}-${RANDOM}"
 web_port="${NETRATEL_LOCAL_FIRST_WEB_PORT:-18081}"
 web_url="${NETRATEL_LOCAL_FIRST_WEB_URL:-http://127.0.0.1:${web_port}}"
@@ -13,6 +66,13 @@ if [[ "${NETRATEL_LOCAL_FIRST_IGNORE_HTTPS_ERRORS:-false}" == true ]]; then
 fi
 key_directory="$(mktemp -d)"
 key_path="$key_directory/agent-auth-private.pem"
+if [[ -n "${NETRATEL_LOCAL_FIRST_WSL_DISTRIBUTION:-}" ]]; then
+  docker_key_directory="/tmp/${project}-keys"
+  wsl_run mkdir -p "$docker_key_directory"
+  wsl_run chmod 711 "$docker_key_directory"
+else
+  docker_key_directory="$key_directory"
+fi
 chmod 711 "$key_directory"
 credential_path="$(mktemp)"
 mcp_stdio_config_path="$(mktemp)"
@@ -42,10 +102,10 @@ if [[ -n "${NETRATEL_LOCAL_FIRST_COMPOSE_OVERLAYS:-}" ]]; then
     compose_files+=(-f "$acceptance_overlay")
   done
 fi
-compose_files+=(-f "$root/tests/compose/local-first-install-links.compose.yaml")
+compose_files+=(-f "$compose_root/tests/compose/local-first-install-links.compose.yaml")
 if [[ -n "$mcp_http_image" ]]; then
   local_http_mcp_directory="$(mktemp -d)"
-  local_http_mcp_overlay="$root/tests/compose/local-http-mcp.compose.yaml"
+  local_http_mcp_overlay="$compose_root/tests/compose/local-http-mcp.compose.yaml"
   mcp_overlay="$root/release/compose.mcp-http.yaml"
   if [[ -n "$bundle_extract_dir" ]]; then
     mcp_overlay="$bundle_extract_dir/compose.mcp-http.yaml"
@@ -84,13 +144,13 @@ if [[ -n "$mcp_http_image" ]]; then
   export NETRATEL_LOCAL_HTTP_MCP_CERT_PASSWORD="$certificate_password"
   export NETRATEL_LOCAL_HTTP_MCP_API_CA="$api_certificate"
   export NETRATEL_LOCAL_HTTP_MCP_API_KEY="$api_key"
-  export NETRATEL_LOCAL_HTTP_MCP_GATEWAY_CONFIG="$root/tests/compose/local-http-mcp-api-proxy.nginx.conf"
+  export NETRATEL_LOCAL_HTTP_MCP_GATEWAY_CONFIG="$compose_root/tests/compose/local-http-mcp-api-proxy.nginx.conf"
   export NETRATEL_LOCAL_HTTP_MCP_MCP_PFX="$mcp_pfx"
   export NETRATEL_LOCAL_HTTP_MCP_CONFIG="$mcp_config"
   export NETRATEL_LOCAL_HTTP_MCP_M2M_SECRET="$m2m_secret"
   compose_files+=(-f "$mcp_overlay" -f "$local_http_mcp_overlay")
 fi
-compose=(docker compose --project-name "$project" "${compose_files[@]}")
+compose=("$docker_command" compose --project-name "$project" "${compose_files[@]}")
 
 cleanup() {
   local status=$?
@@ -102,8 +162,11 @@ cleanup() {
     "${compose[@]}" logs --no-color --tail 250 "${log_services[@]}" >&2 || true
   fi
   "${compose[@]}" down --volumes --remove-orphans --rmi local >/dev/null 2>&1 || true
-  docker volume rm "${project}_api-data" "${project}_web-keys" >/dev/null 2>&1 || true
+  "$docker_command" volume rm "${project}_api-data" "${project}_web-keys" >/dev/null 2>&1 || true
   find "$key_directory" -depth -delete 2>/dev/null || true
+  if [[ -n "${NETRATEL_LOCAL_FIRST_WSL_DISTRIBUTION:-}" ]]; then
+    wsl_run rm -rf "$docker_key_directory" >/dev/null 2>&1 || true
+  fi
   unlink "$credential_path" 2>/dev/null || true
   unlink "$mcp_stdio_config_path" 2>/dev/null || true
   if [[ -n "$bundle_extract_dir" ]]; then
@@ -117,12 +180,18 @@ cleanup() {
 }
 trap cleanup EXIT
 
-openssl ecparam -name prime256v1 -genkey -noout -out "$key_path"
+if [[ -n "${NETRATEL_LOCAL_FIRST_WSL_DISTRIBUTION:-}" ]]; then
+  wsl_run openssl ecparam -name prime256v1 -genkey -noout -out "$docker_key_directory/agent-auth-private.pem"
+else
+  openssl ecparam -name prime256v1 -genkey -noout -out "$key_path"
+fi
 # The disposable key matches the documented non-root identity and private
 # mode; its value is never emitted to logs or test output.
-docker run --rm --volume "$key_directory:/keys" alpine:3.22 \
-  sh -ceu 'chown 1654:1654 /keys/agent-auth-private.pem && chmod 600 /keys/agent-auth-private.pem'
-export NETRATEL_AGENT_AUTH_PRIVATE_KEY="$key_path"
+"$docker_command" run --rm --volume "$docker_key_directory:/keys" alpine:3.22 \
+  chown 1654:1654 /keys/agent-auth-private.pem
+"$docker_command" run --rm --volume "$docker_key_directory:/keys" alpine:3.22 \
+  chmod 600 /keys/agent-auth-private.pem
+export NETRATEL_AGENT_AUTH_PRIVATE_KEY="$docker_key_directory/agent-auth-private.pem"
 export NETRATEL_WEB_PORT="$web_port"
 
 # Reproduce managed deployments that pre-create an empty root-owned named
@@ -130,9 +199,11 @@ export NETRATEL_WEB_PORT="$web_port"
 # writes its first Data Protection key; browser sign-in verifies the result.
 stage="preparing root-owned fresh persistent volumes"
 for volume in "${project}_api-data" "${project}_web-keys"; do
-  docker volume create "$volume" >/dev/null
-  docker run --rm --volume "$volume:/target" alpine:3.22 \
-    sh -ceu 'chown 0:0 /target && chmod 700 /target'
+  "$docker_command" volume create "$volume" >/dev/null
+  "$docker_command" run --rm --volume "$volume:/target" alpine:3.22 \
+    chown 0:0 /target
+  "$docker_command" run --rm --volume "$volume:/target" alpine:3.22 \
+    chmod 700 /target
 done
 
 stage="starting selected local-first Compose profile"
@@ -144,12 +215,16 @@ fi
 
 stage="waiting for migration runner"
 migration_id="$("${compose[@]}" ps -a -q migrations)"
+migration_id="${migration_id//$'\r'/}"
 [[ -n "$migration_id" ]] || { echo "Migration container was not created." >&2; exit 1; }
 migration_complete=false
 for _ in $(seq 1 90); do
-  status="$(docker inspect --format '{{.State.Status}}' "$migration_id")"
+  status="$("$docker_command" inspect --format '{{.State.Status}}' "$migration_id")"
+  status="${status//$'\r'/}"
   if [[ "$status" == exited ]]; then
-    [[ "$(docker inspect --format '{{.State.ExitCode}}' "$migration_id")" == 0 ]] || exit 1
+    exit_code="$("$docker_command" inspect --format '{{.State.ExitCode}}' "$migration_id")"
+    exit_code="${exit_code//$'\r'/}"
+    [[ "$exit_code" == 0 ]] || exit 1
     migration_complete=true
     break
   fi
@@ -372,7 +447,7 @@ if [[ "${NETRATEL_LOCAL_FIRST_STATE_RESET_ACCEPTANCE:-false}" == true ]]; then
 
   stage="verifying partial database loss enters recovery"
   "${compose[@]}" down --remove-orphans >/dev/null
-  docker volume rm "${project}_postgres-data" >/dev/null
+  "$docker_command" volume rm "${project}_postgres-data" >/dev/null
   "${compose[@]}" up --detach >/dev/null
   recovered=false
   for _ in $(seq 1 90); do
@@ -394,13 +469,19 @@ if [[ "${NETRATEL_LOCAL_FIRST_STATE_RESET_ACCEPTANCE:-false}" == true ]]; then
   stage="verifying a complete disposable reset starts a new installation"
   "${compose[@]}" down --volumes --remove-orphans >/dev/null
   for volume in "${project}_postgres-data" "${project}_api-data" "${project}_web-keys"; do
-    if docker volume inspect "$volume" >/dev/null 2>&1; then docker volume rm "$volume" >/dev/null; fi
+    if "$docker_command" volume inspect "$volume" >/dev/null 2>&1; then "$docker_command" volume rm "$volume" >/dev/null; fi
   done
-  docker run --rm --volume "$key_directory:/keys" alpine:3.22 \
-    sh -ceu 'unlink /keys/agent-auth-private.pem'
-  openssl ecparam -name prime256v1 -genkey -noout -out "$key_path"
-  docker run --rm --volume "$key_directory:/keys" alpine:3.22 \
-    sh -ceu 'chown 1654:1654 /keys/agent-auth-private.pem && chmod 600 /keys/agent-auth-private.pem'
+  "$docker_command" run --rm --volume "$docker_key_directory:/keys" alpine:3.22 \
+    unlink /keys/agent-auth-private.pem
+  if [[ -n "${NETRATEL_LOCAL_FIRST_WSL_DISTRIBUTION:-}" ]]; then
+    wsl_run openssl ecparam -name prime256v1 -genkey -noout -out "$docker_key_directory/agent-auth-private.pem"
+  else
+    openssl ecparam -name prime256v1 -genkey -noout -out "$key_path"
+  fi
+  "$docker_command" run --rm --volume "$docker_key_directory:/keys" alpine:3.22 \
+    chown 1654:1654 /keys/agent-auth-private.pem
+  "$docker_command" run --rm --volume "$docker_key_directory:/keys" alpine:3.22 \
+    chmod 600 /keys/agent-auth-private.pem
   "${compose[@]}" up --detach >/dev/null
   fresh=false
   for _ in $(seq 1 90); do

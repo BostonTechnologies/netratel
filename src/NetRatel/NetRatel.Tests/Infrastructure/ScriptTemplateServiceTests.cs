@@ -73,6 +73,7 @@ public sealed class ScriptTemplateServiceTests
         script.Should().Contain("ConvertTo-Json -Depth 4");
         script.Should().Contain("New-Service");
         script.Should().Contain("-BinaryPathName \"`\"$exe`\" --service\"");
+        script.Should().Contain("NetRatelCLIENT__Client__ApiBaseUrl=$ApiBase");
         script.Should().Contain("NetRatel.Update");
         script.Should().Contain("versions");
         script.Should().Contain("netratel-update.ps1");
@@ -135,6 +136,7 @@ public sealed class ScriptTemplateServiceTests
         script.Should().Contain("/onboarding-download");
         script.Should().Contain("X-NetRatel-Enrollment-Code");
         script.Should().Contain("NetRatelCLIENT__Client__AutoUpdate__Mode=Service");
+        script.Should().Contain("Environment=NetRatelCLIENT__Client__ApiBaseUrl=${API_BASE}");
         script.Should().Contain("NetRatelCLIENT__Transport__Mode=AkkaPresence");
         script.Should().Contain("NetRatelCLIENT__Gateway__Endpoint=${API_BASE}");
         script.Should().Contain("NetRatelCLIENT__Gateway__RequiredPresenceAuthority=akka");
@@ -176,6 +178,10 @@ public sealed class ScriptTemplateServiceTests
         script.Should().StartWith("#!/usr/bin/env bash");
         script.Should().Contain("shasum -a 256");
         script.Should().Contain("launchctl bootstrap system");
+        var launchdApiEnvironmentKey = string.Concat(
+            "<", "key>NetRatelCLIENT__Client__ApiBaseUrl</", "key>",
+            "<string>${API_BASE}</string>");
+        script.Should().Contain(launchdApiEnvironmentKey);
         script.Should().Contain("/Library/LaunchDaemons/");
         script.Should().Contain("--enroll");
         script.Should().NotContain("systemctl");

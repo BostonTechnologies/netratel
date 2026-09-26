@@ -54,6 +54,8 @@ using NetRatel.API.Gateway;
 using NetRatel.Akka.Configuration;
 using Microsoft.AspNetCore.Server.Kestrel.Https;
 using HttpProtocols = Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols;
+using System.Net;
+using System.Net.Security;
 using NetRatel.API.Bootstrap;
 using NetRatel.API.Security.Local;
 using NetRatel.API.Security.Authorization;
@@ -62,6 +64,37 @@ using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Infrastructure.Identity.Branding;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.API.OpenApi;
+
+if (args is ["--gssapi-application-smoke"])
+{
+    // Keep the dependency check on the actual API assembly. This invokes the
+    // .NET negotiated-authentication primitive that reaches the platform
+    // GSSAPI implementation; it is deliberately separate from the image
+    // liveness/native-loader check in tools/ci/test-api-runtime-dependency.sh.
+    using var authentication = new NegotiateAuthentication(new NegotiateAuthenticationClientOptions
+    {
+        Package = "Negotiate",
+        TargetName = "HTTP/netratel-gssapi-smoke",
+        Credential = CredentialCache.DefaultNetworkCredentials
+    });
+    var outgoing = authentication.GetOutgoingBlob(ReadOnlySpan<byte>.Empty, out var status);
+    // A disposable API image has no Kerberos ticket or domain credentials, so
+    // UnknownCredentials is the expected terminal result after the native
+    // GSSAPI exchange has been reached. Missing-library and unsupported-path
+    // failures still throw or return a different status and fail the smoke.
+    if (status is not (NegotiateAuthenticationStatusCode.ContinueNeeded or
+        NegotiateAuthenticationStatusCode.Completed or
+        NegotiateAuthenticationStatusCode.UnknownCredentials))
+    {
+        Console.Error.WriteLine($"GSSAPI application path returned unexpected status '{status}'.");
+        Environment.ExitCode = 1;
+        return;
+    }
+
+    Console.WriteLine($"GSSAPI application path reached: package={authentication.Package}; status={status}; outgoingBytes={outgoing?.Length ?? 0}");
+    return;
+}
+
 var builder = WebApplication.CreateBuilder(args);
 // Public install URLs are bearer capabilities; framework request-start logs include raw paths.
 builder.Logging.AddFilter("Microsoft.AspNetCore.Hosting.Diagnostics", LogLevel.Warning);

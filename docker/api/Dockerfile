@@ -9,6 +9,12 @@ ARG APP_GID=1654
 RUN test "$(id -u "${APP_USER}")" = "${APP_UID}" \
  && test "$(id -g "${APP_USER}")" = "${APP_GID}"
 
+# ASP.NET's runtime image does not include the Kerberos GSSAPI native library,
+# but the API's negotiated-authentication path loads it at runtime.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libgssapi-krb5-2 \
+ && rm -rf /var/lib/apt/lists/*
+
 ENV NetRatel_KEYS_DIR=/var/netratel/keys \
     NetRatel_HTTP_PORT=9222
 
