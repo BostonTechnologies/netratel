@@ -501,7 +501,12 @@
 
     private async Task OnTabChanged(int index)
     {
-        if (index != _activeTab && _automationDirty)
+        if (index == _activeTab)
+        {
+            return;
+        }
+
+        if (_automationDirty)
         {
             _automationError = "Save or cancel the automation draft before changing tabs.";
             _automationDrawerOpen = true;
