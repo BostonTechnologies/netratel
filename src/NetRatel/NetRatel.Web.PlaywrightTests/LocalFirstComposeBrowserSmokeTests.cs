@@ -301,6 +301,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             State = WaitForSelectorState.Attached
         });
         await page.GetByRole(AriaRole.Button, new() { Name = "Advanced: upload artifact" }).ClickAsync();
+        await page.GetByRole(AriaRole.Menuitem, new() { Name = "Upload legacy artifact" }).ClickAsync();
         var uploadDialog = page.Locator(".mud-dialog:visible").Filter(new() { HasText = "Runtime Identifier" }).Last;
         var runtimeSelector = page.GetByTestId("upload-runtime-selector");
         await runtimeSelector.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
