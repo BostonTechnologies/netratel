@@ -215,53 +215,39 @@ jobs:
           NETRATEL_NATIVE_CLIENT_DIRECTORY="$PWD/artifacts/netratel-client-win-x64" \
             dotnet src/NetRatel/NetRatel.Tests/bin/Release/net10.0/NetRatel.Tests.dll \
               -method NetRatel.Tests.Infrastructure.WindowsInstallerNativeTests.GeneratedPowerShellInstallerPersistsApiConfigurationAcrossWindowsServiceRestart
+      - name: Prepare Windows public HTTPS certificate
+        if: matrix.runtime == 'win-x64'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $certificateDirectory = Join-Path $env:RUNNER_TEMP 'netratel-windows-public-https'
+          New-Item -ItemType Directory -Path $certificateDirectory -Force | Out-Null
+          $certificatePath = Join-Path $certificateDirectory 'tls.crt'
+          $certificateDerPath = Join-Path $certificateDirectory 'tls.cer'
+          $keyPath = Join-Path $certificateDirectory 'tls.key'
+          & openssl req -x509 -newkey rsa:2048 -nodes -days 1 `
+            -subj '/CN=netratel.example' `
+            -addext 'subjectAltName=DNS:netratel.example,IP:127.0.0.1' `
+            -keyout $keyPath `
+            -out $certificatePath *> $null
+          if ($LASTEXITCODE -ne 0) { throw "OpenSSL certificate generation failed with exit code $LASTEXITCODE." }
+          & openssl x509 -in $certificatePath -outform DER -out $certificateDerPath *> $null
+          if ($LASTEXITCODE -ne 0) { throw "OpenSSL DER certificate conversion failed with exit code $LASTEXITCODE." }
+          $importedCertificates = Import-Certificate -FilePath $certificateDerPath -CertStoreLocation Cert:\LocalMachine\Root
+          $certificate = $importedCertificates | Select-Object -First 1
+          if ($null -eq $certificate -or [string]::IsNullOrWhiteSpace($certificate.Thumbprint)) {
+            throw 'Windows certificate import returned no certificate thumbprint.'
+          }
+          @(
+            "NETRATEL_HTTPS_CERTIFICATE=$certificatePath"
+            "NETRATEL_HTTPS_PRIVATE_KEY=$keyPath"
+            "NETRATEL_WINDOWS_CERTIFICATE_THUMBPRINT=$($certificate.Thumbprint)"
+          ) | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Exercise real public-link Windows service journey
         if: matrix.runtime == 'win-x64'
         shell: bash
         run: |
           set -Eeuo pipefail
-          certificate_directory="$RUNNER_TEMP/netratel-windows-public-https"
-          mkdir -p "$certificate_directory"
-          openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
-            -subj '/CN=netratel.example' \
-            -addext 'subjectAltName=DNS:netratel.example,IP:127.0.0.1' \
-            -keyout "$certificate_directory/tls.key" \
-            -out "$certificate_directory/tls.crt" >/dev/null 2>&1
-          openssl x509 -in "$certificate_directory/tls.crt" -outform DER -out "$certificate_directory/tls.cer"
-          certificate_import_path_windows="$(cygpath -aw "$certificate_directory/tls.cer")"
-          certificate_path_windows="$(cygpath -w "$certificate_directory/tls.crt")"
-          key_path_windows="$(cygpath -w "$certificate_directory/tls.key")"
-          if [[ ! -f "$certificate_directory/tls.cer" ]]; then
-            printf 'Windows certificate file was not created: %s\n' "$certificate_directory/tls.cer" >&2
-            exit 1
-          fi
-          set +e
-          certificate_store_output="$(certutil.exe -addstore -f Root "$certificate_import_path_windows" 2>&1)"
-          certificate_store_status=$?
-          set -e
-          printf 'Windows certificate store exit status: %s\n' "$certificate_store_status"
-          printf '%s\n' "$certificate_store_output"
-          if [[ "$certificate_store_status" -ne 0 ]]; then
-            exit "$certificate_store_status"
-          fi
-          set +e
-          certificate_fingerprint_output="$(openssl x509 -in "$certificate_directory/tls.crt" -noout -fingerprint -sha1 2>&1)"
-          certificate_fingerprint_status=$?
-          set -e
-          printf 'Certificate fingerprint exit status: %s\n' "$certificate_fingerprint_status"
-          printf '%s\n' "$certificate_fingerprint_output"
-          if [[ "$certificate_fingerprint_status" -ne 0 ]]; then
-            exit "$certificate_fingerprint_status"
-          fi
-          certificate_thumbprint="$(printf '%s\n' "$certificate_fingerprint_output" | sed -E 's/^.*=//; s/://g' | tr '[:lower:]' '[:upper:]')"
-          if [[ -z "$certificate_thumbprint" ]]; then
-            printf 'Certificate fingerprint was empty.\n' >&2
-            exit 1
-          fi
-          cleanup() {
-            certutil.exe -delstore Root "$certificate_thumbprint" >/dev/null 2>&1 || true
-          }
-          trap cleanup EXIT
           version="$(python3 tools/ci/product-version.py)"
           NETRATEL_LOCAL_FIRST_WEB_URL=https://127.0.0.1 \
           NETRATEL_LOCAL_FIRST_IGNORE_HTTPS_ERRORS=true \
@@ -275,9 +261,17 @@ jobs:
           NETRATEL_INSTALL_LINK_PUBLIC_ORIGIN=https://127.0.0.1 \
           NETRATEL_HTTPS_BIND_ADDRESS=0.0.0.0 \
           NETRATEL_HTTPS_PORT=443 \
-          NETRATEL_HTTPS_CERTIFICATE="$certificate_path_windows" \
-          NETRATEL_HTTPS_PRIVATE_KEY="$key_path_windows" \
+          NETRATEL_HTTPS_CERTIFICATE="${NETRATEL_HTTPS_CERTIFICATE:?Windows public HTTPS certificate path missing}" \
+          NETRATEL_HTTPS_PRIVATE_KEY="${NETRATEL_HTTPS_PRIVATE_KEY:?Windows public HTTPS private key path missing}" \
             tools/ci/smoke-local-first-compose.sh
+      - name: Remove Windows public HTTPS certificate
+        if: always() && matrix.runtime == 'win-x64'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          if (-not [string]::IsNullOrWhiteSpace($env:NETRATEL_WINDOWS_CERTIFICATE_THUMBPRINT)) {
+            Remove-Item -LiteralPath "Cert:\LocalMachine\Root\$($env:NETRATEL_WINDOWS_CERTIFICATE_THUMBPRINT)" -Force -ErrorAction SilentlyContinue
+          }
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
