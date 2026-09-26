@@ -406,13 +406,14 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         {
             State = WaitForSelectorState.Attached
         });
-        var release = page.Locator(".client-github-release").Filter(new() { HasText = version });
+        var release = page.GetByTestId("github-release-table").GetByRole(AriaRole.Row)
+            .Filter(new() { HasText = version });
         await release.WaitForAsync(new LocatorWaitForOptions { Timeout = 60_000 });
         Assert.Contains("linux-x64", await release.InnerTextAsync());
-        await release.GetByRole(AriaRole.Button, new() { Name = "Download client pack to this instance" }).ClickAsync();
+        await release.GetByRole(AriaRole.Button, new() { Name = "Import pack", Exact = true }).ClickAsync();
         await page.WaitForFunctionAsync("""
-            version => Array.from(document.querySelectorAll('.client-github-release'))
-                .some(item => item.textContent?.includes(version) && item.textContent?.includes('Local state: Imported'))
+            version => Array.from(document.querySelectorAll('[data-testid="github-release-table"] tr'))
+                .some(item => item.textContent?.includes(version) && /Local:\s+(Imported|Published)/.test(item.textContent ?? ''))
             """, version, new PageWaitForFunctionOptions { Timeout = 300_000 });
 
         await page.GetByRole(AriaRole.Tab, new() { Name = "Packages" }).ClickAsync();
