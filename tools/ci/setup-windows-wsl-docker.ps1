@@ -41,6 +41,7 @@ cat /var/log/docker.log 2>/dev/null || true
 exit 1
 '@
 
+$dockerSetup = $dockerSetup.Replace("`r`n", "`n").Replace("`r", "")
 $encodedDockerSetup = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($dockerSetup))
 & wsl.exe --distribution $distribution --user root -- bash -lc "echo $encodedDockerSetup | base64 -d | bash"
 if ($LASTEXITCODE -ne 0) {
