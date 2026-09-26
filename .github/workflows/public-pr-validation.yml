@@ -201,6 +201,9 @@ jobs:
           NETRATEL_NATIVE_CLIENT_DIRECTORY="$PWD/artifacts/netratel-client-win-x64" \
             dotnet src/NetRatel/NetRatel.Tests/bin/Release/net10.0/NetRatel.Tests.dll \
               -method NetRatel.Tests.Infrastructure.WindowsInstallerNativeTests.GeneratedPowerShellInstallerDownloadsVerifiesAndEnrollsNativePackage
+          NETRATEL_NATIVE_CLIENT_DIRECTORY="$PWD/artifacts/netratel-client-win-x64" \
+            dotnet src/NetRatel/NetRatel.Tests/bin/Release/net10.0/NetRatel.Tests.dll \
+              -method NetRatel.Tests.Infrastructure.WindowsInstallerNativeTests.GeneratedPowerShellInstallerPersistsApiConfigurationAcrossWindowsServiceRestart
       - shell: bash
         run: |
           version="$(python3 tools/ci/product-version.py)"

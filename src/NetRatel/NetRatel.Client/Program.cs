@@ -241,7 +241,7 @@ async Task RunClientAsync()
         .AddEnvironmentVariables()
         .AddCommandLine(cliArgs)
         .Build();
-    var cfg = LoadOptions(configuration, appBaseDir, cliArgs);
+    var cfg = ClientConfigurationLoader.Load(configuration, appBaseDir, cliArgs);
     cfg.ApiBaseUrl = NormalizeApiBaseUrl(cfg.ApiBaseUrl);
     var transportMode = configuration["Transport:Mode"] ?? "AkkaPresence";
     var gatewayOptions = LoadGatewayOptions(configuration, cfg.ApiBaseUrl);
@@ -509,53 +509,6 @@ async Task RunClientAsync()
     LogManager.WriteLog($"[Client] Unsupported Transport:Mode '{transportMode}'. Supported modes are AkkaPresence and the legacy AkkaPresenceCanary.");
     Environment.ExitCode = 13;
     return;
-}
-
-static ClientOptions LoadOptions(IConfiguration? configuration, string appBaseDir, string[] args)
-{
-    var opts = new ClientOptions();
-    configuration?.GetSection("Client").Bind(opts);
-
-    var candidate = Path.Combine(appBaseDir, "clientsettings.json");
-    if (File.Exists(candidate))
-    {
-        var json = File.ReadAllText(candidate);
-        var legacy = JsonSerializer.Deserialize<ClientOptions>(json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-        if (legacy is not null)
-        {
-            if (legacy.TenantId != Guid.Empty) opts.TenantId = legacy.TenantId;
-            if (!string.IsNullOrWhiteSpace(legacy.ApiBaseUrl)) opts.ApiBaseUrl = legacy.ApiBaseUrl;
-            opts.Environment = legacy.Environment;
-            opts.UseInProcPowerShell = legacy.UseInProcPowerShell;
-            if (!string.IsNullOrWhiteSpace(legacy.TerminalBackendPreference)) opts.TerminalBackendPreference = legacy.TerminalBackendPreference;
-            opts.EnableNativeUnixPty = legacy.EnableNativeUnixPty;
-            if (legacy.TerminalGracefulExitTimeoutMs > 0) opts.TerminalGracefulExitTimeoutMs = legacy.TerminalGracefulExitTimeoutMs;
-            if (legacy.TerminalKillTimeoutMs > 0) opts.TerminalKillTimeoutMs = legacy.TerminalKillTimeoutMs;
-            if (!string.IsNullOrWhiteSpace(legacy.EnrollmentCode)) opts.EnrollmentCode = legacy.EnrollmentCode;
-            if (!string.IsNullOrWhiteSpace(legacy.AgentId)) opts.AgentId = legacy.AgentId;
-            if (legacy.AutoUpdate is not null) opts.AutoUpdate = legacy.AutoUpdate;
-        }
-    }
-
-    for (int i = 0; i < args.Length; i++)
-    {
-        switch (args[i])
-        {
-            case "--tenant" when i + 1 < args.Length && Guid.TryParse(args[i + 1], out var at):
-                opts.TenantId = at; i++; break;
-            case "--api" when i + 1 < args.Length:
-                opts.ApiBaseUrl = args[i + 1]; i++; break;
-            case "--env" when i + 1 < args.Length && Enum.TryParse<ClientEnvironment>(args[i + 1], true, out var aenv):
-                opts.Environment = aenv; i++; break;
-            case "--enrollment-code" when i + 1 < args.Length:
-                opts.EnrollmentCode = args[i + 1]; i++; break;
-            case "--enroll" when i + 1 < args.Length:
-                opts.EnrollmentCode = args[i + 1]; i++; break;
-            case "--agent-id" when i + 1 < args.Length:
-                opts.AgentId = args[i + 1]; i++; break;
-        }
-    }
-    return opts;
 }
 
 static GatewayClientOptions LoadGatewayOptions(IConfiguration configuration, string apiBaseUrl)
