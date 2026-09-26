@@ -188,7 +188,9 @@ fi
 # The disposable key matches the documented non-root identity and private
 # mode; its value is never emitted to logs or test output.
 "$docker_command" run --rm --volume "$docker_key_directory:/keys" alpine:3.22 \
-  sh -ceu 'chown 1654:1654 /keys/agent-auth-private.pem && chmod 600 /keys/agent-auth-private.pem'
+  chown 1654:1654 /keys/agent-auth-private.pem
+"$docker_command" run --rm --volume "$docker_key_directory:/keys" alpine:3.22 \
+  chmod 600 /keys/agent-auth-private.pem
 export NETRATEL_AGENT_AUTH_PRIVATE_KEY="$docker_key_directory/agent-auth-private.pem"
 export NETRATEL_WEB_PORT="$web_port"
 
@@ -199,7 +201,9 @@ stage="preparing root-owned fresh persistent volumes"
 for volume in "${project}_api-data" "${project}_web-keys"; do
   "$docker_command" volume create "$volume" >/dev/null
   "$docker_command" run --rm --volume "$volume:/target" alpine:3.22 \
-    sh -ceu 'chown 0:0 /target && chmod 700 /target'
+    chown 0:0 /target
+  "$docker_command" run --rm --volume "$volume:/target" alpine:3.22 \
+    chmod 700 /target
 done
 
 stage="starting selected local-first Compose profile"
@@ -464,14 +468,16 @@ if [[ "${NETRATEL_LOCAL_FIRST_STATE_RESET_ACCEPTANCE:-false}" == true ]]; then
     if "$docker_command" volume inspect "$volume" >/dev/null 2>&1; then "$docker_command" volume rm "$volume" >/dev/null; fi
   done
   "$docker_command" run --rm --volume "$docker_key_directory:/keys" alpine:3.22 \
-    sh -ceu 'unlink /keys/agent-auth-private.pem'
+    unlink /keys/agent-auth-private.pem
   if [[ -n "${NETRATEL_LOCAL_FIRST_WSL_DISTRIBUTION:-}" ]]; then
     wsl_run openssl ecparam -name prime256v1 -genkey -noout -out "$docker_key_directory/agent-auth-private.pem"
   else
     openssl ecparam -name prime256v1 -genkey -noout -out "$key_path"
   fi
   "$docker_command" run --rm --volume "$docker_key_directory:/keys" alpine:3.22 \
-    sh -ceu 'chown 1654:1654 /keys/agent-auth-private.pem && chmod 600 /keys/agent-auth-private.pem'
+    chown 1654:1654 /keys/agent-auth-private.pem
+  "$docker_command" run --rm --volume "$docker_key_directory:/keys" alpine:3.22 \
+    chmod 600 /keys/agent-auth-private.pem
   "${compose[@]}" up --detach >/dev/null
   fresh=false
   for _ in $(seq 1 90); do
