@@ -35,29 +35,29 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
         cut.WaitForAssertion(() =>
         {
             cut.Markup.Should().Contain("GitHub releases");
-            cut.Markup.Should().Contain("Instance release automation");
+            cut.Markup.Should().Contain("Release automation");
             cut.Markup.Should().Contain("Verification required");
-            cut.Markup.Should().Contain("Artifacts");
-            cut.Markup.Should().Contain("Auto-update Releases");
-            cut.Markup.Should().Contain("Update Attempts");
-            cut.Markup.Should().Contain("Suspended Agents");
+            cut.Markup.Should().Contain("Packages");
+            cut.Markup.Should().Contain("Auto-updates");
+            cut.Markup.Should().Contain("Activity");
+            cut.Markup.Should().Contain("Suspended");
             _artifacts.ArtifactPageRequests.Should().Be(0);
             _artifacts.ReleasePageRequests.Should().Be(0);
         });
 
-        await cut.InvokeAsync(() => cut.FindAll(".mud-tab").Single(x => x.TextContent.Trim() == "Artifacts").Click());
+        await cut.InvokeAsync(() => cut.FindAll(".mud-tab").Single(x => x.TextContent.Trim() == "Packages").Click());
         cut.WaitForAssertion(() =>
         {
             cut.Markup.Should().Contain("Search artifacts");
             _artifacts.ArtifactPageRequests.Should().BeGreaterThan(0);
         });
 
-        await cut.InvokeAsync(() => cut.FindAll(".mud-tab").Single(x => x.TextContent.Contains("Auto-update Releases")).Click());
+        await cut.InvokeAsync(() => cut.FindAll(".mud-tab").Single(x => x.TextContent.Contains("Auto-updates")).Click());
         cut.WaitForAssertion(() => _artifacts.ReleasePageRequests.Should().BeGreaterThan(0));
         await cut.InvokeAsync(() => cut.FindAll("button").Single(x => x.TextContent.Trim() == "Disable").Click());
         cut.WaitForAssertion(() => _artifacts.DisabledReleaseId.Should().Be(ReleaseId));
 
-        await cut.InvokeAsync(() => cut.FindAll(".mud-tab").Single(x => x.TextContent.Contains("Update Attempts")).Click());
+        await cut.InvokeAsync(() => cut.FindAll(".mud-tab").Single(x => x.TextContent.Contains("Activity")).Click());
         cut.WaitForAssertion(() =>
         {
             cut.Markup.Should().Contain("All states");
@@ -72,15 +72,35 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
             cut.Markup.Should().Contain("canary-host");
         });
 
-        await cut.InvokeAsync(() => cut.FindAll(".mud-tab").Single(x => x.TextContent.Contains("Suspended Agents")).Click());
+        await cut.InvokeAsync(() => cut.FindAll(".mud-tab").Single(x => x.TextContent.Contains("Suspended")).Click());
         cut.WaitForAssertion(() => cut.Markup.Should().Contain("operator-review"));
         await cut.InvokeAsync(() => cut.FindAll("button").Single(x => x.TextContent.Trim() == "Resume future updates").Click());
         cut.WaitForAssertion(() => _artifacts.ResumedAgent.Should().Be((7, AgentId)));
     }
 
+    [Fact]
+    public async Task AutomationDrawer_KeepsDraftSeparateUntilSaved()
+    {
+        var cut = Render<ClientsMgmt>();
+
+        cut.WaitForAssertion(() => cut.Find("[data-testid='automation-settings-button']").Should().NotBeNull());
+        await cut.InvokeAsync(() => cut.Find("[data-testid='automation-settings-button']").Click());
+        cut.WaitForAssertion(() => cut.Find("[data-testid='automation-drawer']").Should().NotBeNull());
+
+        var switches = cut.FindAll("input.mud-switch-input");
+        switches.Should().HaveCountGreaterThanOrEqualTo(4);
+        await cut.InvokeAsync(() => switches[1].Change(true));
+        cut.WaitForAssertion(() => cut.Find("[data-testid='automation-unsaved']").Should().NotBeNull());
+
+        await cut.InvokeAsync(() => cut.FindAll("button").Single(button => button.TextContent.Trim() == "Save policy").Click());
+        cut.WaitForAssertion(() => cut.FindAll("[data-testid='automation-unsaved']").Should().BeEmpty());
+        _artifacts.SavedAutomation.DownloadPrerelease.Should().BeTrue();
+    }
+
     private sealed class StubClientArtifactsService : IClientArtifactsService
     {
         private ClientReleaseAutomationModel _automation = new();
+        public ClientReleaseAutomationModel SavedAutomation => _automation;
         public Task<ClientReleaseAutomationModel> GetReleaseAutomationAsync(CancellationToken ct = default) =>
             Task.FromResult(_automation);
         public Task<ClientReleaseAutomationModel> SaveReleaseAutomationAsync(ClientReleaseAutomationModel settings, CancellationToken ct = default)

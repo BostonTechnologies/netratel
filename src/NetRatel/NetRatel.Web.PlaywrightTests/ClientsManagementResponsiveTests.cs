@@ -29,9 +29,12 @@ public sealed class ClientsManagementResponsiveTests : IAsyncLifetime
     private ClientsManagementFixtureHost? _fixture;
 
     [Theory]
-    [InlineData(1440, 900, "desktop")]
-    [InlineData(390, 844, "phone")]
-    public async Task AuthenticatedFixture_RendersFiveManagementTabsWithinViewport(int width, int height, string viewportName)
+    [InlineData(1440, 900, "desktop", 1.0)]
+    [InlineData(1024, 768, "tablet", 1.0)]
+    [InlineData(390, 844, "phone", 1.0)]
+    [InlineData(390, 480, "phone-short", 1.0)]
+    [InlineData(390, 844, "phone-zoom", 1.25)]
+    public async Task AuthenticatedFixture_RendersFiveManagementTabsWithinViewport(int width, int height, string viewportName, double zoom)
     {
         var browser = _browser ?? throw new InvalidOperationException("Playwright browser was not initialized.");
         var fixture = _fixture ?? throw new InvalidOperationException("Client management fixture was not initialized.");
@@ -48,12 +51,12 @@ public sealed class ClientsManagementResponsiveTests : IAsyncLifetime
             Assert.Equal(5, await page.GetByRole(AriaRole.Tab).CountAsync());
             await page.GetByTestId("github-release-catalogue").WaitForAsync();
             await page.GetByTestId("release-automation-settings").WaitForAsync();
-            await page.GetByText("Automatic prerelease deployment can update enrolled clients", new() { Exact = false }).WaitForAsync();
             await page.GetByText("Fixture GitHub client release", new() { Exact = false }).WaitForAsync();
-            await page.GetByRole(AriaRole.Tab, new() { Name = "Artifacts" }).WaitForAsync();
-            await page.GetByRole(AriaRole.Tab, new() { Name = "Auto-update Releases" }).WaitForAsync();
-            await page.GetByRole(AriaRole.Tab, new() { Name = "Update Attempts" }).WaitForAsync();
-            await page.GetByRole(AriaRole.Tab, new() { Name = "Suspended Agents" }).WaitForAsync();
+            await page.GetByRole(AriaRole.Tab, new() { Name = "Packages" }).WaitForAsync();
+            await page.GetByRole(AriaRole.Tab, new() { Name = "Auto-updates" }).WaitForAsync();
+            await page.GetByRole(AriaRole.Tab, new() { Name = "Activity" }).WaitForAsync();
+            await page.GetByRole(AriaRole.Tab, new() { Name = "Suspended" }).WaitForAsync();
+            await page.EvaluateAsync($"() => document.documentElement.style.zoom = '{zoom.ToString(System.Globalization.CultureInfo.InvariantCulture)}'");
             Assert.False(await page.EvaluateAsync<bool>("() => document.documentElement.scrollWidth > window.innerWidth"), $"{viewportName} management view has horizontal overflow.");
 
             await page.ScreenshotAsync(new PageScreenshotOptions
@@ -61,6 +64,7 @@ public sealed class ClientsManagementResponsiveTests : IAsyncLifetime
                 Path = Path.Combine("TestResults", "playwright", $"clients-management-{viewportName}-{width}x{height}.png"),
                 FullPage = true
             });
+
         }
         finally
         {

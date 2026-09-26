@@ -15,129 +15,128 @@
     <span data-testid="clients-mgmt-interactive" hidden></span>
 }
 <MudPaper Class="client-mgmt-hero pa-4" Elevation="0">
-    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="flex-wrap">
+    <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="flex-wrap" Spacing="2">
         <MudStack Spacing="0">
             <MudText Typo="Typo.h5">Agent Installers &amp; Updates</MudText>
-            <MudText Typo="Typo.body2" Color="Color.Secondary">Manage immutable client packages, published auto-update releases, deployment scripts, update activity, and suspended update policy.</MudText>
+            <MudText Typo="Typo.body2" Color="Color.Secondary">Browse client releases, create tenant-scoped installers, and supervise rollout state from one catalogue.</MudText>
         </MudStack>
-        <MudButton Color="Color.Default" Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Upload" Disabled="@(!_interactiveReady)" OnClick="OpenUpload">Advanced: upload artifact</MudButton>
+        <MudStack Row="true" Class="flex-wrap" Spacing="1">
+            <MudButton Color="Color.Primary" Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Tune" OnClick="OpenAutomationDrawer" data-testid="automation-settings-button">Automation @if (_automationDirty) { <MudChip T="string" Size="Size.Small" Color="Color.Warning" Class="ml-1">Unsaved</MudChip> }</MudButton>
+            <MudMenu Dense="true" Variant="Variant.Outlined" Label="Advanced" StartIcon="@Icons.Material.Filled.MoreHoriz" data-testid="advanced-client-actions">
+                <MudMenuItem Icon="@Icons.Material.Filled.Upload" Disabled="@(!_interactiveReady)" OnClick="OpenUpload">Upload legacy artifact</MudMenuItem>
+            </MudMenu>
+        </MudStack>
     </MudStack>
-    <MudAlert Dense="true" Severity="Severity.Info" Variant="Variant.Outlined" Class="mt-3 mb-0">
-        GitHub releases are the primary client source. Legacy artifact upload remains available for offline use and publishes a valid immutable artifact. Update Attempts records the client rollout lifecycle. Suspended Agents require explicit operator resumption.
-    </MudAlert>
+    <MudStack Row="true" Class="flex-wrap mt-3" AlignItems="AlignItems.Center" Spacing="1">
+        <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Info">Automation: @AutomationSummary</MudChip>
+        @if (_automationSaved is not null)
+        {
+            <MudText Typo="Typo.caption" Color="Color.Secondary">Next check: @UtcTime(_automationSaved.NextCheckAtUtc)</MudText>
+        }
+        <MudText Typo="Typo.caption" Color="Color.Secondary">GitHub is the primary source; legacy upload is under Advanced.</MudText>
+    </MudStack>
 </MudPaper>
 
 <MudPaper Class="mt-4 pa-3 client-mgmt-surface" Elevation="0">
-    <MudTabs Rounded="true" KeepPanelsAlive="true" ActivePanelIndex="_activeTab" ActivePanelIndexChanged="OnTabChanged" TabPanelsClass="client-mgmt-tab-panel" data-testid="client-management-tabs">
+    <MudTabs Rounded="true" KeepPanelsAlive="true" LazyLoadPanels="true" MinimumTabWidth="116px" ActivePanelIndex="_activeTab" ActivePanelIndexChanged="OnTabChanged" TabPanelsClass="client-mgmt-tab-panel" data-testid="client-management-tabs">
         <MudTabPanel Text="GitHub releases" Icon="@Icons.Material.Filled.CloudDownload">
-            @if (_activeTab == 0)
-            {
-                <MudStack Spacing="2" data-testid="github-release-catalogue">
-                    <MudPaper Class="pa-3 client-github-release" Elevation="0" data-testid="release-automation-settings">
-                        <MudText Typo="Typo.subtitle1">Instance release automation</MudText>
-                        <MudText Typo="Typo.body2">Checks and downloads run on this instance. Deployment only reaches tenants whose existing update policy allows the channel.</MudText>
-                        @if (_automation is null)
-                        {
-                            <MudText Typo="Typo.body2">Loading automation settings…</MudText>
-                        }
-                        else
-                        {
-                            <MudGrid Spacing="2" Class="mt-1">
-                                <MudItem xs="12" sm="6"><MudSelect T="int" @bind-Value="_automation.CheckEveryHours" Label="Automatic checks (UTC)"><MudSelectItem Value="0">Off</MudSelectItem><MudSelectItem Value="24">Daily</MudSelectItem><MudSelectItem Value="12">Twice daily</MudSelectItem></MudSelect></MudItem>
-                                <MudItem xs="12" sm="6"><MudSwitch T="bool" @bind-Value="_automation.DownloadStable" Color="Color.Primary" Label="Download new stable releases" /></MudItem>
-                                <MudItem xs="12" sm="6"><MudSwitch T="bool" @bind-Value="_automation.DownloadPrerelease" Color="Color.Warning" Label="Include prereleases in downloads" /></MudItem>
-                                <MudItem xs="12" sm="6"><MudSwitch T="bool" @bind-Value="_automation.PublishAutomatically" Color="Color.Warning" Label="Publish verified imports automatically" /></MudItem>
-                                <MudItem xs="12"><MudSwitch T="bool" @bind-Value="_automation.DeployPrereleaseAutomatically" Color="Color.Error" Label="Allow automatic prerelease deployment" /></MudItem>
-                            </MudGrid>
-                            <MudAlert Severity="Severity.Warning" Dense="true" Class="mt-2">Automatic prerelease deployment can update enrolled clients on prerelease-enabled tenant policies. It requires both prerelease download and automatic publication. Existing disabled releases and suspended agents remain blocked.</MudAlert>
-                            <MudStack Spacing="0" Class="mt-2">
-                                <MudText Typo="Typo.caption">Last attempt: @UtcTime(_automation.LastAttemptAtUtc) · Last success: @UtcTime(_automation.LastSuccessAtUtc) · Next check: @UtcTime(_automation.NextCheckAtUtc)</MudText>
-                                @if (!string.IsNullOrWhiteSpace(_automation.LastError)) { <MudText Typo="Typo.caption" Color="Color.Error">Last error: @_automation.LastError</MudText> }
-                                @if (_automation.UpdatedAtUtc.HasValue) { <MudText Typo="Typo.caption">Policy updated by @_automation.UpdatedBy at @UtcTime(_automation.UpdatedAtUtc)</MudText> }
-                            </MudStack>
-                            <MudStack Row="true" Class="flex-wrap mt-2" Spacing="1">
-                                <MudButton Color="Color.Primary" Variant="Variant.Filled" Disabled="_automationBusy" OnClick="SaveAutomationAsync">Save automation policy</MudButton>
-                                <MudButton Variant="Variant.Outlined" Disabled="_automationBusy" OnClick="CheckReleasesNowAsync">Check now</MudButton>
-                                <MudButton Variant="Variant.Text" Disabled="_automationBusy" OnClick="LoadAutomationAsync">Refresh status</MudButton>
-                            </MudStack>
-                        }
-                        @if (!string.IsNullOrWhiteSpace(_automationError)) { <MudAlert Severity="Severity.Error" Class="mt-2">@_automationError</MudAlert> }
-                    </MudPaper>
-                    <MudStack Row="true" Class="flex-wrap" AlignItems="AlignItems.Center" Spacing="2">
-                        <MudSelect T="string" Value="_githubChannel" ValueChanged="OnGitHubChannelChanged" Label="Channel" Style="width: 190px">
-                            <MudSelectItem Value="@("all")">Stable and prerelease</MudSelectItem>
-                            <MudSelectItem Value="@("stable")">Stable</MudSelectItem>
-                            <MudSelectItem Value="@("prerelease")">Prerelease</MudSelectItem>
-                        </MudSelect>
-                        <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Refresh" Disabled="_githubLoading" OnClick="@(() => LoadGitHubAsync(true))">Refresh</MudButton>
-                        <MudButton Variant="Variant.Text" Disabled="_githubLoading" OnClick="RefreshImportsAsync">Refresh imports</MudButton>
-                        @if (_githubPage is not null && _githubPage.RefreshedAtUtc > DateTimeOffset.MinValue)
-                        {
-                            <MudText Typo="Typo.caption">Checked @_githubPage.RefreshedAtUtc.ToLocalTime().ToString("g")</MudText>
-                        }
+            <MudStack Spacing="2" data-testid="github-release-catalogue">
+                <MudPaper Class="pa-3 client-mgmt-automation-summary" Elevation="0" data-testid="release-automation-settings">
+                    <MudStack Row="true" Class="flex-wrap" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween" Spacing="2">
+                        <MudStack Spacing="0">
+                            <MudText Typo="Typo.subtitle1">Release automation</MudText>
+                            <MudText Typo="Typo.body2" Color="Color.Secondary">Checks and downloads run on this instance. Deployment still follows each tenant’s existing channel policy.</MudText>
+                            <MudText Typo="Typo.caption" Class="mt-1">@AutomationStatusSummary</MudText>
+                        </MudStack>
+                        <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Settings" OnClick="OpenAutomationDrawer">Settings</MudButton>
                     </MudStack>
-                    @if (_githubLoading) { <div role="status" aria-label="Loading GitHub releases"><MudProgressLinear Indeterminate="true" /></div> }
-                    @if (!string.IsNullOrWhiteSpace(_githubError)) { <MudAlert Severity="Severity.Error">@_githubError</MudAlert> }
-                    @if (!string.IsNullOrWhiteSpace(_githubPage?.Warning)) { <MudAlert Severity="Severity.Warning">@_githubPage.Warning</MudAlert> }
-                    @if (_githubPage?.Items.Count == 0 && !_githubLoading)
+                    @if (!string.IsNullOrWhiteSpace(_automationSaved?.LastError))
                     {
-                        <MudText Typo="Typo.body2">No matching releases in the scanned range. Older releases may exist when a scan limit is shown.</MudText>
+                        <MudAlert Severity="Severity.Warning" Dense="true" Class="mt-2">Last automation error: @_automationSaved.LastError</MudAlert>
                     }
-                    @foreach (var release in _githubPage?.Items ?? [])
+                    @if (!string.IsNullOrWhiteSpace(_automationError))
                     {
-                        <MudPaper Class="pa-3 client-github-release" Elevation="0">
-                            <MudStack Row="true" Class="flex-wrap" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
-                                <MudStack Spacing="0">
-                                    <MudText Typo="Typo.subtitle1">@release.Name</MudText>
-                                    <MudText Typo="Typo.caption">@release.Version · @release.PublishedAtUtc.ToLocalTime().ToString("g")</MudText>
-                                </MudStack>
-                                <MudChip T="string" Size="Size.Small" Color="@(release.IsPrerelease ? Color.Warning : Color.Success)">@(release.IsPrerelease ? "Prerelease" : "Stable")</MudChip>
+                        <MudAlert Severity="Severity.Error" Dense="true" Class="mt-2">@_automationError</MudAlert>
+                    }
+                </MudPaper>
+                <MudStack Row="true" Class="flex-wrap" AlignItems="AlignItems.Center" Spacing="1">
+                    <MudSelect T="string" Value="_githubChannel" ValueChanged="OnGitHubChannelChanged" Label="Channel" Class="client-mgmt-channel-filter" Margin="Margin.Dense">
+                        <MudSelectItem Value="@("all")">Stable and prerelease</MudSelectItem>
+                        <MudSelectItem Value="@("stable")">Stable</MudSelectItem>
+                        <MudSelectItem Value="@("prerelease")">Prerelease</MudSelectItem>
+                    </MudSelect>
+                    <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Refresh" Disabled="_githubLoading" OnClick="@(() => LoadGitHubAsync(true))">Refresh catalogue</MudButton>
+                    <MudButton Variant="Variant.Text" Disabled="_githubLoading" OnClick="RefreshImportsAsync">Refresh imports</MudButton>
+                    @if (_githubPage is not null && _githubPage.RefreshedAtUtc > DateTimeOffset.MinValue)
+                    {
+                        <MudText Typo="Typo.caption">Checked @_githubPage.RefreshedAtUtc.ToLocalTime().ToString("g")</MudText>
+                    }
+                </MudStack>
+                @if (_githubLoading) { <div role="status" aria-label="Loading GitHub releases"><MudProgressLinear Indeterminate="true" /></div> }
+                @if (!string.IsNullOrWhiteSpace(_githubError)) { <MudAlert Severity="Severity.Error">@_githubError</MudAlert> }
+                @if (!string.IsNullOrWhiteSpace(_githubPage?.Warning)) { <MudAlert Severity="Severity.Warning">@_githubPage.Warning</MudAlert> }
+                @if (_githubPage?.Items.Count == 0 && !_githubLoading)
+                {
+                    <MudText Typo="Typo.body2">No matching releases in the scanned range. Older releases may exist when a scan limit is shown.</MudText>
+                }
+                <MudTable T="GitHubClientReleaseModel" Items="@(_githubPage?.Items ?? [])" Dense="true" Hover="true" Breakpoint="Breakpoint.Sm" Class="client-github-table" data-testid="github-release-table">
+                    <HeaderContent><MudTh>Release</MudTh><MudTh>Channel</MudTh><MudTh>Packages</MudTh><MudTh>State</MudTh><MudTh>Actions</MudTh></HeaderContent>
+                    <RowTemplate>
+                        <MudTd DataLabel="Release">
+                            <MudStack Spacing="0">
+                                <MudText Typo="Typo.subtitle2">@context.Name</MudText>
+                                <MudText Typo="Typo.caption">@context.Version · @context.PublishedAtUtc.ToLocalTime().ToString("g")</MudText>
+                                <a href="@context.DetailsUrl" target="_blank" rel="noopener noreferrer">Release details</a>
                             </MudStack>
-                            <MudStack Row="true" Class="flex-wrap mt-2" Spacing="1">
-                                @foreach (var asset in release.ClientAssets) { <MudChip T="string" Size="Size.Small">@asset.RuntimeId</MudChip> }
+                        </MudTd>
+                        <MudTd DataLabel="Channel"><MudChip T="string" Size="Size.Small" Color="@(context.IsPrerelease ? Color.Warning : Color.Success)">@(context.IsPrerelease ? "Prerelease" : "Stable")</MudChip></MudTd>
+                        <MudTd DataLabel="Packages">
+                            <MudStack Row="true" Class="flex-wrap" Spacing="1">
+                                @foreach (var asset in context.ClientAssets) { <MudChip T="string" Size="Size.Small">@asset.RuntimeId</MudChip> }
                             </MudStack>
-                            <MudText Typo="Typo.body2" Class="mt-2">@release.PublicationState · @FormatBytes(release.TotalClientBytes)</MudText>
-                            <a href="@release.DetailsUrl" target="_blank" rel="noopener noreferrer">Release details</a>
-                            @if (_githubImports.TryGetValue(release.Id, out var import))
+                            <MudText Typo="Typo.caption">@FormatBytes(context.TotalClientBytes)</MudText>
+                        </MudTd>
+                        <MudTd DataLabel="State">
+                            <MudText Typo="Typo.body2">@context.PublicationState</MudText>
+                            @if (_githubImports.TryGetValue(context.Id, out var import))
                             {
-                                <MudText Typo="Typo.body2" Class="mt-2">Local state: @(import.PublishedAtUtc.HasValue ? "Published for enabled tenant policies" : ImportState(import.State)) · @FormatBytes(import.DownloadedBytes) / @FormatBytes(import.TotalBytes ?? release.TotalClientBytes)</MudText>
-                                @if (!string.IsNullOrWhiteSpace(import.Error)) { <MudAlert Severity="Severity.Error" Class="mt-2">@import.Error</MudAlert> }
-                                @if (!string.IsNullOrWhiteSpace(import.AutomaticPublishError)) { <MudAlert Severity="Severity.Warning" Class="mt-2">Automatic publication: @import.AutomaticPublishError</MudAlert> }
-                                <MudStack Row="true" Class="flex-wrap mt-2" Spacing="1">
-                                    @if (import.State is 6 or 7)
-                                    {
-                                        <MudButton Size="Size.Small" Variant="Variant.Outlined" OnClick="@(() => RetryImportAsync(import.Id))">Retry import</MudButton>
-                                    }
-                                    else if (import.State == 5 && !import.PublishedAtUtc.HasValue)
-                                    {
-                                        <MudButton Size="Size.Small" Color="Color.Warning" Variant="Variant.Filled"
-                                                   OnClick="@(() => PublishImportAsync(import.Id, release.IsPrerelease))">Approve and publish for deployment</MudButton>
-                                    }
-                                    else if (import.State != 5)
-                                    {
-                                        <MudButton Size="Size.Small" Variant="Variant.Outlined" OnClick="@(() => CancelImportAsync(import.Id))">Cancel import</MudButton>
-                                    }
-                                </MudStack>
+                                <MudText Typo="Typo.caption">Local: @(import.PublishedAtUtc.HasValue ? "Published" : ImportState(import.State)) · @FormatBytes(import.DownloadedBytes) / @FormatBytes(import.TotalBytes ?? context.TotalClientBytes)</MudText>
+                                @if (!string.IsNullOrWhiteSpace(import.Error)) { <MudText Typo="Typo.caption" Color="Color.Error">@import.Error</MudText> }
+                                @if (!string.IsNullOrWhiteSpace(import.AutomaticPublishError)) { <MudText Typo="Typo.caption" Color="Color.Warning">Automatic publication: @import.AutomaticPublishError</MudText> }
+                            }
+                        </MudTd>
+                        <MudTd DataLabel="Actions">
+                            @if (_githubImports.TryGetValue(context.Id, out var currentImport))
+                            {
+                                @if (currentImport.State is 6 or 7)
+                                {
+                                    <MudButton Size="Size.Small" Variant="Variant.Outlined" Disabled="_importActionBusy" OnClick="@(() => RetryImportAsync(currentImport.Id))">Retry import</MudButton>
+                                }
+                                else if (currentImport.State == 5 && !currentImport.PublishedAtUtc.HasValue)
+                                {
+                                    <MudButton Size="Size.Small" Color="Color.Warning" Variant="Variant.Filled" Disabled="_importActionBusy" OnClick="@(() => PublishImportAsync(currentImport.Id, context.IsPrerelease))">Approve and publish</MudButton>
+                                }
+                                else if (currentImport.State != 5)
+                                {
+                                    <MudButton Size="Size.Small" Variant="Variant.Outlined" Disabled="_importActionBusy" OnClick="@(() => CancelImportAsync(currentImport.Id))">Cancel import</MudButton>
+                                }
                             }
                             else
                             {
-                                <MudButton Size="Size.Small" Variant="Variant.Filled" Color="Color.Primary" Class="mt-2"
-                                           Disabled="@(!_interactiveReady || release.PublicationState != "verification required" || _importActionBusy)"
-                                           OnClick="@(() => QueueImportAsync(release.Id))">Download client pack to this instance</MudButton>
+                                <MudButton Size="Size.Small" Variant="Variant.Filled" Color="Color.Primary" Disabled="@(!_interactiveReady || context.PublicationState != "verification required" || _importActionBusy)" OnClick="@(() => QueueImportAsync(context.Id))">Import pack</MudButton>
                             }
-                        </MudPaper>
-                    }
-                    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
-                        <MudButton Disabled="@(_githubLoading || _githubPageNumber == 0)" OnClick="PreviousGitHubPage">Previous</MudButton>
-                        <MudText Typo="Typo.body2">Page @(_githubPageNumber + 1)</MudText>
-                        <MudButton Disabled="@(_githubLoading || _githubPage?.HasMore != true)" OnClick="NextGitHubPage">Next</MudButton>
-                    </MudStack>
+                        </MudTd>
+                    </RowTemplate>
+                    <NoRecordsContent><MudText Typo="Typo.body2" Color="Color.Secondary">No matching GitHub client releases were found.</MudText></NoRecordsContent>
+                </MudTable>
+                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                    <MudButton Disabled="@(_githubLoading || _githubPageNumber == 0)" OnClick="PreviousGitHubPage">Previous</MudButton>
+                    <MudText Typo="Typo.body2">Page @(_githubPageNumber + 1)</MudText>
+                    <MudButton Disabled="@(_githubLoading || _githubPage?.HasMore != true)" OnClick="NextGitHubPage">Next</MudButton>
                 </MudStack>
-            }
+            </MudStack>
         </MudTabPanel>
-        <MudTabPanel Text="Artifacts" Icon="@Icons.Material.Filled.Inventory2">
-            @if (_activeTab == 1)
-            {
+        <MudTabPanel Text="Packages" Icon="@Icons.Material.Filled.Inventory2">
                 <MudStack Spacing="2" data-testid="artifact-management-panel">
                     <MudGrid Spacing="2">
                         <MudItem xs="12" md="5"><MudTextField T="string" Value="_artifactSearch" ValueChanged="OnArtifactSearchChanged" Immediate="true" Label="Search artifacts" Placeholder="Runtime, version, filename, SHA, notes" Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search" Clearable="true" data-testid="artifact-search" /></MudItem>
@@ -158,12 +157,9 @@
                         <PagerContent><MudTablePager PageSizeOptions="PageSizes" /></PagerContent>
                     </MudTable>
                 </MudStack>
-            }
         </MudTabPanel>
 
-        <MudTabPanel Text="Auto-update Releases" Icon="@Icons.Material.Filled.SystemUpdateAlt">
-            @if (_activeTab == 2)
-            {
+        <MudTabPanel Text="Auto-updates" Icon="@Icons.Material.Filled.SystemUpdateAlt">
                 <MudStack Spacing="2" data-testid="release-management-panel">
                     <MudGrid Spacing="2">
                         <MudItem xs="12" md="4"><MudTextField T="string" Value="_releaseSearch" ValueChanged="OnReleaseSearchChanged" Immediate="true" Label="Search releases" Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search" Clearable="true" data-testid="release-search" /></MudItem>
@@ -185,12 +181,9 @@
                         <PagerContent><MudTablePager PageSizeOptions="PageSizes" /></PagerContent>
                     </MudTable>
                 </MudStack>
-            }
         </MudTabPanel>
 
-        <MudTabPanel Text="Update Attempts" Icon="@Icons.Material.Filled.History">
-            @if (_activeTab == 3)
-            {
+        <MudTabPanel Text="Activity" Icon="@Icons.Material.Filled.History">
                 <MudStack Spacing="2" data-testid="attempt-management-panel">
                     <MudText Typo="Typo.caption" Color="Color.Secondary">Grouping is applied to this server-filtered page; group counts are not global totals.</MudText>
                     <MudGrid Spacing="2">
@@ -213,12 +206,9 @@
                         <PagerContent><MudTablePager PageSizeOptions="PageSizes" /></PagerContent>
                     </MudTable>
                 </MudStack>
-            }
         </MudTabPanel>
 
-        <MudTabPanel Text="Suspended Agents" Icon="@Icons.Material.Filled.PauseCircleOutline">
-            @if (_activeTab == 4)
-            {
+        <MudTabPanel Text="Suspended" Icon="@Icons.Material.Filled.PauseCircleOutline">
                 <MudStack Spacing="2" data-testid="suspended-management-panel">
                     <MudText Typo="Typo.body2" Color="Color.Secondary">Resume affects only future automatic updates for the selected suspended client.</MudText>
                     <MudGrid Spacing="2"><MudItem xs="12" md="6"><MudTextField T="string" Value="_suspendedSearch" ValueChanged="OnSuspendedSearchChanged" Immediate="true" Label="Search suspended agents" Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search" Clearable="true" data-testid="suspended-search" /></MudItem><MudItem xs="12" md="3"><MudSelect T="int?" Value="_suspendedTenantId" ValueChanged="OnSuspendedTenantChanged" Label="Tenant"><MudSelectItem T="int?" Value="@null">All tenants</MudSelectItem>@foreach (var tenant in _tenants) { <MudSelectItem T="int?" Value="@tenant.TenantId">@tenant.Name</MudSelectItem> }</MudSelect></MudItem></MudGrid>
@@ -229,10 +219,61 @@
                         <PagerContent><MudTablePager PageSizeOptions="PageSizes" /></PagerContent>
                     </MudTable>
                 </MudStack>
-            }
         </MudTabPanel>
     </MudTabs>
 </MudPaper>
+
+<MudDrawer Anchor="Anchor.Right" Variant="DrawerVariant.Temporary" Width="min(560px, 100vw)" @bind-Open="_automationDrawerOpen">
+    <MudStack Class="pa-4 client-mgmt-automation-drawer" Spacing="2" data-testid="automation-drawer">
+        <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+            <MudStack Spacing="0">
+                <MudText Typo="Typo.h6">Release automation settings</MudText>
+                <MudText Typo="Typo.caption" Color="Color.Secondary">Draft changes stay local until you save them.</MudText>
+            </MudStack>
+            <MudIconButton Icon="@Icons.Material.Filled.Close" aria-label="Close automation settings" OnClick="CloseAutomationDrawer" />
+        </MudStack>
+        @if (_automationDraft is null)
+        {
+            <MudProgressLinear Indeterminate="true" />
+        }
+        else
+        {
+            @if (_automationDirty)
+            {
+                <MudAlert Severity="Severity.Warning" Dense="true" data-testid="automation-unsaved">Unsaved changes. Refresh is disabled until you save or cancel this draft.</MudAlert>
+            }
+            <MudSelect T="int" @bind-Value="_automationDraft.CheckEveryHours" Label="Automatic checks (UTC)" Margin="Margin.Dense">
+                <MudSelectItem Value="0">Off</MudSelectItem>
+                <MudSelectItem Value="12">Twice daily</MudSelectItem>
+                <MudSelectItem Value="24">Daily</MudSelectItem>
+            </MudSelect>
+            <MudSwitch T="bool" @bind-Value="_automationDraft.DownloadStable" Color="Color.Primary" Label="Download new stable releases" />
+            <MudSwitch T="bool" @bind-Value="_automationDraft.DownloadPrerelease" Color="Color.Warning" Label="Include prereleases in downloads" />
+            <MudSwitch T="bool" @bind-Value="_automationDraft.PublishAutomatically" Color="Color.Warning" Label="Publish verified imports automatically" />
+            <MudSwitch T="bool" @bind-Value="_automationDraft.DeployPrereleaseAutomatically" Color="Color.Error" Label="Allow automatic prerelease deployment" />
+            <MudAlert Severity="Severity.Warning" Dense="true">Automatic prerelease deployment can update enrolled clients on prerelease-enabled tenant policies. It requires both prerelease download and automatic publication. Existing disabled releases and suspended agents remain blocked.</MudAlert>
+            <MudDivider />
+            <MudText Typo="Typo.subtitle2">Saved policy status</MudText>
+            <MudText Typo="Typo.caption">Last attempt: @UtcTime(_automationSaved?.LastAttemptAtUtc) · Last success: @UtcTime(_automationSaved?.LastSuccessAtUtc) · Next check: @UtcTime(_automationSaved?.NextCheckAtUtc)</MudText>
+            @if (_automationSaved?.UpdatedAtUtc is not null)
+            {
+                <MudText Typo="Typo.caption">Policy updated by @_automationSaved.UpdatedBy at @UtcTime(_automationSaved.UpdatedAtUtc)</MudText>
+            }
+            @if (!string.IsNullOrWhiteSpace(_automationError))
+            {
+                <MudAlert Severity="Severity.Error">@_automationError</MudAlert>
+            }
+            <MudStack Row="true" Class="flex-wrap" Spacing="1">
+                <MudButton Color="Color.Primary" Variant="Variant.Filled" Disabled="@(_automationBusy || !_automationDirty)" OnClick="SaveAutomationAsync">Save policy</MudButton>
+                <MudButton Variant="Variant.Text" Disabled="@(_automationBusy || !_automationDirty)" OnClick="CancelAutomationDraft">Cancel</MudButton>
+            </MudStack>
+            <MudStack Row="true" Class="flex-wrap" Spacing="1">
+                <MudButton Variant="Variant.Outlined" Disabled="@(_automationBusy || _automationDirty)" OnClick="CheckReleasesNowAsync">Run saved policy now</MudButton>
+                <MudButton Variant="Variant.Text" Disabled="@(_automationBusy || _automationDirty)" OnClick="RefreshAutomationAsync">Reload saved settings</MudButton>
+            </MudStack>
+        }
+    </MudStack>
+</MudDrawer>
 
 <MudOverlay Visible="_downloadDialogOpen" AutoClose="false" DarkBackground="true">
     <MudPaper Class="pa-4 mx-auto mt-12" Style="max-width: 520px;"><MudStack Spacing="2"><MudText Typo="Typo.h6">Download Client Package</MudText><MudText Typo="Typo.body2">Installer will auto-enroll on first run; no token is embedded.</MudText><MudSelect T="int?" Label="Tenant" @bind-Value="_selectedTenantId" Required="true">@foreach (var tenant in _tenants) { <MudSelectItem T="int?" Value="@tenant.TenantId">@tenant.Name (@tenant.TenantId)</MudSelectItem> }</MudSelect><MudSelect T="ClientEnvironment" Label="Environment" @bind-Value="_selectedEnvironment"><MudSelectItem T="ClientEnvironment" Value="ClientEnvironment.Dev">Dev</MudSelectItem><MudSelectItem T="ClientEnvironment" Value="ClientEnvironment.Prod">Prod</MudSelectItem><MudSelectItem T="ClientEnvironment" Value="ClientEnvironment.Both">Dev + Prod</MudSelectItem></MudSelect><MudSelect T="string" Label="Runtime" @bind-Value="_selectedRuntimeId">@foreach (var runtimeId in RuntimeIds) { <MudSelectItem Value="@runtimeId">@runtimeId</MudSelectItem> }</MudSelect><MudCheckBox T="bool" Label="Inject enrollment code" @bind-Value="_injectEnrollment" />@if (_injectEnrollment) { <MudSelect T="int?" Label="Validity" @bind-Value="_validityMinutes">@foreach (var preset in _validityPresets) { <MudSelectItem T="int?" Value="@preset.Minutes">@preset.Label</MudSelectItem> }</MudSelect><MudNumericField T="int" Label="Max uses" Min="1" @bind-Value="_maxUses" /> }<MudStack Row="true" Justify="Justify.FlexEnd" Spacing="1"><MudButton Variant="Variant.Text" OnClick="CloseDownloadDialog">Cancel</MudButton><MudButton Color="Color.Primary" Variant="Variant.Filled" Disabled="@(!CanDownload())" OnClick="DownloadSelectedAsync">Download</MudButton></MudStack></MudStack></MudPaper>
@@ -321,9 +362,11 @@
     private IReadOnlyList<TenantDto> _tenants = Array.Empty<TenantDto>();
     private MudTable<ClientArtifactSummaryModel>? _artifactTable;
     private GitHubClientReleasePageModel? _githubPage;
-    private ClientReleaseAutomationModel? _automation;
+    private ClientReleaseAutomationModel? _automationSaved;
+    private ClientReleaseAutomationModel? _automationDraft;
     private string? _automationError;
     private bool _automationBusy;
+    private bool _automationDrawerOpen;
     private Dictionary<long, ClientReleaseImportModel> _githubImports = [];
     private bool _importActionBusy;
     private readonly CancellationTokenSource _importPolling = new();
@@ -383,6 +426,16 @@
     private bool _scriptLinksLoading;
     private bool _interactiveReady;
 
+    private bool _automationDirty => _automationSaved is not null && _automationDraft is not null && !SameAutomationPolicy(_automationSaved, _automationDraft);
+    private string AutomationSummary => _automationSaved is null
+        ? "Loading"
+        : _automationSaved.CheckEveryHours <= 0
+            ? "Checks off"
+            : $"Checks every {_automationSaved.CheckEveryHours}h";
+    private string AutomationStatusSummary => _automationSaved is null
+        ? "Loading saved policy…"
+        : $"Stable downloads: {OnOff(_automationSaved.DownloadStable)} · Prereleases: {OnOff(_automationSaved.DownloadPrerelease)} · Automatic publication: {OnOff(_automationSaved.PublishAutomatically)}";
+
     protected override Task OnAfterRenderAsync(bool firstRender)
     {
         if (firstRender)
@@ -437,17 +490,54 @@
 
     private async Task LoadAutomationAsync()
     {
+        if (_automationDirty)
+        {
+            return;
+        }
+
         _automationError = null;
-        try { _automation = await Artifacts.GetReleaseAutomationAsync(); }
+        try
+        {
+            _automationSaved = await Artifacts.GetReleaseAutomationAsync();
+            _automationDraft = CloneAutomation(_automationSaved);
+        }
         catch (HttpRequestException) { _automationError = "Could not load automation settings. Refresh status and try again."; }
     }
 
+    private async Task OpenAutomationDrawer()
+    {
+        if (_automationDraft is null)
+        {
+            await LoadAutomationAsync();
+        }
+
+        _automationDrawerOpen = true;
+    }
+
+    private void CloseAutomationDrawer() => _automationDrawerOpen = false;
+
+    private void CancelAutomationDraft()
+    {
+        if (_automationSaved is not null)
+        {
+            _automationDraft = CloneAutomation(_automationSaved);
+        }
+
+        _automationError = null;
+    }
+
+    private Task RefreshAutomationAsync() => LoadAutomationAsync();
+
     private async Task SaveAutomationAsync()
     {
-        if (_automation is null) return;
+        if (_automationDraft is null || !_automationDirty) return;
         _automationBusy = true;
         _automationError = null;
-        try { _automation = await Artifacts.SaveReleaseAutomationAsync(_automation); }
+        try
+        {
+            _automationSaved = await Artifacts.SaveReleaseAutomationAsync(CloneAutomation(_automationDraft));
+            _automationDraft = CloneAutomation(_automationSaved);
+        }
         catch (HttpRequestException)
         {
             _automationError = "Could not save the policy. Check the selected options or refresh status if another operator changed it.";
@@ -457,12 +547,47 @@
 
     private async Task CheckReleasesNowAsync()
     {
+        if (_automationDirty)
+        {
+            _automationError = "Save or cancel the automation draft before running the saved policy.";
+            return;
+        }
+
         _automationBusy = true;
         _automationError = null;
-        try { _automation = await Artifacts.CheckReleasesNowAsync(); }
+        try
+        {
+            _automationSaved = await Artifacts.CheckReleasesNowAsync();
+            _automationDraft = CloneAutomation(_automationSaved);
+        }
         catch (HttpRequestException) { _automationError = "Could not schedule a check. Refresh status and try again."; }
         finally { _automationBusy = false; }
     }
+
+    private static ClientReleaseAutomationModel CloneAutomation(ClientReleaseAutomationModel source) => new()
+    {
+        CheckEveryHours = source.CheckEveryHours,
+        DownloadStable = source.DownloadStable,
+        DownloadPrerelease = source.DownloadPrerelease,
+        PublishAutomatically = source.PublishAutomatically,
+        DeployPrereleaseAutomatically = source.DeployPrereleaseAutomatically,
+        LastAttemptAtUtc = source.LastAttemptAtUtc,
+        LastSuccessAtUtc = source.LastSuccessAtUtc,
+        NextCheckAtUtc = source.NextCheckAtUtc,
+        LastError = source.LastError,
+        Revision = source.Revision,
+        UpdatedBy = source.UpdatedBy,
+        UpdatedAtUtc = source.UpdatedAtUtc
+    };
+
+    private static bool SameAutomationPolicy(ClientReleaseAutomationModel left, ClientReleaseAutomationModel right) =>
+        left.CheckEveryHours == right.CheckEveryHours &&
+        left.DownloadStable == right.DownloadStable &&
+        left.DownloadPrerelease == right.DownloadPrerelease &&
+        left.PublishAutomatically == right.PublishAutomatically &&
+        left.DeployPrereleaseAutomatically == right.DeployPrereleaseAutomatically;
+
+    private static string OnOff(bool value) => value ? "on" : "off";
 
     private static string UtcTime(DateTimeOffset? value) =>
         value.HasValue ? value.Value.ToUniversalTime().ToString("yyyy-MM-dd HH:mm 'UTC'") : "Never";
@@ -773,10 +898,20 @@
     .client-mgmt-tab-panel { min-width: 0; overflow-x: hidden; }
     .client-mgmt-clamp { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
     .client-mgmt-surface .mud-table-container { max-width: 100%; overflow-x: auto; }
-    .client-github-release { border: 1px solid var(--mud-palette-divider); overflow-wrap: anywhere; }
+    .client-mgmt-automation-summary { border: 1px solid var(--mud-palette-divider); overflow-wrap: anywhere; }
+    .client-mgmt-channel-filter { min-width: 190px; max-width: 240px; }
+    .client-github-table { min-width: 0; table-layout: fixed; }
+    .client-github-table .mud-table-cell { vertical-align: top; overflow-wrap: anywhere; }
+    .client-mgmt-automation-drawer { min-width: 0; max-width: 100vw; overflow-y: auto; }
     .client-deployment-dialog { max-width: min(100%, 960px); }
     .client-deployment-dialog .mud-dialog-content { min-width: 0; max-height: calc(100dvh - 160px); overflow-y: auto; overflow-wrap: anywhere; }
     .client-deployment-dialog .mud-dialog-actions { flex-wrap: wrap; }
     .client-script-output { min-width: 0; overflow-wrap: anywhere; }
     .client-script-preview { max-width: 100%; max-height: 240px; overflow: auto; padding: 0.75rem; border: 1px solid var(--mud-palette-divider); white-space: pre-wrap; overflow-wrap: anywhere; }
+
+    @@media (max-width: 600px) {
+        .client-mgmt-hero, .client-mgmt-surface { padding-left: 0.75rem !important; padding-right: 0.75rem !important; }
+        .client-mgmt-channel-filter { min-width: min(190px, 100%); max-width: 100%; }
+        .client-github-table .mud-table-cell { padding-left: 0.75rem; padding-right: 0.75rem; }
+    }
 </style>
