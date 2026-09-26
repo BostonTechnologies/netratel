@@ -221,12 +221,12 @@ migration_id="${migration_id//$'\r'/}"
 migration_complete=false
 exit_code=""
 for _ in $(seq 1 90); do
-  running_state="$("$docker_command" inspect --format "{{.State.Running}}" "$migration_id")"
-  exit_code="$("$docker_command" inspect --format "{{.State.ExitCode}}" "$migration_id")"
-  # The Windows WSL handoff can add CR/LF, NUL, or console encoding bytes to
-  # short Docker inspect results. Keep only the value before comparing it.
-  running_state="$(printf '%s' "$running_state" | LC_ALL=C tr -cd '[:alpha:]' | LC_ALL=C tr '[:upper:]' '[:lower:]')"
-  exit_code="$(printf '%s' "$exit_code" | LC_ALL=C tr -cd '[:digit:]')"
+  # Read the complete JSON document instead of using --format here. The
+  # Windows WSL handoff has proved unreliable for short Go-template results;
+  # JSON also keeps the state and exit code in one atomic Docker response.
+  inspect_json="$("$docker_command" inspect "$migration_id" | LC_ALL=C tr -d '\000\r')"
+  running_state="$(jq -r '.[0].State.Running' <<<"$inspect_json")"
+  exit_code="$(jq -r '.[0].State.ExitCode' <<<"$inspect_json")"
   if [[ "$running_state" == false && "$exit_code" == 0 ]]; then
     migration_complete=true
     break
