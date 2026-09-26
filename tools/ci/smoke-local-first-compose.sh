@@ -251,9 +251,12 @@ playwright_script="src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0
 [[ -f "$playwright_script" ]] || { echo "Playwright install script was not produced." >&2; exit 1; }
 pwsh "$playwright_script" install --with-deps chromium
 stage="validating image operator commands and one-time proof rotation"
-api_container_id="$("${compose[@]}" ps -q api)"
-api_container_id="${api_container_id//$'\r'/}"
-[[ -n "$api_container_id" ]] || { echo "API container was not created." >&2; exit 1; }
+refresh_api_container() {
+  api_container_id="$("${compose[@]}" ps -q api)"
+  api_container_id="${api_container_id//$'\r'/}"
+  [[ -n "$api_container_id" ]] || { echo "API container was not created." >&2; return 1; }
+}
+refresh_api_container
 api_operator() { "$docker_command" exec "$api_container_id" "$@"; }
 api_operator dotnet NetRatel.API.dll --help | grep -Fq -- '--show-setup-code'
 initial_setup_proof="$(api_operator cat /var/netratel/bootstrap/setup-proof)"
@@ -468,6 +471,7 @@ if [[ "${NETRATEL_LOCAL_FIRST_STATE_RESET_ACCEPTANCE:-false}" == true ]]; then
     sleep 1
   done
   [[ "$recovered" == true ]] || { echo "A retained bootstrap descriptor accepted an empty replacement database." >&2; exit 1; }
+  refresh_api_container
   set +e
   recovery_status="$(api_operator dotnet NetRatel.API.dll --setup-status)"
   recovery_exit=$?
@@ -502,6 +506,7 @@ if [[ "${NETRATEL_LOCAL_FIRST_STATE_RESET_ACCEPTANCE:-false}" == true ]]; then
     sleep 1
   done
   [[ "$fresh" == true ]] || { echo "A full disposable reset did not produce a fresh setup state." >&2; exit 1; }
+  refresh_api_container
   reset_setup_proof="$(api_operator cat /var/netratel/bootstrap/setup-proof)"
   reset_setup_proof="${reset_setup_proof//$'\r'/}"
   [[ -n "$reset_setup_proof" && "$(printf '%s' "$reset_setup_proof" | sha256sum | cut -d ' ' -f 1)" != "$setup_proof_digest" ]]
