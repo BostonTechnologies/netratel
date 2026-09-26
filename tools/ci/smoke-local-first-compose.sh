@@ -38,9 +38,15 @@ if [[ -n "${NETRATEL_LOCAL_FIRST_WSL_DISTRIBUTION:-}" ]]; then
   if [[ "$docker_command" =~ ^([[:alpha:]]):[\\/].* ]]; then
     docker_command="$(cygpath -u "$docker_command")"
   fi
+  wsl_distribution="${NETRATEL_LOCAL_FIRST_WSL_DISTRIBUTION//$'\r'/}"
+  wsl_distribution="${wsl_distribution//$'\n'/}"
+  [[ -n "$wsl_distribution" ]] || {
+    echo "The Linux Docker WSL distribution name is empty." >&2
+    exit 1
+  }
   compose_root="$(wsl_path "$root")"
   wsl_run() {
-    wsl.exe --distribution "$NETRATEL_LOCAL_FIRST_WSL_DISTRIBUTION" --user root -- "$@"
+    wsl.exe --distribution "$wsl_distribution" --user root -- "$@"
   }
   export MSYS_NO_PATHCONV=1
   export NETRATEL_HTTPS_CERTIFICATE="$(wsl_path "${NETRATEL_HTTPS_CERTIFICATE:?Windows public HTTPS certificate path missing}")"
