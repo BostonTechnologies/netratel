@@ -237,6 +237,10 @@ jobs:
           image="netratel-${{ matrix.name }}:${VERSION}"
           tools/ci/build-public-image.sh --dockerfile "${{ matrix.dockerfile }}" --image "$image" --version "$VERSION" --revision "$GITHUB_SHA"
           tools/ci/scan-public-image.sh --image "$image" --version "$VERSION" --revision "$GITHUB_SHA"
+      - if: matrix.name == 'api'
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: tools/ci/test-api-runtime-dependency.sh --image "netratel-api:${VERSION}"
 
   release-image-compose-smoke:
     name: Smoke actual release-equivalent images
@@ -260,6 +264,7 @@ jobs:
             tools/ci/build-public-image.sh --dockerfile "docker/${component}/Dockerfile" --image "$image" --version "$VERSION" --revision "$GITHUB_SHA"
             tools/ci/scan-public-image.sh --image "$image" --version "$VERSION" --revision "$GITHUB_SHA"
           done
+          tools/ci/test-api-runtime-dependency.sh --image "netratel-api:${VERSION}"
           tools/ci/build-public-image.sh --dockerfile docker/client/Dockerfile.public --image "netratel-client:${VERSION}" --version "$VERSION" --revision "$GITHUB_SHA"
           tools/ci/scan-public-image.sh --image "netratel-client:${VERSION}" --version "$VERSION" --revision "$GITHUB_SHA"
       - env:
