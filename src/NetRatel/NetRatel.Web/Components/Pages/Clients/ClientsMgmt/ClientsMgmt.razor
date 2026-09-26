@@ -456,6 +456,7 @@
     private bool _interactiveReady;
     private MudButton? _automationOpener;
     private bool _restoreAutomationFocus;
+    private int? _pendingTabReload;
 
     private bool _automationDirty => _automationSaved is not null && _automationDraft is not null && !SameAutomationPolicy(_automationSaved, _automationDraft);
     private string? AutomationValidationError => _automationDraft switch
@@ -488,6 +489,16 @@
             _restoreAutomationFocus = false;
             await _automationOpener.FocusAsync();
         }
+
+        if (_pendingTabReload is int pendingTab && pendingTab == _activeTab)
+        {
+            if (!await ReloadActiveTabAsync(pendingTab))
+            {
+                return;
+            }
+
+            _pendingTabReload = null;
+        }
     }
 
     protected override async Task OnInitializedAsync()
@@ -499,29 +510,47 @@
         _importPollingTask = PollImportsAsync(_importPolling.Token);
     }
 
-    private async Task OnTabChanged(int index)
+    private Task OnTabChanged(int index)
     {
         if (index == _activeTab)
         {
-            return;
+            return Task.CompletedTask;
         }
 
         if (_automationDirty)
         {
             _automationError = "Save or cancel the automation draft before changing tabs.";
             _automationDrawerOpen = true;
-            return;
+            return Task.CompletedTask;
         }
 
         _activeTab = index;
-        await Task.Yield();
+        _pendingTabReload = index;
+        return Task.CompletedTask;
+    }
+
+    private async Task<bool> ReloadActiveTabAsync(int index)
+    {
         switch (index)
         {
-            case 0: await LoadGitHubAsync(false); await LoadAutomationAsync(); break;
-            case 1 when _artifactTable is not null: await _artifactTable.ReloadServerData(); break;
-            case 2 when _releaseTable is not null: await _releaseTable.ReloadServerData(); break;
-            case 3 when _attemptTable is not null: await _attemptTable.ReloadServerData(); break;
-            case 4 when _suspendedTable is not null: await _suspendedTable.ReloadServerData(); break;
+            case 0:
+                await LoadGitHubAsync(false);
+                await LoadAutomationAsync();
+                return true;
+            case 1 when _artifactTable is not null:
+                await _artifactTable.ReloadServerData();
+                return true;
+            case 2 when _releaseTable is not null:
+                await _releaseTable.ReloadServerData();
+                return true;
+            case 3 when _attemptTable is not null:
+                await _attemptTable.ReloadServerData();
+                return true;
+            case 4 when _suspendedTable is not null:
+                await _suspendedTable.ReloadServerData();
+                return true;
+            default:
+                return false;
         }
     }
 
