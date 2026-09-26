@@ -216,27 +216,24 @@ jobs:
           certificate_import_path_windows="$(cygpath -w "$certificate_directory/tls.cer")"
           certificate_path_windows="$(cygpath -w "$certificate_directory/tls.crt")"
           key_path_windows="$(cygpath -w "$certificate_directory/tls.key")"
-          certificate_thumbprint="$(pwsh -NoLogo -NoProfile -NonInteractive -Command \
-            "(Import-Certificate -FilePath '$certificate_import_path_windows' -CertStoreLocation Cert:\\LocalMachine\\Root).Thumbprint")"
           pwsh -NoLogo -NoProfile -NonInteractive -Command \
-            "\$hostsPath = Join-Path \$env:SystemRoot 'System32\\drivers\\etc\\hosts'; if (-not (Select-String -Path \$hostsPath -Pattern '^127\\.0\\.0\\.1\\s+netratel\\.example$' -Quiet)) { Add-Content -Path \$hostsPath -Value '127.0.0.1 netratel.example' }"
+            "\$ErrorActionPreference = 'Stop'; Import-Certificate -FilePath '$certificate_import_path_windows' -CertStoreLocation Cert:\\LocalMachine\\Root | Out-Null"
+          certificate_thumbprint="$(openssl x509 -in "$certificate_directory/tls.crt" -noout -fingerprint -sha1 | sed -E 's/^.*=//; s/://g' | tr '[:lower:]' '[:upper:]')"
           cleanup() {
             pwsh -NoLogo -NoProfile -NonInteractive -Command \
               "Remove-Item -LiteralPath 'Cert:\\LocalMachine\\Root\\$certificate_thumbprint' -Force -ErrorAction SilentlyContinue"
-            pwsh -NoLogo -NoProfile -NonInteractive -Command \
-              "\$hostsPath = Join-Path \$env:SystemRoot 'System32\\drivers\\etc\\hosts'; (Get-Content \$hostsPath) | Where-Object { \$_ -notmatch '^127\\.0\\.0\\.1\\s+netratel\\.example$' } | Set-Content \$hostsPath"
           }
           trap cleanup EXIT
-          NETRATEL_LOCAL_FIRST_WEB_URL=https://netratel.example \
+          NETRATEL_LOCAL_FIRST_WEB_URL=https://127.0.0.1 \
           NETRATEL_LOCAL_FIRST_IGNORE_HTTPS_ERRORS=true \
           NETRATEL_LOCAL_FIRST_WINDOWS_INSTALL=true \
           NETRATEL_LOCAL_FIRST_WINDOWS_CLIENT_ARCHIVE="$PWD/artifacts/netratel-client-${{ needs.validate.outputs.version }}-win-x64.zip" \
           NETRATEL_LOCAL_FIRST_WINDOWS_CLIENT_DIRECTORY="$PWD/artifacts/netratel-client-win-x64" \
           NETRATEL_LOCAL_FIRST_COMPOSE_OVERLAYS="release/compose.public-https.yaml:tests/compose/windows-installer-acceptance.compose.yaml" \
           NETRATEL_AUTHENTICATION_MODE=Local \
-          NETRATEL_PUBLIC_ORIGIN=https://netratel.example \
-          NETRATEL_PUBLIC_HOST=netratel.example \
-          NETRATEL_INSTALL_LINK_PUBLIC_ORIGIN=https://netratel.example \
+          NETRATEL_PUBLIC_ORIGIN=https://127.0.0.1 \
+          NETRATEL_PUBLIC_HOST=127.0.0.1 \
+          NETRATEL_INSTALL_LINK_PUBLIC_ORIGIN=https://127.0.0.1 \
           NETRATEL_HTTPS_BIND_ADDRESS=0.0.0.0 \
           NETRATEL_HTTPS_PORT=443 \
           NETRATEL_HTTPS_CERTIFICATE="$certificate_path_windows" \
