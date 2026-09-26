@@ -267,8 +267,19 @@ jobs:
 
           Set-Location -LiteralPath $env:GITHUB_WORKSPACE
           $gitBash = Join-Path $env:ProgramFiles 'Git\bin\bash.exe'
-          & $gitBash -c 'set -Eeuo pipefail; ./tools/ci/smoke-local-first-compose.sh'
-          if ($LASTEXITCODE -ne 0) { throw "Windows public-link smoke failed with exit code $LASTEXITCODE." }
+          # The public overlay is rooted at release/ in the source tree, while Compose
+          # resolves bind mounts relative to the first source compose file. Provide the
+          # expected root-level path for this source-tree-only smoke, then remove it.
+          $publicNginxSourcePath = Join-Path $workspace 'release\nginx.public-https.conf'
+          $publicNginxMountPath = Join-Path $workspace 'nginx.public-https.conf'
+          Copy-Item -LiteralPath $publicNginxSourcePath -Destination $publicNginxMountPath -Force
+          try {
+            & $gitBash -c 'set -Eeuo pipefail; ./tools/ci/smoke-local-first-compose.sh'
+            if ($LASTEXITCODE -ne 0) { throw "Windows public-link smoke failed with exit code $LASTEXITCODE." }
+          }
+          finally {
+            Remove-Item -LiteralPath $publicNginxMountPath -Force -ErrorAction SilentlyContinue
+          }
       - name: Remove Windows public HTTPS certificate
         if: always() && matrix.runtime == 'win-x64'
         shell: pwsh
