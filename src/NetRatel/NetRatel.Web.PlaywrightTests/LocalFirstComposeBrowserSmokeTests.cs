@@ -305,7 +305,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         var uploadDialog = page.Locator(".mud-dialog:visible").Filter(new() { HasText = "Runtime Identifier" }).Last;
         var runtimeSelector = page.GetByTestId("upload-runtime-selector");
         await runtimeSelector.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
-        await runtimeSelector.Locator("input.upload-runtime-select").ClickAsync();
+        await runtimeSelector.Locator(".upload-runtime-select-control").ClickAsync();
         await page.GetByRole(AriaRole.Option, new() { Name = "Linux (x64)" }).ClickAsync();
         await uploadDialog.GetByRole(AriaRole.Textbox, new() { Name = "Version" }).FillAsync(version);
         using var buffer = new MemoryStream();

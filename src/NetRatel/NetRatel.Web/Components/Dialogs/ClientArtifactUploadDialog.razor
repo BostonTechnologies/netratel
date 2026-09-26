@@ -8,7 +8,11 @@
     <DialogContent>
         <MudForm @ref="_form" Class="d-flex flex-column gap-4">
             <div data-testid="upload-runtime-selector">
-                <MudSelect @bind-Value="_rid" Label="Runtime Identifier" Dense="true" InputClass="upload-runtime-select">
+                <MudSelect @bind-Value="_rid"
+                           Label="Runtime Identifier"
+                           Dense="true"
+                           Class="upload-runtime-select-control"
+                           InputClass="upload-runtime-select">
                     <MudSelectItem Value="@("win-x64")">Windows (x64)</MudSelectItem>
                     <MudSelectItem Value="@("win-arm64")">Windows (ARM64)</MudSelectItem>
                     <MudSelectItem Value="@("linux-x64")">Linux (x64)</MudSelectItem>
