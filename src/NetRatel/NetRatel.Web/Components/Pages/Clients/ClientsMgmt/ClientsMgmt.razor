@@ -22,7 +22,7 @@
         </MudStack>
         <MudStack Row="true" Class="flex-wrap" Spacing="1">
             <MudButton Color="Color.Primary" Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Tune" OnClick="OpenAutomationDrawer" data-testid="automation-settings-button">Automation @if (_automationDirty) { <MudChip T="string" Size="Size.Small" Color="Color.Warning" Class="ml-1">Unsaved</MudChip> }</MudButton>
-            <MudMenu Dense="true" Variant="Variant.Outlined" Label="Advanced" StartIcon="@Icons.Material.Filled.MoreHoriz" data-testid="advanced-client-actions">
+            <MudMenu Dense="true" Variant="Variant.Outlined" Label="Advanced" StartIcon="@Icons.Material.Filled.MoreHoriz" aria-label="Advanced: upload artifact" data-testid="advanced-client-actions">
                 <MudMenuItem Icon="@Icons.Material.Filled.Upload" Disabled="@(!_interactiveReady)" OnClick="OpenUpload">Upload legacy artifact</MudMenuItem>
             </MudMenu>
         </MudStack>
