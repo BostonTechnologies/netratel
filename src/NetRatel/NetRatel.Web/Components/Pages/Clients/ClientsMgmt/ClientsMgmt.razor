@@ -40,6 +40,8 @@
 <MudPaper Class="mt-4 pa-3 client-mgmt-surface" Elevation="0">
     <MudTabs Rounded="true" KeepPanelsAlive="true" LazyLoadPanels="true" MinimumTabWidth="116px" ActivePanelIndex="_activeTab" ActivePanelIndexChanged="OnTabChanged" TabPanelsClass="client-mgmt-tab-panel" data-testid="client-management-tabs">
         <MudTabPanel Text="GitHub releases" Icon="@Icons.Material.Filled.CloudDownload">
+            @if (_activeTab == 0)
+            {
             <MudStack Spacing="2" data-testid="github-release-catalogue">
                 <MudPaper Class="pa-3 client-mgmt-automation-summary" Elevation="0" data-testid="release-automation-settings">
                     <MudStack Row="true" Class="flex-wrap" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween" Spacing="2">
@@ -134,9 +136,12 @@
                     <MudText Typo="Typo.body2">Page @(_githubPageNumber + 1)</MudText>
                     <MudButton Disabled="@(_githubLoading || _githubPage?.HasMore != true)" OnClick="NextGitHubPage">Next</MudButton>
                 </MudStack>
-            </MudStack>
+                </MudStack>
+            }
         </MudTabPanel>
         <MudTabPanel Text="Packages" Icon="@Icons.Material.Filled.Inventory2">
+            @if (_activeTab == 1)
+            {
                 <MudStack Spacing="2" data-testid="artifact-management-panel">
                     <MudGrid Spacing="2">
                         <MudItem xs="12" md="5"><MudTextField T="string" Value="_artifactSearch" ValueChanged="OnArtifactSearchChanged" Immediate="true" Label="Search artifacts" Placeholder="Runtime, version, filename, SHA, notes" Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search" Clearable="true" data-testid="artifact-search" /></MudItem>
@@ -157,9 +162,12 @@
                         <PagerContent><MudTablePager PageSizeOptions="PageSizes" /></PagerContent>
                     </MudTable>
                 </MudStack>
+            }
         </MudTabPanel>
 
         <MudTabPanel Text="Auto-updates" Icon="@Icons.Material.Filled.SystemUpdateAlt">
+            @if (_activeTab == 2)
+            {
                 <MudStack Spacing="2" data-testid="release-management-panel">
                     <MudGrid Spacing="2">
                         <MudItem xs="12" md="4"><MudTextField T="string" Value="_releaseSearch" ValueChanged="OnReleaseSearchChanged" Immediate="true" Label="Search releases" Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search" Clearable="true" data-testid="release-search" /></MudItem>
@@ -181,9 +189,12 @@
                         <PagerContent><MudTablePager PageSizeOptions="PageSizes" /></PagerContent>
                     </MudTable>
                 </MudStack>
+            }
         </MudTabPanel>
 
         <MudTabPanel Text="Activity" Icon="@Icons.Material.Filled.History">
+            @if (_activeTab == 3)
+            {
                 <MudStack Spacing="2" data-testid="attempt-management-panel">
                     <MudText Typo="Typo.caption" Color="Color.Secondary">Grouping is applied to this server-filtered page; group counts are not global totals.</MudText>
                     <MudGrid Spacing="2">
@@ -206,9 +217,12 @@
                         <PagerContent><MudTablePager PageSizeOptions="PageSizes" /></PagerContent>
                     </MudTable>
                 </MudStack>
+            }
         </MudTabPanel>
 
         <MudTabPanel Text="Suspended" Icon="@Icons.Material.Filled.PauseCircleOutline">
+            @if (_activeTab == 4)
+            {
                 <MudStack Spacing="2" data-testid="suspended-management-panel">
                     <MudText Typo="Typo.body2" Color="Color.Secondary">Resume affects only future automatic updates for the selected suspended client.</MudText>
                     <MudGrid Spacing="2"><MudItem xs="12" md="6"><MudTextField T="string" Value="_suspendedSearch" ValueChanged="OnSuspendedSearchChanged" Immediate="true" Label="Search suspended agents" Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search" Clearable="true" data-testid="suspended-search" /></MudItem><MudItem xs="12" md="3"><MudSelect T="int?" Value="_suspendedTenantId" ValueChanged="OnSuspendedTenantChanged" Label="Tenant"><MudSelectItem T="int?" Value="@null">All tenants</MudSelectItem>@foreach (var tenant in _tenants) { <MudSelectItem T="int?" Value="@tenant.TenantId">@tenant.Name</MudSelectItem> }</MudSelect></MudItem></MudGrid>
@@ -219,6 +233,7 @@
                         <PagerContent><MudTablePager PageSizeOptions="PageSizes" /></PagerContent>
                     </MudTable>
                 </MudStack>
+            }
         </MudTabPanel>
     </MudTabs>
 </MudPaper>
