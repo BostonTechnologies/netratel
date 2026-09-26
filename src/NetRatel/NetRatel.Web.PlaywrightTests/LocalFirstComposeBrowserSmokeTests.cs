@@ -302,7 +302,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         });
         await page.GetByRole(AriaRole.Button, new() { Name = "Advanced: upload artifact" }).ClickAsync();
         var uploadDialog = page.Locator(".mud-dialog:visible").Filter(new() { HasText = "Runtime Identifier" }).Last;
-        await uploadDialog.GetByRole(AriaRole.Combobox, new() { Name = "Runtime Identifier" }).ClickAsync();
+        await uploadDialog.Locator("input.upload-runtime-select").ClickAsync();
         await page.GetByRole(AriaRole.Option, new() { Name = "Linux (x64)" }).ClickAsync();
         await uploadDialog.GetByRole(AriaRole.Textbox, new() { Name = "Version" }).FillAsync(version);
         using var buffer = new MemoryStream();
