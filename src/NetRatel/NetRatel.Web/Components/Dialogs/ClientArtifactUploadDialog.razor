@@ -7,13 +7,15 @@
 <MudDialog>
     <DialogContent>
         <MudForm @ref="_form" Class="d-flex flex-column gap-4">
-            <MudSelect @bind-Value="_rid" Label="Runtime Identifier" Dense="true" InputClass="upload-runtime-select">
-                <MudSelectItem Value="@("win-x64")">Windows (x64)</MudSelectItem>
-                <MudSelectItem Value="@("win-arm64")">Windows (ARM64)</MudSelectItem>
-                <MudSelectItem Value="@("linux-x64")">Linux (x64)</MudSelectItem>
-                <MudSelectItem Value="@("osx-x64")">macOS (Intel)</MudSelectItem>
-                <MudSelectItem Value="@("osx-arm64")">macOS (Apple Silicon)</MudSelectItem>
-            </MudSelect>
+            <div data-testid="upload-runtime-selector">
+                <MudSelect @bind-Value="_rid" Label="Runtime Identifier" Dense="true" InputClass="upload-runtime-select">
+                    <MudSelectItem Value="@("win-x64")">Windows (x64)</MudSelectItem>
+                    <MudSelectItem Value="@("win-arm64")">Windows (ARM64)</MudSelectItem>
+                    <MudSelectItem Value="@("linux-x64")">Linux (x64)</MudSelectItem>
+                    <MudSelectItem Value="@("osx-x64")">macOS (Intel)</MudSelectItem>
+                    <MudSelectItem Value="@("osx-arm64")">macOS (Apple Silicon)</MudSelectItem>
+                </MudSelect>
+            </div>
 
             <MudTextField @bind-Value="_version" Label="Version" Placeholder="1.2.3 or 1.2.3-preview.1" Margin="Margin.Dense" Required="true" Immediate="true" />
 
