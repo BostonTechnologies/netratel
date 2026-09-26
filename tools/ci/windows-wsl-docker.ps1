@@ -16,6 +16,16 @@ if ([string]::IsNullOrWhiteSpace($env:NETRATEL_LOCAL_FIRST_WSL_WORKSPACE)) {
 }
 
 $wslPath = Join-Path $env:SystemRoot 'System32\wsl.exe'
+function ConvertTo-BashArgument {
+    param([AllowEmptyString()][string] $Value)
+
+    $singleQuote = [string][char]39
+    $escaped = $Value.Replace($singleQuote, $singleQuote + [char]92 + $singleQuote + [char]92 + $singleQuote)
+    return '{0}{1}{0}' -f $singleQuote, $escaped
+}
+
+$quotedArguments = @($Arguments | ForEach-Object { ConvertTo-BashArgument $_ })
+$command = "docker $($quotedArguments -join ' ')"
 $wslArguments = @(
     '--distribution'
     $env:NETRATEL_LOCAL_FIRST_WSL_DISTRIBUTION
@@ -24,8 +34,10 @@ $wslArguments = @(
     '--cd'
     $env:NETRATEL_LOCAL_FIRST_WSL_WORKSPACE
     '--'
-    'docker'
-) + @($Arguments)
+    'bash'
+    '-lc'
+    $command
+)
 
 & $wslPath @wslArguments
 exit $LASTEXITCODE
