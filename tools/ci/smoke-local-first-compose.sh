@@ -215,12 +215,16 @@ fi
 
 stage="waiting for migration runner"
 migration_id="$("${compose[@]}" ps -a -q migrations)"
+migration_id="${migration_id//$'\r'/}"
 [[ -n "$migration_id" ]] || { echo "Migration container was not created." >&2; exit 1; }
 migration_complete=false
 for _ in $(seq 1 90); do
   status="$("$docker_command" inspect --format '{{.State.Status}}' "$migration_id")"
+  status="${status//$'\r'/}"
   if [[ "$status" == exited ]]; then
-    [[ "$("$docker_command" inspect --format '{{.State.ExitCode}}' "$migration_id")" == 0 ]] || exit 1
+    exit_code="$("$docker_command" inspect --format '{{.State.ExitCode}}' "$migration_id")"
+    exit_code="${exit_code//$'\r'/}"
+    [[ "$exit_code" == 0 ]] || exit 1
     migration_complete=true
     break
   fi
