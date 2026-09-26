@@ -218,16 +218,19 @@ migration_id="$("${compose[@]}" ps -a -q migrations)"
 migration_id="${migration_id//$'\r'/}"
 [[ -n "$migration_id" ]] || { echo "Migration container was not created." >&2; exit 1; }
 migration_complete=false
+exit_code=""
 for _ in $(seq 1 90); do
-  state="$("$docker_command" inspect --format '{{.State.Running}}|{{.State.ExitCode}}' "$migration_id")"
-  state="${state//$'\r'/}"
-  state="${state//$'\n'/}"
-  state="${state,,}"
-  if [[ "$state" == 'false|0' ]]; then
+  running_state="$("$docker_command" inspect --format "{{.State.Running}}" "$migration_id")"
+  exit_code="$("$docker_command" inspect --format "{{.State.ExitCode}}" "$migration_id")"
+  running_state="${running_state//$'\r'/}"
+  running_state="${running_state//$'\n'/}"
+  running_state="${running_state,,}"
+  exit_code="${exit_code//$'\r'/}"
+  exit_code="${exit_code//$'\n'/}"
+  if [[ "$running_state" == false && "$exit_code" == 0 ]]; then
     migration_complete=true
     break
-  elif [[ "$state" == false\|* ]]; then
-    exit_code="${state##*|}"
+  elif [[ "$running_state" == false ]]; then
     echo "Migration container exited with code $exit_code." >&2
     break
   fi
