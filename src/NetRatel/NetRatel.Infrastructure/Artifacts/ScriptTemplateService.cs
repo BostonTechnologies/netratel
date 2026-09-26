@@ -67,6 +67,7 @@ public sealed class ScriptTemplateService : IScriptTemplateService
                 -StartupType Automatic
             New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\$serviceName" -Name Environment -PropertyType MultiString -Value @(
                 "NetRatel_CLIENT_LOG_DIR=$LogDir",
+                "NetRatelCLIENT__Client__ApiBaseUrl=$ApiBase",
                 "NetRatelCLIENT__Transport__Mode=AkkaPresence",
                 "NetRatelCLIENT__Gateway__Endpoint=$ApiBase",
                 "NetRatelCLIENT__Gateway__RequiredPresenceAuthority=akka",
@@ -300,6 +301,7 @@ finally {
             Restart=always
             RestartPreventExitStatus=78
             Environment=NetRatel_CLIENT_LOG_DIR=/var/lib/netratel/logs
+            Environment=NetRatelCLIENT__Client__ApiBaseUrl=${API_BASE}
             Environment=NetRatelCLIENT__Transport__Mode=AkkaPresence
             Environment=NetRatelCLIENT__Gateway__Endpoint=${API_BASE}
             Environment=NetRatelCLIENT__Gateway__RequiredPresenceAuthority=akka
@@ -502,6 +504,7 @@ echo "NetRatel deployment complete."
               <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
               <key>EnvironmentVariables</key><dict>
                 <key>NetRatelCLIENT__Transport__Mode</key><string>AkkaPresence</string>
+                <key>NetRatelCLIENT__Client__ApiBaseUrl</key><string>${API_BASE}</string>
                 <key>NetRatelCLIENT__Gateway__Endpoint</key><string>${API_BASE}</string>
                 <key>NetRatelCLIENT__Gateway__RequiredPresenceAuthority</key><string>akka</string>
                 <key>NetRatelCLIENT__Gateway__TelemetryAuthorityEnabled</key><string>true</string>
