@@ -107,6 +107,10 @@ if [[ -n "${NETRATEL_LOCAL_FIRST_COMPOSE_OVERLAYS:-}" ]]; then
   done
 fi
 compose_files+=(-f "$compose_root/tests/compose/local-first-install-links.compose.yaml")
+database_service=postgres
+if [[ -n "${NETRATEL_EXTERNAL_DATABASE_CONNECTION_STRING:-}" ]]; then
+  database_service=external-db
+fi
 if [[ -n "$mcp_http_image" ]]; then
   local_http_mcp_directory="$(mktemp -d)"
   local_http_mcp_overlay="$compose_root/tests/compose/local-http-mcp.compose.yaml"
@@ -161,7 +165,7 @@ cleanup() {
   if (( status != 0 )); then
     echo "::error title=Local-first Compose smoke failed::${stage}" >&2
     "${compose[@]}" ps --all >&2 || true
-    local log_services=(migrations api web)
+    local log_services=("$database_service" migrations api web)
     if [[ "$web_url" == https://* ]]; then log_services+=(ingress); fi
     if [[ -n "$mcp_http_image" ]]; then log_services+=(mcp-http); fi
     "${compose[@]}" logs --no-color --tail 250 "${log_services[@]}" >&2 || true
@@ -281,12 +285,13 @@ ensure_runtime_service() {
   fi
 
   attempts=30
-  [[ "$service" == postgres ]] && attempts=90
+  [[ "$service" == postgres || "$service" == external-db ]] && attempts=90
   for _ in $(seq 1 "$attempts"); do
     inspect_json="$("$docker_command" inspect "$container_id" | LC_ALL=C tr -d '\000\r')"
     running_state="$(jq -r '.[0].State.Running' <<<"$inspect_json")"
     health_state="$(jq -r '.[0].State.Health.Status // empty' <<<"$inspect_json")"
-    if [[ "$running_state" == true && ("$service" != postgres || "$health_state" == healthy) ]]; then
+    if [[ "$running_state" == true &&
+      ("$service" != postgres && "$service" != external-db || "$health_state" == healthy) ]]; then
       return 0
     fi
     sleep 1
@@ -306,16 +311,16 @@ refresh_api_container() {
   fi
   [[ -n "$api_container_id" ]] || { echo "API container was not created." >&2; return 1; }
 }
-ensure_runtime_service postgres
-postgres_restarted="$runtime_service_restarted"
+ensure_runtime_service "$database_service"
+database_restarted="$runtime_service_restarted"
 ensure_runtime_service api
 ensure_runtime_service web
-if [[ "$postgres_restarted" == true ]]; then
+if [[ "$database_restarted" == true ]]; then
   # If WSL recycled the database container, an automatically restarted API can
   # observe the empty/unavailable database first and enter bootstrap recovery.
   # Restart dependents only after PostgreSQL reports healthy so the original
   # bootstrap descriptor, database, and key material are evaluated together.
-  echo "PostgreSQL was recovered; restarting dependent application services." >&2
+  echo "Database service $database_service was recovered; restarting dependent application services." >&2
   "${compose[@]}" restart api web >/dev/null
   ensure_runtime_service api
   ensure_runtime_service web

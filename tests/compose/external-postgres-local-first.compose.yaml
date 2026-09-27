@@ -4,6 +4,7 @@
 services:
   external-db:
     image: postgres:17-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_DB: external-bootstrap
       POSTGRES_USER: external-bootstrap

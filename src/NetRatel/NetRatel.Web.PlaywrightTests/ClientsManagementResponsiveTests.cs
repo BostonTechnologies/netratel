@@ -74,9 +74,10 @@ public sealed class ClientsManagementResponsiveTests : IAsyncLifetime
             Assert.NotNull(response);
             Assert.True(response.Ok, $"Client-management fixture returned HTTP {response.Status}.");
 
-            await page.GetByTestId("app-main-content").WaitForAsync();
-            await page.GetByTestId("client-management-tabs").WaitForAsync();
-            await page.GetByTestId("automation-settings-button").WaitForAsync();
+            var shellWait = new LocatorWaitForOptions { State = WaitForSelectorState.Visible, Timeout = 90_000 };
+            await page.GetByTestId("app-main-content").WaitForAsync(shellWait);
+            await page.GetByTestId("client-management-tabs").WaitForAsync(shellWait);
+            await page.GetByTestId("automation-settings-button").WaitForAsync(shellWait);
             Assert.Equal(5, await page.GetByRole(AriaRole.Tab).CountAsync());
             await page.GetByTestId("github-release-catalogue").WaitForAsync();
             await page.GetByTestId("release-automation-settings").WaitForAsync();
