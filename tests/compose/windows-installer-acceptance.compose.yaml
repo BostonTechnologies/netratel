@@ -14,3 +14,4 @@ services:
       NetRatelAkkaMigration__CommandAuthorityEnabled: "true"
       NetRatelAkkaMigration__JobShadowEnabled: "true"
       NetRatelAkkaMigration__JobAuthorityEnabled: "true"
+      Logging__LogLevel__Microsoft.EntityFrameworkCore.Database.Command: Warning

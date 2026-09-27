@@ -772,24 +772,36 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         string logDirectory, IReadOnlyList<string> markers, TimeSpan timeout, int requiredPresenceAdmissions = 1)
     {
         var deadline = DateTimeOffset.UtcNow + timeout;
+        var lastContent = string.Empty;
         using var pollTimer = new PeriodicTimer(TimeSpan.FromMilliseconds(250));
         while (DateTimeOffset.UtcNow < deadline)
         {
             if (Directory.Exists(logDirectory))
             {
-                var content = string.Join(
+                lastContent = string.Join(
                     Environment.NewLine,
                     Directory.EnumerateFiles(logDirectory, "*.log", SearchOption.TopDirectoryOnly)
                         .Select(File.ReadAllText));
-                if (markers.All(content.Contains) &&
-                    content.Split("Presence admitted. authority=akka", StringSplitOptions.None).Length - 1 >= requiredPresenceAdmissions)
-                    return content;
+                if (markers.All(lastContent.Contains) &&
+                    lastContent.Split("Presence admitted. authority=akka", StringSplitOptions.None).Length - 1 >= requiredPresenceAdmissions)
+                    return lastContent;
             }
 
             await pollTimer.WaitForNextTickAsync();
         }
 
-        throw new TimeoutException("The Windows service did not emit the expected redacted authentication and gateway readiness markers.");
+        var missing = markers.Where(marker => !lastContent.Contains(marker, StringComparison.Ordinal)).ToArray();
+        var admissions = lastContent.Split("Presence admitted. authority=akka", StringSplitOptions.None).Length - 1;
+        var relevantLines = lastContent.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
+            .Where(line => line.Contains("[Auth]", StringComparison.Ordinal) ||
+                           line.Contains("[Gateway]", StringComparison.Ordinal))
+            .TakeLast(WindowsInstallerDiagnosticLineLimit);
+        var diagnostic = FormatWindowsInstallerDiagnosticTail(
+            string.Join(Environment.NewLine, relevantLines), string.Empty, string.Empty);
+        throw new TimeoutException(
+            $"The Windows service did not reach authenticated gateway readiness. " +
+            $"Missing markers: {string.Join(", ", missing)}; admitted sessions: {admissions}/{requiredPresenceAdmissions}. " +
+            $"Redacted authentication/gateway log tail:{Environment.NewLine}{diagnostic}");
     }
 
     private static async Task RemoveWindowsAcceptanceServiceArtifactsAsync()
