@@ -4,59 +4,6 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$root"
 
-docker_command="${NETRATEL_LOCAL_FIRST_DOCKER_COMMAND:-docker}"
-compose_root="$root"
-docker_key_directory=""
-if [[ -n "${NETRATEL_LOCAL_FIRST_WSL_DISTRIBUTION:-}" ]]; then
-  # GitHub's Windows-hosted Docker daemon is a Windows-container engine. The
-  # Windows acceptance still has to run natively, so this mode routes only
-  # Docker through the disposable WSL Linux engine configured by the workflow.
-  # Keep the test process and its Windows paths on the host; only paths handed
-  # to the Linux daemon are converted to /mnt/<drive>/... paths.
-  wsl_path() {
-    local candidate="$1" windows_path drive rest
-    if [[ "$candidate" =~ ^([[:alpha:]]):[\\/](.*)$ ]]; then
-      drive="${BASH_REMATCH[1],,}"
-      rest="${BASH_REMATCH[2]}"
-    else
-      windows_path="$(cygpath -w "$candidate")"
-      [[ "$windows_path" =~ ^([[:alpha:]]):[\\/](.*)$ ]] || {
-        echo "Cannot translate host path for WSL Docker: $candidate" >&2
-        exit 1
-      }
-      drive="${BASH_REMATCH[1],,}"
-      rest="${BASH_REMATCH[2]}"
-    fi
-    rest="${rest//\\//}"
-    printf '/mnt/%s/%s' "$drive" "$rest"
-  }
-
-  [[ "$(command -v cygpath || true)" != "" ]] || {
-    echo "cygpath is required for Windows WSL Docker path translation." >&2
-    exit 1
-  }
-  if [[ "$docker_command" =~ ^([[:alpha:]]):[\\/].* ]]; then
-    docker_command="$(cygpath -u "$docker_command")"
-  fi
-  wsl_distribution="${NETRATEL_LOCAL_FIRST_WSL_DISTRIBUTION//$'\r'/}"
-  wsl_distribution="${wsl_distribution//$'\n'/}"
-  [[ -n "$wsl_distribution" ]] || {
-    echo "The Linux Docker WSL distribution name is empty." >&2
-    exit 1
-  }
-  wsl_command="${NETRATEL_LOCAL_FIRST_WSL_COMMAND:?Windows WSL command shim path missing}"
-  compose_root="$(wsl_path "$root")"
-  wsl_run() {
-    cmd.exe /d /s /c call "$wsl_command" "$@"
-  }
-  export MSYS_NO_PATHCONV=1
-  export NETRATEL_HTTPS_CERTIFICATE="$(wsl_path "${NETRATEL_HTTPS_CERTIFICATE:?Windows public HTTPS certificate path missing}")"
-  export NETRATEL_HTTPS_PRIVATE_KEY="$(wsl_path "${NETRATEL_HTTPS_PRIVATE_KEY:?Windows public HTTPS private key path missing}")"
-else
-  wsl_path() { printf '%s' "$1"; }
-  wsl_run() { "$@"; }
-fi
-
 project="netratel-local-first-${GITHUB_RUN_ID:-local}-${RANDOM}"
 web_port="${NETRATEL_LOCAL_FIRST_WEB_PORT:-18081}"
 web_url="${NETRATEL_LOCAL_FIRST_WEB_URL:-http://127.0.0.1:${web_port}}"
@@ -67,17 +14,6 @@ fi
 key_directory="$(mktemp -d)"
 key_path="$key_directory/agent-auth-private.pem"
 chmod 711 "$key_directory"
-if [[ -n "${NETRATEL_LOCAL_FIRST_WSL_DISTRIBUTION:-}" ]]; then
-  # WSL can recycle its Linux filesystem during the hosted Windows journey.
-  # Keep the disposable key on the runner's persistent Windows temp volume and
-  # translate that path for the Linux Docker daemon, so service restarts keep
-  # seeing the same file bind mount.
-  docker_key_directory="$(wsl_path "$key_directory")"
-  wsl_run mkdir -p "$docker_key_directory"
-  wsl_run chmod 711 "$docker_key_directory"
-else
-  docker_key_directory="$key_directory"
-fi
 credential_path="$(mktemp)"
 mcp_stdio_config_path="$(mktemp)"
 mcp_stdio_error_path="$(mktemp)"
@@ -106,14 +42,14 @@ if [[ -n "${NETRATEL_LOCAL_FIRST_COMPOSE_OVERLAYS:-}" ]]; then
     compose_files+=(-f "$acceptance_overlay")
   done
 fi
-compose_files+=(-f "$compose_root/tests/compose/local-first-install-links.compose.yaml")
+compose_files+=(-f "$root/tests/compose/local-first-install-links.compose.yaml")
 database_service=postgres
 if [[ -n "${NETRATEL_EXTERNAL_DATABASE_CONNECTION_STRING:-}" ]]; then
   database_service=external-db
 fi
 if [[ -n "$mcp_http_image" ]]; then
   local_http_mcp_directory="$(mktemp -d)"
-  local_http_mcp_overlay="$compose_root/tests/compose/local-http-mcp.compose.yaml"
+  local_http_mcp_overlay="$root/tests/compose/local-http-mcp.compose.yaml"
   mcp_overlay="$root/release/compose.mcp-http.yaml"
   if [[ -n "$bundle_extract_dir" ]]; then
     mcp_overlay="$bundle_extract_dir/compose.mcp-http.yaml"
@@ -152,13 +88,13 @@ if [[ -n "$mcp_http_image" ]]; then
   export NETRATEL_LOCAL_HTTP_MCP_CERT_PASSWORD="$certificate_password"
   export NETRATEL_LOCAL_HTTP_MCP_API_CA="$api_certificate"
   export NETRATEL_LOCAL_HTTP_MCP_API_KEY="$api_key"
-  export NETRATEL_LOCAL_HTTP_MCP_GATEWAY_CONFIG="$compose_root/tests/compose/local-http-mcp-api-proxy.nginx.conf"
+  export NETRATEL_LOCAL_HTTP_MCP_GATEWAY_CONFIG="$root/tests/compose/local-http-mcp-api-proxy.nginx.conf"
   export NETRATEL_LOCAL_HTTP_MCP_MCP_PFX="$mcp_pfx"
   export NETRATEL_LOCAL_HTTP_MCP_CONFIG="$mcp_config"
   export NETRATEL_LOCAL_HTTP_MCP_M2M_SECRET="$m2m_secret"
   compose_files+=(-f "$mcp_overlay" -f "$local_http_mcp_overlay")
 fi
-compose=("$docker_command" compose --project-name "$project" "${compose_files[@]}")
+compose=(docker compose --project-name "$project" "${compose_files[@]}")
 
 cleanup() {
   local status=$?
@@ -171,11 +107,8 @@ cleanup() {
     "${compose[@]}" logs --no-color --tail 250 "${log_services[@]}" >&2 || true
   fi
   "${compose[@]}" down --volumes --remove-orphans --rmi local >/dev/null 2>&1 || true
-  "$docker_command" volume rm "${project}_api-data" "${project}_web-keys" >/dev/null 2>&1 || true
+  docker volume rm "${project}_api-data" "${project}_web-keys" >/dev/null 2>&1 || true
   find "$key_directory" -depth -delete 2>/dev/null || true
-  if [[ -n "${NETRATEL_LOCAL_FIRST_WSL_DISTRIBUTION:-}" ]]; then
-    wsl_run rm -rf "$docker_key_directory" >/dev/null 2>&1 || true
-  fi
   unlink "$credential_path" 2>/dev/null || true
   unlink "$mcp_stdio_config_path" 2>/dev/null || true
   if [[ -n "$bundle_extract_dir" ]]; then
@@ -189,18 +122,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if [[ -n "${NETRATEL_LOCAL_FIRST_WSL_DISTRIBUTION:-}" ]]; then
-  wsl_run openssl ecparam -name prime256v1 -genkey -noout -out "$docker_key_directory/agent-auth-private.pem"
-else
-  openssl ecparam -name prime256v1 -genkey -noout -out "$key_path"
-fi
+openssl ecparam -name prime256v1 -genkey -noout -out "$key_path"
 # The disposable key matches the documented non-root identity and private
 # mode; its value is never emitted to logs or test output.
-"$docker_command" run --rm --volume "$docker_key_directory:/keys" alpine:3.22 \
+docker run --rm --volume "$key_directory:/keys" alpine:3.22 \
   chown 1654:1654 /keys/agent-auth-private.pem
-"$docker_command" run --rm --volume "$docker_key_directory:/keys" alpine:3.22 \
+docker run --rm --volume "$key_directory:/keys" alpine:3.22 \
   chmod 600 /keys/agent-auth-private.pem
-export NETRATEL_AGENT_AUTH_PRIVATE_KEY="$docker_key_directory/agent-auth-private.pem"
+export NETRATEL_AGENT_AUTH_PRIVATE_KEY="$key_directory/agent-auth-private.pem"
 export NETRATEL_WEB_PORT="$web_port"
 
 # Reproduce managed deployments that pre-create an empty root-owned named
@@ -208,10 +137,10 @@ export NETRATEL_WEB_PORT="$web_port"
 # writes its first Data Protection key; browser sign-in verifies the result.
 stage="preparing root-owned fresh persistent volumes"
 for volume in "${project}_api-data" "${project}_web-keys"; do
-  "$docker_command" volume create "$volume" >/dev/null
-  "$docker_command" run --rm --volume "$volume:/target" alpine:3.22 \
+  docker volume create "$volume" >/dev/null
+  docker run --rm --volume "$volume:/target" alpine:3.22 \
     chown 0:0 /target
-  "$docker_command" run --rm --volume "$volume:/target" alpine:3.22 \
+  docker run --rm --volume "$volume:/target" alpine:3.22 \
     chmod 700 /target
 done
 
@@ -224,22 +153,17 @@ fi
 
 stage="waiting for migration runner"
 migration_id="$("${compose[@]}" ps -a -q migrations)"
-migration_id="${migration_id//$'\r'/}"
 [[ -n "$migration_id" ]] || { echo "Migration container was not created." >&2; exit 1; }
 migration_complete=false
-exit_code=""
 for _ in $(seq 1 90); do
-  # Read the complete JSON document instead of using --format here. The
-  # Windows WSL handoff has proved unreliable for short Go-template results;
-  # JSON also keeps the state and exit code in one atomic Docker response.
-  inspect_json="$("$docker_command" inspect "$migration_id" | LC_ALL=C tr -d '\000\r')"
-  running_state="$(jq -r '.[0].State.Running' <<<"$inspect_json")"
-  exit_code="$(jq -r '.[0].State.ExitCode' <<<"$inspect_json")"
-  if [[ "$running_state" == false && "$exit_code" == 0 ]]; then
+  status="$(docker inspect --format '{{.State.Status}}' "$migration_id")"
+  if [[ "$status" == exited ]]; then
+    exit_code="$(docker inspect --format '{{.State.ExitCode}}' "$migration_id")"
+    if [[ "$exit_code" != 0 ]]; then
+      echo "Migration container exited with code $exit_code." >&2
+      exit 1
+    fi
     migration_complete=true
-    break
-  elif [[ "$running_state" == false ]]; then
-    echo "Migration container exited with code $exit_code." >&2
     break
   fi
   sleep 1
@@ -275,17 +199,6 @@ run_logged_capture() {
     return "$status"
   fi
 }
-run_capture_report_failure() {
-  local operation="$1" output status
-  shift
-  if output="$("$@")"; then
-    printf '%s' "$output"
-  else
-    status=$?
-    echo "Failed smoke operation: $operation (exit code $status)." >&2
-    return "$status"
-  fi
-}
 run_logged_discard() {
   local operation="$1" status
   shift
@@ -298,86 +211,7 @@ run_logged_discard() {
     return "$status"
   fi
 }
-ensure_runtime_service() {
-  local service="$1" container_id inspect_json running_state health_state attempts start_status
-  runtime_service_restarted=false
-  container_id="$(run_logged_capture "find running $service container" "${compose[@]}" ps -q "$service")"
-  container_id="${container_id//$'\r'/}"
-  if [[ -z "$container_id" ]]; then
-    container_id="$(run_logged_capture "find all $service containers" "${compose[@]}" ps -a -q "$service")"
-    container_id="${container_id//$'\r'/}"
-  fi
-  [[ -n "$container_id" ]] || {
-    echo "${service^} container was not created." >&2
-    return 1
-  }
-
-  inspect_json="$(run_logged_capture "inspect $service container state" "$docker_command" inspect "$container_id" | LC_ALL=C tr -d '\000\r')"
-  running_state="$(jq -r '.[0].State.Running' <<<"$inspect_json")"
-  if [[ "$running_state" != true ]]; then
-    echo "${service^} container $container_id is not running; attempting one restart." >&2
-    if run_logged_discard "start stopped $service container" "$docker_command" start "$container_id"; then
-      runtime_service_restarted=true
-    else
-      start_status=$?
-      echo "Docker start reported exit code $start_status; checking whether the $service container started." >&2
-      inspect_json="$(run_logged_capture "verify $service container after start error" "$docker_command" inspect "$container_id" | LC_ALL=C tr -d '\000\r')"
-      running_state="$(jq -r '.[0].State.Running' <<<"$inspect_json")"
-      if [[ "$running_state" != true ]]; then
-        echo "${service^} container remained stopped after Docker start reported an error." >&2
-        return "$start_status"
-      fi
-      echo "${service^} container is running despite Docker start's nonzero exit; continuing with the existing readiness check." >&2
-      runtime_service_restarted=true
-    fi
-  fi
-
-  attempts=30
-  [[ "$service" == postgres || "$service" == external-db ]] && attempts=90
-  for _ in $(seq 1 "$attempts"); do
-    inspect_json="$(run_capture_report_failure "inspect $service readiness state" "$docker_command" inspect "$container_id" | LC_ALL=C tr -d '\000\r')"
-    running_state="$(jq -r '.[0].State.Running' <<<"$inspect_json")"
-    health_state="$(jq -r '.[0].State.Health.Status // empty' <<<"$inspect_json")"
-    if [[ "$running_state" == true &&
-      ("$service" != postgres && "$service" != external-db || "$health_state" == healthy) ]]; then
-      return 0
-    fi
-    sleep 1
-  done
-
-  echo "${service^} container did not become running after the recovery attempt." >&2
-  jq -c '.[0].State' <<<"$inspect_json" >&2 || true
-  "$docker_command" logs --tail 100 "$container_id" >&2 || true
-  return 1
-}
-refresh_api_container() {
-  api_container_id="$(run_logged_capture "find running API container" "${compose[@]}" ps -q api)"
-  api_container_id="${api_container_id//$'\r'/}"
-  if [[ -z "$api_container_id" ]]; then
-    api_container_id="$(run_logged_capture "find all API containers" "${compose[@]}" ps -a -q api)"
-    api_container_id="${api_container_id//$'\r'/}"
-  fi
-  [[ -n "$api_container_id" ]] || { echo "API container was not created." >&2; return 1; }
-}
-ensure_runtime_service "$database_service"
-database_restarted="$runtime_service_restarted"
-ensure_runtime_service api
-ensure_runtime_service web
-if [[ "$database_restarted" == true ]]; then
-  # If WSL recycled the database container, an automatically restarted API can
-  # observe the empty/unavailable database first and enter bootstrap recovery.
-  # Restart dependents only after PostgreSQL reports healthy so the original
-  # bootstrap descriptor, database, and key material are evaluated together.
-  echo "Database service $database_service was recovered; restarting dependent application services." >&2
-  "${compose[@]}" restart api web >/dev/null
-  ensure_runtime_service api
-  ensure_runtime_service web
-  if [[ "$web_url" == https://* ]]; then
-    "${compose[@]}" restart ingress >/dev/null
-  fi
-fi
-refresh_api_container
-api_operator() { "$docker_command" exec "$api_container_id" "$@"; }
+api_operator() { "${compose[@]}" exec -T api "$@"; }
 operator_help="$(run_logged_capture "read API operator help" api_operator dotnet NetRatel.API.dll --help)"
 if grep -Fq -- '--show-setup-code' <<<"$operator_help"; then
   echo "Passed smoke assertion: API help lists the setup-code operator." >&2
@@ -387,7 +221,6 @@ else
 fi
 unset operator_help
 initial_setup_proof="$(run_logged_capture "read initial setup proof file (value suppressed)" api_operator cat /var/netratel/bootstrap/setup-proof)"
-initial_setup_proof="${initial_setup_proof//$'\r'/}"
 shown_initial_setup_proof="$(run_logged_capture "show initial setup proof (value suppressed)" api_operator dotnet NetRatel.API.dll --show-setup-code)"
 if [[ "$shown_initial_setup_proof" == "$initial_setup_proof" ]]; then
   echo "Passed smoke assertion: displayed initial setup proof matches the persisted proof." >&2
@@ -411,7 +244,6 @@ else
 fi
 run_logged_discard "rotate one-time setup proof (output suppressed)" api_operator dotnet NetRatel.API.dll --rotate-setup-code
 setup_proof="$(run_logged_capture "read rotated setup proof file (value suppressed)" api_operator cat /var/netratel/bootstrap/setup-proof)"
-setup_proof="${setup_proof//$'\r'/}"
 if [[ -n "$setup_proof" && "$setup_proof" != "$initial_setup_proof" ]]; then
   echo "Passed smoke assertion: proof rotation produced a nonempty, changed proof value." >&2
 else
@@ -656,7 +488,7 @@ if [[ "${NETRATEL_LOCAL_FIRST_STATE_RESET_ACCEPTANCE:-false}" == true ]]; then
 
   stage="verifying partial database loss enters recovery"
   "${compose[@]}" down --remove-orphans >/dev/null
-  "$docker_command" volume rm "${project}_postgres-data" >/dev/null
+  docker volume rm "${project}_postgres-data" >/dev/null
   "${compose[@]}" up --detach >/dev/null
   recovered=false
   for _ in $(seq 1 90); do
@@ -668,7 +500,6 @@ if [[ "${NETRATEL_LOCAL_FIRST_STATE_RESET_ACCEPTANCE:-false}" == true ]]; then
     sleep 1
   done
   [[ "$recovered" == true ]] || { echo "A retained bootstrap descriptor accepted an empty replacement database." >&2; exit 1; }
-  refresh_api_container
   set +e
   recovery_status="$(api_operator dotnet NetRatel.API.dll --setup-status)"
   recovery_exit=$?
@@ -679,18 +510,14 @@ if [[ "${NETRATEL_LOCAL_FIRST_STATE_RESET_ACCEPTANCE:-false}" == true ]]; then
   stage="verifying a complete disposable reset starts a new installation"
   "${compose[@]}" down --volumes --remove-orphans >/dev/null
   for volume in "${project}_postgres-data" "${project}_api-data" "${project}_web-keys"; do
-    if "$docker_command" volume inspect "$volume" >/dev/null 2>&1; then "$docker_command" volume rm "$volume" >/dev/null; fi
+    if docker volume inspect "$volume" >/dev/null 2>&1; then docker volume rm "$volume" >/dev/null; fi
   done
-  "$docker_command" run --rm --volume "$docker_key_directory:/keys" alpine:3.22 \
+  docker run --rm --volume "$key_directory:/keys" alpine:3.22 \
     unlink /keys/agent-auth-private.pem
-  if [[ -n "${NETRATEL_LOCAL_FIRST_WSL_DISTRIBUTION:-}" ]]; then
-    wsl_run openssl ecparam -name prime256v1 -genkey -noout -out "$docker_key_directory/agent-auth-private.pem"
-  else
-    openssl ecparam -name prime256v1 -genkey -noout -out "$key_path"
-  fi
-  "$docker_command" run --rm --volume "$docker_key_directory:/keys" alpine:3.22 \
+  openssl ecparam -name prime256v1 -genkey -noout -out "$key_path"
+  docker run --rm --volume "$key_directory:/keys" alpine:3.22 \
     chown 1654:1654 /keys/agent-auth-private.pem
-  "$docker_command" run --rm --volume "$docker_key_directory:/keys" alpine:3.22 \
+  docker run --rm --volume "$key_directory:/keys" alpine:3.22 \
     chmod 600 /keys/agent-auth-private.pem
   "${compose[@]}" up --detach >/dev/null
   fresh=false
@@ -703,11 +530,7 @@ if [[ "${NETRATEL_LOCAL_FIRST_STATE_RESET_ACCEPTANCE:-false}" == true ]]; then
     sleep 1
   done
   [[ "$fresh" == true ]] || { echo "A full disposable reset did not produce a fresh setup state." >&2; exit 1; }
-  ensure_runtime_service api
-  ensure_runtime_service web
-  refresh_api_container
   reset_setup_proof="$(api_operator cat /var/netratel/bootstrap/setup-proof)"
-  reset_setup_proof="${reset_setup_proof//$'\r'/}"
   [[ -n "$reset_setup_proof" && "$(printf '%s' "$reset_setup_proof" | sha256sum | cut -d ' ' -f 1)" != "$setup_proof_digest" ]]
   NETRATEL_LOCAL_FIRST_WEB_URL="$web_url" \
   NETRATEL_LOCAL_FIRST_SETUP_PROOF="$reset_setup_proof" \
