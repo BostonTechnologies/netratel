@@ -604,16 +604,21 @@ public sealed class LocalFirstComposeBrowserSmokeTests
                 Path.Combine(Path.GetDirectoryName(installedExecutable)!, "clientsettings.json"),
                 "{\"apiBaseUrl\":\"https://stale.invalid\"}");
 
-            var presence = await WaitForWindowsGatewayPresenceAsync(page, TimeSpan.FromMinutes(2));
-            Assert.False(string.IsNullOrWhiteSpace(presence.AgentId));
-            Assert.Equal(1, presence.TenantId);
-            Assert.True(presence.IsAuthoritative);
             var serviceLog = await WaitForWindowsServiceLogAsync(
                 logRoot,
-                ["[Auth] Access token acquired", "Presence admitted. authority=akka"],
-                TimeSpan.FromSeconds(30));
+                ["[Auth] Auto-enrollment from netratel.enroll.json succeeded. AgentId=",
+                    "[Auth] Access token acquired", "[Auth] Token tenant_id=1", "Presence admitted. authority=akka"],
+                TimeSpan.FromMinutes(2));
             Assert.Contains("[Auth] Access token acquired", serviceLog);
             Assert.Contains("Presence admitted. authority=akka", serviceLog);
+            var enrollment = Regex.Match(serviceLog,
+                @"Auto-enrollment from netratel\.enroll\.json succeeded\. AgentId=(?<id>[0-9a-fA-F-]{36})");
+            Assert.True(enrollment.Success, "The service did not log its enrolled agent identity.");
+            var agentId = Guid.Parse(enrollment.Groups["id"].Value);
+            Assert.NotEqual(Guid.Empty, agentId);
+
+            await using var clientsPage = await page.Context.NewPageAsync();
+            await WaitForWindowsClientCardAsync(clientsPage, webUrl, agentId, TimeSpan.FromMinutes(2));
 
             var serviceEnvironment = await ReadWindowsServiceEnvironmentAsync();
             Assert.Contains($"NetRatelCLIENT__Client__ApiBaseUrl={InstallLinkPublicOrigin()}", serviceEnvironment);
@@ -624,17 +629,11 @@ public sealed class LocalFirstComposeBrowserSmokeTests
                 timeout: TimeSpan.FromSeconds(30));
             Assert.Equal(0, restart.ExitCode);
 
-            var afterRestart = await WaitForWindowsGatewayPresenceAsync(page, TimeSpan.FromMinutes(2));
-            Assert.Equal(presence.AgentId, afterRestart.AgentId);
-            Assert.Equal(presence.TenantId, afterRestart.TenantId);
-            Assert.True(afterRestart.IsAuthoritative);
-            var restartedLog = await WaitForWindowsServiceLogAsync(
+            await WaitForWindowsServiceLogAsync(
                 logRoot,
                 ["[Auth] Access token acquired", "Presence admitted. authority=akka"],
-                TimeSpan.FromSeconds(30));
-            Assert.True(
-                restartedLog.Split("Presence admitted. authority=akka", StringSplitOptions.None).Length >= 3,
-                "The service restart must produce a second admitted gateway session.");
+                TimeSpan.FromMinutes(2), requiredPresenceAdmissions: 2);
+            await WaitForWindowsClientCardAsync(clientsPage, webUrl, agentId, TimeSpan.FromMinutes(2));
             Assert.Contains($"NetRatelCLIENT__Client__ApiBaseUrl={InstallLinkPublicOrigin()}",
                 await ReadWindowsServiceEnvironmentAsync());
 
@@ -653,9 +652,6 @@ public sealed class LocalFirstComposeBrowserSmokeTests
     }
 
     private sealed record PowerShellResult(int ExitCode, string Output, string Error);
-
-    internal sealed record WindowsPresence(int TenantId, string AgentId, bool IsAuthoritative);
-    internal const string WindowsPresenceEndpoint = "/api/v2/client-presence?online=true";
 
     private const int WindowsInstallerDiagnosticLineLimit = 40;
     private const int WindowsInstallerDiagnosticLineCharacterLimit = 1_000;
@@ -750,69 +746,16 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         return string.Join(Environment.NewLine, tail);
     }
 
-    private static async Task<WindowsPresence> WaitForWindowsGatewayPresenceAsync(IPage page, TimeSpan timeout)
+    private static async Task WaitForWindowsClientCardAsync(IPage clientsPage, Uri webUrl, Guid agentId, TimeSpan timeout)
     {
-        var json = await page.WaitForFunctionAsync($$"""
-            async () => {
-                try {
-                    const response = await fetch('{{WindowsPresenceEndpoint}}');
-                    if (!response.ok) return false;
-
-                    const payload = await response.json();
-                    if (payload === null || typeof payload !== 'object' || Array.isArray(payload) ||
-                        payload.mode !== 'akka' || !Array.isArray(payload.items)) return false;
-
-                    const item = payload.items.find(item => item !== null && typeof item === 'object' &&
-                        !Array.isArray(item) && Number.isInteger(item.tenantId) && item.tenantId === 1 &&
-                        typeof item.agentId === 'string' && item.agentId.trim().length > 0 &&
-                        item.online === true && item.isAuthoritative === true && item.authority === 'akka');
-                    return item
-                        ? JSON.stringify({ tenantId: item.tenantId, agentId: item.agentId, isAuthoritative: true })
-                        : false;
-                } catch {
-                    return false;
-                }
-            }
-            """, null, new PageWaitForFunctionOptions { Timeout = (float)timeout.TotalMilliseconds });
-        var result = await json.JsonValueAsync<string?>();
-        if (!TryParseWindowsPresence(result, out var presence) || presence is null)
-            throw new InvalidOperationException("The client-presence endpoint returned an invalid authoritative gateway presence.");
-
-        return presence;
-    }
-
-    internal static bool TryParseWindowsPresence(string? json, out WindowsPresence? presence)
-    {
-        presence = null;
-        if (string.IsNullOrWhiteSpace(json))
+        var card = clientsPage.Locator($"[data-testid='client-card'][data-agent-id='{agentId:D}'][data-tenant-id='1']");
+        await clientsPage.GotoAsync(new Uri(webUrl, "clients").ToString(),
+            new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await card.GetByText("Online", new() { Exact = true }).WaitForAsync(new LocatorWaitForOptions
         {
-            return false;
-        }
-
-        try
-        {
-            using var document = JsonDocument.Parse(json);
-            var result = document.RootElement;
-            if (result.ValueKind != JsonValueKind.Object ||
-                !result.TryGetProperty("tenantId", out var tenantElement) ||
-                tenantElement.ValueKind != JsonValueKind.Number ||
-                !tenantElement.TryGetInt32(out var tenantId) || tenantId != 1 ||
-                !result.TryGetProperty("agentId", out var agentElement) ||
-                agentElement.ValueKind != JsonValueKind.String ||
-                !Guid.TryParse(agentElement.GetString(), out var agentId) || agentId == Guid.Empty ||
-                !result.TryGetProperty("isAuthoritative", out var authoritativeElement) ||
-                authoritativeElement.ValueKind != JsonValueKind.True)
-            {
-                return false;
-            }
-
-            presence = new WindowsPresence(tenantId, agentElement.GetString()!, true);
-            return true;
-        }
-        catch (JsonException)
-        {
-            return false;
-        }
+            State = WaitForSelectorState.Visible,
+            Timeout = (float)timeout.TotalMilliseconds
+        });
     }
 
     private static async Task<string> ReadWindowsServiceEnvironmentAsync()
@@ -826,7 +769,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
     }
 
     private static async Task<string> WaitForWindowsServiceLogAsync(
-        string logDirectory, IReadOnlyList<string> markers, TimeSpan timeout)
+        string logDirectory, IReadOnlyList<string> markers, TimeSpan timeout, int requiredPresenceAdmissions = 1)
     {
         var deadline = DateTimeOffset.UtcNow + timeout;
         using var pollTimer = new PeriodicTimer(TimeSpan.FromMilliseconds(250));
@@ -838,7 +781,9 @@ public sealed class LocalFirstComposeBrowserSmokeTests
                     Environment.NewLine,
                     Directory.EnumerateFiles(logDirectory, "*.log", SearchOption.TopDirectoryOnly)
                         .Select(File.ReadAllText));
-                if (markers.All(content.Contains)) return content;
+                if (markers.All(content.Contains) &&
+                    content.Split("Presence admitted. authority=akka", StringSplitOptions.None).Length - 1 >= requiredPresenceAdmissions)
+                    return content;
             }
 
             await pollTimer.WaitForNextTickAsync();

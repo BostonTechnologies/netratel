@@ -43,6 +43,9 @@ public sealed class ClientCardGridTests : AsyncBunitContext
         cut.Find("button[aria-label='Open remote support']").Should().NotBeNull();
         cut.Find("button[aria-label='Copy host']").Should().NotBeNull();
         cut.FindAll(".client-card").Should().ContainSingle();
+        var card = cut.Find("[data-testid='client-card']");
+        card.GetAttribute("data-agent-id").Should().Be(AgentId.ToString("D"));
+        card.GetAttribute("data-tenant-id").Should().Be("3");
         cut.Find(".client-meta-grid").TextContent.Should().Contain("Last heartbeat");
         cut.Find(".client-connectivity-row").TextContent.Should().Contain("IP Address");
         cut.Find(".client-connectivity-row").TextContent.Should().Contain("Network");
