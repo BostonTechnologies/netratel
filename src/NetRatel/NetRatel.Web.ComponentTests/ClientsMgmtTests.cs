@@ -4,6 +4,7 @@ using System.Net;
 using System.Reflection;
 using Microsoft.AspNetCore.Components.Forms;
 using Microsoft.Extensions.DependencyInjection;
+using MudBlazor;
 using MudBlazor.Services;
 using NetRatel.Shared.Contracts;
 using NetRatel.Shared.Contracts.Requests;
@@ -162,6 +163,132 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
     }
 
     [Fact]
+    public async Task AutomationEditor_DoesNotLetAnOlderReloadReplaceANewerSave()
+    {
+        _artifacts.SavedAutomation.CheckEveryHours = 12;
+        _artifacts.SavedAutomation.Revision = 4;
+        _artifacts.SavedAutomation.UpdatedBy = "saved-A";
+        var cut = Render<ClientsMgmt>();
+        cut.WaitForAssertion(() => cut.Find("[data-testid='automation-settings-button']").Should().NotBeNull());
+
+        var pendingRead = _artifacts.QueuePendingRead();
+        var loadMethod = typeof(ClientsMgmt).GetMethod("LoadAutomationAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+        loadMethod.Should().NotBeNull();
+        var staleLoadTask = (Task)loadMethod!.Invoke(cut.Instance, null)!;
+
+        await cut.InvokeAsync(() => cut.Find("[data-testid='automation-settings-button']").Click());
+        await cut.InvokeAsync(() => cut.FindAll("input.mud-switch-input")[1].Change(true));
+        cut.WaitForAssertion(() => cut.Find("[data-testid='automation-unsaved']").Should().NotBeNull());
+
+        var pendingSave = _artifacts.QueuePendingSave();
+        var saveTask = cut.InvokeAsync(() => cut.Find("[data-testid='save-automation-policy']").Click());
+        await _artifacts.SaveStarted.Task;
+        pendingSave.SetResult(new ClientReleaseAutomationModel
+        {
+            CheckEveryHours = 12,
+            DownloadPrerelease = true,
+            Revision = 5,
+            UpdatedBy = "saved-B"
+        });
+        await saveTask;
+
+        pendingRead.SetResult(new ClientReleaseAutomationModel
+        {
+            CheckEveryHours = 0,
+            Revision = 4,
+            UpdatedBy = "stale-A"
+        });
+        await staleLoadTask;
+        cut.Render();
+
+        var saved = (ClientReleaseAutomationModel?)typeof(ClientsMgmt)
+            .GetField("_automationSaved", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(cut.Instance);
+        var draft = (ClientReleaseAutomationModel?)typeof(ClientsMgmt)
+            .GetField("_automationDraft", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(cut.Instance);
+        saved!.CheckEveryHours.Should().Be(12);
+        saved.DownloadPrerelease.Should().BeTrue();
+        saved.Revision.Should().Be(5);
+        saved.UpdatedBy.Should().Be("saved-B");
+        draft!.CheckEveryHours.Should().Be(12);
+        draft.DownloadPrerelease.Should().BeTrue();
+        draft.Revision.Should().Be(5);
+        draft.UpdatedBy.Should().Be("saved-B");
+        typeof(ClientsMgmt).GetField("_automationLoading", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(cut.Instance).Should().Be(false);
+    }
+
+    [Fact]
+    public async Task AutomationEditor_IgnoresAnOlderReloadFailureAfterSave()
+    {
+        _artifacts.SavedAutomation.CheckEveryHours = 12;
+        _artifacts.SavedAutomation.Revision = 4;
+        var cut = Render<ClientsMgmt>();
+        cut.WaitForAssertion(() => cut.Find("[data-testid='automation-settings-button']").Should().NotBeNull());
+
+        var pendingRead = _artifacts.QueuePendingRead();
+        var loadMethod = typeof(ClientsMgmt).GetMethod("LoadAutomationAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+        loadMethod.Should().NotBeNull();
+        var staleLoadTask = (Task)loadMethod!.Invoke(cut.Instance, null)!;
+
+        await cut.InvokeAsync(() => cut.Find("[data-testid='automation-settings-button']").Click());
+        await cut.InvokeAsync(() => cut.FindAll("input.mud-switch-input")[1].Change(true));
+        await cut.InvokeAsync(() => cut.Find("[data-testid='save-automation-policy']").Click());
+
+        pendingRead.SetException(new HttpRequestException("Obsolete reload failure.", null, HttpStatusCode.ServiceUnavailable));
+        await staleLoadTask;
+        cut.Render();
+
+        var saved = (ClientReleaseAutomationModel?)typeof(ClientsMgmt)
+            .GetField("_automationSaved", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(cut.Instance);
+        saved!.DownloadPrerelease.Should().BeTrue();
+        saved.Revision.Should().Be(5);
+        typeof(ClientsMgmt).GetField("_automationError", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(cut.Instance).Should().BeNull();
+        cut.Markup.Should().NotContain("Could not load automation settings");
+    }
+
+    [Fact]
+    public async Task AutomationEditor_GuardsDuplicateRunWhileConfirmingAndRunning()
+    {
+        _artifacts.SavedAutomation.PublishAutomatically = true;
+        var dialogProvider = Render<MudDialogProvider>();
+        var cut = Render<ClientsMgmt>();
+        cut.WaitForAssertion(() => cut.Find("[data-testid='automation-settings-button']").Should().NotBeNull());
+        await cut.InvokeAsync(() => cut.Find("[data-testid='automation-settings-button']").Click());
+        cut.WaitForAssertion(() => cut.Find("[data-testid='automation-drawer']").Should().NotBeNull());
+
+        var pendingCheck = _artifacts.QueuePendingCheck();
+        var runMethod = typeof(ClientsMgmt).GetMethod("CheckReleasesNowAsync", BindingFlags.Instance | BindingFlags.NonPublic);
+        runMethod.Should().NotBeNull();
+        var firstRunTask = cut.InvokeAsync(() => cut.Find("[data-testid='run-automation-policy']").Click());
+        dialogProvider.WaitForAssertion(() => dialogProvider.Markup.Should().Contain("Run policy"));
+
+        await (Task)runMethod!.Invoke(cut.Instance, null)!;
+        _artifacts.CheckCalls.Should().Be(0, "the first invocation is still awaiting confirmation");
+        cut.Find("[data-testid='run-automation-policy']").GetAttribute("disabled").Should().NotBeNull();
+
+        var confirmButton = dialogProvider.FindAll("button").Single(button => button.TextContent.Trim() == "Run policy");
+        await dialogProvider.InvokeAsync(() => confirmButton.Click());
+        await _artifacts.CheckStarted.Task;
+        _artifacts.CheckCalls.Should().Be(1);
+
+        await (Task)runMethod.Invoke(cut.Instance, null)!;
+        _artifacts.CheckCalls.Should().Be(1, "the first invocation is still running");
+        pendingCheck.SetResult(new ClientReleaseAutomationModel
+        {
+            PublishAutomatically = true,
+            Revision = _artifacts.SavedAutomation.Revision,
+            NextCheckAtUtc = DateTimeOffset.UtcNow
+        });
+        await firstRunTask;
+        cut.WaitForAssertion(() => cut.FindAll("[data-testid='automation-saving']").Should().BeEmpty());
+        _artifacts.CheckCalls.Should().Be(1);
+    }
+
+    [Fact]
     public async Task AutomationEditor_IgnoresOutOfOrderLoads_AndKeepsDirtyDraft()
     {
         var cut = Render<ClientsMgmt>();
@@ -244,7 +371,9 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
         private ClientReleaseAutomationModel _automation = new();
         private readonly Queue<Task<ClientReleaseAutomationModel>> _automationReads = new();
         private readonly Queue<Task<ClientReleaseAutomationModel>> _automationSaves = new();
+        private readonly Queue<Task<ClientReleaseAutomationModel>> _automationChecks = new();
         public TaskCompletionSource<bool> SaveStarted { get; private set; } = NewSignal();
+        public TaskCompletionSource<bool> CheckStarted { get; private set; } = NewSignal();
         public ClientReleaseAutomationModel SavedAutomation => _automation;
         public int SaveCalls { get; private set; }
         public int CheckCalls { get; private set; }
@@ -266,6 +395,12 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
         public Task<ClientReleaseAutomationModel> CheckReleasesNowAsync(CancellationToken ct = default)
         {
             CheckCalls++;
+            CheckStarted.TrySetResult(true);
+            if (_automationChecks.Count > 0)
+            {
+                return _automationChecks.Dequeue();
+            }
+
             _automation.NextCheckAtUtc = DateTimeOffset.UtcNow;
             return Task.FromResult(_automation);
         }
@@ -282,6 +417,14 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
             SaveStarted = NewSignal();
             var pending = NewSource<ClientReleaseAutomationModel>();
             _automationSaves.Enqueue(pending.Task);
+            return pending;
+        }
+
+        public TaskCompletionSource<ClientReleaseAutomationModel> QueuePendingCheck()
+        {
+            CheckStarted = NewSignal();
+            var pending = NewSource<ClientReleaseAutomationModel>();
+            _automationChecks.Enqueue(pending.Task);
             return pending;
         }
 

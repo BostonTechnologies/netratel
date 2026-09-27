@@ -115,6 +115,7 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
                     return bounds.width > 0 && bounds.left < window.innerWidth - 1 && bounds.right <= window.innerWidth + 1;
                 }
                 """);
+            await AssertAutomationActionsReachableAsync(page, viewportName);
             await CaptureAutomationStateAsync(page, evidenceDirectory, viewportName, "open", width, height);
             await page.GetByTestId("close-automation-settings").FocusAsync();
             await page.Keyboard.PressAsync("Tab");
@@ -319,6 +320,74 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
             $"{description} is clipped or not reachable at {viewportName}: {issue}");
     }
 
+    private static async Task AssertAutomationActionsReachableAsync(IPage page, string viewportName)
+    {
+        var footer = page.GetByTestId("automation-action-footer");
+        await footer.ScrollIntoViewIfNeededAsync();
+        var issue = await footer.EvaluateAsync<string?>("""
+            footer => {
+                const failures = [];
+                const selectors = [
+                    "save-automation-policy",
+                    "cancel-automation-policy",
+                    "run-automation-policy",
+                    "reload-automation-policy"
+                ];
+                const buttons = selectors.map(id => document.querySelector(`button[data-testid='${id}']`));
+                if (buttons.some(button => !button)) {
+                    return "one or more automation actions are missing from the footer";
+                }
+
+                const content = document.querySelector("[data-testid='automation-drawer-content']");
+                const footerRect = footer.getBoundingClientRect();
+                if (footerRect.width <= 0 || footerRect.height <= 0 || footerRect.top < -1 || footerRect.bottom > window.innerHeight + 1) {
+                    failures.push("footer is clipped or outside the viewport");
+                }
+                if (!content) {
+                    failures.push("settings content region is missing");
+                } else if (content.getBoundingClientRect().bottom > footerRect.top + 1) {
+                    failures.push("settings content region extends underneath the footer");
+                }
+
+                const rectangles = buttons.map((button, index) => {
+                    const rect = button.getBoundingClientRect();
+                    if (button.closest("[data-testid='automation-action-footer']") !== footer) {
+                        failures.push(`${selectors[index]} is outside the shared footer`);
+                    }
+                    if (rect.width < 24 || rect.height < 24) {
+                        failures.push(`${selectors[index]} is smaller than the 24px minimum target`);
+                    }
+                    if (rect.left < -1 || rect.right > window.innerWidth + 1 || rect.top < -1 || rect.bottom > window.innerHeight + 1) {
+                        failures.push(`${selectors[index]} is clipped by the viewport`);
+                    }
+                    if (!button.disabled) {
+                        const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+                        if (hit !== button && !button.contains(hit)) {
+                            failures.push(`${selectors[index]} center is obstructed`);
+                        }
+                    }
+                    return rect;
+                });
+
+                for (let left = 0; left < rectangles.length; left++) {
+                    for (let right = left + 1; right < rectangles.length; right++) {
+                        const overlapWidth = Math.min(rectangles[left].right, rectangles[right].right) - Math.max(rectangles[left].left, rectangles[right].left);
+                        const overlapHeight = Math.min(rectangles[left].bottom, rectangles[right].bottom) - Math.max(rectangles[left].top, rectangles[right].top);
+                        if (overlapWidth > 1 && overlapHeight > 1) {
+                            failures.push(`${selectors[left]} overlaps ${selectors[right]}`);
+                        }
+                    }
+                }
+
+                return failures.length === 0 ? null : failures.join("; ");
+            }
+            """);
+
+        Assert.True(
+            issue is null,
+            $"Automation actions are clipped, obstructed, or overlapping at {viewportName}: {issue}");
+    }
+
     private static async Task CaptureAutomationStateAsync(
         IPage page,
         string evidenceDirectory,
@@ -377,6 +446,7 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
                         "light/dark/system theme including system preference changes",
                         "five text-led management tabs",
                         "automation grouped controls and prerelease validation",
+                        "all four automation action targets are reachable and non-overlapping",
                         "dirty navigation/Escape/close guard and focus containment/restoration",
                         "delayed save, visible saving state, disabled controls, and failed-save draft preservation",
                         "responsive overflow and 200% effective text scale"

@@ -219,7 +219,8 @@
 
 <MudDrawer Anchor="Anchor.Right" Variant="DrawerVariant.Temporary" Width="min(560px, 100vw)"
            Open="_automationDrawerOpen" OpenChanged="OnAutomationDrawerChanged" OverlayAutoClose="false">
-    <MudStack Class="pa-4 client-mgmt-automation-drawer" Spacing="2" data-testid="automation-drawer">
+    <MudStack Class="client-mgmt-automation-drawer" Spacing="0" data-testid="automation-drawer">
+        <MudStack Class="pa-4 client-mgmt-automation-content" Spacing="2" data-testid="automation-drawer-content">
         <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
             <MudStack Spacing="0">
                 <MudText Typo="Typo.h6">Release automation settings</MudText>
@@ -282,20 +283,26 @@
             }
             @if (_automationBusy)
             {
-                <MudAlert Severity="Severity.Info" Dense="true" data-testid="automation-saving">Saving automation policy…</MudAlert>
+                <MudAlert Severity="Severity.Info" Dense="true" data-testid="automation-saving">Automation operation in progress…</MudAlert>
             }
             @if (!string.IsNullOrWhiteSpace(_automationError))
             {
                 <MudAlert Severity="Severity.Error" data-testid="automation-drawer-error">@_automationError</MudAlert>
             }
-            <MudStack Row="true" Class="flex-wrap client-mgmt-automation-actions" Spacing="1">
-                <MudButton Color="Color.Primary" Variant="Variant.Filled" Disabled="@(_automationBusy || !_automationDirty || AutomationValidationError is not null)" OnClick="SaveAutomationAsync" data-testid="save-automation-policy">Save policy</MudButton>
-                <MudButton Variant="Variant.Text" Disabled="@(_automationBusy || !_automationDirty)" OnClick="CancelAutomationDraft" data-testid="cancel-automation-policy">Cancel</MudButton>
-            </MudStack>
-            <MudStack Row="true" Class="flex-wrap client-mgmt-automation-actions" Spacing="1">
-                <MudButton Variant="Variant.Outlined" Disabled="@(_automationBusy || _automationDirty)" OnClick="CheckReleasesNowAsync" data-testid="run-automation-policy">Run saved policy now</MudButton>
-                <MudButton Variant="Variant.Text" Disabled="@(_automationBusy || _automationLoading || _automationDirty)" OnClick="RefreshAutomationAsync" data-testid="reload-automation-policy">Reload saved settings</MudButton>
-            </MudStack>
+        }
+        </MudStack>
+        @if (_automationDraft is not null)
+        {
+            <MudPaper Class="client-mgmt-automation-action-footer pa-4" Elevation="0" data-testid="automation-action-footer">
+                <MudStack Row="true" Class="flex-wrap" Spacing="1">
+                    <MudButton Color="Color.Primary" Variant="Variant.Filled" Disabled="@(_automationBusy || !_automationDirty || AutomationValidationError is not null)" OnClick="SaveAutomationAsync" data-testid="save-automation-policy">Save policy</MudButton>
+                    <MudButton Variant="Variant.Text" Disabled="@(_automationBusy || !_automationDirty)" OnClick="CancelAutomationDraft" data-testid="cancel-automation-policy">Cancel</MudButton>
+                </MudStack>
+                <MudStack Row="true" Class="flex-wrap" Spacing="1">
+                    <MudButton Variant="Variant.Outlined" Disabled="@(_automationBusy || _automationDirty)" OnClick="CheckReleasesNowAsync" data-testid="run-automation-policy">Run saved policy now</MudButton>
+                    <MudButton Variant="Variant.Text" Disabled="@(_automationBusy || _automationLoading || _automationDirty)" OnClick="RefreshAutomationAsync" data-testid="reload-automation-policy">Reload saved settings</MudButton>
+                </MudStack>
+            </MudPaper>
         }
     </MudStack>
 </MudDrawer>
@@ -594,12 +601,14 @@
         }
 
         var generation = ++_automationLoadGeneration;
+        var operationGeneration = _automationOperationGeneration;
         _automationLoading = true;
         _automationError = null;
         try
         {
             var loaded = await Artifacts.GetReleaseAutomationAsync();
-            if (_automationDisposed || generation != _automationLoadGeneration || _automationDirty)
+            if (_automationDisposed || generation != _automationLoadGeneration ||
+                operationGeneration != _automationOperationGeneration || _automationDirty)
             {
                 return;
             }
@@ -607,9 +616,13 @@
             _automationSaved = CloneAutomation(loaded);
             _automationDraft = CloneAutomation(loaded);
         }
-        catch (HttpRequestException) when (!_automationDisposed && generation == _automationLoadGeneration)
+        catch (HttpRequestException)
         {
-            _automationError = "Could not load automation settings. Refresh status and try again.";
+            if (!_automationDisposed && generation == _automationLoadGeneration &&
+                operationGeneration == _automationOperationGeneration)
+            {
+                _automationError = "Could not load automation settings. Refresh status and try again.";
+            }
         }
         finally
         {
@@ -686,7 +699,7 @@
         }
 
         _automationBusy = true;
-        var operation = ++_automationOperationGeneration;
+        var operation = BeginAutomationOperation();
         var submitted = CloneAutomation(_automationDraft);
         _automationError = null;
         try
@@ -722,21 +735,31 @@
             return;
         }
 
-        if (_automationSaved is { PublishAutomatically: true } or { DeployPrereleaseAutomatically: true })
-        {
-            var confirmed = await Dialogs.ShowMessageBoxAsync(
-                "Run release automation now",
-                "This may download and publish release packages according to the saved policy. Continue?",
-                yesText: "Run policy", cancelText: "Cancel");
-            if (confirmed != true) return;
-        }
-
         _automationBusy = true;
-        var operation = ++_automationOperationGeneration;
         var savedBefore = _automationSaved is null ? null : CloneAutomation(_automationSaved);
+        var operation = BeginAutomationOperation();
         _automationError = null;
         try
         {
+            if (savedBefore is { PublishAutomatically: true } or { DeployPrereleaseAutomatically: true })
+            {
+                var confirmed = await Dialogs.ShowMessageBoxAsync(
+                    "Run release automation now",
+                    "This may download and publish release packages according to the saved policy. Continue?",
+                    yesText: "Run policy", cancelText: "Cancel");
+                if (confirmed != true || _automationDisposed || operation != _automationOperationGeneration) return;
+
+                if (_automationDirty || _automationSaved is null ||
+                    _automationSaved.Revision != savedBefore.Revision ||
+                    !SameAutomationPolicy(_automationSaved, savedBefore))
+                {
+                    _automationError = "The saved policy changed while confirmation was open. Review it before running again.";
+                    return;
+                }
+            }
+
+            if (_automationDisposed || operation != _automationOperationGeneration) return;
+
             var result = await Artifacts.CheckReleasesNowAsync();
             if (_automationDisposed || operation != _automationOperationGeneration) return;
 
@@ -751,6 +774,13 @@
             _automationError = "Could not schedule a check. Refresh status and try again.";
         }
         finally { _automationBusy = false; }
+    }
+
+    private long BeginAutomationOperation()
+    {
+        _automationLoadGeneration++;
+        _automationLoading = false;
+        return ++_automationOperationGeneration;
     }
 
     private async Task GuardAutomationNavigationAsync(LocationChangingContext context)
@@ -1111,8 +1141,9 @@
     .client-github-table .mud-table-cell { vertical-align: top; padding: 0.375rem 0.5rem; overflow-wrap: anywhere; word-break: normal; }
     .client-github-table .mud-table-cell .mud-button-root { box-sizing: border-box; max-width: 100%; min-width: 0; white-space: normal; }
     .client-github-table .mud-table-cell .mud-button-label { white-space: normal; overflow-wrap: anywhere; }
-    .client-mgmt-automation-drawer { min-width: 0; max-width: 100vw; max-height: 100dvh; overflow-y: auto; }
-    .client-mgmt-automation-actions { position: sticky; bottom: 0; background: var(--mud-palette-surface); padding-top: 0.5rem; z-index: 1; }
+    .client-mgmt-automation-drawer { display: flex; flex-direction: column; min-width: 0; max-width: 100vw; min-height: 0; height: 100dvh; max-height: 100dvh; }
+    .client-mgmt-automation-content { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+    .client-mgmt-automation-action-footer { position: sticky; bottom: 0; z-index: 1; display: flex; flex: 0 0 auto; flex-direction: column; gap: 0.5rem; background: var(--mud-palette-surface); border-top: 1px solid var(--mud-palette-divider); }
     .client-deployment-dialog { max-width: min(100%, 960px); }
     .client-deployment-dialog .mud-dialog-content { min-width: 0; max-height: calc(100dvh - 160px); overflow-y: auto; overflow-wrap: anywhere; }
     .client-deployment-dialog .mud-dialog-actions { flex-wrap: wrap; }
