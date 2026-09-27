@@ -673,6 +673,7 @@ export NETRATEL_SMOKE_CLIENT_UPDATES_ENABLED=true
 export NETRATEL_AGENT_AUTH_PRIVATE_KEY="$agent_key_path"
 export NETRATEL_SMOKE_TLS_CERT_PASSWORD=synthetic-postgresql-oidc-upgrade-certificate-password
 export NETRATEL_GATEWAY_PROXY_CONFIG_PATH="$root/tests/compose/gateway-proxy.nginx.conf"
+export NETRATEL_PUBLIC_NGINX_CONFIG_PATH="$bundle_extract_directory/nginx.public-https.conf"
 export NETRATEL_WEB_PROXY_CONFIG_PATH="$root/tests/compose/web-proxy.nginx.conf"
 export NETRATEL_SMOKE_TLS_CERT_PATH="$tls_bundle_path"
 export NETRATEL_SMOKE_TLS_CERTIFICATE_PATH="$tls_certificate_path"

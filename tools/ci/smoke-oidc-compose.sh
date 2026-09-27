@@ -180,6 +180,11 @@ export NETRATEL_SMOKE_TLS_CERT_PATH="$tls_bundle_path"
 export NETRATEL_SMOKE_TLS_CERTIFICATE_PATH="$tls_certificate_path"
 export NETRATEL_SMOKE_TLS_KEY_PATH="$tls_key_path"
 export NETRATEL_GATEWAY_PROXY_CONFIG_PATH="$root/tests/compose/gateway-proxy.nginx.conf"
+if [[ -n "$bundle_extract_dir" ]]; then
+  export NETRATEL_PUBLIC_NGINX_CONFIG_PATH="$bundle_extract_dir/nginx.public-https.conf"
+else
+  export NETRATEL_PUBLIC_NGINX_CONFIG_PATH="$root/release/nginx.public-https.conf"
+fi
 export NETRATEL_WEB_PROXY_CONFIG_PATH="$root/tests/compose/web-proxy.nginx.conf"
 api_port="${NETRATEL_API_TEST_PORT:-9222}"
 api_url="http://127.0.0.1:${api_port}"
@@ -191,7 +196,7 @@ start_gateway_client() {
     --volume "${tls_certificate_path}:/run/netratel-smoke/tls.crt:ro" \
     --env SSL_CERT_FILE=/run/netratel-smoke/tls.crt \
     --env NetRatel_CLIENT_LOG_DIR=/var/lib/netratel/logs \
-    "$client_image" --api http://api:9222 --Gateway:Endpoint=https://gateway:9443 \
+    "$client_image" --api http://api:9222 --Gateway:Endpoint=https://gateway:443 \
     --Gateway:TelemetryShadowEnabled=true --Gateway:TelemetryAuthorityEnabled=true \
     --Gateway:TelemetryFastIntervalSeconds=1 --Gateway:CommandAuthorityEnabled=true \
     --Gateway:JobAuthorityEnabled=false --Gateway:ControlGatewayEnabled=false \
@@ -205,6 +210,7 @@ wait_for_gateway_sessions() {
     gateway_logs="$(docker logs "$gateway_client" 2>&1 || true)"
     if grep -Fq 'Presence admitted.' <<<"$gateway_logs" &&
       grep -Fq 'Command gateway admitted. authority=akka.' <<<"$gateway_logs"; then
+      echo "Passed authenticated gRPC transport through the public HTTPS ingress (gateway:443): presence and command sessions admitted." >&2
       return 0
     fi
     sleep 1
