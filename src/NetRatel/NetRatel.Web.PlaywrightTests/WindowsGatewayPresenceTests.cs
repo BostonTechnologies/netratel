@@ -2,6 +2,14 @@ namespace NetRatel.Web.PlaywrightTests;
 
 public sealed class WindowsGatewayPresenceTests
 {
+    [Fact]
+    public void Windows_presence_poll_uses_the_canonical_client_presence_route()
+    {
+        Assert.Equal(
+            "/api/v2/client-presence?online=true",
+            LocalFirstComposeBrowserSmokeTests.WindowsPresenceEndpoint);
+    }
+
     [Theory]
     [InlineData(null)]
     [InlineData("")]

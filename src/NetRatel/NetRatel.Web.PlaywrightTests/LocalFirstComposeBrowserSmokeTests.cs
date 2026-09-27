@@ -655,6 +655,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
     private sealed record PowerShellResult(int ExitCode, string Output, string Error);
 
     internal sealed record WindowsPresence(int TenantId, string AgentId, bool IsAuthoritative);
+    internal const string WindowsPresenceEndpoint = "/api/v2/client-presence?online=true";
 
     private const int WindowsInstallerDiagnosticLineLimit = 40;
     private const int WindowsInstallerDiagnosticLineCharacterLimit = 1_000;
@@ -751,10 +752,10 @@ public sealed class LocalFirstComposeBrowserSmokeTests
 
     private static async Task<WindowsPresence> WaitForWindowsGatewayPresenceAsync(IPage page, TimeSpan timeout)
     {
-        var json = await page.WaitForFunctionAsync("""
+        var json = await page.WaitForFunctionAsync($$"""
             async () => {
                 try {
-                    const response = await fetch('/api/v2/client-presence/?tenantId=1&online=true');
+                    const response = await fetch('{{WindowsPresenceEndpoint}}');
                     if (!response.ok) return false;
 
                     const payload = await response.json();
