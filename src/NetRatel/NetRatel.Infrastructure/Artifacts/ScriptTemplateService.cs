@@ -47,6 +47,26 @@ public sealed class ScriptTemplateService : IScriptTemplateService
                 Copy-Item -Path $updaterSource -Destination (Join-Path $UpdaterDir "netratel-update.ps1") -Force
             }
 
+            $preservedClientEnvironment = @()
+            $clientServiceEnvironmentPath = "HKLM:\SYSTEM\CurrentControlSet\Services\NetRatel.Client"
+            if (Test-Path $clientServiceEnvironmentPath) {
+                $existingServiceEnvironment = (Get-ItemProperty -Path $clientServiceEnvironmentPath -Name Environment -ErrorAction SilentlyContinue).Environment
+                foreach ($entry in @($existingServiceEnvironment)) {
+                    if ($entry -isnot [string]) { continue }
+                    $separator = $entry.IndexOf("=")
+                    if ($separator -le 0) { $preservedClientEnvironment += $entry; continue }
+                    $name = $entry.Substring(0, $separator)
+                    if ($name.StartsWith("NetRatelCLIENT__", [StringComparison]::OrdinalIgnoreCase)) {
+                        $setting = $name.Substring("NetRatelCLIENT__".Length)
+                        if ([String]::Equals($setting, "Client__ApiBaseUrl", [StringComparison]::OrdinalIgnoreCase)) { continue }
+                        if (@("Transport__Mode", "Gateway__RequiredPresenceAuthority", "Gateway__TelemetryShadowEnabled", "Gateway__TelemetryAuthorityEnabled", "Gateway__CommandAuthorityEnabled", "Gateway__JobAuthorityEnabled", "Gateway__TerminalAuthorityEnabled") -contains $setting) { continue }
+                        if (@("Gateway__ControlGatewayEnabled", "Gateway__FileGatewayEnabled", "Gateway__LogGatewayEnabled", "Gateway__RemoteSupportGatewayEnabled", "Gateway__TerminalGatewayEnabled") -contains $setting -and
+                            [String]::Equals($entry.Substring($separator + 1), "true", [StringComparison]::OrdinalIgnoreCase)) { continue }
+                    }
+                    $preservedClientEnvironment += $entry
+                }
+            }
+
             Write-Host "Installing Windows services..."
             $serviceName = "NetRatel.Client"
             $updateServiceName = "NetRatel.Update"
@@ -65,22 +85,12 @@ public sealed class ScriptTemplateService : IScriptTemplateService
                 -BinaryPathName "`"$exe`" --service" `
                 -DisplayName "NetRatel Client" `
                 -StartupType Automatic
-            New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\$serviceName" -Name Environment -PropertyType MultiString -Value @(
-                "NetRatel_CLIENT_LOG_DIR=$LogDir",
-                "NetRatelCLIENT__Client__ApiBaseUrl=$ApiBase",
-                "NetRatelCLIENT__Transport__Mode=AkkaPresence",
-                "NetRatelCLIENT__Gateway__Endpoint=$ApiBase",
-                "NetRatelCLIENT__Gateway__RequiredPresenceAuthority=akka",
-                "NetRatelCLIENT__Gateway__TelemetryShadowEnabled=true",
-                "NetRatelCLIENT__Gateway__TelemetryAuthorityEnabled=true",
-                "NetRatelCLIENT__Gateway__CommandAuthorityEnabled=true",
-                "NetRatelCLIENT__Gateway__JobAuthorityEnabled=true",
-                "NetRatelCLIENT__Gateway__FileGatewayEnabled=true",
-                "NetRatelCLIENT__Gateway__LogGatewayEnabled=true",
-                "NetRatelCLIENT__Gateway__RemoteSupportGatewayEnabled=true",
-                "NetRatelCLIENT__Gateway__TerminalGatewayEnabled=true",
-                "NetRatelCLIENT__Gateway__TerminalAuthorityEnabled=true"
-            ) -Force | Out-Null
+            $hasPreservedLogDir = @($preservedClientEnvironment | Where-Object { $_ -match '^NetRatel_CLIENT_LOG_DIR=' }).Count -gt 0
+            $clientEnvironment = @()
+            if (-not $hasPreservedLogDir) { $clientEnvironment += "NetRatel_CLIENT_LOG_DIR=$LogDir" }
+            $clientEnvironment += $preservedClientEnvironment
+            $clientEnvironment += "NetRatelCLIENT__Client__ApiBaseUrl=$ApiBase"
+            New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\$serviceName" -Name Environment -PropertyType MultiString -Value $clientEnvironment -Force | Out-Null
             New-Service `
                 -Name $updateServiceName `
                 -BinaryPathName "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$UpdaterDir\netratel-update.ps1`"" `
@@ -311,6 +321,83 @@ finally {
               install -m 0755 "${TARGET_DIR}/updater/netratel-update.sh" "${UPDATER_DIR}/.netratel-update.sh.$$"
               mv -f "${UPDATER_DIR}/.netratel-update.sh.$$" "${UPDATER_DIR}/netratel-update.sh"
             fi
+            preserved_client_environment="$(python3 - <<'PY'
+            import os
+            import re
+            import subprocess
+
+            prefix = "NetRatelCLIENT__"
+            retired = {
+                "transport__mode",
+                "gateway__requiredpresenceauthority",
+                "gateway__telemetryshadowenabled",
+                "gateway__telemetryauthorityenabled",
+                "gateway__commandauthorityenabled",
+                "gateway__jobauthorityenabled",
+                "gateway__terminalauthorityenabled",
+            }
+            redundant_true = {
+                "gateway__controlgatewayenabled",
+                "gateway__filegatewayenabled",
+                "gateway__loggatewayenabled",
+                "gateway__remotesupportgatewayenabled",
+                "gateway__terminalgatewayenabled",
+            }
+
+            def words(value):
+                index = 0
+                while index < len(value):
+                    while index < len(value) and value[index].isspace():
+                        index += 1
+                    if index == len(value):
+                        break
+                    raw = []
+                    decoded = []
+                    quote = None
+                    while index < len(value):
+                        char = value[index]
+                        if quote is None and char.isspace():
+                            break
+                        if char == "\\" and quote != "'" and index + 1 < len(value):
+                            raw.append(char)
+                            escaped = value[index + 1]
+                            raw.append(escaped)
+                            decoded.append(escaped)
+                            index += 2
+                            continue
+                        if char in "'\"" and (quote is None or quote == char):
+                            raw.append(char)
+                            quote = None if quote is not None else char
+                            index += 1
+                            continue
+                        raw.append(char)
+                        decoded.append(char)
+                        index += 1
+                    yield "".join(raw), "".join(decoded)
+
+            fragment = subprocess.run(["systemctl", "show", "-p", "FragmentPath", "--value", "netratel-client.service"], capture_output=True, text=True).stdout.strip()
+            if not fragment or not os.path.isfile(fragment):
+                raise SystemExit(0)
+            with open(fragment, encoding="utf-8", errors="replace") as unit:
+                lines = unit.readlines()
+            for line in lines:
+                if line.lstrip().startswith("EnvironmentFile="):
+                    print(line)
+                    continue
+                match = re.match(r"^\s*Environment=(.*)$", line)
+                if not match:
+                    continue
+                for raw, assignment in words(match.group(1)):
+                    name, separator, value = assignment.partition("=")
+                    if separator and name.lower().startswith(prefix.lower()):
+                        setting = name[len(prefix):].lower()
+                        if setting == "client__apibaseurl" or setting in retired:
+                            continue
+                        if setting in redundant_true and value.lower() == "true":
+                            continue
+                    print("Environment=" + raw)
+            PY
+            )"
             cat > "${ROOT_DIR}/netratel-client-start.sh" <<SH
             #!/usr/bin/env bash
             set -euo pipefail
@@ -336,23 +423,16 @@ finally {
             Restart=always
             RestartPreventExitStatus=78
             Environment=NetRatel_CLIENT_LOG_DIR=/var/lib/netratel/logs
-            Environment=NetRatelCLIENT__Client__ApiBaseUrl=${API_BASE}
-            Environment=NetRatelCLIENT__Transport__Mode=AkkaPresence
-            Environment=NetRatelCLIENT__Gateway__Endpoint=${API_BASE}
-            Environment=NetRatelCLIENT__Gateway__RequiredPresenceAuthority=akka
-            Environment=NetRatelCLIENT__Gateway__TelemetryShadowEnabled=true
-            Environment=NetRatelCLIENT__Gateway__TelemetryAuthorityEnabled=true
-            Environment=NetRatelCLIENT__Gateway__CommandAuthorityEnabled=true
-            Environment=NetRatelCLIENT__Gateway__JobAuthorityEnabled=true
-            Environment=NetRatelCLIENT__Gateway__FileGatewayEnabled=true
-            Environment=NetRatelCLIENT__Gateway__LogGatewayEnabled=true
-            Environment=NetRatelCLIENT__Gateway__RemoteSupportGatewayEnabled=true
-            Environment=NetRatelCLIENT__Gateway__TerminalGatewayEnabled=true
-            Environment=NetRatelCLIENT__Gateway__TerminalAuthorityEnabled=true
             Environment=NetRatelCLIENT__Client__AutoUpdate__Mode=Service
             Environment=NetRatelCLIENT__Client__AutoUpdate__StateDirectory=${STATE_DIR}
             Environment=NetRatelCLIENT__Client__AutoUpdate__RequestPath=${STATE_DIR}/request.json
             Environment=NetRatelCLIENT__Client__AutoUpdate__ReadyPath=${STATE_DIR}/ready.json
+            UNIT
+            if [ -n "${preserved_client_environment}" ]; then
+              printf '%s\n' "${preserved_client_environment}" >> "${SYSTEMD_UNIT_DIR}/netratel-client.service"
+            fi
+            cat >> "${SYSTEMD_UNIT_DIR}/netratel-client.service" <<UNIT
+            Environment=NetRatelCLIENT__Client__ApiBaseUrl=${API_BASE}
             [Install]
             WantedBy=multi-user.target
             UNIT
@@ -529,6 +609,52 @@ echo "NetRatel deployment complete."
         var serviceBlock = request.InstallAsService ? """
             PLIST_PATH="${NetRatel_LAUNCHD_PLIST:-/Library/LaunchDaemons/co.za.netratel.client.plist}"
             LABEL="co.za.netratel.client"
+            PRESERVED_CLIENT_ENVIRONMENT="$(python3 - "${PLIST_PATH}" "${API_BASE}" <<'PY'
+            import html
+            import os
+            import plistlib
+            import sys
+
+            path, api_base = sys.argv[1:]
+            prefix = "NetRatelCLIENT__"
+            retired = {
+                "transport__mode",
+                "gateway__requiredpresenceauthority",
+                "gateway__telemetryshadowenabled",
+                "gateway__telemetryauthorityenabled",
+                "gateway__commandauthorityenabled",
+                "gateway__jobauthorityenabled",
+                "gateway__terminalauthorityenabled",
+            }
+            redundant_true = {
+                "gateway__controlgatewayenabled",
+                "gateway__filegatewayenabled",
+                "gateway__loggatewayenabled",
+                "gateway__remotesupportgatewayenabled",
+                "gateway__terminalgatewayenabled",
+            }
+
+            environment = {}
+            if os.path.isfile(path):
+                with open(path, "rb") as stream:
+                    current = plistlib.load(stream)
+                for name, value in current.get("EnvironmentVariables", {}).items():
+                    if not isinstance(name, str) or not isinstance(value, str):
+                        continue
+                    if name.lower().startswith(prefix.lower()):
+                        setting = name[len(prefix):].lower()
+                        if setting == "client__apibaseurl" or setting in retired:
+                            continue
+                        if setting in redundant_true and value.lower() == "true":
+                            continue
+                    environment[name] = value
+
+            environment["NetRatelCLIENT__Client__ApiBaseUrl"] = api_base
+            for name, value in sorted(environment.items()):
+                print("                <key>{}</key><string>{}</string>".format(
+                    html.escape(name, quote=True), html.escape(value, quote=True)))
+            PY
+            )"
             cat > "${PLIST_PATH}.new" <<PLIST
             <?xml version="1.0" encoding="UTF-8"?>
             <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -538,18 +664,7 @@ echo "NetRatel deployment complete."
               <key>WorkingDirectory</key><string>${ROOT_DIR}/current</string>
               <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
               <key>EnvironmentVariables</key><dict>
-                <key>NetRatelCLIENT__Transport__Mode</key><string>AkkaPresence</string>
-                <key>NetRatelCLIENT__Client__ApiBaseUrl</key><string>${API_BASE}</string>
-                <key>NetRatelCLIENT__Gateway__Endpoint</key><string>${API_BASE}</string>
-                <key>NetRatelCLIENT__Gateway__RequiredPresenceAuthority</key><string>akka</string>
-                <key>NetRatelCLIENT__Gateway__TelemetryAuthorityEnabled</key><string>true</string>
-                <key>NetRatelCLIENT__Gateway__CommandAuthorityEnabled</key><string>true</string>
-                <key>NetRatelCLIENT__Gateway__JobAuthorityEnabled</key><string>true</string>
-                <key>NetRatelCLIENT__Gateway__FileGatewayEnabled</key><string>true</string>
-                <key>NetRatelCLIENT__Gateway__LogGatewayEnabled</key><string>true</string>
-                <key>NetRatelCLIENT__Gateway__RemoteSupportGatewayEnabled</key><string>true</string>
-                <key>NetRatelCLIENT__Gateway__TerminalGatewayEnabled</key><string>true</string>
-                <key>NetRatelCLIENT__Gateway__TerminalAuthorityEnabled</key><string>true</string>
+            ${PRESERVED_CLIENT_ENVIRONMENT}
               </dict>
             </dict></plist>
             PLIST

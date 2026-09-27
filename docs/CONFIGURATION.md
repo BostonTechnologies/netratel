@@ -29,12 +29,21 @@ selection. Enrollment credentials and the installation identity are persisted
 separately; changing a package or repairing its updater does not silently
 reset them.
 
-Windows service, systemd, and launchd templates place the explicit API and
-gateway values in the service environment so an updater can activate a package
-with fresh defaults without repointing an existing installation. If an
-operator intentionally changes the instance URL, verify the tenant and
-issuer/origin contract before restarting the service and retain the existing
-identity unless a deliberate identity reset is required.
+For the Client, an absent or empty `Gateway:Endpoint` uses the effective
+`Client:ApiBaseUrl` after the precedence above. Same-origin installations need
+only the API URL. A split-host deployment can set an explicit HTTPS gateway
+override through `NetRatelCLIENT__Gateway__Endpoint` (or
+`Gateway__Endpoint`) or the command line (`--Gateway:Endpoint=https://...`).
+The generated Windows, systemd, and launchd service templates persist the API
+URL once and preserve a configured gateway override and intentional `false`
+module opt-outs when rewriting an existing service. If an operator
+intentionally changes the instance URL, verify the tenant and issuer/origin
+contract before restarting the service and retain the existing identity unless
+a deliberate identity reset is required. Existing systemd `EnvironmentFile=`
+entries remain explicit deployment overrides and keep their precedence over
+the generated unit value; update the referenced file too when repointing such
+an installation. Installer rewrites preserve those directives without editing
+the referenced files.
 
 The API image also installs `libgssapi-krb5-2` before dropping to its non-root
 runtime user. The release image gate first loads `libgssapi_krb5.so.2` as UID

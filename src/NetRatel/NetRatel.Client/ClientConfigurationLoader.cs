@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using Microsoft.Extensions.Configuration;
+using NetRatel.Client.Service.Gateway;
 using NetRatel.Shared;
 
 namespace NetRatel.Client;
@@ -28,6 +30,42 @@ internal static class ClientConfigurationLoader
             .AddEnvironmentVariables(prefix: "NetRatelCLIENT__")
             .AddEnvironmentVariables()
             .Build();
+    }
+
+    internal static IConfiguration BuildEffectiveConfiguration(
+        IConfiguration? packagedDefaults,
+        IConfiguration? deploymentOverrides,
+        string appBaseDir,
+        IReadOnlyList<string> args)
+    {
+        var builder = new ConfigurationBuilder().SetBasePath(appBaseDir);
+        if (packagedDefaults is not null)
+        {
+            builder.AddConfiguration(packagedDefaults);
+        }
+
+        if (File.Exists(Path.Combine(appBaseDir, "clientsettings.json")))
+        {
+            builder.AddJsonFile("clientsettings.json", optional: false, reloadOnChange: false);
+        }
+
+        if (deploymentOverrides is not null)
+        {
+            builder.AddConfiguration(deploymentOverrides);
+        }
+
+        builder.AddCommandLine(args.ToArray());
+        return builder.Build();
+    }
+
+    internal static GatewayClientOptions LoadGatewayOptions(IConfiguration configuration, string apiBaseUrl)
+    {
+        var options = new GatewayClientOptions();
+        configuration.GetSection("Gateway").Bind(options);
+        options.Endpoint = string.IsNullOrWhiteSpace(options.Endpoint)
+            ? apiBaseUrl
+            : options.Endpoint;
+        return options;
     }
 
     internal static ClientOptions Load(

@@ -197,9 +197,7 @@ start_gateway_client() {
     --env SSL_CERT_FILE=/run/netratel-smoke/tls.crt \
     --env NetRatel_CLIENT_LOG_DIR=/var/lib/netratel/logs \
     "$client_image" --api http://api:9222 --Gateway:Endpoint=https://gateway:443 \
-    --Gateway:TelemetryShadowEnabled=true --Gateway:TelemetryAuthorityEnabled=true \
-    --Gateway:TelemetryFastIntervalSeconds=1 --Gateway:CommandAuthorityEnabled=true \
-    --Gateway:JobAuthorityEnabled=false --Gateway:ControlGatewayEnabled=false \
+    --Gateway:TelemetryFastIntervalSeconds=1 --Gateway:ControlGatewayEnabled=false \
     --Gateway:FileGatewayEnabled=false --Gateway:LogGatewayEnabled=false \
     --Gateway:RemoteSupportGatewayEnabled=false --Gateway:TerminalGatewayEnabled=false >/dev/null
 }

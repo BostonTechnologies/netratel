@@ -13,9 +13,9 @@ using NetRatel.Client.Service.Tasks;
 namespace NetRatel.Client.Service.Gateway;
 
 /// <summary>
-/// Executes commands received from the fenced Akka command gateway. When the
-/// authority flag is on this class is the only command transport: it neither
-/// subscribes to nor publishes SpacetimeDB command events.
+/// Executes commands received from the fenced Akka command gateway. This is
+/// the only command transport; it neither subscribes to nor publishes
+/// SpacetimeDB command events.
 /// </summary>
 public sealed class AgentCommandGatewayClient(
     GatewayClientOptions options,
@@ -27,11 +27,6 @@ public sealed class AgentCommandGatewayClient(
 
     public async Task RunForPresenceSessionAsync(GatewayPresenceSession session, string accessToken, CancellationToken stoppingToken)
     {
-        if (!options.CommandAuthorityEnabled)
-        {
-            return;
-        }
-
         if (!Uri.TryCreate(options.Endpoint, UriKind.Absolute, out var endpoint) || endpoint.Scheme != Uri.UriSchemeHttps)
         {
             log("Command gateway is disabled because Gateway:Endpoint is not an absolute HTTPS URL.");
@@ -115,7 +110,7 @@ public sealed class AgentCommandGatewayClient(
             }
             catch (RpcException)
             {
-                // The gateway already closed the stream.
+                log("Command gateway stream had already closed before request completion.");
             }
         }
     }

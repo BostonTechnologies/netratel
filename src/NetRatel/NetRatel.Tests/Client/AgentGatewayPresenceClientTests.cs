@@ -27,8 +27,7 @@ public sealed class AgentGatewayPresenceClientTests
         var neverCompletingExtension = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var options = new GatewayClientOptions
         {
-            Endpoint = "https://gateway.test",
-            RequiredPresenceAuthority = GatewayAuthority.Akka
+            Endpoint = "https://gateway.test"
         };
         var agent = new AgentGatewayPresenceClient(
             options,
@@ -55,6 +54,71 @@ public sealed class AgentGatewayPresenceClientTests
     }
 
     [Fact]
+    public async Task RunAsync_RejectsWrongPresenceAuthorityBeforeStartingExtensions()
+    {
+        var gateway = new RefreshGatewayService("spacetimedb");
+        using var host = await BuildHostAsync(gateway);
+        using var stopping = new CancellationTokenSource();
+        var logs = new ConcurrentQueue<string>();
+        var rejectedAuthority = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var extensionStarts = 0;
+        void Log(string message)
+        {
+            logs.Enqueue(message);
+            if (message.Contains("Gateway reported authority", StringComparison.Ordinal))
+            {
+                rejectedAuthority.TrySetResult();
+            }
+        }
+
+        var agent = new AgentGatewayPresenceClient(
+            new GatewayClientOptions { Endpoint = "https://gateway.test" },
+            new ExpiringTokenService(),
+            tenantId: 7,
+            agentId: Guid.NewGuid(),
+            agentVersion: "0.5.6-test",
+            terminalShells: [],
+            log: Log,
+            runForPresenceSession: (_, _, _) =>
+            {
+                Interlocked.Increment(ref extensionStarts);
+                return Task.CompletedTask;
+            },
+            createChannel: _ => GrpcChannel.ForAddress(
+                "http://localhost",
+                new GrpcChannelOptions { HttpHandler = host.GetTestServer().CreateHandler() }));
+
+        var run = agent.RunAsync(stopping.Token);
+        try
+        {
+            await rejectedAuthority.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            extensionStarts.Should().Be(0);
+            logs.Should().Contain(message => message.Contains("the Akka authority is required", StringComparison.Ordinal));
+        }
+        finally
+        {
+            stopping.Cancel();
+            await run.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+    }
+
+    [Fact]
+    public async Task RunAsync_RejectsH2cGatewayEndpoints()
+    {
+        var agent = new AgentGatewayPresenceClient(
+            new GatewayClientOptions { Endpoint = "h2c://api:9223" },
+            new ExpiringTokenService(),
+            tenantId: 7,
+            agentId: Guid.NewGuid(),
+            agentVersion: "0.5.6-test",
+            terminalShells: [],
+            log: _ => { });
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => agent.RunAsync(CancellationToken.None));
+    }
+
+    [Fact]
     public async Task RunAsync_DisabledDuringRefresh_ReAdmitsAfterEnableWithoutRestart()
     {
         var gateway = new RefreshGatewayService();
@@ -63,7 +127,7 @@ public sealed class AgentGatewayPresenceClientTests
         var tokenService = new DisabledDuringRefreshTokenService();
         var logs = new ConcurrentQueue<string>();
         var agent = new AgentGatewayPresenceClient(
-            new GatewayClientOptions { Endpoint = "https://gateway.test", RequiredPresenceAuthority = GatewayAuthority.Akka },
+            new GatewayClientOptions { Endpoint = "https://gateway.test" },
             tokenService, 7, Guid.NewGuid(), "0.5.6-test", [], logs.Enqueue,
             createChannel: _ => GrpcChannel.ForAddress("http://localhost",
                 new GrpcChannelOptions { HttpHandler = host.GetTestServer().CreateHandler() }));
@@ -140,7 +204,13 @@ public sealed class AgentGatewayPresenceClientTests
 
     private sealed class RefreshGatewayService : global::NetRatel.AgentGateway.Contracts.V1.AgentGateway.AgentGatewayBase
     {
+        private readonly string _presenceAuthority;
         private int _connectionEpoch;
+
+        public RefreshGatewayService(string presenceAuthority = GatewayAuthority.Akka)
+        {
+            _presenceAuthority = presenceAuthority;
+        }
 
         public TaskCompletionSource SecondAdmission { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -167,7 +237,7 @@ public sealed class AgentGatewayPresenceClientTests
                 {
                     HeartbeatIntervalSeconds = 1,
                     HeartbeatTimeoutSeconds = 10,
-                    PresenceAuthority = GatewayAuthority.Akka
+                    PresenceAuthority = _presenceAuthority
                 }
             }).ConfigureAwait(false);
 
@@ -191,7 +261,7 @@ public sealed class AgentGatewayPresenceClientTests
                         Sequence = frame.Sequence,
                         HeartbeatAccepted = new HeartbeatAccepted
                         {
-                            PresenceAuthority = GatewayAuthority.Akka
+                            PresenceAuthority = _presenceAuthority
                         }
                     }).ConfigureAwait(false);
                 }

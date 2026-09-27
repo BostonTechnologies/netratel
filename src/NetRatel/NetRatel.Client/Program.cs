@@ -1,5 +1,4 @@
 using Humanizer;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Win32;
@@ -231,22 +230,20 @@ async Task RunClientAsync()
     // loader uses this distinction to preserve a supported installation's legacy file.
     var packagedDefaults = ClientConfigurationLoader.BuildPackagedDefaults(appBaseDir, dotnetEnvironment);
     var deploymentOverrides = ClientConfigurationLoader.BuildDeploymentOverrides();
-    IConfiguration configuration = new ConfigurationBuilder()
-        .AddConfiguration(packagedDefaults)
-        .AddConfiguration(deploymentOverrides)
-        .AddCommandLine(cliArgs)
-        .Build();
+    var configuration = ClientConfigurationLoader.BuildEffectiveConfiguration(
+        packagedDefaults,
+        deploymentOverrides,
+        appBaseDir,
+        cliArgs);
     var cfg = ClientConfigurationLoader.Load(packagedDefaults, deploymentOverrides, appBaseDir, cliArgs);
     cfg.ApiBaseUrl = NormalizeApiBaseUrl(cfg.ApiBaseUrl);
-    var transportMode = configuration["Transport:Mode"] ?? "AkkaPresence";
-    var gatewayOptions = LoadGatewayOptions(configuration, cfg.ApiBaseUrl);
+    var gatewayOptions = ClientConfigurationLoader.LoadGatewayOptions(configuration, cfg.ApiBaseUrl);
     GlobalContext.version = GetAgentVersion();
 
     LogManager.WriteLog($"[Client] RuntimeBaseDir={runtimeBaseDir}");
     LogManager.WriteLog($"[Client] AppBaseDir={appBaseDir}");
     LogManager.WriteLog($"[Client] LogFile={LogManager.LogFilePath}");
     LogManager.WriteLog($"[Client] Tenant={cfg.TenantId}, Env={cfg.Environment}, API={cfg.ApiBaseUrl}");
-    LogManager.WriteLog($"[Client] TransportMode={transportMode}");
     LogManager.WriteLog($"Application {GlobalContext.version} starting.");
 
     var services = new ServiceCollection();
@@ -420,100 +417,82 @@ async Task RunClientAsync()
     var tokenTenantId = TryGetTenantId(initialToken);
     LogManager.WriteLog($"[Auth] Token tenant_id={(tokenTenantId.HasValue ? tokenTenantId.Value.ToString() : "missing")}");
 
-    if (string.Equals(transportMode, "AkkaPresence", StringComparison.OrdinalIgnoreCase) ||
-        string.Equals(transportMode, "AkkaPresenceCanary", StringComparison.OrdinalIgnoreCase))
+    if (!tokenTenantId.HasValue)
     {
-        if (!tokenTenantId.HasValue)
-        {
-            LogManager.WriteLog("[Gateway] The agent token does not contain tenant_id. Exiting.");
-            Environment.ExitCode = 13;
-            return;
-        }
-
-        if (!Guid.TryParse(creds.Value.AgentId, out var agentId) || agentId == Guid.Empty)
-        {
-            LogManager.WriteLog("[Gateway] The enrolled agent ID is invalid. Exiting.");
-            Environment.ExitCode = 13;
-            return;
-        }
-
-        LogManager.WriteLog($"[Gateway] Starting authenticated Akka presence. Endpoint={gatewayOptions.Endpoint}, requiredAuthority={gatewayOptions.RequiredPresenceAuthority}");
-        var telemetryPublisher = new AgentGatewayTelemetryShadowPublisher(
-            gatewayOptions,
-            GetAgentVersion(),
-            message => LogManager.WriteLog($"[Gateway] {message}"));
-        var controlGateway = new AgentControlGatewayClient(
-            gatewayOptions,
-            message => LogManager.WriteLog($"[Gateway] {message}"));
-        var fileGateway = new AgentFileGatewayClient(
-            gatewayOptions,
-            new FileSystemService(),
-            message => LogManager.WriteLog($"[Gateway] {message}"));
-        var logGateway = new AgentLogGatewayClient(gatewayOptions);
-        var remoteSupportGateway = new AgentRemoteSupportGatewayClient(
-            gatewayOptions,
-            message => LogManager.WriteLog($"[Gateway] {message}"));
-        var terminalShells = ShellInventoryDetector.NormalizeKeywords(ShellInventoryDetector.Detect());
-        using var terminalGateway = new AgentTerminalGatewayClient(
-            gatewayOptions,
-            BuildTerminalHostOptions(cfg),
-            terminalShells,
-            message => LogManager.WriteLog($"[Gateway] {message}"));
-        var commandGateway = new AgentCommandGatewayClient(
-            gatewayOptions,
-            cfg.UseInProcPowerShell,
-            message => LogManager.WriteLog($"[Gateway] {message}"));
-        var jobGateway = new AgentJobGatewayClient(
-            gatewayOptions,
-            cfg.UseInProcPowerShell,
-            message => LogManager.WriteLog($"[Gateway] {message}"));
-        await using var updateCoordinator = new AkkaClientAutoUpdateCoordinator(
-            cfg,
-            GetAgentVersion(),
-            tokenService,
-            rootProvider.GetRequiredService<IHttpClientFactory>().CreateClient("AgentAuthApi"));
-        var gatewayExtensionSupervisor = new GatewayPresenceExtensionSupervisor(
-            message => LogManager.WriteLog($"[Gateway] {message}"));
-        var gatewayClient = new AgentGatewayPresenceClient(
-            gatewayOptions,
-            tokenService,
-            tokenTenantId.Value,
-            agentId,
-            GetAgentVersion(),
-            terminalShells,
-            message => LogManager.WriteLog($"[Gateway] {message}"),
-            (session, accessToken, stoppingToken) => gatewayExtensionSupervisor.RunForPresenceSessionAsync(
-                session,
-                accessToken,
-                stoppingToken,
-                [
-                    new GatewayPresenceExtension("telemetry", telemetryPublisher.RunForPresenceSessionAsync),
-                    new GatewayPresenceExtension("control", controlGateway.RunForPresenceSessionAsync),
-                    new GatewayPresenceExtension("file", fileGateway.RunForPresenceSessionAsync),
-                    new GatewayPresenceExtension("log", logGateway.RunForPresenceSessionAsync),
-                    new GatewayPresenceExtension("remote-support", remoteSupportGateway.RunForPresenceSessionAsync),
-                    new GatewayPresenceExtension("terminal", terminalGateway.RunForPresenceSessionAsync),
-                    new GatewayPresenceExtension("command", commandGateway.RunForPresenceSessionAsync),
-                    new GatewayPresenceExtension("job", jobGateway.RunForPresenceSessionAsync)
-                ]),
-            updateCoordinator);
-        await gatewayClient.RunAsync(applicationStopping.Token).ConfigureAwait(false);
+        LogManager.WriteLog("[Gateway] The agent token does not contain tenant_id. Exiting.");
+        Environment.ExitCode = 13;
         return;
     }
 
-    LogManager.WriteLog($"[Client] Unsupported Transport:Mode '{transportMode}'. Supported modes are AkkaPresence and the legacy AkkaPresenceCanary.");
-    Environment.ExitCode = 13;
-    return;
-}
+    if (!Guid.TryParse(creds.Value.AgentId, out var agentId) || agentId == Guid.Empty)
+    {
+        LogManager.WriteLog("[Gateway] The enrolled agent ID is invalid. Exiting.");
+        Environment.ExitCode = 13;
+        return;
+    }
 
-static GatewayClientOptions LoadGatewayOptions(IConfiguration configuration, string apiBaseUrl)
-{
-    var options = new GatewayClientOptions();
-    configuration.GetSection("Gateway").Bind(options);
-    options.Endpoint = string.IsNullOrWhiteSpace(options.Endpoint)
-        ? apiBaseUrl
-        : options.Endpoint;
-    return options;
+    LogManager.WriteLog($"[Gateway] Starting authenticated Akka presence. Endpoint={gatewayOptions.Endpoint}");
+    var telemetryPublisher = new AgentGatewayTelemetryPublisher(
+        gatewayOptions,
+        GetAgentVersion(),
+        message => LogManager.WriteLog($"[Gateway] {message}"));
+    var controlGateway = new AgentControlGatewayClient(
+        gatewayOptions,
+        message => LogManager.WriteLog($"[Gateway] {message}"));
+    var fileGateway = new AgentFileGatewayClient(
+        gatewayOptions,
+        new FileSystemService(),
+        message => LogManager.WriteLog($"[Gateway] {message}"));
+    var logGateway = new AgentLogGatewayClient(gatewayOptions);
+    var remoteSupportGateway = new AgentRemoteSupportGatewayClient(
+        gatewayOptions,
+        message => LogManager.WriteLog($"[Gateway] {message}"));
+    var terminalShells = ShellInventoryDetector.NormalizeKeywords(ShellInventoryDetector.Detect());
+    using var terminalGateway = new AgentTerminalGatewayClient(
+        gatewayOptions,
+        BuildTerminalHostOptions(cfg),
+        terminalShells,
+        message => LogManager.WriteLog($"[Gateway] {message}"));
+    var commandGateway = new AgentCommandGatewayClient(
+        gatewayOptions,
+        cfg.UseInProcPowerShell,
+        message => LogManager.WriteLog($"[Gateway] {message}"));
+    var jobGateway = new AgentJobGatewayClient(
+        gatewayOptions,
+        cfg.UseInProcPowerShell,
+        message => LogManager.WriteLog($"[Gateway] {message}"));
+    await using var updateCoordinator = new AkkaClientAutoUpdateCoordinator(
+        cfg,
+        GetAgentVersion(),
+        tokenService,
+        rootProvider.GetRequiredService<IHttpClientFactory>().CreateClient("AgentAuthApi"));
+    var gatewayExtensionSupervisor = new GatewayPresenceExtensionSupervisor(
+        message => LogManager.WriteLog($"[Gateway] {message}"));
+    var gatewayClient = new AgentGatewayPresenceClient(
+        gatewayOptions,
+        tokenService,
+        tokenTenantId.Value,
+        agentId,
+        GetAgentVersion(),
+        terminalShells,
+        message => LogManager.WriteLog($"[Gateway] {message}"),
+        (session, accessToken, stoppingToken) => gatewayExtensionSupervisor.RunForPresenceSessionAsync(
+            session,
+            accessToken,
+            stoppingToken,
+            [
+                new GatewayPresenceExtension("telemetry", telemetryPublisher.RunForPresenceSessionAsync),
+                new GatewayPresenceExtension("control", controlGateway.RunForPresenceSessionAsync),
+                new GatewayPresenceExtension("file", fileGateway.RunForPresenceSessionAsync),
+                new GatewayPresenceExtension("log", logGateway.RunForPresenceSessionAsync),
+                new GatewayPresenceExtension("remote-support", remoteSupportGateway.RunForPresenceSessionAsync),
+                new GatewayPresenceExtension("terminal", terminalGateway.RunForPresenceSessionAsync),
+                new GatewayPresenceExtension("command", commandGateway.RunForPresenceSessionAsync),
+                new GatewayPresenceExtension("job", jobGateway.RunForPresenceSessionAsync)
+            ]),
+        updateCoordinator);
+    await gatewayClient.RunAsync(applicationStopping.Token).ConfigureAwait(false);
+    return;
 }
 
 static TerminalHostOptions BuildTerminalHostOptions(ClientOptions cfg)

@@ -4,20 +4,6 @@ public sealed class GatewayClientOptions
 {
     public string Endpoint { get; set; } = string.Empty;
     public string ProtocolVersion { get; set; } = "1.0";
-    public string RequiredPresenceAuthority { get; set; } = GatewayAuthority.Akka;
-
-    // This remains a canary-only publisher until the API has a durable,
-    // authoritative telemetry read model. It must never enable a Spacetime
-    // fallback from the NetRatel client.
-    public bool TelemetryShadowEnabled { get; set; }
-
-    public bool TelemetryAuthorityEnabled { get; set; }
-
-    /// <summary>Enables fenced Akka command dispatch and lifecycle authority.</summary>
-    public bool CommandAuthorityEnabled { get; set; }
-
-    /// <summary>Enables fenced Akka job-step dispatch and lifecycle authority.</summary>
-    public bool JobAuthorityEnabled { get; set; }
 
     public bool ControlGatewayEnabled { get; set; }
 
@@ -45,9 +31,6 @@ public sealed class GatewayClientOptions
 
     /// <summary>Enables the fenced terminal PTY stream for the active presence session.</summary>
     public bool TerminalGatewayEnabled { get; set; }
-
-    /// <summary>Requires the terminal stream to be admitted by the configured Akka authority.</summary>
-    public bool TerminalAuthorityEnabled { get; set; }
 
     public int TelemetryFastIntervalSeconds { get; set; } = 5;
 

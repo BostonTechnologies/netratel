@@ -15,7 +15,7 @@ using System.Threading.Tasks;
 namespace NetRatel.Client.Service.Gateway;
 
 /// <summary>
-/// Maintains the presence-only authenticated gateway session used by the Akka DEV canary.
+/// Maintains the authenticated Akka gateway presence session.
 /// It deliberately has no SpacetimeDB fallback: an unavailable or wrongly configured
 /// gateway leaves the agent offline rather than silently restoring legacy ownership.
 /// </summary>
@@ -95,10 +95,8 @@ public sealed class AgentGatewayPresenceClient(
                 AgentVersion = agentVersion
             };
             hello.Capabilities.Add("presence");
-            if (options.TelemetryShadowEnabled)
-            {
-                hello.Capabilities.Add("telemetry-shadow");
-            }
+            // Retain this legacy wire token verbatim; telemetry itself now uses the V2 stream.
+            hello.Capabilities.Add("telemetry-shadow");
             if (options.FileGatewayEnabled)
             {
                 hello.Capabilities.Add("file-gateway");
@@ -115,7 +113,7 @@ public sealed class AgentGatewayPresenceClient(
             {
                 hello.Capabilities.Add("remote-support-v2-inventory");
             }
-            if (options.TerminalGatewayEnabled && options.TerminalAuthorityEnabled)
+            if (options.TerminalGatewayEnabled)
             {
                 hello.Capabilities.Add("terminal-gateway");
                 hello.TerminalCapability = new TerminalCapability
@@ -145,11 +143,11 @@ public sealed class AgentGatewayPresenceClient(
 
             var accepted = call.ResponseStream.Current;
             ValidateConnectedFrame(accepted, operationId);
-            if (!GatewayAuthority.MatchesRequired(accepted.Connected.PresenceAuthority, options.RequiredPresenceAuthority))
+            if (!GatewayAuthority.IsAkka(accepted.Connected.PresenceAuthority))
             {
                 throw new RpcException(new Status(
                     StatusCode.FailedPrecondition,
-                    $"Gateway reported authority '{accepted.Connected.PresenceAuthority}', but '{options.RequiredPresenceAuthority}' is required."));
+                    $"Gateway reported authority '{accepted.Connected.PresenceAuthority}', but the Akka authority is required."));
             }
 
             var heartbeatInterval = TimeSpan.FromSeconds(Math.Clamp((int)accepted.Connected.HeartbeatIntervalSeconds, 1, 60));
@@ -197,11 +195,11 @@ public sealed class AgentGatewayPresenceClient(
 
                     var heartbeat = call.ResponseStream.Current;
                     ValidateHeartbeatFrame(heartbeat, accepted, heartbeatOperationId, heartbeatSequence);
-                    if (!GatewayAuthority.MatchesRequired(heartbeat.HeartbeatAccepted.PresenceAuthority, options.RequiredPresenceAuthority))
+                    if (!GatewayAuthority.IsAkka(heartbeat.HeartbeatAccepted.PresenceAuthority))
                     {
                         throw new RpcException(new Status(
                             StatusCode.FailedPrecondition,
-                            $"Gateway changed authority to '{heartbeat.HeartbeatAccepted.PresenceAuthority}'."));
+                            $"Gateway changed authority to non-Akka '{heartbeat.HeartbeatAccepted.PresenceAuthority}'."));
                     }
 
                     updateHandler?.OnActivationHeartbeatAccepted(accepted.ConnectionEpoch);

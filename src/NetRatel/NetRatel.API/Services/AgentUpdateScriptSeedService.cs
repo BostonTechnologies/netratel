@@ -170,6 +170,26 @@ try {
     $updaterSource = Join-Path $targetDir "updater\netratel-update.ps1"
     if (Test-Path $updaterSource) { Copy-Item -Path $updaterSource -Destination (Join-Path $UpdaterDir "netratel-update.ps1") -Force }
 
+    $preservedClientEnvironment = @()
+    $clientServiceEnvironmentPath = "HKLM:\SYSTEM\CurrentControlSet\Services\NetRatel.Client"
+    if (Test-Path $clientServiceEnvironmentPath) {
+        $existingServiceEnvironment = (Get-ItemProperty -Path $clientServiceEnvironmentPath -Name Environment -ErrorAction SilentlyContinue).Environment
+        foreach ($entry in @($existingServiceEnvironment)) {
+            if ($entry -isnot [string]) { continue }
+            $separator = $entry.IndexOf("=")
+            if ($separator -le 0) { $preservedClientEnvironment += $entry; continue }
+            $name = $entry.Substring(0, $separator)
+            if ($name.StartsWith("NetRatelCLIENT__", [StringComparison]::OrdinalIgnoreCase)) {
+                $setting = $name.Substring("NetRatelCLIENT__".Length)
+                if ([String]::Equals($setting, "Client__ApiBaseUrl", [StringComparison]::OrdinalIgnoreCase)) { continue }
+                if (@("Transport__Mode", "Gateway__RequiredPresenceAuthority", "Gateway__TelemetryShadowEnabled", "Gateway__TelemetryAuthorityEnabled", "Gateway__CommandAuthorityEnabled", "Gateway__JobAuthorityEnabled", "Gateway__TerminalAuthorityEnabled") -contains $setting) { continue }
+                if (@("Gateway__ControlGatewayEnabled", "Gateway__FileGatewayEnabled", "Gateway__LogGatewayEnabled", "Gateway__RemoteSupportGatewayEnabled", "Gateway__TerminalGatewayEnabled") -contains $setting -and
+                    [String]::Equals($entry.Substring($separator + 1), "true", [StringComparison]::OrdinalIgnoreCase)) { continue }
+            }
+            $preservedClientEnvironment += $entry
+        }
+    }
+
     foreach ($name in @("NetRatel.Client", "NetRatel.Update")) {
         $existing = Get-Service -Name $name -ErrorAction SilentlyContinue
         if ($existing) {
@@ -180,22 +200,12 @@ try {
     }
 
     New-Service -Name "NetRatel.Client" -BinaryPathName "`"$exe`" --service" -DisplayName "NetRatel Client" -StartupType Automatic
-    New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\NetRatel.Client" -Name Environment -PropertyType MultiString -Value @(
-        "NetRatel_CLIENT_LOG_DIR=$LogDir",
-        "NetRatelCLIENT__Transport__Mode=AkkaPresence",
-        "NetRatelCLIENT__Gateway__Endpoint=$ApiBase",
-        "NetRatelCLIENT__Gateway__RequiredPresenceAuthority=akka",
-        "NetRatelCLIENT__Gateway__TelemetryShadowEnabled=true",
-        "NetRatelCLIENT__Gateway__TelemetryAuthorityEnabled=true",
-        "NetRatelCLIENT__Gateway__CommandAuthorityEnabled=true",
-        "NetRatelCLIENT__Gateway__JobAuthorityEnabled=true",
-        "NetRatelCLIENT__Gateway__ControlGatewayEnabled=true",
-        "NetRatelCLIENT__Gateway__FileGatewayEnabled=true",
-        "NetRatelCLIENT__Gateway__LogGatewayEnabled=true",
-        "NetRatelCLIENT__Gateway__RemoteSupportGatewayEnabled=true",
-        "NetRatelCLIENT__Gateway__TerminalGatewayEnabled=true",
-        "NetRatelCLIENT__Gateway__TerminalAuthorityEnabled=true"
-    ) -Force | Out-Null
+    $hasPreservedLogDir = @($preservedClientEnvironment | Where-Object { $_ -match '^NetRatel_CLIENT_LOG_DIR=' }).Count -gt 0
+    $clientEnvironment = @()
+    if (-not $hasPreservedLogDir) { $clientEnvironment += "NetRatel_CLIENT_LOG_DIR=$LogDir" }
+    $clientEnvironment += $preservedClientEnvironment
+    $clientEnvironment += "NetRatelCLIENT__Client__ApiBaseUrl=$ApiBase"
+    New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\NetRatel.Client" -Name Environment -PropertyType MultiString -Value $clientEnvironment -Force | Out-Null
     New-Service -Name "NetRatel.Update" -BinaryPathName "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$UpdaterDir\netratel-update.ps1`"" -DisplayName "NetRatel Client Updater" -StartupType Manual
     Start-Service -Name "NetRatel.Client"
     Start-Sleep -Seconds 5
@@ -366,6 +376,83 @@ ln -sfn "$target_dir" "$RootDir/current.next"
 mv -Tf "$RootDir/current.next" "$RootDir/current"
 activated=true
 
+preserved_client_environment="$(python3 - <<'PY'
+import os
+import re
+import subprocess
+
+prefix = "NetRatelCLIENT__"
+retired = {
+    "transport__mode",
+    "gateway__requiredpresenceauthority",
+    "gateway__telemetryshadowenabled",
+    "gateway__telemetryauthorityenabled",
+    "gateway__commandauthorityenabled",
+    "gateway__jobauthorityenabled",
+    "gateway__terminalauthorityenabled",
+}
+redundant_true = {
+    "gateway__controlgatewayenabled",
+    "gateway__filegatewayenabled",
+    "gateway__loggatewayenabled",
+    "gateway__remotesupportgatewayenabled",
+    "gateway__terminalgatewayenabled",
+}
+
+def words(value):
+    index = 0
+    while index < len(value):
+        while index < len(value) and value[index].isspace():
+            index += 1
+        if index == len(value):
+            break
+        raw = []
+        decoded = []
+        quote = None
+        while index < len(value):
+            char = value[index]
+            if quote is None and char.isspace():
+                break
+            if char == "\\" and quote != "'" and index + 1 < len(value):
+                raw.append(char)
+                escaped = value[index + 1]
+                raw.append(escaped)
+                decoded.append(escaped)
+                index += 2
+                continue
+            if char in "'\"" and (quote is None or quote == char):
+                raw.append(char)
+                quote = None if quote is not None else char
+                index += 1
+                continue
+            raw.append(char)
+            decoded.append(char)
+            index += 1
+        yield "".join(raw), "".join(decoded)
+
+fragment = subprocess.run(["systemctl", "show", "-p", "FragmentPath", "--value", "netratel-client.service"], capture_output=True, text=True).stdout.strip()
+if not fragment or not os.path.isfile(fragment):
+    raise SystemExit(0)
+with open(fragment, encoding="utf-8", errors="replace") as unit:
+    lines = unit.readlines()
+for line in lines:
+    if line.lstrip().startswith("EnvironmentFile="):
+        print(line)
+        continue
+    match = re.match(r"^\s*Environment=(.*)$", line)
+    if not match:
+        continue
+    for raw, assignment in words(match.group(1)):
+        name, separator, value = assignment.partition("=")
+        if separator and name.lower().startswith(prefix.lower()):
+            setting = name[len(prefix):].lower()
+            if setting == "client__apibaseurl" or setting in retired:
+                continue
+            if setting in redundant_true and value.lower() == "true":
+                continue
+        print("Environment=" + raw)
+PY
+)"
 cat >/etc/systemd/system/netratel-client.service <<UNIT
 [Unit]
 Description=NetRatel Client
@@ -381,19 +468,12 @@ RestartPreventExitStatus=78
 Environment=DOTNET_ENVIRONMENT=Production
 Environment=DOTNET_BUNDLE_EXTRACT_BASE_DIR=$BundleExtractDir
 Environment=NetRatel_CLIENT_LOG_DIR=/var/lib/netratel/logs
-Environment=NetRatelCLIENT__Transport__Mode=AkkaPresence
-Environment=NetRatelCLIENT__Gateway__Endpoint=$ApiBase
-Environment=NetRatelCLIENT__Gateway__RequiredPresenceAuthority=akka
-Environment=NetRatelCLIENT__Gateway__TelemetryShadowEnabled=true
-Environment=NetRatelCLIENT__Gateway__TelemetryAuthorityEnabled=true
-Environment=NetRatelCLIENT__Gateway__CommandAuthorityEnabled=true
-Environment=NetRatelCLIENT__Gateway__JobAuthorityEnabled=true
-Environment=NetRatelCLIENT__Gateway__ControlGatewayEnabled=true
-Environment=NetRatelCLIENT__Gateway__FileGatewayEnabled=true
-Environment=NetRatelCLIENT__Gateway__LogGatewayEnabled=true
-Environment=NetRatelCLIENT__Gateway__RemoteSupportGatewayEnabled=true
-Environment=NetRatelCLIENT__Gateway__TerminalGatewayEnabled=true
-Environment=NetRatelCLIENT__Gateway__TerminalAuthorityEnabled=true
+UNIT
+if [ -n "$preserved_client_environment" ]; then
+  printf '%s\n' "$preserved_client_environment" >> /etc/systemd/system/netratel-client.service
+fi
+cat >>/etc/systemd/system/netratel-client.service <<UNIT
+Environment=NetRatelCLIENT__Client__ApiBaseUrl=$ApiBase
 
 [Install]
 WantedBy=multi-user.target

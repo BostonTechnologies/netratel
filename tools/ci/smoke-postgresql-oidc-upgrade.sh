@@ -435,9 +435,7 @@ Environment=NetRatel_CLIENT_LOG_DIR=$native_directory/logs
 Environment=NetRatelCLIENT__Client__ApiBaseUrl=$api_url
 Environment=NetRatelCLIENT__Client__AutoUpdate__Mode=Service
 Environment=NetRatelCLIENT__Client__AutoUpdate__Channel=Prerelease
-Environment=NetRatelCLIENT__Transport__Mode=AkkaPresence
 Environment=NetRatelCLIENT__Gateway__Endpoint=https://127.0.0.1:$NETRATEL_GATEWAY_TEST_PORT
-Environment=NetRatelCLIENT__Gateway__RequiredPresenceAuthority=akka
 Environment=SSL_CERT_FILE=$tls_certificate_path
 
 [Install]

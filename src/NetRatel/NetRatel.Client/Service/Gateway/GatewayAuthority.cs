@@ -13,13 +13,4 @@ public static class GatewayAuthority
     public static bool IsAkka(string? authority) =>
         string.Equals(authority, Akka, System.StringComparison.Ordinal) ||
         string.Equals(authority, LegacyDevCanary, System.StringComparison.Ordinal);
-
-    /// <summary>
-    /// Preserves the authority fence for custom values while allowing the two
-    /// equivalent Akka labels during the one-way Dev label transition.
-    /// </summary>
-    public static bool MatchesRequired(string? reportedAuthority, string? requiredAuthority) =>
-        IsAkka(requiredAuthority)
-            ? IsAkka(reportedAuthority)
-            : string.Equals(reportedAuthority, requiredAuthority, System.StringComparison.Ordinal);
 }

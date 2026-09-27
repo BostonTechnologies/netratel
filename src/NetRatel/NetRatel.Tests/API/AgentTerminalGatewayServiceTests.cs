@@ -54,8 +54,7 @@ public sealed class AgentTerminalGatewayServiceTests
             new GatewayClientOptions
             {
                 Endpoint = "https://gateway.test",
-                TerminalGatewayEnabled = true,
-                TerminalAuthorityEnabled = true
+                TerminalGatewayEnabled = true
             },
             new TerminalHostOptions { BackendPreference = TerminalBackendPreference.Redirected },
             [shell],

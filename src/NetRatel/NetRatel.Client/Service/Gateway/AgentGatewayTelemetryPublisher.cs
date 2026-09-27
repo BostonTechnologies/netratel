@@ -19,10 +19,10 @@ using System.Threading.Tasks;
 namespace NetRatel.Client.Service.Gateway;
 
 /// <summary>
-/// Publishes the existing client telemetry shape to the isolated gateway shadow stream.
-/// This publisher has no SpacetimeDB dependency and does not claim telemetry authority.
+/// Publishes telemetry through the authoritative V2 gateway stream.
+/// This publisher has no SpacetimeDB dependency.
 /// </summary>
-public sealed class AgentGatewayTelemetryShadowPublisher(
+public sealed class AgentGatewayTelemetryPublisher(
     GatewayClientOptions options,
     string agentVersion,
     Action<string> log,
@@ -37,14 +37,9 @@ public sealed class AgentGatewayTelemetryShadowPublisher(
         string accessToken,
         CancellationToken stoppingToken)
     {
-        if (!options.TelemetryShadowEnabled)
-        {
-            return;
-        }
-
         if (!Uri.TryCreate(options.Endpoint, UriKind.Absolute, out var endpoint) || endpoint.Scheme != Uri.UriSchemeHttps)
         {
-            log("Telemetry shadow is disabled because Gateway:Endpoint is not an absolute HTTPS URL.");
+            log("Telemetry gateway is disabled because Gateway:Endpoint is not an absolute HTTPS URL.");
             return;
         }
 
@@ -55,14 +50,7 @@ public sealed class AgentGatewayTelemetryShadowPublisher(
         {
             try
             {
-                if (options.TelemetryAuthorityEnabled)
-                {
-                    await RunAuthorityStreamAsync(endpoint, session, accessToken, collector, stoppingToken).ConfigureAwait(false);
-                }
-                else
-                {
-                    await RunStreamAsync(endpoint, session, accessToken, collector, stoppingToken).ConfigureAwait(false);
-                }
+                await RunV2StreamAsync(endpoint, session, accessToken, collector, stoppingToken).ConfigureAwait(false);
                 retryDelay = InitialRetryDelay;
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -71,14 +59,14 @@ public sealed class AgentGatewayTelemetryShadowPublisher(
             }
             catch (Exception exception) when (exception is RpcException or HttpRequestException or IOException)
             {
-                log($"Telemetry shadow stream failed: {exception.GetType().Name}: {exception.Message}. Retrying in {retryDelay.TotalSeconds:0}s.");
+                log($"Telemetry V2 stream failed: {exception.GetType().Name}: {exception.Message}. Retrying in {retryDelay.TotalSeconds:0}s.");
                 await Task.Delay(retryDelay, stoppingToken).ConfigureAwait(false);
                 retryDelay = TimeSpan.FromSeconds(Math.Min(retryDelay.TotalSeconds * 2, MaximumRetryDelay.TotalSeconds));
             }
         }
     }
 
-    private async Task RunAuthorityStreamAsync(Uri endpoint, GatewayPresenceSession session, string accessToken, GatewayTelemetrySnapshotCollector collector, CancellationToken stoppingToken)
+    private async Task RunV2StreamAsync(Uri endpoint, GatewayPresenceSession session, string accessToken, GatewayTelemetrySnapshotCollector collector, CancellationToken stoppingToken)
     {
         using var channel = GrpcChannel.ForAddress(endpoint);
         var client = new global::NetRatel.AgentGateway.Contracts.V1.AgentTelemetryGatewayV2.AgentTelemetryGatewayV2Client(channel);
@@ -227,7 +215,7 @@ public sealed class AgentGatewayTelemetryShadowPublisher(
             try { await reader.ConfigureAwait(false); }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
-                log("Telemetry authority reader stopped after client cancellation.");
+                log("Telemetry V2 reader stopped after client cancellation.");
             }
         }
     }
@@ -245,55 +233,6 @@ public sealed class AgentGatewayTelemetryShadowPublisher(
         catch (OperationCanceledException)
         {
             System.Diagnostics.Trace.WriteLine("Telemetry scheduler selection was cancelled after its competing wait completed.");
-        }
-    }
-
-    private async Task RunStreamAsync(
-        Uri endpoint,
-        GatewayPresenceSession session,
-        string accessToken,
-        GatewayTelemetrySnapshotCollector collector,
-        CancellationToken stoppingToken)
-    {
-        var fastInterval = TimeSpan.FromSeconds(Math.Clamp(options.TelemetryFastIntervalSeconds, 1, 60));
-        var slowInterval = TimeSpan.FromSeconds(Math.Clamp(options.TelemetrySlowIntervalSeconds, 5, 300));
-        using var channel = GrpcChannel.ForAddress(endpoint);
-        var client = new global::NetRatel.AgentGateway.Contracts.V1.AgentTelemetryGateway.AgentTelemetryGatewayClient(channel);
-        var headers = new Metadata { { "Authorization", $"Bearer {accessToken}" } };
-        using var call = client.PublishTelemetry(headers, cancellationToken: stoppingToken);
-
-        try
-        {
-            ulong sequence = 0;
-            var nextSlowSampleAtUtc = DateTimeOffset.MinValue;
-            using var timer = new PeriodicTimer(fastInterval);
-
-            do
-            {
-                var now = DateTimeOffset.UtcNow;
-                var includeSlowMetrics = now >= nextSlowSampleAtUtc;
-                if (includeSlowMetrics)
-                {
-                    nextSlowSampleAtUtc = now.Add(slowInterval);
-                }
-
-                var frame = collector.CreateFrame(session, checked(++sequence), now, includeSlowMetrics);
-                await call.RequestStream.WriteAsync(frame).ConfigureAwait(false);
-            }
-            while (await timer.WaitForNextTickAsync(stoppingToken).ConfigureAwait(false));
-
-            throw new RpcException(new Status(StatusCode.Unavailable, "Telemetry gateway closed the stream."));
-        }
-        finally
-        {
-            try
-            {
-                await call.RequestStream.CompleteAsync().ConfigureAwait(false);
-            }
-            catch (RpcException)
-            {
-                log("Telemetry gateway stream had already closed before request completion.");
-            }
         }
     }
 }
