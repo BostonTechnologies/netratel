@@ -330,7 +330,9 @@ if [[ "$database_restarted" == true ]]; then
 fi
 refresh_api_container
 api_operator() { "$docker_command" exec "$api_container_id" "$@"; }
-api_operator dotnet NetRatel.API.dll --help | grep -Fq -- '--show-setup-code'
+operator_help="$(api_operator dotnet NetRatel.API.dll --help)"
+grep -Fq -- '--show-setup-code' <<<"$operator_help"
+unset operator_help
 initial_setup_proof="$(api_operator cat /var/netratel/bootstrap/setup-proof)"
 initial_setup_proof="${initial_setup_proof//$'\r'/}"
 [[ "$(api_operator dotnet NetRatel.API.dll --show-setup-code)" == "$initial_setup_proof" ]]
