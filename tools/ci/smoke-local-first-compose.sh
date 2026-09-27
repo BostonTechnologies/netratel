@@ -262,13 +262,49 @@ playwright_script="src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0
 [[ -f "$playwright_script" ]] || { echo "Playwright install script was not produced." >&2; exit 1; }
 pwsh "$playwright_script" install --with-deps chromium
 stage="validating image operator commands and one-time proof rotation"
+run_logged_capture() {
+  local operation="$1" output status
+  shift
+  echo "Starting smoke operation: $operation." >&2
+  if output="$("$@")"; then
+    echo "Completed smoke operation: $operation (exit code 0)." >&2
+    printf '%s' "$output"
+  else
+    status=$?
+    echo "Failed smoke operation: $operation (exit code $status)." >&2
+    return "$status"
+  fi
+}
+run_capture_report_failure() {
+  local operation="$1" output status
+  shift
+  if output="$("$@")"; then
+    printf '%s' "$output"
+  else
+    status=$?
+    echo "Failed smoke operation: $operation (exit code $status)." >&2
+    return "$status"
+  fi
+}
+run_logged_discard() {
+  local operation="$1" status
+  shift
+  echo "Starting smoke operation: $operation." >&2
+  if "$@" >/dev/null; then
+    echo "Completed smoke operation: $operation (exit code 0)." >&2
+  else
+    status=$?
+    echo "Failed smoke operation: $operation (exit code $status)." >&2
+    return "$status"
+  fi
+}
 ensure_runtime_service() {
-  local service="$1" container_id inspect_json running_state health_state attempts
+  local service="$1" container_id inspect_json running_state health_state attempts start_status
   runtime_service_restarted=false
-  container_id="$("${compose[@]}" ps -q "$service")"
+  container_id="$(run_logged_capture "find running $service container" "${compose[@]}" ps -q "$service")"
   container_id="${container_id//$'\r'/}"
   if [[ -z "$container_id" ]]; then
-    container_id="$("${compose[@]}" ps -a -q "$service")"
+    container_id="$(run_logged_capture "find all $service containers" "${compose[@]}" ps -a -q "$service")"
     container_id="${container_id//$'\r'/}"
   fi
   [[ -n "$container_id" ]] || {
@@ -276,18 +312,30 @@ ensure_runtime_service() {
     return 1
   }
 
-  inspect_json="$("$docker_command" inspect "$container_id" | LC_ALL=C tr -d '\000\r')"
+  inspect_json="$(run_logged_capture "inspect $service container state" "$docker_command" inspect "$container_id" | LC_ALL=C tr -d '\000\r')"
   running_state="$(jq -r '.[0].State.Running' <<<"$inspect_json")"
   if [[ "$running_state" != true ]]; then
     echo "${service^} container $container_id is not running; attempting one restart." >&2
-    "$docker_command" start "$container_id" >/dev/null
-    runtime_service_restarted=true
+    if run_logged_discard "start stopped $service container" "$docker_command" start "$container_id"; then
+      runtime_service_restarted=true
+    else
+      start_status=$?
+      echo "Docker start reported exit code $start_status; checking whether the $service container started." >&2
+      inspect_json="$(run_logged_capture "verify $service container after start error" "$docker_command" inspect "$container_id" | LC_ALL=C tr -d '\000\r')"
+      running_state="$(jq -r '.[0].State.Running' <<<"$inspect_json")"
+      if [[ "$running_state" != true ]]; then
+        echo "${service^} container remained stopped after Docker start reported an error." >&2
+        return "$start_status"
+      fi
+      echo "${service^} container is running despite Docker start's nonzero exit; continuing with the existing readiness check." >&2
+      runtime_service_restarted=true
+    fi
   fi
 
   attempts=30
   [[ "$service" == postgres || "$service" == external-db ]] && attempts=90
   for _ in $(seq 1 "$attempts"); do
-    inspect_json="$("$docker_command" inspect "$container_id" | LC_ALL=C tr -d '\000\r')"
+    inspect_json="$(run_capture_report_failure "inspect $service readiness state" "$docker_command" inspect "$container_id" | LC_ALL=C tr -d '\000\r')"
     running_state="$(jq -r '.[0].State.Running' <<<"$inspect_json")"
     health_state="$(jq -r '.[0].State.Health.Status // empty' <<<"$inspect_json")"
     if [[ "$running_state" == true &&
@@ -303,10 +351,10 @@ ensure_runtime_service() {
   return 1
 }
 refresh_api_container() {
-  api_container_id="$("${compose[@]}" ps -q api)"
+  api_container_id="$(run_logged_capture "find running API container" "${compose[@]}" ps -q api)"
   api_container_id="${api_container_id//$'\r'/}"
   if [[ -z "$api_container_id" ]]; then
-    api_container_id="$("${compose[@]}" ps -a -q api)"
+    api_container_id="$(run_logged_capture "find all API containers" "${compose[@]}" ps -a -q api)"
     api_container_id="${api_container_id//$'\r'/}"
   fi
   [[ -n "$api_container_id" ]] || { echo "API container was not created." >&2; return 1; }
@@ -330,30 +378,66 @@ if [[ "$database_restarted" == true ]]; then
 fi
 refresh_api_container
 api_operator() { "$docker_command" exec "$api_container_id" "$@"; }
-operator_help="$(api_operator dotnet NetRatel.API.dll --help)"
-grep -Fq -- '--show-setup-code' <<<"$operator_help"
+operator_help="$(run_logged_capture "read API operator help" api_operator dotnet NetRatel.API.dll --help)"
+if grep -Fq -- '--show-setup-code' <<<"$operator_help"; then
+  echo "Passed smoke assertion: API help lists the setup-code operator." >&2
+else
+  echo "Failed smoke assertion: API help did not list the setup-code operator." >&2
+  exit 1
+fi
 unset operator_help
-initial_setup_proof="$(api_operator cat /var/netratel/bootstrap/setup-proof)"
+initial_setup_proof="$(run_logged_capture "read initial setup proof file (value suppressed)" api_operator cat /var/netratel/bootstrap/setup-proof)"
 initial_setup_proof="${initial_setup_proof//$'\r'/}"
-[[ "$(api_operator dotnet NetRatel.API.dll --show-setup-code)" == "$initial_setup_proof" ]]
-initial_status="$(api_operator dotnet NetRatel.API.dll --setup-status)"
-grep -Fq 'Setup code: Available' <<<"$initial_status"
-[[ "$initial_status" != *"$initial_setup_proof"* ]]
-api_operator dotnet NetRatel.API.dll --rotate-setup-code >/dev/null
-setup_proof="$(api_operator cat /var/netratel/bootstrap/setup-proof)"
+shown_initial_setup_proof="$(run_logged_capture "show initial setup proof (value suppressed)" api_operator dotnet NetRatel.API.dll --show-setup-code)"
+if [[ "$shown_initial_setup_proof" == "$initial_setup_proof" ]]; then
+  echo "Passed smoke assertion: displayed initial setup proof matches the persisted proof." >&2
+else
+  echo "Failed smoke assertion: displayed initial setup proof does not match the persisted proof." >&2
+  exit 1
+fi
+unset shown_initial_setup_proof
+initial_status="$(run_logged_capture "read initial API setup status" api_operator dotnet NetRatel.API.dll --setup-status)"
+if grep -Fq 'Setup code: Available' <<<"$initial_status"; then
+  echo "Passed smoke assertion: initial setup status reports an available setup code." >&2
+else
+  echo "Failed smoke assertion: initial setup status did not report an available setup code." >&2
+  exit 1
+fi
+if [[ "$initial_status" != *"$initial_setup_proof"* ]]; then
+  echo "Passed smoke assertion: initial setup status does not expose the proof value." >&2
+else
+  echo "Failed smoke assertion: initial setup status exposed the proof value." >&2
+  exit 1
+fi
+run_logged_discard "rotate one-time setup proof (output suppressed)" api_operator dotnet NetRatel.API.dll --rotate-setup-code
+setup_proof="$(run_logged_capture "read rotated setup proof file (value suppressed)" api_operator cat /var/netratel/bootstrap/setup-proof)"
 setup_proof="${setup_proof//$'\r'/}"
-[[ -n "$setup_proof" && "$setup_proof" != "$initial_setup_proof" ]]
-[[ "$(api_operator dotnet NetRatel.API.dll --show-setup-code)" == "$setup_proof" ]]
-forged_origin_status="$(curl "${curl_tls[@]}" --silent --output /dev/null --write-out '%{http_code}' \
+if [[ -n "$setup_proof" && "$setup_proof" != "$initial_setup_proof" ]]; then
+  echo "Passed smoke assertion: proof rotation produced a nonempty, changed proof value." >&2
+else
+  echo "Failed smoke assertion: proof rotation did not produce a nonempty, changed proof value." >&2
+  exit 1
+fi
+shown_setup_proof="$(run_logged_capture "show rotated setup proof (value suppressed)" api_operator dotnet NetRatel.API.dll --show-setup-code)"
+if [[ "$shown_setup_proof" == "$setup_proof" ]]; then
+  echo "Passed smoke assertion: displayed rotated proof matches the persisted proof." >&2
+else
+  echo "Failed smoke assertion: displayed rotated proof does not match the persisted proof." >&2
+  exit 1
+fi
+unset shown_setup_proof
+forged_origin_status="$(run_logged_capture "curl forged-origin setup-claim probe" curl "${curl_tls[@]}" --silent --output /dev/null --write-out '%{http_code}' \
   --header 'Origin: https://forged.invalid' --header 'Content-Type: application/json' \
   --data '{"proof":"invalid"}' "$web_url/api/v2/setup/claim")"
-[[ "$forged_origin_status" == 403 ]] || { echo "A forged setup origin was not rejected." >&2; exit 1; }
+[[ "$forged_origin_status" == 403 ]] || { echo "A forged setup origin was not rejected (HTTP $forged_origin_status)." >&2; exit 1; }
+echo "Passed smoke assertion: forged setup origin received HTTP 403." >&2
 if [[ "$web_url" == https://* ]]; then
-  forged_host_status="$(curl "${curl_tls[@]}" --silent --output /dev/null --write-out '%{http_code}' \
+  forged_host_status="$(run_logged_capture "curl forged-host public-route probe" curl "${curl_tls[@]}" --silent --output /dev/null --write-out '%{http_code}' \
     --header 'Host: forged.invalid' "$web_url/setup")"
-  [[ "$forged_host_status" == 400 ]] || { echo "A forged public Host was not rejected." >&2; exit 1; }
+  [[ "$forged_host_status" == 400 ]] || { echo "A forged public Host was not rejected (HTTP $forged_host_status)." >&2; exit 1; }
+  echo "Passed smoke assertion: forged public Host received HTTP 400." >&2
 fi
-unset initial_setup_proof initial_status
+unset initial_setup_proof initial_status forged_origin_status forged_host_status
 stage="building and running Playwright local-first journey"
 setup_proof_digest="$(printf '%s' "$setup_proof" | sha256sum | cut -d ' ' -f 1)"
 published_release_version=""
