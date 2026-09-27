@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 using Microsoft.Playwright;
 
 namespace NetRatel.Web.PlaywrightTests;
@@ -581,7 +582,8 @@ public sealed class LocalFirstComposeBrowserSmokeTests
                     ["TMP"] = root
                 },
                 TimeSpan.FromMinutes(5));
-            Assert.True(install.ExitCode == 0, "The supported Windows install command did not complete.");
+            if (install.ExitCode != 0)
+                Assert.Fail(FormatWindowsInstallerFailure(install, command, publicUrl));
 
             var serviceState = await RunPowerShellAsync(
                 ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "(Get-Service -Name 'NetRatel.Client').Status.ToString()"],
@@ -652,6 +654,99 @@ public sealed class LocalFirstComposeBrowserSmokeTests
     private sealed record PowerShellResult(int ExitCode, string Output, string Error);
 
     private sealed record WindowsPresence(int TenantId, string AgentId, bool IsAuthoritative);
+
+    private const int WindowsInstallerDiagnosticLineLimit = 40;
+    private const int WindowsInstallerDiagnosticLineCharacterLimit = 1_000;
+
+    private static readonly Regex WindowsInstallerUrlRegex = new(
+        "\\bhttps?://[^\\s\\\"'<>]+",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private static readonly Regex WindowsPublicInstallPathRegex = new(
+        "/clients/install/[^\\s\\\"'<>/?#]+(?:\\.[A-Za-z0-9]+)?",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private static readonly Regex WindowsInstallerSensitiveAssignmentRegex = new(
+        "(?<prefix>(?:[\\\"']?[\\w.-]*(?:authorization|proxy-authorization|cookie|set-cookie|api[-_]?key|access[-_]?token|refresh[-_]?token|id[-_]?token|bearer[-_]?token|capability(?:[-_]?token)?|enrollment[\\s_-]?(?:code|token)|install[\\s_-]?(?:code|token)|one[\\s_-]?time[\\s_-]?(?:code|token)|secret|credential|token)[\\w.-]*[\\\"']?)\\s*[:=]\\s*)(?:(?:Bearer|Basic)\\s+)?(?:\\\"[^\\\"]*\\\"|'[^']*'|[^\\s,;]+)",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private static readonly Regex WindowsInstallerBearerTokenRegex = new(
+        "\\bBearer\\s+[A-Za-z0-9._~+/-]+=*",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private static readonly Regex WindowsInstallerOpaqueTokenRegex = new(
+        "(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{32,}(?![A-Za-z0-9_-])|\\bnrt_ic_[A-Za-z0-9_-]+\\b|\\bENR-[A-Za-z0-9_-]+\\b|\\beyJ[A-Za-z0-9_-]{5,}\\.[A-Za-z0-9_-]{5,}\\.[A-Za-z0-9_-]{5,}\\b|\\b[A-Z0-9]{4,10}(?:[-_][A-Z0-9]{4,10}){2,}\\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private static readonly Regex WindowsInstallerCommandEchoRegex = new(
+        "(?im)^\\s*\\+\\s*(?:Invoke-WebRequest|Invoke-Expression|New-Service|Start-Service|Stop-Service|curl(?:\\.exe)?)\\b.*$",
+        RegexOptions.CultureInvariant);
+
+    [Fact]
+    public void Windows_installer_failure_diagnostics_redact_secrets_and_bound_stream_tails()
+    {
+        const string publicUrl = "https://install.example/clients/install/public-capability.ps1";
+        var command = $"Invoke-WebRequest -UseBasicParsing -ErrorAction Stop '{publicUrl}' | Invoke-Expression";
+        var stdout = string.Join(
+            Environment.NewLine,
+            Enumerable.Range(0, 45).Select(index => $"stdout line {index}")
+                .Append("New-Service : Access is denied.")
+                .Append("X-NetRatel-Enrollment-Code: ENR-ABC123")
+                .Append("X-Auth-Token: short-install-token")
+                .Append("Authorization: Bearer nrt_ic_examplecapabilitytoken")
+                .Append("Path-only link: /clients/install/another-capability.ps1")
+                .Append("Long diagnostic: " + string.Concat(Enumerable.Repeat("detail ", 200))));
+        var result = new PowerShellResult(1, stdout, command);
+
+        var diagnostic = FormatWindowsInstallerFailure(result, command, publicUrl);
+
+        Assert.Contains("exit code 1", diagnostic);
+        Assert.Contains("New-Service : Access is denied.", diagnostic);
+        Assert.Contains("stdout line 44", diagnostic);
+        Assert.DoesNotContain("stdout line 0", diagnostic);
+        Assert.Contains("[truncated]", diagnostic);
+        Assert.DoesNotContain("Invoke-WebRequest", diagnostic);
+        Assert.DoesNotContain(publicUrl, diagnostic);
+        Assert.DoesNotContain("public-capability", diagnostic);
+        Assert.DoesNotContain("another-capability", diagnostic);
+        Assert.DoesNotContain("ENR-ABC123", diagnostic);
+        Assert.DoesNotContain("short-install-token", diagnostic);
+        Assert.DoesNotContain("nrt_ic_examplecapabilitytoken", diagnostic);
+    }
+
+    private static string FormatWindowsInstallerFailure(
+        PowerShellResult result, string command, string publicUrl)
+        => $"The supported Windows install command did not complete (exit code {result.ExitCode}).{Environment.NewLine}" +
+           $"PowerShell stdout (last {WindowsInstallerDiagnosticLineLimit} lines):{Environment.NewLine}" +
+           $"{FormatWindowsInstallerDiagnosticTail(result.Output, command, publicUrl)}{Environment.NewLine}" +
+           $"PowerShell stderr (last {WindowsInstallerDiagnosticLineLimit} lines):{Environment.NewLine}" +
+           FormatWindowsInstallerDiagnosticTail(result.Error, command, publicUrl);
+
+    private static string FormatWindowsInstallerDiagnosticTail(string output, string command, string publicUrl)
+    {
+        if (string.IsNullOrEmpty(output))
+            return "(empty)";
+
+        var redacted = output;
+        if (!string.IsNullOrEmpty(command))
+            redacted = redacted.Replace(command, "[REDACTED_INSTALL_COMMAND]", StringComparison.OrdinalIgnoreCase);
+        if (!string.IsNullOrEmpty(publicUrl))
+            redacted = redacted.Replace(publicUrl, "[REDACTED_PUBLIC_INSTALL_LINK]", StringComparison.OrdinalIgnoreCase);
+
+        redacted = WindowsInstallerCommandEchoRegex.Replace(redacted, "[REDACTED_INSTALL_COMMAND]");
+        redacted = WindowsInstallerUrlRegex.Replace(redacted, "[REDACTED_URL]");
+        redacted = WindowsPublicInstallPathRegex.Replace(redacted, "[REDACTED_PUBLIC_INSTALL_LINK]");
+        redacted = WindowsInstallerSensitiveAssignmentRegex.Replace(redacted, "${prefix}[REDACTED]");
+        redacted = WindowsInstallerBearerTokenRegex.Replace(redacted, "Bearer [REDACTED]");
+        redacted = WindowsInstallerOpaqueTokenRegex.Replace(redacted, "[REDACTED_TOKEN]");
+
+        var lines = redacted.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries);
+        var firstLine = Math.Max(0, lines.Length - WindowsInstallerDiagnosticLineLimit);
+        var tail = lines.Skip(firstLine).Select(line => line.Length > WindowsInstallerDiagnosticLineCharacterLimit
+            ? line[..WindowsInstallerDiagnosticLineCharacterLimit] + "…[truncated]"
+            : line);
+        return string.Join(Environment.NewLine, tail);
+    }
 
     private static async Task<WindowsPresence> WaitForWindowsGatewayPresenceAsync(IPage page, TimeSpan timeout)
     {
