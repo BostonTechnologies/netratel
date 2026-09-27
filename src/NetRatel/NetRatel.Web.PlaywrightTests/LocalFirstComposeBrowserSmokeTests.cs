@@ -516,30 +516,32 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         Assert.Equal("win-x64", manifest.RootElement.GetProperty("runtimeId").GetString());
 
         await RemoveWindowsAcceptanceServiceArtifactsAsync();
-        // Stage the full candidate through the supported authenticated API. Sending
-        // this large archive through a Blazor file-input circuit adds a second,
-        // unrelated transport to the native install-link acceptance journey.
-        var upload = page.Context.APIRequest.CreateFormData();
-        upload.Set("rid", "win-x64");
-        upload.Set("version", version);
-        upload.Set("file", new FilePayload
-        {
-            Name = Path.GetFileName(archive),
-            MimeType = "application/zip",
-            Buffer = await File.ReadAllBytesAsync(archive)
-        });
-        var uploadResponse = await page.Context.APIRequest.PostAsync(
-            new Uri(webUrl, "api/v1/client-artifacts/upload").ToString(),
-            new APIRequestContextOptions { Multipart = upload, Timeout = 180_000 });
-        Assert.True(uploadResponse.Ok,
-            $"The authenticated final Windows candidate upload failed with HTTP {uploadResponse.Status}.");
-
         await page.GotoAsync(new Uri(webUrl, "clients/mgmt").ToString(),
             new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
         await page.GetByTestId("clients-mgmt-interactive").WaitForAsync(new LocatorWaitForOptions
         {
             State = WaitForSelectorState.Attached
         });
+        await page.GetByRole(AriaRole.Button, new() { Name = "Advanced: upload artifact" }).ClickAsync();
+        await page.GetByRole(AriaRole.Menuitem, new() { Name = "Upload legacy artifact" }).ClickAsync();
+        var uploadDialog = page.Locator(".mud-dialog:visible").Filter(new() { HasText = "Runtime Identifier" }).Last;
+        await uploadDialog.GetByRole(AriaRole.Textbox, new() { Name = "Version" }).FillAsync(version);
+        await uploadDialog.Locator("input[type=file]").SetInputFilesAsync(archive);
+        await uploadDialog.GetByRole(AriaRole.Button, new() { Name = "Upload", Exact = true }).ClickAsync();
+        // A full native archive can take longer than Playwright's default 20s
+        // while the interactive file input streams it to the management API.
+        await page.WaitForFunctionAsync("""
+            () => {
+                const dialog = [...document.querySelectorAll('.mud-dialog')]
+                    .find(element => element.textContent?.includes('Runtime Identifier'));
+                return !dialog || dialog.getClientRects().length === 0 || !!dialog.querySelector('.mud-alert-error');
+            }
+            """, null, new PageWaitForFunctionOptions { Timeout = 180_000 });
+        var uploadError = uploadDialog.Locator(".mud-alert-error");
+        if (await uploadError.CountAsync() > 0)
+            Assert.Fail("The final Windows candidate upload was rejected by the management API.");
+        await uploadDialog.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Hidden });
+
         await page.GetByRole(AriaRole.Tab, new() { Name = "Packages" }).ClickAsync();
         var artifact = page.GetByTestId("artifact-table").GetByRole(AriaRole.Row)
             .Filter(new() { HasText = version }).Filter(new() { HasText = "win-x64" });
