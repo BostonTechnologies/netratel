@@ -154,25 +154,21 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
             await page.EvaluateAsync("() => window.scrollTo(0, 0)");
             if (await page.GetByTestId("mobile-overflow").IsVisibleAsync())
             {
-                await page.GetByTestId("mobile-overflow").ClickAsync();
-                await page.GetByTestId("mobile-theme-option-dark").ClickAsync();
+                await SelectThemeOptionAsync(page, "mobile-overflow", "mobile-theme-option-dark");
             }
             else
             {
-                await page.GetByTestId("theme-preference-menu").ClickAsync();
-                await page.GetByTestId("theme-option-dark").ClickAsync();
+                await SelectThemeOptionAsync(page, "theme-preference-menu", "theme-option-dark");
             }
             await page.Locator("html[data-netratel-theme='dark']").WaitForAsync();
 
             if (await page.GetByTestId("mobile-overflow").IsVisibleAsync())
             {
-                await page.GetByTestId("mobile-overflow").ClickAsync();
-                await page.GetByTestId("mobile-theme-option-system").ClickAsync();
+                await SelectThemeOptionAsync(page, "mobile-overflow", "mobile-theme-option-system");
             }
             else
             {
-                await page.GetByTestId("theme-preference-menu").ClickAsync();
-                await page.GetByTestId("theme-option-system").ClickAsync();
+                await SelectThemeOptionAsync(page, "theme-preference-menu", "theme-option-system");
             }
             await page.EmulateMediaAsync(new PageEmulateMediaOptions { ColorScheme = ColorScheme.Dark });
             await page.Locator("html[data-netratel-theme='dark']").WaitForAsync();
@@ -230,6 +226,15 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
 
         await tab.ClickAsync();
         await page.GetByTestId(panelTestId).WaitForAsync();
+    }
+
+    private static async Task SelectThemeOptionAsync(IPage page, string menuTestId, string optionTestId)
+    {
+        await page.GetByTestId(menuTestId).ClickAsync();
+        var option = page.GetByTestId(optionTestId);
+        await option.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        await option.ScrollIntoViewIfNeededAsync();
+        await option.ClickAsync();
     }
 
     private static void RecordEvidence(string viewportName, int width, int height, int textScalePercent, string directory)

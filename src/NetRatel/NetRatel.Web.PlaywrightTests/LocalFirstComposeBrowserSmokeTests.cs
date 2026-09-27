@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.Playwright;
 
@@ -653,7 +654,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
 
     private sealed record PowerShellResult(int ExitCode, string Output, string Error);
 
-    private sealed record WindowsPresence(int TenantId, string AgentId, bool IsAuthoritative);
+    internal sealed record WindowsPresence(int TenantId, string AgentId, bool IsAuthoritative);
 
     private const int WindowsInstallerDiagnosticLineLimit = 40;
     private const int WindowsInstallerDiagnosticLineCharacterLimit = 1_000;
@@ -752,19 +753,65 @@ public sealed class LocalFirstComposeBrowserSmokeTests
     {
         var json = await page.WaitForFunctionAsync("""
             async () => {
-                const response = await fetch('/api/v2/client-presence/?tenantId=1&online=true');
-                if (!response.ok) return null;
-                const payload = await response.json();
-                const item = payload.items?.find(item => item.online === true && item.isAuthoritative === true && item.authority === 'akka');
-                return item ? { tenantId: item.tenantId, agentId: item.agentId, isAuthoritative: item.isAuthoritative } : null;
+                try {
+                    const response = await fetch('/api/v2/client-presence/?tenantId=1&online=true');
+                    if (!response.ok) return false;
+
+                    const payload = await response.json();
+                    if (payload === null || typeof payload !== 'object' || Array.isArray(payload) ||
+                        payload.mode !== 'akka' || !Array.isArray(payload.items)) return false;
+
+                    const item = payload.items.find(item => item !== null && typeof item === 'object' &&
+                        !Array.isArray(item) && Number.isInteger(item.tenantId) && item.tenantId === 1 &&
+                        typeof item.agentId === 'string' && item.agentId.trim().length > 0 &&
+                        item.online === true && item.isAuthoritative === true && item.authority === 'akka');
+                    return item
+                        ? JSON.stringify({ tenantId: item.tenantId, agentId: item.agentId, isAuthoritative: true })
+                        : false;
+                } catch {
+                    return false;
+                }
             }
             """, null, new PageWaitForFunctionOptions { Timeout = (float)timeout.TotalMilliseconds });
-        var result = await json.JsonValueAsync<System.Text.Json.JsonElement>();
-        var document = System.Text.Json.JsonDocument.Parse(result.GetRawText());
-        return new WindowsPresence(
-            document.RootElement.GetProperty("tenantId").GetInt32(),
-            document.RootElement.GetProperty("agentId").GetString()!,
-            document.RootElement.GetProperty("isAuthoritative").GetBoolean());
+        var result = await json.JsonValueAsync<string?>();
+        if (!TryParseWindowsPresence(result, out var presence) || presence is null)
+            throw new InvalidOperationException("The client-presence endpoint returned an invalid authoritative gateway presence.");
+
+        return presence;
+    }
+
+    internal static bool TryParseWindowsPresence(string? json, out WindowsPresence? presence)
+    {
+        presence = null;
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            var result = document.RootElement;
+            if (result.ValueKind != JsonValueKind.Object ||
+                !result.TryGetProperty("tenantId", out var tenantElement) ||
+                tenantElement.ValueKind != JsonValueKind.Number ||
+                !tenantElement.TryGetInt32(out var tenantId) || tenantId != 1 ||
+                !result.TryGetProperty("agentId", out var agentElement) ||
+                agentElement.ValueKind != JsonValueKind.String ||
+                !Guid.TryParse(agentElement.GetString(), out var agentId) || agentId == Guid.Empty ||
+                !result.TryGetProperty("isAuthoritative", out var authoritativeElement) ||
+                authoritativeElement.ValueKind != JsonValueKind.True)
+            {
+                return false;
+            }
+
+            presence = new WindowsPresence(tenantId, agentElement.GetString()!, true);
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     private static async Task<string> ReadWindowsServiceEnvironmentAsync()
