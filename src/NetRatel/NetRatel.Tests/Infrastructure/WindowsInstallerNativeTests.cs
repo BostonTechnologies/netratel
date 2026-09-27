@@ -17,9 +17,11 @@ namespace NetRatel.Tests.Infrastructure;
 
 public sealed class WindowsInstallerNativeTests
 {
-    [Fact]
+    [Theory]
+    [InlineData(false)] // Flat test archive.
+    [InlineData(true)] // Release archive with its package directory wrapper.
     [Trait("category", "hosted")]
-    public async Task GeneratedPowerShellInstallerDownloadsVerifiesAndEnrollsNativePackage()
+    public async Task GeneratedPowerShellInstallerDownloadsVerifiesAndEnrollsNativePackage(bool includeBaseDirectory)
     {
         if (!OperatingSystem.IsWindows()) return;
 
@@ -40,7 +42,8 @@ public sealed class WindowsInstallerNativeTests
         try
         {
             var archivePath = Path.Combine(root, "client.zip");
-            ZipFile.CreateFromDirectory(packageDirectory, archivePath, CompressionLevel.Optimal, includeBaseDirectory: false);
+            ZipFile.CreateFromDirectory(
+                packageDirectory, archivePath, CompressionLevel.Optimal, includeBaseDirectory: includeBaseDirectory);
             var archiveBytes = await File.ReadAllBytesAsync(archivePath, timeout.Token);
             var sha256 = Convert.ToHexString(SHA256.HashData(archiveBytes)).ToLowerInvariant();
             listener.Start();

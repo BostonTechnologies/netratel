@@ -92,6 +92,12 @@ public sealed class ScriptTemplateServiceTests
         script.Should().Contain("powershell.exe -NoProfile -ExecutionPolicy Bypass -File");
         script.Should().Contain("$actualSha = Get-NetRatelSha256Hex -Path $zipPath");
         script.Should().Contain("Expand-NetRatelZip -ZipPath $zipPath -DestinationPath $targetDir");
+        script.Should().Contain("$wrapperName = \"netratel-client-$Runtime\"");
+        script.Should().Contain("$rootEntries.Count -eq 1");
+        script.Should().Contain("$rootEntries[0].Name -ceq $wrapperName");
+        script.Should().Contain("Wrapped Client package is missing its manifest or executable.");
+        script.Should().Contain("Move-Item -LiteralPath $entry.FullName -Destination $targetDir -ErrorAction Stop");
+        script.Should().Contain("Wrapped Client package contains conflicting root entries.");
         script.Should().NotContain("(Get-FileHash -Path $zipPath -Algorithm SHA256).Hash");
         script.Should().NotContain("Expand-Archive -Path $zipPath -DestinationPath $targetDir -Force");
         script.Should().NotContain("& $exe --enroll");
@@ -114,6 +120,20 @@ public sealed class ScriptTemplateServiceTests
 
         script.Should().NotContain("New-Service");
         script.Should().Contain("--enroll $EnrollmentCode --api $ApiBase");
+    }
+
+    [Fact]
+    public void Build_PowerShell_RejectsUnexpectedPackageLayouts_AndKeepsTheVersionRootExecutablePath()
+    {
+        var script = new ScriptTemplateService().Build(new DeploymentScriptTemplateRequest(
+            4098, "win-x64", "ENR-ABC123", "https://netratel.example.invalid",
+            DateTimeOffset.UtcNow.AddHours(1), false, true, "1.2.3", new string('a', 64)));
+
+        script.Should().Contain("$hasFlatPackage = (Test-Path -LiteralPath $manifestPath -PathType Leaf)");
+        script.Should().Contain("Client package has an unexpected mixed archive layout.");
+        script.Should().Contain("Client package has an unexpected archive layout.");
+        script.Should().Contain("$exe = Join-Path $targetDir \"NetRatel.Client.exe\"");
+        script.Should().Contain("$actualSha -ne $ExpectedSha256.ToLowerInvariant()");
     }
 
     [Fact]

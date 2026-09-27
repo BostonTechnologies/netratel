@@ -242,11 +242,46 @@ try {
 
     Write-Host "Extracting NetRatel Client package..."
     Expand-NetRatelZip -ZipPath $zipPath -DestinationPath $targetDir
-    $exe = @(
-        Join-Path $targetDir "NetRatel.Client.exe"
-        Join-Path $targetDir "NetRatel.Client.exe"
-    ) | Where-Object { Test-Path $_ } | Select-Object -First 1
-    if (-not $exe) {
+    $manifestPath = Join-Path $targetDir "netratel-client-manifest.json"
+    $exe = Join-Path $targetDir "NetRatel.Client.exe"
+    $wrapperName = "netratel-client-$Runtime"
+    $wrapperPath = Join-Path $targetDir $wrapperName
+    $rootEntries = @(Get-ChildItem -LiteralPath $targetDir -Force)
+    $hasFlatPackage = (Test-Path -LiteralPath $manifestPath -PathType Leaf) -and
+        (Test-Path -LiteralPath $exe -PathType Leaf)
+
+    if ($hasFlatPackage) {
+        if (Test-Path -LiteralPath $wrapperPath) {
+            throw "Client package has an unexpected mixed archive layout."
+        }
+    }
+    elseif ($rootEntries.Count -eq 1 -and
+        $rootEntries[0].PSIsContainer -and
+        $rootEntries[0].Name -ceq $wrapperName -and
+        (($rootEntries[0].Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0)) {
+        $wrappedManifestPath = Join-Path $wrapperPath "netratel-client-manifest.json"
+        $wrappedExe = Join-Path $wrapperPath "NetRatel.Client.exe"
+        if (-not (Test-Path -LiteralPath $wrappedManifestPath -PathType Leaf) -or
+            -not (Test-Path -LiteralPath $wrappedExe -PathType Leaf)) {
+            throw "Wrapped Client package is missing its manifest or executable."
+        }
+
+        $wrappedEntries = @(Get-ChildItem -LiteralPath $wrapperPath -Force)
+        foreach ($entry in $wrappedEntries) {
+            $destinationPath = Join-Path $targetDir $entry.Name
+            if (Test-Path -LiteralPath $destinationPath) {
+                throw "Wrapped Client package contains conflicting root entries."
+            }
+            Move-Item -LiteralPath $entry.FullName -Destination $targetDir -ErrorAction Stop
+        }
+        Remove-Item -LiteralPath $wrapperPath -Force -ErrorAction Stop
+    }
+    else {
+        throw "Client package has an unexpected archive layout."
+    }
+
+    $exe = Join-Path $targetDir "NetRatel.Client.exe"
+    if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
         throw "Client executable was not found in extracted package."
     }
 

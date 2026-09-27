@@ -37,13 +37,17 @@ using NetRatel.Web.Components;
 namespace NetRatel.Web.PlaywrightTests;
 
 [Collection(PlaywrightCollection.Name)]
-public sealed class ClientsManagementResponsiveTests : IAsyncLifetime
+public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsManagementBrowserFixture>, IAsyncLifetime
 {
     private static readonly object EvidenceLock = new();
     private static readonly ConcurrentDictionary<string, object> EvidenceCases = new(StringComparer.Ordinal);
-    private IPlaywright? _playwright;
-    private IBrowser? _browser;
+    private readonly ClientsManagementBrowserFixture _browserFixture;
     private ClientsManagementFixtureHost? _fixture;
+
+    public ClientsManagementResponsiveTests(ClientsManagementBrowserFixture browserFixture)
+    {
+        _browserFixture = browserFixture;
+    }
 
     [Theory]
     [InlineData(1600, 900, "wide", 100)]
@@ -55,21 +59,22 @@ public sealed class ClientsManagementResponsiveTests : IAsyncLifetime
     [InlineData(390, 844, "phone-text-200", 200)]
     public async Task AuthenticatedApplicationShell_RendersAndOperatesManagementView(int width, int height, string viewportName, int textScalePercent)
     {
-        var browser = _browser ?? throw new InvalidOperationException("Playwright browser was not initialized.");
+        var browser = _browserFixture.Browser;
         var fixture = _fixture ?? throw new InvalidOperationException("Client management fixture was not initialized.");
-        await using var context = await browser.NewContextAsync(new BrowserNewContextOptions
+        var context = await browser.NewContextAsync(new BrowserNewContextOptions
         {
             ViewportSize = new ViewportSize { Width = width, Height = height },
             ColorScheme = ColorScheme.Light
         });
-        var page = await context.NewPageAsync();
-        // The fixture starts a real Interactive Server circuit. Under the full
-        // hosted test matrix the first circuit can take longer than the normal
-        // interaction budget to attach, especially at the tablet case; keep
-        // the visual assertions strict once the shell is available.
-        page.SetDefaultTimeout(30_000);
         try
         {
+            var page = await context.NewPageAsync();
+            // The fixture starts a real Interactive Server circuit. Under the full
+            // hosted test matrix the first circuit can take longer than the normal
+            // interaction budget to attach, especially at the tablet case; keep
+            // the visual assertions strict once the shell is available.
+            page.SetDefaultTimeout(30_000);
+
             var response = await page.GotoAsync($"{fixture.BaseAddress}/clients/mgmt", new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 30_000 });
             Assert.NotNull(response);
             Assert.True(response.Ok, $"Client-management fixture returned HTTP {response.Status}.");
@@ -186,21 +191,17 @@ public sealed class ClientsManagementResponsiveTests : IAsyncLifetime
         }
         finally
         {
-            await page.CloseAsync();
+            await context.CloseAsync();
         }
     }
 
     public async ValueTask InitializeAsync()
     {
         _fixture = await ClientsManagementFixtureHost.StartAsync();
-        _playwright = await Playwright.CreateAsync();
-        _browser = await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions { Headless = true });
     }
 
     public async ValueTask DisposeAsync()
     {
-        if (_browser is not null) await _browser.DisposeAsync();
-        _playwright?.Dispose();
         if (_fixture is not null) await _fixture.DisposeAsync();
     }
 
@@ -267,6 +268,36 @@ public sealed class ClientsManagementResponsiveTests : IAsyncLifetime
                     screenshots,
                     cases = EvidenceCases.OrderBy(item => item.Key, StringComparer.Ordinal).Select(item => item.Value).ToArray()
                 }, new JsonSerializerOptions { WriteIndented = true }));
+        }
+    }
+}
+
+public sealed class ClientsManagementBrowserFixture : IAsyncLifetime
+{
+    private IPlaywright? _playwright;
+    private IBrowser? _browser;
+
+    public IBrowser Browser => _browser
+        ?? throw new InvalidOperationException("Playwright browser was not initialized.");
+
+    public async ValueTask InitializeAsync()
+    {
+        _playwright = await Playwright.CreateAsync();
+        _browser = await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions { Headless = true });
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        try
+        {
+            if (_browser is not null)
+            {
+                await _browser.DisposeAsync();
+            }
+        }
+        finally
+        {
+            _playwright?.Dispose();
         }
     }
 }
