@@ -2,6 +2,7 @@ using FluentAssertions;
 using System.Diagnostics;
 using System.IO.Compression;
 using System.Text.Json;
+using System.Xml.Linq;
 using NetRatel.Application.Artifacts;
 using NetRatel.Infrastructure.Artifacts;
 using Xunit;
@@ -298,21 +299,27 @@ EnvironmentFile=-/etc/netratel-client.env
             CreateUnixArtifact(archivePath, "0.4.131-rc.1", "osx-arm64");
             var sha = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
                 await File.ReadAllBytesAsync(archivePath))).ToLowerInvariant();
-            await File.WriteAllTextAsync(plistPath, """
-                <?xml version="1.0" encoding="UTF-8"?>
-                <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-                <plist version="1.0"><dict>
-                  <key>Label</key><string>co.za.netratel.client</string>
-                  <key>EnvironmentVariables</key><dict>
-                    <key>NetRatelCLIENT__Client__ApiBaseUrl</key><string>https://old-api.example.invalid</string>
-                    <key>NetRatelCLIENT__Gateway__Endpoint</key><string>https://split-gateway.example.invalid</string>
-                    <key>NetRatelCLIENT__Gateway__FileGatewayEnabled</key><string>false</string>
-                    <key>NetRatelCLIENT__Gateway__ControlGatewayEnabled</key><string>true</string>
-                    <key>NetRatelCLIENT__Transport__Mode</key><string>AkkaPresence</string>
-                    <key>Custom__ServiceValue</key><string>kept &amp; safe</string>
-                  </dict>
-                </dict></plist>
-                """);
+            new XDocument(
+                new XElement("plist",
+                    new XAttribute("version", "1.0"),
+                    new XElement("dict",
+                        new XElement("key", "Label"),
+                        new XElement("string", "co.za.netratel.client"),
+                        new XElement("key", "EnvironmentVariables"),
+                        new XElement("dict",
+                            new XElement("key", "NetRatelCLIENT__Client__ApiBaseUrl"),
+                            new XElement("string", "https://old-api.example.invalid"),
+                            new XElement("key", "NetRatelCLIENT__Gateway__Endpoint"),
+                            new XElement("string", "https://split-gateway.example.invalid"),
+                            new XElement("key", "NetRatelCLIENT__Gateway__FileGatewayEnabled"),
+                            new XElement("string", "false"),
+                            new XElement("key", "NetRatelCLIENT__Gateway__ControlGatewayEnabled"),
+                            new XElement("string", "true"),
+                            new XElement("key", "NetRatelCLIENT__Transport__Mode"),
+                            new XElement("string", "AkkaPresence"),
+                            new XElement("key", "Custom__ServiceValue"),
+                            new XElement("string", "kept & safe")))))
+                .Save(plistPath);
 
             var script = new ScriptTemplateService().Build(new DeploymentScriptTemplateRequest(
                 4098, "osx-arm64", "ENR-ABC123", "https://example.test",
@@ -340,14 +347,16 @@ EnvironmentFile=-/etc/netratel-client.env
             await process.WaitForExitAsync();
             process.ExitCode.Should().Be(0, await process.StandardError.ReadToEndAsync());
 
-            var rewrittenPlist = await File.ReadAllTextAsync(plistPath);
-            rewrittenPlist.Should().Contain("<key>NetRatelCLIENT__Gateway__Endpoint</key><string>https://split-gateway.example.invalid</string>");
-            rewrittenPlist.Should().Contain("<key>NetRatelCLIENT__Gateway__FileGatewayEnabled</key><string>false</string>");
-            rewrittenPlist.Should().Contain("<key>Custom__ServiceValue</key><string>kept &amp; safe</string>");
-            rewrittenPlist.Should().Contain("<key>NetRatelCLIENT__Client__ApiBaseUrl</key><string>https://example.test</string>");
-            rewrittenPlist.Should().NotContain("https://old-api.example.invalid");
-            rewrittenPlist.Should().NotContain("<key>NetRatelCLIENT__Gateway__ControlGatewayEnabled</key>");
-            rewrittenPlist.Should().NotContain("<key>NetRatelCLIENT__Transport__Mode</key>");
+            var rewrittenPlist = XDocument.Load(plistPath);
+            var topLevel = ReadPlistDictionary(rewrittenPlist.Root!.Element("dict")!);
+            var rewrittenEnvironment = ReadPlistDictionary(topLevel["EnvironmentVariables"]);
+            rewrittenEnvironment["NetRatelCLIENT__Gateway__Endpoint"].Value
+                .Should().Be("https://split-gateway.example.invalid");
+            rewrittenEnvironment["NetRatelCLIENT__Gateway__FileGatewayEnabled"].Value.Should().Be("false");
+            rewrittenEnvironment["Custom__ServiceValue"].Value.Should().Be("kept & safe");
+            rewrittenEnvironment["NetRatelCLIENT__Client__ApiBaseUrl"].Value.Should().Be("https://example.test");
+            rewrittenEnvironment.Should().NotContainKey("NetRatelCLIENT__Gateway__ControlGatewayEnabled");
+            rewrittenEnvironment.Should().NotContainKey("NetRatelCLIENT__Transport__Mode");
         }
         finally { Directory.Delete(root, recursive: true); }
     }
@@ -371,7 +380,23 @@ EnvironmentFile=-/etc/netratel-client.env
         script.Should().NotContain("NetRatelCLIENT__Gateway__LogGatewayEnabled=true");
         script.Should().NotContain("NetRatelCLIENT__Gateway__RemoteSupportGatewayEnabled=true");
         script.Should().NotContain("NetRatelCLIENT__Gateway__TerminalGatewayEnabled=true");
-        script.Should().NotContain("<key>NetRatelCLIENT__Gateway__Endpoint</key>");
+        script.Should().NotContain(PlistKeyElement("NetRatelCLIENT__Gateway__Endpoint"));
+    }
+
+    private static string PlistKeyElement(string name)
+        => string.Concat("<", "key>", name, "</", "key>");
+
+    private static Dictionary<string, XElement> ReadPlistDictionary(XElement element)
+    {
+        var entries = element.Elements().ToArray();
+        var result = new Dictionary<string, XElement>(StringComparer.Ordinal);
+        for (var index = 0; index < entries.Length; index += 2)
+        {
+            entries[index].Name.LocalName.Should().Be("key");
+            result.Add(entries[index].Value, entries[index + 1]);
+        }
+
+        return result;
     }
 
     private static void AssertBashSyntax(string script)
