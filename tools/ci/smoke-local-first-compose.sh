@@ -426,13 +426,29 @@ else
   exit 1
 fi
 unset shown_setup_proof
-forged_origin_status="$(run_logged_capture "curl forged-origin setup-claim probe" curl "${curl_tls[@]}" --silent --output /dev/null --write-out '%{http_code}' \
+http_status_probe() {
+  local response status
+  if response="$(curl "$@" --silent --show-error --write-out $'\n%{http_code}')"; then
+    status="${response##*$'\n'}"
+    unset response
+    [[ "$status" =~ ^[0-9]{3}$ ]] || {
+      echo "HTTP status probe did not return a three-digit status." >&2
+      return 1
+    }
+    printf '%s' "$status"
+  else
+    status=$?
+    unset response
+    return "$status"
+  fi
+}
+forged_origin_status="$(run_logged_capture "curl forged-origin setup-claim probe" http_status_probe "${curl_tls[@]}" \
   --header 'Origin: https://forged.invalid' --header 'Content-Type: application/json' \
   --data '{"proof":"invalid"}' "$web_url/api/v2/setup/claim")"
 [[ "$forged_origin_status" == 403 ]] || { echo "A forged setup origin was not rejected (HTTP $forged_origin_status)." >&2; exit 1; }
 echo "Passed smoke assertion: forged setup origin received HTTP 403." >&2
 if [[ "$web_url" == https://* ]]; then
-  forged_host_status="$(run_logged_capture "curl forged-host public-route probe" curl "${curl_tls[@]}" --silent --output /dev/null --write-out '%{http_code}' \
+  forged_host_status="$(run_logged_capture "curl forged-host public-route probe" http_status_probe "${curl_tls[@]}" \
     --header 'Host: forged.invalid' "$web_url/setup")"
   [[ "$forged_host_status" == 400 ]] || { echo "A forged public Host was not rejected (HTTP $forged_host_status)." >&2; exit 1; }
   echo "Passed smoke assertion: forged public Host received HTTP 400." >&2
