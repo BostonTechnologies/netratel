@@ -293,8 +293,27 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
-          if (-not [string]::IsNullOrWhiteSpace($env:NETRATEL_LOCAL_FIRST_WSL_DISTRIBUTION)) {
-            wsl.exe --unregister $env:NETRATEL_LOCAL_FIRST_WSL_DISTRIBUTION
+          $keepalivePid = 0
+          $keepaliveStartTimeUtcTicks = 0L
+          if ([int]::TryParse($env:NETRATEL_LOCAL_FIRST_WSL_KEEPALIVE_PID, [ref]$keepalivePid) -and
+              [long]::TryParse($env:NETRATEL_LOCAL_FIRST_WSL_KEEPALIVE_START_TIME_UTC_TICKS, [ref]$keepaliveStartTimeUtcTicks)) {
+            try {
+              $keepaliveProcess = Get-Process -Id $keepalivePid -ErrorAction Stop
+              $expectedWslPath = [IO.Path]::GetFullPath((Join-Path $env:SystemRoot 'System32\wsl.exe'))
+              if ($keepaliveProcess.Path -and
+                  [IO.Path]::GetFullPath($keepaliveProcess.Path) -ieq $expectedWslPath -and
+                  $keepaliveProcess.StartTime.ToUniversalTime().Ticks -eq $keepaliveStartTimeUtcTicks) {
+                Stop-Process -InputObject $keepaliveProcess -Force -ErrorAction SilentlyContinue
+                try { $keepaliveProcess.WaitForExit(5000) } catch {}
+              }
+            }
+            catch {}
+          }
+          $distribution = $env:NETRATEL_LOCAL_FIRST_WSL_DISTRIBUTION
+          if ($distribution -cmatch '^NetRatelDocker-[0-9]+$') {
+            $wslPath = Join-Path $env:SystemRoot 'System32\wsl.exe'
+            try { & $wslPath --terminate $distribution } catch {}
+            try { & $wslPath --unregister $distribution } catch {}
           }
           if (-not [string]::IsNullOrWhiteSpace($env:NETRATEL_LOCAL_FIRST_WSL_INSTALL_DIRECTORY) -and
               (Test-Path -LiteralPath $env:NETRATEL_LOCAL_FIRST_WSL_INSTALL_DIRECTORY)) {

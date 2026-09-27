@@ -10,6 +10,11 @@ if ($workspace -notmatch '^(?<drive>[A-Za-z]):[\\/](?<rest>.*)$') {
 $rootfsPath = Join-Path $env:RUNNER_TEMP 'ubuntu-noble-wsl.rootfs.tar.gz'
 $distributionDirectory = Join-Path $workspace '.ci-wsl-docker-root'
 
+@(
+    "NETRATEL_LOCAL_FIRST_WSL_DISTRIBUTION=$distribution"
+    "NETRATEL_LOCAL_FIRST_WSL_INSTALL_DIRECTORY=$distributionDirectory"
+) | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
 New-Item -ItemType Directory -Path $distributionDirectory -Force | Out-Null
 Invoke-WebRequest -Uri $rootfsUrl -OutFile $rootfsPath
 $actualRootfsSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $rootfsPath).Hash.ToLowerInvariant()
@@ -52,6 +57,65 @@ if ($LASTEXITCODE -ne 0) {
     throw "Linux Docker engine setup failed with exit code $LASTEXITCODE."
 }
 
+$wslPath = Join-Path $env:SystemRoot 'System32\wsl.exe'
+$previousWslEnvironment = $env:WSLENV
+try {
+    # The keepalive needs no host environment values; in particular, do not
+    # import the test credentials listed in WSLENV into its Linux process.
+    $env:WSLENV = ''
+    $keepaliveProcess = Start-Process -FilePath $wslPath `
+        -ArgumentList @('--distribution', $distribution, '--user', 'root', '--', 'sleep', 'infinity') `
+        -WindowStyle Hidden -PassThru
+}
+finally {
+    if ($null -eq $previousWslEnvironment) {
+        Remove-Item Env:WSLENV -ErrorAction SilentlyContinue
+    }
+    else {
+        $env:WSLENV = $previousWslEnvironment
+    }
+}
+
+$keepaliveProcess.Refresh()
+if ($keepaliveProcess.HasExited) {
+    throw "WSL keepalive exited immediately with code $($keepaliveProcess.ExitCode)."
+}
+$keepaliveStartTimeUtcTicks = $keepaliveProcess.StartTime.ToUniversalTime().Ticks
+$keepaliveState = @(
+    "NETRATEL_LOCAL_FIRST_WSL_KEEPALIVE_PID=$($keepaliveProcess.Id)"
+    "NETRATEL_LOCAL_FIRST_WSL_KEEPALIVE_START_TIME_UTC_TICKS=$($keepaliveStartTimeUtcTicks.ToString([Globalization.CultureInfo]::InvariantCulture))"
+)
+$keepaliveState | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+$keepaliveValidated = $false
+$keepaliveValidationDeadline = [DateTime]::UtcNow.AddSeconds(10)
+do {
+    $keepaliveProcess.Refresh()
+    if ($keepaliveProcess.HasExited) {
+        throw "WSL keepalive exited before distribution $distribution was confirmed running (code $($keepaliveProcess.ExitCode))."
+    }
+
+    $runningDistributions = & $wslPath --list --running --quiet 2>$null
+    $runningDistributionsExitCode = $LASTEXITCODE
+    $runningDistributionNames = @($runningDistributions | ForEach-Object {
+        $_.ToString().TrimStart([char]0xFEFF).Trim()
+    })
+    $keepaliveProcess.Refresh()
+    if ($keepaliveProcess.HasExited) {
+        throw "WSL keepalive exited before distribution $distribution was confirmed running (code $($keepaliveProcess.ExitCode))."
+    }
+    if ($runningDistributionsExitCode -eq 0 -and $runningDistributionNames -contains $distribution) {
+        $keepaliveValidated = $true
+        break
+    }
+
+    Start-Sleep -Milliseconds 250
+} while ([DateTime]::UtcNow -lt $keepaliveValidationDeadline)
+
+if (-not $keepaliveValidated) {
+    throw "WSL keepalive process $($keepaliveProcess.Id) did not keep distribution $distribution running."
+}
+
 $workspaceDrive = $Matches.drive
 $workspaceRest = $Matches.rest
 $workspaceLinux = "/mnt/$($workspaceDrive.ToLowerInvariant())/$($workspaceRest -replace '\\', '/')"
@@ -73,8 +137,6 @@ $wslEnvironment = @(
 ) -join ':'
 
 @(
-    "NETRATEL_LOCAL_FIRST_WSL_DISTRIBUTION=$distribution"
-    "NETRATEL_LOCAL_FIRST_WSL_INSTALL_DIRECTORY=$distributionDirectory"
     "NETRATEL_LOCAL_FIRST_WSL_WORKSPACE=$workspaceLinux"
     "NETRATEL_LOCAL_FIRST_DOCKER_COMMAND=$dockerShim"
     "NETRATEL_LOCAL_FIRST_WSL_COMMAND=$wslCommandShim"
@@ -83,6 +145,8 @@ $wslEnvironment = @(
 
 $env:NETRATEL_LOCAL_FIRST_WSL_DISTRIBUTION = $distribution
 $env:NETRATEL_LOCAL_FIRST_WSL_INSTALL_DIRECTORY = $distributionDirectory
+$env:NETRATEL_LOCAL_FIRST_WSL_KEEPALIVE_PID = [string]$keepaliveProcess.Id
+$env:NETRATEL_LOCAL_FIRST_WSL_KEEPALIVE_START_TIME_UTC_TICKS = $keepaliveStartTimeUtcTicks.ToString([Globalization.CultureInfo]::InvariantCulture)
 $env:NETRATEL_LOCAL_FIRST_WSL_WORKSPACE = $workspaceLinux
 $env:NETRATEL_LOCAL_FIRST_DOCKER_COMMAND = $dockerShim
 $env:NETRATEL_LOCAL_FIRST_WSL_COMMAND = $wslCommandShim
