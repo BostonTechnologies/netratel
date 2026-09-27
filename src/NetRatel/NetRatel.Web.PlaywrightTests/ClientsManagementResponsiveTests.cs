@@ -74,6 +74,8 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
             // interaction budget to attach, especially at the tablet case; keep
             // the visual assertions strict once the shell is available.
             page.SetDefaultTimeout(30_000);
+            var evidenceDirectory = Path.GetFullPath(Path.Combine("TestResults", "playwright"));
+            Directory.CreateDirectory(evidenceDirectory);
 
             var response = await page.GotoAsync($"{fixture.BaseAddress}/clients/mgmt", new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 30_000 });
             Assert.NotNull(response);
@@ -100,10 +102,20 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
             }
 
             Assert.False(await page.EvaluateAsync<bool>("() => document.documentElement.scrollWidth > window.innerWidth"), $"{viewportName} management view has horizontal overflow.");
+            await AssertReleaseRowContentReachableAsync(page, viewportName);
             Assert.Equal(0, await page.Locator("[data-testid='release-automation-settings'] button").CountAsync());
 
             await page.GetByTestId("automation-settings-button").ClickAsync();
             await page.GetByTestId("automation-drawer").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+            await page.WaitForFunctionAsync("""
+                () => {
+                    const drawer = document.querySelector("[data-testid='automation-drawer']");
+                    if (!drawer) return false;
+                    const bounds = drawer.getBoundingClientRect();
+                    return bounds.width > 0 && bounds.left < window.innerWidth - 1 && bounds.right <= window.innerWidth + 1;
+                }
+                """);
+            await CaptureAutomationStateAsync(page, evidenceDirectory, viewportName, "open", width, height);
             await page.GetByTestId("close-automation-settings").FocusAsync();
             await page.Keyboard.PressAsync("Tab");
             Assert.True(
@@ -111,6 +123,7 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
                 "Keyboard focus must remain inside the open automation drawer.");
             await page.GetByTestId("automation-deploy-prerelease").CheckAsync();
             await page.GetByTestId("automation-validation").WaitForAsync();
+            await CaptureAutomationStateAsync(page, evidenceDirectory, viewportName, "dirty", width, height);
 
             await page.Keyboard.PressAsync("Escape");
             await page.GetByTestId("automation-unsaved").WaitForAsync();
@@ -136,6 +149,7 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
             await page.GetByTestId("automation-saving").WaitForAsync();
             Assert.True(await page.GetByTestId("save-automation-policy").IsDisabledAsync());
             Assert.True(await page.GetByTestId("automation-download-stable").IsDisabledAsync());
+            await CaptureAutomationStateAsync(page, evidenceDirectory, viewportName, "saving", width, height);
             fixture.Data.CompletePendingSave();
             await page.GetByTestId("automation-saving").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Hidden });
             await page.GetByTestId("automation-unsaved").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Hidden });
@@ -146,6 +160,9 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
             await page.GetByTestId("save-automation-policy").ClickAsync();
             await page.GetByTestId("automation-drawer-error").WaitForAsync();
             Assert.Contains("Could not save the policy", await page.GetByTestId("automation-drawer-error").TextContentAsync());
+            await page.GetByTestId("automation-drawer-error").EvaluateAsync(
+                "element => element.scrollIntoView({ block: 'center', inline: 'nearest' })");
+            await CaptureAutomationStateAsync(page, evidenceDirectory, viewportName, "error", width, height);
             await page.GetByTestId("automation-unsaved").WaitForAsync();
             await page.GetByTestId("cancel-automation-policy").ClickAsync();
             await page.GetByTestId("close-automation-settings").ClickAsync();
@@ -175,8 +192,6 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
             await page.EmulateMediaAsync(new PageEmulateMediaOptions { ColorScheme = ColorScheme.Light });
             await page.Locator("html[data-netratel-theme='light']").WaitForAsync();
 
-            var evidenceDirectory = Path.GetFullPath(Path.Combine("TestResults", "playwright"));
-            Directory.CreateDirectory(evidenceDirectory);
             await page.ScreenshotAsync(new PageScreenshotOptions
             {
                 Path = Path.Combine(evidenceDirectory, $"clients-management-{viewportName}-{width}x{height}.png"),
@@ -228,6 +243,102 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
         await page.GetByTestId(panelTestId).WaitForAsync();
     }
 
+    private static async Task AssertReleaseRowContentReachableAsync(IPage page, string viewportName)
+    {
+        var releaseNames = page.GetByTestId("github-release-name");
+        Assert.Equal(4, await releaseNames.CountAsync());
+        for (var index = 0; index < await releaseNames.CountAsync(); index++)
+        {
+            await AssertHorizontallyReachableAsync(
+                releaseNames.Nth(index),
+                $"release row {index + 1} name",
+                viewportName);
+        }
+
+        var actionCells = page.GetByTestId("github-release-actions");
+        Assert.Equal(4, await actionCells.CountAsync());
+        for (var rowIndex = 0; rowIndex < await actionCells.CountAsync(); rowIndex++)
+        {
+            var buttons = actionCells.Nth(rowIndex).Locator("button");
+            for (var buttonIndex = 0; buttonIndex < await buttons.CountAsync(); buttonIndex++)
+            {
+                await AssertHorizontallyReachableAsync(
+                    buttons.Nth(buttonIndex),
+                    $"release row {rowIndex + 1} action {buttonIndex + 1}",
+                    viewportName);
+            }
+        }
+
+        var importPack = page.GetByTestId("github-import-pack").First;
+        Assert.True(await importPack.IsEnabledAsync(), "The fixture's verification-required Import pack action must remain enabled.");
+        await importPack.FocusAsync();
+        Assert.True(
+            await importPack.EvaluateAsync<bool>("element => document.activeElement === element"),
+            $"The Import pack action must remain keyboard reachable at {viewportName}.");
+        await AssertHorizontallyReachableAsync(importPack, "Import pack action", viewportName);
+    }
+
+    private static async Task AssertHorizontallyReachableAsync(ILocator element, string description, string viewportName)
+    {
+        await element.ScrollIntoViewIfNeededAsync();
+        var issue = await element.EvaluateAsync<string?>("""
+            element => {
+                const failures = [];
+                const rect = element.getBoundingClientRect();
+                if (rect.width <= 0 || rect.height <= 0) {
+                    failures.push("has no visible box");
+                }
+                if (rect.left < -1 || rect.right > window.innerWidth + 1) {
+                    failures.push(`extends beyond the viewport (${rect.left.toFixed(1)}..${rect.right.toFixed(1)} of ${window.innerWidth}px)`);
+                }
+
+                for (let ancestor = element.parentElement; ancestor; ancestor = ancestor.parentElement) {
+                    const overflowX = getComputedStyle(ancestor).overflowX;
+                    if (!["hidden", "clip", "auto", "scroll"].includes(overflowX)) {
+                        continue;
+                    }
+
+                    const ancestorRect = ancestor.getBoundingClientRect();
+                    const visibleLeft = ancestorRect.left + ancestor.clientLeft;
+                    const visibleRight = visibleLeft + ancestor.clientWidth;
+                    if (rect.left < visibleLeft - 1 || rect.right > visibleRight + 1) {
+                        failures.push(`is outside its ${overflowX} scroll region (${rect.left.toFixed(1)}..${rect.right.toFixed(1)} vs ${visibleLeft.toFixed(1)}..${visibleRight.toFixed(1)})`);
+                    }
+                }
+
+                const ownOverflowX = getComputedStyle(element).overflowX;
+                if (!["auto", "scroll"].includes(ownOverflowX) && element.scrollWidth > element.clientWidth + 1) {
+                    failures.push(`has horizontally overflowing content (${element.scrollWidth}px in ${element.clientWidth}px)`);
+                }
+                return failures.length === 0 ? null : failures.join("; ");
+            }
+            """);
+
+        Assert.True(
+            issue is null,
+            $"{description} is clipped or not reachable at {viewportName}: {issue}");
+    }
+
+    private static async Task CaptureAutomationStateAsync(
+        IPage page,
+        string evidenceDirectory,
+        string viewportName,
+        string state,
+        int width,
+        int height)
+    {
+        if (!string.Equals(viewportName, "desktop", StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        await page.ScreenshotAsync(new PageScreenshotOptions
+        {
+            Path = Path.Combine(evidenceDirectory, $"clients-management-automation-{state}-{viewportName}-{width}x{height}.png"),
+            FullPage = false
+        });
+    }
+
     private static async Task SelectThemeOptionAsync(IPage page, string menuTestId, string optionTestId)
     {
         await page.GetByTestId(menuTestId).ClickAsync();
@@ -271,6 +382,9 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
                         "responsive overflow and 200% effective text scale"
                     },
                     screenshots,
+                    automationStateScreenshots = screenshots
+                        .Where(name => name.Contains("-automation-", StringComparison.Ordinal))
+                        .ToArray(),
                     cases = EvidenceCases.OrderBy(item => item.Key, StringComparer.Ordinal).Select(item => item.Value).ToArray()
                 }, new JsonSerializerOptions { WriteIndented = true }));
         }
