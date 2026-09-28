@@ -631,7 +631,10 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
         await page.GetByTestId(menuTestId).ClickAsync();
         var option = page.GetByTestId(optionTestId);
         await option.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
-        await option.ScrollIntoViewIfNeededAsync();
+        // Wait for the menu item itself to intersect after scrolling its list.
+        await option.EvaluateAsync("element => element.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' })");
+        await Assertions.Expect(option)
+            .ToBeInViewportAsync(new LocatorAssertionsToBeInViewportOptions { Ratio = 1, Timeout = 30_000 });
         await option.ClickAsync();
     }
 
