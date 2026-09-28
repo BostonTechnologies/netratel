@@ -505,6 +505,8 @@
             }
 
             _pendingTabReload = null;
+            // OnAfterRenderAsync does not render again when its awaited reload finishes.
+            await InvokeAsync(StateHasChanged);
         }
     }
 

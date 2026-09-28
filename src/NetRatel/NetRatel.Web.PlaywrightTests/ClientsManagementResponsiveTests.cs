@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Security.Claims;
 using System.Text.Encodings.Web;
@@ -39,6 +41,13 @@ namespace NetRatel.Web.PlaywrightTests;
 [Collection(PlaywrightCollection.Name)]
 public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsManagementBrowserFixture>, IAsyncLifetime
 {
+    private static readonly (string Name, bool ImportPackEnabled)[] ExpectedGitHubReleases =
+    [
+        ("Fixture GitHub client release", true),
+        ("Security maintenance release with a deliberately long provenance label", false),
+        ("Preview channel candidate for staged tenant rollout", true),
+        ("Older release retained for rollback and provenance review", false)
+    ];
     private static readonly object EvidenceLock = new();
     private static readonly ConcurrentDictionary<string, object> EvidenceCases = new(StringComparer.Ordinal);
     private readonly ClientsManagementBrowserFixture _browserFixture;
@@ -88,13 +97,26 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
             Assert.Equal(5, await page.GetByRole(AriaRole.Tab).CountAsync());
             await page.GetByTestId("github-release-catalogue").WaitForAsync();
             await page.GetByTestId("release-automation-settings").WaitForAsync();
-            await page.GetByText("Fixture GitHub client release", new() { Exact = false }).WaitForAsync();
+            var initialImportPack = page.GetByTestId("github-release-name")
+                .GetByText(ExpectedGitHubReleases[0].Name, new() { Exact = true })
+                .Locator("xpath=ancestor::tr[1]")
+                .GetByTestId("github-import-pack");
+            await Assertions.Expect(initialImportPack, "The interactive Client catalogue should enable its verification-required Import pack action.")
+                .ToBeEnabledAsync(new LocatorAssertionsToBeEnabledOptions { Timeout = 30_000 });
+            var initialRequest = fixture.Data.GitHubReleaseRequestCount;
+            Assert.True(initialRequest > 0, "The interactive Client catalogue must have requested its release fixture.");
+            await Assertions.Expect(page.GetByText(FixtureClientArtifactsService.GetGitHubCheckedText(initialRequest), new() { Exact = true }))
+                .ToBeVisibleAsync(new LocatorAssertionsToBeVisibleOptions { Timeout = 30_000 });
 
             await VisitTabAsync(page, "Packages", "artifact-management-panel");
             await VisitTabAsync(page, "Auto-updates", "release-management-panel");
             await VisitTabAsync(page, "Activity", "attempt-management-panel");
             await VisitTabAsync(page, "Suspended", "suspended-management-panel");
+            var previousGitHubRequest = fixture.Data.GitHubReleaseRequestCount;
             await VisitTabAsync(page, "GitHub releases", "github-release-catalogue");
+            var refreshedGitHubRequest = await fixture.Data.WaitForGitHubReleaseRequestAfterAsync(previousGitHubRequest, TimeSpan.FromSeconds(30));
+            await Assertions.Expect(page.GetByText(FixtureClientArtifactsService.GetGitHubCheckedText(refreshedGitHubRequest), new() { Exact = true }))
+                .ToBeVisibleAsync(new LocatorAssertionsToBeVisibleOptions { Timeout = 30_000 });
 
             if (textScalePercent != 100)
             {
@@ -193,13 +215,130 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
             await page.EmulateMediaAsync(new PageEmulateMediaOptions { ColorScheme = ColorScheme.Light });
             await page.Locator("html[data-netratel-theme='light']").WaitForAsync();
 
+            // Wait for the closed drawer to finish sliding out before capturing the full page.
+            await page.WaitForFunctionAsync(
+                """
+                () => {
+                    const drawer = document.querySelector("[data-testid='automation-drawer']")?.closest("aside");
+                    if (!drawer) return false;
+                    const animations = drawer.getAnimations();
+                    return drawer.getBoundingClientRect().left >= window.innerWidth &&
+                        animations.every(animation => animation.playState !== "running" && !animation.pending);
+                }
+                """,
+                null,
+                new PageWaitForFunctionOptions { Timeout = 30_000 });
+
             await page.ScreenshotAsync(new PageScreenshotOptions
             {
                 Path = Path.Combine(evidenceDirectory, $"clients-management-{viewportName}-{width}x{height}.png"),
-                FullPage = true
+                FullPage = true,
+                Animations = ScreenshotAnimations.Disabled
             });
             RecordEvidence(viewportName, width, height, textScalePercent, evidenceDirectory);
 
+        }
+        finally
+        {
+            await context.CloseAsync();
+        }
+    }
+
+    [Fact]
+    public async Task DelayedGitHubReloadRendersItsFixtureResponse_AndReachabilityRejectsMissingOrClippedTargets()
+    {
+        var browser = _browserFixture.Browser;
+        var fixture = _fixture ?? throw new InvalidOperationException("Client management fixture was not initialized.");
+        var context = await browser.NewContextAsync(new BrowserNewContextOptions
+        {
+            ViewportSize = new ViewportSize { Width = 1024, Height = 600 },
+            ColorScheme = ColorScheme.Light
+        });
+        try
+        {
+            var page = await context.NewPageAsync();
+            page.SetDefaultTimeout(30_000);
+            var response = await page.GotoAsync($"{fixture.BaseAddress}/clients/mgmt", new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 30_000 });
+            Assert.NotNull(response);
+            Assert.True(response.Ok, $"Client-management fixture returned HTTP {response.Status}.");
+
+            var shellWait = new LocatorWaitForOptions { State = WaitForSelectorState.Visible, Timeout = 90_000 };
+            await page.GetByTestId("app-main-content").WaitForAsync(shellWait);
+            await page.GetByTestId("client-management-tabs").WaitForAsync(shellWait);
+            var initialImportPack = page.GetByTestId("github-release-name")
+                .GetByText(ExpectedGitHubReleases[0].Name, new() { Exact = true })
+                .Locator("xpath=ancestor::tr[1]")
+                .GetByTestId("github-import-pack");
+            await Assertions.Expect(initialImportPack, "The interactive Client catalogue should enable its verification-required Import pack action.")
+                .ToBeEnabledAsync(new LocatorAssertionsToBeEnabledOptions { Timeout = 30_000 });
+            var initialRequest = fixture.Data.GitHubReleaseRequestCount;
+            Assert.True(initialRequest > 0, "The interactive Client catalogue must have requested its release fixture.");
+            await Assertions.Expect(page.GetByText(FixtureClientArtifactsService.GetGitHubCheckedText(initialRequest), new() { Exact = true }))
+                .ToBeVisibleAsync(new LocatorAssertionsToBeVisibleOptions { Timeout = 30_000 });
+
+            await VisitTabAsync(page, "Packages", "artifact-management-panel");
+            var previousRequest = fixture.Data.GitHubReleaseRequestCount;
+            var reload = fixture.Data.PrepareDelayedGitHubReload();
+            try
+            {
+                await VisitTabAsync(page, "GitHub releases", "github-release-catalogue");
+                var request = await reload.Started.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+                Assert.Equal(previousRequest + 1, request);
+                Assert.NotEqual(FixtureClientArtifactsService.GetGitHubCheckedText(previousRequest), reload.CheckedText);
+                await Assertions.Expect(page.GetByRole(AriaRole.Tab, new() { Name = "GitHub releases", Exact = true, Selected = true }))
+                    .ToBeVisibleAsync();
+                await Assertions.Expect(page.GetByTestId("github-release-catalogue")).ToBeVisibleAsync();
+                await Assertions.Expect(page.GetByText(FixtureClientArtifactsService.GetGitHubCheckedText(previousRequest), new() { Exact = true })).ToBeVisibleAsync();
+                Assert.Equal(0, await page.GetByText(reload.CheckedText, new() { Exact = true }).CountAsync());
+
+                reload.Release();
+                await Assertions.Expect(page.GetByText(reload.CheckedText, new() { Exact = true }))
+                    .ToBeVisibleAsync(new LocatorAssertionsToBeVisibleOptions { Timeout = 30_000 });
+                await Assertions.Expect(page.GetByRole(AriaRole.Status, new() { Name = "Loading GitHub releases", Exact = true }))
+                    .ToBeHiddenAsync(new LocatorAssertionsToBeHiddenOptions { Timeout = 30_000 });
+                await AssertReleaseRowContentReachableAsync(page, "delayed-reload");
+            }
+            finally
+            {
+                reload.Release();
+            }
+
+            var missingTarget = page.GetByTestId("reachability-missing-target");
+            Assert.Equal(0, await missingTarget.CountAsync());
+            var missingTargetFailure = await Assert.ThrowsAsync<TimeoutException>(() => MeasureHorizontalReachabilityAsync(
+                missingTarget,
+                "missing fixture target",
+                "delayed-reload",
+                timeoutMs: 500));
+            Assert.Contains("missing fixture target at delayed-reload", missingTargetFailure.Message);
+
+            await page.EvaluateAsync("""
+                () => {
+                    const container = document.createElement("div");
+                    container.dataset.testid = "reachability-clipping-container";
+                    Object.assign(container.style, {
+                        position: "fixed",
+                        left: "0px",
+                        top: "0px",
+                        width: "32px",
+                        height: "28px",
+                        overflow: "hidden",
+                        pointerEvents: "none",
+                        zIndex: "-1"
+                    });
+                    const target = document.createElement("span");
+                    target.dataset.testid = "reachability-clipped-target";
+                    Object.assign(target.style, { display: "block", width: "64px", height: "24px" });
+                    container.append(target);
+                    document.body.append(container);
+                }
+                """);
+            var clippedTargetIssue = await MeasureHorizontalReachabilityAsync(
+                page.GetByTestId("reachability-clipped-target"),
+                "clipped fixture target",
+                "delayed-reload");
+            Assert.Contains("outside its hidden scroll region", clippedTargetIssue);
         }
         finally
         {
@@ -241,36 +380,39 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
         }
 
         await tab.ClickAsync();
-        await page.GetByTestId(panelTestId).WaitForAsync();
+        await Assertions.Expect(page.GetByRole(AriaRole.Tab, new() { Name = tabName, Exact = true, Selected = true }))
+            .ToBeVisibleAsync(new LocatorAssertionsToBeVisibleOptions { Timeout = 30_000 });
+        await Assertions.Expect(page.GetByTestId(panelTestId))
+            .ToBeVisibleAsync(new LocatorAssertionsToBeVisibleOptions { Timeout = 30_000 });
     }
 
     private static async Task AssertReleaseRowContentReachableAsync(IPage page, string viewportName)
     {
         var releaseNames = page.GetByTestId("github-release-name");
-        Assert.Equal(4, await releaseNames.CountAsync());
-        for (var index = 0; index < await releaseNames.CountAsync(); index++)
+        Assert.Equal(ExpectedGitHubReleases.Length, await releaseNames.CountAsync());
+        Assert.Equal(ExpectedGitHubReleases.Length, await page.GetByTestId("github-release-actions").CountAsync());
+        foreach (var expected in ExpectedGitHubReleases)
         {
-            await AssertHorizontallyReachableAsync(
-                releaseNames.Nth(index),
-                $"release row {index + 1} name",
-                viewportName);
+            var releaseName = releaseNames.GetByText(expected.Name, new() { Exact = true });
+            Assert.Equal(1, await releaseName.CountAsync());
+            var row = releaseName.Locator("xpath=ancestor::tr[1]");
+            Assert.Equal(1, await row.CountAsync());
+            await AssertHorizontallyReachableAsync(releaseName, $"release '{expected.Name}' name", viewportName);
+
+            var actionCell = row.GetByTestId("github-release-actions");
+            Assert.Equal(1, await actionCell.CountAsync());
+            var actionButtons = actionCell.GetByRole(AriaRole.Button);
+            Assert.Equal(1, await actionButtons.CountAsync());
+            var action = actionButtons.First;
+            Assert.Equal("Import pack", (await action.InnerTextAsync()).Trim());
+            Assert.Equal(expected.ImportPackEnabled, await action.IsEnabledAsync());
+            Assert.Equal(1, await row.GetByRole(AriaRole.Link, new() { Name = "Release details", Exact = true }).CountAsync());
+            await AssertHorizontallyReachableAsync(action, $"release '{expected.Name}' action", viewportName);
         }
 
-        var actionCells = page.GetByTestId("github-release-actions");
-        Assert.Equal(4, await actionCells.CountAsync());
-        for (var rowIndex = 0; rowIndex < await actionCells.CountAsync(); rowIndex++)
-        {
-            var buttons = actionCells.Nth(rowIndex).Locator("button");
-            for (var buttonIndex = 0; buttonIndex < await buttons.CountAsync(); buttonIndex++)
-            {
-                await AssertHorizontallyReachableAsync(
-                    buttons.Nth(buttonIndex),
-                    $"release row {rowIndex + 1} action {buttonIndex + 1}",
-                    viewportName);
-            }
-        }
-
-        var importPack = page.GetByTestId("github-import-pack").First;
+        var firstRelease = releaseNames.GetByText(ExpectedGitHubReleases[0].Name, new() { Exact = true }).Locator("xpath=ancestor::tr[1]");
+        var importPack = firstRelease.GetByTestId("github-import-pack");
+        Assert.Equal(1, await importPack.CountAsync());
         Assert.True(await importPack.IsEnabledAsync(), "The fixture's verification-required Import pack action must remain enabled.");
         await importPack.FocusAsync();
         Assert.True(
@@ -281,43 +423,119 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
 
     private static async Task AssertHorizontallyReachableAsync(ILocator element, string description, string viewportName)
     {
-        await element.ScrollIntoViewIfNeededAsync();
-        var issue = await element.EvaluateAsync<string?>("""
-            element => {
-                const failures = [];
-                const rect = element.getBoundingClientRect();
-                if (rect.width <= 0 || rect.height <= 0) {
-                    failures.push("has no visible box");
-                }
-                if (rect.left < -1 || rect.right > window.innerWidth + 1) {
-                    failures.push(`extends beyond the viewport (${rect.left.toFixed(1)}..${rect.right.toFixed(1)} of ${window.innerWidth}px)`);
-                }
-
-                for (let ancestor = element.parentElement; ancestor; ancestor = ancestor.parentElement) {
-                    const overflowX = getComputedStyle(ancestor).overflowX;
-                    if (!["hidden", "clip", "auto", "scroll"].includes(overflowX)) {
-                        continue;
-                    }
-
-                    const ancestorRect = ancestor.getBoundingClientRect();
-                    const visibleLeft = ancestorRect.left + ancestor.clientLeft;
-                    const visibleRight = visibleLeft + ancestor.clientWidth;
-                    if (rect.left < visibleLeft - 1 || rect.right > visibleRight + 1) {
-                        failures.push(`is outside its ${overflowX} scroll region (${rect.left.toFixed(1)}..${rect.right.toFixed(1)} vs ${visibleLeft.toFixed(1)}..${visibleRight.toFixed(1)})`);
-                    }
-                }
-
-                const ownOverflowX = getComputedStyle(element).overflowX;
-                if (!["auto", "scroll"].includes(ownOverflowX) && element.scrollWidth > element.clientWidth + 1) {
-                    failures.push(`has horizontally overflowing content (${element.scrollWidth}px in ${element.clientWidth}px)`);
-                }
-                return failures.length === 0 ? null : failures.join("; ");
-            }
-            """);
-
+        var issue = await MeasureHorizontalReachabilityAsync(element, description, viewportName);
         Assert.True(
             issue is null,
             $"{description} is clipped or not reachable at {viewportName}: {issue}");
+    }
+
+    private static async Task<string?> MeasureHorizontalReachabilityAsync(
+        ILocator element,
+        string description,
+        string viewportName,
+        float timeoutMs = 30_000)
+    {
+        var budget = TimeSpan.FromMilliseconds(timeoutMs);
+        var elapsed = Stopwatch.StartNew();
+        var lastTransient = "the target did not produce a stable geometry sample";
+        TimeoutException? lastTimeout = null;
+        while (elapsed.Elapsed < budget)
+        {
+            var remaining = budget - elapsed.Elapsed;
+            if (remaining <= TimeSpan.Zero)
+            {
+                break;
+            }
+
+            try
+            {
+                var evaluation = element.EvaluateAsync<string>("""
+                async element => {
+                    const transient = reason => JSON.stringify({ status: "transient", reason });
+                    const failure = (issue, rect) => JSON.stringify({
+                        status: "failure",
+                        issue,
+                        bounds: `${rect.left.toFixed(1)}..${rect.right.toFixed(1)} of ${window.innerWidth}px`
+                    });
+                    if (!element.isConnected) return transient("target detached before geometry sampling");
+                    element.scrollIntoView({ behavior: "instant", block: "nearest", inline: "nearest" });
+                    if (!element.isConnected) return transient("target detached while scrolling into view");
+
+                    const firstRect = element.getBoundingClientRect();
+                    const firstStyle = getComputedStyle(element);
+                    if (firstStyle.display === "none" || firstStyle.visibility === "hidden" || firstStyle.visibility === "collapse" || firstRect.width <= 0 || firstRect.height <= 0) {
+                        return failure("is not visible or has no visible box", firstRect);
+                    }
+
+                    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+                    if (!element.isConnected) return transient("target detached during the two-frame stability check");
+
+                    const failures = [];
+                    const style = getComputedStyle(element);
+                    const rect = element.getBoundingClientRect();
+                    if (style.display === "none" || style.visibility === "hidden" || style.visibility === "collapse" || rect.width <= 0 || rect.height <= 0) {
+                        return failure("is not visible or has no visible box", rect);
+                    }
+                    if (Math.abs(rect.left - firstRect.left) > 0.25 || Math.abs(rect.top - firstRect.top) > 0.25 || Math.abs(rect.width - firstRect.width) > 0.25 || Math.abs(rect.height - firstRect.height) > 0.25) {
+                        return transient("target geometry changed during the two-frame stability check");
+                    }
+                    if (rect.left < -1 || rect.right > window.innerWidth + 1) {
+                        failures.push(`extends beyond the viewport (${rect.left.toFixed(1)}..${rect.right.toFixed(1)} of ${window.innerWidth}px)`);
+                    }
+
+                    for (let ancestor = element.parentElement; ancestor; ancestor = ancestor.parentElement) {
+                        const overflowX = getComputedStyle(ancestor).overflowX;
+                        if (!["hidden", "clip", "auto", "scroll"].includes(overflowX)) {
+                            continue;
+                        }
+
+                        const ancestorRect = ancestor.getBoundingClientRect();
+                        const visibleLeft = ancestorRect.left + ancestor.clientLeft;
+                        const visibleRight = visibleLeft + ancestor.clientWidth;
+                        if (rect.left < visibleLeft - 1 || rect.right > visibleRight + 1) {
+                            failures.push(`is outside its ${overflowX} scroll region (${rect.left.toFixed(1)}..${rect.right.toFixed(1)} vs ${visibleLeft.toFixed(1)}..${visibleRight.toFixed(1)})`);
+                        }
+                    }
+
+                    const ownOverflowX = getComputedStyle(element).overflowX;
+                    if (!["auto", "scroll"].includes(ownOverflowX) && element.scrollWidth > element.clientWidth + 1) {
+                        failures.push(`has horizontally overflowing content (${element.scrollWidth}px in ${element.clientWidth}px)`);
+                    }
+                    return JSON.stringify({
+                        status: "complete",
+                        issue: failures.length === 0 ? null : failures.join("; "),
+                        bounds: `${rect.left.toFixed(1)}..${rect.right.toFixed(1)} of ${window.innerWidth}px`
+                    });
+                }
+                """, null, new LocatorEvaluateOptions { Timeout = (float)remaining.TotalMilliseconds });
+                var snapshot = await evaluation.WaitAsync(remaining);
+                using var document = JsonDocument.Parse(snapshot);
+                var status = document.RootElement.GetProperty("status").GetString();
+                if (string.Equals(status, "transient", StringComparison.Ordinal))
+                {
+                    lastTransient = document.RootElement.GetProperty("reason").GetString() ?? lastTransient;
+                    continue;
+                }
+
+                var issue = document.RootElement.GetProperty("issue").GetString();
+                var bounds = document.RootElement.GetProperty("bounds").GetString();
+                return issue is null ? null : $"{issue}; sampled bounds {bounds} ({description}, {viewportName})";
+            }
+            catch (PlaywrightException exception) when (exception.Message.Contains("Element is not attached to the DOM", StringComparison.Ordinal))
+            {
+                lastTransient = exception.Message;
+            }
+            catch (TimeoutException exception)
+            {
+                lastTransient = exception.Message;
+                lastTimeout = exception;
+                break;
+            }
+        }
+
+        throw new TimeoutException(
+            $"Could not resolve and stably measure {description} at {viewportName} within {timeoutMs:0} ms. Last transient state: {lastTransient}",
+            lastTimeout);
     }
 
     private static async Task AssertAutomationActionsReachableAsync(IPage page, string viewportName)
@@ -788,13 +1006,74 @@ internal sealed class FixtureGlobalSearchService : IGlobalSearchService
     }
 }
 
+internal sealed class FixtureGitHubReloadGate
+{
+    private readonly TaskCompletionSource<bool> _released = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    public TaskCompletionSource<int> Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    public string CheckedText => Started.Task.IsCompletedSuccessfully
+        ? FixtureClientArtifactsService.GetGitHubCheckedText(Started.Task.Result)
+        : throw new InvalidOperationException("The delayed GitHub reload has not started.");
+
+    public void Release() => _released.TrySetResult(true);
+
+    internal void MarkStarted(int requestNumber) => Started.TrySetResult(requestNumber);
+
+    internal Task WaitForReleaseAsync(CancellationToken cancellationToken) => _released.Task.WaitAsync(cancellationToken);
+}
+
 internal sealed class FixtureClientArtifactsService : IClientArtifactsService
 {
+    private readonly object _githubRequestLock = new();
+    private TaskCompletionSource<int> _nextGitHubRequestStarted = NewSignal<int>();
+    private FixtureGitHubReloadGate? _nextDelayedGitHubReload;
+    private int _githubReleaseRequestCount;
     private ClientReleaseAutomationModel _automation = new();
     private TaskCompletionSource<bool>? _pendingSave;
     public int SaveCalls { get; private set; }
     public TaskCompletionSource<bool> SaveStarted { get; private set; } = NewSignal();
     public bool FailNextSave { get; set; }
+
+    public int GitHubReleaseRequestCount
+    {
+        get
+        {
+            lock (_githubRequestLock)
+            {
+                return _githubReleaseRequestCount;
+            }
+        }
+    }
+
+    public async Task<int> WaitForGitHubReleaseRequestAfterAsync(int previousRequest, TimeSpan timeout)
+    {
+        Task<int> started;
+        lock (_githubRequestLock)
+        {
+            if (_githubReleaseRequestCount > previousRequest)
+            {
+                return _githubReleaseRequestCount;
+            }
+
+            started = _nextGitHubRequestStarted.Task;
+        }
+
+        return await started.WaitAsync(timeout);
+    }
+
+    public FixtureGitHubReloadGate PrepareDelayedGitHubReload()
+    {
+        lock (_githubRequestLock)
+        {
+            if (_nextDelayedGitHubReload is not null)
+            {
+                throw new InvalidOperationException("A delayed GitHub fixture reload is already prepared.");
+            }
+
+            return _nextDelayedGitHubReload = new FixtureGitHubReloadGate();
+        }
+    }
 
     public void PreparePendingSave()
     {
@@ -834,11 +1113,32 @@ internal sealed class FixtureClientArtifactsService : IClientArtifactsService
         return Task.FromResult(_automation);
     }
 
-    public Task<GitHubClientReleasePageModel> GetGitHubReleasesAsync(string channel, int page, bool refresh, CancellationToken ct = default) =>
-        Task.FromResult(new GitHubClientReleasePageModel
+    public async Task<GitHubClientReleasePageModel> GetGitHubReleasesAsync(string channel, int page, bool refresh, CancellationToken ct = default)
+    {
+        int requestNumber;
+        TaskCompletionSource<int> requestStarted;
+        FixtureGitHubReloadGate? delayedReload;
+        lock (_githubRequestLock)
+        {
+            requestNumber = ++_githubReleaseRequestCount;
+            requestStarted = _nextGitHubRequestStarted;
+            _nextGitHubRequestStarted = NewSignal<int>();
+            delayedReload = _nextDelayedGitHubReload;
+            _nextDelayedGitHubReload = null;
+        }
+
+        requestStarted.TrySetResult(requestNumber);
+        if (delayedReload is not null)
+        {
+            delayedReload.MarkStarted(requestNumber);
+            await delayedReload.WaitForReleaseAsync(ct);
+        }
+
+        var refreshedAtUtc = GetGitHubRefreshedAtUtc(requestNumber);
+        return new GitHubClientReleasePageModel
         {
             Page = page,
-            RefreshedAtUtc = new DateTimeOffset(2026, 9, 1, 12, 0, 0, TimeSpan.Zero),
+            RefreshedAtUtc = refreshedAtUtc,
             Items =
             [
                 new GitHubClientReleaseModel
@@ -891,9 +1191,19 @@ internal sealed class FixtureClientArtifactsService : IClientArtifactsService
                     ClientAssets = [new GitHubClientAssetModel { Id = 6, Name = "win.zip", RuntimeId = "win-x64", SizeBytes = 29000000 }]
                 }
             ]
-        });
+        };
+    }
+
+    public static string GetGitHubCheckedText(int requestNumber) =>
+        $"Checked {GetGitHubRefreshedAtUtc(requestNumber).ToLocalTime().ToString("g", CultureInfo.CurrentCulture)}";
+
+    private static DateTimeOffset GetGitHubRefreshedAtUtc(int requestNumber) =>
+        new DateTimeOffset(2026, 9, 1, 12, 0, 0, TimeSpan.Zero).AddMinutes(requestNumber);
 
     private static TaskCompletionSource<bool> NewSignal() =>
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private static TaskCompletionSource<T> NewSignal<T>() =>
         new(TaskCreationOptions.RunContinuationsAsynchronously);
     private static readonly Guid AgentId = Guid.Parse("7b2f5d97-0d1b-4d25-b3ca-b5f58f069abf");
     private static readonly Guid ReleaseId = Guid.Parse("ee60f7aa-d994-455c-a7bd-30d6ebdbebf0");
