@@ -384,6 +384,7 @@ jobs:
           NETRATEL_AGENT_AUTH_PRIVATE_KEY: ./synthetic-ci-only-agent-auth.pem
           NETRATEL_CLIENT_SMOKE_IMAGE: netratel-client:compose-smoke
           NETRATEL_GATEWAY_PROXY_CONFIG_PATH: ${{ github.workspace }}/tests/compose/gateway-proxy.nginx.conf
+          NETRATEL_PUBLIC_NGINX_CONFIG_PATH: ${{ github.workspace }}/release/nginx.public-https.conf
           NETRATEL_SMOKE_AUTH_ENVIRONMENT: Production
         run: |
           docker compose -f compose.yaml -f tests/compose/oidc-smoke.compose.yaml -f tests/compose/oidc-smoke.production.compose.yaml config --quiet
