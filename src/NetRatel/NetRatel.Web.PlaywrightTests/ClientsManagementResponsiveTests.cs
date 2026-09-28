@@ -78,6 +78,38 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
         try
         {
             var page = await context.NewPageAsync();
+            var startupEvents = new ConcurrentQueue<string>();
+            var startupWebSockets = new ConcurrentQueue<IWebSocket>();
+            var startupClock = Stopwatch.StartNew();
+            void RecordStartupEvent(string message) => startupEvents.Enqueue($"{startupClock.ElapsedMilliseconds,5} ms {message}");
+            page.Console += (_, message) =>
+            {
+                if (message.Type is "error" or "warning")
+                {
+                    RecordStartupEvent($"console {message.Type}: {message.Text}");
+                }
+            };
+            page.PageError += (_, error) => RecordStartupEvent($"pageerror: {error}");
+            page.RequestFailed += (_, request) => RecordStartupEvent(
+                $"requestfailed {request.Method} {GetSafeRequestPath(request.Url)}: {request.Failure ?? "unknown"}");
+            page.Response += (_, response) =>
+            {
+                var path = GetSafeRequestPath(response.Url);
+                if (response.Request.IsNavigationRequest || response.Status >= 400 ||
+                    path is "/_framework/blazor.web.js" or "/_content/MudBlazor/MudBlazor.min.js" ||
+                    path.StartsWith("/_blazor", StringComparison.Ordinal))
+                {
+                    RecordStartupEvent($"response {response.Status} {path}");
+                }
+            };
+            page.WebSocket += (_, webSocket) =>
+            {
+                var path = GetSafeRequestPath(webSocket.Url);
+                startupWebSockets.Enqueue(webSocket);
+                RecordStartupEvent($"websocket request {path}");
+                webSocket.SocketError += (_, error) => RecordStartupEvent($"websocket error {path}: {error}");
+                webSocket.Close += (_, _) => RecordStartupEvent($"websocket closed {path}");
+            };
             // The fixture starts a real Interactive Server circuit. Under the full
             // hosted test matrix the first circuit can take longer than the normal
             // interaction budget to attach, especially at the tablet case; keep
@@ -91,7 +123,16 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
             Assert.True(response.Ok, $"Client-management fixture returned HTTP {response.Status}.");
 
             var shellWait = new LocatorWaitForOptions { State = WaitForSelectorState.Visible, Timeout = 90_000 };
-            await page.GetByTestId("app-main-content").WaitForAsync(shellWait);
+            try
+            {
+                await page.GetByTestId("app-main-content").WaitForAsync(shellWait);
+            }
+            catch (TimeoutException exception)
+            {
+                throw new TimeoutException(
+                    $"The {viewportName} shell did not start at {GetSafeRequestPath(page.Url)}. Browser startup events: {FormatStartupEvents(startupEvents)}. WebSocket state: {FormatWebSocketStates(startupWebSockets)}. Fixture server startup warnings/errors: {FormatServerDiagnostics(fixture)}",
+                    exception);
+            }
             await page.GetByTestId("client-management-tabs").WaitForAsync(shellWait);
             await page.GetByTestId("automation-settings-button").WaitForAsync(shellWait);
             Assert.Equal(5, await page.GetByRole(AriaRole.Tab).CountAsync());
@@ -355,6 +396,25 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
     {
         if (_fixture is not null) await _fixture.DisposeAsync();
     }
+
+    private static string FormatStartupEvents(ConcurrentQueue<string> events) =>
+        events.IsEmpty ? "(none)" : string.Join(" | ", events);
+
+    private static string FormatServerDiagnostics(ClientsManagementFixtureHost fixture)
+    {
+        var messages = fixture.StartupServerDiagnostics;
+        return messages.Count == 0 ? "(none)" : string.Join(" | ", messages);
+    }
+
+    private static string FormatWebSocketStates(ConcurrentQueue<IWebSocket> webSockets) =>
+        webSockets.IsEmpty
+            ? "(none)"
+            : string.Join(", ", webSockets.Select(webSocket => $"{GetSafeRequestPath(webSocket.Url)} closed={webSocket.IsClosed}"));
+
+    private static string GetSafeRequestPath(string requestUrl) =>
+        Uri.TryCreate(requestUrl, UriKind.Absolute, out var uri)
+            ? uri.AbsolutePath
+            : requestUrl.Split('?', 2)[0];
 
     private static async Task VisitTabAsync(IPage page, string tabName, string panelTestId)
     {
@@ -763,20 +823,29 @@ public sealed class ClientsManagementFixtureApp : ComponentBase
 internal sealed class ClientsManagementFixtureHost : IAsyncDisposable
 {
     private readonly WebApplication _application;
+    private readonly FixtureServerDiagnosticLoggerProvider _serverDiagnostics;
 
-    private ClientsManagementFixtureHost(WebApplication application, string baseAddress, FixtureClientArtifactsService data)
+    private ClientsManagementFixtureHost(
+        WebApplication application,
+        string baseAddress,
+        FixtureClientArtifactsService data,
+        FixtureServerDiagnosticLoggerProvider serverDiagnostics)
     {
         _application = application;
         BaseAddress = baseAddress;
         Data = data;
+        _serverDiagnostics = serverDiagnostics;
     }
 
     public string BaseAddress { get; }
     public FixtureClientArtifactsService Data { get; }
+    public IReadOnlyList<string> StartupServerDiagnostics => _serverDiagnostics.Snapshot();
 
     public static async Task<ClientsManagementFixtureHost> StartAsync()
     {
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = "Development" });
+        var serverDiagnostics = new FixtureServerDiagnosticLoggerProvider();
+        builder.Logging.AddProvider(serverDiagnostics);
         builder.WebHost.UseUrls("http://127.0.0.1:0");
         builder.Services.AddRazorComponents().AddInteractiveServerComponents();
         builder.Services.AddCascadingAuthenticationState();
@@ -811,7 +880,11 @@ internal sealed class ClientsManagementFixtureHost : IAsyncDisposable
         application.MapRazorComponents<ClientsManagementFixtureApp>().AddInteractiveServerRenderMode();
         await application.StartAsync().ConfigureAwait(false);
         var address = application.Urls.Single(url => url.StartsWith("http://127.0.0.1:", StringComparison.Ordinal));
-        return new ClientsManagementFixtureHost(application, address, application.Services.GetRequiredService<FixtureClientArtifactsService>());
+        return new ClientsManagementFixtureHost(
+            application,
+            address,
+            application.Services.GetRequiredService<FixtureClientArtifactsService>(),
+            serverDiagnostics);
     }
 
     public async ValueTask DisposeAsync()
@@ -926,6 +999,42 @@ internal sealed class ClientsManagementFixtureHost : IAsyncDisposable
             ?? throw new FileNotFoundException(
                 "The authenticated application-shell visual fixture asset was not found.",
                 string.Join(Environment.NewLine, candidates));
+    }
+}
+
+internal sealed class FixtureServerDiagnosticLoggerProvider : ILoggerProvider
+{
+    private readonly ConcurrentQueue<string> _messages = new();
+
+    public IReadOnlyList<string> Snapshot() => _messages.ToArray();
+
+    public ILogger CreateLogger(string categoryName) => new FixtureLogger(categoryName, _messages);
+
+    public void Dispose()
+    {
+    }
+
+    private sealed class FixtureLogger(string categoryName, ConcurrentQueue<string> messages) : ILogger
+    {
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => logLevel >= LogLevel.Warning;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (IsEnabled(logLevel))
+            {
+                var detail = formatter(state, exception);
+                messages.Enqueue(exception is null
+                    ? $"{categoryName} [{logLevel}]: {detail}"
+                    : $"{categoryName} [{logLevel}]: {detail} | {exception}");
+            }
+        }
     }
 }
 
