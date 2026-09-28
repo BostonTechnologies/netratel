@@ -101,10 +101,15 @@ public sealed class InjectedEnrollmentBootstrap : IInjectedEnrollmentBootstrap
             return "enrollment payload is expired or missing validToUtc.";
         }
 
+        if (string.IsNullOrWhiteSpace(payload.Issuer))
+        {
+            return "issuer is required.";
+        }
+
         if (!string.IsNullOrWhiteSpace(payload.Issuer))
         {
-            var configured = NormalizeOrigin(options.ApiBaseUrl);
-            var issuer = NormalizeOrigin(payload.Issuer);
+            var configured = NormalizeConfiguredApiBase(options.ApiBaseUrl);
+            var issuer = NormalizeConfiguredApiBase(payload.Issuer);
             if (!string.Equals(configured, issuer, StringComparison.OrdinalIgnoreCase))
             {
                 return "issuer does not match the configured API base URL.";
@@ -114,11 +119,12 @@ public sealed class InjectedEnrollmentBootstrap : IInjectedEnrollmentBootstrap
         return null;
     }
 
-    private static string NormalizeOrigin(string value)
+    private static string NormalizeConfiguredApiBase(string value)
     {
         if (Uri.TryCreate(value, UriKind.Absolute, out var uri))
         {
-            return $"{uri.Scheme}://{uri.Authority}";
+            var path = uri.AbsolutePath.TrimEnd('/');
+            return $"{uri.Scheme}://{uri.Authority}{path}{uri.Query}{uri.Fragment}";
         }
 
         return value.Trim().TrimEnd('/');

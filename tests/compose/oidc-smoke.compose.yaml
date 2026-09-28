@@ -64,8 +64,13 @@ services:
       - ${NETRATEL_GATEWAY_PROXY_CONFIG_PATH:?set NETRATEL_GATEWAY_PROXY_CONFIG_PATH}:/etc/nginx/nginx.conf:ro
       - ${NETRATEL_SMOKE_TLS_CERTIFICATE_PATH:-/tmp/netratel-compose-smoke-unavailable.crt}:/run/netratel-smoke/tls.crt:ro
       - ${NETRATEL_SMOKE_TLS_KEY_PATH:-/tmp/netratel-compose-smoke-unavailable.key}:/run/netratel-smoke/tls.key:ro
+      - ${NETRATEL_PUBLIC_NGINX_CONFIG_PATH:?set NETRATEL_PUBLIC_NGINX_CONFIG_PATH}:/etc/nginx/conf.d/public.conf:ro
+      - ${NETRATEL_SMOKE_TLS_CERTIFICATE_PATH:-/tmp/netratel-compose-smoke-unavailable.crt}:/run/netratel-ingress/tls.crt:ro
+      - ${NETRATEL_SMOKE_TLS_KEY_PATH:-/tmp/netratel-compose-smoke-unavailable.key}:/run/netratel-ingress/tls.key:ro
     depends_on:
       api:
+        condition: service_started
+      web:
         condition: service_started
 
   web:

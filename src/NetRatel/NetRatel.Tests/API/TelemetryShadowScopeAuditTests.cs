@@ -8,13 +8,20 @@ public sealed class TelemetryShadowScopeAuditTests
     private static readonly string RepoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../../"));
 
     [Fact]
-    public void GatewayTelemetryPublisher_RemainsIndependentOfTheLegacyClientService()
+    public void GatewayTelemetryPublisher_UsesV2AndRetiresTheLegacyClientStream()
     {
-        var client = Read("src/NetRatel/NetRatel.Client/Service/Gateway/AgentGatewayTelemetryShadowPublisher.cs");
+        var client = Read("src/NetRatel/NetRatel.Client/Service/Gateway/AgentGatewayTelemetryPublisher.cs");
 
         client.Should().Contain("AgentTelemetryGatewayV2");
         client.Should().Contain("GatewayTelemetrySnapshotCollector");
+        client.Should().Contain("telemetry-rate-control-v1");
+        client.Should().Contain("SnapshotAccepted");
+        client.Should().Contain("TelemetrySamplingPolicy");
+        client.Should().NotContain("AgentTelemetryGateway.AgentTelemetryGatewayClient");
+        client.Should().NotContain("PublishTelemetry(");
         client.Should().NotContain("using Spacetime");
+        File.Exists(Path.Combine(RepoRoot, "src/NetRatel/NetRatel.Client/Service/Gateway/AgentGatewayTelemetryShadowPublisher.cs"))
+            .Should().BeFalse();
         File.Exists(Path.Combine(RepoRoot, "src/NetRatel/NetRatel.Client/Service/Telemetry/ClientTelemetryService.cs"))
             .Should().BeFalse();
     }

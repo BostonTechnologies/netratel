@@ -301,8 +301,11 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             State = WaitForSelectorState.Attached
         });
         await page.GetByRole(AriaRole.Button, new() { Name = "Advanced: upload artifact" }).ClickAsync();
+        await page.GetByRole(AriaRole.Menuitem, new() { Name = "Upload legacy artifact" }).ClickAsync();
         var uploadDialog = page.Locator(".mud-dialog:visible").Filter(new() { HasText = "Runtime Identifier" }).Last;
-        await uploadDialog.Locator(".mud-select").First.ClickAsync();
+        var runtimeSelector = page.GetByTestId("upload-runtime-selector");
+        await runtimeSelector.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        await runtimeSelector.Locator(".upload-runtime-select-control").ClickAsync();
         await page.GetByRole(AriaRole.Option, new() { Name = "Linux (x64)" }).ClickAsync();
         await uploadDialog.GetByRole(AriaRole.Textbox, new() { Name = "Version" }).FillAsync(version);
         using var buffer = new MemoryStream();
@@ -332,7 +335,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             Assert.Fail($"Disposable artifact upload failed: {await uploadError.InnerTextAsync()}");
         await uploadDialog.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Hidden });
 
-        await page.GetByRole(AriaRole.Tab, new() { Name = "Artifacts" }).ClickAsync();
+        await page.GetByRole(AriaRole.Tab, new() { Name = "Packages" }).ClickAsync();
         var artifactRow = page.GetByTestId("artifact-table").GetByRole(AriaRole.Row).Filter(new() { HasText = version });
         await artifactRow.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         await artifactRow.GetByRole(AriaRole.Button).Last.ClickAsync();
@@ -403,16 +406,17 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         {
             State = WaitForSelectorState.Attached
         });
-        var release = page.Locator(".client-github-release").Filter(new() { HasText = version });
+        var release = page.GetByTestId("github-release-table").GetByRole(AriaRole.Row)
+            .Filter(new() { HasText = version });
         await release.WaitForAsync(new LocatorWaitForOptions { Timeout = 60_000 });
         Assert.Contains("linux-x64", await release.InnerTextAsync());
-        await release.GetByRole(AriaRole.Button, new() { Name = "Download client pack to this instance" }).ClickAsync();
+        await release.GetByRole(AriaRole.Button, new() { Name = "Import pack", Exact = true }).ClickAsync();
         await page.WaitForFunctionAsync("""
-            version => Array.from(document.querySelectorAll('.client-github-release'))
-                .some(item => item.textContent?.includes(version) && item.textContent?.includes('Local state: Imported'))
+            version => Array.from(document.querySelectorAll('[data-testid="github-release-table"] tr'))
+                .some(item => item.textContent?.includes(version) && /Local:\s+(Imported|Published)/.test(item.textContent ?? ''))
             """, version, new PageWaitForFunctionOptions { Timeout = 300_000 });
 
-        await page.GetByRole(AriaRole.Tab, new() { Name = "Artifacts" }).ClickAsync();
+        await page.GetByRole(AriaRole.Tab, new() { Name = "Packages" }).ClickAsync();
         var artifact = page.GetByTestId("artifact-table").GetByRole(AriaRole.Row)
             .Filter(new() { HasText = version }).Filter(new() { HasText = "linux-x64" });
         await artifact.WaitForAsync(new LocatorWaitForOptions { Timeout = 30_000 });

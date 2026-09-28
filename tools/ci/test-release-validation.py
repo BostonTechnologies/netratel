@@ -4,6 +4,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -25,6 +26,37 @@ def module(name):
 
 ROOT = Path(__file__).resolve().parents[2]
 SCANNER = ROOT / "tools/ci/verify-product-version.py"
+
+
+class PublicGatewayRouteTests(unittest.TestCase):
+    def test_public_ingress_routes_every_protobuf_method_to_the_api_gateway_listener(self):
+        proto_path = ROOT / "src/NetRatel/NetRatel.AgentGateway.Contracts/Protos/agent_gateway.proto"
+        proto = proto_path.read_text()
+        package = re.search(r"(?m)^package\s+([A-Za-z_][A-Za-z_0-9.]*)\s*;", proto)
+        self.assertIsNotNone(package, "The gateway protobuf package declaration is required.")
+
+        method_paths = []
+        for service in re.finditer(
+                r"(?ms)^[ \t]*service\s+([A-Za-z_][A-Za-z_0-9]*)\s*\{(.*?)^[ \t]*\}", proto):
+            methods = re.findall(r"(?m)^[ \t]*rpc\s+([A-Za-z_][A-Za-z_0-9]*)\s*\(", service.group(2))
+            method_paths.extend(
+                f"/{package.group(1)}.{service.group(1)}/{method}" for method in methods)
+
+        self.assertTrue(method_paths, "The gateway protobuf must declare at least one RPC method.")
+        ingress = (ROOT / "release/nginx.public-https.conf").read_text()
+        grpc_locations = [
+            (match.group(1), match.group(2))
+            for match in re.finditer(
+                r"(?ms)^[ \t]*location\s+\^~\s+(\S+)\s*\{(.*?)^[ \t]*\}", ingress)
+            if re.search(r"(?m)^[ \t]*grpc_pass\s+", match.group(2))
+        ]
+        self.assertEqual(len(grpc_locations), 1, "The public ingress must define one dedicated gRPC route.")
+        prefix, location_body = grpc_locations[0]
+        self.assertEqual(prefix, f"/{package.group(1)}.")
+        self.assertRegex(location_body, r"(?m)^[ \t]*grpc_pass\s+grpc://api:9223\s*;")
+        for method_path in method_paths:
+            with self.subTest(method_path=method_path):
+                self.assertTrue(method_path.startswith(prefix), f"{method_path} misses the public gRPC location.")
 
 
 class ProductVersionTests(unittest.TestCase):

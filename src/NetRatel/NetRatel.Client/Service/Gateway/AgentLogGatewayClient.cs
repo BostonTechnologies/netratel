@@ -496,7 +496,7 @@ public sealed class AgentLogGatewayClient(GatewayClientOptions options)
     {
         if (frame.Sequence != 0 || !string.Equals(frame.ProtocolVersion, options.ProtocolVersion, StringComparison.Ordinal) ||
             !string.Equals(frame.OperationId, operationId.ToString("D"), StringComparison.OrdinalIgnoreCase) ||
-            !GatewayAuthority.MatchesRequired(frame.Accepted.LogAuthority, options.RequiredPresenceAuthority) ||
+            !GatewayAuthority.IsAkka(frame.Accepted.LogAuthority) ||
             frame.Accepted.MaximumRecordsPerBatch is 0 or > 100 || frame.Accepted.MaximumEncodedBatchBytes is 0 or > MaximumGatewayFrameBytes)
         {
             throw new RpcException(new Status(StatusCode.DataLoss, "Log gateway returned an invalid acknowledgement."));

@@ -93,6 +93,86 @@ public sealed class InjectedEnrollmentBootstrapTests
         diagnostics.Should().ContainSingle().Which.Should().Contain("missing validToUtc");
     }
 
+    [Fact]
+    public async Task TryEnrollAsync_WithMissingIssuer_LogsReasonAndDoesNotEnroll()
+    {
+        var fs = new FakeFileSystem();
+        var baseDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        fs.Files[Path.Combine(baseDir, "netratel.enroll.json")] = """
+            {"schema":"netratel.enroll.v1","tenantId":42,"enrollmentCode":"ENR-ABC123","validToUtc":"2099-02-27T00:00:00Z"}
+            """;
+        var diagnostics = new List<string>();
+        var bootstrap = new InjectedEnrollmentBootstrap(fs, () => baseDir, diagnostics.Add);
+
+        var result = await bootstrap.TryEnrollAsync(
+            new ClientOptions { ApiBaseUrl = "https://netratel.example.invalid/tenant" },
+            new FakeEnrollmentService(),
+            new FakeCredentialStore(),
+            CancellationToken.None);
+
+        result.Should().BeNull();
+        diagnostics.Should().ContainSingle().Which.Should().Contain("issuer is required");
+    }
+
+    [Fact]
+    public async Task TryEnrollAsync_WithMatchingPathBasedIssuer_Enrolls()
+    {
+        var fs = new FakeFileSystem();
+        var baseDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(baseDir, "netratel.enroll.json");
+        fs.Files[path] = """
+            {
+              "schema":"netratel.enroll.v1",
+              "tenantId":42,
+              "enrollmentCode":"ENR-ABC123",
+              "issuer":"https://netratel.example.invalid/tenant/",
+              "validToUtc":"2099-02-27T00:00:00Z"
+            }
+            """;
+
+        var enrollment = new FakeEnrollmentService();
+        var store = new FakeCredentialStore();
+        var bootstrap = new InjectedEnrollmentBootstrap(fs, () => baseDir);
+
+        var result = await bootstrap.TryEnrollAsync(
+            new ClientOptions { ApiBaseUrl = "https://netratel.example.invalid/tenant" },
+            enrollment,
+            store,
+            CancellationToken.None);
+
+        result.Should().NotBeNull();
+        enrollment.LastEnrollmentCode.Should().Be("ENR-ABC123");
+        store.Saved.Should().NotBeNull();
+        fs.Deleted.Should().Contain(path);
+    }
+
+    [Fact]
+    public async Task TryEnrollAsync_WithDifferentPathBasedIssuer_DoesNotEnroll()
+    {
+        var fs = new FakeFileSystem();
+        var baseDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        fs.Files[Path.Combine(baseDir, "netratel.enroll.json")] = """
+            {
+              "schema":"netratel.enroll.v1",
+              "tenantId":42,
+              "enrollmentCode":"ENR-ABC123",
+              "issuer":"https://netratel.example.invalid/other",
+              "validToUtc":"2099-02-27T00:00:00Z"
+            }
+            """;
+        var diagnostics = new List<string>();
+        var bootstrap = new InjectedEnrollmentBootstrap(fs, () => baseDir, diagnostics.Add);
+
+        var result = await bootstrap.TryEnrollAsync(
+            new ClientOptions { ApiBaseUrl = "https://netratel.example.invalid/tenant" },
+            new FakeEnrollmentService(),
+            new FakeCredentialStore(),
+            CancellationToken.None);
+
+        result.Should().BeNull();
+        diagnostics.Should().ContainSingle().Which.Should().Contain("issuer does not match");
+    }
+
     private sealed class FakeEnrollmentService : IAgentEnrollmentService
     {
         public string? LastEnrollmentCode { get; private set; }

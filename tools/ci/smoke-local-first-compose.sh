@@ -43,6 +43,10 @@ if [[ -n "${NETRATEL_LOCAL_FIRST_COMPOSE_OVERLAYS:-}" ]]; then
   done
 fi
 compose_files+=(-f "$root/tests/compose/local-first-install-links.compose.yaml")
+database_service=postgres
+if [[ -n "${NETRATEL_EXTERNAL_DATABASE_CONNECTION_STRING:-}" ]]; then
+  database_service=external-db
+fi
 if [[ -n "$mcp_http_image" ]]; then
   local_http_mcp_directory="$(mktemp -d)"
   local_http_mcp_overlay="$root/tests/compose/local-http-mcp.compose.yaml"
@@ -97,7 +101,8 @@ cleanup() {
   if (( status != 0 )); then
     echo "::error title=Local-first Compose smoke failed::${stage}" >&2
     "${compose[@]}" ps --all >&2 || true
-    local log_services=(migrations api web)
+    local log_services=("$database_service" migrations api web)
+    if [[ "$web_url" == https://* ]]; then log_services+=(ingress); fi
     if [[ -n "$mcp_http_image" ]]; then log_services+=(mcp-http); fi
     "${compose[@]}" logs --no-color --tail 250 "${log_services[@]}" >&2 || true
   fi
@@ -121,8 +126,10 @@ openssl ecparam -name prime256v1 -genkey -noout -out "$key_path"
 # The disposable key matches the documented non-root identity and private
 # mode; its value is never emitted to logs or test output.
 docker run --rm --volume "$key_directory:/keys" alpine:3.22 \
-  sh -ceu 'chown 1654:1654 /keys/agent-auth-private.pem && chmod 600 /keys/agent-auth-private.pem'
-export NETRATEL_AGENT_AUTH_PRIVATE_KEY="$key_path"
+  chown 1654:1654 /keys/agent-auth-private.pem
+docker run --rm --volume "$key_directory:/keys" alpine:3.22 \
+  chmod 600 /keys/agent-auth-private.pem
+export NETRATEL_AGENT_AUTH_PRIVATE_KEY="$key_directory/agent-auth-private.pem"
 export NETRATEL_WEB_PORT="$web_port"
 
 # Reproduce managed deployments that pre-create an empty root-owned named
@@ -132,7 +139,9 @@ stage="preparing root-owned fresh persistent volumes"
 for volume in "${project}_api-data" "${project}_web-keys"; do
   docker volume create "$volume" >/dev/null
   docker run --rm --volume "$volume:/target" alpine:3.22 \
-    sh -ceu 'chown 0:0 /target && chmod 700 /target'
+    chown 0:0 /target
+  docker run --rm --volume "$volume:/target" alpine:3.22 \
+    chmod 700 /target
 done
 
 stage="starting selected local-first Compose profile"
@@ -149,7 +158,11 @@ migration_complete=false
 for _ in $(seq 1 90); do
   status="$(docker inspect --format '{{.State.Status}}' "$migration_id")"
   if [[ "$status" == exited ]]; then
-    [[ "$(docker inspect --format '{{.State.ExitCode}}' "$migration_id")" == 0 ]] || exit 1
+    exit_code="$(docker inspect --format '{{.State.ExitCode}}' "$migration_id")"
+    if [[ "$exit_code" != 0 ]]; then
+      echo "Migration container exited with code $exit_code." >&2
+      exit 1
+    fi
     migration_complete=true
     break
   fi
@@ -173,26 +186,106 @@ playwright_script="src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0
 [[ -f "$playwright_script" ]] || { echo "Playwright install script was not produced." >&2; exit 1; }
 pwsh "$playwright_script" install --with-deps chromium
 stage="validating image operator commands and one-time proof rotation"
-"${compose[@]}" exec -T api dotnet NetRatel.API.dll --help | grep -Fq -- '--show-setup-code'
-initial_setup_proof="$("${compose[@]}" exec -T api cat /var/netratel/bootstrap/setup-proof)"
-[[ "$("${compose[@]}" exec -T api dotnet NetRatel.API.dll --show-setup-code)" == "$initial_setup_proof" ]]
-initial_status="$("${compose[@]}" exec -T api dotnet NetRatel.API.dll --setup-status)"
-grep -Fq 'Setup code: Available' <<<"$initial_status"
-[[ "$initial_status" != *"$initial_setup_proof"* ]]
-"${compose[@]}" exec -T api dotnet NetRatel.API.dll --rotate-setup-code >/dev/null
-setup_proof="$("${compose[@]}" exec -T api cat /var/netratel/bootstrap/setup-proof)"
-[[ -n "$setup_proof" && "$setup_proof" != "$initial_setup_proof" ]]
-[[ "$("${compose[@]}" exec -T api dotnet NetRatel.API.dll --show-setup-code)" == "$setup_proof" ]]
-forged_origin_status="$(curl "${curl_tls[@]}" --silent --output /dev/null --write-out '%{http_code}' \
+run_logged_capture() {
+  local operation="$1" output status
+  shift
+  echo "Starting smoke operation: $operation." >&2
+  if output="$("$@")"; then
+    echo "Completed smoke operation: $operation (exit code 0)." >&2
+    printf '%s' "$output"
+  else
+    status=$?
+    echo "Failed smoke operation: $operation (exit code $status)." >&2
+    return "$status"
+  fi
+}
+run_logged_discard() {
+  local operation="$1" status
+  shift
+  echo "Starting smoke operation: $operation." >&2
+  if "$@" >/dev/null; then
+    echo "Completed smoke operation: $operation (exit code 0)." >&2
+  else
+    status=$?
+    echo "Failed smoke operation: $operation (exit code $status)." >&2
+    return "$status"
+  fi
+}
+api_operator() { "${compose[@]}" exec -T api "$@"; }
+operator_help="$(run_logged_capture "read API operator help" api_operator dotnet NetRatel.API.dll --help)"
+if grep -Fq -- '--show-setup-code' <<<"$operator_help"; then
+  echo "Passed smoke assertion: API help lists the setup-code operator." >&2
+else
+  echo "Failed smoke assertion: API help did not list the setup-code operator." >&2
+  exit 1
+fi
+unset operator_help
+initial_setup_proof="$(run_logged_capture "read initial setup proof file (value suppressed)" api_operator cat /var/netratel/bootstrap/setup-proof)"
+shown_initial_setup_proof="$(run_logged_capture "show initial setup proof (value suppressed)" api_operator dotnet NetRatel.API.dll --show-setup-code)"
+if [[ "$shown_initial_setup_proof" == "$initial_setup_proof" ]]; then
+  echo "Passed smoke assertion: displayed initial setup proof matches the persisted proof." >&2
+else
+  echo "Failed smoke assertion: displayed initial setup proof does not match the persisted proof." >&2
+  exit 1
+fi
+unset shown_initial_setup_proof
+initial_status="$(run_logged_capture "read initial API setup status" api_operator dotnet NetRatel.API.dll --setup-status)"
+if grep -Fq 'Setup code: Available' <<<"$initial_status"; then
+  echo "Passed smoke assertion: initial setup status reports an available setup code." >&2
+else
+  echo "Failed smoke assertion: initial setup status did not report an available setup code." >&2
+  exit 1
+fi
+if [[ "$initial_status" != *"$initial_setup_proof"* ]]; then
+  echo "Passed smoke assertion: initial setup status does not expose the proof value." >&2
+else
+  echo "Failed smoke assertion: initial setup status exposed the proof value." >&2
+  exit 1
+fi
+run_logged_discard "rotate one-time setup proof (output suppressed)" api_operator dotnet NetRatel.API.dll --rotate-setup-code
+setup_proof="$(run_logged_capture "read rotated setup proof file (value suppressed)" api_operator cat /var/netratel/bootstrap/setup-proof)"
+if [[ -n "$setup_proof" && "$setup_proof" != "$initial_setup_proof" ]]; then
+  echo "Passed smoke assertion: proof rotation produced a nonempty, changed proof value." >&2
+else
+  echo "Failed smoke assertion: proof rotation did not produce a nonempty, changed proof value." >&2
+  exit 1
+fi
+shown_setup_proof="$(run_logged_capture "show rotated setup proof (value suppressed)" api_operator dotnet NetRatel.API.dll --show-setup-code)"
+if [[ "$shown_setup_proof" == "$setup_proof" ]]; then
+  echo "Passed smoke assertion: displayed rotated proof matches the persisted proof." >&2
+else
+  echo "Failed smoke assertion: displayed rotated proof does not match the persisted proof." >&2
+  exit 1
+fi
+unset shown_setup_proof
+http_status_probe() {
+  local response status
+  if response="$(curl "$@" --silent --show-error --write-out $'\n%{http_code}')"; then
+    status="${response##*$'\n'}"
+    unset response
+    [[ "$status" =~ ^[0-9]{3}$ ]] || {
+      echo "HTTP status probe did not return a three-digit status." >&2
+      return 1
+    }
+    printf '%s' "$status"
+  else
+    status=$?
+    unset response
+    return "$status"
+  fi
+}
+forged_origin_status="$(run_logged_capture "curl forged-origin setup-claim probe" http_status_probe "${curl_tls[@]}" \
   --header 'Origin: https://forged.invalid' --header 'Content-Type: application/json' \
   --data '{"proof":"invalid"}' "$web_url/api/v2/setup/claim")"
-[[ "$forged_origin_status" == 403 ]] || { echo "A forged setup origin was not rejected." >&2; exit 1; }
+[[ "$forged_origin_status" == 403 ]] || { echo "A forged setup origin was not rejected (HTTP $forged_origin_status)." >&2; exit 1; }
+echo "Passed smoke assertion: forged setup origin received HTTP 403." >&2
 if [[ "$web_url" == https://* ]]; then
-  forged_host_status="$(curl "${curl_tls[@]}" --silent --output /dev/null --write-out '%{http_code}' \
+  forged_host_status="$(run_logged_capture "curl forged-host public-route probe" http_status_probe "${curl_tls[@]}" \
     --header 'Host: forged.invalid' "$web_url/setup")"
-  [[ "$forged_host_status" == 400 ]] || { echo "A forged public Host was not rejected." >&2; exit 1; }
+  [[ "$forged_host_status" == 400 ]] || { echo "A forged public Host was not rejected (HTTP $forged_host_status)." >&2; exit 1; }
+  echo "Passed smoke assertion: forged public Host received HTTP 400." >&2
 fi
-unset initial_setup_proof initial_status
+unset initial_setup_proof initial_status forged_origin_status forged_host_status
 stage="building and running Playwright local-first journey"
 setup_proof_digest="$(printf '%s' "$setup_proof" | sha256sum | cut -d ' ' -f 1)"
 published_release_version=""
@@ -213,21 +306,44 @@ NETRATEL_LOCAL_FIRST_INTEGRATION_CREDENTIALS_FILE="$credential_path" \
 unset setup_proof
 
 stage="verifying Ready operator status and ordinary restart"
-ready_status="$("${compose[@]}" exec -T api dotnet NetRatel.API.dll --setup-status)"
+ready_status="$(api_operator dotnet NetRatel.API.dll --setup-status)"
 grep -Fq 'Installation: Ready' <<<"$ready_status"
 grep -Fq 'Setup code: Completed' <<<"$ready_status"
-if "${compose[@]}" exec -T api dotnet NetRatel.API.dll --show-setup-code >/dev/null 2>&1; then
+if api_operator dotnet NetRatel.API.dll --show-setup-code >/dev/null 2>&1; then
   echo "A configured installation unexpectedly returned a setup code." >&2
   exit 1
 fi
-"${compose[@]}" restart api web >/dev/null
+restart_services=(api web)
+if [[ "$web_url" == https://* ]]; then
+  # Reset the proxy's upstream connections with the application. Otherwise an
+  # existing HTTPS edge connection can remain pinned to the pre-restart web
+  # process even though the web container is listening again.
+  restart_services+=(ingress)
+fi
+"${compose[@]}" restart "${restart_services[@]}" >/dev/null
+ready_after_restart=false
+ready_response=""
 for _ in $(seq 1 90); do
-  if curl "${curl_tls[@]}" --connect-timeout 2 --fail --silent "$web_url/api/v2/setup/status" | jq -e '.isReady == true' >/dev/null 2>&1; then
+  if ready_response="$(curl "${curl_tls[@]}" --connect-timeout 2 --max-time 5 --fail --silent "$web_url/api/v2/setup/status" 2>/dev/null)" \
+    && jq -e '.isReady == true' <<<"$ready_response" >/dev/null 2>&1; then
+    ready_after_restart=true
     break
   fi
   sleep 1
 done
-curl "${curl_tls[@]}" --connect-timeout 2 --fail --silent "$web_url/api/v2/setup/status" | jq -e '.isReady == true' >/dev/null
+if [[ "$ready_after_restart" != true ]]; then
+  echo "Public setup status did not become ready after the ordinary restart." >&2
+  if [[ -n "$ready_response" ]]; then
+    echo "Last response body:" >&2
+    printf '%s\n' "$ready_response" >&2
+  else
+    echo "Last response body: <empty>" >&2
+  fi
+  echo "Final public probe:" >&2
+  curl "${curl_tls[@]}" --connect-timeout 2 --max-time 5 --fail --silent --show-error --include \
+    "$web_url/api/v2/setup/status" >&2 || true
+  exit 1
+fi
 
 if [[ -n "$mcp_http_image" ]]; then
   stage="waiting for the paired local HTTP MCP gateway"
@@ -385,7 +501,7 @@ if [[ "${NETRATEL_LOCAL_FIRST_STATE_RESET_ACCEPTANCE:-false}" == true ]]; then
   done
   [[ "$recovered" == true ]] || { echo "A retained bootstrap descriptor accepted an empty replacement database." >&2; exit 1; }
   set +e
-  recovery_status="$("${compose[@]}" exec -T api dotnet NetRatel.API.dll --setup-status)"
+  recovery_status="$(api_operator dotnet NetRatel.API.dll --setup-status)"
   recovery_exit=$?
   set -e
   [[ "$recovery_exit" == 5 ]]
@@ -397,10 +513,12 @@ if [[ "${NETRATEL_LOCAL_FIRST_STATE_RESET_ACCEPTANCE:-false}" == true ]]; then
     if docker volume inspect "$volume" >/dev/null 2>&1; then docker volume rm "$volume" >/dev/null; fi
   done
   docker run --rm --volume "$key_directory:/keys" alpine:3.22 \
-    sh -ceu 'unlink /keys/agent-auth-private.pem'
+    unlink /keys/agent-auth-private.pem
   openssl ecparam -name prime256v1 -genkey -noout -out "$key_path"
   docker run --rm --volume "$key_directory:/keys" alpine:3.22 \
-    sh -ceu 'chown 1654:1654 /keys/agent-auth-private.pem && chmod 600 /keys/agent-auth-private.pem'
+    chown 1654:1654 /keys/agent-auth-private.pem
+  docker run --rm --volume "$key_directory:/keys" alpine:3.22 \
+    chmod 600 /keys/agent-auth-private.pem
   "${compose[@]}" up --detach >/dev/null
   fresh=false
   for _ in $(seq 1 90); do
@@ -412,7 +530,7 @@ if [[ "${NETRATEL_LOCAL_FIRST_STATE_RESET_ACCEPTANCE:-false}" == true ]]; then
     sleep 1
   done
   [[ "$fresh" == true ]] || { echo "A full disposable reset did not produce a fresh setup state." >&2; exit 1; }
-  reset_setup_proof="$("${compose[@]}" exec -T api cat /var/netratel/bootstrap/setup-proof)"
+  reset_setup_proof="$(api_operator cat /var/netratel/bootstrap/setup-proof)"
   [[ -n "$reset_setup_proof" && "$(printf '%s' "$reset_setup_proof" | sha256sum | cut -d ' ' -f 1)" != "$setup_proof_digest" ]]
   NETRATEL_LOCAL_FIRST_WEB_URL="$web_url" \
   NETRATEL_LOCAL_FIRST_SETUP_PROOF="$reset_setup_proof" \

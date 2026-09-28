@@ -84,7 +84,7 @@ public sealed class AgentTerminalGatewayClient : IDisposable
 
     public async Task RunForPresenceSessionAsync(GatewayPresenceSession session, string accessToken, CancellationToken stoppingToken)
     {
-        if (!_options.TerminalGatewayEnabled || !_options.TerminalAuthorityEnabled)
+        if (!_options.TerminalGatewayEnabled)
         {
             return;
         }

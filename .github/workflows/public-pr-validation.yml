@@ -46,7 +46,18 @@ jobs:
       - run: python3 tools/ci/test-release-validation.py
       - run: dotnet build NetRatel.sln --configuration Release --no-restore
       - run: pwsh src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/playwright.ps1 install --with-deps chromium
-      - run: dotnet test NetRatel.sln --configuration Release --no-build --filter "category!=compose&category!=hosted" --results-directory TestResults -- --report-trx --report-trx-filename "netratel-tests-{asm}_{tfm}_{arch}.trx"
+      - name: Run generic tests and final-head visual acceptance
+        env:
+          NETRATEL_REVIEW_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          NETRATEL_REVIEW_TEST_MERGE_SHA: ${{ github.sha }}
+        run: dotnet test NetRatel.sln --configuration Release --no-build --filter "category!=compose&category!=hosted" --results-directory TestResults -- --report-trx --report-trx-filename "netratel-tests-{asm}_{tfm}_{arch}.trx"
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pr-clients-management-visual
+          path: src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/TestResults/playwright
+          if-no-files-found: error
+          retention-days: 14
       - name: Fetch latest completed public client pack
         env:
           GH_TOKEN: ${{ github.token }}
@@ -201,6 +212,9 @@ jobs:
           NETRATEL_NATIVE_CLIENT_DIRECTORY="$PWD/artifacts/netratel-client-win-x64" \
             dotnet src/NetRatel/NetRatel.Tests/bin/Release/net10.0/NetRatel.Tests.dll \
               -method NetRatel.Tests.Infrastructure.WindowsInstallerNativeTests.GeneratedPowerShellInstallerDownloadsVerifiesAndEnrollsNativePackage
+          NETRATEL_NATIVE_CLIENT_DIRECTORY="$PWD/artifacts/netratel-client-win-x64" \
+            dotnet src/NetRatel/NetRatel.Tests/bin/Release/net10.0/NetRatel.Tests.dll \
+              -method NetRatel.Tests.Infrastructure.WindowsInstallerNativeTests.GeneratedPowerShellInstallerPersistsApiConfigurationAcrossWindowsServiceRestart
       - shell: bash
         run: |
           version="$(python3 tools/ci/product-version.py)"
@@ -263,6 +277,8 @@ jobs:
           image="netratel-${{ matrix.name }}:pr-validation"
           tools/ci/build-public-image.sh --dockerfile "${{ matrix.dockerfile }}" --image "$image" --version "$version" --revision "$GITHUB_SHA"
           tools/ci/scan-public-image.sh --image "$image" --version "$version" --revision "$GITHUB_SHA"
+      - if: matrix.name == 'api'
+        run: tools/ci/test-api-runtime-dependency.sh --image "netratel-api:pr-validation"
 
   compose:
     name: Source Compose generic OIDC smoke test
@@ -483,6 +499,7 @@ jobs:
           NETRATEL_AGENT_AUTH_PRIVATE_KEY: ./synthetic-ci-only-agent-auth.pem
           NETRATEL_CLIENT_SMOKE_IMAGE: netratel-client:release-smoke
           NETRATEL_GATEWAY_PROXY_CONFIG_PATH: ${{ github.workspace }}/tests/compose/gateway-proxy.nginx.conf
+          NETRATEL_PUBLIC_NGINX_CONFIG_PATH: ${{ github.workspace }}/release/nginx.public-https.conf
         run: |
           docker compose -f release/compose.images.yaml -f tests/compose/oidc-smoke.compose.yaml config --quiet
           NETRATEL_COMPOSE_SMOKE_BUNDLE="review-artifacts/netratel-compose-$(python3 tools/ci/product-version.py).tar.gz" \

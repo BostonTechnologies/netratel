@@ -28,7 +28,9 @@
             <MudItem xs="12" sm="12" md="6" lg="4" data-testid="client-card-item">
                 <MudCard Elevation="3"
                          Class="@($"client-card{(client.Online ? string.Empty : " client-card-offline")}")"
-                         data-testid="client-card">
+                         data-testid="client-card"
+                         data-agent-id="@client.AgentId"
+                         data-tenant-id="@client.TenantId">
                     <MudCardHeader>
                         <CardHeaderAvatar>
                             <MudAvatar Color="@(client.Online ? Color.Success : Color.Default)">
