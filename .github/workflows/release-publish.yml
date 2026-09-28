@@ -79,7 +79,7 @@ jobs:
 
           release_json="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag")" || \
             fail_verification "GitHub has no release for the required tag '$tag'. Publish that exact tag after its Release build succeeds."
-          release_draft="$(jq -r '.draft // empty' <<< "$release_json")"
+          release_draft="$(jq -r 'if (.draft | type) == "boolean" then .draft else empty end' <<< "$release_json")"
           release_tag="$(jq -r '.tag_name // empty' <<< "$release_json")"
           if [[ "$release_draft" != false || "$release_tag" != "$tag" ]]; then
             fail_verification "GitHub release metadata is invalid for '$tag' (draft=$release_draft, tag_name=$release_tag). The target release must be published and retain the canonical tag."

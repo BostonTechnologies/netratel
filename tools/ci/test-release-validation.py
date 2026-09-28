@@ -141,6 +141,70 @@ class ProductVersionTests(unittest.TestCase):
                 self.assertEqual(properties["FileVersion"], f"{prefix}.0")
 
 
+class PublishedReleaseMetadataTests(unittest.TestCase):
+    TAG = "v1.2.3-rc.7"
+    STEP_NAME = "      - name: Verify tag, release, build run, and public package repositories\n"
+
+    def metadata_shell_from_workflow(self):
+        workflow = (ROOT / ".github/workflows/release-publish.yml").read_text()
+        step_start = workflow.index(self.STEP_NAME)
+        run_marker = "        run: |\n"
+        run_start = workflow.index(run_marker, step_start) + len(run_marker)
+        next_step = re.search(r"(?m)^      - (?:name|uses):", workflow[run_start:])
+        self.assertIsNotNone(next_step, "The release verification run block must end at the next workflow step.")
+
+        shell_lines = []
+        for line in workflow[run_start:run_start + next_step.start()].splitlines():
+            if not line.strip():
+                continue
+            self.assertTrue(line.startswith("          "), f"Unexpected YAML shell indentation: {line!r}")
+            shell_lines.append(line[10:])
+
+        shell = "\n".join(shell_lines)
+        metadata_start = shell.index('release_draft="$(jq')
+        metadata_end = shell.index("wait_seconds=", metadata_start)
+        return shell[metadata_start:metadata_end]
+
+    def run_metadata_check(self, release, tag=None):
+        metadata_shell = self.metadata_shell_from_workflow()
+        harness = """set -euo pipefail
+fail_verification() {
+  printf 'verification blocked: %s\\n' "$*" >&2
+  exit 1
+}
+release_json="${RELEASE_JSON:?}"
+tag="${EXPECTED_TAG:?}"
+"""
+        return subprocess.run(
+            ["/bin/bash", "-c", harness + metadata_shell],
+            env={**os.environ,
+                 "RELEASE_JSON": json.dumps(release),
+                 "EXPECTED_TAG": tag or self.TAG},
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+
+    def test_published_release_metadata_accepts_boolean_false(self):
+        result = self.run_metadata_check({"draft": False, "tag_name": self.TAG})
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_unpublished_or_malformed_release_metadata_is_rejected(self):
+        cases = (
+            ("draft true", {"draft": True, "tag_name": self.TAG}, self.TAG),
+            ("missing draft", {"tag_name": self.TAG}, self.TAG),
+            ("null draft", {"draft": None, "tag_name": self.TAG}, self.TAG),
+            ("string false", {"draft": "false", "tag_name": self.TAG}, self.TAG),
+            ("numeric false-looking draft", {"draft": 0, "tag_name": self.TAG}, self.TAG),
+            ("wrong tag", {"draft": False, "tag_name": "v1.2.3-rc.8"}, self.TAG),
+        )
+        for name, release, tag in cases:
+            with self.subTest(name=name):
+                result = self.run_metadata_check(release, tag)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn("verification blocked:", result.stderr)
+
+
 class ReleaseBuildStatusTests(unittest.TestCase):
     def setUp(self):
         self.selector = module("release-build-status")
