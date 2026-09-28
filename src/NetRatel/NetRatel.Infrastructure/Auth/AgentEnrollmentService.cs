@@ -2,7 +2,6 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using NetRatel.Application.ClientAuth;
 using NetRatel.Application.Agents;
 using NetRatel.Infrastructure.Services;
@@ -86,53 +85,39 @@ public sealed class AgentEnrollmentService : IAgentEnrollmentService
         try
         {
             var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-            var payload = string.IsNullOrWhiteSpace(body)
-                ? null
-                : JsonSerializer.Deserialize<ProblemPayload>(body, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-            var detail = payload?.Detail ?? payload?.Title ?? "Enrollment failed.";
-            var correlationId = payload?.CorrelationId;
-            if (string.IsNullOrWhiteSpace(correlationId) && !string.IsNullOrWhiteSpace(body))
+            string? correlationId = null;
+            if (!string.IsNullOrWhiteSpace(body))
             {
                 using var doc = JsonDocument.Parse(body);
-                if (doc.RootElement.TryGetProperty("extensions", out var ext) &&
-                    ext.ValueKind == JsonValueKind.Object &&
-                    ext.TryGetProperty("correlationId", out var corr))
+                if (doc.RootElement.TryGetProperty("correlationId", out var directCorrelation))
+                {
+                    correlationId = directCorrelation.GetString();
+                }
+                if (string.IsNullOrWhiteSpace(correlationId) &&
+                    doc.RootElement.TryGetProperty("extensions", out var ext) &&
+                    ext.ValueKind == JsonValueKind.Object && ext.TryGetProperty("correlationId", out var corr))
                 {
                     correlationId = corr.GetString();
                 }
             }
 
-            var compactBody = TrimForLog(body);
-            return $"status={(int)response.StatusCode} {response.ReasonPhrase}; detail={detail}" +
-                   (string.IsNullOrWhiteSpace(correlationId) ? string.Empty : $"; correlationId={correlationId}") +
-                   (string.IsNullOrWhiteSpace(compactBody) ? string.Empty : $"; body={compactBody}");
+            var safeCorrelation = SafeDiagnosticToken(correlationId);
+            var detail = response.StatusCode == HttpStatusCode.Unauthorized
+                ? "Enrollment was rejected."
+                : "Enrollment failed.";
+            return $"status={(int)response.StatusCode}; detail={detail}" +
+                   (safeCorrelation is null ? string.Empty : $"; correlationId={safeCorrelation}");
         }
-        catch (JsonException)
+        catch (Exception exception) when (exception is JsonException or InvalidOperationException)
         {
             return $"status={(int)response.StatusCode} {response.ReasonPhrase}; detail={(response.StatusCode == HttpStatusCode.Unauthorized ? "Unauthorized." : "Enrollment failed.")}";
         }
     }
 
     private sealed record EnrollResponse(Guid AgentId, string RefreshToken, int ExpiresInDays);
-    private sealed record ProblemPayload(string? Title, string? Detail, string? CorrelationId);
 
-    private static string TrimForLog(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return string.Empty;
-        }
-
-        const int max = 2048;
-        var compact = RedactSecrets(value).Replace(Environment.NewLine, " ").Trim();
-        return compact.Length <= max ? compact : compact[..max] + "...";
-    }
-
-    private static string RedactSecrets(string value)
-    {
-        var result = value;
-        result = Regex.Replace(result, "(\"refreshToken\"\\s*:\\s*\")[^\"]+\"", "$1[REDACTED]\"", RegexOptions.IgnoreCase);
-        result = Regex.Replace(result, "(\"accessToken\"\\s*:\\s*\")[^\"]+\"", "$1[REDACTED]\"", RegexOptions.IgnoreCase);
-        return result;
-    }
+    private static string? SafeDiagnosticToken(string? value) =>
+        !string.IsNullOrWhiteSpace(value) && value.Length <= 64 && value.All(c => char.IsAsciiLetterOrDigit(c) || c is '_' or '-')
+            ? value
+            : null;
 }

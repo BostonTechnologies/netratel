@@ -6,7 +6,6 @@ using Microsoft.AspNetCore.Mvc;
 using NetRatel.API.Gateway;
 using NetRatel.API.Middleware;
 using NetRatel.API.Services;
-using NetRatel.Akka.Configuration;
 using NetRatel.Application.Operations;
 using NetRatel.Application.Presence;
 
@@ -30,7 +29,7 @@ public static class McpOperatorRemoteSupportEndpoints
     private static async Task<IResult> ReadAsync(int tenantId, Guid agentId, string operation,
         HttpContext http, IHostEnvironment environment, IMcpOperatorRouteAdmission admission,
         [FromServices] IClientPresenceRouter presence,
-        [FromServices] NetRatelAkkaMigrationOptions options, TimeProvider timeProvider, CancellationToken cancellationToken)
+        [FromServices] IRemoteSupportV2PreparationRegistry preparation, TimeProvider timeProvider, CancellationToken cancellationToken)
     {
         if (operation is not ("presence" or "capabilities" or "inventory")) return Results.NotFound();
         var (context, failure) = await AdmitAsync(operation, tenantId, agentId, http, environment, admission, cancellationToken);
@@ -44,19 +43,17 @@ public static class McpOperatorRemoteSupportEndpoints
                 var snapshot = await presence.GetSnapshotAsync(target, cancellationToken);
                 return Results.Ok(new { tenantId, agentId, status = snapshot.Status.ToString(), context.CorrelationId });
             }
-            var preparation = http.RequestServices.GetService<IRemoteSupportV2PreparationRegistry>();
-            var enabled = options.IsRemoteSupportV2InventoryActive;
             var now = timeProvider.GetUtcNow();
             if (operation == "capabilities")
             {
-                var snapshot = enabled ? preparation?.GetCapabilities(target) : null;
-                return Results.Ok(new { tenantId, agentId, enabled, hasSnapshot = snapshot is not null,
+                var snapshot = preparation.GetCapabilities(target);
+                return Results.Ok(new { tenantId, agentId, hasSnapshot = snapshot is not null,
                     transportAvailable = snapshot?.IsFresh(now) == true,
                     fresh = snapshot?.IsFresh(now) == true, snapshot, context.CorrelationId });
             }
-            var inventory = enabled ? preparation?.GetInventory(target) : null;
-            return Results.Ok(new { tenantId, agentId, enabled, hasSnapshot = inventory is not null,
-                transportAvailable = enabled && preparation?.GetCapabilities(target)?.IsFresh(now) == true,
+            var inventory = preparation.GetInventory(target);
+            return Results.Ok(new { tenantId, agentId, hasSnapshot = inventory is not null,
+                transportAvailable = preparation.GetCapabilities(target)?.IsFresh(now) == true,
                 fresh = inventory?.IsFresh(now) == true, receivedAtUtc = inventory?.ReceivedAtUtc,
                 projectionExpiresAtUtc = inventory?.ExpiresAtUtc, snapshot = inventory?.Snapshot, context.CorrelationId });
         }
@@ -77,7 +74,7 @@ public static class McpOperatorRemoteSupportEndpoints
     private static async Task<IResult> ConfirmRefreshAsync(int tenantId, Guid agentId, McpOperatorRemoteSupportConfirmRequest request,
         HttpContext http, IHostEnvironment environment, IMcpOperatorRouteAdmission admission,
         IMcpOperatorConfirmationService confirmations,
-        [FromServices] NetRatelAkkaMigrationOptions options, CancellationToken cancellationToken)
+        [FromServices] IRemoteSupportV2PreparationRegistry preparation, CancellationToken cancellationToken)
     {
         var (context, failure) = await AdmitAsync("refresh_inventory", tenantId, agentId, http, environment, admission, cancellationToken);
         if (failure is not null) return failure;
@@ -93,9 +90,6 @@ public static class McpOperatorRemoteSupportEndpoints
         try
         {
             await admission.RecordAcceptedAsync(context.Request, cancellationToken);
-            var preparation = http.RequestServices.GetService<IRemoteSupportV2PreparationRegistry>();
-            if (!options.IsRemoteSupportV2InventoryActive || preparation is null)
-                throw new RemoteSupportV2InventoryUnavailableException(new ClientKey(tenantId, agentId));
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(TimeSpan.FromSeconds(10));
             await preparation.RequestInventoryRefreshAsync(new ClientKey(tenantId, agentId), timeout.Token);
@@ -144,13 +138,12 @@ public static class McpOperatorRemoteSupportEndpoints
         {
             var target = new ClientKey(tenantId, agentId);
             var presence = await http.RequestServices.GetRequiredService<IClientPresenceRouter>().GetSnapshotAsync(target, cancellationToken);
-            var options = http.RequestServices.GetRequiredService<NetRatelAkkaMigrationOptions>();
-            var capabilities = http.RequestServices.GetService<IRemoteSupportV2PreparationRegistry>()?.GetCapabilities(target);
+            var capabilities = http.RequestServices.GetRequiredService<IRemoteSupportV2PreparationRegistry>().GetCapabilities(target);
+            var now = http.RequestServices.GetRequiredService<TimeProvider>().GetUtcNow();
             request = request with
             {
-                TargetOnline = presence.Status == ShadowPresenceStatus.Online,
-                CapabilityAvailable = options.IsRemoteSupportV2InventoryActive &&
-                    capabilities?.IsFresh(http.RequestServices.GetRequiredService<TimeProvider>().GetUtcNow()) == true
+                TargetOnline = presence.Status == ClientPresenceStatus.Online,
+                CapabilityAvailable = capabilities?.IsFresh(now) == true
             };
         }
         var evaluated = await admission.EvaluateAsync(request, cancellationToken);

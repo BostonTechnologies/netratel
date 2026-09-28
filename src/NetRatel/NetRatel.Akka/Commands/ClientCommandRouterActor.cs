@@ -7,12 +7,12 @@ using NetRatel.Application.Commands;
 namespace NetRatel.Akka.Commands;
 
 /// <summary>
-/// Local-only Phase 3 command region. It isolates command entities and records
-/// bounded scalar diagnostics without acquiring command dispatch authority.
+/// Process-local command lifecycle region. Dispatch remains with the gateway
+/// command service; every accepted observation is backed by durable storage.
 /// </summary>
 public sealed class ClientCommandRouterActor : ReceiveActor
 {
-    private readonly ICommandPersistenceStore? _persistenceStore;
+    private readonly ICommandPersistenceStore _persistenceStore;
     private readonly DateTimeOffset _startedAtUtc = DateTimeOffset.UtcNow;
     private int _activeCommands;
     private ulong _completedCommands;
@@ -20,16 +20,12 @@ public sealed class ClientCommandRouterActor : ReceiveActor
     private ulong _invalidTransitions;
     private ulong _staleEvents;
 
-    public ClientCommandRouterActor() : this(null)
+    public ClientCommandRouterActor(ICommandPersistenceStore persistenceStore)
     {
-    }
-
-    public ClientCommandRouterActor(ICommandPersistenceStore? persistenceStore)
-    {
-        _persistenceStore = persistenceStore;
+        _persistenceStore = persistenceStore ?? throw new ArgumentNullException(nameof(persistenceStore));
         Receive<RecordCommandLifecycleEvent>(message =>
             GetOrCreateCommandActor(message.Command).Tell(new RoutedCommandRecord(message, Sender)));
-        Receive<GetCommandShadowState>(message =>
+        Receive<GetCommandState>(message =>
         {
             var commandActor = GetCommandActor(message.Command);
             if (commandActor.IsNobody())
@@ -45,9 +41,6 @@ public sealed class ClientCommandRouterActor : ReceiveActor
         Receive<ProbeClientCommandRoute>(_ => Sender.Tell(CreateStatus()));
     }
 
-    public static Props Props() =>
-        global::Akka.Actor.Props.Create(() => new ClientCommandRouterActor());
-
     public static Props Props(ICommandPersistenceStore persistenceStore) =>
         global::Akka.Actor.Props.Create(() => new ClientCommandRouterActor(persistenceStore));
 
@@ -61,9 +54,7 @@ public sealed class ClientCommandRouterActor : ReceiveActor
 
         using var activity = NetRatelAkkaTelemetry.StartActivity("akka.actor.create", "command");
         return Context.ActorOf(
-            _persistenceStore is null
-                ? CommandActor.Props(command)
-                : CommandActor.Props(command, _persistenceStore),
+            CommandActor.Props(command, _persistenceStore),
             CreateActorName(command.EntityId));
     }
 
@@ -144,8 +135,8 @@ public sealed class ClientCommandRouterActor : ReceiveActor
             _invalidTransitions,
             _staleEvents,
             _startedAtUtc,
-            "local-shadow",
-            "unavailable");
+            "akka",
+            "akka");
 
     private static bool IsActive(CommandLifecycleStatus? status) =>
         status is CommandLifecycleStatus.Created or

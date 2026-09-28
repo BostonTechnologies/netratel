@@ -24,7 +24,7 @@ public sealed class AgentRemoteSupportPreparationGatewayService(
     IAgentManagementService agentManagement,
     IRemoteSupportV2PreparationRegistry preparations,
     IRequiredActor<RemoteSupportSessionAuthorityRegion> authorityRegion,
-    NetRatelAkkaMigrationOptions options,
+    NetRatelAkkaOptions options,
     ILogger<AgentRemoteSupportPreparationGatewayService> logger)
     : AgentRemoteSupportPreparationGateway.AgentRemoteSupportPreparationGatewayBase
 {
@@ -33,11 +33,6 @@ public sealed class AgentRemoteSupportPreparationGatewayService(
         IServerStreamWriter<GatewayRemoteSupportPreparationFrame> responseStream,
         ServerCallContext context)
     {
-        if (!options.IsRemoteSupportV2InventoryActive)
-        {
-            throw new RpcException(new GrpcStatus(StatusCode.FailedPrecondition, "The Remote Support V2 preparation gateway is disabled."));
-        }
-
         if (!AgentGatewayIdentityResolver.TryResolve(context.GetHttpContext().User, out var identity, out var error) || identity is null)
         {
             throw new RpcException(new GrpcStatus(StatusCode.PermissionDenied, error));
@@ -59,24 +54,19 @@ public sealed class AgentRemoteSupportPreparationGatewayService(
             session.Client,
             session.ConnectionId,
             session.ConnectionEpoch,
-            options.ProtocolVersion,
+            NetRatelAkkaOptions.ProtocolVersion,
             requestStream.Current.Hello.Capabilities);
         await responseStream.WriteAsync(CreateAccepted(session)).ConfigureAwait(false);
 
-        var writer = WriteOutboundAsync(registration.Reader, responseStream, context.CancellationToken);
-        try
+        await GatewayDuplexSession.RunAsync(async cancellationToken =>
         {
             ulong lastSequence = 0;
-            while (await requestStream.MoveNext(context.CancellationToken).ConfigureAwait(false))
+            while (await requestStream.MoveNext(cancellationToken).ConfigureAwait(false))
             {
-                lastSequence = await ProcessInboundAsync(requestStream.Current, session, lastSequence, context.CancellationToken).ConfigureAwait(false);
+                lastSequence = await ProcessInboundAsync(requestStream.Current, session, lastSequence, cancellationToken).ConfigureAwait(false);
             }
-        }
-        finally
-        {
-            registration.Dispose();
-            await writer.ConfigureAwait(false);
-        }
+        }, cancellationToken => WriteOutboundAsync(registration.Reader, responseStream, cancellationToken),
+            context.CancellationToken, CancellationToken.None, logger).ConfigureAwait(false);
     }
 
     private async Task<ValidatedPreparationSession> ValidateHelloAsync(
@@ -85,7 +75,7 @@ public sealed class AgentRemoteSupportPreparationGatewayService(
         CancellationToken cancellationToken)
     {
         if (frame.PayloadCase != AgentRemoteSupportPreparationFrame.PayloadOneofCase.Hello || frame.Sequence != 0 ||
-            !string.Equals(frame.ProtocolVersion, options.ProtocolVersion, StringComparison.Ordinal) || frame.TenantId != identity.TenantId ||
+            !string.Equals(frame.ProtocolVersion, NetRatelAkkaOptions.ProtocolVersion, StringComparison.Ordinal) || frame.TenantId != identity.TenantId ||
             !Guid.TryParse(frame.ClientId, out var agentId) || agentId != identity.AgentId ||
             !Guid.TryParse(frame.ConnectionId, out var connectionId) || connectionId == Guid.Empty || frame.ConnectionEpoch == 0)
         {
@@ -221,24 +211,24 @@ public sealed class AgentRemoteSupportPreparationGatewayService(
 
     private GatewayRemoteSupportPreparationFrame CreateAccepted(ValidatedPreparationSession session) => new()
     {
-        ProtocolVersion = options.ProtocolVersion,
+        ProtocolVersion = NetRatelAkkaOptions.ProtocolVersion,
         TenantId = session.Client.TenantId,
         ClientId = session.Client.AgentId.ToString("D"),
         ConnectionEpoch = session.ConnectionEpoch,
         ConnectionId = session.ConnectionId.ToString("D"),
         Sequence = 0,
-        Accepted = new RemoteSupportPreparationConnectAccepted { PreparationAuthority = options.PresenceAuthority }
+        Accepted = new RemoteSupportPreparationConnectAccepted { PreparationAuthority = "akka" }
     };
 
     private bool Matches(AgentRemoteSupportPreparationFrame frame, ValidatedPreparationSession session) =>
-        string.Equals(frame.ProtocolVersion, options.ProtocolVersion, StringComparison.Ordinal) && frame.TenantId == session.Client.TenantId &&
+        string.Equals(frame.ProtocolVersion, NetRatelAkkaOptions.ProtocolVersion, StringComparison.Ordinal) && frame.TenantId == session.Client.TenantId &&
         string.Equals(frame.ClientId, session.Client.AgentId.ToString("D"), StringComparison.OrdinalIgnoreCase) &&
         frame.ConnectionEpoch == session.ConnectionEpoch && string.Equals(frame.ConnectionId, session.ConnectionId.ToString("D"), StringComparison.OrdinalIgnoreCase);
 
     private async Task RequirePresenceAsync(ClientKey client, Guid connectionId, ulong epoch, CancellationToken cancellationToken)
     {
         var presence = await presenceRouter.GetSnapshotAsync(client, cancellationToken).ConfigureAwait(false);
-        if (presence.Status != ShadowPresenceStatus.Online || presence.ConnectionId != connectionId || presence.ConnectionEpoch != checked((long)epoch))
+        if (presence.Status != ClientPresenceStatus.Online || presence.ConnectionId != connectionId || presence.ConnectionEpoch != checked((long)epoch))
         {
             throw new RpcException(new GrpcStatus(StatusCode.Aborted, "The Remote Support V2 preparation stream is fenced by the active presence connection."));
         }

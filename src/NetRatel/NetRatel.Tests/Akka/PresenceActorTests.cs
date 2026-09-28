@@ -23,7 +23,7 @@ public sealed class PresenceActorTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task ClientActor_RecordsOnlyShadowPresence()
+    public async Task ClientActor_RecordsNormalAkkaPresence()
     {
         var client = new ClientKey(17, Guid.NewGuid());
         var connectionId = Guid.NewGuid();
@@ -52,23 +52,21 @@ public sealed class PresenceActorTests : IAsyncLifetime
 
         started.ConnectionEpoch.Should().Be(1);
         heartbeat.Disposition.Should().Be(PresenceMessageDisposition.Accepted);
-        snapshot.Status.Should().Be(ShadowPresenceStatus.Online);
+        snapshot.Status.Should().Be(ClientPresenceStatus.Online);
         snapshot.LastAcceptedSequence.Should().Be(1);
-        snapshot.Source.Should().Be("unavailable");
-        snapshot.IsAuthoritative.Should().BeFalse();
+        snapshot.Source.Should().Be("akka");
+        snapshot.IsAuthoritative.Should().BeTrue();
         snapshot.AgentVersion.Should().Be("1.2.3");
         snapshot.Capabilities.Should().Equal("presence", "shell:pwsh");
         snapshot.LegacySpacetimeIdentity.Should().Be(new string('a', 64));
     }
 
     [Fact]
-    public async Task ClientActor_ClaimsAuthorityWhenPresenceAuthorityIsEnabled()
+    public async Task ClientActor_ReportsTheSameAuthorityWithDefaultRuntimeOptions()
     {
         var client = new ClientKey(18, Guid.NewGuid());
         var connectionId = Guid.NewGuid();
-        var options = CreateOptions();
-        options.PresenceAuthorityEnabled = true;
-        var actor = _system.ActorOf(ClientActor.Props(client, options));
+        var actor = _system.ActorOf(ClientActor.Props(client, CreateOptions()));
 
         await actor.Ask<GatewayPresenceSessionStarted>(new StartGatewayPresenceSession(
             client,
@@ -167,7 +165,7 @@ public sealed class PresenceActorTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Disconnect_MarksOnlyTheShadowSnapshotOffline()
+    public async Task Disconnect_MarksTheCurrentPresenceSnapshotOffline()
     {
         var client = new ClientKey(9, Guid.NewGuid());
         var connectionId = Guid.NewGuid();
@@ -192,12 +190,12 @@ public sealed class PresenceActorTests : IAsyncLifetime
         var snapshot = await actor.Ask<ClientPresenceSnapshot>(new GetClientPresence(client));
 
         ended.Disposition.Should().Be(PresenceMessageDisposition.Accepted);
-        snapshot.Status.Should().Be(ShadowPresenceStatus.Offline);
-        snapshot.IsAuthoritative.Should().BeFalse();
+        snapshot.Status.Should().Be(ClientPresenceStatus.Offline);
+        snapshot.IsAuthoritative.Should().BeTrue();
     }
 
     [Fact]
-    public async Task MissedHeartbeatDeadline_MarksTheShadowSnapshotOffline()
+    public async Task MissedHeartbeatDeadline_MarksTheCurrentPresenceSnapshotOffline()
     {
         var client = new ClientKey(11, Guid.NewGuid());
         var connectionId = Guid.NewGuid();
@@ -205,11 +203,11 @@ public sealed class PresenceActorTests : IAsyncLifetime
         options.HeartbeatIntervalSeconds = 1;
         options.MissedHeartbeatLimit = 1;
         options.HeartbeatGraceSeconds = 0;
-        var offlineTransition = new TaskCompletionSource<ShadowPresenceChanged>(
+        var offlineTransition = new TaskCompletionSource<ClientPresenceChanged>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var observer = _system.ActorOf(global::Akka.Actor.Props.Create(
-            () => new ShadowPresenceObserver(offlineTransition)));
-        _system.EventStream.Subscribe(observer, typeof(ShadowPresenceChanged));
+            () => new ClientPresenceObserver(offlineTransition)));
+        _system.EventStream.Subscribe(observer, typeof(ClientPresenceChanged));
         var actor = _system.ActorOf(ClientActor.Props(client, options));
 
         await actor.Ask<GatewayPresenceSessionStarted>(new StartGatewayPresenceSession(
@@ -226,8 +224,8 @@ public sealed class PresenceActorTests : IAsyncLifetime
         var snapshot = await actor.Ask<ClientPresenceSnapshot>(new GetClientPresence(client));
 
         transition.Reason.Should().Be("heartbeat-expired");
-        snapshot.Status.Should().Be(ShadowPresenceStatus.Offline);
-        snapshot.IsAuthoritative.Should().BeFalse();
+        snapshot.Status.Should().Be(ClientPresenceStatus.Offline);
+        snapshot.IsAuthoritative.Should().BeTrue();
     }
 
     [Fact]
@@ -253,27 +251,24 @@ public sealed class PresenceActorTests : IAsyncLifetime
         projection.Revision.Should().Be(1);
         projection.Items.Should().ContainSingle(snapshot =>
             snapshot.Client == client &&
-            snapshot.Status == ShadowPresenceStatus.Online &&
+            snapshot.Status == ClientPresenceStatus.Online &&
             snapshot.AgentVersion == "0.4.94");
     }
 
-    private static NetRatelAkkaMigrationOptions CreateOptions() => new()
+    private static NetRatelAkkaOptions CreateOptions() => new()
     {
-        Enabled = true,
-        PresenceEnabled = true,
-        GatewayEnabled = true,
         HeartbeatIntervalSeconds = 15,
         MissedHeartbeatLimit = 3,
         HeartbeatGraceSeconds = 5
     };
 
-    private sealed class ShadowPresenceObserver : ReceiveActor
+    private sealed class ClientPresenceObserver : ReceiveActor
     {
-        public ShadowPresenceObserver(TaskCompletionSource<ShadowPresenceChanged> offlineTransition)
+        public ClientPresenceObserver(TaskCompletionSource<ClientPresenceChanged> offlineTransition)
         {
-            Receive<ShadowPresenceChanged>(transition =>
+            Receive<ClientPresenceChanged>(transition =>
             {
-                if (transition.Status == ShadowPresenceStatus.Offline)
+                if (transition.Status == ClientPresenceStatus.Offline)
                 {
                     offlineTransition.TrySetResult(transition);
                 }

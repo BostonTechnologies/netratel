@@ -1006,7 +1006,7 @@ internal sealed class AgentFileGatewaySession(
     private async Task EnsurePresenceLeaseAsync(CancellationToken cancellationToken)
     {
         var presence = await presenceRouter.GetSnapshotAsync(client, cancellationToken).ConfigureAwait(false);
-        if (presence.Status != ShadowPresenceStatus.Online || presence.ConnectionId != connectionId ||
+        if (presence.Status != ClientPresenceStatus.Online || presence.ConnectionId != connectionId ||
             presence.ConnectionEpoch != checked((long)connectionEpoch))
         {
             throw new AgentFileGatewaySessionUnavailableException(client);

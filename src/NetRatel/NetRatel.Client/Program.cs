@@ -10,12 +10,14 @@ using NetRatel.Client.Service.Gateway;
 using NetRatel.Client.Service.Logging;
 using NetRatel.Client.Service.RemoteDesktop;
 using NetRatel.Client.Service.RemoteSupport;
+using NetRatel.Client.Service.Readiness;
 using NetRatel.Client.Service.Tasks;
 using NetRatel.Client.Service.Terminal;
 using NetRatel.Client.Service.Updates;
 using NetRatel.Client.Services;
 using NetRatel.Infrastructure.Auth;
 using NetRatel.Shared;
+using NetRatel.Shared.Client;
 using NetRatel.Shared.Service.ClientEnvironment;
 using NetRatel.Shared.Utils;
 using System;
@@ -236,14 +238,18 @@ async Task RunClientAsync()
         appBaseDir,
         cliArgs);
     var cfg = ClientConfigurationLoader.Load(packagedDefaults, deploymentOverrides, appBaseDir, cliArgs);
-    cfg.ApiBaseUrl = NormalizeApiBaseUrl(cfg.ApiBaseUrl);
-    var gatewayOptions = ClientConfigurationLoader.LoadGatewayOptions(configuration, cfg.ApiBaseUrl);
+    cfg.ApiBaseUrl = ClientEndpointAddress.NormalizeApiBase(cfg.ApiBaseUrl);
+    var readinessReporter = WindowsStartupReadinessReporter.Create(
+        cfg.ServiceReadiness,
+        serviceMode,
+        message => LogManager.WriteLog(message));
+    readinessReporter.Report("service_started");
     GlobalContext.version = GetAgentVersion();
 
     LogManager.WriteLog($"[Client] RuntimeBaseDir={runtimeBaseDir}");
     LogManager.WriteLog($"[Client] AppBaseDir={appBaseDir}");
     LogManager.WriteLog($"[Client] LogFile={LogManager.LogFilePath}");
-    LogManager.WriteLog($"[Client] Tenant={cfg.TenantId}, Env={cfg.Environment}, API={cfg.ApiBaseUrl}");
+    LogManager.WriteLog($"[Client] Env={cfg.Environment}, API={cfg.ApiBaseUrl}");
     LogManager.WriteLog($"Application {GlobalContext.version} starting.");
 
     var services = new ServiceCollection();
@@ -254,7 +260,7 @@ async Task RunClientAsync()
     {
         http.BaseAddress = new Uri(cfg.ApiBaseUrl.TrimEnd('/'));
         http.Timeout = TimeSpan.FromSeconds(30);
-    });
+    }).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
     services.AddScoped<IAgentEnrollmentService>(sp =>
         new AgentEnrollmentService(
             sp.GetRequiredService<IHttpClientFactory>().CreateClient("AgentAuthApi"),
@@ -287,7 +293,17 @@ async Task RunClientAsync()
     var tokenService = (ClientAgentTokenService)rootProvider.GetRequiredService<IAgentTokenService>();
     var injectedEnrollmentBootstrap = new InjectedEnrollmentBootstrap();
     var enrollmentCliCommand = new EnrollmentCliCommand();
-    var creds = await credentialStore.LoadAsync();
+    (string AgentId, string RefreshToken)? creds;
+    try
+    {
+        creds = await credentialStore.LoadAsync();
+    }
+    catch (AgentCredentialStoreException ex)
+    {
+        LogManager.WriteLog($"[Auth] Stored installation credentials were preserved but could not be safely loaded: {ex.Message}");
+        Environment.ExitCode = 12;
+        return;
+    }
     if (creds is null)
     {
         try
@@ -302,6 +318,11 @@ async Task RunClientAsync()
         {
             LogManager.WriteLog($"[Auth] Injected enrollment failed ({ex.Message}). Falling back to manual enrollment code entry.");
         }
+    }
+
+    if (creds is { } enrolledCredentials && Guid.TryParse(enrolledCredentials.AgentId, out var enrolledAgentId))
+    {
+        readinessReporter.Report("enrolled", enrolledAgentId);
     }
 
     var cliResult = await enrollmentCliCommand.TryExecuteAsync(
@@ -389,13 +410,31 @@ async Task RunClientAsync()
         }
     }
 
+    // Enrollment and auth-check commands only need the REST API. Resolve the
+    // HTTPS gateway endpoint when this process is actually going to run the
+    // operational agent session, so local HTTP enrollment remains supported.
+    var gatewayResolution = ClientConfigurationLoader.ResolveGatewayOptions(
+        configuration,
+        cfg.ApiBaseUrl,
+        packagedDefaults,
+        deploymentOverrides,
+        appBaseDir,
+        cliArgs);
+    var gatewayOptions = gatewayResolution.Options;
+
     string initialToken;
     try
     {
-        var tokenResult = await DisabledAgentTokenRetry.GetAccessTokenAsync(
-            tokenService, message => LogManager.WriteLog($"[Auth] {message}"), applicationStopping.Token);
+        var tokenResult = await StartupTokenAcquisition.GetAccessTokenAsync(
+            cfg,
+            tokenService,
+            enrollmentService,
+            credentialStore,
+            injectedEnrollmentBootstrap,
+            message => LogManager.WriteLog($"[Auth] {message}"),
+            applicationStopping.Token);
         initialToken = tokenResult.AccessToken;
-        LogManager.WriteLog($"[Auth] Access token acquired (expires {tokenResult.ExpiresAtUtc:u}; {AccessTokenAuditMetadata.Describe(initialToken)}).");
+        LogManager.WriteLog($"[Auth] Access token acquired (expiresAtUtc={tokenResult.ExpiresAtUtc:O}; {AccessTokenAuditMetadata.Describe(initialToken)}).");
     }
     catch (OperationCanceledException) when (applicationStopping.IsCancellationRequested)
     {
@@ -405,7 +444,16 @@ async Task RunClientAsync()
     {
         if (ex.ShouldClearCredentials)
         {
-            await credentialStore.ClearRefreshCredentialsAsync();
+            try
+            {
+                await credentialStore.ClearRefreshCredentialsAsync();
+            }
+            catch (AgentCredentialStoreException storeError)
+            {
+                LogManager.WriteLog($"[Auth] Refresh credentials were retained because the installation identity could not be preserved: {storeError.Message}");
+                Environment.ExitCode = 12;
+                return;
+            }
         }
         LogManager.WriteLog($"[Auth] Failed to acquire access token: {ex.Message}");
         Environment.ExitCode = 12;
@@ -424,14 +472,26 @@ async Task RunClientAsync()
         return;
     }
 
-    if (!Guid.TryParse(creds.Value.AgentId, out var agentId) || agentId == Guid.Empty)
+    try
+    {
+        creds = await credentialStore.LoadAsync();
+    }
+    catch (AgentCredentialStoreException ex)
+    {
+        LogManager.WriteLog($"[Gateway] Stored installation credentials were preserved but could not be safely loaded: {ex.Message}");
+        Environment.ExitCode = 13;
+        return;
+    }
+    if (creds is null || !Guid.TryParse(creds.Value.AgentId, out var agentId) || agentId == Guid.Empty)
     {
         LogManager.WriteLog("[Gateway] The enrolled agent ID is invalid. Exiting.");
         Environment.ExitCode = 13;
         return;
     }
 
-    LogManager.WriteLog($"[Gateway] Starting authenticated Akka presence. Endpoint={gatewayOptions.Endpoint}");
+    readinessReporter.Report("authenticated", agentId, tokenTenantId.Value);
+
+    LogManager.WriteLog($"[Gateway] Starting authenticated Akka presence. AgentId={agentId}, TenantId={tokenTenantId.Value}, endpointSource={gatewayResolution.Source}, Endpoint={gatewayOptions.Endpoint}");
     var telemetryPublisher = new AgentGatewayTelemetryPublisher(
         gatewayOptions,
         GetAgentVersion(),
@@ -490,7 +550,9 @@ async Task RunClientAsync()
                 new GatewayPresenceExtension("command", commandGateway.RunForPresenceSessionAsync),
                 new GatewayPresenceExtension("job", jobGateway.RunForPresenceSessionAsync)
             ]),
-        updateCoordinator);
+        updateCoordinator,
+        reportReadiness: (stage, readyAgentId, readyTenantId, epoch, connectionId) =>
+            readinessReporter.Report(stage, readyAgentId, readyTenantId, epoch, connectionId));
     await gatewayClient.RunAsync(applicationStopping.Token).ConfigureAwait(false);
     return;
 }
@@ -660,10 +722,17 @@ static async Task<int> RunAuthCheckAsync(
     DateTimeOffset expiresAtUtc;
     try
     {
-        var token = await tokenService.GetAccessTokenAsync(ct);
+        var token = await StartupTokenAcquisition.GetAccessTokenAsync(
+            cfg,
+            tokenService,
+            enrollmentService,
+            credentialStore,
+            injectedEnrollmentBootstrap,
+            message => LogManager.WriteLog($"[AuthCheck] {message}"),
+            ct);
         accessToken = token.AccessToken;
         expiresAtUtc = token.ExpiresAtUtc;
-        LogManager.WriteLog($"[AuthCheck] Access token acquired. expiresAtUtc={expiresAtUtc:u}; {AccessTokenAuditMetadata.Describe(accessToken)}");
+        LogManager.WriteLog($"[AuthCheck] Access token acquired. expiresAtUtc={expiresAtUtc:O}; {AccessTokenAuditMetadata.Describe(accessToken)}");
     }
     catch (AgentClientAuthException ex)
     {
@@ -675,7 +744,15 @@ static async Task<int> RunAuthCheckAsync(
 
         if (ex.ShouldClearCredentials)
         {
-            await credentialStore.ClearRefreshCredentialsAsync();
+            try
+            {
+                await credentialStore.ClearRefreshCredentialsAsync();
+            }
+            catch (AgentCredentialStoreException storeError)
+            {
+                LogManager.WriteLog($"[AuthCheck] Refresh credentials were retained because the installation identity could not be preserved: {storeError.Message}");
+                return 12;
+            }
         }
 
         LogManager.WriteLog($"[AuthCheck] Token request failed: {ex.Message}");
@@ -776,16 +853,6 @@ static string? GetArgValue(string[] args, string key)
     }
 
     return null;
-}
-
-static string NormalizeApiBaseUrl(string value)
-{
-    if (string.IsNullOrWhiteSpace(value))
-    {
-        return value;
-    }
-
-    return value.Trim().TrimEnd('/');
 }
 
 static string ResolveExecutableDirectory(string fallback)
@@ -1949,7 +2016,7 @@ static int? TryGetTenantId(string token)
     {
         var jwt = new JwtSecurityTokenHandler().ReadJwtToken(token);
         var rawTenantId = jwt.Claims.FirstOrDefault(c => c.Type == "tenant_id")?.Value;
-        return int.TryParse(rawTenantId, out var tenantId) ? tenantId : null;
+        return int.TryParse(rawTenantId, out var tenantId) && tenantId > 0 ? tenantId : null;
     }
     catch
     {

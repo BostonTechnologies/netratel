@@ -50,7 +50,8 @@ public static class NetRatelOpenApiCatalog
             // Administrative assertions deliberately do not accept a delegated
             // integration credential, even though they use the default selector.
             ["Operator"] = InteractiveAccountSchemes,
-            ["AkkaShadowAccess"] = InteractiveAccountSchemes,
+            ["OperationsLogAccess"] = InteractiveAccountSchemes,
+            ["RealtimeAccess"] = InteractiveAccountSchemes,
             ["ClientArtifactsWrite"] = InteractiveAccountSchemes
         };
 

@@ -8,7 +8,7 @@ services:
       - "${NETRATEL_OIDC_TEST_BIND_ADDRESS:-0.0.0.0}:${NETRATEL_OIDC_TEST_PORT:-8080}:8080"
     environment:
       JSON_CONFIG: >-
-        {"interactiveLogin":true,"tokenCallbacks":[{"issuerId":"default","requestMappings":[{"requestParam":"code","match":"*","claims":{"preferred_username":"netratel-test-operator@example.test","roles":["Operator"],"aud":["netratel-smoke-client","netratel.api"]}},{"requestParam":"client_id","match":"netratel-cli-smoke-client","claims":{"preferred_username":"netratel-cli-smoke@example.test","roles":["Operator"],"scope":"netratel.api","aud":["netratel.api"]}}]}]}
+        {"interactiveLogin":true,"tokenCallbacks":[{"issuerId":"default","requestMappings":[{"requestParam":"subject","match":"netratel-test-operator","claims":{"sub":"netratel-test-operator","preferred_username":"netratel-test-operator@example.test","roles":["Operator"],"aud":["netratel-smoke-client","netratel.api"]}},{"requestParam":"subject","match":"netratel-test-tenant-admin","claims":{"sub":"netratel-test-tenant-admin","preferred_username":"netratel-test-tenant-admin@example.test","aud":["netratel-smoke-client","netratel.api"]}},{"requestParam":"subject","match":"netratel-test-unprivileged","claims":{"sub":"netratel-test-unprivileged","preferred_username":"netratel-test-unprivileged@example.test","aud":["netratel-smoke-client","netratel.api"]}},{"requestParam":"client_id","match":"netratel-cli-smoke-client","claims":{"sub":"netratel-cli-smoke-client","preferred_username":"netratel-cli-smoke@example.test","roles":["Operator"],"scope":"netratel.api","aud":["netratel.api"]}}]}]}
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/isalive"]
       interval: 2s
@@ -32,18 +32,6 @@ services:
       # issuer names for this Compose overlay.
       Authentication__Oidc__ValidIssuers__0: http://host.docker.internal:${NETRATEL_OIDC_TEST_PORT:-8080}/default
       Authentication__Oidc__ValidIssuers__1: http://127.0.0.1:${NETRATEL_OIDC_TEST_PORT:-8080}/default
-      # The public runtime defaults these additive migration surfaces off. The
-      # disposable smoke enables only the presence, telemetry, and command
-      # authorities it verifies.
-      NetRatelAkkaMigration__Enabled: "true"
-      NetRatelAkkaMigration__PresenceEnabled: "true"
-      NetRatelAkkaMigration__GatewayEnabled: "true"
-      NetRatelAkkaMigration__PresenceAuthorityEnabled: "true"
-      NetRatelAkkaMigration__ClientUpdatesEnabled: ${NETRATEL_SMOKE_CLIENT_UPDATES_ENABLED:-false}
-      NetRatelAkkaMigration__TelemetryShadowEnabled: "true"
-      NetRatelAkkaMigration__TelemetryAuthorityEnabled: "true"
-      NetRatelAkkaMigration__CommandShadowEnabled: "true"
-      NetRatelAkkaMigration__CommandAuthorityEnabled: "true"
     volumes:
       - ${NETRATEL_SMOKE_TLS_CERT_PATH:-/tmp/netratel-compose-smoke-unavailable.pfx}:/run/netratel-smoke/tls.pfx:ro
     extra_hosts:

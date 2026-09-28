@@ -1,5 +1,4 @@
 using System.IO;
-using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
@@ -9,7 +8,6 @@ namespace NetRatel.Web.Services.Sse;
 public sealed class SseClient : IAsyncDisposable
 {
     private readonly HttpClient _http;
-    private readonly Func<CancellationToken, Task<string?>> _getBearer;
     private readonly TimeSpan _maxBackoff = TimeSpan.FromSeconds(30);
     private readonly TimeSpan _initialBackoff = TimeSpan.FromSeconds(1);
     private CancellationTokenSource? _cts;
@@ -20,10 +18,9 @@ public sealed class SseClient : IAsyncDisposable
     public event Action? OnClose;
     public event Action<Exception>? OnError;
 
-    public SseClient(HttpClient http, Func<CancellationToken, Task<string?>> getBearer)
+    public SseClient(HttpClient http)
     {
         _http = http;
-        _getBearer = getBearer;
         _http.Timeout = Timeout.InfiniteTimeSpan;
     }
 
@@ -67,12 +64,6 @@ public sealed class SseClient : IAsyncDisposable
                 };
                 req.Headers.Accept.ParseAdd("text/event-stream");
                 req.Headers.CacheControl = new CacheControlHeaderValue { NoCache = true };
-
-                var bearer = await _getBearer(ct).ConfigureAwait(false);
-                if (!string.IsNullOrWhiteSpace(bearer))
-                {
-                    req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", bearer);
-                }
 
                 using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
                 resp.EnsureSuccessStatusCode();

@@ -1,8 +1,8 @@
 namespace NetRatel.Application.Presence;
 
 /// <summary>
-/// Authenticated Phase 1 client identity. The agent identifier comes from the
-/// validated JWT and is intentionally not inferred from a SpacetimeDB identity.
+/// Authenticated client identity. The agent identifier comes from the
+/// validated JWT and is intentionally not inferred from a legacy identity.
 /// </summary>
 public readonly record struct ClientKey(int TenantId, Guid AgentId)
 {
@@ -13,7 +13,7 @@ public readonly record struct ClientKey(int TenantId, Guid AgentId)
     public override string ToString() => EntityId;
 }
 
-public enum ShadowPresenceStatus
+public enum ClientPresenceStatus
 {
     Unknown = 0,
     Online = 1,
@@ -77,7 +77,7 @@ public sealed record GetClientPresence(ClientKey Client) : IClientPresenceMessag
 
 public sealed record ClientPresenceSnapshot(
     ClientKey Client,
-    ShadowPresenceStatus Status,
+    ClientPresenceStatus Status,
     long? ConnectionEpoch,
     Guid? ConnectionId,
     ulong LastAcceptedSequence,
@@ -97,8 +97,7 @@ public sealed record ClientPresenceRouteStatus(
 
 /// <summary>
 /// Immutable update sent by a per-client presence actor to the process-local
-/// Akka read model. This is deliberately separate from the legacy client
-/// directory and never contains a SpacetimeDB identity.
+/// Akka read model. It never contains a legacy identity.
 /// </summary>
 public sealed record TrackClientPresenceSnapshot(ClientPresenceSnapshot Snapshot);
 
@@ -109,12 +108,11 @@ public sealed record ClientPresenceReadModelSnapshot(
     IReadOnlyList<ClientPresenceSnapshot> Items);
 
 /// <summary>
-/// Process-local presence transition. It is diagnostic unless the explicit
-/// DEV-only gateway presence authority mode marks it authoritative.
+/// Process-local presence transition emitted by the authenticated gateway.
 /// </summary>
-public sealed record ShadowPresenceChanged(
+public sealed record ClientPresenceChanged(
     ClientKey Client,
-    ShadowPresenceStatus Status,
+    ClientPresenceStatus Status,
     long ConnectionEpoch,
     DateTimeOffset ChangedAtUtc,
     string Reason,
@@ -122,8 +120,6 @@ public sealed record ShadowPresenceChanged(
 
 /// <summary>
 /// Transport-neutral entry point used by the gRPC gateway and health checks.
-/// Implementations do not update existing SpacetimeDB or PostgreSQL presence
-/// records. Authority is selected explicitly by migration configuration.
 /// </summary>
 public interface IClientPresenceRouter
 {
@@ -147,8 +143,8 @@ public interface IClientPresenceRouter
 }
 
 /// <summary>
-/// Read-only view of the active gateway presence projection. The DEV canary
-/// implementation is process-local and is rebuilt as gateway clients reconnect.
+/// Read-only view of the active gateway presence projection. This process-local
+/// projection is rebuilt as gateway clients reconnect.
 /// </summary>
 public interface IClientPresenceReadModel
 {

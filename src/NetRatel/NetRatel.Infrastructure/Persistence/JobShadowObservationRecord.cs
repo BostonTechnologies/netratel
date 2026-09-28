@@ -3,6 +3,8 @@ using NetRatel.Application.Jobs;
 
 namespace NetRatel.Infrastructure.Persistence;
 
+// Historical EF row contract. Keep this entity identity and its explicit
+// JobShadowObservations table/index mapping stable for existing databases.
 public sealed class JobShadowObservationRecord
 {
     public Guid Id { get; set; }
@@ -12,7 +14,8 @@ public sealed class JobShadowObservationRecord
     public decimal JobId { get; set; }
     public int? TenantId { get; set; }
     public string ClientIdentity { get; set; } = string.Empty;
-    public JobShadowObservationKind Kind { get; set; }
+    // Keep the persisted enum values stable: Run=0, Step=1.
+    public JobObservationKind Kind { get; set; }
     public string? StartedBy { get; set; }
     public JobRunState? RunStatus { get; set; }
     public int? CurrentStepOrdinal { get; set; }

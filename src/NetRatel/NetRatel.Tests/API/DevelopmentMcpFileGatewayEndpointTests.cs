@@ -21,7 +21,6 @@ using NetRatel.API.Endpoints.Client;
 using NetRatel.API.Gateway;
 using NetRatel.API.Services;
 using NetRatel.API.Services.Events;
-using NetRatel.Akka.Configuration;
 using NetRatel.Application.Events;
 using NetRatel.Application.Operations;
 using NetRatel.Application.Presence;
@@ -108,18 +107,6 @@ public sealed class DevelopmentMcpFileGatewayEndpointTests
         noGrant.StatusCode.Should().Be(HttpStatusCode.Forbidden);
         (await noGrant.Content.ReadAsStringAsync()).Should().Contain("file_fixture_not_authorized");
         app.Services.GetRequiredService<FileRegistry>().ListCalls.Should().Be(0);
-    }
-
-    [Fact]
-    public async Task FileGatewayDisabled_StartsAndFailsClosedWithoutAFileGatewayService()
-    {
-        var agentId = Guid.NewGuid();
-        using var app = await BuildAppAsync(agentId, registerFileGateway: false, fileBrowseAuthorityEnabled: true);
-
-        var response = await AuthorizedClient(app).GetAsync(
-            $"/api/v2/development/mcp/agents/3/{agentId:D}/files?path=%2Ftmp%2Fnetratel-mcp-qa");
-
-        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
     [Fact]
@@ -221,22 +208,13 @@ public sealed class DevelopmentMcpFileGatewayEndpointTests
         return client;
     }
 
-    private static async Task<IHost> BuildAppAsync(Guid agentId, string content = "fixture text", bool registerFileGateway = true, bool? fileBrowseAuthorityEnabled = null) =>
-        await BuildAppAsync(agentId, Encoding.UTF8.GetBytes(content), registerFileGateway, fileBrowseAuthorityEnabled);
+    private static async Task<IHost> BuildAppAsync(Guid agentId, string content = "fixture text") =>
+        await BuildAppAsync(agentId, Encoding.UTF8.GetBytes(content));
 
-    private static async Task<IHost> BuildAppAsync(Guid agentId, byte[] content, bool registerFileGateway = true, bool? fileBrowseAuthorityEnabled = null)
+    private static async Task<IHost> BuildAppAsync(Guid agentId, byte[] content)
     {
         var databaseRoot = new InMemoryDatabaseRoot();
         var databaseName = $"development-mcp-files-{Guid.NewGuid():N}";
-        var options = new NetRatelAkkaMigrationOptions
-        {
-            Enabled = true,
-            PresenceEnabled = true,
-            GatewayEnabled = true,
-            PresenceAuthorityEnabled = true,
-            FileGatewayEnabled = registerFileGateway,
-            FileBrowseAuthorityEnabled = fileBrowseAuthorityEnabled ?? registerFileGateway
-        };
         var builder = Host.CreateDefaultBuilder();
         builder.ConfigureWebHost(web =>
         {
@@ -248,13 +226,9 @@ public sealed class DevelopmentMcpFileGatewayEndpointTests
                 services.AddHttpContextAccessor();
                 services.AddAuthentication("Test").AddScheme<AuthenticationSchemeOptions, TestAuthHandler>("Test", _ => { });
                 services.AddAuthorization(policyOptions => policyOptions.AddPolicy("Operator", policy => policy.RequireAuthenticatedUser()));
-                services.AddSingleton(options);
                 services.AddDbContext<OrchestratorDbContext>(dbOptions => dbOptions.UseInMemoryDatabase(databaseName, databaseRoot));
-                if (registerFileGateway)
-                {
-                    services.AddSingleton(new FileRegistry(content));
-                    services.AddSingleton<IAgentFileGatewaySessionRegistry>(provider => provider.GetRequiredService<FileRegistry>());
-                }
+                services.AddSingleton(new FileRegistry(content));
+                services.AddSingleton<IAgentFileGatewaySessionRegistry>(provider => provider.GetRequiredService<FileRegistry>());
                 services.AddSingleton(new TargetAuthority(agentId));
                 services.AddSingleton<IDevelopmentOperatorTargetAuthority>(provider => provider.GetRequiredService<TargetAuthority>());
                 services.AddScoped<ICorrelationContext, HttpCorrelationContext>();

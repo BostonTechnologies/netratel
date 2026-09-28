@@ -34,17 +34,17 @@ public sealed class PrimaryClientAgentBindingEndpointSourceTests
     }
 
     [Fact]
-    public void GatewayCardReadMapper_ExcludesTheActivePingRoute()
+    public void PrimaryClientGatewayCardMigrationRoutesAreRetiredWhileBindingManagementRemainsSeparate()
     {
         var repositoryRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../../"));
-        var source = File.ReadAllText(Path.Combine(
+        var registration = File.ReadAllText(Path.Combine(
             repositoryRoot,
-            "src/NetRatel/NetRatel.API/Endpoints/Client/PrimaryClientGatewayCardReadEndpoints.cs"));
+            "src/NetRatel/NetRatel.API/Endpoints/ApiEndpointRegistrationExtensions.cs"));
 
-        var readMapper = source[..source.IndexOf("MapPrimaryClientGatewayCardActionEndpoints", StringComparison.Ordinal)];
-        readMapper.Should().Contain("MapGet(\"/api/v2/tenants/{tenantId:int}/primary-client-cards/gateway\"");
-        readMapper.Should().NotContain("MapPost(");
-        source.Should().Contain("MapPrimaryClientGatewayCardActionEndpoints");
-        source.Should().Contain("MapPost(\"/api/v2/tenants/{tenantId:int}/primary-client-cards/{primaryClientIdentity}/gateway/ping\"");
+        registration.Should().NotContain("MapPrimaryClientGatewayCardReadEndpoints");
+        registration.Should().NotContain("MapPrimaryClientGatewayCardActionEndpoints");
+        registration.Should().Contain("app.MapPrimaryClientAgentBindingReadEndpoints();");
+        File.Exists(Path.Combine(repositoryRoot, "src/NetRatel/NetRatel.API/Endpoints/Client/PrimaryClientGatewayCardReadEndpoints.cs"))
+            .Should().BeFalse();
     }
 }

@@ -24,7 +24,7 @@ public sealed class McpOperatorTaskEndpointTests
         builder.Services.AddSingleton<IMcpOperatorConfirmationService>(_ => throw new NotSupportedException());
         builder.Services.AddSingleton<IMcpOperatorTaskStore>(_ => throw new NotSupportedException());
         builder.Services.AddSingleton<IMcpOperatorScriptStore>(_ => throw new NotSupportedException());
-        builder.Services.AddSingleton<NetRatelAkkaMigrationOptions>();
+        builder.Services.AddSingleton<NetRatelAkkaOptions>();
         builder.Services.AddSingleton(new McpOperatorLocalAgentOptions());
         builder.Services.AddSingleton<IAgentCommandAuthorityDispatcher>(_ => throw new NotSupportedException());
         builder.Services.AddSingleton<IAgentCommandGatewaySessionRegistry>(_ => throw new NotSupportedException());

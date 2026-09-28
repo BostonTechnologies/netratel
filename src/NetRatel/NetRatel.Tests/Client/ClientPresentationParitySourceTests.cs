@@ -89,7 +89,7 @@ public sealed class ClientPresentationParitySourceTests
             "SelectedOs",
             "ClientStatusFilter");
         table.Should().ContainAll(">Host / IP<", ">Latency<", "ClientPresentationFormatting.Version", "GatewayActions.PingAsync(client.TenantId, client.AgentId)");
-        presentation.Should().Contain("GetGatewayPresenceAsync");
+        presentation.Should().Contain("GetDirectoryAsync");
         presentation.Should().Contain("(client.TenantId, client.AgentId)");
         presentation.Should().NotContain("GroupBy(client => client.HostName");
     }

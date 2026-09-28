@@ -28,6 +28,8 @@ public interface IAgentControlSessionRegistry
         TimeSpan timeout,
         CancellationToken cancellationToken);
 
+    bool IsAvailable(ClientKey client);
+
     bool TryGetLatestPing(ClientKey client, out AgentControlPingResult result);
 }
 
@@ -108,6 +110,9 @@ public sealed class AgentControlSessionRegistry(TimeProvider timeProvider) : IAg
 
     public bool TryGetLatestPing(ClientKey client, out AgentControlPingResult result) =>
         _latestPings.TryGetValue(client, out result!);
+
+    public bool IsAvailable(ClientKey client) =>
+        _sessions.TryGetValue(client, out var session) && session.IsActive;
 }
 
 public sealed class AgentControlSessionRegistration(

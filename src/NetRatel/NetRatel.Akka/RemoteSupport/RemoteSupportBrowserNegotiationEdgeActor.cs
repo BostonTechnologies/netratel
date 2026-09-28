@@ -16,7 +16,16 @@ internal sealed class RemoteSupportBrowserNegotiationEdgeActor : ReceiveActor
     public RemoteSupportBrowserNegotiationEdgeActor(Channel<RemoteSupportV2NegotiationEnvelope> events)
     {
         _events = events;
-        Receive<RemoteSupportBrowserNegotiationEdgeEvent>(message => _events.Writer.TryWrite(message.Envelope));
+        Receive<RemoteSupportBrowserNegotiationEdgeEvent>(message =>
+        {
+            if (_events.Writer.TryWrite(message.Envelope))
+            {
+                return;
+            }
+
+            _events.Writer.TryComplete(new RemoteSupportEdgeBufferOverflowException("browser negotiation"));
+            Context.Stop(Self);
+        });
     }
 
     protected override void PostStop()

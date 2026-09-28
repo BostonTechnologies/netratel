@@ -120,6 +120,7 @@ public sealed class OidcSessionRefreshTests
             factory,
             configuration,
             new StubSystemTokenService(),
+            new OperatorApiCredentialState(),
             NullLogger<TokenService>.Instance);
     }
 

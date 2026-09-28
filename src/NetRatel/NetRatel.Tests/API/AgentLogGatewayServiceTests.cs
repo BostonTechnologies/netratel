@@ -31,7 +31,7 @@ public sealed class AgentLogGatewayServiceTests
         var agentId = Guid.NewGuid();
         var connectionId = Guid.NewGuid();
         const long connectionEpoch = 6;
-        using var host = await BuildHostAsync(tenantId, agentId, connectionId, connectionEpoch, enabled: true);
+        using var host = await BuildHostAsync(tenantId, agentId, connectionId, connectionEpoch);
         using var channel = GrpcChannel.ForAddress("http://localhost", new GrpcChannelOptions { HttpHandler = host.GetTestServer().CreateHandler() });
         var client = new AgentLogGateway.AgentLogGatewayClient(channel);
         using var call = client.Connect();
@@ -85,26 +85,6 @@ public sealed class AgentLogGatewayServiceTests
         await call.RequestStream.CompleteAsync();
     }
 
-    [Fact]
-    public async Task Connect_IsRejectedWhenLogAuthorityIsDisabled()
-    {
-        const int tenantId = 92;
-        var agentId = Guid.NewGuid();
-        var connectionId = Guid.NewGuid();
-        using var host = await BuildHostAsync(tenantId, agentId, connectionId, 1, enabled: false);
-        using var channel = GrpcChannel.ForAddress("http://localhost", new GrpcChannelOptions { HttpHandler = host.GetTestServer().CreateHandler() });
-        var client = new AgentLogGateway.AgentLogGatewayClient(channel);
-        using var call = client.Connect();
-
-        var action = async () =>
-        {
-            await call.RequestStream.WriteAsync(CreateHello(tenantId, agentId, connectionId, 1, Guid.NewGuid()));
-            await call.ResponseStream.MoveNext(CancellationToken.None);
-        };
-        var exception = await action.Should().ThrowAsync<RpcException>();
-        exception.Which.StatusCode.Should().Be(StatusCode.FailedPrecondition);
-    }
-
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -114,7 +94,7 @@ public sealed class AgentLogGatewayServiceTests
         var agentId = Guid.NewGuid();
         var connection = Guid.NewGuid();
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        using var host = await BuildHostAsync(tenantId, agentId, connection, 5, true, services =>
+        using var host = await BuildHostAsync(tenantId, agentId, connection, 5, services =>
         {
             if (queriesEnabled) services.AddSingleton<IAgentLogGatewayQueryDispatcher, AgentLogGatewayQueryDispatcher>();
         });
@@ -151,7 +131,7 @@ public sealed class AgentLogGatewayServiceTests
             }
             return snapshot;
         });
-        using var host = await BuildHostAsync(tenantId, agentId, connection, 5, true, services => services.AddSingleton<IClientPresenceRouter>(router));
+        using var host = await BuildHostAsync(tenantId, agentId, connection, 5, services => services.AddSingleton<IClientPresenceRouter>(router));
         using var channel = GrpcChannel.ForAddress("http://localhost", new GrpcChannelOptions { HttpHandler = host.GetTestServer().CreateHandler() });
         using var call = new AgentLogGateway.AgentLogGatewayClient(channel).Connect(cancellationToken: timeout.Token);
         await call.RequestStream.WriteAsync(CreateHello(tenantId, agentId, connection, 5, Guid.NewGuid()));
@@ -190,7 +170,7 @@ public sealed class AgentLogGatewayServiceTests
             }
             return snapshot;
         });
-        using var host = await BuildHostAsync(tenantId, agentId, connection, 5, true, services =>
+        using var host = await BuildHostAsync(tenantId, agentId, connection, 5, services =>
         {
             services.AddSingleton<IClientPresenceRouter>(router);
             services.AddSingleton<IAgentLogGatewayQueryDispatcher, AgentLogGatewayQueryDispatcher>();
@@ -216,7 +196,7 @@ public sealed class AgentLogGatewayServiceTests
         var registry = new AgentLogGatewaySessionRegistry();
         AgentLogRegistration? replacement = null;
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        using var host = await BuildHostAsync(tenantId, agentId, connection, 5, true, services =>
+        using var host = await BuildHostAsync(tenantId, agentId, connection, 5, services =>
         {
             services.AddSingleton<IAgentLogGatewaySessionRegistry>(registry);
             services.AddSingleton<IAgentLogGatewayQueryDispatcher>(new RejectingQueryDispatcher(candidate =>
@@ -243,7 +223,7 @@ public sealed class AgentLogGatewayServiceTests
         var registry = new AgentLogGatewaySessionRegistry();
         AgentLogRegistration? replacement = null;
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        using var host = await BuildHostAsync(tenantId, agentId, connection, 5, true, services =>
+        using var host = await BuildHostAsync(tenantId, agentId, connection, 5, services =>
         {
             services.AddSingleton<IAgentLogGatewaySessionRegistry>(registry);
             services.AddSingleton(new ReplaceDuringWriteInterceptor(() =>
@@ -323,7 +303,7 @@ public sealed class AgentLogGatewayServiceTests
         }
     };
 
-    private static async Task<IHost> BuildHostAsync(int tenantId, Guid agentId, Guid connectionId, long epoch, bool enabled, Action<IServiceCollection>? configure = null)
+    private static async Task<IHost> BuildHostAsync(int tenantId, Guid agentId, Guid connectionId, long epoch, Action<IServiceCollection>? configure = null)
     {
         var builder = Host.CreateDefaultBuilder();
         builder.ConfigureWebHost(web =>
@@ -338,15 +318,7 @@ public sealed class AgentLogGatewayServiceTests
                 services.AddSingleton<IClientPresenceRouter>(new CurrentPresenceRouter(tenantId, agentId, connectionId, epoch));
                 services.AddSingleton<IAgentManagementService>(new ActiveAgentManagementService(tenantId, agentId));
                 services.AddSingleton<IAgentLogGatewaySessionRegistry, AgentLogGatewaySessionRegistry>();
-                services.AddSingleton(new NetRatelAkkaMigrationOptions
-                {
-                    Enabled = true,
-                    PresenceEnabled = true,
-                    GatewayEnabled = true,
-                    PresenceAuthorityEnabled = true,
-                    LogGatewayEnabled = enabled,
-                    LogAuthorityEnabled = enabled
-                });
+                services.AddSingleton(new NetRatelAkkaOptions());
                 configure?.Invoke(services);
             });
             web.Configure(app =>
@@ -374,7 +346,7 @@ public sealed class AgentLogGatewayServiceTests
         public Task<ClientPresenceSnapshot> GetSnapshotAsync(ClientKey client, CancellationToken cancellationToken)
         {
             var snapshot = new ClientPresenceSnapshot(client,
-                client.TenantId == tenantId && client.AgentId == agentId ? ShadowPresenceStatus.Online : ShadowPresenceStatus.Offline,
+                client.TenantId == tenantId && client.AgentId == agentId ? ClientPresenceStatus.Online : ClientPresenceStatus.Offline,
                 epoch, connectionId, 0, DateTimeOffset.UtcNow, "test", [], null, "akka", true);
             return onRead is null ? Task.FromResult(snapshot) : onRead(Interlocked.Increment(ref _reads), snapshot);
         }

@@ -13,12 +13,9 @@ public sealed class AkkaGatewayCanarySourceTests
 
         appSettings.Should().NotContain("\"Transport\"");
         appSettings.Should().NotContain("\"Endpoint\"");
-        appSettings.Should().Contain("\"ControlGatewayEnabled\": true");
-        appSettings.Should().Contain("\"FileGatewayEnabled\": true");
-        appSettings.Should().Contain("\"LogGatewayEnabled\": true");
-        appSettings.Should().Contain("\"RemoteSupportGatewayEnabled\": true");
-        appSettings.Should().Contain("\"TerminalGatewayEnabled\": true");
-        appSettings.Should().Contain("\"RemoteSupportV2MediaEnabled\": false");
+        appSettings.Should().NotContain("GatewayEnabled");
+        appSettings.Should().NotContain("AuthorityEnabled");
+        appSettings.Should().NotContain("ShadowEnabled");
         appSettings.Should().Contain("\"Enabled\": false");
         appSettings.Should().NotContain("\"SpaceTime\"");
     }
@@ -35,15 +32,13 @@ public sealed class AkkaGatewayCanarySourceTests
     }
 
     [Fact]
-    public void Gateway_Client_Rejects_NonAkka_Authority_And_Has_No_Spacetime_Fallback()
+    public void Gateway_Client_Has_No_Selectable_Authority_Or_Spacetime_Fallback()
     {
         var source = File.ReadAllText(Path.Combine(
             AppContext.BaseDirectory,
             "../../../../NetRatel.Client/Service/Gateway/AgentGatewayPresenceClient.cs"));
 
-        source.Should().Contain("Gateway reported authority");
-        source.Should().Contain("Gateway changed authority");
-        source.Should().Contain("GatewayAuthority.IsAkka");
+        source.Should().Contain("GatewayWireProtocol.HasAkkaAuthority");
         source.Should().Contain("endpoint.Scheme != Uri.UriSchemeHttps");
         source.Should().Contain("no SpacetimeDB fallback");
         source.Should().NotContain("Only AkkaPresenceCanary is supported.");
@@ -62,13 +57,6 @@ public sealed class AkkaGatewayCanarySourceTests
         source.Should().NotContain("--spacetime-check");
         source.Should().NotContain("#pragma warning disable CS0162");
     }
-
-    [Theory]
-    [InlineData("akka", true)]
-    [InlineData("akka-dev-canary", true)]
-    [InlineData("spacetimedb", false)]
-    public void Gateway_Authority_Accepts_The_Normal_Label_And_Legacy_Rollout_Label(string authority, bool expected) =>
-        GatewayAuthority.IsAkka(authority).Should().Be(expected);
 
     [Fact]
     public void Gateway_Telemetry_Uses_V2_With_Rate_Control_And_No_Legacy_Client_Stream()

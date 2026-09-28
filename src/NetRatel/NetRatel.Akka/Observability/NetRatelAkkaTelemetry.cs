@@ -4,7 +4,7 @@ using System.Diagnostics.Metrics;
 namespace NetRatel.Akka.Observability;
 
 /// <summary>
-/// Bounded OpenTelemetry instrumentation for Akka migration authority paths.
+/// Bounded OpenTelemetry instrumentation for the Akka runtime.
 /// No instrument includes tenant, client, command, or session identifiers.
 /// </summary>
 public static class NetRatelAkkaTelemetry
@@ -58,7 +58,6 @@ public static class NetRatelAkkaTelemetry
     private static readonly Counter<long> SignalRFailures = Counter("akka_signalr_failure_total");
     private static readonly Counter<long> AuthorityRequests = Counter("akka_authority_requests_total");
     private static readonly Counter<long> AuthorityFailures = Counter("akka_authority_failures_total");
-    private static readonly Counter<long> AuthorityFallbacks = Counter("akka_authority_fallback_total");
     private static readonly Counter<long> PresenceAuthorityEvents = Counter("akka_presence_authority_events_total");
     private static readonly Counter<long> TelemetryAuthorityEvents = Counter("akka_telemetry_authority_events_total");
     private static readonly Counter<long> FileBrowserAuthorityEvents = Counter("akka_filebrowser_authority_events_total");
@@ -70,8 +69,6 @@ public static class NetRatelAkkaTelemetry
     private static readonly Counter<long> JobsAuthorityCompleted = Counter("akka_jobs_authority_completed");
     private static readonly Counter<long> RemoteSupportAuthorityEvents = Counter("akka_remote_support_authority_events_total");
     private static readonly Counter<long> RemoteSupportAuthorityFailures = Counter("akka_remote_support_authority_failures_total");
-    private static readonly Counter<long> SignalRAuthorityEvents = Counter("akka_signalr_authority_events_total");
-    private static readonly Counter<long> SignalRAuthorityFailures = Counter("akka_signalr_authority_failures_total");
     private static readonly Counter<long> LogSessionsOpened = Counter("akka_log_sessions_opened_total");
     private static readonly Counter<long> LogSessionsClosed = Counter("akka_log_sessions_closed_total");
     private static readonly Counter<long> LogBatches = Counter("akka_log_batches_total");
@@ -84,14 +81,10 @@ public static class NetRatelAkkaTelemetry
     private static long _presenceActiveClients;
     private static long _telemetryActiveClients;
     private static long _commandsActive;
-    private static long _commandAuthorityActive;
     private static long _commandInboxDepth;
     private static long _commandOutboxDepth;
     private static long _jobsActive;
-    private static long _jobsAuthorityActive;
     private static long _jobsAuthorityRunning;
-    private static long _remoteSupportAuthorityActive;
-    private static long _remoteSupportAuthoritySessionsActive;
     private static long _terminalActiveSessions;
     private static long _terminalActiveTransports;
     private static long _terminalOpenedSessions;
@@ -106,21 +99,16 @@ public static class NetRatelAkkaTelemetry
     private static long _signalRGroups;
     private static long _signalRMemberships;
     private static long _logActiveSessions;
-    private static AuthorityPathState _authorityPathState = AuthorityPathState.Disabled;
 
     static NetRatelAkkaTelemetry()
     {
         Gauge("akka_presence_active_clients", () => _presenceActiveClients);
         Gauge("akka_telemetry_active_clients", () => _telemetryActiveClients);
         Gauge("akka_commands_active", () => _commandsActive);
-        Gauge("akka_command_authority_active", () => _commandAuthorityActive);
         Gauge("akka_command_inbox_depth", () => _commandInboxDepth);
         Gauge("akka_command_outbox_depth", () => _commandOutboxDepth);
         Gauge("akka_jobs_active", () => _jobsActive);
-        Gauge("akka_jobs_authority_active", () => _jobsAuthorityActive);
         Gauge("akka_jobs_authority_running", () => _jobsAuthorityRunning);
-        Meter.CreateObservableGauge("akka_remote_support_authority_active", ObserveRemoteSupportAuthorityActive);
-        Meter.CreateObservableGauge("akka_remote_support_sessions_active", ObserveRemoteSupportAuthoritySessions);
         Gauge("akka_terminal_active_sessions", () => _terminalActiveSessions);
         Gauge("akka_terminal_sessions_active", () => _terminalActiveSessions);
         Gauge("akka_terminal_active_transports", () => _terminalActiveTransports);
@@ -136,10 +124,6 @@ public static class NetRatelAkkaTelemetry
         Gauge("akka_signalr_groups", () => _signalRGroups);
         Gauge("akka_signalr_memberships", () => _signalRMemberships);
         Gauge("akka_log_active_sessions", () => _logActiveSessions);
-        Meter.CreateObservableGauge(
-            "akka_authority_active_paths",
-            ObserveAuthorityPaths,
-            description: "Whether each bounded migration feature currently has DEV Akka authority.");
     }
 
     public static Activity? StartActivity(
@@ -169,7 +153,6 @@ public static class NetRatelAkkaTelemetry
         string feature,
         string authority,
         string operation,
-        bool fallbackUsed,
         string environment)
     {
         if (!ActivitySource.HasListeners())
@@ -179,9 +162,7 @@ public static class NetRatelAkkaTelemetry
 
         var activity = ActivitySource.StartActivity($"akka.authority.{feature}", ActivityKind.Internal);
         activity?.SetTag("authority", authority);
-        activity?.SetTag("migration_phase", "authority-cutover");
         activity?.SetTag("feature", feature);
-        activity?.SetTag("fallback_used", fallbackUsed);
         activity?.SetTag("environment", NormalizeEnvironment(environment));
         activity?.SetTag("netratel.akka.operation", operation);
         return activity;
@@ -242,73 +223,47 @@ public static class NetRatelAkkaTelemetry
         if (droppedRecords > 0) LogDropped.Add(checked((long)Math.Min(droppedRecords, (ulong)long.MaxValue)));
         if (resyncRequired) LogResync.Add(1);
     }
-    public static void RecordSignalRPublished()
-    {
-        SignalRPublished.Add(1);
-        var state = Volatile.Read(ref _authorityPathState);
-        if (state.SignalRActive)
-        {
-            SignalRAuthorityEvents.Add(1, AuthorityTags("signalr", "akka", fallbackUsed: false, state.Environment));
-        }
-    }
+    public static void RecordSignalRPublished() => SignalRPublished.Add(1);
     public static void RecordSignalRDropped() => SignalRDropped.Add(1);
-    public static void RecordSignalRTimedOut()
-    {
-        SignalRTimeouts.Add(1);
-        RecordSignalRAuthorityFailureIfActive();
-    }
-    public static void RecordSignalRFailed()
-    {
-        SignalRFailures.Add(1);
-        RecordSignalRAuthorityFailureIfActive();
-    }
+    public static void RecordSignalRTimedOut() => SignalRTimeouts.Add(1);
+    public static void RecordSignalRFailed() => SignalRFailures.Add(1);
 
     public static void RecordAuthorityRequest(
         string feature,
         string authority,
-        bool fallbackUsed,
         string environment) =>
-        AuthorityRequests.Add(1, AuthorityTags(feature, authority, fallbackUsed, environment));
+        AuthorityRequests.Add(1, AuthorityTags(feature, authority, environment));
 
     public static void RecordAuthorityFailure(
         string feature,
         string authority,
-        bool fallbackUsed,
         string environment)
     {
-        AuthorityFailures.Add(1, AuthorityTags(feature, authority, fallbackUsed, environment));
+        AuthorityFailures.Add(1, AuthorityTags(feature, authority, environment));
         if (feature == "commands")
         {
-            CommandAuthorityFailures.Add(1, AuthorityTags(feature, authority, fallbackUsed, environment));
+            CommandAuthorityFailures.Add(1, AuthorityTags(feature, authority, environment));
         }
         else if (feature == "jobs")
         {
-            JobsAuthorityFailures.Add(1, AuthorityTags(feature, authority, fallbackUsed, environment));
+            JobsAuthorityFailures.Add(1, AuthorityTags(feature, authority, environment));
         }
         else if (feature == "remote-support")
         {
-            RemoteSupportAuthorityFailures.Add(1, AuthorityTags(feature, authority, fallbackUsed, environment));
+            RemoteSupportAuthorityFailures.Add(1, AuthorityTags(feature, authority, environment));
         }
         else if (feature == "terminal")
         {
-            TerminalAuthorityFailures.Add(1, AuthorityTags(feature, authority, fallbackUsed, environment));
-        }
-        else if (feature == "signalr")
-        {
-            SignalRAuthorityFailures.Add(1, AuthorityTags(feature, authority, fallbackUsed, environment));
+            TerminalAuthorityFailures.Add(1, AuthorityTags(feature, authority, environment));
         }
     }
-
-    public static void RecordAuthorityFallback(string feature, string authority, string environment) =>
-        AuthorityFallbacks.Add(1, AuthorityTags(feature, authority, fallbackUsed: true, environment));
 
     public static void RecordAuthorityEvent(
         string feature,
         string authority,
-        bool fallbackUsed,
         string environment)
     {
-        var tags = AuthorityTags(feature, authority, fallbackUsed, environment);
+        var tags = AuthorityTags(feature, authority, environment);
         switch (feature)
         {
             case "presence":
@@ -333,40 +288,9 @@ public static class NetRatelAkkaTelemetry
             case "terminal":
                 TerminalAuthorityEvents.Add(1, tags);
                 break;
-            case "signalr":
-                SignalRAuthorityEvents.Add(1, tags);
-                break;
             default:
                 throw new ArgumentOutOfRangeException(nameof(feature), feature, "Unknown authority feature.");
         }
-    }
-
-    public static void ConfigureAuthorityPaths(
-        bool presenceActive,
-        bool telemetryActive,
-        bool fileBrowseActive,
-        bool commandsActive,
-        bool jobsActive,
-        bool remoteSupportActive,
-        bool terminalActive,
-        bool signalRActive,
-        string environment)
-    {
-        Volatile.Write(
-            ref _authorityPathState,
-            new AuthorityPathState(
-                presenceActive,
-                telemetryActive,
-                fileBrowseActive,
-                commandsActive,
-                jobsActive,
-                remoteSupportActive,
-                terminalActive,
-                signalRActive,
-                NormalizeEnvironment(environment)));
-        Set(ref _commandAuthorityActive, commandsActive ? 1 : 0);
-        Set(ref _jobsAuthorityActive, jobsActive ? 1 : 0);
-        Set(ref _remoteSupportAuthorityActive, remoteSupportActive ? 1 : 0);
     }
 
     public static void SetPresenceActiveClients(long value) => Set(ref _presenceActiveClients, value);
@@ -380,12 +304,10 @@ public static class NetRatelAkkaTelemetry
 
     public static void SetJobsActive(long value) => Set(ref _jobsActive, value);
     public static void SetJobsAuthorityRunning(long value) => Set(ref _jobsAuthorityRunning, value);
-    public static void JobAuthorityCompleted(string authority, bool fallbackUsed, string environment) =>
-        JobsAuthorityCompleted.Add(1, AuthorityTags("jobs", authority, fallbackUsed, environment));
-    public static void RemoteSupportAuthoritySessionCompleted(string authority, bool fallbackUsed, string environment) =>
-        RemoteSupportSessionsCompleted.Add(1, AuthorityTags("remote-support", authority, fallbackUsed, environment));
-    public static void SetRemoteSupportAuthoritySessionsActive(long value) =>
-        Set(ref _remoteSupportAuthoritySessionsActive, value);
+    public static void JobAuthorityCompleted(string authority, string environment) =>
+        JobsAuthorityCompleted.Add(1, AuthorityTags("jobs", authority, environment));
+    public static void RemoteSupportAuthoritySessionCompleted(string authority, string environment) =>
+        RemoteSupportSessionsCompleted.Add(1, AuthorityTags("remote-support", authority, environment));
     public static void SetTerminalActiveSessions(long value) => Set(ref _terminalActiveSessions, value);
     public static void SetTerminalActiveTransports(long value) => Set(ref _terminalActiveTransports, value);
     public static void SetTerminalLifecycleSessions(long opened, long opening, long suspended)
@@ -430,15 +352,6 @@ public static class NetRatelAkkaTelemetry
 
     private static Counter<long> Counter(string name) => Meter.CreateCounter<long>(name);
 
-    private static void RecordSignalRAuthorityFailureIfActive()
-    {
-        var state = Volatile.Read(ref _authorityPathState);
-        if (state.SignalRActive)
-        {
-            SignalRAuthorityFailures.Add(1, AuthorityTags("signalr", "akka", fallbackUsed: false, state.Environment));
-        }
-    }
-
     private static void Gauge(string name, Func<long> value) =>
         Meter.CreateObservableGauge(name, () => Math.Max(0, value()));
 
@@ -453,54 +366,14 @@ public static class NetRatelAkkaTelemetry
         }
     }
 
-    private static IEnumerable<Measurement<long>> ObserveAuthorityPaths()
-    {
-        var state = Volatile.Read(ref _authorityPathState);
-        yield return AuthorityPathMeasurement("presence", state.PresenceActive, state.Environment);
-        yield return AuthorityPathMeasurement("telemetry", state.TelemetryActive, state.Environment);
-        yield return AuthorityPathMeasurement("file-browser", state.FileBrowseActive, state.Environment);
-        yield return AuthorityPathMeasurement("commands", state.CommandsActive, state.Environment);
-        yield return AuthorityPathMeasurement("jobs", state.JobsActive, state.Environment);
-        yield return AuthorityPathMeasurement("remote-support", state.RemoteSupportActive, state.Environment);
-        yield return AuthorityPathMeasurement("terminal", state.TerminalActive, state.Environment);
-        yield return AuthorityPathMeasurement("signalr", state.SignalRActive, state.Environment);
-    }
-
-    private static IEnumerable<Measurement<long>> ObserveRemoteSupportAuthorityActive()
-    {
-        var state = Volatile.Read(ref _authorityPathState);
-        yield return new Measurement<long>(
-            Math.Max(0, Volatile.Read(ref _remoteSupportAuthorityActive)),
-            AuthorityTags("remote-support", state.RemoteSupportActive ? "akka" : "unavailable", fallbackUsed: false, state.Environment));
-    }
-
-    private static IEnumerable<Measurement<long>> ObserveRemoteSupportAuthoritySessions()
-    {
-        var state = Volatile.Read(ref _authorityPathState);
-        yield return new Measurement<long>(
-            Math.Max(0, Volatile.Read(ref _remoteSupportAuthoritySessionsActive)),
-            AuthorityTags("remote-support", state.RemoteSupportActive ? "akka" : "unavailable", fallbackUsed: false, state.Environment));
-    }
-
-    private static Measurement<long> AuthorityPathMeasurement(string feature, bool active, string environment)
-    {
-        var authority = active ? "akka" : "unavailable";
-        return new Measurement<long>(
-            active ? 1 : 0,
-            AuthorityTags(feature, authority, fallbackUsed: false, environment));
-    }
-
     private static TagList AuthorityTags(
         string feature,
         string authority,
-        bool fallbackUsed,
         string environment) =>
         new()
         {
             { "authority", authority },
-            { "migration_phase", "authority-cutover" },
             { "feature", feature },
-            { "fallback_used", fallbackUsed ? "true" : "false" },
             { "environment", NormalizeEnvironment(environment) }
         };
 
@@ -511,17 +384,4 @@ public static class NetRatelAkkaTelemetry
                 ? "unknown"
                 : environment.ToLowerInvariant();
 
-    private sealed record AuthorityPathState(
-        bool PresenceActive,
-        bool TelemetryActive,
-        bool FileBrowseActive,
-        bool CommandsActive,
-        bool JobsActive,
-        bool RemoteSupportActive,
-        bool TerminalActive,
-        bool SignalRActive,
-        string Environment)
-    {
-        public static AuthorityPathState Disabled { get; } = new(false, false, false, false, false, false, false, false, "unknown");
-    }
 }

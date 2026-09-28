@@ -16,7 +16,16 @@ public sealed class RemoteSupportAgentEdgeActor : ReceiveActor
     public RemoteSupportAgentEdgeActor(Channel<RemoteSupportAgentRouteEnvelope> outbound)
     {
         _outbound = outbound;
-        Receive<RemoteSupportAgentRouteEnvelope>(message => _outbound.Writer.TryWrite(message));
+        Receive<RemoteSupportAgentRouteEnvelope>(message =>
+        {
+            if (_outbound.Writer.TryWrite(message))
+            {
+                return;
+            }
+
+            _outbound.Writer.TryComplete(new RemoteSupportEdgeBufferOverflowException("agent"));
+            Context.Stop(Self);
+        });
         Receive<StopRemoteSupportAgentEdge>(_ => Context.Stop(Self));
     }
 

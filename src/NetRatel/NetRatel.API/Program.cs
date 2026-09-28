@@ -32,8 +32,6 @@ using NetRatel.API.Models;
 using NetRatel.API.Security;
 using NetRatel.API.Security.M2M;
 using Microsoft.AspNetCore.Authorization;
-using NetRatel.API.Application.Requests.Services;
-using NetRatel.API.Application;
 using NetRatel.Shared.Connectivity;
 using NetRatel.Shared.Operations;
 using NetRatel.Application.Common;
@@ -174,11 +172,10 @@ if (bootstrapDescriptor.State != BootstrapState.Ready)
     return;
 }
 
-var akkaMigrationOptions = builder.Configuration.GetSection(NetRatelAkkaMigrationOptions.SectionName).Get<NetRatelAkkaMigrationOptions>() ?? new NetRatelAkkaMigrationOptions();
 var aiAgentOpsLogBuffer = new AiAgentOpsLogBuffer();
 
 builder.AddServiceDefaults();
-builder.Services.AddNetRatelAkkaMigration(builder.Configuration, builder.Environment);
+builder.Services.AddNetRatelAkkaRuntime(builder.Configuration);
 builder.Services.AddRemoteSupportIceConfiguration(builder.Configuration);
 builder.Services.AddSingleton(aiAgentOpsLogBuffer);
 builder.Logging.AddProvider(new AiAgentOpsLoggerProvider(aiAgentOpsLogBuffer));
@@ -195,11 +192,8 @@ mcpLocalAgentOptions.EnsureValid();
 builder.Services.AddSingleton(mcpLocalAgentOptions);
 builder.Services.AddScoped<McpOperatorClientObservabilityService>();
 builder.Services.AddScoped<NetRatel.API.Services.Operations.McpDevelopmentScriptAdapter>();
-if (akkaMigrationOptions.IsCommandAuthorityActive)
-{
-    builder.Services.AddScoped<McpOperatorTaskReconciliationService>();
-    builder.Services.AddHostedService<McpOperatorTaskReconciliationHostedService>();
-}
+builder.Services.AddScoped<McpOperatorTaskReconciliationService>();
+builder.Services.AddHostedService<McpOperatorTaskReconciliationHostedService>();
 builder.Services.AddResponseCompression(options =>
 {
     options.MimeTypes = ResponseCompressionDefaults.MimeTypes
@@ -453,7 +447,16 @@ builder.Services
             }
 
             var users = context.HttpContext.RequestServices.GetRequiredService<UserManager<LocalUser>>();
-            var user = await users.FindByIdAsync(userId).ConfigureAwait(false);
+            LocalUser? user;
+            try
+            {
+                user = await users.FindByIdAsync(userId).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (DatabaseExceptionClassifier.IsAvailabilityFailure(exception))
+            {
+                throw new LocalAuthenticationUnavailableException();
+            }
+
             if (user is null || !LocalSessionValidator.IsValid(context.Principal!, user))
             {
                 context.RejectPrincipal();
@@ -512,6 +515,12 @@ builder.Services.AddAuthorization(options =>
     {
         policy.RequireAuthenticatedUser();
         policy.RequireAssertion(ctx => HasAdminClaim(ctx.User, ResolveAdminId()));
+    });
+
+    options.AddPolicy("OperationsLogAccess", policy =>
+    {
+        policy.RequireAuthenticatedUser();
+        policy.AddRequirements(new EffectiveAccessRequirement(NetRatelPermissions.TelemetryRead, instanceScope: true));
     });
 
     options.AddPolicy("InstanceAdministrator", policy =>
@@ -603,10 +612,10 @@ builder.Services.AddAuthorization(options =>
         policy.AddRequirements(new EffectiveAccessRequirement(NetRatelPermissions.McpPolicyAdministration, legacyRequiredScope: "netratel.mcp.admin"));
     });
 
-    options.AddPolicy("AkkaShadowAccess", policy =>
+    options.AddPolicy("RealtimeAccess", policy =>
     {
         policy.RequireAuthenticatedUser();
-        policy.RequireAssertion(ctx => HasAdminClaim(ctx.User, ResolveAdminId()));
+        policy.AddRequirements(new EffectiveAccessRequirement(NetRatelPermissions.ClientManagement, instanceScope: true));
     });
 
     options.AddPolicy("ClientArtifactsWrite", policy =>
@@ -757,23 +766,12 @@ if (builder.Environment.IsDevelopment())
 {
     builder.Services.AddHostedService<DevelopmentMcpFileArtifactRetentionService>();
 }
-if (akkaMigrationOptions.IsTerminalAuthorityActive)
-{
-    // Browser circuits can vanish without running component disposal. Keep a
-    // bounded server-side attachment lease so an invisible V2 terminal is
-    // closed (and retried across a transport reconnect) instead of surviving
-    // indefinitely on the client.
-    builder.Services.AddSingleton<GatewayTerminalBrowserAttachmentLeaseRegistry>();
-    builder.Services.AddHostedService<GatewayTerminalBrowserAttachmentExpiryService>();
-    builder.Services.AddHostedService<ProductionMcpTerminalExpiryService>();
-}
 builder.Services.AddSingleton<ClientUpdateBroadcaster>();
 builder.Services.AddSingleton<ClientLogBroadcaster>();
 builder.Services.AddSingleton<IAgentTelemetryCompatibilityRegistry, GatewayTelemetryCompatibilityRegistry>();
 builder.Services.AddScoped<ITenantLookupService, PostgresTenantLookupService>();
 builder.Services.AddScoped<IClientScriptService, ClientScriptService>();
 builder.Services.Configure<ClientArtifactsOptions>(builder.Configuration.GetSection("ClientArtifacts"));
-builder.Services.Configure<TerminalTransportOptions>(builder.Configuration.GetSection("Terminal"));
 builder.Services.Configure<AgentAuthOptions>(builder.Configuration.GetSection("AgentAuth"));
 builder.Services.Configure<SecurityHardeningOptions>(builder.Configuration.GetSection("Security"));
 builder.Services.Configure<StorageOptions>(builder.Configuration.GetSection("StorageOptions"));
@@ -807,6 +805,7 @@ builder.Services.AddScoped<ClientReleaseAutomationService>();
 builder.Services.AddHostedService<ClientReleaseAutomationWorker>();
 builder.Services.AddHostedService<ClientReleaseImportWorker>();
 builder.Services.AddScoped<ClientUpdateAuthorityService>();
+builder.Services.AddScoped<IClientUpdateActivationAuthority>(services => services.GetRequiredService<ClientUpdateAuthorityService>());
 builder.Services.AddScoped<IClientUpdatePublisher>(services => services.GetRequiredService<ClientUpdateAuthorityService>());
 builder.Services.AddScoped<IClientUpdateOperatorAuthority>(services => services.GetRequiredService<ClientUpdateAuthorityService>());
 builder.Services.AddScoped<IMcpOperatorEventAuthority, McpOperatorEventAuthority>();
@@ -847,35 +846,6 @@ builder.Services.AddAuthentication()
     .AddJwtBearer("M2M", _ => { });
 builder.Services.AddSingleton<IConfigureOptions<JwtBearerOptions>, M2MJwtBearerOptionsConfigurator>();
 
-var legacyQueueWorkerEnabled = builder.Configuration.GetValue<bool>("LegacyQueueWorker:Enabled");
-
-// Downstream: ExternalService API (legacy queue worker path only)
-var downstreamExternalService = builder.Configuration.GetSection("Downstream:ExternalServiceApi").Get<NetRatel.API.Security.M2M.DownstreamApiOptions>();
-if (legacyQueueWorkerEnabled
-    && downstreamExternalService is not null
-    && !string.IsNullOrWhiteSpace(downstreamExternalService.BaseUrl)
-    && !IsPlaceholder(downstreamExternalService.Authority)
-    && !IsPlaceholder(downstreamExternalService.TokenEndpoint)
-    && !IsPlaceholder(downstreamExternalService.ClientId)
-    && !IsPlaceholder(downstreamExternalService.ClientSecret))
-{
-    builder.Services.AddSingleton(downstreamExternalService);
-    builder.Services.AddHttpClient("ExternalServiceApi", (sp, http) =>
-    {
-        http.BaseAddress = new Uri(downstreamExternalService.BaseUrl);
-    })
-    .AddHttpMessageHandler(sp => new M2MTokenHandler(
-        sp.GetRequiredService<IClientCredentialsTokenService>(),
-        sp.GetRequiredService<NetRatel.API.Security.M2M.DownstreamApiOptions>()))
-    .AddStandardResilienceHandler();
-}
-
-// Request execution queue + worker
-builder.Services.AddSingleton<IExecutionQueue, ExecutionQueue>();
-if (legacyQueueWorkerEnabled)
-{
-    builder.Services.AddHostedService<ExecutionWorker>();
-}
 builder.Services.AddHostedService<OutboxProcessor>();
 builder.Services.AddHostedService<GlobalSearchQueryWarmupService>();
 builder.Services.AddNetRatelApplication();
@@ -916,19 +886,19 @@ builder.WebHost.ConfigureKestrel(k =>
         throw new InvalidOperationException("NetRatel_HTTP_PORT must be between 1 and 65535.");
     }
 
-    var akkaMigration = builder.Configuration
-        .GetSection(NetRatel.Akka.Configuration.NetRatelAkkaMigrationOptions.SectionName)
-        .Get<NetRatel.Akka.Configuration.NetRatelAkkaMigrationOptions>()
-        ?? new NetRatel.Akka.Configuration.NetRatelAkkaMigrationOptions();
+    var akkaGrpcPort = builder.Configuration.GetValue<int>(
+        $"{NetRatel.Akka.Configuration.NetRatelAkkaOptions.SectionName}:GatewayGrpcPort",
+        9223);
+    if (akkaGrpcPort is < 1 or > 65535)
+    {
+        throw new InvalidOperationException("NetRatelAkka:GatewayGrpcPort must be between 1 and 65535.");
+    }
 
     // h2c and HTTP/1.1 use separate listeners so REST and legacy clients remain unchanged.
     k.ListenAnyIP(httpPort, listen => listen.Protocols = HttpProtocols.Http1);
-    if (akkaMigration.Enabled && akkaMigration.GatewayEnabled)
-    {
-        k.ListenAnyIP(
-            akkaMigration.GatewayGrpcPort,
-            listen => listen.Protocols = HttpProtocols.Http2);
-    }
+    k.ListenAnyIP(
+        akkaGrpcPort,
+        listen => listen.Protocols = HttpProtocols.Http2);
 
     var hardening = builder.Configuration.GetSection("Security").Get<SecurityHardeningOptions>() ?? new SecurityHardeningOptions();
     k.Limits.MaxRequestBodySize = 1_000_000_000; // same limit
@@ -966,6 +936,7 @@ app.UseExceptionHandler(errorApp =>
 
         var (status, title) = ex switch
         {
+            LocalAuthenticationUnavailableException => (StatusCodes.Status503ServiceUnavailable, "Local authentication is temporarily unavailable."),
             RequestValidationException => (StatusCodes.Status400BadRequest, "Validation error"),
             FileNotFoundException => (StatusCodes.Status404NotFound, "Resource not found"),
             BadHttpRequestException => (StatusCodes.Status400BadRequest, "Invalid request"),
@@ -977,15 +948,25 @@ app.UseExceptionHandler(errorApp =>
         context.Response.ContentType = "application/problem+json";
         context.Response.Headers["X-Correlation-Id"] = corr;
 
-        var problem = new
-        {
-            type = $"https://httpstatuses.com/{status}",
-            title,
-            status,
-            detail = ex?.Message,
-            traceId = context.TraceIdentifier,
-            extensions = new { correlationId = corr }
-        };
+        object problem = ex is LocalAuthenticationUnavailableException
+            ? new
+            {
+                type = $"https://httpstatuses.com/{status}",
+                title,
+                status,
+                code = "local_authentication_unavailable",
+                traceId = context.TraceIdentifier,
+                extensions = new { correlationId = corr }
+            }
+            : new
+            {
+                type = $"https://httpstatuses.com/{status}",
+                title,
+                status,
+                detail = ex?.Message,
+                traceId = context.TraceIdentifier,
+                extensions = new { correlationId = corr }
+            };
 
         await context.Response.WriteAsJsonAsync(problem);
     });
@@ -1026,18 +1007,6 @@ catch (Exception ex)
 }
 
 app.Run();
-
-static bool IsPlaceholder(string? value)
-{
-    if (string.IsNullOrWhiteSpace(value))
-    {
-        return true;
-    }
-
-    return value.Contains("REPLACE_ME", StringComparison.OrdinalIgnoreCase)
-        || value.Contains("auth.example.com", StringComparison.OrdinalIgnoreCase)
-        || value.Contains("external-service.local", StringComparison.OrdinalIgnoreCase);
-}
 
 static bool HasAdminClaim(ClaimsPrincipal user, string? adminGroupId)
 {

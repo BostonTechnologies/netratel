@@ -204,18 +204,7 @@ public sealed partial class AgentCommandJobControlGatewayServiceTests
                     services.AddSingleton(Stub<IMcpOperatorCommandStore>(fixture.RecordProjection));
                     services.AddSingleton(Stub<IMcpOperatorTaskStore>(fixture.RecordProjection));
                     services.AddSingleton(Stub<IJobRunService>(fixture.RecordProjection));
-                    services.AddSingleton(new NetRatelAkkaMigrationOptions
-                    {
-                        Enabled = true,
-                        PresenceEnabled = true,
-                        GatewayEnabled = true,
-                        PresenceAuthorityEnabled = true,
-                        ControlGatewayEnabled = true,
-                        CommandShadowEnabled = true,
-                        CommandAuthorityEnabled = true,
-                        JobShadowEnabled = true,
-                        JobAuthorityEnabled = true
-                    });
+                    services.AddSingleton(new NetRatelAkkaOptions());
                     services.AddSingleton(NullLogger<AgentCommandGatewayService>.Instance);
                     services.AddSingleton(NullLogger<AgentJobGatewayService>.Instance);
                     services.AddSingleton(NullLogger<AgentControlGatewayService>.Instance);
@@ -395,7 +384,7 @@ public sealed partial class AgentCommandJobControlGatewayServiceTests
                 // Resume a stale read even after replacement cancellation to exercise the ownership check.
                 await ReleaseRead.Task;
             }
-            return new ClientPresenceSnapshot(client, ShadowPresenceStatus.Online, checked((long)Epoch), connectionId,
+            return new ClientPresenceSnapshot(client, ClientPresenceStatus.Online, checked((long)Epoch), connectionId,
                 0, DateTimeOffset.UtcNow, "test", [], null, "akka", true);
         }
 

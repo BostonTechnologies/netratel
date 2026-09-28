@@ -7,6 +7,7 @@ using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Net;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Threading;
@@ -15,6 +16,7 @@ using System.Threading.Tasks;
 using NetRatel.AgentGateway.Contracts.V1;
 using NetRatel.Application.ClientAuth;
 using NetRatel.Client.Service.Logging;
+using NetRatel.Shared.Client;
 using NuGet.Versioning;
 
 namespace NetRatel.Client.Service.Updates;
@@ -34,6 +36,7 @@ public sealed class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdateHandler
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { WriteIndented = true };
     private readonly ClientOptions _options;
     private readonly string _currentVersion;
+    private readonly Uri _apiOrigin;
     private readonly string _runtimeId;
     private readonly string _stateDirectory;
     private readonly string _requestPath;
@@ -62,6 +65,7 @@ public sealed class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdateHandler
         _currentVersion = NormalizeVersion(currentVersion);
         _tokenService = tokenService;
         _apiClient = apiClient;
+        _apiOrigin = new Uri(ClientEndpointAddress.NormalizeApiBase(options.ApiBaseUrl), UriKind.Absolute);
         _runtimeId = ClientUpdateVersioning.ResolveRuntimeId(options.AutoUpdate.RuntimeId);
         _stateDirectory = string.IsNullOrWhiteSpace(options.AutoUpdate.StateDirectory)
             ? OperatingSystem.IsWindows()
@@ -258,42 +262,10 @@ public sealed class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdateHandler
         string downloadPath,
         CancellationToken cancellationToken)
     {
-        if (!Uri.TryCreate(downloadPath, UriKind.Relative, out var relativeDownloadPath) || !downloadPath.StartsWith('/'))
-            throw new InvalidOperationException("Update offer download path must be same-origin and relative.");
-        if (offer.SizeBytes <= 0 || offer.SizeBytes > _options.AutoUpdate.MaximumArtifactBytes)
-            throw new InvalidOperationException("Update offer size is outside the configured limit.");
-
-        Directory.CreateDirectory(Path.Combine(_stateDirectory, "staging"));
         var packagePath = Path.Combine(_stateDirectory, "staging", $"{_runtimeId}-{offer.Version}.zip");
-        for (var attempt = 1; attempt <= 3; attempt++)
-        {
-            try
-            {
-                using var request = new HttpRequestMessage(HttpMethod.Get, relativeDownloadPath);
-                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
-                using var response = await _apiClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
-                response.EnsureSuccessStatusCode();
-                await using var source = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-                await using (var destination = new FileStream(packagePath + ".tmp", FileMode.Create, FileAccess.Write, FileShare.None, 64 * 1024, true))
-                {
-                    await source.CopyToAsync(destination, cancellationToken).ConfigureAwait(false);
-                    await destination.FlushAsync(cancellationToken).ConfigureAwait(false);
-                }
-
-                // Windows will not rename a file whose writer is still open with FileShare.None.
-                File.Move(packagePath + ".tmp", packagePath, true);
-                break;
-            }
-            catch when (attempt < 3)
-            {
-                await Task.Delay(TimeSpan.FromSeconds(Math.Pow(2, attempt)), cancellationToken).ConfigureAwait(false);
-            }
-        }
-
-        var fileInfo = new FileInfo(packagePath);
-        if (fileInfo.Length != offer.SizeBytes || !string.Equals(await ComputeShaAsync(packagePath, cancellationToken), offer.Sha256, StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException("Downloaded update size or SHA-256 does not match the offer.");
-        ValidateManifest(packagePath, offer.Version, _runtimeId);
+        await DownloadAndVerifyOfferedArtifactAsync(_apiClient, _apiOrigin, downloadPath, accessToken,
+            packagePath, offer.Version, _runtimeId, offer.SizeBytes, _options.AutoUpdate.MaximumArtifactBytes,
+            offer.Sha256, cancellationToken).ConfigureAwait(false);
         await ReportStateAsync(claim.AttemptId, "Staged", null, null, accessToken, cancellationToken).ConfigureAwait(false);
         Directory.CreateDirectory(_stateDirectory);
         if (File.Exists(_readyPath)) File.Delete(_readyPath);
@@ -303,6 +275,110 @@ public sealed class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdateHandler
         AtomicWriteJson(_requestPath, updateRequest);
         await ReportStateAsync(claim.AttemptId, "Activating", null, null, accessToken, cancellationToken).ConfigureAwait(false);
         StartUpdater();
+    }
+
+    internal static async Task DownloadAndVerifyOfferedArtifactAsync(
+        HttpClient apiClient,
+        Uri apiOrigin,
+        string downloadPath,
+        string accessToken,
+        string packagePath,
+        string version,
+        string runtimeId,
+        long exactSizeBytes,
+        long maximumArtifactBytes,
+        string expectedSha256,
+        CancellationToken cancellationToken)
+    {
+        if (exactSizeBytes <= 0 || exactSizeBytes > maximumArtifactBytes)
+            throw new InvalidOperationException("Update offer size is outside the configured limit.");
+
+        var downloadUri = ResolveSameOriginDownloadUri(apiOrigin, downloadPath);
+        Directory.CreateDirectory(Path.GetDirectoryName(packagePath) ??
+            throw new InvalidOperationException("The staged package path has no directory."));
+        for (var attempt = 1; attempt <= 3; attempt++)
+        {
+            var temporaryPackagePath = packagePath + $".{Guid.NewGuid():N}.tmp";
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get, downloadUri);
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+                using var response = await apiClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+                if (response.StatusCode != HttpStatusCode.OK)
+                    throw new InvalidOperationException($"Artifact download returned HTTP {(int)response.StatusCode}.");
+                if (response.Content.Headers.ContentLength is long contentLength && contentLength != exactSizeBytes)
+                    throw new InvalidOperationException("Downloaded update size does not match the offer.");
+                await using var source = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+                await using (var destination = new FileStream(temporaryPackagePath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 64 * 1024, true))
+                {
+                    await CopyOfferedArtifactAsync(source, destination, exactSizeBytes, cancellationToken).ConfigureAwait(false);
+                    await destination.FlushAsync(cancellationToken).ConfigureAwait(false);
+                }
+
+                if (!string.Equals(await ComputeShaAsync(temporaryPackagePath, cancellationToken).ConfigureAwait(false),
+                        expectedSha256, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("Downloaded update SHA-256 does not match the offer.");
+                ValidateManifest(temporaryPackagePath, version, runtimeId);
+                // Windows will not rename a file whose writer is still open with FileShare.None.
+                File.Move(temporaryPackagePath, packagePath, true);
+                break;
+            }
+            catch (Exception exception) when (attempt < 3 && (exception is HttpRequestException or IOException))
+            {
+                await Task.Delay(TimeSpan.FromSeconds(Math.Pow(2, attempt)), cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                if (File.Exists(temporaryPackagePath)) File.Delete(temporaryPackagePath);
+            }
+        }
+
+    }
+
+    internal static Uri ResolveSameOriginDownloadUri(Uri apiOrigin, string downloadPath)
+    {
+        if (!apiOrigin.IsAbsoluteUri ||
+            (apiOrigin.Scheme != Uri.UriSchemeHttp && apiOrigin.Scheme != Uri.UriSchemeHttps) ||
+            apiOrigin.UserInfo.Length != 0 ||
+            string.IsNullOrWhiteSpace(downloadPath) || downloadPath[0] != '/' ||
+            (downloadPath.Length > 1 && downloadPath[1] == '/') ||
+            downloadPath.Contains('\\') ||
+            !Uri.TryCreate(downloadPath, UriKind.Relative, out var relativePath))
+        {
+            throw new InvalidOperationException("Update offer download path must be a same-origin API path.");
+        }
+
+        var downloadUri = new Uri(apiOrigin, relativePath);
+        if (!string.Equals(downloadUri.Scheme, apiOrigin.Scheme, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(downloadUri.Host, apiOrigin.Host, StringComparison.OrdinalIgnoreCase) ||
+            downloadUri.Port != apiOrigin.Port || downloadUri.UserInfo.Length != 0 || downloadUri.Fragment.Length != 0)
+        {
+            throw new InvalidOperationException("Update offer download path resolved outside the configured API origin.");
+        }
+
+        return downloadUri;
+    }
+
+    private static async Task CopyOfferedArtifactAsync(
+        Stream source,
+        Stream destination,
+        long exactSizeBytes,
+        CancellationToken cancellationToken)
+    {
+        var buffer = new byte[64 * 1024];
+        long totalBytes = 0;
+        while (true)
+        {
+            var bytesRead = await source.ReadAsync(buffer.AsMemory(), cancellationToken).ConfigureAwait(false);
+            if (bytesRead == 0) break;
+            if (bytesRead > exactSizeBytes - totalBytes)
+                throw new InvalidOperationException("Downloaded update exceeds the offered artifact size.");
+            await destination.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken).ConfigureAwait(false);
+            totalBytes += bytesRead;
+        }
+
+        if (totalBytes != exactSizeBytes)
+            throw new InvalidOperationException("Downloaded update size does not match the offer.");
     }
 
     private void ApplyConfirmation(UpdateActivationConfirmation? confirmation)
@@ -383,15 +459,75 @@ public sealed class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdateHandler
     {
         if (OperatingSystem.IsWindows())
         {
-            var script = Path.Combine(Environment.GetEnvironmentVariable("NetRatel_UPDATE_ROOT") ??
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "NetRatel", "Client"),
-                "updater", "netratel-update.ps1");
-            Process.Start(new ProcessStartInfo("powershell.exe", $"-NoProfile -ExecutionPolicy Bypass -File \"{script}\"")
-            { UseShellExecute = false, CreateNoWindow = true });
+            var root = Environment.GetEnvironmentVariable("NetRatel_UPDATE_ROOT");
+            if (string.IsNullOrWhiteSpace(root))
+            {
+                root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "NetRatel", "Client");
+            }
+
+            var startInfo = CreateWindowsUpdaterStartInfo(
+                ResolveTrustedWindowsPowerShellPath(),
+                root,
+                _stateDirectory,
+                _requestPath);
+            using var updaterProcess = Process.Start(startInfo)
+                ?? throw new InvalidOperationException("The verified Windows updater process could not be started.");
             return;
         }
         Process.Start(new ProcessStartInfo("systemctl", $"start {_options.AutoUpdate.LinuxServiceName}")
         { UseShellExecute = false, CreateNoWindow = true });
+    }
+
+    internal static ProcessStartInfo CreateWindowsUpdaterStartInfo(
+        string powerShellPath,
+        string rootDirectory,
+        string stateDirectory,
+        string requestPath)
+    {
+        var root = Path.GetFullPath(rootDirectory);
+        var state = Path.GetFullPath(stateDirectory);
+        var request = Path.GetFullPath(requestPath);
+        var script = Path.GetFullPath(Path.Combine(root, "updater", "netratel-update.ps1"));
+        var startInfo = new ProcessStartInfo(powerShellPath)
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            WorkingDirectory = Path.GetDirectoryName(script) ?? root
+        };
+        startInfo.ArgumentList.Add("-NoProfile");
+        startInfo.ArgumentList.Add("-ExecutionPolicy");
+        startInfo.ArgumentList.Add("Bypass");
+        startInfo.ArgumentList.Add("-File");
+        startInfo.ArgumentList.Add(script);
+        startInfo.Environment["NetRatel_UPDATE_ROOT"] = root;
+        startInfo.Environment["NetRatel_UPDATE_STATE"] = state;
+        startInfo.Environment["NetRatel_UPDATE_REQUEST"] = request;
+        return startInfo;
+    }
+
+    private static string ResolveTrustedWindowsPowerShellPath()
+    {
+        var windowsRoot = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+        if (string.IsNullOrWhiteSpace(windowsRoot))
+        {
+            windowsRoot = Environment.GetEnvironmentVariable("SystemRoot") ?? string.Empty;
+        }
+
+        if (string.IsNullOrWhiteSpace(windowsRoot))
+        {
+            throw new InvalidOperationException("The trusted Windows directory is unavailable for the updater launch.");
+        }
+
+        var relativeRoot = Environment.Is64BitOperatingSystem && !Environment.Is64BitProcess
+            ? "Sysnative"
+            : "System32";
+        var path = Path.GetFullPath(Path.Combine(windowsRoot, relativeRoot, "WindowsPowerShell", "v1.0", "powershell.exe"));
+        if (!File.Exists(path))
+        {
+            throw new FileNotFoundException("The trusted Windows PowerShell executable was not found in the Windows directory.");
+        }
+
+        return path;
     }
 
     private static void ValidateManifest(string packagePath, string version, string runtimeId)

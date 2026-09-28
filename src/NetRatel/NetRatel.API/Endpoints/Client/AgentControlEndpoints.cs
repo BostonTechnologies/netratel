@@ -1,5 +1,4 @@
 using Microsoft.AspNetCore.Mvc;
-using NetRatel.Akka.Configuration;
 using NetRatel.API.Gateway;
 using NetRatel.Application.Presence;
 
@@ -30,17 +29,10 @@ public static class AgentControlEndpoints
     private static async Task<IResult> PingAsync(
         int tenantId,
         Guid agentId,
-        [FromServices] NetRatelAkkaMigrationOptions options,
-        IServiceProvider services,
+        [FromServices] IAgentControlSessionRegistry registry,
         CancellationToken cancellationToken)
     {
-        if (!options.IsPingAuthorityActive)
-        {
-            return Results.NotFound();
-        }
-
         var client = new ClientKey(tenantId, agentId);
-        var registry = services.GetRequiredService<IAgentControlSessionRegistry>();
         try
         {
             var result = await registry.RequestPingAsync(

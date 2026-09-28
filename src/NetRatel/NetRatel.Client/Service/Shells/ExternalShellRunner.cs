@@ -2,7 +2,11 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
+using System.Security.AccessControl;
+using System.Security.Principal;
+using System.Runtime.Versioning;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -91,7 +95,13 @@ namespace NetRatel.Client.Service.Shells
                 case ScriptType.PowerShell:
                     return RunPowerShellScriptFileAsync(pref, content, cwd, timeoutSec, ct, parameters);
                 case ScriptType.Bash:
-                    return RunByPreferenceAsync(pref == ShellExecutor.Auto ? ShellExecutor.Bash : pref, content, cwd, timeoutSec, ct);
+                    var bashPreference = pref == ShellExecutor.Auto ? ShellExecutor.Bash : pref;
+                    if (bashPreference == ShellExecutor.Bash)
+                    {
+                        return RunBashScriptAsync(content, cwd, timeoutSec, ct, parameters);
+                    }
+
+                    return RunByPreferenceAsync(bashPreference, content, cwd, timeoutSec, ct);
                 case ScriptType.Python:
                 case ScriptType.JavaScript:
                 case ScriptType.TypeScript:
@@ -114,12 +124,12 @@ namespace NetRatel.Client.Service.Shells
             IReadOnlyDictionary<string, string>? parameters)
         {
             var timeout = TimeSpan.FromSeconds(timeoutSec ?? (int)_defaultTimeout.TotalSeconds);
-            var scriptPath = WriteTemp(".ps1", content);
+            var scriptPath = WritePrivateTemp(".ps1", content);
             string? wrapperPath = null;
-            var (shellPath, _) = ResolvePowerShellHost(pref);
 
             try
             {
+                var (shellPath, _) = ResolvePowerShellHost(pref);
                 if (parameters is { Count: > 0 })
                 {
                     static string Esc(string? value) => (value ?? string.Empty).Replace("'", "''");
@@ -146,7 +156,7 @@ namespace NetRatel.Client.Service.Shells
                            .AppendLine("' @__netratelParams");
                     wrapper.AppendLine("exit $LASTEXITCODE");
 
-                    wrapperPath = WriteTemp(".ps1", wrapper.ToString());
+                    wrapperPath = WritePrivateTemp(".ps1", wrapper.ToString());
                 }
 
                 var fileToRun = wrapperPath ?? scriptPath;
@@ -156,10 +166,10 @@ namespace NetRatel.Client.Service.Shells
             }
             finally
             {
-                TryDelete(scriptPath);
+                TryDeletePrivateTemp(scriptPath);
                 if (wrapperPath is not null)
                 {
-                    TryDelete(wrapperPath);
+                    TryDeletePrivateTemp(wrapperPath);
                 }
             }
         }
@@ -172,6 +182,44 @@ namespace NetRatel.Client.Service.Shells
 
         private Task<RunResult> RunBashCommandAsync(string command, string? cwd, TimeSpan timeout, CancellationToken ct)
             => RunDirectAsync((Inv.Find("bash")?.Path ?? Inv.Find("sh")?.Path) ?? Throw("bash/sh"), "-lc", command, timeout, cwd, ct);
+
+        private Task<RunResult> RunBashScriptAsync(
+            string script,
+            string? cwd,
+            int? timeoutSeconds,
+            CancellationToken ct,
+            IReadOnlyDictionary<string, string>? parameters)
+        {
+            var timeout = TimeSpan.FromSeconds(timeoutSeconds ?? (int)_defaultTimeout.TotalSeconds);
+            var environment = CreateBashParameterEnvironment(parameters);
+            var shellPath = (Inv.Find("bash")?.Path ?? Inv.Find("sh")?.Path) ?? Throw("bash/sh");
+            return RunDirectAsync(shellPath, "-lc", script, timeout, cwd, ct, environment);
+        }
+
+        private static Dictionary<string, string>? CreateBashParameterEnvironment(
+            IReadOnlyDictionary<string, string>? parameters)
+        {
+            if (parameters is not { Count: > 0 }) return null;
+
+            var environment = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var (key, value) in parameters)
+            {
+                var name = key.Trim();
+                if (name.Length == 0 || !(char.IsAsciiLetter(name[0]) || name[0] == '_'))
+                {
+                    throw new InvalidOperationException("Bash library script parameters must use valid environment variable names.");
+                }
+
+                if (name.Skip(1).Any(character => !(char.IsAsciiLetterOrDigit(character) || character == '_')))
+                {
+                    throw new InvalidOperationException("Bash library script parameters must use valid environment variable names.");
+                }
+
+                environment[name] = value;
+            }
+
+            return environment;
+        }
 
         private Task<RunResult> RunCmdCommandAsync(string command, string? cwd, TimeSpan timeout, CancellationToken ct)
         {
@@ -202,42 +250,312 @@ namespace NetRatel.Client.Service.Shells
             return sb.ToString();
         }
 
-        private static string WriteTemp(string ext, string contents)
+        internal static string WritePrivateTemp(string ext, string contents)
+            => WritePrivateTemp(ext, contents, tempRootOverride: null);
+
+        internal static string WritePrivateTemp(string ext, string contents, string? tempRootOverride)
         {
-            var dir = EnsureTempDirectory();
-            var path = Path.Combine(dir, $"netratel_{Guid.NewGuid():N}{ext}");
-            File.WriteAllText(path, contents, new UTF8Encoding(false));
-            return path;
+            var privateDirectory = CreatePrivateTempDirectory(tempRootOverride);
+            try
+            {
+                var path = Path.Combine(privateDirectory, $"netratel_{Guid.NewGuid():N}{ext}");
+                File.WriteAllText(path, contents, new UTF8Encoding(false));
+                return path;
+            }
+            catch
+            {
+                TryDeletePrivateTempDirectory(privateDirectory);
+                throw;
+            }
         }
 
-        private static string EnsureTempDirectory()
-        {
-            string? root = null;
-            try { root = Path.GetTempPath(); } catch { }
+        private const UnixFileMode OwnerOnlyDirectoryMode =
+            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+        private const UnixFileMode StickyDirectoryMode = (UnixFileMode)0x200;
 
-            if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(root))
+        private static string CreatePrivateTempDirectory(string? tempRootOverride)
+        {
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             {
-                if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                var localApplicationData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+                if (string.IsNullOrWhiteSpace(localApplicationData) || !Directory.Exists(localApplicationData))
                 {
-                    var windowsDir = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
-                    root = string.IsNullOrWhiteSpace(windowsDir)
-                        ? Path.Combine("C:", "Windows", "Temp")
-                        : Path.Combine(windowsDir, "Temp");
+                    throw new InvalidOperationException("The current Windows user's local application data directory is unavailable.");
                 }
-                else
+
+                var owner = GetCurrentWindowsSid();
+                ValidateWindowsPrivateDirectory(localApplicationData, owner, protectContents: false);
+                var applicationRoot = Path.Combine(localApplicationData, "NetRatel");
+                EnsureWindowsPrivateDirectory(applicationRoot, owner);
+                var privateRoot = Path.Combine(applicationRoot, "PrivateParameters");
+                EnsureWindowsPrivateDirectory(privateRoot, owner);
+                var windowsExecutionDirectory = Path.Combine(privateRoot, $"netratel_private_{Guid.NewGuid():N}");
+                Directory.CreateDirectory(windowsExecutionDirectory);
+                try
                 {
-                    root = "/tmp";
+                    ProtectWindowsPrivateDirectory(windowsExecutionDirectory);
+                    ValidateWindowsPrivateDirectory(windowsExecutionDirectory, owner, protectContents: true);
+                    return windowsExecutionDirectory;
+                }
+                catch
+                {
+                    TryDeletePrivateTempDirectory(windowsExecutionDirectory);
+                    throw;
                 }
             }
 
-            var target = Path.Combine(root!, "netratel");
-            Directory.CreateDirectory(target);
-            return target;
+            var configuredRoot = tempRootOverride ?? (OperatingSystem.IsMacOS() ? "/private/tmp" : "/tmp");
+            if (string.IsNullOrWhiteSpace(configuredRoot))
+            {
+                throw new InvalidOperationException("The operating system temporary directory is unavailable.");
+            }
+
+            var root = ResolveTrustedUnixTemporaryDirectory(configuredRoot);
+            var executionDirectory = Path.Combine(root, $"netratel_private_{Guid.NewGuid():N}");
+            if (MakeUnixDirectory(executionDirectory, (int)OwnerOnlyDirectoryMode) != 0)
+            {
+                var error = Marshal.GetLastPInvokeError();
+                throw new IOException($"Could not create a private temporary directory (errno {error}).");
+            }
+
+            try
+            {
+                if (ReadUnixFileStatus(executionDirectory).Uid != GetUnixEffectiveUserId())
+                {
+                    throw new UnauthorizedAccessException("The private temporary directory is not owned by the current Unix identity.");
+                }
+
+                File.SetUnixFileMode(executionDirectory, OwnerOnlyDirectoryMode);
+                return executionDirectory;
+            }
+            catch
+            {
+                TryDeletePrivateTempDirectory(executionDirectory);
+                throw;
+            }
+        }
+
+        private static string ResolveTrustedUnixTemporaryDirectory(string configuredRoot)
+        {
+            var candidate = new DirectoryInfo(Path.GetFullPath(configuredRoot));
+            var expectedRoot = OperatingSystem.IsMacOS() ? "/private/tmp" : "/tmp";
+            if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
+            {
+                throw new PlatformNotSupportedException("Private script files require a supported Linux or macOS temporary directory.");
+            }
+
+            if (!string.Equals(candidate.FullName, expectedRoot, StringComparison.Ordinal))
+            {
+                throw new UnauthorizedAccessException("Private script files require the canonical system temporary directory.");
+            }
+
+            if (!candidate.Exists)
+            {
+                throw new InvalidOperationException("The operating system temporary directory does not exist.");
+            }
+
+            if ((candidate.Attributes & FileAttributes.ReparsePoint) != 0)
+            {
+                throw new UnauthorizedAccessException("The canonical system temporary directory must not be a symbolic link.");
+            }
+
+            var ancestor = new DirectoryInfo(Path.GetPathRoot(candidate.FullName)!);
+            ValidateUnixTemporaryAncestor(ancestor.FullName, allowSharedWrite: false);
+            var ancestorPath = ancestor.FullName;
+            foreach (var component in Path.GetRelativePath(ancestorPath, candidate.FullName)
+                         .Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries))
+            {
+                ancestorPath = Path.Combine(ancestorPath, component);
+                var isTemporaryRoot = string.Equals(ancestorPath, candidate.FullName, StringComparison.Ordinal);
+                ValidateUnixTemporaryAncestor(ancestorPath, isTemporaryRoot);
+            }
+
+            return candidate.FullName;
+        }
+
+        private static void ValidateUnixTemporaryAncestor(string path, bool allowSharedWrite)
+        {
+            var status = ReadUnixFileStatus(path);
+            if ((status.Mode & UnixFileTypeMask) != UnixDirectoryFileType)
+            {
+                throw new UnauthorizedAccessException("The system temporary directory path contains a missing directory or symbolic link.");
+            }
+
+            if (status.Uid != 0)
+            {
+                throw new UnauthorizedAccessException("The system temporary directory path must be owned by the operating system administrator.");
+            }
+
+            var mode = (UnixFileMode)(status.Mode & UnixPermissionMask);
+            var sharedWrite = UnixFileMode.GroupWrite | UnixFileMode.OtherWrite;
+            if ((mode & sharedWrite) != 0 &&
+                (!allowSharedWrite || (mode & StickyDirectoryMode) == 0))
+            {
+                throw new UnauthorizedAccessException("A system temporary directory ancestor is writable by other users.");
+            }
+        }
+
+        private const int UnixFileTypeMask = 0xF000;
+        private const int UnixDirectoryFileType = 0x4000;
+        private const int UnixPermissionMask = 0xFFF;
+
+        // Keep this layout in sync with .NET 10's normalized Interop.Sys.FileStatus
+        // in System.Native. The application targets net10.0; this avoids depending on
+        // Linux/Darwin struct stat ABI offsets. Recheck on a target framework upgrade.
+        [StructLayout(LayoutKind.Sequential)]
+        private struct UnixFileStatus
+        {
+            public int Flags;
+            public int Mode;
+            public uint Uid;
+            public uint Gid;
+            public long Size;
+            public long ATime;
+            public long ATimeNsec;
+            public long MTime;
+            public long MTimeNsec;
+            public long CTime;
+            public long CTimeNsec;
+            public long BirthTime;
+            public long BirthTimeNsec;
+            public long Dev;
+            public long RDev;
+            public long Ino;
+            public uint UserFlags;
+        }
+
+        [DllImport("libc", EntryPoint = "geteuid", SetLastError = true)]
+        private static extern uint GetUnixEffectiveUserId();
+
+        [DllImport("System.Native", EntryPoint = "SystemNative_LStat", SetLastError = true, CharSet = CharSet.Ansi)]
+        private static extern int LStatUnixPath([MarshalAs(UnmanagedType.LPUTF8Str)] string path, out UnixFileStatus status);
+
+        [DllImport("System.Native", EntryPoint = "SystemNative_MkDir", SetLastError = true, CharSet = CharSet.Ansi)]
+        private static extern int MakeUnixDirectory([MarshalAs(UnmanagedType.LPUTF8Str)] string path, int mode);
+
+        private static UnixFileStatus ReadUnixFileStatus(string path)
+        {
+            if (LStatUnixPath(path, out var status) != 0)
+            {
+                throw new IOException($"Could not verify system temporary directory metadata (errno {Marshal.GetLastPInvokeError()}).");
+            }
+
+            return status;
+        }
+
+        [SupportedOSPlatform("windows")]
+        private static SecurityIdentifier GetCurrentWindowsSid()
+        {
+            using var identity = WindowsIdentity.GetCurrent();
+            return identity.User ?? throw new InvalidOperationException("The current Windows identity has no user SID.");
+        }
+
+        [SupportedOSPlatform("windows")]
+        private static void EnsureWindowsPrivateDirectory(string path, SecurityIdentifier owner)
+        {
+            if (Directory.Exists(path))
+            {
+                ValidateWindowsPrivateDirectory(path, owner, protectContents: true);
+                return;
+            }
+
+            Directory.CreateDirectory(path);
+            ProtectWindowsPrivateDirectory(path);
+            ValidateWindowsPrivateDirectory(path, owner, protectContents: true);
+        }
+
+        [SupportedOSPlatform("windows")]
+        private static void ValidateWindowsPrivateDirectory(string path, SecurityIdentifier owner, bool protectContents)
+        {
+            var info = new DirectoryInfo(path);
+            if (!info.Exists || (info.Attributes & FileAttributes.ReparsePoint) != 0)
+            {
+                throw new UnauthorizedAccessException("A private temporary directory is missing or is a reparse point.");
+            }
+
+            var security = info.GetAccessControl();
+            if (security.GetOwner(typeof(SecurityIdentifier)) is not SecurityIdentifier directoryOwner || !directoryOwner.Equals(owner))
+            {
+                throw new UnauthorizedAccessException("A private temporary directory is not owned by the current Windows identity.");
+            }
+
+            if (protectContents && !security.AreAccessRulesProtected)
+            {
+                throw new UnauthorizedAccessException("A private temporary directory must not inherit access rules from its parent.");
+            }
+
+            var system = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
+            var administrators = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
+            var creatorOwner = new SecurityIdentifier(WellKnownSidType.CreatorOwnerSid, null);
+            var allowedWriters = new[] { owner, system, administrators, creatorOwner };
+            var protectedRights = FileSystemRights.Write | FileSystemRights.Delete |
+                                  FileSystemRights.DeleteSubdirectoriesAndFiles | FileSystemRights.ChangePermissions |
+                                  FileSystemRights.TakeOwnership;
+            if (protectContents)
+            {
+                protectedRights |= FileSystemRights.Read | FileSystemRights.ReadAndExecute;
+            }
+            var rules = security.GetAccessRules(includeExplicit: true, includeInherited: true, typeof(SecurityIdentifier));
+            foreach (FileSystemAccessRule rule in rules)
+            {
+                if (rule.AccessControlType != AccessControlType.Allow || (rule.FileSystemRights & protectedRights) == 0)
+                {
+                    continue;
+                }
+
+                if (!allowedWriters.Any(sid => sid.Equals((SecurityIdentifier)rule.IdentityReference)))
+                {
+                    throw new UnauthorizedAccessException("A private temporary directory grants write access to an untrusted Windows identity.");
+                }
+            }
+        }
+
+        [SupportedOSPlatform("windows")]
+        private static void ProtectWindowsPrivateDirectory(string path)
+        {
+            using var identity = WindowsIdentity.GetCurrent();
+            var currentSid = identity.User ?? throw new InvalidOperationException("The current Windows identity has no user SID.");
+            var systemSid = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
+            var administratorsSid = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
+            var security = new DirectorySecurity();
+            security.SetOwner(currentSid);
+            security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+            var inheritance = InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit;
+            foreach (var sid in new[] { currentSid, systemSid, administratorsSid })
+            {
+                security.AddAccessRule(new FileSystemAccessRule(
+                    sid,
+                    FileSystemRights.FullControl,
+                    inheritance,
+                    PropagationFlags.None,
+                    AccessControlType.Allow));
+            }
+            new DirectoryInfo(path).SetAccessControl(security);
+        }
+
+        internal static void TryDeletePrivateTemp(string path)
+        {
+            TryDelete(path);
+            var directory = Path.GetDirectoryName(path);
+            if (directory is not null && Path.GetFileName(directory).StartsWith("netratel_private_", StringComparison.Ordinal))
+                TryDeletePrivateTempDirectory(directory);
+        }
+
+        private static void TryDeletePrivateTempDirectory(string path)
+        {
+            try
+            {
+                if (Directory.Exists(path)) Directory.Delete(path, recursive: true);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                LogManager.WriteLog($"[Shell] Private parameter temp cleanup failed ({exception.GetType().Name}); the protected directory remains in place.");
+            }
         }
 
         private async Task<RunResult> RunViaTempPs1Async(string shellPath, string command, TimeSpan timeout, string? cwd, CancellationToken ct, bool isPwsh)
         {
-            var ps1 = WriteTemp(".ps1", WrapPSBlock(command));
+            var ps1 = WritePrivateTemp(".ps1", WrapPSBlock(command));
             try
             {
                 var args = new StringBuilder("-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass ");
@@ -249,14 +567,21 @@ namespace NetRatel.Client.Service.Shells
             }
             finally
             {
-                TryDelete(ps1);
+                TryDeletePrivateTemp(ps1);
             }
         }
 
-        private Task<RunResult> RunDirectAsync(string shellPath, string argPrefix, string command, TimeSpan timeout, string? cwd, CancellationToken ct)
+        private Task<RunResult> RunDirectAsync(
+            string shellPath,
+            string argPrefix,
+            string command,
+            TimeSpan timeout,
+            string? cwd,
+            CancellationToken ct,
+            IReadOnlyDictionary<string, string>? environment = null)
         {
             string args = $"{argPrefix} {QuoteArgument(command)}";
-            return StartAsync(shellPath, args, cwd, timeout, ct);
+            return StartAsync(shellPath, args, cwd, timeout, ct, environment);
         }
 
         private (string Path, bool IsPwsh) ResolvePowerShellHost(ShellExecutor preference)
@@ -453,7 +778,13 @@ namespace NetRatel.Client.Service.Shells
             return AppContext.BaseDirectory ?? ".";
         }
 
-        private async Task<RunResult> StartAsync(string fileName, string arguments, string? cwd, TimeSpan timeout, CancellationToken ct)
+        private async Task<RunResult> StartAsync(
+            string fileName,
+            string arguments,
+            string? cwd,
+            TimeSpan timeout,
+            CancellationToken ct,
+            IReadOnlyDictionary<string, string>? environment = null)
         {
             ct.ThrowIfCancellationRequested();
             var res = new RunResult();
@@ -466,6 +797,13 @@ namespace NetRatel.Client.Service.Shells
                 RedirectStandardError = true,
                 CreateNoWindow = true
             };
+            if (environment is not null)
+            {
+                foreach (var (key, value) in environment)
+                {
+                    psi.Environment[key] = value;
+                }
+            }
             res.ShellPath = fileName;
             res.Arguments = arguments;
             res.WorkingDirectory = resolvedCwd;

@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
-using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Threading;
@@ -19,18 +18,15 @@ namespace NetRatel.Web.Services.Clients;
 public class ClientApiService : IClientApiService
 {
     private readonly IHttpClientFactory _clientFactory;
-    private readonly ITokenProvider _tokenProvider;
     private readonly ILogger<ClientApiService> _logger;
     private static readonly JsonSerializerOptions _json =
         new() { PropertyNameCaseInsensitive = true };
 
     public ClientApiService(
         IHttpClientFactory clientFactory,
-        ITokenProvider tokenProvider,
         ILogger<ClientApiService> logger)
     {
         _clientFactory = clientFactory;
-        _tokenProvider = tokenProvider;
         _logger = logger;
     }
 
@@ -123,10 +119,6 @@ public class ClientApiService : IClientApiService
         async Task<HttpResponseMessage> SendAsync(CancellationToken ct)
         {
             using var request = new HttpRequestMessage(HttpMethod.Delete, requestUri);
-            var token = await _tokenProvider.GetBearerAsync(ct).ConfigureAwait(false);
-            if (!string.IsNullOrWhiteSpace(token))
-                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-
             return await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
         }
 

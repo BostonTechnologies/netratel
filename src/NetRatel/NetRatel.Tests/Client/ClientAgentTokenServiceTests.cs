@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using FluentAssertions;
 using NetRatel.Application.ClientAuth;
+using NetRatel.Client;
 using NetRatel.Infrastructure.Auth;
 using NetRatel.Client.Service.Auth;
 using Xunit;
@@ -12,7 +13,7 @@ namespace NetRatel.Tests.Client;
 public sealed class ClientAgentTokenServiceTests
 {
     [Fact]
-    public async Task GetAccessTokenAsync_WhenServerReportsDeletedAgent_ClearsStaleCredential()
+    public async Task GetAccessTokenAsync_WhenServerReportsDeletedAgent_PreservesCredentialUntilAuthorizedRecovery()
     {
         var credentials = new FakeCredentialStore("4b750cbb-0d54-4e74-a7de-863d273b4d76", "stale-refresh-token");
         using var http = new HttpClient(new StaticResponseHandler(
@@ -27,9 +28,9 @@ public sealed class ClientAgentTokenServiceTests
 
         var exception = await action.Should().ThrowAsync<AgentClientAuthException>();
         exception.Which.Code.Should().Be("agent_not_found");
-        exception.Which.ShouldClearCredentials.Should().BeTrue();
-        credentials.Cleared.Should().BeTrue();
-        (await credentials.LoadAsync()).Should().BeNull();
+        exception.Which.ShouldClearCredentials.Should().BeFalse();
+        credentials.Cleared.Should().BeFalse();
+        (await credentials.LoadAsync()).Should().Be(("4b750cbb-0d54-4e74-a7de-863d273b4d76", "stale-refresh-token"));
     }
 
     [Fact]
@@ -51,6 +52,53 @@ public sealed class ClientAgentTokenServiceTests
         exception.Which.ShouldClearCredentials.Should().BeFalse();
         credentials.Cleared.Should().BeFalse();
         (await credentials.LoadAsync()).Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task RevokedRefreshAcrossRestarts_DoesNotConsumePendingInstallerEnrollmentGrant()
+    {
+        var credentials = new FakeCredentialStore("4b750cbb-0d54-4e74-a7de-863d273b4d76", "revoked-refresh-token");
+        var originalCredentials = await credentials.LoadAsync();
+        var originalDeviceKey = await credentials.GetOrCreateAsync(CancellationToken.None);
+        var fileSystem = new FakeInjectedEnrollmentFileSystem();
+        var installDirectory = Path.Combine(Path.GetTempPath(), $"netratel-revoked-grant-{Guid.NewGuid():N}");
+        var enrollmentPath = Path.Combine(installDirectory, "netratel.enroll.json");
+        fileSystem.Files[enrollmentPath] = """
+            {
+              "schema":"netratel.enroll.v1",
+              "tenantId":42,
+              "enrollmentCode":"ENR-PENDING-REPAIR",
+              "issuer":"https://netratel-dev-api.example",
+              "validToUtc":"2099-02-27T00:00:00Z"
+            }
+            """;
+        var bootstrap = new InjectedEnrollmentBootstrap(fileSystem, () => installDirectory);
+        var enrollment = new CountingEnrollmentService();
+        var handler = new CountingUnauthorizedHandler();
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("https://netratel-dev-api.example") };
+        var options = new ClientOptions { ApiBaseUrl = "https://netratel-dev-api.example" };
+
+        for (var start = 0; start < 2; start++)
+        {
+            if (await credentials.LoadAsync() is null)
+            {
+                await bootstrap.TryEnrollAsync(options, enrollment, credentials, CancellationToken.None);
+            }
+
+            var tokenService = new ClientAgentTokenService(http, credentials, credentials);
+            var action = () => StartupTokenAcquisition.GetAccessTokenAsync(
+                options, tokenService, enrollment, credentials, bootstrap, _ => { }, CancellationToken.None);
+            var exception = await action.Should().ThrowAsync<AgentClientAuthException>();
+            exception.Which.Code.Should().Be("refresh_token_rejected");
+            exception.Which.ShouldClearCredentials.Should().BeFalse();
+            (await credentials.LoadAsync()).Should().Be(originalCredentials);
+            fileSystem.Files.Should().ContainKey(enrollmentPath);
+        }
+
+        handler.RequestCount.Should().Be(2);
+        enrollment.Codes.Should().BeEmpty();
+        fileSystem.Deleted.Should().BeEmpty();
+        (await credentials.GetOrCreateAsync(CancellationToken.None)).Should().Be(originalDeviceKey);
     }
 
     [Fact]
@@ -95,6 +143,44 @@ public sealed class ClientAgentTokenServiceTests
             {
                 Content = new StringContent(body, Encoding.UTF8, "application/problem+json")
             });
+    }
+
+    private sealed class CountingUnauthorizedHandler : HttpMessageHandler
+    {
+        public int RequestCount { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            RequestCount++;
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.Unauthorized)
+            {
+                Content = new StringContent("{}", Encoding.UTF8, "application/problem+json")
+            });
+        }
+    }
+
+    private sealed class CountingEnrollmentService : IAgentEnrollmentService
+    {
+        public List<string> Codes { get; } = [];
+
+        public Task<(string AgentId, string RefreshToken)> EnrollAsync(string enrollmentCode, CancellationToken ct)
+        {
+            Codes.Add(enrollmentCode);
+            return Task.FromResult(("new-agent", "new-refresh"));
+        }
+    }
+
+    private sealed class FakeInjectedEnrollmentFileSystem : IInjectedEnrollmentFileSystem
+    {
+        public Dictionary<string, string> Files { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public List<string> Deleted { get; } = [];
+        public bool Exists(string path) => Files.ContainsKey(path);
+        public Task<string> ReadAllTextAsync(string path, CancellationToken ct) => Task.FromResult(Files[path]);
+        public void Delete(string path)
+        {
+            Deleted.Add(path);
+            Files.Remove(path);
+        }
     }
 
     private sealed class FakeCredentialStore(string agentId, string refreshToken) : IAgentCredentialStore, IAgentDeviceKeyStore

@@ -17,11 +17,11 @@ public sealed class ClientTelemetryStreamService : IAsyncDisposable
     private readonly Uri _baseAddress;
     private Func<AgentTelemetrySnapshotDto, Task>? _onTelemetry;
 
-    public ClientTelemetryStreamService(IHttpClientFactory factory, ITokenProvider tokens)
+    public ClientTelemetryStreamService(IHttpClientFactory factory)
     {
         var http = factory.CreateClient("OrchestratorApi");
         _baseAddress = http.BaseAddress!;
-        _sse = new LegacySseClient(http, tokens.GetBearerAsync);
+        _sse = new LegacySseClient(http);
         _sse.OnEvent += OnSseAsync;
     }
 

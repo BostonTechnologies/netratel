@@ -579,7 +579,7 @@ public sealed class AgentFileGatewaySessionRegistryTests
         public Task<ClientPresenceSnapshot> GetSnapshotAsync(ClientKey client, CancellationToken cancellationToken) =>
             Task.FromResult(new ClientPresenceSnapshot(
                 client,
-                client == expectedClient ? ShadowPresenceStatus.Online : ShadowPresenceStatus.Offline,
+                client == expectedClient ? ClientPresenceStatus.Online : ClientPresenceStatus.Offline,
                 epoch,
                 connectionId,
                 0,
@@ -610,7 +610,7 @@ public sealed class AgentFileGatewaySessionRegistryTests
         public Task<ClientPresenceSnapshot> GetSnapshotAsync(ClientKey client, CancellationToken cancellationToken) =>
             Task.FromResult(new ClientPresenceSnapshot(
                 client,
-                client == expectedClient ? ShadowPresenceStatus.Online : ShadowPresenceStatus.Offline,
+                client == expectedClient ? ClientPresenceStatus.Online : ClientPresenceStatus.Offline,
                 Volatile.Read(ref _epoch),
                 _connectionId,
                 0,

@@ -38,31 +38,42 @@ public sealed class TokenService : ITokenService
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly IConfiguration _configuration;
     private readonly ISystemTokenService _systemTokenService;
+    private readonly OperatorApiCredentialState _operatorApiCredentialState;
     private readonly ILogger<TokenService> _logger;
     private readonly object _circuitTokenLock = new();
     private string? _circuitAccessToken;
     private DateTimeOffset? _circuitAccessTokenExpiresAt;
+    private ClaimsPrincipal? _circuitAccessTokenPrincipal;
+    private long _circuitAccessTokenGeneration;
 
     public TokenService(
         IHttpContextAccessor httpContextAccessor,
         IHttpClientFactory httpClientFactory,
         IConfiguration configuration,
         ISystemTokenService systemTokenService,
+        OperatorApiCredentialState operatorApiCredentialState,
         ILogger<TokenService> logger)
     {
         _httpContextAccessor = httpContextAccessor;
         _httpClientFactory = httpClientFactory;
         _configuration = configuration;
         _systemTokenService = systemTokenService;
+        _operatorApiCredentialState = operatorApiCredentialState;
         _logger = logger;
     }
 
-    public async Task<string> GetValidAccessTokenAsync()
+    public Task<string> GetValidAccessTokenAsync() => GetValidAccessTokenAsync(CancellationToken.None);
+
+    public async Task<string> GetValidAccessTokenAsync(CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var context = _httpContextAccessor.HttpContext;
         if (context is null)
         {
-            var circuitToken = GetCircuitAccessToken();
+            var circuitPrincipal = _operatorApiCredentialState.GetBoundPrincipal();
+            var circuitToken = circuitPrincipal is { Identity.IsAuthenticated: true }
+                ? GetCircuitAccessToken(circuitPrincipal)
+                : null;
             if (!string.IsNullOrWhiteSpace(circuitToken))
             {
                 return circuitToken;
@@ -70,6 +81,10 @@ public sealed class TokenService : ITokenService
 
             throw new ReauthRequiredException(ReauthMessage);
         }
+
+        using var requestCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, context.RequestAborted);
+        var requestCancellationToken = requestCancellation.Token;
+        var credentialGeneration = _operatorApiCredentialState.GetGeneration();
 
         if (context.Items.TryGetValue(RefreshedAccessTokenItemKey, out var refreshedAccessToken)
             && refreshedAccessToken is string refreshedAccessTokenValue
@@ -84,10 +99,12 @@ public sealed class TokenService : ITokenService
             throw new ReauthRequiredException(ReauthMessage);
         }
 
-        if (!await TryRefreshSessionAsync(context, authentication, context.RequestAborted).ConfigureAwait(false))
+        if (!await TryRefreshSessionCoreAsync(context, authentication, requestCancellationToken, credentialGeneration).ConfigureAwait(false))
         {
             throw new ReauthRequiredException(ReauthMessage);
         }
+
+        requestCancellationToken.ThrowIfCancellationRequested();
 
         if (context.Items.TryGetValue(RefreshedAccessTokenItemKey, out var refreshed)
             && refreshed is string refreshedTokenValue
@@ -102,14 +119,21 @@ public sealed class TokenService : ITokenService
             throw new ReauthRequiredException(ReauthMessage);
         }
 
-        CacheCircuitAccessToken(accessToken, ParseExpiration(authentication.Properties?.GetTokenValue("expires_at")));
+        CacheCircuitAccessToken(accessToken, ParseExpiration(authentication.Properties?.GetTokenValue("expires_at")), authentication.Principal!, credentialGeneration);
         return accessToken;
     }
 
-    public async Task<bool> TryRefreshSessionAsync(
+    public Task<bool> TryRefreshSessionAsync(
         HttpContext context,
         AuthenticateResult authentication,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        TryRefreshSessionCoreAsync(context, authentication, cancellationToken, _operatorApiCredentialState.GetGeneration());
+
+    private async Task<bool> TryRefreshSessionCoreAsync(
+        HttpContext context,
+        AuthenticateResult authentication,
+        CancellationToken cancellationToken,
+        long credentialGeneration)
     {
         if (authentication.Principal is not { Identity.IsAuthenticated: true } principal)
         {
@@ -127,7 +151,7 @@ public sealed class TokenService : ITokenService
 
         if (IsDevelopmentSession(principal))
         {
-            return await RefreshDevelopmentSessionAsync(context, authentication).ConfigureAwait(false);
+            return await RefreshDevelopmentSessionAsync(context, authentication, credentialGeneration).ConfigureAwait(false);
         }
 
         if (IsAiAgentSession(principal))
@@ -149,7 +173,7 @@ public sealed class TokenService : ITokenService
 
         if (DateTimeOffset.UtcNow < expiresAt.Value.Subtract(TokenRefreshBuffer))
         {
-            CacheCircuitAccessToken(accessToken, expiresAt);
+            CacheCircuitAccessToken(accessToken, expiresAt, principal, credentialGeneration);
             return true;
         }
 
@@ -169,7 +193,8 @@ public sealed class TokenService : ITokenService
             accessToken,
             refreshToken,
             expiresAt.Value,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            credentialGeneration).ConfigureAwait(false);
         if (refreshed is null)
         {
             return false;
@@ -185,7 +210,8 @@ public sealed class TokenService : ITokenService
         string accessToken,
         string refreshToken,
         DateTimeOffset currentAccessTokenExpiresAt,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        long credentialGeneration)
     {
         var key = BuildRefreshKey(authentication.Principal!, accessToken, refreshToken);
         PruneExpiredRefreshResults();
@@ -196,7 +222,7 @@ public sealed class TokenService : ITokenService
         {
             if (TryGetRecentRefreshResult(key, out var recent))
             {
-                await UpdateCookieTokensAsync(context, authentication, recent).ConfigureAwait(false);
+                await UpdateCookieTokensAsync(context, authentication, recent, credentialGeneration).ConfigureAwait(false);
                 return recent;
             }
 
@@ -205,7 +231,7 @@ public sealed class TokenService : ITokenService
             {
                 if (TryGetRecentRefreshResult(key, out recent))
                 {
-                    await UpdateCookieTokensAsync(context, authentication, recent).ConfigureAwait(false);
+                    await UpdateCookieTokensAsync(context, authentication, recent, credentialGeneration).ConfigureAwait(false);
                     return recent;
                 }
 
@@ -214,7 +240,7 @@ public sealed class TokenService : ITokenService
 
             RecentRefreshResults[key] = new CachedRefreshResult(result, DateTimeOffset.UtcNow.Add(RecentRefreshLifetime));
             PruneExpiredRefreshResults();
-            await UpdateCookieTokensAsync(context, authentication, result).ConfigureAwait(false);
+            await UpdateCookieTokensAsync(context, authentication, result, credentialGeneration).ConfigureAwait(false);
             return result;
         }
         finally
@@ -289,7 +315,8 @@ public sealed class TokenService : ITokenService
     private async Task UpdateCookieTokensAsync(
         HttpContext context,
         AuthenticateResult authentication,
-        RefreshResult result)
+        RefreshResult result,
+        long credentialGeneration)
     {
         var properties = authentication.Properties ?? new AuthenticationProperties();
         properties.UpdateTokenValue("access_token", result.AccessToken);
@@ -303,10 +330,10 @@ public sealed class TokenService : ITokenService
                 properties)
             .ConfigureAwait(false);
         context.Items[SessionRefreshedItemKey] = true;
-        CacheCircuitAccessToken(result.AccessToken, result.ExpiresAt);
+        CacheCircuitAccessToken(result.AccessToken, result.ExpiresAt, authentication.Principal!, credentialGeneration);
     }
 
-    private async Task<bool> RefreshDevelopmentSessionAsync(HttpContext context, AuthenticateResult authentication)
+    private async Task<bool> RefreshDevelopmentSessionAsync(HttpContext context, AuthenticateResult authentication, long credentialGeneration)
     {
         var accessToken = await _systemTokenService.GetTokenAsync().ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(accessToken))
@@ -315,7 +342,7 @@ public sealed class TokenService : ITokenService
         }
 
         var expiresAt = TryGetTokenExpiration(accessToken) ?? DateTimeOffset.UtcNow.AddMinutes(30);
-        await UpdateCookieTokensAsync(context, authentication, new RefreshResult(accessToken, null, expiresAt)).ConfigureAwait(false);
+        await UpdateCookieTokensAsync(context, authentication, new RefreshResult(accessToken, null, expiresAt), credentialGeneration).ConfigureAwait(false);
         context.Items[RefreshedAccessTokenItemKey] = accessToken;
         return true;
     }
@@ -338,20 +365,35 @@ public sealed class TokenService : ITokenService
         properties.IsPersistent = true;
     }
 
-    private void CacheCircuitAccessToken(string accessToken, DateTimeOffset? expiresAt)
+    private void CacheCircuitAccessToken(string accessToken, DateTimeOffset? expiresAt, ClaimsPrincipal principal, long credentialGeneration)
     {
+        if (!_operatorApiCredentialState.IsBoundTo(principal, credentialGeneration))
+        {
+            return;
+        }
+
         lock (_circuitTokenLock)
         {
+            if (!_operatorApiCredentialState.IsBoundTo(principal, credentialGeneration))
+            {
+                return;
+            }
+
             _circuitAccessToken = accessToken;
             _circuitAccessTokenExpiresAt = expiresAt;
+            _circuitAccessTokenPrincipal = principal;
+            _circuitAccessTokenGeneration = credentialGeneration;
         }
     }
 
-    private string? GetCircuitAccessToken()
+    private string? GetCircuitAccessToken(ClaimsPrincipal principal)
     {
         lock (_circuitTokenLock)
         {
             if (string.IsNullOrWhiteSpace(_circuitAccessToken)
+                || _circuitAccessTokenPrincipal is null
+                || !OperatorApiCredentialState.SamePrincipal(_circuitAccessTokenPrincipal, principal)
+                || _circuitAccessTokenGeneration != _operatorApiCredentialState.GetGeneration()
                 || !_circuitAccessTokenExpiresAt.HasValue
                 || DateTimeOffset.UtcNow >= _circuitAccessTokenExpiresAt.Value.Subtract(TokenRefreshBuffer))
             {

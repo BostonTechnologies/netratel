@@ -217,6 +217,61 @@
 }
 
 @media (max-width: 720px) {
+    .clients-status-tools {
+        flex-wrap: wrap !important;
+        justify-content: flex-start !important;
+    }
+
+    .clients-status-filter {
+        flex: 1 1 100%;
+        min-width: 0;
+    }
+
+    .clients-view-tools {
+        flex: 0 0 auto;
+        margin-inline-start: auto;
+    }
+
+    .client-card-grid-shell .client-title-row {
+        align-items: flex-start;
+        flex-wrap: wrap;
+    }
+
+    .client-card-grid-shell .client-title-row .client-title {
+        flex: 1 1 100%;
+        overflow: visible;
+        overflow-wrap: anywhere;
+        text-overflow: clip;
+        white-space: normal;
+    }
+
+    .client-card-grid-shell .client-title-row .mud-chip {
+        margin-inline-start: auto;
+    }
+
+    .client-card-grid-shell .client-host-row {
+        align-items: flex-start;
+    }
+
+    .client-card-grid-shell .client-host {
+        overflow: visible;
+        overflow-wrap: anywhere;
+        text-overflow: clip;
+        white-space: normal;
+    }
+
+    .client-card-grid-shell .client-meta-grid {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 2px;
+    }
+
+    .client-card-grid-shell .client-meta-grid .client-meta-value {
+        overflow: visible;
+        overflow-wrap: anywhere;
+        text-overflow: clip;
+        white-space: normal;
+    }
+
     .client-card-grid-shell .client-card.mud-card {
         height: auto !important;
         min-height: 500px;

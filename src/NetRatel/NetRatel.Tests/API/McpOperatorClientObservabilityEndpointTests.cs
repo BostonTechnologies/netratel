@@ -20,7 +20,6 @@ using NetRatel.API.Gateway;
 using NetRatel.API.Middleware;
 using NetRatel.API.Realtime;
 using NetRatel.API.Services;
-using NetRatel.Akka.Configuration;
 using NetRatel.Application.Agents;
 using NetRatel.Application.Operations;
 using NetRatel.Application.Presence;
@@ -191,12 +190,11 @@ public sealed class McpOperatorClientObservabilityEndpointTests
         var client = AuthorizedClient(app);
         var root = $"/api/v2/mcp/operator/agents/7/{agentId:D}";
         var presence = app.Services.GetRequiredService<TestPresence>();
-        var options = app.Services.GetRequiredService<NetRatelAkkaMigrationOptions>();
 
         presence.Online = false;
         var offline = await client.GetAsync($"{root}/logs/sources");
         presence.Online = true;
-        options.LogAuthorityEnabled = false;
+        presence.Capabilities = [];
         var unavailable = await client.GetAsync($"{root}/logs/sources");
 
         offline.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
@@ -634,19 +632,6 @@ public sealed class McpOperatorClientObservabilityEndpointTests
     private static async Task<IHost> BuildAppAsync(Guid agentId, bool allowed, bool initiallyEnabled = true)
     {
         var client = new ClientKey(7, agentId);
-        var options = new NetRatelAkkaMigrationOptions
-        {
-            Enabled = true,
-            PresenceEnabled = true,
-            GatewayEnabled = true,
-            PresenceAuthorityEnabled = true,
-            ControlGatewayEnabled = true,
-            PingAuthorityEnabled = true,
-            LogGatewayEnabled = true,
-            LogAuthorityEnabled = true,
-            TelemetryShadowEnabled = true,
-            TelemetryAuthorityEnabled = true
-        };
         var builder = Host.CreateDefaultBuilder();
         builder.ConfigureWebHost(web =>
         {
@@ -657,7 +642,6 @@ public sealed class McpOperatorClientObservabilityEndpointTests
                 services.AddRouting();
                 services.AddAuthentication("Test").AddScheme<AuthenticationSchemeOptions, TestAuthenticationHandler>("Test", _ => { });
                 services.AddAuthorization(policyOptions => policyOptions.AddPolicy("M2MOnly", policy => policy.RequireAuthenticatedUser()));
-                services.AddSingleton(options);
                 services.AddScoped<McpOperatorClientObservabilityService>();
                 services.AddDbContext<OrchestratorDbContext>(db => db.UseInMemoryDatabase($"mcp-operator-client-{agentId:N}"));
                 services.AddSingleton<McpOperatorLocalAgentOptions>();
@@ -764,6 +748,7 @@ public sealed class McpOperatorClientObservabilityEndpointTests
     private sealed class TestPresence(ClientKey client) : IClientPresenceRouter
     {
         public bool Online { get; set; } = true;
+        public IReadOnlyList<string> Capabilities { get; set; } = ["log-gateway", "telemetry-shadow"];
 
         public Task<GatewayPresenceSessionStarted> StartSessionAsync(StartGatewayPresenceSession message, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<PresenceMessageResult> RecordHeartbeatAsync(RecordGatewayHeartbeat message, CancellationToken cancellationToken) => throw new NotSupportedException();
@@ -772,13 +757,13 @@ public sealed class McpOperatorClientObservabilityEndpointTests
 
         public Task<ClientPresenceSnapshot> GetSnapshotAsync(ClientKey value, CancellationToken cancellationToken) => Task.FromResult(new ClientPresenceSnapshot(
             value,
-            value == client && Online ? ShadowPresenceStatus.Online : ShadowPresenceStatus.Offline,
+            value == client && Online ? ClientPresenceStatus.Online : ClientPresenceStatus.Offline,
             1,
             Guid.NewGuid(),
             1,
             DateTimeOffset.UtcNow,
             "1.0",
-            ["logs", "telemetry"],
+            Capabilities,
             null,
             "test",
             true));
@@ -877,6 +862,8 @@ public sealed class McpOperatorClientObservabilityEndpointTests
         public ConcurrentQueue<ClientKey> Calls { get; } = [];
 
         public AgentControlSessionRegistration Register(ClientKey value, Guid connectionId, ulong connectionEpoch, bool provisional = false) => throw new NotSupportedException();
+
+        public bool IsAvailable(ClientKey value) => value == client;
 
         public Task<AgentControlPingResult> RequestPingAsync(ClientKey value, TimeSpan timeout, CancellationToken cancellationToken)
         {

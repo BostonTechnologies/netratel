@@ -115,7 +115,7 @@ public sealed class InjectedEnrollmentBootstrapTests
     }
 
     [Fact]
-    public async Task TryEnrollAsync_WithMatchingPathBasedIssuer_Enrolls()
+    public async Task TryEnrollAsync_WithMatchingApiSuffixIssuer_Enrolls()
     {
         var fs = new FakeFileSystem();
         var baseDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
@@ -125,7 +125,7 @@ public sealed class InjectedEnrollmentBootstrapTests
               "schema":"netratel.enroll.v1",
               "tenantId":42,
               "enrollmentCode":"ENR-ABC123",
-              "issuer":"https://netratel.example.invalid/tenant/",
+              "issuer":"https://netratel.example.invalid/api/",
               "validToUtc":"2099-02-27T00:00:00Z"
             }
             """;
@@ -135,7 +135,7 @@ public sealed class InjectedEnrollmentBootstrapTests
         var bootstrap = new InjectedEnrollmentBootstrap(fs, () => baseDir);
 
         var result = await bootstrap.TryEnrollAsync(
-            new ClientOptions { ApiBaseUrl = "https://netratel.example.invalid/tenant" },
+            new ClientOptions { ApiBaseUrl = "https://netratel.example.invalid/api" },
             enrollment,
             store,
             CancellationToken.None);
@@ -147,7 +147,7 @@ public sealed class InjectedEnrollmentBootstrapTests
     }
 
     [Fact]
-    public async Task TryEnrollAsync_WithDifferentPathBasedIssuer_DoesNotEnroll()
+    public async Task TryEnrollAsync_WithUnrecognizedApiPathBase_DoesNotEnroll()
     {
         var fs = new FakeFileSystem();
         var baseDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
@@ -156,7 +156,7 @@ public sealed class InjectedEnrollmentBootstrapTests
               "schema":"netratel.enroll.v1",
               "tenantId":42,
               "enrollmentCode":"ENR-ABC123",
-              "issuer":"https://netratel.example.invalid/other",
+              "issuer":"https://netratel.example.invalid/tenant",
               "validToUtc":"2099-02-27T00:00:00Z"
             }
             """;
@@ -164,13 +164,13 @@ public sealed class InjectedEnrollmentBootstrapTests
         var bootstrap = new InjectedEnrollmentBootstrap(fs, () => baseDir, diagnostics.Add);
 
         var result = await bootstrap.TryEnrollAsync(
-            new ClientOptions { ApiBaseUrl = "https://netratel.example.invalid/tenant" },
+            new ClientOptions { ApiBaseUrl = "https://netratel.example.invalid" },
             new FakeEnrollmentService(),
             new FakeCredentialStore(),
             CancellationToken.None);
 
         result.Should().BeNull();
-        diagnostics.Should().ContainSingle().Which.Should().Contain("issuer does not match");
+        diagnostics.Should().ContainSingle().Which.Should().Contain("origin, optionally followed by /api");
     }
 
     private sealed class FakeEnrollmentService : IAgentEnrollmentService

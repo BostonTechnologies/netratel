@@ -1,6 +1,8 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
+using System.Net;
+using System.Net.Http;
 using System.Runtime.CompilerServices;
 using System.Security.Claims;
 using System.Text.Encodings.Web;
@@ -29,11 +31,13 @@ using NetRatel.Shared.Contracts.Requests;
 using NetRatel.Web.Components.Layout;
 using NetRatel.Web.Components.Pages.Clients.ClientsMgmt;
 using NetRatel.Web.Services;
+using NetRatel.Web.Services.Clients;
 using NetRatel.Web.Services.Access;
 using NetRatel.Web.Services.Branding;
 using NetRatel.Web.Services.Notifications;
 using NetRatel.Web.Services.Search;
 using NetRatel.Web.Services.Tenants;
+using NetRatel.Web.Services.Telemetry;
 using NetRatel.Web.Components;
 
 namespace NetRatel.Web.PlaywrightTests;
@@ -380,6 +384,135 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
                 "clipped fixture target",
                 "delayed-reload");
             Assert.Contains("outside its hidden scroll region", clippedTargetIssue);
+        }
+        finally
+        {
+            await context.CloseAsync();
+        }
+    }
+
+    [Fact]
+    public async Task AuthenticatedClientsDirectory_RendersOnlineOfflineEmptyAndErrorStates_AtDesktopAndNarrowWidths()
+    {
+        var browser = _browserFixture.Browser;
+        var fixture = _fixture ?? throw new InvalidOperationException("Client management fixture was not initialized.");
+        var context = await browser.NewContextAsync(new BrowserNewContextOptions
+        {
+            ViewportSize = new ViewportSize { Width = 1600, Height = 900 },
+            ColorScheme = ColorScheme.Light
+        });
+
+        try
+        {
+            var page = await context.NewPageAsync();
+            page.SetDefaultTimeout(30_000);
+            var response = await page.GotoAsync($"{fixture.BaseAddress}/clients", new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 30_000 });
+            Assert.NotNull(response);
+            Assert.True(response.Ok, $"Client directory fixture returned HTTP {response.Status}.");
+            await Assertions.Expect(page.Locator(".client-title")).ToHaveTextAsync(["gateway-agent-01", "registered-offline-agent"]);
+            Assert.Equal(2, await page.Locator(".client-card").CountAsync());
+            var evidenceDirectory = Path.GetFullPath(Path.Combine("TestResults", "playwright"));
+            Directory.CreateDirectory(evidenceDirectory);
+            await page.ScreenshotAsync(new PageScreenshotOptions
+            {
+                Path = Path.Combine(evidenceDirectory, "clients-directory-desktop-light-populated-1600x900.png"),
+                FullPage = true,
+                Animations = ScreenshotAnimations.Disabled
+            });
+
+            var requestCount = fixture.ClientDirectory.RequestCount;
+            var refresh = page.GetByRole(AriaRole.Button, new() { Name = "Refresh clients" });
+            await refresh.FocusAsync();
+            await page.Keyboard.PressAsync("Enter");
+            await fixture.ClientDirectory.WaitForRequestAfterAsync(requestCount, TimeSpan.FromSeconds(10));
+            Assert.True(await page.EvaluateAsync<bool>("() => document.activeElement?.getAttribute('aria-label') === 'Refresh clients'"),
+                "The directory refresh action must remain operable from keyboard focus.");
+
+            var search = page.GetByRole(AriaRole.Textbox, new() { Name = "Search" });
+            await search.FillAsync("registered-offline-agent");
+            await Assertions.Expect(page.Locator(".client-title")).ToHaveTextAsync(["registered-offline-agent"]);
+            await page.GetByRole(AriaRole.Button, new() { Name = "Show all clients" }).ClickAsync();
+            await search.FillAsync(string.Empty);
+
+            await page.SetViewportSizeAsync(390, 844);
+            await page.EvaluateAsync("() => document.documentElement.style.fontSize = '32px'");
+            if (await page.GetByTestId("mobile-overflow").IsVisibleAsync())
+            {
+                await SelectThemeOptionAsync(page, "mobile-overflow", "mobile-theme-option-dark");
+            }
+            else
+            {
+                await SelectThemeOptionAsync(page, "theme-preference-menu", "theme-option-dark");
+            }
+
+            await page.Locator("html[data-netratel-theme='dark']").WaitForAsync();
+            Assert.False(await page.EvaluateAsync<bool>("() => document.documentElement.scrollWidth > window.innerWidth"),
+                "The directory must reflow without horizontal overflow at narrow width and 200% effective text size.");
+            var narrowLayoutProblems = await page.EvaluateAsync<string[]>(
+                """
+                () => {
+                const problems = [];
+                const viewportRight = window.innerWidth;
+                for (const label of ['Refresh clients', 'Switch client view']) {
+                    const button = document.querySelector(`[aria-label="${label}"]`);
+                    if (!button) {
+                        problems.push(`${label} control is missing`);
+                        continue;
+                    }
+
+                    const rect = button.getBoundingClientRect();
+                    const paper = button.closest('.mud-paper');
+                    const paperRect = paper?.getBoundingClientRect();
+                    if (rect.left < 0 || rect.right > viewportRight || (paperRect && (rect.left < paperRect.left || rect.right > paperRect.right))) {
+                        problems.push(`${label} control is outside the viewport or filter panel (${rect.left.toFixed(1)}..${rect.right.toFixed(1)})`);
+                    }
+                }
+
+                for (const selector of ['.client-title', '.client-host']) {
+                    for (const element of document.querySelectorAll(selector)) {
+                        if (element.scrollWidth > element.clientWidth + 1) {
+                            problems.push(`${selector} text is clipped (${element.scrollWidth}px in ${element.clientWidth}px)`);
+                        }
+                    }
+                }
+
+                return problems;
+                }
+                """);
+            Assert.Empty(narrowLayoutProblems);
+            await Assertions.Expect(page.Locator(".client-title")).ToHaveTextAsync(["gateway-agent-01", "registered-offline-agent"]);
+            await page.ScreenshotAsync(new PageScreenshotOptions
+            {
+                Path = Path.Combine(evidenceDirectory, "clients-directory-phone-dark-populated-390x844-text-200.png"),
+                FullPage = true,
+                Animations = ScreenshotAnimations.Disabled
+            });
+
+            fixture.ClientDirectory.SetMode(ClientDirectoryFixtureMode.Empty);
+            await page.GetByRole(AriaRole.Button, new() { Name = "Refresh clients" }).ClickAsync();
+            await page.GetByText("No registered clients yet.").WaitForAsync();
+            await Assertions.Expect(page.GetByText("No clients match the active filters.")).ToHaveCountAsync(0);
+            await page.ScreenshotAsync(new PageScreenshotOptions
+            {
+                Path = Path.Combine(evidenceDirectory, "clients-directory-phone-dark-empty-390x844-text-200.png"),
+                FullPage = true,
+                Animations = ScreenshotAnimations.Disabled
+            });
+
+            fixture.ClientDirectory.SetMode(ClientDirectoryFixtureMode.Unavailable);
+            await page.GetByRole(AriaRole.Button, new() { Name = "Refresh clients" }).ClickAsync();
+            await page.GetByRole(AriaRole.Alert).GetByText("could not load the client directory").WaitForAsync();
+            await page.ScreenshotAsync(new PageScreenshotOptions
+            {
+                Path = Path.Combine(evidenceDirectory, "clients-directory-phone-dark-error-390x844-text-200.png"),
+                FullPage = true,
+                Animations = ScreenshotAnimations.Disabled
+            });
+
+            fixture.ClientDirectory.SetMode(ClientDirectoryFixtureMode.Populated);
+            await page.GetByTestId("retry-client-directory").ClickAsync();
+            await Assertions.Expect(page.Locator(".client-title")).ToHaveTextAsync(["gateway-agent-01", "registered-offline-agent"]);
+            await Assertions.Expect(page.GetByRole(AriaRole.Alert)).ToHaveCountAsync(0);
         }
         finally
         {
@@ -773,6 +906,7 @@ public sealed class ClientsManagementBrowserFixture : IAsyncLifetime
 }
 
 [Route("/clients/mgmt")]
+[Route("/clients")]
 public sealed class ClientsManagementFixtureApp : ComponentBase
 {
     protected override void BuildRenderTree(RenderTreeBuilder builder)
@@ -829,16 +963,19 @@ internal sealed class ClientsManagementFixtureHost : IAsyncDisposable
         WebApplication application,
         string baseAddress,
         FixtureClientArtifactsService data,
+        ClientDirectoryFixtureData clientDirectory,
         FixtureServerDiagnosticLoggerProvider serverDiagnostics)
     {
         _application = application;
         BaseAddress = baseAddress;
         Data = data;
+        ClientDirectory = clientDirectory;
         _serverDiagnostics = serverDiagnostics;
     }
 
     public string BaseAddress { get; }
     public FixtureClientArtifactsService Data { get; }
+    public ClientDirectoryFixtureData ClientDirectory { get; }
     public IReadOnlyList<string> StartupServerDiagnostics => _serverDiagnostics.Snapshot();
 
     public static async Task<ClientsManagementFixtureHost> StartAsync()
@@ -854,6 +991,12 @@ internal sealed class ClientsManagementFixtureHost : IAsyncDisposable
             .AddScheme<AuthenticationSchemeOptions, FixtureAuthenticationHandler>("Fixture", _ => { });
         builder.Services.AddAuthorization(_ => { });
         builder.Services.AddSingleton<FixtureClientArtifactsService>();
+        builder.Services.AddSingleton<ClientDirectoryFixtureData>();
+        builder.Services.AddSingleton<IHttpClientFactory, ClientDirectoryFixtureHttpClientFactory>();
+        builder.Services.AddScoped<ClientPresenceApiService>();
+        builder.Services.AddScoped<ClientPresentationService>();
+        builder.Services.AddScoped<GatewayTelemetryApiService>();
+        builder.Services.AddScoped<GatewayClientActionApiService>();
         builder.Services.AddSingleton<IClientArtifactsService>(services => services.GetRequiredService<FixtureClientArtifactsService>());
         builder.Services.AddSingleton<ITenantApiService, FixtureTenantApiService>();
         builder.Services.AddSingleton<IDeploymentBrandingApiService, FixtureBrandingApiService>();
@@ -884,6 +1027,7 @@ internal sealed class ClientsManagementFixtureHost : IAsyncDisposable
             application,
             address,
             application.Services.GetRequiredService<FixtureClientArtifactsService>(),
+            application.Services.GetRequiredService<ClientDirectoryFixtureData>(),
             serverDiagnostics);
     }
 
@@ -1368,6 +1512,129 @@ internal sealed class FixtureClientArtifactsService : IClientArtifactsService
     public Task DeleteAsync(string rid, string version, CancellationToken ct = default) => Task.CompletedTask;
     public Task OpenUploadDialogAsync(string initialRid, Func<Task> onUploaded) => Task.CompletedTask;
     public Task UploadAsync(string rid, string version, string? notes, IBrowserFile file, CancellationToken ct = default) => Task.CompletedTask;
+}
+
+internal enum ClientDirectoryFixtureMode
+{
+    Populated,
+    Empty,
+    Unavailable
+}
+
+internal sealed class ClientDirectoryFixtureData
+{
+    private static readonly Guid OnlineAgentId = Guid.Parse("4886c6c0-e486-4f59-a006-40e4043a4a46");
+    private static readonly Guid OfflineAgentId = Guid.Parse("99f5a0b0-5e61-4039-8d09-6c9d44c7c100");
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private readonly object _gate = new();
+    private TaskCompletionSource<int> _requestChanged = NewSignal<int>();
+    private ClientDirectoryFixtureMode _mode = ClientDirectoryFixtureMode.Populated;
+    private int _requestCount;
+
+    public int RequestCount
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _requestCount;
+            }
+        }
+    }
+
+    public void SetMode(ClientDirectoryFixtureMode mode)
+    {
+        lock (_gate)
+        {
+            _mode = mode;
+        }
+    }
+
+    public async Task<int> WaitForRequestAfterAsync(int previousRequest, TimeSpan timeout)
+    {
+        Task<int> requestStarted;
+        lock (_gate)
+        {
+            if (_requestCount > previousRequest)
+            {
+                return _requestCount;
+            }
+
+            requestStarted = _requestChanged.Task;
+        }
+
+        return await requestStarted.WaitAsync(timeout);
+    }
+
+    public HttpResponseMessage Respond(HttpRequestMessage request)
+    {
+        if (request.RequestUri?.AbsolutePath == "/api/v2/client-presence")
+        {
+            ClientDirectoryFixtureMode mode;
+            lock (_gate)
+            {
+                _requestCount++;
+                mode = _mode;
+                _requestChanged.TrySetResult(_requestCount);
+                _requestChanged = NewSignal<int>();
+            }
+
+            if (mode == ClientDirectoryFixtureMode.Unavailable)
+            {
+                return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable);
+            }
+
+            var entries = mode == ClientDirectoryFixtureMode.Empty
+                ? []
+                : new ClientPresenceDto[]
+                {
+                    new ClientPresenceDto(
+                        $"gateway:3:{OnlineAgentId:D}", 3, OnlineAgentId, "gateway-agent-01", "gateway-agent-01", "Linux", "x64", true, true,
+                        DateTimeOffset.UtcNow, "0.4.101", ["terminal-gateway", "file-gateway", "remote-support-gateway"], "gateway", "akka", true, 12,
+                        new GatewayTerminalCapabilityDto(true, ["bash", "sh"], true, null, DateTimeOffset.UtcNow), "NetRatel"),
+                    new ClientPresenceDto(
+                        "gateway:3:offline", 3, OfflineAgentId, "registered-offline-agent", null, "Linux", "x64", false, true,
+                        null, null, [], "gateway", "unobserved", false, 12, null, "NetRatel")
+                };
+
+            return Json(HttpStatusCode.OK, new ClientPresenceListDto("Akka", 12, entries));
+        }
+
+        if (request.RequestUri?.AbsolutePath == "/api/v2/agent-telemetry")
+        {
+            return Json(HttpStatusCode.OK, new[]
+            {
+                new GatewayTelemetrySummary(3, OnlineAgentId, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
+                    new GatewayTelemetryCpu(37.5, 0.25, 100), new GatewayTelemetryMemory(1024, 624, 400, 61),
+                    [new GatewayTelemetryDisk("/", 80, 20, 60, 25)],
+                    [new GatewayTelemetryNetwork("eth0", 1000, 500)],
+                    new GatewayTelemetryTransportHealth(3600, "0.4.101", "Linux", DateTimeOffset.UtcNow), "gateway", true)
+            });
+        }
+
+        return Json(HttpStatusCode.OK, Array.Empty<object>());
+    }
+
+    private static HttpResponseMessage Json<T>(HttpStatusCode statusCode, T payload) => new(statusCode)
+    {
+        Content = new StringContent(JsonSerializer.Serialize(payload, JsonOptions))
+    };
+
+    private static TaskCompletionSource<T> NewSignal<T>() => new(TaskCreationOptions.RunContinuationsAsynchronously);
+}
+
+internal sealed class ClientDirectoryFixtureHttpClientFactory(ClientDirectoryFixtureData directory) : IHttpClientFactory
+{
+    public HttpClient CreateClient(string name) => new(new Handler(directory))
+    {
+        BaseAddress = new Uri("https://netratel.test")
+    };
+
+    private sealed class Handler(ClientDirectoryFixtureData directory) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            Task.FromResult(directory.Respond(request));
+    }
 }
 
 internal sealed class FixtureTenantApiService : ITenantApiService

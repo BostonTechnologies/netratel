@@ -3,6 +3,7 @@ set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$root"
+source "$root/tools/ci/chromium-nss-trust.sh"
 
 source tools/ci/load-prior-release.sh
 
@@ -23,6 +24,10 @@ cookie_jar="$(mktemp)"
 tls_key_path="$(mktemp)"
 tls_certificate_path="$(mktemp)"
 tls_bundle_path="$(mktemp --suffix=.pfx)"
+smoke_ca_key_path="$(mktemp)"
+smoke_ca_certificate_path="$(mktemp --suffix=.crt)"
+tls_request_path="$(mktemp --suffix=.csr)"
+tls_extensions_path="$(mktemp)"
 stage="initializing ${legacy_version} PostgreSQL/OIDC upgrade smoke"
 active_compose=()
 legacy_principal_count=""
@@ -64,7 +69,10 @@ cleanup() {
   if (( ${#active_compose[@]} > 0 )); then
     "${active_compose[@]}" down --volumes --remove-orphans --rmi local >/dev/null 2>&1 || true
   fi
-  unlink "$agent_key_path" "$tls_key_path" "$tls_certificate_path" "$tls_bundle_path" 2>/dev/null || true
+  cleanup_chromium_nss_trust || true
+  unlink "$agent_key_path" "$tls_key_path" "$tls_certificate_path" "$tls_bundle_path" \
+    "$smoke_ca_key_path" "$smoke_ca_certificate_path" "$tls_request_path" "$tls_extensions_path" 2>/dev/null || true
+  unlink "${smoke_ca_certificate_path}.srl" 2>/dev/null || true
   unlink "$cookie_jar" 2>/dev/null || true
   docker volume rm "$client_volume" >/dev/null 2>&1 || true
   if [[ -n "$native_image_container" ]]; then
@@ -115,15 +123,31 @@ wait_for_web() {
 run_browser_oidc_smoke() {
   local expected_version="$1"
   local expect_current_shell="$2"
-  local proxy_address
+  local proxy_address report_name
   proxy_address="$("${active_compose[@]}" port web-proxy 9444)"
+  if [[ "$expect_current_shell" == true ]]; then
+    report_name="upgraded-browser.trx"
+  else
+    report_name="previous-release-browser.trx"
+  fi
+  rm -f "TestResults/postgresql-oidc/$report_name"
+  if [[ -z "$chromium_nss_xdg_data_home" ]]; then
+    prepare_chromium_nss_trust "$smoke_ca_certificate_path"
+  fi
   NETRATEL_BROWSER_SMOKE_WEB_URL="$web_url" \
     NETRATEL_BROWSER_SMOKE_PROXY_URL="https://${proxy_address}" \
     NETRATEL_BROWSER_SMOKE_USERNAME=netratel-test-operator \
+    NETRATEL_BROWSER_SMOKE_NSS_DATA_HOME="$chromium_nss_xdg_data_home" \
+    XDG_DATA_HOME="$chromium_nss_xdg_data_home" \
+    SSL_CERT_FILE="$smoke_ca_certificate_path" \
+    NODE_EXTRA_CA_CERTS="$smoke_ca_certificate_path" \
     NETRATEL_BROWSER_SMOKE_EXPECTED_VERSION="$expected_version" \
     NETRATEL_BROWSER_SMOKE_EXPECT_CURRENT_SHELL="$expect_current_shell" \
-    dotnet test src/NetRatel/NetRatel.Web.PlaywrightTests/NetRatel.Web.PlaywrightTests.csproj \
-      --configuration Release --no-build --filter 'FullyQualifiedName~OidcComposeBrowserSmokeTests'
+    dotnet test --project src/NetRatel/NetRatel.Web.PlaywrightTests/NetRatel.Web.PlaywrightTests.csproj \
+      --configuration Release --no-build \
+      --filter-class NetRatel.Web.PlaywrightTests.OidcComposeBrowserSmokeTests \
+      --results-directory TestResults/postgresql-oidc --report-trx --report-trx-filename "$report_name"
+  python3 tools/ci/verify-mtp-trx.py "TestResults/postgresql-oidc/$report_name" --expected-executed 2
 }
 
 durable_oidc_principal_count() {
@@ -436,7 +460,7 @@ Environment=NetRatelCLIENT__Client__ApiBaseUrl=$api_url
 Environment=NetRatelCLIENT__Client__AutoUpdate__Mode=Service
 Environment=NetRatelCLIENT__Client__AutoUpdate__Channel=Prerelease
 Environment=NetRatelCLIENT__Gateway__Endpoint=https://127.0.0.1:$NETRATEL_GATEWAY_TEST_PORT
-Environment=SSL_CERT_FILE=$tls_certificate_path
+Environment=SSL_CERT_FILE=$smoke_ca_certificate_path
 
 [Install]
 WantedBy=multi-user.target
@@ -667,7 +691,6 @@ export OIDC_CLIENT_SECRET=synthetic-postgresql-oidc-upgrade-oidc-secret
 export NETRATEL_WEB_PORT="${NETRATEL_UPGRADE_OIDC_WEB_PORT:-18084}"
 export NETRATEL_OIDC_TEST_PORT="${NETRATEL_UPGRADE_OIDC_PORT:-18085}"
 export NETRATEL_GATEWAY_TEST_PORT="${NETRATEL_UPGRADE_GATEWAY_PORT:-19443}"
-export NETRATEL_SMOKE_CLIENT_UPDATES_ENABLED=true
 export NETRATEL_AGENT_AUTH_PRIVATE_KEY="$agent_key_path"
 export NETRATEL_SMOKE_TLS_CERT_PASSWORD=synthetic-postgresql-oidc-upgrade-certificate-password
 export NETRATEL_GATEWAY_PROXY_CONFIG_PATH="$root/tests/compose/gateway-proxy.nginx.conf"
@@ -681,12 +704,27 @@ api_url="http://127.0.0.1:${NETRATEL_API_TEST_PORT:-9222}"
 oidc_resolve="host.docker.internal:${NETRATEL_OIDC_TEST_PORT}:127.0.0.1"
 
 openssl ecparam -name prime256v1 -genkey -noout -out "$agent_key_path"
-openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=gateway' \
-  -addext 'subjectAltName=DNS:gateway,DNS:localhost,IP:127.0.0.1' \
-  -keyout "$tls_key_path" -out "$tls_certificate_path" >/dev/null 2>&1
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$smoke_ca_key_path" >/dev/null 2>&1
+openssl req -x509 -new -key "$smoke_ca_key_path" -sha256 -days 2 \
+  -subj '/CN=NetRatel PostgreSQL upgrade smoke CA' \
+  -addext 'basicConstraints=critical,CA:TRUE' \
+  -addext 'keyUsage=critical,keyCertSign,cRLSign' \
+  -out "$smoke_ca_certificate_path" >/dev/null 2>&1
+openssl req -new -newkey rsa:2048 -nodes -keyout "$tls_key_path" \
+  -out "$tls_request_path" -subj '/CN=gateway' >/dev/null 2>&1
+cat > "$tls_extensions_path" <<'EOF'
+basicConstraints=critical,CA:FALSE
+keyUsage=critical,digitalSignature,keyEncipherment
+extendedKeyUsage=serverAuth
+subjectAltName=DNS:gateway,DNS:localhost,IP:127.0.0.1
+EOF
+openssl x509 -req -in "$tls_request_path" -CA "$smoke_ca_certificate_path" \
+  -CAkey "$smoke_ca_key_path" -CAcreateserial -days 2 -sha256 \
+  -extfile "$tls_extensions_path" -out "$tls_certificate_path" >/dev/null 2>&1
 openssl pkcs12 -export -out "$tls_bundle_path" -inkey "$tls_key_path" -in "$tls_certificate_path" \
+  -certfile "$smoke_ca_certificate_path" \
   -passout "pass:${NETRATEL_SMOKE_TLS_CERT_PASSWORD}" >/dev/null 2>&1
-chmod 0644 "$agent_key_path" "$tls_key_path" "$tls_certificate_path" "$tls_bundle_path"
+chmod 0644 "$agent_key_path" "$tls_key_path" "$tls_certificate_path" "$tls_bundle_path" "$smoke_ca_certificate_path"
 
 stage="building the OIDC browser probe"
 dotnet restore src/NetRatel/NetRatel.Web.PlaywrightTests/NetRatel.Web.PlaywrightTests.csproj

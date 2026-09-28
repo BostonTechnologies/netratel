@@ -200,9 +200,9 @@ public sealed class AgentCommandGatewayClient(
 
         public void ValidateAccepted(GatewayCommandFrame frame)
         {
-            if (!Matches(frame) || frame.Sequence != 0 || !GatewayAuthority.IsAkka(frame.Accepted.CommandAuthority))
+            if (!Matches(frame) || frame.Sequence != 0 || !GatewayWireProtocol.HasAkkaAuthority(frame.Accepted.CommandAuthority))
             {
-                throw new RpcException(new Status(StatusCode.FailedPrecondition, "Command gateway did not admit the required Akka authority."));
+                throw new RpcException(new Status(StatusCode.FailedPrecondition, "Command gateway returned an invalid authority acknowledgement."));
             }
         }
 

@@ -1,80 +1,65 @@
-using System.IdentityModel.Tokens.Jwt;
+using System.Net;
 using System.Net.Http.Headers;
-using Microsoft.AspNetCore.Http;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.Logging;
-using System.Linq;
 
 namespace NetRatel.Web.Services.Authentication;
 
-public class TokenAuthorizationHandler : DelegatingHandler
+/// <summary>Projects the request-scoped credential onto an API request for API-side validation.</summary>
+public sealed class TokenAuthorizationHandler(ILogger<TokenAuthorizationHandler> logger) : DelegatingHandler
 {
-    private readonly ITokenService _tokenService;
-    private readonly ILogger<TokenAuthorizationHandler> _logger;
-    private readonly IHttpContextAccessor _httpContextAccessor;
-    private readonly string _localCookieName;
-    private static readonly JwtSecurityTokenHandler TokenReader = new();
+    private static readonly TimeSpan TokenRefreshBuffer = TimeSpan.FromMinutes(5);
 
-    public TokenAuthorizationHandler(
-        ITokenService tokenService,
-        ILogger<TokenAuthorizationHandler> logger,
-        IHttpContextAccessor httpContextAccessor,
-        IConfiguration configuration)
-    {
-        _tokenService = tokenService;
-        _logger = logger;
-        _httpContextAccessor = httpContextAccessor;
-        _localCookieName = configuration["Authentication:Local:CookieName"]?.Trim() is { Length: > 0 } configuredCookieName
-            ? configuredCookieName
-            : "NetRatel.Local";
-    }
-
-    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         try
         {
-            var context = _httpContextAccessor.HttpContext;
-            var localCookie = context?.User.HasClaim("auth_mode", "local") == true
-                ? context.Request.Cookies[_localCookieName]
-                : null;
-            if (!string.IsNullOrWhiteSpace(localCookie))
+            if (!request.Options.TryGetValue(OperatorApiCredential.RequestOptionsKey, out var credential))
             {
-                // Internal BFF hop only. The API validates this protected
-                // ticket and its current local-account state on every call.
-                request.Headers.TryAddWithoutValidation("Cookie", $"{_localCookieName}={localCookie}");
-                // Blazor's server-side event path is protected by the Web
-                // host antiforgery middleware. A browser cannot add this
-                // non-simple header to a cross-origin API request without an
-                // approved CORS preflight, so the API can reject direct
-                // cookie-originating credential mutations.
+                throw new ReauthRequiredException("No caller credential is available for this API request.");
+            }
+
+            if (credential.Kind == OperatorApiCredentialKind.LocalSessionCookie)
+            {
+                if (string.IsNullOrWhiteSpace(credential.Value))
+                {
+                    throw new ReauthRequiredException("The local operator session is not available for this API request.");
+                }
+
+                // The API validates the protected LocalSession ticket and current account state on every call.
+                request.Headers.Authorization = null;
+                request.Headers.Remove("Cookie");
+                request.Headers.Remove("X-NetRatel-Account-Request");
+                var cookieName = string.IsNullOrWhiteSpace(credential.CookieName) ? "NetRatel.Local" : credential.CookieName;
+                request.Headers.TryAddWithoutValidation("Cookie", $"{cookieName}={credential.Value}");
                 request.Headers.TryAddWithoutValidation("X-NetRatel-Account-Request", "1");
-                return await base.SendAsync(request, ct);
             }
-
-            var token = await _tokenService.GetValidAccessTokenAsync();
-
-            if (string.IsNullOrWhiteSpace(token))
+            else if (credential.Kind == OperatorApiCredentialKind.Bearer
+                     && credential.ExpiresAtUtc is { } expiresAt
+                     && expiresAt > DateTimeOffset.UtcNow.Add(TokenRefreshBuffer)
+                     && !string.IsNullOrWhiteSpace(credential.Value))
             {
-                throw new ReauthRequiredException("No bearer token available for API call.");
+                request.Headers.Remove("Cookie");
+                request.Headers.Remove("X-NetRatel-Account-Request");
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", credential.Value);
+            }
+            else
+            {
+                throw new ReauthRequiredException("The operator API credential is missing or no longer valid.");
             }
 
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-            _logger.LogInformation("Attached bearer token for {Method} {Uri}", request.Method, request.RequestUri);
-
-            return await base.SendAsync(request, ct);
+            return await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
         }
-        catch (TaskCanceledException) when (ct.IsCancellationRequested)
+        catch (TaskCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
         }
-        catch (TaskCanceledException ex)
+        catch (TaskCanceledException exception)
         {
-            _logger.LogWarning(ex, "Timed out calling {Method} {Uri}", request.Method, request.RequestUri);
-            return new HttpResponseMessage(System.Net.HttpStatusCode.GatewayTimeout)
+            logger.LogWarning(exception, "Timed out calling operator API method {Method}.", request.Method);
+            return new HttpResponseMessage(HttpStatusCode.GatewayTimeout)
             {
                 RequestMessage = request,
                 ReasonPhrase = "Upstream API timeout"

@@ -35,15 +35,14 @@ only the API URL. A split-host deployment can set an explicit HTTPS gateway
 override through `NetRatelCLIENT__Gateway__Endpoint` (or
 `Gateway__Endpoint`) or the command line (`--Gateway:Endpoint=https://...`).
 The generated Windows, systemd, and launchd service templates persist the API
-URL once and preserve a configured gateway override and intentional `false`
-module opt-outs when rewriting an existing service. If an operator
-intentionally changes the instance URL, verify the tenant and issuer/origin
-contract before restarting the service and retain the existing identity unless
-a deliberate identity reset is required. Existing systemd `EnvironmentFile=`
-entries remain explicit deployment overrides and keep their precedence over
-the generated unit value; update the referenced file too when repointing such
-an installation. Installer rewrites preserve those directives without editing
-the referenced files.
+URL once and preserve an explicitly configured gateway endpoint when rewriting
+an existing service. If an operator intentionally changes the instance URL,
+verify the tenant and issuer/origin contract before restarting the service and
+retain the existing identity unless a deliberate identity reset is required.
+Existing systemd `EnvironmentFile=` entries remain explicit deployment
+overrides and keep their precedence over the generated unit value; update the
+referenced file too when repointing such an installation. Installer rewrites
+preserve those directives without editing the referenced files.
 
 The API image also installs `libgssapi-krb5-2` before dropping to its non-root
 runtime user. The release image gate first loads `libgssapi_krb5.so.2` as UID
@@ -67,7 +66,10 @@ libraries, unsupported negotiation, and unexpected status codes fail the gate.
 - `AgentAuth:PrivateKeyPath` points to a deployment-supplied ES256 private key
   used only for native-agent token issuance. Mount it read-only and keep it out
   of the repository and ordinary application data volume. Generate a distinct
-  key for each instance through your approved secret-management process.
+  key for each instance through your approved secret-management process. When
+  this setting is absent, the API preserves the deployed signing-key file
+  fallback at `/app/storage/keys/spacetime-es256-private.pem` for existing
+  instances; it is a file-location compatibility rule, not a runtime selector.
 
 Back up PostgreSQL and persistent key/artifact volumes
 together. Replacing a Data Protection key ring invalidates cookies and
@@ -75,14 +77,21 @@ protected state.
 
 ## Public client install links
 
-The API derives both the public install-link Web URL and the client API base
-from the effective administrator `Site URL` under `/admin/branding`. Set that
-value to the canonical public HTTPS origin reachable by a new client. Include a
-supported external base path when the reverse proxy maps it to the corresponding
-application routes. The API rejects a missing, HTTP, localhost, private DNS
-suffix, credential-bearing, query-bearing, or fragment-bearing Site URL before
-it creates an install grant. No separate public URL environment variables are
-required.
+The effective administrator `Site URL` under `/admin/branding` supplies the
+public HTTPS origin for install-link URLs and, by default, the Client API
+endpoint. Set it to the canonical public origin with no path, credentials,
+query, or fragment; the application routes install links and API calls from
+their known paths. The API rejects a missing, HTTP, localhost, private DNS
+suffix, credential-bearing, path-bearing, query-bearing, or fragment-bearing
+Site URL before it creates an install grant.
+
+When the native Client uses a separate public API host, set the API-side
+`ClientArtifacts:PublicBaseUrl` to that HTTPS API origin. An optional `/api`
+suffix is accepted and normalized away; arbitrary paths are rejected. A
+separate public gateway origin can be set with
+`ClientArtifacts:PublicGatewayBaseUrl`. These values describe the addresses
+embedded in new Client installs. They are independent of the Web-to-API
+internal address and the OIDC issuer URL.
 
 The API stores each generated script and capability token with ASP.NET Data
 Protection in PostgreSQL; the corresponding key ring in

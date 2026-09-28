@@ -23,14 +23,13 @@ public sealed class TerminalTransportRetirementTests
     }
 
     [Fact]
-    public void Client_Settings_No_Longer_Offer_The_Retired_Transport()
+    public void Client_Settings_Do_Not_Expose_A_Retired_Transport_Selector()
     {
         var repositoryRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../../"));
-        var source = File.ReadAllText(Path.Combine(
+        var sourcePath = Path.Combine(
             repositoryRoot,
-            "src/NetRatel/NetRatel.Web/Components/Dialogs/ClientSettingsDialog.razor"));
+            "src/NetRatel/NetRatel.Web/Components/Dialogs/ClientSettingsDialog.razor");
 
-        source.Should().Contain("TerminalTransportKind.AkkaGateway");
-        source.Should().NotContain("Value=\"@TerminalTransportKind.Spacetime.ToString()\"");
+        File.Exists(sourcePath).Should().BeFalse("the old client settings dialog has no callers and only exposes retired transport choices");
     }
 }

@@ -4,8 +4,8 @@ using NetRatel.Application.Commands;
 namespace NetRatel.Infrastructure.Persistence;
 
 /// <summary>
-/// Stores command intent and observed delivery state for replay. It records the
-/// authority selected by the dispatcher but never dispatches commands itself.
+/// Stores command intent and observed delivery state for replay. Historical
+/// authority metadata is retained, but this store does not dispatch commands.
 /// </summary>
 public sealed class CommandOutbox(OrchestratorDbContext db)
 {
@@ -39,6 +39,9 @@ public sealed class CommandOutbox(OrchestratorDbContext db)
                 CorrelationId = lifecycleEvent.CorrelationId,
                 RequestTimestamp = lifecycleEvent.RequestTimestamp,
                 CreatedAtUtc = recordedAtUtc,
+                // Persisted historical provenance only. New gateway producers
+                // mark lifecycle events authoritative; this value never selects
+                // a command dispatcher or runtime implementation.
                 Mode = lifecycleEvent.IsAuthoritative ? "authority" : "shadow-only",
                 IsAuthoritative = lifecycleEvent.IsAuthoritative
             };

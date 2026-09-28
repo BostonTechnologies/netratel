@@ -16,6 +16,31 @@ public sealed record ClientUpdateResumeEligibility(bool IsEligible, string? Fail
 public sealed record ClientUpdateResumeResult(bool Resumed, string? FailureCode, long? PolicyRevision = null);
 public sealed record ClientPackPublishItem(ClientArtifactSummaryDto Artifact, string ManifestJson);
 
+/// <summary>
+/// The gateway's narrow persisted-update admission boundary. Implementations
+/// must bind readmission and confirmation to the authenticated identity and
+/// the exact presence connection that acknowledged the heartbeat.
+/// </summary>
+public interface IClientUpdateActivationAuthority
+{
+    Task<ClientUpdateActivationResult> MarkReadmittedAsync(
+        AuthenticatedAgentIdentity identity,
+        Guid attemptId,
+        Guid releaseId,
+        string nonce,
+        string agentVersion,
+        Guid connectionId,
+        long connectionEpoch,
+        CancellationToken cancellationToken);
+
+    Task<ClientUpdateActivationResult> ConfirmAsync(
+        AuthenticatedAgentIdentity identity,
+        Guid attemptId,
+        Guid connectionId,
+        long connectionEpoch,
+        CancellationToken cancellationToken);
+}
+
 public interface IClientUpdatePublisher
 {
     Task<ClientUpdateReleaseRecord> PublishArtifactAsync(ClientArtifactSummaryDto artifact, string manifestJson,
@@ -37,9 +62,9 @@ public interface IClientUpdateOperatorAuthority
 public sealed class ClientUpdateAuthorityService(
     OrchestratorDbContext db,
     IClientUpdateCatalog catalog,
-    NetRatelAkkaMigrationOptions options,
     TimeProvider timeProvider,
-    ILogger<ClientUpdateAuthorityService> logger) : IClientUpdatePublisher, IClientUpdateOperatorAuthority
+    ILogger<ClientUpdateAuthorityService> logger)
+    : IClientUpdatePublisher, IClientUpdateOperatorAuthority, IClientUpdateActivationAuthority
 {
     // A client restart abandons a download before it can persist a usable continuation token.
     // The same authenticated agent can therefore immediately reclaim Downloading; a fresh
@@ -76,7 +101,7 @@ public sealed class ClientUpdateAuthorityService(
             var policy = (await db.ClientReleaseAutomationSettings
                 .FromSqlRaw("SELECT * FROM \"ClientReleaseAutomationSettings\" WHERE \"Id\" = 1 FOR SHARE")
                 .AsNoTracking().ToListAsync(cancellationToken).ConfigureAwait(false)).SingleOrDefault();
-            if (!options.IsClientUpdateAuthorityActive || policy is null ||
+            if (policy is null ||
                 !policy.PublishAutomatically || policy.CheckEveryHours == 0 ||
                 parsedVersion.IsPrerelease &&
                 (!policy.DownloadPrerelease || !policy.DeployPrereleaseAutomatically) ||
@@ -207,11 +232,6 @@ public sealed class ClientUpdateAuthorityService(
         string admissionNonce,
         CancellationToken cancellationToken)
     {
-        if (!options.IsClientUpdateAuthorityActive)
-        {
-            ClientUpdateTelemetry.ClaimObserved("ineligible");
-            return null;
-        }
         var release = await db.ClientUpdateReleases.SingleOrDefaultAsync(
             x => x.PublicId == releasePublicId && x.Enabled,
             cancellationToken).ConfigureAwait(false);

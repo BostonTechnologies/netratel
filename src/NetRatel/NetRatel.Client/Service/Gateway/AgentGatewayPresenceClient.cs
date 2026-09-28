@@ -30,7 +30,8 @@ public sealed class AgentGatewayPresenceClient(
     Func<GatewayPresenceSession, string, CancellationToken, Task>? runForPresenceSession = null,
     IAgentGatewayUpdateHandler? updateHandler = null,
     Func<Uri, GrpcChannel>? createChannel = null,
-    TimeSpan? extensionShutdownTimeout = null)
+    TimeSpan? extensionShutdownTimeout = null,
+    Action<string, Guid?, int?, ulong?, Guid?>? reportReadiness = null)
 {
     private static readonly TimeSpan InitialRetryDelay = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan MaximumRetryDelay = TimeSpan.FromSeconds(30);
@@ -46,6 +47,7 @@ public sealed class AgentGatewayPresenceClient(
             {
                 var token = await DisabledAgentTokenRetry.GetAccessTokenAsync(tokenService, log, stoppingToken).ConfigureAwait(false);
                 await RunSessionAsync(token.AccessToken, token.ExpiresAtUtc, stoppingToken).ConfigureAwait(false);
+                reportReadiness?.Invoke("disconnected", null, null, null, null);
                 retryDelay = InitialRetryDelay;
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -54,11 +56,13 @@ public sealed class AgentGatewayPresenceClient(
             }
             catch (AgentClientAuthException exception)
             {
+                reportReadiness?.Invoke("authentication_failed", null, null, null, null);
                 log($"Agent token acquisition failed: {exception.Message}");
                 throw;
             }
             catch (Exception exception) when (exception is RpcException or HttpRequestException or IOException or OperationCanceledException)
             {
+                reportReadiness?.Invoke("disconnected", null, null, null, null);
                 log($"Gateway session failed: {exception.GetType().Name}: {exception.Message}. Retrying in {retryDelay.TotalSeconds:0}s.");
                 try
                 {
@@ -97,31 +101,16 @@ public sealed class AgentGatewayPresenceClient(
             hello.Capabilities.Add("presence");
             // Retain this legacy wire token verbatim; telemetry itself now uses the V2 stream.
             hello.Capabilities.Add("telemetry-shadow");
-            if (options.FileGatewayEnabled)
+            hello.Capabilities.Add("file-gateway");
+            hello.Capabilities.Add("log-gateway");
+            hello.Capabilities.Add("remote-support-gateway");
+            hello.Capabilities.Add("remote-support-v2-inventory");
+            hello.Capabilities.Add("terminal-gateway");
+            hello.TerminalCapability = new TerminalCapability
             {
-                hello.Capabilities.Add("file-gateway");
-            }
-            if (options.LogGatewayEnabled)
-            {
-                hello.Capabilities.Add("log-gateway");
-            }
-            if (options.RemoteSupportGatewayEnabled)
-            {
-                hello.Capabilities.Add("remote-support-gateway");
-            }
-            if (options.RemoteSupportV2InventoryEnabled)
-            {
-                hello.Capabilities.Add("remote-support-v2-inventory");
-            }
-            if (options.TerminalGatewayEnabled)
-            {
-                hello.Capabilities.Add("terminal-gateway");
-                hello.TerminalCapability = new TerminalCapability
-                {
-                    Supported = true,
-                    AvailableShells = { terminalShells }
-                };
-            }
+                Supported = true,
+                AvailableShells = { terminalShells }
+            };
             updateHandler?.PopulateHello(hello);
 
             await call.RequestStream.WriteAsync(new AgentFrame
@@ -143,11 +132,11 @@ public sealed class AgentGatewayPresenceClient(
 
             var accepted = call.ResponseStream.Current;
             ValidateConnectedFrame(accepted, operationId);
-            if (!GatewayAuthority.IsAkka(accepted.Connected.PresenceAuthority))
+            if (!GatewayWireProtocol.HasAkkaAuthority(accepted.Connected.PresenceAuthority))
             {
                 throw new RpcException(new Status(
                     StatusCode.FailedPrecondition,
-                    $"Gateway reported authority '{accepted.Connected.PresenceAuthority}', but the Akka authority is required."));
+                    "Gateway returned an unsupported presence authority token."));
             }
 
             var heartbeatInterval = TimeSpan.FromSeconds(Math.Clamp((int)accepted.Connected.HeartbeatIntervalSeconds, 1, 60));
@@ -156,14 +145,16 @@ public sealed class AgentGatewayPresenceClient(
                 accepted.Connected.UpdatePolicy,
                 confirmation: null);
             updateHandler?.OnPresenceConnected(accepted.ConnectionEpoch);
-            log($"Presence admitted. authority={accepted.Connected.PresenceAuthority}, connectionEpoch={accepted.ConnectionEpoch}, heartbeatInterval={heartbeatInterval.TotalSeconds:0}s.");
+            var acceptedConnectionId = Guid.Parse(accepted.ConnectionId);
+            reportReadiness?.Invoke("admitted", agentId, tenantId, accepted.ConnectionEpoch, acceptedConnectionId);
+            log($"Presence admitted. connectionEpoch={accepted.ConnectionEpoch}, heartbeatInterval={heartbeatInterval.TotalSeconds:0}s.");
 
             using var sessionStopping = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
             var session = new GatewayPresenceSession(
                 tenantId,
                 agentId,
                 accepted.ConnectionEpoch,
-                Guid.Parse(accepted.ConnectionId));
+                acceptedConnectionId);
             ulong sequence = 0;
             Task? sessionTask = null;
             try
@@ -195,14 +186,15 @@ public sealed class AgentGatewayPresenceClient(
 
                     var heartbeat = call.ResponseStream.Current;
                     ValidateHeartbeatFrame(heartbeat, accepted, heartbeatOperationId, heartbeatSequence);
-                    if (!GatewayAuthority.IsAkka(heartbeat.HeartbeatAccepted.PresenceAuthority))
+                    if (!GatewayWireProtocol.HasAkkaAuthority(heartbeat.HeartbeatAccepted.PresenceAuthority))
                     {
                         throw new RpcException(new Status(
                             StatusCode.FailedPrecondition,
-                            $"Gateway changed authority to non-Akka '{heartbeat.HeartbeatAccepted.PresenceAuthority}'."));
+                            "Gateway returned an unsupported heartbeat authority token."));
                     }
 
                     updateHandler?.OnActivationHeartbeatAccepted(accepted.ConnectionEpoch);
+                    reportReadiness?.Invoke("heartbeat_ready", agentId, tenantId, accepted.ConnectionEpoch, acceptedConnectionId);
                     NotifyUpdateHandler(
                         heartbeat.HeartbeatAccepted.UpdateOffer,
                         heartbeat.HeartbeatAccepted.UpdatePolicy,
@@ -229,6 +221,12 @@ public sealed class AgentGatewayPresenceClient(
             }
             finally
             {
+                reportReadiness?.Invoke(
+                    "disconnected",
+                    agentId,
+                    tenantId,
+                    accepted.ConnectionEpoch,
+                    acceptedConnectionId);
                 sessionStopping.Cancel();
                 await StopSessionExtensionsAsync(sessionTask, sessionStopping.Token, stoppingToken).ConfigureAwait(false);
             }

@@ -135,9 +135,9 @@ public sealed class AgentGatewayTelemetryPublisher(
                 Hello = new AgentTelemetryHello { AgentVersion = agentVersion, Capabilities = { "telemetry-rate-control-v1" } }
             }).ConfigureAwait(false);
             var admission = await accepted.Task.WaitAsync(stoppingToken).ConfigureAwait(false);
-            if (!GatewayAuthority.IsAkka(admission.TelemetryAuthority))
+            if (!GatewayWireProtocol.HasAkkaAuthority(admission.TelemetryAuthority))
             {
-                throw new RpcException(new Status(StatusCode.FailedPrecondition, "Telemetry gateway did not admit the required Akka authority."));
+                throw new RpcException(new Status(StatusCode.FailedPrecondition, "Telemetry gateway returned an unsupported authority token."));
             }
 
             var slowInterval = TimeSpan.FromSeconds(Math.Clamp(options.TelemetrySlowIntervalSeconds, 5, 300));

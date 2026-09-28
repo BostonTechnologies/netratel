@@ -1,6 +1,7 @@
 using FluentAssertions;
 using System.Diagnostics;
 using System.IO.Compression;
+using System.Runtime.Versioning;
 using System.Text.Json;
 using System.Xml.Linq;
 using NetRatel.Application.Artifacts;
@@ -12,50 +13,168 @@ namespace NetRatel.Tests.Infrastructure;
 public sealed class ScriptTemplateServiceTests
 {
     [Fact]
-    public async Task Build_Bash_InstallsAnExactArtifactAtomically_AndStartsTheNewUnit()
+    public void Build_WindowsServiceReadinessTimeoutIsBoundedAndConfigurable()
     {
-        if (!OperatingSystem.IsLinux()) return;
+        var script = new ScriptTemplateService().Build(new DeploymentScriptTemplateRequest(
+            12, "win-x64", "ENR-TEST", "https://api.example", DateTimeOffset.UtcNow.AddHours(1),
+            InstallAsService: true, SilentInstall: true, ReadinessTimeoutSeconds: 17));
+
+        script.Should().Contain("expiresAtUtc = $requestedAt.AddSeconds(17).ToString('O')");
+        script.Should().Contain("$readinessDeadline = $requestedAt.AddSeconds(17)");
+
+        var invalidRequest = new DeploymentScriptTemplateRequest(
+            12, "win-x64", "ENR-TEST", "https://api.example", DateTimeOffset.UtcNow.AddHours(1),
+            InstallAsService: true, SilentInstall: true, ReadinessTimeoutSeconds: 4);
+        var build = () => new ScriptTemplateService().Build(invalidRequest);
+        build.Should().Throw<ArgumentOutOfRangeException>()
+            .WithParameterName(nameof(DeploymentScriptTemplateRequest.ReadinessTimeoutSeconds));
+    }
+
+    [Theory]
+    [SupportedOSPlatform("linux")]
+    [InlineData("https://legacy-api.example.invalid", "https://split-gateway.example.invalid", "https://legacy-api.example.invalid", "https://split-gateway.example.invalid", "https://split-gateway.example.invalid", "https://split-gateway.example.invalid")]
+    [InlineData("https://legacy-api.example.invalid/api/", "https://legacy-api.example.invalid", "https://legacy-api.example.invalid/api/", "https://legacy-api.example.invalid", "", "")]
+    [InlineData("https://file-api.example.invalid", "https://file-api.example.invalid", "https://service-api.example.invalid", "", "", "")]
+    [InlineData("https://file-api.example.invalid", "https://split-gateway.example.invalid", "https://service-api.example.invalid", "", "", "https://split-gateway.example.invalid")]
+    public async Task Build_Bash_InstallsAnExactArtifactAtomically_AndStartsTheNewUnit(
+        string previousApiBase,
+        string previousGatewayEndpoint,
+        string previousServiceApiBase,
+        string previousServiceGatewayEndpoint,
+        string expectedServiceGatewayEndpoint,
+        string expectedSettingsGatewayEndpoint)
+    {
+        if (!OperatingSystem.IsLinux()) Assert.Skip("The Linux systemd installer integration test requires a Linux host.");
 
         var root = Path.Combine(Path.GetTempPath(), $"netratel-installer-{Guid.NewGuid():N}");
         var bin = Path.Combine(root, "bin");
         var artifact = Path.Combine(root, "artifact.zip");
         var scriptPath = Path.Combine(root, "install.sh");
         Directory.CreateDirectory(root);
-        Directory.CreateDirectory(bin);
         try
         {
+            const UnixFileMode privateDirectoryMode = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+            const UnixFileMode publicDirectoryMode = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+                UnixFileMode.GroupRead | UnixFileMode.GroupExecute | UnixFileMode.OtherRead | UnixFileMode.OtherExecute;
+            const UnixFileMode publicFileMode = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead | UnixFileMode.OtherRead;
+
+            File.SetUnixFileMode(root, privateDirectoryMode);
+            Directory.CreateDirectory(bin);
+            File.SetUnixFileMode(bin, privateDirectoryMode);
             CreateLinuxArtifact(artifact, "0.4.131-rc.1");
+            File.SetUnixFileMode(artifact, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            var artifactSha = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(await File.ReadAllBytesAsync(artifact))).ToLowerInvariant();
+            var artifactSize = new FileInfo(artifact).Length.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var clientRoot = Path.Combine(root, "client");
+            var previousVersion = Path.Combine(clientRoot, "versions", "0.4.131-rc.1");
+            Directory.CreateDirectory(previousVersion);
+            File.SetUnixFileMode(clientRoot, publicDirectoryMode);
+            File.SetUnixFileMode(Path.Combine(clientRoot, "versions"), publicDirectoryMode);
+            File.SetUnixFileMode(previousVersion, publicDirectoryMode);
+            var manifestPath = Path.Combine(previousVersion, "netratel-client-manifest.json");
+            await File.WriteAllTextAsync(manifestPath, JsonSerializer.Serialize(new
+            {
+                schema = "netratel.client.manifest.v1",
+                product = "NetRatel.Client",
+                version = "0.4.131-rc.1",
+                runtimeId = "linux-x64",
+                executable = "NetRatel.Client",
+                commitSha = new string('a', 40)
+            }));
+            File.SetUnixFileMode(manifestPath, publicFileMode);
+            var previousExecutable = Path.Combine(previousVersion, "NetRatel.Client");
+            await File.WriteAllTextAsync(previousExecutable, "#!/usr/bin/env bash\nexit 0\n");
+            SetUnixExecutable(previousExecutable);
+            var previousSettingsPath = Path.Combine(previousVersion, "clientsettings.json");
+            await File.WriteAllTextAsync(previousSettingsPath, $$"""
+                {
+                  "Client": { "ApiBaseUrl": "{{previousApiBase}}", "TerminalGracefulExitTimeoutMs": 3210 },
+                  "Gateway": {
+                    "Endpoint": "{{previousGatewayEndpoint}}",
+                    "FileGatewayEnabled": false,
+                    "ControlGatewayEnabled": true
+                  },
+                  "Transport": { "Mode": "AkkaPresence" }
+                }
+                """);
+            File.SetUnixFileMode(previousSettingsPath, publicFileMode);
+            Directory.CreateSymbolicLink(Path.Combine(clientRoot, "current"), previousVersion);
+            var launcherPath = Path.Combine(clientRoot, "netratel-client-start.sh");
+            await File.WriteAllTextAsync(launcherPath, $"#!/usr/bin/env bash\nROOT_DIR=\"{clientRoot}\"\nexec \"{clientRoot}/current/NetRatel.Client\" --service\n");
+            SetUnixExecutable(launcherPath);
             var script = new ScriptTemplateService().Build(new DeploymentScriptTemplateRequest(
                 4098, "linux-x64", "ENR-ABC123", "https://example.test", DateTimeOffset.UtcNow.AddHours(1), true, true,
-                "0.4.131-rc.1", Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(await File.ReadAllBytesAsync(artifact))).ToLowerInvariant()));
+                "0.4.131-rc.1", artifactSha));
             await File.WriteAllTextAsync(scriptPath, script);
-            File.SetUnixFileMode(scriptPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-            await File.WriteAllTextAsync(Path.Combine(bin, "curl"), "#!/usr/bin/env bash\nwhile [ \"$#\" -gt 0 ]; do if [ \"$1\" = -o ]; then cp \"$FAKE_ARCHIVE\" \"$2\"; exit 0; fi; shift; done\nexit 1\n");
-            var existingUnit = Path.Combine(root, "existing-netratel-client.service");
-            await File.WriteAllTextAsync(existingUnit, """
+            SetUnixExecutable(scriptPath);
+            await File.WriteAllTextAsync(Path.Combine(bin, "curl"), """
+                #!/usr/bin/env bash
+                headers=""
+                out=""
+                while [ "$#" -gt 0 ]; do case "$1" in -D) headers="$2"; shift 2;; -o) out="$2"; shift 2;; *) shift;; esac; done
+                cp "$FAKE_ARCHIVE" "$out"
+                printf 'HTTP/1.1 200 OK\r\nX-NetRatel-Artifact-Rid: linux-x64\r\nX-NetRatel-Artifact-Version: 0.4.131-rc.1\r\nX-NetRatel-Artifact-Sha256: %s\r\nX-NetRatel-Artifact-Size: %s\r\n\r\n' "$FAKE_SHA" "$FAKE_SIZE" > "$headers"
+                """);
+            var unitDirectory = Path.Combine(root, "systemd");
+            Directory.CreateDirectory(unitDirectory);
+            File.SetUnixFileMode(unitDirectory, publicDirectoryMode);
+            var existingUnit = Path.Combine(unitDirectory, "netratel-client.service");
+            var stateDirectory = Path.Combine(root, "state");
+            var previousServiceGatewayLine = string.IsNullOrEmpty(previousServiceGatewayEndpoint)
+                ? string.Empty
+                : $"Environment=NetRatelCLIENT__Gateway__Endpoint={previousServiceGatewayEndpoint}{Environment.NewLine}";
+            var optionalEnvironmentFile = Path.Combine(root, "optional", "netratel-client.env");
+            await File.WriteAllTextAsync(existingUnit, $$"""
 [Unit]
 Description=Previous NetRatel Client
 [Service]
-Environment=NetRatelCLIENT__Client__ApiBaseUrl=https://legacy-api.example.invalid
-Environment=NetRatelCLIENT__Gateway__Endpoint=https://split-gateway.example.invalid
-Environment=NetRatelCLIENT__Gateway__FileGatewayEnabled=false
+WorkingDirectory={{clientRoot}}/current
+ExecStart={{launcherPath}}
+Environment=NetRatelCLIENT__Client__ApiBaseUrl={{previousServiceApiBase}}
+Environment=NetRatelCLIENT__Client__AutoUpdate__StateDirectory={{stateDirectory}}
+{{previousServiceGatewayLine}}Environment=NetRatelCLIENT__Gateway__FileGatewayEnabled=false
 Environment=NetRatelCLIENT__Gateway__ControlGatewayEnabled=true
 Environment=NetRatelCLIENT__Transport__Mode=AkkaPresence
 Environment=Custom__ServiceValue="kept value"
-EnvironmentFile=-/etc/netratel-client.env
+EnvironmentFile=-{{optionalEnvironmentFile}}
 """);
-            await File.WriteAllTextAsync(Path.Combine(bin, "systemctl"), "#!/usr/bin/env bash\ncase \"$1\" in show) printf '%s\\n' \"$FAKE_SYSTEMD_FRAGMENT\" ;; is-active) test -f \"$FAKE_SYSTEMD_STATE\" ;; stop) rm -f \"$FAKE_SYSTEMD_STATE\" ;; start) touch \"$FAKE_SYSTEMD_STATE\" ;; *) exit 0 ;; esac\n");
+            File.SetUnixFileMode(existingUnit, publicFileMode);
+            await File.WriteAllTextAsync(Path.Combine(bin, "systemctl"), """
+                #!/usr/bin/env bash
+                case "$1" in
+                  show)
+                    case "$3" in
+                      FragmentPath) printf '%s\n' "$FAKE_SYSTEMD_FRAGMENT" ;;
+                      DropInPaths) printf '\n' ;;
+                      LoadState) printf 'loaded\n' ;;
+                      MainPID) if [ -f "$FAKE_SYSTEMD_STATE" ]; then printf '%s\n' "$FAKE_SYSTEMD_PID"; else printf '0\n'; fi ;;
+                      *) exit 0 ;;
+                    esac ;;
+                  is-active) if [ -f "$FAKE_SYSTEMD_STATE" ]; then exit 0; else exit 3; fi ;;
+                  is-enabled) exit 0 ;;
+                  stop) rm -f "$FAKE_SYSTEMD_STATE" ;;
+                  start) touch "$FAKE_SYSTEMD_STATE" ;;
+                  cat) exit 1 ;;
+                  *) exit 0 ;;
+                esac
+                """);
             foreach (var file in Directory.EnumerateFiles(bin))
-                File.SetUnixFileMode(file, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+                SetUnixExecutable(file);
 
             var start = new ProcessStartInfo("bash", scriptPath) { RedirectStandardError = true, UseShellExecute = false };
             start.Environment["PATH"] = $"{bin}:/usr/bin:/bin";
             start.Environment["FAKE_ARCHIVE"] = artifact;
-            start.Environment["FAKE_SYSTEMD_STATE"] = Path.Combine(root, "service-running");
+            start.Environment["FAKE_SHA"] = artifactSha;
+            start.Environment["FAKE_SIZE"] = artifactSize;
+            var fakeServiceState = Path.Combine(root, "service-running");
+            await File.WriteAllTextAsync(fakeServiceState, "active");
+            File.SetUnixFileMode(fakeServiceState, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            start.Environment["FAKE_SYSTEMD_STATE"] = fakeServiceState;
             start.Environment["FAKE_SYSTEMD_FRAGMENT"] = existingUnit;
-            start.Environment["NetRatel_ROOT"] = Path.Combine(root, "client");
-            start.Environment["NetRatel_STATE"] = Path.Combine(root, "state");
-            start.Environment["NetRatel_SYSTEMD_UNIT_DIR"] = Path.Combine(root, "systemd");
+            start.Environment["FAKE_SYSTEMD_PID"] = "424242";
+            start.Environment["NetRatel_ROOT"] = clientRoot;
+            start.Environment["NetRatel_STATE"] = stateDirectory;
+            start.Environment["NetRatel_SYSTEMD_UNIT_DIR"] = unitDirectory;
             start.Environment["NetRatel_TEST_ALLOW_NONROOT"] = "true";
             using var process = Process.Start(start)!;
             await process.WaitForExitAsync();
@@ -64,15 +183,30 @@ EnvironmentFile=-/etc/netratel-client.env
             var current = Path.Combine(root, "client", "current");
             new FileInfo(current).ResolveLinkTarget(true)!.Name.Should().Be("0.4.131-rc.1");
             var rewrittenUnit = await File.ReadAllTextAsync(Path.Combine(root, "systemd", "netratel-client.service"));
-            rewrittenUnit.Should().Contain("Environment=NetRatelCLIENT__Gateway__Endpoint=https://split-gateway.example.invalid");
-            rewrittenUnit.Should().Contain("Environment=NetRatelCLIENT__Gateway__FileGatewayEnabled=false");
+            if (string.IsNullOrEmpty(expectedServiceGatewayEndpoint))
+                rewrittenUnit.Should().NotContain("Environment=NetRatelCLIENT__Gateway__Endpoint=");
+            else
+                rewrittenUnit.Should().Contain($"Environment=NetRatelCLIENT__Gateway__Endpoint={expectedServiceGatewayEndpoint}");
+            rewrittenUnit.Should().NotContain("Environment=NetRatelCLIENT__Gateway__FileGatewayEnabled=false");
             rewrittenUnit.Should().Contain("Environment=Custom__ServiceValue=\"kept value\"");
-            rewrittenUnit.Should().Contain("EnvironmentFile=-/etc/netratel-client.env");
+            rewrittenUnit.Should().Contain($"EnvironmentFile=-{optionalEnvironmentFile}");
             rewrittenUnit.Should().Contain("Environment=NetRatelCLIENT__Client__ApiBaseUrl=https://example.test");
             rewrittenUnit.Should().NotContain("Environment=NetRatelCLIENT__Client__ApiBaseUrl=https://legacy-api.example.invalid");
             rewrittenUnit.Should().NotContain("Environment=NetRatelCLIENT__Gateway__ControlGatewayEnabled=true");
             rewrittenUnit.Should().NotContain("Environment=NetRatelCLIENT__Transport__Mode=AkkaPresence");
             File.Exists(Path.Combine(root, "service-running")).Should().BeTrue();
+
+            using var installedSettings = JsonDocument.Parse(await File.ReadAllTextAsync(
+                Path.Combine(root, "client", "versions", "0.4.131-rc.1", "clientsettings.json")));
+            installedSettings.RootElement.GetProperty("Client").GetProperty("TerminalGracefulExitTimeoutMs").GetInt32().Should().Be(3210);
+            var installedGateway = installedSettings.RootElement.GetProperty("Gateway");
+            if (string.IsNullOrEmpty(expectedSettingsGatewayEndpoint))
+                installedGateway.TryGetProperty("Endpoint", out _).Should().BeFalse();
+            else
+                installedGateway.GetProperty("Endpoint").GetString().Should().Be(expectedSettingsGatewayEndpoint);
+            installedGateway.TryGetProperty("FileGatewayEnabled", out _).Should().BeFalse();
+            installedGateway.TryGetProperty("ControlGatewayEnabled", out _).Should().BeFalse();
+            installedSettings.RootElement.TryGetProperty("Transport", out _).Should().BeFalse();
         }
         finally { Directory.Delete(root, recursive: true); }
     }
@@ -97,13 +231,70 @@ EnvironmentFile=-/etc/netratel-client.env
         script.Should().Contain("New-Service");
         script.Should().Contain("-BinaryPathName \"`\"$exe`\" --service\"");
         script.Should().Contain("NetRatelCLIENT__Client__ApiBaseUrl=$ApiBase");
-        script.Should().Contain("NetRatel.Update");
+        script.Should().Contain("NetRatel_UPDATE_ROOT=$RootDir");
+        script.Should().Contain("NetRatel_UPDATE_STATE=$StateDir");
+        script.Should().Contain("NetRatel_UPDATE_REQUEST=$autoUpdateRequestPath");
+        script.Should().Contain("NetRatelCLIENT__Client__AutoUpdate__StateDirectory=$StateDir");
+        script.Should().Contain("NetRatelCLIENT__Client__AutoUpdate__RequestPath=$autoUpdateRequestPath");
+        script.Should().Contain("NetRatelCLIENT__Client__AutoUpdate__ReadyPath=$autoUpdateReadyPath");
+        script.Should().Contain("update.lock");
+        script.Should().Contain("netratel.install-readiness.request.v1");
+        script.Should().Contain("netratel.install-readiness.ready.v1");
+        script.Should().Contain("heartbeat_ready");
+        script.Should().Contain("connectionEpoch");
+        script.Should().Contain("connectionId");
+        script.Should().Contain("S-1-5-18");
+        script.Should().Contain("NT SERVICE', 'TrustedInstaller");
+        script.Should().Contain("function Test-NetRatelSameOrAncestorPath");
+        script.Should().Contain("$explicitRootAncestor = $rootWasExplicit -and (Test-NetRatelSameOrAncestorPath $canonicalPath $canonicalRoot)");
+        script.Should().Contain("New-NetRatelProtectedDirectory $currentPath $trustedSids ($allowLegacyAdministrators -or $allowLegacyAdministratorAncestors)");
+        script.Should().Contain("Assert-NetRatelTrustedReadinessPath $path $false $false $true $false $allowLegacyAdministratorsOnParent");
+        script.Should().Contain("(-not $isLeaf -and $allowLegacyAdministratorAncestors)");
+        script.Should().Contain("$script:NetRatelStateAncestorAllowance = [bool]($stateWasExplicit -or $trustedServiceState)");
+        script.Should().Contain("Assert-NetRatelTrustedReadinessPath $readinessDir $false $false $true $false $script:NetRatelStateAncestorAllowance");
+        script.Should().Contain("Assert-NetRatelTrustedReadinessPath $readinessFile $true $false $true $false $script:NetRatelStateAncestorAllowance");
+        script.Should().Contain("Assert-NetRatelTrustedReadinessPath $requestPath $true $false $true $false $script:NetRatelStateAncestorAllowance");
+        script.Should().Contain("Assert-NetRatelTrustedReadinessPath $canonicalState $false $false $true $false $script:NetRatelStateAncestorAllowance");
+        script.Should().Contain("$acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])");
+        script.Should().Contain("[System.IO.Directory]::CreateDirectory($path, $acl)");
+        script.Should().Contain("Protect-NetRatelOwnedStateTree $canonicalState $trustedSids");
+        script.Should().Contain("Initialize-NetRatelProtectedInstallDirectories");
+        script.Should().Contain("@($RootDir, $UpdaterDir, $VersionsDir, $StagingDir, $FailedDir, $LogDir)");
+        var mainBodyStart = script.IndexOf("$tempDir = Join-Path $env:TEMP", StringComparison.Ordinal);
+        var installPathInitialization = script.IndexOf("Initialize-NetRatelProtectedInstallDirectories", mainBodyStart, StringComparison.Ordinal);
+        var statePathInitialization = script.IndexOf("Initialize-NetRatelProtectedStateDirectory", mainBodyStart, StringComparison.Ordinal);
+        var lockAcquisition = script.IndexOf("$updateLockPath = Join-Path $StateDir", mainBodyStart, StringComparison.Ordinal);
+        installPathInitialization.Should().BeGreaterThanOrEqualTo(mainBodyStart);
+        statePathInitialization.Should().BeGreaterThan(installPathInitialization);
+        lockAcquisition.Should().BeGreaterThan(statePathInitialization);
+        script.Should().NotContain("-Path $tempDir, $LogDir");
+        script.Should().NotContain("New-Item -ItemType Directory -Path $tempDir, $RootDir, $StateDir");
+        script.Should().NotContain("icacls.exe $readinessDir");
+        script.Should().Contain("The installed service identity is retained");
+        script.Should().Contain("function Test-NetRatelOwnedUpdaterImage");
+        script.Should().Contain("Get-CimInstance Win32_Service -Filter \"Name='NetRatel.Update'\" -ErrorAction Stop");
+        script.Should().Contain("if ($retiredUpdaterService -and -not (Test-NetRatelOwnedUpdaterImage ([string]$retiredUpdaterService.PathName)))");
+        var trustedSidStart = script.IndexOf("function Get-NetRatelTrustedStateSids {", StringComparison.Ordinal);
+        var trustedSidEnd = script.IndexOf("function Get-NetRatelProtectedDirectoryAcl", trustedSidStart, StringComparison.Ordinal);
+        trustedSidStart.Should().BeGreaterThanOrEqualTo(0);
+        trustedSidEnd.Should().BeGreaterThan(trustedSidStart);
+        script[trustedSidStart..trustedSidEnd].Should().NotContain("$existingService.StartName");
         script.Should().Contain("versions");
         script.Should().Contain("netratel-update.ps1");
         script.Should().Contain("/onboarding-download");
         script.Should().Contain("X-NetRatel-Enrollment-Code");
-        script.Should().Contain("NetRatel.Client service failed to start");
-        script.Should().Contain("Get-Content -Path $latestLog.FullName -Tail 80");
+        script.Should().Contain("X-NetRatel-Artifact-Version");
+        script.Should().Contain("X-NetRatel-Artifact-Sha256");
+        script.Should().Contain("X-NetRatel-Artifact-Size");
+        script.Should().Contain("Get-NetRatelFinalResponseHeaders");
+        script.Should().Contain("Receive-NetRatelArtifactWithoutCurl");
+        script.Should().Contain("$request.AllowAutoRedirect = $false");
+        script.Should().Contain("$request.ReadWriteTimeout = 120000");
+        script.Should().Contain("--max-time 120");
+        script.Should().Contain("$Version -ne 'latest' -and $reportedVersion -ne $Version");
+        script.Should().Contain("$manifestVersion -ne $resolvedVersion");
+        script.Should().Contain("Waiting for the LocalSystem service");
+        script.Should().NotContain("New-Service -Name $updateServiceName");
         AssertNoRetiredClientDefaults(script);
         script.Should().Contain("Get-NetRatelSha256Hex");
         script.Should().Contain("Expand-NetRatelZip");
@@ -113,9 +304,13 @@ EnvironmentFile=-/etc/netratel-client.env
         script.Should().Contain("[System.IO.Compression.ZipFile]::ExtractToDirectory");
         script.Should().Contain("[System.Net.ServicePointManager]::SecurityProtocol");
         script.Should().Contain("PowerShell version:");
-        script.Should().Contain("powershell.exe -NoProfile -ExecutionPolicy Bypass -File");
+        script.Should().Contain("$legacyCommandMatch = [regex]::Match($pathName");
+        script.Should().Contain("Test-NetRatelOwnedUpdaterImage ([string]$retiredUpdaterService.PathName)");
         script.Should().Contain("$actualSha = Get-NetRatelSha256Hex -Path $zipPath");
         script.Should().Contain("Expand-NetRatelZip -ZipPath $zipPath -DestinationPath $targetDir");
+        script.Should().Contain("$stageDir = Join-Path $StagingDir");
+        script.Should().Contain("Move-Item -LiteralPath $versionTargetDir -Destination $versionBackupDir");
+        script.Should().Contain("Move-Item -LiteralPath $targetDir -Destination $versionTargetDir");
         script.Should().Contain("$wrapperName = \"netratel-client-$Runtime\"");
         script.Should().Contain("$rootEntries.Count -eq 1");
         script.Should().Contain("$rootEntries[0].Name -ceq $wrapperName");
@@ -144,7 +339,156 @@ EnvironmentFile=-/etc/netratel-client.env
 
         script.Should().NotContain("New-Service");
         script.Should().Contain("--enroll $EnrollmentCode --api $ApiBase");
+        script.Should().Contain("NetRatel client installed and enrolled; no service readiness was requested.");
+        script.Should().NotContain("netratel.install-readiness.request.v1");
         AssertNoRetiredClientDefaults(script);
+    }
+
+    [Fact]
+    public async Task Build_WindowsServicePathResolution_PreservesInheritedCustomPathsAndRejectsConflicts()
+    {
+        var script = new ScriptTemplateService().Build(new DeploymentScriptTemplateRequest(
+            4098, "win-x64", "ENR-ABC123", "https://netratel.example.invalid",
+            DateTimeOffset.UtcNow.AddHours(1), true, true, "1.2.3", new string('a', 64)));
+        var start = script.IndexOf("function Get-NetRatelCanonicalPath", StringComparison.Ordinal);
+        var end = start < 0 ? -1 : script.IndexOf("$rootWasExplicit", start, StringComparison.Ordinal);
+        Assert.True(start >= 0 && end > start, "Windows install-path resolvers must remain isolated for behavior testing.");
+        var assertionStart = script.IndexOf("function Assert-NetRatelTrustedReadinessPath", end, StringComparison.Ordinal);
+        var assertionEnd = assertionStart < 0 ? -1 : script.IndexOf("function Protect-NetRatelOwnedStateTree", assertionStart, StringComparison.Ordinal);
+        Assert.True(assertionStart >= 0 && assertionEnd > assertionStart, "The protected-path verifier must remain isolated for behavior testing.");
+
+        var root = Path.Combine(Path.GetTempPath(), $"netratel-installer-paths-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var requestedRoot = Path.Combine(root, "default-root");
+        var inheritedRoot = Path.Combine(root, "custom-root", "client");
+        var conflictingRoot = Path.Combine(root, "other-root", "client");
+        var requestedState = Path.Combine(root, "default-state");
+        var inheritedState = Path.Combine(root, "custom-state");
+        var conflictingState = Path.Combine(root, "other-state");
+        var explicitAdminAncestor = Path.Combine(root, "administrator-owned-parent");
+        var explicitRootBelowAncestor = Path.Combine(explicitAdminAncestor, "custom", "client");
+        var protectedLeaf = Path.Combine(explicitAdminAncestor, "custom", "client", "versions");
+        var customState = Path.Combine(explicitAdminAncestor, "custom", "client", "state");
+        var readinessDirectory = Path.Combine(customState, "install-readiness");
+        var readinessFile = Path.Combine(readinessDirectory, "request.json");
+        var readyFile = Path.Combine(readinessDirectory, "ready.json");
+        var requestPath = Path.Combine(inheritedState, "offer request.json");
+        var mismatchRequestPath = Path.Combine(inheritedState, "other-request.json");
+        var harness = string.Join(Environment.NewLine,
+            "$ErrorActionPreference = 'Stop'",
+            script[start..end],
+            "$adminAncestor = " + PowerShellLiteral(explicitAdminAncestor),
+            "$customRoot = " + PowerShellLiteral(explicitRootBelowAncestor),
+            "$protectedLeaf = " + PowerShellLiteral(protectedLeaf),
+            "function Get-NetRatelTrustedStateSids { return @('S-1-5-18') }",
+            "function Test-NetRatelLocalAdministratorMemberSid([string] $sid) { return $sid -eq 'S-1-5-21-local-admin' }",
+            "function Test-Path { [CmdletBinding()] param([string]$LiteralPath,[string]$PathType,[switch]$Force) return $true }",
+            "function Get-Item { [CmdletBinding()] param([string]$LiteralPath,[switch]$Force) $isFile = [string]::Equals($LiteralPath, " + PowerShellLiteral(readinessFile) + ", [StringComparison]::OrdinalIgnoreCase) -or [string]::Equals($LiteralPath, " + PowerShellLiteral(readyFile) + ", [StringComparison]::OrdinalIgnoreCase); [pscustomobject]@{ FullName=$LiteralPath; Attributes=$(if ($isFile) { [System.IO.FileAttributes]::Normal } else { [System.IO.FileAttributes]::Directory }); PSIsContainer=(-not $isFile) } }",
+            "function Get-Acl { [CmdletBinding()] param([string]$LiteralPath)",
+            "    $ownerSid = if ([string]::Equals($LiteralPath, $adminAncestor, [StringComparison]::OrdinalIgnoreCase)) { 'S-1-5-21-local-admin' } else { 'S-1-5-18' }",
+            "    $rules = @()",
+            "    $adminWriteLeaf = ($script:addAdminWriteToLeaf -and [string]::Equals($LiteralPath, $protectedLeaf, [StringComparison]::OrdinalIgnoreCase)) -or ($script:addAdminWriteToReadinessDirectory -and [string]::Equals($LiteralPath, " + PowerShellLiteral(readinessDirectory) + ", [StringComparison]::OrdinalIgnoreCase)) -or ($script:addAdminWriteToReadinessFile -and ([string]::Equals($LiteralPath, " + PowerShellLiteral(readinessFile) + ", [StringComparison]::OrdinalIgnoreCase) -or [string]::Equals($LiteralPath, " + PowerShellLiteral(readyFile) + ", [StringComparison]::OrdinalIgnoreCase)))",
+            "    if ($ownerSid -eq 'S-1-5-21-local-admin' -or $adminWriteLeaf) {",
+            "        $rules += [pscustomobject]@{ AccessControlType=[System.Security.AccessControl.AccessControlType]::Allow; PropagationFlags=[System.Security.AccessControl.PropagationFlags]::None; IdentityReference=[pscustomobject]@{ Value='S-1-5-21-local-admin' }; FileSystemRights=[System.Security.AccessControl.FileSystemRights]::WriteData; IsInherited=$false }",
+            "    }",
+            "    $acl = [pscustomobject]@{ OwnerSid=$ownerSid; Rules=$rules }",
+            "    $acl | Add-Member ScriptMethod GetOwner { param($type) return [pscustomobject]@{ Value=$this.OwnerSid } }",
+            "    $acl | Add-Member ScriptMethod GetAccessRules { param($includeExplicit,$includeInherited,$sidType) return ,$this.Rules }",
+            "    return $acl",
+            "}",
+            script[assertionStart..assertionEnd],
+            "if (-not (Test-NetRatelSameOrAncestorPath $adminAncestor $customRoot)) { throw 'The explicit custom root did not identify its verified administrator-owned ancestor.' }",
+            "if (Test-NetRatelSameOrAncestorPath $adminAncestor " + PowerShellLiteral(conflictingRoot) + ") { throw 'An unrelated path was treated as the explicit root descendant.' }",
+            "Assert-NetRatelTrustedReadinessPath $protectedLeaf $false $false $true $false $true",
+            "Assert-NetRatelTrustedReadinessPath " + PowerShellLiteral(readinessDirectory) + " $false $false $true $false $true",
+            "Assert-NetRatelTrustedReadinessPath " + PowerShellLiteral(readinessFile) + " $true $false $true $false $true",
+            "$unscopedAncestorRejected = $false",
+            "try { Assert-NetRatelTrustedReadinessPath " + PowerShellLiteral(readinessDirectory) + " $false } catch { $unscopedAncestorRejected = $true }",
+            "if (-not $unscopedAncestorRejected) { throw 'A custom administrator-owned ancestor was accepted without explicit path provenance.' }",
+            "$script:addAdminWriteToLeaf = $true",
+            "$leafWriteRejected = $false",
+            "try { Assert-NetRatelTrustedReadinessPath $protectedLeaf $false $false $true $false $true } catch { $leafWriteRejected = $true }",
+            "if (-not $leafWriteRejected) { throw 'A protected leaf ACL was allowed to inherit individual-administrator write access.' }",
+            "$script:addAdminWriteToReadinessDirectory = $true",
+            "$readinessDirectoryWriteRejected = $false",
+            "try { Assert-NetRatelTrustedReadinessPath " + PowerShellLiteral(readinessDirectory) + " $false $false $true $false $true } catch { $readinessDirectoryWriteRejected = $true }",
+            "if (-not $readinessDirectoryWriteRejected) { throw 'A readiness directory accepted individual-administrator write access.' }",
+            "$script:addAdminWriteToReadinessDirectory = $false",
+            "$script:addAdminWriteToReadinessFile = $true",
+            "$readinessFileWriteRejected = $false",
+            "try { Assert-NetRatelTrustedReadinessPath " + PowerShellLiteral(readinessFile) + " $true $false $true $false $true } catch { $readinessFileWriteRejected = $true }",
+            "if (-not $readinessFileWriteRejected) { throw 'A readiness file accepted individual-administrator write access.' }",
+            "$script:addAdminWriteToReadinessFile = $false",
+            "$root = Resolve-NetRatelInstallRoot " + PowerShellLiteral(requestedRoot) + " " + PowerShellLiteral(inheritedRoot) + " " + PowerShellLiteral(inheritedRoot) + " $false",
+            "if (-not [string]::Equals([System.IO.Path]::GetFullPath($root), [System.IO.Path]::GetFullPath(" + PowerShellLiteral(inheritedRoot) + "), [StringComparison]::OrdinalIgnoreCase)) { throw 'Inherited package root was not retained.' }",
+            "$rootConflictRejected = $false",
+            "try { [void](Resolve-NetRatelInstallRoot " + PowerShellLiteral(requestedRoot) + " " + PowerShellLiteral(inheritedRoot) + " " + PowerShellLiteral(inheritedRoot) + " $true) } catch { $rootConflictRejected = $true }",
+            "if (-not $rootConflictRejected) { throw 'Explicit package-root conflict was accepted.' }",
+            "$state = Resolve-NetRatelStateDirectory " + PowerShellLiteral(requestedState) + " " + PowerShellLiteral(inheritedState) + " " + PowerShellLiteral(inheritedState) + " $false",
+            "if (-not [string]::Equals([System.IO.Path]::GetFullPath($state), [System.IO.Path]::GetFullPath(" + PowerShellLiteral(inheritedState) + "), [StringComparison]::OrdinalIgnoreCase)) { throw 'Inherited update state was not retained.' }",
+            "$stateConflictRejected = $false",
+            "try { [void](Resolve-NetRatelStateDirectory " + PowerShellLiteral(requestedState) + " " + PowerShellLiteral(inheritedState) + " " + PowerShellLiteral(inheritedState) + " $true) } catch { $stateConflictRejected = $true }",
+            "if (-not $stateConflictRejected) { throw 'Explicit update-state conflict was accepted.' }",
+            "$request = Resolve-NetRatelUpdateRequestPath $state " + PowerShellLiteral(requestPath) + " '' '' " + PowerShellLiteral(requestPath),
+            "if (-not [string]::Equals([System.IO.Path]::GetFullPath($request), [System.IO.Path]::GetFullPath(" + PowerShellLiteral(requestPath) + "), [StringComparison]::OrdinalIgnoreCase)) { throw 'The paired request path was not retained.' }",
+            "$requestConflictRejected = $false",
+            "try { [void](Resolve-NetRatelUpdateRequestPath $state " + PowerShellLiteral(requestPath) + " '' '' " + PowerShellLiteral(mismatchRequestPath) + ") } catch { $requestConflictRejected = $true }",
+            "if (-not $requestConflictRejected) { throw 'Conflicting updater request path was accepted.' }",
+            "$defaultRequest = Resolve-NetRatelUpdateRequestPath $state '' '' '' ''",
+            "if (-not [string]::Equals($defaultRequest, (Join-Path $state 'request.json'), [StringComparison]::OrdinalIgnoreCase)) { throw 'The default request path was not derived from the effective state directory.' }");
+        var harnessPath = Path.Combine(root, "verify-paths.ps1");
+        await File.WriteAllTextAsync(harnessPath, harness);
+
+        try
+        {
+            var executable = OperatingSystem.IsWindows()
+                ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell", "v1.0", "powershell.exe")
+                : "pwsh";
+            using var process = new Process
+            {
+                StartInfo = new ProcessStartInfo(executable)
+                {
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false
+                }
+            };
+            process.StartInfo.ArgumentList.Add("-NoProfile");
+            process.StartInfo.ArgumentList.Add("-NonInteractive");
+            process.StartInfo.ArgumentList.Add("-File");
+            process.StartInfo.ArgumentList.Add(harnessPath);
+            try
+            {
+                process.Start();
+            }
+            catch (System.ComponentModel.Win32Exception)
+            {
+                Assert.Skip("PowerShell is required to execute the Windows installer path resolver.");
+            }
+
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            try
+            {
+                await process.WaitForExitAsync(timeout.Token);
+            }
+            catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+            {
+                if (!process.HasExited)
+                {
+                    process.Kill(entireProcessTree: true);
+                    await process.WaitForExitAsync(CancellationToken.None);
+                }
+
+                throw new TimeoutException("Windows installer path resolver did not finish within 20 seconds.");
+            }
+
+            Assert.True(process.ExitCode == 0,
+                "Windows installer path resolver cases failed: " + await process.StandardError.ReadToEndAsync());
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
     }
 
     [Fact]
@@ -180,12 +524,17 @@ EnvironmentFile=-/etc/netratel-client.env
         script.Should().Contain("netratel-update.sh");
         script.Should().Contain("/onboarding-download");
         script.Should().Contain("X-NetRatel-Enrollment-Code");
+        script.Should().Contain("X-NetRatel-Artifact-Sha256");
+        script.Should().Contain("REPORTED_VERSION=$(read_response_header");
+        script.Should().Contain("status == \"200\"");
+        script.Should().Contain("--max-time 120");
         script.Should().Contain("NetRatelCLIENT__Client__AutoUpdate__Mode=Service");
         script.Should().Contain("Environment=NetRatelCLIENT__Client__ApiBaseUrl=${API_BASE}");
         script.Should().Contain("NetRatelCLIENT__Client__AutoUpdate__StateDirectory=${STATE_DIR}");
         AssertNoRetiredClientDefaults(script);
         script.Should().Contain("EUID");
-        script.Should().Contain("curl unzip sha256sum systemctl");
+        script.Should().Contain("for REQUIRED_COMMAND in curl sha256sum systemctl flock python3 install timeout realpath readlink grep awk wc tr; do");
+        script.Should().NotContain("unzip");
         script.Should().Contain("\"${CLIENT_EXE}\" --enroll \"${ENROLLMENT_CODE}\" --api \"${API_BASE}\"");
         script.Should().NotContain("netratel.enroll.json");
         script.Should().NotContain("sudo");
@@ -196,10 +545,30 @@ EnvironmentFile=-/etc/netratel-client.env
         script.Should().Contain("journalctl -u netratel-client.service -n 80 --no-pager");
         script.Should().Contain("flock -n 9");
         script.Should().Contain("netratel-client-manifest.json");
-        script.Should().Contain("Immutable target version");
+        script.Should().Contain("TARGET_BACKUP=\"${FAILED_DIR}/${RESOLVED_VERSION}-replaced-$(basename \"${TXN_DIR}\")\"");
+        script.Should().Contain("if [ \"${TARGET_BACKED_UP}\" = true ]; then");
+        script.Should().Contain("if ! mv -- \"${TARGET_BACKUP}\" \"${TARGET_DIR}\"; then rollback_failed=true; fi");
         script.Should().Contain("systemctl disable --now sto-client.service");
-        script.Should().Contain("rollback_install");
-        script.Should().Contain("install -m 0755");
+        script.Should().Contain("if ! wait_for_service_stopped; then");
+        script.Should().Contain("TARGET_BACKED_UP=true");
+        script.Should().Contain("Installer activation failed and rollback could not fully restore the previous installation. Recovery snapshot:");
+        var zipPreflight = script.IndexOf("Artifact ZIP preflight failed: ", StringComparison.Ordinal);
+        zipPreflight.Should().BeGreaterThanOrEqualTo(0);
+        var extraction = script.IndexOf("archive.extractall(stage_dir)", zipPreflight, StringComparison.Ordinal);
+        extraction.Should().BeGreaterThan(zipPreflight);
+        var stopVerification = script.IndexOf("if ! wait_for_service_stopped; then", extraction, StringComparison.Ordinal);
+        stopVerification.Should().BeGreaterThan(extraction);
+        var targetBackupMove = script.IndexOf("mv \"${TARGET_DIR}\" \"${TARGET_BACKUP}\"", extraction, StringComparison.Ordinal);
+        targetBackupMove.Should().BeGreaterThan(extraction);
+        targetBackupMove.Should().BeGreaterThan(stopVerification);
+        script.Should().Contain("finish_install() {");
+        script.Should().Contain("local status=$?");
+        script.Should().Contain("trap finish_install EXIT");
+        script.Should().Contain("if [ \"${status}\" -ne 0 ] && [ \"${TRANSACTION_MUTATED}\" = true ]; then");
+        script.Should().Contain("if [ \"${status}\" -eq 0 ] || [ \"${rollback_failed}\" = false ]; then");
+        script.Should().Contain("if [ \"${rollback_failed}\" = true ]; then exit 70; fi");
+        script.Should().Contain("exit \"${status}\"");
+        script.Should().Contain("install -m 0755 \"${TARGET_DIR}/updater/netratel-update.sh\" \"${UPDATER_DIR}/.netratel-update.sh.$$\"");
     }
 
     [Fact]
@@ -213,6 +582,9 @@ EnvironmentFile=-/etc/netratel-client.env
         service.GetFileExtension("osx-arm64").Should().Be("sh");
         script.Should().StartWith("#!/usr/bin/env bash");
         script.Should().Contain("shasum -a 256");
+        script.Should().Contain("X-NetRatel-Artifact-Sha256");
+        script.Should().Contain("status == \"200\"");
+        script.Should().Contain("--max-time 120");
         script.Should().Contain("launchctl bootstrap system");
         var launchdApiEnvironmentKey = string.Concat(
             "<", "key>NetRatelCLIENT__Client__ApiBaseUrl</", "key>",
@@ -243,9 +615,11 @@ EnvironmentFile=-/etc/netratel-client.env
     }
 
     [Fact]
+    [SupportedOSPlatform("linux")]
+    [SupportedOSPlatform("macos")]
     public async Task Build_MacOS_InstallsExactPackageWithoutServiceOnUnixHost()
     {
-        if (OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows()) Assert.Skip("The macOS package installer integration test requires a Unix host.");
 
         var root = Path.Combine(Path.GetTempPath(), $"netratel-macos-installer-{Guid.NewGuid():N}");
         var bin = Path.Combine(root, "bin");
@@ -264,14 +638,16 @@ EnvironmentFile=-/etc/netratel-client.env
             await File.WriteAllTextAsync(scriptPath, script);
             var curl = Path.Combine(bin, "curl");
             await File.WriteAllTextAsync(curl,
-                "#!/usr/bin/env bash\nwhile [ \"$#\" -gt 0 ]; do if [ \"$1\" = -o ]; then cp \"$FAKE_ARCHIVE\" \"$2\"; exit 0; fi; shift; done\nexit 1\n");
-            File.SetUnixFileMode(curl, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+                "#!/usr/bin/env bash\nheaders=\"\"\nout=\"\"\nwhile [ \"$#\" -gt 0 ]; do case \"$1\" in -D) headers=\"$2\"; shift 2;; -o) out=\"$2\"; shift 2;; *) shift;; esac; done\ncp \"$FAKE_ARCHIVE\" \"$out\"\nprintf 'HTTP/1.1 200 OK\\r\\nX-NetRatel-Artifact-Rid: osx-arm64\\r\\nX-NetRatel-Artifact-Version: 0.4.131-rc.1\\r\\nX-NetRatel-Artifact-Sha256: %s\\r\\nX-NetRatel-Artifact-Size: %s\\r\\n\\r\\n' \"$FAKE_SHA\" \"$FAKE_SIZE\" > \"$headers\"\n");
+            SetUnixExecutable(curl);
             var start = new ProcessStartInfo("bash", scriptPath)
             {
                 RedirectStandardError = true, UseShellExecute = false
             };
             start.Environment["PATH"] = $"{bin}:{Environment.GetEnvironmentVariable("PATH")}";
             start.Environment["FAKE_ARCHIVE"] = archivePath;
+            start.Environment["FAKE_SHA"] = sha;
+            start.Environment["FAKE_SIZE"] = new FileInfo(archivePath).Length.ToString(System.Globalization.CultureInfo.InvariantCulture);
             start.Environment["NetRatel_ROOT"] = Path.Combine(root, "installed");
             using var process = Process.Start(start)!;
             await process.WaitForExitAsync();
@@ -283,10 +659,14 @@ EnvironmentFile=-/etc/netratel-client.env
         finally { Directory.Delete(root, recursive: true); }
     }
 
-    [Fact]
-    public async Task Build_MacOS_Service_Preserves_SplitGateway_And_False_OptOut()
+    [Theory]
+    [SupportedOSPlatform("linux")]
+    [InlineData("https://old-api.example.invalid", "https://split-gateway.example.invalid", "https://split-gateway.example.invalid")]
+    [InlineData("https://old-api.example.invalid/api/", "https://old-api.example.invalid", "")]
+    public async Task Build_MacOS_Service_Preserves_Only_ExplicitSplitGateway(
+        string previousApiBase, string previousGatewayEndpoint, string expectedGatewayEndpoint)
     {
-        if (!OperatingSystem.IsLinux()) return;
+        if (!OperatingSystem.IsLinux()) Assert.Skip("The macOS service installer integration test requires Linux.");
 
         var root = Path.Combine(Path.GetTempPath(), $"netratel-macos-service-installer-{Guid.NewGuid():N}");
         var bin = Path.Combine(root, "bin");
@@ -296,6 +676,21 @@ EnvironmentFile=-/etc/netratel-client.env
         Directory.CreateDirectory(bin);
         try
         {
+            var installRoot = Path.Combine(root, "installed");
+            var previousVersion = Path.Combine(installRoot, "versions", "0.4.130");
+            Directory.CreateDirectory(previousVersion);
+            await File.WriteAllTextAsync(Path.Combine(previousVersion, "clientsettings.json"), $$"""
+                {
+                  "Client": { "ApiBaseUrl": "{{previousApiBase}}", "TerminalGracefulExitTimeoutMs": 3210 },
+                  "Gateway": {
+                    "Endpoint": "{{previousGatewayEndpoint}}",
+                    "FileGatewayEnabled": false,
+                    "ControlGatewayEnabled": true
+                  },
+                  "Transport": { "Mode": "AkkaPresence" }
+                }
+                """);
+            Directory.CreateSymbolicLink(Path.Combine(installRoot, "current"), previousVersion);
             CreateUnixArtifact(archivePath, "0.4.131-rc.1", "osx-arm64");
             var sha = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
                 await File.ReadAllBytesAsync(archivePath))).ToLowerInvariant();
@@ -308,9 +703,9 @@ EnvironmentFile=-/etc/netratel-client.env
                         new XElement("key", "EnvironmentVariables"),
                         new XElement("dict",
                             new XElement("key", "NetRatelCLIENT__Client__ApiBaseUrl"),
-                            new XElement("string", "https://old-api.example.invalid"),
+                            new XElement("string", previousApiBase),
                             new XElement("key", "NetRatelCLIENT__Gateway__Endpoint"),
-                            new XElement("string", "https://split-gateway.example.invalid"),
+                            new XElement("string", previousGatewayEndpoint),
                             new XElement("key", "NetRatelCLIENT__Gateway__FileGatewayEnabled"),
                             new XElement("string", "false"),
                             new XElement("key", "NetRatelCLIENT__Gateway__ControlGatewayEnabled"),
@@ -327,11 +722,11 @@ EnvironmentFile=-/etc/netratel-client.env
             await File.WriteAllTextAsync(scriptPath, script);
             var curl = Path.Combine(bin, "curl");
             await File.WriteAllTextAsync(curl,
-                "#!/usr/bin/env bash\nwhile [ \"$#\" -gt 0 ]; do if [ \"$1\" = -o ]; then cp \"$FAKE_ARCHIVE\" \"$2\"; exit 0; fi; shift; done\nexit 1\n");
+                "#!/usr/bin/env bash\nheaders=\"\"\nout=\"\"\nwhile [ \"$#\" -gt 0 ]; do case \"$1\" in -D) headers=\"$2\"; shift 2;; -o) out=\"$2\"; shift 2;; *) shift;; esac; done\ncp \"$FAKE_ARCHIVE\" \"$out\"\nprintf 'HTTP/1.1 200 OK\\r\\nX-NetRatel-Artifact-Rid: osx-arm64\\r\\nX-NetRatel-Artifact-Version: 0.4.131-rc.1\\r\\nX-NetRatel-Artifact-Sha256: %s\\r\\nX-NetRatel-Artifact-Size: %s\\r\\n\\r\\n' \"$FAKE_SHA\" \"$FAKE_SIZE\" > \"$headers\"\n");
             var launchctl = Path.Combine(bin, "launchctl");
             await File.WriteAllTextAsync(launchctl, "#!/usr/bin/env bash\nexit 0\n");
             foreach (var file in Directory.EnumerateFiles(bin))
-                File.SetUnixFileMode(file, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+                SetUnixExecutable(file);
 
             var start = new ProcessStartInfo("bash", scriptPath)
             {
@@ -340,7 +735,9 @@ EnvironmentFile=-/etc/netratel-client.env
             };
             start.Environment["PATH"] = $"{bin}:{Environment.GetEnvironmentVariable("PATH")}";
             start.Environment["FAKE_ARCHIVE"] = archivePath;
-            start.Environment["NetRatel_ROOT"] = Path.Combine(root, "installed");
+            start.Environment["FAKE_SHA"] = sha;
+            start.Environment["FAKE_SIZE"] = new FileInfo(archivePath).Length.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            start.Environment["NetRatel_ROOT"] = installRoot;
             start.Environment["NetRatel_LAUNCHD_PLIST"] = plistPath;
             start.Environment["NetRatel_TEST_ALLOW_NONROOT"] = "true";
             using var process = Process.Start(start)!;
@@ -350,13 +747,27 @@ EnvironmentFile=-/etc/netratel-client.env
             var rewrittenPlist = XDocument.Load(plistPath);
             var topLevel = ReadPlistDictionary(rewrittenPlist.Root!.Element("dict")!);
             var rewrittenEnvironment = ReadPlistDictionary(topLevel["EnvironmentVariables"]);
-            rewrittenEnvironment["NetRatelCLIENT__Gateway__Endpoint"].Value
-                .Should().Be("https://split-gateway.example.invalid");
-            rewrittenEnvironment["NetRatelCLIENT__Gateway__FileGatewayEnabled"].Value.Should().Be("false");
+            if (string.IsNullOrEmpty(expectedGatewayEndpoint))
+                rewrittenEnvironment.Should().NotContainKey("NetRatelCLIENT__Gateway__Endpoint");
+            else
+                rewrittenEnvironment["NetRatelCLIENT__Gateway__Endpoint"].Value.Should().Be(expectedGatewayEndpoint);
+            rewrittenEnvironment.Should().NotContainKey("NetRatelCLIENT__Gateway__FileGatewayEnabled");
             rewrittenEnvironment["Custom__ServiceValue"].Value.Should().Be("kept & safe");
             rewrittenEnvironment["NetRatelCLIENT__Client__ApiBaseUrl"].Value.Should().Be("https://example.test");
             rewrittenEnvironment.Should().NotContainKey("NetRatelCLIENT__Gateway__ControlGatewayEnabled");
             rewrittenEnvironment.Should().NotContainKey("NetRatelCLIENT__Transport__Mode");
+
+            using var installedSettings = JsonDocument.Parse(await File.ReadAllTextAsync(
+                Path.Combine(installRoot, "versions", "0.4.131-rc.1", "clientsettings.json")));
+            installedSettings.RootElement.GetProperty("Client").GetProperty("TerminalGracefulExitTimeoutMs").GetInt32().Should().Be(3210);
+            var installedGateway = installedSettings.RootElement.GetProperty("Gateway");
+            if (string.IsNullOrEmpty(expectedGatewayEndpoint))
+                installedGateway.TryGetProperty("Endpoint", out _).Should().BeFalse();
+            else
+                installedGateway.GetProperty("Endpoint").GetString().Should().Be(expectedGatewayEndpoint);
+            installedGateway.TryGetProperty("FileGatewayEnabled", out _).Should().BeFalse();
+            installedGateway.TryGetProperty("ControlGatewayEnabled", out _).Should().BeFalse();
+            installedSettings.RootElement.TryGetProperty("Transport", out _).Should().BeFalse();
         }
         finally { Directory.Delete(root, recursive: true); }
     }
@@ -386,6 +797,9 @@ EnvironmentFile=-/etc/netratel-client.env
     private static string PlistKeyElement(string name)
         => string.Concat("<", "key>", name, "</", "key>");
 
+    private static string PowerShellLiteral(string value)
+        => $"'{value.Replace("'", "''", StringComparison.Ordinal)}'";
+
     private static Dictionary<string, XElement> ReadPlistDictionary(XElement element)
     {
         var entries = element.Elements().ToArray();
@@ -401,7 +815,11 @@ EnvironmentFile=-/etc/netratel-client.env
 
     private static void AssertBashSyntax(string script)
     {
-        if (OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows())
+        {
+            Assert.Skip("Bash syntax validation requires a Unix host.");
+            return;
+        }
         var start = new ProcessStartInfo("bash") { RedirectStandardError = true, UseShellExecute = false };
         start.ArgumentList.Add("-n");
         start.ArgumentList.Add("-c");
@@ -411,11 +829,30 @@ EnvironmentFile=-/etc/netratel-client.env
         process.ExitCode.Should().Be(0, process.StandardError.ReadToEnd());
     }
 
+    private static void SetUnixExecutable(string path)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            return;
+        }
+
+        Assert.Skip("Unix executable permissions require a Unix host.");
+    }
+
     private static void CreateUnixArtifact(string path, string version, string runtimeId)
     {
         using var archive = ZipFile.Open(path, ZipArchiveMode.Create);
         using (var writer = new StreamWriter(archive.CreateEntry("netratel-client-manifest.json").Open()))
-            writer.Write(JsonSerializer.Serialize(new { schema = "netratel.client.manifest.v1", product = "NetRatel.Client", version, runtimeId, executable = "NetRatel.Client" }));
+            writer.Write(JsonSerializer.Serialize(new
+            {
+                schema = "netratel.client.manifest.v1",
+                product = "NetRatel.Client",
+                version,
+                runtimeId,
+                executable = "NetRatel.Client",
+                commitSha = new string('a', 40)
+            }));
         using (var writer = new StreamWriter(archive.CreateEntry("NetRatel.Client").Open()))
             writer.Write("#!/usr/bin/env bash\nexit 0\n");
         using var updater = new StreamWriter(archive.CreateEntry("updater/netratel-update.sh").Open());

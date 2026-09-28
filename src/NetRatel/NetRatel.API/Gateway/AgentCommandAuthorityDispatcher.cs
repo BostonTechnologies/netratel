@@ -7,8 +7,7 @@ namespace NetRatel.API.Gateway;
 /// <summary>
 /// Single server-side create/dispatch authority for an admitted agent command
 /// session. It records the two server lifecycle transitions before exposing
-/// work to the client; failure to find a session is explicit and never routes
-/// a command through SpacetimeDB.
+/// work to the client; failure to find a session remains explicit.
 /// </summary>
 public interface IAgentCommandAuthorityDispatcher
 {
@@ -45,17 +44,17 @@ public sealed class AgentCommandAuthorityDispatcher(
     {
         if (!sessions.IsAvailable(client))
         {
-            NetRatelAkkaTelemetry.RecordAuthorityFailure(Feature, Authority, fallbackUsed: false, environment.EnvironmentName);
+            NetRatelAkkaTelemetry.RecordAuthorityFailure(Feature, Authority, environment.EnvironmentName);
             throw new AgentCommandGatewaySessionUnavailableException(client);
         }
 
         var requestedAt = DateTimeOffset.UtcNow;
-        NetRatelAkkaTelemetry.RecordAuthorityRequest(Feature, Authority, fallbackUsed: false, environment.EnvironmentName);
-        using var activity = NetRatelAkkaTelemetry.StartAuthorityActivity(Feature, Authority, "dispatch", fallbackUsed: false, environment.EnvironmentName);
+        NetRatelAkkaTelemetry.RecordAuthorityRequest(Feature, Authority, environment.EnvironmentName);
+        using var activity = NetRatelAkkaTelemetry.StartAuthorityActivity(Feature, Authority, "dispatch", environment.EnvironmentName);
         await RecordRequiredAsync(new CommandLifecycleEvent(client, commandId, correlationId, requestedAt, requestedAt, 1, 1, CommandLifecycleStatus.Created, Authority, true), cancellationToken).ConfigureAwait(false);
         await RecordRequiredAsync(new CommandLifecycleEvent(client, commandId, correlationId, requestedAt, requestedAt, 2, 2, CommandLifecycleStatus.Dispatched, Authority, true), cancellationToken).ConfigureAwait(false);
         await sessions.DispatchAsync(client, new CommandGatewayDispatch(commandId, correlationId, requestedAt, 3, 3, taskType, payloadJson, environmentValue, client.TenantId), cancellationToken).ConfigureAwait(false);
-        NetRatelAkkaTelemetry.RecordAuthorityEvent(Feature, Authority, fallbackUsed: false, environment.EnvironmentName);
+        NetRatelAkkaTelemetry.RecordAuthorityEvent(Feature, Authority, environment.EnvironmentName);
     }
 
     private async Task RecordRequiredAsync(CommandLifecycleEvent lifecycle, CancellationToken cancellationToken)
@@ -63,17 +62,8 @@ public sealed class AgentCommandAuthorityDispatcher(
         var result = await commandRouter.RecordAsync(new RecordCommandLifecycleEvent(lifecycle), cancellationToken).ConfigureAwait(false);
         if (result.Disposition != CommandMessageDisposition.Accepted)
         {
-            NetRatelAkkaTelemetry.RecordAuthorityFailure(Feature, Authority, fallbackUsed: false, environment.EnvironmentName);
+            NetRatelAkkaTelemetry.RecordAuthorityFailure(Feature, Authority, environment.EnvironmentName);
             throw new InvalidOperationException($"Command authority transition '{lifecycle.Status}' was rejected: {result.Disposition}.");
         }
     }
-}
-
-/// <summary>Stable API-facing authority when the current command gateway is disabled.</summary>
-public sealed class UnavailableAgentCommandAuthorityDispatcher : IAgentCommandAuthorityDispatcher
-{
-    public bool IsAvailable(ClientKey client) => false;
-
-    public Task DispatchAsync(ClientKey client, string commandId, string correlationId, string taskType, string payloadJson, int environment, CancellationToken cancellationToken)
-        => Task.FromException(new InvalidOperationException("The Akka command authority is unavailable."));
 }

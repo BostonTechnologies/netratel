@@ -21,7 +21,7 @@ public sealed class AgentRemoteSupportGatewayService(
     IClientPresenceRouter presenceRouter,
     IAgentManagementService agentManagement,
     IServiceProvider serviceProvider,
-    NetRatelAkkaMigrationOptions options,
+    NetRatelAkkaOptions options,
     TimeProvider timeProvider,
     ILogger<AgentRemoteSupportGatewayService> logger)
     : AgentRemoteSupportGateway.AgentRemoteSupportGatewayBase
@@ -31,11 +31,6 @@ public sealed class AgentRemoteSupportGatewayService(
         IServerStreamWriter<GatewayRemoteSupportFrame> responseStream,
         ServerCallContext context)
     {
-        if (!options.IsLegacyRemoteSupportGatewayActive && !options.IsRemoteSupportV2ReplicaSafeEdgeActive)
-        {
-            throw new RpcException(new Status(StatusCode.FailedPrecondition, "The remote-support authority canary is disabled."));
-        }
-
         if (!AgentGatewayIdentityResolver.TryResolve(context.GetHttpContext().User, out var identity, out var error) || identity is null)
         {
             throw new RpcException(new Status(StatusCode.PermissionDenied, error));
@@ -53,61 +48,13 @@ public sealed class AgentRemoteSupportGatewayService(
         }
 
         var session = await ValidateHelloAsync(requestStream.Current, identity, context.CancellationToken).ConfigureAwait(false);
-        if (options.IsRemoteSupportV2ReplicaSafeEdgeActive)
-        {
-            await ConnectReplicaSafeAsync(requestStream, responseStream, context, session).ConfigureAwait(false);
-            return;
-        }
-
-        var supportSessions = serviceProvider.GetRequiredService<IGatewayRemoteSupportSessionRegistry>();
-        AgentRemoteSupportGatewayRegistration registration;
-        try
-        {
-            registration = supportSessions.Register(session.Client, session.ConnectionId, session.ConnectionEpoch);
-        }
-        catch (InvalidOperationException exception)
-        {
-            throw new RpcException(new Status(StatusCode.AlreadyExists, exception.Message));
-        }
-
-        try
-        {
-            await responseStream.WriteAsync(new GatewayRemoteSupportFrame
-            {
-                ProtocolVersion = options.ProtocolVersion,
-                TenantId = session.Client.TenantId,
-                ClientId = session.Client.AgentId.ToString("D"),
-                ConnectionEpoch = session.ConnectionEpoch,
-                ConnectionId = session.ConnectionId.ToString("D"),
-                Sequence = 0,
-                Accepted = new RemoteSupportConnectAccepted { SupportAuthority = options.PresenceAuthority }
-            }).ConfigureAwait(false);
-
-            var writer = WriteOutboundAsync(registration.Reader, responseStream, context.CancellationToken);
-            try
-            {
-                ulong lastSequence = 0;
-                while (await requestStream.MoveNext(context.CancellationToken).ConfigureAwait(false))
-                {
-                    lastSequence = await ProcessInboundAsync(requestStream.Current, session, lastSequence, supportSessions, context.CancellationToken).ConfigureAwait(false);
-                }
-            }
-            finally
-            {
-                registration.Dispose();
-                await writer.ConfigureAwait(false);
-            }
-        }
-        finally
-        {
-            registration.Dispose();
-        }
+        await ConnectReplicaSafeAsync(requestStream, responseStream, context, session).ConfigureAwait(false);
     }
 
     private async Task<ValidatedSupportSession> ValidateHelloAsync(AgentRemoteSupportFrame frame, AuthenticatedAgentIdentity identity, CancellationToken cancellationToken)
     {
         if (frame.PayloadCase != AgentRemoteSupportFrame.PayloadOneofCase.Hello || frame.Sequence != 0 ||
-            !string.Equals(frame.ProtocolVersion, options.ProtocolVersion, StringComparison.Ordinal) || frame.TenantId != identity.TenantId ||
+            !string.Equals(frame.ProtocolVersion, NetRatelAkkaOptions.ProtocolVersion, StringComparison.Ordinal) || frame.TenantId != identity.TenantId ||
             !Guid.TryParse(frame.ClientId, out var agentId) || agentId != identity.AgentId ||
             !Guid.TryParse(frame.ConnectionId, out var connectionId) || connectionId == Guid.Empty || frame.ConnectionEpoch == 0)
         {
@@ -117,30 +64,6 @@ public sealed class AgentRemoteSupportGatewayService(
         var client = new ClientKey(identity.TenantId, identity.AgentId);
         await RequirePresenceAsync(client, connectionId, frame.ConnectionEpoch, cancellationToken).ConfigureAwait(false);
         return new ValidatedSupportSession(client, connectionId, frame.ConnectionEpoch);
-    }
-
-    private async Task<ulong> ProcessInboundAsync(AgentRemoteSupportFrame frame, ValidatedSupportSession session, ulong lastSequence, IGatewayRemoteSupportSessionRegistry supportSessions, CancellationToken cancellationToken)
-    {
-        if (!Matches(frame, session) || frame.Sequence == 0 || frame.Sequence <= lastSequence)
-        {
-            throw new RpcException(new Status(StatusCode.InvalidArgument, "The remote-support gateway frame is invalid or stale."));
-        }
-
-        await RequirePresenceAsync(session.Client, session.ConnectionId, session.ConnectionEpoch, cancellationToken).ConfigureAwait(false);
-        lastSequence = frame.Sequence;
-        var accepted = frame.PayloadCase switch
-        {
-            AgentRemoteSupportFrame.PayloadOneofCase.Signal => supportSessions.TryReceiveAgentSignal(session.Client, frame.Signal),
-            AgentRemoteSupportFrame.PayloadOneofCase.Closed => supportSessions.TryReceiveAgentClose(session.Client, frame.Closed),
-            _ => false
-        };
-        if (!accepted)
-        {
-            logger.LogDebug("Ignoring invalid remote-support signalling frame. tenantId={TenantId}, agentId={AgentId}, kind={FrameKind}",
-                session.Client.TenantId, session.Client.AgentId, frame.PayloadCase);
-        }
-
-        return lastSequence;
     }
 
     private async Task ConnectReplicaSafeAsync(
@@ -153,67 +76,61 @@ public sealed class AgentRemoteSupportGatewayService(
         using var registration = edges.Register(session.Client, session.ConnectionId, session.ConnectionEpoch);
         await responseStream.WriteAsync(new GatewayRemoteSupportFrame
         {
-            ProtocolVersion = options.ProtocolVersion,
+            ProtocolVersion = NetRatelAkkaOptions.ProtocolVersion,
             TenantId = session.Client.TenantId,
             ClientId = session.Client.AgentId.ToString("D"),
             ConnectionEpoch = session.ConnectionEpoch,
             ConnectionId = session.ConnectionId.ToString("D"),
             Sequence = 0,
-            Accepted = new RemoteSupportConnectAccepted { SupportAuthority = options.PresenceAuthority }
+            Accepted = new RemoteSupportConnectAccepted { SupportAuthority = "akka" }
         }).ConfigureAwait(false);
 
-        var writer = WriteReplicaSafeOutboundAsync(registration.Reader, responseStream, session, context.CancellationToken);
-        var renewal = RenewReplicaSafeEdgeAsync(registration, context.CancellationToken);
         try
         {
-            ulong lastSequence = 0;
-            while (await requestStream.MoveNext(context.CancellationToken).ConfigureAwait(false))
+            await GatewayDuplexSession.RunAsync(async cancellationToken =>
             {
-                var frame = requestStream.Current;
-                if (!Matches(frame, session) || frame.Sequence == 0 || frame.Sequence <= lastSequence)
+                ulong lastSequence = 0;
+                while (await requestStream.MoveNext(cancellationToken).ConfigureAwait(false))
                 {
-                    throw new RpcException(new Status(StatusCode.InvalidArgument, "The remote-support V2 edge frame is invalid or stale."));
-                }
+                    var frame = requestStream.Current;
+                    if (!Matches(frame, session) || frame.Sequence == 0 || frame.Sequence <= lastSequence)
+                    {
+                        throw new RpcException(new Status(StatusCode.InvalidArgument, "The remote-support V2 edge frame is invalid or stale."));
+                    }
 
-                await RequirePresenceAsync(session.Client, session.ConnectionId, session.ConnectionEpoch, context.CancellationToken).ConfigureAwait(false);
-                lastSequence = frame.Sequence;
-                var accepted = frame.PayloadCase switch
-                {
-                    AgentRemoteSupportFrame.PayloadOneofCase.V2EdgeRegistration =>
-                        TryGetSession(frame.V2EdgeRegistration.Session, session.Client, out var supportSession) &&
-                        frame.V2EdgeRegistration.RouteGeneration is > 0 and <= long.MaxValue &&
-                        await registration.RegisterAsync(supportSession!, checked((long)frame.V2EdgeRegistration.RouteGeneration), context.CancellationToken).ConfigureAwait(false),
-                    AgentRemoteSupportFrame.PayloadOneofCase.V2Envelope =>
-                        options.IsRemoteSupportV2MediaActive &&
-                        ((TryMapNegotiation(frame.V2Envelope, session.Client, out var negotiation, out var edgeRouteId, out var routeGeneration) &&
-                          await registration.RouteAsync(negotiation!, edgeRouteId, routeGeneration, context.CancellationToken).ConfigureAwait(false)) ||
-                         (TryMapTransitionEvidence(frame.V2Envelope, session.Client, out var evidence, out edgeRouteId, out routeGeneration) &&
-                          await registration.RouteEvidenceAsync(evidence!, edgeRouteId, routeGeneration, context.CancellationToken).ConfigureAwait(false))),
-                    _ => false
-                };
-                if (!accepted)
-                {
-                    throw new RpcException(new Status(StatusCode.Aborted, "The remote-support V2 edge envelope is fenced or invalid."));
+                    await RequirePresenceAsync(session.Client, session.ConnectionId, session.ConnectionEpoch, cancellationToken).ConfigureAwait(false);
+                    lastSequence = frame.Sequence;
+                    var accepted = frame.PayloadCase switch
+                    {
+                        AgentRemoteSupportFrame.PayloadOneofCase.V2EdgeRegistration =>
+                            TryGetSession(frame.V2EdgeRegistration.Session, session.Client, out var supportSession) &&
+                            frame.V2EdgeRegistration.RouteGeneration is > 0 and <= long.MaxValue &&
+                            await registration.RegisterAsync(supportSession!, checked((long)frame.V2EdgeRegistration.RouteGeneration), cancellationToken).ConfigureAwait(false),
+                        AgentRemoteSupportFrame.PayloadOneofCase.V2Envelope =>
+                            ((TryMapNegotiation(frame.V2Envelope, session.Client, out var negotiation, out var edgeRouteId, out var routeGeneration) &&
+                              await registration.RouteAsync(negotiation!, edgeRouteId, routeGeneration, cancellationToken).ConfigureAwait(false)) ||
+                             (TryMapTransitionEvidence(frame.V2Envelope, session.Client, out var evidence, out edgeRouteId, out routeGeneration) &&
+                              await registration.RouteEvidenceAsync(evidence!, edgeRouteId, routeGeneration, cancellationToken).ConfigureAwait(false))),
+                        _ => false
+                    };
+                    if (!accepted)
+                    {
+                        throw new RpcException(new Status(StatusCode.Aborted, "The remote-support V2 edge envelope is fenced or invalid."));
+                    }
                 }
-            }
+            }, cancellationToken => WriteReplicaSafeOutboundAsync(registration.Reader, responseStream, session, cancellationToken),
+                cancellationToken => RenewReplicaSafeEdgeAsync(registration, cancellationToken),
+                context.CancellationToken, CancellationToken.None, logger).ConfigureAwait(false);
         }
-        finally
+        catch (Exception exception) when (RemoteSupportEdgeBufferOverflowException.Is(exception))
         {
-            registration.Dispose();
-            try
-            {
-                await Task.WhenAll(writer, renewal).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
-            {
-                logger.LogDebug("Remote-support V2 edge stream cancelled for tenant {TenantId}, agent {AgentId}.",
-                    session.Client.TenantId, session.Client.AgentId);
-            }
+            logger.LogWarning(exception, "Remote Support V2 gateway edge buffer overflowed for {EdgeKind}.", exception is RemoteSupportEdgeBufferOverflowException overflow ? overflow.EdgeKind : "unknown");
+            throw new RpcException(new Status(StatusCode.ResourceExhausted, "The Remote Support edge buffer is full."));
         }
     }
 
     private bool Matches(AgentRemoteSupportFrame frame, ValidatedSupportSession session) =>
-        string.Equals(frame.ProtocolVersion, options.ProtocolVersion, StringComparison.Ordinal) && frame.TenantId == session.Client.TenantId &&
+        string.Equals(frame.ProtocolVersion, NetRatelAkkaOptions.ProtocolVersion, StringComparison.Ordinal) && frame.TenantId == session.Client.TenantId &&
         string.Equals(frame.ClientId, session.Client.AgentId.ToString("D"), StringComparison.OrdinalIgnoreCase) &&
         frame.ConnectionEpoch == session.ConnectionEpoch && string.Equals(frame.ConnectionId, session.ConnectionId.ToString("D"), StringComparison.OrdinalIgnoreCase);
 
@@ -318,17 +235,9 @@ public sealed class AgentRemoteSupportGatewayService(
     private async Task RequirePresenceAsync(ClientKey client, Guid connectionId, ulong epoch, CancellationToken cancellationToken)
     {
         var presence = await presenceRouter.GetSnapshotAsync(client, cancellationToken).ConfigureAwait(false);
-        if (presence.Status != ShadowPresenceStatus.Online || presence.ConnectionId != connectionId || presence.ConnectionEpoch != checked((long)epoch))
+        if (presence.Status != ClientPresenceStatus.Online || presence.ConnectionId != connectionId || presence.ConnectionEpoch != checked((long)epoch))
         {
             throw new RpcException(new Status(StatusCode.Aborted, "The remote-support gateway session is fenced by the active presence connection."));
-        }
-    }
-
-    private static async Task WriteOutboundAsync(System.Threading.Channels.ChannelReader<GatewayRemoteSupportFrame> reader, IServerStreamWriter<GatewayRemoteSupportFrame> responseStream, CancellationToken cancellationToken)
-    {
-        await foreach (var frame in reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
-        {
-            await responseStream.WriteAsync(frame).ConfigureAwait(false);
         }
     }
 
@@ -343,7 +252,7 @@ public sealed class AgentRemoteSupportGatewayService(
         {
             await responseStream.WriteAsync(new GatewayRemoteSupportFrame
             {
-                ProtocolVersion = options.ProtocolVersion,
+                ProtocolVersion = NetRatelAkkaOptions.ProtocolVersion,
                 TenantId = connection.Client.TenantId,
                 ClientId = connection.Client.AgentId.ToString("D"),
                 ConnectionEpoch = connection.ConnectionEpoch,
@@ -400,7 +309,7 @@ public sealed class AgentRemoteSupportGatewayService(
 
     private async Task RenewReplicaSafeEdgeAsync(RemoteSupportV2AgentEdgeConnection registration, CancellationToken cancellationToken)
     {
-        using var timer = new PeriodicTimer(options.RemoteSupportV2AgentEdgeRenewalInterval, timeProvider);
+        using var timer = new PeriodicTimer(options.RemoteSupportAgentEdgeRenewalInterval, timeProvider);
         while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
         {
             await registration.RenewAsync(cancellationToken).ConfigureAwait(false);

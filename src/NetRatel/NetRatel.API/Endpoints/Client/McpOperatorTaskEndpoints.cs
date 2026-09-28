@@ -2,7 +2,6 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using NetRatel.Akka.Configuration;
 using NetRatel.API.Gateway;
 using NetRatel.API.Middleware;
 using NetRatel.Application.Operations;
@@ -53,7 +52,6 @@ public static class McpOperatorTaskEndpoints
         IHostEnvironment environment,
         [FromServices] IClientPresenceRouter presence,
         IMcpOperatorRouteAdmission admission,
-        NetRatelAkkaMigrationOptions options,
         McpOperatorLocalAgentOptions localAgents,
         IAgentCommandAuthorityDispatcher dispatcher,
         IMcpOperatorTaskStore tasks,
@@ -62,7 +60,7 @@ public static class McpOperatorTaskEndpoints
         var operation = http.Request.Path.Value?.EndsWith("/recent", StringComparison.Ordinal) is true ? "recent" : "list";
         if (!IsTaskState(state) || limit is < 1 or > 100 || (sinceUtc.HasValue && sinceUtc.Value > DateTimeOffset.UtcNow.AddMinutes(5)))
             return Results.BadRequest(new { code = "task_query_invalid" });
-        var admitted = await TryContextAsync(operation, tenantId, agentId, http, environment, presence, admission, options, localAgents, dispatcher, false, cancellationToken).ConfigureAwait(false);
+        var admitted = await TryContextAsync(operation, tenantId, agentId, http, environment, presence, admission, localAgents, dispatcher, false, cancellationToken).ConfigureAwait(false);
         if (admitted.Failure is { } failure) return failure;
         var context = admitted.Context!;
         try
@@ -82,13 +80,12 @@ public static class McpOperatorTaskEndpoints
         IHostEnvironment environment,
         [FromServices] IClientPresenceRouter presence,
         IMcpOperatorRouteAdmission admission,
-        NetRatelAkkaMigrationOptions options,
         McpOperatorLocalAgentOptions localAgents,
         IAgentCommandAuthorityDispatcher dispatcher,
         IMcpOperatorTaskStore tasks,
         CancellationToken cancellationToken)
     {
-        var admitted = await TryContextAsync("get", tenantId, agentId, http, environment, presence, admission, options, localAgents, dispatcher, false, cancellationToken).ConfigureAwait(false);
+        var admitted = await TryContextAsync("get", tenantId, agentId, http, environment, presence, admission, localAgents, dispatcher, false, cancellationToken).ConfigureAwait(false);
         if (admitted.Failure is { } failure) return failure;
         var context = admitted.Context!;
         try
@@ -113,7 +110,6 @@ public static class McpOperatorTaskEndpoints
         IHostEnvironment environment,
         [FromServices] IClientPresenceRouter presence,
         IMcpOperatorRouteAdmission admission,
-        NetRatelAkkaMigrationOptions options,
         McpOperatorLocalAgentOptions localAgents,
         IAgentCommandAuthorityDispatcher dispatcher,
         IMcpOperatorTaskStore tasks,
@@ -121,7 +117,7 @@ public static class McpOperatorTaskEndpoints
     {
         if (sinceId is < 0 || !IsLogStream(stream) || limit is < 1 or > 100)
             return Results.BadRequest(new { code = "task_logs_invalid" });
-        var admitted = await TryContextAsync("logs", tenantId, agentId, http, environment, presence, admission, options, localAgents, dispatcher, false, cancellationToken).ConfigureAwait(false);
+        var admitted = await TryContextAsync("logs", tenantId, agentId, http, environment, presence, admission, localAgents, dispatcher, false, cancellationToken).ConfigureAwait(false);
         if (admitted.Failure is { } failure) return failure;
         var context = admitted.Context!;
         try
@@ -145,7 +141,6 @@ public static class McpOperatorTaskEndpoints
         IHostEnvironment environment,
         [FromServices] IClientPresenceRouter presence,
         IMcpOperatorRouteAdmission admission,
-        NetRatelAkkaMigrationOptions options,
         McpOperatorLocalAgentOptions localAgents,
         IAgentCommandAuthorityDispatcher dispatcher,
         IMcpOperatorTaskStore tasks,
@@ -153,7 +148,7 @@ public static class McpOperatorTaskEndpoints
     {
         if (!IsCommandId(requestId) || sinceId is < 0 || !IsLogStream(stream) || limit is < 1 or > 100)
             return Results.BadRequest(new { code = "task_logs_invalid" });
-        var admitted = await TryContextAsync("logs_by_request", tenantId, agentId, http, environment, presence, admission, options, localAgents, dispatcher, false, cancellationToken).ConfigureAwait(false);
+        var admitted = await TryContextAsync("logs_by_request", tenantId, agentId, http, environment, presence, admission, localAgents, dispatcher, false, cancellationToken).ConfigureAwait(false);
         if (admitted.Failure is { } failure) return failure;
         var context = admitted.Context!;
         try
@@ -177,7 +172,6 @@ public static class McpOperatorTaskEndpoints
         [FromServices] IClientPresenceRouter presence,
         IMcpOperatorRouteAdmission admission,
         IMcpOperatorConfirmationService confirmations,
-        NetRatelAkkaMigrationOptions options,
         McpOperatorLocalAgentOptions localAgents,
         IAgentCommandAuthorityDispatcher dispatcher,
         IMcpOperatorTaskStore tasks,
@@ -185,7 +179,7 @@ public static class McpOperatorTaskEndpoints
         CancellationToken cancellationToken)
     {
         if (!IsMutation(action)) return Results.NotFound();
-        var admitted = await TryContextAsync(action, tenantId, agentId, http, environment, presence, admission, options, localAgents, dispatcher, false, cancellationToken).ConfigureAwait(false);
+        var admitted = await TryContextAsync(action, tenantId, agentId, http, environment, presence, admission, localAgents, dispatcher, false, cancellationToken).ConfigureAwait(false);
         if (admitted.Failure is { } failure) return failure;
         var context = admitted.Context!;
         var resolution = await ResolveMutationAsync(action, request, tasks, scripts, admission, context, cancellationToken).ConfigureAwait(false);
@@ -208,7 +202,6 @@ public static class McpOperatorTaskEndpoints
         [FromServices] IClientPresenceRouter presence,
         IMcpOperatorRouteAdmission admission,
         IMcpOperatorConfirmationService confirmations,
-        NetRatelAkkaMigrationOptions options,
         McpOperatorLocalAgentOptions localAgents,
         IAgentCommandAuthorityDispatcher dispatcher,
         [FromServices] IAgentCommandGatewaySessionRegistry commandSessions,
@@ -217,7 +210,7 @@ public static class McpOperatorTaskEndpoints
         CancellationToken cancellationToken)
     {
         if (!IsMutation(action)) return Results.NotFound();
-        var admitted = await TryContextAsync(action, tenantId, agentId, http, environment, presence, admission, options, localAgents, dispatcher, true, cancellationToken).ConfigureAwait(false);
+        var admitted = await TryContextAsync(action, tenantId, agentId, http, environment, presence, admission, localAgents, dispatcher, true, cancellationToken).ConfigureAwait(false);
         if (admitted.Failure is { } failure) return failure;
         var context = admitted.Context!;
         if (!HasPlan(request.PlanToken, request.IdempotencyKey)) return Failure("confirmation_plan_invalid", context);
@@ -405,7 +398,8 @@ public static class McpOperatorTaskEndpoints
             ? Task.CompletedTask
             : tasks.RecordLifecycleAsync(task.CommandId, tenantId, agentId, "Failed", failureCode, DateTimeOffset.UtcNow, CancellationToken.None);
 
-    private static async Task<McpOperatorTaskContextResult> TryContextAsync(string operation, int tenantId, Guid agentId, HttpContext http, IHostEnvironment environment, [FromServices] IClientPresenceRouter presence, IMcpOperatorRouteAdmission admission, NetRatelAkkaMigrationOptions options, McpOperatorLocalAgentOptions localAgents, IAgentCommandAuthorityDispatcher dispatcher, bool requiresGateway, CancellationToken cancellationToken)
+    private static async Task<McpOperatorTaskContextResult> TryContextAsync(string operation, int tenantId, Guid agentId, HttpContext http, IHostEnvironment environment, [FromServices] IClientPresenceRouter presence, IMcpOperatorRouteAdmission admission,
+        McpOperatorLocalAgentOptions localAgents, IAgentCommandAuthorityDispatcher dispatcher, bool requiresGateway, CancellationToken cancellationToken)
     {
         var fallback = MinimalContext(operation, tenantId, agentId, http.TraceIdentifier);
         var delegated = http.TryGetMcpOperatorDelegation(out var assertion) && assertion is not null;
@@ -419,8 +413,8 @@ public static class McpOperatorTaskEndpoints
             effective.TenantId != tenantId || effective.AgentId != agentId || string.IsNullOrWhiteSpace(effective.Resource) || string.IsNullOrWhiteSpace(effective.CorrelationId))
             return new(null, Failure("delegated_identity_invalid", fallback));
         var target = new ClientKey(tenantId, agentId);
-        var online = !requiresGateway || (await presence.GetSnapshotAsync(target, cancellationToken).ConfigureAwait(false)).Status == ShadowPresenceStatus.Online;
-        var available = !requiresGateway || (options.IsCommandAuthorityActive && dispatcher.IsAvailable(target));
+        var online = !requiresGateway || (await presence.GetSnapshotAsync(target, cancellationToken).ConfigureAwait(false)).Status == ClientPresenceStatus.Online;
+        var available = !requiresGateway || dispatcher.IsAvailable(target);
         var route = new McpOperatorRouteAccessRequest(operatorEnvironment,
             new McpOperatorPrincipal(effective.Identity.Subject, effective.Identity.ClientId, effective.Identity.AuthorizedParty,
                 effective.Identity.Groups.ToHashSet(StringComparer.Ordinal), effective.Identity.Roles.ToHashSet(StringComparer.Ordinal), effective.Identity.Scopes.ToHashSet(StringComparer.Ordinal)),

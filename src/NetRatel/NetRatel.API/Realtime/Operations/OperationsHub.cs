@@ -7,7 +7,7 @@ using NetRatel.Shared.Contracts;
 namespace NetRatel.API.Realtime.Operations;
 
 /// <summary>Authorized live-log fan-out for the operations UI.</summary>
-[Authorize(Policy = "Operator")]
+[Authorize(Policy = "OperationsLogAccess")]
 public sealed class OperationsHub(
     OperationsLogSubscriptionRegistry subscriptions,
     IOperationsLogTenantAuthorizer tenantAuthorizer,
@@ -46,7 +46,7 @@ public sealed class OperationsHub(
 
     public async Task<GatewayLogPageDto> SubscribeLogs(int tenantId, string agentId, string sourceId, string? cursor = null, GatewayLogQueryFilters? filters = null)
     {
-        var client = ResolveClient(tenantId, agentId);
+        var client = await ResolveClientAsync(tenantId, agentId).ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(sourceId) || sourceId.Length > 128 || !IsValid(filters) ||
             !logSessions.GetSources(client).Any(source => source.Available && string.Equals(source.SourceId, sourceId, StringComparison.Ordinal)))
         {
@@ -90,7 +90,7 @@ public sealed class OperationsHub(
 
     public async Task UnsubscribeLogs(int tenantId, string agentId, string sourceId)
     {
-        var client = ResolveClient(tenantId, agentId);
+        var client = await ResolveClientAsync(tenantId, agentId).ConfigureAwait(false);
         var groupName = GroupName(client);
         var removed = subscriptions.Remove(Context.ConnectionId, groupName, client, sourceId, out var leaveGroup, out var stopFollow);
         try
@@ -127,9 +127,10 @@ public sealed class OperationsHub(
         }
     }
 
-    private ClientKey ResolveClient(int tenantId, string agentId)
+    private async Task<ClientKey> ResolveClientAsync(int tenantId, string agentId)
     {
-        if (Context.User is null || !tenantAuthorizer.IsAuthorized(Context.User, tenantId) ||
+        if (Context.User is null ||
+            !await tenantAuthorizer.IsAuthorizedAsync(Context.User, tenantId, Context.ConnectionAborted).ConfigureAwait(false) ||
             !Guid.TryParse(agentId, out var parsedAgentId) || parsedAgentId == Guid.Empty)
         {
             throw new HubException("Tenant authorization failed.");

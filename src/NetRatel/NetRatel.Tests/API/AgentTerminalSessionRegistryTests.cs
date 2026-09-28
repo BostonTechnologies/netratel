@@ -125,7 +125,7 @@ public sealed class AgentTerminalSessionRegistryTests
     private static async Task<ReplayFixture> OpenReplayFixtureAsync(TimeProvider? clock = null)
     {
         var client = new ClientKey(3, Guid.NewGuid());
-        var registry = new AgentTerminalSessionRegistry(clock ?? TimeProvider.System, new ThrowingShadowFanoutSink());
+        var registry = new AgentTerminalSessionRegistry(clock ?? TimeProvider.System, new ThrowingRealtimeFanoutSink());
         var registration = registry.Register(client, Guid.NewGuid(), 4, ["sh"]);
         var session = await registry.OpenAsync(client, "sh", "/tmp", 100, 30, CancellationToken.None);
         await registration.Reader.ReadAsync();
@@ -157,7 +157,7 @@ public sealed class AgentTerminalSessionRegistryTests
     public async Task Register_RejectsStaleOrAmbiguousCandidateWithoutMutatingCurrentTransport(ulong candidateEpoch)
     {
         var client = new ClientKey(3, Guid.NewGuid());
-        var registry = new AgentTerminalSessionRegistry(TimeProvider.System, new ThrowingShadowFanoutSink());
+        var registry = new AgentTerminalSessionRegistry(TimeProvider.System, new ThrowingRealtimeFanoutSink());
         using var current = registry.Register(client, Guid.NewGuid(), 5, ["bash"]);
         var opening = await registry.OpenAsync(client, "bash", null, 100, 30, CancellationToken.None);
         await current.Reader.ReadAsync();
@@ -179,7 +179,7 @@ public sealed class AgentTerminalSessionRegistryTests
     {
         var client = new ClientKey(3, Guid.NewGuid());
         var connection = Guid.NewGuid();
-        var registry = new AgentTerminalSessionRegistry(TimeProvider.System, new ThrowingShadowFanoutSink());
+        var registry = new AgentTerminalSessionRegistry(TimeProvider.System, new ThrowingRealtimeFanoutSink());
         using var first = registry.RegisterProvisional(client, connection, 5, ["bash"]);
         registry.GetAvailability(client).Should().BeNull();
         var open = () => registry.OpenAsync(client, "bash", null, 100, 30, CancellationToken.None);
@@ -197,7 +197,7 @@ public sealed class AgentTerminalSessionRegistryTests
     public async Task OpenAsync_RequiresAnAdmittedTransport_ThenRoutesTheLifecycleToThatTransport()
     {
         var client = new ClientKey(3, Guid.NewGuid());
-        var registry = new AgentTerminalSessionRegistry(TimeProvider.System, new ThrowingShadowFanoutSink());
+        var registry = new AgentTerminalSessionRegistry(TimeProvider.System, new ThrowingRealtimeFanoutSink());
 
         var unavailable = () => registry.OpenAsync(client, "bash", null, 120, 32, CancellationToken.None);
         var error = await unavailable.Should().ThrowAsync<AgentTerminalSessionUnavailableException>();
@@ -247,7 +247,7 @@ public sealed class AgentTerminalSessionRegistryTests
     public async Task OpenAsync_RejectsShellsOutsideTheVerifiedTransportInventory()
     {
         var client = new ClientKey(3, Guid.NewGuid());
-        var registry = new AgentTerminalSessionRegistry(TimeProvider.System, new ThrowingShadowFanoutSink());
+        var registry = new AgentTerminalSessionRegistry(TimeProvider.System, new ThrowingRealtimeFanoutSink());
         using var registration = registry.Register(client, Guid.NewGuid(), 4, ["bash"]);
 
         var action = () => registry.OpenAsync(client, "powershell", null, 120, 32, CancellationToken.None);
@@ -260,7 +260,7 @@ public sealed class AgentTerminalSessionRegistryTests
     public async Task InputBeforeOpened_IsRejectedAsOpening()
     {
         var client = new ClientKey(3, Guid.NewGuid());
-        var registry = new AgentTerminalSessionRegistry(TimeProvider.System, new ThrowingShadowFanoutSink());
+        var registry = new AgentTerminalSessionRegistry(TimeProvider.System, new ThrowingRealtimeFanoutSink());
         using var registration = registry.Register(client, Guid.NewGuid(), 4, ["bash"]);
         var opening = await registry.OpenAsync(client, "bash", null, 120, 32, CancellationToken.None);
         await registration.Reader.ReadAsync();
@@ -275,7 +275,7 @@ public sealed class AgentTerminalSessionRegistryTests
     public async Task OutputPressure_DropsBoundedStdoutWithoutBlockingLifecycleFrames()
     {
         var client = new ClientKey(3, Guid.NewGuid());
-        var registry = new AgentTerminalSessionRegistry(TimeProvider.System, new ThrowingShadowFanoutSink());
+        var registry = new AgentTerminalSessionRegistry(TimeProvider.System, new ThrowingRealtimeFanoutSink());
         using var registration = registry.Register(client, Guid.NewGuid(), 4, ["bash"]);
         var opening = await registry.OpenAsync(client, "bash", null, 100, 30, CancellationToken.None);
         await registration.Reader.ReadAsync();
@@ -316,7 +316,7 @@ public sealed class AgentTerminalSessionRegistryTests
     public async Task DetachedOutputSubscriber_DoesNotPreventANewBrowserAttachmentFromReceivingOutput()
     {
         var client = new ClientKey(3, Guid.NewGuid());
-        var registry = new AgentTerminalSessionRegistry(TimeProvider.System, new ThrowingShadowFanoutSink());
+        var registry = new AgentTerminalSessionRegistry(TimeProvider.System, new ThrowingRealtimeFanoutSink());
         using var registration = registry.Register(client, Guid.NewGuid(), 4, ["bash"]);
         var opening = await registry.OpenAsync(client, "bash", null, 100, 30, CancellationToken.None);
         await registration.Reader.ReadAsync();
@@ -352,7 +352,7 @@ public sealed class AgentTerminalSessionRegistryTests
     {
         var client = new ClientKey(3, Guid.NewGuid());
         var connectionId = Guid.NewGuid();
-        var registry = new AgentTerminalSessionRegistry(TimeProvider.System, new ThrowingShadowFanoutSink());
+        var registry = new AgentTerminalSessionRegistry(TimeProvider.System, new ThrowingRealtimeFanoutSink());
         using var first = registry.Register(client, connectionId, 4, ["bash"], [AgentTerminalSessionRegistry.IdempotentCloseCapability]);
         var opening = await registry.OpenAsync(client, "bash", null, 100, 30, CancellationToken.None);
         await first.Reader.ReadAsync();
@@ -372,7 +372,7 @@ public sealed class AgentTerminalSessionRegistryTests
         var client = new ClientKey(3, Guid.NewGuid());
         var connectionId = Guid.NewGuid();
         var clock = new ManualTimeProvider();
-        var registry = new AgentTerminalSessionRegistry(clock, new ThrowingShadowFanoutSink());
+        var registry = new AgentTerminalSessionRegistry(clock, new ThrowingRealtimeFanoutSink());
         using var first = registry.Register(client, connectionId, 4, ["bash"], [AgentTerminalSessionRegistry.IdempotentCloseCapability]);
         var opening = await registry.OpenAsync(client, "bash", null, 100, 30, CancellationToken.None);
         var start = await first.Reader.ReadAsync();
@@ -401,7 +401,7 @@ public sealed class AgentTerminalSessionRegistryTests
     {
         var client = new ClientKey(3, Guid.NewGuid());
         var connectionId = Guid.NewGuid();
-        var registry = new AgentTerminalSessionRegistry(TimeProvider.System, new ThrowingShadowFanoutSink());
+        var registry = new AgentTerminalSessionRegistry(TimeProvider.System, new ThrowingRealtimeFanoutSink());
         using var first = registry.Register(client, connectionId, 4, ["bash"], [AgentTerminalSessionRegistry.IdempotentCloseCapability]);
         var opening = await registry.OpenAsync(client, "bash", null, 100, 30, CancellationToken.None);
         var start = await first.Reader.ReadAsync();
@@ -426,7 +426,7 @@ public sealed class AgentTerminalSessionRegistryTests
     {
         var client = new ClientKey(3, Guid.NewGuid());
         var connectionId = Guid.NewGuid();
-        var registry = new AgentTerminalSessionRegistry(TimeProvider.System, new ThrowingShadowFanoutSink());
+        var registry = new AgentTerminalSessionRegistry(TimeProvider.System, new ThrowingRealtimeFanoutSink());
         using var first = registry.Register(client, connectionId, 4, ["bash"], [AgentTerminalSessionRegistry.IdempotentCloseCapability]);
         var opening = await registry.OpenAsync(client, "bash", "/srv/netratel", 100, 30, CancellationToken.None);
         var firstStart = await first.Reader.ReadAsync();
@@ -453,7 +453,7 @@ public sealed class AgentTerminalSessionRegistryTests
     public async Task InputAfterTransportLoss_ReturnsReconnectingInsteadOfChannelClosed()
     {
         var client = new ClientKey(3, Guid.NewGuid());
-        var registry = new AgentTerminalSessionRegistry(TimeProvider.System, new ThrowingShadowFanoutSink());
+        var registry = new AgentTerminalSessionRegistry(TimeProvider.System, new ThrowingRealtimeFanoutSink());
         using var registration = registry.Register(client, Guid.NewGuid(), 4, ["bash"]);
         var opening = await registry.OpenAsync(client, "bash", null, 100, 30, CancellationToken.None);
         var start = await registration.Reader.ReadAsync();
@@ -472,7 +472,7 @@ public sealed class AgentTerminalSessionRegistryTests
     public async Task InputBackpressure_DoesNotRemoveAHealthyTransport()
     {
         var client = new ClientKey(3, Guid.NewGuid());
-        var registry = new AgentTerminalSessionRegistry(TimeProvider.System, new ThrowingShadowFanoutSink());
+        var registry = new AgentTerminalSessionRegistry(TimeProvider.System, new ThrowingRealtimeFanoutSink());
         using var registration = registry.Register(client, Guid.NewGuid(), 4, ["bash"]);
         var opening = await registry.OpenAsync(client, "bash", null, 100, 30, CancellationToken.None);
         var start = await registration.Reader.ReadAsync();
@@ -505,7 +505,7 @@ public sealed class AgentTerminalSessionRegistryTests
     {
         var client = new ClientKey(3, Guid.NewGuid());
         var connectionId = Guid.NewGuid();
-        var registry = new AgentTerminalSessionRegistry(TimeProvider.System, new ThrowingShadowFanoutSink());
+        var registry = new AgentTerminalSessionRegistry(TimeProvider.System, new ThrowingRealtimeFanoutSink());
         using var registration = registry.Register(client, connectionId, 4, ["bash"]);
         var opening = await registry.OpenAsync(client, "bash", null, 100, 30, CancellationToken.None);
         var start = await registration.Reader.ReadAsync();
@@ -562,7 +562,7 @@ public sealed class AgentTerminalSessionRegistryTests
     {
         var client = new ClientKey(3, Guid.NewGuid());
         var connectionId = Guid.NewGuid();
-        var registry = new AgentTerminalSessionRegistry(TimeProvider.System, new ThrowingShadowFanoutSink());
+        var registry = new AgentTerminalSessionRegistry(TimeProvider.System, new ThrowingRealtimeFanoutSink());
         using var registration = registry.Register(client, connectionId, 4, ["bash"]);
         var opening = await registry.OpenAsync(client, "bash", null, 100, 30, CancellationToken.None);
         var start = await registration.Reader.ReadAsync();
@@ -623,7 +623,7 @@ public sealed class AgentTerminalSessionRegistryTests
     public async Task StartWrittenAfterFastOpenedAcknowledgement_DoesNotOverwriteOpened()
     {
         var client = new ClientKey(3, Guid.NewGuid());
-        var registry = new AgentTerminalSessionRegistry(TimeProvider.System, new ThrowingShadowFanoutSink());
+        var registry = new AgentTerminalSessionRegistry(TimeProvider.System, new ThrowingRealtimeFanoutSink());
         using var registration = registry.Register(client, Guid.NewGuid(), 4, ["bash"]);
         var opening = await registry.OpenAsync(client, "bash", null, 100, 30, CancellationToken.None);
         var start = await registration.Reader.ReadAsync();
@@ -640,7 +640,7 @@ public sealed class AgentTerminalSessionRegistryTests
         var client = new ClientKey(3, Guid.NewGuid());
         var connectionId = Guid.NewGuid();
         var clock = new ManualTimeProvider();
-        var registry = new AgentTerminalSessionRegistry(clock, new ThrowingShadowFanoutSink());
+        var registry = new AgentTerminalSessionRegistry(clock, new ThrowingRealtimeFanoutSink());
         using var first = registry.Register(client, connectionId, 4, ["bash"], [AgentTerminalSessionRegistry.IdempotentCloseCapability]);
         var opening = await registry.OpenAsync(client, "bash", "/srv/netratel", 100, 30, CancellationToken.None);
         var start = await first.Reader.ReadAsync();
@@ -674,7 +674,7 @@ public sealed class AgentTerminalSessionRegistryTests
     {
         var client = new ClientKey(3, Guid.NewGuid());
         var clock = new ManualTimeProvider();
-        var registry = new AgentTerminalSessionRegistry(clock, new ThrowingShadowFanoutSink());
+        var registry = new AgentTerminalSessionRegistry(clock, new ThrowingRealtimeFanoutSink());
         using var registration = registry.Register(client, Guid.NewGuid(), 4, ["bash"], [AgentTerminalSessionRegistry.IdempotentCloseCapability]);
         var opening = await registry.OpenAsync(client, "bash", null, 100, 30, CancellationToken.None);
         using var output = registry.Subscribe(opening.SessionId, opening.Generation);
@@ -709,7 +709,7 @@ public sealed class AgentTerminalSessionRegistryTests
     {
         var client = new ClientKey(3, Guid.NewGuid());
         var connectionId = Guid.NewGuid();
-        var registry = new AgentTerminalSessionRegistry(TimeProvider.System, new ThrowingShadowFanoutSink());
+        var registry = new AgentTerminalSessionRegistry(TimeProvider.System, new ThrowingRealtimeFanoutSink());
         using var first = registry.Register(client, connectionId, 4, ["bash"]);
         using var replacement = registry.Register(client, connectionId, 4, ["bash"]);
 
@@ -724,7 +724,7 @@ public sealed class AgentTerminalSessionRegistryTests
     {
         var client = new ClientKey(3, Guid.NewGuid());
         var connectionId = Guid.NewGuid();
-        var registry = new AgentTerminalSessionRegistry(TimeProvider.System, new ThrowingShadowFanoutSink());
+        var registry = new AgentTerminalSessionRegistry(TimeProvider.System, new ThrowingRealtimeFanoutSink());
         using var registration = registry.Register(client, connectionId, 4, ["bash"]);
         var active = await registry.OpenAsync(client, "bash", null, 100, 30, CancellationToken.None);
         await registration.Reader.ReadAsync();
@@ -759,7 +759,7 @@ public sealed class AgentTerminalSessionRegistryTests
     {
         var client = new ClientKey(3, Guid.NewGuid());
         var connectionId = Guid.NewGuid();
-        var registry = new AgentTerminalSessionRegistry(TimeProvider.System, new ThrowingShadowFanoutSink());
+        var registry = new AgentTerminalSessionRegistry(TimeProvider.System, new ThrowingRealtimeFanoutSink());
         using var first = registry.Register(client, connectionId, 4, ["bash"], [AgentTerminalSessionRegistry.IdempotentCloseCapability]);
         var opening = await registry.OpenAsync(client, "bash", null, 100, 30, CancellationToken.None);
         await first.Reader.ReadAsync();
@@ -788,7 +788,7 @@ public sealed class AgentTerminalSessionRegistryTests
     public async Task ClosingSession_WithoutIdempotentCloseCapability_DoesNotRepeatTheCloseFrame()
     {
         var client = new ClientKey(3, Guid.NewGuid());
-        var registry = new AgentTerminalSessionRegistry(TimeProvider.System, new ThrowingShadowFanoutSink());
+        var registry = new AgentTerminalSessionRegistry(TimeProvider.System, new ThrowingRealtimeFanoutSink());
         using var registration = registry.Register(client, Guid.NewGuid(), 4, ["bash"]);
         var opening = await registry.OpenAsync(client, "bash", null, 100, 30, CancellationToken.None);
         await registration.Reader.ReadAsync();
@@ -807,7 +807,7 @@ public sealed class AgentTerminalSessionRegistryTests
     public async Task ReplacedPresenceFence_FencesThePriorSessionAndRejectsFurtherControl()
     {
         var client = new ClientKey(3, Guid.NewGuid());
-        var registry = new AgentTerminalSessionRegistry(TimeProvider.System, new ThrowingShadowFanoutSink());
+        var registry = new AgentTerminalSessionRegistry(TimeProvider.System, new ThrowingRealtimeFanoutSink());
         using var first = registry.Register(client, Guid.NewGuid(), 4, ["bash"]);
         var opening = await registry.OpenAsync(client, "bash", null, 100, 30, CancellationToken.None);
         await first.Reader.ReadAsync();
@@ -828,7 +828,7 @@ public sealed class AgentTerminalSessionRegistryTests
     {
         var client = new ClientKey(3, Guid.NewGuid());
         var firstConnectionId = Guid.NewGuid();
-        var registry = new AgentTerminalSessionRegistry(TimeProvider.System, new ThrowingShadowFanoutSink());
+        var registry = new AgentTerminalSessionRegistry(TimeProvider.System, new ThrowingRealtimeFanoutSink());
         using var first = registry.Register(client, firstConnectionId, 4, ["bash"]);
         var opening = await registry.OpenAsync(client, "bash", null, 100, 30, CancellationToken.None);
         var start = await first.Reader.ReadAsync();
@@ -873,7 +873,7 @@ public sealed class AgentTerminalSessionRegistryTests
         await SeedRecoveryLeaseAsync(services, client, sessionId, expired: false);
         var registry = new AgentTerminalSessionRegistry(
             TimeProvider.System,
-            new ThrowingShadowFanoutSink(),
+            new ThrowingRealtimeFanoutSink(),
             scopeFactory: services.GetRequiredService<IServiceScopeFactory>());
         using var registration = registry.Register(client, Guid.NewGuid(), 4, ["bash"], [AgentTerminalSessionRegistry.IdempotentCloseCapability]);
 
@@ -899,7 +899,7 @@ public sealed class AgentTerminalSessionRegistryTests
         await SeedRecoveryLeaseAsync(services, client, sessionId, expired: true);
         var registry = new AgentTerminalSessionRegistry(
             TimeProvider.System,
-            new ThrowingShadowFanoutSink(),
+            new ThrowingRealtimeFanoutSink(),
             scopeFactory: services.GetRequiredService<IServiceScopeFactory>());
         using var registration = registry.Register(client, Guid.NewGuid(), 4, ["bash"], [AgentTerminalSessionRegistry.IdempotentCloseCapability]);
 
@@ -943,7 +943,7 @@ public sealed class AgentTerminalSessionRegistryTests
             .BuildServiceProvider();
         var registry = new AgentTerminalSessionRegistry(
             TimeProvider.System,
-            new ThrowingShadowFanoutSink(),
+            new ThrowingRealtimeFanoutSink(),
             scopeFactory: services.GetRequiredService<IServiceScopeFactory>());
         var bound = (IAgentTerminalRegistrationBoundRegistry)registry;
         using var first = registry.Register(client, connectionId, 4, ["bash"], [AgentTerminalSessionRegistry.IdempotentCloseCapability]);
@@ -991,7 +991,7 @@ public sealed class AgentTerminalSessionRegistryTests
             .BuildServiceProvider();
         var registry = new AgentTerminalSessionRegistry(
             TimeProvider.System,
-            new ThrowingShadowFanoutSink(),
+            new ThrowingRealtimeFanoutSink(),
             scopeFactory: services.GetRequiredService<IServiceScopeFactory>());
         var bound = (IAgentTerminalRegistrationBoundRecoveryAdmissionRegistry)registry;
         using var registration = registry.Register(client, Guid.NewGuid(), 4, ["bash"], [AgentTerminalSessionRegistry.IdempotentCloseCapability]);

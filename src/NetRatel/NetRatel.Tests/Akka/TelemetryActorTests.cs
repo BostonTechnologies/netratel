@@ -39,7 +39,7 @@ public sealed class TelemetryActorTests : IAsyncLifetime
         state.Latest.Should().NotBeNull();
         state.Latest!.Sequence.Should().Be(3);
         state.Latest.Cpu!.UsagePercent.Should().Be(30);
-        state.Latest.Source.Should().Be("akka-shadow");
+        state.Latest.Source.Should().Be("akka");
         state.Latest.IsAuthoritative.Should().BeFalse();
     }
 
@@ -106,7 +106,7 @@ public sealed class TelemetryActorTests : IAsyncLifetime
         diagnostics.AcceptedCount.Should().Be(2);
         diagnostics.RejectedCount.Should().Be(1);
         diagnostics.LastUpdateTimestamp.Should().NotBeNull();
-        diagnostics.Authority.Should().Be("unavailable");
+        diagnostics.Authority.Should().Be("akka");
     }
 
     private static TelemetrySnapshot CreateSnapshot(

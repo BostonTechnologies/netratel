@@ -14,7 +14,6 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using NetRatel.AgentGateway.Contracts.V1;
-using NetRatel.Akka.Configuration;
 using NetRatel.API.Endpoints;
 using NetRatel.API.Gateway;
 using NetRatel.Application.Presence;
@@ -78,15 +77,6 @@ public sealed class AgentTerminalGatewayEndpointWebSocketTests
                 services.AddAuthorization(options =>
                     options.AddPolicy("Operator", policy => policy.RequireAuthenticatedUser()));
                 services.AddSingleton(registry);
-                services.AddSingleton(new NetRatelAkkaMigrationOptions
-                {
-                    Enabled = true,
-                    PresenceEnabled = true,
-                    GatewayEnabled = true,
-                    TerminalGatewayEnabled = true,
-                    PresenceAuthorityEnabled = true,
-                    TerminalAuthorityEnabled = true
-                });
             });
             web.Configure(app =>
             {

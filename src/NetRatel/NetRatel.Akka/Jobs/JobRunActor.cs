@@ -4,18 +4,18 @@ using NetRatel.Application.Jobs;
 namespace NetRatel.Akka.Jobs;
 
 /// <summary>
-/// Reconstructs and validates one job run from the append-only shadow ledger.
+/// Reconstructs and validates one job run from its append-only observation history.
 /// It never schedules work, dispatches commands, or mutates production job state.
 /// </summary>
 public sealed class JobRunActor : ReceiveActor
 {
     private const int HistoryLimit = 32;
     private readonly ulong _jobRunId;
-    private readonly IJobShadowPersistenceStore _persistenceStore;
+    private readonly IJobObservationStore _persistenceStore;
     private readonly CancellationTokenSource _stopping = new();
     private readonly Dictionary<ulong, MutableStepState> _steps = [];
-    private readonly List<JobShadowHistoryEntry> _recentHistory = new(HistoryLimit);
-    private IJobShadowObservation? _lastObservation;
+    private readonly List<JobHistoryEntry> _recentHistory = new(HistoryLimit);
+    private IJobObservation? _lastObservation;
     private ulong? _jobId;
     private int? _tenantId;
     private bool _tenantBound;
@@ -30,7 +30,7 @@ public sealed class JobRunActor : ReceiveActor
     private long _lastAcceptedSourceEventId;
     private bool _recovered;
 
-    public JobRunActor(ulong jobRunId, IJobShadowPersistenceStore persistenceStore)
+    public JobRunActor(ulong jobRunId, IJobObservationStore persistenceStore)
     {
         if (jobRunId == 0)
         {
@@ -40,7 +40,7 @@ public sealed class JobRunActor : ReceiveActor
         _jobRunId = jobRunId;
         _persistenceStore = persistenceStore ?? throw new ArgumentNullException(nameof(persistenceStore));
 
-        ReceiveAsync<RoutedJobShadowRecord>(async message =>
+        ReceiveAsync<RoutedJobObservation>(async message =>
         {
             // Akka.ActorContext is scoped to the synchronous receive turn. Capture
             // the parent before awaiting persistence/recovery work, otherwise the
@@ -52,7 +52,7 @@ public sealed class JobRunActor : ReceiveActor
                 var previousStatus = _status;
                 var previousActiveSteps = CountActiveSteps();
                 var result = await RecordAsync(message.Message.Observation).ConfigureAwait(false);
-                parent.Tell(new RoutedJobShadowResult(
+                parent.Tell(new RoutedJobObservationResult(
                     result,
                     message.ReplyTo,
                     previousStatus,
@@ -66,9 +66,9 @@ public sealed class JobRunActor : ReceiveActor
                 // A failed initial replay must be observable by the caller. Letting
                 // ReceiveAsync fault loses the Ask reply and turns a storage outage
                 // into an unbounded gateway timeout.
-                parent.Tell(new RoutedJobShadowResult(
+                parent.Tell(new RoutedJobObservationResult(
                     CreateResult(
-                        JobShadowMessageDisposition.PersistenceUnavailable,
+                        JobMessageDisposition.PersistenceUnavailable,
                         JobCommandCorrelationStatus.NotProvided,
                         null),
                     message.ReplyTo,
@@ -79,7 +79,7 @@ public sealed class JobRunActor : ReceiveActor
                     RecoveredFromHistory: false));
             }
         });
-        ReceiveAsync<GetJobShadowState>(async message =>
+        ReceiveAsync<GetJobRunProjection>(async message =>
         {
             var replyTo = Sender;
             try
@@ -89,12 +89,12 @@ public sealed class JobRunActor : ReceiveActor
             }
             catch (Exception) when (!_stopping.IsCancellationRequested)
             {
-                replyTo.Tell(EmptyState(message.JobRunId, "akka-shadow-persistence-unavailable"));
+                replyTo.Tell(EmptyState(message.JobRunId, "akka-persistence-unavailable"));
             }
         });
     }
 
-    public static Props Props(ulong jobRunId, IJobShadowPersistenceStore persistenceStore) =>
+    public static Props Props(ulong jobRunId, IJobObservationStore persistenceStore) =>
         global::Akka.Actor.Props.Create(() => new JobRunActor(jobRunId, persistenceStore));
 
     protected override void PostStop()
@@ -104,9 +104,9 @@ public sealed class JobRunActor : ReceiveActor
         base.PostStop();
     }
 
-    internal static JobRunShadowState EmptyState(
+    internal static JobRunView EmptyState(
         ulong jobRunId,
-        string source = "akka-shadow") =>
+        string source = "unobserved") =>
         new(
             jobRunId,
             null,
@@ -124,7 +124,7 @@ public sealed class JobRunActor : ReceiveActor
             source,
             IsAuthoritative: false);
 
-    private async Task<JobShadowMessageResult> RecordAsync(IJobShadowObservation observation)
+    private async Task<JobMessageResult> RecordAsync(IJobObservation observation)
     {
         try
         {
@@ -132,23 +132,23 @@ public sealed class JobRunActor : ReceiveActor
             var correlationStatus = JobCommandCorrelationStatus.NotProvided;
             NetRatel.Application.Commands.CommandLifecycleStatus? commandStatus = null;
 
-            if (disposition is JobShadowMessageDisposition.Accepted or JobShadowMessageDisposition.Duplicate)
+            if (disposition is JobMessageDisposition.Accepted or JobMessageDisposition.Duplicate)
             {
                 var persistence = await _persistenceStore.RecordAsync(observation, _stopping.Token)
                     .ConfigureAwait(false);
                 correlationStatus = persistence.CommandCorrelationStatus;
                 commandStatus = persistence.CorrelatedCommandStatus;
-                if (persistence.Disposition == JobShadowPersistenceWriteDisposition.Duplicate &&
-                    disposition == JobShadowMessageDisposition.Accepted)
+                if (persistence.Disposition == JobObservationWriteDisposition.Duplicate &&
+                    disposition == JobMessageDisposition.Accepted)
                 {
                     ResetState();
                     _recovered = false;
                     await EnsureRecoveredAsync().ConfigureAwait(false);
-                    disposition = JobShadowMessageDisposition.Duplicate;
+                    disposition = JobMessageDisposition.Duplicate;
                 }
             }
 
-            if (disposition == JobShadowMessageDisposition.Accepted)
+            if (disposition == JobMessageDisposition.Accepted)
             {
                 Apply(observation, correlationStatus, commandStatus);
             }
@@ -158,49 +158,48 @@ public sealed class JobRunActor : ReceiveActor
         catch (Exception) when (!_stopping.IsCancellationRequested)
         {
             return CreateResult(
-                JobShadowMessageDisposition.PersistenceUnavailable,
+                JobMessageDisposition.PersistenceUnavailable,
                 JobCommandCorrelationStatus.NotProvided,
                 null);
         }
     }
 
-    private JobShadowMessageDisposition GetDisposition(IJobShadowObservation observation)
+    private JobMessageDisposition GetDisposition(IJobObservation observation)
     {
         if (observation.JobRunId != _jobRunId ||
-            (_lastObservation is not null && observation.IsAuthoritative != _isAuthoritative) ||
             (_jobId.HasValue && observation.JobId != _jobId.Value) ||
             (_tenantBound && observation.TenantId != _tenantId) ||
             (_clientIdentity is not null &&
              !string.Equals(observation.ClientIdentity, _clientIdentity, StringComparison.Ordinal)))
         {
-            return JobShadowMessageDisposition.IdentityMismatch;
+            return JobMessageDisposition.IdentityMismatch;
         }
 
         if (_lastObservation is not null && observation.SourceEventId == _lastAcceptedSourceEventId)
         {
             return Equals(observation, _lastObservation)
-                ? JobShadowMessageDisposition.Duplicate
-                : JobShadowMessageDisposition.IdentityMismatch;
+                ? JobMessageDisposition.Duplicate
+                : JobMessageDisposition.IdentityMismatch;
         }
 
         if (_lastObservation is not null && observation.SourceEventId < _lastAcceptedSourceEventId)
         {
-            return JobShadowMessageDisposition.StaleEvent;
+            return JobMessageDisposition.StaleEvent;
         }
 
         return observation switch
         {
-            JobRunShadowObservation run => IsValidRunObservation(run)
-                ? JobShadowMessageDisposition.Accepted
-                : JobShadowMessageDisposition.InvalidTransition,
-            JobStepShadowObservation step => IsValidStepObservation(step)
-                ? JobShadowMessageDisposition.Accepted
-                : JobShadowMessageDisposition.InvalidTransition,
-            _ => JobShadowMessageDisposition.IdentityMismatch
+            JobRunObservation run => IsValidRunObservation(run)
+                ? JobMessageDisposition.Accepted
+                : JobMessageDisposition.InvalidTransition,
+            JobStepObservation step => IsValidStepObservation(step)
+                ? JobMessageDisposition.Accepted
+                : JobMessageDisposition.InvalidTransition,
+            _ => JobMessageDisposition.IdentityMismatch
         };
     }
 
-    private bool IsValidRunObservation(JobRunShadowObservation run)
+    private bool IsValidRunObservation(JobRunObservation run)
     {
         if (run.CurrentStepOrdinal < 0 || run.CurrentStepOrdinal < _currentStepOrdinal)
         {
@@ -233,7 +232,7 @@ public sealed class JobRunActor : ReceiveActor
         };
     }
 
-    private bool IsValidStepObservation(JobStepShadowObservation step)
+    private bool IsValidStepObservation(JobStepObservation step)
     {
         if (step.JobStepRunId == 0 || step.Ordinal < 0 || IsTerminal(_status))
         {
@@ -289,10 +288,10 @@ public sealed class JobRunActor : ReceiveActor
         {
             foreach (var persisted in replay)
             {
-                if (GetDisposition(persisted.Observation) != JobShadowMessageDisposition.Accepted)
+                if (GetDisposition(persisted.Observation) != JobMessageDisposition.Accepted)
                 {
                     throw new InvalidOperationException(
-                        $"Durable job shadow history for run '{_jobRunId}' contains an invalid transition.");
+                        $"Durable job history for run '{_jobRunId}' contains an invalid transition.");
                 }
 
                 Apply(
@@ -313,7 +312,7 @@ public sealed class JobRunActor : ReceiveActor
     }
 
     private void Apply(
-        IJobShadowObservation observation,
+        IJobObservation observation,
         JobCommandCorrelationStatus correlationStatus,
         NetRatel.Application.Commands.CommandLifecycleStatus? commandStatus)
     {
@@ -328,7 +327,7 @@ public sealed class JobRunActor : ReceiveActor
         _isAuthoritative = observation.IsAuthoritative;
         switch (observation)
         {
-            case JobRunShadowObservation run:
+            case JobRunObservation run:
                 _startedBy ??= run.StartedBy;
                 _status = run.Status;
                 _currentStepOrdinal = run.CurrentStepOrdinal;
@@ -337,13 +336,13 @@ public sealed class JobRunActor : ReceiveActor
                 _completedAtUtc = run.CompletedAtUtc ?? _completedAtUtc;
                 AddHistory(new(
                     run.SourceEventId,
-                    JobShadowObservationKind.Run,
+                    JobObservationKind.Run,
                     run.Status,
                     null,
                     null,
                     run.Timestamp));
                 break;
-            case JobStepShadowObservation step:
+            case JobStepObservation step:
                 if (!_steps.TryGetValue(step.JobStepRunId, out var stepState))
                 {
                     stepState = new MutableStepState(step.JobStepRunId);
@@ -361,7 +360,7 @@ public sealed class JobRunActor : ReceiveActor
                 stepState.LastAcceptedSourceEventId = step.SourceEventId;
                 AddHistory(new(
                     step.SourceEventId,
-                    JobShadowObservationKind.Step,
+                    JobObservationKind.Step,
                     null,
                     step.Status,
                     step.JobStepRunId,
@@ -373,7 +372,7 @@ public sealed class JobRunActor : ReceiveActor
         _lastAcceptedSourceEventId = observation.SourceEventId;
     }
 
-    private void AddHistory(JobShadowHistoryEntry entry)
+    private void AddHistory(JobHistoryEntry entry)
     {
         if (_recentHistory.Count == HistoryLimit)
         {
@@ -383,8 +382,8 @@ public sealed class JobRunActor : ReceiveActor
         _recentHistory.Add(entry);
     }
 
-    private JobShadowMessageResult CreateResult(
-        JobShadowMessageDisposition disposition,
+    private JobMessageResult CreateResult(
+        JobMessageDisposition disposition,
         JobCommandCorrelationStatus correlationStatus,
         NetRatel.Application.Commands.CommandLifecycleStatus? commandStatus) =>
         new(
@@ -395,7 +394,7 @@ public sealed class JobRunActor : ReceiveActor
             correlationStatus,
             commandStatus);
 
-    private JobRunShadowState CreateState() =>
+    private JobRunView CreateState() =>
         new(
             _jobRunId,
             _jobId,
@@ -414,7 +413,7 @@ public sealed class JobRunActor : ReceiveActor
                 .Select(item => item.ToState())
                 .ToArray(),
             _recentHistory.ToArray(),
-            _isAuthoritative ? "akka" : "akka-shadow",
+            "akka",
             IsAuthoritative: _isAuthoritative);
 
     private int CountActiveSteps() =>
@@ -458,7 +457,7 @@ public sealed class JobRunActor : ReceiveActor
         public DateTimeOffset? CompletedAtUtc { get; set; }
         public long LastAcceptedSourceEventId { get; set; }
 
-        public JobStepShadowState ToState() =>
+        public JobStepView ToState() =>
             new(
                 JobStepRunId,
                 JobStepId,
@@ -473,12 +472,12 @@ public sealed class JobRunActor : ReceiveActor
     }
 }
 
-internal sealed record RoutedJobShadowRecord(
-    RecordJobShadowObservation Message,
+internal sealed record RoutedJobObservation(
+    RecordJobObservation Message,
     IActorRef ReplyTo);
 
-internal sealed record RoutedJobShadowResult(
-    JobShadowMessageResult Result,
+internal sealed record RoutedJobObservationResult(
+    JobMessageResult Result,
     IActorRef ReplyTo,
     JobRunState? PreviousStatus,
     JobRunState? CurrentStatus,

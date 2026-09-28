@@ -59,19 +59,21 @@ public sealed class ApiEndpointRegistrationSourceTests
         var source = File.ReadAllText(Path.Combine(RepoRoot, "src/NetRatel/NetRatel.API/Program.cs"));
 
         source.Should().Contain("k.ListenAnyIP(httpPort, listen => listen.Protocols = HttpProtocols.Http1);");
-        source.Should().Contain("akkaMigration.GatewayGrpcPort");
+        source.Should().Contain("NetRatelAkkaOptions.SectionName");
+        source.Should().Contain("GatewayGrpcPort");
         source.Should().Contain("listen => listen.Protocols = HttpProtocols.Http2");
-        source.Should().Contain("akkaMigration.Enabled && akkaMigration.GatewayEnabled");
+        source.Should().NotContain("NetRatelAkkaMigration");
     }
 
     [Fact]
     public void Program_Registers_Development_Mcp_Retention_Services_Only_In_Development()
     {
         var source = File.ReadAllText(Path.Combine(RepoRoot, "src/NetRatel/NetRatel.API/Program.cs"));
+        var runtime = File.ReadAllText(Path.Combine(RepoRoot, "src/NetRatel/NetRatel.API/Gateway/NetRatelAkkaRuntimeRegistration.cs"));
 
         source.Should().Contain("if (builder.Environment.IsDevelopment())");
         source.Should().Contain("AddHostedService<DevelopmentMcpFileArtifactRetentionService>()");
-        source.Should().Contain("AddHostedService<ProductionMcpTerminalExpiryService>()");
+        runtime.Should().Contain("AddHostedService<ProductionMcpTerminalExpiryService>()");
     }
 
     [Fact]
@@ -100,10 +102,10 @@ public sealed class ApiEndpointRegistrationSourceTests
 
         source.Should().Contain("/api/v2/client-presence");
         source.Should().Contain("IClientPresenceReadModel");
-        source.Should().Contain("PresenceReadModelEnabled");
         source.Should().Contain("RequireAuthorization(\"InstanceAdministrator\")");
         source.Should().Contain("[FromQuery] int? limit");
-        source.Should().Contain(".Take(boundedLimit)");
+        source.Should().Contain(".Take(batchSize)");
+        source.Should().Contain("while (matches.Count < boundedLimit)");
         source.Should().NotContain("SpacetimeDbService");
     }
 
@@ -153,9 +155,9 @@ public sealed class ApiEndpointRegistrationSourceTests
             "app.MapHealthEndpoints();",
             "app.MapDocumentationEndpoints();",
             "app.MapAgentGatewayEndpoints();",
+            "app.MapAgentRemoteSupportV2Endpoints();",
             "app.MapSecretEndpoints();",
             "app.MapPrimaryClientAgentBindingReadEndpoints();",
-            "app.MapPrimaryClientGatewayCardReadEndpoints();",
             "app.MapMcpOperatorPolicyAdministrationEndpoints();",
             "app.MapMcpOperatorAccessEndpoints();",
             "app.MapMcpOperatorAuthenticationStatusEndpoints();",
@@ -184,7 +186,6 @@ public sealed class ApiEndpointRegistrationSourceTests
             "app.MapTelemetryEndpoints();",
             "app.MapAgentFileGatewayEndpoints();",
             "app.MapAgentCommandGatewayEndpoints();",
-            "app.MapAgentRemoteSupportGatewayEndpoints();",
             "app.MapAgentTerminalGatewayEndpoints();",
             "app.MapClientArtifactsEndpoints();",
             "app.MapClientUpdatesEndpoints();",

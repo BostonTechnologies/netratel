@@ -1,6 +1,8 @@
+using System.Data.Common;
+using Akka.Actor;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using NetRatel.Akka.Configuration;
+using Microsoft.Extensions.Logging;
 using NetRatel.API.Gateway;
 using NetRatel.API.Services.AgentDirectory;
 using NetRatel.Application.Presence;
@@ -10,9 +12,8 @@ using NetRatel.Shared.Contracts;
 namespace NetRatel.API.Endpoints.Client;
 
 /// <summary>
-/// Exposes the process-local Akka gateway presence projection. This is a
-/// presence-only gateway API: it deliberately does not reuse legacy client
-/// identity or expose remote-action endpoints.
+/// Exposes persisted agent directory entries enriched with the process-local
+/// Akka gateway presence projection. Live presence never owns the directory.
 /// </summary>
 public static class ClientPresenceReadEndpoints
 {
@@ -30,9 +31,12 @@ public static class ClientPresenceReadEndpoints
             [FromQuery] string? search,
             [FromQuery] bool? online,
             [FromQuery] int? limit,
-            [FromServices] NetRatelAkkaMigrationOptions options,
-            IServiceProvider services,
+            [FromServices] IClientPresenceReadModel readModel,
+            [FromServices] IAgentTerminalSessionRegistry terminals,
+            [FromServices] IAgentFileGatewaySessionRegistry files,
             [FromServices] OrchestratorDbContext db,
+            [FromServices] ILoggerFactory loggerFactory,
+            HttpContext httpContext,
             CancellationToken ct) =>
         {
             var boundedLimit = limit ?? DefaultLimit;
@@ -41,58 +45,115 @@ public static class ClientPresenceReadEndpoints
                 return Results.BadRequest(new { code = "invalid_limit", message = $"limit must be between 1 and {MaximumLimit}." });
             }
 
-            if (!options.IsGatewayPresenceReadModelEnabled)
+            try
             {
-                return Results.NotFound();
+                var projection = await readModel.GetSnapshotAsync(ct).ConfigureAwait(false);
+                var snapshots = projection.Items.ToDictionary(snapshot => snapshot.Client);
+
+                var agents = from agent in db.Agents.AsNoTracking()
+                             join tenant in db.Tenants.AsNoTracking()
+                                 on agent.TenantId equals tenant.Id
+                             select new
+                             {
+                                 agent.TenantId,
+                                 agent.Id,
+                                 agent.Name,
+                                 agent.IsEnabled,
+                                 agent.DeviceInfoJson,
+                                 TenantName = tenant.Name
+                             };
+                if (tenantId.HasValue)
+                {
+                    agents = agents.Where(agent => agent.TenantId == tenantId.Value);
+                }
+
+                if (!string.IsNullOrWhiteSpace(search))
+                {
+                    var term = search.Trim();
+                    var pattern = $"%{EscapeLikePattern(term)}%";
+                    // DeviceInfoJson is parsed and unescaped after paging; raw SQL text matching can omit a real host/OS match.
+                    agents = agents.Where(agent =>
+                        (agent.Name != null && EF.Functions.ILike(agent.Name, pattern, "\\")) ||
+                        agent.DeviceInfoJson != null ||
+                        EF.Functions.ILike("Agent-" + agent.Id.ToString().Substring(0, 8), pattern, "\\") ||
+                        EF.Functions.ILike(agent.Id.ToString(), pattern, "\\"));
+                }
+
+                const int batchSize = 100;
+                var matches = new List<ClientPresenceDto>(boundedLimit);
+                var offset = 0;
+                while (matches.Count < boundedLimit)
+                {
+                    var page = await agents
+                        .OrderBy(agent => agent.TenantId)
+                        .ThenBy(agent => agent.Name)
+                        .ThenBy(agent => agent.Id)
+                        .Skip(offset)
+                        .Take(batchSize)
+                        .ToListAsync(ct)
+                        .ConfigureAwait(false);
+                    if (page.Count == 0)
+                    {
+                        break;
+                    }
+
+                    offset += page.Count;
+                    foreach (var row in page)
+                    {
+                        var agent = AgentDirectoryPresentation.Create(
+                            row.TenantId,
+                            row.Id,
+                            row.Name,
+                            row.IsEnabled,
+                            row.DeviceInfoJson,
+                            row.TenantName);
+                        var item = Map(agent, snapshots, terminals, files, projection.Revision);
+                        if ((!online.HasValue || item.Online == online.Value) && Matches(item, search))
+                        {
+                            matches.Add(item);
+                            if (matches.Count == boundedLimit)
+                            {
+                                break;
+                            }
+                        }
+                    }
+
+                    if (page.Count < batchSize)
+                    {
+                        break;
+                    }
+                }
+
+                return Results.Ok(new ClientPresenceListDto(
+                    "akka",
+                    projection.Revision,
+                    matches));
             }
-
-            var readModel = services.GetRequiredService<IClientPresenceReadModel>();
-            var terminals = services.GetService<IAgentTerminalSessionRegistry>();
-            var files = services.GetService<IAgentFileGatewaySessionRegistry>();
-            var projection = await readModel.GetSnapshotAsync(ct).ConfigureAwait(false);
-            var snapshots = projection.Items.ToDictionary(snapshot => snapshot.Client);
-
-            var agents = db.Agents.AsNoTracking().AsQueryable();
-            if (tenantId.HasValue)
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
-                agents = agents.Where(agent => agent.TenantId == tenantId.Value);
+                throw;
             }
-
-            var rows = await agents
-                .Join(
-                    db.Tenants.AsNoTracking(),
-                    agent => agent.TenantId,
-                    tenant => tenant.Id,
-                    (agent, tenant) => new { agent, tenant.Name })
-                .OrderBy(agent => agent.agent.TenantId)
-                .ThenBy(agent => agent.agent.Name)
-                .ThenBy(agent => agent.agent.Id)
-                .Select(agent => AgentDirectoryPresentation.Create(
-                    agent.agent.TenantId,
-                    agent.agent.Id,
-                    agent.agent.Name,
-                    agent.agent.IsEnabled,
-                    agent.agent.DeviceInfoJson,
-                    agent.Name))
-                .ToListAsync(ct)
-                .ConfigureAwait(false);
-
-            var items = rows
-                .Select(agent => Map(agent, snapshots, terminals, files, projection.Revision))
-                .Where(item => !online.HasValue || item.Online == online.Value)
-                .Where(item => Matches(item, search))
-                .Take(boundedLimit)
-                .ToArray();
-
-            return Results.Ok(new ClientPresenceListDto(
-                "akka",
-                projection.Revision,
-                items));
+            catch (Exception exception) when (IsDependencyFailure(exception))
+            {
+                var logger = loggerFactory.CreateLogger("NetRatel.API.Endpoints.Client.ClientPresenceReadEndpoints");
+                logger.LogWarning(
+                    "Client presence directory dependency failed for trace {TraceId} with {FailureType}.",
+                    httpContext.TraceIdentifier,
+                    exception.GetType().Name);
+                return Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable,
+                    title: "Client directory is temporarily unavailable.",
+                    extensions: new Dictionary<string, object?>
+                    {
+                        ["code"] = "client_directory_unavailable",
+                        ["traceId"] = httpContext.TraceIdentifier
+                    });
+            }
         })
         .WithName("ClientPresence_List")
         .Produces<ClientPresenceListDto>(StatusCodes.Status200OK)
         .Produces(StatusCodes.Status400BadRequest)
-        .Produces(StatusCodes.Status404NotFound);
+        .Produces(StatusCodes.Status503ServiceUnavailable);
 
         return app;
     }
@@ -100,8 +161,8 @@ public static class ClientPresenceReadEndpoints
     private static ClientPresenceDto Map(
         AgentDirectoryPresentation agent,
         IReadOnlyDictionary<ClientKey, ClientPresenceSnapshot> snapshots,
-        IAgentTerminalSessionRegistry? terminals,
-        IAgentFileGatewaySessionRegistry? files,
+        IAgentTerminalSessionRegistry terminals,
+        IAgentFileGatewaySessionRegistry files,
         long revision)
     {
         var key = new ClientKey(agent.TenantId, agent.AgentId);
@@ -124,7 +185,7 @@ public static class ClientPresenceReadEndpoints
             HostName: agent.HostName,
             OperatingSystem: agent.OperatingSystem,
             Architecture: agent.Architecture,
-            Online: snapshot?.Status == ShadowPresenceStatus.Online,
+            Online: snapshot?.Status == ClientPresenceStatus.Online,
             IsEnabled: agent.IsEnabled,
             LastReceivedAtUtc: snapshot?.LastReceivedAtUtc,
             AgentVersion: snapshot?.AgentVersion,
@@ -142,15 +203,14 @@ public static class ClientPresenceReadEndpoints
         ClientPresenceSnapshot? presence,
         GatewayFileGatewayAvailability? availability)
     {
-        // The authenticated hello advertises file-gateway only when the client
-        // configuration enables it, so "configured" and "advertised" are
-        // distinct fields with the same current source of truth.
+        // The authenticated hello advertises file-gateway when the agent
+        // implementation supports it; active sessions are reported separately.
         var advertised = presence?.Capabilities.Contains("file-gateway", StringComparer.OrdinalIgnoreCase) == true;
         var sessionActive = availability is not null;
         var fenceMatchesPresence = availability is not null &&
-            presence is { Status: ShadowPresenceStatus.Online, ConnectionId: var connectionId, ConnectionEpoch: var epoch } &&
+            presence is { Status: ClientPresenceStatus.Online, ConnectionId: var connectionId, ConnectionEpoch: var epoch } &&
             connectionId == availability.ConnectionId && epoch == checked((long)availability.ConnectionEpoch);
-        var readinessReason = presence?.Status != ShadowPresenceStatus.Online
+        var readinessReason = presence?.Status != ClientPresenceStatus.Online
             ? "file_gateway_presence_offline"
             : !advertised
                 ? "file_gateway_not_advertised"
@@ -186,7 +246,19 @@ public static class ClientPresenceReadEndpoints
                item.AgentId.ToString("D").Contains(term, StringComparison.OrdinalIgnoreCase);
     }
 
+    private static string EscapeLikePattern(string term) =>
+        term.Replace("\\", "\\\\", StringComparison.Ordinal)
+            .Replace("%", "\\%", StringComparison.Ordinal)
+            .Replace("_", "\\_", StringComparison.Ordinal);
+
     private static bool Contains(string? value, string term) =>
         !string.IsNullOrWhiteSpace(value) && value.Contains(term, StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsDependencyFailure(Exception exception) => exception switch
+    {
+        DbException or DbUpdateException or TimeoutException or AskTimeoutException => true,
+        OperationCanceledException => true,
+        _ => exception.InnerException is not null && IsDependencyFailure(exception.InnerException)
+    };
 
 }

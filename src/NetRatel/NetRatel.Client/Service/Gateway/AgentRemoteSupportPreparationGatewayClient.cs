@@ -213,7 +213,7 @@ internal sealed class AgentRemoteSupportPreparationGatewayClient(
         // The preparation stream may run on non-Windows hosts and media is
         // independently feature-gated. Never advertise controls that cannot
         // be exercised by this edge instance.
-        if (!options.RemoteSupportV2MediaEnabled || !OperatingSystem.IsWindows())
+        if (!OperatingSystem.IsWindows())
         {
             return capabilities;
         }
@@ -458,9 +458,9 @@ internal sealed class AgentRemoteSupportPreparationGatewayClient(
     private void ValidateAccepted(GatewayRemoteSupportPreparationFrame frame, GatewayPresenceSession session)
     {
         ValidateFrame(frame, session);
-        if (!GatewayAuthority.IsAkka(frame.Accepted.PreparationAuthority))
+        if (!GatewayWireProtocol.HasAkkaAuthority(frame.Accepted.PreparationAuthority))
         {
-            throw new RpcException(new Status(StatusCode.FailedPrecondition, "Remote-support V2 preparation gateway did not admit the expected authority."));
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, "Remote-support preparation gateway returned an unsupported authority token."));
         }
     }
 

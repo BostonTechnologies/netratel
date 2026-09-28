@@ -9,7 +9,7 @@ public interface IWebClientDownloadService
     Task<Stream> DownloadAsync(int tenantId, ClientEnvironment env, string rid, bool injectEnrollment, int? validForMinutes, int? maxUses, CancellationToken ct = default);
 }
 
-public class WebClientDownloadService(HttpClient http) : IWebClientDownloadService
+public class WebClientDownloadService(HttpClient http) : IWebClientDownloadService, IDisposable
 {
     private readonly HttpClient _http = http;
 
@@ -28,4 +28,6 @@ public class WebClientDownloadService(HttpClient http) : IWebClientDownloadServi
         resp.EnsureSuccessStatusCode();
         return await resp.Content.ReadAsStreamAsync(ct);
     }
+
+    public void Dispose() => _http.Dispose();
 }

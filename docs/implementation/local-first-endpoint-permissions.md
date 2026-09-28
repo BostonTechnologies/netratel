@@ -13,13 +13,27 @@ access evaluator and the explicit `InstanceAdministrator`,
 `TenantAdministrator`, `ClientManager`, `TelemetryReader`,
 `TerminalOperator`, `RemoteSupportOperator`, and `McpOperatorPolicyAdmin`
 policies. The latter preserves the legacy OIDC `netratel.mcp.admin` scope
-requirement. Other explicit policies are `Operator`, `AkkaShadowAccess`,
+requirement. Other explicit policies are `Operator`, `RealtimeAccess`,
+`OperationsLogAccess`,
 `ClientArtifactsWrite`, `ClientArtifactsUpload`, `ClientArtifactsDownload`,
 `HealthRead`, `M2MOnly`, `AgentAccess`, `AgentGatewayAccess`, and
 `MachineTokenApi`. The API also has OIDC, machine-token, M2M, system and native
 agent schemes. This preserves the existing trust-path separation while
 allowing durable local and external principals to be evaluated with tenant
 scope on the ported routes.
+
+The realtime hubs use two-stage effective-access checks. `/hubs/akka-authority`
+uses `RealtimeAccess` for authenticated instance-scope client-management
+admission, then checks `ClientManagement` against the requested tenant before
+joining a group. `/hubs/operations` uses `OperationsLogAccess` for authenticated
+instance-scope telemetry-read admission, then checks `TelemetryRead` against
+the requested tenant before subscribing to logs. These policies replace the
+former role/group claim-only checks on the hubs with the effective-access
+evaluator: provisioned Local administrators are recognized, tenant grants are
+resolved from stored assignments, and tenant or integration-credential claims
+cannot grant broader access by themselves. The global `Operator` policy
+remains available for unported routes, and the evaluator retains the existing
+supported OIDC `Operator` compatibility behavior.
 
 ## Route families and target checks
 
@@ -34,6 +48,8 @@ scope on the ported routes.
 | MCP operator client, file, observability, command, script, job, task and request routes | mostly `M2MOnly` | Existing MCP policy/profile, confirmation, idempotency and target checks | Integration-management plus operation-specific effective access; no gateway bypass |
 | MCP policy administration | `McpOperatorPolicyAdmin` | Persisted policy/profile IDs | MCP policy administration and audit; legacy OIDC scope remains required |
 | `/api/v2/branding` and managed branding assets | anonymous effective presentation reads; `InstanceAdministrator` for update/upload | Singleton deployment record and opaque database asset IDs | Global presentation only; no tenant context, arbitrary path/URL fetch, or credential/configuration disclosure |
+| `/hubs/akka-authority` realtime subscriptions | `RealtimeAccess` | Instance-scope `ClientManagement` at connection and tenant-scoped `ClientManagement` before group subscription | Authenticated realtime metadata only; effective tenant assignments remain authoritative |
+| `/hubs/operations` live logs | `OperationsLogAccess` | Instance-scope `TelemetryRead` at connection and tenant-scoped `TelemetryRead` before log subscription | Authenticated operational logs; tenant claims alone do not grant access |
 | Development MCP/onboarding and operator-target routes | `Operator` | Tenant/agent and grant IDs | Enrollment/client-management and scoped target administration |
 | Agent enrollment, refresh, updates and gateway transport | `AgentAccess` / `AgentGatewayAccess` | Native agent identity and enrollment state | Native Client identity remains separate; no operator credential reuse |
 | Client artifacts and update publication | `ArtifactPublisher` plus explicit artifact policies | Artifact/release ownership | Artifact/update publication; preserve native updater contract |

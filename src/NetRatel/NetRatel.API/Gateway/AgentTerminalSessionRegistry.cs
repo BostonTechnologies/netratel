@@ -4,7 +4,7 @@ using Google.Protobuf;
 using Microsoft.Extensions.Logging;
 using NetRatel.AgentGateway.Contracts.V1;
 using NetRatel.Akka.Observability;
-using NetRatel.API.Realtime.Shadow;
+using NetRatel.API.Realtime;
 using NetRatel.API.Services.Terminal;
 using NetRatel.Application.Fanout;
 using NetRatel.Application.Operations;
@@ -154,7 +154,7 @@ public sealed class AgentTerminalSessionUnavailableException(ClientKey client)
 
 public sealed class AgentTerminalSessionRegistry(
     TimeProvider timeProvider,
-    IShadowFanoutSink fanout,
+    IRealtimeFanoutSink fanout,
     TerminalTimingRecorder? timing = null,
     IServiceScopeFactory? scopeFactory = null,
     ILogger<AgentTerminalSessionRegistry>? logger = null)
@@ -369,8 +369,8 @@ public sealed class AgentTerminalSessionRegistry(
                 session.Generation,
                 transport.ConnectionId,
                 transport.ConnectionEpoch);
-            NetRatelAkkaTelemetry.RecordAuthorityRequest("terminal", "akka", fallbackUsed: false, "dev");
-            NetRatelAkkaTelemetry.RecordAuthorityEvent("terminal", "akka", fallbackUsed: false, "dev");
+            NetRatelAkkaTelemetry.RecordAuthorityRequest("terminal", "akka", "dev");
+            NetRatelAkkaTelemetry.RecordAuthorityEvent("terminal", "akka", "dev");
             NetRatelAkkaTelemetry.SetTerminalActiveSessions(ActiveSessionCount());
             return session.Snapshot();
         }
@@ -385,7 +385,7 @@ public sealed class AgentTerminalSessionRegistry(
         {
             _sessions.TryRemove(session.Id, out _);
             session.Dispose();
-            NetRatelAkkaTelemetry.RecordAuthorityFailure("terminal", "akka", fallbackUsed: false, "dev");
+            NetRatelAkkaTelemetry.RecordAuthorityFailure("terminal", "akka", "dev");
             throw;
         }
     }
@@ -550,7 +550,7 @@ public sealed class AgentTerminalSessionRegistry(
             client.AgentId,
             session.Id,
             session.Generation);
-        Publish(session, ShadowFanoutEventType.Updated, ShadowFanoutStatus.Active);
+        Publish(session, RealtimeFanoutEventType.Updated, RealtimeFanoutStatus.Active);
         return true;
     }
 
@@ -749,7 +749,7 @@ public sealed class AgentTerminalSessionRegistry(
                     return true;
                 }
 
-                Publish(adopted, ShadowFanoutEventType.Updated, ShadowFanoutStatus.Pending);
+                Publish(adopted, RealtimeFanoutEventType.Updated, RealtimeFanoutStatus.Pending);
             }
             await DispatchPendingCloseAsync(adopted, CancellationToken.None).ConfigureAwait(false);
             return true;
@@ -773,7 +773,7 @@ public sealed class AgentTerminalSessionRegistry(
 
             NetRatelAkkaTelemetry.TerminalSessionOpened();
             NetRatelAkkaTelemetry.SetTerminalActiveSessions(ActiveSessionCount());
-            Publish(adopted, ShadowFanoutEventType.Updated, ShadowFanoutStatus.Active);
+            Publish(adopted, RealtimeFanoutEventType.Updated, RealtimeFanoutStatus.Active);
         }
         return true;
     }
@@ -867,7 +867,7 @@ public sealed class AgentTerminalSessionRegistry(
         NetRatelAkkaTelemetry.TerminalFrameObserved();
         timing?.RecordFrame(output.SessionId, TerminalTransportKind.AkkaGateway, "output", output.Content.Length);
         timing?.RecordStage(output.SessionId, TerminalTransportKind.AkkaGateway, "agent.output.api", 0);
-        Publish(session, ShadowFanoutEventType.Updated, ShadowFanoutStatus.Active, output.SessionSequence);
+        Publish(session, RealtimeFanoutEventType.Updated, RealtimeFanoutStatus.Active, output.SessionSequence);
         return Task.FromResult(true);
     }
 
@@ -893,7 +893,7 @@ public sealed class AgentTerminalSessionRegistry(
         }
 
         timing?.RecordStage(resize.SessionId, TerminalTransportKind.AkkaGateway, "agent.resize.applied", 0);
-        Publish(session, ShadowFanoutEventType.Updated, ShadowFanoutStatus.Active, resize.SessionSequence);
+        Publish(session, RealtimeFanoutEventType.Updated, RealtimeFanoutStatus.Active, resize.SessionSequence);
         return true;
     }
 
@@ -1004,7 +1004,7 @@ public sealed class AgentTerminalSessionRegistry(
 
         NetRatelAkkaTelemetry.TerminalSessionClosed();
         NetRatelAkkaTelemetry.SetTerminalActiveSessions(ActiveSessionCount());
-        Publish(session, ShadowFanoutEventType.Completed, ShadowFanoutStatus.Completed);
+        Publish(session, RealtimeFanoutEventType.Completed, RealtimeFanoutStatus.Completed);
         ScheduleRemoval(session);
         return transition;
     }
@@ -1017,9 +1017,9 @@ public sealed class AgentTerminalSessionRegistry(
             return transition;
         }
 
-        NetRatelAkkaTelemetry.RecordAuthorityFailure("terminal", "akka", fallbackUsed: false, "dev");
+        NetRatelAkkaTelemetry.RecordAuthorityFailure("terminal", "akka", "dev");
         NetRatelAkkaTelemetry.SetTerminalActiveSessions(ActiveSessionCount());
-        Publish(session, ShadowFanoutEventType.Completed, ShadowFanoutStatus.Failed);
+        Publish(session, RealtimeFanoutEventType.Completed, RealtimeFanoutStatus.Failed);
         ScheduleRemoval(session);
         return transition;
     }
@@ -1089,7 +1089,7 @@ public sealed class AgentTerminalSessionRegistry(
                 transport.ConnectionId,
                 transport.ConnectionEpoch,
                 transport.RegistrationId);
-            Publish(session, ShadowFanoutEventType.Updated, ShadowFanoutStatus.Pending);
+            Publish(session, RealtimeFanoutEventType.Updated, RealtimeFanoutStatus.Pending);
             _ = ExpireSuspendedSessionAsync(session, transport);
         }
     }
@@ -1131,7 +1131,7 @@ public sealed class AgentTerminalSessionRegistry(
             {
                 if (session.TrySuspend())
                 {
-                    Publish(session, ShadowFanoutEventType.Updated, ShadowFanoutStatus.Pending);
+                    Publish(session, RealtimeFanoutEventType.Updated, RealtimeFanoutStatus.Pending);
                 }
 
                 throw TransportReconnecting(session.Client);
@@ -1180,12 +1180,12 @@ public sealed class AgentTerminalSessionRegistry(
                 // Publish while the registration gate is held so a later
                 // presence replacement cannot make a stale Pending event
                 // arrive after its Suspended/Failed transition.
-                Publish(session, ShadowFanoutEventType.Updated, ShadowFanoutStatus.Pending);
+                Publish(session, RealtimeFanoutEventType.Updated, RealtimeFanoutStatus.Pending);
             }
             else if (enqueue == TerminalTransportEnqueueResult.Backpressured)
             {
                 session.ReturnStartToRequested(transport.RegistrationId, dispatchAttempt);
-                Publish(session, ShadowFanoutEventType.Updated, ShadowFanoutStatus.Pending);
+                Publish(session, RealtimeFanoutEventType.Updated, RealtimeFanoutStatus.Pending);
             }
         }
 
@@ -1398,10 +1398,10 @@ public sealed class AgentTerminalSessionRegistry(
 
             // Make the ClosePending state observable before another
             // registration can suspend, resume, or fence this generation.
-            NetRatelAkkaTelemetry.RecordAuthorityFailure("terminal", "akka", fallbackUsed: false, "dev");
+            NetRatelAkkaTelemetry.RecordAuthorityFailure("terminal", "akka", "dev");
             NetRatelAkkaTelemetry.TerminalOpeningTimedOut();
             NetRatelAkkaTelemetry.TerminalCompensatingCloseQueued();
-            Publish(session, ShadowFanoutEventType.Updated, ShadowFanoutStatus.Pending);
+            Publish(session, RealtimeFanoutEventType.Updated, RealtimeFanoutStatus.Pending);
         }
 
         logger?.LogWarning(
@@ -1594,17 +1594,17 @@ public sealed class AgentTerminalSessionRegistry(
         _ => null
     };
 
-    private void Publish(TerminalSession session, ShadowFanoutEventType eventType, ShadowFanoutStatus status, ulong? sequence = null)
+    private void Publish(TerminalSession session, RealtimeFanoutEventType eventType, RealtimeFanoutStatus status, ulong? sequence = null)
     {
-        fanout.TryEnqueueBestEffort(new ShadowFanoutEnvelope(
-            ShadowFanoutEnvelope.CurrentSchemaVersion,
-            ShadowFanoutCategory.Terminal,
-            new ShadowFanoutTarget(session.Client.TenantId, ShadowFanoutTargetScope.Terminal, session.Client.AgentId.ToString("D"), session.Id),
+        fanout.TryEnqueueBestEffort(new RealtimeFanoutEnvelope(
+            RealtimeFanoutEnvelope.CurrentSchemaVersion,
+            RealtimeFanoutCategory.Terminal,
+            new RealtimeFanoutTarget(session.Client.TenantId, RealtimeFanoutTargetScope.Terminal, session.Client.AgentId.ToString("D"), session.Id),
             eventType,
             status,
             timeProvider.GetUtcNow(),
             sequence,
-            Diagnostics: new ShadowFanoutDiagnosticSummary(ActiveCount: status == ShadowFanoutStatus.Active ? 1UL : 0UL),
+            Diagnostics: new RealtimeFanoutDiagnosticSummary(ActiveCount: status == RealtimeFanoutStatus.Active ? 1UL : 0UL),
             IsAuthoritative: true));
         if (sequence is null)
         {

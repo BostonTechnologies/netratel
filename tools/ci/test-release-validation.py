@@ -59,6 +59,795 @@ class PublicGatewayRouteTests(unittest.TestCase):
                 self.assertTrue(method_path.startswith(prefix), f"{method_path} misses the public gRPC location.")
 
 
+class TraefikGatewayRouteFixtureTests(unittest.TestCase):
+    def test_fixture_routes_the_full_dotted_rpc_prefix_to_h2c_and_keeps_rest_as_fallback(self):
+        dynamic = (ROOT / "tools/ci/tests/traefik-gateway-dynamic.yaml").read_text()
+        self.assertIn("PathPrefix(`/netratel.gateway.v1.`)", dynamic)
+        self.assertIn("priority: 100", dynamic)
+        self.assertIn("h2c://gateway-fixture:9223", dynamic)
+        self.assertIn("PathPrefix(`/`)", dynamic)
+        self.assertIn("priority: 10", dynamic)
+        self.assertIn("http://gateway-fixture:9222", dynamic)
+        self.assertNotIn("StripPrefix", dynamic)
+
+        probe = (ROOT / "tools/ci/tests/traefik-upstream.js").read_text()
+        self.assertIn('"/netratel.gateway.v1.AgentGateway/Connect"', probe)
+        self.assertIn('"grpc-status": "7"', probe)
+        self.assertIn('grpc-status", "7"', probe)
+        self.assertIn('response.status !== 403', probe)
+        self.assertIn("x-netratel-ingress-route", probe)
+        self.assertIn("x-correlation-id", probe)
+
+
+class MtpTestReceiptTests(unittest.TestCase):
+    def setUp(self):
+        self.verifier = module("verify-mtp-trx")
+        self.directory = tempfile.TemporaryDirectory()
+        self.report = Path(self.directory.name) / "receipt.trx"
+
+    def tearDown(self):
+        self.directory.cleanup()
+
+    def write_report(self, outcome="Completed", counters=None, run_info=""):
+        values = counters or {
+            "total": 2, "executed": 2, "passed": 2, "failed": 0,
+            "error": 0, "timeout": 0, "aborted": 0, "inconclusive": 0,
+            "passedButRunAborted": 0, "notRunnable": 0, "notExecuted": 0,
+            "disconnected": 0, "warning": 0, "completed": 0,
+            "inProgress": 0, "pending": 0,
+        }
+        attributes = " ".join(f'{name}="{value}"' for name, value in values.items())
+        self.report.write_text(
+            f'<TestRun xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">'
+            f'<ResultSummary outcome="{outcome}"><Counters {attributes}/></ResultSummary>'
+            f"{run_info}</TestRun>",
+            encoding="utf-8",
+        )
+
+    def test_completed_report_requires_exact_positive_pass_count(self):
+        self.write_report()
+        receipt = self.verifier.validate_report(self.report, expected_executed=2)
+        self.assertEqual((receipt["total"], receipt["executed"], receipt["passed"]), (2, 2, 2))
+
+    def test_empty_or_incomplete_report_is_rejected(self):
+        self.write_report(counters={
+            "total": 0, "executed": 0, "passed": 0, "failed": 0,
+            "error": 0, "timeout": 0, "aborted": 0, "inconclusive": 0,
+            "passedButRunAborted": 0, "notRunnable": 0, "notExecuted": 0,
+            "disconnected": 0, "warning": 0, "completed": 0,
+            "inProgress": 0, "pending": 0,
+        })
+        with self.assertRaisesRegex(ValueError, "selected zero test cases"):
+            self.verifier.validate_report(self.report, expected_executed=2)
+
+        self.write_report(outcome="Failed", run_info="<RunInfo />")
+        with self.assertRaisesRegex(ValueError, "outcome='Failed'"):
+            self.verifier.validate_report(self.report, expected_executed=2)
+
+    def test_every_non_success_counter_must_be_zero(self):
+        for counter in self.verifier.NON_SUCCESS_COUNTERS:
+            with self.subTest(counter=counter):
+                counters = {
+                    name: 0 for name in self.verifier.COUNTER_NAMES
+                }
+                counters.update(total=2, executed=2, passed=2)
+                counters[counter] = 1
+                self.write_report(counters=counters)
+                with self.assertRaisesRegex(ValueError, "non-success test counters"):
+                    self.verifier.validate_success_report(self.report)
+
+    def test_passed_executed_and_total_counters_must_agree(self):
+        for counter, value in (("total", 3), ("executed", 1), ("passed", 1)):
+            with self.subTest(counter=counter):
+                counters = {
+                    name: 0 for name in self.verifier.COUNTER_NAMES
+                }
+                counters.update(total=2, executed=2, passed=2)
+                counters[counter] = value
+                self.write_report(counters=counters)
+                with self.assertRaisesRegex(ValueError, "must contain only passed executed cases"):
+                    self.verifier.validate_success_report(self.report)
+
+    def test_negative_counters_are_rejected(self):
+        counters = {name: 0 for name in self.verifier.COUNTER_NAMES}
+        counters.update(total=2, executed=2, passed=2, warning=-1)
+        self.write_report(counters=counters)
+        with self.assertRaisesRegex(ValueError, "negative test counter"):
+            self.verifier.validate_success_report(self.report)
+
+    def test_missing_or_invalid_standard_counters_are_rejected(self):
+        counters = {
+            name: 0 for name in self.verifier.COUNTER_NAMES
+        }
+        counters.update(total=2, executed=2, passed=2)
+        del counters["timeout"]
+        self.write_report(counters=counters)
+        with self.assertRaisesRegex(ValueError, "invalid or missing test counters"):
+            self.verifier.validate_success_report(self.report)
+
+        counters["timeout"] = "unknown"
+        self.write_report(counters=counters)
+        with self.assertRaisesRegex(ValueError, "invalid or missing test counters"):
+            self.verifier.validate_success_report(self.report)
+
+
+class MtpCiRunnerSelectionTests(unittest.TestCase):
+    def test_ci_uses_sdk10_mtp_selectors_and_requires_each_generic_test_assembly(self):
+        paths = (
+            ROOT / ".github/workflows/public-pr-validation.yml",
+            ROOT / ".github/workflows/release-build.yml",
+            ROOT / "tools/ci/smoke-oidc-compose.sh",
+            ROOT / "tools/ci/smoke-postgresql-oidc-upgrade.sh",
+            ROOT / "tools/ci/smoke-local-first-compose.sh",
+        )
+        for path in paths:
+            source = path.read_text(encoding="utf-8")
+            with self.subTest(path=path.name):
+                self.assertNotRegex(source, r"--filter(?:\s|=)", "VSTest filter syntax is invalid under the selected MTP runner.")
+                self.assertNotIn("-- --report-trx", source, "SDK 10 MTP options are passed directly without a legacy separator.")
+                self.assertIn("--report-trx-filename", source)
+
+        required_assemblies = (
+            "NetRatel.API.IntegrationTests",
+            "NetRatel.Tests",
+            "NetRatel.Web.ComponentTests",
+            "NetRatel.Web.PlaywrightTests",
+        )
+        for path in paths[:2]:
+            source = path.read_text(encoding="utf-8")
+            self.assertIn("validate_success_report", source)
+            for assembly in required_assemblies:
+                with self.subTest(path=path.name, assembly=assembly):
+                    self.assertIn(f'"{assembly}"', source)
+            self.assertIn("totals[\"executed\"] == 0", source)
+
+        self.assertIn("selected zero test cases", (ROOT / "tools/ci/verify-mtp-trx.py").read_text())
+
+        native_windows_methods = (
+            "GeneratedPowerShellInstallerDownloadsVerifiesAndEnrollsNativePackage",
+            "GeneratedServiceInstallerRejectsAnUnownedServiceImageBeforeStoppingOrReplacingFiles",
+            "GeneratedServiceInstallerRetainsIdentityWhenAgentIsDisabledAndNeverReportsReady",
+            "GeneratedServiceInstallerRequiresLocalSystemGatewayAdmissionAndAcknowledgedHeartbeats",
+            "GeneratedServiceInstallerPreservesAnExistingAdminDpapiCredentialWhenLocalSystemCannotReadIt",
+        )
+        for path in paths[:2]:
+            source = path.read_text(encoding="utf-8")
+            windows_methods = re.findall(
+                r"-method NetRatel\.Tests\.Infrastructure\.WindowsInstallerNativeTests\.([A-Za-z0-9_]+)",
+                source,
+            )
+            with self.subTest(path=path.name, group="native Windows"):
+                self.assertEqual(native_windows_methods, tuple(windows_methods))
+                self.assertIn("--expected-executed 7", source)
+            with self.subTest(path=path.name, group="native macOS"):
+                self.assertIn("--expected-executed 3", source)
+
+
+class ChromiumNssSmokeTests(unittest.TestCase):
+    def test_nss_helper_creates_and_removes_only_its_private_store_and_rejects_legacy_precedence(self):
+        helper = ROOT / "tools/ci/chromium-nss-trust.sh"
+        with tempfile.TemporaryDirectory(prefix="netratel-nss-guard-") as temporary:
+            root = Path(temporary)
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            fake_certutil = fake_bin / "certutil"
+            fake_certutil.write_text(
+                """#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$CERTUTIL_CALLS"
+if [[ "${CERTUTIL_FAIL:-}" == "$1" ]]; then
+  exit 42
+fi
+if [[ "$1" == -N ]]; then
+  shift
+  while (($#)); do
+    if [[ "$1" == -d ]]; then
+      database="${2#sql:}"
+      mkdir -p "$database"
+      : > "$database/cert9.db"
+      exit 0
+    fi
+    shift
+  done
+  exit 2
+fi
+""",
+                encoding="utf-8",
+            )
+            fake_certutil.chmod(0o755)
+            temporary_root = root / "tmp"
+            temporary_root.mkdir()
+            certificate = root / "smoke-ca.crt"
+            certificate.write_text("synthetic test certificate\n", encoding="ascii")
+            call_log = root / "certutil-calls.txt"
+            environment = os.environ.copy()
+            environment.update(
+                TMPDIR=str(temporary_root),
+                CERTUTIL_CALLS=str(call_log),
+                PATH=f"{fake_bin}{os.pathsep}{environment['PATH']}",
+            )
+            legacy_store = root / "fixture-home" / ".pki" / "nssdb"
+            prepare = subprocess.run(
+                [
+                    "bash", "-c",
+                    'source "$1"; require_chromium_nss_legacy_store_absent "$2" || exit 11; '
+                    'prepare_chromium_nss_database "$3" "$4" || exit 12; '
+                    'chromium_nss_xdg_data_home="$3"; '
+                    'printf "%s\\n" "$chromium_nss_xdg_data_home"; '
+                    'test -f "$chromium_nss_xdg_data_home/pki/nssdb/cert9.db" || exit 13; '
+                    'cleanup_chromium_nss_trust',
+                    "nss-helper-test", str(helper), str(legacy_store),
+                    str(tempfile.mkdtemp(prefix="netratel-chromium-nss.", dir=temporary_root)),
+                    str(certificate),
+                ],
+                env=environment,
+                check=False,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(prepare.returncode, 0, prepare.stderr)
+            owned_store = Path(prepare.stdout.strip())
+            self.assertEqual(owned_store.parent, temporary_root)
+            self.assertFalse(owned_store.exists(), "The helper must remove its exact private XDG store.")
+            certutil_calls = call_log.read_text(encoding="utf-8")
+            self.assertIn("-A -d sql:", certutil_calls)
+            self.assertIn("-n netratel-smoke-root -t C,,", certutil_calls)
+
+            for failed_phase in ("-N", "-A", "-L"):
+                with self.subTest(certutil_phase=failed_phase):
+                    failing_store = Path(tempfile.mkdtemp(
+                        prefix="netratel-chromium-nss.", dir=temporary_root
+                    ))
+                    failing_environment = environment.copy()
+                    failing_environment["CERTUTIL_FAIL"] = failed_phase
+                    failed_setup = subprocess.run(
+                        [
+                            "bash", "-c",
+                            'source "$1"; chromium_nss_xdg_data_home="$2"; '
+                            'prepare_chromium_nss_database "$2" "$3" || { '
+                            'cleanup_chromium_nss_trust; exit 12; }; exit 0',
+                            "nss-helper-test", str(helper), str(failing_store), str(certificate),
+                        ],
+                        env=failing_environment,
+                        check=False,
+                        text=True,
+                        capture_output=True,
+                    )
+                    self.assertEqual(failed_setup.returncode, 12, failed_setup.stderr)
+                    self.assertFalse(failing_store.exists(), "Failed NSS setup must clean its exact task-owned directory.")
+
+            legacy_store.mkdir(parents=True)
+            before = set(temporary_root.iterdir())
+            refused = subprocess.run(
+                [
+                    "bash", "-c",
+                    'source "$1"; require_chromium_nss_legacy_store_absent "$2"',
+                    "nss-helper-test", str(helper), str(legacy_store),
+                ],
+                env=environment,
+                check=False,
+                text=True,
+                capture_output=True,
+            )
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertIn("pre-existing ~/.pki/nssdb", refused.stderr)
+            self.assertEqual(before, set(temporary_root.iterdir()))
+
+    def test_strict_oidc_browser_and_api_request_share_the_private_ca_trust_path(self):
+        browser_test = (ROOT / "src/NetRatel/NetRatel.Web.PlaywrightTests/OidcComposeBrowserSmokeTests.cs").read_text()
+        self.assertEqual(browser_test.count("IgnoreHTTPSErrors = false"), 2)
+        self.assertNotIn("IgnoreHTTPSErrors = true", browser_test)
+        self.assertIn("context.APIRequest.GetAsync", browser_test)
+        self.assertIn("executableVersion.Major >= 146", browser_test)
+        self.assertIn('browserEnvironment["XDG_DATA_HOME"] = nssDataHome', browser_test)
+        self.assertIsNotNone(re.search(
+            r"if \(expectCurrentShell\)\s*\{\s*var verifyDirectoryAuthorizationBoundaries.*?VerifyClientDirectoryCircuitAsync",
+            browser_test,
+            re.DOTALL,
+        ))
+
+        helper = (ROOT / "tools/ci/chromium-nss-trust.sh").read_text()
+        self.assertIn('legacy_database="$home_directory/.pki/nssdb"', helper)
+        self.assertIn('local database_path="$xdg_data_home/pki/nssdb"', helper)
+        self.assertIn("certutil -A", helper)
+
+        for relative in (
+            "tools/ci/smoke-oidc-compose.sh",
+            "tools/ci/smoke-postgresql-oidc-upgrade.sh",
+        ):
+            source = (ROOT / relative).read_text()
+            with self.subTest(script=relative):
+                self.assertIn("chromium-nss-trust.sh", source)
+                self.assertIn('XDG_DATA_HOME="$chromium_nss_xdg_data_home"', source)
+                self.assertIn('NODE_EXTRA_CA_CERTS="$smoke_ca_certificate_path"', source)
+                self.assertIn("NETRATEL_BROWSER_SMOKE_NSS_DATA_HOME=", source)
+                self.assertIn("basicConstraints=critical,CA:FALSE", source)
+                self.assertIn("subjectAltName=DNS:gateway,DNS:localhost,IP:127.0.0.1", source)
+
+        oidc_smoke = (ROOT / "tools/ci/smoke-oidc-compose.sh").read_text()
+        self.assertIn('subjectAltName=DNS:host.docker.internal,IP:127.0.0.1', oidc_smoke)
+        self.assertIn('if [[ "${GITHUB_ACTIONS:-false}" == true ]]; then', oidc_smoke)
+        production_overlay = (ROOT / "tests/compose/oidc-smoke.production.compose.yaml").read_text()
+        self.assertIn('Authentication__Oidc__RequireHttpsMetadata: "true"', production_overlay)
+        upgrade_smoke = (ROOT / "tools/ci/smoke-postgresql-oidc-upgrade.sh").read_text()
+        self.assertIn('run_browser_oidc_smoke "$legacy_version" false', upgrade_smoke)
+        self.assertIn('run_browser_oidc_smoke "v$(python3 tools/ci/product-version.py)" true', upgrade_smoke)
+
+        for workflow in (
+            ROOT / ".github/workflows/public-pr-validation.yml",
+            ROOT / ".github/workflows/release-build.yml",
+        ):
+            with self.subTest(workflow=workflow.name):
+                self.assertIn("libnss3-tools", workflow.read_text())
+
+
+class RuntimeSelectorRetirementTests(unittest.TestCase):
+    api_retired_properties = (
+        "PresenceEnabled", "GatewayEnabled", "ClientUpdatesEnabled",
+        "ControlGatewayEnabled", "FileGatewayEnabled", "LogGatewayEnabled", "RemoteSupportGatewayEnabled",
+        "RemoteSupportV2InventoryEnabled", "RemoteSupportV2LifecycleAuthorityEnabled",
+        "RemoteSupportV2ReplicaSafeEdgeEnabled", "RemoteSupportV2MediaEnabled",
+        "RemoteSupportLegacyGatewayRollbackEnabled", "PrimaryCardGatewayReadsEnabled",
+        "PrimaryCardGatewayActionsEnabled", "TerminalGatewayEnabled", "TerminalGatewayPrimaryCardEnabled",
+        "PresenceReadModelEnabled", "TelemetryShadowEnabled", "CommandShadowEnabled",
+        "CommandPersistenceEnabled", "JobShadowEnabled", "TerminalShadowEnabled", "SignalRShadowEnabled",
+        "SignalRShadowLocalCanaryEnabled", "PresenceAuthorityEnabled", "PingAuthorityEnabled",
+        "TelemetryAuthorityEnabled", "FileBrowseAuthorityEnabled", "LogAuthorityEnabled",
+        "RemoteSupportAuthorityEnabled", "CommandAuthorityEnabled", "JobAuthorityEnabled",
+        "TerminalAuthorityEnabled", "SignalRAuthorityEnabled", "RemoteSupportShadowEnabled",
+        "AuthorityMode",
+    )
+    client_retired_gateway_properties = (
+        "RequiredPresenceAuthority", "TelemetryShadowEnabled", "TelemetryAuthorityEnabled",
+        "ControlAuthorityEnabled", "CommandAuthorityEnabled", "FileAuthorityEnabled",
+        "JobAuthorityEnabled", "LogAuthorityEnabled", "RemoteSupportAuthorityEnabled",
+        "TerminalAuthorityEnabled", "RemoteSupportV1Enabled", "ControlGatewayEnabled",
+        "FileGatewayEnabled", "LogGatewayEnabled", "RemoteSupportGatewayEnabled",
+        "TerminalGatewayEnabled", "RemoteSupportV2InventoryEnabled", "RemoteSupportV2MediaEnabled",
+    )
+    selector_names = tuple(sorted(set(api_retired_properties + client_retired_gateway_properties)
+                                  - {"PresenceEnabled", "GatewayEnabled", "ClientUpdatesEnabled"}))
+    client_selector_names = tuple(sorted(client_retired_gateway_properties))
+    retired_selector_pattern = re.compile(
+        r"\bNetRatelAkkaMigration\b"
+        r"|(?<![A-Za-z0-9])LegacyQueueWorker(?![A-Za-z0-9])"
+        r"|(?<![A-Za-z0-9])Transport(?::|__|\.)Mode(?![A-Za-z0-9])"
+        r"|(?<![A-Za-z0-9])Gateway(?::|__|\.)Enabled(?![A-Za-z0-9])"
+        r"|[\"']Transport[\"']\s*:\s*\{\s*[\"']Mode[\"']"
+        r"|[\"']Gateway[\"']\s*:\s*\{\s*[\"']Enabled[\"']"
+        r"|\b(?:PrimaryCardGateway(?:Reads|Actions)Enabled|TerminalGatewayPrimaryCardEnabled)\b"
+        r"|(?<![A-Za-z0-9])Gateway(?::|__|\.)(?:" +
+        "|".join(re.escape(name) for name in client_selector_names) + r")(?![A-Za-z0-9])"
+        r"|(?<![A-Za-z0-9])(?:" + "|".join(re.escape(name) for name in selector_names) + r")(?![A-Za-z0-9])",
+        re.IGNORECASE,
+    )
+    scanned_roots = (
+        ROOT / "src/NetRatel",
+        ROOT / "release",
+        ROOT / "docker",
+        ROOT / "tests",
+        ROOT / ".github/workflows",
+        ROOT / "tools/ci",
+        ROOT / "docs",
+    )
+    scanned_suffixes = {
+        ".cs", ".csproj", ".json", ".yaml", ".yml", ".sh", ".py", ".md", ".conf",
+        ".properties", ".env", ".props", ".targets", ".xml", ".proto", ".ps1", ".psm1",
+        ".psd1", ".cmd", ".bat", ".toml", ".ini", ".sln", ".slnx", ".slnf",
+    }
+
+    @staticmethod
+    def _marker_region(content, start_marker, end_marker, start_at=0):
+        start = content.index(start_marker, start_at)
+        end = content.index(end_marker, start + len(start_marker))
+        return start, end
+
+    @staticmethod
+    def _csharp_member_region(content, member_marker):
+        start = content.index(member_marker)
+        following = re.search(r"(?m)^ {4}(?:\[(?:Fact|Theory)\]|(?:public|private|protected)\s+)", content[start + len(member_marker):])
+        end = len(content) if following is None else start + len(member_marker) + following.start()
+        return start, end
+
+    @classmethod
+    def _allowed_retirement_regions(cls):
+        regions = {}
+
+        def add(path, content, label, start, end):
+            for match in cls.retired_selector_pattern.finditer(content, start, end):
+                regions.setdefault(path, []).append((label, match.start(), match.end()))
+
+        def marker(path, content, label, start_marker, end_marker, start_at=0):
+            start, end = cls._marker_region(content, start_marker, end_marker, start_at)
+            add(path, content, label, start, end)
+
+        def member(path, content, label, marker_text):
+            start, end = cls._csharp_member_region(content, marker_text)
+            add(path, content, label, start, end)
+
+        relative = "src/NetRatel/NetRatel.Infrastructure/Artifacts/ScriptTemplateService.cs"
+        content = (ROOT / relative).read_text(encoding="utf-8")
+        powershell_cleanup = content.index("function Remove-RetiredClientSettings")
+        powershell_property_start = content.index("$name -in @(", powershell_cleanup)
+        powershell_property_end = content.index(")) {", powershell_property_start) + 4
+        add(relative, content, "PowerShell JSON property cleanup inventory",
+            powershell_property_start, powershell_property_end)
+        marker(relative, content, "PowerShell service-environment cleanup inventory",
+               "$retiredClientSettings = @(", "\n            foreach ($entry in $existingServiceEnvironment) {")
+        first_retired = content.index("            retired = {")
+        marker(relative, content, "Linux service-environment and JSON cleanup inventories",
+               "            retired = {", "            retired_json_gateway = {", first_retired)
+        linux_json = content.index("            retired_json_gateway = {", first_retired)
+        marker(relative, content, "Linux nested JSON cleanup inventory",
+               "            retired_json_gateway = {", "            def words(value):", linux_json)
+        final_retired = content.rindex("            retired = {")
+        marker(relative, content, "macOS service-environment and JSON cleanup inventories",
+               "            retired = {", "            retired_json_gateway = {", final_retired)
+        macos_json = content.index("            retired_json_gateway = {", final_retired)
+        marker(relative, content, "macOS nested JSON cleanup inventory",
+               "            retired_json_gateway = {", "            environment = {", macos_json)
+        json_inventory_starts = [
+            match.start()
+            for match in re.finditer(r"(?m)^ {12}retired_json_gateway = \{", content)
+        ]
+        if len(json_inventory_starts) != 3:
+            raise AssertionError("The generated Linux, Windows, and macOS installers must each have one JSON cleanup inventory.")
+        windows_json_start = json_inventory_starts[1]
+        windows_json_end = content.index("\n            }", windows_json_start) + len("\n            }")
+        add(relative, content, "Windows installer nested JSON cleanup inventory",
+            windows_json_start, windows_json_end)
+        inline_json_retired = content.index("                retired = {\"requiredpresenceauthority\"}")
+        inline_end = content.index("\n", inline_json_retired)
+        add(relative, content, "Linux nested JSON cleanup value", inline_json_retired, inline_end)
+
+        relative = "src/NetRatel/NetRatel.Client/tools/netratel-update.ps1"
+        content = (ROOT / relative).read_text(encoding="utf-8")
+        marker(relative, content, "Windows updater JSON property cleanup",
+               "$name -in @(", ")) {")
+
+        relative = "src/NetRatel/NetRatel.Tests/API/NetRatelAkkaRuntimeRegistrationTests.cs"
+        content = (ROOT / relative).read_text(encoding="utf-8")
+        marker(relative, content, "retired API key test inventory", "RetiredBooleanKeys =\n    [", "    ];")
+        member(relative, content, "retired API keys are inert in either boolean state",
+               "public void RetiredMigrationKeys_AreInertWhenAbsentEnabledOrDisabled(")
+
+        relative = "src/NetRatel/NetRatel.API.IntegrationTests/RuntimeInventoryHostIntegrationTests.cs"
+        content = (ROOT / relative).read_text(encoding="utf-8")
+        marker(relative, content, "runtime host retired selector fixture inventory",
+               "RetiredBooleanKeys =\n    [", "    ];")
+        member(relative, content, "initialized Local host ignores supplied retired selectors",
+               "public async Task InitializedLocalHostsIgnoreRetiredSelectorsAndRunTheSameAkkaGateway(")
+        member(relative, content, "pre-ready host rejects database failure with retired keys present",
+               "public async Task DatabaseUnavailableDuringBootstrapKeepsTheOperationalRuntimeOutAndReadinessFalse(")
+        member(relative, content, "unconfigured host remains non-ready when retired selectors are true",
+               "public async Task UnconfiguredLocalBootstrapDoesNotStartAkkaEvenWhenRetiredSelectorsAreTrue(")
+
+        relative = "src/NetRatel/NetRatel.API.IntegrationTests/ApiFactory.cs"
+        content = (ROOT / relative).read_text(encoding="utf-8")
+        marker(relative, content, "API integration fixture environment snapshot keys",
+               "RetiredSelectorConfigurationKeys { get; } = Array.AsReadOnly<string>(\n    [", "    ]);")
+
+        relative = "src/NetRatel/NetRatel.Tests/API/AgentUpdateScriptSeedServiceTests.cs"
+        content = (ROOT / relative).read_text(encoding="utf-8")
+        member(relative, content, "seeded Linux updater uses shared verified installer and protected handoff",
+               "public async Task Seeded_Linux_Update_UsesSharedVerifiedInstallerAndProtectedDetachedHandoff(")
+        member(relative, content, "seeded Linux worker rejects a changed service process identity",
+               "public async Task Seeded_Linux_WorkerRejectsChangedServiceProcessIdentity(")
+        member(relative, content, "seeded Linux updater asserts retired selectors are absent",
+               "private static void AssertNoRetiredLinuxSelectors(string script)")
+        fixture_start = content.index("private static async Task<LinuxSeedFixture> CreateLinuxSeedFixtureAsync(")
+        fixture_settings_start = content.index(
+            'await File.WriteAllTextAsync(Path.Combine(installedVersion, "clientsettings.json"), """',
+            fixture_start,
+        )
+        fixture_settings_end = content.index('\n            """);', fixture_settings_start)
+        add(relative, content, "seeded Linux fixture legacy client-settings input",
+            fixture_settings_start, fixture_settings_end)
+
+        relative = "src/NetRatel/NetRatel.Tests/API/ApiEndpointRegistrationSourceTests.cs"
+        content = (ROOT / relative).read_text(encoding="utf-8")
+        member(relative, content, "API registration does not bind the retired options section",
+               "public void Program_Uses_Dedicated_H2c_Listener_For_The_Agent_Gateway(")
+
+        relative = "src/NetRatel/NetRatel.Tests/Client/AgentGatewayPresenceClientTests.cs"
+        content = (ROOT / relative).read_text(encoding="utf-8")
+        member(relative, content, "retired client settings do not disable gateway extensions",
+               "public async Task RunAsync_LegacyGatewaySelectorsCannotDisableAcceptedExtensions(")
+
+        relative = "src/NetRatel/NetRatel.Tests/Client/ClientConfigurationLoaderTests.cs"
+        content = (ROOT / relative).read_text(encoding="utf-8")
+        marker(relative, content, "retired client key test inventory",
+               "RetiredGatewayBooleanSettings =\n    [", "    ];")
+        test_start = content.index("public void Load_RetiredGatewaySelectorsAreInertWhileSupportedClientTunablesRemainActive(")
+        for label, literal in (
+            ("RequiredPresenceAuthority is tested as inert", 'gatewayEntries.Append(",\\"RequiredPresenceAuthority\\"'),
+            ("Transport.Mode legacy JSON shape is tested as inert", '"Transport": { "Mode":'),
+        ):
+            start = content.index(literal, test_start)
+            end = content.index("\n", start)
+            add(relative, content, label, start, end)
+
+        relative = "src/NetRatel/NetRatel.Tests/Client/AkkaGatewayCanarySourceTests.cs"
+        content = (ROOT / relative).read_text(encoding="utf-8")
+        member(relative, content, "client runtime does not select a transport mode",
+               "public void Client_Runtime_Uses_Akka_Without_Transport_Selection(")
+
+        relative = "src/NetRatel/NetRatel.Tests/Infrastructure/ScriptTemplateServiceTests.cs"
+        content = (ROOT / relative).read_text(encoding="utf-8")
+        member(relative, content, "Linux installer retires stale values while preserving ordinary settings",
+               "public async Task Build_Bash_InstallsAnExactArtifactAtomically_AndStartsTheNewUnit(")
+        member(relative, content, "macOS installer retires stale values while preserving ordinary settings",
+               "public async Task Build_MacOS_Service_Preserves_Only_ExplicitSplitGateway(")
+        member(relative, content, "generated installer has no retired client defaults",
+               "private static void AssertNoRetiredClientDefaults(")
+
+        relative = "docs/RC11_AKKA_RUNTIME_REFACTOR.md"
+        content = (ROOT / relative).read_text(encoding="utf-8")
+        marker(relative, content, "bounded report-only refactor inventory",
+               "<!-- RETIRED_SELECTOR_INVENTORY_BEGIN -->", "<!-- RETIRED_SELECTOR_INVENTORY_END -->")
+
+        return regions
+
+    def test_retired_activation_selectors_are_absent_outside_the_exact_cleanup_and_regression_allowlist(self):
+        allowed_regions = self._allowed_retirement_regions()
+        unexpected = []
+        seen_regions = set()
+        for base in self.scanned_roots:
+            paths = (base,) if base.is_file() else base.rglob("*")
+            for path in paths:
+                if not path.is_file() or path.suffix not in self.scanned_suffixes:
+                    continue
+                if {"bin", "obj", "__pycache__"}.intersection(path.parts):
+                    continue
+                relative = path.relative_to(ROOT).as_posix()
+                if relative == "tools/ci/test-release-validation.py":
+                    continue
+                content = path.read_bytes().decode("utf-8", errors="ignore")
+                regions = allowed_regions.get(relative, ())
+                for match in self.retired_selector_pattern.finditer(content):
+                    allowed = next((region for region in regions if region[1] <= match.start() < region[2]), None)
+                    if allowed is None:
+                        line = content.count("\n", 0, match.start()) + 1
+                        unexpected.append(f"{relative}:{line}: {match.group(0)}")
+                    else:
+                        seen_regions.add((relative, allowed[0]))
+
+        expected_regions = {
+            (path, label)
+            for path, regions in allowed_regions.items()
+            for label, _start, _end in regions
+        }
+        self.assertEqual(expected_regions, seen_regions,
+                         "Every allowlisted region must contain a retired selector for the documented cleanup or regression assertion.")
+        self.assertEqual([], unexpected,
+                         "Retired activation selectors may appear only inside exact updater cleanup inventories and inert-key behavior assertions:\n"
+                         + "\n".join(unexpected))
+
+    def test_retired_client_cleanup_inventories_are_exact_and_remain_scoped_to_update(self):
+        expected_properties = {name.lower() for name in self.client_retired_gateway_properties}
+        expected_environment = {"transport__mode"} | {f"gateway__{name}" for name in expected_properties}
+
+        def set_body(content, marker, closing_pattern, start_at=0):
+            start = content.index(marker, start_at) + len(marker)
+            close = re.search(closing_pattern, content[start:], re.MULTILINE)
+            self.assertIsNotNone(close, f"Could not bound retirement set after {marker}.")
+            body = content[start:start + close.start()]
+            return {value.lower() for value in re.findall(r"[\"']([^\"']+)[\"']", body)}
+
+        template_path = ROOT / "src/NetRatel/NetRatel.Infrastructure/Artifacts/ScriptTemplateService.cs"
+        template = template_path.read_text(encoding="utf-8")
+        ps_function = template[template.index("function Remove-RetiredClientSettings"):template.index("$stageClientSettingsPath =")]
+        property_list = ps_function.split("$name -in @(", 1)[1].split(")) {", 1)[0]
+        property_names = {value.lower() for value in re.findall(r"'([^']+)'", property_list)}
+        self.assertEqual(expected_properties, property_names)
+        self.assertIn("$settings.Transport.PSObject.Properties.Remove('Mode')", ps_function)
+
+        ps_environment = set_body(template, "$retiredClientSettings = @(", r"\)")
+        self.assertEqual(expected_environment, ps_environment)
+
+        retired_lists = [match.start() for match in re.finditer(r"(?m)^ {12}retired = \{", template)]
+        self.assertEqual(2, len(retired_lists), "Linux and macOS must each have one explicit environment retirement inventory.")
+        for start in retired_lists:
+            values = set_body(template, "retired = {", r"(?m)^ {12}\}", start)
+            self.assertEqual(expected_environment, values)
+        json_lists = [match.start() for match in re.finditer(r"(?m)^ {12}retired_json_gateway = \{", template)]
+        self.assertEqual(3, len(json_lists), "Windows, Linux, and macOS each have one exact JSON-property retirement inventory.")
+        for start in json_lists:
+            values = set_body(template, "retired_json_gateway = {", r"(?m)^ {12}\}", start)
+            self.assertEqual(expected_properties, values)
+
+        api_seed_path = ROOT / "src/NetRatel/NetRatel.API/Services/AgentUpdateScriptSeedService.cs"
+        api_seed = api_seed_path.read_text(encoding="utf-8")
+        seed_start, seed_end = self._csharp_member_region(
+            api_seed, "private static SeedScript BuildLinuxScript()")
+        linux_seed_builder = api_seed[seed_start:seed_end]
+        self.assertEqual(1, linux_seed_builder.count(
+            "new NetRatel.Infrastructure.Artifacts.ScriptTemplateService().Build("))
+        self.assertIn("new NetRatel.Application.Artifacts.DeploymentScriptTemplateRequest(", linux_seed_builder)
+        self.assertIn('"linux-x64"', linux_seed_builder)
+        self.assertIn("InstallAsService: true", linux_seed_builder)
+        self.assertIn("LinuxScriptManifest + Environment.NewLine + content", linux_seed_builder)
+        self.assertNotIn("retired = {", linux_seed_builder)
+        self.assertNotIn("retired_json_gateway", linux_seed_builder)
+        self.assertNotIn("Remove-RetiredClientSettings", linux_seed_builder)
+
+        seed_test_path = ROOT / "src/NetRatel/NetRatel.Tests/API/AgentUpdateScriptSeedServiceTests.cs"
+        seed_tests = seed_test_path.read_text(encoding="utf-8")
+        update_test_start, update_test_end = self._csharp_member_region(
+            seed_tests, "public async Task Seeded_Linux_Update_UsesSharedVerifiedInstallerAndProtectedDetachedHandoff(")
+        update_test = seed_tests[update_test_start:update_test_end]
+        self.assertIn("AssertNoRetiredLinuxSelectors(script);", update_test)
+        self.assertIn("CreateLinuxSeedFixtureAsync(script)", update_test)
+        worker_test_start, worker_test_end = self._csharp_member_region(
+            seed_tests, "public async Task Seeded_Linux_WorkerRejectsChangedServiceProcessIdentity(")
+        worker_test = seed_tests[worker_test_start:worker_test_end]
+        self.assertIn("CreateLinuxSeedFixtureAsync(GetSeedScript(\"LinuxScript\"))", worker_test)
+        fixture_wrapper_start, fixture_wrapper_end = self._csharp_member_region(
+            seed_tests, "private static async Task<LinuxSeedFixture> CreateLinuxSeedFixtureAsync(")
+        fixture_wrapper = seed_tests[fixture_wrapper_start:fixture_wrapper_end]
+        self.assertIn("CreateLinuxSeedFixtureCoreAsync(root, script)", fixture_wrapper)
+        fixture_method_start, fixture_method_end = self._csharp_member_region(
+            seed_tests, "private static async Task<LinuxSeedFixture> CreateLinuxSeedFixtureCoreAsync(")
+        fixture_method = seed_tests[fixture_method_start:fixture_method_end]
+        fixture_settings_start = fixture_method.index(
+            'await File.WriteAllTextAsync(Path.Combine(installedVersion, "clientsettings.json"), """')
+        fixture_settings_end = fixture_method.index('\n            """);', fixture_settings_start)
+        fixture_settings = fixture_method[fixture_settings_start:fixture_settings_end]
+        self.assertEqual(1, fixture_settings.count('"Transport": { "Mode": "AkkaPresence" }'))
+
+        template_build_start, template_build_end = self._csharp_member_region(
+            template, "public string Build(DeploymentScriptTemplateRequest request)")
+        template_build = template[template_build_start:template_build_end]
+        self.assertIn('request.RuntimeId.StartsWith("linux-", StringComparison.OrdinalIgnoreCase)', template_build)
+        self.assertIn("return BuildBash(request);", template_build)
+        bash_start = template.index("private static string BuildBash(")
+        bash_end = template.index("private static string BuildMacBash(", bash_start)
+        linux_bash_template = template[bash_start:bash_end]
+        preparation_start = linux_bash_template.index("var preparationBlock = request.InstallAsService")
+        service_block_start = linux_bash_template.index("var serviceBlock = request.InstallAsService", preparation_start)
+        preparation_source = linux_bash_template[preparation_start:service_block_start]
+        self.assertEqual(1, linux_bash_template.count("var preparationBlock = request.InstallAsService"))
+        self.assertEqual(1, linux_bash_template.count("{{preparationBlock}}"))
+        self.assertEqual(1, preparation_source.count('preserved_client_environment="$(python3'))
+        self.assertEqual(1, preparation_source.count('settings_migration="$(python3'))
+        self.assertEqual(1, preparation_source.count("setting in retired"))
+        self.assertEqual(1, preparation_source.count("if lowered in retired_json_gateway:"))
+
+        updater_path = ROOT / "src/NetRatel/NetRatel.Client/tools/netratel-update.ps1"
+        updater = updater_path.read_text(encoding="utf-8")
+        updater_function = updater[updater.index("function Remove-NetRatelRetiredClientSettings"):updater.index("function Copy-NetRatelInstalledClientSettings")]
+        updater_property_list = updater_function.split("$name -in @(", 1)[1].split(")) {", 1)[0]
+        updater_properties = {value.lower() for value in re.findall(r"'([^']+)'", updater_property_list)}
+        self.assertEqual(expected_properties, updater_properties)
+        self.assertIn("$Settings.Transport.PSObject.Properties.Remove('Mode')", updater_function)
+
+    def test_api_retirement_behavior_test_covers_the_exact_historical_key_inventory(self):
+        path = ROOT / "src/NetRatel/NetRatel.Tests/API/NetRatelAkkaRuntimeRegistrationTests.cs"
+        source = path.read_text(encoding="utf-8")
+        start, end = self._marker_region(source, "RetiredBooleanKeys =\n    [", "    ];")
+        actual = set(re.findall(r'"([^"]+)"', source[start:end]))
+        expected = {
+            f"NetRatelAkkaMigration:{name}"
+            for name in self.api_retired_properties
+            if name != "AuthorityMode"
+        } | {"NetRatelAkkaMigration:Enabled", "LegacyQueueWorker:Enabled"}
+        self.assertEqual(expected, actual)
+        self.assertIn('enabledConfiguration["NetRatelAkkaMigration:AuthorityMode"] = "Shadow";', source)
+        self.assertIn('disabledConfiguration["NetRatelAkkaMigration:AuthorityMode"] = "Authority";', source)
+
+    def test_review_inventory_lists_exact_retired_api_and_client_selector_names(self):
+        source = (ROOT / "docs/RC11_AKKA_RUNTIME_REFACTOR.md").read_text(encoding="utf-8")
+        start, end = self._marker_region(
+            source,
+            "<!-- RETIRED_SELECTOR_INVENTORY_BEGIN -->",
+            "<!-- RETIRED_SELECTOR_INVENTORY_END -->",
+        )
+        inventory = source[start:end]
+        api_key_rows = re.findall(r"`(NetRatelAkkaMigration:[^`]+|LegacyQueueWorker:Enabled)`", inventory)
+        api_keys = set(api_key_rows)
+        expected_api_keys = {
+            f"NetRatelAkkaMigration:{name}"
+            for name in self.api_retired_properties
+        } | {"NetRatelAkkaMigration:Enabled", "LegacyQueueWorker:Enabled"}
+        self.assertEqual(expected_api_keys, api_keys)
+        self.assertEqual(len(expected_api_keys), len(api_key_rows), "The review inventory must list each API selector exactly once.")
+
+        client_key_rows = re.findall(r"`(Gateway:[^`]+|Transport:Mode)`", inventory)
+        client_keys = set(client_key_rows)
+        expected_client_keys = {
+            f"Gateway:{name}"
+            for name in self.client_retired_gateway_properties
+        } | {"Transport:Mode"}
+        self.assertEqual(expected_client_keys, client_keys)
+        self.assertEqual(len(expected_client_keys), len(client_key_rows), "The review inventory must list each client selector exactly once.")
+
+    def test_immutable_database_transport_and_job_identity_contracts_remain_present(self):
+        proto = (ROOT / "src/NetRatel/NetRatel.AgentGateway.Contracts/Protos/agent_gateway.proto").read_text()
+        package = re.search(r"(?m)^package\s+([A-Za-z_][A-Za-z_0-9.]*)\s*;", proto)
+        self.assertIsNotNone(package)
+        self.assertEqual(package.group(1), "netratel.gateway.v1")
+        self.assertRegex(proto, r"(?m)^\s*string\s+legacy_spacetime_identity\s*=\s*3\s*;")
+
+        ingress = (ROOT / "release/nginx.public-https.conf").read_text()
+        self.assertRegex(ingress, r"(?m)^\s*location\s+\^~\s+/netratel\.gateway\.v1\.\s*\{")
+        self.assertRegex(ingress, r"(?m)^\s*grpc_pass\s+grpc://api:9223\s*;")
+
+        source_files = tuple(path for path in (ROOT / "src/NetRatel").rglob("*.cs")
+                             if not {"bin", "obj"}.intersection(path.parts))
+        api_sources = tuple(path for path in (ROOT / "src/NetRatel/NetRatel.API").rglob("*.cs")
+                            if not {"bin", "obj"}.intersection(path.parts))
+        source_contents = [(path, path.read_text(encoding="utf-8", errors="ignore")) for path in source_files]
+        self.assertTrue(any("CurrentSchemaVersion = 1" in source for _path, source in source_contents),
+                        "The retained SignalR envelope wire schema version must remain 1.")
+        api_text = "\n".join(path.read_text(encoding="utf-8") for path in api_sources)
+        self.assertIn('"/hubs/akka-authority"', api_text)
+        self.assertIn('"shadowUpdated"', api_text)
+        self.assertIn('"akka-shadow:v1:tenant:"', api_text)
+
+        migration_path = ROOT / "src/NetRatel/NetRatel.Infrastructure/Persistence/Migrations/20260807105643_AddJobShadowObservations.cs"
+        migration = migration_path.read_text(encoding="utf-8")
+        self.assertIn('name: "JobShadowObservations"', migration)
+        self.assertIn('SourceEventId = table.Column<long>', migration)
+        self.assertIn('migrationBuilder.DropTable(\n                name: "JobShadowObservations")', migration)
+        model = (ROOT / "src/NetRatel/NetRatel.Infrastructure/Persistence/OrchestratorDbContext.cs").read_text()
+        self.assertIn('entity.ToTable("JobShadowObservations")', model)
+        self.assertIn('entity.HasIndex(x => new { x.JobRunId, x.SourceEventId })', model)
+
+        job_contracts = (ROOT / "src/NetRatel/NetRatel.Application/Jobs/JobRuntimeContracts.cs").read_text()
+        self.assertEqual(2, job_contracts.count('string SourceSystem = "akka-job-shadow-event"'),
+                         "The deployed run/step source identity must remain stable for idempotent replay.")
+        inventory = (ROOT / "docs/RC11_AKKA_RUNTIME_REFACTOR.md").read_text()
+        self.assertIn("`akka-job-shadow-event`", inventory)
+
+    def test_web_realtime_consumer_uses_the_normalized_fanout_contract_type(self):
+        source = (ROOT / "src/NetRatel/NetRatel.Web/Services/Terminal/AkkaAuthorityFanoutClient.cs").read_text()
+        self.assertIn("RealtimeFanoutEnvelope", source)
+        self.assertNotIn("ShadowFanoutEnvelope", source)
+        self.assertIn('"shadowUpdated"', source)
+
+    def test_deployed_agent_signing_key_filename_remains_a_narrow_file_compatibility(self):
+        legacy_key = "/app/storage/keys/spacetime-es256-private.pem"
+        signer = (ROOT / "src/NetRatel/NetRatel.Infrastructure/Services/OidcSigningService.cs").read_text()
+        api = (ROOT / "src/NetRatel/NetRatel.API/Program.cs").read_text()
+        self.assertIn(f'const string legacyContainerPath = "{legacy_key}";', signer)
+        self.assertIn("if (File.Exists(legacyContainerPath))", signer)
+        self.assertIn(f'candidatePaths.Add("{legacy_key}");', api)
+
+    def test_spacetimedb_runtime_dependencies_and_known_runtime_paths_are_absent(self):
+        project_files = [path for path in (ROOT / "src/NetRatel").rglob("*")
+                         if path.is_file() and path.suffix in {".csproj", ".props", ".targets"}
+                         and not {"bin", "obj"}.intersection(path.parts)]
+        dependency_pattern = re.compile(r"(?i)\bSpacetime(?:DB)?(?:\.[A-Za-z0-9_.-]+)?\b")
+        dependency_hits = []
+        for path in project_files:
+            content = path.read_text(encoding="utf-8", errors="ignore")
+            if dependency_pattern.search(content):
+                dependency_hits.append(path.relative_to(ROOT).as_posix())
+        self.assertEqual([], dependency_hits, "No project/package reference may keep the retired SpacetimeDB runtime available.")
+
+        runtime_types = re.compile(
+            r"\b(?:SpacetimeDbService|ClientSpacetimeSubscriptions|SpacetimeDB\.Client|Spacetime\.Client|--spacetime-check)\b",
+            re.IGNORECASE,
+        )
+        runtime_hits = []
+        for path in (ROOT / "src/NetRatel").rglob("*"):
+            if not path.is_file() or path.suffix not in {".cs", ".csproj", ".props", ".targets", ".json"}:
+                continue
+            if "NetRatel.Tests" in path.parts or {"bin", "obj"}.intersection(path.parts):
+                continue
+            if runtime_types.search(path.read_text(encoding="utf-8", errors="ignore")):
+                runtime_hits.append(path.relative_to(ROOT).as_posix())
+        self.assertEqual([], runtime_hits, "Production source must not retain a SpacetimeDB client, service, or probe fallback.")
+
+        retired_paths = (
+            "src/NetRatel/NetRatel.Client/Service/Spacetime",
+            "src/NetRatel/NetRatel.API/Services/Spacetime",
+            "src/NetRatel/NetRatel.Infrastructure/Spacetime",
+            "src/NetRatel/NetRatel.Shared/SpacetimeIdentityHelpers.cs",
+        )
+        existing = [relative for relative in retired_paths if (ROOT / relative).exists()]
+        self.assertEqual([], existing, "Known retired runtime implementation paths must remain deleted.")
+
+
 class ProductVersionTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="netratel-version-tests-")
