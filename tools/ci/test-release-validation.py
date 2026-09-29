@@ -248,6 +248,33 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
         self.assertIn('"startup-diagnostics.json"', browser_test)
         self.assertIn('"startup-failure.png"', browser_test)
 
+    def test_release_compose_oidc_checks_current_presence_and_bounds_command_conflict_diagnostics(self):
+        source = (ROOT / "tools/ci/smoke-oidc-compose.sh").read_text(encoding="utf-8")
+        current_presence = re.search(r"read_current_gateway_presence\(\) \{([\s\S]*?)\n\}", source)
+        self.assertIsNotNone(current_presence)
+        self.assertIn("/api/v2/client-presence/", current_presence.group(1))
+        self.assertIn(".online == true", current_presence.group(1))
+        self.assertIn('.source == "gateway"', current_presence.group(1))
+        self.assertIn('.authority == "akka"', current_presence.group(1))
+        self.assertIn(".isAuthoritative == true", current_presence.group(1))
+
+        browser_stage = source.index('stage="running browser OIDC rehearsal"')
+        telemetry_stage = source.index('stage="waiting for Client telemetry"', browser_stage)
+        presence_wait = source.index('wait_for_current_gateway_presence "$operator_access_token"', telemetry_stage)
+        first_dispatch = source.index('command_response="$(dispatch_disposable_command', presence_wait)
+        self.assertLess(browser_stage, telemetry_stage)
+        self.assertLess(telemetry_stage, presence_wait)
+        self.assertLess(presence_wait, first_dispatch)
+
+        dispatch_start = source.index("dispatch_disposable_command() {")
+        dispatch_end = source.index("\n}\n", dispatch_start) + 3
+        dispatch = source[dispatch_start:dispatch_end]
+        self.assertIn("--write-out '%{http_code}'", dispatch)
+        self.assertIn('.code | select(. == "agent_command_session_unavailable")', dispatch)
+        failure_diagnostics = dispatch[dispatch.index('echo "Disposable command dispatch failed'):]
+        self.assertIn("current Client presence HTTP=%s state=%s; container state=%s", failure_diagnostics)
+        self.assertNotIn('cat "$command_response_path"', failure_diagnostics)
+
 
 
 class ChromiumNssSmokeTests(unittest.TestCase):
