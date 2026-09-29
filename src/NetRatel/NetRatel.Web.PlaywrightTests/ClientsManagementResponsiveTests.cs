@@ -64,11 +64,13 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
     private static readonly object EvidenceLock = new();
     private static readonly ConcurrentDictionary<string, object> EvidenceCases = new(StringComparer.Ordinal);
     private readonly ClientsManagementBrowserFixture _browserFixture;
+    private readonly ITestOutputHelper _testOutputHelper;
     private ClientsManagementFixtureHost? _fixture;
 
-    public ClientsManagementResponsiveTests(ClientsManagementBrowserFixture browserFixture)
+    public ClientsManagementResponsiveTests(ClientsManagementBrowserFixture browserFixture, ITestOutputHelper testOutputHelper)
     {
         _browserFixture = browserFixture;
+        _testOutputHelper = testOutputHelper;
     }
 
     [Theory]
@@ -559,7 +561,7 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
             await page.EvaluateAsync("() => document.documentElement.style.fontSize = '32px'");
             if (await page.GetByTestId("mobile-overflow").IsVisibleAsync())
             {
-                await SelectThemeOptionAsync(page, "mobile-overflow", "mobile-theme-option-dark");
+                await SelectThemeOptionAsync(page, "mobile-overflow", "mobile-theme-option-dark", _testOutputHelper);
             }
             else
             {
@@ -1023,17 +1025,110 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
         });
     }
 
-    private static async Task SelectThemeOptionAsync(IPage page, string menuTestId, string optionTestId)
+    private static async Task SelectThemeOptionAsync(IPage page, string menuTestId, string optionTestId, ITestOutputHelper? testOutputHelper = null)
     {
         await page.GetByTestId(menuTestId).ClickAsync();
         var option = page.GetByTestId(optionTestId);
         await option.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        if (testOutputHelper is not null && Environment.GetEnvironmentVariable("NETRATEL_MENU_VIEWPORT_DIAGNOSTICS") == "1")
+        {
+            testOutputHelper.WriteLine($"NETRATEL_MENU_VIEWPORT_DIAGNOSTIC before-scroll {await CaptureMenuViewportGeometryAsync(option).WaitAsync(TimeSpan.FromSeconds(3))}");
+        }
+
         // Wait for the menu item itself to intersect after scrolling its list.
         await option.EvaluateAsync("element => element.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' })");
-        await Assertions.Expect(option)
-            .ToBeInViewportAsync(new LocatorAssertionsToBeInViewportOptions { Ratio = 1, Timeout = 30_000 });
+        if (testOutputHelper is not null && Environment.GetEnvironmentVariable("NETRATEL_MENU_VIEWPORT_DIAGNOSTICS") == "1")
+        {
+            testOutputHelper.WriteLine($"NETRATEL_MENU_VIEWPORT_DIAGNOSTIC after-scroll {await CaptureMenuViewportGeometryAsync(option).WaitAsync(TimeSpan.FromSeconds(3))}");
+        }
+
+        try
+        {
+            await Assertions.Expect(option)
+                .ToBeInViewportAsync(new LocatorAssertionsToBeInViewportOptions { Ratio = 1, Timeout = 30_000 });
+        }
+        catch
+        {
+            if (testOutputHelper is not null)
+            {
+                try
+                {
+                    testOutputHelper.WriteLine($"NETRATEL_MENU_VIEWPORT_DIAGNOSTIC assertion-failed {await CaptureMenuViewportGeometryAsync(option).WaitAsync(TimeSpan.FromSeconds(3))}");
+                }
+                catch (Exception diagnosticFailure)
+                {
+                    testOutputHelper.WriteLine($"NETRATEL_MENU_VIEWPORT_DIAGNOSTIC capture-unavailable exception={diagnosticFailure.GetType().Name}");
+                }
+            }
+
+            throw;
+        }
+
         await option.ClickAsync();
     }
+
+    private static Task<string> CaptureMenuViewportGeometryAsync(ILocator option) => option.EvaluateAsync<string>(
+        """
+        element => {
+            const rect = node => {
+                const bounds = node.getBoundingClientRect();
+                return {
+                    x: Math.round(bounds.x * 10) / 10,
+                    y: Math.round(bounds.y * 10) / 10,
+                    width: Math.round(bounds.width * 10) / 10,
+                    height: Math.round(bounds.height * 10) / 10,
+                    top: Math.round(bounds.top * 10) / 10,
+                    bottom: Math.round(bounds.bottom * 10) / 10
+                };
+            };
+            const ancestors = [];
+            for (let node = element, depth = 0; node && depth < 10; node = node.parentElement, depth++) {
+                const style = getComputedStyle(node);
+                const bounds = node.getBoundingClientRect();
+                const kind = node.matches('.mud-menu-item') ? 'menu-item'
+                    : node.matches('.mud-list') ? 'menu-list'
+                    : node.matches('.mud-menu-list-wrapper') ? 'menu-wrapper'
+                    : node.matches('.mud-popover') ? 'popover'
+                    : node === document.body ? 'body'
+                    : 'ancestor';
+                ancestors.push({
+                    kind,
+                    overflowY: style.overflowY,
+                    overflowX: style.overflowX,
+                    maxHeight: style.maxHeight,
+                    height: style.height,
+                    rect: rect(node),
+                    scrollTop: Math.round(node.scrollTop * 10) / 10,
+                    scrollHeight: node.scrollHeight,
+                    clientHeight: node.clientHeight,
+                    childElementCount: node.childElementCount
+                });
+                if (node === document.body) break;
+            }
+
+            const optionBounds = element.getBoundingClientRect();
+            const visibleWidth = Math.max(0, Math.min(optionBounds.right, window.innerWidth) - Math.max(optionBounds.left, 0));
+            const visibleHeight = Math.max(0, Math.min(optionBounds.bottom, window.innerHeight) - Math.max(optionBounds.top, 0));
+            const optionArea = optionBounds.width * optionBounds.height;
+            const visibleRatio = optionArea === 0 ? 0 : (visibleWidth * visibleHeight) / optionArea;
+            const assetPaths = new Set(performance.getEntriesByType('resource').map(entry => {
+                try { return new URL(entry.name, location.href).pathname; }
+                catch { return ''; }
+            }));
+
+            return JSON.stringify({
+                viewport: { width: window.innerWidth, height: window.innerHeight },
+                rootFontSize: getComputedStyle(document.documentElement).fontSize,
+                option: { visible: element.getClientRects().length > 0, rect: rect(element), viewportRatio: Math.round(visibleRatio * 1000) / 1000 },
+                ancestors,
+                mudBlazorAssets: {
+                    cssLoaded: assetPaths.has('/_content/MudBlazor/MudBlazor.min.css'),
+                    jsLoaded: assetPaths.has('/_content/MudBlazor/MudBlazor.min.js')
+                }
+            });
+        }
+        """,
+        options: new LocatorEvaluateOptions { Timeout = 3_000 });
 
     private static void RecordEvidence(string viewportName, int width, int height, int textScalePercent, string directory)
     {
