@@ -578,21 +578,21 @@ try {
         $script:traefikVerified = $true
         Expand-Archive -LiteralPath $traefikArchive -DestinationPath $traefikExtract
 
-        $initdb = @(Get-ChildItem -LiteralPath $script:postgresExtract -Filter 'initdb.exe' -File -Recurse)
-        $postgres = @(Get-ChildItem -LiteralPath $script:postgresExtract -Filter 'postgres.exe' -File -Recurse)
-        $pgCtl = @(Get-ChildItem -LiteralPath $script:postgresExtract -Filter 'pg_ctl.exe' -File -Recurse)
-        $createdb = @(Get-ChildItem -LiteralPath $script:postgresExtract -Filter 'createdb.exe' -File -Recurse)
-        $psql = @(Get-ChildItem -LiteralPath $script:postgresExtract -Filter 'psql.exe' -File -Recurse)
+        # The EDB ZIP also includes pgAdmin's private psql.exe. Use the PostgreSQL
+        # server tools from the canonical core bin directory instead of requiring
+        # executable basenames to be unique across the entire vendor archive.
+        $script:pgBin = Join-Path $script:postgresExtract 'pgsql\bin'
+        $script:initdbExe = Join-Path $script:pgBin 'initdb.exe'
+        $script:postgresExe = Join-Path $script:pgBin 'postgres.exe'
+        $script:pgCtlExe = Join-Path $script:pgBin 'pg_ctl.exe'
+        $script:createdbExe = Join-Path $script:pgBin 'createdb.exe'
+        $script:psqlExe = Join-Path $script:pgBin 'psql.exe'
+        $postgresTools = @($script:initdbExe, $script:postgresExe, $script:pgCtlExe, $script:createdbExe, $script:psqlExe)
+        $missingPostgresTools = @($postgresTools | Where-Object { -not (Test-Path -LiteralPath $_ -PathType Leaf) })
         $traefik = @(Get-ChildItem -LiteralPath $traefikExtract -Filter 'traefik.exe' -File -Recurse)
-        if ($initdb.Count -ne 1 -or $postgres.Count -ne 1 -or $pgCtl.Count -ne 1 -or $createdb.Count -ne 1 -or $psql.Count -ne 1 -or $traefik.Count -ne 1) {
+        if ($missingPostgresTools.Count -ne 0 -or $traefik.Count -ne 1) {
             throw 'vendor_archive_layout_unexpected'
         }
-        $script:postgresExe = $postgres[0].FullName
-        $script:pgCtlExe = $pgCtl[0].FullName
-        $script:pgBin = $pgCtl[0].DirectoryName
-        $script:initdbExe = $initdb[0].FullName
-        $script:createdbExe = $createdb[0].FullName
-        $script:psqlExe = $psql[0].FullName
         $script:traefikExe = $traefik[0].FullName
         $script:traefikWorkingDirectory = $traefik[0].DirectoryName
         $script:postgresVersion = (Invoke-CapturedProcess -FilePath $script:postgresExe -ArgumentList @('--version') -TimeoutSeconds 15 -WorkingDirectory $script:pgBin).StandardOutput.Trim()

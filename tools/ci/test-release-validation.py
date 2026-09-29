@@ -274,6 +274,17 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
                     script.index(f"Expand-Archive -LiteralPath {variable}"),
                 )
 
+        postgres_tools = script[
+            script.index("$script:pgBin = Join-Path $script:postgresExtract") : script.index("$script:postgresVersion =")
+        ]
+        self.assertIn("'pgsql\\bin'", postgres_tools)
+        for executable in ("initdb.exe", "postgres.exe", "pg_ctl.exe", "createdb.exe", "psql.exe"):
+            with self.subTest(postgresql_executable=executable):
+                self.assertIn(f"Join-Path $script:pgBin '{executable}'", postgres_tools)
+        self.assertIn("Get-ChildItem -LiteralPath $traefikExtract -Filter 'traefik.exe'", postgres_tools)
+        self.assertNotIn("Get-ChildItem -LiteralPath $script:postgresExtract", postgres_tools)
+        self.assertIn("pgAdmin's private psql.exe", script)
+
         self.assertIn("NetRatel.Migrations/NetRatel.Migrations.csproj", script)
         self.assertIn("NetRatel.API.dll", script)
         self.assertIn("Cert:\\CurrentUser\\Root", script)
