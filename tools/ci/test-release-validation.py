@@ -222,7 +222,7 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
             with self.subTest(path=path.name, group="native macOS"):
                 self.assertIn("--expected-executed 3", source)
 
-    def test_windows_hosted_prerequisites_are_a_required_sanitized_qualification(self):
+    def test_windows_hosted_onboarding_is_a_required_sanitized_acceptance(self):
         script_path = ROOT / "tools/ci/smoke-windows-hosted-prerequisites.ps1"
         script = script_path.read_text(encoding="utf-8")
         workflow_paths = (
@@ -241,14 +241,26 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
                 job = match.group("body")
                 self.assertIn("runs-on: windows-11-arm", job)
                 self.assertIn("tools/ci/smoke-windows-hosted-prerequisites.ps1", job)
-                self.assertIn("name: windows-hosted-prerequisites", job)
+                self.assertIn("name: Windows hosted onboarding", job)
+                self.assertIn("timeout-minutes: 100", job)
+                self.assertIn("uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1", job)
+                if workflow_path.name == "public-pr-validation.yml":
+                    self.assertIn("needs: [dotnet, client-packages]", job)
+                    self.assertIn("name: pr-netratel-client-win-x64", job)
+                else:
+                    self.assertIn("needs: [validate, client-packages]", job)
+                    self.assertIn("name: netratel-client-${{ needs.validate.outputs.version }}-win-x64", job)
                 self.assertIn("NETRATEL_REVIEW_SOURCE_SHA:", job)
                 self.assertIn("NETRATEL_REVIEW_TEST_MERGE_SHA: ${{ github.sha }}", job)
                 if workflow_path.name == "public-pr-validation.yml":
                     self.assertIn("NETRATEL_REVIEW_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}", job)
                 else:
                     self.assertIn("NETRATEL_REVIEW_SOURCE_SHA: ${{ github.sha }}", job)
-                self.assertIn("integrated acceptance was not run", script)
+                self.assertIn("NETRATEL_CLIENT_ARTIFACT_DIRECTORY:", job)
+                self.assertIn("NETRATEL_ONBOARDING_RECEIPT:", job)
+                self.assertIn("netratel-windows-hosted-onboarding.json", job)
+                self.assertIn("netratel-hosted-evidence-*/*.png", job)
+                self.assertIn("Run initialized backend, native SYSTEM onboarding, and Web acceptance", job)
                 self.assertRegex(source, r"(?m)^    needs: .*windows-hosted-prerequisites")
                 self.assertIn("WINDOWS_HOSTED_PREREQUISITES_RESULT: ${{ needs.windows-hosted-prerequisites.result }}", source)
                 self.assertIn('[[ "$WINDOWS_HOSTED_PREREQUISITES_RESULT" == success ]]', source)
@@ -287,7 +299,11 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
 
         self.assertIn("NetRatel.Migrations/NetRatel.Migrations.csproj", script)
         self.assertIn("NetRatel.API.dll", script)
-        self.assertIn("Cert:\\CurrentUser\\Root", script)
+        self.assertIn("'hosted_browser_missing'", script)
+        self.assertIn("Microsoft\\Edge\\Application\\msedge.exe", script)
+        self.assertNotIn("playwright.ps1' 'install' 'chromium'", script)
+        self.assertIn("Cert:\\LocalMachine\\Root", script)
+        self.assertNotIn("Cert:\\CurrentUser\\Root", script)
         self.assertIn("AllowAutoRedirect = $false", script)
         self.assertIn("UseProxy = $false", script)
         self.assertNotIn("ServerCertificateCustomValidationCallback", script)
@@ -304,8 +320,122 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
         self.assertIn("postgres_stopped_status_conflicts_with_tracked_process", script)
         self.assertIn("captured_processes_stopped", script)
         self.assertIn("SetAccessRuleProtection($true, $false)", script)
+        cleanup_start = script.index("finally {\n    $cleanupFailed = $false")
+        pending_stop = script.index("foreach ($record in @($script:pendingCapturedProcesses))", cleanup_start)
+        test_process_stop = script.index("Where-Object { $_.Role -in @('main-test', 'web-test')", pending_stop)
+        client_tree_gate = script.index("if ($script:clientInstallationAttempted)", test_process_stop)
+        listener_stop = script.index("Where-Object { $_.Role -eq 'web' }", client_tree_gate)
+        self.assertLess(pending_stop, test_process_stop)
+        self.assertLess(test_process_stop, client_tree_gate)
+        self.assertLess(client_tree_gate, listener_stop)
+        self.assertIn("if (-not $script:cleanup.captured_processes_stopped)", script[client_tree_gate:listener_stop])
         self.assertLess(script.index("Invoke-QualificationCheck 'windows_runner'"), script.index("Invoke-WebRequest -Uri"))
-        self.assertIn("integratedAcceptance = 'not_run'", script)
+        self.assertIn("$script:scope = 'windows-hosted-onboarding'", script)
+        self.assertIn("$script:integratedAcceptance = 'not_run'", script)
+        self.assertIn("$script:initialAcceptance = 'not_run'", script)
+        self.assertIn("$script:mandatoryLaterAcceptance = 'not_run'", script)
+        self.assertIn("$script:initialAcceptance = 'completed'", script)
+        self.assertIn("$script:integratedAcceptance = 'initial_completed'", script)
+        self.assertIn("Wait-ForProductionApiReady", script)
+        ready_start = script.index("function Wait-ForProductionApiReady {")
+        ready_end = script.index("\nfunction Send-ApiJson {", ready_start)
+        production_ready = script[ready_start:ready_end]
+        self.assertIn("-Path '/api/v2/local-auth/me'", production_ready)
+        self.assertIn("-Path '/api/v2/access/tenants'", production_ready)
+        self.assertIn("/api/v2/client-presence/?tenantId=", production_ready)
+        self.assertIn("-Path '/health/ready'", production_ready)
+        readiness_retry = re.findall(
+            r"\$[A-Za-z]+\.StatusCode -eq \[System\.Net\.HttpStatusCode\]::ServiceUnavailable\) \{ Start-Sleep -Milliseconds 500; continue \}",
+            production_ready,
+        )
+        self.assertEqual(4, len(readiness_retry), "Each authenticated dependency 503 must retry with a bounded polling delay.")
+        self.assertIn("$health.status -cne 'ready'", production_ready)
+        self.assertIn("@($receipt.PSObject.Properties).Count -ne $requiredProperties.Count", script)
+        self.assertIn("@($request.PSObject.Properties).Count -ne $requiredFields.Count", script)
+        self.assertNotIn("$receipt.PSObject.Properties.Count", script)
+        self.assertNotIn("$request.PSObject.Properties.Count", script)
+        self.assertLess(production_ready.index("/api/v2/local-auth/me"), production_ready.index("/api/v2/access/tenants"))
+        self.assertLess(production_ready.index("/api/v2/access/tenants"), production_ready.index("/api/v2/client-presence/?tenantId="))
+        self.assertLess(production_ready.index("/api/v2/client-presence/?tenantId="), production_ready.index("/health/ready"))
+        initialize_start = script.index("function Initialize-ProductionLocalRuntime {")
+        initialize_end = script.index("\nfunction Start-OwnedWeb {", initialize_start)
+        initialize_runtime = script[initialize_start:initialize_end]
+        self.assertEqual(2, initialize_runtime.count("Wait-ForProductionApiReady -TimeoutSeconds 90"))
+        self.assertLess(
+            initialize_runtime.index("Assert-InitializedLocalIdentity"),
+            initialize_runtime.rindex("Wait-ForProductionApiReady -TimeoutSeconds 90"),
+        )
+
+        handoff_reader_start = script.index("function Read-BoundedHandoffJson {")
+        handoff_reader_end = script.index("\nfunction Copy-FileStreamingWithSha256 {", handoff_reader_start)
+        handoff_reader = script[handoff_reader_start:handoff_reader_end]
+        self.assertIn("$MaximumBytes + 1", handoff_reader)
+        self.assertIn("$stream.Read($buffer, 0, [Math]::Min($buffer.Length, $remaining))", handoff_reader)
+        self.assertIn("$memory.Length -gt $MaximumBytes", handoff_reader)
+        self.assertNotIn("$stream.ReadToEnd()", handoff_reader)
+        self.assertIn("FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete", handoff_reader)
+
+        captured_start = script.index("function Invoke-CapturedProcess {")
+        captured_end = script.index("\nfunction Start-OwnedProcess {", captured_start)
+        captured_process = script[captured_start:captured_end]
+        self.assertIn("$primaryError = $_", captured_process)
+        self.assertIn("Stop-OwnedProcess -Record $record", captured_process)
+        self.assertIn("$script:pendingCapturedProcesses.Add($record)", captured_process)
+        self.assertIn("$script:cleanup.captured_processes_stopped = $false", captured_process)
+        self.assertIn("throw $primaryError", captured_process)
+        self.assertIn("if (-not $keepProcessHandle -and -not $processDisposed)", captured_process)
+
+        context_start = script.index("function Set-IntegratedContext {")
+        context_end = script.index("\nfunction Build-HostedAcceptanceAssemblies {", context_start)
+        context = script[context_start:context_end]
+        self.assertIn("$context = [ordered]@{", context)
+        context_fields = (
+            "schemaVersion", "scope", "sourceSha", "testMergeSha", "productVersion", "runId",
+            "publicOrigin", "apiBaseUri", "gatewayBaseUri", "webBaseUri", "tenantId", "operatorEmail",
+            "operatorPasswordFile", "candidateArchive", "candidateRuntimeId", "candidateVersion",
+            "candidateSha256", "installRoot", "stateRoot", "identityReceiptPath", "controlRequestPath",
+            "controlAckPath", "safeEvidenceDirectory",
+        )
+        for context_field in context_fields:
+            with self.subTest(context_field=context_field):
+                self.assertRegex(context, rf"(?m)^\s+{context_field}\s*=")
+        self.assertNotIn("fields =", context)
+        for selector in (
+            "NetRatel.Tests.Infrastructure.WindowsHostedOnboardingTests.ProductionLocalOnboarding_ActualSystemServiceReachesTwoAcknowledgedHeartbeatsAndDirectory",
+            "NetRatel.Web.PlaywrightTests.WindowsHostedOnboardingBrowserSmokeTests.ProductionLocalOnboarding_DirectoryAndScopedIdentitiesUseTheSameAuthenticatedRuntime",
+        ):
+            with self.subTest(selector=selector):
+                self.assertIn(selector, script)
+        self.assertIn("Set-QualificationOperation 'create-root-certificate'", script)
+        self.assertIn("Set-QualificationOperation 'create-server-certificate'", script)
+        self.assertIn("Set-QualificationOperation 'export-server-certificate'", script)
+        self.assertIn("Set-QualificationOperation 'export-server-private-key'", script)
+        self.assertIn("Set-QualificationOperation 'trust-local-machine-root'", script)
+        self.assertIn("Set-QualificationOperation 'verify-local-machine-root'", script)
+        self.assertIn("Write-QualificationCheckpoint", script)
+        self.assertIn("FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete", script)
+        self.assertIn("DataProtection__ApplicationName' = 'NetRatel'", script)
+        self.assertIn("'ApiBaseUrl' = \"http://127.0.0.1:$($script:apiPort)\"", script)
+        api_environment_start = script.index("function New-ApiEnvironment {")
+        api_environment_end = script.index("\nfunction Start-OwnedApi {", api_environment_start)
+        api_environment = script[api_environment_start:api_environment_end]
+        self.assertNotIn("ClientArtifacts__PublicGatewayBaseUrl", api_environment)
+        self.assertNotIn("integratedAcceptance = 'completed'", script)
+        self.assertIn("$script:integratedAcceptance = 'initial_completed'", script)
+
+        tls = script[script.index("Invoke-QualificationCheck 'native_traefik_trusted_https'"):script.index("Invoke-QualificationCheck 'initialized_production_local_api'")]
+        for operation, call in (
+            ("create-root-certificate", "New-SelfSignedCertificate -Subject \"CN=NetRatel hosted qualification CA"),
+            ("create-server-certificate", "New-SelfSignedCertificate -Subject \"CN=$($script:hostname)\""),
+            ("export-server-certificate", "$script:serverCertificate.ExportCertificatePem()"),
+            ("export-server-private-key", "$rsa.ExportPkcs8PrivateKeyPem()"),
+            ("trust-local-machine-root", "'-addstore', 'Root'"),
+            ("verify-local-machine-root", "Cert:\\LocalMachine\\Root"),
+        ):
+            with self.subTest(tls_operation=operation):
+                self.assertLess(tls.index(f"Set-QualificationOperation '{operation}'"), tls.index(call))
+        self.assertIn("-TimeoutSeconds 30 -WorkingDirectory $script:taskRoot", tls)
+        self.assertIn("Set-QualificationOperation 'verify-strict-https'", tls)
 
     def test_windows_hosted_prerequisite_failure_codes_are_an_explicit_allowlist(self):
         script = (ROOT / "tools/ci/smoke-windows-hosted-prerequisites.ps1").read_text(encoding="utf-8")
@@ -327,6 +457,12 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
         function_start = script.index("function Invoke-CapturedProcess {")
         function_end = script.index("\nfunction Start-OwnedProcess {", function_start)
         process_function = script[function_start:function_end]
+        drain_start = script.index("function Wait-CapturedOutputDrain {")
+        drain_end = script.index("\nfunction Invoke-CapturedProcess {", drain_start)
+        drain_function = script[drain_start:drain_end]
+        self.assertIn("[System.Threading.Tasks.Task]::WaitAll($Tasks, $TimeoutMilliseconds)", drain_function)
+        self.assertIn("catch [System.AggregateException]", drain_function)
+        self.assertIn("$null = $task.Exception", drain_function)
         self.assertIn("[switch]$PgCtlStartWithInheritedOutputPipes", process_function)
         self.assertIn("$actualExecutable -ine $expectedPgCtl", process_function)
         self.assertIn("$actualServerLog -ieq $expectedServerLog", process_function)
@@ -334,10 +470,11 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
         self.assertIn("-not $hasPrivateServerLog -or -not $hasWait -or -not $hasSilent", process_function)
         self.assertIn("throw 'process_output_policy_not_allowed'", process_function)
         self.assertIn("if (-not $skipOutputPipeDrain) {", process_function)
-        self.assertIn("$process.StandardOutput.ReadToEndAsync()", process_function)
-        self.assertIn("$process.StandardError.ReadToEndAsync()", process_function)
+        self.assertIn("[NetRatel.Ci.BoundedStreamDrain]::Start($process.StandardOutput, 65536)", process_function)
+        self.assertIn("[NetRatel.Ci.BoundedStreamDrain]::Start($process.StandardError, 65536)", process_function)
+        self.assertNotIn("ReadToEndAsync()", process_function)
         self.assertIn("'process_output_pipe_timeout'", process_function)
-        self.assertIn("[System.Threading.Tasks.Task]::WaitAll([System.Threading.Tasks.Task[]]$outputTasks, 10000)", process_function)
+        self.assertIn("Wait-CapturedOutputDrain -Tasks ([System.Threading.Tasks.Task[]]$outputTasks) -TimeoutMilliseconds 10000", process_function)
         self.assertIn("$process.Dispose()", process_function)
 
         opt_in_calls = re.findall(r"(?m)^\s*\$null = Invoke-CapturedProcess[^\n]*-PgCtlStartWithInheritedOutputPipes\s*$", script)
