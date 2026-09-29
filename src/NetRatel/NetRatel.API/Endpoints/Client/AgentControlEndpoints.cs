@@ -5,9 +5,8 @@ using NetRatel.Application.Presence;
 namespace NetRatel.API.Endpoints.Client;
 
 /// <summary>
-/// V2 control endpoints are keyed by the authenticated agent directory ID, not
-/// a Spacetime identity. They are intentionally separate from existing v1
-/// client action routes while the inventory mapping migration is incomplete.
+/// Control endpoints use the persisted tenant and AgentId, then route requests
+/// through the current admitted Akka session for that directory identity.
 /// </summary>
 public static class AgentControlEndpoints
 {

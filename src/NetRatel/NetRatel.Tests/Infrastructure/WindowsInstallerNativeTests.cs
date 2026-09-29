@@ -11,6 +11,7 @@ using System.Security.AccessControl;
 using System.Security.Cryptography;
 using System.Security.Claims;
 using System.Security.Cryptography.X509Certificates;
+using System.Security.Principal;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -55,6 +56,30 @@ namespace NetRatel.Tests.Infrastructure;
 
 public sealed class WindowsInstallerNativeTests
 {
+    [Fact]
+    public void InstallerFailureDiagnosticAcceptsPowerShellLineWrappingWithoutLeakingPathsOrSids()
+    {
+        const string privatePath = @"C:\untrusted\installer.ps1";
+        const string privateSid = "S-1-5-21-111111111-222222222-333333333-1001";
+        var output = string.Join("\r\n", new[]
+        {
+            "The service readiness path could not be securely verified",
+            "(scope=leaf;",
+            "component=2;",
+            "check=replacement-access;",
+            "exception=RuntimeException).",
+            $"at {privatePath} for {privateSid}"
+        });
+
+        var diagnostic = GetSafeInstallerDiagnostic(output);
+
+        Assert.Equal(
+            "The service readiness path could not be securely verified (scope=leaf; component=2; check=replacement-access; exception=RuntimeException).",
+            diagnostic);
+        Assert.DoesNotContain(privatePath, diagnostic, StringComparison.Ordinal);
+        Assert.DoesNotContain(privateSid, diagnostic, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData(false, false)] // Flat archive using curl.exe.
     [InlineData(true, false)] // Wrapped archive using curl.exe.
@@ -152,10 +177,9 @@ public sealed class WindowsInstallerNativeTests
 
         const string serviceName = "NetRatel.Client";
         AssertWindowsServiceAbsent(serviceName);
-        var root = Path.Combine(Path.GetTempPath(), $"netratel-windows-unowned-service-{Guid.NewGuid():N}");
+        var root = CreateWindowsServiceFixtureRoot("unowned-service");
         var unownedImage = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "System32", "svchost.exe");
         var unownedImagePath = $"{unownedImage} -k netsvcs";
-        Directory.CreateDirectory(root);
         using var listener = new TcpListener(IPAddress.Loopback, 0);
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         using var packageServerCancellation = new CancellationTokenSource();
@@ -278,9 +302,8 @@ public sealed class WindowsInstallerNativeTests
         AssertWindowsServiceAbsent(serviceName);
         Assert.False(Directory.Exists(credentialDirectory), "the disposable Windows runner must start without NetRatel credential files");
 
-        var root = Path.Combine(Path.GetTempPath(), $"netratel-windows-service-{Guid.NewGuid():N}");
+        var root = CreateWindowsServiceFixtureRoot("disabled-service");
         var installRoot = Path.Combine(root, "client");
-        Directory.CreateDirectory(root);
         var certificate = CreateNativeGatewayCertificate();
         var trustedCertificate = X509CertificateLoader.LoadCertificate(certificate.Export(X509ContentType.Cert));
         using var fixture = new NativeGatewayHostFixture(4098, Guid.NewGuid(), "ENR-SYNTHETIC-WINDOWS-SERVICE", agentDisabled: true);
@@ -469,9 +492,8 @@ public sealed class WindowsInstallerNativeTests
         Assert.False(Directory.Exists(credentialDirectory), "the disposable Windows runner must start without NetRatel credential files");
         Assert.False(Directory.Exists(stateDirectory), "the disposable Windows runner must start without NetRatel updater state");
 
-        var root = Path.Combine(Path.GetTempPath(), $"netratel-windows-real-gateway-{Guid.NewGuid():N}");
+        var root = CreateWindowsServiceFixtureRoot("real-gateway");
         var installRoot = Path.Combine(root, "client");
-        Directory.CreateDirectory(root);
         var certificate = CreateNativeGatewayCertificate();
         var trustedCertificate = X509CertificateLoader.LoadCertificate(certificate.Export(X509ContentType.Cert));
         WebApplication? app = null;
@@ -957,7 +979,7 @@ public sealed class WindowsInstallerNativeTests
         AssertWindowsServiceAbsent(serviceName);
         var credentialDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "NetRatel");
         Assert.False(Directory.Exists(credentialDirectory), "the disposable Windows runner must start without NetRatel credential files");
-        var root = Path.Combine(Path.GetTempPath(), $"netratel-windows-admin-dpapi-{Guid.NewGuid():N}");
+        var root = CreateWindowsServiceFixtureRoot("admin-dpapi");
         var installRoot = Path.Combine(root, "client");
         var credentialPath = Path.Combine(credentialDirectory, "agent.dat");
         byte[]? originalCredentialBytes = null;
@@ -971,7 +993,6 @@ public sealed class WindowsInstallerNativeTests
         Process? installerProcess = null;
         try
         {
-            Directory.CreateDirectory(root);
             Directory.CreateDirectory(credentialDirectory);
             credentialDirectoryCreatedByTest = true;
             string publicKey;
@@ -1178,18 +1199,107 @@ public sealed class WindowsInstallerNativeTests
         var combined = string.Concat(output, Environment.NewLine, error);
         if (combined.Contains(expected, StringComparison.OrdinalIgnoreCase)) return;
 
+        var safeDiagnostic = GetSafeInstallerDiagnostic(combined);
+        Assert.Fail($"Expected installer output to contain '{expected}'; exit code={exitCode}; diagnostic={safeDiagnostic}");
+    }
+
+    private static string GetSafeInstallerDiagnostic(string combined)
+    {
         var protectedPathFailure = Regex.Match(
             combined,
-            @"The service readiness path could not be securely verified \(scope=(?:ancestor|leaf); component=\d+; check=[a-z-]+; exception=[A-Za-z0-9]+\)\.",
+            @"The\s+service\s+readiness\s+path\s+could\s+not\s+be\s+securely\s+verified\s+\(scope=(?:ancestor|leaf);\s*component=\d+;\s*check=[a-z-]+;\s*exception=[A-Za-z0-9]+\)\.",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
         const string unownedServiceFailure = "The registered NetRatel.Client image is outside the configured NetRatel package layout; refusing to stop or rewrite it.";
-        var safeDiagnostic = protectedPathFailure.Success
-            ? protectedPathFailure.Value
+        return protectedPathFailure.Success
+            ? Regex.Replace(protectedPathFailure.Value, @"\s+", " ").Trim()
             : combined.Contains(unownedServiceFailure, StringComparison.OrdinalIgnoreCase)
                 ? unownedServiceFailure
                 : "no bounded installer preflight diagnostic was emitted";
+    }
 
-        Assert.Fail($"Expected installer output to contain '{expected}'; exit code={exitCode}; diagnostic={safeDiagnostic}");
+    [SupportedOSPlatform("windows")]
+    private static string CreateWindowsServiceFixtureRoot(string fixtureName)
+    {
+        var commonApplicationData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
+        if (string.IsNullOrWhiteSpace(commonApplicationData))
+        {
+            throw new InvalidOperationException("The hosted Windows runner has no CommonApplicationData directory.");
+        }
+
+        var root = Path.Combine(
+            commonApplicationData,
+            $"NetRatelInstallerNative-{fixtureName}-{Guid.NewGuid():N}");
+        if (Directory.Exists(root) || File.Exists(root))
+        {
+            throw new IOException("The unique hosted Windows fixture path already exists.");
+        }
+
+        var administrators = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
+        var localSystem = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
+        var security = new DirectorySecurity();
+        security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+        security.SetOwner(administrators);
+        security.AddAccessRule(new FileSystemAccessRule(
+            administrators,
+            FileSystemRights.FullControl,
+            InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
+            PropagationFlags.None,
+            AccessControlType.Allow));
+        security.AddAccessRule(new FileSystemAccessRule(
+            localSystem,
+            FileSystemRights.FullControl,
+            InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
+            PropagationFlags.None,
+            AccessControlType.Allow));
+
+        var directory = new DirectoryInfo(root);
+        var createdRoot = false;
+        try
+        {
+            directory.Create(security);
+            createdRoot = true;
+
+            var actualSecurity = directory.GetAccessControl();
+            var actualOwner = actualSecurity.GetOwner(typeof(SecurityIdentifier)) as SecurityIdentifier;
+            var actualRules = actualSecurity
+                .GetAccessRules(includeExplicit: true, includeInherited: true, typeof(SecurityIdentifier))
+                .Cast<FileSystemAccessRule>()
+                .ToArray();
+            var allowedSids = new HashSet<string>(StringComparer.Ordinal)
+            {
+                administrators.Value,
+                localSystem.Value
+            };
+            if (!actualSecurity.AreAccessRulesProtected || actualOwner?.Value != administrators.Value ||
+                actualRules.Any(rule => rule.IsInherited ||
+                    rule.AccessControlType != AccessControlType.Allow ||
+                    !allowedSids.Contains(rule.IdentityReference.Value)) ||
+                !actualRules.Any(rule => rule.IdentityReference.Value == administrators.Value &&
+                    (rule.FileSystemRights & FileSystemRights.FullControl) == FileSystemRights.FullControl) ||
+                !actualRules.Any(rule => rule.IdentityReference.Value == localSystem.Value &&
+                    (rule.FileSystemRights & FileSystemRights.FullControl) == FileSystemRights.FullControl))
+            {
+                throw new InvalidOperationException("The hosted Windows fixture directory did not receive its protected administrator and SYSTEM ACL.");
+            }
+
+            return root;
+        }
+        catch (Exception fixtureFailure)
+        {
+            if (createdRoot)
+            {
+                try
+                {
+                    if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+                }
+                catch (Exception cleanupFailure)
+                {
+                    fixtureFailure.Data["FixtureRootCleanupException"] = cleanupFailure.GetType().Name;
+                }
+            }
+
+            throw;
+        }
     }
 
     private static async Task<string> ReadRequestAsync(NetworkStream stream, CancellationToken ct)

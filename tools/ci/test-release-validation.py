@@ -222,6 +222,93 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
             with self.subTest(path=path.name, group="native macOS"):
                 self.assertIn("--expected-executed 3", source)
 
+    def test_windows_hosted_prerequisites_are_a_required_sanitized_qualification(self):
+        script_path = ROOT / "tools/ci/smoke-windows-hosted-prerequisites.ps1"
+        script = script_path.read_text(encoding="utf-8")
+        workflow_paths = (
+            ROOT / ".github/workflows/public-pr-validation.yml",
+            ROOT / ".github/workflows/release-build.yml",
+        )
+        for workflow_path in workflow_paths:
+            source = workflow_path.read_text(encoding="utf-8")
+            with self.subTest(workflow=workflow_path.name):
+                self.assertIn("windows-hosted-prerequisites:", source)
+                match = re.search(
+                    r"(?ms)^  windows-hosted-prerequisites:\n(?P<body>.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)",
+                    source,
+                )
+                self.assertIsNotNone(match, "The prerequisite job must be a complete top-level workflow job.")
+                job = match.group("body")
+                self.assertIn("runs-on: windows-11-arm", job)
+                self.assertIn("tools/ci/smoke-windows-hosted-prerequisites.ps1", job)
+                self.assertIn("name: windows-hosted-prerequisites", job)
+                self.assertIn("NETRATEL_REVIEW_SOURCE_SHA:", job)
+                self.assertIn("NETRATEL_REVIEW_TEST_MERGE_SHA: ${{ github.sha }}", job)
+                if workflow_path.name == "public-pr-validation.yml":
+                    self.assertIn("NETRATEL_REVIEW_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}", job)
+                else:
+                    self.assertIn("NETRATEL_REVIEW_SOURCE_SHA: ${{ github.sha }}", job)
+                self.assertIn("integrated acceptance was not run", script)
+                self.assertRegex(source, r"(?m)^    needs: .*windows-hosted-prerequisites")
+                self.assertIn("WINDOWS_HOSTED_PREREQUISITES_RESULT: ${{ needs.windows-hosted-prerequisites.result }}", source)
+                self.assertIn('[[ "$WINDOWS_HOSTED_PREREQUISITES_RESULT" == success ]]', source)
+
+        pinned_assets = (
+            (
+                "https://get.enterprisedb.com/postgresql/postgresql-17.11-4-windows-x64-binaries.zip",
+                "b9424ee7bc60b52450ff910a3630225df32e633f3cb29c1d126d9299d59aea28",
+                "$postgresArchive",
+            ),
+            (
+                "https://github.com/traefik/traefik/releases/download/v3.7.13/traefik_v3.7.13_windows_arm64.zip",
+                "b742323dc327e4a6eed0659b52109fb180ab48bc228075790401a669a11aa8c3",
+                "$traefikArchive",
+            ),
+        )
+        for url, digest, variable in pinned_assets:
+            with self.subTest(asset=url):
+                self.assertIn(url, script)
+                self.assertIn(digest, script)
+                self.assertLess(
+                    script.index(f"Assert-ArchiveSha256 -Path {variable}"),
+                    script.index(f"Expand-Archive -LiteralPath {variable}"),
+                )
+
+        self.assertIn("NetRatel.Migrations/NetRatel.Migrations.csproj", script)
+        self.assertIn("NetRatel.API.dll", script)
+        self.assertIn("Cert:\\CurrentUser\\Root", script)
+        self.assertIn("AllowAutoRedirect = $false", script)
+        self.assertIn("UseProxy = $false", script)
+        self.assertNotIn("ServerCertificateCustomValidationCallback", script)
+        self.assertIn("http://127.0.0.1:$($script:apiPort)", script)
+        self.assertIn("RUNNER_ENVIRONMENT -cne 'github-hosted'", script)
+        self.assertIn("NETRATEL_REVIEW_SOURCE_SHA", script)
+        self.assertIn("NETRATEL_REVIEW_TEST_MERGE_SHA", script)
+        self.assertIn("provenance = [ordered]@", script)
+        self.assertIn("failureDetails = @($script:failureDetails)", script)
+        self.assertIn("$checkoutSha -cne $script:testMergeSha", script)
+        self.assertIn("DataProtection__KeysDirectory", script)
+        self.assertIn("Remove-Item -LiteralPath $certificate.PSPath -Force -DeleteKey", script)
+        self.assertIn("$descriptor.state -ne 0", script)
+        self.assertIn("postgres_stopped_status_conflicts_with_tracked_process", script)
+        self.assertIn("captured_processes_stopped", script)
+        self.assertIn("SetAccessRuleProtection($true, $false)", script)
+        self.assertLess(script.index("Invoke-QualificationCheck 'windows_runner'"), script.index("Invoke-WebRequest -Uri"))
+        self.assertIn("integratedAcceptance = 'not_run'", script)
+
+    def test_windows_hosted_prerequisite_failure_codes_are_an_explicit_allowlist(self):
+        script = (ROOT / "tools/ci/smoke-windows-hosted-prerequisites.ps1").read_text(encoding="utf-8")
+        allowlist = re.search(
+            r"(?ms)^(?:\[void\])?\$script:safeFailureCodes\.UnionWith\(\[string\[\]\]@\((?P<codes>.*?)^\)\)",
+            script,
+        )
+        self.assertIsNotNone(allowlist, "Sanitized failure codes must come from a bounded explicit list.")
+        codes = set(re.findall(r"'([a-z][a-z0-9_]{0,79})'", allowlist.group("codes")))
+        self.assertIn("process_timeout", codes)
+        self.assertNotIn("arbitrary_lowercase_message", codes)
+        self.assertIn("$script:safeFailureCodes.Contains($SafeCode)", script)
+        self.assertNotIn("$SafeCode -match", script)
+
 
 class ChromiumNssSmokeTests(unittest.TestCase):
     def test_nss_helper_creates_and_removes_only_its_private_store_and_rejects_legacy_precedence(self):

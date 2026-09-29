@@ -45,6 +45,15 @@ namespace NetRatel.Web.PlaywrightTests;
 [Collection(PlaywrightCollection.Name)]
 public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsManagementBrowserFixture>, IAsyncLifetime
 {
+    private static readonly string[] SafeNetworkFailures =
+    [
+        "net::ERR_ABORTED",
+        "net::ERR_CONNECTION_CLOSED",
+        "net::ERR_CONNECTION_REFUSED",
+        "net::ERR_CONNECTION_RESET",
+        "net::ERR_NAME_NOT_RESOLVED",
+        "net::ERR_TIMED_OUT"
+    ];
     private static readonly (string Name, bool ImportPackEnabled)[] ExpectedGitHubReleases =
     [
         ("Fixture GitHub client release", true),
@@ -302,13 +311,108 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
         try
         {
             var page = await context.NewPageAsync();
+            var startupEvents = new ConcurrentQueue<string>();
+            var startupWebSockets = new ConcurrentQueue<IWebSocket>();
+            var startupClock = Stopwatch.StartNew();
+            var startupEventCount = 0;
+            var startupWebSocketCount = 0;
+            var startupDiagnosticsActive = 1;
+            void RecordStartupEvent(string message)
+            {
+                if (Volatile.Read(ref startupDiagnosticsActive) == 0 ||
+                    Interlocked.Increment(ref startupEventCount) > 32 ||
+                    Volatile.Read(ref startupDiagnosticsActive) == 0)
+                {
+                    return;
+                }
+
+                var boundedMessage = message.Length <= 240 ? message : message[..240];
+                startupEvents.Enqueue($"{startupClock.ElapsedMilliseconds,5} ms {boundedMessage}");
+            }
+
+            page.Console += (_, message) =>
+            {
+                if (message.Type is "error" or "warning")
+                {
+                    RecordStartupEvent($"console {message.Type}");
+                }
+            };
+            page.PageError += (_, _) => RecordStartupEvent("page error event");
+            page.RequestFailed += (_, request) =>
+            {
+                var method = request.Method is "GET" or "POST" ? request.Method : "other";
+                RecordStartupEvent(
+                    $"request failed {method} {GetSafeStartupRequestPath(request.Url)}: {GetSafeNetworkFailure(request.Failure)}");
+            };
+            page.Response += (_, response) =>
+            {
+                var path = GetSafeStartupRequestPath(response.Url);
+                if (response.Request.IsNavigationRequest || response.Status >= 400 ||
+                    path is "/_framework/blazor.web.js" or "/_content/MudBlazor/MudBlazor.min.js" ||
+                    path.StartsWith("/_blazor", StringComparison.Ordinal))
+                {
+                    RecordStartupEvent($"response {response.Status} {path}");
+                }
+            };
+            page.WebSocket += (_, webSocket) =>
+            {
+                if (Volatile.Read(ref startupDiagnosticsActive) == 0)
+                {
+                    return;
+                }
+
+                var path = GetSafeStartupRequestPath(webSocket.Url);
+                if (Interlocked.Increment(ref startupWebSocketCount) <= 12 &&
+                    Volatile.Read(ref startupDiagnosticsActive) != 0)
+                {
+                    startupWebSockets.Enqueue(webSocket);
+                }
+
+                RecordStartupEvent($"websocket request {path}");
+                webSocket.SocketError += (_, _) => RecordStartupEvent($"websocket error {path}");
+                webSocket.Close += (_, _) => RecordStartupEvent($"websocket closed {path}");
+            };
             page.SetDefaultTimeout(30_000);
             var response = await page.GotoAsync($"{fixture.BaseAddress}/clients/mgmt", new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 30_000 });
             Assert.NotNull(response);
             Assert.True(response.Ok, $"Client-management fixture returned HTTP {response.Status}.");
 
             var shellWait = new LocatorWaitForOptions { State = WaitForSelectorState.Visible, Timeout = 90_000 };
-            await page.GetByTestId("app-main-content").WaitForAsync(shellWait);
+            try
+            {
+                await page.GetByTestId("app-main-content").WaitForAsync(shellWait);
+                Interlocked.Exchange(ref startupDiagnosticsActive, 0);
+            }
+            catch (TimeoutException exception)
+            {
+                Interlocked.Exchange(ref startupDiagnosticsActive, 0);
+                var domSummary = "unavailable";
+                try
+                {
+                    domSummary = await page.EvaluateAsync<string>("""
+                        () => {
+                            const mainContent = document.querySelector('[data-testid="app-main-content"]');
+                            const errorUi = document.querySelector('#blazor-error-ui');
+                            const errorStyle = errorUi ? getComputedStyle(errorUi) : null;
+                            return [
+                                `ready=${document.readyState}`,
+                                `shell=${Boolean(mainContent)}`,
+                                `blazorErrorVisible=${Boolean(errorUi && errorStyle && errorStyle.display !== 'none' && errorStyle.visibility !== 'hidden')}`,
+                                `bodyChildren=${document.body?.children.length ?? 0}`,
+                                `frameworkScript=${Boolean(document.querySelector('script[src="/_framework/blazor.web.js"]'))}`
+                            ].join(',');
+                        }
+                        """).WaitAsync(TimeSpan.FromSeconds(3));
+                }
+                catch (Exception diagnosticException) when (diagnosticException is PlaywrightException or TimeoutException)
+                {
+                    domSummary = $"unavailable ({diagnosticException.GetType().Name})";
+                }
+
+                throw new TimeoutException(
+                    $"The delayed GitHub fixture shell did not start at {GetSafeStartupRequestPath(page.Url)}. DOM summary: {domSummary}. Browser startup events: {FormatStartupEvents(startupEvents)}. WebSocket states: {FormatSafeWebSocketStates(startupWebSockets)}. Fixture server diagnostics: {FormatSafeServerDiagnostics(fixture)}",
+                    exception);
+            }
             await page.GetByTestId("client-management-tabs").WaitForAsync(shellWait);
             var initialImportPack = page.GetByTestId("github-release-name")
                 .GetByText(ExpectedGitHubReleases[0].Name, new() { Exact = true })
@@ -389,6 +493,23 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
         {
             await context.CloseAsync();
         }
+    }
+
+    [Fact]
+    public void StartupDiagnosticsKeepOnlySafePathsAndFailureCategories()
+    {
+        const string url = "http://127.0.0.1/clients/mgmt?code=fixture-secret#access_token=fixture-secret";
+        const string serverMessage = "Microsoft.AspNetCore.Components.Server.Circuits.CircuitHost [Warning]: access_token=fixture-secret | System.InvalidOperationException: fixture-secret";
+
+        Assert.Equal("/clients/mgmt", GetSafeStartupRequestPath(url));
+        Assert.Equal("(other)", GetSafeStartupRequestPath("https://fixture.test/clients/secret-capability"));
+        Assert.Equal("/_content/(asset)", GetSafeStartupRequestPath("https://fixture.test/_content/secret-capability/asset.js?code=fixture-secret"));
+        Assert.Equal("/_blazor/(endpoint)", GetSafeStartupRequestPath("https://fixture.test/_blazor/secret-capability?token=fixture-secret"));
+        Assert.Equal("net::ERR_CONNECTION_RESET", GetSafeNetworkFailure("net::ERR_CONNECTION_RESET; token=fixture-secret"));
+        Assert.Equal("network failure", GetSafeNetworkFailure("net::ERR_secret-capability-token"));
+        Assert.Equal("network failure", GetSafeNetworkFailure("Authorization: Bearer fixture-secret"));
+        Assert.Equal("Blazor circuit [Warning]", FormatSafeServerDiagnostic(serverMessage));
+        Assert.DoesNotContain("fixture-secret", FormatSafeServerDiagnostic(serverMessage), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -543,6 +664,89 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
         webSockets.IsEmpty
             ? "(none)"
             : string.Join(", ", webSockets.Select(webSocket => $"{GetSafeRequestPath(webSocket.Url)} closed={webSocket.IsClosed}"));
+
+    private static string FormatSafeWebSocketStates(ConcurrentQueue<IWebSocket> webSockets) =>
+        webSockets.IsEmpty
+            ? "(none)"
+            : string.Join(", ", webSockets.Take(12).Select(webSocket => $"{GetSafeStartupRequestPath(webSocket.Url)} closed={webSocket.IsClosed}"));
+
+    private static string FormatSafeServerDiagnostics(ClientsManagementFixtureHost fixture)
+    {
+        var messages = fixture.StartupServerDiagnostics;
+        if (messages.Count == 0)
+        {
+            return "(none)";
+        }
+
+        var categories = messages.Take(12).Select(FormatSafeServerDiagnostic);
+        var omittedCount = messages.Count - Math.Min(messages.Count, 12);
+        return omittedCount == 0
+            ? string.Join(" | ", categories)
+            : $"{string.Join(" | ", categories)} | {omittedCount} additional event(s) omitted";
+    }
+
+    private static string FormatSafeServerDiagnostic(string message)
+    {
+        var levelStart = message.IndexOf(" [", StringComparison.Ordinal);
+        if (levelStart <= 0)
+        {
+            return "unknown server warning/error";
+        }
+
+        var levelEnd = message.IndexOf(']', levelStart + 2);
+        if (levelEnd < 0)
+        {
+            return "unknown server warning/error";
+        }
+
+        var category = GetSafeServerDiagnosticCategory(message[..levelStart]);
+        var rawLevel = message[(levelStart + 2)..levelEnd];
+        var level = rawLevel is "Warning" or "Error" ? rawLevel : "other";
+        return $"{category} [{level}]";
+    }
+
+    private static string GetSafeServerDiagnosticCategory(string category) => category switch
+    {
+        "Microsoft.AspNetCore.Server.Kestrel" => "Kestrel",
+        "Microsoft.AspNetCore.Hosting.Diagnostics" => "Hosting",
+        "Microsoft.AspNetCore.StaticFiles.StaticFileMiddleware" => "Static files",
+        "Microsoft.Hosting.Lifetime" => "Host lifetime",
+        _ when category.StartsWith("Microsoft.AspNetCore.Components.Server.Circuits.", StringComparison.Ordinal) => "Blazor circuit",
+        _ when category.StartsWith("Microsoft.AspNetCore.Http.Connections.", StringComparison.Ordinal) => "SignalR connection",
+        _ when category.StartsWith("Microsoft.AspNetCore.SignalR.", StringComparison.Ordinal) => "SignalR",
+        _ => "other server"
+    };
+
+    private static string GetSafeStartupRequestPath(string requestUrl)
+    {
+        var path = GetSafeRequestPath(requestUrl);
+        return path switch
+        {
+            "/" or "/clients/mgmt" or "/_framework/blazor.web.js" or "/_content/MudBlazor/MudBlazor.min.js" or "/js/theme-preference.js" or "/app-site.css" or "/NetRatel.Web.styles.css" => path,
+            _ when path.StartsWith("/_framework/", StringComparison.Ordinal) => "/_framework/(asset)",
+            _ when path.StartsWith("/_content/", StringComparison.Ordinal) => "/_content/(asset)",
+            _ when path.StartsWith("/_blazor", StringComparison.Ordinal) => "/_blazor/(endpoint)",
+            _ => "(other)"
+        };
+    }
+
+    private static string GetSafeNetworkFailure(string? failure)
+    {
+        if (failure is not null)
+        {
+            foreach (var knownFailure in SafeNetworkFailures)
+            {
+                if (failure.Equals(knownFailure, StringComparison.Ordinal) ||
+                    failure.StartsWith($"{knownFailure};", StringComparison.Ordinal) ||
+                    failure.StartsWith($"{knownFailure} ", StringComparison.Ordinal))
+                {
+                    return knownFailure;
+                }
+            }
+        }
+
+        return "network failure";
+    }
 
     private static string GetSafeRequestPath(string requestUrl) =>
         Uri.TryCreate(requestUrl, UriKind.Absolute, out var uri)
