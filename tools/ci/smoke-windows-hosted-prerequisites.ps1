@@ -67,7 +67,8 @@ $script:safeFailureCodes = [System.Collections.Generic.HashSet[string]]::new([Sy
     'postgres_started_identity_unavailable', 'postgres_status_unknown', 'postgres_stop_ownership_unavailable',
     'postgres_stopped_status_conflicts_with_live_owned_process', 'postgres_stopped_status_conflicts_with_tracked_process',
     'postgresql_migrations_not_observed', 'postgresql_version_mismatch', 'process_exit_nonzero',
-    'process_output_pipe_timeout', 'process_start_failed', 'process_timeout', 'product_version_resolution_failed',
+    'process_output_policy_not_allowed', 'process_output_pipe_timeout', 'process_start_failed', 'process_timeout',
+    'product_version_resolution_failed',
     'repository_checkout_path_mismatch', 'runner_temp_required', 'source_provenance_missing',
     'task_root_ownership_check_failed', 'traefik_version_or_architecture_mismatch', 'vendor_archive_digest_mismatch',
     'vendor_archive_layout_unexpected', 'windows_11_required', 'windows_required'
@@ -175,8 +176,32 @@ function Invoke-CapturedProcess {
         [string]$WorkingDirectory = $script:taskRoot,
         [System.Collections.IDictionary]$Environment = @{},
         [PSCredential]$Credential,
-        [switch]$AllowNonZeroExitCode
+        [switch]$AllowNonZeroExitCode,
+        [switch]$PgCtlStartWithInheritedOutputPipes
     )
+    $skipOutputPipeDrain = $false
+    if ($PgCtlStartWithInheritedOutputPipes) {
+        $expectedPgCtl = [System.IO.Path]::GetFullPath($script:pgCtlExe)
+        $actualExecutable = [System.IO.Path]::GetFullPath($FilePath)
+        $logArgumentIndex = [Array]::IndexOf([string[]]$ArgumentList, '-l')
+        $hasPrivateServerLog = $logArgumentIndex -ge 0 -and
+            $logArgumentIndex + 1 -lt $ArgumentList.Length -and
+            -not [string]::IsNullOrWhiteSpace($ArgumentList[$logArgumentIndex + 1])
+        if ($hasPrivateServerLog -and -not [string]::IsNullOrWhiteSpace($script:pgLog)) {
+            $expectedServerLog = [System.IO.Path]::GetFullPath($script:pgLog)
+            $actualServerLog = [System.IO.Path]::GetFullPath($ArgumentList[$logArgumentIndex + 1])
+            $hasPrivateServerLog = $actualServerLog -ieq $expectedServerLog
+        }
+        else { $hasPrivateServerLog = $false }
+        $hasWait = [Array]::IndexOf([string[]]$ArgumentList, '-w') -ge 0
+        $hasSilent = [Array]::IndexOf([string[]]$ArgumentList, '-s') -ge 0
+        if ($actualExecutable -ine $expectedPgCtl -or
+            $ArgumentList.Length -eq 0 -or $ArgumentList[-1] -cne 'start' -or
+            -not $hasPrivateServerLog -or -not $hasWait -or -not $hasSilent) {
+            throw 'process_output_policy_not_allowed'
+        }
+        $skipOutputPipeDrain = $true
+    }
     $process = [System.Diagnostics.Process]::new()
     $process.StartInfo = Get-ProcessStartInfo -FilePath $FilePath -ArgumentList $ArgumentList -WorkingDirectory $WorkingDirectory -Environment $Environment -Credential $Credential
     $script:currentOperation = "process:$([System.IO.Path]::GetFileName($FilePath))"
@@ -184,16 +209,25 @@ function Invoke-CapturedProcess {
     $keepProcessHandle = $false
     $processId = $null
     $processStartTicks = $null
+    $outputTasks = @()
     try {
         if (-not $process.Start()) { throw 'process_start_failed' }
         $processId = $process.Id
         $processStartTicks = $process.StartTime.ToUniversalTime().Ticks
-        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
-        $stderrTask = $process.StandardError.ReadToEndAsync()
+        # On Windows pg_ctl start launches a shell that inherits these redirected handles.
+        # Its -l target is the private server log and -s suppresses routine pg_ctl output, but
+        # the daemon can keep pipe handles open after pg_ctl exits. Avoid creating EOF readers
+        # only for this validated start; Process.Dispose closes the parent pipes with no reader
+        # tasks left running. The bounded parent exit and subsequent status/PID checks still apply.
+        if (-not $skipOutputPipeDrain) {
+            $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+            $stderrTask = $process.StandardError.ReadToEndAsync()
+            $outputTasks = @($stdoutTask, $stderrTask)
+        }
         if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
             try { $process.Kill($true) } catch { }
             $exited = $process.WaitForExit(10000)
-            $streamsClosed = [System.Threading.Tasks.Task]::WaitAll([System.Threading.Tasks.Task[]]@($stdoutTask, $stderrTask), 10000)
+            $streamsClosed = $skipOutputPipeDrain -or [System.Threading.Tasks.Task]::WaitAll([System.Threading.Tasks.Task[]]$outputTasks, 10000)
             if (-not $exited -or -not $streamsClosed) {
                 $keepProcessHandle = $true
                 $script:cleanup.captured_processes_stopped = $false
@@ -202,16 +236,16 @@ function Invoke-CapturedProcess {
                     Process = $process
                     ProcessId = $processId
                     StartTimeTicks = $processStartTicks
-                    OutputTasks = @($stdoutTask, $stderrTask)
+                    OutputTasks = $outputTasks
                 })
             }
             throw 'process_timeout'
         }
-        $streamsClosed = [System.Threading.Tasks.Task]::WaitAll([System.Threading.Tasks.Task[]]@($stdoutTask, $stderrTask), 10000)
+        $streamsClosed = $skipOutputPipeDrain -or [System.Threading.Tasks.Task]::WaitAll([System.Threading.Tasks.Task[]]$outputTasks, 10000)
         if (-not $streamsClosed) {
             try { $process.Kill($true) } catch { }
             $exited = $process.WaitForExit(10000)
-            $streamsClosed = [System.Threading.Tasks.Task]::WaitAll([System.Threading.Tasks.Task[]]@($stdoutTask, $stderrTask), 10000)
+            $streamsClosed = [System.Threading.Tasks.Task]::WaitAll([System.Threading.Tasks.Task[]]$outputTasks, 10000)
             if (-not $exited -or -not $streamsClosed) {
                 $keepProcessHandle = $true
                 $script:cleanup.captured_processes_stopped = $false
@@ -220,13 +254,19 @@ function Invoke-CapturedProcess {
                     Process = $process
                     ProcessId = $processId
                     StartTimeTicks = $processStartTicks
-                    OutputTasks = @($stdoutTask, $stderrTask)
+                    OutputTasks = $outputTasks
                 })
             }
             throw 'process_output_pipe_timeout'
         }
-        $stdout = $stdoutTask.GetAwaiter().GetResult()
-        $stderr = $stderrTask.GetAwaiter().GetResult()
+        if ($skipOutputPipeDrain) {
+            $stdout = ''
+            $stderr = ''
+        }
+        else {
+            $stdout = $stdoutTask.GetAwaiter().GetResult()
+            $stderr = $stderrTask.GetAwaiter().GetResult()
+        }
         $script:lastProcessExitCode = $process.ExitCode
         if ($process.ExitCode -ne 0 -and -not $AllowNonZeroExitCode) { throw 'process_exit_nonzero' }
         return [pscustomobject]@{ ExitCode = $process.ExitCode; StandardOutput = $stdout; StandardError = $stderr }
@@ -630,7 +670,7 @@ try {
         $serverOptions = "-h 127.0.0.1 -p $($script:postgresPort) -c listen_addresses=127.0.0.1"
         $script:postgresStartAttempted = $true
         $script:cleanup.postgresql_stopped = $false
-        $null = Invoke-CapturedProcess -FilePath $script:pgCtlExe -ArgumentList @('-D', $dataDirectory, '-l', $script:pgLog, '-o', $serverOptions, '-w', '-t', '45', 'start') -TimeoutSeconds 75 -WorkingDirectory $script:pgBin -Environment @{ TEMP = $dataDirectory; TMP = $dataDirectory } -Credential $script:postgresCredential
+        $null = Invoke-CapturedProcess -FilePath $script:pgCtlExe -ArgumentList @('-D', $dataDirectory, '-l', $script:pgLog, '-o', $serverOptions, '-s', '-w', '-t', '45', 'start') -TimeoutSeconds 75 -WorkingDirectory $script:pgBin -Environment @{ TEMP = $dataDirectory; TMP = $dataDirectory } -Credential $script:postgresCredential -PgCtlStartWithInheritedOutputPipes
         $status = Get-PostgresCtlStatus
         if ($status.ExitCode -ne 0) { throw 'postgres_start_not_observed' }
         $script:postgresIdentity = Get-PostgresIdentityFromPidFile

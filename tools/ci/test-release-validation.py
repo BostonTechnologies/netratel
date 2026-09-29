@@ -316,9 +316,43 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
         self.assertIsNotNone(allowlist, "Sanitized failure codes must come from a bounded explicit list.")
         codes = set(re.findall(r"'([a-z][a-z0-9_]{0,79})'", allowlist.group("codes")))
         self.assertIn("process_timeout", codes)
+        self.assertIn("process_output_policy_not_allowed", codes)
         self.assertNotIn("arbitrary_lowercase_message", codes)
         self.assertIn("$script:safeFailureCodes.Contains($SafeCode)", script)
         self.assertNotIn("$SafeCode -match", script)
+
+    def test_pg_ctl_daemon_start_does_not_wait_for_descendant_output_pipe_eof(self):
+        script = (ROOT / "tools/ci/smoke-windows-hosted-prerequisites.ps1").read_text(encoding="utf-8")
+        function_start = script.index("function Invoke-CapturedProcess {")
+        function_end = script.index("\nfunction Start-OwnedProcess {", function_start)
+        process_function = script[function_start:function_end]
+        self.assertIn("[switch]$PgCtlStartWithInheritedOutputPipes", process_function)
+        self.assertIn("$actualExecutable -ine $expectedPgCtl", process_function)
+        self.assertIn("$actualServerLog -ieq $expectedServerLog", process_function)
+        self.assertIn("$ArgumentList[-1] -cne 'start'", process_function)
+        self.assertIn("-not $hasPrivateServerLog -or -not $hasWait -or -not $hasSilent", process_function)
+        self.assertIn("throw 'process_output_policy_not_allowed'", process_function)
+        self.assertIn("if (-not $skipOutputPipeDrain) {", process_function)
+        self.assertIn("$process.StandardOutput.ReadToEndAsync()", process_function)
+        self.assertIn("$process.StandardError.ReadToEndAsync()", process_function)
+        self.assertIn("'process_output_pipe_timeout'", process_function)
+        self.assertIn("[System.Threading.Tasks.Task]::WaitAll([System.Threading.Tasks.Task[]]$outputTasks, 10000)", process_function)
+        self.assertIn("$process.Dispose()", process_function)
+
+        opt_in_calls = re.findall(r"(?m)^\s*\$null = Invoke-CapturedProcess[^\n]*-PgCtlStartWithInheritedOutputPipes\s*$", script)
+        self.assertEqual(1, len(opt_in_calls), "Only the verified pg_ctl daemon-start call may skip descendant-held pipe EOF.")
+        pg_ctl_start = opt_in_calls[0]
+        self.assertIn("-FilePath $script:pgCtlExe", pg_ctl_start)
+        self.assertIn("'-l', $script:pgLog", pg_ctl_start)
+        self.assertIn("'-s', '-w'", pg_ctl_start)
+        self.assertRegex(pg_ctl_start, r"'start'\).*?-PgCtlStartWithInheritedOutputPipes$")
+        call_index = script.index(pg_ctl_start)
+        status_index = script.index("$status = Get-PostgresCtlStatus", call_index)
+        identity_index = script.index("$script:postgresIdentity = Get-PostgresIdentityFromPidFile", status_index)
+        database_index = script.index("$null = Invoke-CapturedProcess -FilePath $script:createdbExe", identity_index)
+        self.assertLess(call_index, status_index)
+        self.assertLess(status_index, identity_index)
+        self.assertLess(identity_index, database_index)
 
 
 class ChromiumNssSmokeTests(unittest.TestCase):
