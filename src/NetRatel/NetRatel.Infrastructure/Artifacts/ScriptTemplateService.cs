@@ -105,18 +105,6 @@ if ($existingService) {
     if ($null -ne $existingEnvironmentValue) { $existingServiceEnvironment = @($existingEnvironmentValue) }
 }
 
-function Get-NetRatelServiceEnvironmentValue([string] $name) {
-    foreach ($entry in $existingServiceEnvironment) {
-        if ($entry -isnot [string]) { continue }
-        $separator = $entry.IndexOf('=')
-        if ($separator -le 0) { continue }
-        if ($entry.Substring(0, $separator).Equals($name, [StringComparison]::OrdinalIgnoreCase)) {
-            return $entry.Substring($separator + 1)
-        }
-    }
-    return $null
-}
-
 function Get-NetRatelCanonicalPath([string] $value, [string] $settingName) {
     if ([string]::IsNullOrWhiteSpace($value)) { return $null }
     if (-not [System.IO.Path]::IsPathRooted($value)) { throw "$settingName must be an absolute path." }
@@ -1062,10 +1050,22 @@ $Version = "{{(string.IsNullOrWhiteSpace(request.ArtifactVersion) ? "latest" : r
 $ExpectedSha256 = "{{(string.IsNullOrWhiteSpace(request.ArtifactSha256) ? string.Empty : request.ArtifactSha256)}}"
 $RootDir = if ($env:NetRatel_ROOT) { $env:NetRatel_ROOT } else { Join-Path $env:ProgramFiles "NetRatel\Client" }
 $StateDir = if ($env:NetRatel_STATE) { $env:NetRatel_STATE } else { Join-Path $env:ProgramData "NetRatel\update" }
+$existingServiceEnvironment = @()
+function Get-NetRatelServiceEnvironmentValue([string] $name) {
+    foreach ($entry in $existingServiceEnvironment) {
+        if ($entry -isnot [string]) { continue }
+        $separator = $entry.IndexOf('=')
+        if ($separator -le 0) { continue }
+        if ($entry.Substring(0, $separator).Equals($name, [StringComparison]::OrdinalIgnoreCase)) {
+            return $entry.Substring($separator + 1)
+        }
+    }
+    return $null
+}
+{{servicePreflightBlock}}
 $configuredServiceLogDir = Get-NetRatelServiceEnvironmentValue 'NetRatel_CLIENT_LOG_DIR'
 $logDirWasExplicit = -not [string]::IsNullOrWhiteSpace($env:NetRatel_LOG_DIR)
 $LogDir = if ($logDirWasExplicit) { $env:NetRatel_LOG_DIR } elseif ($configuredServiceLogDir) { $configuredServiceLogDir } else { Join-Path $env:ProgramData "NetRatel\logs" }
-{{servicePreflightBlock}}
 $UpdaterDir = Join-Path $RootDir "updater"
 $VersionsDir = Join-Path $RootDir "versions"
 $StagingDir = Join-Path $RootDir "staging"

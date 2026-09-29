@@ -279,6 +279,28 @@ EnvironmentFile=-{{optionalEnvironmentFile}}
         trustedSidStart.Should().BeGreaterThanOrEqualTo(0);
         trustedSidEnd.Should().BeGreaterThan(trustedSidStart);
         script[trustedSidStart..trustedSidEnd].Should().NotContain("$existingService.StartName");
+        var serviceEnvironmentFunction = script.IndexOf("function Get-NetRatelServiceEnvironmentValue", StringComparison.Ordinal);
+        var initialRootAssignment = script.IndexOf("$RootDir = if ($env:NetRatel_ROOT)", StringComparison.Ordinal);
+        Assert.True(initialRootAssignment >= 0, "Generated Windows installer is missing the initial install-root selection.");
+        var initialStateAssignment = script.IndexOf("$StateDir = if ($env:NetRatel_STATE)", initialRootAssignment, StringComparison.Ordinal);
+        Assert.True(initialStateAssignment >= 0, "Generated Windows installer is missing the initial update-state selection.");
+        var servicePreflight = script.IndexOf("$serviceName = 'NetRatel.Client'", initialStateAssignment, StringComparison.Ordinal);
+        Assert.True(servicePreflight >= 0, "Generated service installer is missing its service preflight.");
+        var updaterDirectoryAssignment = script.IndexOf("$UpdaterDir = Join-Path $RootDir", servicePreflight, StringComparison.Ordinal);
+        var selectedLogDirectory = script.IndexOf("$LogDir = if ($logDirWasExplicit)", servicePreflight, StringComparison.Ordinal);
+        var configuredLogLookup = selectedLogDirectory < 0
+            ? -1
+            : script.LastIndexOf("$configuredServiceLogDir = Get-NetRatelServiceEnvironmentValue 'NetRatel_CLIENT_LOG_DIR'", selectedLogDirectory, StringComparison.Ordinal);
+        var processLogOverride = configuredLogLookup < 0
+            ? -1
+            : script.IndexOf("$logDirWasExplicit = -not [string]::IsNullOrWhiteSpace($env:NetRatel_LOG_DIR)", configuredLogLookup, StringComparison.Ordinal);
+        serviceEnvironmentFunction.Should().BeGreaterThan(initialStateAssignment);
+        serviceEnvironmentFunction.Should().BeLessThan(servicePreflight);
+        servicePreflight.Should().BeLessThan(configuredLogLookup);
+        configuredLogLookup.Should().BeLessThan(processLogOverride);
+        processLogOverride.Should().BeLessThan(selectedLogDirectory);
+        selectedLogDirectory.Should().BeLessThan(updaterDirectoryAssignment);
+        script.Should().Contain("$LogDir = if ($logDirWasExplicit) { $env:NetRatel_LOG_DIR } elseif ($configuredServiceLogDir) { $configuredServiceLogDir } else { Join-Path $env:ProgramData \"NetRatel\\logs\" }");
         script.Should().Contain("versions");
         script.Should().Contain("netratel-update.ps1");
         script.Should().Contain("/onboarding-download");
@@ -341,7 +363,63 @@ EnvironmentFile=-{{optionalEnvironmentFile}}
         script.Should().Contain("--enroll $EnrollmentCode --api $ApiBase");
         script.Should().Contain("NetRatel client installed and enrolled; no service readiness was requested.");
         script.Should().NotContain("netratel.install-readiness.request.v1");
+        script.Should().Contain("$existingServiceEnvironment = @()");
+        script.Should().Contain("function Get-NetRatelServiceEnvironmentValue");
+        script.Should().NotContain("$serviceName = 'NetRatel.Client'");
         AssertNoRetiredClientDefaults(script);
+    }
+
+    [Theory]
+    [InlineData(true, true, true, "process")]
+    [InlineData(true, false, true, "service")]
+    [InlineData(true, false, false, "fallback")]
+    [InlineData(false, true, true, "process")]
+    [InlineData(false, false, true, "fallback")]
+    public async Task Build_PowerShell_LogDirectoryResolutionHonorsProcessServiceAndFallback(
+        bool installAsService,
+        bool processLogDirectoryIsSet,
+        bool serviceLogDirectoryIsSet,
+        string expectedSource)
+    {
+        var service = new ScriptTemplateService();
+        var script = service.Build(new DeploymentScriptTemplateRequest(
+            TenantId: 4098,
+            RuntimeId: "win-x64",
+            EnrollmentCode: "ENR-ABC123",
+            ApiBaseUrl: "https://netratel.example.invalid",
+            ValidToUtc: DateTimeOffset.UtcNow.AddHours(1),
+            InstallAsService: installAsService,
+            SilentInstall: true));
+        var root = Path.Combine(Path.GetTempPath(), $"netratel-installer-log-path-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+
+        try
+        {
+            var programData = Path.Combine(root, "program-data");
+            var processLogDirectory = processLogDirectoryIsSet ? Path.Combine(root, "process-logs") : null;
+            var serviceLogDirectory = serviceLogDirectoryIsSet ? Path.Combine(root, "service-logs") : null;
+            var expectedLogDirectory = expectedSource switch
+            {
+                "process" => processLogDirectory,
+                "service" => serviceLogDirectory,
+                "fallback" => Path.Combine(programData, "NetRatel", "logs"),
+                _ => throw new InvalidOperationException($"Unknown expected log-directory source '{expectedSource}'.")
+            };
+
+            var selectedLogDirectory = await RunPowerShellLogDirectoryResolverAsync(
+                script,
+                Path.Combine(root, "client"),
+                Path.Combine(root, "update-state"),
+                programData,
+                processLogDirectory,
+                serviceLogDirectory);
+
+            selectedLogDirectory.Should().Be(expectedLogDirectory);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
     }
 
     [Fact]
@@ -796,6 +874,98 @@ EnvironmentFile=-{{optionalEnvironmentFile}}
 
     private static string PlistKeyElement(string name)
         => string.Concat("<", "key>", name, "</", "key>");
+
+    private static async Task<string> RunPowerShellLogDirectoryResolverAsync(
+        string script,
+        string installRoot,
+        string stateDirectory,
+        string programData,
+        string? processLogDirectory,
+        string? serviceLogDirectory)
+    {
+        const string assignment = "$LogDir = if ($logDirWasExplicit)";
+        var assignmentStart = script.IndexOf(assignment, StringComparison.Ordinal);
+        Assert.True(assignmentStart >= 0, "Generated Windows installer is missing its log-directory selection.");
+        var assignmentEnd = script.IndexOf('\n', assignmentStart);
+        var generatedPrefix = assignmentEnd >= 0 ? script[..assignmentEnd] : script;
+        var harness = string.Join(Environment.NewLine,
+            "$ErrorActionPreference = 'Stop'",
+            "function Get-CimInstance { [CmdletBinding()] param([string]$ClassName,[string]$Filter) if ($ClassName -eq 'Win32_Service') { return [pscustomobject]@{ PathName=$env:NETRATEL_TEST_SERVICE_PATH } }; return $null }",
+            "function Get-ItemProperty { [CmdletBinding()] param([string]$Path) return [pscustomobject]@{ Environment=@($env:NETRATEL_TEST_SERVICE_ENVIRONMENT) } }",
+            "function Test-Path { [CmdletBinding()] param([string]$LiteralPath,[string]$PathType,[switch]$Force) return $false }",
+            generatedPrefix,
+            "Write-Output ('NETRATEL_SELECTED_LOG_DIR=' + $LogDir)");
+        var harnessRoot = Path.Combine(Path.GetTempPath(), $"netratel-installer-log-resolver-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(harnessRoot);
+
+        try
+        {
+            var harnessPath = Path.Combine(harnessRoot, "verify-log-directory.ps1");
+            await File.WriteAllTextAsync(harnessPath, harness);
+            var executable = OperatingSystem.IsWindows()
+                ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell", "v1.0", "powershell.exe")
+                : "pwsh";
+            using var process = new Process
+            {
+                StartInfo = new ProcessStartInfo(executable)
+                {
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false
+                }
+            };
+            process.StartInfo.ArgumentList.Add("-NoProfile");
+            process.StartInfo.ArgumentList.Add("-NonInteractive");
+            process.StartInfo.ArgumentList.Add("-File");
+            process.StartInfo.ArgumentList.Add(harnessPath);
+            process.StartInfo.Environment["NetRatel_ROOT"] = installRoot;
+            process.StartInfo.Environment["NetRatel_STATE"] = stateDirectory;
+            process.StartInfo.Environment["ProgramFiles"] = Path.Combine(harnessRoot, "program-files");
+            process.StartInfo.Environment["ProgramData"] = programData;
+            process.StartInfo.Environment["NETRATEL_TEST_SERVICE_PATH"] = $"\"{Path.Combine(installRoot, "NetRatel.Client.exe")}\"";
+            if (processLogDirectory is null)
+                process.StartInfo.Environment.Remove("NetRatel_LOG_DIR");
+            else
+                process.StartInfo.Environment["NetRatel_LOG_DIR"] = processLogDirectory;
+            if (serviceLogDirectory is null)
+                process.StartInfo.Environment.Remove("NETRATEL_TEST_SERVICE_ENVIRONMENT");
+            else
+                process.StartInfo.Environment["NETRATEL_TEST_SERVICE_ENVIRONMENT"] = $"NetRatel_CLIENT_LOG_DIR={serviceLogDirectory}";
+
+            process.Start();
+
+            var stdoutTask = process.StandardOutput.ReadToEndAsync();
+            var stderrTask = process.StandardError.ReadToEndAsync();
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            try
+            {
+                await process.WaitForExitAsync(timeout.Token);
+            }
+            catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+            {
+                if (!process.HasExited)
+                {
+                    process.Kill(entireProcessTree: true);
+                    await process.WaitForExitAsync(CancellationToken.None);
+                }
+
+                throw new TimeoutException("Generated Windows log-directory resolver did not finish within 20 seconds.");
+            }
+
+            var stdout = await stdoutTask;
+            var stderr = await stderrTask;
+            Assert.True(process.ExitCode == 0, "Generated Windows log-directory resolver failed: " + stderr);
+            const string marker = "NETRATEL_SELECTED_LOG_DIR=";
+            var selectedLine = stdout.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
+                .FirstOrDefault(line => line.StartsWith(marker, StringComparison.Ordinal));
+            Assert.NotNull(selectedLine);
+            return selectedLine[marker.Length..];
+        }
+        finally
+        {
+            Directory.Delete(harnessRoot, recursive: true);
+        }
+    }
 
     private static string PowerShellLiteral(string value)
         => $"'{value.Replace("'", "''", StringComparison.Ordinal)}'";

@@ -379,6 +379,75 @@ fi
             with self.subTest(workflow=workflow.name):
                 self.assertIn("libnss3-tools", workflow.read_text())
 
+    def test_pinned_oidc_compose_uses_one_subject_profile_for_browser_code_and_refresh_tokens(self):
+        page = (ROOT / "tests/compose/oidc-smoke-login.html").read_text()
+        profile_block = re.search(
+            r'<script id="oidc-claim-profiles" type="application/json">([\s\S]*?)</script>',
+            page,
+        )
+        self.assertIsNotNone(profile_block)
+        profiles = json.loads(profile_block.group(1))
+        self.assertEqual(
+            set(profiles),
+            {
+                "netratel-test-operator",
+                "netratel-test-tenant-admin",
+                "netratel-test-unprivileged",
+            },
+        )
+        for subject, claims in profiles.items():
+            with self.subTest(subject=subject):
+                self.assertEqual(claims["sub"], subject)
+                self.assertEqual(claims["aud"], ["netratel-smoke-client", "netratel.api"])
+                self.assertEqual(
+                    claims.get("roles", []),
+                    ["Operator"] if subject == "netratel-test-operator" else [],
+                )
+                self.assertTrue(claims["preferred_username"].endswith("@example.test"))
+
+        compose_files = (
+            ROOT / "tests/compose/oidc-smoke.compose.yaml",
+            ROOT / "tests/compose/oidc-smoke.production.compose.yaml",
+        )
+        for compose_file in compose_files:
+            source = compose_file.read_text()
+            config_block = re.search(r"(?m)^\s+JSON_CONFIG:\s*>-\s*\n\s+(\{[^\n]+\})\s*$", source)
+            self.assertIsNotNone(config_block, str(compose_file))
+            provider_config = json.loads(config_block.group(1))
+            with self.subTest(compose_file=compose_file.name):
+                self.assertEqual(provider_config["loginPagePath"], "/run/netratel-smoke/oidc-login.html")
+                callbacks = provider_config["tokenCallbacks"]
+                self.assertEqual(len(callbacks), 1)
+                self.assertEqual(
+                    [mapping["match"] for mapping in callbacks[0]["requestMappings"]],
+                    ["netratel-cli-smoke-client"],
+                )
+
+        base_compose = compose_files[0].read_text()
+        self.assertIn("file: ${PWD}/tests/compose/oidc-smoke-login.html", base_compose)
+        self.assertIn("target: /run/netratel-smoke/oidc-login.html", base_compose)
+        self.assertIn('usernameInput.addEventListener("input", updateClaims)', page)
+        self.assertIn('loginForm.addEventListener("submit", updateClaims)', page)
+
+        smoke = (ROOT / "tools/ci/smoke-oidc-compose.sh").read_text()
+        self.assertIn('claims=${claims_json}', smoke)
+        self.assertIn('claims=${operator_claims_json}', smoke)
+        request_helper = re.search(
+            r"request_oidc_access_token\(\) \{([\s\S]*?)\n\}",
+            smoke,
+        )
+        self.assertIsNotNone(request_helper)
+        for token_variable in (
+            "$access_token", "$id_token", "$refreshed_access_token", "$refreshed_id_token",
+        ):
+            self.assertIn(f'verify_oidc_smoke_token_claims "{token_variable}"', smoke)
+            self.assertRegex(
+                request_helper.group(1),
+                re.escape(f'verify_oidc_smoke_token_claims "{token_variable}"')
+                + r'\s+"\$claims_json".*\|\|\s*return 1',
+            )
+        self.assertIn("grant_type=refresh_token", smoke)
+
 
 class RuntimeSelectorRetirementTests(unittest.TestCase):
     api_retired_properties = (

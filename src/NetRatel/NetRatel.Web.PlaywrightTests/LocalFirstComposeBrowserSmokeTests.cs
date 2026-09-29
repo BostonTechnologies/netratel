@@ -1093,7 +1093,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
                 new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
             await page.GetByText("You do not have an access-administration tenant scope.", new() { Exact = true })
                 .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
-            await page.GetByTestId("access-scope").ClickAsync();
+            await page.GetByRole(AriaRole.Combobox, new PageGetByRoleOptions { Name = "Manage tenant", Exact = true }).ClickAsync();
             Assert.Equal(0, await page.Locator("[data-testid^='access-scope-tenant-']").CountAsync());
             return;
         }
@@ -1102,7 +1102,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
         await page.GetByTestId("access-administration-client-ready").WaitForAsync(
             new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
-        await page.GetByTestId("access-scope").ClickAsync();
+        await page.GetByRole(AriaRole.Combobox, new PageGetByRoleOptions { Name = "Manage tenant", Exact = true }).ClickAsync();
         var scopedTenants = page.Locator("[data-testid^='access-scope-tenant-']");
         await scopedTenants.First.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         Assert.Equal(1, await scopedTenants.CountAsync());
