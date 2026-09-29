@@ -574,6 +574,7 @@ public sealed class WindowsInstallerNativeTests
         var legacyStateParentAclInjected = false;
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(4));
         using var fixture = new NativeGatewayHostFixture(tenantId, agentId, "ENR-SYNTHETIC-SYSTEM-GATEWAY");
+        fixture.AgentStore.FirstAdmissionObserver = () => AssertProtectedServiceReadinessRequest(stateDirectory);
         Process? repairInstallerProcess = null;
         Process? unsafeRepairInstallerProcess = null;
         try
@@ -629,6 +630,8 @@ public sealed class WindowsInstallerNativeTests
             AssertInstallerOutputHasSafeText(output, "Gateway heartbeat ready:", "gateway_ready_message");
             AssertInstallerOutputHasSafeText(output, $"agentId={agentId:D}", "agent_id_message");
             AssertInstallerOutputHasSafeText(output, $"tenantId={tenantId}", "tenant_id_message");
+            Assert.Equal(1, fixture.AgentStore.FirstAdmissionObservations);
+            Assert.Empty(fixture.AgentStore.FirstAdmissionObservationFailures);
             Assert.Equal(2, ReadWindowsServiceStartType(serviceName));
             Assert.True(File.Exists(credentialPath), "the LocalSystem service must retain its enrolled credentials");
             Assert.Equal(1, fixture.EnrollmentRequests);
@@ -2301,6 +2304,57 @@ public sealed class WindowsInstallerNativeTests
     }
 
     [SupportedOSPlatform("windows")]
+    private static void AssertProtectedServiceReadinessRequest(string stateDirectory)
+    {
+        var requestPath = Path.Combine(stateDirectory, "install-readiness", "request.json");
+        var requestFile = new FileInfo(requestPath);
+        Assert.True(requestFile.Exists, "the installer must persist the current service-readiness challenge");
+
+        var security = requestFile.GetAccessControl();
+        var administrators = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
+        var localSystem = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
+        var trustedInstaller = new NTAccount("NT SERVICE", "TrustedInstaller")
+            .Translate(typeof(SecurityIdentifier)) as SecurityIdentifier;
+        Assert.NotNull(trustedInstaller);
+        var allowedSids = new HashSet<string>(StringComparer.Ordinal)
+        {
+            administrators.Value,
+            localSystem.Value,
+            trustedInstaller!.Value
+        };
+        var owner = security.GetOwner(typeof(SecurityIdentifier)) as SecurityIdentifier;
+        var rules = security
+            .GetAccessRules(includeExplicit: true, includeInherited: true, typeof(SecurityIdentifier))
+            .Cast<FileSystemAccessRule>()
+            .ToArray();
+
+        Assert.True(security.AreAccessRulesProtected,
+            "the published readiness request must not inherit access rules");
+        Assert.Equal(administrators.Value, owner?.Value);
+        Assert.Equal(allowedSids.Count, rules.Length);
+        Assert.All(rules, rule =>
+        {
+            Assert.False(rule.IsInherited);
+            Assert.Equal(AccessControlType.Allow, rule.AccessControlType);
+            Assert.Contains(rule.IdentityReference.Value, allowedSids);
+            Assert.Equal(FileSystemRights.FullControl, rule.FileSystemRights);
+            Assert.Equal(InheritanceFlags.None, rule.InheritanceFlags);
+            Assert.Equal(PropagationFlags.None, rule.PropagationFlags);
+        });
+        Assert.All(allowedSids, sid => Assert.Contains(rules, rule => rule.IdentityReference.Value == sid));
+
+        using var request = JsonDocument.Parse(File.ReadAllText(requestPath));
+        Assert.Equal("netratel.install-readiness.request.v1", request.RootElement.GetProperty("schema").GetString());
+        Assert.True(Guid.TryParse(request.RootElement.GetProperty("attemptId").GetString(), out var attemptId));
+        Assert.NotEqual(Guid.Empty, attemptId);
+        Assert.Equal(32, Convert.FromBase64String(request.RootElement.GetProperty("nonce").GetString()!).Length);
+        var requestedAt = request.RootElement.GetProperty("requestedAtUtc").GetDateTimeOffset();
+        var expiresAt = request.RootElement.GetProperty("expiresAtUtc").GetDateTimeOffset();
+        Assert.True(requestedAt <= DateTimeOffset.UtcNow);
+        Assert.True(expiresAt > requestedAt);
+    }
+
+    [SupportedOSPlatform("windows")]
     private static void AssertWindowsServiceAbsent(string serviceName)
     {
         using var key = Registry.LocalMachine.OpenSubKey($"SYSTEM\\CurrentControlSet\\Services\\{serviceName}");
@@ -2679,14 +2733,29 @@ public sealed class WindowsInstallerNativeTests
     {
         private int _isEnrolled;
         private int _admissionCalls;
+        private int _firstAdmissionObserved;
+        private int _firstAdmissionObservationCount;
 
         public bool IsEnrolled => Volatile.Read(ref _isEnrolled) != 0;
         public int AdmissionCalls => Volatile.Read(ref _admissionCalls);
+        public int FirstAdmissionObservations => Volatile.Read(ref _firstAdmissionObservationCount);
+        public Action? FirstAdmissionObserver { get; set; }
+        public ConcurrentQueue<string> FirstAdmissionObservationFailures { get; } = new();
         public void MarkEnrolled() => Interlocked.Exchange(ref _isEnrolled, 1);
 
         public Task<AgentDetailDto?> GetAsync(int requestedTenantId, Guid requestedAgentId, CancellationToken ct)
         {
             Interlocked.Increment(ref _admissionCalls);
+            var observer = FirstAdmissionObserver;
+            if (observer is not null && Interlocked.Exchange(ref _firstAdmissionObserved, 1) == 0)
+            {
+                try
+                {
+                    observer();
+                    Interlocked.Increment(ref _firstAdmissionObservationCount);
+                }
+                catch (Exception exception) { FirstAdmissionObservationFailures.Enqueue(exception.GetType().Name); }
+            }
             AgentDetailDto? agent = IsEnrolled && requestedTenantId == tenantId && requestedAgentId == agentId
                 ? new AgentDetailDto(tenantId, agentId, "Hosted SYSTEM gateway agent", true, null,
                     DateTimeOffset.UtcNow, "native-fixture", null, null, null)

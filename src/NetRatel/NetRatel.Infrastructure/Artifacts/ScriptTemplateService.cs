@@ -311,6 +311,84 @@ function Get-NetRatelProtectedDirectoryAcl([string[]] $trustedSids) {
     return $acl
 }
 
+function Write-NetRatelProtectedReadinessRequest([string] $path, [string] $content, [string[]] $trustedSids, [bool] $allowLegacyAdministratorAncestors = $false) {
+    $directory = Split-Path -Parent $path
+    $temporaryPath = Join-Path $directory ('.request-' + [Guid]::NewGuid().ToString('N') + '.tmp')
+    $stream = $null
+    $temporaryFileCreated = $false
+    $publishFailed = $false
+    $cleanupFailed = $false
+    try {
+        Assert-NetRatelTrustedReadinessPath $directory $false $false $true $false $allowLegacyAdministratorAncestors
+
+        $security = [System.Security.AccessControl.FileSecurity]::new()
+        $security.SetAccessRuleProtection($true, $false)
+        $security.SetOwner([System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))
+        foreach ($sidValue in $trustedSids) {
+            $sid = [System.Security.Principal.SecurityIdentifier]::new($sidValue)
+            $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+                $sid, [System.Security.AccessControl.FileSystemRights]::FullControl,
+                [System.Security.AccessControl.InheritanceFlags]::None,
+                [System.Security.AccessControl.PropagationFlags]::None,
+                [System.Security.AccessControl.AccessControlType]::Allow)
+            $security.AddAccessRule($rule)
+        }
+
+        $stream = [System.IO.FileStream]::new(
+            $temporaryPath,
+            [System.IO.FileMode]::CreateNew,
+            [System.Security.AccessControl.FileSystemRights]::FullControl,
+            [System.IO.FileShare]::None,
+            4096,
+            [System.IO.FileOptions]::WriteThrough,
+            $security)
+        $temporaryFileCreated = $true
+        $bytes = [System.Text.UTF8Encoding]::new($false).GetBytes($content)
+        try {
+            $stream.Write($bytes, 0, $bytes.Length)
+            $stream.Flush($true)
+        }
+        finally {
+            [Array]::Clear($bytes, 0, $bytes.Length)
+        }
+
+        $stream.Dispose()
+        $stream = $null
+        Assert-NetRatelTrustedReadinessPath $temporaryPath $true $false $true $false $allowLegacyAdministratorAncestors
+        [System.IO.File]::Move($temporaryPath, $path)
+        $temporaryFileCreated = $false
+        Assert-NetRatelTrustedReadinessPath $path $true $false $true $false $allowLegacyAdministratorAncestors
+    }
+    catch {
+        $publishFailed = $true
+    }
+    finally {
+        if ($stream) {
+            try { $stream.Dispose() }
+            catch { $cleanupFailed = $true }
+        }
+        if ($temporaryFileCreated) {
+            try {
+                $temporaryItem = Get-Item -LiteralPath $temporaryPath -Force -ErrorAction Stop
+                if ($temporaryItem.PSIsContainer -or ($temporaryItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                    throw 'The fresh service readiness request temporary path changed type.'
+                }
+                [System.IO.File]::Delete($temporaryPath)
+                $temporaryFileCreated = $false
+            }
+            catch {
+                $cleanupFailed = $true
+            }
+        }
+    }
+
+    if ($publishFailed -and $cleanupFailed) {
+        throw 'The fresh service readiness request publication failed and temporary cleanup was incomplete.'
+    }
+    if ($publishFailed) { throw 'The fresh service readiness request could not be securely published.' }
+    if ($cleanupFailed) { throw 'The fresh service readiness request temporary cleanup was incomplete.' }
+}
+
 function New-NetRatelProtectedDirectory([string] $path, [string[]] $trustedSids, [bool] $allowLegacyAdministratorsOnParent = $false) {
     if (Test-Path -LiteralPath $path) { throw 'A protected updater state directory appeared during creation.' }
     $parentPath = Split-Path -Parent $path
@@ -1125,8 +1203,7 @@ function Initialize-NetRatelProtectedInstallDirectories {
                     requestedAtUtc = $requestedAt.ToString('O')
                     expiresAtUtc = $requestedAt.AddSeconds({{request.ReadinessTimeoutSeconds}}).ToString('O')
                 } | ConvertTo-Json -Depth 4
-                Set-Content -LiteralPath $requestPath -Value $challenge -Encoding UTF8
-                Assert-NetRatelTrustedReadinessPath $requestPath $true $false $true $false $script:NetRatelStateAncestorAllowance
+                Write-NetRatelProtectedReadinessRequest $requestPath $challenge (Get-NetRatelTrustedStateSids) $script:NetRatelStateAncestorAllowance
                 Start-Service -Name $serviceName -ErrorAction Stop
             }
             catch {

@@ -255,7 +255,14 @@ EnvironmentFile=-{{optionalEnvironmentFile}}
         script.Should().Contain("$script:NetRatelStateAncestorAllowance = [bool]($stateWasExplicit -or $trustedServiceState)");
         script.Should().Contain("Assert-NetRatelTrustedReadinessPath $readinessDir $false $false $true $false $script:NetRatelStateAncestorAllowance");
         script.Should().Contain("Assert-NetRatelTrustedReadinessPath $readinessFile $true $false $true $false $script:NetRatelStateAncestorAllowance");
-        script.Should().Contain("Assert-NetRatelTrustedReadinessPath $requestPath $true $false $true $false $script:NetRatelStateAncestorAllowance");
+        script.Should().Contain("function Write-NetRatelProtectedReadinessRequest");
+        script.Should().Contain("[System.IO.FileMode]::CreateNew");
+        script.Should().Contain("[System.Security.AccessControl.FileSystemRights]::FullControl");
+        script.Should().Contain("Assert-NetRatelTrustedReadinessPath $temporaryPath $true $false $true $false $allowLegacyAdministratorAncestors");
+        script.Should().Contain("[System.IO.File]::Move($temporaryPath, $path)");
+        script.Should().Contain("Assert-NetRatelTrustedReadinessPath $path $true $false $true $false $allowLegacyAdministratorAncestors");
+        script.Should().Contain("Write-NetRatelProtectedReadinessRequest $requestPath $challenge (Get-NetRatelTrustedStateSids) $script:NetRatelStateAncestorAllowance");
+        script.Should().NotContain("Set-Content -LiteralPath $requestPath");
         script.Should().Contain("Assert-NetRatelTrustedReadinessPath $canonicalState $false $false $true $false $script:NetRatelStateAncestorAllowance");
         script.Should().Contain("$acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])");
         script.Should().Contain("[System.IO.Directory]::CreateDirectory($path, $acl)");
