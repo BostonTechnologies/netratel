@@ -128,7 +128,7 @@ public sealed class AgentTerminalGatewayEndpointStreamTests
                 services.AddAuthentication("Test")
                     .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>("Test", _ => { });
                 services.AddAuthorization(options =>
-                    options.AddPolicy("Operator", policy => policy.RequireAuthenticatedUser()));
+                    options.AddPolicy("TerminalSessionAccess", policy => policy.RequireAuthenticatedUser()));
                 services.AddSingleton(registry);
             });
             web.Configure(app =>

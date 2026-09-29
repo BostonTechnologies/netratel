@@ -33,6 +33,7 @@ public sealed class ApiEndpointRegistrationSourceTests
             .And.Contain("IAllowAnonymous")
             .And.Contain("M2MOnly")
             .And.Contain("AgentGatewayAccess")
+            .And.Contain("[\"TerminalSessionAccess\"] = DefaultAuthenticatedSchemes")
             .And.Contain("DefaultAuthenticatedSchemes")
             .And.Contain("ResolveSupportedSchemes")
             .And.Contain("Integrations/MCP")
@@ -276,6 +277,7 @@ public sealed class ApiEndpointRegistrationSourceTests
 
         program.Should().Contain("options.AddPolicy(\"HealthRead\"");
         program.Should().Contain("policy.AddAuthenticationSchemes(\"Bearer\", \"M2M\")");
+        program.Should().Contain("HasInstanceAdministratorOrLegacyOperatorAsync(ctx)");
 
         status.Should().Contain("/api/v1/auth/machine-token/status");
         status.Should().Contain("RequireAuthorization(\"MachineTokenApi\")");

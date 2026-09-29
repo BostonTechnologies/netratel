@@ -558,6 +558,12 @@ builder.Services.AddAuthorization(options =>
         policy.AddRequirements(new EffectiveAccessRequirement(NetRatelPermissions.TerminalAccess));
     });
 
+    options.AddPolicy("TerminalSessionAccess", policy =>
+    {
+        policy.RequireAuthenticatedUser();
+        policy.AddRequirements(new TerminalSessionAccessRequirement());
+    });
+
     options.AddPolicy("RemoteSupportOperator", policy =>
     {
         policy.RequireAuthenticatedUser();
@@ -632,7 +638,7 @@ builder.Services.AddAuthorization(options =>
         {
             if (HasAllowedM2MClient(ctx.User, m2m.AllowedCallerClientIds, m2m.Audience))
                 return true;
-            return await HasInstanceArtifactAuthorityAsync(ctx).ConfigureAwait(false);
+            return await HasInstanceAdministratorOrLegacyOperatorAsync(ctx).ConfigureAwait(false);
         });
     });
 
@@ -640,9 +646,12 @@ builder.Services.AddAuthorization(options =>
     {
         policy.AddAuthenticationSchemes("Bearer", "M2M");
         policy.RequireAuthenticatedUser();
-        policy.RequireAssertion(ctx =>
-            HasAdminClaim(ctx.User, ResolveAdminId()) ||
-            HasAllowedM2MClient(ctx.User, m2m.AllowedCallerClientIds, m2m.Audience));
+        policy.RequireAssertion(async ctx =>
+        {
+            if (HasAllowedM2MClient(ctx.User, m2m.AllowedCallerClientIds, m2m.Audience))
+                return true;
+            return await HasInstanceAdministratorOrLegacyOperatorAsync(ctx).ConfigureAwait(false);
+        });
     });
 
     options.AddPolicy("ClientArtifactsDownload", policy =>
@@ -652,7 +661,7 @@ builder.Services.AddAuthorization(options =>
         policy.RequireAssertion(async ctx =>
             HasAllowedM2MClient(ctx.User, m2m.AllowedCallerClientIds, m2m.Audience) ||
             (IsAgentPrincipal(ctx.User) && HasScope(ctx.User, "netratel:connect")) ||
-            await HasInstanceArtifactAuthorityAsync(ctx).ConfigureAwait(false));
+            await HasInstanceAdministratorOrLegacyOperatorAsync(ctx).ConfigureAwait(false));
     });
 
     // Require Operator by default (unless [AllowAnonymous])
@@ -727,6 +736,7 @@ builder.Services.AddDataProtection()
 
 builder.Services.AddSingleton<IAuthorizationHandler, AllowedClientHandler>();
 builder.Services.AddScoped<IAuthorizationHandler, EffectiveAccessHandler>();
+builder.Services.AddScoped<IAuthorizationHandler, TerminalSessionAccessHandler>();
 builder.Services.AddScoped<InstanceAdministratorInvariant>();
 
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
@@ -1023,11 +1033,11 @@ static bool HasAdminClaim(ClaimsPrincipal user, string? adminGroupId)
     return hasRole || hasGroupByName || hasGroupById;
 }
 
-static async Task<bool> HasInstanceArtifactAuthorityAsync(AuthorizationHandlerContext context)
+static async Task<bool> HasInstanceAdministratorOrLegacyOperatorAsync(AuthorizationHandlerContext context)
 {
     if (context.Resource is not HttpContext http) return false;
     var access = http.RequestServices.GetRequiredService<IEffectiveAccessService>();
-    var snapshot = await access.GetSnapshotAsync(context.User, tenantId: null).ConfigureAwait(false);
+    var snapshot = await access.GetSnapshotAsync(context.User, tenantId: null, http.RequestAborted).ConfigureAwait(false);
     return snapshot.IsLegacyOperator || snapshot.IsInstanceAdministrator;
 }
 

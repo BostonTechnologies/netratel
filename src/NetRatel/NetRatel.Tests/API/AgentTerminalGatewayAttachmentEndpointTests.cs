@@ -161,7 +161,7 @@ public sealed class AgentTerminalGatewayAttachmentEndpointTests
                 services.AddAuthentication("Test")
                     .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>("Test", _ => { });
                 services.AddAuthorization(options =>
-                    options.AddPolicy("Operator", policy => policy.RequireAuthenticatedUser()));
+                    options.AddPolicy("TerminalSessionAccess", policy => policy.RequireAuthenticatedUser()));
                 services.AddSingleton<IAgentTerminalSessionRegistry>(terminals);
                 services.AddSingleton(attachments);
             });

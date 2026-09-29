@@ -3,16 +3,17 @@ using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Net;
 using System.Net.Http.Json;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.IdentityModel.Tokens;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Npgsql;
 using NetRatel.API.Bootstrap;
+using NetRatel.Infrastructure;
 using NetRatel.Infrastructure.Identity;
 using NetRatel.Infrastructure.Persistence;
 using Testcontainers.PostgreSql;
@@ -454,11 +455,13 @@ public sealed class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
         }
 
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(settings).Build();
-
-        var applicationOptions = new DbContextOptionsBuilder<OrchestratorDbContext>().UseNpgsql(connectionString).Options;
-        var identityOptions = new DbContextOptionsBuilder<NetRatelIdentityDbContext>().UseNpgsql(connectionString).Options;
-        await using (var application = new OrchestratorDbContext(applicationOptions)) await application.Database.MigrateAsync();
-        await using (var identity = new NetRatelIdentityDbContext(identityOptions)) await identity.Database.MigrateAsync();
+        var migrationServices = new ServiceCollection();
+        migrationServices.AddSingleton<IConfiguration>(configuration);
+        migrationServices.AddNetRatelInfrastructure(configuration);
+        await using (var migrationProvider = migrationServices.BuildServiceProvider())
+        {
+            await migrationProvider.MigrateNetRatelInfrastructureAsync();
+        }
 
         var bootstrapOptions = new BootstrapOptions { StateDirectory = stateDirectory };
         var store = new BootstrapStateStore(bootstrapOptions);

@@ -12,9 +12,8 @@ using NetRatel.Shared.Contracts.Terminals;
 namespace NetRatel.API.Endpoints;
 
 /// <summary>
-/// Operator-facing adapter for the fenced terminal gRPC transport. It has no
-/// SpacetimeDB or direct-tunnel dependency: when the authority runtime is always active,
-/// these V2 routes do not exist from the caller's perspective.
+/// Adapter for the fenced terminal gRPC transport. Session routes authorize
+/// against the tenant of the registered session before serving or changing it.
 /// </summary>
 public static class AgentTerminalGatewayEndpoints
 {
@@ -27,7 +26,7 @@ public static class AgentTerminalGatewayEndpoints
 
         var sessions = app.MapGroup("/api/v2/gateway-terminal/{sessionId}")
             .WithTags("Gateway Terminal")
-            .RequireAuthorization("Operator");
+            .RequireAuthorization("TerminalSessionAccess");
         sessions.MapGet("", GetAsync);
         sessions.MapPost("/close", CloseAsync);
         sessions.MapPost("/attachment/renew", RenewAttachmentAsync);
