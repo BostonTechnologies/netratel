@@ -1,9 +1,11 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Runtime.Versioning;
+using System.Runtime.ExceptionServices;
 using System.Text.Json;
 using Microsoft.Playwright;
 
@@ -20,6 +22,10 @@ public sealed class WindowsHostedOnboardingBrowserSmokeTests
     private const int MaxProtectedContextBytes = 65_536;
     private const int MaxProtectedReceiptBytes = 32_768;
     private const int MaxProtectedPasswordBytes = 4_096;
+    private const int MaxControlFileBytes = 4_096;
+    private static readonly TimeSpan ControlAcknowledgementTimeout = TimeSpan.FromSeconds(150);
+    private static readonly TimeSpan ControlPollInterval = TimeSpan.FromMilliseconds(200);
+    private const string NetworkUnavailableMessage = "The web app could not reach the API. Check web-to-API connectivity, then retry.";
     private static readonly FileSystemRights HandoffModificationRights =
         FileSystemRights.Write |
         FileSystemRights.Delete |
@@ -134,6 +140,8 @@ public sealed class WindowsHostedOnboardingBrowserSmokeTests
             await VerifyOnlineDirectoryIdentityAsync(api, operatorCookie, context.AgentId, context.TenantId);
             return true;
         });
+
+        await VerifyApiOutageAndSameCircuitRecoveryAsync(api, context, operatorPage, operatorCookie);
 
         await VerifyTenantAdministratorBoundaryAsync(
             browser,
@@ -430,6 +438,201 @@ public sealed class WindowsHostedOnboardingBrowserSmokeTests
             "The authenticated operator agent list did not include the installed identity.");
     }
 
+    private static async Task VerifyApiOutageAndSameCircuitRecoveryAsync(
+        HttpClient api,
+        HostedContext context,
+        IPage operatorPage,
+        string operatorCookie)
+    {
+        var control = new ProtectedApiPhaseControl(context);
+        Exception? primaryFailure = null;
+        Exception? restorationFailure = null;
+
+        try
+        {
+            await RunSanitizedPhaseAsync("api-control-initialize", async () =>
+            {
+                await control.InitializeAsync();
+                return true;
+            });
+            await RunSanitizedPhaseAsync("api-stop-control", async () =>
+            {
+                await control.SendAsync("stop_api");
+                return true;
+            });
+
+            await RunSanitizedPhaseAsync("operator-directory-api-outage", async () =>
+            {
+                var loadCount = await ReadDirectoryLoadCountAsync(operatorPage);
+                await operatorPage.GetByRole(AriaRole.Button, new() { Name = "Refresh clients" }).ClickAsync();
+                await WaitForDirectoryLoadAsync(operatorPage, expectedTrigger: "manual", loadCount);
+                await AssertApiUnavailableDirectoryAsync(operatorPage);
+
+                loadCount = await ReadDirectoryLoadCountAsync(operatorPage);
+                await operatorPage.GetByTestId("retry-client-directory").ClickAsync();
+                await WaitForDirectoryLoadAsync(operatorPage, expectedTrigger: "manual", loadCount);
+                await AssertApiUnavailableDirectoryAsync(operatorPage);
+
+                loadCount = await ReadDirectoryLoadCountAsync(operatorPage);
+                await WaitForDirectoryLoadAsync(
+                    operatorPage,
+                    expectedTrigger: "periodic",
+                    loadCount,
+                    timeoutMilliseconds: 25_000);
+                await AssertApiUnavailableDirectoryAsync(operatorPage);
+                await CaptureDirectoryScreenshotAsync(
+                    operatorPage,
+                    context.SafeEvidenceDirectory,
+                    context.HandoffRoot,
+                    "hosted-directory-api-unavailable.png");
+                return true;
+            });
+        }
+        catch (Exception exception)
+        {
+            primaryFailure = exception;
+        }
+        finally
+        {
+            try
+            {
+                await RunSanitizedPhaseAsync("api-start-control", async () =>
+                {
+                    await control.StartApiForCleanupAsync();
+                    return true;
+                });
+            }
+            catch (Exception exception)
+            {
+                restorationFailure = exception;
+            }
+        }
+
+        if (primaryFailure is not null)
+            ExceptionDispatchInfo.Capture(primaryFailure).Throw();
+        if (restorationFailure is not null)
+            ExceptionDispatchInfo.Capture(restorationFailure).Throw();
+
+        await RunSanitizedPhaseAsync("operator-api-public-recovery", async () =>
+        {
+            await WaitForOnlineDirectoryIdentityAsync(api, operatorCookie, context.AgentId, context.TenantId);
+            return true;
+        });
+
+        await RunSanitizedPhaseAsync("operator-directory-same-circuit-recovery", async () =>
+        {
+            var loadCount = await ReadDirectoryLoadCountAsync(operatorPage);
+            var retry = operatorPage.GetByTestId("retry-client-directory");
+            if (await retry.IsVisibleAsync())
+            {
+                await retry.ClickAsync();
+            }
+            else
+            {
+                // The page's independent 15-second refresh can recover before
+                // the public probe finishes. The registered agent may still be
+                // offline until the gateway reconnects, so the explicit manual
+                // load below remains the authoritative recovery assertion.
+                await operatorPage.GetByRole(AriaRole.Button, new() { Name = "Refresh clients" }).ClickAsync();
+            }
+            await WaitForDirectoryLoadAsync(operatorPage, expectedTrigger: "manual", loadCount);
+            await AssertOnlineDirectoryCardAsync(operatorPage, context.AgentId, context.TenantId);
+            Require(
+                await operatorPage.GetByText(NetworkUnavailableMessage, new() { Exact = true }).CountAsync() == 0,
+                "The original operator circuit kept its API connectivity error after recovery.");
+            await CaptureDirectoryScreenshotAsync(
+                operatorPage,
+                context.SafeEvidenceDirectory,
+                context.HandoffRoot,
+                "hosted-directory-api-recovered.png");
+            return true;
+        });
+    }
+
+    private static async Task AssertApiUnavailableDirectoryAsync(IPage page)
+    {
+        var retry = page.GetByTestId("retry-client-directory");
+        await retry.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        var alertMessage = page.GetByText(NetworkUnavailableMessage, new() { Exact = true });
+        await alertMessage.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        Require(await page.GetByText("No registered clients yet.", new() { Exact = false }).CountAsync() == 0,
+            "An API outage was rendered as a successful empty directory.");
+        Require(await page.Locator(".client-card, .client-grid-view tbody tr").CountAsync() == 0,
+            "A stale client row remained visible after the directory API became unavailable.");
+    }
+
+    private static async Task WaitForOnlineDirectoryIdentityAsync(
+        HttpClient api,
+        string cookie,
+        Guid agentId,
+        int tenantId)
+    {
+        var recoveryTimeout = TimeSpan.FromSeconds(60);
+        using var overallTimeout = new CancellationTokenSource(recoveryTimeout);
+        using var pollingTimer = new PeriodicTimer(ControlPollInterval);
+        var transientFailures = 0;
+        while (!overallTimeout.IsCancellationRequested)
+        {
+            using var requestTimeout = CancellationTokenSource.CreateLinkedTokenSource(overallTimeout.Token);
+            requestTimeout.CancelAfter(TimeSpan.FromSeconds(5));
+
+            try
+            {
+                using var response = await SendWithCookieAsync(
+                    api,
+                    HttpMethod.Get,
+                    "/api/v2/client-presence",
+                    cookie,
+                    cancellationToken: requestTimeout.Token);
+
+                if (response.StatusCode == HttpStatusCode.OK)
+                {
+                    using var document = await ReadJsonAsync(response, requestTimeout.Token);
+                    var items = RequiredArray(document.RootElement, "items");
+                    var matching = items.EnumerateArray()
+                        .Where(item => ReadGuid(item, "agentId") == agentId && ReadInt32(item, "tenantId") == tenantId)
+                        .ToArray();
+                    if (matching.Length == 1 && ReadBoolean(matching[0], "online"))
+                        return;
+                }
+                else if ((int)response.StatusCode < 500)
+                {
+                    throw new InvalidOperationException("The authenticated public directory API rejected the operator during recovery.");
+                }
+                else
+                {
+                    transientFailures++;
+                }
+            }
+            catch (HttpRequestException exception) when (exception.StatusCode is null || (int)exception.StatusCode >= 500)
+            {
+                // A public route can take a short time to become reachable after
+                // the producer acknowledges API readiness.
+                transientFailures++;
+            }
+            catch (OperationCanceledException) when (overallTimeout.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (OperationCanceledException) when (requestTimeout.IsCancellationRequested)
+            {
+                // Bound each probe while retaining the overall recovery deadline.
+                transientFailures++;
+            }
+
+            try
+            {
+                await pollingTimer.WaitForNextTickAsync(overallTimeout.Token);
+            }
+            catch (OperationCanceledException) when (overallTimeout.IsCancellationRequested)
+            {
+                break;
+            }
+        }
+
+        throw new TimeoutException($"The authenticated public directory API did not recover with the expected online identity within {recoveryTimeout.TotalSeconds:0} seconds after {transientFailures} transient request failures.");
+    }
+
     private static async Task<int> CreateRestrictedTenantAsync(HttpClient api, string cookie, string runId)
     {
         var tenantName = $"Hosted browser tenant {runId[..8]} {Guid.NewGuid():N}";
@@ -698,20 +901,21 @@ public sealed class WindowsHostedOnboardingBrowserSmokeTests
         HttpMethod method,
         string path,
         string cookie,
-        object? body = null)
+        object? body = null,
+        CancellationToken cancellationToken = default)
     {
         using var request = new HttpRequestMessage(method, path);
         if (!string.IsNullOrEmpty(cookie))
             Require(request.Headers.TryAddWithoutValidation("Cookie", $"{LocalCookieName}={cookie}"), "The Local session could not be forwarded to the protected API origin.");
         if (body is not null)
             request.Content = JsonContent.Create(body);
-        return await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+        return await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
     }
 
-    private static async Task<JsonDocument> ReadJsonAsync(HttpResponseMessage response)
+    private static async Task<JsonDocument> ReadJsonAsync(HttpResponseMessage response, CancellationToken cancellationToken = default)
     {
-        await using var content = await response.Content.ReadAsStreamAsync();
-        return await JsonDocument.ParseAsync(content, new JsonDocumentOptions { MaxDepth = 16 });
+        await using var content = await response.Content.ReadAsStreamAsync(cancellationToken);
+        return await JsonDocument.ParseAsync(content, new JsonDocumentOptions { MaxDepth = 16 }, cancellationToken);
     }
 
     private static void RequireStatus(HttpResponseMessage response, HttpStatusCode expected) =>
@@ -887,7 +1091,11 @@ public sealed class WindowsHostedOnboardingBrowserSmokeTests
     }
 
     [SupportedOSPlatform("windows")]
-    private static async Task<byte[]> ReadProtectedHandoffFileAsync(string path, string handoffRoot, int maximumBytes)
+    private static async Task<byte[]> ReadProtectedHandoffFileAsync(
+        string path,
+        string handoffRoot,
+        int maximumBytes,
+        FileShare fileShare = FileShare.Read)
     {
         var fullPath = ValidateHandoffPath(path, handoffRoot, requireExists: true, expectDirectory: false);
         var fileLength = new FileInfo(fullPath).Length;
@@ -898,7 +1106,7 @@ public sealed class WindowsHostedOnboardingBrowserSmokeTests
             fullPath,
             FileMode.Open,
             FileAccess.Read,
-            FileShare.Read,
+            fileShare,
             bufferSize: 8_192,
             FileOptions.Asynchronous | FileOptions.SequentialScan);
         using var buffer = new MemoryStream(capacity: Math.Min(maximumBytes, 65_536));
@@ -945,6 +1153,323 @@ public sealed class WindowsHostedOnboardingBrowserSmokeTests
     {
         if (!condition)
             throw new InvalidOperationException(safeMessage);
+    }
+
+    private sealed class ProtectedApiPhaseControl(HostedContext context)
+    {
+        private static readonly string[] RequestFields =
+        ["schemaVersion", "scope", "runId", "requestId", "sequence", "action"];
+        private static readonly string[] AcknowledgementFields =
+        ["schemaVersion", "scope", "runId", "requestId", "sequence", "action", "result"];
+        private readonly string _root = context.HandoffRoot;
+        private long _lastPublishedSequence;
+        private bool _initialized;
+
+        public async Task InitializeAsync()
+        {
+            if (_initialized)
+                return;
+
+            var request = await ReadRequestAsync();
+            var acknowledgement = await ReadAcknowledgementAsync();
+            if (request is null)
+            {
+                Require(acknowledgement is null,
+                    "The protected API control acknowledgement has no matching request.");
+                _initialized = true;
+                return;
+            }
+
+            _lastPublishedSequence = request.Sequence;
+            _initialized = true;
+
+            if (acknowledgement is null || acknowledgement.Sequence < request.Sequence)
+            {
+                await WaitForAcknowledgementAsync(request, ControlAcknowledgementTimeout);
+                return;
+            }
+
+            Require(IsMatchingAcknowledgement(request, acknowledgement),
+                "The protected API control request and acknowledgement do not match.");
+            Require(acknowledgement.Result == "passed",
+                "The previous protected API control action did not complete successfully.");
+        }
+
+        public async Task SendAsync(string action)
+        {
+            if (!_initialized)
+                await InitializeAsync();
+
+            await PublishAndWaitAsync(action);
+        }
+
+        public async Task StartApiForCleanupAsync()
+        {
+            if (!_initialized)
+                await InitializeAsync();
+
+            await PublishAndWaitAsync("start_api");
+        }
+
+        private async Task PublishAndWaitAsync(string action)
+        {
+            Require(action is "stop_api" or "start_api" or "restart_api",
+                "The protected API control action is not supported.");
+            Require(_lastPublishedSequence < long.MaxValue,
+                "The protected API control sequence is exhausted.");
+
+            var request = new ControlRequest(
+                SchemaVersion: 1,
+                Scope: "integrated-onboarding",
+                RunId: context.RunId,
+                RequestId: Guid.NewGuid().ToString("D"),
+                Sequence: _lastPublishedSequence + 1,
+                Action: action);
+            await WriteRequestAtomicallyAsync(request);
+            _lastPublishedSequence = request.Sequence;
+            await WaitForAcknowledgementAsync(request, ControlAcknowledgementTimeout);
+        }
+
+        private async Task WaitForAcknowledgementAsync(ControlRequest request, TimeSpan timeout)
+        {
+            using var deadline = new CancellationTokenSource(timeout);
+            using var pollingTimer = new PeriodicTimer(ControlPollInterval);
+            while (!deadline.IsCancellationRequested)
+            {
+                var acknowledgement = await ReadAcknowledgementAsync();
+                if (acknowledgement is not null && acknowledgement.Sequence >= request.Sequence)
+                {
+                    Require(IsMatchingAcknowledgement(request, acknowledgement),
+                        "The protected API control acknowledgement does not match the published request.");
+                    Require(acknowledgement.Result == "passed",
+                        "The protected API control action did not complete successfully.");
+                    return;
+                }
+
+                try
+                {
+                    await pollingTimer.WaitForNextTickAsync(deadline.Token);
+                }
+                catch (OperationCanceledException) when (deadline.IsCancellationRequested)
+                {
+                    break;
+                }
+            }
+
+            throw new TimeoutException($"The protected API control action was not acknowledged within {timeout.TotalSeconds:0} seconds.");
+        }
+
+        private static bool IsMatchingAcknowledgement(ControlRequest request, ControlAcknowledgement acknowledgement) =>
+            acknowledgement.SchemaVersion == request.SchemaVersion &&
+            acknowledgement.Scope == request.Scope &&
+            acknowledgement.RunId == request.RunId &&
+            acknowledgement.RequestId == request.RequestId &&
+            acknowledgement.Sequence == request.Sequence &&
+            acknowledgement.Action == request.Action;
+
+        private async Task<ControlRequest?> ReadRequestAsync()
+        {
+            var bytes = await ReadOptionalControlFileAsync(context.ControlRequestPath);
+            if (bytes is null)
+                return null;
+
+            using var document = JsonDocument.Parse(bytes, new JsonDocumentOptions { MaxDepth = 4 });
+            var root = document.RootElement;
+            RequireExactProperties(root, RequestFields);
+            var request = new ControlRequest(
+                SchemaVersion: ReadInt32(root, "schemaVersion"),
+                Scope: ReadString(root, "scope"),
+                RunId: ReadString(root, "runId"),
+                RequestId: ReadControlRequestId(root),
+                Sequence: ReadInt64(root, "sequence"),
+                Action: ReadString(root, "action"));
+            Require(request.SchemaVersion == 1 && request.Scope == "integrated-onboarding" &&
+                    request.RunId == context.RunId && request.Sequence > 0 &&
+                    request.Action is "stop_api" or "start_api" or "restart_api",
+                "The protected API control request is malformed.");
+            return request;
+        }
+
+        private async Task<ControlAcknowledgement?> ReadAcknowledgementAsync()
+        {
+            var bytes = await ReadOptionalControlFileAsync(context.ControlAckPath);
+            if (bytes is null)
+                return null;
+
+            using var document = JsonDocument.Parse(bytes, new JsonDocumentOptions { MaxDepth = 4 });
+            var root = document.RootElement;
+            RequireExactProperties(root, AcknowledgementFields);
+            var acknowledgement = new ControlAcknowledgement(
+                SchemaVersion: ReadInt32(root, "schemaVersion"),
+                Scope: ReadString(root, "scope"),
+                RunId: ReadString(root, "runId"),
+                RequestId: ReadControlRequestId(root),
+                Sequence: ReadInt64(root, "sequence"),
+                Action: ReadString(root, "action"),
+                Result: ReadString(root, "result"));
+            Require(acknowledgement.SchemaVersion == 1 && acknowledgement.Scope == "integrated-onboarding" &&
+                    acknowledgement.RunId == context.RunId && acknowledgement.Sequence > 0 &&
+                    acknowledgement.Action is "stop_api" or "start_api" or "restart_api" &&
+                    acknowledgement.Result is "passed" or "failed",
+                "The protected API control acknowledgement is malformed.");
+            return acknowledgement;
+        }
+
+        private async Task<byte[]?> ReadOptionalControlFileAsync(string path)
+        {
+            var fullPath = ValidateHandoffPath(path, _root, requireExists: false, expectDirectory: false);
+            if (!File.Exists(fullPath))
+                return null;
+
+            try
+            {
+                return await ReadProtectedHandoffFileAsync(
+                    fullPath,
+                    _root,
+                    MaxControlFileBytes,
+                    FileShare.Read | FileShare.Delete);
+            }
+            catch (FileNotFoundException)
+            {
+                return null;
+            }
+            catch (DirectoryNotFoundException)
+            {
+                return null;
+            }
+        }
+
+        private async Task WriteRequestAtomicallyAsync(ControlRequest request)
+        {
+            var targetPath = ValidateHandoffPath(context.ControlRequestPath, _root, requireExists: false, expectDirectory: false);
+            var payload = JsonSerializer.SerializeToUtf8Bytes(new
+            {
+                schemaVersion = request.SchemaVersion,
+                scope = request.Scope,
+                runId = request.RunId,
+                requestId = request.RequestId,
+                sequence = request.Sequence,
+                action = request.Action
+            });
+            Require(payload.Length is > 0 and <= MaxControlFileBytes,
+                "The protected API control request exceeds its size limit.");
+            var targetDirectory = Path.GetDirectoryName(targetPath);
+            Require(!string.IsNullOrWhiteSpace(targetDirectory),
+                "The protected API control request directory is invalid.");
+            var temporaryPath = ValidateHandoffPath(
+                Path.Combine(targetDirectory!, $".control-request-{Guid.NewGuid():N}.tmp"),
+                _root,
+                requireExists: false,
+                expectDirectory: false);
+
+            Exception? writeFailure = null;
+            try
+            {
+                await using (var stream = new FileStream(
+                                 temporaryPath,
+                                 FileMode.CreateNew,
+                                 FileAccess.Write,
+                                 FileShare.None,
+                                 bufferSize: MaxControlFileBytes,
+                                 FileOptions.Asynchronous | FileOptions.WriteThrough))
+                {
+                    await stream.WriteAsync(payload);
+                    await stream.FlushAsync();
+                    stream.Flush(flushToDisk: true);
+                }
+
+                ValidateHandoffPath(temporaryPath, _root, requireExists: true, expectDirectory: false);
+                await MoveRequestWithSharingRetryAsync(temporaryPath, targetPath);
+                _lastPublishedSequence = request.Sequence;
+                ValidateHandoffPath(targetPath, _root, requireExists: true, expectDirectory: false);
+            }
+            catch (Exception exception)
+            {
+                writeFailure = exception;
+                throw;
+            }
+            finally
+            {
+                if (File.Exists(temporaryPath))
+                {
+                    try
+                    {
+                        var safeTemporaryPath = ValidateHandoffPath(
+                            temporaryPath,
+                            _root,
+                            requireExists: true,
+                            expectDirectory: false);
+                        File.Delete(safeTemporaryPath);
+                    }
+                    catch (Exception cleanupException)
+                    {
+                        if (writeFailure is not null)
+                            writeFailure.Data["control-temp-cleanup-failure"] = cleanupException.GetType().Name;
+                        else
+                            throw new IOException("The protected API control temporary file could not be removed.", cleanupException);
+                    }
+                }
+            }
+        }
+
+        private static async Task MoveRequestWithSharingRetryAsync(string temporaryPath, string targetPath)
+        {
+            var timeout = TimeSpan.FromSeconds(5);
+            var stopwatch = Stopwatch.StartNew();
+            using var pollingTimer = new PeriodicTimer(ControlPollInterval);
+            while (true)
+            {
+                try
+                {
+                    File.Move(temporaryPath, targetPath, overwrite: true);
+                    return;
+                }
+                catch (IOException exception) when (IsWindowsSharingViolation(exception) && stopwatch.Elapsed < timeout)
+                {
+                    await pollingTimer.WaitForNextTickAsync();
+                }
+            }
+        }
+
+        private static bool IsWindowsSharingViolation(IOException exception) =>
+            (exception.HResult & 0xFFFF) is 32 or 33;
+
+        private static string ReadControlRequestId(JsonElement root)
+        {
+            var value = ReadString(root, "requestId");
+            Require(Guid.TryParseExact(value, "D", out var requestId) && requestId != Guid.Empty,
+                "The protected API control request identifier is malformed.");
+            return requestId.ToString("D");
+        }
+
+        private static void RequireExactProperties(JsonElement root, IReadOnlyCollection<string> expectedFields)
+        {
+            if (root.ValueKind != JsonValueKind.Object)
+                throw new InvalidOperationException("A protected API control object is malformed.");
+
+            var actualFields = root.EnumerateObject().Select(property => property.Name).ToArray();
+            Require(actualFields.Length == expectedFields.Count &&
+                    actualFields.Distinct(StringComparer.Ordinal).Count() == expectedFields.Count &&
+                    expectedFields.All(field => actualFields.Contains(field, StringComparer.Ordinal)),
+                "A protected API control object has an unexpected shape.");
+        }
+
+        private sealed record ControlRequest(
+            int SchemaVersion,
+            string Scope,
+            string RunId,
+            string RequestId,
+            long Sequence,
+            string Action);
+
+        private sealed record ControlAcknowledgement(
+            int SchemaVersion,
+            string Scope,
+            string RunId,
+            string RequestId,
+            long Sequence,
+            string Action,
+            string Result);
     }
 
     private static async Task<T> RunSanitizedPhaseAsync<T>(string phase, Func<Task<T>> operation)
