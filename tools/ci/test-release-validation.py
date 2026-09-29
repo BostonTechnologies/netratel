@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Negative release-gate tests using isolated source fixtures."""
+import base64
 import importlib.util
 import io
 import json
@@ -9,6 +10,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError
@@ -417,23 +419,109 @@ fi
         self.assertIn('loginForm.addEventListener("submit", updateClaims)', page)
 
         smoke = (ROOT / "tools/ci/smoke-oidc-compose.sh").read_text()
+        self.assertIn('source "$root/tools/ci/oidc-smoke-claims.sh"', smoke)
         self.assertIn('claims=${claims_json}', smoke)
         self.assertIn('claims=${operator_claims_json}', smoke)
+        self.assertIn(
+            'operator_claims_json="$(oidc_smoke_claims_for_subject '
+            '"$root/tests/compose/oidc-smoke-login.html" netratel-test-operator)"',
+            smoke,
+        )
         request_helper = re.search(
-            r"request_oidc_access_token\(\) \{([\s\S]*?)\n\}",
+            r"request_oidc_access_token\(\) \(([\s\S]*?)\n\)",
             smoke,
         )
         self.assertIsNotNone(request_helper)
         for token_variable in (
             "$access_token", "$id_token", "$refreshed_access_token", "$refreshed_id_token",
         ):
-            self.assertIn(f'verify_oidc_smoke_token_claims "{token_variable}"', smoke)
             self.assertRegex(
                 request_helper.group(1),
                 re.escape(f'verify_oidc_smoke_token_claims "{token_variable}"')
-                + r'\s+"\$claims_json".*\|\|\s*return 1',
+                + r'\s+"\$claims_json".*"\$oidc_authority"\s+\|\|\s*return 1',
             )
         self.assertIn("grant_type=refresh_token", smoke)
+
+        upgrade = (ROOT / "tools/ci/smoke-postgresql-oidc-upgrade.sh").read_text()
+        self.assertIn('source "$root/tools/ci/oidc-smoke-claims.sh"', upgrade)
+        upgrade_helper = re.search(
+            r"request_operator_access_token\(\) \(([\s\S]*?)\n\)",
+            upgrade,
+        )
+        self.assertIsNotNone(upgrade_helper)
+        self.assertIn(
+            'expected_issuer="http://host.docker.internal:${NETRATEL_OIDC_TEST_PORT}/default"',
+            upgrade_helper.group(1),
+        )
+        self.assertIn('--data-urlencode "claims=${claims_json}"', upgrade_helper.group(1))
+        self.assertIn('token_cookie_jar="$(mktemp)"', upgrade_helper.group(1))
+        self.assertIn('trap \'unlink "$token_cookie_jar" 2>/dev/null || true\' EXIT',
+                      upgrade_helper.group(1))
+        self.assertNotIn('--cookie "$cookie_jar"', upgrade_helper.group(1))
+        self.assertIn('"access token" "$expected_issuer" || return 1', upgrade_helper.group(1))
+        self.assertLess(
+            upgrade_helper.group(1).index('"access token" "$expected_issuer" || return 1'),
+            upgrade_helper.group(1).index('printf \'%s\' "$access_token"'),
+        )
+
+    def test_oidc_claims_shell_helpers_extract_and_reject_fixture_claims(self):
+        helper = ROOT / "tools/ci/oidc-smoke-claims.sh"
+        page = ROOT / "tests/compose/oidc-smoke-login.html"
+        username = "netratel-test-operator"
+        extracted = subprocess.run(
+            [
+                "bash", "-c",
+                'source "$1"; oidc_smoke_claims_for_subject "$2" "$3"',
+                "oidc-smoke-claims-test", str(helper), str(page), username,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        claims_profile = json.loads(extracted.stdout)
+        self.assertEqual(claims_profile["sub"], username)
+        self.assertEqual(claims_profile["preferred_username"], f"{username}@example.test")
+        self.assertEqual(claims_profile["roles"], ["Operator"])
+        self.assertEqual(claims_profile["aud"], ["netratel-smoke-client", "netratel.api"])
+
+        def encoded_token(payload):
+            encoded = base64.urlsafe_b64encode(json.dumps(payload).encode()).rstrip(b"=").decode()
+            return f"e30.{encoded}.signature"
+
+        expected_issuer = "http://host.docker.internal:18085/default"
+        valid_claims = {
+            **claims_profile,
+            "iss": expected_issuer,
+            "exp": int(time.time()) + 120,
+        }
+
+        def verify(payload):
+            token = encoded_token(payload)
+            result = subprocess.run(
+                [
+                    "bash", "-c",
+                    'source "$1"; verify_oidc_smoke_token_claims "$2" "$3" "$4" "$5" "$6"',
+                    "oidc-smoke-claims-test", str(helper), token, json.dumps(claims_profile),
+                    username, "access token", expected_issuer,
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotIn(token, result.stderr)
+            return result
+
+        self.assertEqual(verify(valid_claims).returncode, 0)
+        invalid_claims = {
+            "missing operator role": {
+                key: value for key, value in valid_claims.items() if key != "roles"
+            },
+            "wrong issuer": {**valid_claims, "iss": "http://wrong.example/default"},
+            "wrong audience": {**valid_claims, "aud": ["netratel-smoke-client"]},
+            "expired token": {**valid_claims, "exp": int(time.time()) - 1},
+        }
+        for reason, payload in invalid_claims.items():
+            with self.subTest(reason=reason):
+                self.assertNotEqual(verify(payload).returncode, 0)
 
 
 class RuntimeSelectorRetirementTests(unittest.TestCase):

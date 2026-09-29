@@ -4,6 +4,7 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$root"
 source "$root/tools/ci/chromium-nss-trust.sh"
+source "$root/tools/ci/oidc-smoke-claims.sh"
 
 source tools/ci/load-prior-release.sh
 
@@ -155,18 +156,27 @@ durable_oidc_principal_count() {
     'SELECT COUNT(*) FROM "ApplicationPrincipals" WHERE "ExternalIssuer" IS NOT NULL AND "ExternalSubject" IS NOT NULL;'
 }
 
-request_operator_access_token() {
+request_operator_access_token() (
   local redirect_uri authorization_url response callback_location callback_code token_response access_token
+  local claims_json token_cookie_jar expected_issuer
   redirect_uri="http://127.0.0.1:65535/netratel-smoke-callback"
-  authorization_url="http://host.docker.internal:${NETRATEL_OIDC_TEST_PORT}/default/authorize?response_type=code&client_id=netratel-smoke-client&redirect_uri=http%3A%2F%2F127.0.0.1%3A65535%2Fnetratel-smoke-callback&scope=openid%20netratel.api&state=postgresql-oidc-upgrade"
+  expected_issuer="http://host.docker.internal:${NETRATEL_OIDC_TEST_PORT}/default"
+  authorization_url="${expected_issuer}/authorize?response_type=code&client_id=netratel-smoke-client&redirect_uri=http%3A%2F%2F127.0.0.1%3A65535%2Fnetratel-smoke-callback&scope=openid%20netratel.api&state=postgresql-oidc-upgrade"
+  claims_json="$(oidc_smoke_claims_for_subject "$root/tests/compose/oidc-smoke-login.html" netratel-test-operator)" || {
+    echo "The OIDC smoke fixture has no claims profile for netratel-test-operator." >&2
+    return 1
+  }
+  token_cookie_jar="$(mktemp)"
+  trap 'unlink "$token_cookie_jar" 2>/dev/null || true' EXIT
   response="$(curl --silent --show-error --dump-header - --resolve "$oidc_resolve" \
-    --cookie "$cookie_jar" --cookie-jar "$cookie_jar" "$authorization_url")"
+    --cookie "$token_cookie_jar" --cookie-jar "$token_cookie_jar" "$authorization_url")"
   callback_location="$(awk 'BEGIN { IGNORECASE = 1 } /^location: / { sub(/^[^:]*: /, ""); sub(/\r$/, ""); print; exit }' <<<"$response")"
 
   if [[ -z "$callback_location" ]]; then
     response="$(curl --silent --show-error --dump-header - --resolve "$oidc_resolve" \
-      --cookie "$cookie_jar" --cookie-jar "$cookie_jar" \
-      --data-urlencode 'username=netratel-test-operator' "$authorization_url")"
+      --cookie "$token_cookie_jar" --cookie-jar "$token_cookie_jar" \
+      --data-urlencode 'username=netratel-test-operator' \
+      --data-urlencode "claims=${claims_json}" "$authorization_url")"
     callback_location="$(awk 'BEGIN { IGNORECASE = 1 } /^location: / { sub(/^[^:]*: /, ""); sub(/\r$/, ""); print; exit }' <<<"$response")"
   fi
 
@@ -196,8 +206,10 @@ request_operator_access_token() {
     echo "The test OIDC provider did not issue a direct API access token." >&2
     return 1
   }
+  verify_oidc_smoke_token_claims "$access_token" "$claims_json" netratel-test-operator \
+    "access token" "$expected_issuer" || return 1
   printf '%s' "$access_token"
-}
+)
 
 seed_historical_oidc_principal() {
   local access_token issuer subject principal_id

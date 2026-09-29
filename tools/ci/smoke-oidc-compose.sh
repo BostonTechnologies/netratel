@@ -4,6 +4,7 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$root"
 source "$root/tools/ci/chromium-nss-trust.sh"
+source "$root/tools/ci/oidc-smoke-claims.sh"
 
 mode="${NETRATEL_COMPOSE_SMOKE_MODE:-source}"
 auth_environment="${NETRATEL_SMOKE_AUTH_ENVIRONMENT:-Production}"
@@ -50,7 +51,6 @@ oidc_tls_keystore_path="$(mktemp --suffix=.p12)"
 trust_bundle_path="$(mktemp --suffix=.pem)"
 smoke_ca_trust_path=""
 smoke_ca_trust_installed=0
-oidc_token_cookie_jars=()
 cli_extract_dir=""
 mcp_stdio_extract_dir=""
 mcp_stdio_config_path="$(mktemp --suffix=.json)"
@@ -171,9 +171,6 @@ cleanup() {
   unlink "$oidc_tls_certificate_path" 2>/dev/null || true
   unlink "$oidc_tls_extensions_path" 2>/dev/null || true
   unlink "$oidc_tls_keystore_path" 2>/dev/null || true
-  for oidc_token_cookie_jar in "${oidc_token_cookie_jars[@]}"; do
-    unlink "$oidc_token_cookie_jar" 2>/dev/null || true
-  done
   unlink "${smoke_ca_certificate_path}.srl" 2>/dev/null || true
   unlink "$trust_bundle_path" 2>/dev/null || true
   if (( smoke_ca_trust_installed )); then
@@ -360,14 +357,14 @@ wait_for_gateway_sessions() {
   return 1
 }
 
-request_oidc_access_token() {
+request_oidc_access_token() (
   local username="$1" state="$2"
   local redirect_uri authorization_url response callback_location callback_code token_response access_token id_token refresh_token
   local refresh_response refreshed_access_token refreshed_id_token claims_json token_cookie_jar
   redirect_uri="http://127.0.0.1:65535/netratel-smoke-callback"
   token_cookie_jar="$(mktemp)"
-  oidc_token_cookie_jars+=("$token_cookie_jar")
-  claims_json="$(oidc_smoke_claims_for_subject "$username")" || {
+  trap 'unlink "$token_cookie_jar" 2>/dev/null || true' EXIT
+  claims_json="$(oidc_smoke_claims_for_subject "$root/tests/compose/oidc-smoke-login.html" "$username")" || {
     echo "The OIDC smoke fixture has no claims profile for ${username}." >&2
     return 1
   }
@@ -413,8 +410,8 @@ request_oidc_access_token() {
     return 1
   }
 
-  verify_oidc_smoke_token_claims "$access_token" "$claims_json" "$username" "access token" || return 1
-  verify_oidc_smoke_token_claims "$id_token" "$claims_json" "$username" "ID token" || return 1
+  verify_oidc_smoke_token_claims "$access_token" "$claims_json" "$username" "access token" "$oidc_authority" || return 1
+  verify_oidc_smoke_token_claims "$id_token" "$claims_json" "$username" "ID token" "$oidc_authority" || return 1
 
   refresh_response="$(curl --silent --show-error --fail --resolve "$oidc_resolve" "${oidc_curl_args[@]}" \
     --data-urlencode 'grant_type=refresh_token' \
@@ -428,54 +425,11 @@ request_oidc_access_token() {
     echo "The test OIDC provider did not preserve the expected claims across token refresh for ${username}." >&2
     return 1
   }
-  verify_oidc_smoke_token_claims "$refreshed_access_token" "$claims_json" "$username" "refreshed access token" || return 1
-  verify_oidc_smoke_token_claims "$refreshed_id_token" "$claims_json" "$username" "refreshed ID token" || return 1
+  verify_oidc_smoke_token_claims "$refreshed_access_token" "$claims_json" "$username" "refreshed access token" "$oidc_authority" || return 1
+  verify_oidc_smoke_token_claims "$refreshed_id_token" "$claims_json" "$username" "refreshed ID token" "$oidc_authority" || return 1
 
   printf '%s' "$access_token"
-}
-
-oidc_smoke_claims_for_subject() {
-  local username="$1"
-  node -e '
-    const fs = require("node:fs");
-    const html = fs.readFileSync(process.argv[1], "utf8");
-    const profileBlock = html.match(/<script id="oidc-claim-profiles" type="application\/json">([\s\S]*?)<\/script>/);
-    if (!profileBlock) process.exit(2);
-    const profiles = JSON.parse(profileBlock[1]);
-    const claims = profiles[process.argv[2]];
-    if (!claims) process.exit(3);
-    process.stdout.write(JSON.stringify(claims));
-  ' "$root/tests/compose/oidc-smoke-login.html" "$username"
-}
-
-verify_oidc_smoke_token_claims() {
-  local token="$1" expected_claims="$2" username="$3" token_kind="$4"
-  node -e '
-    const [token, expectedJson, username, tokenKind, expectedIssuer] = process.argv.slice(1);
-    const fail = () => {
-      process.stderr.write(`The disposable OIDC provider returned invalid ${tokenKind} claims for ${username}.\n`);
-      process.exit(1);
-    };
-    try {
-      const segments = token.split(".");
-      if (segments.length !== 3) fail();
-      const claims = JSON.parse(Buffer.from(segments[1], "base64url").toString("utf8"));
-      const expected = JSON.parse(expectedJson);
-      const values = value => value == null ? [] : Array.isArray(value) ? value : [value];
-      const sameValues = (actual, wanted) => {
-        const normalizedActual = [...values(actual)].sort();
-        const normalizedWanted = [...values(wanted)].sort();
-        return JSON.stringify(normalizedActual) === JSON.stringify(normalizedWanted);
-      };
-      if (claims.iss !== expectedIssuer || claims.sub !== expected.sub ||
-          claims.preferred_username !== expected.preferred_username ||
-          !sameValues(claims.aud, expected.aud) || !sameValues(claims.roles, expected.roles) ||
-          !Number.isInteger(claims.exp) || claims.exp <= Math.floor(Date.now() / 1000)) fail();
-    } catch {
-      fail();
-    }
-  ' "$token" "$expected_claims" "$username" "$token_kind" "$oidc_authority"
-}
+)
 
 verify_directory_denial() {
   local access_token="$1" path="$2" status
@@ -775,7 +729,7 @@ curl --silent --show-error --fail --resolve "$oidc_resolve" "${oidc_curl_args[@]
   "$authorization_location" >/dev/null
 
 stage="authenticating disposable OIDC operator"
-operator_claims_json="$(oidc_smoke_claims_for_subject netratel-test-operator)" || {
+operator_claims_json="$(oidc_smoke_claims_for_subject "$root/tests/compose/oidc-smoke-login.html" netratel-test-operator)" || {
   echo "The OIDC smoke fixture has no claims profile for the operator." >&2
   exit 1
 }
