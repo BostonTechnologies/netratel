@@ -343,23 +343,29 @@ function Assert-NetRatelTrustedReadinessPath([string] $path, [bool] $leafFile, [
         [System.Security.AccessControl.FileSystemRights]::AppendData -bor
         [System.Security.AccessControl.FileSystemRights]::WriteAttributes -bor
         [System.Security.AccessControl.FileSystemRights]::WriteExtendedAttributes
+    $componentIndex = 0
     foreach ($componentPath in $pathComponents) {
         $isLeaf = [string]::Equals($componentPath, $fullPath, [StringComparison]::OrdinalIgnoreCase)
         $allowLegacyAdministratorForComponent = $allowLegacyAdministrators -or
             (-not $isLeaf -and $allowLegacyAdministratorAncestors)
+        $verificationCheck = 'path-inspection'
         try {
             $item = Get-Item -LiteralPath $componentPath -Force -ErrorAction Stop
+            $verificationCheck = 'component-type-or-reparse'
             if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 -or
                 ($isLeaf -and ($item.PSIsContainer -eq $leafFile)) -or
                 (-not $isLeaf -and -not $item.PSIsContainer)) {
                 throw 'The service readiness path contains an unexpected file or reparse point.'
             }
+            $verificationCheck = 'acl-read'
             $acl = Get-Acl -LiteralPath $componentPath -ErrorAction Stop
+            $verificationCheck = 'owner'
             $ownerSid = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
             if ($ownerSid -notin $trustedSids -and
                 -not ($allowLegacyAdministratorForComponent -and (Test-NetRatelLocalAdministratorMemberSid $ownerSid))) {
                 throw 'The service readiness path has an untrusted owner.'
             }
+            $verificationCheck = 'acl-rules-read'
             $rules = $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
             foreach ($rule in $rules) {
                 if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or
@@ -370,17 +376,21 @@ function Assert-NetRatelTrustedReadinessPath([string] $path, [bool] $leafFile, [
                     $untrusted = $false
                 }
                 if ($untrusted -and ($rule.FileSystemRights -band $dangerousRights) -ne 0) {
+                    $verificationCheck = 'replacement-access'
                     throw 'The service readiness path grants an untrusted principal replacement access.'
                 }
                 if ($isLeaf -and $checkLeafWrite -and $untrusted -and ($rule.FileSystemRights -band $leafWriteRights) -ne 0 -and
                     -not ($allowInheritedStateWrites -and $rule.IsInherited)) {
+                    $verificationCheck = 'leaf-write'
                     throw 'The service readiness path grants an untrusted principal write access.'
                 }
             }
         }
         catch {
-            throw "The service readiness path could not be securely verified ($($_.Exception.GetType().Name))."
+            $scope = if ($isLeaf) { 'leaf' } else { 'ancestor' }
+            throw "The service readiness path could not be securely verified (scope=$scope; component=$componentIndex; check=$verificationCheck; exception=$($_.Exception.GetType().Name))."
         }
+        $componentIndex++
     }
 }
 

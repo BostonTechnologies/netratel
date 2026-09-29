@@ -158,7 +158,9 @@ public sealed class WindowsInstallerNativeTests
         Directory.CreateDirectory(root);
         using var listener = new TcpListener(IPAddress.Loopback, 0);
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        using var packageServerCancellation = new CancellationTokenSource();
         Process? installerProcess = null;
+        Task<bool>? serving = null;
         try
         {
             var packageDirectory = Environment.GetEnvironmentVariable("NETRATEL_NATIVE_CLIENT_DIRECTORY")
@@ -183,7 +185,8 @@ public sealed class WindowsInstallerNativeTests
                 InstallAsService: true, SilentInstall: true, version, sha256));
             var scriptPath = Path.Combine(root, "install.ps1");
             await File.WriteAllTextAsync(scriptPath, script, timeout.Token);
-            var serving = ServePackageOnlyAsync(listener, archiveBytes, version, enrollmentCode, timeout.Token);
+            var servingTask = ServePackageOnlyAsync(listener, archiveBytes, version, enrollmentCode, packageServerCancellation.Token);
+            serving = servingTask;
 
             var start = new ProcessStartInfo("powershell.exe")
             {
@@ -210,11 +213,15 @@ public sealed class WindowsInstallerNativeTests
             var outputTask = installerProcess.StandardOutput.ReadToEndAsync(timeout.Token);
             var errorTask = installerProcess.StandardError.ReadToEndAsync(timeout.Token);
             await installerProcess.WaitForExitAsync(timeout.Token);
-            await serving;
+            packageServerCancellation.Cancel();
+            var packageWasRequested = await servingTask;
+            serving = null;
             var output = await outputTask;
             var error = await errorTask;
             Assert.NotEqual(0, installerProcess.ExitCode);
-            Assert.Contains("outside the configured NetRatel package layout", $"{output}\n{error}", StringComparison.OrdinalIgnoreCase);
+            Assert.False(packageWasRequested, "The installer must reject the unowned service image before requesting the candidate package.");
+            AssertInstallerOutputContains(
+                "outside the configured NetRatel package layout", output, error, installerProcess.ExitCode);
             Assert.True(File.Exists(sentinel));
             Assert.Equal("existing package remains untouched", await File.ReadAllTextAsync(sentinel, timeout.Token));
             Assert.Equal(beforeImage, ReadWindowsServiceImagePath(serviceName));
@@ -223,14 +230,29 @@ public sealed class WindowsInstallerNativeTests
         }
         finally
         {
-            if (installerProcess is { HasExited: false }) installerProcess.Kill(entireProcessTree: true);
-            installerProcess?.Dispose();
+            packageServerCancellation.Cancel();
             listener.Stop();
-            var serviceRemoved = RemoveWindowsServiceIfRegisteredImagePathEquals(serviceName, unownedImagePath);
-            Assert.True(serviceRemoved, "The unowned service registration changed; retaining its files for inspection.");
-            if (serviceRemoved && Directory.Exists(root))
+            try
             {
-                Directory.Delete(root, recursive: true);
+                if (installerProcess is not null)
+                {
+                    try
+                    {
+                        if (!installerProcess.HasExited) installerProcess.Kill(entireProcessTree: true);
+                        await installerProcess.WaitForExitAsync(CancellationToken.None);
+                    }
+                    finally { installerProcess.Dispose(); }
+                }
+                if (serving is not null) await serving;
+            }
+            finally
+            {
+                var serviceRemoved = RemoveWindowsServiceIfRegisteredImagePathEquals(serviceName, unownedImagePath);
+                Assert.True(serviceRemoved, "The unowned service registration changed; retaining its files for inspection.");
+                if (serviceRemoved && Directory.Exists(root))
+                {
+                    Directory.Delete(root, recursive: true);
+                }
             }
         }
     }
@@ -328,7 +350,7 @@ public sealed class WindowsInstallerNativeTests
             Assert.NotEqual(0, installerProcess.ExitCode);
             Assert.Contains("PowerShell edition: Desktop", output);
             Assert.Contains("PowerShell version: 5.", output);
-            Assert.Contains("did not reach gateway heartbeat readiness", $"{output}\n{error}", StringComparison.OrdinalIgnoreCase);
+            AssertInstallerOutputContains("did not reach gateway heartbeat readiness", output, error, installerProcess.ExitCode);
             Assert.DoesNotContain("authenticated gateway heartbeat readiness was verified", output, StringComparison.OrdinalIgnoreCase);
             Assert.True(File.Exists(credentialPath), "a service that enrolled but failed gateway admission retains its identity for repair");
             Assert.Equal(1, fixture.EnrollmentRequests);
@@ -1031,7 +1053,7 @@ public sealed class WindowsInstallerNativeTests
             var output = await outputTask;
             var error = await errorTask;
             Assert.NotEqual(0, installerProcess.ExitCode);
-            Assert.Contains("did not reach gateway heartbeat readiness", $"{output}\n{error}", StringComparison.OrdinalIgnoreCase);
+            AssertInstallerOutputContains("did not reach gateway heartbeat readiness", output, error, installerProcess.ExitCode);
             Assert.DoesNotContain("authenticated gateway heartbeat readiness was verified", output, StringComparison.OrdinalIgnoreCase);
             Assert.Equal(originalCredentialBytes, await File.ReadAllBytesAsync(credentialPath, timeout.Token));
             Assert.Equal(0, fixture.EnrollmentRequests);
@@ -1128,17 +1150,46 @@ public sealed class WindowsInstallerNativeTests
         }
     }
 
-    private static async Task ServePackageOnlyAsync(TcpListener listener, byte[] archive, string version, string enrollmentCode, CancellationToken ct)
+    private static async Task<bool> ServePackageOnlyAsync(TcpListener listener, byte[] archive, string version, string enrollmentCode, CancellationToken ct)
     {
-        using var client = await listener.AcceptTcpClientAsync(ct);
-        await using var stream = client.GetStream();
-        var request = await ReadRequestAsync(stream, ct);
-        Assert.StartsWith($"GET /api/v1/client-artifacts/win-x64/{version}/onboarding-download ", request);
-        Assert.Contains($"X-NetRatel-Enrollment-Code: {enrollmentCode}", request, StringComparison.OrdinalIgnoreCase);
-        var header = Encoding.ASCII.GetBytes($"HTTP/1.1 200 OK\r\nContent-Type: application/zip\r\nContent-Length: {archive.Length}\r\nX-NetRatel-Artifact-Rid: win-x64\r\nX-NetRatel-Artifact-Version: {version}\r\nX-NetRatel-Artifact-Sha256: {Convert.ToHexString(SHA256.HashData(archive)).ToLowerInvariant()}\r\nX-NetRatel-Artifact-Size: {archive.LongLength}\r\nConnection: close\r\n\r\n");
-        await stream.WriteAsync(header, ct);
-        await stream.WriteAsync(archive, ct);
-        await stream.FlushAsync(ct);
+        var accepted = false;
+        try
+        {
+            using var client = await listener.AcceptTcpClientAsync(ct);
+            accepted = true;
+            await using var stream = client.GetStream();
+            var request = await ReadRequestAsync(stream, ct);
+            Assert.StartsWith($"GET /api/v1/client-artifacts/win-x64/{version}/onboarding-download ", request);
+            Assert.Contains($"X-NetRatel-Enrollment-Code: {enrollmentCode}", request, StringComparison.OrdinalIgnoreCase);
+            var header = Encoding.ASCII.GetBytes($"HTTP/1.1 200 OK\r\nContent-Type: application/zip\r\nContent-Length: {archive.Length}\r\nX-NetRatel-Artifact-Rid: win-x64\r\nX-NetRatel-Artifact-Version: {version}\r\nX-NetRatel-Artifact-Sha256: {Convert.ToHexString(SHA256.HashData(archive)).ToLowerInvariant()}\r\nX-NetRatel-Artifact-Size: {archive.LongLength}\r\nConnection: close\r\n\r\n");
+            await stream.WriteAsync(header, ct);
+            await stream.WriteAsync(archive, ct);
+            await stream.FlushAsync(ct);
+            return true;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            return accepted;
+        }
+    }
+
+    private static void AssertInstallerOutputContains(string expected, string output, string error, int exitCode)
+    {
+        var combined = string.Concat(output, Environment.NewLine, error);
+        if (combined.Contains(expected, StringComparison.OrdinalIgnoreCase)) return;
+
+        var protectedPathFailure = Regex.Match(
+            combined,
+            @"The service readiness path could not be securely verified \(scope=(?:ancestor|leaf); component=\d+; check=[a-z-]+; exception=[A-Za-z0-9]+\)\.",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        const string unownedServiceFailure = "The registered NetRatel.Client image is outside the configured NetRatel package layout; refusing to stop or rewrite it.";
+        var safeDiagnostic = protectedPathFailure.Success
+            ? protectedPathFailure.Value
+            : combined.Contains(unownedServiceFailure, StringComparison.OrdinalIgnoreCase)
+                ? unownedServiceFailure
+                : "no bounded installer preflight diagnostic was emitted";
+
+        Assert.Fail($"Expected installer output to contain '{expected}'; exit code={exitCode}; diagnostic={safeDiagnostic}");
     }
 
     private static async Task<string> ReadRequestAsync(NetworkStream stream, CancellationToken ct)
