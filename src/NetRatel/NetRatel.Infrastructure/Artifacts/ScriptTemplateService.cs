@@ -566,6 +566,250 @@ function Initialize-NetRatelProtectedInstallDirectories {
                 catch { return $null }
             }
 
+            if ($null -eq ('NetRatel.Installation.BoundedServiceControlRunner' -as [type])) {
+                Add-Type -TypeDefinition @'
+            using System;
+            using System.Diagnostics;
+            using System.IO;
+            using System.Text;
+            using System.Threading.Tasks;
+
+            namespace NetRatel.Installation
+            {
+                public sealed class BoundedServiceControlResult
+                {
+                    public int ExitCode { get; set; }
+                    public bool TimedOut { get; set; }
+                    public bool ProcessStopped { get; set; }
+                    public bool OutputDrained { get; set; }
+                    public string StandardOutput { get; set; }
+                    public string StandardError { get; set; }
+                    public Process ProcessHandle { get; set; }
+                }
+
+                public static class BoundedServiceControlRunner
+                {
+                    private sealed class CaptureBuffer
+                    {
+                        public readonly StringBuilder Text = new StringBuilder();
+                        public bool Faulted;
+                    }
+
+                    public static BoundedServiceControlResult Run(string executablePath, string[] arguments,
+                        int timeoutMilliseconds, int stopTimeoutMilliseconds, int maximumCapturedCharacters)
+                    {
+                        var result = new BoundedServiceControlResult();
+                        result.StandardOutput = string.Empty;
+                        result.StandardError = string.Empty;
+                        var process = new Process();
+                        var retainProcessHandle = false;
+                        var processStarted = false;
+                        try
+                        {
+                            process.StartInfo = new ProcessStartInfo();
+                            process.StartInfo.FileName = executablePath;
+                            process.StartInfo.Arguments = SerializeArguments(arguments);
+                            process.StartInfo.UseShellExecute = false;
+                            process.StartInfo.CreateNoWindow = true;
+                            process.StartInfo.RedirectStandardOutput = true;
+                            process.StartInfo.RedirectStandardError = true;
+                            if (!process.Start())
+                            {
+                                result.ProcessStopped = true;
+                                result.OutputDrained = true;
+                                result.ExitCode = -1;
+                                return result;
+                            }
+
+                            processStarted = true;
+                            var standardOutput = new CaptureBuffer();
+                            var standardError = new CaptureBuffer();
+                            var outputTask = StartDrain(process.StandardOutput, standardOutput, maximumCapturedCharacters);
+                            var errorTask = StartDrain(process.StandardError, standardError, maximumCapturedCharacters);
+                            var exited = process.WaitForExit(timeoutMilliseconds);
+                            if (!exited)
+                            {
+                                result.TimedOut = true;
+                                TryKill(process);
+                                exited = process.WaitForExit(stopTimeoutMilliseconds);
+                                if (!exited) exited = HasExited(process);
+                            }
+
+                            result.ProcessStopped = exited;
+                            result.ExitCode = exited ? (result.TimedOut ? 1460 : process.ExitCode) : 1460;
+                            if (!exited)
+                            {
+                                result.ProcessHandle = process;
+                                retainProcessHandle = true;
+                                return result;
+                            }
+
+                            var outputDrained = false;
+                            try
+                            {
+                                outputDrained = Task.WaitAll(
+                                    new Task[] { outputTask, errorTask }, stopTimeoutMilliseconds);
+                            }
+                            catch (AggregateException) { outputDrained = false; }
+                            catch (Exception) { outputDrained = false; }
+                            result.OutputDrained = outputDrained &&
+                                !standardOutput.Faulted && !standardError.Faulted;
+                            if (result.OutputDrained)
+                            {
+                                result.StandardOutput = standardOutput.Text.ToString();
+                                result.StandardError = standardError.Text.ToString();
+                            }
+                            return result;
+                        }
+                        catch
+                        {
+                            if (!processStarted) throw;
+
+                            if (!HasExited(process)) TryKill(process);
+                            var stopped = false;
+                            try { stopped = process.WaitForExit(stopTimeoutMilliseconds); }
+                            catch (Exception) { stopped = HasExited(process); }
+                            if (!stopped) stopped = HasExited(process);
+                            result.ProcessStopped = stopped;
+                            result.ExitCode = stopped ? 1 : 1460;
+                            result.OutputDrained = false;
+                            if (!stopped)
+                            {
+                                result.ProcessHandle = process;
+                                retainProcessHandle = true;
+                            }
+                            return result;
+                        }
+                        finally
+                        {
+                            if (!retainProcessHandle) process.Dispose();
+                        }
+                    }
+
+                    private static bool HasExited(Process process)
+                    {
+                        try { return process.HasExited; }
+                        catch (Exception) { return false; }
+                    }
+
+                    private static bool TryKill(Process process)
+                    {
+                        try
+                        {
+                            process.Kill();
+                            return true;
+                        }
+                        catch (Exception) { return HasExited(process); }
+                    }
+
+                    private static Task StartDrain(StreamReader reader, CaptureBuffer capture, int maximumCharacters)
+                    {
+                        return Task.Run(async delegate
+                        {
+                            var buffer = new char[1024];
+                            try
+                            {
+                                int read;
+                                while ((read = await reader.ReadAsync(buffer, 0, buffer.Length).ConfigureAwait(false)) > 0)
+                                {
+                                    var remaining = maximumCharacters - capture.Text.Length;
+                                    if (remaining > 0)
+                                        capture.Text.Append(buffer, 0, Math.Min(read, remaining));
+                                }
+                            }
+                            catch (Exception) { capture.Faulted = true; }
+                        });
+                    }
+
+                    private static string SerializeArguments(string[] arguments)
+                    {
+                        var serialized = new string[arguments.Length];
+                        for (var index = 0; index < arguments.Length; index++)
+                            serialized[index] = QuoteArgument(arguments[index]);
+                        return string.Join(" ", serialized);
+                    }
+
+                    private static string QuoteArgument(string argument)
+                    {
+                        if (argument == null) throw new ArgumentNullException("argument");
+                        var serialized = new StringBuilder();
+                        serialized.Append('"');
+                        var backslashes = 0;
+                        foreach (var character in argument)
+                        {
+                            if (character == '\\')
+                            {
+                                backslashes++;
+                                continue;
+                            }
+
+                            if (character == '"')
+                            {
+                                serialized.Append('\\', backslashes * 2 + 1);
+                                serialized.Append('"');
+                                backslashes = 0;
+                                continue;
+                            }
+
+                            serialized.Append('\\', backslashes);
+                            serialized.Append(character);
+                            backslashes = 0;
+                        }
+
+                        serialized.Append('\\', backslashes * 2);
+                        serialized.Append('"');
+                        return serialized.ToString();
+                    }
+                }
+            }
+            '@ -ErrorAction Stop
+            }
+
+            function Invoke-NetRatelServiceControl([string[]] $arguments) {
+                $result = $null
+                try {
+                    $scPath = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::System)) 'sc.exe'
+                    $result = [NetRatel.Installation.BoundedServiceControlRunner]::Run($scPath, $arguments, 30000, 5000, 4096)
+                }
+                catch {
+                    throw 'Windows service control failed with safe error code 1.'
+                }
+                if (-not $result.ProcessStopped) {
+                    $script:serviceControlProcessReaped = $false
+                    $script:serviceControlProcessHandle = $result.ProcessHandle
+                    throw 'Windows service control did not stop within its bound; safe error code 1460.'
+                }
+                if ($result.TimedOut -or -not $result.OutputDrained) {
+                    throw 'Windows service control exceeded its bound; safe error code 1460.'
+                }
+                if ($result.ExitCode -ne 0) {
+                    $combinedOutput = [string]::Concat($result.StandardOutput, "`n", $result.StandardError)
+                    $scError = [System.Text.RegularExpressions.Regex]::Match(
+                        $combinedOutput, '\[SC\][^\r\n]*\bFAILED\s+(?<code>[0-9]+):',
+                        [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+                    $errorCode = [int]$result.ExitCode
+                    $parsedErrorCode = 0
+                    if ($scError.Success -and [int]::TryParse(
+                        $scError.Groups['code'].Value,
+                        [System.Globalization.NumberStyles]::None,
+                        [System.Globalization.CultureInfo]::InvariantCulture,
+                        [ref]$parsedErrorCode)) {
+                        $errorCode = $parsedErrorCode
+                    }
+                    throw "Windows service control failed with safe error code $errorCode."
+                }
+            }
+
+            function Assert-NetRatelServiceConfiguration([string] $expectedPathName, [string] $expectedStartName, [string] $expectedStartMode) {
+                $service = Get-CimInstance Win32_Service -Filter "Name='$serviceName'" -ErrorAction Stop
+                if (-not $service -or
+                    -not [string]::Equals([string]$service.PathName, $expectedPathName, [StringComparison]::OrdinalIgnoreCase) -or
+                    -not [string]::Equals([string]$service.StartName, $expectedStartName, [StringComparison]::OrdinalIgnoreCase) -or
+                    -not [string]::Equals([string]$service.StartMode, $expectedStartMode, [StringComparison]::OrdinalIgnoreCase)) {
+                    throw 'The NetRatel.Client service configuration did not verify.'
+                }
+            }
+
             function Test-NetRatelOwnedUpdaterImage([string] $pathName) {
                 if ([string]::IsNullOrWhiteSpace($pathName)) { return $false }
                 $legacyCommandMatch = [regex]::Match($pathName,
@@ -694,7 +938,7 @@ function Initialize-NetRatelProtectedInstallDirectories {
                 }
                 if ($settings.Transport) {
                     $settings.Transport.PSObject.Properties.Remove('Mode')
-                    if ($settings.Transport.PSObject.Properties.Count -eq 0) {
+                    if (@($settings.Transport.PSObject.Properties).Count -eq 0) {
                         $settings.PSObject.Properties.Remove('Transport')
                     }
                 }
@@ -777,6 +1021,7 @@ function Initialize-NetRatelProtectedInstallDirectories {
             }
             $previousPathName = if ($existingService) { [string]$existingService.PathName } else { $null }
             $previousStartName = if ($existingService) { [string]$existingService.StartName } else { 'LocalSystem' }
+            $previousServiceStartMode = if ($existingService) { [string]$existingService.StartMode } else { 'Auto' }
             $previousStartMode = if ($existingService) {
                 switch ([string]$existingService.StartMode) {
                     'Auto' { 'auto' }
@@ -796,6 +1041,8 @@ function Initialize-NetRatelProtectedInstallDirectories {
             $newTargetInstalled = $false
             $cutoverPrepared = $false
             $serviceConfigurationChanged = $false
+            $script:serviceControlProcessReaped = $true
+            $script:serviceControlProcessHandle = $null
             $stagedTargetDir = $targetDir
             $retiredUpdaterService = $null
             try {
@@ -846,9 +1093,12 @@ function Initialize-NetRatelProtectedInstallDirectories {
                     New-Service -Name $serviceName -BinaryPathName "`"$exe`" --service" -DisplayName 'NetRatel Client' -StartupType Automatic | Out-Null
                     $serviceCreated = $true
                 }
-                $scResult = & sc.exe config $serviceName "binPath= `"$exe`" --service" 'obj= LocalSystem' 'start= auto' 2>&1
                 $serviceConfigurationChanged = $true
-                if ($LASTEXITCODE -ne 0) { throw 'Could not configure the NetRatel.Client service executable and LocalSystem identity.' }
+                $candidateServiceImage = '"' + $exe + '" --service'
+                Invoke-NetRatelServiceControl -arguments ([string[]]@(
+                    'config', $serviceName, 'binPath=', $candidateServiceImage,
+                    'obj=', 'LocalSystem', 'start=', 'auto'))
+                Assert-NetRatelServiceConfiguration $candidateServiceImage 'LocalSystem' 'Auto'
 
                 $hasPreservedLogDir = @($preservedClientEnvironment | Where-Object { $_ -match '^NetRatel_CLIENT_LOG_DIR=' }).Count -gt 0
                 $clientEnvironment = @()
@@ -881,30 +1131,83 @@ function Initialize-NetRatelProtectedInstallDirectories {
             }
             catch {
                 $activationFailure = $_
+                $activationFailureCode = 1
+                $activationCodeMatch = [System.Text.RegularExpressions.Regex]::Match(
+                    [string]$activationFailure.Exception.Message,
+                    '\bsafe error code (?<code>[0-9]{1,10})\b',
+                    [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+                $parsedActivationFailureCode = 0
+                if ($activationCodeMatch.Success -and [int]::TryParse(
+                    $activationCodeMatch.Groups['code'].Value,
+                    [System.Globalization.NumberStyles]::None,
+                    [System.Globalization.CultureInfo]::InvariantCulture,
+                    [ref]$parsedActivationFailureCode)) {
+                    $activationFailureCode = $parsedActivationFailureCode
+                }
                 $rollbackFailures = @()
                 $rollbackSafe = -not $cutoverPrepared
                 if ($cutoverPrepared) {
-                $rollbackSafe = $true
-                    $rollbackService = $null
-                    try {
-                        $rollbackService = Get-CimInstance Win32_Service -Filter "Name='$serviceName'" -ErrorAction Stop
-                        if (($existingService -or $serviceCreated) -and -not $rollbackService) {
-                            throw 'The expected NetRatel.Client service registration could not be confirmed.'
+                    if (-not $script:serviceControlProcessReaped -and $script:serviceControlProcessHandle) {
+                        try {
+                            $script:serviceControlProcessReaped = [bool]$script:serviceControlProcessHandle.WaitForExit(0)
                         }
-                        if ($rollbackService -and $rollbackService.State -ne 'Stopped') {
-                            Stop-Service -Name $serviceName -Force -ErrorAction Stop
-                            $rollbackStopDeadline = [DateTimeOffset]::UtcNow.AddSeconds(60)
-                            do {
-                                Start-Sleep -Milliseconds 250
-                                $rollbackService = Get-CimInstance Win32_Service -Filter "Name='$serviceName'" -ErrorAction Stop
-                                if ($rollbackService.State -eq 'Stopped') { break }
-                            } while ([DateTimeOffset]::UtcNow -lt $rollbackStopDeadline)
-                            if ($rollbackService.State -ne 'Stopped') { throw 'The replacement service did not stop; its executable files were left untouched.' }
+                        catch {
+                            $script:serviceControlProcessReaped = $false
+                        }
+                        if ($script:serviceControlProcessReaped) {
+                            try { $script:serviceControlProcessHandle.Dispose() }
+                            catch { $rollbackFailures += 'service control handle cleanup: 1' }
+                            $script:serviceControlProcessHandle = $null
+                        }
+                    }
+                    if (-not $script:serviceControlProcessReaped) {
+                        $rollbackSafe = $false
+                        $rollbackFailures += 'service control process: 1460'
+                    }
+                    else {
+                        $rollbackSafe = $true
+                        $rollbackService = $null
+                        try {
+                            $rollbackService = Get-CimInstance Win32_Service -Filter "Name='$serviceName'" -ErrorAction Stop
+                            if (($existingService -or $serviceCreated) -and -not $rollbackService) {
+                                throw 'The expected NetRatel.Client service registration could not be confirmed.'
+                            }
+                            if ($rollbackService -and $rollbackService.State -ne 'Stopped') {
+                                Stop-Service -Name $serviceName -Force -ErrorAction Stop
+                                $rollbackStopDeadline = [DateTimeOffset]::UtcNow.AddSeconds(60)
+                                do {
+                                    Start-Sleep -Milliseconds 250
+                                    $rollbackService = Get-CimInstance Win32_Service -Filter "Name='$serviceName'" -ErrorAction Stop
+                                    if ($rollbackService.State -eq 'Stopped') { break }
+                                } while ([DateTimeOffset]::UtcNow -lt $rollbackStopDeadline)
+                                if ($rollbackService.State -ne 'Stopped') { throw 'The replacement service did not stop; its executable files were left untouched.' }
+                            }
+                        }
+                        catch {
+                            $rollbackSafe = $false
+                            $rollbackFailures += "service stop/query: $($_.Exception.GetType().Name)"
+                        }
+                    }
+                }
+                if ($rollbackSafe -and $cutoverPrepared) {
+                    $serviceConfigurationRestoreVerified = $true
+                    try {
+                        if ($serviceCreated) {
+                            Invoke-NetRatelServiceControl -arguments ([string[]]@('delete', $serviceName))
+                        }
+                        elseif ($existingService -and $serviceConfigurationChanged) {
+                            $serviceConfigurationRestoreVerified = $false
+                            if (-not $previousPathName) { throw 'The previous service executable was unavailable for rollback.' }
+                            Invoke-NetRatelServiceControl -arguments ([string[]]@(
+                                'config', $serviceName, 'binPath=', $previousPathName,
+                                'obj=', $previousStartName, 'start=', $previousStartMode))
+                            Assert-NetRatelServiceConfiguration $previousPathName $previousStartName $previousServiceStartMode
+                            $serviceConfigurationRestoreVerified = $true
                         }
                     }
                     catch {
-                        $rollbackSafe = $false
-                        $rollbackFailures += "service stop/query: $($_.Exception.GetType().Name)"
+                        if (-not $script:serviceControlProcessReaped) { $rollbackSafe = $false }
+                        $rollbackFailures += "service restore: $($_.Exception.GetType().Name)"
                     }
                 }
                 if ($rollbackSafe -and $cutoverPrepared) {
@@ -918,50 +1221,40 @@ function Initialize-NetRatelProtectedInstallDirectories {
                         }
                     }
                     catch {
+                        $rollbackSafe = $false
                         $rollbackFailures += "file restore: $($_.Exception.GetType().Name)"
                     }
+                }
+                if ($rollbackSafe -and $existingService -and $serviceConfigurationChanged) {
                     try {
-                        if ($serviceCreated) {
-                            & sc.exe delete $serviceName | Out-Null
-                            if ($LASTEXITCODE -ne 0) { throw 'Could not remove the new service registration.' }
+                        if ($previousEnvironment.Count -gt 0) {
+                            New-ItemProperty -Path $serviceRegistryPath -Name Environment -PropertyType MultiString -Value $previousEnvironment -Force | Out-Null
                         }
-                        elseif ($existingService -and $serviceConfigurationChanged) {
-                            if ($previousPathName) {
-                                & sc.exe config $serviceName "binPath= $previousPathName" "obj= $previousStartName" "start= $previousStartMode" | Out-Null
-                                if ($LASTEXITCODE -ne 0) { throw 'Could not restore the previous service configuration.' }
+                        else {
+                            Remove-ItemProperty -Path $serviceRegistryPath -Name Environment -ErrorAction SilentlyContinue
+                        }
+                        $restoredEnvironment = @((Get-ItemProperty -Path $serviceRegistryPath -Name Environment -ErrorAction SilentlyContinue).Environment)
+                        if (($restoredEnvironment -join "`n") -ne ($previousEnvironment -join "`n")) { throw 'The previous service environment did not verify after rollback.' }
+                        if ($previousWasRunning -and $serviceConfigurationRestoreVerified) {
+                            Start-Service -Name $serviceName -ErrorAction Stop
+                            $restoreStartDeadline = [DateTimeOffset]::UtcNow.AddSeconds(60)
+                            do {
+                                Start-Sleep -Milliseconds 250
                                 $restoredService = Get-CimInstance Win32_Service -Filter "Name='$serviceName'" -ErrorAction Stop
-                                if (-not [string]::Equals([string]$restoredService.PathName, $previousPathName, [StringComparison]::OrdinalIgnoreCase) -or
-                                    -not [string]::Equals([string]$restoredService.StartName, $previousStartName, [StringComparison]::OrdinalIgnoreCase)) {
-                                    throw 'The previous service executable or identity did not verify after rollback.'
-                                }
-                            }
-                            if ($previousEnvironment.Count -gt 0) {
-                                New-ItemProperty -Path $serviceRegistryPath -Name Environment -PropertyType MultiString -Value $previousEnvironment -Force | Out-Null
-                            }
-                            else {
-                                Remove-ItemProperty -Path $serviceRegistryPath -Name Environment -ErrorAction SilentlyContinue
-                            }
-                            $restoredEnvironment = @((Get-ItemProperty -Path $serviceRegistryPath -Name Environment -ErrorAction SilentlyContinue).Environment)
-                            if (($restoredEnvironment -join "`n") -ne ($previousEnvironment -join "`n")) { throw 'The previous service environment did not verify after rollback.' }
-                            if ($previousWasRunning) {
-                                Start-Service -Name $serviceName -ErrorAction Stop
-                                $restoreStartDeadline = [DateTimeOffset]::UtcNow.AddSeconds(60)
-                                do {
-                                    Start-Sleep -Milliseconds 250
-                                    $restoredService = Get-CimInstance Win32_Service -Filter "Name='$serviceName'" -ErrorAction Stop
-                                    if ($restoredService.State -eq 'Running') { break }
-                                } while ([DateTimeOffset]::UtcNow -lt $restoreStartDeadline)
-                                if ($restoredService.State -ne 'Running') { throw 'The previous service did not return to Running after rollback.' }
-                            }
+                                if ($restoredService.State -eq 'Running') { break }
+                            } while ([DateTimeOffset]::UtcNow -lt $restoreStartDeadline)
+                            if ($restoredService.State -ne 'Running') { throw 'The previous service did not return to Running after rollback.' }
                         }
                     }
                     catch {
-                        $rollbackFailures += "service restore: $($_.Exception.GetType().Name)"
+                        $rollbackFailures += "service environment/start: $($_.Exception.GetType().Name)"
                     }
                 }
-                Remove-Item -LiteralPath $requestPath, $readyPath -Force -ErrorAction SilentlyContinue
+                if ($rollbackSafe) {
+                    Remove-Item -LiteralPath $requestPath, $readyPath -Force -ErrorAction SilentlyContinue
+                }
                 if ($rollbackFailures.Count -gt 0) {
-                    throw "Activation failed and rollback was incomplete ($($rollbackFailures -join ', ')); candidate identity and package files were retained for repair."
+                    throw "Activation failed with safe error code $activationFailureCode and rollback was incomplete ($($rollbackFailures -join ', ')); candidate identity and package files were retained for repair."
                 }
                 throw $activationFailure
             }
@@ -1044,11 +1337,23 @@ function Initialize-NetRatelProtectedInstallDirectories {
                         } while ([DateTimeOffset]::UtcNow -lt $updaterStopDeadline)
                         if ($retiredUpdaterService.State -ne 'Stopped') { throw 'The obsolete updater service did not stop.' }
                     }
-                    & sc.exe delete 'NetRatel.Update' | Out-Null
-                    if ($LASTEXITCODE -ne 0) { throw 'Could not delete the obsolete updater service registration.' }
+                    Invoke-NetRatelServiceControl -arguments ([string[]]@('delete', 'NetRatel.Update'))
                 }
                 catch {
-                    Write-Warning "The client is ready, but the obsolete updater service could not be retired ($($_.Exception.GetType().Name))."
+                    $retirementFailureCode = 1
+                    $retirementCodeMatch = [System.Text.RegularExpressions.Regex]::Match(
+                        [string]$_.Exception.Message,
+                        '\bsafe error code (?<code>[0-9]{1,10})\b',
+                        [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+                    $parsedRetirementFailureCode = 0
+                    if ($retirementCodeMatch.Success -and [int]::TryParse(
+                        $retirementCodeMatch.Groups['code'].Value,
+                        [System.Globalization.NumberStyles]::None,
+                        [System.Globalization.CultureInfo]::InvariantCulture,
+                        [ref]$parsedRetirementFailureCode)) {
+                        $retirementFailureCode = $parsedRetirementFailureCode
+                    }
+                    Write-Warning "The client is ready, but the obsolete updater service could not be retired (safe error code $retirementFailureCode)."
                 }
             }
             Write-Host "Gateway heartbeat ready: agentId=$($readyRecord.agentId), tenantId=$($readyRecord.tenantId), connectionEpoch=$($readyRecord.connectionEpoch)."

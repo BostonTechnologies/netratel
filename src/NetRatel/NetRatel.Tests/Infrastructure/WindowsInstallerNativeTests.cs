@@ -253,8 +253,8 @@ public sealed class WindowsInstallerNativeTests
         const string serviceName = "NetRatel.Client";
         AssertWindowsServiceAbsent(serviceName);
         var root = CreateWindowsServiceFixtureRoot("unowned-service");
-        var unownedImage = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "System32", "svchost.exe");
-        var unownedImagePath = $"{unownedImage} -k netsvcs";
+        var unownedImage = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "System32", "cmd.exe");
+        var unownedImagePath = $"\"{unownedImage}\" --service";
         using var listener = new TcpListener(IPAddress.Loopback, 0);
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         using var packageServerCancellation = new CancellationTokenSource();
@@ -467,6 +467,7 @@ public sealed class WindowsInstallerNativeTests
             var tokensBeforeRestart = fixture.TokenRequests;
             Assert.True(ServiceExecutableMatches(
                 ReadWindowsServiceImagePath(serviceName), Path.Combine(installRoot, "versions", version, "NetRatel.Client.exe")));
+            Assert.Equal(2, ReadWindowsServiceStartType(serviceName));
             StopWindowsService(serviceName);
             StartWindowsService(serviceName);
             await WaitUntilAsync(
@@ -628,6 +629,7 @@ public sealed class WindowsInstallerNativeTests
             AssertInstallerOutputHasSafeText(output, "Gateway heartbeat ready:", "gateway_ready_message");
             AssertInstallerOutputHasSafeText(output, $"agentId={agentId:D}", "agent_id_message");
             AssertInstallerOutputHasSafeText(output, $"tenantId={tenantId}", "tenant_id_message");
+            Assert.Equal(2, ReadWindowsServiceStartType(serviceName));
             Assert.True(File.Exists(credentialPath), "the LocalSystem service must retain its enrolled credentials");
             Assert.Equal(1, fixture.EnrollmentRequests);
             Assert.True(fixture.TokenRequests >= 1);
@@ -802,6 +804,7 @@ public sealed class WindowsInstallerNativeTests
             legacyStateParentAclInjected = false;
             Assert.True(ServiceExecutableMatches(
                 ReadWindowsServiceImagePath(serviceName), Path.Combine(installRoot, "versions", version, "NetRatel.Client.exe")));
+            Assert.Equal(2, ReadWindowsServiceStartType(serviceName));
 
             var installedExecutable = Path.Combine(installRoot, "versions", version, "NetRatel.Client.exe");
             var originalExecutableBytes = await File.ReadAllBytesAsync(installedExecutable, timeout.Token);
@@ -2220,6 +2223,13 @@ public sealed class WindowsInstallerNativeTests
     {
         using var key = Registry.LocalMachine.OpenSubKey($"SYSTEM\\CurrentControlSet\\Services\\{serviceName}");
         return key?.GetValue("ObjectName") as string ?? throw new InvalidOperationException("Service logon identity was not registered.");
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static int ReadWindowsServiceStartType(string serviceName)
+    {
+        using var key = Registry.LocalMachine.OpenSubKey($"SYSTEM\\CurrentControlSet\\Services\\{serviceName}");
+        return (int)(key?.GetValue("Start") ?? throw new InvalidOperationException("Service startup type was not registered."));
     }
 
     [SupportedOSPlatform("windows")]
