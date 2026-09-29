@@ -56,6 +56,9 @@ namespace NetRatel.Tests.Infrastructure;
 
 public sealed class WindowsInstallerNativeTests
 {
+    private const string UnownedServiceImageFailure =
+        "The registered NetRatel.Client image is outside the configured NetRatel package layout; refusing to stop or rewrite it.";
+
     [Fact]
     public void InstallerFailureDiagnosticAcceptsPowerShellLineWrappingWithoutLeakingPathsOrSids()
     {
@@ -78,6 +81,34 @@ public sealed class WindowsInstallerNativeTests
             diagnostic);
         Assert.DoesNotContain(privatePath, diagnostic, StringComparison.Ordinal);
         Assert.DoesNotContain(privateSid, diagnostic, StringComparison.Ordinal);
+
+        const string unownedServiceFailure = "The registered NetRatel.Client image is outside the configured NetRatel package layout; refusing to stop or rewrite it.";
+        var wrappedUnownedServiceFailure = string.Join("\r\n", new[]
+        {
+            "The registered NetRatel.Client image is outside the configured NetRatel",
+            "package layout; refusing to stop or rewrite it."
+        });
+        Assert.Equal(unownedServiceFailure, GetSafeInstallerDiagnostic(wrappedUnownedServiceFailure));
+        AssertInstallerOutputContains(
+            "outside the configured NetRatel package layout",
+            wrappedUnownedServiceFailure,
+            string.Empty,
+            exitCode: 1);
+
+        var tlsProbe = new NativeTlsProbePair(
+            new NativeTlsProbeResult(NativeTlsProbeClass.TlsHandshakeFailure, 35, "none", true),
+            new NativeTlsProbeResult(NativeTlsProbeClass.HttpResponse, 0, "404", false));
+        Assert.Equal(
+            "Download failed with exit code 35; default[class=TlsHandshakeFailure,curlExit=35,httpStatus=none,proxyUsed=True]; direct[class=HttpResponse,curlExit=0,httpStatus=404,proxyUsed=False]",
+            GetSafeInstallerDiagnostic("Download failed with exit code 35.", tlsProbe));
+        Assert.DoesNotContain(privatePath, GetSafeInstallerDiagnostic("Download failed with exit code 35.", tlsProbe), StringComparison.Ordinal);
+        Assert.DoesNotContain(privateSid, GetSafeInstallerDiagnostic("Download failed with exit code 35.", tlsProbe), StringComparison.Ordinal);
+        Assert.Equal(NativeTlsProbeClass.HttpResponse, ClassifyCurlResult(0, "404"));
+        Assert.Equal(NativeTlsProbeClass.TlsHandshakeFailure, ClassifyCurlResult(35, "none"));
+        Assert.Equal(NativeTlsProbeClass.TransportFailure, ClassifyCurlResult(0, "000"));
+        Assert.Equal(NativeTlsProbeClass.TransportFailure, ClassifyCurlResult(60, "404"));
+        Assert.Equal("none", ParseCurlHttpStatus("000"));
+        Assert.Equal("404", ParseCurlHttpStatus("404"));
     }
 
     [Theory]
@@ -304,8 +335,8 @@ public sealed class WindowsInstallerNativeTests
 
         var root = CreateWindowsServiceFixtureRoot("disabled-service");
         var installRoot = Path.Combine(root, "client");
-        var certificate = CreateNativeGatewayCertificate();
-        var trustedCertificate = X509CertificateLoader.LoadCertificate(certificate.Export(X509ContentType.Cert));
+        using var certificate = CreateNativeGatewayCertificate();
+        using var trustedCertificate = X509CertificateLoader.LoadCertificate(certificate.Export(X509ContentType.Cert));
         using var fixture = new NativeGatewayHostFixture(4098, Guid.NewGuid(), "ENR-SYNTHETIC-WINDOWS-SERVICE", agentDisabled: true);
         WebApplication? app = null;
         var trusted = false;
@@ -321,6 +352,7 @@ public sealed class WindowsInstallerNativeTests
                 .Features.Get<IServerAddressesFeature>()?.Addresses;
             Assert.NotNull(addresses);
             var apiBase = Assert.Single(addresses!, address => address.StartsWith("https://", StringComparison.OrdinalIgnoreCase));
+            var tlsProbe = await ProbeLoopbackHttpsAsync(apiBase, timeout.Token);
 
             var stagedPackage = Path.Combine(root, "package");
             CopyDirectory(packageDirectory, stagedPackage);
@@ -373,7 +405,7 @@ public sealed class WindowsInstallerNativeTests
             Assert.NotEqual(0, installerProcess.ExitCode);
             Assert.Contains("PowerShell edition: Desktop", output);
             Assert.Contains("PowerShell version: 5.", output);
-            AssertInstallerOutputContains("did not reach gateway heartbeat readiness", output, error, installerProcess.ExitCode);
+            AssertInstallerOutputContains("did not reach gateway heartbeat readiness", output, error, installerProcess.ExitCode, tlsProbe);
             Assert.DoesNotContain("authenticated gateway heartbeat readiness was verified", output, StringComparison.OrdinalIgnoreCase);
             Assert.True(File.Exists(credentialPath), "a service that enrolled but failed gateway admission retains its identity for repair");
             Assert.Equal(1, fixture.EnrollmentRequests);
@@ -453,8 +485,6 @@ public sealed class WindowsInstallerNativeTests
                     }
                     finally
                     {
-                        trustedCertificate.Dispose();
-                        certificate.Dispose();
                         if (serviceRemoved)
                         {
                             DeleteCredentialFiles(credentialDirectory);
@@ -494,8 +524,8 @@ public sealed class WindowsInstallerNativeTests
 
         var root = CreateWindowsServiceFixtureRoot("real-gateway");
         var installRoot = Path.Combine(root, "client");
-        var certificate = CreateNativeGatewayCertificate();
-        var trustedCertificate = X509CertificateLoader.LoadCertificate(certificate.Export(X509ContentType.Cert));
+        using var certificate = CreateNativeGatewayCertificate();
+        using var trustedCertificate = X509CertificateLoader.LoadCertificate(certificate.Export(X509ContentType.Cert));
         WebApplication? app = null;
         Process? installerProcess = null;
         var trusted = false;
@@ -515,6 +545,7 @@ public sealed class WindowsInstallerNativeTests
                 .Features.Get<IServerAddressesFeature>()?.Addresses;
             Assert.NotNull(addresses);
             var apiBase = Assert.Single(addresses!, address => address.StartsWith("https://", StringComparison.OrdinalIgnoreCase));
+            var tlsProbe = await ProbeLoopbackHttpsAsync(apiBase, timeout.Token);
 
             var archivePath = Path.Combine(root, "client.zip");
             ZipFile.CreateFromDirectory(packageDirectory, archivePath, CompressionLevel.Optimal, includeBaseDirectory: false);
@@ -554,7 +585,8 @@ public sealed class WindowsInstallerNativeTests
             var output = await outputTask;
             var error = await errorTask;
 
-            Assert.True(installerProcess.ExitCode == 0, $"The real HTTPS gateway installer failed: {error}");
+            Assert.True(installerProcess.ExitCode == 0,
+                $"The real HTTPS gateway installer failed; installerExit={installerProcess.ExitCode}; {GetSafeInstallerDiagnostic(error, tlsProbe)}");
             Assert.Contains("Gateway heartbeat ready:", output);
             Assert.Contains($"agentId={agentId:D}", output);
             Assert.Contains($"tenantId={tenantId}", output);
@@ -945,8 +977,6 @@ public sealed class WindowsInstallerNativeTests
                     }
                     finally
                     {
-                        trustedCertificate.Dispose();
-                        certificate.Dispose();
                         if (serviceRemoved)
                         {
                             if (Directory.Exists(stateDirectory)) Directory.Delete(stateDirectory, recursive: true);
@@ -1035,6 +1065,7 @@ public sealed class WindowsInstallerNativeTests
                 .Features.Get<IServerAddressesFeature>()?.Addresses;
             Assert.NotNull(addresses);
             var apiBase = Assert.Single(addresses!, address => address.StartsWith("https://", StringComparison.OrdinalIgnoreCase));
+            var tlsProbe = await ProbeLoopbackHttpsAsync(apiBase, timeout.Token);
 
             var archivePath = Path.Combine(root, "client.zip");
             ZipFile.CreateFromDirectory(packageDirectory, archivePath, CompressionLevel.Optimal, includeBaseDirectory: false);
@@ -1074,7 +1105,7 @@ public sealed class WindowsInstallerNativeTests
             var output = await outputTask;
             var error = await errorTask;
             Assert.NotEqual(0, installerProcess.ExitCode);
-            AssertInstallerOutputContains("did not reach gateway heartbeat readiness", output, error, installerProcess.ExitCode);
+            AssertInstallerOutputContains("did not reach gateway heartbeat readiness", output, error, installerProcess.ExitCode, tlsProbe);
             Assert.DoesNotContain("authenticated gateway heartbeat readiness was verified", output, StringComparison.OrdinalIgnoreCase);
             Assert.Equal(originalCredentialBytes, await File.ReadAllBytesAsync(credentialPath, timeout.Token));
             Assert.Equal(0, fixture.EnrollmentRequests);
@@ -1194,27 +1225,317 @@ public sealed class WindowsInstallerNativeTests
         }
     }
 
-    private static void AssertInstallerOutputContains(string expected, string output, string error, int exitCode)
+    private static void AssertInstallerOutputContains(
+        string expected,
+        string output,
+        string error,
+        int exitCode,
+        NativeTlsProbePair? tlsProbe = null)
     {
         var combined = string.Concat(output, Environment.NewLine, error);
         if (combined.Contains(expected, StringComparison.OrdinalIgnoreCase)) return;
 
-        var safeDiagnostic = GetSafeInstallerDiagnostic(combined);
+        if (string.Equals(expected, "outside the configured NetRatel package layout", StringComparison.OrdinalIgnoreCase))
+        {
+            var normalized = Regex.Replace(combined, @"\s+", " ").Trim();
+            if (normalized.Contains(UnownedServiceImageFailure, StringComparison.OrdinalIgnoreCase)) return;
+        }
+
+        var safeDiagnostic = GetSafeInstallerDiagnostic(combined, tlsProbe);
         Assert.Fail($"Expected installer output to contain '{expected}'; exit code={exitCode}; diagnostic={safeDiagnostic}");
     }
 
-    private static string GetSafeInstallerDiagnostic(string combined)
+    private static string GetSafeInstallerDiagnostic(string combined, NativeTlsProbePair? tlsProbe = null)
     {
         var protectedPathFailure = Regex.Match(
             combined,
             @"The\s+service\s+readiness\s+path\s+could\s+not\s+be\s+securely\s+verified\s+\(scope=(?:ancestor|leaf);\s*component=\d+;\s*check=[a-z-]+;\s*exception=[A-Za-z0-9]+\)\.",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-        const string unownedServiceFailure = "The registered NetRatel.Client image is outside the configured NetRatel package layout; refusing to stop or rewrite it.";
+        var whitespaceNormalized = Regex.Replace(combined, @"\s+", " ").Trim();
+        var downloadFailure = Regex.Match(
+            combined,
+            @"Download\s+failed\s+with\s+exit\s+code\s+(?<code>\d+)\.",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
         return protectedPathFailure.Success
             ? Regex.Replace(protectedPathFailure.Value, @"\s+", " ").Trim()
-            : combined.Contains(unownedServiceFailure, StringComparison.OrdinalIgnoreCase)
-                ? unownedServiceFailure
-                : "no bounded installer preflight diagnostic was emitted";
+            : whitespaceNormalized.Contains(UnownedServiceImageFailure, StringComparison.OrdinalIgnoreCase)
+                ? UnownedServiceImageFailure
+                : downloadFailure.Success
+                    ? $"Download failed with exit code {downloadFailure.Groups["code"].Value}; {tlsProbe?.ToSafeDiagnostic() ?? "TLS probe unavailable"}"
+                    : tlsProbe?.ToSafeDiagnostic() ?? "no bounded installer preflight diagnostic was emitted";
+    }
+
+    private static async Task<NativeTlsProbePair> ProbeLoopbackHttpsAsync(string apiBase, CancellationToken cancellationToken)
+    {
+        var probeUri = new Uri(new Uri(apiBase, UriKind.Absolute), "/__netratel_native_tls_probe");
+        var defaultEnvironment = await RunCurlTlsProbeAsync(probeUri, bypassProxy: false, cancellationToken);
+        var directLoopback = await RunCurlTlsProbeAsync(probeUri, bypassProxy: true, cancellationToken);
+        return new NativeTlsProbePair(defaultEnvironment, directLoopback);
+    }
+
+    private static async Task<NativeTlsProbeResult> RunCurlTlsProbeAsync(
+        Uri probeUri,
+        bool bypassProxy,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var start = new ProcessStartInfo("curl.exe")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false
+        };
+        start.ArgumentList.Add("--disable");
+        start.ArgumentList.Add("--verbose");
+        start.ArgumentList.Add("--silent");
+        start.ArgumentList.Add("--show-error");
+        start.ArgumentList.Add("--connect-timeout");
+        start.ArgumentList.Add("5");
+        start.ArgumentList.Add("--max-time");
+        start.ArgumentList.Add("10");
+        start.ArgumentList.Add("--output");
+        start.ArgumentList.Add("NUL");
+        start.ArgumentList.Add("--write-out");
+        start.ArgumentList.Add("%{http_code}");
+        if (bypassProxy)
+        {
+            start.ArgumentList.Add("--noproxy");
+            start.ArgumentList.Add("*");
+        }
+
+        start.ArgumentList.Add(probeUri.AbsoluteUri);
+
+        Process? process;
+        try
+        {
+            process = Process.Start(start);
+        }
+        catch (Win32Exception)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return new NativeTlsProbeResult(NativeTlsProbeClass.CurlUnavailable, null, "none", false);
+        }
+
+        if (process is null)
+        {
+            return new NativeTlsProbeResult(NativeTlsProbeClass.CurlUnavailable, null, "none", false);
+        }
+
+        using (process)
+        using (var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+        using (var outputCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+        {
+            timeout.CancelAfter(TimeSpan.FromSeconds(12));
+            var standardOutputTask = ReadBoundedOutputAsync(process.StandardOutput, maximumCharacters: 128, outputCancellation.Token);
+            var standardErrorTask = ReadBoundedOutputAsync(process.StandardError, maximumCharacters: 8192, outputCancellation.Token);
+            var timedOut = false;
+            var processTerminated = true;
+            try
+            {
+                await process.WaitForExitAsync(timeout.Token);
+            }
+            catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+            {
+                timedOut = !cancellationToken.IsCancellationRequested;
+                processTerminated = await TerminateProbeProcessAsync(process);
+            }
+
+            var probeOutput = await DrainProbeOutputAsync(
+                process,
+                standardOutputTask,
+                standardErrorTask,
+                outputCancellation);
+            if (cancellationToken.IsCancellationRequested)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
+            if (timedOut || !processTerminated || probeOutput is null)
+            {
+                return new NativeTlsProbeResult(
+                    NativeTlsProbeClass.TimedOut,
+                    process.HasExited ? process.ExitCode : null,
+                    probeOutput is null ? "none" : ParseCurlHttpStatus(probeOutput.Value.StandardOutput),
+                    probeOutput is null ? false : CurlUsedEnvironmentProxy(probeOutput.Value.StandardError));
+            }
+
+            var httpStatus = ParseCurlHttpStatus(probeOutput.Value.StandardOutput);
+            var proxyUsed = CurlUsedEnvironmentProxy(probeOutput.Value.StandardError);
+            var classification = ClassifyCurlResult(process.ExitCode, httpStatus);
+            return new NativeTlsProbeResult(classification, process.ExitCode, httpStatus, proxyUsed);
+        }
+    }
+
+    private static async Task<bool> TerminateProbeProcessAsync(Process process)
+    {
+        if (process.HasExited) return true;
+
+        try
+        {
+            process.Kill(entireProcessTree: true);
+        }
+        catch (InvalidOperationException) when (process.HasExited)
+        {
+            return true;
+        }
+        catch (Win32Exception)
+        {
+            return process.HasExited;
+        }
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        try
+        {
+            await process.WaitForExitAsync(timeout.Token);
+            return true;
+        }
+        catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+        {
+            return process.HasExited;
+        }
+    }
+
+    private static async Task<(string StandardOutput, string StandardError)?> DrainProbeOutputAsync(
+        Process process,
+        Task<string> standardOutputTask,
+        Task<string> standardErrorTask,
+        CancellationTokenSource outputCancellation)
+    {
+        var drained = await TryAwaitProbeReadersAsync(standardOutputTask, standardErrorTask, TimeSpan.FromSeconds(5));
+        if (drained)
+        {
+            if (standardOutputTask.IsCompletedSuccessfully && standardErrorTask.IsCompletedSuccessfully)
+            {
+                return (await standardOutputTask, await standardErrorTask);
+            }
+
+            return null;
+        }
+
+        outputCancellation.Cancel();
+        process.StandardOutput.Dispose();
+        process.StandardError.Dispose();
+        var observed = await TryAwaitProbeReadersAsync(standardOutputTask, standardErrorTask, TimeSpan.FromSeconds(1));
+        if (!observed)
+        {
+            ObserveProbeReaderFailure(standardOutputTask);
+            ObserveProbeReaderFailure(standardErrorTask);
+        }
+
+        return null;
+    }
+
+    private static async Task<bool> TryAwaitProbeReadersAsync(
+        Task<string> standardOutputTask,
+        Task<string> standardErrorTask,
+        TimeSpan timeout)
+    {
+        try
+        {
+            await Task.WhenAll(standardOutputTask, standardErrorTask).WaitAsync(timeout);
+            return true;
+        }
+        catch (System.TimeoutException)
+        {
+            return false;
+        }
+        catch (OperationCanceledException) when (standardOutputTask.IsCanceled || standardErrorTask.IsCanceled)
+        {
+            return true;
+        }
+        catch (IOException)
+        {
+            return true;
+        }
+        catch (ObjectDisposedException)
+        {
+            return true;
+        }
+    }
+
+    private static void ObserveProbeReaderFailure(Task<string> task)
+    {
+        _ = task.ContinueWith(
+            static completed => { _ = completed.Exception; },
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+    }
+
+    private static async Task<string> ReadBoundedOutputAsync(
+        StreamReader reader,
+        int maximumCharacters,
+        CancellationToken cancellationToken)
+    {
+        var output = new StringBuilder(Math.Min(maximumCharacters, 4096));
+        var buffer = new char[512];
+        while (true)
+        {
+            var read = await reader.ReadAsync(buffer.AsMemory(), cancellationToken);
+            if (read == 0)
+            {
+                return output.ToString();
+            }
+
+            if (output.Length < maximumCharacters)
+            {
+                output.Append(buffer, 0, Math.Min(read, maximumCharacters - output.Length));
+            }
+        }
+    }
+
+    private static string ParseCurlHttpStatus(string standardOutput)
+    {
+        var value = standardOutput.Trim();
+        return IsValidHttpStatus(value) ? value : "none";
+    }
+
+    private static NativeTlsProbeClass ClassifyCurlResult(int curlExitCode, string httpStatus) =>
+        curlExitCode == 35
+            ? NativeTlsProbeClass.TlsHandshakeFailure
+            : curlExitCode == 0 && IsValidHttpStatus(httpStatus)
+                ? NativeTlsProbeClass.HttpResponse
+                : NativeTlsProbeClass.TransportFailure;
+
+    private static bool IsValidHttpStatus(string value) =>
+        Regex.IsMatch(value, @"^\d{3}$", RegexOptions.CultureInvariant) &&
+        int.TryParse(value, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var statusCode) &&
+        statusCode is >= 100 and <= 599;
+
+    private static bool CurlUsedEnvironmentProxy(string standardError) =>
+        Regex.IsMatch(
+            standardError,
+            @"(?im)^\*\s+Uses\s+proxy\s+env\s+variable\s+(?:HTTPS?_PROXY|ALL_PROXY)\b",
+            RegexOptions.CultureInvariant);
+
+    private enum NativeTlsProbeClass
+    {
+        HttpResponse,
+        TlsHandshakeFailure,
+        TransportFailure,
+        TimedOut,
+        CurlUnavailable
+    }
+
+    private readonly record struct NativeTlsProbeResult(
+        NativeTlsProbeClass Classification,
+        int? CurlExitCode,
+        string HttpStatus,
+        bool ProxyUsed)
+    {
+        public string ToSafeDiagnostic(string name)
+        {
+            var exitCode = CurlExitCode?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "none";
+            return $"{name}[class={Classification},curlExit={exitCode},httpStatus={HttpStatus},proxyUsed={ProxyUsed}]";
+        }
+    }
+
+    private readonly record struct NativeTlsProbePair(
+        NativeTlsProbeResult DefaultEnvironment,
+        NativeTlsProbeResult DirectLoopback)
+    {
+        public string ToSafeDiagnostic() =>
+            $"{DefaultEnvironment.ToSafeDiagnostic("default")}; {DirectLoopback.ToSafeDiagnostic("direct")}";
     }
 
     [SupportedOSPlatform("windows")]
@@ -1342,7 +1663,26 @@ public sealed class WindowsInstallerNativeTests
         request.CertificateExtensions.Add(subjectAlternativeNames.Build());
         var usages = new OidCollection { new("1.3.6.1.5.5.7.3.1") };
         request.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension(usages, critical: true));
-        return request.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-1), DateTimeOffset.UtcNow.AddHours(2));
+        var generatedCertificate = request.CreateSelfSigned(
+            DateTimeOffset.UtcNow.AddMinutes(-1),
+            DateTimeOffset.UtcNow.AddHours(2));
+        if (!OperatingSystem.IsWindows()) return generatedCertificate;
+
+        // Schannel needs the server key in a Windows key container; keep it temporary by omitting PersistKeySet.
+        var passwordBytes = RandomNumberGenerator.GetBytes(32);
+        var password = Convert.ToBase64String(passwordBytes);
+        byte[]? pkcs12 = null;
+        try
+        {
+            pkcs12 = generatedCertificate.Export(X509ContentType.Pfx, password);
+            return X509CertificateLoader.LoadPkcs12(pkcs12, password, X509KeyStorageFlags.UserKeySet);
+        }
+        finally
+        {
+            if (pkcs12 is not null) CryptographicOperations.ZeroMemory(pkcs12);
+            CryptographicOperations.ZeroMemory(passwordBytes);
+            generatedCertificate.Dispose();
+        }
     }
 
     [SupportedOSPlatform("windows")]
