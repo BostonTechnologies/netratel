@@ -56,6 +56,31 @@ namespace NetRatel.Tests.Infrastructure;
 
 public sealed class WindowsInstallerNativeTests
 {
+    private const int MaximumCapturedInstallerStreamCharacters = 128 * 1024;
+    private const int MaximumCombinedInstallerDiagnosticCharacters = MaximumCapturedInstallerStreamCharacters * 2;
+    private static readonly string[] SafePowerShellExceptionTypes =
+    [
+        "RuntimeException",
+        "CommandNotFoundException",
+        "ParameterBindingException",
+        "ItemNotFoundException",
+        "UnauthorizedAccessException",
+        "IOException",
+        "DirectoryNotFoundException",
+        "FileNotFoundException",
+        "InvalidDataException",
+        "InvalidOperationException",
+        "ArgumentException",
+        "SecurityException",
+        "CryptographicException",
+        "Win32Exception",
+        "WebException",
+        "HttpRequestException",
+        "ServiceCommandException",
+        "ProcessCommandException",
+        "NativeCommandError",
+        "RemoteException"
+    ];
     private const string UnownedServiceImageFailure =
         "The registered NetRatel.Client image is outside the configured NetRatel package layout; refusing to stop or rewrite it.";
 
@@ -109,6 +134,24 @@ public sealed class WindowsInstallerNativeTests
         Assert.Equal(NativeTlsProbeClass.TransportFailure, ClassifyCurlResult(60, "404"));
         Assert.Equal("none", ParseCurlHttpStatus("000"));
         Assert.Equal("404", ParseCurlHttpStatus("404"));
+
+        const string privateMessage = "grant=ENR-private-capability password=private-password";
+        const string privateInstallerPath = @"C:\private\task-root\install.ps1";
+        var powerShellError = $"At {privateInstallerPath}:42 char:7\r\n+ throw '{privateMessage}'\r\nCategoryInfo : OperationStopped: (private source text:String) [], RuntimeException\r\nFullyQualifiedErrorId : RuntimeException";
+        const string safePowerShellDiagnostic = "PowerShell failure type=RuntimeException line=42";
+        Assert.Equal(safePowerShellDiagnostic, GetSafeInstallerDiagnostic(powerShellError));
+        Assert.DoesNotContain(privateMessage, GetSafeInstallerDiagnostic(powerShellError), StringComparison.Ordinal);
+        Assert.DoesNotContain(privateInstallerPath, GetSafeInstallerDiagnostic(powerShellError), StringComparison.Ordinal);
+
+        var powerShell7ConciseError = $"At {privateInstallerPath}: line 57 char:1\r\n+ throw '{privateMessage}'\r\nRuntimeException: {privateMessage}";
+        const string safePowerShell7Diagnostic = "PowerShell failure type=RuntimeException line=57";
+        Assert.Equal(safePowerShell7Diagnostic, GetSafeInstallerDiagnostic(powerShell7ConciseError));
+        Assert.DoesNotContain(privateMessage, GetSafeInstallerDiagnostic(powerShell7ConciseError), StringComparison.Ordinal);
+        Assert.DoesNotContain(privateInstallerPath, GetSafeInstallerDiagnostic(powerShell7ConciseError), StringComparison.Ordinal);
+
+        var oversizedMalformedOutput = new string('x', MaximumCombinedInstallerDiagnosticCharacters + 4096) +
+            $"\r\nAt {privateInstallerPath}:43 char:7\r\nCategoryInfo : OperationStopped: (private source text:String) [], RuntimeException";
+        Assert.Equal("no bounded installer preflight diagnostic was emitted", GetSafeInstallerDiagnostic(oversizedMalformedOutput));
     }
 
     [Theory]
@@ -177,13 +220,14 @@ public sealed class WindowsInstallerNativeTests
                 start.Environment["PATH"] = Path.GetDirectoryName(powershellPath)!;
             }
             installerProcess = Process.Start(start)!;
-            var output = installerProcess.StandardOutput.ReadToEndAsync(timeout.Token);
-            var error = installerProcess.StandardError.ReadToEndAsync(timeout.Token);
-            await installerProcess.WaitForExitAsync(timeout.Token);
+            var captured = await RunInstallerAndCaptureOutputAsync(installerProcess, timeout.Token);
+            var output = captured.StandardOutput;
+            var error = captured.StandardError;
             await serving;
             Assert.True(installerProcess.ExitCode == 0,
-                $"The Windows installer exited {installerProcess.ExitCode}: {await error}");
-            Assert.Contains("NetRatel client installed and enrolled; no service readiness was requested.", await output);
+                $"The Windows installer failed: exitCode={installerProcess.ExitCode}; {GetSafeInstallerDiagnostic(string.Concat(output, Environment.NewLine, error))}");
+            AssertInstallerOutputHasSafeText(
+                output, "NetRatel client installed and enrolled; no service readiness was requested.", "nonservice_installed");
             var installed = Path.Combine(installRoot, "versions", version, "NetRatel.Client.exe");
             Assert.True(File.Exists(installed));
             Assert.True(File.Exists(Path.Combine(credentialDirectory, "agent.dat")) ||
@@ -265,14 +309,12 @@ public sealed class WindowsInstallerNativeTests
             start.Environment["TEMP"] = root;
 
             installerProcess = Process.Start(start)!;
-            var outputTask = installerProcess.StandardOutput.ReadToEndAsync(timeout.Token);
-            var errorTask = installerProcess.StandardError.ReadToEndAsync(timeout.Token);
-            await installerProcess.WaitForExitAsync(timeout.Token);
+            var captured = await RunInstallerAndCaptureOutputAsync(installerProcess, timeout.Token);
             packageServerCancellation.Cancel();
             var packageWasRequested = await servingTask;
             serving = null;
-            var output = await outputTask;
-            var error = await errorTask;
+            var output = captured.StandardOutput;
+            var error = captured.StandardError;
             Assert.NotEqual(0, installerProcess.ExitCode);
             Assert.False(packageWasRequested, "The installer must reject the unowned service image before requesting the candidate package.");
             AssertInstallerOutputContains(
@@ -396,17 +438,15 @@ public sealed class WindowsInstallerNativeTests
             start.Environment["NetRatel_LOG_DIR"] = logDirectory;
             start.Environment["TEMP"] = root;
             installerProcess = Process.Start(start)!;
-            var outputTask = installerProcess.StandardOutput.ReadToEndAsync(timeout.Token);
-            var errorTask = installerProcess.StandardError.ReadToEndAsync(timeout.Token);
-            await installerProcess.WaitForExitAsync(timeout.Token);
-            var output = await outputTask;
-            var error = await errorTask;
+            var captured = await RunInstallerAndCaptureOutputAsync(installerProcess, timeout.Token);
+            var output = captured.StandardOutput;
+            var error = captured.StandardError;
 
             Assert.NotEqual(0, installerProcess.ExitCode);
-            Assert.Contains("PowerShell edition: Desktop", output);
-            Assert.Contains("PowerShell version: 5.", output);
+            AssertInstallerOutputHasSafeText(output, "PowerShell edition: Desktop", "powershell_edition");
+            AssertInstallerOutputHasSafeText(output, "PowerShell version: 5.", "powershell_version");
             AssertInstallerOutputContains("did not reach gateway heartbeat readiness", output, error, installerProcess.ExitCode, tlsProbe);
-            Assert.DoesNotContain("authenticated gateway heartbeat readiness was verified", output, StringComparison.OrdinalIgnoreCase);
+            AssertInstallerOutputLacksSafeText(output, "authenticated gateway heartbeat readiness was verified", "unexpected_ready_message");
             Assert.True(File.Exists(credentialPath), "a service that enrolled but failed gateway admission retains its identity for repair");
             Assert.Equal(1, fixture.EnrollmentRequests);
             Assert.True(fixture.TokenRequests >= 1);
@@ -579,17 +619,15 @@ public sealed class WindowsInstallerNativeTests
             start.Environment["NetRatel_LOG_DIR"] = logDirectory;
             start.Environment["TEMP"] = root;
             installerProcess = Process.Start(start)!;
-            var outputTask = installerProcess.StandardOutput.ReadToEndAsync(timeout.Token);
-            var errorTask = installerProcess.StandardError.ReadToEndAsync(timeout.Token);
-            await installerProcess.WaitForExitAsync(timeout.Token);
-            var output = await outputTask;
-            var error = await errorTask;
+            var captured = await RunInstallerAndCaptureOutputAsync(installerProcess, timeout.Token);
+            var output = captured.StandardOutput;
+            var error = captured.StandardError;
 
             Assert.True(installerProcess.ExitCode == 0,
-                $"The real HTTPS gateway installer failed; installerExit={installerProcess.ExitCode}; {GetSafeInstallerDiagnostic(error, tlsProbe)}");
-            Assert.Contains("Gateway heartbeat ready:", output);
-            Assert.Contains($"agentId={agentId:D}", output);
-            Assert.Contains($"tenantId={tenantId}", output);
+                $"The real HTTPS gateway installer failed; installerExit={installerProcess.ExitCode}; {GetSafeInstallerDiagnostic(string.Concat(output, Environment.NewLine, error), tlsProbe)}");
+            AssertInstallerOutputHasSafeText(output, "Gateway heartbeat ready:", "gateway_ready_message");
+            AssertInstallerOutputHasSafeText(output, $"agentId={agentId:D}", "agent_id_message");
+            AssertInstallerOutputHasSafeText(output, $"tenantId={tenantId}", "tenant_id_message");
             Assert.True(File.Exists(credentialPath), "the LocalSystem service must retain its enrolled credentials");
             Assert.Equal(1, fixture.EnrollmentRequests);
             Assert.True(fixture.TokenRequests >= 1);
@@ -675,13 +713,12 @@ public sealed class WindowsInstallerNativeTests
                 var tokensBeforeUnsafeRepair = fixture.TokenRequests;
                 unsafeRepairInstallerProcess = Process.Start(unsafeRepairStart)
                     ?? throw new InvalidOperationException("Could not start the unsafe-state repair check.");
-                var unsafeOutputTask = unsafeRepairInstallerProcess.StandardOutput.ReadToEndAsync(timeout.Token);
-                var unsafeErrorTask = unsafeRepairInstallerProcess.StandardError.ReadToEndAsync(timeout.Token);
-                await unsafeRepairInstallerProcess.WaitForExitAsync(timeout.Token);
-                var unsafeOutput = await unsafeOutputTask;
-                var unsafeError = await unsafeErrorTask;
+                var unsafeCaptured = await RunInstallerAndCaptureOutputAsync(unsafeRepairInstallerProcess, timeout.Token);
+                var unsafeOutput = unsafeCaptured.StandardOutput;
+                var unsafeError = unsafeCaptured.StandardError;
                 Assert.NotEqual(0, unsafeRepairInstallerProcess.ExitCode);
-                Assert.Contains("service readiness path", $"{unsafeOutput}\n{unsafeError}", StringComparison.OrdinalIgnoreCase);
+                AssertInstallerOutputContains(
+                    "service readiness path", unsafeOutput, unsafeError, unsafeRepairInstallerProcess.ExitCode);
                 Assert.Equal(serviceProcessIdBeforeUnsafeRepair, ReadWindowsServiceProcessId(serviceName));
                 Assert.Equal(tokensBeforeUnsafeRepair, fixture.TokenRequests);
                 Assert.Equal(1, fixture.DownloadRequests);
@@ -730,15 +767,14 @@ public sealed class WindowsInstallerNativeTests
             var tokensBeforeRepair = fixture.TokenRequests;
             repairInstallerProcess = Process.Start(repairStart)
                 ?? throw new InvalidOperationException("Could not start the same-version repair installer.");
-            var repairOutputTask = repairInstallerProcess.StandardOutput.ReadToEndAsync(timeout.Token);
-            var repairErrorTask = repairInstallerProcess.StandardError.ReadToEndAsync(timeout.Token);
-            await repairInstallerProcess.WaitForExitAsync(timeout.Token);
-            var repairOutput = await repairOutputTask;
-            var repairError = await repairErrorTask;
-            Assert.True(repairInstallerProcess.ExitCode == 0, $"The same-version service repair failed: {repairError}");
-            Assert.Contains("Gateway heartbeat ready:", repairOutput);
-            Assert.Contains($"agentId={agentId:D}", repairOutput);
-            Assert.Contains($"tenantId={tenantId}", repairOutput);
+            var repairCaptured = await RunInstallerAndCaptureOutputAsync(repairInstallerProcess, timeout.Token);
+            var repairOutput = repairCaptured.StandardOutput;
+            var repairError = repairCaptured.StandardError;
+            Assert.True(repairInstallerProcess.ExitCode == 0,
+                $"The same-version service repair failed: exitCode={repairInstallerProcess.ExitCode}; {GetSafeInstallerDiagnostic(string.Concat(repairOutput, Environment.NewLine, repairError))}");
+            AssertInstallerOutputHasSafeText(repairOutput, "Gateway heartbeat ready:", "repair_ready_message");
+            AssertInstallerOutputHasSafeText(repairOutput, $"agentId={agentId:D}", "repair_agent_id_message");
+            AssertInstallerOutputHasSafeText(repairOutput, $"tenantId={tenantId}", "repair_tenant_id_message");
             repairInstallerProcess.Dispose();
             repairInstallerProcess = null;
 
@@ -1099,14 +1135,12 @@ public sealed class WindowsInstallerNativeTests
             start.Environment["TEMP"] = root;
 
             installerProcess = Process.Start(start) ?? throw new InvalidOperationException("Could not start the service installer.");
-            var outputTask = installerProcess.StandardOutput.ReadToEndAsync(timeout.Token);
-            var errorTask = installerProcess.StandardError.ReadToEndAsync(timeout.Token);
-            await installerProcess.WaitForExitAsync(timeout.Token);
-            var output = await outputTask;
-            var error = await errorTask;
+            var captured = await RunInstallerAndCaptureOutputAsync(installerProcess, timeout.Token);
+            var output = captured.StandardOutput;
+            var error = captured.StandardError;
             Assert.NotEqual(0, installerProcess.ExitCode);
             AssertInstallerOutputContains("did not reach gateway heartbeat readiness", output, error, installerProcess.ExitCode, tlsProbe);
-            Assert.DoesNotContain("authenticated gateway heartbeat readiness was verified", output, StringComparison.OrdinalIgnoreCase);
+            AssertInstallerOutputLacksSafeText(output, "authenticated gateway heartbeat readiness was verified", "unexpected_ready_message");
             Assert.Equal(originalCredentialBytes, await File.ReadAllBytesAsync(credentialPath, timeout.Token));
             Assert.Equal(0, fixture.EnrollmentRequests);
             Assert.Equal(0, fixture.TokenRequests);
@@ -1245,8 +1279,25 @@ public sealed class WindowsInstallerNativeTests
         Assert.Fail($"Expected installer output to contain '{expected}'; exit code={exitCode}; diagnostic={safeDiagnostic}");
     }
 
+    private static void AssertInstallerOutputHasSafeText(string output, string expected, string diagnosticCode)
+    {
+        if (output.Contains(expected, StringComparison.Ordinal)) return;
+
+        Assert.Fail($"Installer output omitted an expected marker; code={diagnosticCode}; diagnostic={GetSafeInstallerDiagnostic(output)}");
+    }
+
+    private static void AssertInstallerOutputLacksSafeText(string output, string unexpected, string diagnosticCode)
+    {
+        if (!output.Contains(unexpected, StringComparison.OrdinalIgnoreCase)) return;
+
+        Assert.Fail($"Installer output contained a forbidden success marker; code={diagnosticCode}; diagnostic={GetSafeInstallerDiagnostic(output)}");
+    }
+
     private static string GetSafeInstallerDiagnostic(string combined, NativeTlsProbePair? tlsProbe = null)
     {
+        if (combined.Length > MaximumCombinedInstallerDiagnosticCharacters)
+            combined = combined[..MaximumCombinedInstallerDiagnosticCharacters];
+
         var protectedPathFailure = Regex.Match(
             combined,
             @"The\s+service\s+readiness\s+path\s+could\s+not\s+be\s+securely\s+verified\s+\(scope=(?:ancestor|leaf);\s*component=\d+;\s*check=[a-z-]+;\s*exception=[A-Za-z0-9]+\)\.",
@@ -1256,13 +1307,206 @@ public sealed class WindowsInstallerNativeTests
             combined,
             @"Download\s+failed\s+with\s+exit\s+code\s+(?<code>\d+)\.",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        var powerShellFailure = GetSafePowerShellFailureDiagnostic(combined);
         return protectedPathFailure.Success
             ? Regex.Replace(protectedPathFailure.Value, @"\s+", " ").Trim()
             : whitespaceNormalized.Contains(UnownedServiceImageFailure, StringComparison.OrdinalIgnoreCase)
                 ? UnownedServiceImageFailure
                 : downloadFailure.Success
                     ? $"Download failed with exit code {downloadFailure.Groups["code"].Value}; {tlsProbe?.ToSafeDiagnostic() ?? "TLS probe unavailable"}"
-                    : tlsProbe?.ToSafeDiagnostic() ?? "no bounded installer preflight diagnostic was emitted";
+                    : powerShellFailure ?? tlsProbe?.ToSafeDiagnostic() ?? "no bounded installer preflight diagnostic was emitted";
+    }
+
+    private static string? GetSafePowerShellFailureDiagnostic(string capturedOutput)
+    {
+        var lineMatch = Regex.Match(
+            capturedOutput,
+            @"\binstall\.ps1\s*:\s*(?:line\s+)?(?<line>[1-9][0-9]{0,5})\b",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        var lineNumber = lineMatch.Success && int.TryParse(
+            lineMatch.Groups["line"].Value,
+            System.Globalization.NumberStyles.None,
+            System.Globalization.CultureInfo.InvariantCulture,
+            out var parsedLine)
+            ? parsedLine.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            : null;
+
+        string? exceptionType = null;
+        using (var reader = new StringReader(capturedOutput))
+        {
+            while (reader.ReadLine() is { } currentLine)
+            {
+                var line = currentLine.Trim();
+                var separator = line.IndexOf(':');
+                if (separator < 0) continue;
+                var label = line[..separator].Trim();
+                if (!label.Equals("CategoryInfo", StringComparison.OrdinalIgnoreCase) &&
+                    !label.Equals("FullyQualifiedErrorId", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                var value = line[(separator + 1)..].Trim();
+                var lastToken = value.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).LastOrDefault();
+                if (lastToken is not null && NormalizeSafePowerShellExceptionType(lastToken) is { } safeType)
+                {
+                    exceptionType = safeType;
+                    break;
+                }
+            }
+        }
+
+        if (exceptionType is null)
+        {
+            using var reader = new StringReader(capturedOutput);
+            while (reader.ReadLine() is { } currentLine)
+            {
+                var conciseError = Regex.Match(
+                    currentLine,
+                    @"^\s*(?:System\.Management\.Automation\.)?(?<type>[A-Za-z][A-Za-z0-9]+(?:Exception|Error))\s*:",
+                    RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+                if (!conciseError.Success) continue;
+
+                var candidate = conciseError.Groups["type"].Value;
+                exceptionType = NormalizeSafePowerShellExceptionType(candidate);
+                if (exceptionType is null) continue;
+                break;
+            }
+        }
+
+        var hasPowerShellFailureMarker = lineMatch.Success ||
+            capturedOutput.Contains("CategoryInfo", StringComparison.OrdinalIgnoreCase) ||
+            capturedOutput.Contains("FullyQualifiedErrorId", StringComparison.OrdinalIgnoreCase) ||
+            exceptionType is not null;
+        return hasPowerShellFailureMarker
+            ? $"PowerShell failure type={exceptionType ?? "unclassified"} line={lineNumber ?? "unavailable"}"
+            : null;
+    }
+
+    private static string? NormalizeSafePowerShellExceptionType(string candidate)
+    {
+        var separator = candidate.LastIndexOf('.');
+        var shortName = separator >= 0 ? candidate[(separator + 1)..] : candidate;
+        return SafePowerShellExceptionTypes.FirstOrDefault(
+            allowed => string.Equals(allowed, shortName, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static async Task<(string StandardOutput, string StandardError)> RunInstallerAndCaptureOutputAsync(
+        Process process,
+        CancellationToken cancellationToken)
+    {
+        using var captureCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var standardOutputTask = ReadBoundedInstallerOutputAsync(process.StandardOutput, captureCancellation.Token);
+        var standardErrorTask = ReadBoundedInstallerOutputAsync(process.StandardError, captureCancellation.Token);
+
+        try
+        {
+            await process.WaitForExitAsync(cancellationToken);
+            return (await standardOutputTask, await standardErrorTask);
+        }
+        catch
+        {
+            captureCancellation.Cancel();
+            var processStopped = await TerminateInstallerProcessAsync(process);
+            if (!processStopped)
+            {
+                process.StandardOutput.Dispose();
+                process.StandardError.Dispose();
+            }
+
+            var outputObserved = await ObserveInstallerOutputTasksAsync(standardOutputTask, standardErrorTask);
+            if (!outputObserved)
+            {
+                process.StandardOutput.Dispose();
+                process.StandardError.Dispose();
+                await ObserveInstallerOutputTasksAsync(standardOutputTask, standardErrorTask);
+            }
+
+            throw;
+        }
+    }
+
+    private static async Task<bool> TerminateInstallerProcessAsync(Process process)
+    {
+        try
+        {
+            if (process.HasExited) return true;
+            process.Kill(entireProcessTree: true);
+        }
+        catch (InvalidOperationException) when (process.HasExited)
+        {
+            return true;
+        }
+        catch (Win32Exception)
+        {
+            return process.HasExited;
+        }
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        try
+        {
+            await process.WaitForExitAsync(timeout.Token);
+            return true;
+        }
+        catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+        {
+            return process.HasExited;
+        }
+    }
+
+    private static async Task<bool> ObserveInstallerOutputTasksAsync(
+        Task<string> standardOutputTask,
+        Task<string> standardErrorTask)
+    {
+        try
+        {
+            await Task.WhenAll(standardOutputTask, standardErrorTask).WaitAsync(TimeSpan.FromSeconds(5));
+            return true;
+        }
+        catch (OperationCanceledException) when (standardOutputTask.IsCanceled || standardErrorTask.IsCanceled)
+        {
+            return true;
+        }
+        catch (IOException)
+        {
+            return true;
+        }
+        catch (ObjectDisposedException)
+        {
+            return true;
+        }
+        catch (InvalidOperationException)
+        {
+            return true;
+        }
+        catch (System.TimeoutException)
+        {
+            ObserveInstallerOutputTaskOnCompletion(standardOutputTask);
+            ObserveInstallerOutputTaskOnCompletion(standardErrorTask);
+            return false;
+        }
+    }
+
+    private static void ObserveInstallerOutputTaskOnCompletion(Task<string> task)
+    {
+        _ = task.ContinueWith(
+            static completed => _ = completed.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+    }
+
+    private static async Task<string> ReadBoundedInstallerOutputAsync(StreamReader reader, CancellationToken cancellationToken)
+    {
+        var captured = new StringBuilder(Math.Min(MaximumCapturedInstallerStreamCharacters, 4096));
+        var buffer = new char[4096];
+        while (true)
+        {
+            var read = await reader.ReadAsync(buffer.AsMemory(), cancellationToken);
+            if (read == 0) return captured.ToString();
+
+            var remaining = MaximumCapturedInstallerStreamCharacters - captured.Length;
+            if (remaining > 0)
+                captured.Append(buffer, 0, Math.Min(read, remaining));
+        }
     }
 
     private static async Task<NativeTlsProbePair> ProbeLoopbackHttpsAsync(string apiBase, CancellationToken cancellationToken)
