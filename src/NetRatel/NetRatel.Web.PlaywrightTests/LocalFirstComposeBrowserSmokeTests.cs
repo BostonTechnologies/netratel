@@ -91,7 +91,17 @@ public sealed class LocalFirstComposeBrowserSmokeTests
                 }
                 finally
                 {
-                    await RunDockerAsync("start", apiContainer, webContainer);
+                    try
+                    {
+                        await RunDockerAsync("start", apiContainer);
+                        await WaitForApiReadyAsync(apiContainer);
+                    }
+                    finally
+                    {
+                        // Keep the disposable environment recoverable even when the API
+                        // readiness probe fails; the test still fails on that probe.
+                        await RunDockerAsync("start", webContainer);
+                    }
                 }
             });
             if (dropCommittedResponse) await route.AbortAsync("failed");
@@ -221,6 +231,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
 
     private static async Task RunDockerAsync(string operation, params string[] containerIds)
     {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(60));
         var start = new ProcessStartInfo("docker")
         {
             RedirectStandardOutput = true,
@@ -230,10 +241,63 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         start.ArgumentList.Add(operation);
         foreach (var containerId in containerIds) start.ArgumentList.Add(containerId);
         using var process = Process.Start(start) ?? throw new InvalidOperationException("Docker could not be started.");
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(60));
-        await process.WaitForExitAsync(deadline.Token);
+        var standardOutput = process.StandardOutput.ReadToEndAsync();
+        var standardError = process.StandardError.ReadToEndAsync();
+        try
+        {
+            await process.WaitForExitAsync(deadline.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            if (!process.HasExited)
+            {
+                try
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+                catch (InvalidOperationException)
+                {
+                    if (!process.HasExited) throw;
+                }
+            }
+
+            await process.WaitForExitAsync();
+            await Task.WhenAll(standardOutput, standardError);
+            throw new TimeoutException($"Docker {operation} did not finish within 60 seconds.");
+        }
+
+        await Task.WhenAll(standardOutput, standardError);
+        if (process.ExitCode != 0 && operation == "run")
+        {
+            throw new InvalidOperationException(
+                "The restarted API did not report isReady=true through /api/v2/setup/status within the bounded probe.");
+        }
+
         Assert.Equal(0, process.ExitCode);
     }
+
+    private static Task WaitForApiReadyAsync(string apiContainer) => RunDockerAsync(
+        "run",
+        "--rm",
+        "--network",
+        $"container:{apiContainer}",
+        "alpine:3.22",
+        "sh",
+        "-ceu",
+        """
+        attempt=0
+        while [ "$attempt" -lt 25 ]; do
+          status="$(wget -q -T 1 -O - http://127.0.0.1:9222/api/v2/setup/status 2>/dev/null)" || status=""
+          if printf '%s' "$status" | grep -Eq '"isReady"[[:space:]]*:[[:space:]]*true'; then
+            exit 0
+          fi
+          attempt=$((attempt + 1))
+          sleep 1
+        done
+        echo "API did not report isReady=true through /api/v2/setup/status within the bounded restart probe." >&2
+        exit 1
+        """);
+
     private static bool IgnoreSyntheticHttpsErrors => Environment.GetEnvironmentVariable("NETRATEL_LOCAL_FIRST_IGNORE_HTTPS_ERRORS") == "true";
 
     private static async Task CaptureReviewScreenshotAsync(IPage page, string name)
