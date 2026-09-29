@@ -50,7 +50,10 @@ jobs:
         env:
           NETRATEL_REVIEW_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           NETRATEL_REVIEW_TEST_MERGE_SHA: ${{ github.sha }}
-        run: dotnet test --solution NetRatel.sln --configuration Release --no-build --filter-not-trait category=compose category=hosted --results-directory TestResults --report-trx --report-trx-filename "netratel-tests-{asm}_{tfm}_{arch}.trx"
+          NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT: ${{ github.workspace }}/src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/TestResults/playwright
+        run: |
+          export NETRATEL_DOTNET_SDK_VERSION="$(dotnet --version)"
+          dotnet test --solution NetRatel.sln --configuration Release --no-build --max-parallel-test-modules 1 --filter-not-trait category=compose category=hosted --results-directory TestResults --report-trx --report-trx-filename "netratel-tests-{asm}_{tfm}_{arch}.trx"
       - name: Require generic test execution receipts
         run: |
           python3 - <<'PY'

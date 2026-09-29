@@ -210,6 +210,44 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
             with self.subTest(path=path.name, group="native macOS"):
                 self.assertIn("--expected-executed 3", source)
 
+    def test_generic_test_modules_are_serialized_and_browser_failure_evidence_is_collected(self):
+        workflow_paths = (
+            ROOT / ".github/workflows/public-pr-validation.yml",
+            ROOT / ".github/workflows/release-build.yml",
+        )
+        for path in workflow_paths:
+            source = path.read_text(encoding="utf-8")
+            with self.subTest(workflow=path.name):
+                run_start = source.index("dotnet test --solution NetRatel.sln --configuration Release --no-build")
+                run_command = source[run_start:source.index("\n", run_start)]
+                self.assertIn("--max-parallel-test-modules 1", run_command)
+                self.assertIn("--filter-not-trait category=compose category=hosted", run_command)
+                self.assertIn(
+                    "NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT: ${{ github.workspace }}/src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/TestResults/playwright",
+                    source,
+                )
+
+        pr_workflow = workflow_paths[0].read_text(encoding="utf-8")
+        browser_output_path = "src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/TestResults/playwright"
+        self.assertIn(f"path: {browser_output_path}", pr_workflow)
+        self.assertIn("NETRATEL_REVIEW_SOURCE_SHA:", pr_workflow)
+        self.assertIn("NETRATEL_REVIEW_TEST_MERGE_SHA:", pr_workflow)
+
+        release_workflow = workflow_paths[1].read_text(encoding="utf-8")
+        self.assertIn("name: Run generic tests", release_workflow)
+        self.assertRegex(release_workflow, r"(?s)if: always\(\).*?name: dotnet-test-results\s+path: TestResults")
+        self.assertRegex(
+            release_workflow,
+            rf"(?s)if: always\(\).*?name: playwright-browser-evidence\s+path: {re.escape(browser_output_path)}\s+if-no-files-found: error",
+        )
+        self.assertIn("NETRATEL_REVIEW_SOURCE_SHA: ${{ github.sha }}", release_workflow)
+        self.assertIn("NETRATEL_REVIEW_TEST_MERGE_SHA: ${{ github.sha }}", release_workflow)
+
+        browser_test = (ROOT / "src/NetRatel/NetRatel.Web.PlaywrightTests/ClientsManagementResponsiveTests.cs").read_text(encoding="utf-8")
+        self.assertIn("AbortedCriticalStartupScript_FailsAndWritesDiagnosticsBeforeContextDisposal", browser_test)
+        self.assertIn('"startup-diagnostics.json"', browser_test)
+        self.assertIn('"startup-failure.png"', browser_test)
+
 
 
 class ChromiumNssSmokeTests(unittest.TestCase):
