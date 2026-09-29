@@ -56,6 +56,8 @@ mcp_stdio_extract_dir=""
 mcp_stdio_config_path="$(mktemp --suffix=.json)"
 mcp_stdio_error_path="$(mktemp)"
 bundle_extract_dir=""
+gateway_presence_response_path="$(mktemp)"
+command_response_path="$(mktemp)"
 client_volume="${project}-client-state"
 gateway_client="${project}-gateway-client"
 stage="initializing Compose OIDC smoke"
@@ -190,6 +192,8 @@ cleanup() {
   fi
   unlink "$mcp_stdio_config_path" 2>/dev/null || true
   unlink "$mcp_stdio_error_path" 2>/dev/null || true
+  unlink "$gateway_presence_response_path" 2>/dev/null || true
+  unlink "$command_response_path" 2>/dev/null || true
   if [[ -n "$bundle_extract_dir" ]]; then
     find "$bundle_extract_dir" -depth -delete 2>/dev/null || true
   fi
@@ -354,6 +358,47 @@ wait_for_gateway_sessions() {
 
   echo "Disposable Client did not establish authenticated HTTPS presence and command-gateway sessions." >&2
   docker logs "$gateway_client" >&2 || true
+  return 1
+}
+
+read_current_gateway_presence() {
+  local access_token="$1" http_status state
+  http_status="$(curl --connect-timeout 2 --max-time 5 --silent --output "$gateway_presence_response_path" \
+    --write-out '%{http_code}' --header "Authorization: Bearer ${access_token}" \
+    "${api_url}/api/v2/client-presence/?tenantId=${tenant_id}&online=true&search=${agent_id}&limit=100" 2>/dev/null || true)"
+
+  if [[ "$http_status" == 200 ]] && jq -e \
+    --argjson expected_tenant "$tenant_id" --arg expected_agent "$agent_id" \
+    'any(.items[]?; .tenantId == $expected_tenant and ((.agentId | ascii_downcase) == ($expected_agent | ascii_downcase)) and .online == true and .source == "gateway" and .authority == "akka" and .isAuthoritative == true)' \
+    "$gateway_presence_response_path" >/dev/null 2>&1; then
+    state="online"
+  elif [[ "$http_status" == 200 ]]; then
+    state="offline"
+  else
+    state="unavailable"
+  fi
+
+  printf '%s %s\n' "${http_status:-000}" "$state"
+}
+
+gateway_client_container_state() {
+  docker inspect --format '{{.State.Status}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}} restarting={{.State.Restarting}}' \
+    "$gateway_client" 2>/dev/null || printf 'unavailable'
+}
+
+wait_for_current_gateway_presence() {
+  local access_token="$1" http_status state
+  for _ in $(seq 1 30); do
+    read -r http_status state < <(read_current_gateway_presence "$access_token")
+    if [[ "$http_status" == 200 && "$state" == online ]]; then
+      echo "Passed current API presence check for the disposable Client." >&2
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "Disposable Client did not have current API gateway presence (HTTP ${http_status:-unavailable}, state=${state:-unavailable})." >&2
+  printf 'Disposable Client container state: %s\n' "$(gateway_client_container_state)" >&2
   return 1
 }
 
@@ -552,6 +597,34 @@ wait_for_telemetry() {
   done
 
   echo "The enrolled Client did not publish an authoritative telemetry snapshot." >&2
+  return 1
+}
+
+dispatch_disposable_command() {
+  local access_token="$1" payload="$2" correlation_id="$3"
+  local request_json http_status response_code presence_status presence_state
+  request_json="$(jq -nc --arg payload "$payload" --arg correlation_id "$correlation_id" \
+    '{taskType:"exec-shell-cmd", payloadJson:$payload, environment:0, correlationId:$correlation_id}')"
+  http_status="$(curl --connect-timeout 5 --max-time 15 --silent --output "$command_response_path" \
+    --write-out '%{http_code}' --header "Authorization: Bearer ${access_token}" \
+    --header 'Content-Type: application/json' --data "$request_json" \
+    "${api_url}/api/v2/agents/${tenant_id}/${agent_id}/commands" 2>/dev/null || true)"
+
+  if [[ "$http_status" == 202 ]]; then
+    cat "$command_response_path"
+    return 0
+  fi
+
+  echo "Disposable command dispatch failed with HTTP ${http_status:-000}." >&2
+  if [[ "$http_status" == 409 ]]; then
+    response_code="$(jq -er '.code | select(. == "agent_command_session_unavailable")' \
+      "$command_response_path" 2>/dev/null || true)"
+    [[ -n "$response_code" ]] || response_code="unavailable"
+    read -r presence_status presence_state < <(read_current_gateway_presence "$access_token")
+    printf 'Gateway response code=%s; current Client presence HTTP=%s state=%s; container state=%s\n' \
+      "$response_code" "${presence_status:-unavailable}" "${presence_state:-unavailable}" \
+      "$(gateway_client_container_state)" >&2
+  fi
   return 1
 }
 
@@ -842,16 +915,14 @@ stage="running browser OIDC rehearsal"
 run_browser_oidc_smoke
 stage="waiting for Client telemetry"
 wait_for_telemetry "$operator_access_token"
+stage="checking current Client gateway presence"
+wait_for_current_gateway_presence "$operator_access_token"
 # The public Linux client image deliberately includes Bash, and the gateway
 # command contract accepts an explicit executor. Do not rely on the image's
 # default /bin/sh implementation for this end-to-end execution assertion.
 command_payload='{"preferred":3,"command":"printf netratel-compose-smoke","timeoutSeconds":10}'
 stage="waiting for disposable command execution"
-command_response="$(curl --silent --show-error --fail \
-  --header "Authorization: Bearer ${operator_access_token}" \
-  --header 'Content-Type: application/json' \
-  --data "$(jq -nc --arg payload "$command_payload" '{taskType:"exec-shell-cmd", payloadJson:$payload, environment:0, correlationId:"compose-smoke-harmless"}')" \
-  "${api_url}/api/v2/agents/${tenant_id}/${agent_id}/commands")"
+command_response="$(dispatch_disposable_command "$operator_access_token" "$command_payload" compose-smoke-harmless)"
 command_id="$(jq -r '.commandId // empty' <<<"$command_response")"
 [[ "$command_id" =~ ^[0-9a-f]{32}$ ]] || {
   echo "The command authority did not return a valid disposable command ID." >&2
@@ -861,11 +932,7 @@ wait_for_command_status "$operator_access_token" "$command_id" 4
 
 cancel_payload='{"command":"sleep 20","timeoutSeconds":30}'
 stage="waiting for disposable command cancellation"
-cancel_response="$(curl --silent --show-error --fail \
-  --header "Authorization: Bearer ${operator_access_token}" \
-  --header 'Content-Type: application/json' \
-  --data "$(jq -nc --arg payload "$cancel_payload" '{taskType:"exec-shell-cmd", payloadJson:$payload, environment:0, correlationId:"compose-smoke-cancel"}')" \
-  "${api_url}/api/v2/agents/${tenant_id}/${agent_id}/commands")"
+cancel_response="$(dispatch_disposable_command "$operator_access_token" "$cancel_payload" compose-smoke-cancel)"
 cancel_command_id="$(jq -r '.commandId // empty' <<<"$cancel_response")"
 [[ "$cancel_command_id" =~ ^[0-9a-f]{32}$ ]] || {
   echo "The cancellation probe did not return a valid disposable command ID." >&2

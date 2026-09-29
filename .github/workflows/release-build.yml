@@ -20,7 +20,7 @@ jobs:
   validate:
     name: Validate release source
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
     outputs:
       version: ${{ steps.version.outputs.value }}
     steps:
@@ -58,7 +58,14 @@ jobs:
       - run: dotnet restore NetRatel.sln
       - run: dotnet build NetRatel.sln --configuration Release --no-restore
       - run: pwsh src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/playwright.ps1 install --with-deps chromium
-      - run: dotnet test --solution NetRatel.sln --configuration Release --no-build --filter-not-trait category=compose category=hosted --results-directory TestResults --report-trx --report-trx-filename "netratel-tests-{asm}_{tfm}_{arch}.trx"
+      - name: Run generic tests
+        env:
+          NETRATEL_REVIEW_SOURCE_SHA: ${{ github.sha }}
+          NETRATEL_REVIEW_TEST_MERGE_SHA: ${{ github.sha }}
+          NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT: ${{ github.workspace }}/src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/TestResults/playwright
+        run: |
+          export NETRATEL_DOTNET_SDK_VERSION="$(dotnet --version)"
+          dotnet test --solution NetRatel.sln --configuration Release --no-build --max-parallel-test-modules 1 --filter-not-trait category=compose category=hosted --results-directory TestResults --report-trx --report-trx-filename "netratel-tests-{asm}_{tfm}_{arch}.trx"
       - name: Require generic test execution receipts
         run: |
           python3 - <<'PY'
@@ -111,6 +118,13 @@ jobs:
           name: dotnet-test-results
           path: TestResults
           if-no-files-found: warn
+          retention-days: 14
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-browser-evidence
+          path: src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/TestResults/playwright
+          if-no-files-found: error
           retention-days: 14
 
   package:

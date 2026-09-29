@@ -210,6 +210,71 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
             with self.subTest(path=path.name, group="native macOS"):
                 self.assertIn("--expected-executed 3", source)
 
+    def test_generic_test_modules_are_serialized_and_browser_failure_evidence_is_collected(self):
+        workflow_paths = (
+            ROOT / ".github/workflows/public-pr-validation.yml",
+            ROOT / ".github/workflows/release-build.yml",
+        )
+        for path in workflow_paths:
+            source = path.read_text(encoding="utf-8")
+            with self.subTest(workflow=path.name):
+                run_start = source.index("dotnet test --solution NetRatel.sln --configuration Release --no-build")
+                run_command = source[run_start:source.index("\n", run_start)]
+                self.assertIn("--max-parallel-test-modules 1", run_command)
+                self.assertIn("--filter-not-trait category=compose category=hosted", run_command)
+                self.assertIn(
+                    "NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT: ${{ github.workspace }}/src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/TestResults/playwright",
+                    source,
+                )
+
+        pr_workflow = workflow_paths[0].read_text(encoding="utf-8")
+        browser_output_path = "src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/TestResults/playwright"
+        self.assertIn(f"path: {browser_output_path}", pr_workflow)
+        self.assertIn("NETRATEL_REVIEW_SOURCE_SHA:", pr_workflow)
+        self.assertIn("NETRATEL_REVIEW_TEST_MERGE_SHA:", pr_workflow)
+
+        release_workflow = workflow_paths[1].read_text(encoding="utf-8")
+        self.assertIn("name: Run generic tests", release_workflow)
+        self.assertRegex(release_workflow, r"(?s)if: always\(\).*?name: dotnet-test-results\s+path: TestResults")
+        self.assertRegex(
+            release_workflow,
+            rf"(?s)if: always\(\).*?name: playwright-browser-evidence\s+path: {re.escape(browser_output_path)}\s+if-no-files-found: error",
+        )
+        self.assertIn("NETRATEL_REVIEW_SOURCE_SHA: ${{ github.sha }}", release_workflow)
+        self.assertIn("NETRATEL_REVIEW_TEST_MERGE_SHA: ${{ github.sha }}", release_workflow)
+
+        browser_test = (ROOT / "src/NetRatel/NetRatel.Web.PlaywrightTests/ClientsManagementResponsiveTests.cs").read_text(encoding="utf-8")
+        self.assertIn("AbortedCriticalStartupScript_FailsAndWritesDiagnosticsBeforeContextDisposal", browser_test)
+        self.assertIn('"startup-diagnostics.json"', browser_test)
+        self.assertIn('"startup-failure.png"', browser_test)
+
+    def test_release_compose_oidc_checks_current_presence_and_bounds_command_conflict_diagnostics(self):
+        source = (ROOT / "tools/ci/smoke-oidc-compose.sh").read_text(encoding="utf-8")
+        current_presence = re.search(r"read_current_gateway_presence\(\) \{([\s\S]*?)\n\}", source)
+        self.assertIsNotNone(current_presence)
+        self.assertIn("/api/v2/client-presence/", current_presence.group(1))
+        self.assertIn(".online == true", current_presence.group(1))
+        self.assertIn('.source == "gateway"', current_presence.group(1))
+        self.assertIn('.authority == "akka"', current_presence.group(1))
+        self.assertIn(".isAuthoritative == true", current_presence.group(1))
+
+        browser_stage = source.index('stage="running browser OIDC rehearsal"')
+        telemetry_stage = source.index('stage="waiting for Client telemetry"', browser_stage)
+        presence_wait = source.index('wait_for_current_gateway_presence "$operator_access_token"', telemetry_stage)
+        first_dispatch = source.index('command_response="$(dispatch_disposable_command', presence_wait)
+        self.assertLess(browser_stage, telemetry_stage)
+        self.assertLess(telemetry_stage, presence_wait)
+        self.assertLess(presence_wait, first_dispatch)
+
+        dispatch_start = source.index("dispatch_disposable_command() {")
+        dispatch_end = source.index("\n}\n", dispatch_start) + 3
+        dispatch = source[dispatch_start:dispatch_end]
+        self.assertIn("--write-out '%{http_code}'", dispatch)
+        self.assertIn('.code | select(. == "agent_command_session_unavailable")', dispatch)
+        failure_diagnostics = dispatch[dispatch.index('echo "Disposable command dispatch failed'):]
+        self.assertIn("current Client presence HTTP=%s state=%s; container state=%s", failure_diagnostics)
+        self.assertNotIn('cat "$command_response_path"', failure_diagnostics)
+
 
 
 class ChromiumNssSmokeTests(unittest.TestCase):

@@ -7,6 +7,7 @@ using System.Runtime.CompilerServices;
 using System.Security.Claims;
 using System.Text.Encodings.Web;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
@@ -52,6 +53,7 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
         "net::ERR_CONNECTION_REFUSED",
         "net::ERR_CONNECTION_RESET",
         "net::ERR_NAME_NOT_RESOLVED",
+        "net::ERR_NETWORK_CHANGED",
         "net::ERR_TIMED_OUT"
     ];
     private static readonly (string Name, bool ImportPackEnabled)[] ExpectedGitHubReleases =
@@ -63,6 +65,7 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
     ];
     private static readonly object EvidenceLock = new();
     private static readonly ConcurrentDictionary<string, object> EvidenceCases = new(StringComparer.Ordinal);
+    private const string FailureEvidenceDirectoryDataKey = "NetRatel.PlaywrightFailureEvidenceDirectory";
     private readonly ClientsManagementBrowserFixture _browserFixture;
     private readonly ITestOutputHelper _testOutputHelper;
     private ClientsManagementFixtureHost? _fixture;
@@ -90,64 +93,23 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
             ViewportSize = new ViewportSize { Width = width, Height = height },
             ColorScheme = ColorScheme.Light
         });
+        IPage? page = null;
+        BrowserStartupDiagnostics? startupDiagnostics = null;
+        Exception? testFailureInFlight = null;
         try
         {
-            var page = await context.NewPageAsync();
-            var startupEvents = new ConcurrentQueue<string>();
-            var startupWebSockets = new ConcurrentQueue<IWebSocket>();
-            var startupClock = Stopwatch.StartNew();
-            void RecordStartupEvent(string message) => startupEvents.Enqueue($"{startupClock.ElapsedMilliseconds,5} ms {message}");
-            page.Console += (_, message) =>
-            {
-                if (message.Type is "error" or "warning")
-                {
-                    RecordStartupEvent($"console {message.Type}: {message.Text}");
-                }
-            };
-            page.PageError += (_, error) => RecordStartupEvent($"pageerror: {error}");
-            page.RequestFailed += (_, request) => RecordStartupEvent(
-                $"requestfailed {request.Method} {GetSafeRequestPath(request.Url)}: {request.Failure ?? "unknown"}");
-            page.Response += (_, response) =>
-            {
-                var path = GetSafeRequestPath(response.Url);
-                if (response.Request.IsNavigationRequest || response.Status >= 400 ||
-                    path is "/_framework/blazor.web.js" or "/_content/MudBlazor/MudBlazor.min.js" ||
-                    path.StartsWith("/_blazor", StringComparison.Ordinal))
-                {
-                    RecordStartupEvent($"response {response.Status} {path}");
-                }
-            };
-            page.WebSocket += (_, webSocket) =>
-            {
-                var path = GetSafeRequestPath(webSocket.Url);
-                startupWebSockets.Enqueue(webSocket);
-                RecordStartupEvent($"websocket request {path}");
-                webSocket.SocketError += (_, error) => RecordStartupEvent($"websocket error {path}: {error}");
-                webSocket.Close += (_, _) => RecordStartupEvent($"websocket closed {path}");
-            };
+            page = await context.NewPageAsync();
+            startupDiagnostics = new BrowserStartupDiagnostics(page);
             // The fixture starts a real Interactive Server circuit. Under the full
             // hosted test matrix the first circuit can take longer than the normal
             // interaction budget to attach, especially at the tablet case; keep
             // the visual assertions strict once the shell is available.
             page.SetDefaultTimeout(30_000);
-            var evidenceDirectory = Path.GetFullPath(Path.Combine("TestResults", "playwright"));
+            var evidenceDirectory = GetPlaywrightArtifactRoot();
             Directory.CreateDirectory(evidenceDirectory);
 
-            var response = await page.GotoAsync($"{fixture.BaseAddress}/clients/mgmt", new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 30_000 });
-            Assert.NotNull(response);
-            Assert.True(response.Ok, $"Client-management fixture returned HTTP {response.Status}.");
-
+            await NavigateAndWaitForShellAsync(page, fixture, startupDiagnostics, viewportName, 90_000);
             var shellWait = new LocatorWaitForOptions { State = WaitForSelectorState.Visible, Timeout = 90_000 };
-            try
-            {
-                await page.GetByTestId("app-main-content").WaitForAsync(shellWait);
-            }
-            catch (TimeoutException exception)
-            {
-                throw new TimeoutException(
-                    $"The {viewportName} shell did not start at {GetSafeRequestPath(page.Url)}. Browser startup events: {FormatStartupEvents(startupEvents)}. WebSocket state: {FormatWebSocketStates(startupWebSockets)}. Fixture server startup warnings/errors: {FormatServerDiagnostics(fixture)}",
-                    exception);
-            }
             await page.GetByTestId("client-management-tabs").WaitForAsync(shellWait);
             await page.GetByTestId("automation-settings-button").WaitForAsync(shellWait);
             Assert.Equal(5, await page.GetByRole(AriaRole.Tab).CountAsync());
@@ -294,9 +256,99 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
             RecordEvidence(viewportName, width, height, textScalePercent, evidenceDirectory);
 
         }
+        catch (Exception exception)
+        {
+            testFailureInFlight = exception;
+            await CaptureFailureDiagnosticsBestEffortAsync(
+                browser,
+                page,
+                startupDiagnostics,
+                fixture,
+                $"responsive-{viewportName}-{width}x{height}-text-{textScalePercent}",
+                width,
+                height,
+                textScalePercent,
+                exception);
+            throw;
+        }
         finally
         {
-            await context.CloseAsync();
+            await CloseContextPreservingFailureAsync(context, testFailureInFlight);
+        }
+    }
+
+    [Fact]
+    public async Task AbortedCriticalStartupScript_FailsAndWritesDiagnosticsBeforeContextDisposal()
+    {
+        var browser = _browserFixture.Browser;
+        var fixture = _fixture ?? throw new InvalidOperationException("Client management fixture was not initialized.");
+        const int width = 1280;
+        const int height = 800;
+        const int textScalePercent = 100;
+        const string viewportName = "diagnostic-regression";
+        var context = await browser.NewContextAsync(new BrowserNewContextOptions
+        {
+            ViewportSize = new ViewportSize { Width = width, Height = height },
+            ColorScheme = ColorScheme.Light
+        });
+        var page = await context.NewPageAsync();
+        var startupDiagnostics = new BrowserStartupDiagnostics(page);
+        Exception? testFailureInFlight = null;
+
+        try
+        {
+            await page.RouteAsync("**/_framework/blazor.web.js", route => route.AbortAsync("aborted"));
+            var failure = await Record.ExceptionAsync(() => NavigateAndWaitForShellAsync(
+                page,
+                fixture,
+                startupDiagnostics,
+                viewportName,
+                shellTimeoutMilliseconds: 5_000));
+            Assert.NotNull(failure);
+            Assert.IsType<TimeoutException>(failure);
+            Assert.IsType<TimeoutException>(failure.InnerException);
+            Assert.Contains("/_framework/blazor.web.js", failure.Message, StringComparison.Ordinal);
+            Assert.Contains("net::ERR_ABORTED", failure.Message, StringComparison.Ordinal);
+
+            await CaptureFailureDiagnosticsBestEffortAsync(
+                browser,
+                page,
+                startupDiagnostics,
+                fixture,
+                $"responsive-{viewportName}-{width}x{height}-text-{textScalePercent}",
+                width,
+                height,
+                textScalePercent,
+                failure);
+
+            Assert.True(failure.Data.Contains(FailureEvidenceDirectoryDataKey));
+            var evidenceDirectory = Assert.IsType<string>(failure.Data[FailureEvidenceDirectoryDataKey]);
+            var diagnosticPath = Path.Combine(evidenceDirectory, "startup-diagnostics.json");
+            var screenshotPath = Path.Combine(evidenceDirectory, "startup-failure.png");
+            Assert.True(File.Exists(diagnosticPath), $"Startup diagnostics were not written before context disposal: {diagnosticPath}");
+            Assert.True(File.Exists(screenshotPath), $"Startup screenshot was not written before context disposal: {screenshotPath}");
+
+            var diagnosticsJson = await File.ReadAllTextAsync(diagnosticPath);
+            Assert.Contains("/_framework/blazor.web.js", diagnosticsJson, StringComparison.Ordinal);
+            Assert.Contains("ERR_ABORTED", diagnosticsJson, StringComparison.Ordinal);
+            Assert.Contains("failedCriticalResourcePaths", diagnosticsJson, StringComparison.Ordinal);
+            using var diagnostics = JsonDocument.Parse(diagnosticsJson);
+            var circuitState = diagnostics.RootElement
+                .GetProperty("webSocketAndCircuitState")
+                .GetProperty("circuitState")
+                .GetString();
+            Assert.True(
+                circuitState is "circuit not observed; no WebSocket observed" or "circuit readiness unknown; WebSocket observed",
+                $"Unexpected circuit observation state: {circuitState}");
+        }
+        catch (Exception exception)
+        {
+            testFailureInFlight = exception;
+            throw;
+        }
+        finally
+        {
+            await CloseContextPreservingFailureAsync(context, testFailureInFlight);
         }
     }
 
@@ -508,6 +560,7 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
         Assert.Equal("/_content/(asset)", GetSafeStartupRequestPath("https://fixture.test/_content/secret-capability/asset.js?code=fixture-secret"));
         Assert.Equal("/_blazor/(endpoint)", GetSafeStartupRequestPath("https://fixture.test/_blazor/secret-capability?token=fixture-secret"));
         Assert.Equal("net::ERR_CONNECTION_RESET", GetSafeNetworkFailure("net::ERR_CONNECTION_RESET; token=fixture-secret"));
+        Assert.Equal("net::ERR_NETWORK_CHANGED", GetSafeNetworkFailure("net::ERR_NETWORK_CHANGED"));
         Assert.Equal("network failure", GetSafeNetworkFailure("net::ERR_secret-capability-token"));
         Assert.Equal("network failure", GetSafeNetworkFailure("Authorization: Bearer fixture-secret"));
         Assert.Equal("Blazor circuit [Warning]", FormatSafeServerDiagnostic(serverMessage));
@@ -534,7 +587,7 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
             Assert.True(response.Ok, $"Client directory fixture returned HTTP {response.Status}.");
             await Assertions.Expect(page.Locator(".client-title")).ToHaveTextAsync(["gateway-agent-01", "registered-offline-agent"]);
             Assert.Equal(2, await page.Locator(".client-card").CountAsync());
-            var evidenceDirectory = Path.GetFullPath(Path.Combine("TestResults", "playwright"));
+            var evidenceDirectory = GetPlaywrightArtifactRoot();
             Directory.CreateDirectory(evidenceDirectory);
             await page.ScreenshotAsync(new PageScreenshotOptions
             {
@@ -653,19 +706,249 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
         if (_fixture is not null) await _fixture.DisposeAsync();
     }
 
-    private static string FormatStartupEvents(ConcurrentQueue<string> events) =>
-        events.IsEmpty ? "(none)" : string.Join(" | ", events);
-
-    private static string FormatServerDiagnostics(ClientsManagementFixtureHost fixture)
+    private static string GetPlaywrightArtifactRoot()
     {
-        var messages = fixture.StartupServerDiagnostics;
-        return messages.Count == 0 ? "(none)" : string.Join(" | ", messages);
+        var configuredRoot = Environment.GetEnvironmentVariable("NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT");
+        if (!string.IsNullOrWhiteSpace(configuredRoot))
+        {
+            if (!Path.IsPathFullyQualified(configuredRoot))
+            {
+                throw new InvalidOperationException("NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT must be an absolute path.");
+            }
+
+            return Path.GetFullPath(configuredRoot);
+        }
+
+        return Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "TestResults", "playwright"));
     }
 
-    private static string FormatWebSocketStates(ConcurrentQueue<IWebSocket> webSockets) =>
-        webSockets.IsEmpty
-            ? "(none)"
-            : string.Join(", ", webSockets.Select(webSocket => $"{GetSafeRequestPath(webSocket.Url)} closed={webSocket.IsClosed}"));
+    private async Task CaptureFailureDiagnosticsBestEffortAsync(
+        IBrowser browser,
+        IPage? page,
+        BrowserStartupDiagnostics? startupDiagnostics,
+        ClientsManagementFixtureHost fixture,
+        string caseName,
+        int width,
+        int height,
+        int textScalePercent,
+        Exception originalException)
+    {
+        var evidenceDirectory = "(unavailable)";
+        try
+        {
+            evidenceDirectory = Path.Combine(
+                GetPlaywrightArtifactRoot(), "failures", SanitizePathSegment(caseName),
+                $"attempt-{SafeMetadata(Environment.GetEnvironmentVariable("GITHUB_RUN_ATTEMPT"), "^[0-9]{1,6}$", "local")}-{Guid.NewGuid():N}");
+            Directory.CreateDirectory(evidenceDirectory);
+            var captureFailures = new List<string>();
+            var screenshotPath = Path.Combine(evidenceDirectory, "startup-failure.png");
+            if (page is not null)
+            {
+                try
+                {
+                    await page.ScreenshotAsync(new PageScreenshotOptions
+                    {
+                        Path = screenshotPath,
+                        FullPage = true,
+                        Animations = ScreenshotAnimations.Disabled,
+                        Timeout = 3_000
+                    });
+                }
+                catch (Exception captureException)
+                {
+                    captureFailures.Add($"screenshot capture failed ({captureException.GetType().Name})");
+                }
+            }
+            else
+            {
+                captureFailures.Add("screenshot capture unavailable (page was not created)");
+            }
+
+            var payload = new
+            {
+                schema = "netratel-playwright-startup-diagnostics-v1",
+                capturedAtUtc = DateTimeOffset.UtcNow,
+                sourceSha = SafeMetadata(Environment.GetEnvironmentVariable("NETRATEL_REVIEW_SOURCE_SHA") ?? Environment.GetEnvironmentVariable("GITHUB_SHA"), "^[0-9a-fA-F]{7,64}$", "local"),
+                testedSha = SafeMetadata(Environment.GetEnvironmentVariable("NETRATEL_REVIEW_TEST_MERGE_SHA") ?? Environment.GetEnvironmentVariable("GITHUB_SHA"), "^[0-9a-fA-F]{7,64}$", "local"),
+                runId = SafeMetadata(Environment.GetEnvironmentVariable("GITHUB_RUN_ID"), "^[0-9]{1,20}$", "local"),
+                runAttempt = SafeMetadata(Environment.GetEnvironmentVariable("GITHUB_RUN_ATTEMPT"), "^[0-9]{1,6}$", "local"),
+                dotnetSdkVersion = SafeMetadata(Environment.GetEnvironmentVariable("NETRATEL_DOTNET_SDK_VERSION"), "^[0-9A-Za-z.+-]{1,40}$", "unknown"),
+                browser = new { name = "Chromium", version = SafeMetadata(browser.Version, "^[0-9A-Za-z.+-]{1,40}$", "unknown") },
+                viewport = new { name = caseName, width, height, textScalePercent },
+                currentPath = page is null ? "(unavailable)" : GetSafeStartupRequestPath(page.Url),
+                failedCriticalResourcePaths = startupDiagnostics?.FailedCriticalResourcePaths ?? [],
+                webSocketAndCircuitState = new
+                {
+                    webSockets = startupDiagnostics is null ? "(none)" : FormatSafeWebSocketStates(startupDiagnostics.WebSockets),
+                    circuitState = startupDiagnostics is null || startupDiagnostics.WebSockets.IsEmpty
+                        ? "circuit not observed; no WebSocket observed"
+                        : "circuit readiness unknown; WebSocket observed"
+                },
+                fixtureServerDiagnostics = FormatSafeServerDiagnostics(fixture),
+                failure = new { exceptionType = originalException.GetType().FullName },
+                timeline = startupDiagnostics?.Events.ToArray() ?? [],
+                omittedTimelineEvents = startupDiagnostics?.OmittedTimelineEvents ?? 0,
+                screenshot = File.Exists(screenshotPath) ? Path.GetFileName(screenshotPath) : null,
+                diagnosticCaptureFailures = captureFailures
+            };
+
+            var diagnosticPath = Path.Combine(evidenceDirectory, "startup-diagnostics.json");
+            await File.WriteAllTextAsync(diagnosticPath, JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true }));
+            originalException.Data[FailureEvidenceDirectoryDataKey] = evidenceDirectory;
+            _testOutputHelper.WriteLine($"Browser failure diagnostics were written before context disposal: {evidenceDirectory}");
+        }
+        catch (Exception captureException)
+        {
+            _testOutputHelper.WriteLine($"Best-effort browser failure diagnostics could not be completed ({captureException.GetType().Name}).");
+        }
+    }
+
+    private async Task CloseContextPreservingFailureAsync(IBrowserContext context, Exception? testFailureInFlight)
+    {
+        try
+        {
+            await context.CloseAsync();
+        }
+        catch (Exception cleanupException) when (testFailureInFlight is not null)
+        {
+            _testOutputHelper.WriteLine($"Browser context cleanup failed while preserving the test failure ({cleanupException.GetType().Name}).");
+        }
+    }
+
+    private static async Task NavigateAndWaitForShellAsync(
+        IPage page,
+        ClientsManagementFixtureHost fixture,
+        BrowserStartupDiagnostics startupDiagnostics,
+        string viewportName,
+        int shellTimeoutMilliseconds)
+    {
+        var response = await page.GotoAsync(
+            $"{fixture.BaseAddress}/clients/mgmt",
+            new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 30_000 });
+        Assert.NotNull(response);
+        Assert.True(response.Ok, $"Client-management fixture returned HTTP {response.Status}.");
+
+        try
+        {
+            await page.GetByTestId("app-main-content").WaitForAsync(new LocatorWaitForOptions
+            {
+                State = WaitForSelectorState.Visible,
+                Timeout = shellTimeoutMilliseconds
+            });
+        }
+        catch (TimeoutException exception)
+        {
+            throw new TimeoutException(
+                $"The {viewportName} shell did not start at {GetSafeStartupRequestPath(page.Url)}. Browser startup events: {startupDiagnostics.FormatTimeline()}. WebSocket/circuit state: {FormatSafeWebSocketStates(startupDiagnostics.WebSockets)}. Fixture server startup warnings/errors: {FormatSafeServerDiagnostics(fixture)}",
+                exception);
+        }
+    }
+
+    private static string SafeMetadata(string? value, string allowedPattern, string fallback) =>
+        value is not null && Regex.IsMatch(value, allowedPattern, RegexOptions.CultureInvariant)
+            ? value
+            : fallback;
+
+    private static string SanitizePathSegment(string value)
+    {
+        var sanitized = Regex.Replace(value, "[^A-Za-z0-9.-]", "-");
+        return sanitized.Length <= 100 ? sanitized : sanitized[..100];
+    }
+
+    private sealed class BrowserStartupDiagnostics
+    {
+        private const int MaximumTimelineEvents = 250;
+        private readonly Stopwatch _clock = Stopwatch.StartNew();
+        public ConcurrentQueue<BrowserTimelineEvent> Events { get; } = new();
+        public ConcurrentQueue<IWebSocket> WebSockets { get; } = new();
+        private readonly ConcurrentDictionary<string, byte> _failedCriticalResourcePaths = new(StringComparer.Ordinal);
+        private int _eventCount;
+        private int _omittedTimelineEvents;
+
+        public BrowserStartupDiagnostics(IPage page)
+        {
+            page.Request += (_, request) => Record("request", GetSafeStartupRequestPath(request.Url));
+            page.Console += (_, message) =>
+            {
+                if (message.Type is "error" or "warning")
+                {
+                    Record("console", GetSafeConsoleResourcePath(message.Location), severity: message.Type);
+                }
+            };
+            page.PageError += (_, _) => Record("pageerror");
+            page.RequestFailed += (_, request) =>
+            {
+                var path = GetSafeStartupRequestPath(request.Url);
+                if (IsCriticalStartupPath(path))
+                {
+                    _failedCriticalResourcePaths.TryAdd(path, 0);
+                }
+
+                Record("requestfailed", path, failure: GetSafeNetworkFailure(request.Failure));
+            };
+            page.Response += (_, response) =>
+            {
+                var path = GetSafeStartupRequestPath(response.Url);
+                if (response.Request.IsNavigationRequest || response.Status >= 400 ||
+                    IsCriticalStartupPath(path) || path.StartsWith("/_blazor/", StringComparison.Ordinal))
+                {
+                    Record("response", path, status: response.Status);
+                }
+            };
+            page.FrameNavigated += (_, frame) => Record("navigation", GetSafeStartupRequestPath(frame.Url));
+            page.WebSocket += (_, webSocket) =>
+            {
+                var path = GetSafeStartupRequestPath(webSocket.Url);
+                WebSockets.Enqueue(webSocket);
+                Record("websocket", path);
+                webSocket.SocketError += (_, _) => Record("websocket-error", path);
+                webSocket.Close += (_, _) => Record("websocket-closed", path);
+            };
+        }
+
+        public IReadOnlyList<string> FailedCriticalResourcePaths => _failedCriticalResourcePaths.Keys
+            .OrderBy(path => path, StringComparer.Ordinal)
+            .ToArray();
+
+        public int OmittedTimelineEvents => Volatile.Read(ref _omittedTimelineEvents);
+
+        public string FormatTimeline()
+        {
+            var timeline = string.Join(" | ", Events.Select(item => item.ToString()));
+            return OmittedTimelineEvents == 0 ? timeline : $"{timeline} | {OmittedTimelineEvents} additional event(s) omitted";
+        }
+
+        private void Record(string kind, string? path = null, int? status = null, string? failure = null, string? severity = null)
+        {
+            if (Interlocked.Increment(ref _eventCount) > MaximumTimelineEvents)
+            {
+                Interlocked.Increment(ref _omittedTimelineEvents);
+                return;
+            }
+
+            Events.Enqueue(new BrowserTimelineEvent(_clock.ElapsedMilliseconds, kind, path, status, failure, severity));
+        }
+
+        private static bool IsCriticalStartupPath(string path) =>
+            path is "/_framework/blazor.web.js" or "/_content/MudBlazor/MudBlazor.min.js" or "/js/theme-preference.js" ||
+            path.StartsWith("/_blazor/", StringComparison.Ordinal);
+    }
+
+    private sealed record BrowserTimelineEvent(long ElapsedMilliseconds, string Kind, string? Path, int? Status, string? Failure, string? Severity)
+    {
+        public override string ToString() =>
+            $"{ElapsedMilliseconds,5} ms {Kind}{(Severity is null ? "" : $" severity={Severity}")}{(Status is null ? "" : $" status={Status}")}{(Failure is null ? "" : $" failure={Failure}")}{(Path is null ? "" : $" path={Path}")}";
+    }
+
+    private static string GetSafeConsoleResourcePath(string location)
+    {
+        var columnSeparator = location.LastIndexOf(':');
+        var lineSeparator = columnSeparator > 0 ? location.LastIndexOf(':', columnSeparator - 1) : -1;
+        return lineSeparator > 0 ? GetSafeStartupRequestPath(location[..lineSeparator]) : "(unknown)";
+    }
+
+    private static string FormatStartupEvents(ConcurrentQueue<string> events) =>
+        events.IsEmpty ? "(none)" : string.Join(" | ", events);
 
     private static string FormatSafeWebSocketStates(ConcurrentQueue<IWebSocket> webSockets) =>
         webSockets.IsEmpty
