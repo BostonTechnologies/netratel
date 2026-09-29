@@ -3,7 +3,7 @@ using System.Net.Http.Json;
 
 namespace NetRatel.Web.Services.Telemetry;
 
-/// <summary>Reads the additive Agent-ID keyed telemetry canary surface.</summary>
+/// <summary>Reads the optional Agent-ID keyed telemetry enrichment surface.</summary>
 public sealed class GatewayTelemetryApiService(IHttpClientFactory factory)
 {
     private readonly HttpClient _http = factory.CreateClient("OrchestratorApi");

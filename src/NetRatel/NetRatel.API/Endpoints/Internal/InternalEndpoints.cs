@@ -2,8 +2,6 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using NetRatel.API.Application.Requests.Contracts;
-using NetRatel.API.Application.Requests.Services;
 using NetRatel.API.Services.Events;
 using NetRatel.API.Services.Jobs;
 using NetRatel.API.Services.Orchestration;
@@ -139,17 +137,6 @@ public static class InternalEndpoints
             }
         });
 
-        group.MapPost("/requests/queue", async (QueueRequestDto request, IExecutionQueue queue, HttpContext http, CancellationToken ct) =>
-        {
-            var correlationId = http.Request.Headers["X-Correlation-Id"].FirstOrDefault() ?? Guid.NewGuid().ToString("N");
-            await queue.EnqueueAsync(new QueuedItem(request.RequestId, request.Tenant, request.TypeKey, request.Inputs, request.CallbackUrl, correlationId), ct).ConfigureAwait(false);
-            return Results.Accepted($"/internal/requests/{request.RequestId}");
-        });
-        group.MapPost("/notify-external-service", async (IHttpClientFactory factory, CancellationToken ct) =>
-        {
-            var response = await factory.CreateClient("ExternalServiceApi").PostAsJsonAsync("/internal/ingest", new { source = "orchestrator", at = DateTimeOffset.UtcNow }, ct).ConfigureAwait(false);
-            return Results.StatusCode((int)response.StatusCode);
-        });
         return app;
     }
 

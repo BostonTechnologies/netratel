@@ -22,19 +22,12 @@ service.
 Set `Client:ApiBaseUrl` to the public HTTPS origin used for enrollment and HTTP
 API calls. The Client uses that same URL for its gRPC gateway when
 `Gateway:Endpoint` is absent or empty. Generated Windows, Linux and macOS
-service installers persist the API URL once; they do not add a duplicate
-gateway URL or enable optional module flags that already default to enabled.
-An explicit `Gateway:Endpoint` remains available for deployments that publish
-the gateway on a separate HTTPS host.
-
-The `Gateway:ControlGatewayEnabled`, `FileGatewayEnabled`, `LogGatewayEnabled`,
-`RemoteSupportGatewayEnabled`, and `TerminalGatewayEnabled` settings remain
-available as local opt-outs; generated service configuration leaves enabled
-defaults implicit and preserves explicit `false` values. Remote Support V2
-inventory/media and handover switches remain independently opt-in because
-they add capabilities beyond the retained support-signalling stream. Terminal
-support also continues to depend on the Client host's available shell/PTY
-capabilities.
+service installers persist the API URL once; an explicit `Gateway:Endpoint`
+sets the gateway's public HTTPS address for deployments that publish it on a
+separate host. Gateway operations use the configured endpoint. Remote Support
+V2 follows the enrolled Client's advertised capabilities and platform; provider
+handover remains governed by the `RemoteSupport:Handover` policy. Terminal
+support depends on the Client host's available shell/PTY capabilities.
 
 For a shared public host, route the gateway's protobuf service namespace to the
 API's private h2c gateway listener. The connection path is:
@@ -65,10 +58,16 @@ protobuf package. The proxy terminates public TLS and uses h2c only on its
 private hop to the API listener. Do not add path rewriting. Set the entrypoint,
 TLS certificate configuration, backend address, and router priority for your
 deployment. Forwarding this package prefix does not bypass per-RPC
-authentication or authority checks, and it does not enable disabled legacy
-handlers. If the gateway is instead on a dedicated public host, a Host-only
-router can send that host to the same h2c listener; set `Gateway:Endpoint` to
-its public HTTPS URL, for example `https://grpc.example.com`.
+authentication or the API's authenticated-peer, tenant, current-session, and
+protocol checks. If the gateway is instead on a dedicated public host, a
+Host-only router can send that host to the same h2c listener; set
+`Gateway:Endpoint` to its public HTTPS URL, for example
+`https://grpc.example.com`.
+
+Generated install links are immutable snapshots. After deploying an updated
+candidate, create a fresh link for validation; an existing link does not pick
+up a newer installer script. Never reuse an exposed or consumed enrollment
+grant.
 
 The package includes runtime-specific update helpers and a manifest. Preserve
 the existing installation identity and rollback material during an update; do

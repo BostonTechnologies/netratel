@@ -32,8 +32,8 @@ public sealed class AgentLogGatewayClient(GatewayClientOptions options)
 
     public async Task RunForPresenceSessionAsync(GatewayPresenceSession session, string accessToken, CancellationToken stoppingToken)
     {
-        if (!options.LogGatewayEnabled) return;
-        if (!Uri.TryCreate(options.Endpoint, UriKind.Absolute, out var endpoint) || endpoint.Scheme != Uri.UriSchemeHttps) return;
+        if (!Uri.TryCreate(options.Endpoint, UriKind.Absolute, out var endpoint) || endpoint.Scheme != Uri.UriSchemeHttps)
+            throw new InvalidOperationException("Gateway:Endpoint must be an absolute HTTPS URL.");
 
         var retryDelay = InitialRetryDelay;
         while (!stoppingToken.IsCancellationRequested)
@@ -496,7 +496,7 @@ public sealed class AgentLogGatewayClient(GatewayClientOptions options)
     {
         if (frame.Sequence != 0 || !string.Equals(frame.ProtocolVersion, options.ProtocolVersion, StringComparison.Ordinal) ||
             !string.Equals(frame.OperationId, operationId.ToString("D"), StringComparison.OrdinalIgnoreCase) ||
-            !GatewayAuthority.IsAkka(frame.Accepted.LogAuthority) ||
+            !GatewayWireProtocol.HasAkkaAuthority(frame.Accepted.LogAuthority) ||
             frame.Accepted.MaximumRecordsPerBatch is 0 or > 100 || frame.Accepted.MaximumEncodedBatchBytes is 0 or > MaximumGatewayFrameBytes)
         {
             throw new RpcException(new Status(StatusCode.DataLoss, "Log gateway returned an invalid acknowledgement."));

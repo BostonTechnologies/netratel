@@ -6,7 +6,6 @@ using NetRatel.API.Endpoints.Search;
 using System.Text;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
-using NetRatel.Akka.Configuration;
 using NetRatel.API.Middleware;
 using NetRatel.API.Ops;
 using NetRatel.API.Security.M2M;
@@ -34,15 +33,13 @@ public static class McpOperatorSystemObservabilityEndpoints
 
     private static async Task<IResult> TelemetryAsync(HttpContext http, IHostEnvironment environment,
         IOptions<M2MOptions> m2m, IMcpOperatorAuthorization authorization,
-        [FromServices] NetRatelAkkaMigrationOptions options, IServiceProvider services,
+        [FromServices] IClientTelemetryRouter telemetry,
         CancellationToken cancellationToken)
     {
         var admission = await AdmitAsync("netratel_telemetry", "overview", http, environment, m2m,
             authorization, cancellationToken).ConfigureAwait(false);
         if (admission.FailureCode is { } code) return Failure(code, admission.Context ?? admission.Fallback);
         var context = admission.Context!;
-        if (!options.IsTelemetryAuthorityActive || services.GetService<IClientTelemetryRouter>() is not { } telemetry)
-            return Failure("telemetry_unavailable", context);
         try
         {
             await authorization.RecordAcceptedAsync(context.Decision, context.ServicePrincipal, cancellationToken).ConfigureAwait(false);

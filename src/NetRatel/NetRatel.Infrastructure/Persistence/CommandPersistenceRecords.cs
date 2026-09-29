@@ -28,7 +28,7 @@ public sealed class CommandIntentEventRecord
     public decimal Version { get; set; }
     public decimal Sequence { get; set; }
     public CommandLifecycleStatus Status { get; set; }
-    public string Source { get; set; } = "akka-shadow";
+    public string Source { get; set; } = "akka";
     public bool IsAuthoritative { get; set; }
     public DateTimeOffset RecordedAtUtc { get; set; }
 }
@@ -48,6 +48,6 @@ public sealed class CommandOutboxRecord
     public decimal LastAcceptedSequence { get; set; }
     public CommandLifecycleStatus CurrentStatus { get; set; }
     public int ObservedDispatchCount { get; set; }
-    public string Mode { get; set; } = "shadow-only";
+    public string Mode { get; set; } = "authority";
     public bool IsAuthoritative { get; set; }
 }

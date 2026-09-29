@@ -292,6 +292,7 @@ published_release_version=""
 if [[ "${NETRATEL_LOCAL_FIRST_NATIVE_INSTALL:-false}" == true ]]; then
   published_release_version="$(python3 tools/ci/select-prior-release.py | jq -er '.tag | ltrimstr("v")')"
 fi
+rm -f TestResults/local-first/local-first-browser.trx
 NETRATEL_LOCAL_FIRST_WEB_URL="$web_url" \
 NETRATEL_LOCAL_FIRST_PUBLISHED_RELEASE_VERSION="$published_release_version" \
 NETRATEL_LOCAL_FIRST_SETUP_PROOF="$setup_proof" \
@@ -300,9 +301,11 @@ NETRATEL_LOCAL_FIRST_ADMIN_PASSWORD="browser smoke local passphrase" \
 NETRATEL_LOCAL_FIRST_RESTART_API_CONTAINER="$("${compose[@]}" ps -q api)" \
 NETRATEL_LOCAL_FIRST_RESTART_WEB_CONTAINER="$("${compose[@]}" ps -q web)" \
 NETRATEL_LOCAL_FIRST_INTEGRATION_CREDENTIALS_FILE="$credential_path" \
-  dotnet test src/NetRatel/NetRatel.Web.PlaywrightTests/NetRatel.Web.PlaywrightTests.csproj \
-    --configuration Release --no-build --filter 'FullyQualifiedName~LocalFirstComposeBrowserSmokeTests' \
-    --results-directory TestResults/local-first -- --report-trx --report-trx-filename local-first-browser.trx
+  dotnet test --project src/NetRatel/NetRatel.Web.PlaywrightTests/NetRatel.Web.PlaywrightTests.csproj \
+    --configuration Release --no-build \
+    --filter-class NetRatel.Web.PlaywrightTests.LocalFirstComposeBrowserSmokeTests \
+    --results-directory TestResults/local-first --report-trx --report-trx-filename local-first-browser.trx
+python3 tools/ci/verify-mtp-trx.py TestResults/local-first/local-first-browser.trx --expected-executed 1
 unset setup_proof
 
 stage="verifying Ready operator status and ordinary restart"
@@ -532,6 +535,7 @@ if [[ "${NETRATEL_LOCAL_FIRST_STATE_RESET_ACCEPTANCE:-false}" == true ]]; then
   [[ "$fresh" == true ]] || { echo "A full disposable reset did not produce a fresh setup state." >&2; exit 1; }
   reset_setup_proof="$(api_operator cat /var/netratel/bootstrap/setup-proof)"
   [[ -n "$reset_setup_proof" && "$(printf '%s' "$reset_setup_proof" | sha256sum | cut -d ' ' -f 1)" != "$setup_proof_digest" ]]
+  rm -f TestResults/local-first/local-first-reset-browser.trx
   NETRATEL_LOCAL_FIRST_WEB_URL="$web_url" \
   NETRATEL_LOCAL_FIRST_SETUP_PROOF="$reset_setup_proof" \
   NETRATEL_LOCAL_FIRST_ADMIN_EMAIL="browser-admin@example.test" \
@@ -539,9 +543,11 @@ if [[ "${NETRATEL_LOCAL_FIRST_STATE_RESET_ACCEPTANCE:-false}" == true ]]; then
   NETRATEL_LOCAL_FIRST_RESTART_API_CONTAINER="$("${compose[@]}" ps -q api)" \
   NETRATEL_LOCAL_FIRST_RESTART_WEB_CONTAINER="$("${compose[@]}" ps -q web)" \
   NETRATEL_LOCAL_FIRST_INTEGRATION_CREDENTIALS_FILE="$credential_path" \
-    dotnet test src/NetRatel/NetRatel.Web.PlaywrightTests/NetRatel.Web.PlaywrightTests.csproj \
-      --configuration Release --no-build --filter 'FullyQualifiedName~LocalFirstComposeBrowserSmokeTests' \
-      --results-directory TestResults/local-first -- --report-trx --report-trx-filename local-first-reset-browser.trx
+    dotnet test --project src/NetRatel/NetRatel.Web.PlaywrightTests/NetRatel.Web.PlaywrightTests.csproj \
+      --configuration Release --no-build \
+      --filter-class NetRatel.Web.PlaywrightTests.LocalFirstComposeBrowserSmokeTests \
+      --results-directory TestResults/local-first --report-trx --report-trx-filename local-first-reset-browser.trx
+  python3 tools/ci/verify-mtp-trx.py TestResults/local-first/local-first-reset-browser.trx --expected-executed 1
   unset reset_setup_proof
   curl "${curl_tls[@]}" --connect-timeout 2 --fail --silent "$web_url/api/v2/setup/status" | jq -e '.isReady == true' >/dev/null
 fi

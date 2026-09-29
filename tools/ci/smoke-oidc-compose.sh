@@ -3,8 +3,18 @@ set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$root"
+source "$root/tools/ci/chromium-nss-trust.sh"
+source "$root/tools/ci/oidc-smoke-claims.sh"
 
 mode="${NETRATEL_COMPOSE_SMOKE_MODE:-source}"
+auth_environment="${NETRATEL_SMOKE_AUTH_ENVIRONMENT:-Production}"
+case "$auth_environment" in
+  Development|Production) ;;
+  *)
+    echo "NETRATEL_SMOKE_AUTH_ENVIRONMENT must be Development or Production." >&2
+    exit 2
+    ;;
+esac
 case "$mode" in
   source)
     compose_args=(-f compose.yaml -f tests/compose/oidc-smoke.compose.yaml)
@@ -29,6 +39,18 @@ cookie_jar="$(mktemp)"
 tls_key_path="$(mktemp)"
 tls_certificate_path="$(mktemp)"
 tls_bundle_path="$(mktemp --suffix=.pfx)"
+smoke_ca_key_path="$(mktemp)"
+smoke_ca_certificate_path="$(mktemp --suffix=.crt)"
+tls_request_path="$(mktemp --suffix=.csr)"
+tls_extensions_path="$(mktemp)"
+oidc_tls_key_path="$(mktemp)"
+oidc_tls_request_path="$(mktemp --suffix=.csr)"
+oidc_tls_certificate_path="$(mktemp --suffix=.crt)"
+oidc_tls_extensions_path="$(mktemp)"
+oidc_tls_keystore_path="$(mktemp --suffix=.p12)"
+trust_bundle_path="$(mktemp --suffix=.pem)"
+smoke_ca_trust_path=""
+smoke_ca_trust_installed=0
 cli_extract_dir=""
 mcp_stdio_extract_dir=""
 mcp_stdio_config_path="$(mktemp --suffix=.json)"
@@ -81,7 +103,7 @@ wait_for_web() {
 wait_for_status() {
   local expected_status="$1" url="$2" status
   for _ in $(seq 1 60); do
-    status="$(curl --connect-timeout 2 --silent --output /dev/null --write-out '%{http_code}' "$url" || true)"
+    status="$(curl --connect-timeout 2 --silent "${web_curl_args[@]}" --output /dev/null --write-out '%{http_code}' "$url" || true)"
     if [[ "$status" == "$expected_status" ]]; then
       return 0
     fi
@@ -93,8 +115,12 @@ wait_for_status() {
 }
 
 run_browser_oidc_smoke() {
-  local playwright_script proxy_address
+  local playwright_script proxy_address authorization_boundaries
   proxy_address="$(docker compose --project-name "$project" "${compose_args[@]}" port web-proxy 9444)"
+  authorization_boundaries=false
+  if [[ "$auth_environment" == Production ]]; then
+    authorization_boundaries=true
+  fi
   dotnet restore src/NetRatel/NetRatel.Web.PlaywrightTests/NetRatel.Web.PlaywrightTests.csproj
   dotnet build src/NetRatel/NetRatel.Web.PlaywrightTests/NetRatel.Web.PlaywrightTests.csproj --configuration Release --no-restore
   playwright_script="src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/playwright.ps1"
@@ -103,11 +129,23 @@ run_browser_oidc_smoke() {
     return 1
   }
   pwsh "$playwright_script" install --with-deps chromium
-  NETRATEL_BROWSER_SMOKE_WEB_URL="$web_url" \
+  prepare_chromium_nss_trust "$smoke_ca_certificate_path"
+  rm -f TestResults/oidc-compose/oidc-browser.trx
+  NETRATEL_BROWSER_SMOKE_WEB_URL="$web_public_url" \
     NETRATEL_BROWSER_SMOKE_PROXY_URL="https://$proxy_address" \
     NETRATEL_BROWSER_SMOKE_USERNAME="netratel-test-operator" \
-    dotnet test src/NetRatel/NetRatel.Web.PlaywrightTests/NetRatel.Web.PlaywrightTests.csproj \
-      --configuration Release --no-build --filter 'FullyQualifiedName~OidcComposeBrowserSmokeTests'
+    NETRATEL_BROWSER_SMOKE_DIRECTORY_AUTHZ="$authorization_boundaries" \
+    NETRATEL_BROWSER_SMOKE_TENANT_ADMIN_USERNAME="netratel-test-tenant-admin" \
+    NETRATEL_BROWSER_SMOKE_UNPRIVILEGED_USERNAME="netratel-test-unprivileged" \
+    NETRATEL_BROWSER_SMOKE_NSS_DATA_HOME="$chromium_nss_xdg_data_home" \
+    XDG_DATA_HOME="$chromium_nss_xdg_data_home" \
+    SSL_CERT_FILE="$trust_bundle_path" \
+    NODE_EXTRA_CA_CERTS="$smoke_ca_certificate_path" \
+    dotnet test --project src/NetRatel/NetRatel.Web.PlaywrightTests/NetRatel.Web.PlaywrightTests.csproj \
+      --configuration Release --no-build \
+      --filter-class NetRatel.Web.PlaywrightTests.OidcComposeBrowserSmokeTests \
+      --results-directory TestResults/oidc-compose --report-trx --report-trx-filename oidc-browser.trx
+  python3 tools/ci/verify-mtp-trx.py TestResults/oidc-compose/oidc-browser.trx --expected-executed 2
 }
 
 cleanup() {
@@ -118,11 +156,32 @@ cleanup() {
   docker rm -f "$gateway_client" >/dev/null 2>&1 || true
   docker compose --project-name "$project" "${compose_args[@]}" down --volumes --remove-orphans --rmi local >/dev/null 2>&1 || true
   docker volume rm "$client_volume" >/dev/null 2>&1 || true
+  cleanup_chromium_nss_trust || true
   unlink "$key_path" 2>/dev/null || true
   unlink "$cookie_jar" 2>/dev/null || true
   unlink "$tls_key_path" 2>/dev/null || true
   unlink "$tls_certificate_path" 2>/dev/null || true
   unlink "$tls_bundle_path" 2>/dev/null || true
+  unlink "$smoke_ca_key_path" 2>/dev/null || true
+  unlink "$smoke_ca_certificate_path" 2>/dev/null || true
+  unlink "$tls_request_path" 2>/dev/null || true
+  unlink "$tls_extensions_path" 2>/dev/null || true
+  unlink "$oidc_tls_key_path" 2>/dev/null || true
+  unlink "$oidc_tls_request_path" 2>/dev/null || true
+  unlink "$oidc_tls_certificate_path" 2>/dev/null || true
+  unlink "$oidc_tls_extensions_path" 2>/dev/null || true
+  unlink "$oidc_tls_keystore_path" 2>/dev/null || true
+  unlink "${smoke_ca_certificate_path}.srl" 2>/dev/null || true
+  unlink "$trust_bundle_path" 2>/dev/null || true
+  if (( smoke_ca_trust_installed )); then
+    if [[ "$EUID" -eq 0 ]]; then
+      rm -f "$smoke_ca_trust_path"
+      update-ca-certificates >/dev/null 2>&1 || true
+    else
+      sudo rm -f "$smoke_ca_trust_path"
+      sudo update-ca-certificates >/dev/null 2>&1 || true
+    fi
+  fi
   if [[ -n "$cli_extract_dir" ]]; then
     find "$cli_extract_dir" -depth -delete 2>/dev/null || true
   fi
@@ -147,11 +206,27 @@ if [[ "$mode" == release-images && -n "${NETRATEL_COMPOSE_SMOKE_BUNDLE:-}" ]]; t
 fi
 
 web_port="${NETRATEL_WEB_PORT:-8082}"
-oidc_port="${NETRATEL_OIDC_TEST_PORT:-8080}"
+if [[ "$auth_environment" == Production ]]; then
+  oidc_port="${NETRATEL_OIDC_TEST_PORT:-18444}"
+  compose_args+=(-f tests/compose/oidc-smoke.production.compose.yaml)
+  export NETRATEL_SMOKE_OIDC_TLS_PASSWORD="${NETRATEL_SMOKE_OIDC_TLS_PASSWORD:-netratel-compose-oidc-password}"
+else
+  oidc_port="${NETRATEL_OIDC_TEST_PORT:-8080}"
+fi
 export NETRATEL_WEB_PORT="$web_port"
 export NETRATEL_OIDC_TEST_PORT="$oidc_port"
+export NETRATEL_SMOKE_AUTH_ENVIRONMENT="$auth_environment"
 web_url="http://127.0.0.1:${web_port}"
+web_public_url="$web_url"
 oidc_resolve="host.docker.internal:${oidc_port}:127.0.0.1"
+oidc_curl_args=()
+web_curl_args=()
+oidc_scheme="http"
+if [[ "$auth_environment" == Production ]]; then
+  oidc_scheme="https"
+fi
+oidc_authority="${oidc_scheme}://host.docker.internal:${oidc_port}/default"
+oidc_loopback_token_url="${oidc_scheme}://127.0.0.1:${oidc_port}/default/token"
 
 export POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-netratel-oidc-smoke-postgres}"
 export OIDC_AUTHORITY="${OIDC_AUTHORITY:-https://unused.example.invalid}"
@@ -171,14 +246,79 @@ openssl ecparam -name prime256v1 -genkey -noout -out "$key_path"
 chmod 644 "$key_path"
 export NETRATEL_AGENT_AUTH_PRIVATE_KEY="$key_path"
 export NETRATEL_SMOKE_TLS_CERT_PASSWORD="netratel-compose-only-password"
-openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=gateway' \
-  -keyout "$tls_key_path" -out "$tls_certificate_path" >/dev/null 2>&1
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$smoke_ca_key_path" >/dev/null 2>&1
+openssl req -x509 -new -key "$smoke_ca_key_path" -sha256 -days 2 \
+  -subj '/CN=NetRatel disposable smoke CA' \
+  -addext 'basicConstraints=critical,CA:TRUE' \
+  -addext 'keyUsage=critical,keyCertSign,cRLSign' \
+  -out "$smoke_ca_certificate_path" >/dev/null 2>&1
+openssl req -new -newkey rsa:2048 -nodes -keyout "$tls_key_path" \
+  -out "$tls_request_path" -subj '/CN=gateway' >/dev/null 2>&1
+cat > "$tls_extensions_path" <<'EOF'
+basicConstraints=critical,CA:FALSE
+keyUsage=critical,digitalSignature,keyEncipherment
+extendedKeyUsage=serverAuth
+subjectAltName=DNS:gateway,DNS:localhost,IP:127.0.0.1
+EOF
+openssl x509 -req -in "$tls_request_path" -CA "$smoke_ca_certificate_path" \
+  -CAkey "$smoke_ca_key_path" -CAcreateserial -days 2 -sha256 \
+  -extfile "$tls_extensions_path" -out "$tls_certificate_path" >/dev/null 2>&1
 openssl pkcs12 -export -out "$tls_bundle_path" -inkey "$tls_key_path" -in "$tls_certificate_path" \
+  -certfile "$smoke_ca_certificate_path" \
   -passout "pass:${NETRATEL_SMOKE_TLS_CERT_PASSWORD}" >/dev/null 2>&1
-chmod 644 "$tls_certificate_path" "$tls_bundle_path"
+chmod 644 "$tls_certificate_path" "$tls_bundle_path" "$smoke_ca_certificate_path" "$trust_bundle_path"
+cp "$smoke_ca_certificate_path" "$trust_bundle_path"
 export NETRATEL_SMOKE_TLS_CERT_PATH="$tls_bundle_path"
 export NETRATEL_SMOKE_TLS_CERTIFICATE_PATH="$tls_certificate_path"
 export NETRATEL_SMOKE_TLS_KEY_PATH="$tls_key_path"
+export NETRATEL_SMOKE_CA_BUNDLE_PATH="$trust_bundle_path"
+
+if [[ "$auth_environment" == Production ]]; then
+  openssl req -new -newkey rsa:2048 -nodes -keyout "$oidc_tls_key_path" \
+    -out "$oidc_tls_request_path" -subj '/CN=host.docker.internal' >/dev/null 2>&1
+  cat > "$oidc_tls_extensions_path" <<'EOF'
+basicConstraints=critical,CA:FALSE
+keyUsage=critical,digitalSignature,keyEncipherment
+extendedKeyUsage=serverAuth
+subjectAltName=DNS:host.docker.internal,IP:127.0.0.1
+EOF
+  openssl x509 -req -in "$oidc_tls_request_path" -CA "$smoke_ca_certificate_path" \
+    -CAkey "$smoke_ca_key_path" -CAcreateserial -days 2 -sha256 \
+    -extfile "$oidc_tls_extensions_path" -out "$oidc_tls_certificate_path" >/dev/null 2>&1
+  openssl pkcs12 -export -out "$oidc_tls_keystore_path" -inkey "$oidc_tls_key_path" \
+    -in "$oidc_tls_certificate_path" -certfile "$smoke_ca_certificate_path" \
+    -name netratel-oidc-smoke \
+    -passout "pass:${NETRATEL_SMOKE_OIDC_TLS_PASSWORD}" >/dev/null 2>&1
+  chmod 644 "$oidc_tls_keystore_path"
+  export NETRATEL_SMOKE_OIDC_TLS_KEYSTORE_PATH="$oidc_tls_keystore_path"
+  export SSL_CERT_FILE="$trust_bundle_path"
+  oidc_curl_args=(--cacert "$smoke_ca_certificate_path")
+
+  if [[ "${GITHUB_ACTIONS:-false}" == true ]]; then
+    command -v update-ca-certificates >/dev/null 2>&1 || {
+      echo 'The hosted Production OIDC smoke requires update-ca-certificates to trust its disposable CA.' >&2
+      exit 1
+    }
+    smoke_ca_trust_path="/usr/local/share/ca-certificates/netratel-smoke-${project}.crt"
+    [[ ! -e "$smoke_ca_trust_path" && ! -L "$smoke_ca_trust_path" ]] || {
+      echo 'Refusing to replace a pre-existing system CA file at the smoke-owned path.' >&2
+      exit 1
+    }
+    smoke_ca_trust_installed=1
+    if [[ "$EUID" -eq 0 ]]; then
+      install -m 0644 "$smoke_ca_certificate_path" "$smoke_ca_trust_path"
+      update-ca-certificates >/dev/null
+    else
+      command -v sudo >/dev/null 2>&1 || {
+        echo 'The hosted Production OIDC smoke needs root or sudo to trust its disposable CA.' >&2
+        exit 1
+      }
+      sudo install -m 0644 "$smoke_ca_certificate_path" "$smoke_ca_trust_path"
+      sudo update-ca-certificates >/dev/null
+    fi
+  fi
+fi
+
 export NETRATEL_GATEWAY_PROXY_CONFIG_PATH="$root/tests/compose/gateway-proxy.nginx.conf"
 if [[ -n "$bundle_extract_dir" ]]; then
   export NETRATEL_PUBLIC_NGINX_CONFIG_PATH="$bundle_extract_dir/nginx.public-https.conf"
@@ -193,13 +333,11 @@ start_gateway_client() {
   docker rm -f "$gateway_client" >/dev/null 2>&1 || true
   docker run --detach --name "$gateway_client" --network "${project}_default" \
     --volume "${client_volume}:/var/lib/netratel" \
-    --volume "${tls_certificate_path}:/run/netratel-smoke/tls.crt:ro" \
-    --env SSL_CERT_FILE=/run/netratel-smoke/tls.crt \
+    --volume "${trust_bundle_path}:/run/netratel-smoke/ca-bundle.pem:ro" \
+    --env SSL_CERT_FILE=/run/netratel-smoke/ca-bundle.pem \
     --env NetRatel_CLIENT_LOG_DIR=/var/lib/netratel/logs \
     "$client_image" --api http://api:9222 --Gateway:Endpoint=https://gateway:443 \
-    --Gateway:TelemetryFastIntervalSeconds=1 --Gateway:ControlGatewayEnabled=false \
-    --Gateway:FileGatewayEnabled=false --Gateway:LogGatewayEnabled=false \
-    --Gateway:RemoteSupportGatewayEnabled=false --Gateway:TerminalGatewayEnabled=false >/dev/null
+    --Gateway:TelemetryFastIntervalSeconds=1 >/dev/null
 }
 
 wait_for_gateway_sessions() {
@@ -219,18 +357,27 @@ wait_for_gateway_sessions() {
   return 1
 }
 
-request_operator_access_token() {
-  local redirect_uri authorization_url response callback_location callback_code token_response access_token
+request_oidc_access_token() (
+  local username="$1" state="$2"
+  local redirect_uri authorization_url response callback_location callback_code token_response access_token id_token refresh_token
+  local refresh_response refreshed_access_token refreshed_id_token claims_json token_cookie_jar
   redirect_uri="http://127.0.0.1:65535/netratel-smoke-callback"
-  authorization_url="http://host.docker.internal:${oidc_port}/default/authorize?response_type=code&client_id=netratel-smoke-client&redirect_uri=http%3A%2F%2F127.0.0.1%3A65535%2Fnetratel-smoke-callback&scope=openid%20netratel.api&state=compose-smoke-api"
-  response="$(curl --silent --show-error --dump-header - --resolve "$oidc_resolve" \
-    --cookie "$cookie_jar" --cookie-jar "$cookie_jar" "$authorization_url")"
+  token_cookie_jar="$(mktemp)"
+  trap 'unlink "$token_cookie_jar" 2>/dev/null || true' EXIT
+  claims_json="$(oidc_smoke_claims_for_subject "$root/tests/compose/oidc-smoke-login.html" "$username")" || {
+    echo "The OIDC smoke fixture has no claims profile for ${username}." >&2
+    return 1
+  }
+  authorization_url="${oidc_authority}/authorize?response_type=code&client_id=netratel-smoke-client&redirect_uri=http%3A%2F%2F127.0.0.1%3A65535%2Fnetratel-smoke-callback&scope=openid%20netratel.api&state=${state}"
+  response="$(curl --silent --show-error --dump-header - --resolve "$oidc_resolve" "${oidc_curl_args[@]}" \
+    --cookie "$token_cookie_jar" --cookie-jar "$token_cookie_jar" "$authorization_url")"
   callback_location="$(awk 'BEGIN { IGNORECASE = 1 } /^location: / { sub(/^[^:]*: /, ""); sub(/\r$/, ""); print; exit }' <<<"$response")"
 
   if [[ -z "$callback_location" ]]; then
-    response="$(curl --silent --show-error --dump-header - --resolve "$oidc_resolve" \
-      --cookie "$cookie_jar" --cookie-jar "$cookie_jar" \
-      --data-urlencode 'username=netratel-test-operator' "$authorization_url")"
+    response="$(curl --silent --show-error --dump-header - --resolve "$oidc_resolve" "${oidc_curl_args[@]}" \
+      --cookie "$token_cookie_jar" --cookie-jar "$token_cookie_jar" \
+      --data-urlencode "username=${username}" \
+      --data-urlencode "claims=${claims_json}" "$authorization_url")"
     callback_location="$(awk 'BEGIN { IGNORECASE = 1 } /^location: / { sub(/^[^:]*: /, ""); sub(/\r$/, ""); print; exit }' <<<"$response")"
   fi
 
@@ -248,19 +395,125 @@ request_operator_access_token() {
     echo "The test OIDC provider did not return an authorization code for direct API verification." >&2
     return 1
   }
-  token_response="$(curl --silent --show-error --fail --resolve "$oidc_resolve" \
+  token_response="$(curl --silent --show-error --fail --resolve "$oidc_resolve" "${oidc_curl_args[@]}" \
     --data-urlencode 'grant_type=authorization_code' \
     --data-urlencode 'client_id=netratel-smoke-client' \
     --data-urlencode 'client_secret=synthetic-compose-only-secret' \
     --data-urlencode "redirect_uri=${redirect_uri}" \
     --data-urlencode "code=${callback_code}" \
-    "http://host.docker.internal:${oidc_port}/default/token")"
+    "$oidc_authority/token")"
   access_token="$(jq -r '.access_token // empty' <<<"$token_response")"
-  [[ -n "$access_token" ]] || {
-    echo "The test OIDC provider did not issue a direct API access token." >&2
+  id_token="$(jq -r '.id_token // empty' <<<"$token_response")"
+  refresh_token="$(jq -r '.refresh_token // empty' <<<"$token_response")"
+  [[ -n "$access_token" && -n "$id_token" && -n "$refresh_token" ]] || {
+    echo "The test OIDC provider did not issue the expected access, ID and refresh tokens." >&2
     return 1
   }
+
+  verify_oidc_smoke_token_claims "$access_token" "$claims_json" "$username" "access token" "$oidc_authority" || return 1
+  verify_oidc_smoke_token_claims "$id_token" "$claims_json" "$username" "ID token" "$oidc_authority" || return 1
+
+  refresh_response="$(curl --silent --show-error --fail --resolve "$oidc_resolve" "${oidc_curl_args[@]}" \
+    --data-urlencode 'grant_type=refresh_token' \
+    --data-urlencode 'client_id=netratel-smoke-client' \
+    --data-urlencode 'client_secret=synthetic-compose-only-secret' \
+    --data-urlencode "refresh_token=${refresh_token}" \
+    "$oidc_authority/token")"
+  refreshed_access_token="$(jq -r '.access_token // empty' <<<"$refresh_response")"
+  refreshed_id_token="$(jq -r '.id_token // empty' <<<"$refresh_response")"
+  [[ -n "$refreshed_access_token" && -n "$refreshed_id_token" ]] || {
+    echo "The test OIDC provider did not preserve the expected claims across token refresh for ${username}." >&2
+    return 1
+  }
+  verify_oidc_smoke_token_claims "$refreshed_access_token" "$claims_json" "$username" "refreshed access token" "$oidc_authority" || return 1
+  verify_oidc_smoke_token_claims "$refreshed_id_token" "$claims_json" "$username" "refreshed ID token" "$oidc_authority" || return 1
+
   printf '%s' "$access_token"
+)
+
+verify_directory_denial() {
+  local access_token="$1" path="$2" status
+  status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+    --header "Authorization: Bearer ${access_token}" "${api_url}${path}")"
+  [[ "$status" == 403 ]] || {
+    echo "Expected the authenticated client-directory request ${path} to be forbidden, got HTTP ${status}." >&2
+    return 1
+  }
+}
+
+prepare_oidc_directory_authorization_fixtures() {
+  local operator_access_token="$1" tenant_response role_response role_id
+  local tenant_admin_token tenant_admin_self tenant_admin_principal_id
+  local unprivileged_token unprivileged_self unprivileged_principal_id
+  local tenant_admin_scope unprivileged_scope
+
+  tenant_response="$(curl --silent --show-error --fail \
+    --header "Authorization: Bearer ${operator_access_token}" \
+    --header 'Content-Type: application/json' \
+    --data '{"name":"compose-smoke-unassigned","description":"Disposable second Compose smoke tenant","location":"test","domains":[],"autoUpdate":false}' \
+    "${api_url}/api/v1/tenants/")"
+  unassigned_tenant_id="$(jq -r '.tenantId // empty' <<<"$tenant_response")"
+  [[ "$unassigned_tenant_id" =~ ^[1-9][0-9]*$ && "$unassigned_tenant_id" != "$tenant_id" ]] || {
+    echo "Compose smoke could not create a second distinct tenant for scoped authorization checks." >&2
+    return 1
+  }
+
+  tenant_admin_token="$(request_oidc_access_token netratel-test-tenant-admin compose-smoke-tenant-admin)"
+  tenant_admin_self="$(curl --silent --show-error --fail \
+    --header "Authorization: Bearer ${tenant_admin_token}" \
+    "${api_url}/api/v2/access/self")"
+  tenant_admin_principal_id="$(jq -r '.principalId // empty' <<<"$tenant_admin_self")"
+  [[ -n "$tenant_admin_principal_id" ]] || {
+    echo "The validated tenant-administrator OIDC subject did not resolve to an application principal." >&2
+    return 1
+  }
+
+  unprivileged_token="$(request_oidc_access_token netratel-test-unprivileged compose-smoke-unprivileged)"
+  unprivileged_self="$(curl --silent --show-error --fail \
+    --header "Authorization: Bearer ${unprivileged_token}" \
+    "${api_url}/api/v2/access/self")"
+  unprivileged_principal_id="$(jq -r '.principalId // empty' <<<"$unprivileged_self")"
+  [[ -n "$unprivileged_principal_id" && "$unprivileged_principal_id" != "$tenant_admin_principal_id" ]] || {
+    echo "The two validated OIDC subjects did not resolve to distinct application principals." >&2
+    return 1
+  }
+
+  role_response="$(curl --silent --show-error --fail \
+    --header "Authorization: Bearer ${operator_access_token}" \
+    "${api_url}/api/v2/access/roles")"
+  role_id="$(jq -r '.[] | select(.name == "TenantAdministrator") | .id' <<<"$role_response")"
+  [[ -n "$role_id" && "$role_id" != null ]] || {
+    echo "The operator could not resolve the built-in TenantAdministrator role." >&2
+    return 1
+  }
+
+  curl --silent --show-error --fail --output /dev/null \
+    --request PUT \
+    --header "Authorization: Bearer ${operator_access_token}" \
+    --header 'Content-Type: application/json' \
+    --data "$(jq -nc --arg roleId "$role_id" --argjson tenantId "$tenant_id" '{roleId:$roleId,tenantId:$tenantId}')" \
+    "${api_url}/api/v2/access/principals/${tenant_admin_principal_id}/assignments"
+
+  tenant_admin_scope="$(curl --silent --show-error --fail \
+    --header "Authorization: Bearer ${tenant_admin_token}" \
+    "${api_url}/api/v2/access/tenants")"
+  jq -e --argjson expectedTenant "$tenant_id" \
+    'length == 1 and .[0].tenantId == $expectedTenant' >/dev/null <<<"$tenant_admin_scope" || {
+    echo "The tenant-administrator principal did not receive exactly its assigned tenant scope." >&2
+    return 1
+  }
+
+  unprivileged_scope="$(curl --silent --show-error --fail \
+    --header "Authorization: Bearer ${unprivileged_token}" \
+    "${api_url}/api/v2/access/tenants")"
+  jq -e 'length == 0' >/dev/null <<<"$unprivileged_scope" || {
+    echo "The OIDC principal without a persisted role unexpectedly received tenant scope." >&2
+    return 1
+  }
+
+  verify_directory_denial "$tenant_admin_token" "/api/v2/client-presence/?tenantId=${tenant_id}"
+  verify_directory_denial "$tenant_admin_token" "/api/v2/client-presence/?tenantId=${unassigned_tenant_id}"
+  verify_directory_denial "$unprivileged_token" "/api/v2/client-presence/"
 }
 
 wait_for_command_status() {
@@ -320,7 +573,7 @@ verify_cli_archive_scoped_read() {
   set +e
   cli_output="$("$cli_executable" \
     --api-base-url "$api_url" \
-    --token-url "http://127.0.0.1:${oidc_port}/default/token" \
+    --token-url "$oidc_loopback_token_url" \
     --client-id netratel-cli-smoke-client \
     --username netratel-cli-smoke \
     --app-password synthetic-compose-only-password \
@@ -356,7 +609,7 @@ verify_mcp_stdio_archive_scoped_read() {
 
   jq -n \
     --arg api_base_url "$api_url" \
-    --arg token_url "http://127.0.0.1:${oidc_port}/default/token" \
+    --arg token_url "$oidc_loopback_token_url" \
     '{apiBaseUrl:$api_base_url,oidcTokenUrl:$token_url,oidcClientId:"netratel-cli-smoke-client",oidcUsername:"netratel-mcp-smoke",oidcAppPassword:"synthetic-compose-only-password",oidcScope:"netratel.api"}' \
     > "$mcp_stdio_config_path"
   chmod 600 "$mcp_stdio_config_path"
@@ -441,16 +694,20 @@ wait_for_migrations
 
 stage="waiting for disposable OIDC issuer"
 curl --retry 20 --retry-connrefused --fail --silent --show-error \
-  "http://127.0.0.1:${oidc_port}/isalive" >/dev/null
+  --resolve "$oidc_resolve" "${oidc_curl_args[@]}" "${oidc_authority}/isalive" >/dev/null
 
 stage="waiting for the Web application"
 wait_for_web
+stage="resolving the HTTPS Web ingress"
+web_proxy_address="$(docker compose --project-name "$project" "${compose_args[@]}" port web-proxy 9444)"
+if [[ "$auth_environment" == Production ]]; then
+  web_public_url="https://${web_proxy_address}"
+  web_curl_args=(--cacert "$trust_bundle_path")
+fi
 stage="checking anonymous API rejection"
-wait_for_status 401 "${web_url}/api/v1/tenants"
-stage="running browser OIDC rehearsal"
-run_browser_oidc_smoke
+wait_for_status 401 "${web_public_url}/api/v1/tenants"
 
-unauthenticated_status="$(curl --silent --output /dev/null --write-out '%{http_code}' "${web_url}/api/v1/tenants")"
+unauthenticated_status="$(curl --silent "${web_curl_args[@]}" --output /dev/null --write-out '%{http_code}' "${web_public_url}/api/v1/tenants")"
 [[ "$unauthenticated_status" == 401 ]] || {
   echo "Expected the protected API route to reject an anonymous request, got ${unauthenticated_status}." >&2
   exit 1
@@ -458,46 +715,51 @@ unauthenticated_status="$(curl --silent --output /dev/null --write-out '%{http_c
 
 stage="starting interactive OIDC challenge"
 authorization_location="$(curl --silent --show-error --output /dev/null --dump-header - \
-  --cookie "$cookie_jar" --cookie-jar "$cookie_jar" \
-  "${web_url}/auth/oidc?returnUrl=%2Ftenants" \
+  "${web_curl_args[@]}" --cookie "$cookie_jar" --cookie-jar "$cookie_jar" \
+  "${web_public_url}/auth/oidc?returnUrl=%2Ftenants" \
   | awk 'BEGIN { IGNORECASE = 1 } /^location: / { sub(/^[^:]*: /, ""); sub(/\r$/, ""); print; exit }')"
-[[ "$authorization_location" == http://host.docker.internal:${oidc_port}/default/authorize* ]] || {
+[[ "$authorization_location" == "${oidc_authority}/authorize"* ]] || {
   echo "The Web application did not challenge the configured generic OIDC provider." >&2
   exit 1
 }
 
 stage="loading OIDC authorization page"
-curl --silent --show-error --fail --resolve "$oidc_resolve" \
+curl --silent --show-error --fail --resolve "$oidc_resolve" "${oidc_curl_args[@]}" \
   --cookie "$cookie_jar" --cookie-jar "$cookie_jar" \
   "$authorization_location" >/dev/null
 
 stage="authenticating disposable OIDC operator"
+operator_claims_json="$(oidc_smoke_claims_for_subject "$root/tests/compose/oidc-smoke-login.html" netratel-test-operator)" || {
+  echo "The OIDC smoke fixture has no claims profile for the operator." >&2
+  exit 1
+}
 callback_response="$(curl --silent --show-error --dump-header - \
-  --resolve "$oidc_resolve" --cookie "$cookie_jar" --cookie-jar "$cookie_jar" \
+  --resolve "$oidc_resolve" "${oidc_curl_args[@]}" --cookie "$cookie_jar" --cookie-jar "$cookie_jar" \
   --data-urlencode 'username=netratel-test-operator' \
+  --data-urlencode "claims=${operator_claims_json}" \
   "$authorization_location")"
 callback_location="$(awk 'BEGIN { IGNORECASE = 1 } /^location: / { sub(/^[^:]*: /, ""); sub(/\r$/, ""); print; exit }' <<<"$callback_response")"
 
 if [[ -n "$callback_location" ]]; then
-  [[ "$callback_location" == "${web_url}/signin-oidc"* ]] || {
+  [[ "$callback_location" == "${web_public_url}/signin-oidc"* ]] || {
     echo "The generic OIDC provider returned an unexpected authorization-code callback: ${callback_location}." >&2
     exit 1
   }
 
   authenticated_status="$(curl --silent --show-error \
-    --resolve "$oidc_resolve" --cookie "$cookie_jar" --cookie-jar "$cookie_jar" \
+    "${web_curl_args[@]}" --cookie "$cookie_jar" --cookie-jar "$cookie_jar" \
     --output /dev/null --write-out '%{http_code}' "$callback_location")"
 else
   callback_action="$(sed -n 's/.*<form action="\([^"]*\)".*/\1/p' <<<"$callback_response" | head -n 1)"
   callback_code="$(sed -n 's/.*name="code" value="\([^"]*\)".*/\1/p' <<<"$callback_response" | head -n 1)"
   callback_state="$(sed -n 's/.*name="state" value="\([^"]*\)".*/\1/p' <<<"$callback_response" | head -n 1)"
-  [[ "$callback_action" == "${web_url}/signin-oidc" && -n "$callback_code" && -n "$callback_state" ]] || {
+  [[ "$callback_action" == "${web_public_url}/signin-oidc" && -n "$callback_code" && -n "$callback_state" ]] || {
     echo "The generic OIDC provider did not return a usable authorization-code callback." >&2
     exit 1
   }
 
   authenticated_status="$(curl --silent --show-error \
-    --cookie "$cookie_jar" --cookie-jar "$cookie_jar" \
+    "${web_curl_args[@]}" --cookie "$cookie_jar" --cookie-jar "$cookie_jar" \
     --data-urlencode "code=$callback_code" --data-urlencode "state=$callback_state" \
     --output /dev/null --write-out '%{http_code}' "$callback_action")"
 fi
@@ -510,7 +772,7 @@ fi
 
 stage="checking authenticated API access"
 protected_status="$(curl --silent --show-error --cookie "$cookie_jar" \
-  --output /dev/null --write-out '%{http_code}' "${web_url}/api/v1/tenants")"
+  "${web_curl_args[@]}" --output /dev/null --write-out '%{http_code}' "${web_public_url}/api/v1/tenants")"
 [[ "$protected_status" == 200 ]] || {
   echo "The authenticated OIDC session could not access the protected API route, got ${protected_status}." >&2
   docker compose --project-name "$project" "${compose_args[@]}" \
@@ -519,10 +781,10 @@ protected_status="$(curl --silent --show-error --cookie "$cookie_jar" \
 }
 
 stage="creating disposable tenant"
-tenant_response="$(curl --silent --show-error --fail --cookie "$cookie_jar" \
+tenant_response="$(curl --silent --show-error --fail "${web_curl_args[@]}" --cookie "$cookie_jar" \
   --header 'Content-Type: application/json' \
   --data '{"name":"compose-smoke","description":"Disposable Compose smoke tenant","location":"test","domains":[],"autoUpdate":false}' \
-  "${web_url}/api/v1/tenants/")"
+  "${web_public_url}/api/v1/tenants/")"
 tenant_id="$(jq -r '.tenantId // empty' <<<"$tenant_response")"
 [[ "$tenant_id" =~ ^[1-9][0-9]*$ ]] || { echo "Compose smoke could not create a synthetic tenant." >&2; exit 1; }
 
@@ -532,10 +794,10 @@ stage="verifying packaged stdio MCP read"
 verify_mcp_stdio_archive_scoped_read "${NETRATEL_MCP_STDIO_SMOKE_ARCHIVE:-}"
 
 stage="issuing disposable Client enrollment"
-enrollment_response="$(curl --silent --show-error --fail --cookie "$cookie_jar" \
+enrollment_response="$(curl --silent --show-error --fail "${web_curl_args[@]}" --cookie "$cookie_jar" \
   --header 'Content-Type: application/json' \
   --data '{"validForMinutes":5,"maxUses":1,"note":"Disposable Compose smoke enrollment"}' \
-  "${web_url}/api/v1/tenants/${tenant_id}/enrollment-codes")"
+  "${web_public_url}/api/v1/tenants/${tenant_id}/enrollment-codes")"
 enrollment_code="$(jq -r '.enrollmentCode // empty' <<<"$enrollment_response")"
 [[ -n "$enrollment_code" ]] || { echo "Compose smoke could not issue a short-lived enrollment code." >&2; exit 1; }
 
@@ -571,7 +833,13 @@ start_gateway_client
 wait_for_gateway_sessions
 
 stage="requesting direct operator token"
-operator_access_token="$(request_operator_access_token)"
+operator_access_token="$(request_oidc_access_token netratel-test-operator compose-smoke-api)"
+if [[ "$auth_environment" == Production ]]; then
+  stage="provisioning scoped OIDC directory identities"
+  prepare_oidc_directory_authorization_fixtures "$operator_access_token"
+fi
+stage="running browser OIDC rehearsal"
+run_browser_oidc_smoke
 stage="waiting for Client telemetry"
 wait_for_telemetry "$operator_access_token"
 # The public Linux client image deliberately includes Bash, and the gateway
@@ -615,7 +883,7 @@ wait_for_gateway_sessions
 docker rm -f "$gateway_client" >/dev/null
 
 logout_headers="$(curl --silent --show-error --dump-header - --output /dev/null \
-  --cookie "$cookie_jar" --cookie-jar "$cookie_jar" "${web_url}/auth/logout")"
+  "${web_curl_args[@]}" --cookie "$cookie_jar" --cookie-jar "$cookie_jar" "${web_public_url}/auth/logout")"
 grep -qi '^set-cookie:.*\.AspNetCore\.Cookies=;' <<<"$logout_headers" || {
   echo "Logout did not clear the Web authentication cookie." >&2
   exit 1

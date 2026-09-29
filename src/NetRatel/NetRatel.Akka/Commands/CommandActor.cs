@@ -8,13 +8,12 @@ namespace NetRatel.Akka.Commands;
 
 /// <summary>
 /// Owns one command lifecycle and persists accepted transitions before applying
-/// them. Shadow and authoritative streams retain separate identity; dispatch
-/// remains with the gateway command authority.
+/// them. Dispatch remains with the gateway command authority.
 /// </summary>
 public sealed class CommandActor : ReceiveActor
 {
     private readonly CommandKey _command;
-    private readonly ICommandPersistenceStore? _persistenceStore;
+    private readonly ICommandPersistenceStore _persistenceStore;
     private readonly ILoggingAdapter _logger;
     private readonly CancellationTokenSource _stopping = new();
     private readonly List<CommandHistoryEntry> _history = new(5);
@@ -27,11 +26,7 @@ public sealed class CommandActor : ReceiveActor
     private bool _isAuthoritative;
     private bool _recovered;
 
-    public CommandActor(CommandKey command) : this(command, null)
-    {
-    }
-
-    public CommandActor(CommandKey command, ICommandPersistenceStore? persistenceStore)
+    public CommandActor(CommandKey command, ICommandPersistenceStore persistenceStore)
     {
         if (!command.IsValid)
         {
@@ -39,9 +34,8 @@ public sealed class CommandActor : ReceiveActor
         }
 
         _command = command;
-        _persistenceStore = persistenceStore;
+        _persistenceStore = persistenceStore ?? throw new ArgumentNullException(nameof(persistenceStore));
         _logger = Context.GetLogger();
-        _recovered = persistenceStore is null;
         ReceiveAsync<RecordCommandLifecycleEvent>(async message =>
         {
             var replyTo = Sender;
@@ -64,7 +58,7 @@ public sealed class CommandActor : ReceiveActor
                     ? result.CurrentStatus
                     : previousStatus));
         });
-        ReceiveAsync<GetCommandShadowState>(async message =>
+        ReceiveAsync<GetCommandState>(async message =>
         {
             var replyTo = Sender;
             try
@@ -74,13 +68,10 @@ public sealed class CommandActor : ReceiveActor
             }
             catch (Exception) when (!_stopping.IsCancellationRequested)
             {
-                replyTo.Tell(EmptyState(message.Command, "akka-shadow-persistence-unavailable"));
+                replyTo.Tell(EmptyState(message.Command, "akka-persistence-unavailable"));
             }
         });
     }
-
-    public static Props Props(CommandKey command) =>
-        global::Akka.Actor.Props.Create(() => new CommandActor(command));
 
     public static Props Props(CommandKey command, ICommandPersistenceStore persistenceStore) =>
         global::Akka.Actor.Props.Create(() => new CommandActor(command, persistenceStore));
@@ -99,7 +90,7 @@ public sealed class CommandActor : ReceiveActor
             await EnsureRecoveredAsync().ConfigureAwait(false);
             var lifecycleEvent = message.Event;
             var disposition = GetDisposition(lifecycleEvent);
-            if (disposition == CommandMessageDisposition.Accepted && lifecycleEvent.IsAuthoritative)
+            if (disposition == CommandMessageDisposition.Accepted)
             {
                 // The gateway supplies server receipt time. Preserve logical
                 // chronology if the server clock steps backwards, without
@@ -109,8 +100,7 @@ public sealed class CommandActor : ReceiveActor
                 if (lifecycleEvent.StatusTimestamp < lowerBound)
                     lifecycleEvent = lifecycleEvent with { StatusTimestamp = lowerBound };
             }
-            if (_persistenceStore is not null &&
-                disposition is CommandMessageDisposition.Accepted or CommandMessageDisposition.Duplicate)
+            if (disposition is CommandMessageDisposition.Accepted or CommandMessageDisposition.Duplicate)
             {
                 var persistenceResult = await _persistenceStore
                     .RecordAsync(lifecycleEvent, _stopping.Token)
@@ -144,7 +134,6 @@ public sealed class CommandActor : ReceiveActor
     private CommandMessageDisposition GetDisposition(CommandLifecycleEvent lifecycleEvent)
     {
         if (lifecycleEvent.Command != _command ||
-            (_client.HasValue && lifecycleEvent.IsAuthoritative != _isAuthoritative) ||
             (_client.HasValue && lifecycleEvent.Client != _client.Value) ||
             (_correlationId is not null &&
              !string.Equals(lifecycleEvent.CorrelationId, _correlationId, StringComparison.Ordinal)) ||
@@ -153,7 +142,7 @@ public sealed class CommandActor : ReceiveActor
             return CommandMessageDisposition.IdentityMismatch;
         }
 
-        if (_currentStatus.HasValue &&
+            if (_currentStatus.HasValue &&
             lifecycleEvent.Version == _lastAcceptedVersion &&
             lifecycleEvent.Sequence == _lastAcceptedSequence &&
             lifecycleEvent.Status == _currentStatus.Value)
@@ -179,7 +168,7 @@ public sealed class CommandActor : ReceiveActor
 
     private async Task EnsureRecoveredAsync()
     {
-        if (_recovered || _persistenceStore is null)
+        if (_recovered)
         {
             return;
         }
@@ -253,7 +242,7 @@ public sealed class CommandActor : ReceiveActor
         _isAuthoritative = false;
     }
 
-    private CommandShadowState CreateState() =>
+    private CommandState CreateState() =>
         new(
             _command,
             _client,
@@ -263,12 +252,12 @@ public sealed class CommandActor : ReceiveActor
             _lastAcceptedVersion,
             _lastAcceptedSequence,
             _history.ToArray(),
-            _isAuthoritative ? "akka" : "akka-shadow",
+            "akka",
             IsAuthoritative: _isAuthoritative);
 
-    internal static CommandShadowState EmptyState(
+    internal static CommandState EmptyState(
         CommandKey command,
-        string source = "akka-shadow") =>
+        string source = "unobserved") =>
         new(
             command,
             null,

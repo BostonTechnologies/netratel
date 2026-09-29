@@ -34,8 +34,19 @@ public sealed class RemoteSupportLegacyRetirementSourceTests
 
         cardGrid.Should().Contain("GatewayRemoteSupportDialog");
         gridView.Should().Contain("GatewayRemoteSupportDialog");
-        apiMap.Should().Contain("app.MapAgentRemoteSupportGatewayEndpoints();");
+        apiMap.Should().Contain("app.MapAgentRemoteSupportV2Endpoints();");
         apiMap.Should().NotContain("app.MapRemoteSupportEndpoints();");
+
+        var gatewayEndpoints = Read("src/NetRatel/NetRatel.API/Endpoints/RemoteAccess/AgentRemoteSupportGatewayEndpoints.cs");
+        gatewayEndpoints.Should().Contain("/v2/lifecycle/sessions");
+        gatewayEndpoints.Should().Contain("RequireAuthorization(\"RemoteSupportOperator\")");
+        gatewayEndpoints.Should().NotContain("MapPost(\"/sessions\"");
+        gatewayEndpoints.Should().NotContain("/api/v2/gateway-remote-support");
+        gatewayEndpoints.Should().NotContain("IGatewayRemoteSupportSessionRegistry");
+        gatewayEndpoints.Should().NotContain("GetService<IRequiredActor");
+        gatewayEndpoints.Should().Contain("GetRequiredService<IRequiredActor<RemoteSupportSessionAuthorityRegion>>");
+        gatewayEndpoints.Should().Contain("catch (AskTimeoutException)");
+        gatewayEndpoints.Should().Contain("StatusCodes.Status503ServiceUnavailable");
     }
 
     private static string Read(string relativePath) => File.ReadAllText(Path.Combine(RepoRoot, relativePath));

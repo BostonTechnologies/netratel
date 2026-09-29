@@ -69,6 +69,8 @@ public sealed class McpOperatorTaskReconciliationService(
             return false;
         foreach (var item in page.Events)
         {
+            // IsAuthoritative is historical persisted provenance here. Old
+            // observational rows must never be used to infer a live task result.
             if (!item.IsAuthoritative || item.Client.TenantId != task.TenantId || item.Client.AgentId != task.AgentId ||
                 !string.Equals(item.CommandId, task.CommandId, StringComparison.Ordinal) ||
                 !string.Equals(item.CorrelationId, task.CorrelationId, StringComparison.Ordinal) ||

@@ -1,5 +1,8 @@
 using Microsoft.Playwright;
+using System.Collections;
+using System.Diagnostics;
 using System.Reflection;
+using System.Text.RegularExpressions;
 using NetRatel.Web.Components.Layout;
 
 namespace NetRatel.Web.PlaywrightTests;
@@ -10,21 +13,37 @@ public sealed class OidcComposeBrowserSmokeTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task GenericOidcStack_LoadsAssets_Authenticates_And_LogsOut(bool trustedProxy)
+    public async Task GenericOidcStack_LoadsAssets_Authenticates_And_LogsOut(bool useProxy)
     {
-        var webUrl = RequireEnvironmentUri(trustedProxy ? "NETRATEL_BROWSER_SMOKE_PROXY_URL" : "NETRATEL_BROWSER_SMOKE_WEB_URL");
+        var webUrl = RequireEnvironmentUri(useProxy ? "NETRATEL_BROWSER_SMOKE_PROXY_URL" : "NETRATEL_BROWSER_SMOKE_WEB_URL");
         var username = RequireEnvironmentValue("NETRATEL_BROWSER_SMOKE_USERNAME");
+        var nssDataHome = RequireEnvironmentValue("NETRATEL_BROWSER_SMOKE_NSS_DATA_HOME");
+        var expectCurrentShell = Environment.GetEnvironmentVariable("NETRATEL_BROWSER_SMOKE_EXPECT_CURRENT_SHELL") != "false";
+        Assert.True(Directory.Exists(Path.Combine(nssDataHome, "pki", "nssdb")),
+            "The browser smoke must use its private, prepared Chromium NSS database.");
 
         using var playwright = await Playwright.CreateAsync();
+        var executableVersion = await ReadChromiumExecutableVersionAsync(playwright.Chromium.ExecutablePath, nssDataHome);
+        Assert.True(executableVersion.Major >= 146,
+            $"Chromium {executableVersion} predates the supported XDG NSS database path.");
+
+        var browserEnvironment = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (DictionaryEntry entry in Environment.GetEnvironmentVariables())
+        {
+            if (entry.Key is string key && entry.Value is string value)
+                browserEnvironment[key] = value;
+        }
+        browserEnvironment["XDG_DATA_HOME"] = nssDataHome;
         await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
         {
             Headless = true,
+            Env = browserEnvironment,
             // The disposable issuer is exposed only on the hosted runner loopback.
             // Containers and the OIDC issuer use this stable authority hostname.
             Args = ["--host-resolver-rules=MAP host.docker.internal 127.0.0.1"]
         });
-        // The HTTPS proxy uses the disposable smoke certificate, never a production certificate.
-        await using var context = await browser.NewContextAsync(new BrowserNewContextOptions { IgnoreHTTPSErrors = trustedProxy });
+        Assert.Equal(executableVersion.Major, int.Parse(browser.Version.Split('.')[0], System.Globalization.CultureInfo.InvariantCulture));
+        await using var context = await browser.NewContextAsync(new BrowserNewContextOptions { IgnoreHTTPSErrors = false });
         var page = await context.NewPageAsync();
         page.SetDefaultTimeout(15_000);
 
@@ -71,14 +90,14 @@ public sealed class OidcComposeBrowserSmokeTests
             new PageWaitForURLOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
         var sessionCookies = (await context.CookiesAsync()).Where(cookie => cookie.Name.StartsWith(".AspNetCore.Cookies", StringComparison.Ordinal)).ToArray();
         Assert.NotEmpty(sessionCookies);
-        if (trustedProxy)
+        if (webUrl.Scheme == Uri.UriSchemeHttps)
             Assert.All(sessionCookies, cookie => Assert.True(cookie.Secure));
 
         var authenticatedStatus = await page.EvaluateAsync<int>("async () => (await fetch('/api/v1/tenants')).status");
         Assert.Equal(200, authenticatedStatus);
         await CaptureBrandingAsync(page, "navbar");
         await AssertProductVersionBadgesAsync(page);
-        if (Environment.GetEnvironmentVariable("NETRATEL_BROWSER_SMOKE_EXPECT_CURRENT_SHELL") != "false")
+        if (expectCurrentShell)
         {
             await page.GotoAsync(new Uri(webUrl, "account/security").ToString(),
                 new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
@@ -88,9 +107,207 @@ public sealed class OidcComposeBrowserSmokeTests
             Assert.Equal(0, await page.GetByTestId("open-mfa-setup").CountAsync());
         }
 
+        if (expectCurrentShell)
+        {
+            var verifyDirectoryAuthorizationBoundaries =
+                string.Equals(Environment.GetEnvironmentVariable("NETRATEL_BROWSER_SMOKE_DIRECTORY_AUTHZ"), "true", StringComparison.OrdinalIgnoreCase);
+            await VerifyClientDirectoryCircuitAsync(
+                page,
+                webUrl,
+                "OIDC Operator",
+                returnToOriginalPage: !verifyDirectoryAuthorizationBoundaries);
+
+            if (verifyDirectoryAuthorizationBoundaries)
+            {
+                await VerifyRestrictedDirectoryCircuitsAsync(browser, page, webUrl);
+            }
+        }
+
         await page.GotoAsync(new Uri(webUrl, "auth/logout").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
         var anonymousStatus = await page.EvaluateAsync<int>("async () => (await fetch('/api/v1/tenants')).status");
         Assert.Equal(401, anonymousStatus);
+    }
+
+    internal static async Task VerifyClientDirectoryCircuitAsync(
+        IPage page,
+        Uri webUrl,
+        string identityDescription,
+        bool returnToOriginalPage = true)
+    {
+        var returnUrl = page.Url;
+        var response = await page.GotoAsync(new Uri(webUrl, "clients").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        Assert.NotNull(response);
+        Assert.True(response.Ok, $"The authenticated {identityDescription} client directory returned HTTP {response.Status}.");
+        var directory = page.GetByTestId("client-directory-state");
+        await page.GetByTestId("clients-page-interactive").WaitForAsync(new LocatorWaitForOptions
+        {
+            State = WaitForSelectorState.Attached
+        });
+        await page.WaitForFunctionAsync(
+            "() => { const state = document.querySelector('[data-testid=client-directory-state]'); return state?.getAttribute('data-last-load-trigger') === 'initial' && state?.getAttribute('data-loading') === 'false' && Number(state?.getAttribute('data-load-count') || 0) > 0; }",
+            null,
+            new PageWaitForFunctionOptions { Timeout = 30_000 });
+        await AssertClientDirectorySucceededAsync(page, directory, identityDescription);
+
+        var loadCount = await ReadClientDirectoryLoadCountAsync(directory);
+        await page.GetByRole(AriaRole.Button, new() { Name = "Refresh clients" }).ClickAsync();
+        await WaitForClientDirectoryLoadAfterAsync(page, loadCount, "manual");
+        await AssertClientDirectorySucceededAsync(page, directory, identityDescription);
+
+        loadCount = await ReadClientDirectoryLoadCountAsync(directory);
+        await WaitForClientDirectoryLoadAfterAsync(page, loadCount, "periodic", timeoutMilliseconds: 25_000);
+        await AssertClientDirectorySucceededAsync(page, directory, identityDescription);
+
+        var evidenceDirectory = Path.Combine("TestResults", "playwright");
+        Directory.CreateDirectory(evidenceDirectory);
+        var identitySlug = string.Concat(identityDescription.Select(character => char.IsLetterOrDigit(character) ? char.ToLowerInvariant(character) : '-'))
+            .Trim('-');
+        await page.ScreenshotAsync(new PageScreenshotOptions
+        {
+            Path = Path.Combine(evidenceDirectory, $"clients-directory-{identitySlug}-compose.png"),
+            FullPage = true,
+            Animations = ScreenshotAnimations.Disabled
+        });
+        if (returnToOriginalPage)
+        {
+            await page.GotoAsync(returnUrl, new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        }
+    }
+
+    private static async Task VerifyRestrictedDirectoryCircuitsAsync(
+        IBrowser browser,
+        IPage operatorPage,
+        Uri webUrl)
+    {
+        foreach (var (environmentName, identityDescription) in new[]
+        {
+            ("NETRATEL_BROWSER_SMOKE_TENANT_ADMIN_USERNAME", "OIDC tenant administrator"),
+            ("NETRATEL_BROWSER_SMOKE_UNPRIVILEGED_USERNAME", "OIDC principal without a role")
+        })
+        {
+            var username = RequireEnvironmentValue(environmentName);
+            await using var context = await browser.NewContextAsync(new BrowserNewContextOptions
+            {
+                IgnoreHTTPSErrors = false
+            });
+            var page = await context.NewPageAsync();
+            page.SetDefaultTimeout(15_000);
+            await SignInToClientsAsync(page, webUrl, username);
+            await VerifyClientDirectoryDeniedCircuitAsync(page, webUrl, identityDescription);
+        }
+
+        // Keep the original operator circuit alive while the restricted users
+        // authenticate and make requests. Its refresh proves the pooled
+        // transport did not carry another circuit's credentials forward.
+        var directory = operatorPage.GetByTestId("client-directory-state");
+        var count = await ReadClientDirectoryLoadCountAsync(directory);
+        await operatorPage.GetByRole(AriaRole.Button, new() { Name = "Refresh clients" }).ClickAsync();
+        await WaitForClientDirectoryLoadAfterAsync(operatorPage, count, "manual");
+        await AssertClientDirectorySucceededAsync(operatorPage, directory, "OIDC Operator after restricted-user requests");
+
+        count = await ReadClientDirectoryLoadCountAsync(directory);
+        await WaitForClientDirectoryLoadAfterAsync(operatorPage, count, "periodic", timeoutMilliseconds: 25_000);
+        await AssertClientDirectorySucceededAsync(operatorPage, directory, "OIDC Operator after restricted-user requests");
+    }
+
+    private static async Task SignInToClientsAsync(IPage page, Uri webUrl, string username)
+    {
+        var loginResponse = await page.GotoAsync(
+            new Uri(webUrl, "login?ReturnUrl=%2Fclients").ToString(),
+            new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        Assert.NotNull(loginResponse);
+        Assert.True(loginResponse.Ok, $"The login page returned HTTP {loginResponse.Status}.");
+        await page.Locator(".netratel-login-primary-action").ClickAsync();
+        await page.Locator("input[name='username']").FillAsync(username, new LocatorFillOptions { Timeout = 60_000 });
+
+        var callbackResponse = page.WaitForResponseAsync(response =>
+            Uri.TryCreate(response.Url, UriKind.Absolute, out var responseUri)
+            && responseUri.GetLeftPart(UriPartial.Path) == new Uri(webUrl, "signin-oidc").ToString());
+        await page.Locator("form").EvaluateAsync("form => form.submit()");
+        Assert.Equal(302, (await callbackResponse).Status);
+        await page.WaitForURLAsync(new Uri(webUrl, "clients").ToString(),
+            new PageWaitForURLOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+    }
+
+    internal static async Task VerifyClientDirectoryDeniedCircuitAsync(IPage page, Uri webUrl, string identityDescription)
+    {
+        var response = await page.GotoAsync(new Uri(webUrl, "clients").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        Assert.NotNull(response);
+        Assert.True(response.Ok, $"The authenticated {identityDescription} page returned HTTP {response.Status}.");
+        var directory = page.GetByTestId("client-directory-state");
+        await page.GetByTestId("clients-page-interactive").WaitForAsync(new LocatorWaitForOptions
+        {
+            State = WaitForSelectorState.Attached
+        });
+        await page.WaitForFunctionAsync(
+            "() => { const state = document.querySelector('[data-testid=client-directory-state]'); return state?.getAttribute('data-last-load-trigger') === 'initial' && state?.getAttribute('data-loading') === 'false' && Number(state?.getAttribute('data-load-count') || 0) > 0; }",
+            null,
+            new PageWaitForFunctionOptions { Timeout = 30_000 });
+        await AssertClientDirectoryDeniedAsync(page, directory, identityDescription);
+
+        var count = await ReadClientDirectoryLoadCountAsync(directory);
+        await page.GetByTestId("retry-client-directory").ClickAsync();
+        await WaitForClientDirectoryLoadAfterAsync(page, count, "manual");
+        await AssertClientDirectoryDeniedAsync(page, directory, identityDescription);
+
+        count = await ReadClientDirectoryLoadCountAsync(directory);
+        await WaitForClientDirectoryLoadAfterAsync(page, count, "periodic", timeoutMilliseconds: 25_000);
+        await AssertClientDirectoryDeniedAsync(page, directory, identityDescription);
+
+        var evidenceDirectory = Path.Combine("TestResults", "playwright");
+        Directory.CreateDirectory(evidenceDirectory);
+        var identitySlug = string.Concat(identityDescription.Select(character => char.IsLetterOrDigit(character) ? char.ToLowerInvariant(character) : '-'))
+            .Trim('-');
+        await page.ScreenshotAsync(new PageScreenshotOptions
+        {
+            Path = Path.Combine(evidenceDirectory, $"clients-directory-denied-{identitySlug}-compose.png"),
+            FullPage = true,
+            Animations = ScreenshotAnimations.Disabled
+        });
+    }
+
+    private static async Task AssertClientDirectoryDeniedAsync(IPage page, ILocator directory, string identityDescription)
+    {
+        var loadCount = await directory.GetAttributeAsync("data-load-count");
+        Assert.True(int.TryParse(loadCount, out var count) && count > 0,
+            $"The {identityDescription} directory request did not settle.");
+        Assert.True(await page.GetByTestId("retry-client-directory").IsVisibleAsync(),
+            $"The {identityDescription} must see a retryable permission error instead of an empty directory.");
+        var message = await page.GetByRole(AriaRole.Alert).InnerTextAsync();
+        Assert.Contains("does not have permission to read the client directory", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, await page.GetByText("No registered clients yet.", new() { Exact = false }).CountAsync());
+        Assert.Equal(0, await page.Locator(".client-card, .client-grid-view tbody tr").CountAsync());
+    }
+
+    private static async Task WaitForClientDirectoryLoadAfterAsync(
+        IPage page,
+        int previousLoadCount,
+        string expectedTrigger,
+        int timeoutMilliseconds = 20_000) =>
+        await page.WaitForFunctionAsync(
+            "expected => { const state = document.querySelector('[data-testid=client-directory-state]'); return Number(state?.getAttribute('data-load-count') || 0) > expected.previousLoadCount && state?.getAttribute('data-last-load-trigger') === expected.trigger && state?.getAttribute('data-loading') === 'false'; }",
+            new { previousLoadCount, trigger = expectedTrigger },
+            new PageWaitForFunctionOptions { Timeout = timeoutMilliseconds });
+
+    private static async Task<int> ReadClientDirectoryLoadCountAsync(ILocator directory) =>
+        int.Parse((await directory.GetAttributeAsync("data-load-count")) ?? "0", System.Globalization.CultureInfo.InvariantCulture);
+
+    private static async Task AssertClientDirectorySucceededAsync(IPage page, ILocator directory, string identityDescription)
+    {
+        var loadCount = await directory.GetAttributeAsync("data-load-count");
+        Assert.True(int.TryParse(loadCount, out var count) && count > 0, "The OIDC directory request did not settle.");
+        var errorCount = await page.GetByTestId("retry-client-directory").CountAsync();
+        if (errorCount != 0)
+        {
+            var message = await page.GetByRole(AriaRole.Alert).InnerTextAsync();
+            Assert.Fail($"The authenticated {identityDescription} circuit could not read the client directory: {message}");
+        }
+
+        Assert.True(
+            await page.GetByText("No registered clients yet.", new() { Exact = false }).CountAsync() > 0 ||
+            await page.Locator(".client-card").CountAsync() > 0 ||
+            await page.Locator(".client-grid-view tbody tr").CountAsync() > 0,
+            $"The authenticated {identityDescription} directory should render either registered clients or its successful empty state.");
     }
 
     private static async Task CaptureBrandingAsync(IPage page, string view)
@@ -247,4 +464,43 @@ public sealed class OidcComposeBrowserSmokeTests
         Environment.GetEnvironmentVariable(name) is { Length: > 0 } value
             ? value
             : throw new InvalidOperationException($"{name} is required by the Compose browser smoke test.");
+
+    private static async Task<Version> ReadChromiumExecutableVersionAsync(string executablePath, string nssDataHome)
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = executablePath,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false
+        };
+        startInfo.ArgumentList.Add("--version");
+        startInfo.Environment["XDG_DATA_HOME"] = nssDataHome;
+
+        using var process = Process.Start(startInfo)
+            ?? throw new InvalidOperationException("The Playwright Chromium executable could not be started for version verification.");
+        var standardOutput = process.StandardOutput.ReadToEndAsync();
+        var standardError = process.StandardError.ReadToEndAsync();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        try
+        {
+            await process.WaitForExitAsync(timeout.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            if (!process.HasExited)
+                process.Kill(entireProcessTree: true);
+            await process.WaitForExitAsync();
+            throw new InvalidOperationException("The Playwright Chromium version probe did not finish within ten seconds.");
+        }
+
+        var output = $"{await standardOutput} {await standardError}";
+        if (process.ExitCode != 0)
+            throw new InvalidOperationException($"The Playwright Chromium version probe exited with {process.ExitCode}.");
+
+        var match = Regex.Match(output, @"(?<version>\d+\.\d+(?:\.\d+){1,2})", RegexOptions.CultureInvariant);
+        return match.Success && Version.TryParse(match.Groups["version"].Value, out var version)
+            ? version
+            : throw new InvalidOperationException("The Playwright Chromium executable did not report a recognizable version.");
+    }
 }

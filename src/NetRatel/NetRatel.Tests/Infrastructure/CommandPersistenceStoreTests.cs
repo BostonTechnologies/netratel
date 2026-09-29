@@ -37,7 +37,7 @@ public sealed class CommandPersistenceStoreTests
         diagnostics.InboxDepth.Should().Be(1);
         diagnostics.OutboxDepth.Should().Be(1);
         diagnostics.DuplicateDetectionCount.Should().Be(1);
-        diagnostics.Authority.Should().Be("unavailable");
+        diagnostics.Authority.Should().Be("akka");
     }
 
     [Fact]

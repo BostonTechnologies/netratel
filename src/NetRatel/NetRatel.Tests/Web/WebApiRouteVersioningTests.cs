@@ -3,6 +3,8 @@ using System.Text;
 using System.Text.Json;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Configuration;
 using NetRatel.Shared;
 using NetRatel.Shared.Contracts;
 using NetRatel.Shared.Contracts.FileSystem;
@@ -54,36 +56,45 @@ public sealed class WebApiRouteVersioningTests
     }
 
     [Fact]
-    public async Task TerminalService_uses_v1_terminal_routes()
+    public async Task TerminalService_uses_only_v2_gateway_terminal_routes()
     {
         var factory = new RecordingHttpClientFactory();
-        var service = new TerminalService(factory, new StubTokenService(), NullLogger<TerminalService>.Instance);
-        var identity = "ABC-123";
+        var credentials = new OperatorApiCredentialProvider(
+            new HttpContextAccessor(),
+            new StubTokenService(),
+            new OperatorApiCredentialState(),
+            new ConfigurationBuilder().Build());
+        var service = new TerminalService(factory, credentials, NullLogger<TerminalService>.Instance);
+        var agentId = Guid.Parse("11111111-1111-1111-1111-111111111111");
 
-        await service.OpenSessionAsync(identity, new OpenTerminalRequest("bash", 120, 32));
+        var opened = await service.OpenGatewaySessionAsync(42, agentId, new OpenTerminalRequest("bash", 120, 32));
+        opened.SessionId.Should().Be("session-1");
         await service.CloseAsync("session-1", "done");
         await service.SendInputAsync("session-1", "pwd");
         await service.ResizeAsync("session-1", 100, 30);
-        await service.GetSessionsAsync(identity);
-        await service.GetSessionAsync("session-1");
+        var session = await service.GetSessionAsync("session-1");
+        session.Should().NotBeNull();
+        session!.SessionId.Should().Be("session-1");
 
         var stream = service.StreamSessionAsync("session-1").GetAsyncEnumerator();
         try
         {
-            await stream.MoveNextAsync();
+            (await stream.MoveNextAsync()).Should().BeTrue();
+            stream.Current.Kind.Should().Be("output");
+            stream.Current.Data.Should().Be("ok");
         }
         finally
         {
             await stream.DisposeAsync();
         }
 
-        factory.RequestedPaths.Should().Contain("/api/v1/clients/abc123/terminal/open");
-        factory.RequestedPaths.Should().Contain("/api/v1/terminal/session-1/close");
-        factory.RequestedPaths.Should().Contain("/api/v1/terminal/session-1/stdin");
-        factory.RequestedPaths.Should().Contain("/api/v1/terminal/session-1/resize");
-        factory.RequestedPaths.Should().Contain("/api/v1/clients/abc123/terminal/sessions");
-        factory.RequestedPaths.Should().Contain("/api/v1/terminal/session-1");
-        factory.RequestedPaths.Should().Contain("/api/v1/terminal/session-1/stream");
+        factory.RequestedPaths.Should().Contain($"/api/v2/agents/42/{agentId:D}/terminal/sessions");
+        factory.RequestedPaths.Should().Contain("/api/v2/gateway-terminal/session-1/close");
+        factory.RequestedPaths.Should().Contain("/api/v2/gateway-terminal/session-1/stdin");
+        factory.RequestedPaths.Should().Contain("/api/v2/gateway-terminal/session-1/resize");
+        factory.RequestedPaths.Should().Contain("/api/v2/gateway-terminal/session-1");
+        factory.RequestedPaths.Should().Contain("/api/v2/gateway-terminal/session-1/stream");
+        factory.RequestedPaths.Should().NotContain(path => path.StartsWith("/api/v1/", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -101,7 +112,7 @@ public sealed class WebApiRouteVersioningTests
         await tenants.UpdateTenantAsync(3, new UpdateTenantRequest { Name = "Acme Updated" });
         await tenants.DeleteTenantAsync(3);
 
-        var clients = new ClientApiService(factory, new StubTokenProvider(), NullLogger<ClientApiService>.Instance);
+        var clients = new ClientApiService(factory, NullLogger<ClientApiService>.Instance);
         await clients.DeleteClientAsync("client 1");
 
         factory.RequestedPaths.Should().Contain("/api/v1/clients/client%201/filesystem?path=%2Ftmp");
@@ -116,9 +127,7 @@ public sealed class WebApiRouteVersioningTests
     public async Task Sse_services_use_v1_stream_routes()
     {
         var factory = new RecordingHttpClientFactory();
-        var tokens = new StubTokenProvider();
-
-        await using (var clientStream = new ClientStreamService(factory, tokens))
+        await using (var clientStream = new ClientStreamService(factory))
         {
             await clientStream.StartAsync(
                 "/api/v1/clients/stream",
@@ -127,13 +136,13 @@ public sealed class WebApiRouteVersioningTests
             await factory.WaitForPathAsync("/api/v1/clients/stream");
         }
 
-        await using (var telemetry = new TelemetryOverviewStreamService(factory, tokens))
+        await using (var telemetry = new TelemetryOverviewStreamService(factory))
         {
             await telemetry.StartAsync(_ => Task.CompletedTask);
             await factory.WaitForPathAsync("/api/v1/telemetry/stream");
         }
 
-        await using (var clientTelemetry = new ClientTelemetryStreamService(factory, tokens))
+        await using (var clientTelemetry = new ClientTelemetryStreamService(factory))
         {
             await clientTelemetry.StartAsync("client 1", _ => Task.CompletedTask);
             await factory.WaitForPathAsync("/api/v1/clients/client%201/telemetry/stream");
@@ -213,19 +222,6 @@ public sealed class WebApiRouteVersioningTests
         {
             var path = request.RequestUri!.AbsolutePath;
 
-            // The legacy-terminal route test models a server without a gateway session.
-            // TerminalService must discover that with a V2 lookup before it selects V1.
-            if (request.Method == HttpMethod.Get &&
-                path.StartsWith("/api/v2/gateway-terminal/", StringComparison.Ordinal))
-            {
-                return new HttpResponseMessage(HttpStatusCode.NotFound);
-            }
-
-            if (path.EndsWith("/stream", StringComparison.Ordinal))
-            {
-                return JsonResponse("data: {\"kind\":\"output\",\"data\":\"ok\"}\n\n", "text/event-stream");
-            }
-
             if (path.Contains("/client-tasks/recent", StringComparison.Ordinal) ||
                 path.EndsWith("/client-tasks", StringComparison.Ordinal) ||
                 path.Contains("/client-tasks/logs", StringComparison.Ordinal))
@@ -257,20 +253,20 @@ public sealed class WebApiRouteVersioningTests
                 return JsonResponse(SampleTask());
             }
 
-            if (path.EndsWith("/terminal/open", StringComparison.Ordinal))
+            if (request.Method == HttpMethod.Post &&
+                path.EndsWith("/terminal/sessions", StringComparison.Ordinal))
             {
                 return JsonResponse(new TerminalOpenResponse("track-1", "session-1", "opened"));
             }
 
-            if (path.EndsWith("/terminal/sessions", StringComparison.Ordinal))
+            if (path.StartsWith("/api/v2/gateway-terminal/", StringComparison.Ordinal))
             {
-                return JsonResponse(new[] { SampleTerminalSession() });
-            }
+                if (request.Method == HttpMethod.Get && path.EndsWith("/stream", StringComparison.Ordinal))
+                {
+                    return JsonResponse("data: {\"kind\":\"output\",\"data\":\"ok\"}\n\n", "text/event-stream");
+                }
 
-            if (path.Contains("/terminal/", StringComparison.Ordinal) &&
-                !path.EndsWith("/stream", StringComparison.Ordinal))
-            {
-                return path.EndsWith("/session-1", StringComparison.Ordinal)
+                return request.Method == HttpMethod.Get
                     ? JsonResponse(SampleTerminalSession())
                     : JsonResponse(new TerminalActionResponse("track-1", "ok", "session-1"));
             }
@@ -332,8 +328,4 @@ public sealed class WebApiRouteVersioningTests
         public Task<string> GetValidAccessTokenAsync() => Task.FromResult("token");
     }
 
-    private sealed class StubTokenProvider : ITokenProvider
-    {
-        public Task<string?> GetBearerAsync(CancellationToken ct) => Task.FromResult<string?>("token");
-    }
 }

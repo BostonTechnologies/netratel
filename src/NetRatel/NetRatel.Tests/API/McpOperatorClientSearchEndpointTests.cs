@@ -16,7 +16,6 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.IdentityModel.Tokens;
 using NetRatel.API.Endpoints.Client;
 using NetRatel.API.Ops;
-using NetRatel.Akka.Configuration;
 using NetRatel.Application.Telemetry;
 using NetRatel.Application.Presence;
 using NetRatel.API.Endpoints.Search;
@@ -338,10 +337,6 @@ public sealed class McpOperatorClientSearchEndpointTests(McpClientSearchPostgres
                 services.AddRouting();
                 services.AddLogging();
                 services.AddSingleton<DatabaseCommandMetricsInterceptor>();
-                services.AddSingleton(new NetRatelAkkaMigrationOptions
-                {
-                    Enabled = true, PresenceAuthorityEnabled = true, TelemetryShadowEnabled = true, TelemetryAuthorityEnabled = true
-                });
                 services.AddSingleton<IClientTelemetryRouter, TestTelemetry>();
                 var logBuffer = new AiAgentOpsLogBuffer();
                 logBuffer.Add(Microsoft.Extensions.Logging.LogLevel.Information, "certification", default, "certification-log", null);

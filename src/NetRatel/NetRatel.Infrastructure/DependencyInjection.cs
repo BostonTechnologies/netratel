@@ -48,12 +48,12 @@ public static class DependencyInjection
         services.AddScoped<IMcpOperationObjectTargetResolver, McpOperationObjectTargetResolver>();
         services.AddScoped<IDeploymentBrandingService, DeploymentBrandingService>();
         services.AddNetRatelCommandPersistence();
-        services.AddNetRatelJobShadowPersistence();
+        services.AddNetRatelJobObservationPersistence();
         services.AddNetRatelRemoteSupportLifecycle();
 
         services.AddSingleton<INetRatelNotificationEventBus, NetRatelNotificationEventBus>();
         services.AddSingleton<IRequestEventBus, RequestEventBus>();
-        services.AddScoped<IClientDisplayNameResolver, UnavailableClientDisplayNameResolver>();
+        services.AddScoped<IClientDisplayNameResolver, LegacyClientIdentityRedactionResolver>();
         services.AddScoped<NetRatelNotificationDisplaySanitizer>();
         services.AddScoped<INetRatelNotificationService, NetRatelNotificationService>();
         services.AddScoped<IEventRecorder, OutboxEventRecorder>();

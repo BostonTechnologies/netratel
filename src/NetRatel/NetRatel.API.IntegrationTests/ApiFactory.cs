@@ -1,13 +1,19 @@
-using Microsoft.AspNetCore.Authentication;
+using System.Security.Cryptography;
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
+using System.Net;
+using System.Net.Http.Json;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.Hosting;
-using Microsoft.AspNetCore.TestHost;
 using Microsoft.AspNetCore.Identity;
-using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.Tokens;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
+using Npgsql;
 using NetRatel.API.Bootstrap;
+using NetRatel.Infrastructure;
 using NetRatel.Infrastructure.Identity;
 using NetRatel.Infrastructure.Persistence;
 using Testcontainers.PostgreSql;
@@ -15,56 +21,412 @@ using Xunit;
 
 public sealed class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
 {
-    private readonly string _root = Path.Combine(Path.GetTempPath(), "netratel-api-openapi", Guid.NewGuid().ToString("N"));
-    private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:16-alpine").Build();
+    public const string LocalAdministratorEmail = "openapi@example.test";
+    public const string LocalAdministratorPassword = "A1! local-first passphrase";
+    internal static IReadOnlyList<string> RetiredSelectorConfigurationKeys { get; } = Array.AsReadOnly<string>(
+    [
+        "NetRatelAkkaMigration:Enabled",
+        "NetRatelAkkaMigration:PresenceEnabled",
+        "NetRatelAkkaMigration:GatewayEnabled",
+        "NetRatelAkkaMigration:ClientUpdatesEnabled",
+        "NetRatelAkkaMigration:ControlGatewayEnabled",
+        "NetRatelAkkaMigration:FileGatewayEnabled",
+        "NetRatelAkkaMigration:LogGatewayEnabled",
+        "NetRatelAkkaMigration:RemoteSupportGatewayEnabled",
+        "NetRatelAkkaMigration:RemoteSupportV2InventoryEnabled",
+        "NetRatelAkkaMigration:RemoteSupportV2LifecycleAuthorityEnabled",
+        "NetRatelAkkaMigration:RemoteSupportV2ReplicaSafeEdgeEnabled",
+        "NetRatelAkkaMigration:RemoteSupportV2MediaEnabled",
+        "NetRatelAkkaMigration:RemoteSupportLegacyGatewayRollbackEnabled",
+        "NetRatelAkkaMigration:PrimaryCardGatewayReadsEnabled",
+        "NetRatelAkkaMigration:PrimaryCardGatewayActionsEnabled",
+        "NetRatelAkkaMigration:TerminalGatewayEnabled",
+        "NetRatelAkkaMigration:TerminalGatewayPrimaryCardEnabled",
+        "NetRatelAkkaMigration:PresenceReadModelEnabled",
+        "NetRatelAkkaMigration:TelemetryShadowEnabled",
+        "NetRatelAkkaMigration:CommandShadowEnabled",
+        "NetRatelAkkaMigration:CommandPersistenceEnabled",
+        "NetRatelAkkaMigration:JobShadowEnabled",
+        "NetRatelAkkaMigration:TerminalShadowEnabled",
+        "NetRatelAkkaMigration:SignalRShadowEnabled",
+        "NetRatelAkkaMigration:SignalRShadowLocalCanaryEnabled",
+        "NetRatelAkkaMigration:PresenceAuthorityEnabled",
+        "NetRatelAkkaMigration:PingAuthorityEnabled",
+        "NetRatelAkkaMigration:TelemetryAuthorityEnabled",
+        "NetRatelAkkaMigration:FileBrowseAuthorityEnabled",
+        "NetRatelAkkaMigration:LogAuthorityEnabled",
+        "NetRatelAkkaMigration:RemoteSupportAuthorityEnabled",
+        "NetRatelAkkaMigration:CommandAuthorityEnabled",
+        "NetRatelAkkaMigration:JobAuthorityEnabled",
+        "NetRatelAkkaMigration:TerminalAuthorityEnabled",
+        "NetRatelAkkaMigration:SignalRAuthorityEnabled",
+        "NetRatelAkkaMigration:AuthorityMode",
+        "NetRatelAkkaMigration:RemoteSupportShadowEnabled",
+        "LegacyQueueWorker:Enabled"
+    ]);
+
+    private readonly string _root;
+    private readonly PostgreSqlContainer _postgres;
+    private readonly bool _ownsPostgres;
     private IReadOnlyDictionary<string, string?> _settings = new Dictionary<string, string?>();
     private IReadOnlyDictionary<string, string?> _previousEnvironment = new Dictionary<string, string?>();
+
+    public ApiFactory()
+        : this(new PostgreSqlBuilder("postgres:16-alpine").Build(), ownsPostgres: true)
+    {
+    }
+
+    private ApiFactory(PostgreSqlContainer postgres, bool ownsPostgres)
+    {
+        _postgres = postgres;
+        _ownsPostgres = ownsPostgres;
+        _root = Path.Combine(Path.GetTempPath(), "netratel-api-openapi", Guid.NewGuid().ToString("N"));
+    }
+
+    private ApiFactory(PostgreSqlContainer postgres, IReadOnlyDictionary<string, string?> settings)
+        : this(postgres, ownsPostgres: false)
+    {
+        _settings = settings;
+    }
 
     public async ValueTask InitializeAsync()
     {
         await _postgres.StartAsync();
         _settings = await CreateReadyLocalFirstSettingsAsync();
-        _previousEnvironment = _settings.Keys.ToDictionary(
-            EnvironmentKey,
-            Environment.GetEnvironmentVariable,
-            StringComparer.Ordinal);
-        foreach (var setting in _settings)
-        {
-            Environment.SetEnvironmentVariable(EnvironmentKey(setting.Key), setting.Value);
-        }
+        ApplyEnvironmentSettings(
+            _settings.Keys
+                .Concat(RetiredSelectorConfigurationKeys)
+                .Append("ConnectionStrings:Default"));
     }
 
     async ValueTask IAsyncDisposable.DisposeAsync()
     {
-        Dispose();
-        await _postgres.DisposeAsync();
+        try
+        {
+            Dispose();
+        }
+        finally
+        {
+            if (_ownsPostgres)
+            {
+                await _postgres.DisposeAsync();
+            }
+        }
+    }
+
+    public ApiFactory CreateRuntimeSibling(IReadOnlyDictionary<string, string?> overrides)
+    {
+        ArgumentNullException.ThrowIfNull(overrides);
+
+        var settings = _settings.ToDictionary(setting => setting.Key, setting => setting.Value, StringComparer.OrdinalIgnoreCase);
+        foreach (var setting in overrides)
+        {
+            settings[setting.Key] = setting.Value;
+        }
+
+        var sibling = new ApiFactory(_postgres, settings);
+        sibling.ApplyEnvironmentSettings(settings.Keys.Concat(RetiredSelectorConfigurationKeys));
+        return sibling;
+    }
+
+    public ApiFactory CreateUnavailableDatabaseSibling(IReadOnlyDictionary<string, string?>? overrides = null)
+    {
+        var settings = _settings.ToDictionary(setting => setting.Key, setting => setting.Value, StringComparer.OrdinalIgnoreCase);
+        if (overrides is not null)
+        {
+            foreach (var setting in overrides)
+            {
+                settings[setting.Key] = setting.Value;
+            }
+        }
+
+        var sibling = new ApiFactory(_postgres, settings);
+        var readyBootstrapDirectory = _settings["Bootstrap:StateDirectory"]!;
+        var isolatedBootstrapDirectory = Path.Combine(sibling._root, "bootstrap");
+        CopyDirectory(readyBootstrapDirectory, isolatedBootstrapDirectory);
+        settings["Bootstrap:StateDirectory"] = isolatedBootstrapDirectory;
+
+        var unavailableDatabase = new NpgsqlConnectionStringBuilder(
+            settings["ConnectionStrings:NetRatelDb"]
+            ?? throw new InvalidOperationException("The integration API host has no PostgreSQL connection string."))
+        {
+            Host = IPAddress.Loopback.ToString(),
+            Port = 1,
+            Timeout = 1,
+            CommandTimeout = 1
+        };
+        settings["ConnectionStrings:NetRatelDb"] = unavailableDatabase.ConnectionString;
+        sibling._settings = settings;
+        sibling.ApplyEnvironmentSettings(settings.Keys.Concat(RetiredSelectorConfigurationKeys));
+        return sibling;
+    }
+
+    public ApiFactory CreateUnconfiguredSibling(IReadOnlyDictionary<string, string?> overrides)
+    {
+        ArgumentNullException.ThrowIfNull(overrides);
+        var settings = _settings.ToDictionary(setting => setting.Key, setting => setting.Value, StringComparer.OrdinalIgnoreCase);
+        foreach (var setting in overrides)
+        {
+            settings[setting.Key] = setting.Value;
+        }
+
+        var sibling = new ApiFactory(_postgres, settings);
+        settings.Remove("ConnectionStrings:NetRatelDb");
+        settings.Remove("ConnectionStrings:Default");
+        settings["Bootstrap:StateDirectory"] = Path.Combine(sibling._root, "bootstrap-unconfigured");
+        sibling._settings = settings;
+        sibling.ApplyEnvironmentSettings(
+            settings.Keys
+                .Concat(RetiredSelectorConfigurationKeys)
+                .Append("ConnectionStrings:NetRatelDb")
+                .Append("ConnectionStrings:Default"));
+        return sibling;
+    }
+
+    internal async Task<IAsyncDisposable> DenyApplicationDatabaseConnectionsAsync()
+    {
+        var applicationConnectionString = _settings["ConnectionStrings:NetRatelDb"]
+            ?? throw new InvalidOperationException("The integration API host has no PostgreSQL connection string.");
+        var applicationDatabase = new NpgsqlConnectionStringBuilder(applicationConnectionString).Database;
+        if (string.IsNullOrWhiteSpace(applicationDatabase) ||
+            string.Equals(applicationDatabase, "template1", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("The integration API host must target an application database outside template1.");
+        }
+
+        var controlConnectionString = new NpgsqlConnectionStringBuilder(applicationConnectionString)
+        {
+            Database = "template1",
+            Pooling = false,
+            Timeout = 5,
+            CommandTimeout = 5
+        };
+        var controlConnection = new NpgsqlConnection(controlConnectionString.ConnectionString);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var quotedDatabase = new NpgsqlCommandBuilder().QuoteIdentifier(applicationDatabase);
+        var blocked = false;
+        try
+        {
+            await controlConnection.OpenAsync(timeout.Token);
+            await using var command = controlConnection.CreateCommand();
+            command.CommandTimeout = 5;
+            blocked = true;
+            command.CommandText = $"ALTER DATABASE {quotedDatabase} WITH ALLOW_CONNECTIONS FALSE";
+            await command.ExecuteNonQueryAsync(timeout.Token);
+
+            command.CommandText = "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = @databaseName AND pid <> pg_backend_pid()";
+            command.Parameters.AddWithValue("databaseName", applicationDatabase);
+            await command.ExecuteNonQueryAsync(timeout.Token);
+            ClearApplicationConnectionPool(applicationConnectionString);
+
+            return new ApplicationDatabaseConnectionLease(
+                controlConnection,
+                quotedDatabase,
+                applicationConnectionString);
+        }
+        catch
+        {
+            if (blocked)
+            {
+                try
+                {
+                    await using var restore = controlConnection.CreateCommand();
+                    restore.CommandTimeout = 5;
+                    restore.CommandText = $"ALTER DATABASE {quotedDatabase} WITH ALLOW_CONNECTIONS TRUE";
+                    await restore.ExecuteNonQueryAsync(CancellationToken.None);
+                }
+                finally
+                {
+                    try
+                    {
+                        ClearApplicationConnectionPool(applicationConnectionString);
+                    }
+                    finally
+                    {
+                        await controlConnection.DisposeAsync();
+                    }
+                }
+            }
+            else
+            {
+                await controlConnection.DisposeAsync();
+            }
+
+            throw;
+        }
+    }
+
+    public string CreateAgentBearerToken(
+        int tenantId,
+        Guid agentId,
+        bool includeRole = true,
+        bool includeTenant = true,
+        string? issuer = null,
+        string? audience = null,
+        bool expired = false,
+        bool invalidSignature = false)
+    {
+        var keyPath = _settings["AgentAuth:PrivateKeyPath"]
+            ?? throw new InvalidOperationException("The integration API host has no agent signing key path.");
+        using var privateKey = ECDsa.Create();
+        privateKey.ImportFromPem(File.ReadAllText(keyPath));
+        using var alternateKey = invalidSignature ? ECDsa.Create(ECCurve.NamedCurves.nistP256) : null;
+        var signingKey = new ECDsaSecurityKey(alternateKey ?? privateKey)
+        {
+            KeyId = _settings.GetValueOrDefault("AgentAuth:SigningKeyId") ?? "netratel-agent-es256",
+            CryptoProviderFactory = new CryptoProviderFactory { CacheSignatureProviders = false }
+        };
+        var credentials = new SigningCredentials(signingKey, SecurityAlgorithms.EcdsaSha256);
+        var now = DateTime.UtcNow;
+        var claims = new List<Claim>
+        {
+            new("sub", agentId.ToString("D")),
+            new("agent_id", agentId.ToString("D")),
+            new("scope", "netratel:connect")
+        };
+        if (includeTenant)
+        {
+            claims.Add(new Claim("tenant_id", tenantId.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+        }
+        if (includeRole)
+        {
+            claims.Add(new Claim("role", "agent"));
+        }
+
+        var token = new JwtSecurityToken(
+            issuer: issuer ?? _settings.GetValueOrDefault("AgentAuth:Issuer") ?? "https://netratel.example.invalid",
+            audience: audience ?? _settings.GetValueOrDefault("AgentAuth:Audience") ?? "netratel-agent",
+            claims,
+            notBefore: expired ? now.AddMinutes(-15) : now.AddSeconds(-5),
+            expires: expired ? now.AddMinutes(-10) : now.AddMinutes(5),
+            signingCredentials: credentials);
+
+        return new JwtSecurityTokenHandler().WriteToken(token);
     }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Production");
         builder.ConfigureAppConfiguration((_, configuration) => configuration.AddInMemoryCollection(_settings));
-        builder.ConfigureTestServices(services =>
+    }
+
+    public async Task<HttpClient> CreateLocalAdministratorClientAsync(TimeSpan? timeout = null)
+    {
+        var client = CreateClient(new WebApplicationFactoryClientOptions { HandleCookies = true });
+        if (timeout is { } requestTimeout)
         {
-            services.AddAuthentication(options =>
-            {
-                options.DefaultAuthenticateScheme = "Test";
-                options.DefaultChallengeScheme = "Test";
-            }).AddScheme<AuthenticationSchemeOptions, TestAuthHandler>("Test", _ => { });
+            client.Timeout = requestTimeout;
+        }
+
+        using var login = await client.PostAsJsonAsync("/api/v2/local-auth/login", new
+        {
+            Email = LocalAdministratorEmail,
+            Password = LocalAdministratorPassword,
+            RememberMe = false
         });
+        if (login.StatusCode != HttpStatusCode.NoContent)
+        {
+            client.Dispose();
+            throw new InvalidOperationException($"Local administrator login failed with HTTP {(int)login.StatusCode}.");
+        }
+
+        return client;
+    }
+
+    public async Task<HttpClient> CreateLocalUserClientAsync(string email, string password)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(email);
+        ArgumentException.ThrowIfNullOrWhiteSpace(password);
+
+        await using (var scope = Services.CreateAsyncScope())
+        {
+            var identity = scope.ServiceProvider.GetRequiredService<NetRatelIdentityDbContext>();
+            if (!await identity.Users.AnyAsync(user => user.Email == email))
+            {
+                var principal = new ApplicationPrincipal();
+                var user = new LocalUser
+                {
+                    UserName = email,
+                    Email = email,
+                    NormalizedUserName = email.ToUpperInvariant(),
+                    NormalizedEmail = email.ToUpperInvariant(),
+                    EmailConfirmed = true,
+                    DisplayName = "Unprivileged Integration User",
+                    PrincipalId = principal.Id,
+                    IsEnabled = true,
+                    IsInstanceAdministrator = false
+                };
+                user.PasswordHash = new PasswordHasher<LocalUser>().HashPassword(user, password);
+                principal.LocalUserId = user.Id;
+                identity.ApplicationPrincipals.Add(principal);
+                identity.Users.Add(user);
+                await identity.SaveChangesAsync();
+            }
+        }
+
+        var client = CreateClient(new WebApplicationFactoryClientOptions { HandleCookies = true });
+        using var login = await client.PostAsJsonAsync("/api/v2/local-auth/login", new
+        {
+            Email = email,
+            Password = password,
+            RememberMe = false
+        });
+        if (login.StatusCode != HttpStatusCode.NoContent)
+        {
+            client.Dispose();
+            throw new InvalidOperationException($"Local user login failed with HTTP {(int)login.StatusCode}.");
+        }
+
+        return client;
     }
 
     protected override void Dispose(bool disposing)
     {
-        base.Dispose(disposing);
-        if (disposing && Directory.Exists(_root))
+        if (!disposing)
         {
-            foreach (var setting in _previousEnvironment)
-            {
-                Environment.SetEnvironmentVariable(setting.Key, setting.Value);
-            }
-            Directory.Delete(_root, recursive: true);
+            base.Dispose(disposing);
+            return;
         }
+
+        try
+        {
+            base.Dispose(disposing);
+        }
+        finally
+        {
+            RestoreEnvironmentSettings();
+            if (Directory.Exists(_root))
+            {
+                Directory.Delete(_root, recursive: true);
+            }
+        }
+    }
+
+    private void ApplyEnvironmentSettings(IEnumerable<string> configurationKeys)
+    {
+        var keys = configurationKeys.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        var environmentKeys = keys.Select(EnvironmentKey).Distinct(StringComparer.Ordinal).ToArray();
+        _previousEnvironment = environmentKeys.ToDictionary(
+            static key => key,
+            Environment.GetEnvironmentVariable,
+            StringComparer.Ordinal);
+
+        foreach (var configurationKey in keys)
+        {
+            Environment.SetEnvironmentVariable(
+                EnvironmentKey(configurationKey),
+                _settings.GetValueOrDefault(configurationKey));
+        }
+    }
+
+    private void RestoreEnvironmentSettings()
+    {
+        foreach (var setting in _previousEnvironment)
+        {
+            Environment.SetEnvironmentVariable(setting.Key, setting.Value);
+        }
+
+        _previousEnvironment = new Dictionary<string, string?>();
     }
 
     private async Task<IReadOnlyDictionary<string, string?>> CreateReadyLocalFirstSettingsAsync()
@@ -81,14 +443,25 @@ public sealed class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
             ["StorageOptions:RootPath"] = Path.Combine(_root, "storage"),
             ["ClientArtifacts:StorageRoot"] = Path.Combine(_root, "artifacts"),
             ["AgentAuth:PrivateKeyPath"] = Path.Combine(_root, "agent-private-key.pem"),
-            ["NetRatelAkkaMigration:Enabled"] = "false"
+            ["AgentAuth:Issuer"] = "https://netratel.example.invalid",
+            ["AgentAuth:Audience"] = "netratel-agent",
+            ["AgentAuth:SigningKeyId"] = "netratel-agent-es256",
+            ["Authentication:Mode"] = "Local",
+            ["Authentication:Local:AllowInsecureLocalhost"] = "true"
         };
-        var configuration = new ConfigurationBuilder().AddInMemoryCollection(settings).Build();
+        using (var key = ECDsa.Create(ECCurve.NamedCurves.nistP256))
+        {
+            await File.WriteAllTextAsync(settings["AgentAuth:PrivateKeyPath"]!, key.ExportPkcs8PrivateKeyPem());
+        }
 
-        var applicationOptions = new DbContextOptionsBuilder<OrchestratorDbContext>().UseNpgsql(connectionString).Options;
-        var identityOptions = new DbContextOptionsBuilder<NetRatelIdentityDbContext>().UseNpgsql(connectionString).Options;
-        await using (var application = new OrchestratorDbContext(applicationOptions)) await application.Database.MigrateAsync();
-        await using (var identity = new NetRatelIdentityDbContext(identityOptions)) await identity.Database.MigrateAsync();
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(settings).Build();
+        var migrationServices = new ServiceCollection();
+        migrationServices.AddSingleton<IConfiguration>(configuration);
+        migrationServices.AddNetRatelInfrastructure(configuration);
+        await using (var migrationProvider = migrationServices.BuildServiceProvider())
+        {
+            await migrationProvider.MigrateNetRatelInfrastructureAsync();
+        }
 
         var bootstrapOptions = new BootstrapOptions { StateDirectory = stateDirectory };
         var store = new BootstrapStateStore(bootstrapOptions);
@@ -107,7 +480,7 @@ public sealed class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
             Options.Create(new IdentityOptions()));
         var initialized = await initializer.InitializeAsync(
             operationId,
-            new BootstrapInitializationRequest("OpenAPI Administrator", "openapi@example.test", "A1! local-first passphrase", "OpenAPI tenant"));
+            new BootstrapInitializationRequest("OpenAPI Administrator", LocalAdministratorEmail, LocalAdministratorPassword, "OpenAPI tenant"));
         if (!initialized.Succeeded)
         {
             throw new InvalidOperationException("The Release OpenAPI test host could not complete local-first initialization.");
@@ -117,6 +490,61 @@ public sealed class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
     }
 
     private static string EnvironmentKey(string configurationKey) => configurationKey.Replace(":", "__", StringComparison.Ordinal);
+
+    private static void ClearApplicationConnectionPool(string connectionString)
+    {
+        using var connection = new NpgsqlConnection(connectionString);
+        NpgsqlConnection.ClearPool(connection);
+    }
+
+    private static void CopyDirectory(string sourceDirectory, string targetDirectory)
+    {
+        Directory.CreateDirectory(targetDirectory);
+        foreach (var sourceFile in Directory.EnumerateFiles(sourceDirectory, "*", SearchOption.AllDirectories))
+        {
+            var relativePath = Path.GetRelativePath(sourceDirectory, sourceFile);
+            var targetFile = Path.Combine(targetDirectory, relativePath);
+            Directory.CreateDirectory(Path.GetDirectoryName(targetFile)!);
+            File.Copy(sourceFile, targetFile, overwrite: true);
+        }
+    }
+
+    private sealed class ApplicationDatabaseConnectionLease(
+        NpgsqlConnection controlConnection,
+        string quotedDatabase,
+        string applicationConnectionString) : IAsyncDisposable
+    {
+        private NpgsqlConnection? _controlConnection = controlConnection;
+
+        public async ValueTask DisposeAsync()
+        {
+            var connection = Interlocked.Exchange(ref _controlConnection, null);
+            if (connection is null)
+            {
+                return;
+            }
+
+            try
+            {
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                await using var command = connection.CreateCommand();
+                command.CommandTimeout = 5;
+                command.CommandText = $"ALTER DATABASE {quotedDatabase} WITH ALLOW_CONNECTIONS TRUE";
+                await command.ExecuteNonQueryAsync(timeout.Token);
+            }
+            finally
+            {
+                try
+                {
+                    ClearApplicationConnectionPool(applicationConnectionString);
+                }
+                finally
+                {
+                    await connection.DisposeAsync();
+                }
+            }
+        }
+    }
 }
 
 [CollectionDefinition(Name)]

@@ -6,12 +6,12 @@ using Xunit;
 
 namespace NetRatel.Tests.API;
 
-public sealed class CommandPersistenceHealthCheckTests
+public sealed class CommandLifecyclePersistenceHealthCheckTests
 {
     [Fact]
     public async Task CheckHealth_ReportsBoundedPersistenceDiagnostics()
     {
-        var check = new CommandPersistenceHealthCheck(new StubStore(
+        var check = new CommandLifecyclePersistenceHealthCheck(new StubStore(
             new CommandPersistenceDiagnostics(
                 12,
                 3,
@@ -19,8 +19,8 @@ public sealed class CommandPersistenceHealthCheckTests
                 2,
                 4,
                 DateTimeOffset.UtcNow,
-                "shadow-only",
-                "spacetimedb")));
+                "akka",
+                "akka")));
 
         var result = await check.CheckHealthAsync(new HealthCheckContext());
 
@@ -30,13 +30,13 @@ public sealed class CommandPersistenceHealthCheckTests
         result.Data["replayCount"].Should().Be(5UL);
         result.Data["duplicateDetectionCount"].Should().Be(2UL);
         result.Data["recoverySuccessCount"].Should().Be(4UL);
-        result.Data["commandAuthority"].Should().Be("spacetimedb");
+        result.Data["commandAuthority"].Should().Be("akka");
     }
 
     [Fact]
     public async Task CheckHealth_IsUnhealthyWhenPersistenceCannotBeRead()
     {
-        var check = new CommandPersistenceHealthCheck(new StubStore(
+        var check = new CommandLifecyclePersistenceHealthCheck(new StubStore(
             new InvalidOperationException("database unavailable")));
 
         var result = await check.CheckHealthAsync(new HealthCheckContext());

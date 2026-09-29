@@ -20,12 +20,11 @@ public sealed class AgentJobGatewayService(
     IAgentManagementService agentManagement,
     IAgentJobGatewaySessionRegistry sessions,
     IAkkaJobAuthorityService jobs,
-    NetRatelAkkaMigrationOptions options,
     IHostEnvironment environment,
     ILogger<AgentJobGatewayService> logger)
     : AgentJobGateway.AgentJobGatewayBase
 {
-    private string Authority => options.PresenceAuthority;
+    private const string Authority = "akka";
     private const string Feature = "jobs";
 
     public override async Task Connect(
@@ -33,11 +32,6 @@ public sealed class AgentJobGatewayService(
         IServerStreamWriter<GatewayJobFrame> responseStream,
         ServerCallContext context)
     {
-        if (!options.IsJobAuthorityActive)
-        {
-            throw new RpcException(new Status(StatusCode.FailedPrecondition, "The job authority canary is disabled."));
-        }
-
         if (!AgentGatewayIdentityResolver.TryResolve(context.GetHttpContext().User, out var identity, out var error) || identity is null)
         {
             throw new RpcException(new Status(StatusCode.PermissionDenied, error));
@@ -74,7 +68,7 @@ public sealed class AgentJobGatewayService(
             RequireCurrent(registration);
             await responseStream.WriteAsync(new GatewayJobFrame
             {
-                ProtocolVersion = options.ProtocolVersion,
+                ProtocolVersion = NetRatelAkkaOptions.ProtocolVersion,
                 TenantId = session.Client.TenantId,
                 ClientId = session.Client.AgentId.ToString("D"),
                 ConnectionEpoch = session.ConnectionEpoch,
@@ -108,7 +102,7 @@ public sealed class AgentJobGatewayService(
     private async Task<ValidatedSession> ValidateHelloAsync(AgentJobFrame frame, AuthenticatedAgentIdentity identity, CancellationToken cancellationToken)
     {
         if (frame.PayloadCase != AgentJobFrame.PayloadOneofCase.Hello || frame.Sequence != 0 ||
-            !string.Equals(frame.ProtocolVersion, options.ProtocolVersion, StringComparison.Ordinal) || frame.TenantId != identity.TenantId ||
+            !string.Equals(frame.ProtocolVersion, NetRatelAkkaOptions.ProtocolVersion, StringComparison.Ordinal) || frame.TenantId != identity.TenantId ||
             !Guid.TryParse(frame.ClientId, out var agentId) || agentId != identity.AgentId ||
             !Guid.TryParse(frame.ConnectionId, out var connectionId) || connectionId == Guid.Empty || frame.ConnectionEpoch == 0)
         {
@@ -178,7 +172,7 @@ public sealed class AgentJobGatewayService(
         }
         catch (Exception exception) when (exception is InvalidOperationException or KeyNotFoundException)
         {
-            NetRatelAkkaTelemetry.RecordAuthorityFailure(Feature, Authority, fallbackUsed: false, environment.EnvironmentName);
+            NetRatelAkkaTelemetry.RecordAuthorityFailure(Feature, Authority, environment.EnvironmentName);
             throw new RpcException(new Status(StatusCode.FailedPrecondition, exception.Message));
         }
 
@@ -188,7 +182,7 @@ public sealed class AgentJobGatewayService(
     private async Task RequirePresenceAsync(ClientKey client, Guid connectionId, ulong connectionEpoch, CancellationToken cancellationToken)
     {
         var presence = await presenceRouter.GetSnapshotAsync(client, cancellationToken).ConfigureAwait(false);
-        if (presence.Status != ShadowPresenceStatus.Online || presence.ConnectionId != connectionId || presence.ConnectionEpoch != checked((long)connectionEpoch))
+        if (presence.Status != ClientPresenceStatus.Online || presence.ConnectionId != connectionId || presence.ConnectionEpoch != checked((long)connectionEpoch))
         {
             throw new RpcException(new Status(StatusCode.Aborted, "The job gateway session is fenced by the active presence connection."));
         }
@@ -220,7 +214,7 @@ public sealed class AgentJobGatewayService(
     }
 
     private bool MatchesSession(AgentJobFrame frame, ValidatedSession session) =>
-        string.Equals(frame.ProtocolVersion, options.ProtocolVersion, StringComparison.Ordinal) && frame.TenantId == session.Client.TenantId &&
+        string.Equals(frame.ProtocolVersion, NetRatelAkkaOptions.ProtocolVersion, StringComparison.Ordinal) && frame.TenantId == session.Client.TenantId &&
         string.Equals(frame.ClientId, session.Client.AgentId.ToString("D"), StringComparison.OrdinalIgnoreCase) &&
         frame.ConnectionEpoch == session.ConnectionEpoch && string.Equals(frame.ConnectionId, session.ConnectionId.ToString("D"), StringComparison.OrdinalIgnoreCase);
 

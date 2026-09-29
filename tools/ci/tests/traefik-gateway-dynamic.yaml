@@ -1,0 +1,46 @@
+http:
+  routers:
+    netratel-grpc:
+      rule: "Host(`netratel.example.test`) && PathPrefix(`/netratel.gateway.v1.`)"
+      entryPoints:
+        - websecure
+      priority: 100
+      service: netratel-grpc
+      middlewares:
+        - netratel-grpc-route
+      tls: {}
+
+    netratel-rest:
+      rule: "Host(`netratel.example.test`) && PathPrefix(`/`)"
+      entryPoints:
+        - websecure
+      priority: 10
+      service: netratel-rest
+      middlewares:
+        - netratel-rest-route
+      tls: {}
+
+  middlewares:
+    netratel-grpc-route:
+      headers:
+        customResponseHeaders:
+          X-NetRatel-Ingress-Route: grpc-h2c-9223
+    netratel-rest-route:
+      headers:
+        customResponseHeaders:
+          X-NetRatel-Ingress-Route: rest-http-9222
+
+  services:
+    netratel-grpc:
+      loadBalancer:
+        servers:
+          - url: h2c://gateway-fixture:9223
+    netratel-rest:
+      loadBalancer:
+        servers:
+          - url: http://gateway-fixture:9222
+
+tls:
+  certificates:
+    - certFile: /run/traefik/tls.crt
+      keyFile: /run/traefik/tls.key

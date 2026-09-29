@@ -24,7 +24,6 @@ using NetRatel.API.Gateway;
 using NetRatel.API.Middleware;
 using NetRatel.API.Services;
 using NetRatel.AgentGateway.Contracts.V1;
-using NetRatel.Akka.Configuration;
 using NetRatel.Application.Operations;
 using NetRatel.Application.Presence;
 using NetRatel.Infrastructure.Persistence;
@@ -101,7 +100,6 @@ public sealed class McpOperatorTerminalAvailabilityEndpointTests
         builder.Services.AddSingleton<IMcpOperatorConfirmationService>(_ => throw new NotSupportedException());
         builder.Services.AddSingleton<IMcpOperatorTerminalSessionStore>(_ => throw new NotSupportedException());
         builder.Services.AddSingleton<IMcpOperatorTerminalActionStore>(_ => throw new NotSupportedException());
-        builder.Services.AddSingleton<NetRatelAkkaMigrationOptions>();
         builder.Services.AddSingleton<IAgentTerminalSessionRegistry>(new AvailableTerminalRegistry(Guid.Empty));
         var app = builder.Build();
 
@@ -499,15 +497,6 @@ public sealed class McpOperatorTerminalAvailabilityEndpointTests
                 services.AddSingleton<McpOperatorDelegationTokenService>();
                 services.AddSingleton(admission);
                 services.AddSingleton<IMcpOperatorRouteAdmission>(admission);
-                services.AddSingleton(new NetRatelAkkaMigrationOptions
-                {
-                    Enabled = true,
-                    PresenceEnabled = true,
-                    GatewayEnabled = true,
-                    PresenceAuthorityEnabled = true,
-                    TerminalGatewayEnabled = true,
-                    TerminalAuthorityEnabled = true
-                });
                 services.AddSingleton<IClientPresenceRouter>(new TestPresence(new ClientKey(42, agentId)));
                 services.AddSingleton<IMcpOperatorConfirmationService>(_ => throw new NotSupportedException());
                 services.AddDbContext<OrchestratorDbContext>(options => options.UseInMemoryDatabase(databaseName));
@@ -705,7 +694,7 @@ public sealed class McpOperatorTerminalAvailabilityEndpointTests
 
         public Task<ClientPresenceSnapshot> GetSnapshotAsync(ClientKey value, CancellationToken cancellationToken) => Task.FromResult(new ClientPresenceSnapshot(
             value,
-            value == client ? ShadowPresenceStatus.Online : ShadowPresenceStatus.Offline,
+            value == client ? ClientPresenceStatus.Online : ClientPresenceStatus.Offline,
             1,
             Guid.NewGuid(),
             1,

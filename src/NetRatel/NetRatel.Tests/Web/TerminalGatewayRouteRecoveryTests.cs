@@ -2,7 +2,10 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using FluentAssertions;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.AspNetCore.Http;
 using NetRatel.Shared.Contracts.Terminals;
 using NetRatel.Web.Services.Authentication;
 using NetRatel.Web.Services.Terminal;
@@ -13,66 +16,61 @@ namespace NetRatel.Tests.Web;
 public sealed class TerminalGatewayRouteRecoveryTests
 {
     [Fact]
-    public async Task Fresh_service_resolves_an_existing_gateway_session_before_using_v1()
+    public async Task Input_for_an_unknown_session_uses_only_the_gateway_route()
     {
         var handler = new TerminalRouteHandler(HttpStatusCode.OK);
-        var service = CreateService(handler);
+        using var host = CreateService(handler);
 
-        await service.SendInputAsync("gateway-session", "ignored");
+        await host.Service.SendInputAsync("gateway-session", "ignored");
 
-        handler.Requests.Should().ContainInOrder(
-            "GET /api/v2/gateway-terminal/gateway-session",
-            "POST /api/v2/gateway-terminal/gateway-session/stdin");
-        handler.Requests.Should().NotContain(request => request.Contains("/api/v1/terminal/gateway-session", StringComparison.Ordinal));
+        handler.Requests.Should().ContainSingle("POST /api/v2/gateway-terminal/gateway-session/stdin");
     }
 
     [Fact]
-    public async Task Temporary_gateway_route_failure_does_not_fall_back_to_v1()
+    public async Task Temporary_gateway_route_failure_is_returned_without_a_route_probe_or_fallback()
     {
         var handler = new TerminalRouteHandler(HttpStatusCode.ServiceUnavailable);
-        var service = CreateService(handler);
+        using var host = CreateService(handler);
 
-        await service.SendInputAsync("gateway-session", "ignored");
+        var failure = await Assert.ThrowsAsync<HttpRequestException>(() => host.Service.SendInputAsync("gateway-session", "ignored"));
 
-        handler.Requests.Should().ContainInOrder(
-            "GET /api/v2/gateway-terminal/gateway-session",
-            "POST /api/v2/gateway-terminal/gateway-session/stdin");
-        handler.Requests.Should().NotContain(request => request.Contains("/api/v1/terminal/gateway-session", StringComparison.Ordinal));
+        failure.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
+        handler.Requests.Should().ContainSingle("POST /api/v2/gateway-terminal/gateway-session/stdin");
     }
 
     [Fact]
-    public async Task V1_is_used_only_after_gateway_session_lookup_reports_not_found()
+    public async Task Missing_gateway_session_is_not_redirected_to_a_v1_session()
     {
         var handler = new TerminalRouteHandler(HttpStatusCode.NotFound);
-        var service = CreateService(handler);
+        using var host = CreateService(handler);
 
-        await service.SendInputAsync("legacy-session", "ignored");
+        var failure = await Assert.ThrowsAsync<HttpRequestException>(() => host.Service.SendInputAsync("legacy-session", "ignored"));
 
-        handler.Requests.Should().ContainInOrder(
-            "GET /api/v2/gateway-terminal/legacy-session",
-            "POST /api/v1/terminal/legacy-session/stdin");
+        failure.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        handler.Requests.Should().ContainSingle("POST /api/v2/gateway-terminal/legacy-session/stdin");
+        handler.Requests.Should().NotContain(request => request.Contains("/api/v1/", StringComparison.Ordinal));
     }
 
     [Fact]
     public async Task Persisted_gateway_handle_lookup_never_falls_back_to_v1()
     {
         var handler = new TerminalRouteHandler(HttpStatusCode.NotFound);
-        var service = CreateService(handler);
+        using var host = CreateService(handler);
 
-        var session = await service.GetGatewaySessionAsync("former-gateway-session");
+        var session = await host.Service.GetGatewaySessionAsync("former-gateway-session");
 
         session.Should().BeNull();
         handler.Requests.Should().ContainSingle("GET /api/v2/gateway-terminal/former-gateway-session");
-        handler.Requests.Should().NotContain(request => request.Contains("/api/v1/terminal/former-gateway-session", StringComparison.Ordinal));
+        handler.Requests.Should().NotContain(request => request.Contains("/api/v1/", StringComparison.Ordinal));
     }
 
     [Fact]
     public async Task Browser_attachment_heartbeat_posts_exact_generation_and_attachment_fences_directly_to_v2()
     {
         var handler = new TerminalRouteHandler(HttpStatusCode.OK);
-        var service = CreateService(handler);
+        using var host = CreateService(handler);
 
-        await service.RenewGatewayAttachmentAsync(
+        await host.Service.RenewGatewayAttachmentAsync(
             "gateway-session",
             7,
             "lease-7",
@@ -84,14 +82,42 @@ public sealed class TerminalGatewayRouteRecoveryTests
         handler.RequestBodies.Single().Should().Contain("\"attachmentLeaseId\":\"lease-7\"");
         handler.RequestBodies.Single().Should().Contain("\"browserAttachmentId\":\"browser-7\"");
         handler.RequestBodies.Single().Should().Contain("\"claimOwnership\":true");
-        handler.Requests.Should().NotContain(request => request.Contains("/api/v1/terminal/gateway-session", StringComparison.Ordinal));
+        handler.Requests.Should().NotContain(request => request.Contains("/api/v1/", StringComparison.Ordinal));
     }
 
-    private static TerminalService CreateService(HttpMessageHandler handler) =>
-        new(
-            new StaticHttpClientFactory(handler),
-            new StubTokenService(),
-            NullLogger<TerminalService>.Instance);
+    private static TerminalServiceHost CreateService(HttpMessageHandler handler) => new(handler);
+
+    private sealed class TerminalServiceHost : IDisposable
+    {
+        private readonly ServiceProvider _services;
+        private readonly IServiceScope _scope;
+
+        public TerminalServiceHost(HttpMessageHandler handler)
+        {
+            var services = new ServiceCollection();
+            services.AddLogging();
+            services.AddSingleton<IHttpClientFactory>(new StaticHttpClientFactory(handler));
+            services.AddHttpContextAccessor();
+            services.AddSingleton<IConfiguration>(new ConfigurationBuilder().Build());
+            services.AddSingleton<ITokenService, StubTokenService>();
+            services.AddScoped<OperatorApiCredentialState>();
+            services.AddScoped<OperatorApiCredentialProvider>();
+            _services = services.BuildServiceProvider(validateScopes: true);
+            _scope = _services.CreateScope();
+            Service = new TerminalService(
+                _scope.ServiceProvider.GetRequiredService<IHttpClientFactory>(),
+                _scope.ServiceProvider.GetRequiredService<OperatorApiCredentialProvider>(),
+                NullLogger<TerminalService>.Instance);
+        }
+
+        public TerminalService Service { get; }
+
+        public void Dispose()
+        {
+            _scope.Dispose();
+            _services.Dispose();
+        }
+    }
 
     private sealed class StaticHttpClientFactory(HttpMessageHandler handler) : IHttpClientFactory
     {
@@ -132,7 +158,9 @@ public sealed class TerminalGatewayRouteRecoveryTests
 
             if (request.Method == HttpMethod.Post && path == "/api/v2/gateway-terminal/gateway-session/stdin")
             {
-                return JsonResponse(new TerminalActionResponse("track", "queued", "gateway-session"));
+                return gatewayLookupStatus == HttpStatusCode.OK
+                    ? JsonResponse(new TerminalActionResponse("track", "queued", "gateway-session"))
+                    : new HttpResponseMessage(gatewayLookupStatus);
             }
 
             if (request.Method == HttpMethod.Post && path == "/api/v2/gateway-terminal/gateway-session/attachment/renew")
@@ -143,9 +171,9 @@ public sealed class TerminalGatewayRouteRecoveryTests
                 });
             }
 
-            if (request.Method == HttpMethod.Post && path == "/api/v1/terminal/legacy-session/stdin")
+            if (request.Method == HttpMethod.Post && path == "/api/v2/gateway-terminal/legacy-session/stdin")
             {
-                return JsonResponse(new TerminalActionResponse("track", "queued", "legacy-session"));
+                return new HttpResponseMessage(gatewayLookupStatus);
             }
 
             return new HttpResponseMessage(HttpStatusCode.NotFound);

@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using System.Reflection;
 using System.Threading.Channels;
 using FluentAssertions;
 using Google.Protobuf;
@@ -9,8 +10,10 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Akka.Hosting;
 using NetRatel.AgentGateway.Contracts.V1;
 using NetRatel.Akka.Configuration;
+using NetRatel.Akka.Hosting;
 using NetRatel.Akka.RemoteSupport;
 using NetRatel.API.Gateway;
 using NetRatel.Application.Agents;
@@ -168,66 +171,13 @@ public sealed class AgentCapabilityGatewayEndToEndTests
     }
 
     [Fact]
-    public async Task RemoteSupportGateway_RelaysFencedOrderedSignalsInBothDirections()
-    {
-        const int tenantId = 92;
-        var agentId = Guid.NewGuid();
-        var connectionId = Guid.NewGuid();
-        const ulong epoch = 4;
-        using var host = await BuildHostAsync(tenantId, agentId, connectionId, epoch);
-        using var channel = CreateChannel(host);
-        var client = new AgentRemoteSupportGateway.AgentRemoteSupportGatewayClient(channel);
-        using var call = client.Connect();
-
-        await call.RequestStream.WriteAsync(RemoteFrame(tenantId, agentId, connectionId, epoch, 0,
-            frame => frame.Hello = new AgentRemoteSupportHello { Capabilities = { "webrtc-signalling", "ice" } }));
-        (await call.ResponseStream.MoveNext(CancellationToken.None)).Should().BeTrue();
-        call.ResponseStream.Current.Accepted.SupportAuthority.Should().Be("akka");
-
-        var registry = host.Services.GetRequiredService<IGatewayRemoteSupportSessionRegistry>();
-        var clientKey = new ClientKey(tenantId, agentId);
-        var opened = await registry.OpenAsync(clientKey, new OpenRemoteSupportRequest(), CancellationToken.None);
-        var open = await NextRemoteServerFrameAsync(call);
-        open.Signal.SessionId.Should().Be(opened.SessionId);
-        open.Signal.SignalType.Should().Be("open");
-
-        using var subscription = registry.Subscribe(opened.SessionId);
-        await call.RequestStream.WriteAsync(RemoteFrame(tenantId, agentId, connectionId, epoch, 1,
-            frame => frame.Signal = new RemoteSupportSignal
-            {
-                SessionId = opened.SessionId,
-                MessageId = Guid.NewGuid().ToString("N"),
-                SignalType = RemoteSupportSignalTypes.Ready,
-                SessionSequence = 1,
-                Payload = ByteString.CopyFromUtf8("{\"agent\":\"ready\"}")
-            }));
-        var agentReady = await subscription.Reader.ReadAsync();
-        agentReady.SignalType.Should().Be(RemoteSupportSignalTypes.Ready);
-        agentReady.Direction.Should().Be("agent");
-
-        await registry.SendBrowserSignalAsync(opened.SessionId,
-            new RemoteSupportSignalRequest(RemoteSupportSignalTypes.Offer, "{\"type\":\"offer\"}"), CancellationToken.None);
-        var offer = await NextRemoteServerFrameAsync(call);
-        offer.Signal.SessionId.Should().Be(opened.SessionId);
-        offer.Signal.SignalType.Should().Be(RemoteSupportSignalTypes.Offer);
-        // The opening request is the first browser-to-agent envelope, so the
-        // subsequent offer is monotonically sequenced as two.
-        offer.Signal.SessionSequence.Should().Be(2);
-
-        await registry.CloseAsync(opened.SessionId, "operator_finished", CancellationToken.None);
-        var close = await NextRemoteServerFrameAsync(call);
-        close.Closed.SessionId.Should().Be(opened.SessionId);
-        close.Closed.Reason.Should().Be("operator_finished");
-    }
-
-    [Fact]
     public async Task RemoteSupportV2Gateway_RegistersTheLiveEdgeAndWritesOnlyTheTransientRouteEnvelope()
     {
         const int tenantId = 93;
         var agentId = Guid.NewGuid();
         var connectionId = Guid.NewGuid();
         const ulong epoch = 5;
-        using var host = await BuildHostAsync(tenantId, agentId, connectionId, epoch, replicaSafe: true);
+        using var host = await BuildHostAsync(tenantId, agentId, connectionId, epoch);
         using var channel = CreateChannel(host);
         var client = new AgentRemoteSupportGateway.AgentRemoteSupportGatewayClient(channel);
         using var call = client.Connect();
@@ -266,6 +216,134 @@ public sealed class AgentCapabilityGatewayEndToEndTests
         envelope.V2Envelope.Payload.Should().BeEmpty();
 
         await call.RequestStream.CompleteAsync();
+        (await call.ResponseStream.MoveNext(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(2)))
+            .Should().BeFalse("normal client half-close must stop the renewal and outbound workers");
+    }
+
+    [Fact]
+    public async Task RemoteSupportV2Gateway_ReportsBoundedEdgeOverflowAsResourceExhausted()
+    {
+        const int tenantId = 97;
+        var agentId = Guid.NewGuid();
+        var connectionId = Guid.NewGuid();
+        const ulong epoch = 9;
+        using var host = await BuildHostAsync(tenantId, agentId, connectionId, epoch);
+        using var channel = CreateChannel(host);
+        var client = new AgentRemoteSupportGateway.AgentRemoteSupportGatewayClient(channel);
+        using var call = client.Connect();
+
+        await call.RequestStream.WriteAsync(RemoteFrame(tenantId, agentId, connectionId, epoch, 0,
+            frame => frame.Hello = new AgentRemoteSupportHello { Capabilities = { "webrtc-signalling" } }));
+        (await call.ResponseStream.MoveNext(CancellationToken.None)).Should().BeTrue();
+        call.ResponseStream.Current.Accepted.SupportAuthority.Should().Be("akka");
+
+        host.Services.GetRequiredService<TestV2EdgeRegistry>()
+            .FailOutbound(new RemoteSupportEdgeBufferOverflowException("agent"));
+
+        var error = await Assert.ThrowsAsync<RpcException>(() =>
+            call.ResponseStream.MoveNext(CancellationToken.None)).WaitAsync(TimeSpan.FromSeconds(2));
+        error.StatusCode.Should().Be(StatusCode.ResourceExhausted);
+        error.Status.Detail.Should().Be("The Remote Support edge buffer is full.");
+    }
+
+    [Fact]
+    public async Task RemoteSupportV2Gateway_InvalidFrameStopsAllWorkersAndPreservesProtocolFailure()
+    {
+        const int tenantId = 94;
+        var agentId = Guid.NewGuid();
+        var connectionId = Guid.NewGuid();
+        const ulong epoch = 6;
+        using var host = await BuildHostAsync(tenantId, agentId, connectionId, epoch);
+        using var channel = CreateChannel(host);
+        var client = new AgentRemoteSupportGateway.AgentRemoteSupportGatewayClient(channel);
+        using var call = client.Connect();
+
+        await call.RequestStream.WriteAsync(RemoteFrame(tenantId, agentId, connectionId, epoch, 0,
+            frame => frame.Hello = new AgentRemoteSupportHello { Capabilities = { "webrtc-signalling" } }));
+        (await call.ResponseStream.MoveNext(CancellationToken.None)).Should().BeTrue();
+        await call.RequestStream.WriteAsync(RemoteFrame(tenantId, agentId, connectionId, epoch, 1,
+            frame => frame.ProtocolVersion = "invalid"));
+
+        var completion = call.ResponseStream.MoveNext(CancellationToken.None);
+        var error = await Assert.ThrowsAsync<RpcException>(() => completion).WaitAsync(TimeSpan.FromSeconds(2));
+        error.StatusCode.Should().Be(StatusCode.InvalidArgument);
+    }
+
+    [Fact]
+    public async Task RemoteSupportV2Gateway_OutboundWriterFailureStopsTheInboundWorker()
+    {
+        const int tenantId = 96;
+        var agentId = Guid.NewGuid();
+        var connectionId = Guid.NewGuid();
+        const ulong epoch = 8;
+        using var host = await BuildHostAsync(tenantId, agentId, connectionId, epoch);
+        using var channel = CreateChannel(host);
+        var client = new AgentRemoteSupportGateway.AgentRemoteSupportGatewayClient(channel);
+        using var call = client.Connect();
+
+        await call.RequestStream.WriteAsync(RemoteFrame(tenantId, agentId, connectionId, epoch, 0,
+            frame => frame.Hello = new AgentRemoteSupportHello { Capabilities = { "webrtc-signalling" } }));
+        (await call.ResponseStream.MoveNext(CancellationToken.None)).Should().BeTrue();
+        var expected = new RpcException(new Status(StatusCode.Aborted, "Test edge writer failure."));
+        host.Services.GetRequiredService<TestV2EdgeRegistry>().FailOutbound(expected);
+
+        var completion = call.ResponseStream.MoveNext(CancellationToken.None);
+        var error = await Assert.ThrowsAsync<RpcException>(() => completion).WaitAsync(TimeSpan.FromSeconds(2));
+        error.StatusCode.Should().Be(StatusCode.Aborted);
+        error.Status.Detail.Should().Be("Test edge writer failure.");
+    }
+
+    [Fact]
+    public async Task RemoteSupportV2Gateway_RenewalFailureStopsTheInboundWorker()
+    {
+        const int tenantId = 97;
+        var agentId = Guid.NewGuid();
+        var connectionId = Guid.NewGuid();
+        const ulong epoch = 9;
+        using var host = await BuildHostAsync(tenantId, agentId, connectionId, epoch, renewalIntervalSeconds: 1);
+        using var channel = CreateChannel(host);
+        var client = new AgentRemoteSupportGateway.AgentRemoteSupportGatewayClient(channel);
+        using var call = client.Connect();
+
+        await call.RequestStream.WriteAsync(RemoteFrame(tenantId, agentId, connectionId, epoch, 0,
+            frame => frame.Hello = new AgentRemoteSupportHello { Capabilities = { "webrtc-signalling" } }));
+        (await call.ResponseStream.MoveNext(CancellationToken.None)).Should().BeTrue();
+        host.Services.GetRequiredService<TestV2EdgeRegistry>().RenewalFailure =
+            new RpcException(new Status(StatusCode.DataLoss, "Test edge renewal failure."));
+
+        var completion = call.ResponseStream.MoveNext(CancellationToken.None);
+        var error = await Assert.ThrowsAsync<RpcException>(() => completion).WaitAsync(TimeSpan.FromSeconds(3));
+        error.StatusCode.Should().Be(StatusCode.DataLoss);
+        error.Status.Detail.Should().Be("Test edge renewal failure.");
+    }
+
+    [Fact]
+    public async Task RemoteSupportV2PreparationGateway_CompletesAfterAgentHalfClose()
+    {
+        const int tenantId = 95;
+        var agentId = Guid.NewGuid();
+        var connectionId = Guid.NewGuid();
+        const ulong epoch = 7;
+        using var host = await BuildHostAsync(tenantId, agentId, connectionId, epoch);
+        using var channel = CreateChannel(host);
+        var client = new AgentRemoteSupportPreparationGateway.AgentRemoteSupportPreparationGatewayClient(channel);
+        using var call = client.Connect();
+
+        await call.RequestStream.WriteAsync(new AgentRemoteSupportPreparationFrame
+        {
+            ProtocolVersion = NetRatelAkkaOptions.ProtocolVersion,
+            TenantId = tenantId,
+            ClientId = agentId.ToString("D"),
+            ConnectionId = connectionId.ToString("D"),
+            ConnectionEpoch = epoch,
+            Sequence = 0,
+            Hello = new AgentRemoteSupportPreparationHello()
+        });
+        (await call.ResponseStream.MoveNext(CancellationToken.None)).Should().BeTrue();
+        await call.RequestStream.CompleteAsync();
+
+        (await call.ResponseStream.MoveNext(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(2)))
+            .Should().BeFalse("normal client half-close must stop the outbound worker");
     }
 
     private static GrpcChannel CreateChannel(IHost host) => GrpcChannel.ForAddress(
@@ -278,30 +356,9 @@ public sealed class AgentCapabilityGatewayEndToEndTests
         return call.ResponseStream.Current;
     }
 
-    private static async Task<GatewayRemoteSupportFrame> NextRemoteServerFrameAsync(AsyncDuplexStreamingCall<AgentRemoteSupportFrame, GatewayRemoteSupportFrame> call)
-    {
-        (await call.ResponseStream.MoveNext(CancellationToken.None)).Should().BeTrue();
-        return call.ResponseStream.Current;
-    }
-
     private static AgentFileFrame FileFrame(int tenantId, Guid agentId, Guid connectionId, ulong epoch, ulong sequence, Action<AgentFileFrame> populate)
     {
         var frame = new AgentFileFrame
-        {
-            ProtocolVersion = "1.0",
-            TenantId = tenantId,
-            ClientId = agentId.ToString("D"),
-            ConnectionId = connectionId.ToString("D"),
-            ConnectionEpoch = epoch,
-            Sequence = sequence
-        };
-        populate(frame);
-        return frame;
-    }
-
-    private static AgentRemoteSupportFrame RemoteFrame(int tenantId, Guid agentId, Guid connectionId, ulong epoch, ulong sequence, Action<AgentRemoteSupportFrame> populate)
-    {
-        var frame = new AgentRemoteSupportFrame
         {
             ProtocolVersion = "1.0",
             TenantId = tenantId,
@@ -335,7 +392,12 @@ public sealed class AgentCapabilityGatewayEndToEndTests
         Sha256 = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(content.Span)).ToLowerInvariant()
     };
 
-    private static async Task<IHost> BuildHostAsync(int tenantId, Guid agentId, Guid connectionId, ulong epoch, bool replicaSafe = false)
+    private static async Task<IHost> BuildHostAsync(
+        int tenantId,
+        Guid agentId,
+        Guid connectionId,
+        ulong epoch,
+        int renewalIntervalSeconds = 10)
     {
         var builder = Host.CreateDefaultBuilder();
         builder.ConfigureWebHost(web =>
@@ -350,30 +412,14 @@ public sealed class AgentCapabilityGatewayEndToEndTests
                 services.AddSingleton<IClientPresenceRouter>(new CurrentPresenceRouter(tenantId, agentId, connectionId, epoch));
                 services.AddSingleton<IAgentManagementService>(new ActiveAgentManagementService(tenantId, agentId));
                 services.AddSingleton<IAgentFileGatewaySessionRegistry, AgentFileGatewaySessionRegistry>();
-                if (replicaSafe)
-                {
-                    services.AddSingleton<TestV2EdgeRegistry>();
-                    services.AddSingleton<IRemoteSupportV2AgentEdgeRegistry>(serviceProvider =>
-                        serviceProvider.GetRequiredService<TestV2EdgeRegistry>());
-                }
-                else
-                {
-                    services.AddSingleton<IGatewayRemoteSupportSessionRegistry, GatewayRemoteSupportSessionRegistry>();
-                }
+                services.AddSingleton<TestV2EdgeRegistry>();
+                services.AddSingleton<IRemoteSupportV2AgentEdgeRegistry>(serviceProvider =>
+                    serviceProvider.GetRequiredService<TestV2EdgeRegistry>());
+                services.AddSingleton<IRemoteSupportV2PreparationRegistry, RemoteSupportV2PreparationRegistry>();
+                services.AddSingleton(Stub<IRequiredActor<RemoteSupportSessionAuthorityRegion>>(
+                    (method, _) => throw new NotSupportedException($"Unexpected preparation test actor access: {method}.")));
                 services.AddSingleton(TimeProvider.System);
-                services.AddSingleton(new NetRatelAkkaMigrationOptions
-                {
-                    Enabled = true,
-                    PresenceEnabled = true,
-                    GatewayEnabled = true,
-                    PresenceAuthorityEnabled = true,
-                    FileGatewayEnabled = true,
-                    FileBrowseAuthorityEnabled = true,
-                    RemoteSupportGatewayEnabled = true,
-                    RemoteSupportAuthorityEnabled = true,
-                    RemoteSupportV2LifecycleAuthorityEnabled = replicaSafe,
-                    RemoteSupportV2ReplicaSafeEdgeEnabled = replicaSafe
-                });
+                services.AddSingleton(new NetRatelAkkaOptions { RemoteSupportAgentEdgeRenewalSeconds = renewalIntervalSeconds });
             });
             web.Configure(app =>
             {
@@ -396,6 +442,7 @@ public sealed class AgentCapabilityGatewayEndToEndTests
                 {
                     endpoints.MapGrpcService<AgentFileGatewayService>();
                     endpoints.MapGrpcService<AgentRemoteSupportGatewayService>();
+                    endpoints.MapGrpcService<AgentRemoteSupportPreparationGatewayService>();
                 });
             });
         });
@@ -412,7 +459,7 @@ public sealed class AgentCapabilityGatewayEndToEndTests
         public Task<ClientPresenceSnapshot> GetSnapshotAsync(ClientKey client, CancellationToken cancellationToken) =>
             Task.FromResult(new ClientPresenceSnapshot(
                 client,
-                client == new ClientKey(tenantId, agentId) ? ShadowPresenceStatus.Online : ShadowPresenceStatus.Offline,
+                client == new ClientKey(tenantId, agentId) ? ClientPresenceStatus.Online : ClientPresenceStatus.Offline,
                 checked((long)epoch), connectionId, 0, DateTimeOffset.UtcNow, "e2e-test", Array.Empty<string>(), null,
                 "akka", true));
     }
@@ -422,6 +469,7 @@ public sealed class AgentCapabilityGatewayEndToEndTests
         private readonly Channel<RemoteSupportAgentRouteEnvelope> _outbound = Channel.CreateBounded<RemoteSupportAgentRouteEnvelope>(32);
         private readonly TaskCompletionSource _registered = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public Guid EdgeRouteId { get; } = Guid.NewGuid();
+        public Exception? RenewalFailure { get; set; }
 
         public RemoteSupportV2AgentEdgeConnection Register(ClientKey client, Guid connectionId, ulong connectionEpoch) => new(
             _outbound.Reader,
@@ -430,12 +478,57 @@ public sealed class AgentCapabilityGatewayEndToEndTests
                 _registered.TrySetResult();
                 return Task.FromResult(session.TenantId == client.TenantId && session.AgentId == client.AgentId && generation == 1);
             },
-            _ => Task.CompletedTask,
+            _ => RenewalFailure is { } exception ? Task.FromException(exception) : Task.CompletedTask,
             () => _outbound.Writer.TryComplete());
 
         public Task WaitForRegistrationAsync() => _registered.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
         public ValueTask SendAsync(RemoteSupportAgentRouteEnvelope envelope) => _outbound.Writer.WriteAsync(envelope);
+
+        public void FailOutbound(Exception exception) => _outbound.Writer.TryComplete(exception).Should().BeTrue();
+    }
+
+    private static T Stub<T>(Func<string, object?[]?, object?> invoke) where T : class
+    {
+        var proxy = DispatchProxy.Create<T, StrictDependencyStub>();
+        ((StrictDependencyStub)(object)proxy).Handler = invoke;
+        return proxy;
+    }
+
+    public class StrictDependencyStub : DispatchProxy
+    {
+        public Func<string, object?[]?, object?> Handler { get; set; } = (_, _) => throw new NotSupportedException();
+
+        protected override object? Invoke(MethodInfo? targetMethod, object?[]? args) =>
+            Handler(targetMethod!.Name, args);
+    }
+
+    private static AgentRemoteSupportFrame RemoteFrame(
+        int tenantId,
+        Guid agentId,
+        Guid connectionId,
+        ulong epoch,
+        ulong sequence,
+        Action<AgentRemoteSupportFrame> populate)
+    {
+        var frame = new AgentRemoteSupportFrame
+        {
+            ProtocolVersion = NetRatelAkkaOptions.ProtocolVersion,
+            TenantId = tenantId,
+            ClientId = agentId.ToString("D"),
+            ConnectionId = connectionId.ToString("D"),
+            ConnectionEpoch = epoch,
+            Sequence = sequence
+        };
+        populate(frame);
+        return frame;
+    }
+
+    private static async Task<GatewayRemoteSupportFrame> NextRemoteServerFrameAsync(
+        AsyncDuplexStreamingCall<AgentRemoteSupportFrame, GatewayRemoteSupportFrame> call)
+    {
+        (await call.ResponseStream.MoveNext(CancellationToken.None)).Should().BeTrue();
+        return call.ResponseStream.Current;
     }
 
     private sealed class ActiveAgentManagementService(int tenantId, Guid agentId) : IAgentManagementService

@@ -86,7 +86,7 @@ public sealed class LegacyApiSpacetimeServiceRemovalTests
         File.ReadAllText(Path.Combine(repositoryRoot, "src/NetRatel/NetRatel.Tests/NetRatel.Tests.csproj"))
             .Should().NotContain("SpacetimeDB");
 
-        File.ReadAllText(Path.Combine(repositoryRoot, "src/NetRatel/NetRatel.Application/Jobs/JobShadowContracts.cs"))
+        File.ReadAllText(Path.Combine(repositoryRoot, "src/NetRatel/NetRatel.Application/Jobs/JobRuntimeContracts.cs"))
             .Should().NotContain("spacetimedb-job-execution-event");
     }
 

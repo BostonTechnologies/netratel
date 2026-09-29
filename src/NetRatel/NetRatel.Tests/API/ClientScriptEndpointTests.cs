@@ -19,6 +19,7 @@ using NetRatel.API.Services;
 using NetRatel.Application.Agents;
 using NetRatel.Application.Artifacts;
 using NetRatel.Infrastructure.Artifacts;
+using NetRatel.Infrastructure.Identity.Branding;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.Services;
 using Xunit;
@@ -51,7 +52,6 @@ public sealed class ClientScriptEndpointTests
             var script = await response.Content.ReadAsStringAsync();
             script.Should().Contain("ENR-");
             script.Should().Contain("netratel.enroll.json");
-            script.Should().Contain("NetRatel.Update");
             script.Should().Contain("win-x64");
             script.Should().Contain("/api/v1/client-artifacts/");
             script.Should().Contain("0.4.10");
@@ -61,6 +61,9 @@ public sealed class ClientScriptEndpointTests
             script.Should().NotContain("/latest");
             script.Should().NotContain("/api/v1/client/download");
             script.Should().NotContain("eyJ"); // heuristic JWT prefix
+            script.Should().Contain("$ApiBase = \"https://netratel.example.invalid\"");
+            script.Should().Contain("$GatewayEndpoint = \"\"");
+            script.Should().NotContain("NetRatelCLIENT__Gateway__Endpoint=https://netratel.example.invalid");
 
             await using var scope = app.Services.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
@@ -68,6 +71,58 @@ public sealed class ClientScriptEndpointTests
             row.TenantId.Should().Be(4098);
             row.Uses.Should().Be(0);
         }
+    }
+
+    [Fact]
+    public async Task PostClientScript_NormalizesApiSuffixAndCarriesOnlyAnExplicitPublicGateway()
+    {
+        using var app = await BuildAppAsync(
+            publicApiBase: "https://public-api.example.test/api/",
+            publicGatewayBase: "https://public-gateway.example.test/");
+        var client = app.GetTestClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test");
+
+        var response = await client.PostAsJsonAsync("/api/v1/client/script", new
+        {
+            tenantId = 4098,
+            runtimeId = "win-x64",
+            validForMinutes = 60,
+            maxUses = 1,
+            installAsService = true,
+            silentInstall = true
+        });
+
+        response.IsSuccessStatusCode.Should().BeTrue();
+        var script = await response.Content.ReadAsStringAsync();
+        script.Should().Contain("$ApiBase = \"https://public-api.example.test\"");
+        script.Should().Contain("$GatewayEndpoint = \"https://public-gateway.example.test\"");
+        script.Should().NotContain("public-api.example.test/api/api");
+    }
+
+    [Fact]
+    public async Task PostClientScript_OmitsRedundantSameOriginGatewayOverride()
+    {
+        using var app = await BuildAppAsync(
+            publicApiBase: "https://same-origin.example.test/api/",
+            publicGatewayBase: "https://same-origin.example.test/");
+        var client = app.GetTestClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test");
+
+        var response = await client.PostAsJsonAsync("/api/v1/client/script", new
+        {
+            tenantId = 4098,
+            runtimeId = "win-x64",
+            validForMinutes = 60,
+            maxUses = 1,
+            installAsService = true,
+            silentInstall = true
+        });
+
+        response.IsSuccessStatusCode.Should().BeTrue();
+        var script = await response.Content.ReadAsStringAsync();
+        script.Should().Contain("$ApiBase = \"https://same-origin.example.test\"");
+        script.Should().Contain("$GatewayEndpoint = \"\"");
+        script.Should().NotContain("NetRatelCLIENT__Gateway__Endpoint=https://same-origin.example.test");
     }
 
     [Fact]
@@ -112,7 +167,9 @@ public sealed class ClientScriptEndpointTests
         (await db.EnrollmentCodes.CountAsync()).Should().Be(0);
     }
 
-    private static async Task<IHost> BuildAppAsync()
+    private static async Task<IHost> BuildAppAsync(
+        string? publicApiBase = null,
+        string? publicGatewayBase = null)
     {
         var dbName = Guid.NewGuid().ToString("N");
         var builder = Host.CreateDefaultBuilder();
@@ -136,11 +193,15 @@ public sealed class ClientScriptEndpointTests
                 services.AddScoped<IClientScriptService, ClientScriptService>();
                 services.AddScoped<ITenantLookupService, AlwaysTenantLookupService>();
                 services.AddScoped<IClientArtifactsService, NoopArtifactsService>();
+                services.AddSingleton<IDeploymentBrandingService>(new FixtureBranding());
                 services.Configure<AgentAuthOptions>(o => o.Issuer = "https://netratel.example.invalid");
-                services.AddSingleton<IConfiguration>(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+                var settings = new Dictionary<string, string?>
                 {
                     ["AgentAuth:Issuer"] = "https://netratel.example.invalid"
-                }).Build());
+                };
+                if (publicApiBase is not null) settings["ClientArtifacts:PublicBaseUrl"] = publicApiBase;
+                if (publicGatewayBase is not null) settings["ClientArtifacts:PublicGatewayBaseUrl"] = publicGatewayBase;
+                services.AddSingleton<IConfiguration>(new ConfigurationBuilder().AddInMemoryCollection(settings).Build());
             });
 
             web.Configure(app =>
@@ -153,6 +214,31 @@ public sealed class ClientScriptEndpointTests
         });
 
         return await builder.StartAsync();
+    }
+
+    private sealed class FixtureBranding : IDeploymentBrandingService
+    {
+        public Task<EffectiveDeploymentBranding> GetEffectiveAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(new EffectiveDeploymentBranding(
+                new("NetRatel", BrandingValueSource.Default, false),
+                new("NetRatel", BrandingValueSource.Default, false),
+                new("Automation Platform", BrandingValueSource.Default, false),
+                new("brand/netratel-wordmark-600.webp", BrandingValueSource.Default, false),
+                new("brand/netratel-wordmark-600.webp", BrandingValueSource.Default, false),
+                new("brand/netratel-mark-64.png", BrandingValueSource.Default, false),
+                new("favicon.ico", BrandingValueSource.Default, false),
+                new(string.Empty, BrandingValueSource.Default, false),
+                new("https://netratel.example.invalid", BrandingValueSource.Administrator, false),
+                1));
+
+        public Task<EffectiveDeploymentBranding> UpdateAsync(UpdateDeploymentBrandingRequest request,
+            string? actorPrincipalId, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public Task<BrandingAssetUploadResult> UploadAssetAsync(BrandingAssetUpload upload,
+            string? actorPrincipalId, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public Task<DeploymentBrandingAsset?> FindAssetAsync(string assetId,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
     }
 
     private sealed class AlwaysTenantLookupService : ITenantLookupService

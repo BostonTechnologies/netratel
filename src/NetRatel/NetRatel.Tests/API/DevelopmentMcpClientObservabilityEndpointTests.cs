@@ -17,7 +17,6 @@ using NetRatel.API.Gateway;
 using NetRatel.API.Realtime;
 using NetRatel.API.Services;
 using NetRatel.API.Services.Events;
-using NetRatel.Akka.Configuration;
 using NetRatel.Application.Events;
 using NetRatel.Application.Operations;
 using NetRatel.Application.Presence;
@@ -157,10 +156,10 @@ public sealed class DevelopmentMcpClientObservabilityEndpointTests
     }
 
     [Fact]
-    public async Task OptionalGatewayRoutes_StartAndFailClosedWhenTheirServicesAreUnavailable()
+    public async Task AdmittedRoutes_ReportMissingGatewayDataWithTheNormalServicesRegistered()
     {
         var agentId = Guid.NewGuid();
-        using var app = await BuildAppAsync(agentId, includeOptionalGateways: false);
+        using var app = await BuildAppAsync(agentId, gatewayDataAvailable: false);
         var client = AuthorizedClient(app);
         var root = $"/api/v2/development/mcp/agents/3/{agentId:D}";
 
@@ -169,6 +168,11 @@ public sealed class DevelopmentMcpClientObservabilityEndpointTests
 
         logs.StatusCode.Should().Be(HttpStatusCode.NotFound);
         telemetry.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        app.Services.GetRequiredService<IAgentLogGatewaySessionRegistry>().Should().NotBeNull();
+        app.Services.GetRequiredService<IClientTelemetryRouter>().Should().NotBeNull();
+        app.Services.GetRequiredService<TestTargetAuthority>().AcceptedOperations.Should().Equal(
+            DevelopmentOperatorOperation.ClientLogRead,
+            DevelopmentOperatorOperation.ClientTelemetryRead);
     }
 
     private static HttpClient AuthorizedClient(IHost app)
@@ -178,20 +182,9 @@ public sealed class DevelopmentMcpClientObservabilityEndpointTests
         return client;
     }
 
-    private static async Task<IHost> BuildAppAsync(Guid agentId, bool includeOptionalGateways = true)
+    private static async Task<IHost> BuildAppAsync(Guid agentId, bool gatewayDataAvailable = true)
     {
         var client = new ClientKey(3, agentId);
-        var options = new NetRatelAkkaMigrationOptions
-        {
-            Enabled = true,
-            PresenceEnabled = true,
-            GatewayEnabled = true,
-            PresenceAuthorityEnabled = true,
-            LogGatewayEnabled = true,
-            LogAuthorityEnabled = true,
-            TelemetryShadowEnabled = true,
-            TelemetryAuthorityEnabled = true
-        };
         var builder = Host.CreateDefaultBuilder();
         builder.ConfigureWebHost(web =>
         {
@@ -203,17 +196,13 @@ public sealed class DevelopmentMcpClientObservabilityEndpointTests
                 services.AddHttpContextAccessor();
                 services.AddAuthentication("Test").AddScheme<AuthenticationSchemeOptions, TestAuthHandler>("Test", _ => { });
                 services.AddAuthorization(policyOptions => policyOptions.AddPolicy("Operator", policy => policy.RequireAuthenticatedUser()));
-                services.AddSingleton(options);
                 services.AddScoped<McpOperatorClientObservabilityService>();
-                if (includeOptionalGateways)
-                {
-                    services.AddSingleton(new TestLogRegistry(client));
-                    services.AddSingleton<IAgentLogGatewaySessionRegistry>(provider => provider.GetRequiredService<TestLogRegistry>());
-                    services.AddSingleton(new TestDispatcher());
-                    services.AddSingleton<IAgentLogGatewayQueryDispatcher>(provider => provider.GetRequiredService<TestDispatcher>());
-                    services.AddSingleton<IClientTelemetryRouter>(new TestTelemetryRouter(client));
-                    services.AddSingleton<IGatewayTelemetryLiveRegistry, GatewayTelemetryLiveRegistry>();
-                }
+                services.AddSingleton(new TestLogRegistry(client, gatewayDataAvailable));
+                services.AddSingleton<IAgentLogGatewaySessionRegistry>(provider => provider.GetRequiredService<TestLogRegistry>());
+                services.AddSingleton(new TestDispatcher());
+                services.AddSingleton<IAgentLogGatewayQueryDispatcher>(provider => provider.GetRequiredService<TestDispatcher>());
+                services.AddSingleton<IClientTelemetryRouter>(new TestTelemetryRouter(client, gatewayDataAvailable));
+                services.AddSingleton<IGatewayTelemetryLiveRegistry, GatewayTelemetryLiveRegistry>();
                 services.AddSingleton(new TestTargetAuthority(agentId));
                 services.AddSingleton<IDevelopmentOperatorTargetAuthority>(provider => provider.GetRequiredService<TestTargetAuthority>());
                 services.AddScoped<ICorrelationContext, HttpCorrelationContext>();
@@ -229,7 +218,7 @@ public sealed class DevelopmentMcpClientObservabilityEndpointTests
         return await builder.StartAsync();
     }
 
-    private sealed class TestLogRegistry(ClientKey client) : IAgentLogGatewaySessionRegistry
+    private sealed class TestLogRegistry(ClientKey client, bool gatewayDataAvailable) : IAgentLogGatewaySessionRegistry
     {
         public event Action<GatewayLogBatchEvent>? LogBatchAccepted
         {
@@ -238,7 +227,7 @@ public sealed class DevelopmentMcpClientObservabilityEndpointTests
         }
         public AgentLogRegistration Register(ClientKey value, Guid connectionId, ulong connectionEpoch, AgentLogHello hello, bool provisional = false) => throw new NotSupportedException();
         public bool TryCompleteResync(ClientKey value, string sourceId) => value == client && sourceId == "netratel-runtime";
-        public IReadOnlyList<GatewayLogSourceDescriptorDto> GetSources(ClientKey value) => value == client
+        public IReadOnlyList<GatewayLogSourceDescriptorDto> GetSources(ClientKey value) => value == client && gatewayDataAvailable
             ? [new("netratel-runtime", "runtime", "Runtime", "linux", true, null, true, true, true, ["text"])]
             : [];
         public GatewayLogPageDto Query(ClientKey value, GatewayLogPageRequest request) => new([], null, null, false, 0, false);
@@ -260,14 +249,14 @@ public sealed class DevelopmentMcpClientObservabilityEndpointTests
         }
     }
 
-    private sealed class TestTelemetryRouter(ClientKey client) : IClientTelemetryRouter
+    private sealed class TestTelemetryRouter(ClientKey client, bool gatewayDataAvailable) : IClientTelemetryRouter
     {
         private readonly TelemetrySnapshot _snapshot = new(
             client, 1, 1, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
             new NetRatel.Application.Telemetry.TelemetryCpu(20, null, 4), new NetRatel.Application.Telemetry.TelemetryMemory(100, 50, 50, 50), [], [], null, "akka-shadow", true);
         public Task<TelemetryMessageResult> RecordAsync(RecordTelemetrySnapshot message, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public Task<ClientTelemetryState> GetSnapshotAsync(ClientKey requested, CancellationToken cancellationToken) => Task.FromResult(new ClientTelemetryState(requested, requested == client ? _snapshot : null));
-        public Task<ClientTelemetryReadModelSnapshot> GetReadModelAsync(CancellationToken cancellationToken) => Task.FromResult(new ClientTelemetryReadModelSnapshot([_snapshot], DateTimeOffset.UtcNow));
+        public Task<ClientTelemetryState> GetSnapshotAsync(ClientKey requested, CancellationToken cancellationToken) => Task.FromResult(new ClientTelemetryState(requested, gatewayDataAvailable && requested == client ? _snapshot : null));
+        public Task<ClientTelemetryReadModelSnapshot> GetReadModelAsync(CancellationToken cancellationToken) => Task.FromResult(new ClientTelemetryReadModelSnapshot(gatewayDataAvailable ? [_snapshot] : [], DateTimeOffset.UtcNow));
         public Task<ClientTelemetryRouteStatus> ProbeAsync(CancellationToken cancellationToken) => Task.FromResult(new ClientTelemetryRouteStatus(1, 1, 0, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, "test", "test"));
     }
 

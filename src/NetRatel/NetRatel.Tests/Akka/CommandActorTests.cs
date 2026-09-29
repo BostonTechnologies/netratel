@@ -27,7 +27,7 @@ public sealed class CommandActorTests : IAsyncLifetime
     {
         var client = new ClientKey(41, Guid.NewGuid());
         var key = new CommandKey(client.TenantId, "receipt-time");
-        var actor = _system.ActorOf(CommandActor.Props(key));
+        var actor = _system.ActorOf(CommandActor.Props(key, new TestCommandPersistenceStore()));
         var requestedAt = DateTimeOffset.Parse("2026-09-06T09:15:36Z");
         var statuses = new[] { CommandLifecycleStatus.Created, CommandLifecycleStatus.Dispatched,
             CommandLifecycleStatus.Accepted, CommandLifecycleStatus.Started, CommandLifecycleStatus.Cancelled };
@@ -45,24 +45,24 @@ public sealed class CommandActorTests : IAsyncLifetime
         var duplicate = await actor.Ask<CommandMessageResult>(last! with { Event = last!.Event with { StatusTimestamp = requestedAt.AddDays(1) } });
         duplicate.Disposition.Should().Be(CommandMessageDisposition.Duplicate);
         duplicate.CurrentStatusTimestamp.Should().Be(requestedAt.AddSeconds(10));
-        var state = await actor.Ask<CommandShadowState>(new GetCommandShadowState(key));
+        var state = await actor.Ask<CommandState>(new GetCommandState(key));
         state.RequestTimestamp.Should().Be(requestedAt);
         state.History.Select(item => item.StatusTimestamp).Should().Equal(requestedAt, requestedAt,
             requestedAt.AddSeconds(10), requestedAt.AddSeconds(10), requestedAt.AddSeconds(10));
     }
 
     [Fact]
-    public async Task Shadow_timestamp_semantics_are_preserved()
+    public async Task Lifecycle_timestamps_are_monotonic_for_every_persisted_event()
     {
         var client = new ClientKey(41, Guid.NewGuid());
         var key = new CommandKey(client.TenantId, "shadow-time");
-        var actor = _system.ActorOf(CommandActor.Props(key));
+        var actor = _system.ActorOf(CommandActor.Props(key, new TestCommandPersistenceStore()));
         var requestedAt = DateTimeOffset.Parse("2026-09-06T09:15:36Z");
         var record = new RecordCommandLifecycleEvent(new(client, key.CommandId, "shadow-correlation",
             requestedAt, requestedAt.AddSeconds(-5), 1, 1, CommandLifecycleStatus.Created));
         var result = await actor.Ask<CommandMessageResult>(record);
-        result.CurrentStatusTimestamp.Should().Be(record.Event.StatusTimestamp);
-        (await actor.Ask<CommandShadowState>(new GetCommandShadowState(key))).History.Single().StatusTimestamp.Should().Be(record.Event.StatusTimestamp);
+        result.CurrentStatusTimestamp.Should().Be(requestedAt);
+        (await actor.Ask<CommandState>(new GetCommandState(key))).History.Single().StatusTimestamp.Should().Be(requestedAt);
     }
 
     [Theory]
@@ -74,7 +74,7 @@ public sealed class CommandActorTests : IAsyncLifetime
     {
         var client = new ClientKey(41, Guid.NewGuid());
         var command = new CommandKey(client.TenantId, $"command-{Guid.NewGuid():N}");
-        var actor = _system.ActorOf(CommandActor.Props(command));
+        var actor = _system.ActorOf(CommandActor.Props(command, new TestCommandPersistenceStore()));
         var requestTimestamp = DateTimeOffset.UtcNow;
         var statuses = new[]
         {
@@ -99,11 +99,11 @@ public sealed class CommandActorTests : IAsyncLifetime
             result.Disposition.Should().Be(CommandMessageDisposition.Accepted);
         }
 
-        var state = await actor.Ask<CommandShadowState>(new GetCommandShadowState(command));
+        var state = await actor.Ask<CommandState>(new GetCommandState(command));
         state.CurrentStatus.Should().Be(terminalStatus);
         state.History.Select(entry => entry.Status).Should().Equal(statuses);
         state.History.Should().HaveCount(5);
-        state.Source.Should().Be("akka-shadow");
+        state.Source.Should().Be("akka");
         state.IsAuthoritative.Should().BeFalse();
     }
 
@@ -114,7 +114,7 @@ public sealed class CommandActorTests : IAsyncLifetime
     {
         var client = new ClientKey(41, Guid.NewGuid());
         var command = new CommandKey(client.TenantId, $"queued-{Guid.NewGuid():N}");
-        var actor = _system.ActorOf(CommandActor.Props(command));
+        var actor = _system.ActorOf(CommandActor.Props(command, new TestCommandPersistenceStore()));
         var timestamp = DateTimeOffset.UtcNow;
         var statuses = new[] { CommandLifecycleStatus.Created, CommandLifecycleStatus.Dispatched, CommandLifecycleStatus.Accepted, terminalStatus };
         for (var index = 0; index < statuses.Length; index++)
@@ -127,7 +127,7 @@ public sealed class CommandActorTests : IAsyncLifetime
         duplicate.Disposition.Should().Be(CommandMessageDisposition.Duplicate);
         var lateStart = await actor.Ask<CommandMessageResult>(CreateRecord(client, command.CommandId, timestamp, CommandLifecycleStatus.Started, 5, 5));
         lateStart.Disposition.Should().Be(CommandMessageDisposition.InvalidTransition);
-        (await actor.Ask<CommandShadowState>(new GetCommandShadowState(command))).History.Select(entry => entry.Status).Should().Equal(statuses);
+        (await actor.Ask<CommandState>(new GetCommandState(command))).History.Select(entry => entry.Status).Should().Equal(statuses);
         CommandLifecycleRules.IsValidTransition(CommandLifecycleStatus.Accepted, CommandLifecycleStatus.Completed).Should().BeFalse();
     }
 
@@ -136,7 +136,7 @@ public sealed class CommandActorTests : IAsyncLifetime
     {
         var client = new ClientKey(42, Guid.NewGuid());
         var command = new CommandKey(client.TenantId, "opaque-command-id");
-        var actor = _system.ActorOf(CommandActor.Props(command));
+        var actor = _system.ActorOf(CommandActor.Props(command, new TestCommandPersistenceStore()));
         var requestTimestamp = DateTimeOffset.UtcNow;
 
         var outOfOrder = await actor.Ask<CommandMessageResult>(CreateRecord(
@@ -171,7 +171,7 @@ public sealed class CommandActorTests : IAsyncLifetime
         outOfOrder.Disposition.Should().Be(CommandMessageDisposition.InvalidTransition);
         duplicate.Disposition.Should().Be(CommandMessageDisposition.Duplicate);
         stale.Disposition.Should().Be(CommandMessageDisposition.StaleEvent);
-        var state = await actor.Ask<CommandShadowState>(new GetCommandShadowState(command));
+        var state = await actor.Ask<CommandState>(new GetCommandState(command));
         state.CurrentStatus.Should().Be(CommandLifecycleStatus.Created);
         state.History.Should().ContainSingle();
     }
@@ -182,7 +182,7 @@ public sealed class CommandActorTests : IAsyncLifetime
         var firstClient = new ClientKey(43, Guid.NewGuid());
         var otherClient = new ClientKey(43, Guid.NewGuid());
         var command = new CommandKey(firstClient.TenantId, "shared-command");
-        var actor = _system.ActorOf(CommandActor.Props(command));
+        var actor = _system.ActorOf(CommandActor.Props(command, new TestCommandPersistenceStore()));
         var requestTimestamp = DateTimeOffset.UtcNow;
 
         await actor.Ask<CommandMessageResult>(CreateRecord(
@@ -210,40 +210,53 @@ public sealed class CommandActorTests : IAsyncLifetime
 
         wrongClient.Disposition.Should().Be(CommandMessageDisposition.IdentityMismatch);
         wrongCorrelation.Disposition.Should().Be(CommandMessageDisposition.IdentityMismatch);
-        var state = await actor.Ask<CommandShadowState>(new GetCommandShadowState(command));
+        var state = await actor.Ask<CommandState>(new GetCommandState(command));
         state.Client.Should().Be(firstClient);
         state.CurrentStatus.Should().Be(CommandLifecycleStatus.Created);
     }
 
     [Fact]
-    public async Task AuthoritativeLifecycle_IsRecordedAsAkkaAuthorityAndCannotMixWithShadow()
+    public async Task Lifecycle_authority_metadata_does_not_select_a_second_runtime()
     {
         var client = new ClientKey(43, Guid.NewGuid());
         var command = new CommandKey(client.TenantId, "authoritative-command");
-        var actor = _system.ActorOf(CommandActor.Props(command));
+        var actor = _system.ActorOf(CommandActor.Props(command, new TestCommandPersistenceStore()));
         var requestedAt = DateTimeOffset.UtcNow;
 
-        foreach (var (status, order) in new[]
+        foreach (var (status, order, authoritative) in new[]
                  {
-                     (CommandLifecycleStatus.Created, 1UL),
-                     (CommandLifecycleStatus.Dispatched, 2UL),
-                     (CommandLifecycleStatus.Accepted, 3UL),
-                     (CommandLifecycleStatus.Started, 4UL),
-                     (CommandLifecycleStatus.Completed, 5UL)
+                     (CommandLifecycleStatus.Created, 1UL, false),
+                     (CommandLifecycleStatus.Dispatched, 2UL, true),
+                     (CommandLifecycleStatus.Accepted, 3UL, false),
+                     (CommandLifecycleStatus.Started, 4UL, true),
+                     (CommandLifecycleStatus.Completed, 5UL, false)
                  })
         {
             var result = await actor.Ask<CommandMessageResult>(CreateRecord(
-                client, command.CommandId, requestedAt, status, order, order, authoritative: true));
+                client, command.CommandId, requestedAt, status, order, order, authoritative: authoritative));
             result.Disposition.Should().Be(CommandMessageDisposition.Accepted);
         }
 
-        var state = await actor.Ask<CommandShadowState>(new GetCommandShadowState(command));
+        var state = await actor.Ask<CommandState>(new GetCommandState(command));
         state.Source.Should().Be("akka");
-        state.IsAuthoritative.Should().BeTrue();
+        state.IsAuthoritative.Should().BeFalse();
+    }
 
-        var mixed = await actor.Ask<CommandMessageResult>(CreateRecord(
-            client, command.CommandId, requestedAt, CommandLifecycleStatus.Completed, 6, 6));
-        mixed.Disposition.Should().Be(CommandMessageDisposition.IdentityMismatch);
+    [Fact]
+    public async Task Persistence_failure_is_reported_as_unavailable_instead_of_unobserved()
+    {
+        var command = new CommandKey(45, "persistence-failure");
+        var store = new TestCommandPersistenceStore
+        {
+            ReplayFailure = new InvalidOperationException("database unavailable")
+        };
+        var actor = _system.ActorOf(CommandActor.Props(command, store));
+
+        var state = await actor.Ask<CommandState>(new GetCommandState(command));
+
+        state.Command.Should().Be(command);
+        state.Client.Should().BeNull();
+        state.Source.Should().Be("akka-persistence-unavailable");
     }
 
     [Fact]
@@ -254,7 +267,7 @@ public sealed class CommandActorTests : IAsyncLifetime
         var completedCommand = $"completed-{Guid.NewGuid():N}";
         var activeCommand = $"active-{Guid.NewGuid():N}";
         var requestTimestamp = DateTimeOffset.UtcNow;
-        var router = _system.ActorOf(ClientCommandRouterActor.Props());
+        var router = _system.ActorOf(ClientCommandRouterActor.Props(new TestCommandPersistenceStore()));
 
         await ProgressAsync(
             router,
@@ -284,10 +297,10 @@ public sealed class CommandActorTests : IAsyncLifetime
             version: 2,
             sequence: 0));
 
-        var completed = await router.Ask<CommandShadowState>(
-            new GetCommandShadowState(new CommandKey(completedClient.TenantId, completedCommand)));
-        var active = await router.Ask<CommandShadowState>(
-            new GetCommandShadowState(new CommandKey(activeClient.TenantId, activeCommand)));
+        var completed = await router.Ask<CommandState>(
+            new GetCommandState(new CommandKey(completedClient.TenantId, completedCommand)));
+        var active = await router.Ask<CommandState>(
+            new GetCommandState(new CommandKey(activeClient.TenantId, activeCommand)));
         var diagnostics = await router.Ask<ClientCommandRouteStatus>(new ProbeClientCommandRoute());
 
         completed.CurrentStatus.Should().Be(CommandLifecycleStatus.Completed);
@@ -297,7 +310,7 @@ public sealed class CommandActorTests : IAsyncLifetime
         diagnostics.FailedCommands.Should().Be(0);
         diagnostics.InvalidTransitions.Should().Be(1);
         diagnostics.StaleEvents.Should().Be(1);
-        diagnostics.Authority.Should().Be("unavailable");
+        diagnostics.Authority.Should().Be("akka");
     }
 
     private static async Task ProgressAsync(

@@ -11,10 +11,10 @@ public sealed class ClientLogStreamService : IAsyncDisposable
     private readonly LegacySseClient _sse;
     private Func<ClientLogEntryDto, Task>? _onLogEntry;
 
-    public ClientLogStreamService(IHttpClientFactory factory, ITokenProvider tokens)
+    public ClientLogStreamService(IHttpClientFactory factory)
     {
         var http = factory.CreateClient("OrchestratorApi");
-        _sse = new LegacySseClient(http, tokens.GetBearerAsync);
+        _sse = new LegacySseClient(http);
         _sse.OnEvent += OnSseAsync;
     }
 

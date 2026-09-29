@@ -113,8 +113,8 @@ public sealed class CommandPersistenceStore(
             ReadCounter(ref _duplicateDetectionCount),
             ReadCounter(ref _recoverySuccessCount),
             lastReplayTicks == 0 ? null : new DateTimeOffset(lastReplayTicks, TimeSpan.Zero),
-            "shadow-only",
-            "unavailable");
+            "akka",
+            "akka");
     }
 
     public void RecordRecoverySucceeded() =>

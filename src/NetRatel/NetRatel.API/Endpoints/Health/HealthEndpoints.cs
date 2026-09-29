@@ -22,35 +22,6 @@ public static class HealthEndpoints
             .WithTags("Health")
             .WithSummary("Readiness probe for required NetRatel dependencies");
 
-        app.MapGet("/health/akka-authority", async (
-            HealthCheckService healthChecks,
-            CancellationToken cancellationToken) =>
-        {
-            var report = await healthChecks.CheckHealthAsync(
-                registration => registration.Name == "akka-authority-mode",
-                cancellationToken).ConfigureAwait(false);
-            if (!report.Entries.TryGetValue("akka-authority-mode", out var entry))
-            {
-                return Results.Problem(
-                    statusCode: StatusCodes.Status503ServiceUnavailable,
-                    title: "Akka authority health check is not registered.");
-            }
-
-            var payload = new
-            {
-                status = entry.Status.ToString().ToLowerInvariant(),
-                entry.Description,
-                entry.Data
-            };
-
-            return entry.Status == HealthStatus.Healthy
-                ? Results.Ok(payload)
-                : Results.Json(payload, statusCode: StatusCodes.Status503ServiceUnavailable);
-        })
-            .RequireAuthorization("Operator")
-            .WithTags("Health")
-            .WithSummary("Akka migration authority and fallback status");
-
         return app;
     }
 }

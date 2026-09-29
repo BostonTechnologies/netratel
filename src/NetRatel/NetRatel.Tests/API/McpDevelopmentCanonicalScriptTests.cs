@@ -180,7 +180,7 @@ public sealed class McpDevelopmentCanonicalScriptTests
         builder.Services.AddSingleton<IEventRecorder>(services => services.GetRequiredService<Events>());
         builder.Services.AddSingleton<ICorrelationContext, Correlation>();
         builder.Services.AddSingleton<McpOperatorLocalAgentOptions>();
-        builder.Services.AddSingleton<NetRatelAkkaMigrationOptions>();
+        builder.Services.AddSingleton<NetRatelAkkaOptions>();
         var app = builder.Build();
         app.UseAuthentication();
         // The trusted delegation output is supplied here; signature verification has separate coverage.

@@ -1,4 +1,3 @@
-using NetRatel.Akka.Configuration;
 using NetRatel.API.Gateway;
 using NetRatel.API.Realtime;
 using NetRatel.Application.Telemetry;
@@ -42,16 +41,9 @@ public static class AgentTelemetryReadEndpoints
     }
 
     private static async Task<IResult> ListAsync(
-        NetRatelAkkaMigrationOptions options,
-        IServiceProvider services,
+        [FromServices] IClientTelemetryRouter telemetry,
         CancellationToken cancellationToken)
     {
-        if (!options.IsTelemetryAuthorityActive)
-        {
-            return Results.NotFound();
-        }
-
-        var telemetry = services.GetRequiredService<IClientTelemetryRouter>();
         var readModel = await telemetry.GetReadModelAsync(cancellationToken).ConfigureAwait(false);
         return Results.Ok(readModel.Snapshots.Select(Map).ToArray());
     }
@@ -61,8 +53,7 @@ public static class AgentTelemetryReadEndpoints
         Guid agentId,
         HttpContext http,
         IEffectiveAccessService access,
-        NetRatelAkkaMigrationOptions options,
-        IServiceProvider services,
+        [FromServices] IClientTelemetryRouter telemetry,
         CancellationToken cancellationToken)
     {
         // Keep the tenant scope enforcement adjacent to this resource as a
@@ -74,12 +65,6 @@ public static class AgentTelemetryReadEndpoints
             return Results.Forbid();
         }
 
-        if (!options.IsTelemetryAuthorityActive)
-        {
-            return Results.NotFound();
-        }
-
-        var telemetry = services.GetRequiredService<IClientTelemetryRouter>();
         var state = await telemetry.GetSnapshotAsync(new(tenantId, agentId), cancellationToken).ConfigureAwait(false);
         return state.Latest is null ? Results.NotFound() : Results.Ok(Map(state.Latest));
     }
@@ -102,19 +87,12 @@ public static class AgentTelemetryReadEndpoints
         Guid agentId,
         [FromQuery] int? samplePeriodMs,
         HttpContext http,
-        [FromServices] NetRatelAkkaMigrationOptions options,
         [FromServices] IClientTelemetryRouter telemetry,
         [FromServices] IGatewayTelemetryLiveRegistry live,
         [FromServices] ITelemetryInteractiveDemandRegistry demand,
         [FromServices] IAgentTelemetryGatewaySessionRegistry sessions,
         [FromServices] TimeProvider timeProvider)
     {
-        if (!options.IsTelemetryAuthorityActive)
-        {
-            http.Response.StatusCode = StatusCodes.Status404NotFound;
-            return;
-        }
-
         var client = new NetRatel.Application.Presence.ClientKey(tenantId, agentId);
         var period = Math.Clamp(samplePeriodMs ?? 1000, 1000, 60_000);
         TelemetryInteractiveLease? lease = null;

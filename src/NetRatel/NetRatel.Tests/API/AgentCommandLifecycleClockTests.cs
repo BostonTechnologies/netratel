@@ -20,6 +20,7 @@ using NetRatel.Application.Commands;
 using NetRatel.Application.Jobs;
 using NetRatel.Application.Operations;
 using NetRatel.Application.Presence;
+using NetRatel.Tests.Akka;
 using Xunit;
 
 namespace NetRatel.Tests.API;
@@ -130,7 +131,7 @@ public sealed partial class AgentCommandJobControlGatewayServiceTests
             var fixture = new ClockFixture();
             fixture.Clock.Now = fixture.RequestedAt.AddSeconds(1);
             fixture.system = ActorSystem.Create("command-clock-" + Guid.NewGuid().ToString("N"));
-            fixture.actor = fixture.system.ActorOf(CommandActor.Props(fixture.Command));
+            fixture.actor = fixture.system.ActorOf(CommandActor.Props(fixture.Command, new TestCommandPersistenceStore()));
             foreach (var (status, order) in new[] { (CommandLifecycleStatus.Created, 1UL), (CommandLifecycleStatus.Dispatched, 2UL) })
                 (await fixture.actor.Ask<CommandMessageResult>(new RecordCommandLifecycleEvent(new(fixture.Client,
                     fixture.Command.CommandId, "clock-correlation", fixture.RequestedAt, fixture.RequestedAt, order, order, status, "akka", true))))
@@ -154,15 +155,7 @@ public sealed partial class AgentCommandJobControlGatewayServiceTests
                     services.AddSingleton(Stub<IMcpOperatorCommandStore>((method, args) => fixture.Project("command", method, args)));
                     services.AddSingleton(Stub<IMcpOperatorTaskStore>((method, args) => fixture.Project("task", method, args)));
                     services.AddSingleton(Stub<IJobRunService>((method, args) => fixture.Project("job", method, args)));
-                    services.AddSingleton(new NetRatelAkkaMigrationOptions
-                    {
-                        Enabled = true,
-                        PresenceEnabled = true,
-                        GatewayEnabled = true,
-                        PresenceAuthorityEnabled = true,
-                        CommandShadowEnabled = true,
-                        CommandAuthorityEnabled = true
-                    });
+                    services.AddSingleton(new NetRatelAkkaOptions());
                     services.AddSingleton(NullLogger<AgentCommandGatewayService>.Instance);
                 });
                 web.Configure(app =>
@@ -219,7 +212,7 @@ public sealed partial class AgentCommandJobControlGatewayServiceTests
             ConnectionId = ConnectionId.ToString("D"),
             ConnectionEpoch = 5
         };
-        public Task<CommandShadowState> StateAsync() => actor.Ask<CommandShadowState>(new GetCommandShadowState(Command));
+        public Task<CommandState> StateAsync() => actor.Ask<CommandState>(new GetCommandState(Command));
         public async Task<IReadOnlyList<ClockProjection>> ReadProjectionsAsync(int count)
         {
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));

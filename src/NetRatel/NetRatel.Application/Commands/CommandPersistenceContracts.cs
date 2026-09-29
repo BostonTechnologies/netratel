@@ -37,7 +37,8 @@ public sealed record CommandPersistenceDiagnostics(
     string Authority);
 
 /// <summary>
-/// Stores shadow command observations. Implementations must not dispatch or execute commands.
+/// Stores command lifecycle observations for replay. Implementations do not
+/// dispatch or execute commands.
 /// </summary>
 public interface ICommandPersistenceStore
 {

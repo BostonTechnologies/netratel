@@ -86,6 +86,8 @@ public sealed class ClientInstallLinkTests : IAsyncLifetime
         Assert.True(replay.Replay);
         Assert.StartsWith("https://netratel.example/clients/install/", created.PublicUrl);
         Assert.Contains("API_BASE=\"https://netratel.example\"", created.Script);
+        Assert.Contains("GATEWAY_ENDPOINT=\"\"", created.Script);
+        Assert.DoesNotContain("NetRatelCLIENT__Gateway__Endpoint=https://netratel.example", created.Script);
         Assert.Equal(created.PublicUrl, replay.PublicUrl);
         Assert.Equal(created.Script, replay.Script);
         Assert.Equal(1, await db.ClientInstallGrants.CountAsync());
@@ -112,6 +114,46 @@ public sealed class ClientInstallLinkTests : IAsyncLifetime
         Assert.Equal(code, validated.Code);
         await Assert.ThrowsAsync<InvalidOperationException>(() => links.CreateAsync(
             request with { MaxUses = 3 }, "fixture-admin", TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task ExplicitApiAndGatewayOriginsNormalizeOnceAndRemainInTheImmutableScriptSnapshot()
+    {
+        await using var services = BuildServices(
+            Keys,
+            siteUrl: "https://brand.example.test",
+            publicApiBase: "https://public-api.example.test/api/",
+            publicGatewayBase: "https://public-gateway.example.test/");
+        await using var scope = services.CreateAsyncScope();
+        var links = scope.ServiceProvider.GetRequiredService<ClientInstallLinkService>();
+        var request = Request();
+
+        var created = await links.CreateAsync(request, "fixture-admin", TestContext.Current.CancellationToken);
+        var replay = await links.CreateAsync(request, "fixture-admin", TestContext.Current.CancellationToken);
+
+        Assert.Contains("API_BASE=\"https://public-api.example.test\"", created.Script);
+        Assert.Contains("GATEWAY_ENDPOINT=\"https://public-gateway.example.test\"", created.Script);
+        Assert.DoesNotContain("public-api.example.test/api/api", created.Script);
+        Assert.Equal(created.Script, replay.Script);
+        Assert.Equal(created.PublicUrl, replay.PublicUrl);
+    }
+
+    [Fact]
+    public async Task SameOriginGatewayConfigurationIsNotPersistedInTheIssuedScript()
+    {
+        await using var services = BuildServices(
+            Keys,
+            siteUrl: "https://brand.example.test",
+            publicApiBase: "https://shared.example.test/api/",
+            publicGatewayBase: "https://shared.example.test/");
+        await using var scope = services.CreateAsyncScope();
+        var links = scope.ServiceProvider.GetRequiredService<ClientInstallLinkService>();
+
+        var created = await links.CreateAsync(Request(), "fixture-admin", TestContext.Current.CancellationToken);
+
+        Assert.Contains("API_BASE=\"https://shared.example.test\"", created.Script);
+        Assert.Contains("GATEWAY_ENDPOINT=\"\"", created.Script);
+        Assert.DoesNotContain("NetRatelCLIENT__Gateway__Endpoint=https://shared.example.test", created.Script);
     }
 
     [Fact]
@@ -287,13 +329,19 @@ public sealed class ClientInstallLinkTests : IAsyncLifetime
         Assert.Equal(1, await finalDb.Agents.CountAsync());
     }
 
-    private ServiceProvider BuildServices(string keys, string? siteUrl = "https://netratel.example")
+    private ServiceProvider BuildServices(
+        string keys,
+        string? siteUrl = "https://netratel.example",
+        string? publicApiBase = null,
+        string? publicGatewayBase = null)
     {
         var archive = MakeArchive();
         var artifacts = new FixtureArtifacts(archive);
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
-            ["DataProtection:KeysDirectory"] = keys
+            ["DataProtection:KeysDirectory"] = keys,
+            ["ClientArtifacts:PublicBaseUrl"] = publicApiBase,
+            ["ClientArtifacts:PublicGatewayBaseUrl"] = publicGatewayBase
         }).Build();
         var services = new ServiceCollection()
             .AddLogging()

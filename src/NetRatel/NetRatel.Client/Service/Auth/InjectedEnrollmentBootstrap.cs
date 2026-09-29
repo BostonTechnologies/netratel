@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using NetRatel.Application.ClientAuth;
 using NetRatel.Client.Service.Logging;
+using NetRatel.Shared.Client;
 
 namespace NetRatel.Client.Service.Auth;
 
@@ -106,28 +107,21 @@ public sealed class InjectedEnrollmentBootstrap : IInjectedEnrollmentBootstrap
             return "issuer is required.";
         }
 
-        if (!string.IsNullOrWhiteSpace(payload.Issuer))
+        try
         {
-            var configured = NormalizeConfiguredApiBase(options.ApiBaseUrl);
-            var issuer = NormalizeConfiguredApiBase(payload.Issuer);
+            var configured = ClientEndpointAddress.NormalizeApiBase(options.ApiBaseUrl);
+            var issuer = ClientEndpointAddress.NormalizeApiBase(payload.Issuer);
             if (!string.Equals(configured, issuer, StringComparison.OrdinalIgnoreCase))
             {
                 return "issuer does not match the configured API base URL.";
             }
         }
-
-        return null;
-    }
-
-    private static string NormalizeConfiguredApiBase(string value)
-    {
-        if (Uri.TryCreate(value, UriKind.Absolute, out var uri))
+        catch (ArgumentException)
         {
-            var path = uri.AbsolutePath.TrimEnd('/');
-            return $"{uri.Scheme}://{uri.Authority}{path}{uri.Query}{uri.Fragment}";
+            return "issuer and configured API base URL must be an origin, optionally followed by /api.";
         }
 
-        return value.Trim().TrimEnd('/');
+        return null;
     }
 
     private static string ResolveExecutableDirectory()

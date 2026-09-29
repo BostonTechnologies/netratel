@@ -11,6 +11,7 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.TestHost;
+using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -19,8 +20,8 @@ using NetRatel.API.Endpoints;
 using NetRatel.API.Endpoints.Client;
 using NetRatel.API.Gateway;
 using NetRatel.API.Services.RemoteSupport;
-using NetRatel.Akka.Configuration;
 using NetRatel.Akka.Observability;
+using NetRatel.Akka.Configuration;
 using NetRatel.Application.Presence;
 using NetRatel.Application.RemoteSupport;
 using NetRatel.Shared.Contracts.FileSystem;
@@ -32,10 +33,10 @@ namespace NetRatel.Tests.API;
 public sealed class GatewayCapabilityEndpointTests
 {
     [Fact]
-    public async Task FileList_UsesTheAgentIdGatewayRegistry_WhenAuthorityIsActive()
+    public async Task FileList_UsesTheAgentIdGatewayRegistry()
     {
         var agentId = Guid.NewGuid();
-        using var app = await BuildAppAsync(fileEnabled: true, remoteEnabled: false);
+        using var app = await BuildAppAsync();
         var client = app.GetTestClient();
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test");
 
@@ -76,7 +77,7 @@ public sealed class GatewayCapabilityEndpointTests
         listener.Start();
 
         var agentId = Guid.NewGuid();
-        using var app = await BuildAppAsync(fileEnabled: true, remoteEnabled: false);
+        using var app = await BuildAppAsync();
         var client = app.GetTestClient();
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test");
 
@@ -90,9 +91,7 @@ public sealed class GatewayCapabilityEndpointTests
             measurement.Tags.Should().Contain(new Dictionary<string, object?>
             {
                 ["authority"] = "akka",
-                ["migration_phase"] = "authority-cutover",
                 ["feature"] = "file-browser",
-                ["fallback_used"] = "false",
                 ["environment"] = "dev"
             });
         }
@@ -110,7 +109,7 @@ public sealed class GatewayCapabilityEndpointTests
     public async Task FileList_MapsExpectedRemoteFailuresToStructuredProblemDetails(string failureCode, HttpStatusCode expectedStatus)
     {
         var agentId = Guid.NewGuid();
-        using var app = await BuildAppAsync(fileEnabled: true, remoteEnabled: false);
+        using var app = await BuildAppAsync();
         app.Services.GetRequiredService<FileRegistry>().FailureCode = failureCode;
         var client = app.GetTestClient();
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test");
@@ -123,33 +122,39 @@ public sealed class GatewayCapabilityEndpointTests
     }
 
     [Fact]
-    public async Task RemoteSupportOpen_IsNotExposed_WhenAuthorityIsDisabled()
+    public async Task RemoteSupportV2Routes_AreRegisteredAndRequireOperatorAuthorization()
     {
-        using var app = await BuildAppAsync(fileEnabled: false, remoteEnabled: false);
+        using var app = await BuildAppAsync();
         var client = app.GetTestClient();
-        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test");
 
-        var response = await client.PostAsJsonAsync($"/api/v2/agents/3/{Guid.NewGuid():D}/remote-support/sessions", new OpenRemoteSupportRequest());
+        var agentId = Guid.NewGuid();
+        var response = await client.GetAsync($"/api/v2/agents/3/{agentId:D}/remote-support/v2/capabilities");
 
-        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+
+        var routes = app.Services.GetRequiredService<EndpointDataSource>().Endpoints
+            .OfType<RouteEndpoint>()
+            .Select(endpoint => endpoint.RoutePattern.RawText)
+            .ToArray();
+        routes.Should().Contain("/api/v2/agents/{tenantId:int}/{agentId:guid}/remote-support/v2/capabilities");
+        routes.Should().NotContain("/api/v2/agents/{tenantId:int}/{agentId:guid}/remote-support/sessions");
+        routes.Should().NotContain("/api/v2/gateway-remote-support/{sessionId}");
     }
 
     [Fact]
-    public async Task RemoteSupportOpen_UsesTheAgentIdGatewayRegistry_WhenAuthorityIsActive()
+    public async Task RemoteSupportV2Lifecycle_KeepsUnknownSessionsNotFoundForAuthorizedOperators()
     {
         var agentId = Guid.NewGuid();
-        using var app = await BuildAppAsync(fileEnabled: false, remoteEnabled: true);
+        var sessionId = Guid.NewGuid();
+        using var app = await BuildAppAsync();
+        app.Services.GetRequiredService<V2LifecycleRouter>().ReturnMissingSnapshot = true;
         var client = app.GetTestClient();
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test");
 
-        var response = await client.PostAsJsonAsync($"/api/v2/agents/3/{agentId:D}/remote-support/sessions", new OpenRemoteSupportRequest());
+        var response = await client.GetAsync(
+            $"/api/v2/agents/3/{agentId:D}/remote-support/v2/lifecycle/sessions/{sessionId:D}");
 
-        response.StatusCode.Should().Be(HttpStatusCode.Accepted);
-        var payload = await response.Content.ReadFromJsonAsync<GatewayRemoteSupportOpenResponse>();
-        payload!.TenantId.Should().Be(3);
-        payload.AgentId.Should().Be(agentId);
-        payload.Authority.Should().Be("akka-dev-canary");
-        app.Services.GetRequiredService<RemoteRegistry>().OpenedClient.Should().Be(new ClientKey(3, agentId));
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
     [Fact]
@@ -157,7 +162,7 @@ public sealed class GatewayCapabilityEndpointTests
     {
         var agentId = Guid.NewGuid();
         var sessionId = Guid.NewGuid();
-        using var app = await BuildAppAsync(fileEnabled: false, remoteEnabled: true, replicaSafe: true);
+        using var app = await BuildAppAsync();
         var client = app.GetTestClient();
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test");
         client.DefaultRequestHeaders.Add("Last-Event-ID", "2");
@@ -181,7 +186,7 @@ public sealed class GatewayCapabilityEndpointTests
     {
         var agentId = Guid.NewGuid();
         var sessionId = Guid.NewGuid();
-        using var app = await BuildAppAsync(fileEnabled: false, remoteEnabled: true, replicaSafe: true);
+        using var app = await BuildAppAsync();
         var client = app.GetTestClient();
         var router = app.Services.GetRequiredService<V2LifecycleRouter>();
         var requestUri = $"/api/v2/agents/3/{agentId:D}/remote-support/v2/lifecycle/sessions/{sessionId:D}/ice-configuration?generation=1";
@@ -203,23 +208,8 @@ public sealed class GatewayCapabilityEndpointTests
         body.Should().NotContain("test-shared-secret");
     }
 
-    private static async Task<IHost> BuildAppAsync(bool fileEnabled, bool remoteEnabled, bool replicaSafe = false)
+    private static async Task<IHost> BuildAppAsync()
     {
-        var options = new NetRatelAkkaMigrationOptions
-        {
-            Enabled = true,
-            PresenceEnabled = true,
-            GatewayEnabled = true,
-            PresenceAuthorityEnabled = true,
-            FileGatewayEnabled = fileEnabled,
-            FileBrowseAuthorityEnabled = fileEnabled,
-            RemoteSupportGatewayEnabled = remoteEnabled,
-            RemoteSupportAuthorityEnabled = remoteEnabled,
-            RemoteSupportV2LifecycleAuthorityEnabled = replicaSafe,
-            RemoteSupportV2ReplicaSafeEdgeEnabled = replicaSafe,
-            RemoteSupportV2InventoryEnabled = replicaSafe,
-            RemoteSupportV2MediaEnabled = replicaSafe
-        };
         var builder = Host.CreateDefaultBuilder();
         builder.ConfigureWebHost(web =>
         {
@@ -231,16 +221,16 @@ public sealed class GatewayCapabilityEndpointTests
                 services.AddAuthentication("Test").AddScheme<AuthenticationSchemeOptions, TestAuthHandler>("Test", _ => { });
                 services.AddAuthorization(policyOptions =>
                 {
-                    policyOptions.AddPolicy("Operator", policy => policy.RequireAuthenticatedUser());
                     policyOptions.AddPolicy("FileReader", policy => policy.RequireAuthenticatedUser());
                     policyOptions.AddPolicy("FileWriter", policy => policy.RequireAuthenticatedUser());
                     policyOptions.AddPolicy("RemoteSupportOperator", policy => policy.RequireAuthenticatedUser());
                 });
-                services.AddSingleton(options);
                 services.AddSingleton<FileRegistry>();
                 services.AddSingleton<IAgentFileGatewaySessionRegistry>(provider => provider.GetRequiredService<FileRegistry>());
-                services.AddSingleton<RemoteRegistry>();
-                services.AddSingleton<IGatewayRemoteSupportSessionRegistry>(provider => provider.GetRequiredService<RemoteRegistry>());
+                services.AddSingleton<V2LifecycleRouter>();
+                services.AddSingleton<IRemoteSupportLifecycleRouter>(provider => provider.GetRequiredService<V2LifecycleRouter>());
+                services.AddSingleton(TimeProvider.System);
+                services.AddSingleton<IRemoteSupportV2PreparationRegistry, RemoteSupportV2PreparationRegistry>();
                 services.AddSingleton<IRemoteSupportIceConfigurationProvider>(new RemoteSupportIceConfigurationProvider(
                     Options.Create(new RemoteSupportIceOptions
                     {
@@ -253,11 +243,7 @@ public sealed class GatewayCapabilityEndpointTests
                         }
                     }), TimeProvider.System));
                 services.AddSingleton(TimeProvider.System);
-                if (replicaSafe)
-                {
-                    services.AddSingleton<V2LifecycleRouter>();
-                    services.AddSingleton<IRemoteSupportLifecycleRouter>(provider => provider.GetRequiredService<V2LifecycleRouter>());
-                }
+                services.AddSingleton(new NetRatelAkkaOptions());
             });
             web.Configure(app =>
             {
@@ -267,7 +253,7 @@ public sealed class GatewayCapabilityEndpointTests
                 app.UseEndpoints(endpoints =>
                 {
                     endpoints.MapAgentFileGatewayEndpoints();
-                    endpoints.MapAgentRemoteSupportGatewayEndpoints();
+                    endpoints.MapAgentRemoteSupportV2Endpoints();
                 });
             });
         });
@@ -292,34 +278,17 @@ public sealed class GatewayCapabilityEndpointTests
         public bool TryFail(ClientKey client, NetRatel.AgentGateway.Contracts.V1.FileRequestFailed failed) => false;
     }
 
-    private sealed class RemoteRegistry : IGatewayRemoteSupportSessionRegistry
-    {
-        public ClientKey? OpenedClient { get; private set; }
-        public AgentRemoteSupportGatewayRegistration Register(ClientKey client, Guid connectionId, ulong connectionEpoch) => throw new NotSupportedException();
-        public Task<GatewayRemoteSupportSession> OpenAsync(ClientKey client, OpenRemoteSupportRequest request, CancellationToken cancellationToken)
-        {
-            OpenedClient = client;
-            return Task.FromResult(new GatewayRemoteSupportSession("session-test", client.TenantId, client.AgentId,
-                "open", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, "akka-dev-canary", null));
-        }
-        public Task SendBrowserSignalAsync(string sessionId, RemoteSupportSignalRequest request, CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task CloseAsync(string sessionId, string? reason, CancellationToken cancellationToken) => Task.CompletedTask;
-        public GatewayRemoteSupportSession? Get(string sessionId) => null;
-        public GatewayRemoteSupportSignalSubscription Subscribe(string sessionId) => throw new NotSupportedException();
-        public bool TryReceiveAgentSignal(ClientKey client, NetRatel.AgentGateway.Contracts.V1.RemoteSupportSignal signal) => false;
-        public bool TryReceiveAgentClose(ClientKey client, NetRatel.AgentGateway.Contracts.V1.RemoteSupportSessionClosed closed) => false;
-    }
-
     private sealed class V2LifecycleRouter : IRemoteSupportLifecycleRouter
     {
         public long? LastSubscribeCursor { get; private set; }
         public long? LastResumeCursor { get; private set; }
         public string SnapshotState { get; set; } = RemoteSupportV2SessionStates.ReadyForOffer;
         public DateTimeOffset? SnapshotExpiresAtUtc { get; set; } = DateTimeOffset.UtcNow.AddMinutes(30);
+        public bool ReturnMissingSnapshot { get; set; }
 
         public Task<RemoteSupportSessionSnapshot> OpenAsync(RemoteSupportOpenSessionCommand command, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<RemoteSupportSessionSnapshot?> GetAsync(RemoteSupportSessionKey session, RemoteSupportOperatorBinding operatorBinding, CancellationToken cancellationToken) =>
-            Task.FromResult<RemoteSupportSessionSnapshot?>(Snapshot(session));
+            Task.FromResult<RemoteSupportSessionSnapshot?>(ReturnMissingSnapshot ? null : Snapshot(session));
         public Task<RemoteSupportLifecycleTransitionResult> ControlAsync(RemoteSupportControlCommand command, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<RemoteSupportLifecycleTransitionResult> AdvanceAsync(AdvanceRemoteSupportSessionLifecycle command, CancellationToken cancellationToken) => throw new NotSupportedException();
 
@@ -354,6 +323,11 @@ public sealed class GatewayCapabilityEndpointTests
     {
         protected override Task<AuthenticateResult> HandleAuthenticateAsync()
         {
+            if (!string.Equals(Request.Headers.Authorization.ToString(), "Test", StringComparison.Ordinal))
+            {
+                return Task.FromResult(AuthenticateResult.NoResult());
+            }
+
             var identity = new ClaimsIdentity([new Claim(ClaimTypes.Name, "test-admin")], Scheme.Name);
             return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(new ClaimsPrincipal(identity), Scheme.Name)));
         }

@@ -3,7 +3,6 @@ using NetRatel.AgentGateway.Contracts.V1;
 using NetRatel.API.Endpoints.Client;
 using NetRatel.API.Gateway;
 using NetRatel.API.Realtime;
-using NetRatel.Akka.Configuration;
 using NetRatel.Application.Presence;
 using NetRatel.Application.Telemetry;
 using NetRatel.Shared.Contracts;
@@ -17,9 +16,7 @@ namespace NetRatel.API.Services;
 /// only source validation, gateway queries, bounded live windows, and their
 /// safe operational outcomes.
 /// </summary>
-public sealed class McpOperatorClientObservabilityService(
-    NetRatelAkkaMigrationOptions options,
-    IServiceProvider services)
+public sealed class McpOperatorClientObservabilityService(IServiceProvider services)
 {
     private const int DefaultLogPageSize = 100;
     private const int DefaultTailWindowSeconds = 5;
@@ -27,16 +24,7 @@ public sealed class McpOperatorClientObservabilityService(
     private const int DefaultTelemetryWindowSeconds = 5;
     private const int DefaultTelemetrySampleLimit = 5;
 
-    private readonly NetRatelAkkaMigrationOptions _options = options;
     private readonly IServiceProvider _services = services;
-
-    public bool IsLogCapabilityAvailable => _options.IsLogAuthorityActive &&
-        _services.GetService<IAgentLogGatewaySessionRegistry>() is not null &&
-        _services.GetService<IAgentLogGatewayQueryDispatcher>() is not null;
-
-    public bool IsTelemetryCapabilityAvailable => _options.IsTelemetryAuthorityActive &&
-        _services.GetService<IClientTelemetryRouter>() is not null &&
-        _services.GetService<IGatewayTelemetryLiveRegistry>() is not null;
 
     public static bool IsValidHistoryRequest(
         string sourceId,
@@ -71,9 +59,7 @@ public sealed class McpOperatorClientObservabilityService(
 
     public McpOperatorObservabilityResult<IReadOnlyList<GatewayLogSourceDescriptorDto>> GetSources(ClientKey client)
     {
-        if (!TryGetLogSessions(out var sessions))
-            return Failure<IReadOnlyList<GatewayLogSourceDescriptorDto>>("observability_gateway_unavailable");
-
+        var sessions = _services.GetRequiredService<IAgentLogGatewaySessionRegistry>();
         var sources = sessions.GetSources(client);
         return sources.Count == 0
             ? Failure<IReadOnlyList<GatewayLogSourceDescriptorDto>>("log_sources_unavailable")
@@ -95,8 +81,8 @@ public sealed class McpOperatorClientObservabilityService(
         string? text,
         CancellationToken cancellationToken)
     {
-        if (!TryGetLogServices(out var sessions, out var dispatcher))
-            return Failure<McpOperatorLogHistoryResponse>("observability_gateway_unavailable");
+        var sessions = _services.GetRequiredService<IAgentLogGatewaySessionRegistry>();
+        var dispatcher = _services.GetRequiredService<IAgentLogGatewayQueryDispatcher>();
         if (!TryCreateLogRequest(sourceId, cursor, pageSize, fromUtc, toUtc, severity, prefix, category, provider, eventId, text, out var request))
             return Failure<McpOperatorLogHistoryResponse>("invalid_log_query");
         if (ValidateLogSource(sessions, client, sourceId!) is { } sourceFailure)
@@ -126,8 +112,8 @@ public sealed class McpOperatorClientObservabilityService(
         Func<CancellationToken, Task<string?>>? currentAdmission,
         CancellationToken cancellationToken)
     {
-        if (!TryGetLogServices(out var sessions, out var dispatcher))
-            return Failure<McpOperatorLogTailResponse>("observability_gateway_unavailable");
+        var sessions = _services.GetRequiredService<IAgentLogGatewaySessionRegistry>();
+        var dispatcher = _services.GetRequiredService<IAgentLogGatewayQueryDispatcher>();
 
         if (!IsValidTailRequest(sourceId, windowSeconds, maxRecords))
             return Failure<McpOperatorLogTailResponse>("invalid_log_query");
@@ -225,8 +211,8 @@ public sealed class McpOperatorClientObservabilityService(
         Func<CancellationToken, Task<string?>>? currentAdmission,
         CancellationToken cancellationToken)
     {
-        if (!TryGetLogServices(out var sessions, out var dispatcher))
-            return Failure<McpOperatorLogResyncResponse>("observability_gateway_unavailable");
+        var sessions = _services.GetRequiredService<IAgentLogGatewaySessionRegistry>();
+        var dispatcher = _services.GetRequiredService<IAgentLogGatewayQueryDispatcher>();
         if (!IsValidSourceId(sourceId))
             return Failure<McpOperatorLogResyncResponse>("invalid_log_query");
         if (ValidateLogSource(sessions, client, sourceId!) is { } sourceFailure)
@@ -266,9 +252,7 @@ public sealed class McpOperatorClientObservabilityService(
         ClientKey client,
         CancellationToken cancellationToken)
     {
-        if (!TryGetTelemetry(out var telemetry))
-            return Failure<AgentTelemetrySnapshotResponse>("observability_gateway_unavailable");
-
+        var telemetry = _services.GetRequiredService<IClientTelemetryRouter>();
         var state = await telemetry.GetSnapshotAsync(client, cancellationToken).ConfigureAwait(false);
         return state.Latest is null
             ? Failure<AgentTelemetrySnapshotResponse>("telemetry_unavailable")
@@ -282,8 +266,8 @@ public sealed class McpOperatorClientObservabilityService(
         Func<CancellationToken, Task<string?>>? currentAdmission,
         CancellationToken cancellationToken)
     {
-        if (!TryGetTelemetry(out var telemetry) || _services.GetService<IGatewayTelemetryLiveRegistry>() is not { } live)
-            return Failure<McpOperatorTelemetryWindowResponse>("observability_gateway_unavailable");
+        var telemetry = _services.GetRequiredService<IClientTelemetryRouter>();
+        var live = _services.GetRequiredService<IGatewayTelemetryLiveRegistry>();
 
         if (!IsValidTelemetryWindow(windowSeconds, maxSamples))
             return Failure<McpOperatorTelemetryWindowResponse>("invalid_telemetry_window");
@@ -340,33 +324,6 @@ public sealed class McpOperatorClientObservabilityService(
             return AdmissionFailure<McpOperatorTelemetryWindowResponse>(finalAdmissionFailure);
 
         return Success(new McpOperatorTelemetryWindowResponse(samples, boundedWindow, boundedLimit));
-    }
-
-    private bool TryGetLogSessions(out IAgentLogGatewaySessionRegistry sessions)
-    {
-        sessions = default!;
-        if (!_options.IsLogAuthorityActive || _services.GetService<IAgentLogGatewaySessionRegistry>() is not { } registered)
-            return false;
-
-        sessions = registered;
-        return true;
-    }
-
-    private bool TryGetLogServices(out IAgentLogGatewaySessionRegistry sessions, out IAgentLogGatewayQueryDispatcher dispatcher)
-    {
-        sessions = default!;
-        dispatcher = default!;
-        return TryGetLogSessions(out sessions) && _services.GetService<IAgentLogGatewayQueryDispatcher>() is { } registered && (dispatcher = registered) is not null;
-    }
-
-    private bool TryGetTelemetry(out IClientTelemetryRouter telemetry)
-    {
-        telemetry = default!;
-        if (!_options.IsTelemetryAuthorityActive || _services.GetService<IClientTelemetryRouter>() is not { } registered)
-            return false;
-
-        telemetry = registered;
-        return true;
     }
 
     private static bool TryCreateLogRequest(

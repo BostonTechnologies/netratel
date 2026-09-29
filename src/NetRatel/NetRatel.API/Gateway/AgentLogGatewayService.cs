@@ -18,7 +18,7 @@ public sealed class AgentLogGatewayService(
     IClientPresenceRouter presenceRouter,
     IAgentManagementService agentManagement,
     IAgentLogGatewaySessionRegistry logSessions,
-    NetRatelAkkaMigrationOptions options,
+    NetRatelAkkaOptions options,
     IAgentLogGatewayQueryDispatcher? logQueries = null,
     ILogger<AgentLogGatewayService>? logger = null)
     : AgentLogGateway.AgentLogGatewayBase
@@ -28,11 +28,6 @@ public sealed class AgentLogGatewayService(
         IServerStreamWriter<GatewayLogFrame> responseStream,
         ServerCallContext context)
     {
-        if (!options.IsLogAuthorityActive)
-        {
-            throw new RpcException(new Status(StatusCode.FailedPrecondition, "The log gateway authority is disabled."));
-        }
-
         if (!AgentGatewayIdentityResolver.TryResolve(context.GetHttpContext().User, out var identity, out var error) || identity is null)
         {
             throw new RpcException(new Status(StatusCode.PermissionDenied, error));
@@ -143,7 +138,7 @@ public sealed class AgentLogGatewayService(
         CancellationToken cancellationToken)
     {
         if (frame.PayloadCase != AgentLogFrame.PayloadOneofCase.Hello || frame.Sequence != 0 ||
-            !string.Equals(frame.ProtocolVersion, options.ProtocolVersion, StringComparison.Ordinal) ||
+            !string.Equals(frame.ProtocolVersion, NetRatelAkkaOptions.ProtocolVersion, StringComparison.Ordinal) ||
             frame.TenantId != identity.TenantId || !Guid.TryParse(frame.ClientId, out var agentId) || agentId != identity.AgentId ||
             !Guid.TryParse(frame.ConnectionId, out var connectionId) || connectionId == Guid.Empty ||
             !Guid.TryParse(frame.OperationId, out var operationId) || operationId == Guid.Empty || frame.ConnectionEpoch == 0 ||
@@ -169,7 +164,7 @@ public sealed class AgentLogGatewayService(
 
     private GatewayLogFrame CreateAccepted(ValidatedLogSession session, AgentLogFrame request) => new()
     {
-        ProtocolVersion = options.ProtocolVersion,
+        ProtocolVersion = NetRatelAkkaOptions.ProtocolVersion,
         TenantId = session.Client.TenantId,
         ClientId = session.Client.AgentId.ToString("D"),
         ConnectionEpoch = session.ConnectionEpoch,
@@ -180,7 +175,7 @@ public sealed class AgentLogGatewayService(
         Tracestate = request.Tracestate,
         Accepted = new LogConnectAccepted
         {
-            LogAuthority = options.PresenceAuthority,
+            LogAuthority = "akka",
             MaximumRecordsPerBatch = 100,
             MaximumEncodedBatchBytes = (uint)Math.Min(64 * 1024, options.MaxInboundMessageBytes)
         }
@@ -188,7 +183,7 @@ public sealed class AgentLogGatewayService(
 
     private GatewayLogFrame CreateFlowControl(ValidatedLogSession session, AgentLogFrame request) => new()
     {
-        ProtocolVersion = options.ProtocolVersion,
+        ProtocolVersion = NetRatelAkkaOptions.ProtocolVersion,
         TenantId = session.Client.TenantId,
         ClientId = session.Client.AgentId.ToString("D"),
         ConnectionEpoch = session.ConnectionEpoch,
@@ -213,7 +208,7 @@ public sealed class AgentLogGatewayService(
     }
 
     private bool MatchesSession(AgentLogFrame frame, ValidatedLogSession session) =>
-        string.Equals(frame.ProtocolVersion, options.ProtocolVersion, StringComparison.Ordinal) &&
+        string.Equals(frame.ProtocolVersion, NetRatelAkkaOptions.ProtocolVersion, StringComparison.Ordinal) &&
         frame.TenantId == session.Client.TenantId &&
         string.Equals(frame.ClientId, session.Client.AgentId.ToString("D"), StringComparison.OrdinalIgnoreCase) &&
         frame.ConnectionEpoch == session.ConnectionEpoch &&
@@ -222,7 +217,7 @@ public sealed class AgentLogGatewayService(
     private async Task RequirePresenceAsync(ClientKey client, Guid connectionId, ulong connectionEpoch, CancellationToken cancellationToken)
     {
         var presence = await presenceRouter.GetSnapshotAsync(client, cancellationToken).ConfigureAwait(false);
-        if (presence.Status != ShadowPresenceStatus.Online || presence.ConnectionId != connectionId ||
+        if (presence.Status != ClientPresenceStatus.Online || presence.ConnectionId != connectionId ||
             presence.ConnectionEpoch != checked((long)connectionEpoch))
         {
             throw new RpcException(new Status(StatusCode.Aborted, "The log gateway session is fenced by the active presence connection."));

@@ -5,7 +5,7 @@ using NetRatel.Application.Presence;
 namespace NetRatel.Akka.Presence;
 
 /// <summary>
-/// Foundation for the future per-client aggregate. Phase 1 delegates only
+/// Per-client aggregate. The current router delegates only
 /// presence messages to its PresenceActor child.
 /// </summary>
 public sealed class ClientActor : ReceiveActor
@@ -14,7 +14,7 @@ public sealed class ClientActor : ReceiveActor
 
     public ClientActor(
         ClientKey client,
-        NetRatelAkkaMigrationOptions options,
+        NetRatelAkkaOptions options,
         IActorRef presenceReadModel)
     {
         _presence = Context.ActorOf(PresenceActor.Props(client, options, presenceReadModel), "presence");
@@ -23,10 +23,10 @@ public sealed class ClientActor : ReceiveActor
 
     public static Props Props(
         ClientKey client,
-        NetRatelAkkaMigrationOptions options,
+        NetRatelAkkaOptions options,
         IActorRef presenceReadModel) =>
         global::Akka.Actor.Props.Create(() => new ClientActor(client, options, presenceReadModel));
 
-    public static Props Props(ClientKey client, NetRatelAkkaMigrationOptions options) =>
+    public static Props Props(ClientKey client, NetRatelAkkaOptions options) =>
         Props(client, options, ActorRefs.Nobody);
 }

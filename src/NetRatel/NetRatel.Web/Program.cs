@@ -2,6 +2,7 @@
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Components.Server.Circuits;
 using MudBlazor.Services;
 using Microsoft.AspNetCore.StaticFiles;
 using MudBlazor.Extensions;
@@ -135,17 +136,18 @@ builder.Services.AddScoped<SseClient>(sp =>
 builder.Services.AddScoped<ITerminalService, TerminalService>();
 builder.Services.AddScoped<AkkaAuthorityFanoutClient>();
 builder.Services.AddScoped<GatewayRemoteSupportApiService>();
-builder.Services.AddScoped<PrimaryClientGatewayCardReadApiService>();
 
 // Register authentication services and token handlers
 builder.Services.AddHttpContextAccessor();
-builder.Services.AddScoped<ITokenProvider, ServerTokenProvider>();
 builder.Services.AddTransient<TokenAuthorizationHandler>();
 builder.Services.AddTransient<SystemTokenAuthorizationHandler>();
 builder.Services.AddScoped<ITokenService, TokenService>();
+builder.Services.AddScoped<OperatorApiCredentialState>();
+builder.Services.AddScoped<OperatorApiCredentialProvider>();
+builder.Services.AddScoped<CircuitHandler, OperatorApiCredentialCircuitHandler>();
 builder.Services.AddScoped<ILocalAccountApiService, LocalAccountApiService>();
 builder.Services.AddScoped<CookieOidcSessionEvents>();
-builder.Services.AddSingleton<ISystemTokenService, SystemTokenService>();
+builder.Services.AddScoped<ISystemTokenService, SystemTokenService>();
 builder.Services.AddBlazorDownloadFile();
 var oidcConfiguration = builder.Configuration.GetSection("Authentication:Oidc");
 if (!oidcConfiguration.Exists())
@@ -302,14 +304,14 @@ builder.Services.AddTransient<RedirectReissueHandler>();
 builder.Services.AddHttpClient("TokenClient", c =>
 {
     c.Timeout = TimeSpan.FromSeconds(30);
-});
+}).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { UseCookies = false });
 
 builder.Services.AddHttpClient("OrchestratorApi", c =>
 {
     c.BaseAddress = new Uri(builder.Configuration["ApiBaseUrl"] ?? "https://localhost:5001/");
     c.Timeout = Timeout.InfiniteTimeSpan;
 })
-.ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false })
+.ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false })
 .AddHttpMessageHandler<RedirectReissueHandler>()
 .AddHttpMessageHandler<TokenAuthorizationHandler>();
 
@@ -318,7 +320,7 @@ builder.Services.AddHttpClient("OrchestratorApiStreaming", c =>
     c.BaseAddress = new Uri(builder.Configuration["ApiBaseUrl"] ?? "https://localhost:5001/");
     c.Timeout = Timeout.InfiniteTimeSpan;
 })
-.ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false })
+.ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false })
 .AddHttpMessageHandler<RedirectReissueHandler>()
 .AddHttpMessageHandler<TokenAuthorizationHandler>()
 .RemoveAllResilienceHandlers();
@@ -337,21 +339,24 @@ builder.Services.AddHttpClient("Bff", (sp, c) =>
         var fallback = sp.GetService<IConfiguration>()?["PublicBaseUrl"] ?? "https://localhost:7247/";
         c.BaseAddress = new Uri(fallback, UriKind.Absolute);
     }
-});
+}).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { UseCookies = false });
 
-builder.Services.AddHttpClient<IWebClientDownloadService, WebClientDownloadService>(c =>
+var webClientDownloadName = typeof(IWebClientDownloadService).Name;
+builder.Services.AddHttpClient(webClientDownloadName, c =>
 {
     c.BaseAddress = new Uri(builder.Configuration["ApiBaseUrl"] ?? "https://localhost:5001/");
 })
-.ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false })
+.ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false })
 .AddHttpMessageHandler<RedirectReissueHandler>()
 .AddHttpMessageHandler<TokenAuthorizationHandler>();
+builder.Services.AddScoped<IWebClientDownloadService>(sp => new WebClientDownloadService(
+    sp.GetRequiredService<IHttpClientFactory>().CreateClient(webClientDownloadName)));
 
 builder.Services.AddHttpClient("SystemApi", c =>
 {
     c.BaseAddress = new Uri(builder.Configuration["ApiBaseUrl"] ?? "https://localhost:5001/");
 })
-.ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false })
+.ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false })
 .AddHttpMessageHandler<RedirectReissueHandler>()
 .AddHttpMessageHandler<SystemTokenAuthorizationHandler>();
 
@@ -359,7 +364,7 @@ builder.Services.AddHttpClient("SystemApiNoAuth", c =>
 {
     c.BaseAddress = new Uri(builder.Configuration["ApiBaseUrl"] ?? "https://localhost:5001/");
 })
-.ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false })
+.ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false })
 .AddHttpMessageHandler<RedirectReissueHandler>();
 
 // Register API services
@@ -367,6 +372,10 @@ builder.Services.AddScoped<TenantApiService>();
 builder.Services.AddScoped<UploadsApiClient>();
 builder.Services.AddScoped<IUploadsApiClient>(sp => sp.GetRequiredService<UploadsApiClient>());
 builder.Services.AddScoped<ScriptLibraryClient>();
+
+// The standard factory still owns and pools the stateless handler pipelines;
+// this scoped adapter adds each circuit's credential to individual requests.
+builder.Services.AddScoped<IHttpClientFactory, OperatorApiHttpClientFactory>();
 
 #endregion
 

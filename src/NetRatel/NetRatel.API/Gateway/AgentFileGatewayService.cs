@@ -17,7 +17,6 @@ public sealed class AgentFileGatewayService(
     IClientPresenceRouter presenceRouter,
     IAgentManagementService agentManagement,
     IAgentFileGatewaySessionRegistry fileSessions,
-    NetRatelAkkaMigrationOptions options,
     ILogger<AgentFileGatewayService> logger)
     : AgentFileGateway.AgentFileGatewayBase
 {
@@ -26,11 +25,6 @@ public sealed class AgentFileGatewayService(
         IServerStreamWriter<GatewayFileFrame> responseStream,
         ServerCallContext context)
     {
-        if (!options.IsFileBrowseAuthorityActive)
-        {
-            throw new RpcException(new Status(StatusCode.FailedPrecondition, "The file gateway authority canary is disabled."));
-        }
-
         if (!AgentGatewayIdentityResolver.TryResolve(context.GetHttpContext().User, out var identity, out var error) || identity is null)
         {
             throw new RpcException(new Status(StatusCode.PermissionDenied, error));
@@ -105,7 +99,7 @@ public sealed class AgentFileGatewayService(
         CancellationToken cancellationToken)
     {
         if (frame.PayloadCase != AgentFileFrame.PayloadOneofCase.Hello || frame.Sequence != 0 ||
-            !string.Equals(frame.ProtocolVersion, options.ProtocolVersion, StringComparison.Ordinal) ||
+            !string.Equals(frame.ProtocolVersion, NetRatelAkkaOptions.ProtocolVersion, StringComparison.Ordinal) ||
             frame.TenantId != identity.TenantId || !Guid.TryParse(frame.ClientId, out var agentId) || agentId != identity.AgentId ||
             !Guid.TryParse(frame.ConnectionId, out var connectionId) || connectionId == Guid.Empty || frame.ConnectionEpoch == 0)
         {
@@ -160,17 +154,17 @@ public sealed class AgentFileGatewayService(
 
     private GatewayFileFrame CreateAccepted(ValidatedFileSession session) => new()
     {
-        ProtocolVersion = options.ProtocolVersion,
+        ProtocolVersion = NetRatelAkkaOptions.ProtocolVersion,
         TenantId = session.Client.TenantId,
         ClientId = session.Client.AgentId.ToString("D"),
         ConnectionEpoch = session.ConnectionEpoch,
         ConnectionId = session.ConnectionId.ToString("D"),
         Sequence = 0,
-        Accepted = new FileConnectAccepted { FileAuthority = options.PresenceAuthority }
+        Accepted = new FileConnectAccepted { FileAuthority = "akka" }
     };
 
     private bool MatchesSession(AgentFileFrame frame, ValidatedFileSession session) =>
-        string.Equals(frame.ProtocolVersion, options.ProtocolVersion, StringComparison.Ordinal) &&
+        string.Equals(frame.ProtocolVersion, NetRatelAkkaOptions.ProtocolVersion, StringComparison.Ordinal) &&
         frame.TenantId == session.Client.TenantId &&
         string.Equals(frame.ClientId, session.Client.AgentId.ToString("D"), StringComparison.OrdinalIgnoreCase) &&
         frame.ConnectionEpoch == session.ConnectionEpoch &&
@@ -179,7 +173,7 @@ public sealed class AgentFileGatewayService(
     private async Task RequirePresenceAsync(ClientKey client, Guid connectionId, ulong connectionEpoch, CancellationToken cancellationToken)
     {
         var presence = await presenceRouter.GetSnapshotAsync(client, cancellationToken).ConfigureAwait(false);
-        if (presence.Status != ShadowPresenceStatus.Online || presence.ConnectionId != connectionId ||
+        if (presence.Status != ClientPresenceStatus.Online || presence.ConnectionId != connectionId ||
             presence.ConnectionEpoch != checked((long)connectionEpoch))
         {
             throw new RpcException(new Status(StatusCode.Aborted, "The file gateway session is fenced by the active presence connection."));

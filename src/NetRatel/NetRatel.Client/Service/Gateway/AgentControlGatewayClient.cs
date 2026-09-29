@@ -26,11 +26,6 @@ public sealed class AgentControlGatewayClient(
         string accessToken,
         CancellationToken stoppingToken)
     {
-        if (!options.ControlGatewayEnabled)
-        {
-            return;
-        }
-
         if (!Uri.TryCreate(options.Endpoint, UriKind.Absolute, out var endpoint) || endpoint.Scheme != Uri.UriSchemeHttps)
         {
             log("Control gateway is disabled because Gateway:Endpoint is not an absolute HTTPS URL.");
@@ -144,7 +139,7 @@ public sealed class AgentControlGatewayClient(
             frame.ConnectionEpoch != session.ConnectionEpoch ||
             !string.Equals(frame.ConnectionId, session.ConnectionId.ToString("D"), StringComparison.OrdinalIgnoreCase) ||
             frame.Sequence != 0 ||
-            string.IsNullOrWhiteSpace(frame.Accepted.ControlAuthority))
+            !GatewayWireProtocol.HasAkkaAuthority(frame.Accepted.ControlAuthority))
         {
             throw new RpcException(new Status(StatusCode.DataLoss, "Control gateway returned an invalid connect acknowledgement."));
         }

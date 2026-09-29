@@ -12,7 +12,9 @@ public sealed class AgentControlSessionRegistryTests
     {
         var client = new ClientKey(3, Guid.NewGuid());
         var registry = new AgentControlSessionRegistry(TimeProvider.System);
+        registry.IsAvailable(client).Should().BeFalse();
         using var registration = registry.Register(client, Guid.NewGuid(), connectionEpoch: 4);
+        registry.IsAvailable(client).Should().BeTrue();
 
         var ping = registry.RequestPingAsync(client, TimeSpan.FromSeconds(1), CancellationToken.None);
         var frame = await registration.Reader.ReadAsync();
@@ -29,6 +31,8 @@ public sealed class AgentControlSessionRegistryTests
         registry.TryGetLatestPing(client, out var latest).Should().BeTrue();
         latest.RequestId.Should().Be(requestId);
         latest.ReceivedAtUtc.Should().Be(result.ReceivedAtUtc);
+        registration.Dispose();
+        registry.IsAvailable(client).Should().BeFalse("cached pings do not indicate a live control session");
     }
 
     [Fact]
@@ -41,6 +45,7 @@ public sealed class AgentControlSessionRegistryTests
 
         await action.Should().ThrowAsync<AgentControlSessionUnavailableException>();
         registry.TryGetLatestPing(client, out _).Should().BeFalse();
+        registry.IsAvailable(client).Should().BeFalse();
     }
 
     [Fact]
@@ -97,9 +102,11 @@ public sealed class AgentControlSessionRegistryTests
         var registry = new AgentControlSessionRegistry(TimeProvider.System);
         var client = new ClientKey(71, Guid.NewGuid());
         using var candidate = registry.Register(client, Guid.NewGuid(), 5, provisional: true);
+        registry.IsAvailable(client).Should().BeFalse();
         await Assert.ThrowsAsync<AgentControlSessionUnavailableException>(() =>
             registry.RequestPingAsync(client, TimeSpan.FromSeconds(5), CancellationToken.None));
         candidate.Activate().Should().BeTrue();
+        registry.IsAvailable(client).Should().BeTrue();
         var ping = registry.RequestPingAsync(client, TimeSpan.FromSeconds(5), CancellationToken.None);
         var frame = await candidate.Reader.ReadAsync();
         candidate.TryCompletePing(Guid.Parse(frame.PingRequest.RequestId), DateTimeOffset.UtcNow).Should().BeTrue();

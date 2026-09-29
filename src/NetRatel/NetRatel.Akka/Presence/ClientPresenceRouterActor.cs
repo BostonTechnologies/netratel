@@ -13,13 +13,13 @@ namespace NetRatel.Akka.Presence;
 /// </summary>
 public sealed class ClientPresenceRouterActor : ReceiveActor
 {
-    private readonly NetRatelAkkaMigrationOptions _options;
+    private readonly NetRatelAkkaOptions _options;
     private readonly IActorRef _presenceReadModel;
     private readonly ClientPresenceMessageExtractor _extractor = new();
     private readonly DateTimeOffset _startedAtUtc = DateTimeOffset.UtcNow;
 
     public ClientPresenceRouterActor(
-        NetRatelAkkaMigrationOptions options,
+        NetRatelAkkaOptions options,
         IActorRef presenceReadModel)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
@@ -33,12 +33,12 @@ public sealed class ClientPresenceRouterActor : ReceiveActor
             Sender.Tell(new ClientPresenceRouteStatus(
                 clients,
                 _startedAtUtc,
-                _options.IsPresenceAuthorityActive ? "akka" : "unavailable"));
+                "akka"));
         });
     }
 
     public static Props Props(
-        NetRatelAkkaMigrationOptions options,
+        NetRatelAkkaOptions options,
         IActorRef presenceReadModel) =>
         global::Akka.Actor.Props.Create(() => new ClientPresenceRouterActor(options, presenceReadModel));
 

@@ -232,9 +232,9 @@ public sealed class AgentJobGatewayClient(
 
         public void ValidateAccepted(GatewayJobFrame frame)
         {
-            if (!Matches(frame) || frame.Sequence != 0 || !GatewayAuthority.IsAkka(frame.Accepted.JobAuthority))
+            if (!Matches(frame) || frame.Sequence != 0 || !GatewayWireProtocol.HasAkkaAuthority(frame.Accepted.JobAuthority))
             {
-                throw new RpcException(new Status(StatusCode.FailedPrecondition, "Job gateway did not admit the required Akka authority."));
+                throw new RpcException(new Status(StatusCode.FailedPrecondition, "Job gateway returned an invalid authority acknowledgement."));
             }
         }
 

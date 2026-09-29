@@ -5,11 +5,14 @@ using System.Linq;
 using Microsoft.Extensions.Configuration;
 using NetRatel.Client.Service.Gateway;
 using NetRatel.Shared;
+using NetRatel.Shared.Client;
 
 namespace NetRatel.Client;
 
 internal static class ClientConfigurationLoader
 {
+    internal sealed record GatewayOptionsResolution(GatewayClientOptions Options, string Source);
+
     internal static IConfiguration BuildPackagedDefaults(string appBaseDir, string? environmentName)
     {
         var builder = new ConfigurationBuilder()
@@ -58,14 +61,131 @@ internal static class ClientConfigurationLoader
         return builder.Build();
     }
 
-    internal static GatewayClientOptions LoadGatewayOptions(IConfiguration configuration, string apiBaseUrl)
+    internal static GatewayClientOptions LoadGatewayOptions(
+        IConfiguration configuration,
+        string apiBaseUrl,
+        IConfiguration? packagedDefaults,
+        IConfiguration? deploymentOverrides,
+        string appBaseDir,
+        IReadOnlyList<string> args)
+        => ResolveGatewayOptions(configuration, apiBaseUrl, packagedDefaults, deploymentOverrides, appBaseDir, args).Options;
+
+    internal static GatewayOptionsResolution ResolveGatewayOptions(
+        IConfiguration configuration,
+        string apiBaseUrl,
+        IConfiguration? packagedDefaults,
+        IConfiguration? deploymentOverrides,
+        string appBaseDir,
+        IReadOnlyList<string> args)
     {
         var options = new GatewayClientOptions();
         configuration.GetSection("Gateway").Bind(options);
-        options.Endpoint = string.IsNullOrWhiteSpace(options.Endpoint)
-            ? apiBaseUrl
-            : options.Endpoint;
-        return options;
+        var endpoint = packagedDefaults?["Gateway:Endpoint"];
+        var source = string.IsNullOrWhiteSpace(endpoint) ? "api-base-url" : "packaged-defaults";
+        if (!string.IsNullOrWhiteSpace(endpoint) &&
+            HasRedundantPairedGatewayDefault(packagedDefaults, ["Client:ApiBaseUrl", "ApiBaseUrl"]))
+        {
+            endpoint = apiBaseUrl;
+            source = "api-base-url";
+        }
+
+        var installedSettingsPath = string.IsNullOrWhiteSpace(appBaseDir)
+            ? string.Empty
+            : Path.Combine(appBaseDir, "clientsettings.json");
+        if (!string.IsNullOrWhiteSpace(installedSettingsPath) && File.Exists(installedSettingsPath))
+        {
+            var installedSettings = new ConfigurationBuilder()
+                .AddJsonFile(installedSettingsPath, optional: false, reloadOnChange: false)
+                .Build();
+            var installedEndpoint = installedSettings["Gateway:Endpoint"];
+            if (installedEndpoint is not null)
+            {
+                var isPairedDefault = HasRedundantPairedGatewayDefault(installedSettings, ["Client:ApiBaseUrl", "ApiBaseUrl"]);
+                endpoint = isPairedDefault ? apiBaseUrl : installedEndpoint;
+                source = isPairedDefault || string.IsNullOrWhiteSpace(installedEndpoint)
+                    ? "api-base-url"
+                    : "installed-settings";
+            }
+        }
+
+        // Deployment and command-line gateway values are explicit choices. Keep them
+        // even when they currently match their API value: a higher-precedence API-only
+        // override must not erase an intentionally pinned gateway origin.
+        if (deploymentOverrides?["Gateway:Endpoint"] is { } deploymentEndpoint)
+        {
+            endpoint = deploymentEndpoint;
+            source = string.IsNullOrWhiteSpace(deploymentEndpoint) ? "api-base-url" : "deployment-configuration";
+        }
+
+        var commandLineOverrides = new ConfigurationBuilder()
+            .AddCommandLine(args.ToArray())
+            .Build();
+        if (commandLineOverrides["Gateway:Endpoint"] is { } commandLineEndpoint)
+        {
+            endpoint = commandLineEndpoint;
+            source = string.IsNullOrWhiteSpace(commandLineEndpoint) ? "api-base-url" : "command-line";
+        }
+
+        if (string.IsNullOrWhiteSpace(endpoint))
+        {
+            endpoint = apiBaseUrl;
+            source = "api-base-url";
+        }
+
+        options.Endpoint = ClientEndpointAddress.NormalizeGatewayBase(endpoint);
+        return new GatewayOptionsResolution(options, source);
+    }
+
+    private static bool HasRedundantPairedGatewayDefault(
+        IConfiguration? configuration,
+        IReadOnlyList<string> apiKeys)
+    {
+        if (configuration is not IConfigurationRoot root)
+        {
+            return false;
+        }
+
+        var providers = root.Providers.ToArray();
+        for (var index = providers.Length - 1; index >= 0; index--)
+        {
+            var provider = providers[index];
+            if (!provider.TryGet("Gateway:Endpoint", out var gatewayEndpoint))
+            {
+                continue;
+            }
+
+            if (string.IsNullOrWhiteSpace(gatewayEndpoint))
+            {
+                return false;
+            }
+
+            string? pairedApiBaseUrl = null;
+            foreach (var apiKey in apiKeys)
+            {
+                if (provider.TryGet(apiKey, out pairedApiBaseUrl))
+                {
+                    break;
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(pairedApiBaseUrl))
+            {
+                return false;
+            }
+
+            try
+            {
+                var gatewayOrigin = ClientEndpointAddress.NormalizeGatewayBase(gatewayEndpoint);
+                var pairedApiOrigin = ClientEndpointAddress.NormalizeApiBase(pairedApiBaseUrl);
+                return string.Equals(gatewayOrigin, pairedApiOrigin, StringComparison.OrdinalIgnoreCase);
+            }
+            catch (ArgumentException)
+            {
+                return false;
+            }
+        }
+
+        return false;
     }
 
     internal static ClientOptions Load(
@@ -140,6 +260,7 @@ internal static class ClientConfigurationLoader
             }
         }
 
+        options.ApiBaseUrl = ClientEndpointAddress.NormalizeApiBase(options.ApiBaseUrl);
         return options;
     }
 }

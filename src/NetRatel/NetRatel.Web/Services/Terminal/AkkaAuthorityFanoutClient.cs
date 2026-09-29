@@ -6,13 +6,13 @@ using NetRatel.Web.Services.Authentication;
 namespace NetRatel.Web.Services.Terminal;
 
 /// <summary>
-/// Maintains the web application's authenticated subscription to the DEV
-/// authority hub. Terminal bytes remain on the dedicated SSE data stream;
+/// Maintains the web application's authenticated subscription to the
+/// Akka authority hub. Terminal bytes remain on the dedicated SSE data stream;
 /// this hub carries bounded lifecycle/projection metadata only.
 /// </summary>
 public sealed class AkkaAuthorityFanoutClient(
     IHttpClientFactory clientFactory,
-    ITokenService tokens,
+    OperatorApiCredentialProvider credentials,
     ILogger<AkkaAuthorityFanoutClient> logger) : IAsyncDisposable
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
@@ -38,17 +38,14 @@ public sealed class AkkaAuthorityFanoutClient(
             {
                 var http = clientFactory.CreateClient("OrchestratorApi");
                 if (http.BaseAddress is null) throw new InvalidOperationException("The OrchestratorApi base address is not configured.");
+                var hubUri = new Uri(http.BaseAddress, "/hubs/akka-authority");
                 _connection = new HubConnectionBuilder()
-                    .WithUrl(new Uri(http.BaseAddress, "/hubs/akka-authority"), options =>
-                    {
-                        options.AccessTokenProvider = async () => await tokens.GetValidAccessTokenAsync().ConfigureAwait(false);
-                    })
+                    .WithUrl(hubUri, options => OperatorApiHubAuthentication.Configure(options, hubUri, credentials))
                     .WithAutomaticReconnect()
                     .Build();
-                _connection.On<ShadowFanoutEnvelope>("shadowUpdated", envelope =>
+                _connection.On<RealtimeFanoutEnvelope>("shadowUpdated", envelope =>
                 {
-                    if (envelope.IsAuthoritative)
-                        logger.LogDebug("Akka authority fanout event received category={Category} target={Target} status={Status}", envelope.Category, envelope.Target.Scope, envelope.Status);
+                    logger.LogDebug("Akka fanout event received category={Category} target={Target} status={Status}", envelope.Category, envelope.Target.Scope, envelope.Status);
                 });
                 _connection.Reconnected += ResubscribeAsync;
             }
@@ -74,7 +71,7 @@ public sealed class AkkaAuthorityFanoutClient(
     }
 
     private static Task SubscribeAsync(HubConnection connection, TerminalTarget target, CancellationToken cancellationToken) =>
-        connection.InvokeAsync<IReadOnlyList<ShadowFanoutEnvelope>>("SubscribeTerminal", cancellationToken, target.TenantId, target.AgentId.ToString("D"), target.SessionId);
+        connection.InvokeAsync<IReadOnlyList<RealtimeFanoutEnvelope>>("SubscribeTerminal", cancellationToken, target.TenantId, target.AgentId.ToString("D"), target.SessionId);
 
     private async ValueTask UnsubscribeAsync(TerminalTarget target)
     {

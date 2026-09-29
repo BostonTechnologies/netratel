@@ -17,11 +17,11 @@ public sealed class TelemetryOverviewStreamService : IAsyncDisposable
     private readonly Uri _targetUri;
     private Func<AgentTelemetrySnapshotDto, Task>? _onTelemetry;
 
-    public TelemetryOverviewStreamService(IHttpClientFactory factory, ITokenProvider tokens)
+    public TelemetryOverviewStreamService(IHttpClientFactory factory)
     {
         var http = factory.CreateClient("OrchestratorApi");
         _targetUri = new Uri(http.BaseAddress!, "/api/v1/telemetry/stream");
-        _sse = new LegacySseClient(http, tokens.GetBearerAsync);
+        _sse = new LegacySseClient(http);
         _sse.OnEvent += OnSseAsync;
     }
 

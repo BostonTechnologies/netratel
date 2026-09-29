@@ -3,7 +3,6 @@ using System.Text;
 using System.Text.Json;
 using NetRatel.API.Gateway;
 using NetRatel.API.Middleware;
-using NetRatel.Akka.Configuration;
 using NetRatel.Application.Operations;
 using NetRatel.Application.Presence;
 using NetRatel.Shared.Operations;
@@ -65,7 +64,6 @@ public static class McpOperatorClientFileEndpoints
         IHostEnvironment environment,
         [FromServices] IClientPresenceRouter presence,
         IMcpOperatorRouteAdmission admission,
-        NetRatelAkkaMigrationOptions options,
         [FromServices] IAgentFileGatewaySessionRegistry sessions,
         CancellationToken cancellationToken)
     {
@@ -74,7 +72,7 @@ public static class McpOperatorClientFileEndpoints
             return GatewayFailure("invalid_file_query", fallback);
 
         var admitted = await TryCreateContextAsync(
-            http, environment, presence, admission, options, tenantId, agentId, "browse", cancellationToken).ConfigureAwait(false);
+            http, environment, presence, admission, tenantId, agentId, "browse", cancellationToken).ConfigureAwait(false);
         if (admitted.Failure is { } failure)
             return failure;
 
@@ -83,7 +81,7 @@ public static class McpOperatorClientFileEndpoints
             return Failure("file_policy_roots_missing", context);
         if (await RecordAcceptedAsync(admission, context, cancellationToken).ConfigureAwait(false) is { } rejected)
             return rejected;
-        if (await RecheckAdmissionAsync(admission, presence, options, new ClientKey(tenantId, agentId), context.Request, path, cancellationToken).ConfigureAwait(false) is { } beforeDispatch)
+        if (await RecheckAdmissionAsync(admission, presence, new ClientKey(tenantId, agentId), context.Request, path, cancellationToken).ConfigureAwait(false) is { } beforeDispatch)
             return Failure(beforeDispatch, context);
 
         try
@@ -94,7 +92,7 @@ public static class McpOperatorClientFileEndpoints
                 pageSize ?? MaximumPageSize,
                 accessPolicy,
                 cancellationToken).ConfigureAwait(false);
-            if (await RecheckAdmissionAsync(admission, presence, options, new ClientKey(tenantId, agentId), context.Request, path, cancellationToken).ConfigureAwait(false) is { } afterDispatch)
+            if (await RecheckAdmissionAsync(admission, presence, new ClientKey(tenantId, agentId), context.Request, path, cancellationToken).ConfigureAwait(false) is { } afterDispatch)
                 return Failure(afterDispatch, context);
 
             var safeEntries = entries
@@ -133,13 +131,12 @@ public static class McpOperatorClientFileEndpoints
         IHostEnvironment environment,
         [FromServices] IClientPresenceRouter presence,
         IMcpOperatorRouteAdmission admission,
-        NetRatelAkkaMigrationOptions options,
         [FromServices] IAgentFileGatewaySessionRegistry sessions,
         CancellationToken cancellationToken)
     {
         var fallback = MinimalContext(tenantId, agentId, "read", http.TraceIdentifier);
         var admitted = await TryCreateContextAsync(
-            http, environment, presence, admission, options, tenantId, agentId, "read", cancellationToken).ConfigureAwait(false);
+            http, environment, presence, admission, tenantId, agentId, "read", cancellationToken).ConfigureAwait(false);
         if (admitted.Failure is { } failure)
             return failure;
 
@@ -148,7 +145,7 @@ public static class McpOperatorClientFileEndpoints
             return Failure("file_policy_roots_missing", context);
         if (await RecordAcceptedAsync(admission, context, cancellationToken).ConfigureAwait(false) is { } rejected)
             return rejected;
-        if (await RecheckAdmissionAsync(admission, presence, options, new ClientKey(tenantId, agentId), context.Request, path, cancellationToken).ConfigureAwait(false) is { } beforeDispatch)
+        if (await RecheckAdmissionAsync(admission, presence, new ClientKey(tenantId, agentId), context.Request, path, cancellationToken).ConfigureAwait(false) is { } beforeDispatch)
             return Failure(beforeDispatch, context);
 
         GatewayFileReadOperation? operation = null;
@@ -167,7 +164,7 @@ public static class McpOperatorClientFileEndpoints
                 }
 
                 await content.WriteAsync(chunk, cancellationToken).ConfigureAwait(false);
-                if (await RecheckAdmissionAsync(admission, presence, options, new ClientKey(tenantId, agentId), context.Request, path, cancellationToken).ConfigureAwait(false) is { } revoked)
+                if (await RecheckAdmissionAsync(admission, presence, new ClientKey(tenantId, agentId), context.Request, path, cancellationToken).ConfigureAwait(false) is { } revoked)
                 {
                     await operation.CancelAsync("operator_policy_revoked", CancellationToken.None).ConfigureAwait(false);
                     return Failure(revoked, context);
@@ -176,7 +173,7 @@ public static class McpOperatorClientFileEndpoints
 
             await operation.Completion.ConfigureAwait(false);
             completed = true;
-            if (await RecheckAdmissionAsync(admission, presence, options, new ClientKey(tenantId, agentId), context.Request, path, cancellationToken).ConfigureAwait(false) is { } afterDispatch)
+            if (await RecheckAdmissionAsync(admission, presence, new ClientKey(tenantId, agentId), context.Request, path, cancellationToken).ConfigureAwait(false) is { } afterDispatch)
                 return Failure(afterDispatch, context);
 
             var bytes = content.ToArray();
@@ -221,12 +218,11 @@ public static class McpOperatorClientFileEndpoints
         [FromServices] IClientPresenceRouter presence,
         IMcpOperatorRouteAdmission admission,
         IMcpOperatorConfirmationService confirmations,
-        NetRatelAkkaMigrationOptions options,
-        CancellationToken cancellationToken)
+                CancellationToken cancellationToken)
     {
         var fallback = MinimalContext(tenantId, agentId, "collect", http.TraceIdentifier);
         var admitted = await TryCreateContextAsync(
-            http, environment, presence, admission, options, tenantId, agentId, "collect", cancellationToken, "preview_collect").ConfigureAwait(false);
+            http, environment, presence, admission, tenantId, agentId, "collect", cancellationToken, "preview_collect").ConfigureAwait(false);
         if (admitted.Failure is { } failure)
             return failure;
 
@@ -271,7 +267,6 @@ public static class McpOperatorClientFileEndpoints
         IMcpOperatorRouteAdmission admission,
         IMcpOperatorConfirmationService confirmations,
         IMcpOperatorFileArtifactStore artifacts,
-        NetRatelAkkaMigrationOptions options,
         [FromServices] IAgentFileGatewaySessionRegistry sessions,
         CancellationToken cancellationToken)
     {
@@ -280,7 +275,7 @@ public static class McpOperatorClientFileEndpoints
             return GatewayFailure("invalid_file_query", fallback);
 
         var admitted = await TryCreateContextAsync(
-            http, environment, presence, admission, options, tenantId, agentId, "collect", cancellationToken, "confirm_collect").ConfigureAwait(false);
+            http, environment, presence, admission, tenantId, agentId, "collect", cancellationToken, "confirm_collect").ConfigureAwait(false);
         if (admitted.Failure is { } failure)
             return failure;
 
@@ -320,7 +315,7 @@ public static class McpOperatorClientFileEndpoints
         try
         {
             var beforeDispatch = await RecheckArtifactCollectionAsync(
-                admission, presence, options, new ClientKey(tenantId, agentId), context.Request, request.Path, cancellationToken).ConfigureAwait(false);
+                admission, presence, new ClientKey(tenantId, agentId), context.Request, request.Path, cancellationToken).ConfigureAwait(false);
             if (beforeDispatch.FailureCode is not null ||
                 !string.Equals(beforeDispatch.ReadRootFingerprint, readRootFingerprint, StringComparison.Ordinal))
             {
@@ -350,7 +345,7 @@ public static class McpOperatorClientFileEndpoints
 
                 await content.WriteAsync(chunk, cancellationToken).ConfigureAwait(false);
                 var duringDispatch = await RecheckArtifactCollectionAsync(
-                    admission, presence, options, new ClientKey(tenantId, agentId), context.Request, request.Path, cancellationToken).ConfigureAwait(false);
+                    admission, presence, new ClientKey(tenantId, agentId), context.Request, request.Path, cancellationToken).ConfigureAwait(false);
                 if (duringDispatch.FailureCode is not null ||
                     !string.Equals(duringDispatch.ReadRootFingerprint, readRootFingerprint, StringComparison.Ordinal) ||
                     content.Length > duringDispatch.MaximumBytes)
@@ -366,7 +361,7 @@ public static class McpOperatorClientFileEndpoints
             await operation.Completion.ConfigureAwait(false);
             completed = true;
             var afterDispatch = await RecheckArtifactCollectionAsync(
-                admission, presence, options, new ClientKey(tenantId, agentId), context.Request, request.Path, cancellationToken).ConfigureAwait(false);
+                admission, presence, new ClientKey(tenantId, agentId), context.Request, request.Path, cancellationToken).ConfigureAwait(false);
             if (afterDispatch.FailureCode is not null ||
                 !string.Equals(afterDispatch.ReadRootFingerprint, readRootFingerprint, StringComparison.Ordinal) ||
                 content.Length > afterDispatch.MaximumBytes)
@@ -429,11 +424,10 @@ public static class McpOperatorClientFileEndpoints
         [FromServices] IClientPresenceRouter presence,
         IMcpOperatorRouteAdmission admission,
         IMcpOperatorFileArtifactStore artifacts,
-        NetRatelAkkaMigrationOptions options,
-        CancellationToken cancellationToken)
+                CancellationToken cancellationToken)
     {
         var admitted = await TryCreateContextAsync(
-            http, environment, presence, admission, options, tenantId, agentId, "artifact_status", cancellationToken).ConfigureAwait(false);
+            http, environment, presence, admission, tenantId, agentId, "artifact_status", cancellationToken).ConfigureAwait(false);
         if (admitted.Failure is { } failure)
             return failure;
 
@@ -447,7 +441,7 @@ public static class McpOperatorClientFileEndpoints
             return Failure("artifact_policy_changed", context);
         if (await RecordAcceptedAsync(admission, context, cancellationToken).ConfigureAwait(false) is { } rejected)
             return rejected;
-        if (await RecheckArtifactAccessAsync(admission, presence, options, new ClientKey(tenantId, agentId), context.Request, artifact, cancellationToken).ConfigureAwait(false) is { } afterAdmission)
+        if (await RecheckArtifactAccessAsync(admission, presence, new ClientKey(tenantId, agentId), context.Request, artifact, cancellationToken).ConfigureAwait(false) is { } afterAdmission)
             return Failure(afterAdmission, context);
 
         return Results.Ok(ToArtifactMetadata(artifact, replayed: false, context.CorrelationId));
@@ -462,11 +456,10 @@ public static class McpOperatorClientFileEndpoints
         [FromServices] IClientPresenceRouter presence,
         IMcpOperatorRouteAdmission admission,
         IMcpOperatorFileArtifactStore artifacts,
-        NetRatelAkkaMigrationOptions options,
-        CancellationToken cancellationToken)
+                CancellationToken cancellationToken)
     {
         var admitted = await TryCreateContextAsync(
-            http, environment, presence, admission, options, tenantId, agentId, "download", cancellationToken).ConfigureAwait(false);
+            http, environment, presence, admission, tenantId, agentId, "download", cancellationToken).ConfigureAwait(false);
         if (admitted.Failure is { } failure)
             return failure;
 
@@ -486,7 +479,7 @@ public static class McpOperatorClientFileEndpoints
             return Results.NotFound();
         if (!IsArtifactAvailable(artifact, DateTimeOffset.UtcNow) || artifact.Content is null || artifact.Content.Length != artifact.SizeBytes)
             return ArtifactUnavailable(artifact, context);
-        if (await RecheckArtifactAccessAsync(admission, presence, options, new ClientKey(tenantId, agentId), context.Request, artifact, cancellationToken).ConfigureAwait(false) is { } afterDownload)
+        if (await RecheckArtifactAccessAsync(admission, presence, new ClientKey(tenantId, agentId), context.Request, artifact, cancellationToken).ConfigureAwait(false) is { } afterDownload)
             return Failure(afterDownload, context);
 
         return Results.Ok(new McpOperatorFileArtifactDownload(
@@ -510,11 +503,10 @@ public static class McpOperatorClientFileEndpoints
         IMcpOperatorRouteAdmission admission,
         IMcpOperatorConfirmationService confirmations,
         IMcpOperatorFileArtifactStore artifacts,
-        NetRatelAkkaMigrationOptions options,
-        CancellationToken cancellationToken)
+                CancellationToken cancellationToken)
     {
         var admitted = await TryCreateContextAsync(
-            http, environment, presence, admission, options, tenantId, agentId, "artifact_cleanup", cancellationToken, "preview_artifact_cleanup").ConfigureAwait(false);
+            http, environment, presence, admission, tenantId, agentId, "artifact_cleanup", cancellationToken, "preview_artifact_cleanup").ConfigureAwait(false);
         if (admitted.Failure is { } failure)
             return failure;
 
@@ -556,15 +548,14 @@ public static class McpOperatorClientFileEndpoints
         IMcpOperatorRouteAdmission admission,
         IMcpOperatorConfirmationService confirmations,
         IMcpOperatorFileArtifactStore artifacts,
-        NetRatelAkkaMigrationOptions options,
-        CancellationToken cancellationToken)
+                CancellationToken cancellationToken)
     {
         var fallback = MinimalContext(tenantId, agentId, "artifact_cleanup", http.TraceIdentifier);
         if (!HasPlanCredentials(request.PlanToken, request.IdempotencyKey))
             return GatewayFailure("invalid_file_query", fallback);
 
         var admitted = await TryCreateContextAsync(
-            http, environment, presence, admission, options, tenantId, agentId, "artifact_cleanup", cancellationToken, "confirm_artifact_cleanup").ConfigureAwait(false);
+            http, environment, presence, admission, tenantId, agentId, "artifact_cleanup", cancellationToken, "confirm_artifact_cleanup").ConfigureAwait(false);
         if (admitted.Failure is { } failure)
             return failure;
 
@@ -595,7 +586,7 @@ public static class McpOperatorClientFileEndpoints
             return Failure(rejection.FailureCode, context);
         }
 
-        if (await RecheckArtifactCleanupAsync(admission, presence, options, new ClientKey(tenantId, agentId), context.Request, cancellationToken).ConfigureAwait(false) is { } beforeCleanup)
+        if (await RecheckArtifactCleanupAsync(admission, presence, new ClientKey(tenantId, agentId), context.Request, cancellationToken).ConfigureAwait(false) is { } beforeCleanup)
         {
             await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Failed, beforeCleanup, cancellationToken).ConfigureAwait(false);
             return Failure(beforeCleanup, context);
@@ -616,7 +607,7 @@ public static class McpOperatorClientFileEndpoints
             return Results.NotFound();
         }
 
-        if (await RecheckArtifactCleanupAsync(admission, presence, options, new ClientKey(tenantId, agentId), context.Request, cancellationToken).ConfigureAwait(false) is { } afterCleanup)
+        if (await RecheckArtifactCleanupAsync(admission, presence, new ClientKey(tenantId, agentId), context.Request, cancellationToken).ConfigureAwait(false) is { } afterCleanup)
         {
             await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Succeeded, artifactId.ToString("D"), cancellationToken).ConfigureAwait(false);
             return Failure(afterCleanup, context);
@@ -634,13 +625,12 @@ public static class McpOperatorClientFileEndpoints
         IHostEnvironment environment,
         [FromServices] IClientPresenceRouter presence,
         IMcpOperatorRouteAdmission admission,
-        NetRatelAkkaMigrationOptions options,
         [FromServices] IAgentFileGatewaySessionRegistry sessions,
         CancellationToken cancellationToken)
     {
         var fallback = MinimalContext(tenantId, agentId, "stat", http.TraceIdentifier);
         var admitted = await TryCreateContextAsync(
-            http, environment, presence, admission, options, tenantId, agentId, "stat", cancellationToken).ConfigureAwait(false);
+            http, environment, presence, admission, tenantId, agentId, "stat", cancellationToken).ConfigureAwait(false);
         if (admitted.Failure is { } failure)
             return failure;
 
@@ -649,14 +639,14 @@ public static class McpOperatorClientFileEndpoints
             return Failure("file_policy_roots_missing", context);
         if (await RecordAcceptedAsync(admission, context, cancellationToken).ConfigureAwait(false) is { } rejected)
             return rejected;
-        if (await RecheckAdmissionAsync(admission, presence, options, new ClientKey(tenantId, agentId), context.Request, path, cancellationToken).ConfigureAwait(false) is { } beforeDispatch)
+        if (await RecheckAdmissionAsync(admission, presence, new ClientKey(tenantId, agentId), context.Request, path, cancellationToken).ConfigureAwait(false) is { } beforeDispatch)
             return Failure(beforeDispatch, context);
 
         try
         {
             var metadata = await sessions.StatAsync(
                 new ClientKey(tenantId, agentId), path, accessPolicy, cancellationToken).ConfigureAwait(false);
-            if (await RecheckAdmissionAsync(admission, presence, options, new ClientKey(tenantId, agentId), context.Request, path, cancellationToken).ConfigureAwait(false) is { } afterDispatch)
+            if (await RecheckAdmissionAsync(admission, presence, new ClientKey(tenantId, agentId), context.Request, path, cancellationToken).ConfigureAwait(false) is { } afterDispatch)
                 return Failure(afterDispatch, context);
 
             return Results.Ok(new McpOperatorFileStatResult(
@@ -693,8 +683,7 @@ public static class McpOperatorClientFileEndpoints
         [FromServices] IClientPresenceRouter presence,
         IMcpOperatorRouteAdmission admission,
         IMcpOperatorConfirmationService confirmations,
-        NetRatelAkkaMigrationOptions options,
-        CancellationToken cancellationToken)
+                CancellationToken cancellationToken)
     {
         var fallback = MinimalContext(tenantId, agentId, "write_text", http.TraceIdentifier);
         if (!TryEncodeText(request.Text, MaximumWriteTextBytes, out var bytes))
@@ -702,7 +691,7 @@ public static class McpOperatorClientFileEndpoints
 
         return WritePreviewAsync(
             new McpOperatorFileWriteCommand("write_text", request.Path, bytes, MaximumWriteTextBytes),
-            tenantId, agentId, http, environment, presence, admission, confirmations, options, cancellationToken);
+            tenantId, agentId, http, environment, presence, admission, confirmations, cancellationToken);
     }
 
     private static Task<IResult> UploadPreviewAsync(
@@ -714,8 +703,7 @@ public static class McpOperatorClientFileEndpoints
         [FromServices] IClientPresenceRouter presence,
         IMcpOperatorRouteAdmission admission,
         IMcpOperatorConfirmationService confirmations,
-        NetRatelAkkaMigrationOptions options,
-        CancellationToken cancellationToken)
+                CancellationToken cancellationToken)
     {
         var fallback = MinimalContext(tenantId, agentId, "upload", http.TraceIdentifier);
         if (!TryDecodeBase64(request.ContentBase64, MaximumUploadBytes, out var bytes))
@@ -723,7 +711,7 @@ public static class McpOperatorClientFileEndpoints
 
         return WritePreviewAsync(
             new McpOperatorFileWriteCommand("upload", request.Path, bytes, MaximumUploadBytes),
-            tenantId, agentId, http, environment, presence, admission, confirmations, options, cancellationToken);
+            tenantId, agentId, http, environment, presence, admission, confirmations, cancellationToken);
     }
 
     private static Task<IResult> WriteTextConfirmAsync(
@@ -735,7 +723,6 @@ public static class McpOperatorClientFileEndpoints
         [FromServices] IClientPresenceRouter presence,
         IMcpOperatorRouteAdmission admission,
         IMcpOperatorConfirmationService confirmations,
-        NetRatelAkkaMigrationOptions options,
         [FromServices] IAgentFileGatewaySessionRegistry sessions,
         CancellationToken cancellationToken)
     {
@@ -749,7 +736,7 @@ public static class McpOperatorClientFileEndpoints
         return WriteConfirmAsync(
             new McpOperatorFileWriteCommand("write_text", request.Path, bytes, MaximumWriteTextBytes),
             request.PlanToken, request.IdempotencyKey,
-            tenantId, agentId, http, environment, presence, admission, confirmations, options, sessions, cancellationToken);
+            tenantId, agentId, http, environment, presence, admission, confirmations, sessions, cancellationToken);
     }
 
     private static Task<IResult> UploadConfirmAsync(
@@ -761,7 +748,6 @@ public static class McpOperatorClientFileEndpoints
         [FromServices] IClientPresenceRouter presence,
         IMcpOperatorRouteAdmission admission,
         IMcpOperatorConfirmationService confirmations,
-        NetRatelAkkaMigrationOptions options,
         [FromServices] IAgentFileGatewaySessionRegistry sessions,
         CancellationToken cancellationToken)
     {
@@ -775,7 +761,7 @@ public static class McpOperatorClientFileEndpoints
         return WriteConfirmAsync(
             new McpOperatorFileWriteCommand("upload", request.Path, bytes, MaximumUploadBytes),
             request.PlanToken, request.IdempotencyKey,
-            tenantId, agentId, http, environment, presence, admission, confirmations, options, sessions, cancellationToken);
+            tenantId, agentId, http, environment, presence, admission, confirmations, sessions, cancellationToken);
     }
 
     private static Task<IResult> CreateDirectoryPreviewAsync(
@@ -787,11 +773,10 @@ public static class McpOperatorClientFileEndpoints
         [FromServices] IClientPresenceRouter presence,
         IMcpOperatorRouteAdmission admission,
         IMcpOperatorConfirmationService confirmations,
-        NetRatelAkkaMigrationOptions options,
-        CancellationToken cancellationToken) =>
+                CancellationToken cancellationToken) =>
         WritePreviewAsync(
             new McpOperatorFileWriteCommand("create_directory", request.Path, [], 0),
-            tenantId, agentId, http, environment, presence, admission, confirmations, options, cancellationToken);
+            tenantId, agentId, http, environment, presence, admission, confirmations, cancellationToken);
 
     private static Task<IResult> CreateDirectoryConfirmAsync(
         int tenantId,
@@ -802,7 +787,6 @@ public static class McpOperatorClientFileEndpoints
         [FromServices] IClientPresenceRouter presence,
         IMcpOperatorRouteAdmission admission,
         IMcpOperatorConfirmationService confirmations,
-        NetRatelAkkaMigrationOptions options,
         [FromServices] IAgentFileGatewaySessionRegistry sessions,
         CancellationToken cancellationToken)
     {
@@ -813,7 +797,7 @@ public static class McpOperatorClientFileEndpoints
         return WriteConfirmAsync(
             new McpOperatorFileWriteCommand("create_directory", request.Path, [], 0),
             request.PlanToken, request.IdempotencyKey,
-            tenantId, agentId, http, environment, presence, admission, confirmations, options, sessions, cancellationToken);
+            tenantId, agentId, http, environment, presence, admission, confirmations, sessions, cancellationToken);
     }
 
     private static Task<IResult> DeletePreviewAsync(
@@ -825,11 +809,10 @@ public static class McpOperatorClientFileEndpoints
         [FromServices] IClientPresenceRouter presence,
         IMcpOperatorRouteAdmission admission,
         IMcpOperatorConfirmationService confirmations,
-        NetRatelAkkaMigrationOptions options,
-        CancellationToken cancellationToken) =>
+                CancellationToken cancellationToken) =>
         WritePreviewAsync(
             new McpOperatorFileWriteCommand("delete", request.Path, [], 0),
-            tenantId, agentId, http, environment, presence, admission, confirmations, options, cancellationToken);
+            tenantId, agentId, http, environment, presence, admission, confirmations, cancellationToken);
 
     private static Task<IResult> DeleteConfirmAsync(
         int tenantId,
@@ -840,7 +823,6 @@ public static class McpOperatorClientFileEndpoints
         [FromServices] IClientPresenceRouter presence,
         IMcpOperatorRouteAdmission admission,
         IMcpOperatorConfirmationService confirmations,
-        NetRatelAkkaMigrationOptions options,
         [FromServices] IAgentFileGatewaySessionRegistry sessions,
         CancellationToken cancellationToken)
     {
@@ -851,7 +833,7 @@ public static class McpOperatorClientFileEndpoints
         return WriteConfirmAsync(
             new McpOperatorFileWriteCommand("delete", request.Path, [], 0),
             request.PlanToken, request.IdempotencyKey,
-            tenantId, agentId, http, environment, presence, admission, confirmations, options, sessions, cancellationToken);
+            tenantId, agentId, http, environment, presence, admission, confirmations, sessions, cancellationToken);
     }
 
     private static Task<IResult> CopyPreviewAsync(
@@ -863,11 +845,10 @@ public static class McpOperatorClientFileEndpoints
         [FromServices] IClientPresenceRouter presence,
         IMcpOperatorRouteAdmission admission,
         IMcpOperatorConfirmationService confirmations,
-        NetRatelAkkaMigrationOptions options,
-        CancellationToken cancellationToken) =>
+                CancellationToken cancellationToken) =>
         RelocationPreviewAsync(
             new McpOperatorFileRelocationCommand("copy", request.SourcePath, request.DestinationPath),
-            tenantId, agentId, http, environment, presence, admission, confirmations, options, cancellationToken);
+            tenantId, agentId, http, environment, presence, admission, confirmations, cancellationToken);
 
     private static Task<IResult> CopyConfirmAsync(
         int tenantId,
@@ -878,13 +859,12 @@ public static class McpOperatorClientFileEndpoints
         [FromServices] IClientPresenceRouter presence,
         IMcpOperatorRouteAdmission admission,
         IMcpOperatorConfirmationService confirmations,
-        NetRatelAkkaMigrationOptions options,
         [FromServices] IAgentFileGatewaySessionRegistry sessions,
         CancellationToken cancellationToken) =>
         RelocationConfirmAsync(
             new McpOperatorFileRelocationCommand("copy", request.SourcePath, request.DestinationPath),
             request.PlanToken, request.IdempotencyKey,
-            tenantId, agentId, http, environment, presence, admission, confirmations, options, sessions, cancellationToken);
+            tenantId, agentId, http, environment, presence, admission, confirmations, sessions, cancellationToken);
 
     private static Task<IResult> MovePreviewAsync(
         int tenantId,
@@ -895,11 +875,10 @@ public static class McpOperatorClientFileEndpoints
         [FromServices] IClientPresenceRouter presence,
         IMcpOperatorRouteAdmission admission,
         IMcpOperatorConfirmationService confirmations,
-        NetRatelAkkaMigrationOptions options,
-        CancellationToken cancellationToken) =>
+                CancellationToken cancellationToken) =>
         RelocationPreviewAsync(
             new McpOperatorFileRelocationCommand("move", request.SourcePath, request.DestinationPath),
-            tenantId, agentId, http, environment, presence, admission, confirmations, options, cancellationToken);
+            tenantId, agentId, http, environment, presence, admission, confirmations, cancellationToken);
 
     private static Task<IResult> MoveConfirmAsync(
         int tenantId,
@@ -910,13 +889,12 @@ public static class McpOperatorClientFileEndpoints
         [FromServices] IClientPresenceRouter presence,
         IMcpOperatorRouteAdmission admission,
         IMcpOperatorConfirmationService confirmations,
-        NetRatelAkkaMigrationOptions options,
         [FromServices] IAgentFileGatewaySessionRegistry sessions,
         CancellationToken cancellationToken) =>
         RelocationConfirmAsync(
             new McpOperatorFileRelocationCommand("move", request.SourcePath, request.DestinationPath),
             request.PlanToken, request.IdempotencyKey,
-            tenantId, agentId, http, environment, presence, admission, confirmations, options, sessions, cancellationToken);
+            tenantId, agentId, http, environment, presence, admission, confirmations, sessions, cancellationToken);
 
     private static async Task<IResult> WritePreviewAsync(
         McpOperatorFileWriteCommand write,
@@ -927,12 +905,11 @@ public static class McpOperatorClientFileEndpoints
         [FromServices] IClientPresenceRouter presence,
         IMcpOperatorRouteAdmission admission,
         IMcpOperatorConfirmationService confirmations,
-        NetRatelAkkaMigrationOptions options,
-        CancellationToken cancellationToken)
+                CancellationToken cancellationToken)
     {
         var fallback = MinimalContext(tenantId, agentId, write.Operation, http.TraceIdentifier);
         var admitted = await TryCreateContextAsync(
-            http, environment, presence, admission, options, tenantId, agentId, write.Operation, cancellationToken, $"preview_{write.Operation}").ConfigureAwait(false);
+            http, environment, presence, admission, tenantId, agentId, write.Operation, cancellationToken, $"preview_{write.Operation}").ConfigureAwait(false);
         if (admitted.Failure is { } failure)
             return failure;
 
@@ -973,11 +950,10 @@ public static class McpOperatorClientFileEndpoints
         [FromServices] IClientPresenceRouter presence,
         IMcpOperatorRouteAdmission admission,
         IMcpOperatorConfirmationService confirmations,
-        NetRatelAkkaMigrationOptions options,
-        CancellationToken cancellationToken)
+                CancellationToken cancellationToken)
     {
         var admitted = await TryCreateContextAsync(
-            http, environment, presence, admission, options, tenantId, agentId, relocation.Operation, cancellationToken, $"preview_{relocation.Operation}").ConfigureAwait(false);
+            http, environment, presence, admission, tenantId, agentId, relocation.Operation, cancellationToken, $"preview_{relocation.Operation}").ConfigureAwait(false);
         if (admitted.Failure is { } failure)
             return failure;
 
@@ -1018,12 +994,11 @@ public static class McpOperatorClientFileEndpoints
         [FromServices] IClientPresenceRouter presence,
         IMcpOperatorRouteAdmission admission,
         IMcpOperatorConfirmationService confirmations,
-        NetRatelAkkaMigrationOptions options,
         [FromServices] IAgentFileGatewaySessionRegistry sessions,
         CancellationToken cancellationToken)
     {
         var admitted = await TryCreateContextAsync(
-            http, environment, presence, admission, options, tenantId, agentId, write.Operation, cancellationToken, $"confirm_{write.Operation}").ConfigureAwait(false);
+            http, environment, presence, admission, tenantId, agentId, write.Operation, cancellationToken, $"confirm_{write.Operation}").ConfigureAwait(false);
         if (admitted.Failure is { } failure)
             return failure;
 
@@ -1055,7 +1030,7 @@ public static class McpOperatorClientFileEndpoints
 
         try
         {
-            if (await RecheckAdmissionAsync(admission, presence, options, new ClientKey(tenantId, agentId), context.Request, write.Path, cancellationToken, isWrite: true).ConfigureAwait(false) is { } beforeDispatch)
+            if (await RecheckAdmissionAsync(admission, presence, new ClientKey(tenantId, agentId), context.Request, write.Path, cancellationToken, isWrite: true).ConfigureAwait(false) is { } beforeDispatch)
             {
                 await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Failed, beforeDispatch, cancellationToken).ConfigureAwait(false);
                 return Failure(beforeDispatch, context);
@@ -1074,7 +1049,7 @@ public static class McpOperatorClientFileEndpoints
                 await using var content = new MemoryStream(write.Bytes, writable: false);
                 await sessions.WriteAsync(new ClientKey(tenantId, agentId), write.Path, content, accessPolicy, cancellationToken).ConfigureAwait(false);
             }
-            if (await RecheckAdmissionAsync(admission, presence, options, new ClientKey(tenantId, agentId), context.Request, write.Path, cancellationToken, isWrite: true).ConfigureAwait(false) is { } afterDispatch)
+            if (await RecheckAdmissionAsync(admission, presence, new ClientKey(tenantId, agentId), context.Request, write.Path, cancellationToken, isWrite: true).ConfigureAwait(false) is { } afterDispatch)
             {
                 var completedAfterRevocation = ToFileWriteResult(tenantId, agentId, write, replayed: false, context.CorrelationId);
                 await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Succeeded, WriteResultReference(write, completedAfterRevocation), cancellationToken).ConfigureAwait(false);
@@ -1118,7 +1093,6 @@ public static class McpOperatorClientFileEndpoints
         [FromServices] IClientPresenceRouter presence,
         IMcpOperatorRouteAdmission admission,
         IMcpOperatorConfirmationService confirmations,
-        NetRatelAkkaMigrationOptions options,
         [FromServices] IAgentFileGatewaySessionRegistry sessions,
         CancellationToken cancellationToken)
     {
@@ -1127,7 +1101,7 @@ public static class McpOperatorClientFileEndpoints
             return GatewayFailure("invalid_file_query", fallback);
 
         var admitted = await TryCreateContextAsync(
-            http, environment, presence, admission, options, tenantId, agentId, relocation.Operation, cancellationToken, $"confirm_{relocation.Operation}").ConfigureAwait(false);
+            http, environment, presence, admission, tenantId, agentId, relocation.Operation, cancellationToken, $"confirm_{relocation.Operation}").ConfigureAwait(false);
         if (admitted.Failure is { } failure)
             return failure;
 
@@ -1157,7 +1131,7 @@ public static class McpOperatorClientFileEndpoints
 
         try
         {
-            if (await RecheckRelocationAdmissionAsync(admission, presence, options, new ClientKey(tenantId, agentId), context.Request, relocation, cancellationToken).ConfigureAwait(false) is { } beforeDispatch)
+            if (await RecheckRelocationAdmissionAsync(admission, presence, new ClientKey(tenantId, agentId), context.Request, relocation, cancellationToken).ConfigureAwait(false) is { } beforeDispatch)
             {
                 await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Failed, beforeDispatch, cancellationToken).ConfigureAwait(false);
                 return Failure(beforeDispatch, context);
@@ -1172,7 +1146,7 @@ public static class McpOperatorClientFileEndpoints
                 await sessions.MoveAsync(new ClientKey(tenantId, agentId), relocation.SourcePath, relocation.DestinationPath, accessPolicy, cancellationToken).ConfigureAwait(false);
             }
 
-            if (await RecheckRelocationAdmissionAsync(admission, presence, options, new ClientKey(tenantId, agentId), context.Request, relocation, cancellationToken).ConfigureAwait(false) is { } afterDispatch)
+            if (await RecheckRelocationAdmissionAsync(admission, presence, new ClientKey(tenantId, agentId), context.Request, relocation, cancellationToken).ConfigureAwait(false) is { } afterDispatch)
             {
                 var completedAfterRevocation = ToRelocationResult(tenantId, agentId, relocation, replayed: false, context.CorrelationId);
                 await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Succeeded, RelocationResultReference(relocation, completedAfterRevocation), cancellationToken).ConfigureAwait(false);
@@ -1264,17 +1238,16 @@ public static class McpOperatorClientFileEndpoints
     private static async Task<McpOperatorFileArtifactCollectionAdmission> RecheckArtifactCollectionAsync(
         IMcpOperatorRouteAdmission admission,
         [FromServices] IClientPresenceRouter presence,
-        NetRatelAkkaMigrationOptions options,
         ClientKey client,
         McpOperatorRouteAccessRequest request,
         string path,
         CancellationToken cancellationToken)
     {
-        var targetOnline = (await presence.GetSnapshotAsync(client, cancellationToken).ConfigureAwait(false)).Status == ShadowPresenceStatus.Online;
+        var target = await presence.GetSnapshotAsync(client, cancellationToken).ConfigureAwait(false);
         var evaluated = await admission.EvaluateAsync(request with
         {
-            TargetOnline = targetOnline,
-            CapabilityAvailable = options.IsFileBrowseAuthorityActive
+            TargetOnline = target.Status == ClientPresenceStatus.Online,
+            CapabilityAvailable = target.Capabilities.Contains("file-gateway", StringComparer.OrdinalIgnoreCase)
         }, cancellationToken).ConfigureAwait(false);
         if (!evaluated.Decision.IsAllowed)
             return new(null, null, 0, evaluated.Decision.FailureCode ?? "target_policy_missing");
@@ -1293,17 +1266,16 @@ public static class McpOperatorClientFileEndpoints
     private static async Task<string?> RecheckArtifactAccessAsync(
         IMcpOperatorRouteAdmission admission,
         [FromServices] IClientPresenceRouter presence,
-        NetRatelAkkaMigrationOptions options,
         ClientKey client,
         McpOperatorRouteAccessRequest request,
         McpOperatorFileArtifact artifact,
         CancellationToken cancellationToken)
     {
-        var targetOnline = (await presence.GetSnapshotAsync(client, cancellationToken).ConfigureAwait(false)).Status == ShadowPresenceStatus.Online;
+        var target = await presence.GetSnapshotAsync(client, cancellationToken).ConfigureAwait(false);
         var evaluated = await admission.EvaluateAsync(request with
         {
-            TargetOnline = targetOnline,
-            CapabilityAvailable = options.IsFileBrowseAuthorityActive
+            TargetOnline = target.Status == ClientPresenceStatus.Online,
+            CapabilityAvailable = target.Capabilities.Contains("file-gateway", StringComparer.OrdinalIgnoreCase)
         }, cancellationToken).ConfigureAwait(false);
         return !evaluated.Decision.IsAllowed
             ? evaluated.Decision.FailureCode ?? "target_policy_missing"
@@ -1315,16 +1287,15 @@ public static class McpOperatorClientFileEndpoints
     private static async Task<string?> RecheckArtifactCleanupAsync(
         IMcpOperatorRouteAdmission admission,
         [FromServices] IClientPresenceRouter presence,
-        NetRatelAkkaMigrationOptions options,
         ClientKey client,
         McpOperatorRouteAccessRequest request,
         CancellationToken cancellationToken)
     {
-        var targetOnline = (await presence.GetSnapshotAsync(client, cancellationToken).ConfigureAwait(false)).Status == ShadowPresenceStatus.Online;
+        var target = await presence.GetSnapshotAsync(client, cancellationToken).ConfigureAwait(false);
         var evaluated = await admission.EvaluateAsync(request with
         {
-            TargetOnline = targetOnline,
-            CapabilityAvailable = options.IsFileBrowseAuthorityActive
+            TargetOnline = target.Status == ClientPresenceStatus.Online,
+            CapabilityAvailable = target.Capabilities.Contains("file-gateway", StringComparer.OrdinalIgnoreCase)
         }, cancellationToken).ConfigureAwait(false);
         return evaluated.Decision.IsAllowed ? null : evaluated.Decision.FailureCode ?? "target_policy_missing";
     }
@@ -1451,7 +1422,6 @@ public static class McpOperatorClientFileEndpoints
         IHostEnvironment environment,
         [FromServices] IClientPresenceRouter presence,
         IMcpOperatorRouteAdmission admission,
-        NetRatelAkkaMigrationOptions options,
         int tenantId,
         Guid agentId,
         string operation,
@@ -1484,7 +1454,7 @@ public static class McpOperatorClientFileEndpoints
             return Rejected("delegated_identity_invalid", fallback);
         }
 
-        var targetOnline = (await presence.GetSnapshotAsync(new ClientKey(tenantId, agentId), cancellationToken).ConfigureAwait(false)).Status == ShadowPresenceStatus.Online;
+        var target = await presence.GetSnapshotAsync(new ClientKey(tenantId, agentId), cancellationToken).ConfigureAwait(false);
         var request = new McpOperatorRouteAccessRequest(
             operatorEnvironment.Value,
             new McpOperatorPrincipal(
@@ -1504,8 +1474,8 @@ public static class McpOperatorClientFileEndpoints
             new HashSet<string>([McpOperationAccessScopeNames.Canonical(access.RequiredScope)], StringComparer.Ordinal),
             delegation.CorrelationId!,
             delegation.RequestId,
-            targetOnline,
-            CapabilityAvailable: options.IsFileBrowseAuthorityActive);
+            target.Status == ClientPresenceStatus.Online,
+            CapabilityAvailable: target.Capabilities.Contains("file-gateway", StringComparer.OrdinalIgnoreCase));
         var evaluated = await admission.EvaluateAsync(request, cancellationToken).ConfigureAwait(false);
         var failureContext = new McpOperatorFileRouteContext(request, evaluated.Decision, McpOperationAccessScopeNames.Canonical(access.RequiredScope));
         return evaluated.Decision.IsAllowed
@@ -1532,18 +1502,17 @@ public static class McpOperatorClientFileEndpoints
     private static async Task<string?> RecheckAdmissionAsync(
         IMcpOperatorRouteAdmission admission,
         [FromServices] IClientPresenceRouter presence,
-        NetRatelAkkaMigrationOptions options,
         ClientKey client,
         McpOperatorRouteAccessRequest request,
         string path,
         CancellationToken cancellationToken,
         bool isWrite = false)
     {
-        var targetOnline = (await presence.GetSnapshotAsync(client, cancellationToken).ConfigureAwait(false)).Status == ShadowPresenceStatus.Online;
+        var target = await presence.GetSnapshotAsync(client, cancellationToken).ConfigureAwait(false);
         var evaluated = await admission.EvaluateAsync(request with
         {
-            TargetOnline = targetOnline,
-            CapabilityAvailable = options.IsFileBrowseAuthorityActive
+            TargetOnline = target.Status == ClientPresenceStatus.Online,
+            CapabilityAvailable = target.Capabilities.Contains("file-gateway", StringComparer.OrdinalIgnoreCase)
         }, cancellationToken).ConfigureAwait(false);
         return !evaluated.Decision.IsAllowed
             ? evaluated.Decision.FailureCode ?? "target_policy_missing"
@@ -1559,17 +1528,16 @@ public static class McpOperatorClientFileEndpoints
     private static async Task<string?> RecheckRelocationAdmissionAsync(
         IMcpOperatorRouteAdmission admission,
         [FromServices] IClientPresenceRouter presence,
-        NetRatelAkkaMigrationOptions options,
         ClientKey client,
         McpOperatorRouteAccessRequest request,
         McpOperatorFileRelocationCommand relocation,
         CancellationToken cancellationToken)
     {
-        var targetOnline = (await presence.GetSnapshotAsync(client, cancellationToken).ConfigureAwait(false)).Status == ShadowPresenceStatus.Online;
+        var target = await presence.GetSnapshotAsync(client, cancellationToken).ConfigureAwait(false);
         var evaluated = await admission.EvaluateAsync(request with
         {
-            TargetOnline = targetOnline,
-            CapabilityAvailable = options.IsFileBrowseAuthorityActive
+            TargetOnline = target.Status == ClientPresenceStatus.Online,
+            CapabilityAvailable = target.Capabilities.Contains("file-gateway", StringComparer.OrdinalIgnoreCase)
         }, cancellationToken).ConfigureAwait(false);
         return !evaluated.Decision.IsAllowed
             ? evaluated.Decision.FailureCode ?? "target_policy_missing"

@@ -29,10 +29,10 @@ service AgentCommandShadowGateway {
 }
 
 // The authoritative command transport is deliberately separate from the
-// shadow publisher. It is a fenced, bidirectional session: the server creates
+// compatibility observation publisher. It is a fenced, bidirectional session: the server creates
 // and dispatches work, while the admitted agent acknowledges and reports its
-// lifecycle. No SpacetimeDB command stream participates when this service is
-// enabled.
+// lifecycle. This is the normal command transport; no SpacetimeDB command
+// stream participates.
 service AgentCommandGateway {
   rpc Connect(stream AgentCommandFrame) returns (stream GatewayCommandFrame);
 }
@@ -65,7 +65,7 @@ service AgentRemoteSupportGateway {
 }
 
 // V2 target inventory and preparation is isolated from retained signalling.
-// It is feature-gated and carries only redacted WTS readiness metadata; it
+// It carries only redacted WTS readiness metadata; it
 // never carries SDP, ICE, media, browser input, or credentials.
 service AgentRemoteSupportPreparationGateway {
   rpc Connect(stream AgentRemoteSupportPreparationFrame) returns (stream GatewayRemoteSupportPreparationFrame);

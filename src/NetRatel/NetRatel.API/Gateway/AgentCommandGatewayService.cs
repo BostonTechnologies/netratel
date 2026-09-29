@@ -22,13 +22,12 @@ public sealed class AgentCommandGatewayService(
     IJobRunService jobRuns,
     IMcpOperatorCommandStore operatorCommands,
     IMcpOperatorTaskStore operatorTasks,
-    NetRatelAkkaMigrationOptions options,
     IHostEnvironment environment,
     ILogger<AgentCommandGatewayService> logger,
     TimeProvider timeProvider)
     : AgentCommandGateway.AgentCommandGatewayBase
 {
-    private string Authority => options.PresenceAuthority;
+    private const string Authority = "akka";
     private const string Feature = "commands";
     private const int MaximumResultJsonBytes = 64 * 1024;
 
@@ -37,11 +36,6 @@ public sealed class AgentCommandGatewayService(
         IServerStreamWriter<GatewayCommandFrame> responseStream,
         ServerCallContext context)
     {
-        if (!options.IsCommandAuthorityActive)
-        {
-            throw new RpcException(new Status(StatusCode.FailedPrecondition, "The command authority canary is disabled."));
-        }
-
         if (!AgentGatewayIdentityResolver.TryResolve(context.GetHttpContext().User, out var identity, out var error) || identity is null)
         {
             throw new RpcException(new Status(StatusCode.PermissionDenied, error));
@@ -78,7 +72,7 @@ public sealed class AgentCommandGatewayService(
             RequireCurrent(registration);
             await responseStream.WriteAsync(new GatewayCommandFrame
             {
-                ProtocolVersion = options.ProtocolVersion,
+                ProtocolVersion = NetRatelAkkaOptions.ProtocolVersion,
                 TenantId = session.Client.TenantId,
                 ClientId = session.Client.AgentId.ToString("D"),
                 ConnectionEpoch = session.ConnectionEpoch,
@@ -112,7 +106,7 @@ public sealed class AgentCommandGatewayService(
     private async Task<ValidatedSession> ValidateHelloAsync(AgentCommandFrame frame, AuthenticatedAgentIdentity identity, CancellationToken cancellationToken)
     {
         if (frame.PayloadCase != AgentCommandFrame.PayloadOneofCase.Hello || frame.Sequence != 0 ||
-            !string.Equals(frame.ProtocolVersion, options.ProtocolVersion, StringComparison.Ordinal) || frame.TenantId != identity.TenantId ||
+            !string.Equals(frame.ProtocolVersion, NetRatelAkkaOptions.ProtocolVersion, StringComparison.Ordinal) || frame.TenantId != identity.TenantId ||
             !Guid.TryParse(frame.ClientId, out var agentId) || agentId != identity.AgentId ||
             !Guid.TryParse(frame.ConnectionId, out var connectionId) || connectionId == Guid.Empty || frame.ConnectionEpoch == 0)
         {
@@ -151,8 +145,8 @@ public sealed class AgentCommandGatewayService(
             throw new RpcException(new Status(StatusCode.InvalidArgument, "The command lifecycle timestamps are invalid."));
         }
 
-        NetRatelAkkaTelemetry.RecordAuthorityRequest(Feature, Authority, fallbackUsed: false, environment.EnvironmentName);
-        using var activity = NetRatelAkkaTelemetry.StartAuthorityActivity(Feature, Authority, status.ToString(), fallbackUsed: false, environment.EnvironmentName);
+        NetRatelAkkaTelemetry.RecordAuthorityRequest(Feature, Authority, environment.EnvironmentName);
+        using var activity = NetRatelAkkaTelemetry.StartAuthorityActivity(Feature, Authority, status.ToString(), environment.EnvironmentName);
         RequireCurrent(registration);
         var result = await commandRouter.RecordAsync(new RecordCommandLifecycleEvent(new CommandLifecycleEvent(
             session.Client,
@@ -208,11 +202,11 @@ public sealed class AgentCommandGatewayService(
                     IsTerminal(taskStatus) ? safeResult : null), cancellationToken).ConfigureAwait(false);
                 RequireCurrent(registration);
             }
-            NetRatelAkkaTelemetry.RecordAuthorityEvent(Feature, Authority, fallbackUsed: false, environment.EnvironmentName);
+            NetRatelAkkaTelemetry.RecordAuthorityEvent(Feature, Authority, environment.EnvironmentName);
         }
         else
         {
-            NetRatelAkkaTelemetry.RecordAuthorityFailure(Feature, Authority, fallbackUsed: false, environment.EnvironmentName);
+            NetRatelAkkaTelemetry.RecordAuthorityFailure(Feature, Authority, environment.EnvironmentName);
             throw new RpcException(new Status(StatusCode.FailedPrecondition, $"Command lifecycle transition was rejected: {result.Disposition}."));
         }
 
@@ -222,7 +216,7 @@ public sealed class AgentCommandGatewayService(
     private async Task RequirePresenceAsync(ClientKey client, Guid connectionId, ulong connectionEpoch, CancellationToken cancellationToken)
     {
         var presence = await presenceRouter.GetSnapshotAsync(client, cancellationToken).ConfigureAwait(false);
-        if (presence.Status != ShadowPresenceStatus.Online || presence.ConnectionId != connectionId || presence.ConnectionEpoch != checked((long)connectionEpoch))
+        if (presence.Status != ClientPresenceStatus.Online || presence.ConnectionId != connectionId || presence.ConnectionEpoch != checked((long)connectionEpoch))
         {
             throw new RpcException(new Status(StatusCode.Aborted, "The command gateway session is fenced by the active presence connection."));
         }
@@ -254,7 +248,7 @@ public sealed class AgentCommandGatewayService(
     }
 
     private bool MatchesSession(AgentCommandFrame frame, ValidatedSession session) =>
-        string.Equals(frame.ProtocolVersion, options.ProtocolVersion, StringComparison.Ordinal) && frame.TenantId == session.Client.TenantId &&
+        string.Equals(frame.ProtocolVersion, NetRatelAkkaOptions.ProtocolVersion, StringComparison.Ordinal) && frame.TenantId == session.Client.TenantId &&
         string.Equals(frame.ClientId, session.Client.AgentId.ToString("D"), StringComparison.OrdinalIgnoreCase) &&
         frame.ConnectionEpoch == session.ConnectionEpoch && string.Equals(frame.ConnectionId, session.ConnectionId.ToString("D"), StringComparison.OrdinalIgnoreCase);
 

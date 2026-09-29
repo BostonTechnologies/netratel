@@ -50,7 +50,53 @@ jobs:
         env:
           NETRATEL_REVIEW_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           NETRATEL_REVIEW_TEST_MERGE_SHA: ${{ github.sha }}
-        run: dotnet test NetRatel.sln --configuration Release --no-build --filter "category!=compose&category!=hosted" --results-directory TestResults -- --report-trx --report-trx-filename "netratel-tests-{asm}_{tfm}_{arch}.trx"
+        run: dotnet test --solution NetRatel.sln --configuration Release --no-build --filter-not-trait category=compose category=hosted --results-directory TestResults --report-trx --report-trx-filename "netratel-tests-{asm}_{tfm}_{arch}.trx"
+      - name: Require generic test execution receipts
+        run: |
+          python3 - <<'PY'
+          import importlib.util
+          import sys
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          spec = importlib.util.spec_from_file_location("verify_mtp_trx", Path("tools/ci/verify-mtp-trx.py"))
+          if spec is None or spec.loader is None:
+              sys.exit("Could not load the MTP test receipt verifier.")
+          verifier = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(verifier)
+
+          reports = sorted(Path("TestResults").glob("netratel-tests-*.trx"))
+          if not reports:
+              sys.exit("The generic test run produced no TRX receipts.")
+
+          required_assemblies = {
+              "NetRatel.API.IntegrationTests",
+              "NetRatel.Tests",
+              "NetRatel.Web.ComponentTests",
+              "NetRatel.Web.PlaywrightTests",
+          }
+          observed_assemblies = set()
+          totals = {"total": 0, "executed": 0, "passed": 0}
+          for path in reports:
+              try:
+                  values = verifier.validate_success_report(path)
+              except (OSError, ET.ParseError, ValueError) as error:
+                  sys.exit(f"The generic test report {path} is invalid: {error}")
+              assembly = path.name.removeprefix("netratel-tests-").split("_net", 1)[0]
+              observed_assemblies.add(assembly)
+              receipt = {"assembly": assembly, **values}
+              print("Generic test receipt:", receipt)
+              for key, value in values.items():
+                  if key in totals:
+                      totals[key] += value
+
+          missing_assemblies = required_assemblies - observed_assemblies
+          if missing_assemblies:
+              sys.exit("Missing generic test reports for required assemblies: " + ", ".join(sorted(missing_assemblies)))
+          print("Generic test totals:", totals)
+          if totals["executed"] == 0 or totals["passed"] == 0:
+              sys.exit("The generic test selection executed zero test cases.")
+          PY
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -202,19 +248,22 @@ jobs:
         shell: bash
         run: |
           dotnet build src/NetRatel/NetRatel.Tests/NetRatel.Tests.csproj --configuration Release
+          mkdir -p TestResults/native-macos
           dotnet src/NetRatel/NetRatel.Tests/bin/Release/net10.0/NetRatel.Tests.dll \
-            -method NetRatel.Tests.Infrastructure.ScriptTemplateServiceTests.Build_MacOS_InstallsExactPackageWithoutServiceOnUnixHost
-      - name: Exercise Windows installer on native runner
-        if: matrix.runtime == 'win-x64'
-        shell: bash
-        run: |
-          dotnet build src/NetRatel/NetRatel.Tests/NetRatel.Tests.csproj --configuration Release
-          NETRATEL_NATIVE_CLIENT_DIRECTORY="$PWD/artifacts/netratel-client-win-x64" \
-            dotnet src/NetRatel/NetRatel.Tests/bin/Release/net10.0/NetRatel.Tests.dll \
-              -method NetRatel.Tests.Infrastructure.WindowsInstallerNativeTests.GeneratedPowerShellInstallerDownloadsVerifiesAndEnrollsNativePackage
-          NETRATEL_NATIVE_CLIENT_DIRECTORY="$PWD/artifacts/netratel-client-win-x64" \
-            dotnet src/NetRatel/NetRatel.Tests/bin/Release/net10.0/NetRatel.Tests.dll \
-              -method NetRatel.Tests.Infrastructure.WindowsInstallerNativeTests.GeneratedPowerShellInstallerPersistsApiConfigurationAcrossWindowsServiceRestart
+            -method NetRatel.Tests.Infrastructure.ScriptTemplateServiceTests.Build_MacOS_InstallsExactPackageWithoutServiceOnUnixHost \
+            -method NetRatel.Tests.Client.CommandCancellationTests.Parameter_wrapper_temp_directory_is_private_to_its_owner_and_system_administrators \
+            -method NetRatel.Tests.Client.CommandCancellationTests.Bash_library_parameters_are_passed_through_the_child_environment_not_script_arguments \
+            -result-trx TestResults/native-macos/native-macos-client-tests.trx
+          python3 tools/ci/verify-mtp-trx.py TestResults/native-macos/native-macos-client-tests.trx \
+            --expected-executed 3
+      - name: Retain macOS installer test receipt
+        if: always() && matrix.runtime == 'osx-arm64'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-client-macos-hosted-tests
+          path: TestResults/native-macos/native-macos-client-tests.trx
+          if-no-files-found: error
+          retention-days: 14
       - shell: bash
         run: |
           version="$(python3 tools/ci/product-version.py)"
@@ -290,6 +339,7 @@ jobs:
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
           global-json-file: global.json
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libnss3-tools
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: pr-netratel-cli-mcp-linux-x64
@@ -310,17 +360,30 @@ jobs:
           NETRATEL_AGENT_AUTH_PRIVATE_KEY: ./synthetic-ci-only-agent-auth.pem
           NETRATEL_CLIENT_SMOKE_IMAGE: netratel-client:compose-smoke
           NETRATEL_GATEWAY_PROXY_CONFIG_PATH: ${{ github.workspace }}/tests/compose/gateway-proxy.nginx.conf
+          NETRATEL_PUBLIC_NGINX_CONFIG_PATH: ${{ github.workspace }}/release/nginx.public-https.conf
+          NETRATEL_SMOKE_AUTH_ENVIRONMENT: Production
         run: |
-          docker compose -f compose.yaml config --quiet
+          docker compose -f compose.yaml -f tests/compose/oidc-smoke.compose.yaml -f tests/compose/oidc-smoke.production.compose.yaml config --quiet
           NETRATEL_CLI_SMOKE_ARCHIVE="review-artifacts/netratel-cli-$(python3 tools/ci/product-version.py)-linux-x64.tar.gz" \
-            NETRATEL_MCP_STDIO_SMOKE_ARCHIVE="review-artifacts/netratel-mcp-stdio-$(python3 tools/ci/product-version.py)-linux-x64.tar.gz" \
+          NETRATEL_MCP_STDIO_SMOKE_ARCHIVE="review-artifacts/netratel-mcp-stdio-$(python3 tools/ci/product-version.py)-linux-x64.tar.gz" \
             tools/ci/smoke-oidc-compose.sh
+          tools/ci/tests/traefik-gateway-routing.sh
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: branding-${{ github.job }}
           path: '**/TestResults/branding/*.png'
           if-no-files-found: error
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: oidc-browser-evidence-${{ github.job }}
+          path: |
+            TestResults/oidc-compose
+            TestResults/playwright/clients-directory-*-compose.png
+            src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/TestResults/playwright/clients-directory-*-compose.png
+          if-no-files-found: warn
+          retention-days: 14
 
   local-first-compose:
     name: Source Compose local-first browser smoke test
@@ -470,6 +533,7 @@ jobs:
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
           global-json-file: global.json
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libnss3-tools
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: pr-netratel-cli-mcp-linux-x64
@@ -500,8 +564,9 @@ jobs:
           NETRATEL_CLIENT_SMOKE_IMAGE: netratel-client:release-smoke
           NETRATEL_GATEWAY_PROXY_CONFIG_PATH: ${{ github.workspace }}/tests/compose/gateway-proxy.nginx.conf
           NETRATEL_PUBLIC_NGINX_CONFIG_PATH: ${{ github.workspace }}/release/nginx.public-https.conf
+          NETRATEL_SMOKE_AUTH_ENVIRONMENT: Production
         run: |
-          docker compose -f release/compose.images.yaml -f tests/compose/oidc-smoke.compose.yaml config --quiet
+          docker compose -f release/compose.images.yaml -f tests/compose/oidc-smoke.compose.yaml -f tests/compose/oidc-smoke.production.compose.yaml config --quiet
           NETRATEL_COMPOSE_SMOKE_BUNDLE="review-artifacts/netratel-compose-$(python3 tools/ci/product-version.py).tar.gz" \
             NETRATEL_CLI_SMOKE_ARCHIVE="review-artifacts/netratel-cli-$(python3 tools/ci/product-version.py)-linux-x64.tar.gz" \
             NETRATEL_MCP_STDIO_SMOKE_ARCHIVE="review-artifacts/netratel-mcp-stdio-$(python3 tools/ci/product-version.py)-linux-x64.tar.gz" \
@@ -512,6 +577,16 @@ jobs:
           name: branding-${{ github.job }}
           path: '**/TestResults/branding/*.png'
           if-no-files-found: error
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: oidc-browser-evidence-${{ github.job }}
+          path: |
+            TestResults/oidc-compose
+            TestResults/playwright/clients-directory-*-compose.png
+            src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/TestResults/playwright/clients-directory-*-compose.png
+          if-no-files-found: warn
+          retention-days: 14
 
   postgresql-regressions:
     name: PostgreSQL provider and migration regressions
@@ -524,8 +599,13 @@ jobs:
           global-json-file: global.json
       - run: |
           bash tools/ci/check-postgresql-only.sh
-          dotnet test src/NetRatel/NetRatel.Tests/NetRatel.Tests.csproj --configuration Release \
-            --filter 'FullyQualifiedName~PostgreSqlProviderRegressionTests'
+          rm -f TestResults/postgresql-regressions/postgresql-regressions.trx
+          dotnet test --project src/NetRatel/NetRatel.Tests/NetRatel.Tests.csproj --configuration Release \
+            --filter-class NetRatel.Tests.Infrastructure.PostgreSqlProviderRegressionTests \
+            --results-directory TestResults/postgresql-regressions \
+            --report-trx --report-trx-filename postgresql-regressions.trx
+          python3 tools/ci/verify-mtp-trx.py TestResults/postgresql-regressions/postgresql-regressions.trx \
+            --expected-executed 3
 
   postgresql-release-upgrade:
     name: PostgreSQL previous-release upgrade (${{ matrix.authentication }})
@@ -541,6 +621,8 @@ jobs:
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
           global-json-file: global.json
+      - if: matrix.authentication == 'oidc'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libnss3-tools
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: pr-netratel-cli-mcp-linux-x64
@@ -572,6 +654,17 @@ jobs:
             export NETRATEL_UPGRADE_CURRENT_CLIENT_ARCHIVE="client-artifacts/netratel-client-${version}-linux-x64.tar.gz"
             tools/ci/smoke-postgresql-oidc-upgrade.sh
           fi
+      - if: always() && matrix.authentication == 'oidc'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: postgresql-oidc-browser-evidence-${{ github.job }}-${{ matrix.authentication }}
+          path: |
+            TestResults/postgresql-oidc
+            TestResults/playwright/clients-directory-*-compose.png
+            src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/TestResults/playwright/clients-directory-*-compose.png
+            **/TestResults/branding/*.png
+          if-no-files-found: warn
+          retention-days: 14
 
   mcp-http-image-smoke:
     name: HTTP MCP image smoke test

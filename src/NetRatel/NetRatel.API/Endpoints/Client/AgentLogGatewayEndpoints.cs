@@ -1,7 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
 using NetRatel.AgentGateway.Contracts.V1;
 using NetRatel.API.Gateway;
-using NetRatel.Akka.Configuration;
 using NetRatel.API.Realtime.Operations;
 using NetRatel.Application.Presence;
 using NetRatel.Shared.Contracts;
@@ -22,16 +21,14 @@ public static class AgentLogGatewayEndpoints
         return app;
     }
 
-    private static IResult SourcesAsync(
+    private static async Task<IResult> SourcesAsync(
         int tenantId,
         Guid agentId,
         HttpContext context,
-        NetRatelAkkaMigrationOptions options,
         IServiceProvider services)
     {
-        if (!options.IsLogAuthorityActive) return Results.NotFound();
         var tenantAuthorizer = services.GetRequiredService<IOperationsLogTenantAuthorizer>();
-        if (!tenantAuthorizer.IsAuthorized(context.User, tenantId)) return Results.Forbid();
+        if (!await tenantAuthorizer.IsAuthorizedAsync(context.User, tenantId, context.RequestAborted).ConfigureAwait(false)) return Results.Forbid();
         var sessions = services.GetRequiredService<IAgentLogGatewaySessionRegistry>();
         var sources = sessions.GetSources(new ClientKey(tenantId, agentId));
         return sources.Count == 0 ? Results.NotFound() : Results.Ok(sources);
@@ -52,12 +49,10 @@ public static class AgentLogGatewayEndpoints
         [FromQuery] long[]? eventId,
         [FromQuery] string? text,
         HttpContext context,
-        NetRatelAkkaMigrationOptions options,
         IServiceProvider services)
     {
-        if (!options.IsLogAuthorityActive) return Results.NotFound();
         var tenantAuthorizer = services.GetRequiredService<IOperationsLogTenantAuthorizer>();
-        if (!tenantAuthorizer.IsAuthorized(context.User, tenantId)) return Results.Forbid();
+        if (!await tenantAuthorizer.IsAuthorizedAsync(context.User, tenantId, context.RequestAborted).ConfigureAwait(false)) return Results.Forbid();
         if (string.IsNullOrWhiteSpace(sourceId) || sourceId.Length > 128 || cursor?.Length > 256 || text?.Length > 512 ||
             severity?.Length > 8 || prefix?.Length > 32 || category?.Length > 32 || provider?.Length > 32 || eventId?.Length > 32 ||
             category?.Any(value => string.IsNullOrWhiteSpace(value) || value.Length > 256) == true || provider?.Any(value => string.IsNullOrWhiteSpace(value) || value.Length > 256) == true || eventId?.Any(value => value < 0) == true || fromUtc > toUtc ||

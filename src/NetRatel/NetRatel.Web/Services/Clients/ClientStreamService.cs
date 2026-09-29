@@ -15,11 +15,11 @@ public sealed class ClientStreamService : IAsyncDisposable
 
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
 
-    public ClientStreamService(IHttpClientFactory factory, ITokenProvider tokens)
+    public ClientStreamService(IHttpClientFactory factory)
     {
         // ⬇️ Use the named client that already attaches bearer/redirect handling
         var http = factory.CreateClient("OrchestratorApi");
-        _sse = new LegacySseClient(http, tokens.GetBearerAsync);
+        _sse = new LegacySseClient(http);
         _sse.OnEvent += OnSseAsync;
         _sse.OnError += ex =>
         {

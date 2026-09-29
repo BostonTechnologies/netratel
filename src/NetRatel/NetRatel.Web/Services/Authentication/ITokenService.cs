@@ -10,6 +10,15 @@ public interface ITokenService
     /// </summary>
     Task<string> GetValidAccessTokenAsync();
 
+    /// <summary>Returns a valid access token while observing caller cancellation.</summary>
+    async Task<string> GetValidAccessTokenAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var accessToken = await GetValidAccessTokenAsync().ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        return accessToken;
+    }
+
     /// <summary>
     /// Validates the current authentication ticket and renews its OIDC token state when required.
     /// </summary>

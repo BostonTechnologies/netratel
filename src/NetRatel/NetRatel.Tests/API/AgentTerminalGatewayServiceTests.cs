@@ -11,9 +11,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
 using NetRatel.AgentGateway.Contracts.V1;
-using NetRatel.Akka.Configuration;
 using NetRatel.API.Gateway;
-using NetRatel.API.Realtime.Shadow;
+using NetRatel.API.Realtime;
 using NetRatel.Application.Operations;
 using NetRatel.Application.Presence;
 using NetRatel.Client.Service.Gateway;
@@ -43,7 +42,7 @@ public sealed class AgentTerminalGatewayServiceTests
         var replacementPresence = new GatewayPresenceSession(tenantId, agentId, 1, Guid.NewGuid());
         var shell = OperatingSystem.IsWindows() ? "cmd" : "sh";
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        var previousRegistry = new AgentTerminalSessionRegistry(TimeProvider.System, NullShadowFanoutSink.Instance);
+        var previousRegistry = new AgentTerminalSessionRegistry(TimeProvider.System, new RecordingRealtimeFanoutSink());
         var previousStore = new RecordingTerminalSessionStore();
         using var previousHost = await BuildHostAsync(tenantId, agentId,
             new CurrentPresenceRouter(key, previousPresence.ConnectionId, previousEpoch), previousRegistry, previousStore);
@@ -54,7 +53,6 @@ public sealed class AgentTerminalGatewayServiceTests
             new GatewayClientOptions
             {
                 Endpoint = "https://gateway.test",
-                TerminalGatewayEnabled = true
             },
             new TerminalHostOptions { BackendPreference = TerminalBackendPreference.Redirected },
             [shell],
@@ -104,7 +102,7 @@ public sealed class AgentTerminalGatewayServiceTests
         }
 
         await previousHost.StopAsync(deadline.Token);
-        var replacementRegistry = new AgentTerminalSessionRegistry(TimeProvider.System, NullShadowFanoutSink.Instance);
+        var replacementRegistry = new AgentTerminalSessionRegistry(TimeProvider.System, new RecordingRealtimeFanoutSink());
         var replacementStore = new RecordingTerminalSessionStore();
         using var replacementHost = await BuildHostAsync(tenantId, agentId,
             new CurrentPresenceRouter(key, replacementPresence.ConnectionId, 1), replacementRegistry, replacementStore);
@@ -173,7 +171,7 @@ public sealed class AgentTerminalGatewayServiceTests
         var key = new ClientKey(tenantId, agentId);
         var oldConnection = Guid.NewGuid();
         var currentConnection = Guid.NewGuid();
-        var terminals = new AgentTerminalSessionRegistry(TimeProvider.System, NullShadowFanoutSink.Instance);
+        var terminals = new AgentTerminalSessionRegistry(TimeProvider.System, new RecordingRealtimeFanoutSink());
         AgentTerminalGatewayRegistration? current = null;
         GatewayTerminalSession? opened = null;
         var presence = new InterleavingPresenceRouter(key, oldConnection, candidateEpoch, async () =>
@@ -217,7 +215,7 @@ public sealed class AgentTerminalGatewayServiceTests
         var agentId = Guid.NewGuid();
         var key = new ClientKey(tenantId, agentId);
         var connectionId = Guid.NewGuid();
-        var terminals = new AgentTerminalSessionRegistry(TimeProvider.System, NullShadowFanoutSink.Instance);
+        var terminals = new AgentTerminalSessionRegistry(TimeProvider.System, new RecordingRealtimeFanoutSink());
         var presence = new InterleavingPresenceRouter(key, connectionId, 4, () => Task.CompletedTask,
             () => terminals.GetAvailability(key).Should().BeNull(), advanceAfterFirstRead: true);
         using var host = await BuildHostAsync(tenantId, agentId, presence, terminals);
@@ -240,7 +238,7 @@ public sealed class AgentTerminalGatewayServiceTests
         var connectionId = Guid.NewGuid();
         const ulong connectionEpoch = 4;
         var presence = new CurrentPresenceRouter(new ClientKey(tenantId, agentId), connectionId, connectionEpoch);
-        var terminals = new AgentTerminalSessionRegistry(TimeProvider.System, NullShadowFanoutSink.Instance);
+        var terminals = new AgentTerminalSessionRegistry(TimeProvider.System, new RecordingRealtimeFanoutSink());
         var durableSessions = new RecordingTerminalSessionStore();
 
         using var host = await BuildHostAsync(tenantId, agentId, presence, terminals, durableSessions);
@@ -299,7 +297,7 @@ public sealed class AgentTerminalGatewayServiceTests
         var connectionId = Guid.NewGuid();
         const ulong connectionEpoch = 4;
         var presence = new CurrentPresenceRouter(new ClientKey(tenantId, agentId), connectionId, connectionEpoch);
-        var terminals = new AgentTerminalSessionRegistry(TimeProvider.System, NullShadowFanoutSink.Instance);
+        var terminals = new AgentTerminalSessionRegistry(TimeProvider.System, new RecordingRealtimeFanoutSink());
         var durableSessions = new RecordingTerminalSessionStore();
 
         using var host = await BuildHostAsync(tenantId, agentId, presence, terminals, durableSessions);
@@ -408,7 +406,7 @@ public sealed class AgentTerminalGatewayServiceTests
             .BuildServiceProvider();
         var terminals = new AgentTerminalSessionRegistry(
             TimeProvider.System,
-            NullShadowFanoutSink.Instance,
+            new RecordingRealtimeFanoutSink(),
             scopeFactory: recoveryServices.GetRequiredService<IServiceScopeFactory>());
         var durableSessions = new RecordingTerminalSessionStore();
 
@@ -455,7 +453,7 @@ public sealed class AgentTerminalGatewayServiceTests
         var connectionId = Guid.NewGuid();
         const ulong connectionEpoch = 4;
         var presence = new CurrentPresenceRouter(new ClientKey(tenantId, agentId), connectionId, connectionEpoch);
-        var terminals = new AgentTerminalSessionRegistry(TimeProvider.System, NullShadowFanoutSink.Instance);
+        var terminals = new AgentTerminalSessionRegistry(TimeProvider.System, new RecordingRealtimeFanoutSink());
         var durableSessions = new RecordingTerminalSessionStore();
 
         using var host = await BuildHostAsync(tenantId, agentId, presence, terminals, durableSessions);
@@ -513,7 +511,7 @@ public sealed class AgentTerminalGatewayServiceTests
         var connectionId = Guid.NewGuid();
         const ulong connectionEpoch = 4;
         var presence = new CurrentPresenceRouter(new ClientKey(tenantId, agentId), connectionId, connectionEpoch);
-        var terminals = new AgentTerminalSessionRegistry(TimeProvider.System, NullShadowFanoutSink.Instance);
+        var terminals = new AgentTerminalSessionRegistry(TimeProvider.System, new RecordingRealtimeFanoutSink());
 
         using var host = await BuildHostAsync(tenantId, agentId, presence, terminals);
         using var channel = GrpcChannel.ForAddress(
@@ -574,7 +572,7 @@ public sealed class AgentTerminalGatewayServiceTests
         var connectionId = Guid.NewGuid();
         const ulong connectionEpoch = 4;
         var presence = new CurrentPresenceRouter(new ClientKey(tenantId, agentId), connectionId, connectionEpoch);
-        var terminals = new AgentTerminalSessionRegistry(TimeProvider.System, NullShadowFanoutSink.Instance);
+        var terminals = new AgentTerminalSessionRegistry(TimeProvider.System, new RecordingRealtimeFanoutSink());
         var durableSessions = new RecordingTerminalSessionStore();
 
         using var host = await BuildHostAsync(tenantId, agentId, presence, terminals, durableSessions);
@@ -710,15 +708,6 @@ public sealed class AgentTerminalGatewayServiceTests
                 services.AddSingleton(presence);
                 services.AddSingleton(terminals);
                 services.AddSingleton<IMcpOperatorTerminalSessionStore>(terminalSessions);
-                services.AddSingleton(new NetRatelAkkaMigrationOptions
-                {
-                    Enabled = true,
-                    PresenceEnabled = true,
-                    GatewayEnabled = true,
-                    PresenceAuthorityEnabled = true,
-                    TerminalGatewayEnabled = true,
-                    TerminalAuthorityEnabled = true
-                });
                 services.AddSingleton(NullLogger<AgentTerminalGatewayService>.Instance);
             });
             web.Configure(app =>
@@ -771,7 +760,7 @@ public sealed class AgentTerminalGatewayServiceTests
             if (read == 1) await beforeFirstReturns();
             else duringSecondRead?.Invoke();
             return new ClientPresenceSnapshot(client,
-                client == expectedClient ? ShadowPresenceStatus.Online : ShadowPresenceStatus.Offline,
+                client == expectedClient ? ClientPresenceStatus.Online : ClientPresenceStatus.Offline,
                 checked((long)epoch) + (advanceAfterFirstRead && read > 1 ? 1 : 0), connectionId,
                 0, DateTimeOffset.UtcNow, "test", [], null, "akka", true);
         }
@@ -787,7 +776,7 @@ public sealed class AgentTerminalGatewayServiceTests
         public Task<ClientPresenceSnapshot> GetSnapshotAsync(ClientKey client, CancellationToken cancellationToken) =>
             Task.FromResult(new ClientPresenceSnapshot(
                 client,
-                client == expectedClient ? ShadowPresenceStatus.Online : ShadowPresenceStatus.Offline,
+                client == expectedClient ? ClientPresenceStatus.Online : ClientPresenceStatus.Offline,
                 checked((long)epoch),
                 connectionId,
                 0,
@@ -825,7 +814,7 @@ public sealed class AgentTerminalGatewayServiceTests
             {
                 return Task.FromResult(new ClientPresenceSnapshot(
                     client,
-                    client == expectedClient ? ShadowPresenceStatus.Online : ShadowPresenceStatus.Offline,
+                    client == expectedClient ? ClientPresenceStatus.Online : ClientPresenceStatus.Offline,
                     _epoch,
                     _connectionId,
                     0,
