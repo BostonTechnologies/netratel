@@ -317,6 +317,7 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
         codes = set(re.findall(r"'([a-z][a-z0-9_]{0,79})'", allowlist.group("codes")))
         self.assertIn("process_timeout", codes)
         self.assertIn("process_output_policy_not_allowed", codes)
+        self.assertIn("postgres_command_line_directory_contract_failed", codes)
         self.assertNotIn("arbitrary_lowercase_message", codes)
         self.assertIn("$script:safeFailureCodes.Contains($SafeCode)", script)
         self.assertNotIn("$SafeCode -match", script)
@@ -353,6 +354,48 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
         self.assertLess(call_index, status_index)
         self.assertLess(status_index, identity_index)
         self.assertLess(identity_index, database_index)
+
+    def test_postgres_process_identity_parses_canonical_data_directory_without_receipt_paths(self):
+        script = (ROOT / "tools/ci/smoke-windows-hosted-prerequisites.ps1").read_text(encoding="utf-8")
+        parser_start = script.index("function Get-PostgresDataDirectoryFromCommandLine {")
+        parser_end = script.index("\nfunction Test-PostgresDataDirectoryCommandLine {", parser_start)
+        parser = script[parser_start:parser_end]
+        self.assertIn("^(?:\"[^\"]+\"|\\S+)\\s+-D\\s+", parser)
+        self.assertIn("(?<quoted>", parser)
+        self.assertIn("(?<unquoted>", parser)
+        self.assertIn(r"$directory.Replace('/', '\')", parser)
+        self.assertIn("Get-CanonicalWindowsPath", parser)
+        contract_start = script.index("function Assert-PostgresDataDirectoryCommandLineContract {")
+        contract_end = script.index("\nfunction Get-PostgresIdentityFromPidFile {", contract_start)
+        parser_contract = script[contract_start:contract_end]
+        self.assertIn("$compactDataDirectory = 'C:\\NetRatel\\data'", parser_contract)
+        self.assertIn("ExpectedDataDirectory = $compactDataDirectory; Expected = $true", parser_contract)
+        self.assertIn("--config `\"C:/NetRatel qualification/postgres data`\"", parser_contract)
+        self.assertIn("CommandLine = ''; ExpectedDataDirectory = $expectedDataDirectory; Expected = $false", parser_contract)
+        self.assertGreaterEqual(parser_contract.count("Expected = $true"), 3)
+        self.assertGreaterEqual(parser_contract.count("Expected = $false"), 6)
+
+        identity_start = script.index("function Get-PostgresIdentityByProcessId {")
+        identity_end = script.index("\nfunction Assert-SamePostgresIdentity {", identity_start)
+        identity = script[identity_start:identity_end]
+        self.assertIn("Test-PostgresDataDirectoryCommandLine", identity)
+        self.assertNotIn("IndexOf($expectedDataDirectory", identity)
+        for safe_dimension in (
+            "executablePathPresent",
+            "executablePathMatchesExpected",
+            "commandLinePresent",
+            "commandLineDataDirectoryMatches",
+            "creationDatePresent",
+        ):
+            with self.subTest(diagnostic=safe_dimension):
+                self.assertIn(f"{safe_dimension} = [bool]", identity)
+        diagnostic_start = identity.index("$script:postgresIdentityDiagnostic = [ordered]@{")
+        diagnostic_end = identity.index("\n            }", diagnostic_start)
+        diagnostic = identity[diagnostic_start:diagnostic_end]
+        self.assertNotIn("$process.ExecutablePath", diagnostic)
+        self.assertNotIn("$process.CommandLine", diagnostic)
+        self.assertIn("postgresIdentityDiagnostic = $script:postgresIdentityDiagnostic", script)
+        self.assertIn("Assert-PostgresDataDirectoryCommandLineContract", script)
 
 
 class ChromiumNssSmokeTests(unittest.TestCase):

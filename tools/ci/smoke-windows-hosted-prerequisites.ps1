@@ -38,6 +38,7 @@ $script:pendingCapturedProcesses = [System.Collections.Generic.List[object]]::ne
 $script:postgresInitialized = $false
 $script:postgresStartAttempted = $false
 $script:postgresIdentity = $null
+$script:postgresIdentityDiagnostic = $null
 $script:postgresCredentialDisposed = $false
 $script:localUserCreated = $false
 $script:postgresCredential = $null
@@ -62,7 +63,7 @@ $script:safeFailureCodes = [System.Collections.Generic.HashSet[string]]::new([Sy
     'checked_out_source_does_not_match_test_merge_sha', 'database_test_user_is_elevated', 'github_hosted_runner_required',
     'github_runner_paths_required', 'https_api_not_in_unconfigured_bootstrap_state', 'https_bootstrap_liveness_mismatch',
     'https_route_timeout', 'listener_process_exited', 'owned_hosts_entry_not_found', 'owned_process_start_failed', 'owned_trust_certificate_removal_unverified',
-    'postgres_owned_process_identity_changed', 'postgres_pid_file_data_directory_mismatch', 'postgres_pid_file_invalid',
+    'postgres_command_line_directory_contract_failed', 'postgres_owned_process_identity_changed', 'postgres_pid_file_data_directory_mismatch', 'postgres_pid_file_invalid',
     'postgres_process_identity_mismatch', 'postgres_running_identity_unavailable', 'postgres_start_not_observed',
     'postgres_started_identity_unavailable', 'postgres_status_unknown', 'postgres_stop_ownership_unavailable',
     'postgres_stopped_status_conflicts_with_live_owned_process', 'postgres_stopped_status_conflicts_with_tracked_process',
@@ -329,6 +330,56 @@ function Get-CanonicalWindowsPath {
     return [System.IO.Path]::GetFullPath($Path).TrimEnd('\')
 }
 
+function Get-PostgresDataDirectoryFromCommandLine {
+    param([AllowNull()][string]$CommandLine)
+    if ([string]::IsNullOrWhiteSpace($CommandLine)) { return $null }
+
+    # pg_ctl on Windows emits postgres.exe followed by a quoted -D value. Parse that
+    # argument instead of searching the command line for a path substring: PostgreSQL
+    # canonicalizes the value and may use forward slashes on Windows.
+    $match = [System.Text.RegularExpressions.Regex]::Match(
+        $CommandLine,
+        '^(?:"[^"]+"|\S+)\s+-D\s+(?:"(?<quoted>[^"\r\n]+)"|(?<unquoted>[^\s"\r\n]+))(?=\s|$)',
+        [System.Text.RegularExpressions.RegexOptions]::IgnoreCase -bor [System.Text.RegularExpressions.RegexOptions]::CultureInvariant)
+    if (-not $match.Success) { return $null }
+
+    $directory = if ($match.Groups['quoted'].Success) { $match.Groups['quoted'].Value } else { $match.Groups['unquoted'].Value }
+    try { return Get-CanonicalWindowsPath ($directory.Replace('/', '\')) }
+    catch { return $null }
+}
+
+function Test-PostgresDataDirectoryCommandLine {
+    param(
+        [AllowNull()][string]$CommandLine,
+        [Parameter(Mandatory)][string]$ExpectedDataDirectory
+    )
+    $actualDataDirectory = Get-PostgresDataDirectoryFromCommandLine -CommandLine $CommandLine
+    if ([string]::IsNullOrWhiteSpace($actualDataDirectory)) { return $false }
+    return $actualDataDirectory -ieq (Get-CanonicalWindowsPath $ExpectedDataDirectory)
+}
+
+function Assert-PostgresDataDirectoryCommandLineContract {
+    $expectedDataDirectory = 'C:\NetRatel qualification\postgres data'
+    $compactDataDirectory = 'C:\NetRatel\data'
+    $quotedExecutable = '"C:\PostgreSQL binaries\pgsql\bin\postgres.exe"'
+    $cases = @(
+        [pscustomobject]@{ CommandLine = "$quotedExecutable -D `"C:/NetRatel qualification/postgres data`" -p 55432"; ExpectedDataDirectory = $expectedDataDirectory; Expected = $true },
+        [pscustomobject]@{ CommandLine = "$quotedExecutable -D `"C:\NetRatel qualification\postgres data`" -p 55432"; ExpectedDataDirectory = $expectedDataDirectory; Expected = $true },
+        [pscustomobject]@{ CommandLine = "$quotedExecutable -D C:/NetRatel/data -p 55432"; ExpectedDataDirectory = $compactDataDirectory; Expected = $true },
+        [pscustomobject]@{ CommandLine = "$quotedExecutable -D C:/NetRatel/postgres-data -p 55432"; ExpectedDataDirectory = $expectedDataDirectory; Expected = $false },
+        [pscustomobject]@{ CommandLine = "$quotedExecutable -D `"C:/NetRatel qualification/postgres data-old`" -p 55432"; ExpectedDataDirectory = $expectedDataDirectory; Expected = $false },
+        [pscustomobject]@{ CommandLine = "$quotedExecutable --config `"C:/NetRatel qualification/postgres data`""; ExpectedDataDirectory = $expectedDataDirectory; Expected = $false },
+        [pscustomobject]@{ CommandLine = "$quotedExecutable -p 55432"; ExpectedDataDirectory = $expectedDataDirectory; Expected = $false },
+        [pscustomobject]@{ CommandLine = ''; ExpectedDataDirectory = $expectedDataDirectory; Expected = $false },
+        [pscustomobject]@{ CommandLine = "$quotedExecutable -D `"C:/NetRatel qualification/postgres data -p 55432"; ExpectedDataDirectory = $expectedDataDirectory; Expected = $false }
+    )
+    foreach ($case in $cases) {
+        if ((Test-PostgresDataDirectoryCommandLine -CommandLine $case.CommandLine -ExpectedDataDirectory $case.ExpectedDataDirectory) -ne $case.Expected) {
+            throw 'postgres_command_line_directory_contract_failed'
+        }
+    }
+}
+
 function Get-PostgresIdentityFromPidFile {
     $pidFile = Join-Path $script:pgDataDirectory 'postmaster.pid'
     if (-not (Test-Path -LiteralPath $pidFile -PathType Leaf)) { return $null }
@@ -350,10 +401,29 @@ function Get-PostgresIdentityByProcessId {
     if ($null -eq $process) { return $null }
     $expectedExecutable = Get-CanonicalWindowsPath $script:postgresExe
     $expectedDataDirectory = Get-CanonicalWindowsPath $script:pgDataDirectory
-    if ((Get-CanonicalWindowsPath $process.ExecutablePath) -ine $expectedExecutable -or
-        [string]::IsNullOrWhiteSpace($process.CommandLine) -or
-        $process.CommandLine.IndexOf($expectedDataDirectory, [StringComparison]::OrdinalIgnoreCase) -lt 0 -or
-        $null -eq $process.CreationDate) {
+    $executablePathPresent = -not [string]::IsNullOrWhiteSpace([string]$process.ExecutablePath)
+    $executablePathMatchesExpected = $false
+    if ($executablePathPresent) {
+        try { $executablePathMatchesExpected = (Get-CanonicalWindowsPath ([string]$process.ExecutablePath)) -ieq $expectedExecutable }
+        catch { $executablePathMatchesExpected = $false }
+    }
+    $commandLinePresent = -not [string]::IsNullOrWhiteSpace([string]$process.CommandLine)
+    $commandLineDataDirectoryMatches = $false
+    if ($commandLinePresent) {
+        $commandLineDataDirectoryMatches = Test-PostgresDataDirectoryCommandLine -CommandLine ([string]$process.CommandLine) -ExpectedDataDirectory $expectedDataDirectory
+    }
+    $creationDatePresent = $null -ne $process.CreationDate
+    if (-not $executablePathMatchesExpected -or -not $commandLineDataDirectoryMatches -or -not $creationDatePresent) {
+        if ($null -eq $script:postgresIdentityDiagnostic) {
+            $script:postgresIdentityDiagnostic = [ordered]@{
+                processFound = $true
+                executablePathPresent = [bool]$executablePathPresent
+                executablePathMatchesExpected = [bool]$executablePathMatchesExpected
+                commandLinePresent = [bool]$commandLinePresent
+                commandLineDataDirectoryMatches = [bool]$commandLineDataDirectoryMatches
+                creationDatePresent = [bool]$creationDatePresent
+            }
+        }
         throw 'postgres_process_identity_mismatch'
     }
     return [pscustomobject]@{
@@ -545,6 +615,7 @@ function Write-QualificationReceipt {
         }
         checks = $script:checks
         cleanup = $script:cleanup
+        postgresIdentityDiagnostic = $script:postgresIdentityDiagnostic
         failedCheck = $script:failureCode
         failureDetails = @($script:failureDetails)
     }
@@ -586,6 +657,7 @@ try {
         }
         $principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
         if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'administrator_runner_required' }
+        Assert-PostgresDataDirectoryCommandLineContract
         if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) { throw 'runner_temp_required' }
         $script:hostsPath = Join-Path $env:WINDIR 'System32\drivers\etc\hosts'
         Assert-LoopbackPortFree -Port $script:traefikPort
