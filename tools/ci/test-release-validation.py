@@ -1213,6 +1213,34 @@ class ReleaseBuildStatusTests(unittest.TestCase):
         self.assertEqual(self.selector.classify_runs(runs, self.tag, self.revision)["run_id"], "123")
 
 
+class ReleasePublishMetadataTests(unittest.TestCase):
+    def test_release_publish_accepts_only_an_explicit_boolean_false_draft(self):
+        workflow = (ROOT / ".github/workflows/release-publish.yml").read_text()
+        filter_match = re.search(
+            r'''(?m)^\s*release_draft="\$\(jq -r '([^']+)' <<< "\$release_json"\)"$''', workflow)
+        self.assertIsNotNone(filter_match, "The publication workflow must parse release draft metadata with jq.")
+        self.assertIn(
+            'if [[ "$release_draft" != false || "$release_tag" != "$tag" ]]; then', workflow,
+            "Release metadata must remain fail-closed unless draft is false and the tag matches.")
+
+        jq = shutil.which("jq")
+        self.assertIsNotNone(jq, "jq is required by the publication workflow and its metadata check.")
+        jq_filter = filter_match.group(1)
+        cases = (
+            ({"draft": False}, "false"),
+            ({"draft": True}, "true"),
+            ({}, ""),
+            ({"draft": None}, ""),
+            ({"draft": "false"}, ""),
+        )
+        for metadata, expected in cases:
+            with self.subTest(metadata=metadata):
+                result = subprocess.run(
+                    [jq, "-r", jq_filter], input=json.dumps(metadata), capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.removesuffix("\n"), expected)
+
+
 class DistributionTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="netratel-distribution-tests-")
