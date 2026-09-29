@@ -109,7 +109,8 @@ public sealed class WindowsStartupReadinessReporter
         Guid? agentId = null,
         int? tenantId = null,
         ulong? connectionEpoch = null,
-        Guid? connectionId = null)
+        Guid? connectionId = null,
+        ulong? heartbeatSequence = null)
     {
         try
         {
@@ -131,7 +132,8 @@ public sealed class WindowsStartupReadinessReporter
                 connectionEpoch,
                 connectionId?.ToString("D"),
                 _request.RequestedAtUtc,
-                observedAt);
+                observedAt,
+                heartbeatSequence);
             var json = JsonSerializer.Serialize(record, JsonOptions);
             lock (_writeGate)
             {
@@ -221,7 +223,8 @@ public sealed class WindowsStartupReadinessReporter
         ulong? ConnectionEpoch,
         string? ConnectionId,
         DateTimeOffset RequestedAtUtc,
-        DateTimeOffset ObservedAtUtc);
+        DateTimeOffset ObservedAtUtc,
+        ulong? HeartbeatSequence);
 
     internal sealed record ReadinessProcessIdentity(
         int ProcessId,

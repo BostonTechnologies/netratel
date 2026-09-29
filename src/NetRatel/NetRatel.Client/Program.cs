@@ -551,8 +551,8 @@ async Task RunClientAsync()
                 new GatewayPresenceExtension("job", jobGateway.RunForPresenceSessionAsync)
             ]),
         updateCoordinator,
-        reportReadiness: (stage, readyAgentId, readyTenantId, epoch, connectionId) =>
-            readinessReporter.Report(stage, readyAgentId, readyTenantId, epoch, connectionId));
+        reportReadinessWithHeartbeatSequence: (stage, readyAgentId, readyTenantId, epoch, connectionId, heartbeatSequence) =>
+            readinessReporter.Report(stage, readyAgentId, readyTenantId, epoch, connectionId, heartbeatSequence));
     await gatewayClient.RunAsync(applicationStopping.Token).ConfigureAwait(false);
     return;
 }

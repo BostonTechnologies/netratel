@@ -195,6 +195,54 @@ public sealed class AgentGatewayPresenceClientTests
     }
 
     [Fact]
+    public async Task RunAsync_DoesNotReportHeartbeatReadinessForMismatchedAcknowledgementSequence()
+    {
+        var gateway = new RefreshGatewayService(returnMismatchedHeartbeatSequence: true);
+        using var host = await BuildHostAsync(gateway);
+        using var stopping = new CancellationTokenSource();
+        var invalidAcknowledgement = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var reportedStages = new ConcurrentQueue<(string Stage, ulong? HeartbeatSequence)>();
+        var extensionStarts = 0;
+        var agent = new AgentGatewayPresenceClient(
+            new GatewayClientOptions { Endpoint = "https://gateway.test" },
+            new StableTokenService(),
+            tenantId: 7,
+            agentId: Guid.NewGuid(),
+            agentVersion: "0.5.6-test",
+            terminalShells: [],
+            log: message =>
+            {
+                if (message.Contains("invalid heartbeat acknowledgement", StringComparison.Ordinal))
+                    invalidAcknowledgement.TrySetResult();
+            },
+            runForPresenceSession: (_, _, _) =>
+            {
+                Interlocked.Increment(ref extensionStarts);
+                return Task.CompletedTask;
+            },
+            createChannel: _ => GrpcChannel.ForAddress(
+                "http://localhost",
+                new GrpcChannelOptions { HttpHandler = host.GetTestServer().CreateHandler() }),
+            reportReadinessWithHeartbeatSequence: (stage, _, _, _, _, heartbeatSequence) =>
+                reportedStages.Enqueue((stage, heartbeatSequence)));
+
+        var run = agent.RunAsync(stopping.Token);
+        try
+        {
+            await gateway.FirstHeartbeatReceived.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await invalidAcknowledgement.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            reportedStages.Should().NotContain(entry => entry.Stage == "heartbeat_ready");
+            Volatile.Read(ref extensionStarts).Should().Be(0);
+        }
+        finally
+        {
+            stopping.Cancel();
+            await run.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+    }
+
+    [Fact]
     public async Task RunAsync_InvalidatesHeartbeatReadinessWhenSessionDisconnectsBeforeReconnect()
     {
         var gateway = new RefreshGatewayService(disconnectAfterFirstHeartbeat: true);
@@ -204,12 +252,12 @@ public sealed class AgentGatewayPresenceClientTests
         var extensionCleanupStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var extensionCleanupRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var disconnectedDuringExtensionCleanup = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var secondHeartbeatReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var heartbeatReadyCount = 0;
+        var secondConnectionSecondHeartbeatReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var readinessEvents = new ConcurrentQueue<(string Stage, ulong? ConnectionEpoch, Guid? ConnectionId, ulong? HeartbeatSequence)>();
         var sessionToken = CancellationToken.None;
         var agent = new AgentGatewayPresenceClient(
             new GatewayClientOptions { Endpoint = "https://gateway.test" },
-            new ExpiringTokenService(),
+            new StableTokenService(),
             tenantId: 7,
             agentId: Guid.NewGuid(),
             agentVersion: "0.5.6-test",
@@ -226,10 +274,14 @@ public sealed class AgentGatewayPresenceClientTests
             reportReadiness: (stage, _, _, _, _) =>
             {
                 stages.Enqueue(stage);
-                if (stage == "heartbeat_ready" && Interlocked.Increment(ref heartbeatReadyCount) == 2)
-                    secondHeartbeatReady.TrySetResult();
                 if (stage == "disconnected" && !sessionToken.IsCancellationRequested)
                     disconnectedDuringExtensionCleanup.TrySetResult();
+            },
+            reportReadinessWithHeartbeatSequence: (stage, _, _, epoch, connectionId, heartbeatSequence) =>
+            {
+                readinessEvents.Enqueue((stage, epoch, connectionId, heartbeatSequence));
+                if (stage == "heartbeat_ready" && epoch == 2 && heartbeatSequence == 2)
+                    secondConnectionSecondHeartbeatReady.TrySetResult();
             });
 
         var run = agent.RunAsync(stopping.Token);
@@ -240,9 +292,15 @@ public sealed class AgentGatewayPresenceClientTests
             sessionToken.IsCancellationRequested.Should().BeTrue();
             run.IsCompleted.Should().BeFalse("extension cleanup remains in progress after readiness was invalidated");
             extensionCleanupRelease.TrySetResult();
-            await gateway.SecondHeartbeatAcknowledged.Task.WaitAsync(TimeSpan.FromSeconds(10));
-            await secondHeartbeatReady.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await gateway.SecondConnectionSecondHeartbeatAcknowledged.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            await secondConnectionSecondHeartbeatReady.Task.WaitAsync(TimeSpan.FromSeconds(5));
             stages.ToArray().Should().ContainInOrder("admitted", "heartbeat_ready", "disconnected", "admitted", "heartbeat_ready");
+            var heartbeats = readinessEvents.Where(entry => entry.Stage == "heartbeat_ready").ToArray();
+            heartbeats.Select(entry => entry.HeartbeatSequence).Should().Equal((ulong?)1, (ulong?)1, (ulong?)2);
+            heartbeats[0].ConnectionEpoch.Should().Be(1);
+            heartbeats[1].ConnectionEpoch.Should().Be(2);
+            Assert.NotEqual(heartbeats[0].ConnectionId, heartbeats[1].ConnectionId);
+            heartbeats[1].ConnectionId.Should().Be(heartbeats[2].ConnectionId);
         }
         finally
         {
@@ -375,17 +433,23 @@ public sealed class AgentGatewayPresenceClientTests
     {
         private readonly string _presenceAuthority;
         private readonly bool _disconnectAfterFirstHeartbeat;
+        private readonly bool _returnMismatchedHeartbeatSequence;
         private int _connectionEpoch;
         private int _disconnectIssued;
 
-        public RefreshGatewayService(string presenceAuthority = "akka", bool disconnectAfterFirstHeartbeat = false)
+        public RefreshGatewayService(
+            string presenceAuthority = "akka",
+            bool disconnectAfterFirstHeartbeat = false,
+            bool returnMismatchedHeartbeatSequence = false)
         {
             _presenceAuthority = presenceAuthority;
             _disconnectAfterFirstHeartbeat = disconnectAfterFirstHeartbeat;
+            _returnMismatchedHeartbeatSequence = returnMismatchedHeartbeatSequence;
         }
 
         public TaskCompletionSource SecondAdmission { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public TaskCompletionSource SecondHeartbeatAcknowledged { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource FirstHeartbeatReceived { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource SecondConnectionSecondHeartbeatAcknowledged { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public override async Task Connect(
             IAsyncStreamReader<AgentFrame> requestStream,
@@ -422,6 +486,7 @@ public sealed class AgentGatewayPresenceClientTests
                 {
                     var frame = requestStream.Current;
                     if (frame.PayloadCase is not AgentFrame.PayloadOneofCase.Heartbeat) continue;
+                    FirstHeartbeatReceived.TrySetResult();
 
                     await responseStream.WriteAsync(new GatewayFrame
                     {
@@ -431,7 +496,7 @@ public sealed class AgentGatewayPresenceClientTests
                         ConnectionEpoch = connectionEpoch,
                         ConnectionId = connectionId.ToString("D"),
                         OperationId = frame.OperationId,
-                        Sequence = frame.Sequence,
+                        Sequence = _returnMismatchedHeartbeatSequence ? frame.Sequence + 1 : frame.Sequence,
                         HeartbeatAccepted = new HeartbeatAccepted
                         {
                             PresenceAuthority = _presenceAuthority
@@ -444,7 +509,10 @@ public sealed class AgentGatewayPresenceClientTests
                         return;
                     }
 
-                    if (connectionEpoch >= 2) SecondHeartbeatAcknowledged.TrySetResult();
+                    if (connectionEpoch >= 2)
+                    {
+                        if (frame.Sequence >= 2) SecondConnectionSecondHeartbeatAcknowledged.TrySetResult();
+                    }
                 }
             }
             catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)

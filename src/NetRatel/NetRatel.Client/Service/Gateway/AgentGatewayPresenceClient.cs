@@ -31,7 +31,8 @@ public sealed class AgentGatewayPresenceClient(
     IAgentGatewayUpdateHandler? updateHandler = null,
     Func<Uri, GrpcChannel>? createChannel = null,
     TimeSpan? extensionShutdownTimeout = null,
-    Action<string, Guid?, int?, ulong?, Guid?>? reportReadiness = null)
+    Action<string, Guid?, int?, ulong?, Guid?>? reportReadiness = null,
+    Action<string, Guid?, int?, ulong?, Guid?, ulong?>? reportReadinessWithHeartbeatSequence = null)
 {
     private static readonly TimeSpan InitialRetryDelay = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan MaximumRetryDelay = TimeSpan.FromSeconds(30);
@@ -47,7 +48,7 @@ public sealed class AgentGatewayPresenceClient(
             {
                 var token = await DisabledAgentTokenRetry.GetAccessTokenAsync(tokenService, log, stoppingToken).ConfigureAwait(false);
                 await RunSessionAsync(token.AccessToken, token.ExpiresAtUtc, stoppingToken).ConfigureAwait(false);
-                reportReadiness?.Invoke("disconnected", null, null, null, null);
+                ReportReadinessStage("disconnected", null, null, null, null);
                 retryDelay = InitialRetryDelay;
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -56,13 +57,13 @@ public sealed class AgentGatewayPresenceClient(
             }
             catch (AgentClientAuthException exception)
             {
-                reportReadiness?.Invoke("authentication_failed", null, null, null, null);
+                ReportReadinessStage("authentication_failed", null, null, null, null);
                 log($"Agent token acquisition failed: {exception.Message}");
                 throw;
             }
             catch (Exception exception) when (exception is RpcException or HttpRequestException or IOException or OperationCanceledException)
             {
-                reportReadiness?.Invoke("disconnected", null, null, null, null);
+                ReportReadinessStage("disconnected", null, null, null, null);
                 log($"Gateway session failed: {exception.GetType().Name}: {exception.Message}. Retrying in {retryDelay.TotalSeconds:0}s.");
                 try
                 {
@@ -146,7 +147,7 @@ public sealed class AgentGatewayPresenceClient(
                 confirmation: null);
             updateHandler?.OnPresenceConnected(accepted.ConnectionEpoch);
             var acceptedConnectionId = Guid.Parse(accepted.ConnectionId);
-            reportReadiness?.Invoke("admitted", agentId, tenantId, accepted.ConnectionEpoch, acceptedConnectionId);
+            ReportReadinessStage("admitted", agentId, tenantId, accepted.ConnectionEpoch, acceptedConnectionId);
             log($"Presence admitted. connectionEpoch={accepted.ConnectionEpoch}, heartbeatInterval={heartbeatInterval.TotalSeconds:0}s.");
 
             using var sessionStopping = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
@@ -194,7 +195,7 @@ public sealed class AgentGatewayPresenceClient(
                     }
 
                     updateHandler?.OnActivationHeartbeatAccepted(accepted.ConnectionEpoch);
-                    reportReadiness?.Invoke("heartbeat_ready", agentId, tenantId, accepted.ConnectionEpoch, acceptedConnectionId);
+                    ReportReadinessStage("heartbeat_ready", agentId, tenantId, accepted.ConnectionEpoch, acceptedConnectionId, heartbeatSequence);
                     NotifyUpdateHandler(
                         heartbeat.HeartbeatAccepted.UpdateOffer,
                         heartbeat.HeartbeatAccepted.UpdatePolicy,
@@ -221,7 +222,7 @@ public sealed class AgentGatewayPresenceClient(
             }
             finally
             {
-                reportReadiness?.Invoke(
+                ReportReadinessStage(
                     "disconnected",
                     agentId,
                     tenantId,
@@ -253,6 +254,24 @@ public sealed class AgentGatewayPresenceClient(
                 log("Gateway stream was canceled during session hand-off; reconnecting.");
             }
         }
+    }
+
+    private void ReportReadinessStage(
+        string stage,
+        Guid? reportedAgentId,
+        int? reportedTenantId,
+        ulong? connectionEpoch,
+        Guid? connectionId,
+        ulong? heartbeatSequence = null)
+    {
+        reportReadiness?.Invoke(stage, reportedAgentId, reportedTenantId, connectionEpoch, connectionId);
+        reportReadinessWithHeartbeatSequence?.Invoke(
+            stage,
+            reportedAgentId,
+            reportedTenantId,
+            connectionEpoch,
+            connectionId,
+            heartbeatSequence);
     }
 
     private async Task StopSessionExtensionsAsync(

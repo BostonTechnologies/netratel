@@ -966,7 +966,18 @@ function Initialize-NetRatelProtectedInstallDirectories {
                 throw $activationFailure
             }
 
-            Write-Host 'Waiting for the LocalSystem service to enroll, authenticate, gain gateway admission, and acknowledge a heartbeat...'
+            function Test-NetRatelHasTwoAcknowledgedHeartbeats([object] $candidate) {
+                $heartbeatSequenceText = [string]$candidate.heartbeatSequence
+                $heartbeatSequence = [UInt64]0
+                if (-not [UInt64]::TryParse(
+                    $heartbeatSequenceText,
+                    [System.Globalization.NumberStyles]::None,
+                    [System.Globalization.CultureInfo]::InvariantCulture,
+                    [ref]$heartbeatSequence)) { return $false }
+                return $heartbeatSequence -ge 2
+            }
+
+            Write-Host 'Waiting for the LocalSystem service to enroll, authenticate, gain gateway admission, and acknowledge two heartbeats...'
             $readinessDeadline = $requestedAt.AddSeconds({{request.ReadinessTimeoutSeconds}})
             $lastStage = 'service-started'
             $readyRecord = $null
@@ -989,6 +1000,7 @@ function Initialize-NetRatelProtectedInstallDirectories {
                 if ($candidate.schema -ne 'netratel.install-readiness.ready.v1' -or
                     $candidate.attemptId -ne $attemptId -or $candidate.nonce -ne $nonce -or
                     $candidate.stage -ne 'heartbeat_ready' -or
+                    -not (Test-NetRatelHasTwoAcknowledgedHeartbeats $candidate) -or
                     [int]$candidate.processId -ne [int]$currentService.ProcessId -or
                     [int]$candidate.sessionId -ne 0 -or $candidate.userSid -ne 'S-1-5-18' -or
                     -not [Guid]::TryParse([string]$candidate.agentId, [ref]$parsedAgentId) -or $parsedAgentId -eq [Guid]::Empty -or

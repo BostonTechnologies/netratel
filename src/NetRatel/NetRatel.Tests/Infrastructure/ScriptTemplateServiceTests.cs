@@ -241,6 +241,8 @@ EnvironmentFile=-{{optionalEnvironmentFile}}
         script.Should().Contain("netratel.install-readiness.request.v1");
         script.Should().Contain("netratel.install-readiness.ready.v1");
         script.Should().Contain("heartbeat_ready");
+        script.Should().Contain("heartbeatSequence");
+        script.Should().Contain("-not (Test-NetRatelHasTwoAcknowledgedHeartbeats $candidate) -or");
         script.Should().Contain("connectionEpoch");
         script.Should().Contain("connectionId");
         script.Should().Contain("S-1-5-18");
@@ -347,6 +349,105 @@ EnvironmentFile=-{{optionalEnvironmentFile}}
     }
 
     [Fact]
+    public async Task Build_WindowsReadinessRequiresTwoIntegerAcknowledgementsOnOneConnection()
+    {
+        var script = new ScriptTemplateService().Build(new DeploymentScriptTemplateRequest(
+            4098, "win-x64", "ENR-ABC123", "https://netratel.example.invalid",
+            DateTimeOffset.UtcNow.AddHours(1), InstallAsService: true, SilentInstall: true));
+        const string predicateStartMarker = "function Test-NetRatelHasTwoAcknowledgedHeartbeats";
+        const string predicateEndMarker = "Write-Host 'Waiting for the LocalSystem service";
+        var predicateStart = script.IndexOf(predicateStartMarker, StringComparison.Ordinal);
+        var predicateEnd = predicateStart < 0 ? -1 : script.IndexOf(predicateEndMarker, predicateStart, StringComparison.Ordinal);
+        Assert.True(predicateStart >= 0 && predicateEnd > predicateStart,
+            "The generated Windows installer must expose its two-heartbeat sequence predicate before readiness polling.");
+        script.Should().Contain("-not (Test-NetRatelHasTwoAcknowledgedHeartbeats $candidate) -or");
+        script.Should().Contain("$candidate.connectionEpoch -eq 0");
+        script.Should().Contain("$candidate.connectionId");
+
+        var connectionId = Guid.NewGuid().ToString("D");
+        var oldRecord = JsonSerializer.Serialize(new
+        {
+            schema = "netratel.install-readiness.ready.v1",
+            stage = "heartbeat_ready",
+            connectionEpoch = 22,
+            connectionId
+        });
+        var harness = string.Join(Environment.NewLine,
+            "$ErrorActionPreference = 'Stop'",
+            script[predicateStart..predicateEnd],
+            "$legacyRecord = " + PowerShellLiteral(oldRecord) + " | ConvertFrom-Json",
+            "if (Test-NetRatelHasTwoAcknowledgedHeartbeats $legacyRecord) { throw 'An old record without heartbeatSequence was accepted.' }",
+            "$invalidValues = @($null, '+2', '-2', '1.5', '18446744073709551616')",
+            "foreach ($value in $invalidValues) { if (Test-NetRatelHasTwoAcknowledgedHeartbeats ([pscustomobject]@{ heartbeatSequence = $value })) { throw ('Invalid heartbeat sequence was accepted: ' + $value) } }",
+            "$fractionalNumber = [pscustomobject]@{ heartbeatSequence = [decimal]1.5 }",
+            "if (Test-NetRatelHasTwoAcknowledgedHeartbeats $fractionalNumber) { throw 'A fractional numeric heartbeat sequence was accepted.' }",
+            "$expectedEpoch = [UInt64]22",
+            "$expectedConnectionId = " + PowerShellLiteral(connectionId),
+            "$sequenceOne = [pscustomobject]@{ heartbeatSequence = [UInt64]1; connectionEpoch = $expectedEpoch; connectionId = $expectedConnectionId }",
+            "$sequenceTwo = [pscustomobject]@{ heartbeatSequence = [UInt64]2; connectionEpoch = $expectedEpoch; connectionId = $expectedConnectionId }",
+            "$accepted = $null",
+            "foreach ($candidate in @($sequenceOne, $sequenceTwo)) {",
+            "    if ($candidate.connectionEpoch -ne $expectedEpoch -or $candidate.connectionId -ne $expectedConnectionId) { continue }",
+            "    if (-not (Test-NetRatelHasTwoAcknowledgedHeartbeats $candidate)) { continue }",
+            "    $accepted = $candidate",
+            "    break",
+            "}",
+            "if (-not $accepted -or $accepted.heartbeatSequence -ne 2) { throw 'Readiness did not wait for sequence 2 on the admitted connection.' }",
+            "$reconnectedSequenceOne = [pscustomobject]@{ heartbeatSequence = [UInt64]1; connectionEpoch = [UInt64]23; connectionId = " + PowerShellLiteral(Guid.NewGuid().ToString("D")) + " }",
+            "if (Test-NetRatelHasTwoAcknowledgedHeartbeats $reconnectedSequenceOne) { throw 'A new connection sequence 1 was accepted as two acknowledgements.' }");
+
+        var root = Path.Combine(Path.GetTempPath(), $"netratel-readiness-sequence-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var harnessPath = Path.Combine(root, "verify-readiness-sequence.ps1");
+            await File.WriteAllTextAsync(harnessPath, harness);
+            var executable = OperatingSystem.IsWindows()
+                ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell", "v1.0", "powershell.exe")
+                : "pwsh";
+            using var process = new Process
+            {
+                StartInfo = new ProcessStartInfo(executable)
+                {
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false
+                }
+            };
+            process.StartInfo.ArgumentList.Add("-NoProfile");
+            process.StartInfo.ArgumentList.Add("-NonInteractive");
+            process.StartInfo.ArgumentList.Add("-File");
+            process.StartInfo.ArgumentList.Add(harnessPath);
+            process.Start();
+            var stdoutTask = process.StandardOutput.ReadToEndAsync();
+            var stderrTask = process.StandardError.ReadToEndAsync();
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            try
+            {
+                await process.WaitForExitAsync(timeout.Token);
+            }
+            catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+            {
+                if (!process.HasExited)
+                {
+                    process.Kill(entireProcessTree: true);
+                    await process.WaitForExitAsync(CancellationToken.None);
+                }
+
+                throw new System.TimeoutException("Generated Windows readiness sequence predicate did not finish within 20 seconds.");
+            }
+
+            var stdout = await stdoutTask;
+            var stderr = await stderrTask;
+            Assert.True(process.ExitCode == 0, $"Generated Windows readiness sequence predicate failed. stdout={stdout}; stderr={stderr}");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Build_PowerShell_OmitsServiceBlock_WhenDisabled()
     {
         var service = new ScriptTemplateService();
@@ -363,6 +464,7 @@ EnvironmentFile=-{{optionalEnvironmentFile}}
         script.Should().Contain("--enroll $EnrollmentCode --api $ApiBase");
         script.Should().Contain("NetRatel client installed and enrolled; no service readiness was requested.");
         script.Should().NotContain("netratel.install-readiness.request.v1");
+        script.Should().NotContain("Test-NetRatelHasTwoAcknowledgedHeartbeats");
         script.Should().Contain("$existingServiceEnvironment = @()");
         script.Should().Contain("function Get-NetRatelServiceEnvironmentValue");
         script.Should().NotContain("$serviceName = 'NetRatel.Client'");
