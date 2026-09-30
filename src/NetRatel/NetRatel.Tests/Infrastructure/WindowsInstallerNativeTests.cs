@@ -246,6 +246,182 @@ public sealed class WindowsInstallerNativeTests
     [Fact]
     [Trait("category", "hosted")]
     [SupportedOSPlatform("windows")]
+    public async Task GeneratedPowerShell51InstallerPreflightRepairsInheritedWritesOnDefaultProductDirectories()
+    {
+        if (!OperatingSystem.IsWindows()) Assert.Skip("The native Windows installer preflight test requires hosted Windows.");
+
+        const string serviceName = "NetRatel.Client";
+        const string enrollmentCode = "ENR-SYNTHETIC-PREFLIGHT-ONLY";
+        AssertWindowsServiceAbsent(serviceName);
+
+        var commonApplicationData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
+        var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+        Assert.False(string.IsNullOrWhiteSpace(commonApplicationData));
+        Assert.False(string.IsNullOrWhiteSpace(programFiles));
+
+        var programDataDirectory = new DirectoryInfo(commonApplicationData);
+        var originalProgramDataSecurity = programDataDirectory.GetAccessControl();
+        const AccessControlSections programDataSecuritySections =
+            AccessControlSections.Access | AccessControlSections.Owner | AccessControlSections.Group;
+        var originalProgramDataSddl = originalProgramDataSecurity.GetSecurityDescriptorSddlForm(programDataSecuritySections);
+        var productDataDirectory = Path.Combine(commonApplicationData, "NetRatel");
+        var logsDirectory = Path.Combine(productDataDirectory, "logs");
+        var updateDirectory = Path.Combine(productDataDirectory, "update");
+        var productInstallDirectory = Path.Combine(programFiles, "NetRatel");
+        var installRoot = Path.Combine(productInstallDirectory, "Client");
+
+        Assert.False(Directory.Exists(productDataDirectory), "the disposable Windows runner must start without NetRatel identity or updater data");
+        Assert.False(Directory.Exists(productInstallDirectory), "the disposable Windows runner must start without a default NetRatel package root");
+        Assert.False(File.Exists(Path.Combine(productDataDirectory, "agent.dat")));
+        Assert.False(File.Exists(Path.Combine(productDataDirectory, ".netratel-credential-machine-id")));
+
+        var administratorSid = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
+        var systemSid = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
+        var usersSid = new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null);
+        var dataAcl = new DirectorySecurity();
+        dataAcl.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+        dataAcl.SetOwner(administratorSid);
+        var productRights = FileSystemRights.FullControl;
+        var productInheritance = InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit;
+        dataAcl.AddAccessRule(new FileSystemAccessRule(
+            administratorSid, productRights, productInheritance, PropagationFlags.None, AccessControlType.Allow));
+        dataAcl.AddAccessRule(new FileSystemAccessRule(
+            systemSid, productRights, productInheritance, PropagationFlags.None, AccessControlType.Allow));
+        dataAcl.AddAccessRule(new FileSystemAccessRule(
+            usersSid, FileSystemRights.WriteData, productInheritance, PropagationFlags.None, AccessControlType.Allow));
+
+        var root = Path.Combine(Path.GetTempPath(), $"netratel-native-preflight-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        using var serverCancellation = new CancellationTokenSource();
+        Process? installerProcess = null;
+        Task? serving = null;
+        var packageRequests = 0;
+        var productDataCreated = false;
+        var productInstallCreated = false;
+        try
+        {
+            productDataCreated = true;
+            new DirectoryInfo(productDataDirectory).Create(dataAcl);
+            Directory.CreateDirectory(logsDirectory);
+            Directory.CreateDirectory(updateDirectory);
+            SetDirectoryOwner(logsDirectory, administratorSid);
+            SetDirectoryOwner(updateDirectory, administratorSid);
+            AssertInheritedWriteOnlyDirectoryAcl(logsDirectory, usersSid);
+            AssertInheritedWriteOnlyDirectoryAcl(updateDirectory, usersSid);
+
+            var createdParentSecurity = new DirectoryInfo(productDataDirectory).GetAccessControl();
+            var createdOwner = createdParentSecurity.GetOwner(typeof(SecurityIdentifier)) as SecurityIdentifier;
+            Assert.Equal(administratorSid.Value, createdOwner?.Value);
+            Assert.True(createdParentSecurity.AreAccessRulesProtected);
+
+            listener.Start();
+            var apiBase = $"http://127.0.0.1:{((IPEndPoint)listener.LocalEndpoint).Port}";
+            var script = new ScriptTemplateService().Build(new DeploymentScriptTemplateRequest(
+                4098, "win-x64", enrollmentCode, apiBase, DateTimeOffset.UtcNow.AddHours(1),
+                InstallAsService: true, SilentInstall: true));
+            var scriptPath = Path.Combine(root, "install.ps1");
+            await File.WriteAllTextAsync(scriptPath, script, timeout.Token);
+
+            productInstallCreated = true;
+            serving = ServeInstallerAndPackageRejectionAsync(
+                listener, script, enrollmentCode, () => Interlocked.Increment(ref packageRequests), serverCancellation.Token);
+            var powershellPath = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.System),
+                "WindowsPowerShell", "v1.0", "powershell.exe");
+            Assert.True(File.Exists(powershellPath), "the native preflight regression requires Windows PowerShell 5.1");
+            var start = new ProcessStartInfo(powershellPath)
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false
+            };
+            start.ArgumentList.Add("-NoProfile");
+            start.ArgumentList.Add("-ExecutionPolicy");
+            start.ArgumentList.Add("Bypass");
+            start.ArgumentList.Add("-Command");
+            start.ArgumentList.Add($"(Invoke-WebRequest -UseBasicParsing -Uri '{apiBase}/install.ps1').Content | Invoke-Expression");
+            start.Environment.Remove("NetRatel_ROOT");
+            start.Environment.Remove("NetRatel_STATE");
+            start.Environment.Remove("NetRatel_LOG_DIR");
+            start.Environment["TEMP"] = root;
+            installerProcess = Process.Start(start)
+                ?? throw new InvalidOperationException("Could not start Windows PowerShell 5.1 for the native ACL regression.");
+            var captured = await RunInstallerAndCaptureOutputAsync(installerProcess, timeout.Token);
+            serverCancellation.Cancel();
+            listener.Stop();
+            try { await serving; }
+            catch (Exception exception) when (serverCancellation.IsCancellationRequested &&
+                (exception is OperationCanceledException or SocketException))
+            {
+                Debug.WriteLine($"Synthetic installer source listener stopped after cancellation: {exception.GetType().Name}.");
+            }
+            serving = null;
+
+            var output = captured.StandardOutput;
+            var error = captured.StandardError;
+            var combined = string.Concat(output, Environment.NewLine, error);
+            using var identity = WindowsIdentity.GetCurrent();
+            var isAdministrator = new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
+            var shellVersion = Regex.Match(output, @"(?m)^PowerShell version: (?<version>[^\r\n]+)").Groups["version"].Value;
+            AssertInstallerOutputHasSafeText(output, "PowerShell edition: Desktop", "preflight_powershell_edition");
+            AssertInstallerOutputHasSafeText(output, "PowerShell version: 5.", "preflight_powershell_version");
+            Console.WriteLine(
+                $"Native installer preflight receipt: os={Environment.OSVersion.VersionString}; " +
+                $"powershell={shellVersion}; roles=install-root-default,logs-default,update-state-default; " +
+                $"syntheticInheritedAce=BUILTIN\\Users:WriteData(0x{(int)FileSystemRights.WriteData:X}); runAsAdministrator={isAdministrator}");
+            Assert.True(isAdministrator, "the native installer preflight regression requires an elevated disposable Windows runner");
+            Assert.DoesNotContain(enrollmentCode, combined, StringComparison.Ordinal);
+            Assert.True(installerProcess.ExitCode != 0,
+                "the synthetic package endpoint must reject the download after preflight rather than install a package");
+            Assert.True(Volatile.Read(ref packageRequests) == 1,
+                $"the generated preflight did not reach the synthetic artifact request; diagnostic={GetSafeInstallerDiagnostic(combined)}");
+            AssertInstallerOutputHasSafeText(output, "Downloading NetRatel Client package", "preflight_reached_download");
+
+            AssertProtectedOwnedDirectoryAcl(logsDirectory, usersSid);
+            AssertProtectedOwnedDirectoryAcl(updateDirectory, usersSid);
+            Assert.True(Directory.Exists(Path.Combine(installRoot, "updater")));
+            Assert.True(Directory.Exists(Path.Combine(installRoot, "versions")));
+            Assert.True(Directory.Exists(Path.Combine(installRoot, "staging")));
+            Assert.True(Directory.Exists(Path.Combine(installRoot, "failed")));
+            Assert.DoesNotContain(enrollmentCode, GetSafeInstallerDiagnostic(combined), StringComparison.Ordinal);
+        }
+        finally
+        {
+            serverCancellation.Cancel();
+            listener.Stop();
+            if (installerProcess is { HasExited: false }) installerProcess.Kill(entireProcessTree: true);
+            installerProcess?.Dispose();
+            if (serving is not null)
+            {
+                try { await serving; }
+                catch (Exception exception) when (serverCancellation.IsCancellationRequested &&
+                    (exception is OperationCanceledException or SocketException))
+                {
+                    Debug.WriteLine($"Synthetic installer source listener stopped during cleanup: {exception.GetType().Name}.");
+                }
+            }
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+            if (Directory.Exists(updateDirectory)) Directory.Delete(updateDirectory, recursive: true);
+            if (Directory.Exists(logsDirectory)) Directory.Delete(logsDirectory, recursive: true);
+            if (productDataCreated && Directory.Exists(productDataDirectory)) Directory.Delete(productDataDirectory, recursive: true);
+            if (productInstallCreated && Directory.Exists(productInstallDirectory)) Directory.Delete(productInstallDirectory, recursive: true);
+
+            var currentProgramDataSddl = programDataDirectory.GetAccessControl()
+                .GetSecurityDescriptorSddlForm(programDataSecuritySections);
+            var programDataAclWasChanged = !string.Equals(currentProgramDataSddl, originalProgramDataSddl, StringComparison.Ordinal);
+            if (programDataAclWasChanged)
+                programDataDirectory.SetAccessControl(originalProgramDataSecurity);
+            Assert.False(programDataAclWasChanged, "the generated installer changed the shared ProgramData ACL; the original ACL was restored");
+            Assert.Equal(originalProgramDataSddl, programDataDirectory.GetAccessControl()
+                .GetSecurityDescriptorSddlForm(programDataSecuritySections));
+        }
+    }
+
+    [Fact]
+    [Trait("category", "hosted")]
+    [SupportedOSPlatform("windows")]
     public async Task GeneratedServiceInstallerRejectsAnUnownedServiceImageBeforeStoppingOrReplacingFiles()
     {
         if (!OperatingSystem.IsWindows()) Assert.Skip("The native Windows service test requires hosted Windows.");
@@ -1202,6 +1378,96 @@ public sealed class WindowsInstallerNativeTests
             }
             Assert.True(serviceRemoved, "The service registration changed; retaining its package and credentials for inspection.");
         }
+    }
+
+    private static async Task ServeInstallerAndPackageRejectionAsync(
+        TcpListener listener,
+        string installerScript,
+        string enrollmentCode,
+        Action recordPackageRequest,
+        CancellationToken cancellationToken)
+    {
+        var installerBytes = Encoding.UTF8.GetBytes(installerScript);
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            using var client = await listener.AcceptTcpClientAsync(cancellationToken);
+            await using var stream = client.GetStream();
+            var request = await ReadRequestAsync(stream, cancellationToken);
+            var requestLine = request.Split("\r\n", 2, StringSplitOptions.None)[0];
+            var isInstallerSource = requestLine.Contains("/install.ps1", StringComparison.Ordinal);
+            if (!isInstallerSource)
+            {
+                Assert.Contains("/api/v1/client-artifacts/win-x64/latest/onboarding-download", requestLine, StringComparison.Ordinal);
+                Assert.Contains("X-NetRatel-Tenant-Id: 4098", request, StringComparison.OrdinalIgnoreCase);
+                Assert.Contains($"X-NetRatel-Enrollment-Code: {enrollmentCode}", request, StringComparison.OrdinalIgnoreCase);
+                recordPackageRequest();
+            }
+
+            byte[] body = isInstallerSource ? installerBytes : Array.Empty<byte>();
+            var statusLine = isInstallerSource ? "HTTP/1.1 200 OK" : "HTTP/1.1 404 Not Found";
+            var headers = Encoding.ASCII.GetBytes(
+                $"{statusLine}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {body.Length}\r\nConnection: close\r\n\r\n");
+            await stream.WriteAsync(headers, cancellationToken);
+            if (body.Length > 0) await stream.WriteAsync(body, cancellationToken);
+            await stream.FlushAsync(cancellationToken);
+        }
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static void SetDirectoryOwner(string path, SecurityIdentifier owner)
+    {
+        var directory = new DirectoryInfo(path);
+        var security = directory.GetAccessControl();
+        security.SetOwner(owner);
+        directory.SetAccessControl(security);
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static void AssertInheritedWriteOnlyDirectoryAcl(string path, SecurityIdentifier usersSid)
+    {
+        var security = new DirectoryInfo(path).GetAccessControl();
+        var administratorSid = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
+        var owner = security.GetOwner(typeof(SecurityIdentifier)) as SecurityIdentifier;
+        Assert.Equal(administratorSid.Value, owner?.Value);
+        Assert.False(security.AreAccessRulesProtected, "the legacy fixture must retain inherited access rules before preflight");
+        var rules = security.GetAccessRules(includeExplicit: true, includeInherited: true, typeof(SecurityIdentifier))
+            .Cast<FileSystemAccessRule>()
+            .Where(rule => rule.IdentityReference.Value == usersSid.Value)
+            .ToArray();
+        var inheritedWriteRule = Assert.Single(rules);
+        Assert.True(inheritedWriteRule.IsInherited);
+        Assert.Equal(AccessControlType.Allow, inheritedWriteRule.AccessControlType);
+        Assert.True((inheritedWriteRule.FileSystemRights & FileSystemRights.WriteData) != 0,
+            $"the synthetic inherited ACE must grant WriteData; numeric rights=0x{(int)inheritedWriteRule.FileSystemRights:X}");
+        Assert.Equal(PropagationFlags.None, inheritedWriteRule.PropagationFlags);
+        Assert.True((inheritedWriteRule.InheritanceFlags & InheritanceFlags.ContainerInherit) != 0);
+        var dangerousRights = FileSystemRights.Delete | FileSystemRights.DeleteSubdirectoriesAndFiles |
+            FileSystemRights.ChangePermissions | FileSystemRights.TakeOwnership;
+        Assert.True((inheritedWriteRule.FileSystemRights & dangerousRights) == 0,
+            $"the synthetic ACE must not grant replacement or ACL-control rights; numeric rights=0x{(int)inheritedWriteRule.FileSystemRights:X}");
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static void AssertProtectedOwnedDirectoryAcl(string path, SecurityIdentifier usersSid)
+    {
+        var security = new DirectoryInfo(path).GetAccessControl();
+        var administratorSid = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
+        var systemSid = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
+        var owner = security.GetOwner(typeof(SecurityIdentifier)) as SecurityIdentifier;
+        Assert.Equal(administratorSid.Value, owner?.Value);
+        Assert.True(security.AreAccessRulesProtected, "the repaired product directory must not inherit write access");
+        var rules = security.GetAccessRules(includeExplicit: true, includeInherited: true, typeof(SecurityIdentifier))
+            .Cast<FileSystemAccessRule>()
+            .ToArray();
+        Assert.DoesNotContain(rules, rule => rule.IdentityReference.Value == usersSid.Value &&
+            rule.AccessControlType == AccessControlType.Allow && (rule.FileSystemRights & FileSystemRights.WriteData) != 0);
+        Assert.All(rules, rule => Assert.False(rule.IsInherited));
+        Assert.Contains(rules, rule => rule.IdentityReference.Value == administratorSid.Value &&
+            rule.AccessControlType == AccessControlType.Allow &&
+            (rule.FileSystemRights & FileSystemRights.FullControl) == FileSystemRights.FullControl);
+        Assert.Contains(rules, rule => rule.IdentityReference.Value == systemSid.Value &&
+            rule.AccessControlType == AccessControlType.Allow &&
+            (rule.FileSystemRights & FileSystemRights.FullControl) == FileSystemRights.FullControl);
     }
 
     private static async Task ServePackageAndEnrollmentAsync(TcpListener listener, byte[] archive,
