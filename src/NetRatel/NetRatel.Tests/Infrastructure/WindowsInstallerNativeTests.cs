@@ -322,6 +322,7 @@ public sealed class WindowsInstallerNativeTests
         var packageRequests = 0;
         var productDataCreated = false;
         var productInstallCreated = false;
+        string? customFixtureRoot = null;
         try
         {
             new DirectoryInfo(productDataDirectory).Create(dataAcl);
@@ -394,7 +395,8 @@ public sealed class WindowsInstallerNativeTests
                 installerProcess = null;
             }
 
-            var customPathRoot = Path.Combine(root, "custom paths with spaces");
+            customFixtureRoot = CreateWindowsServiceFixtureRoot("custom-space");
+            var customPathRoot = Path.Combine(customFixtureRoot, "custom paths with spaces");
             var customInstallRoot = Path.Combine(customPathRoot, "client root");
             var customStateDirectory = Path.Combine(customPathRoot, "state directory");
             var customLogsDirectory = Path.Combine(customPathRoot, "log directory");
@@ -421,7 +423,23 @@ public sealed class WindowsInstallerNativeTests
             Assert.DoesNotContain(enrollmentCode, customCombined, StringComparison.Ordinal);
             Assert.True(installerProcess.ExitCode != 0,
                 "the custom-path synthetic package endpoint must reject the download after preflight");
-            Assert.Equal(3, Volatile.Read(ref packageRequests));
+            var customPackageRequestCount = Volatile.Read(ref packageRequests);
+            if (customPackageRequestCount != 3)
+            {
+                WriteWindowsAclInventory("custom-path-common-data-ancestor", commonApplicationData);
+                if (customFixtureRoot is not null && Directory.Exists(customFixtureRoot))
+                    WriteWindowsAclInventory("custom-path-fixture-root", customFixtureRoot);
+                if (Directory.Exists(customPathRoot))
+                    WriteWindowsAclInventory("custom-path-spaces-ancestor", customPathRoot);
+                if (Directory.Exists(customInstallRoot))
+                    WriteWindowsAclInventory("custom-path-install-root", customInstallRoot);
+                if (Directory.Exists(customStateDirectory))
+                    WriteWindowsAclInventory("custom-path-state-root", customStateDirectory);
+                if (Directory.Exists(customLogsDirectory))
+                    WriteWindowsAclInventory("custom-path-log-root", customLogsDirectory);
+            }
+            Assert.True(customPackageRequestCount == 3,
+                $"The custom-path preflight did not reach the synthetic artifact request; requests={customPackageRequestCount}; diagnostic={GetSafeInstallerDiagnostic(customCombined)}");
             AssertInstallerOutputHasSafeText(customOutput, "Downloading NetRatel Client package", "custom_space_preflight_reached_download");
             AssertInstallerOutputHasSafeText(customOutput, "PowerShell edition: Desktop", "custom_space_powershell_edition");
             AssertInstallerOutputHasSafeText(customOutput, "PowerShell version: 5.", "custom_space_powershell_version");
@@ -561,6 +579,8 @@ public sealed class WindowsInstallerNativeTests
                 }
             }
             if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+            if (customFixtureRoot is not null && Directory.Exists(customFixtureRoot))
+                Directory.Delete(customFixtureRoot, recursive: true);
             if (productDataCreated)
             {
                 if (Directory.Exists(updateDirectory)) Directory.Delete(updateDirectory, recursive: true);
