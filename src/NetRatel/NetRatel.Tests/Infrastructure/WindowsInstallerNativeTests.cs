@@ -2310,20 +2310,20 @@ public sealed class WindowsInstallerNativeTests
         using var channel = GrpcChannel.ForAddress(apiBase);
         var client = new global::NetRatel.AgentGateway.Contracts.V1.AgentGateway.AgentGatewayClient(channel);
         var headers = new Metadata { { "Authorization", $"Bearer {token}" } };
-        using var call = client.Connect(headers, cancellationToken: ct);
-        await call.RequestStream.WriteAsync(new AgentFrame
-        {
-            ProtocolVersion = NetRatelAkkaOptions.ProtocolVersion,
-            TenantId = tenantId,
-            ClientId = agentId.ToString("D"),
-            ConnectionId = Guid.NewGuid().ToString("D"),
-            OperationId = Guid.NewGuid().ToString("D"),
-            Hello = new ConnectHello { AgentVersion = "native-auth-negative" }
-        });
-        await call.RequestStream.CompleteAsync();
-
         var exception = await Assert.ThrowsAsync<RpcException>(async () =>
         {
+            using var call = client.Connect(headers, cancellationToken: ct);
+            await call.RequestStream.WriteAsync(new AgentFrame
+            {
+                ProtocolVersion = NetRatelAkkaOptions.ProtocolVersion,
+                TenantId = tenantId,
+                ClientId = agentId.ToString("D"),
+                ConnectionId = Guid.NewGuid().ToString("D"),
+                OperationId = Guid.NewGuid().ToString("D"),
+                Hello = new ConnectHello { AgentVersion = "native-auth-negative" }
+            });
+            await call.RequestStream.CompleteAsync();
+
             while (await call.ResponseStream.MoveNext(ct)) { }
         });
         Assert.Equal(expectedStatus, exception.StatusCode);
