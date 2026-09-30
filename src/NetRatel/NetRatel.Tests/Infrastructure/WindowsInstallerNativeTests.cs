@@ -1164,10 +1164,28 @@ public sealed class WindowsInstallerNativeTests
         var legacyStateParentAclInjected = false;
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(4));
         using var fixture = new NativeGatewayHostFixture(tenantId, agentId, "ENR-SYNTHETIC-SYSTEM-GATEWAY");
+        var readinessObservationFailures = new ConcurrentQueue<string>();
+        var readinessRequestPath = Path.Combine(stateDirectory, "install-readiness", "request.json");
+        var readinessResponsePath = Path.Combine(stateDirectory, "install-readiness", "ready.json");
         fixture.AgentStore.FirstAdmissionObserver = () =>
         {
-            AssertProtectedServiceReadinessRequest(stateDirectory);
-            AssertSystemServiceReadinessResponse(stateDirectory);
+            try { AssertProtectedServiceReadinessRequest(stateDirectory); }
+            catch (Exception exception)
+            {
+                readinessObservationFailures.Enqueue(
+                    $"request:{exception.GetType().Name}:requestPresent={File.Exists(readinessRequestPath)}:" +
+                    $"responsePresent={File.Exists(readinessResponsePath)}");
+                throw;
+            }
+
+            try { AssertSystemServiceReadinessResponse(stateDirectory); }
+            catch (Exception exception)
+            {
+                readinessObservationFailures.Enqueue(
+                    $"response:{exception.GetType().Name}:requestPresent={File.Exists(readinessRequestPath)}:" +
+                    $"responsePresent={File.Exists(readinessResponsePath)}");
+                throw;
+            }
         };
         Process? repairInstallerProcess = null;
         Process? unsafeRepairInstallerProcess = null;
@@ -1224,8 +1242,13 @@ public sealed class WindowsInstallerNativeTests
             AssertInstallerOutputHasSafeText(output, "Gateway heartbeat ready:", "gateway_ready_message");
             AssertInstallerOutputHasSafeText(output, $"agentId={agentId:D}", "agent_id_message");
             AssertInstallerOutputHasSafeText(output, $"tenantId={tenantId}", "tenant_id_message");
-            Assert.Equal(1, fixture.AgentStore.FirstAdmissionObservations);
+            var firstAdmissionObservations = fixture.AgentStore.FirstAdmissionObservations;
+            Assert.True(firstAdmissionObservations == 1,
+                $"The first gateway admission did not observe protected readiness; observations={firstAdmissionObservations}; " +
+                $"readinessFailures=[{string.Join(",", readinessObservationFailures.Take(4))}]; " +
+                $"observerFailureTypes=[{string.Join(",", fixture.AgentStore.FirstAdmissionObservationFailures.Take(4))}]");
             Assert.Empty(fixture.AgentStore.FirstAdmissionObservationFailures);
+            Assert.Empty(readinessObservationFailures);
             Assert.Equal(2, ReadWindowsServiceStartType(serviceName));
             Assert.True(File.Exists(credentialPath), "the LocalSystem service must retain its enrolled credentials");
             Assert.Equal(1, fixture.EnrollmentRequests);
