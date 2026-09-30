@@ -193,6 +193,16 @@ public sealed class WindowsInstallerNativeTests
         Assert.DoesNotContain(privateMessage, GetSafeInstallerDiagnostic(powerShell7ConciseError), StringComparison.Ordinal);
         Assert.DoesNotContain(privateInstallerPath, GetSafeInstallerDiagnostic(powerShell7ConciseError), StringComparison.Ordinal);
 
+        const string privateUpdaterNonce = "private-updater-nonce-should-not-be-logged";
+        var updaterWriteFailure = GetSafeUpdaterFailureClassification(
+            $"The updater path grants an untrusted principal write access. {privateInstallerPath} {privateSid} {privateUpdaterNonce}");
+        Assert.Equal("preflight-untrusted-write", updaterWriteFailure);
+        Assert.DoesNotContain(privateInstallerPath, updaterWriteFailure, StringComparison.Ordinal);
+        Assert.DoesNotContain(privateSid, updaterWriteFailure, StringComparison.Ordinal);
+        Assert.DoesNotContain(privateUpdaterNonce, updaterWriteFailure, StringComparison.Ordinal);
+        Assert.Equal("unclassified", GetSafeUpdaterFailureClassification(
+            $"Unexpected private failure at {privateInstallerPath} for {privateSid}: {privateUpdaterNonce}"));
+
         var oversizedMalformedOutput = new string('x', MaximumCombinedInstallerDiagnosticCharacters + 4096) +
             $"\r\nAt {privateInstallerPath}:43 char:7\r\nCategoryInfo : OperationStopped: (private source text:String) [], RuntimeException";
         Assert.Equal("no bounded installer preflight diagnostic was emitted", GetSafeInstallerDiagnostic(oversizedMalformedOutput));
@@ -1494,22 +1504,42 @@ public sealed class WindowsInstallerNativeTests
             var serviceProcessIdBeforePreflight = ReadWindowsServiceProcessId(serviceName);
             var tokensBeforePreflight = fixture.TokenRequests;
             var enrollmentsBeforePreflight = fixture.EnrollmentRequests;
-            var requestAclBeforePreflight = new FileInfo(updateRequestPath).GetAccessControl();
+            var requestFile = new FileInfo(updateRequestPath);
+            var requestAclBeforePreflight = requestFile.GetAccessControl();
+            var requestAclFingerprintBeforePreflight = GetWindowsFileSecurityFingerprint(requestAclBeforePreflight);
+            var originalRequestRules = GetWindowsFileSystemAccessRules(requestAclBeforePreflight);
+            var originalRequestRuleFingerprints = originalRequestRules
+                .Select(GetWindowsAccessRuleFingerprint)
+                .ToHashSet(StringComparer.Ordinal);
+            var syntheticRequestWriteRuleFingerprints = new HashSet<string>(StringComparer.Ordinal);
+            Assert.False(originalRequestRules.Any(IsExplicitUsersWriteAce),
+                "the updater request must start without the synthetic BUILTIN\\Users write ACE");
             try
             {
-                var untrustedRequestAcl = new FileInfo(updateRequestPath).GetAccessControl();
+                var untrustedRequestAcl = requestFile.GetAccessControl();
                 untrustedRequestAcl.AddAccessRule(new FileSystemAccessRule(
                     new System.Security.Principal.SecurityIdentifier("S-1-5-32-545"),
                     FileSystemRights.WriteData,
                     AccessControlType.Allow));
-                new FileInfo(updateRequestPath).SetAccessControl(untrustedRequestAcl);
+                requestFile.SetAccessControl(untrustedRequestAcl);
+
+                var requestRulesAfterInjection = GetWindowsFileSystemAccessRules(requestFile.GetAccessControl());
+                var addedUsersWriteRules = requestRulesAfterInjection
+                    .Where(rule => IsExplicitUsersWriteAce(rule) &&
+                        !originalRequestRuleFingerprints.Contains(GetWindowsAccessRuleFingerprint(rule)))
+                    .ToArray();
+                foreach (var addedRule in addedUsersWriteRules)
+                {
+                    syntheticRequestWriteRuleFingerprints.Add(GetWindowsAccessRuleFingerprint(addedRule));
+                }
+                Assert.True(addedUsersWriteRules.Length == 1,
+                    "the synthetic updater ACL fixture must add exactly one explicit BUILTIN\\Users write ACE");
 
                 var unsafeRequestUpdate = await RunWindowsUpdaterAsync(
                     powershellPath, installRoot, stateDirectory, updateRequestPath, timeout.Token);
                 Assert.NotEqual(0, unsafeRequestUpdate.ExitCode);
-                Assert.Contains("untrusted principal write access",
-                    $"{unsafeRequestUpdate.StandardOutput}\n{unsafeRequestUpdate.StandardError}",
-                    StringComparison.OrdinalIgnoreCase);
+                Assert.Equal("preflight-untrusted-write", GetSafeUpdaterFailureClassification(
+                    string.Concat(unsafeRequestUpdate.StandardOutput, Environment.NewLine, unsafeRequestUpdate.StandardError)));
                 Assert.Equal(serviceProcessIdBeforePreflight, ReadWindowsServiceProcessId(serviceName));
                 Assert.Equal(serviceImageBeforePreflight, ReadWindowsServiceImagePath(serviceName));
                 Assert.Equal(originalExecutableBytes, await File.ReadAllBytesAsync(installedExecutable, timeout.Token));
@@ -1530,13 +1560,37 @@ public sealed class WindowsInstallerNativeTests
             }
             finally
             {
-                new FileInfo(updateRequestPath).SetAccessControl(requestAclBeforePreflight);
+                requestFile.SetAccessControl(requestAclBeforePreflight);
+                var restoredRequestAcl = requestFile.GetAccessControl();
+                var residualSyntheticWriteRules = GetWindowsFileSystemAccessRules(restoredRequestAcl)
+                    .Where(rule => syntheticRequestWriteRuleFingerprints.Contains(GetWindowsAccessRuleFingerprint(rule)))
+                    .ToArray();
+                if (residualSyntheticWriteRules.Length > 0)
+                {
+                    foreach (var residualRule in residualSyntheticWriteRules)
+                    {
+                        restoredRequestAcl.RemoveAccessRuleSpecific(residualRule);
+                    }
+
+                    requestFile.SetAccessControl(restoredRequestAcl);
+                    restoredRequestAcl = requestFile.GetAccessControl();
+                }
+
+                var finalRequestRules = GetWindowsFileSystemAccessRules(restoredRequestAcl);
+                Assert.False(finalRequestRules.Any(IsExplicitUsersWriteAce),
+                    "the synthetic BUILTIN\\Users write ACE must be absent before direct updater execution");
+                Assert.True(StringComparer.Ordinal.Equals(
+                        requestAclFingerprintBeforePreflight,
+                        GetWindowsFileSecurityFingerprint(restoredRequestAcl)),
+                    "the updater request ACL must exactly match its pre-injection owner and DACL fingerprint");
             }
 
             var processIdBeforeDirectUpdate = ReadWindowsServiceProcessId(serviceName);
             var tokensBeforeDirectUpdate = fixture.TokenRequests;
             var directUpdate = await RunWindowsUpdaterAsync(powershellPath, installRoot, stateDirectory, updateRequestPath, timeout.Token);
-            Assert.Equal(0, directUpdate.ExitCode);
+            Assert.True(directUpdate.ExitCode == 0,
+                $"Direct updater failed; exitCode={directUpdate.ExitCode}; " +
+                $"failure={GetSafeUpdaterFailureClassification(string.Concat(directUpdate.StandardOutput, Environment.NewLine, directUpdate.StandardError))}");
             Assert.Contains($"NetRatel client update {version} accepted.", directUpdate.StandardOutput);
             using (var directResult = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(stateDirectory, "result.json"), timeout.Token)))
             {
@@ -2591,6 +2645,35 @@ public sealed class WindowsInstallerNativeTests
             (int)rule.PropagationFlags,
             rule.IsInherited);
 
+    [SupportedOSPlatform("windows")]
+    private static FileSystemAccessRule[] GetWindowsFileSystemAccessRules(FileSecurity security)
+        => security.GetAccessRules(includeExplicit: true, includeInherited: true, typeof(SecurityIdentifier))
+            .Cast<FileSystemAccessRule>()
+            .ToArray();
+
+    [SupportedOSPlatform("windows")]
+    private static bool IsExplicitUsersWriteAce(FileSystemAccessRule rule)
+        => string.Equals(rule.IdentityReference.Value, "S-1-5-32-545", StringComparison.Ordinal) &&
+           rule.AccessControlType == AccessControlType.Allow &&
+           !rule.IsInherited &&
+           (rule.FileSystemRights & FileSystemRights.WriteData) != 0;
+
+    [SupportedOSPlatform("windows")]
+    private static string GetWindowsFileSecurityFingerprint(FileSecurity security)
+    {
+        var ownerSid = security.GetOwner(typeof(SecurityIdentifier)) as SecurityIdentifier;
+        var groupSid = security.GetGroup(typeof(SecurityIdentifier)) as SecurityIdentifier;
+        var ruleFingerprints = GetWindowsFileSystemAccessRules(security)
+            .Select(GetWindowsAccessRuleFingerprint)
+            .Order(StringComparer.Ordinal);
+        return string.Join("\n",
+            ownerSid?.Value ?? "no-owner",
+            groupSid?.Value ?? "no-group",
+            security.AreAccessRulesProtected.ToString(),
+            security.AreAccessRulesCanonical.ToString(),
+            string.Join("\n", ruleFingerprints));
+    }
+
     private static async Task ServePackageAndEnrollmentAsync(TcpListener listener, byte[] archive,
         string version, string enrollmentCode, CancellationToken ct)
     {
@@ -2711,6 +2794,40 @@ public sealed class WindowsInstallerNativeTests
                 : downloadFailure.Success
                     ? $"Download failed with exit code {downloadFailure.Groups["code"].Value}; {tlsProbe?.ToSafeDiagnostic() ?? "TLS probe unavailable"}"
                     : powerShellFailure ?? tlsProbe?.ToSafeDiagnostic() ?? "no bounded installer preflight diagnostic was emitted";
+    }
+
+    private static string GetSafeUpdaterFailureClassification(string combined)
+    {
+        if (combined.Length > MaximumCombinedInstallerDiagnosticCharacters)
+            combined = combined[..MaximumCombinedInstallerDiagnosticCharacters];
+
+        var normalized = Regex.Replace(combined, @"\s+", " ");
+        if (normalized.Contains("untrusted principal write access", StringComparison.OrdinalIgnoreCase))
+            return "preflight-untrusted-write";
+        if (normalized.Contains("untrusted principal replacement access", StringComparison.OrdinalIgnoreCase))
+            return "preflight-replacement-access";
+        if (normalized.Contains("updater path has an untrusted owner", StringComparison.OrdinalIgnoreCase))
+            return "preflight-untrusted-owner";
+        if (normalized.Contains("reparse point", StringComparison.OrdinalIgnoreCase))
+            return "preflight-reparse-point";
+        if (normalized.Contains("checksum mismatch", StringComparison.OrdinalIgnoreCase))
+            return "package-checksum-mismatch";
+        if (normalized.Contains("did not stop", StringComparison.OrdinalIgnoreCase))
+            return "service-stop-failure";
+
+        var powerShellFailure = GetSafePowerShellFailureDiagnostic(combined);
+        if (powerShellFailure?.Contains("type=UnauthorizedAccessException", StringComparison.Ordinal) == true ||
+            powerShellFailure?.Contains("type=SecurityException", StringComparison.Ordinal) == true)
+            return "access-denied";
+        if (powerShellFailure?.Contains("type=IOException", StringComparison.Ordinal) == true ||
+            powerShellFailure?.Contains("type=DirectoryNotFoundException", StringComparison.Ordinal) == true ||
+            powerShellFailure?.Contains("type=FileNotFoundException", StringComparison.Ordinal) == true)
+            return "io-failure";
+        if (powerShellFailure is not null) return "powershell-failure";
+        if (normalized.Contains("netratel client update failed", StringComparison.OrdinalIgnoreCase))
+            return "updater-failure";
+
+        return "unclassified";
     }
 
     private static string GetSafeSeededParentFailureEvidence(string capturedOutput)
