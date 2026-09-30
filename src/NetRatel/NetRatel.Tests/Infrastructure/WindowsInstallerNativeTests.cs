@@ -1113,7 +1113,7 @@ public sealed class WindowsInstallerNativeTests
                     {
                         if (serviceRemoved)
                         {
-                            DeleteCredentialFiles(credentialDirectory);
+                            DeleteServiceFixtureData(credentialDirectory);
                             if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
                         }
                     }
@@ -1738,7 +1738,7 @@ public sealed class WindowsInstallerNativeTests
                         {
                             if (Directory.Exists(stateDirectory)) Directory.Delete(stateDirectory, recursive: true);
                             if (Directory.Exists(logDirectory)) Directory.Delete(logDirectory, recursive: true);
-                            DeleteCredentialFiles(credentialDirectory);
+                            DeleteServiceFixtureData(credentialDirectory);
                             if (Directory.Exists(installRoot)) Directory.Delete(installRoot, recursive: true);
                             if (Directory.Exists(productInstallDirectory) && !Directory.EnumerateFileSystemEntries(productInstallDirectory).Any())
                                 Directory.Delete(productInstallDirectory);
@@ -2058,7 +2058,7 @@ public sealed class WindowsInstallerNativeTests
                         {
                             if (Directory.Exists(stateDirectory)) Directory.Delete(stateDirectory, recursive: true);
                             if (Directory.Exists(logDirectory)) Directory.Delete(logDirectory, recursive: true);
-                            DeleteCredentialFiles(credentialDirectory);
+                            DeleteServiceFixtureData(credentialDirectory);
                             if (Directory.Exists(installRoot)) Directory.Delete(installRoot, recursive: true);
                             if (Directory.Exists(productInstallDirectory) && !Directory.EnumerateFileSystemEntries(productInstallDirectory).Any())
                                 Directory.Delete(productInstallDirectory);
@@ -2380,7 +2380,7 @@ public sealed class WindowsInstallerNativeTests
                         certificate?.Dispose();
                         if (serviceRemoved)
                         {
-                            if (credentialDirectoryCreatedByTest) DeleteCredentialFiles(credentialDirectory);
+                            if (credentialDirectoryCreatedByTest) DeleteServiceFixtureData(credentialDirectory);
                             if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
                         }
                     }
@@ -4198,6 +4198,21 @@ public sealed class WindowsInstallerNativeTests
 
         var separator = trimmed.IndexOf(' ');
         return separator < 0 ? trimmed : trimmed[..separator];
+    }
+
+    private static void DeleteServiceFixtureData(string credentialDirectory)
+    {
+        // Each service fixture requires this directory to be absent before starting and
+        // calls cleanup only after removing its own service. The client also writes
+        // Client/logs/service and remote-support diagnostics here, outside logs/update.
+        // Remove the complete fixture-owned tree so the next native test starts clean.
+        if (Directory.Exists(credentialDirectory))
+        {
+            Directory.Delete(credentialDirectory, recursive: true);
+        }
+
+        Assert.False(Directory.Exists(credentialDirectory),
+            "the stopped Windows service fixture must leave no product data for the next test");
     }
 
     private static void DeleteCredentialFiles(string credentialDirectory)
