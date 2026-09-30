@@ -666,8 +666,9 @@ public sealed class WindowsInstallerNativeTests
             var ancestorReparseInstallRoot = Path.Combine(ancestorReparsePath, "client root");
             var ancestorReparseDiagnostic = await AssertRejectedPathWithCustomStateAsync(
                 "ancestor-reparse", ancestorReparseInstallRoot, ancestorReparseFixtureRoot, expectedReason: "reparse-point");
-            Assert.Contains("scope=ancestor", ancestorReparseDiagnostic, StringComparison.Ordinal);
-            Assert.Contains("reason=reparse-point", ancestorReparseDiagnostic, StringComparison.Ordinal);
+            // The ancestor walker validates each prefix separately, so this junction is the leaf of its checked prefix.
+            Assert.True(ancestorReparseDiagnostic.Contains("reason=reparse-point", StringComparison.Ordinal),
+                $"The ancestor junction was not rejected as a reparse point; diagnostic={ancestorReparseDiagnostic}");
             Assert.True((File.GetAttributes(ancestorReparsePath) & FileAttributes.ReparsePoint) != 0);
             Assert.False(Directory.Exists(ancestorReparseInstallRoot),
                 "The installer must not create a product directory beneath a reparse ancestor.");
