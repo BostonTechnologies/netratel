@@ -489,7 +489,7 @@ public sealed class WindowsInstallerNativeTests
             seededStart.ArgumentList.Add("-TenantId");
             seededStart.ArgumentList.Add("4098");
             seededStart.ArgumentList.Add("-EnrollmentCode");
-            seededStart.ArgumentList.Add("ENR-SYNTHETIC-HANDOFF-ONLY");
+            seededStart.ArgumentList.Add(enrollmentCode);
             seededStart.ArgumentList.Add("-Runtime");
             seededStart.ArgumentList.Add("win-x64");
             seededStart.ArgumentList.Add("-Version");
@@ -500,6 +500,7 @@ public sealed class WindowsInstallerNativeTests
             seededStart.Environment.Remove("NetRatel_UPDATE_ROOT");
             seededStart.Environment.Remove("NetRatel_UPDATE_STATE");
             seededStart.Environment["TEMP"] = root;
+            var existingPowerShellProcessIds = GetProcessIdsByName("powershell");
             installerProcess = Process.Start(seededStart)
                 ?? throw new InvalidOperationException("Could not start the saved API-seeded installer in Windows PowerShell 5.1.");
             var seededCaptured = await RunInstallerAndCaptureOutputAsync(installerProcess, timeout.Token);
@@ -508,7 +509,7 @@ public sealed class WindowsInstallerNativeTests
             var seededFailureEvidence = GetSafeSeededParentFailureEvidence(seededCombined);
             Assert.True(installerProcess.ExitCode == 0,
                 $"The saved API-seeded parent did not hand off successfully: {GetSafeInstallerDiagnostic(seededCombined)}; {seededFailureEvidence}");
-            Assert.DoesNotContain("ENR-SYNTHETIC-HANDOFF-ONLY", seededCombined, StringComparison.Ordinal);
+            Assert.DoesNotContain(enrollmentCode, seededCombined, StringComparison.Ordinal);
             AssertInstallerOutputHasSafeText(seededOutput, "handed off to independent installer process", "seeded_parent_handoff");
             installerProcess.Dispose();
             installerProcess = null;
@@ -526,30 +527,70 @@ public sealed class WindowsInstallerNativeTests
             var seededRequestPath = Path.Combine(seededHandoffDirectory, $"handoff-{seededHandoffId}.json");
             var seededChildScriptPath = Path.Combine(seededHandoffDirectory, $"handoff-{seededHandoffId}.ps1");
             JsonDocument? terminalResult = null;
-            await WaitUntilAsync(() =>
+            try
             {
-                if (Volatile.Read(ref packageRequests) < 4 || !File.Exists(seededResultPath)) return false;
-                try
+                await WaitUntilAsync(() =>
                 {
-                    var observed = JsonDocument.Parse(File.ReadAllText(seededResultPath));
-                    if (observed.RootElement.GetProperty("state").GetString() == "failed")
+                    if (!File.Exists(seededResultPath)) return false;
+                    try
                     {
-                        terminalResult = observed;
-                        return true;
+                        var observed = JsonDocument.Parse(File.ReadAllText(seededResultPath));
+                        if (observed.RootElement.TryGetProperty("state", out var state) &&
+                            state.ValueKind == JsonValueKind.String &&
+                            string.Equals(state.GetString(), "failed", StringComparison.Ordinal))
+                        {
+                            terminalResult = observed;
+                            return true;
+                        }
+
+                        observed.Dispose();
+                        return false;
                     }
-                    observed.Dispose();
-                    return false;
-                }
-                catch (Exception exception) when (exception is JsonException or IOException) { return false; }
-            }, TimeSpan.FromSeconds(45), timeout.Token);
+                    catch (Exception exception) when (exception is JsonException or IOException or UnauthorizedAccessException)
+                    {
+                        return false;
+                    }
+                }, TimeSpan.FromSeconds(45), timeout.Token);
+            }
+            catch (System.TimeoutException exception)
+            {
+                var progress = GetSafeSeededChildProgressEvidence(
+                    seededResultPath,
+                    seededRequestPath,
+                    seededChildScriptPath,
+                    existingPowerShellProcessIds,
+                    Volatile.Read(ref packageRequests),
+                    serving);
+                throw new System.TimeoutException(
+                    $"The detached child did not publish a terminal failure result; {progress}",
+                    exception);
+            }
             var completedTerminalResult = terminalResult ?? throw new InvalidOperationException(
                 "The detached child must reach the synthetic artifact rejection and publish a terminal failure result.");
             using (completedTerminalResult)
             {
                 Assert.Equal("failed", completedTerminalResult.RootElement.GetProperty("state").GetString());
-                Assert.Equal("installer_failed", completedTerminalResult.RootElement.GetProperty("failureCode").GetString());
+                var failureCode = GetSafeHandoffResultField(completedTerminalResult.RootElement, "failureCode", "installer_failed", "handoff_rejected");
+                Assert.True(failureCode == "installer_failed",
+                    $"The detached child failed before the synthetic artifact rejection; failureCode={failureCode}; " +
+                    GetSafeSeededChildProgressEvidence(
+                        seededResultPath,
+                        seededRequestPath,
+                        seededChildScriptPath,
+                        existingPowerShellProcessIds,
+                        Volatile.Read(ref packageRequests),
+                        serving));
             }
-            Assert.Equal(4, Volatile.Read(ref packageRequests));
+            var terminalPackageRequestCount = Volatile.Read(ref packageRequests);
+            Assert.True(terminalPackageRequestCount == 4,
+                $"The detached child did not reach the synthetic artifact request before terminal failure; " +
+                GetSafeSeededChildProgressEvidence(
+                    seededResultPath,
+                    seededRequestPath,
+                    seededChildScriptPath,
+                    existingPowerShellProcessIds,
+                    terminalPackageRequestCount,
+                    serving));
             await WaitUntilAsync(
                 () => !File.Exists(seededRequestPath) && !File.Exists(seededChildScriptPath),
                 TimeSpan.FromSeconds(15), timeout.Token);
@@ -2284,9 +2325,11 @@ public sealed class WindowsInstallerNativeTests
             var isInstallerSource = requestLine.Contains("/install.ps1", StringComparison.Ordinal);
             if (!isInstallerSource)
             {
-                Assert.Contains("/api/v1/client-artifacts/win-x64/latest/onboarding-download", requestLine, StringComparison.Ordinal);
-                Assert.Contains("X-NetRatel-Tenant-Id: 4098", request, StringComparison.OrdinalIgnoreCase);
-                Assert.Contains($"X-NetRatel-Enrollment-Code: {enrollmentCode}", request, StringComparison.OrdinalIgnoreCase);
+                if (!requestLine.Contains("/api/v1/client-artifacts/win-x64/latest/onboarding-download", StringComparison.Ordinal))
+                    throw new InvalidOperationException("Synthetic artifact request route did not match the fixture endpoint.");
+                if (!request.Contains("X-NetRatel-Tenant-Id: 4098", StringComparison.OrdinalIgnoreCase) ||
+                    !request.Contains($"X-NetRatel-Enrollment-Code: {enrollmentCode}", StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("Synthetic artifact request authorization headers did not match the fixture.");
                 recordPackageRequest();
             }
 
@@ -2611,6 +2654,101 @@ public sealed class WindowsInstallerNativeTests
         var shellFailure = GetSafePowerShellFailureDiagnostic(capturedOutput) ?? "PowerShell failure unavailable";
         return $"installerStop summary=not-emitted serviceState=unavailable handoffFailure={handoffFailure}; {shellFailure}";
     }
+
+    private static string GetSafeSeededChildProgressEvidence(
+        string resultPath,
+        string requestPath,
+        string childScriptPath,
+        IReadOnlySet<int> baselinePowerShellProcessIds,
+        int packageRequestCount,
+        Task? listenerTask)
+    {
+        var resultPresent = File.Exists(resultPath);
+        var resultState = resultPresent ? "unavailable" : "missing";
+        var failureCode = "none";
+        var exceptionType = "none";
+        if (resultPresent)
+        {
+            try
+            {
+                using var result = JsonDocument.Parse(File.ReadAllText(resultPath));
+                resultState = GetSafeHandoffResultField(
+                    result.RootElement, "state", "handed_off", "processing", "heartbeat_ready", "failed");
+                failureCode = GetSafeHandoffResultField(
+                    result.RootElement, "failureCode", "installer_failed", "handoff_rejected");
+                if (result.RootElement.TryGetProperty("exceptionType", out var typeValue) &&
+                    typeValue.ValueKind == JsonValueKind.String)
+                {
+                    exceptionType = NormalizeSafeExceptionType(typeValue.GetString());
+                }
+            }
+            catch (JsonException)
+            {
+                resultState = "malformed";
+            }
+            catch (IOException)
+            {
+                resultState = "unreadable";
+            }
+            catch (UnauthorizedAccessException)
+            {
+                resultState = "inaccessible";
+            }
+        }
+
+        var newPowerShellProcessCount = CountProcessesOutsideBaseline("powershell", baselinePowerShellProcessIds);
+        var listenerState = listenerTask?.Status.ToString() ?? "not-started";
+        var listenerExceptionType = listenerTask?.Exception is { } listenerFailure
+            ? NormalizeSafeExceptionType(listenerFailure.GetBaseException().GetType().Name)
+            : "none";
+        return $"seededChild packageRequests={packageRequestCount} requestPresent={File.Exists(requestPath)} " +
+            $"childScriptPresent={File.Exists(childScriptPath)} childProcessPresent={newPowerShellProcessCount > 0} " +
+            $"childProcessCount={newPowerShellProcessCount} resultPresent={resultPresent} resultState={resultState} " +
+            $"failureCode={failureCode} exceptionType={exceptionType} listenerState={listenerState} " +
+            $"listenerExceptionType={listenerExceptionType}";
+    }
+
+    private static HashSet<int> GetProcessIdsByName(string processName)
+    {
+        var processes = Process.GetProcessesByName(processName);
+        try
+        {
+            return processes.Select(static process => process.Id).ToHashSet();
+        }
+        finally
+        {
+            foreach (var process in processes) process.Dispose();
+        }
+    }
+
+    private static int CountProcessesOutsideBaseline(string processName, IReadOnlySet<int> baselineProcessIds)
+    {
+        var processes = Process.GetProcessesByName(processName);
+        try
+        {
+            return processes.Count(process => !baselineProcessIds.Contains(process.Id));
+        }
+        finally
+        {
+            foreach (var process in processes) process.Dispose();
+        }
+    }
+
+    private static string GetSafeHandoffResultField(JsonElement result, string propertyName, params string[] allowedValues)
+    {
+        if (!result.TryGetProperty(propertyName, out var value) || value.ValueKind != JsonValueKind.String)
+            return "none";
+
+        var candidate = value.GetString();
+        return candidate is not null && allowedValues.Contains(candidate, StringComparer.Ordinal)
+            ? candidate
+            : "other";
+    }
+
+    private static string NormalizeSafeExceptionType(string? candidate) =>
+        !string.IsNullOrWhiteSpace(candidate) && Regex.IsMatch(candidate, "^[A-Za-z][A-Za-z0-9]{0,63}$", RegexOptions.CultureInvariant)
+            ? candidate
+            : "other";
 
     private static string GetSafeHandoffFailureClassification(string capturedOutput)
     {
