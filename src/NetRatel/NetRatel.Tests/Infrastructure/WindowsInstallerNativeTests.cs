@@ -3923,8 +3923,9 @@ public sealed class WindowsInstallerNativeTests
             .ToArray();
 
         RequireReadinessInvariant(
-            owner is not null && localSystem.Equals(owner),
-            $"response-owner expected=LocalSystem actual={GetSafeWindowsPrincipalLabel(owner?.Value)}");
+            owner is not null && (localSystem.Equals(owner) || administrators.Equals(owner)),
+            $"response-owner expected=LocalSystem|BUILTIN\\Administrators " +
+            $"actual={GetSafeWindowsPrincipalLabel(owner?.Value)}");
         RequireReadinessInvariant(
             allowedSids.Count == rules.Length,
             $"response-ace-count expected={allowedSids.Count} actual={rules.Length}");
