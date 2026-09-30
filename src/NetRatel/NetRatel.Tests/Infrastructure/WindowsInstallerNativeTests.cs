@@ -930,6 +930,8 @@ public sealed class WindowsInstallerNativeTests
                     .Cast<FileSystemAccessRule>(),
                 rule => rule.IsInherited && rule.IdentityReference.Value == "S-1-5-32-545" &&
                         (rule.FileSystemRights & FileSystemRights.WriteData) != 0);
+            WriteWindowsAclInventory("credential-root-before-inherited-state-repair", credentialDirectory);
+            WriteWindowsAclInventory("update-state-before-inherited-state-repair", stateDirectory);
 
             var repairStart = new ProcessStartInfo(powershellPath)
             {
@@ -1468,6 +1470,50 @@ public sealed class WindowsInstallerNativeTests
         Assert.Contains(rules, rule => rule.IdentityReference.Value == systemSid.Value &&
             rule.AccessControlType == AccessControlType.Allow &&
             (rule.FileSystemRights & FileSystemRights.FullControl) == FileSystemRights.FullControl);
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static void WriteWindowsAclInventory(string role, string path)
+    {
+        var directory = new DirectoryInfo(path);
+        var security = directory.GetAccessControl();
+        var ownerSid = security.GetOwner(typeof(SecurityIdentifier)) as SecurityIdentifier;
+        var reparsePoint = (directory.Attributes & FileAttributes.ReparsePoint) != 0;
+        Console.WriteLine(
+            $"Windows ACL inventory: role={role}; owner={GetSafeWindowsPrincipalLabel(ownerSid?.Value)}; " +
+            $"protected={security.AreAccessRulesProtected}; reparse={reparsePoint}");
+        foreach (var rule in security.GetAccessRules(
+                     includeExplicit: true, includeInherited: true, typeof(SecurityIdentifier))
+                 .Cast<FileSystemAccessRule>()
+                 .OrderBy(rule => rule.IsInherited)
+                 .ThenBy(rule => rule.IdentityReference.Value, StringComparer.Ordinal)
+                 .ThenBy(rule => rule.AccessControlType))
+        {
+            Console.WriteLine(
+                $"Windows ACL ACE: role={role}; principal={GetSafeWindowsPrincipalLabel(rule.IdentityReference.Value)}; " +
+                $"type={rule.AccessControlType}; rights=0x{unchecked((uint)(int)rule.FileSystemRights):X8}({rule.FileSystemRights}); " +
+                $"inherited={rule.IsInherited}; inheritance={rule.InheritanceFlags}; propagation={rule.PropagationFlags}");
+        }
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static string GetSafeWindowsPrincipalLabel(string? sid)
+    {
+        var trustedInstallerSid = new System.Security.Principal.NTAccount("NT SERVICE", "TrustedInstaller")
+            .Translate(typeof(SecurityIdentifier)).Value;
+        if (string.Equals(sid, trustedInstallerSid, StringComparison.Ordinal)) return "NT-SERVICE\\TrustedInstaller";
+
+        return sid switch
+        {
+            "S-1-5-18" => "NT-AUTHORITY\\SYSTEM",
+            "S-1-5-32-544" => "BUILTIN\\Administrators",
+            "S-1-5-32-545" => "BUILTIN\\Users",
+            "S-1-5-11" => "NT-AUTHORITY\\Authenticated-Users",
+            "S-1-1-0" => "Everyone",
+            "S-1-3-0" => "CREATOR-OWNER",
+            null => "unknown",
+            _ => "redacted-principal"
+        };
     }
 
     private static async Task ServePackageAndEnrollmentAsync(TcpListener listener, byte[] archive,
