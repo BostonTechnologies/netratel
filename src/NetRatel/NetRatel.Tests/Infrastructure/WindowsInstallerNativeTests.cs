@@ -1172,8 +1172,9 @@ public sealed class WindowsInstallerNativeTests
             try { AssertProtectedServiceReadinessRequest(stateDirectory); }
             catch (Exception exception)
             {
+                var failureCode = GetSafeReadinessFailureCode(exception);
                 readinessObservationFailures.Enqueue(
-                    $"request:{exception.GetType().Name}:requestPresent={File.Exists(readinessRequestPath)}:" +
+                    $"request:{failureCode}:requestPresent={File.Exists(readinessRequestPath)}:" +
                     $"responsePresent={File.Exists(readinessResponsePath)}");
                 throw;
             }
@@ -1181,8 +1182,9 @@ public sealed class WindowsInstallerNativeTests
             try { AssertSystemServiceReadinessResponse(stateDirectory); }
             catch (Exception exception)
             {
+                var failureCode = GetSafeReadinessFailureCode(exception);
                 readinessObservationFailures.Enqueue(
-                    $"response:{exception.GetType().Name}:requestPresent={File.Exists(readinessRequestPath)}:" +
+                    $"response:{failureCode}:requestPresent={File.Exists(readinessRequestPath)}:" +
                     $"responsePresent={File.Exists(readinessResponsePath)}");
                 throw;
             }
@@ -3900,7 +3902,7 @@ public sealed class WindowsInstallerNativeTests
         var readinessDirectory = Path.Combine(stateDirectory, "install-readiness");
         var requestPath = Path.Combine(readinessDirectory, "request.json");
         var readyFile = new FileInfo(Path.Combine(readinessDirectory, "ready.json"));
-        Assert.True(readyFile.Exists, "the LocalSystem service must publish its current readiness response");
+        RequireReadinessInvariant(readyFile.Exists, "response-file-missing");
 
         var security = readyFile.GetAccessControl();
         var administrators = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
@@ -3920,26 +3922,81 @@ public sealed class WindowsInstallerNativeTests
             .Cast<FileSystemAccessRule>()
             .ToArray();
 
-        Assert.Equal(localSystem.Value, owner?.Value);
-        Assert.Equal(allowedSids.Count, rules.Length);
-        Assert.All(rules, rule =>
+        RequireReadinessInvariant(
+            owner is not null && localSystem.Equals(owner),
+            $"response-owner expected=LocalSystem actual={GetSafeWindowsPrincipalLabel(owner?.Value)}");
+        RequireReadinessInvariant(
+            allowedSids.Count == rules.Length,
+            $"response-ace-count expected={allowedSids.Count} actual={rules.Length}");
+        foreach (var rule in rules)
         {
-            Assert.True(rule.IsInherited, "the SYSTEM-created response must inherit only the protected readiness-directory ACL");
-            Assert.Equal(AccessControlType.Allow, rule.AccessControlType);
-            Assert.Contains(rule.IdentityReference.Value, allowedSids);
-            Assert.Equal(FileSystemRights.FullControl, rule.FileSystemRights);
-            Assert.Equal(InheritanceFlags.None, rule.InheritanceFlags);
-            Assert.Equal(PropagationFlags.None, rule.PropagationFlags);
-        });
-        Assert.All(allowedSids, sid => Assert.Contains(rules, rule => rule.IdentityReference.Value == sid));
+            var principal = GetSafeWindowsPrincipalLabel(rule.IdentityReference.Value);
+            RequireReadinessInvariant(
+                rule.IsInherited,
+                $"response-ace-inherited principal={principal} actual={rule.IsInherited}");
+            RequireReadinessInvariant(
+                rule.AccessControlType == AccessControlType.Allow,
+                $"response-ace-type principal={principal} actual={rule.AccessControlType}");
+            RequireReadinessInvariant(
+                allowedSids.Contains(rule.IdentityReference.Value),
+                $"response-ace-principal principal={principal} allowed=false");
+            RequireReadinessInvariant(
+                rule.FileSystemRights == FileSystemRights.FullControl,
+                $"response-ace-rights principal={principal} expected=FullControl " +
+                $"actual=0x{unchecked((uint)(int)rule.FileSystemRights):X8}({rule.FileSystemRights})");
+            RequireReadinessInvariant(
+                rule.InheritanceFlags == InheritanceFlags.None,
+                $"response-ace-inheritance principal={principal} actual={rule.InheritanceFlags}");
+            RequireReadinessInvariant(
+                rule.PropagationFlags == PropagationFlags.None,
+                $"response-ace-propagation principal={principal} actual={rule.PropagationFlags}");
+        }
+        foreach (var sid in allowedSids)
+        {
+            var principal = GetSafeWindowsPrincipalLabel(sid);
+            RequireReadinessInvariant(
+                rules.Any(rule => rule.IdentityReference.Value == sid),
+                $"response-ace-principal-missing principal={principal}");
+        }
 
         using var request = JsonDocument.Parse(File.ReadAllText(requestPath));
         using var ready = JsonDocument.Parse(File.ReadAllText(readyFile.FullName));
-        Assert.Equal(request.RootElement.GetProperty("attemptId").GetString(), ready.RootElement.GetProperty("attemptId").GetString());
-        Assert.Equal(request.RootElement.GetProperty("nonce").GetString(), ready.RootElement.GetProperty("nonce").GetString());
-        Assert.Equal("S-1-5-18", ready.RootElement.GetProperty("userSid").GetString());
-        Assert.Equal(0, ready.RootElement.GetProperty("sessionId").GetInt32());
-        Assert.Equal(ReadWindowsServiceProcessId("NetRatel.Client"), ready.RootElement.GetProperty("processId").GetInt32());
+        var attemptIdMatches = string.Equals(
+            request.RootElement.GetProperty("attemptId").GetString(),
+            ready.RootElement.GetProperty("attemptId").GetString(),
+            StringComparison.Ordinal);
+        RequireReadinessInvariant(attemptIdMatches, $"response-attempt-match actual={attemptIdMatches}");
+        var nonceMatches = string.Equals(
+            request.RootElement.GetProperty("nonce").GetString(),
+            ready.RootElement.GetProperty("nonce").GetString(),
+            StringComparison.Ordinal);
+        RequireReadinessInvariant(nonceMatches, $"response-nonce-match actual={nonceMatches}");
+        var userSid = ready.RootElement.GetProperty("userSid").GetString();
+        var systemUserMatches = string.Equals(userSid, localSystem.Value, StringComparison.Ordinal);
+        RequireReadinessInvariant(
+            systemUserMatches,
+            $"response-user expected=LocalSystem actual={GetSafeWindowsPrincipalLabel(userSid)}");
+        var sessionId = ready.RootElement.GetProperty("sessionId").GetInt32();
+        RequireReadinessInvariant(sessionId == 0, $"response-session expected=0 actual={sessionId}");
+        var expectedProcessId = ReadWindowsServiceProcessId("NetRatel.Client");
+        var responseProcessId = ready.RootElement.GetProperty("processId").GetInt32();
+        var processIdMatches = expectedProcessId == responseProcessId;
+        RequireReadinessInvariant(processIdMatches, $"response-process-match actual={processIdMatches}");
+    }
+
+    private static void RequireReadinessInvariant(bool condition, string safeFailureCode)
+    {
+        if (!condition) throw new ReadinessInvariantException(safeFailureCode);
+    }
+
+    private static string GetSafeReadinessFailureCode(Exception exception)
+        => exception is ReadinessInvariantException readinessInvariant
+            ? readinessInvariant.FailureCode
+            : exception.GetType().Name;
+
+    private sealed class ReadinessInvariantException(string failureCode) : Exception(failureCode)
+    {
+        public string FailureCode { get; } = failureCode;
     }
 
     private static string GetSeededWindowsScript()
