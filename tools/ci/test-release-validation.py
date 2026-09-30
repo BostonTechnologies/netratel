@@ -9,6 +9,7 @@ import re
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -275,6 +276,133 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
         self.assertIn("current Client presence HTTP=%s state=%s; container state=%s", failure_diagnostics)
         self.assertNotIn('cat "$command_response_path"', failure_diagnostics)
 
+
+
+class PublishedClientPackFetchTests(unittest.TestCase):
+    def setUp(self):
+        self.fetcher = module("fetch-published-client-pack")
+        self.directory = tempfile.TemporaryDirectory()
+        self.fetch_count = 0
+        self.source_version = "1.2.0"
+        self.source_tag = "v" + self.source_version
+        self.source_commit = "a" * 40
+        self.archive_bytes = {
+            f"netratel-client-{self.source_version}-linux-x64.tar.gz": b"linux pack",
+            f"netratel-client-{self.source_version}-win-x64.zip": b"windows pack",
+            f"netratel-client-{self.source_version}-osx-arm64.tar.gz": b"mac pack",
+        }
+
+    def tearDown(self):
+        self.directory.cleanup()
+
+    def run_fetch(self, *, selected_runtime=None, missing_assets=()):
+        self.fetch_count += 1
+        output = Path(self.directory.name) / f"published-pack-{self.fetch_count}"
+        output.mkdir()
+        files = {name: {"sha256": hashlib.sha256(data).hexdigest()}
+                 for name, data in self.archive_bytes.items()}
+        publication = {
+            "productVersion": self.source_version,
+            "verification": {"state": "complete"},
+            "publicCommit": self.source_commit,
+            "inputReceipt": {"repository": "BostonTechnologies/netratel",
+                             "headSha": self.source_commit, "files": files},
+        }
+        publication_data = json.dumps(publication).encode()
+        asset_bytes = {
+            "publication.json": publication_data,
+            "SHA256SUMS": b"release checksums\n",
+            **self.archive_bytes,
+        }
+        assets = [
+            {"name": name, "state": "uploaded", "size": len(data),
+             "digest": "sha256:" + hashlib.sha256(data).hexdigest()}
+            for name, data in asset_bytes.items() if name not in missing_assets
+        ]
+        release_data = json.dumps({"draft": False, "tag_name": self.source_tag, "assets": assets})
+        self.downloaded = []
+
+        def download(args, **_kwargs):
+            args = tuple(args)
+            name = args[args.index("--pattern") + 1]
+            target = Path(args[args.index("--dir") + 1]) / name
+            target.write_bytes(asset_bytes[name])
+            self.downloaded.append(name)
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        def command(*args):
+            if args[-1] == "tools/ci/product-version.py":
+                return "0.1.0-rc.13"
+            if args[-1] == "tools/ci/select-prior-release.py":
+                return json.dumps({"tag": self.source_tag})
+            raise AssertionError(f"Unexpected command: {args}")
+
+        def gh(*args):
+            if args[1].endswith("/releases/tags/" + self.source_tag):
+                return release_data
+            if args[1].endswith("/commits/" + self.source_tag):
+                return json.dumps({"sha": self.source_commit})
+            raise AssertionError(f"Unexpected GitHub API request: {args}")
+
+        argv = ["fetch-published-client-pack.py", "--output", str(output)]
+        if selected_runtime is not None:
+            argv.extend(("--runtime", selected_runtime))
+        with patch.object(self.fetcher, "command", side_effect=command), \
+                patch.object(self.fetcher, "gh", side_effect=gh), \
+                patch.object(self.fetcher.subprocess, "run", side_effect=download), \
+                patch.object(sys, "argv", argv):
+            self.fetcher.main()
+        return output
+
+    def test_runtime_filter_downloads_only_requested_archive_and_keeps_metadata(self):
+        selected = f"netratel-client-{self.source_version}-win-x64.zip"
+        output = self.run_fetch(selected_runtime="win-x64")
+        self.assertCountEqual(self.downloaded, ["publication.json", "SHA256SUMS", selected])
+        self.assertTrue((output / selected).is_file())
+        self.assertFalse((output / f"netratel-client-{self.source_version}-linux-x64.tar.gz").exists())
+
+    def test_runtime_filter_still_requires_every_inventory_asset_to_be_published(self):
+        linux_archive = f"netratel-client-{self.source_version}-linux-x64.tar.gz"
+        with self.assertRaisesRegex(ValueError, "Publication inventory asset is absent"):
+            self.run_fetch(selected_runtime="win-x64", missing_assets=(linux_archive,))
+        self.assertCountEqual(self.downloaded, ["publication.json", "SHA256SUMS"])
+
+    def test_runtime_filter_rejects_duplicate_runtime_inventory_entries(self):
+        windows_tarball = f"netratel-client-{self.source_version}-win-x64.tar.gz"
+        self.archive_bytes[windows_tarball] = b"duplicate windows pack"
+        with self.assertRaisesRegex(ValueError, "Duplicate published client runtime: win-x64"):
+            self.run_fetch(selected_runtime="win-x64")
+        self.assertCountEqual(self.downloaded, ["publication.json", "SHA256SUMS"])
+
+    def test_missing_requested_runtime_is_rejected_and_default_fetch_remains_complete(self):
+        with self.assertRaisesRegex(ValueError, "no client archive for runtime: freebsd-x64"):
+            self.run_fetch(selected_runtime="freebsd-x64")
+        self.assertCountEqual(self.downloaded, ["publication.json", "SHA256SUMS"])
+
+        self.run_fetch()
+        self.assertCountEqual(self.downloaded, [
+            "publication.json", "SHA256SUMS", *self.archive_bytes.keys(),
+        ])
+
+
+class PublishedWindowsUpgradeWorkflowTests(unittest.TestCase):
+    def test_windows_client_lane_fetches_publication_fixture_and_retains_upgrade_receipt(self):
+        source = (ROOT / ".github/workflows/public-pr-validation.yml").read_text(encoding="utf-8")
+        fetch_step = source.index("name: Fetch latest completed public Windows client pack")
+        native_step = source.index("name: Run native Windows installer preflight ACL regression")
+        repair_test = source.index("GeneratedServiceInstallerRequiresLocalSystemGatewayAdmissionAndAcknowledgedHeartbeats")
+        upgrade_test = source.index("GeneratedServiceInstallerUpgradesPublishedPreviousVersionAndPreservesIdentity")
+        upgrade_receipt = source.index("windows-installer-published-upgrade.trx")
+        self.assertLess(fetch_step, native_step)
+        self.assertLess(repair_test, upgrade_test)
+        self.assertLess(upgrade_test, upgrade_receipt)
+        self.assertIn("GH_TOKEN: ${{ github.token }}", source[fetch_step:native_step])
+        self.assertIn("--runtime win-x64", source[fetch_step:native_step])
+        fixture_env = source.index("NETRATEL_RELEASE_FIXTURE_DIR=\"$RUNNER_TEMP/published-client-pack\"")
+        upgrade_setup = source[fixture_env:upgrade_test]
+        self.assertIn("NETRATEL_NATIVE_CLIENT_DIRECTORY=\"$PWD/artifacts/netratel-client-win-x64\"", upgrade_setup)
+        self.assertIn("--expected-executed 1", source[upgrade_receipt:upgrade_receipt + 180])
+        self.assertIn("path: TestResults/native-windows/*.trx", source)
 
 
 class ChromiumNssSmokeTests(unittest.TestCase):

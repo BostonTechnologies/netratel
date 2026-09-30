@@ -1646,6 +1646,458 @@ public sealed class WindowsInstallerNativeTests
     [Fact]
     [Trait("category", "hosted")]
     [SupportedOSPlatform("windows")]
+    public async Task GeneratedServiceInstallerUpgradesPublishedPreviousVersionAndPreservesIdentity()
+    {
+        if (!OperatingSystem.IsWindows()) Assert.Skip("The published Windows service upgrade test requires hosted Windows.");
+
+        var fixtureDirectory = Environment.GetEnvironmentVariable("NETRATEL_RELEASE_FIXTURE_DIR")
+            ?? throw new InvalidOperationException("NETRATEL_RELEASE_FIXTURE_DIR must contain the selected completed public release fixture.");
+        var packageDirectory = Environment.GetEnvironmentVariable("NETRATEL_NATIVE_CLIENT_DIRECTORY")
+            ?? throw new InvalidOperationException("Set NETRATEL_NATIVE_CLIENT_DIRECTORY to the hosted Windows client package directory.");
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(8));
+        var publishedPackage = await LoadVerifiedPublishedWindowsPackageAsync(fixtureDirectory, timeout.Token);
+
+        using var candidateManifest = JsonDocument.Parse(await File.ReadAllTextAsync(
+            Path.Combine(packageDirectory, "netratel-client-manifest.json"), timeout.Token));
+        var candidateManifestRoot = candidateManifest.RootElement;
+        var candidateVersion = candidateManifestRoot.GetProperty("version").GetString()
+            ?? throw new InvalidDataException("The candidate client manifest has no version.");
+        var candidateCommit = candidateManifestRoot.GetProperty("commitSha").GetString()
+            ?? throw new InvalidDataException("The candidate client manifest has no commit identity.");
+        Assert.Equal("NetRatel.Client", candidateManifestRoot.GetProperty("product").GetString());
+        Assert.Equal("win-x64", candidateManifestRoot.GetProperty("runtimeId").GetString());
+        Assert.Matches("^[0-9a-f]{40}$", candidateCommit);
+        Assert.True(ClientUpdateVersioning.IsNewerVersion(candidateVersion, publishedPackage.Version),
+            "The dynamically selected completed publication must be an earlier version than the candidate.");
+
+        const string serviceName = "NetRatel.Client";
+        const int tenantId = 4098;
+        var agentId = Guid.NewGuid();
+        var commonApplicationData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
+        var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+        Assert.False(string.IsNullOrWhiteSpace(commonApplicationData));
+        Assert.False(string.IsNullOrWhiteSpace(programFiles));
+        var credentialDirectory = Path.Combine(commonApplicationData, "NetRatel");
+        var credentialPath = Path.Combine(credentialDirectory, "agent.dat");
+        var stateDirectory = Path.Combine(credentialDirectory, "update");
+        var logDirectory = Path.Combine(credentialDirectory, "logs");
+        var productInstallDirectory = Path.Combine(programFiles, "NetRatel");
+        var installRoot = Path.Combine(productInstallDirectory, "Client");
+        var programDataDirectory = new DirectoryInfo(commonApplicationData);
+        var programFilesDirectory = new DirectoryInfo(programFiles);
+        const AccessControlSections parentSecuritySections =
+            AccessControlSections.Access | AccessControlSections.Owner | AccessControlSections.Group;
+        var originalProgramDataSecurity = programDataDirectory.GetAccessControl();
+        var originalProgramDataSddl = originalProgramDataSecurity.GetSecurityDescriptorSddlForm(parentSecuritySections);
+        var originalProgramFilesSecurity = programFilesDirectory.GetAccessControl();
+        var originalProgramFilesSddl = originalProgramFilesSecurity.GetSecurityDescriptorSddlForm(parentSecuritySections);
+        AssertWindowsServiceAbsent(serviceName);
+        Assert.False(Directory.Exists(credentialDirectory), "the disposable Windows runner must start without NetRatel credential files");
+        Assert.False(Directory.Exists(stateDirectory), "the disposable Windows runner must start without NetRatel updater state");
+        Assert.False(Directory.Exists(logDirectory), "the disposable Windows runner must start without the default NetRatel log directory");
+        Assert.False(Directory.Exists(productInstallDirectory), "the disposable Windows runner must start without the default NetRatel installation root");
+
+        var root = CreateWindowsServiceFixtureRoot("published-upgrade");
+        using var certificate = CreateNativeGatewayCertificate();
+        using var trustedCertificate = X509CertificateLoader.LoadCertificate(certificate.Export(X509ContentType.Cert));
+        WebApplication? app = null;
+        Process? installerProcess = null;
+        var trusted = false;
+        using var fixture = new NativeGatewayHostFixture(tenantId, agentId, "ENR-SYNTHETIC-PUBLISHED-UPGRADE");
+        fixture.AgentStore.FirstAdmissionObserver = () =>
+        {
+            AssertProtectedServiceReadinessRequest(stateDirectory);
+            AssertSystemServiceReadinessResponse(stateDirectory);
+        };
+        var observedReadinessAttempts = new ConcurrentDictionary<Guid, byte>();
+        fixture.AgentStore.AdmissionObserver = () =>
+        {
+            var readinessRequestPath = Path.Combine(stateDirectory, "install-readiness", "request.json");
+            var readinessResponsePath = Path.Combine(stateDirectory, "install-readiness", "ready.json");
+            if (!File.Exists(readinessRequestPath) || !File.Exists(readinessResponsePath)) return;
+
+            var attemptId = ReadServiceReadinessAttemptId(stateDirectory);
+            if (!observedReadinessAttempts.TryAdd(attemptId, 0)) return;
+
+            try
+            {
+                AssertProtectedServiceReadinessRequest(stateDirectory);
+                AssertSystemServiceReadinessResponse(stateDirectory);
+            }
+            catch
+            {
+                observedReadinessAttempts.TryRemove(attemptId, out _);
+                throw;
+            }
+        };
+
+        try
+        {
+            var candidateArchivePath = Path.Combine(root, "candidate.zip");
+            ZipFile.CreateFromDirectory(packageDirectory, candidateArchivePath, CompressionLevel.Optimal, includeBaseDirectory: false);
+            var candidateArchiveBytes = await File.ReadAllBytesAsync(candidateArchivePath, timeout.Token);
+            var candidateSha256 = Convert.ToHexString(SHA256.HashData(candidateArchiveBytes)).ToLowerInvariant();
+            await AssertWindowsClientArchiveManifestAsync(
+                candidateArchivePath, candidateVersion, candidateCommit, timeout.Token);
+
+            AddLocalMachineTrust(trustedCertificate);
+            trusted = true;
+            app = BuildNativeGatewayHost(certificate, fixture);
+            await app.StartAsync(timeout.Token);
+            var addresses = app.Services.GetRequiredService<IServer>()
+                .Features.Get<IServerAddressesFeature>()?.Addresses;
+            Assert.NotNull(addresses);
+            var apiBase = Assert.Single(addresses!, address => address.StartsWith("https://", StringComparison.OrdinalIgnoreCase));
+            var tlsProbe = await ProbeLoopbackHttpsAsync(apiBase, timeout.Token);
+            var powershellPath = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.System),
+                "WindowsPowerShell", "v1.0", "powershell.exe");
+
+            async Task<(int ExitCode, string StandardOutput, string StandardError)> RunGeneratedInstallerAsync(
+                string version,
+                string sha256,
+                string scriptName)
+            {
+                var script = new ScriptTemplateService().Build(new DeploymentScriptTemplateRequest(
+                    tenantId, "win-x64", fixture.EnrollmentCode, apiBase, DateTimeOffset.UtcNow.AddHours(1),
+                    InstallAsService: true, SilentInstall: true, version, sha256,
+                    ReadinessTimeoutSeconds: 90));
+                var scriptPath = Path.Combine(root, scriptName);
+                await File.WriteAllTextAsync(scriptPath, script, timeout.Token);
+
+                var start = new ProcessStartInfo(powershellPath)
+                {
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false
+                };
+                start.ArgumentList.Add("-NoProfile");
+                start.ArgumentList.Add("-ExecutionPolicy");
+                start.ArgumentList.Add("Bypass");
+                start.ArgumentList.Add("-File");
+                start.ArgumentList.Add(scriptPath);
+                start.Environment.Remove("NetRatel_ROOT");
+                start.Environment.Remove("NetRatel_STATE");
+                start.Environment.Remove("NetRatel_LOG_DIR");
+                start.Environment["TEMP"] = root;
+
+                installerProcess = Process.Start(start)
+                    ?? throw new InvalidOperationException("Could not start the generated Windows service installer.");
+                var captured = await RunInstallerAndCaptureOutputAsync(installerProcess, timeout.Token);
+                var exitCode = installerProcess.ExitCode;
+                installerProcess.Dispose();
+                installerProcess = null;
+                return (exitCode, captured.StandardOutput, captured.StandardError);
+            }
+
+            fixture.SetArtifact(publishedPackage.Bytes, publishedPackage.Version, publishedPackage.Sha256);
+            var previousInstall = await RunGeneratedInstallerAsync(
+                publishedPackage.Version, publishedPackage.Sha256, "install-published-previous.ps1");
+            Assert.True(previousInstall.ExitCode == 0,
+                $"The published previous-version service install failed; {GetSafeInstallerDiagnostic(string.Concat(previousInstall.StandardOutput, Environment.NewLine, previousInstall.StandardError), tlsProbe)}");
+            AssertInstallerOutputHasSafeText(previousInstall.StandardOutput, "Gateway heartbeat ready:", "published_previous_ready_message");
+            AssertInstallerOutputHasSafeText(previousInstall.StandardOutput, $"agentId={agentId:D}", "published_previous_agent_id_message");
+            AssertInstallerOutputHasSafeText(previousInstall.StandardOutput, $"tenantId={tenantId}", "published_previous_tenant_id_message");
+            Assert.Equal(1, fixture.AgentStore.FirstAdmissionObservations);
+            Assert.Empty(fixture.AgentStore.FirstAdmissionObservationFailures);
+            Assert.Equal(1, fixture.DownloadRequests);
+            Assert.Equal(1, fixture.EnrollmentRequests);
+            Assert.True(File.Exists(credentialPath), "the LocalSystem install must retain its enrolled credentials");
+
+            var presence = app.Services.GetRequiredService<IClientPresenceRouter>();
+            var clientKey = new ClientKey(tenantId, agentId);
+            var previousSnapshot = await WaitForPresenceAsync(presence, clientKey, minimumEpoch: 1, timeout.Token);
+            Assert.Equal(ClientPresenceStatus.Online, previousSnapshot.Status);
+            Assert.True(previousSnapshot.IsAuthoritative);
+            Assert.Equal("akka", previousSnapshot.Source);
+            Assert.True(previousSnapshot.LastAcceptedSequence >= 2,
+                "the published previous-version service must have two gateway-acknowledged heartbeat frames");
+
+            var previousExecutable = Path.Combine(
+                installRoot, "versions", publishedPackage.Version, "NetRatel.Client.exe");
+            Assert.True(File.Exists(previousExecutable));
+            Assert.True(ServiceExecutableMatches(ReadWindowsServiceImagePath(serviceName), previousExecutable));
+            Assert.Equal("LocalSystem", ReadWindowsServiceStartName(serviceName));
+            Assert.Equal(2, ReadWindowsServiceStartType(serviceName));
+            var previousServiceProcessId = ReadWindowsServiceProcessId(serviceName);
+            using (var previousServiceProcess = Process.GetProcessById(previousServiceProcessId))
+            {
+                Assert.Equal(0, previousServiceProcess.SessionId);
+            }
+
+            var installedPreviousExecutableBytes = await File.ReadAllBytesAsync(previousExecutable, timeout.Token);
+            var credentialBytesBeforeUpgrade = await File.ReadAllBytesAsync(credentialPath, timeout.Token);
+            var credentialSecurityBeforeUpgrade = AssertProtectedWindowsCredential(credentialPath);
+            var tokensBeforeUpgrade = fixture.TokenRequests;
+
+            fixture.SetArtifact(candidateArchiveBytes, candidateVersion, candidateSha256);
+            var candidateInstall = await RunGeneratedInstallerAsync(
+                candidateVersion, candidateSha256, "install-candidate-upgrade.ps1");
+            Assert.True(candidateInstall.ExitCode == 0,
+                $"The candidate service upgrade failed; {GetSafeInstallerDiagnostic(string.Concat(candidateInstall.StandardOutput, Environment.NewLine, candidateInstall.StandardError), tlsProbe)}");
+            AssertInstallerOutputHasSafeText(candidateInstall.StandardOutput, "Gateway heartbeat ready:", "candidate_upgrade_ready_message");
+            AssertInstallerOutputHasSafeText(candidateInstall.StandardOutput, $"agentId={agentId:D}", "candidate_upgrade_agent_id_message");
+            AssertInstallerOutputHasSafeText(candidateInstall.StandardOutput, $"tenantId={tenantId}", "candidate_upgrade_tenant_id_message");
+
+            var upgradedSnapshot = await WaitForPresenceAsync(
+                presence, clientKey, checked(previousSnapshot.ConnectionEpoch!.Value + 1), timeout.Token);
+            Assert.Equal(ClientPresenceStatus.Online, upgradedSnapshot.Status);
+            Assert.True(upgradedSnapshot.IsAuthoritative);
+            Assert.Equal("akka", upgradedSnapshot.Source);
+            Assert.True(upgradedSnapshot.LastAcceptedSequence >= 2,
+                "the candidate service must establish two newly acknowledged gateway heartbeat frames");
+            Assert.Equal(clientKey, upgradedSnapshot.Client);
+            Assert.NotEqual(previousSnapshot.ConnectionId, upgradedSnapshot.ConnectionId);
+            Assert.True(upgradedSnapshot.ConnectionEpoch.HasValue &&
+                upgradedSnapshot.ConnectionEpoch.Value > previousSnapshot.ConnectionEpoch!.Value);
+
+            var candidateExecutable = Path.Combine(installRoot, "versions", candidateVersion, "NetRatel.Client.exe");
+            Assert.True(File.Exists(candidateExecutable));
+            Assert.True(File.Exists(previousExecutable), "the prior published package version must remain available after upgrade");
+            Assert.Equal(installedPreviousExecutableBytes, await File.ReadAllBytesAsync(previousExecutable, timeout.Token));
+            Assert.True(ServiceExecutableMatches(ReadWindowsServiceImagePath(serviceName), candidateExecutable));
+            Assert.Equal("LocalSystem", ReadWindowsServiceStartName(serviceName));
+            Assert.Equal(2, ReadWindowsServiceStartType(serviceName));
+            var candidateServiceProcessId = ReadWindowsServiceProcessId(serviceName);
+            Assert.NotEqual(previousServiceProcessId, candidateServiceProcessId);
+            using (var candidateServiceProcess = Process.GetProcessById(candidateServiceProcessId))
+            {
+                Assert.Equal(0, candidateServiceProcess.SessionId);
+            }
+
+            Assert.Equal(credentialBytesBeforeUpgrade, await File.ReadAllBytesAsync(credentialPath, timeout.Token));
+            Assert.Equal(credentialSecurityBeforeUpgrade, AssertProtectedWindowsCredential(credentialPath));
+            Assert.True(fixture.EnrollmentRequests == 1,
+                "the upgrade must reuse the installed Agent identity instead of enrolling a second agent");
+            Assert.Equal(2, fixture.DownloadRequests);
+            Assert.True(fixture.TokenRequests > tokensBeforeUpgrade,
+                "the candidate LocalSystem process must authenticate and publish a new connection");
+            Assert.All(fixture.TokenAgentIds, value => Assert.Equal(agentId.ToString("D"), value));
+            Assert.All(fixture.RefreshTokens, value => Assert.Equal(NativeGatewayHostFixture.RefreshToken, value));
+
+            Assert.Equal(2, observedReadinessAttempts.Count);
+            Assert.Empty(fixture.AgentStore.AdmissionObservationFailures);
+            Assert.False(File.Exists(Path.Combine(stateDirectory, "install-readiness", "request.json")),
+                "the successful installer must remove its readiness request after the admission was observed");
+            Assert.False(File.Exists(Path.Combine(stateDirectory, "install-readiness", "ready.json")),
+                "the successful installer must remove its readiness response after the admission was observed");
+            Console.WriteLine(
+                $"Native published Windows upgrade receipt: os={Environment.OSVersion.VersionString}; " +
+                $"powershell=WindowsPowerShell-5.1; previous={publishedPackage.Version}; candidate={candidateVersion}; " +
+                "service=LocalSystem-session-0; priorAndCandidateHeartbeats=acknowledged>=2; identityPreserved=true; enrollments=1");
+        }
+        finally
+        {
+            if (installerProcess is not null)
+            {
+                try
+                {
+                    if (!installerProcess.HasExited) installerProcess.Kill(entireProcessTree: true);
+                    await installerProcess.WaitForExitAsync(CancellationToken.None);
+                }
+                finally { installerProcess.Dispose(); }
+            }
+
+            var serviceRemoved = false;
+            try
+            {
+                serviceRemoved = RemoveWindowsServiceIfRegisteredImagePathEquals(
+                    serviceName,
+                    GetExpectedServiceImagePath(Path.Combine(
+                        installRoot, "versions", publishedPackage.Version, "NetRatel.Client.exe")));
+                if (!serviceRemoved)
+                {
+                    serviceRemoved = RemoveWindowsServiceIfRegisteredImagePathEquals(
+                        serviceName,
+                        GetExpectedServiceImagePath(Path.Combine(
+                            installRoot, "versions", candidateVersion, "NetRatel.Client.exe")));
+                }
+            }
+            finally
+            {
+                try
+                {
+                    if (app is not null)
+                    {
+                        try { await app.StopAsync(CancellationToken.None); }
+                        finally { await app.DisposeAsync(); }
+                    }
+                }
+                finally
+                {
+                    try
+                    {
+                        if (trusted) RemoveLocalMachineTrust(trustedCertificate);
+                    }
+                    finally
+                    {
+                        if (serviceRemoved)
+                        {
+                            if (Directory.Exists(stateDirectory)) Directory.Delete(stateDirectory, recursive: true);
+                            if (Directory.Exists(logDirectory)) Directory.Delete(logDirectory, recursive: true);
+                            DeleteCredentialFiles(credentialDirectory);
+                            if (Directory.Exists(installRoot)) Directory.Delete(installRoot, recursive: true);
+                            if (Directory.Exists(productInstallDirectory) && !Directory.EnumerateFileSystemEntries(productInstallDirectory).Any())
+                                Directory.Delete(productInstallDirectory);
+                            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+                        }
+                    }
+                }
+            }
+
+            var currentProgramDataSddl = programDataDirectory.GetAccessControl()
+                .GetSecurityDescriptorSddlForm(parentSecuritySections);
+            var programDataAclWasChanged = !string.Equals(currentProgramDataSddl, originalProgramDataSddl, StringComparison.Ordinal);
+            if (programDataAclWasChanged) programDataDirectory.SetAccessControl(originalProgramDataSecurity);
+            Assert.False(programDataAclWasChanged,
+                "the generated published-upgrade installer changed the shared ProgramData ACL; the original ACL was restored");
+            Assert.Equal(originalProgramDataSddl, programDataDirectory.GetAccessControl()
+                .GetSecurityDescriptorSddlForm(parentSecuritySections));
+
+            var currentProgramFilesSddl = programFilesDirectory.GetAccessControl()
+                .GetSecurityDescriptorSddlForm(parentSecuritySections);
+            var programFilesAclWasChanged = !string.Equals(currentProgramFilesSddl, originalProgramFilesSddl, StringComparison.Ordinal);
+            if (programFilesAclWasChanged) programFilesDirectory.SetAccessControl(originalProgramFilesSecurity);
+            Assert.False(programFilesAclWasChanged,
+                "the generated published-upgrade installer changed the shared Program Files ACL; the original ACL was restored");
+            Assert.Equal(originalProgramFilesSddl, programFilesDirectory.GetAccessControl()
+                .GetSecurityDescriptorSddlForm(parentSecuritySections));
+            Assert.True(serviceRemoved, "The service registration changed; retaining its package and credentials for inspection.");
+        }
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static async Task<(string Version, string Sha256, byte[] Bytes)> LoadVerifiedPublishedWindowsPackageAsync(
+        string fixtureDirectory,
+        CancellationToken cancellationToken)
+    {
+        using var publication = JsonDocument.Parse(await File.ReadAllTextAsync(
+            Path.Combine(fixtureDirectory, "publication.json"), cancellationToken));
+        var record = publication.RootElement;
+        var version = record.GetProperty("productVersion").GetString()
+            ?? throw new InvalidDataException("The publication record has no product version.");
+        Assert.Matches("^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$", version);
+        Assert.Equal("complete", record.GetProperty("verification").GetProperty("state").GetString());
+
+        var receipt = record.GetProperty("inputReceipt");
+        Assert.Equal("BostonTechnologies/netratel", receipt.GetProperty("repository").GetString());
+        Assert.Equal(".github/workflows/release-build.yml", receipt.GetProperty("workflow").GetString());
+        Assert.True(receipt.GetProperty("runId").GetInt64() > 0);
+        Assert.True(receipt.GetProperty("attempt").GetInt32() > 0);
+        var commit = record.GetProperty("publicCommit").GetString()
+            ?? throw new InvalidDataException("The publication record has no public commit identity.");
+        Assert.Matches("^[0-9a-f]{40}$", commit);
+        Assert.Equal(commit, receipt.GetProperty("headSha").GetString());
+
+        var archiveName = $"netratel-client-{version}-win-x64.zip";
+        var receiptFiles = receipt.GetProperty("files");
+        Assert.True(receiptFiles.TryGetProperty(archiveName, out var receiptArchive),
+            "The completed build receipt must declare the exact previous Windows archive.");
+        var receiptSha256 = receiptArchive.GetProperty("sha256").GetString()
+            ?? throw new InvalidDataException("The publication receipt has no archive checksum.");
+        var publishedArtifacts = record.GetProperty("artifacts");
+        Assert.True(publishedArtifacts.TryGetProperty(archiveName, out var publishedArchiveSha256),
+            "The completed publication record must list the previous Windows archive asset.");
+        Assert.Equal(receiptSha256.ToLowerInvariant(), publishedArchiveSha256.GetString()?.ToLowerInvariant());
+
+        var archivePath = Path.Combine(fixtureDirectory, archiveName);
+        Assert.True(File.Exists(archivePath), "The selected publication fixture must contain its declared Windows archive.");
+        var checksumLines = File.ReadAllLines(Path.Combine(fixtureDirectory, "SHA256SUMS"))
+            .Select(line => Regex.Match(line, "^(?<sha256>[a-fA-F0-9]{64})\\s+\\*?(?<name>[^\\s]+)$"))
+            .Where(match => match.Success && string.Equals(match.Groups["name"].Value, archiveName, StringComparison.Ordinal))
+            .Select(match => match.Groups["sha256"].Value.ToLowerInvariant())
+            .ToArray();
+        var checksumSha256 = Assert.Single(checksumLines);
+        Assert.Equal(receiptSha256.ToLowerInvariant(), checksumSha256);
+
+        var bytes = await File.ReadAllBytesAsync(archivePath, cancellationToken);
+        var actualSha256 = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+        Assert.Equal(receiptSha256.ToLowerInvariant(), actualSha256);
+        await AssertWindowsClientArchiveManifestAsync(archivePath, version, commit, cancellationToken);
+        return (version, actualSha256, bytes);
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static async Task AssertWindowsClientArchiveManifestAsync(
+        string archivePath,
+        string expectedVersion,
+        string expectedCommit,
+        CancellationToken cancellationToken)
+    {
+        using var archive = ZipFile.OpenRead(archivePath);
+        const string manifestName = "netratel-client-manifest.json";
+        var manifestEntry = Assert.Single(archive.Entries,
+            entry => string.Equals(entry.FullName, manifestName, StringComparison.Ordinal) ||
+                     string.Equals(entry.FullName, $"netratel-client-win-x64/{manifestName}", StringComparison.Ordinal));
+        Assert.InRange(manifestEntry.Length, 1, 128 * 1024);
+        const string wrappedPackagePrefix = "netratel-client-win-x64/";
+        var isWrapped = manifestEntry.FullName.StartsWith(wrappedPackagePrefix, StringComparison.Ordinal);
+        if (isWrapped)
+        {
+            Assert.All(archive.Entries, entry =>
+                Assert.True(entry.FullName.StartsWith(wrappedPackagePrefix, StringComparison.Ordinal),
+                    "a wrapped Windows package archive must not mix in other root entries"));
+        }
+        else
+        {
+            Assert.DoesNotContain(archive.Entries,
+                entry => entry.FullName.StartsWith(wrappedPackagePrefix, StringComparison.Ordinal));
+        }
+
+        var packageDirectory = manifestEntry.FullName[..^manifestName.Length];
+        await using var manifestStream = manifestEntry.Open();
+        using var manifest = await JsonDocument.ParseAsync(manifestStream, cancellationToken: cancellationToken);
+        var manifestRoot = manifest.RootElement;
+        Assert.Equal("netratel.client.manifest.v1", manifestRoot.GetProperty("schema").GetString());
+        Assert.Equal("NetRatel.Client", manifestRoot.GetProperty("product").GetString());
+        Assert.Equal(expectedVersion, manifestRoot.GetProperty("version").GetString());
+        Assert.Equal("win-x64", manifestRoot.GetProperty("runtimeId").GetString());
+        Assert.Equal(expectedCommit, manifestRoot.GetProperty("commitSha").GetString());
+        var executable = manifestRoot.GetProperty("executable").GetString();
+        Assert.Equal("NetRatel.Client.exe", executable);
+        Assert.Contains(archive.Entries,
+            entry => string.Equals(entry.FullName, $"{packageDirectory}{executable}", StringComparison.Ordinal));
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static string AssertProtectedWindowsCredential(string credentialPath)
+    {
+        var file = new FileInfo(credentialPath);
+        Assert.True(file.Exists, "the LocalSystem service must persist its machine credential file");
+        var security = file.GetAccessControl();
+        var systemSid = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
+        var owner = security.GetOwner(typeof(SecurityIdentifier)) as SecurityIdentifier;
+        Assert.Equal(systemSid.Value, owner?.Value);
+        var untrustedSids = new HashSet<string>(StringComparer.Ordinal)
+        {
+            new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null).Value,
+            new SecurityIdentifier(WellKnownSidType.WorldSid, null).Value,
+            new SecurityIdentifier(WellKnownSidType.AuthenticatedUserSid, null).Value
+        };
+        const FileSystemRights replacementRights = FileSystemRights.WriteData | FileSystemRights.AppendData |
+            FileSystemRights.WriteExtendedAttributes | FileSystemRights.WriteAttributes | FileSystemRights.Delete |
+            FileSystemRights.DeleteSubdirectoriesAndFiles | FileSystemRights.ChangePermissions | FileSystemRights.TakeOwnership;
+        var rules = security
+            .GetAccessRules(includeExplicit: true, includeInherited: true, typeof(SecurityIdentifier))
+            .Cast<FileSystemAccessRule>()
+            .ToArray();
+        Assert.DoesNotContain(rules, rule => rule.AccessControlType == AccessControlType.Allow &&
+            untrustedSids.Contains(rule.IdentityReference.Value) && (rule.FileSystemRights & replacementRights) != 0);
+        return security.GetSecurityDescriptorSddlForm(
+            AccessControlSections.Access | AccessControlSections.Owner | AccessControlSections.Group);
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static Guid ReadServiceReadinessAttemptId(string stateDirectory)
+    {
+        using var request = JsonDocument.Parse(File.ReadAllText(
+            Path.Combine(stateDirectory, "install-readiness", "request.json")));
+        return request.RootElement.GetProperty("attemptId").GetGuid();
+    }
+
+    [Fact]
+    [Trait("category", "hosted")]
+    [SupportedOSPlatform("windows")]
     public async Task GeneratedServiceInstallerPreservesAnExistingAdminDpapiCredentialWhenLocalSystemCannotReadIt()
     {
         if (!OperatingSystem.IsWindows()) Assert.Skip("The native Windows credential-boundary test requires hosted Windows.");
@@ -3282,7 +3734,12 @@ public sealed class WindowsInstallerNativeTests
             ?? throw new InvalidOperationException("The API-seeded Windows installer script is unavailable.");
         var contentProperty = seed.GetType().GetProperty("Content", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("The API-seeded Windows installer script content could not be resolved.");
-        return (string)contentProperty.GetValue(seed)!;
+        var seededContent = (string)contentProperty.GetValue(seed)!;
+        const string manifestBoundary = "#| END";
+        var manifestEnd = seededContent.IndexOf(manifestBoundary, StringComparison.Ordinal);
+        Assert.True(manifestEnd >= 0, "the seeded PowerShell script must contain its manifest boundary");
+        Assert.Equal(manifestEnd, seededContent.LastIndexOf(manifestBoundary, StringComparison.Ordinal));
+        return seededContent[(manifestEnd + manifestBoundary.Length)..].TrimStart('\r', '\n');
     }
 
     [SupportedOSPlatform("windows")]
@@ -3672,6 +4129,8 @@ public sealed class WindowsInstallerNativeTests
         public int FirstAdmissionObservations => Volatile.Read(ref _firstAdmissionObservationCount);
         public Action? FirstAdmissionObserver { get; set; }
         public ConcurrentQueue<string> FirstAdmissionObservationFailures { get; } = new();
+        public Action? AdmissionObserver { get; set; }
+        public ConcurrentQueue<string> AdmissionObservationFailures { get; } = new();
         public void MarkEnrolled() => Interlocked.Exchange(ref _isEnrolled, 1);
 
         public Task<AgentDetailDto?> GetAsync(int requestedTenantId, Guid requestedAgentId, CancellationToken ct)
@@ -3686,6 +4145,12 @@ public sealed class WindowsInstallerNativeTests
                     Interlocked.Increment(ref _firstAdmissionObservationCount);
                 }
                 catch (Exception exception) { FirstAdmissionObservationFailures.Enqueue(exception.GetType().Name); }
+            }
+            var admissionObserver = AdmissionObserver;
+            if (admissionObserver is not null)
+            {
+                try { admissionObserver(); }
+                catch (Exception exception) { AdmissionObservationFailures.Enqueue(exception.GetType().Name); }
             }
             AgentDetailDto? agent = IsEnrolled && requestedTenantId == tenantId && requestedAgentId == agentId
                 ? new AgentDetailDto(tenantId, agentId, "Hosted SYSTEM gateway agent", true, null,

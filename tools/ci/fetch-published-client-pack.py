@@ -47,6 +47,7 @@ def checked_download(tag, name, asset, directory):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--runtime", help="Download only this published client runtime archive")
     args = parser.parse_args()
     directory = args.output.resolve()
     directory.mkdir(parents=True, exist_ok=True)
@@ -59,7 +60,10 @@ def main():
     release = json.loads(gh("api", f"repos/{REPOSITORY}/releases/tags/{tag}"))
     if release.get("draft") or release.get("tag_name") != tag:
         raise ValueError("Selected release is a draft or tag identity changed")
-    assets = {asset["name"]: asset for asset in release["assets"] if asset.get("state") == "uploaded"}
+    uploaded_assets = [asset for asset in release["assets"] if asset.get("state") == "uploaded"]
+    assets = {asset["name"]: asset for asset in uploaded_assets}
+    if len(assets) != len(uploaded_assets):
+        raise ValueError("Completed release contains duplicate uploaded asset names")
     for name in ("publication.json", "SHA256SUMS"):
         if name not in assets:
             raise ValueError(f"Completed release is missing {name}")
@@ -89,10 +93,17 @@ def main():
         runtime_ids.add(runtime)
         if name not in assets:
             raise ValueError(f"Publication inventory asset is absent: {name}")
+    selected = [name for name in names
+                if args.runtime is None or pattern.fullmatch(name).group("runtime") == args.runtime]
+    if args.runtime is not None and not selected:
+        raise ValueError(f"Completed release declares no client archive for runtime: {args.runtime}")
+    for name in selected:
         checked_download(tag, name, assets[name], directory)
 
     print(json.dumps({"sourceTag": tag, "sourceCommit": tag_commit,
-                      "candidateVersion": current_version, "runtimes": sorted(runtime_ids)}))
+                      "candidateVersion": current_version,
+                      "runtimes": sorted({pattern.fullmatch(name).group("runtime")
+                                           for name in selected})}))
 
 
 if __name__ == "__main__":
