@@ -2189,13 +2189,17 @@ public sealed class WindowsInstallerNativeTests
         Assert.True(file.Exists, "the LocalSystem service must persist its machine credential file");
         var security = file.GetAccessControl();
         var systemSid = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
+        var administratorsSid = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
         var owner = security.GetOwner(typeof(SecurityIdentifier)) as SecurityIdentifier;
-        Assert.Equal(systemSid.Value, owner?.Value);
-        var untrustedSids = new HashSet<string>(StringComparer.Ordinal)
+        // A LocalSystem token can create an Administrators-owned file. Service account,
+        // session, PID and gateway readiness are verified separately by the caller.
+        Assert.True(owner is not null && (systemSid.Equals(owner) || administratorsSid.Equals(owner)),
+            $"the credential owner must be SYSTEM or BUILTIN\\Administrators; actual={GetSafeWindowsPrincipalLabel(owner?.Value)}");
+        var trustedWriterSids = new HashSet<string>(StringComparer.Ordinal)
         {
-            new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null).Value,
-            new SecurityIdentifier(WellKnownSidType.WorldSid, null).Value,
-            new SecurityIdentifier(WellKnownSidType.AuthenticatedUserSid, null).Value
+            systemSid.Value,
+            administratorsSid.Value,
+            new NTAccount("NT SERVICE", "TrustedInstaller").Translate(typeof(SecurityIdentifier)).Value
         };
         const FileSystemRights replacementRights = FileSystemRights.WriteData | FileSystemRights.AppendData |
             FileSystemRights.WriteExtendedAttributes | FileSystemRights.WriteAttributes | FileSystemRights.Delete |
@@ -2205,7 +2209,7 @@ public sealed class WindowsInstallerNativeTests
             .Cast<FileSystemAccessRule>()
             .ToArray();
         Assert.DoesNotContain(rules, rule => rule.AccessControlType == AccessControlType.Allow &&
-            untrustedSids.Contains(rule.IdentityReference.Value) && (rule.FileSystemRights & replacementRights) != 0);
+            !trustedWriterSids.Contains(rule.IdentityReference.Value) && (rule.FileSystemRights & replacementRights) != 0);
         return security.GetSecurityDescriptorSddlForm(
             AccessControlSections.Access | AccessControlSections.Owner | AccessControlSections.Group);
     }
