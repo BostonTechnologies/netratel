@@ -44,7 +44,23 @@ public sealed class ScriptTemplateService : IScriptTemplateService
     }
 """;
 
-        var updateLockBlock = """
+        var updateLockBlock = request.InstallAsService ? """
+            $updateLockPath = Join-Path $StateDir "update.lock"
+            Assert-NetRatelTrustedReadinessPath -path $updateLockPath -leafFile:$true -allowMissingLeaf:$true `
+                -allowLegacyAdministrators:$true -allowLegacyAdministratorAncestors:$script:NetRatelStateAncestorAllowance `
+                -pathRole 'updater-lock' -phase 'lock-acquire'
+            $updateLockDeadline = [DateTimeOffset]::UtcNow.AddMinutes(3)
+            while ($null -eq $updateLock) {
+                try {
+                    $updateLock = [System.IO.File]::Open($updateLockPath, [System.IO.FileMode]::OpenOrCreate,
+                        [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+                }
+                catch [System.IO.IOException] {
+                    if ([DateTimeOffset]::UtcNow -ge $updateLockDeadline) { throw "Timed out waiting for the NetRatel updater lock." }
+                    Start-Sleep -Seconds 1
+                }
+            }
+            """ : """
             $updateLockPath = Join-Path $StateDir "update.lock"
             $updateLockDeadline = [DateTimeOffset]::UtcNow.AddMinutes(3)
             while ($null -eq $updateLock) {
@@ -96,6 +112,7 @@ public sealed class ScriptTemplateService : IScriptTemplateService
 
         var servicePreflightBlock = request.InstallAsService
             ? """
+try {
 $serviceName = 'NetRatel.Client'
 $serviceRegistryPath = "HKLM:\SYSTEM\CurrentControlSet\Services\$serviceName"
 $existingService = Get-CimInstance Win32_Service -Filter "Name='$serviceName'" -ErrorAction Stop
@@ -252,6 +269,7 @@ if (-not $configuredAutoUpdateState -and $defaultsAutoUpdate) { $configuredAutoU
 $configuredUpdaterState = Get-NetRatelServiceEnvironmentValue 'NetRatel_UPDATE_STATE'
 $StateDir = Resolve-NetRatelStateDirectory $StateDir $configuredAutoUpdateState $configuredUpdaterState $stateWasExplicit
 $StateDir = Get-NetRatelCanonicalPath $StateDir 'NetRatel_STATE'
+# NetRatel seeded state-path validation extension point.
 
 $configuredAutoUpdateRequest = Get-NetRatelServiceEnvironmentValue 'NetRatelCLIENT__Client__AutoUpdate__RequestPath'
 $settingsAutoUpdateRequest = if ($settingsAutoUpdate) { [string]$settingsAutoUpdate.RequestPath } else { $null }
@@ -278,6 +296,27 @@ function Get-NetRatelLocalAdministratorMemberSids {
 function Test-NetRatelLocalAdministratorMemberSid([string] $sid) {
     if ([string]::IsNullOrWhiteSpace($sid)) { return $false }
     return $sid -in (Get-NetRatelLocalAdministratorMemberSids)
+}
+
+function Test-NetRatelTrustedAdministratorSid([string] $sid) {
+    if ([string]::IsNullOrWhiteSpace($sid)) { return $false }
+    $directMember = $false
+    try { $directMember = Test-NetRatelLocalAdministratorMemberSid $sid }
+    catch { $directMember = $false }
+    if ($directMember) { return $true }
+
+    $identity = $null
+    try { $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent() }
+    catch { $identity = $null }
+    if ($null -eq $identity -or $null -eq $identity.User -or
+        -not [string]::Equals($sid, $identity.User.Value, [StringComparison]::OrdinalIgnoreCase)) { return $false }
+    try {
+        $principal = [System.Security.Principal.WindowsPrincipal]::new($identity)
+        $administratorSid = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
+        return $principal.IsInRole($administratorSid)
+    }
+    catch { return $false }
+    finally { $identity.Dispose() }
 }
 
 function Get-NetRatelTrustedStateSids {
@@ -390,15 +429,38 @@ function Write-NetRatelProtectedReadinessRequest([string] $path, [string] $conte
 }
 
 function New-NetRatelProtectedDirectory([string] $path, [string[]] $trustedSids, [bool] $allowLegacyAdministratorsOnParent = $false) {
-    if (Test-Path -LiteralPath $path) { throw 'A protected updater state directory appeared during creation.' }
+    try {
+        [void](Get-Item -LiteralPath $path -Force -ErrorAction Stop)
+        throw 'A protected updater state directory appeared during creation.'
+    }
+    catch {
+        $missingPath = $_.CategoryInfo.Category -eq [System.Management.Automation.ErrorCategory]::ObjectNotFound -or
+            $_.Exception -is [System.Management.Automation.ItemNotFoundException] -or
+            $_.Exception -is [System.IO.FileNotFoundException] -or
+            $_.Exception -is [System.IO.DirectoryNotFoundException]
+        if (-not $missingPath -or $_.Exception.Message -eq 'A protected updater state directory appeared during creation.') { throw }
+    }
     $parentPath = Split-Path -Parent $path
-    Assert-NetRatelTrustedReadinessPath $parentPath $false $false $false $allowLegacyAdministratorsOnParent
+    Assert-NetRatelTrustedReadinessPath $parentPath $false $false $false `
+        $allowLegacyAdministratorsOnParent $allowLegacyAdministratorsOnParent
     $acl = Get-NetRatelProtectedDirectoryAcl $trustedSids
     [void][System.IO.Directory]::CreateDirectory($path, $acl)
     Assert-NetRatelTrustedReadinessPath $path $false $false $true $false $allowLegacyAdministratorsOnParent
 }
 
-function Assert-NetRatelTrustedReadinessPath([string] $path, [bool] $leafFile, [bool] $allowInheritedStateWrites = $false, [bool] $checkLeafWrite = $true, [bool] $allowLegacyAdministrators = $false, [bool] $allowLegacyAdministratorAncestors = $false) {
+function Assert-NetRatelTrustedReadinessPath {
+    param(
+        [Parameter(Mandatory = $true)][string] $path,
+        [Parameter(Mandatory = $true)][bool] $leafFile,
+        [bool] $allowInheritedStateWrites = $false,
+        [bool] $checkLeafWrite = $true,
+        [bool] $allowLegacyAdministrators = $false,
+        [bool] $allowLegacyAdministratorAncestors = $false,
+        [bool] $allowMissingLeaf = $false,
+        [string] $pathRole = 'filesystem-path',
+        [string] $phase = 'path-preflight',
+        [bool] $normalizationAttempted = $false
+    )
     $fullPath = [System.IO.Path]::GetFullPath($path)
     $pathRoot = [System.IO.Path]::GetPathRoot($fullPath)
     if ([string]::IsNullOrWhiteSpace($pathRoot)) { throw 'The service readiness path has no filesystem root.' }
@@ -424,23 +486,51 @@ function Assert-NetRatelTrustedReadinessPath([string] $path, [bool] $leafFile, [
     $componentIndex = 0
     foreach ($componentPath in $pathComponents) {
         $isLeaf = [string]::Equals($componentPath, $fullPath, [StringComparison]::OrdinalIgnoreCase)
-        $allowLegacyAdministratorForComponent = $allowLegacyAdministrators -or
+        $allowLegacyAdministratorForComponent = ($isLeaf -and $allowLegacyAdministrators) -or
             (-not $isLeaf -and $allowLegacyAdministratorAncestors)
         $verificationCheck = 'path-inspection'
+        $verificationExceptionType = $null
+        $ownerSid = 'unknown'
+        $offendingRule = $null
+        $item = $null
         try {
-            $item = Get-Item -LiteralPath $componentPath -Force -ErrorAction Stop
-            $verificationCheck = 'component-type-or-reparse'
-            if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 -or
-                ($isLeaf -and ($item.PSIsContainer -eq $leafFile)) -or
+            try {
+                $item = Get-Item -LiteralPath $componentPath -Force -ErrorAction Stop
+            }
+            catch {
+                $missingPath = $_.CategoryInfo.Category -eq [System.Management.Automation.ErrorCategory]::ObjectNotFound -or
+                    $_.Exception -is [System.Management.Automation.ItemNotFoundException] -or
+                    $_.Exception -is [System.IO.FileNotFoundException] -or
+                    $_.Exception -is [System.IO.DirectoryNotFoundException]
+                if ($missingPath -and $isLeaf -and $allowMissingLeaf) {
+                    $componentIndex++
+                    continue
+                }
+                if ($missingPath) {
+                    $verificationCheck = 'missing-path'
+                    $verificationExceptionType = $_.Exception.GetType().Name
+                    throw 'The service readiness path component is missing.'
+                }
+                $verificationCheck = 'path-inspection-failed'
+                $verificationExceptionType = $_.Exception.GetType().Name
+                throw 'The service readiness path component could not be inspected.'
+            }
+            if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                $verificationCheck = 'reparse-point'
+                throw 'The service readiness path contains a reparse point.'
+            }
+            if (($isLeaf -and ($item.PSIsContainer -eq $leafFile)) -or
                 (-not $isLeaf -and -not $item.PSIsContainer)) {
-                throw 'The service readiness path contains an unexpected file or reparse point.'
+                $verificationCheck = 'unexpected-type'
+                throw 'The service readiness path has an unexpected file or directory type.'
             }
             $verificationCheck = 'acl-read'
             $acl = Get-Acl -LiteralPath $componentPath -ErrorAction Stop
             $verificationCheck = 'owner'
             $ownerSid = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
             if ($ownerSid -notin $trustedSids -and
-                -not ($allowLegacyAdministratorForComponent -and (Test-NetRatelLocalAdministratorMemberSid $ownerSid))) {
+                -not ($allowLegacyAdministratorForComponent -and (Test-NetRatelTrustedAdministratorSid $ownerSid))) {
+                $verificationCheck = 'untrusted-owner'
                 throw 'The service readiness path has an untrusted owner.'
             }
             $verificationCheck = 'acl-rules-read'
@@ -450,57 +540,121 @@ function Assert-NetRatelTrustedReadinessPath([string] $path, [bool] $leafFile, [
                     ($rule.PropagationFlags -band [System.Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) { continue }
                 $ruleSid = $rule.IdentityReference.Value
                 $untrusted = $ruleSid -notin $trustedSids
-                if ($untrusted -and $allowLegacyAdministratorForComponent -and (Test-NetRatelLocalAdministratorMemberSid $ruleSid)) {
+                if ($untrusted -and $allowLegacyAdministratorForComponent -and (Test-NetRatelTrustedAdministratorSid $ruleSid)) {
                     $untrusted = $false
                 }
                 if ($untrusted -and ($rule.FileSystemRights -band $dangerousRights) -ne 0) {
                     $verificationCheck = 'replacement-access'
+                    $offendingRule = $rule
                     throw 'The service readiness path grants an untrusted principal replacement access.'
                 }
                 if ($isLeaf -and $checkLeafWrite -and $untrusted -and ($rule.FileSystemRights -band $leafWriteRights) -ne 0 -and
-                    -not ($allowInheritedStateWrites -and $rule.IsInherited)) {
+                    -not ($allowInheritedStateWrites -and $isLeaf -and -not $leafFile -and $rule.IsInherited)) {
                     $verificationCheck = 'leaf-write'
+                    $offendingRule = $rule
                     throw 'The service readiness path grants an untrusted principal write access.'
                 }
             }
         }
         catch {
             $scope = if ($isLeaf) { 'leaf' } else { 'ancestor' }
-            throw "The service readiness path could not be securely verified (scope=$scope; component=$componentIndex; check=$verificationCheck; exception=$($_.Exception.GetType().Name))."
+            $normalization = if ($normalizationAttempted) { 'attempted' } else { 'not-attempted' }
+            $exceptionType = if ($verificationExceptionType) { $verificationExceptionType } else { $_.Exception.GetType().Name }
+            $permissionDetail = ''
+            if ($offendingRule) {
+                $rights = ([string]$offendingRule.FileSystemRights).Replace(', ', '|')
+                $inheritance = ([string]$offendingRule.InheritanceFlags).Replace(', ', '|')
+                $propagation = ([string]$offendingRule.PropagationFlags).Replace(', ', '|')
+                $inherited = if ($offendingRule.IsInherited) { 'true' } else { 'false' }
+                $permissionDetail = "; aceRights=$rights; aceRightsValue=$([int]$offendingRule.FileSystemRights); aceInherited=$inherited; aceInheritance=$inheritance; acePropagation=$propagation"
+            }
+            throw "The service readiness path could not be securely verified (phase=$phase; role=$pathRole; scope=$scope; component=$componentIndex; reason=$verificationCheck; normalization=$normalization; exception=$exceptionType$permissionDetail)."
         }
         $componentIndex++
     }
 }
 
-function Protect-NetRatelOwnedStateTree([string] $path, [string[]] $trustedSids) {
-    $items = [System.Collections.Generic.List[object]]::new()
-    $pending = [System.Collections.Generic.Stack[object]]::new()
-    $pending.Push((Get-Item -LiteralPath $path -Force -ErrorAction Stop))
-    while ($pending.Count -gt 0) {
-        $item = $pending.Pop()
-        $isFile = -not $item.PSIsContainer
-        Assert-NetRatelTrustedReadinessPath $item.FullName $isFile (-not $isFile) $true $true
-        $items.Add($item)
-        if ($item.PSIsContainer) {
-            foreach ($child in @(Get-ChildItem -LiteralPath $item.FullName -Force -ErrorAction Stop)) {
-                if (($child.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
-                    throw 'The existing updater state contains a reparse point.'
-                }
-                $pending.Push($child)
-            }
+function Assert-NetRatelProtectedPathAcl([string] $path, [bool] $isDirectory, [string[]] $trustedSids, [string] $pathRole, [string] $phase) {
+    try {
+        $acl = Get-Acl -LiteralPath $path -ErrorAction Stop
+        $ownerSid = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
+        $rules = @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
+    }
+    catch {
+        $exceptionType = $_.Exception.GetType().Name
+        throw "The service readiness path could not be securely verified (phase=$phase; role=$pathRole; scope=leaf; component=0; reason=acl-verification-read-failed; normalization=attempted; exception=$exceptionType)."
+    }
+
+    $administratorSid = 'S-1-5-32-544'
+    $expectedInheritance = if ($isDirectory) {
+        [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+            [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
+    } else { [System.Security.AccessControl.InheritanceFlags]::None }
+    if (-not $acl.AreAccessRulesProtected -or $ownerSid -ne $administratorSid -or $rules.Count -ne $trustedSids.Count) {
+        throw "The service readiness path could not be securely verified (phase=$phase; role=$pathRole; scope=leaf; component=0; reason=protected-acl-mismatch; normalization=attempted; exception=RuntimeException)."
+    }
+    foreach ($rule in $rules) {
+        if ($rule.IdentityReference.Value -notin $trustedSids -or
+            $rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or
+            $rule.FileSystemRights -ne [System.Security.AccessControl.FileSystemRights]::FullControl -or
+            $rule.InheritanceFlags -ne $expectedInheritance -or
+            $rule.PropagationFlags -ne [System.Security.AccessControl.PropagationFlags]::None -or
+            $rule.IsInherited) {
+            throw "The service readiness path could not be securely verified (phase=$phase; role=$pathRole; scope=leaf; component=0; reason=protected-acl-mismatch; normalization=attempted; exception=RuntimeException)."
+        }
+    }
+}
+
+function Assert-NetRatelProductDirectoryBoundary([string] $path, [string] $pathRole, [string] $phase) {
+    $canonicalPath = [System.IO.Path]::GetFullPath($path)
+    $pathRoot = [System.IO.Path]::GetPathRoot($canonicalPath)
+    if ($canonicalPath.Length -gt $pathRoot.Length) { $canonicalPath = $canonicalPath.TrimEnd([char[]]@('\', '/')) }
+    $sharedBoundaries = @(
+        [System.Environment]::GetFolderPath([System.Environment+SpecialFolder]::Windows),
+        [System.Environment]::GetFolderPath([System.Environment+SpecialFolder]::ProgramFiles),
+        [System.Environment]::GetFolderPath([System.Environment+SpecialFolder]::ProgramFilesX86),
+        [System.Environment]::GetFolderPath([System.Environment+SpecialFolder]::CommonApplicationData),
+        [System.Environment]::GetFolderPath([System.Environment+SpecialFolder]::UserProfile),
+        [System.IO.Path]::GetPathRoot($canonicalPath)
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
+        ForEach-Object {
+            $boundary = [System.IO.Path]::GetFullPath([string]$_)
+            $boundaryRoot = [System.IO.Path]::GetPathRoot($boundary)
+            if ($boundary.Length -gt $boundaryRoot.Length) { $boundary = $boundary.TrimEnd([char[]]@('\', '/')) }
+            $boundary
+        }
+    foreach ($sharedBoundary in $sharedBoundaries) {
+        if ([string]::Equals($canonicalPath, $sharedBoundary, [StringComparison]::OrdinalIgnoreCase) -or
+            (Test-NetRatelSameOrAncestorPath $canonicalPath $sharedBoundary)) {
+            throw "The NetRatel product path targets or contains a shared operating-system boundary (phase=$phase; role=$pathRole; reason=shared-directory-boundary; normalization=not-attempted)."
         }
     }
 
-    foreach ($item in $items) {
-        $acl = Get-Acl -LiteralPath $item.FullName -ErrorAction Stop
+    $credentialRoot = [System.IO.Path]::GetFullPath((Join-Path $env:ProgramData 'NetRatel')).TrimEnd([char[]]@('\', '/'))
+    if (($pathRole -eq 'update-state' -or $pathRole -like '*update-state*') -and
+        [string]::Equals($canonicalPath, $credentialRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "The updater state path cannot replace the shared NetRatel credential root (phase=$phase; role=$pathRole; reason=shared-state-boundary; normalization=not-attempted)."
+    }
+}
+
+function Set-NetRatelProtectedPathAcl([string] $path, [bool] $isDirectory, [string[]] $trustedSids, [string] $pathRole, [string] $phase) {
+    $normalization = 'attempted'
+    try { $acl = Get-Acl -LiteralPath $path -ErrorAction Stop }
+    catch {
+        $exceptionType = $_.Exception.GetType().Name
+        throw "The service readiness path could not be securely verified (phase=$phase; role=$pathRole; scope=leaf; component=0; reason=acl-read-failed; normalization=$normalization; exception=$exceptionType)."
+    }
+
+    try {
         $acl.SetAccessRuleProtection($true, $false)
         $acl.SetOwner([System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))
         foreach ($existingRule in @($acl.GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier]))) {
             [void]$acl.RemoveAccessRuleSpecific($existingRule)
         }
         $rights = [System.Security.AccessControl.FileSystemRights]::FullControl
-        $inheritance = if ($item.PSIsContainer) {
-            [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
+        $inheritance = if ($isDirectory) {
+            [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+                [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
         } else { [System.Security.AccessControl.InheritanceFlags]::None }
         foreach ($sidValue in $trustedSids) {
             $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
@@ -509,11 +663,109 @@ function Protect-NetRatelOwnedStateTree([string] $path, [string[]] $trustedSids)
                 [System.Security.AccessControl.AccessControlType]::Allow)
             $acl.AddAccessRule($rule)
         }
-        Set-Acl -LiteralPath $item.FullName -AclObject $acl -ErrorAction Stop
+    }
+    catch {
+        $exceptionType = $_.Exception.GetType().Name
+        throw "The service readiness path could not be securely verified (phase=$phase; role=$pathRole; scope=leaf; component=0; reason=acl-normalization-failed; normalization=$normalization; exception=$exceptionType)."
+    }
+
+    try { Set-Acl -LiteralPath $path -AclObject $acl -ErrorAction Stop }
+    catch {
+        $exceptionType = $_.Exception.GetType().Name
+        throw "The service readiness path could not be securely verified (phase=$phase; role=$pathRole; scope=leaf; component=0; reason=acl-write-failed; normalization=$normalization; exception=$exceptionType)."
+    }
+
+    Assert-NetRatelProtectedPathAcl $path $isDirectory $trustedSids $pathRole $phase
+}
+
+function Protect-NetRatelOwnedStateTree {
+    param(
+        [Parameter(Mandatory = $true)][string] $path,
+        [switch] $ValidateOnly,
+        [switch] $LockHeld,
+        [switch] $RequireProtected,
+        [string] $phase = 'state-tree-normalization'
+    )
+
+    $trustedSids = Get-NetRatelTrustedStateSids
+    $items = [System.Collections.Generic.List[object]]::new()
+    $pending = [System.Collections.Generic.Stack[object]]::new()
+    $heldLockPath = if ($LockHeld) { [System.IO.Path]::GetFullPath((Join-Path $path 'update.lock')) } else { $null }
+    $rootPath = [System.IO.Path]::GetFullPath($path).TrimEnd([char[]]@('\', '/'))
+    $itemCount = 0
+    try { $pending.Push((Get-Item -LiteralPath $path -Force -ErrorAction Stop)) }
+    catch {
+        throw "The updater state tree could not be opened for inspection (phase=$phase; role=update-state; reason=path-inspection-failed; normalization=$(if ($ValidateOnly) { 'not-attempted' } else { 'attempted' }); exception=$($_.Exception.GetType().Name))."
+    }
+    while ($pending.Count -gt 0) {
+        $item = $pending.Pop()
+        $itemCount++
+        if ($itemCount -gt 16384) {
+            throw "The updater state tree exceeded its bounded inspection limit (phase=$phase; role=update-state; reason=tree-item-limit-exceeded; normalization=$(if ($ValidateOnly) { 'not-attempted' } else { 'attempted' }))."
+        }
+        $relativePath = $item.FullName.Substring($rootPath.Length).TrimStart([char[]]@('\', '/'))
+        if ($relativePath.Split([char[]]@('\', '/'), [StringSplitOptions]::RemoveEmptyEntries).Count -gt 32) {
+            throw "The updater state tree exceeded its bounded inspection depth (phase=$phase; role=update-state; reason=tree-depth-limit-exceeded; normalization=$(if ($ValidateOnly) { 'not-attempted' } else { 'attempted' }))."
+        }
+        try { $currentItem = Get-Item -LiteralPath $item.FullName -Force -ErrorAction Stop }
+        catch {
+            $exceptionType = $_.Exception.GetType().Name
+            throw "The updater state tree changed during inspection (phase=$phase; role=update-state; reason=path-inspection-failed; normalization=$(if ($ValidateOnly) { 'not-attempted' } else { 'attempted' }); exception=$exceptionType)."
+        }
+        $itemPath = [System.IO.Path]::GetFullPath($currentItem.FullName)
+        if (-not (Test-NetRatelSameOrAncestorPath $rootPath $itemPath)) {
+            throw "The updater state tree changed during inspection (phase=$phase; role=update-state; reason=path-outside-tree; normalization=$(if ($ValidateOnly) { 'not-attempted' } else { 'attempted' }))."
+        }
+        if ([bool]$currentItem.PSIsContainer -ne [bool]$item.PSIsContainer) {
+            throw "The updater state tree changed during inspection (phase=$phase; role=update-state; reason=object-type-changed; normalization=$(if ($ValidateOnly) { 'not-attempted' } else { 'attempted' }))."
+        }
+        if (($currentItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "The updater state tree contains a reparse point (phase=$phase; role=update-state; reason=path-reparse-point; normalization=$(if ($ValidateOnly) { 'not-attempted' } else { 'attempted' }))."
+        }
+        $item = $currentItem
+        $isFile = -not $item.PSIsContainer
+        if ($heldLockPath -and [string]::Equals([System.IO.Path]::GetFullPath($item.FullName), $heldLockPath, [StringComparison]::OrdinalIgnoreCase)) {
+            continue
+        }
+        $itemRole = if ($isFile) { 'update-state-file' } else { 'update-state-directory' }
+        if ($RequireProtected) {
+            Assert-NetRatelProtectedPathAcl $item.FullName (-not $isFile) $trustedSids $itemRole $phase
+        }
+        else {
+            Assert-NetRatelTrustedReadinessPath -path $item.FullName -leafFile:$isFile `
+                -allowInheritedStateWrites:(-not $isFile) -checkLeafWrite:$true `
+                -allowLegacyAdministrators:$true -allowLegacyAdministratorAncestors:$script:NetRatelStateAncestorAllowance `
+                -pathRole $itemRole `
+                -phase $phase -normalizationAttempted:$false
+        }
+        $items.Add($item)
+        if ($item.PSIsContainer) {
+            try {
+                foreach ($child in @(Get-ChildItem -LiteralPath $item.FullName -Force -ErrorAction Stop)) {
+                    $pending.Push($child)
+                }
+            }
+            catch {
+                throw "The updater state directory could not be enumerated (phase=$phase; role=update-state-directory; reason=directory-enumeration-failed; normalization=$(if ($ValidateOnly) { 'not-attempted' } else { 'attempted' }); exception=$($_.Exception.GetType().Name))."
+            }
+        }
+    }
+
+    if ($ValidateOnly) { return }
+
+    foreach ($item in $items) {
+        $isDirectory = [bool]$item.PSIsContainer
+        $pathRole = if ($isDirectory) { 'update-state-directory' } else { 'update-state-file' }
+        Set-NetRatelProtectedPathAcl $item.FullName $isDirectory $trustedSids $pathRole $phase
+        Assert-NetRatelTrustedReadinessPath -path $item.FullName -leafFile:(-not $isDirectory) `
+            -checkLeafWrite:$true -allowLegacyAdministrators:$true `
+            -allowLegacyAdministratorAncestors:$script:NetRatelStateAncestorAllowance -pathRole $pathRole `
+            -phase 'state-tree-verification' -normalizationAttempted:$true
     }
 }
 
 function Initialize-NetRatelProtectedStateDirectory {
+    # Establish only the safe root needed to open update.lock; full descendants are read-only checked here and normalized under the lock.
     $canonicalState = [System.IO.Path]::GetFullPath($StateDir)
     $trustedSids = Get-NetRatelTrustedStateSids
     $configuredPaths = @($configuredAutoUpdateState, $configuredUpdaterState) |
@@ -526,14 +778,49 @@ function Initialize-NetRatelProtectedStateDirectory {
         }
     }
     $legacyDefaultState = [System.IO.Path]::GetFullPath((Join-Path $env:ProgramData 'NetRatel\update'))
-    $ownsConfiguredState = $ownsConfiguredState -or ($existingService -and $configuredPaths.Count -eq 0 -and
-        [string]::Equals($legacyDefaultState.TrimEnd('\', '/'), $canonicalState.TrimEnd('\', '/'), [StringComparison]::OrdinalIgnoreCase))
-    $trustedServiceState = [bool]($existingService -and $ownsConfiguredState)
-    $script:NetRatelStateAncestorAllowance = [bool]($stateWasExplicit -or $trustedServiceState)
+    $isLegacyDefaultState = [string]::Equals(
+        $legacyDefaultState.TrimEnd('\', '/'), $canonicalState.TrimEnd('\', '/'), [StringComparison]::OrdinalIgnoreCase)
+    $ownsDefaultState = [bool]($isLegacyDefaultState -and $existingService -and $configuredPaths.Count -eq 0)
+    $stateSource = if ($existingService -and ($ownsConfiguredState -or $ownsDefaultState)) { 'service-update-state' } elseif ($isLegacyDefaultState) { 'default-update-state' } else { 'explicit-update-state' }
+    Assert-NetRatelProductDirectoryBoundary $canonicalState 'update-state' 'state-preflight'
+    if (-not ($ownsConfiguredState -or $ownsDefaultState -or $isLegacyDefaultState -or $stateWasExplicit)) {
+        throw "The updater state path did not match a selected NetRatel state role (phase=state-preflight; role=update-state; reason=unexpected-state-role; normalization=not-attempted)."
+    }
+    $script:NetRatelStateAncestorAllowance = [bool]($stateWasExplicit -or ($existingService -and ($ownsConfiguredState -or $ownsDefaultState)))
+    $script:NetRatelStateRole = $stateSource
+    Write-Host "Phase: checking directories; state role=$stateSource."
 
-    if (Test-Path -LiteralPath $canonicalState) {
-        Assert-NetRatelTrustedReadinessPath $canonicalState $false $trustedServiceState $true $trustedServiceState ($stateWasExplicit -or $trustedServiceState)
-        if ($trustedServiceState) { Protect-NetRatelOwnedStateTree $canonicalState $trustedSids }
+    $stateItem = $null
+    try { $stateItem = Get-Item -LiteralPath $canonicalState -Force -ErrorAction Stop }
+    catch {
+        $missingState = $_.CategoryInfo.Category -eq [System.Management.Automation.ErrorCategory]::ObjectNotFound -or
+            $_.Exception -is [System.Management.Automation.ItemNotFoundException] -or
+            $_.Exception -is [System.IO.FileNotFoundException] -or
+            $_.Exception -is [System.IO.DirectoryNotFoundException]
+        if (-not $missingState) {
+            throw "The updater state path could not be inspected (phase=state-preflight; role=update-state; reason=path-inspection-failed; normalization=not-attempted; exception=$($_.Exception.GetType().Name))."
+        }
+    }
+
+    if ($stateItem) {
+        if (-not ($existingService -and ($ownsConfiguredState -or $ownsDefaultState))) {
+            Assert-NetRatelTrustedReadinessPath -path $canonicalState -leafFile:$false `
+                -allowInheritedStateWrites:$true -allowLegacyAdministrators:$true `
+                -allowLegacyAdministratorAncestors:$script:NetRatelStateAncestorAllowance `
+                -pathRole $stateSource -phase 'state-normalization-eligibility'
+            if (-not (Test-NetRatelCustomUpdateStateLayout $canonicalState 'state-normalization-eligibility')) {
+                throw "The existing update-state directory did not match the safe partial-install layout (phase=state-preflight; role=$stateSource; reason=unowned-product-scope; normalization=not-attempted)."
+            }
+        }
+        Protect-NetRatelOwnedStateTree -path $canonicalState -ValidateOnly -phase 'state-preflight'
+        Assert-NetRatelTrustedReadinessPath -path $canonicalState -leafFile:$false -allowInheritedStateWrites:$true `
+            -allowLegacyAdministrators:$true -allowLegacyAdministratorAncestors:$script:NetRatelStateAncestorAllowance `
+            -pathRole $stateSource -phase 'state-normalization-eligibility'
+        Set-NetRatelProtectedPathAcl $canonicalState $true $trustedSids $stateSource 'state-root-normalization'
+        Assert-NetRatelTrustedReadinessPath -path $canonicalState -leafFile:$false `
+            -allowLegacyAdministrators:$true -allowLegacyAdministratorAncestors:$script:NetRatelStateAncestorAllowance `
+            -pathRole $stateSource -phase 'state-root-verification' -normalizationAttempted:$true
+        Protect-NetRatelOwnedStateTree -path $canonicalState -ValidateOnly -phase 'state-root-verification'
     }
     else {
         $components = [System.Collections.Generic.List[string]]::new()
@@ -545,91 +832,436 @@ function Initialize-NetRatelProtectedStateDirectory {
             $current = Join-Path $current $component
             $components.Add($current)
         }
+        if ($stateWasExplicit -and -not $isLegacyDefaultState) {
+            Assert-NetRatelProductPathAncestors $canonicalState $stateSource 'state-preflight' $true
+        }
         foreach ($componentPath in $components) {
-            if (Test-Path -LiteralPath $componentPath) {
-                $isStateLeaf = [string]::Equals($componentPath, $canonicalState, [StringComparison]::OrdinalIgnoreCase)
-                $allowLegacyAdministratorsOnPath = -not $isStateLeaf -and ($stateWasExplicit -or $trustedServiceState)
-                Assert-NetRatelTrustedReadinessPath $componentPath $false $false $isStateLeaf $allowLegacyAdministratorsOnPath ($stateWasExplicit -or $trustedServiceState)
+            $componentItem = $null
+            try { $componentItem = Get-Item -LiteralPath $componentPath -Force -ErrorAction Stop }
+            catch {
+                $missingComponent = $_.CategoryInfo.Category -eq [System.Management.Automation.ErrorCategory]::ObjectNotFound -or
+                    $_.Exception -is [System.Management.Automation.ItemNotFoundException] -or
+                    $_.Exception -is [System.IO.FileNotFoundException] -or
+                    $_.Exception -is [System.IO.DirectoryNotFoundException]
+                if (-not $missingComponent) {
+                    throw "An updater state ancestor could not be inspected (phase=state-preflight; role=update-state; reason=path-inspection-failed; normalization=not-attempted; exception=$($_.Exception.GetType().Name))."
+                }
+            }
+            if ($componentItem) {
+                Assert-NetRatelTrustedReadinessPath -path $componentPath -leafFile:$false `
+                    -checkLeafWrite:([string]::Equals($componentPath, $canonicalState, [StringComparison]::OrdinalIgnoreCase)) `
+                    -allowLegacyAdministrators:([string]::Equals($componentPath, $canonicalState, [StringComparison]::OrdinalIgnoreCase)) `
+                    -allowLegacyAdministratorAncestors:$script:NetRatelStateAncestorAllowance `
+                    -pathRole $stateSource -phase 'state-preflight'
                 continue
             }
-            New-NetRatelProtectedDirectory $componentPath $trustedSids ($stateWasExplicit -or $trustedServiceState)
+            New-NetRatelProtectedDirectory $componentPath $trustedSids $script:NetRatelStateAncestorAllowance
         }
     }
-    Assert-NetRatelTrustedReadinessPath $canonicalState $false $false $true $false $script:NetRatelStateAncestorAllowance
+
+    Assert-NetRatelTrustedReadinessPath -path $canonicalState -leafFile:$false `
+        -allowLegacyAdministrators:$true -allowLegacyAdministratorAncestors:$script:NetRatelStateAncestorAllowance `
+        -pathRole $stateSource -phase 'state-root-verification' -normalizationAttempted:$true
+    $updateLockPath = Join-Path $canonicalState 'update.lock'
+    Assert-NetRatelTrustedReadinessPath -path $updateLockPath -leafFile:$true -allowMissingLeaf:$true `
+        -allowLegacyAdministrators:$true -allowLegacyAdministratorAncestors:$script:NetRatelStateAncestorAllowance `
+        -pathRole 'updater-lock' -phase 'lock-preflight'
+    $script:InstallerLastCompletedPhase = 'state-root-prepared'
 }
 
-function Set-NetRatelProtectedInstallDirectoryAcl([string] $path, [string[]] $trustedSids) {
-    $acl = Get-Acl -LiteralPath $path -ErrorAction Stop
-    $acl.SetAccessRuleProtection($true, $false)
-    $acl.SetOwner([System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))
-    foreach ($existingRule in @($acl.GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier]))) {
-        [void]$acl.RemoveAccessRuleSpecific($existingRule)
+function Test-NetRatelDirectoryEmpty([string] $path, [string] $pathRole, [string] $phase) {
+    try { return (@(Get-ChildItem -LiteralPath $path -Force -ErrorAction Stop).Count -eq 0) }
+    catch {
+        throw "The NetRatel product directory could not be checked for existing contents (phase=$phase; role=$pathRole; reason=directory-enumeration-failed; normalization=not-attempted; exception=$($_.Exception.GetType().Name))."
     }
-    $rights = [System.Security.AccessControl.FileSystemRights]::FullControl
-    $inheritance = [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
-        [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
-    foreach ($sidValue in $trustedSids) {
-        $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
-            [System.Security.Principal.SecurityIdentifier]::new($sidValue), $rights, $inheritance,
-            [System.Security.AccessControl.PropagationFlags]::None,
-            [System.Security.AccessControl.AccessControlType]::Allow)
-        $acl.AddAccessRule($rule)
-    }
-    Set-Acl -LiteralPath $path -AclObject $acl -ErrorAction Stop
 }
 
-function Initialize-NetRatelProtectedInstallDirectories {
+function Test-NetRatelProtectedAclMatches([string] $path, [bool] $isDirectory, [string[]] $trustedSids, [string] $pathRole, [string] $phase) {
+    try {
+        Assert-NetRatelProtectedPathAcl $path $isDirectory $trustedSids $pathRole $phase
+        return $true
+    }
+    catch { return $false }
+}
+
+function Test-NetRatelTrustedPartialFileAcl([string] $path, [bool] $allowLegacyAdministratorAncestors, [string] $pathRole, [string] $phase) {
+    try {
+        $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+        if ($item.PSIsContainer -or ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
+        # File creation under an exact protected product directory can leave the creating administrator as owner.
+        # Validate effective write/replacement access and ownership, without requiring a directory-style protected DACL.
+        Assert-NetRatelTrustedReadinessPath -path $path -leafFile:$true -checkLeafWrite:$true `
+            -allowLegacyAdministrators:$true -allowLegacyAdministratorAncestors:$allowLegacyAdministratorAncestors `
+            -pathRole $pathRole -phase $phase
+        return $true
+    }
+    catch { return $false }
+}
+
+function Test-NetRatelInstallerDirectoryTree([string] $path, [string] $phase) {
+    $pending = [System.Collections.Generic.Stack[object]]::new()
+    try { $pending.Push((Get-Item -LiteralPath $path -Force -ErrorAction Stop)) }
+    catch { return $false }
+    $rootPath = [System.IO.Path]::GetFullPath($path).TrimEnd([char[]]@('\', '/'))
+    $itemCount = 0
+    while ($pending.Count -gt 0) {
+        $item = $pending.Pop()
+        $itemCount++
+        if ($itemCount -gt 4096) { return $false }
+        $relativePath = $item.FullName.Substring($rootPath.Length).TrimStart([char[]]@('\', '/'))
+        if ($relativePath.Split([char[]]@('\', '/'), [StringSplitOptions]::RemoveEmptyEntries).Count -gt 16) { return $false }
+        if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
+        $isFile = -not [bool]$item.PSIsContainer
+        try {
+            Assert-NetRatelTrustedReadinessPath -path $item.FullName -leafFile:$isFile `
+                -checkLeafWrite:$true -allowLegacyAdministrators:$true `
+                -allowLegacyAdministratorAncestors:$true -pathRole 'installer-partial-content' -phase $phase
+        }
+        catch { return $false }
+        if ($item.PSIsContainer) {
+            try {
+                foreach ($child in @(Get-ChildItem -LiteralPath $item.FullName -Force -ErrorAction Stop)) {
+                    if (($child.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
+                    $pending.Push($child)
+                }
+            }
+            catch { return $false }
+        }
+    }
+    return $true
+}
+
+function Test-NetRatelCustomInstallRootLayout([string] $path, [string] $phase, [string[]] $trustedSids, [bool] $allowLegacyAdministratorAncestors = $false) {
+    $expectedChildren = @('updater', 'versions', 'staging', 'failed')
+    $semanticVersionExpression = '(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?'
+    $semanticVersionPattern = "^$semanticVersionExpression$"
+    $guidPattern = '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
+    try { $children = @(Get-ChildItem -LiteralPath $path -Force -ErrorAction Stop) }
+    catch {
+        throw "The custom NetRatel install root could not be inspected (phase=$phase; role=install-root; reason=directory-enumeration-failed; normalization=not-attempted; exception=$($_.Exception.GetType().Name))."
+    }
+    if ($children.Count -eq 0) { return $true }
+
+    $nonemptyChildren = [System.Collections.Generic.List[object]]::new()
+    foreach ($child in $children) {
+        if ($child.Name -notin $expectedChildren -or -not $child.PSIsContainer -or
+            ($child.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
+        Assert-NetRatelTrustedReadinessPath -path $child.FullName -leafFile:$false `
+            -allowInheritedStateWrites:$true -allowLegacyAdministrators:$true `
+            -allowLegacyAdministratorAncestors:$allowLegacyAdministratorAncestors `
+            -pathRole 'install-subdirectory' -phase $phase
+        if (-not (Test-NetRatelDirectoryEmpty $child.FullName 'install-subdirectory' $phase)) { $nonemptyChildren.Add($child) }
+    }
+
+    if (-not (Test-NetRatelProtectedAclMatches $path $true $trustedSids 'install-root' $phase)) { return $false }
+    foreach ($child in $children) {
+        if (-not (Test-NetRatelProtectedAclMatches $child.FullName $true $trustedSids 'install-subdirectory' $phase)) { return $false }
+    }
+    if ($nonemptyChildren.Count -eq 0) { return $true }
+    $partialItemCount = 0
+    foreach ($partialDirectory in $nonemptyChildren) {
+        $partialEntries = @()
+        try { $partialEntries = @(Get-ChildItem -LiteralPath $partialDirectory.FullName -Force -ErrorAction Stop) }
+        catch { return $false }
+        if ($partialEntries.Count -gt 16) { return $false }
+        $partialItemCount += $partialEntries.Count
+        if ($partialItemCount -gt 32) { return $false }
+
+        foreach ($partialEntry in $partialEntries) {
+            if (($partialEntry.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
+            if ($partialDirectory.Name -eq 'updater') {
+                if ($partialEntry.PSIsContainer -or $partialEntry.Name -cne 'netratel-update.ps1' -or
+                    $partialEntry.Length -gt 1048576 -or
+                    -not (Test-NetRatelTrustedPartialFileAcl $partialEntry.FullName $allowLegacyAdministratorAncestors 'updater-script' $phase)) { return $false }
+                continue
+            }
+            if (-not $partialEntry.PSIsContainer) { return $false }
+            $allowedName = switch ($partialDirectory.Name) {
+                'staging' { $partialEntry.Name -cmatch '^install-[0-9a-f]{32}$' }
+                'versions' { $partialEntry.Name -cmatch $semanticVersionPattern }
+                'failed' {
+                    $partialEntry.Name -cmatch "^$semanticVersionExpression-installer-failed-$guidPattern$" -or
+                        $partialEntry.Name -cmatch "^$semanticVersionExpression-replaced-(?:$guidPattern|[0-9a-fA-F]{32})$"
+                }
+                default { $false }
+            }
+            if (-not $allowedName -or -not (Test-NetRatelInstallerDirectoryTree $partialEntry.FullName $phase)) { return $false }
+        }
+    }
+    return $true
+}
+
+function Test-NetRatelCustomUpdateStateLayout([string] $path, [string] $phase) {
+    try { $children = @(Get-ChildItem -LiteralPath $path -Force -ErrorAction Stop) }
+    catch {
+        throw "The custom update-state directory could not be inspected (phase=$phase; role=explicit-update-state; reason=directory-enumeration-failed; normalization=not-attempted; exception=$($_.Exception.GetType().Name))."
+    }
+    if ($children.Count -eq 0) { return $true }
+    if ($children.Count -gt 2) { return $false }
+    $trustedSids = Get-NetRatelTrustedStateSids
+    $lockItem = $null
+    $handoffDirectory = $null
+    foreach ($child in $children) {
+        if ($child.Name -ceq 'update.lock') {
+            if ($lockItem -or $child.PSIsContainer -or
+                ($child.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 -or $child.Length -ne 0) { return $false }
+            $lockItem = $child
+        }
+        elseif ($child.Name -ceq 'install-handoffs') {
+            if ($handoffDirectory -or -not $child.PSIsContainer -or
+                ($child.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
+            $handoffDirectory = $child
+        }
+        else { return $false }
+    }
+    if (-not (Test-NetRatelProtectedAclMatches $path $true $trustedSids 'explicit-update-state' $phase)) { return $false }
+    if ($lockItem) {
+        if (-not (Test-NetRatelTrustedPartialFileAcl $lockItem.FullName $script:NetRatelStateAncestorAllowance 'updater-lock' $phase)) { return $false }
+    }
+    if ($handoffDirectory) {
+        if (-not (Test-NetRatelProtectedAclMatches $handoffDirectory.FullName $true $trustedSids 'seed-handoff-directory' $phase)) { return $false }
+        $handoffFiles = @()
+        try { $handoffFiles = @(Get-ChildItem -LiteralPath $handoffDirectory.FullName -Force -ErrorAction Stop) }
+        catch { return $false }
+        if ($handoffFiles.Count -gt 64) { return $false }
+        foreach ($handoffFile in $handoffFiles) {
+            if ($handoffFile.PSIsContainer -or
+                ($handoffFile.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 -or
+                $handoffFile.Name -cnotmatch '^handoff-[a-f0-9]{32}\.(?:json|ps1|result\.json|result\.json\.[0-9]+\.tmp)$') { return $false }
+            $maximumLength = if ($handoffFile.Name -match '\.ps1$') { 1048576 } else { 65536 }
+            if ($handoffFile.Length -gt $maximumLength -or
+                -not (Test-NetRatelTrustedPartialFileAcl $handoffFile.FullName $script:NetRatelStateAncestorAllowance 'seed-handoff-file' $phase)) { return $false }
+        }
+    }
+    return $true
+}
+
+function Test-NetRatelDefaultLogLayout([string] $path, [string] $phase) {
+    if (Test-NetRatelDirectoryEmpty $path 'default-log-directory' $phase) { return $true }
+    $trustedSids = Get-NetRatelTrustedStateSids
+    if (-not (Test-NetRatelProtectedAclMatches $path $true $trustedSids 'default-log-directory' $phase)) { return $false }
+    try { $entries = @(Get-ChildItem -LiteralPath $path -Force -ErrorAction Stop) }
+    catch { return $false }
+    foreach ($entry in $entries) {
+        if ($entry.PSIsContainer -or ($entry.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 -or
+            $entry.Name -notmatch '^netratel-client-service-.+-[0-9]+\.log$') { return $false }
+        try {
+            Assert-NetRatelTrustedReadinessPath -path $entry.FullName -leafFile:$true `
+                -allowLegacyAdministrators:$true -pathRole 'default-service-log' -phase $phase
+        }
+        catch { return $false }
+    }
+    return $true
+}
+
+function Assert-NetRatelProductPathAncestors([string] $path, [string] $pathRole, [string] $phase, [bool] $allowLegacyAdministratorAncestors) {
+    $fullPath = [System.IO.Path]::GetFullPath($path)
+    $pathRoot = [System.IO.Path]::GetPathRoot($fullPath)
+    if ([string]::IsNullOrWhiteSpace($pathRoot)) {
+        throw "The NetRatel product path has no filesystem root (phase=$phase; role=$pathRole; reason=missing-filesystem-root; normalization=not-attempted)."
+    }
+    Assert-NetRatelTrustedReadinessPath -path $pathRoot -leafFile:$false -checkLeafWrite:$false `
+        -allowLegacyAdministrators:$allowLegacyAdministratorAncestors `
+        -allowLegacyAdministratorAncestors:$allowLegacyAdministratorAncestors -pathRole $pathRole -phase $phase
+    $currentPath = $pathRoot
+    foreach ($component in $fullPath.Substring($pathRoot.Length).Split([char[]]@('\', '/'), [StringSplitOptions]::RemoveEmptyEntries)) {
+        $currentPath = Join-Path $currentPath $component
+        $item = $null
+        try { $item = Get-Item -LiteralPath $currentPath -Force -ErrorAction Stop }
+        catch {
+            $missingPath = $_.CategoryInfo.Category -eq [System.Management.Automation.ErrorCategory]::ObjectNotFound -or
+                $_.Exception -is [System.Management.Automation.ItemNotFoundException] -or
+                $_.Exception -is [System.IO.FileNotFoundException] -or
+                $_.Exception -is [System.IO.DirectoryNotFoundException]
+            if ($missingPath) { return }
+            throw "A NetRatel product path ancestor could not be inspected (phase=$phase; role=$pathRole; reason=path-inspection-failed; normalization=not-attempted; exception=$($_.Exception.GetType().Name))."
+        }
+        Assert-NetRatelTrustedReadinessPath -path $currentPath -leafFile:$false -checkLeafWrite:$false `
+            -allowLegacyAdministrators:$allowLegacyAdministratorAncestors `
+            -allowLegacyAdministratorAncestors:$allowLegacyAdministratorAncestors -pathRole $pathRole -phase $phase
+        if (-not $item.PSIsContainer) {
+            throw "A NetRatel product path ancestor has an unexpected file type (phase=$phase; role=$pathRole; reason=unexpected-type; normalization=not-attempted)."
+        }
+    }
+}
+
+function Initialize-NetRatelProtectedInstallDirectories([switch] $PreflightOnly) {
     $trustedSids = Get-NetRatelTrustedStateSids
     $canonicalRoot = [System.IO.Path]::GetFullPath($RootDir).TrimEnd('\', '/')
     $ownsRegisteredRoot = $existingService -and $registeredRootDir -and
         [string]::Equals([System.IO.Path]::GetFullPath($registeredRootDir).TrimEnd('\', '/'), $canonicalRoot, [StringComparison]::OrdinalIgnoreCase)
+    $canonicalDefaultRoot = [System.IO.Path]::GetFullPath((Join-Path $env:ProgramFiles 'NetRatel\Client')).TrimEnd('\', '/')
+    $ownsDefaultRoot = [string]::Equals($canonicalDefaultRoot, $canonicalRoot, [StringComparison]::OrdinalIgnoreCase)
+    $rootScopeAuthorized = [bool]$ownsRegisteredRoot
+    $rootItem = $null
+    try { $rootItem = Get-Item -LiteralPath $canonicalRoot -Force -ErrorAction Stop }
+    catch {
+        $missingRoot = $_.CategoryInfo.Category -eq [System.Management.Automation.ErrorCategory]::ObjectNotFound -or
+            $_.Exception -is [System.Management.Automation.ItemNotFoundException] -or
+            $_.Exception -is [System.IO.FileNotFoundException] -or
+            $_.Exception -is [System.IO.DirectoryNotFoundException]
+        if (-not $missingRoot) {
+            throw "The NetRatel install root could not be inspected (phase=directory-preflight; role=install-root; reason=path-inspection-failed; normalization=not-attempted; exception=$($_.Exception.GetType().Name))."
+        }
+    }
+    Assert-NetRatelProductDirectoryBoundary $canonicalRoot 'install-root' 'directory-preflight'
+    if ($rootItem) {
+        $allowExistingRootWrites = [bool]($ownsRegisteredRoot -or $ownsDefaultRoot -or $rootWasExplicit)
+        Assert-NetRatelTrustedReadinessPath -path $canonicalRoot -leafFile:$false `
+            -allowInheritedStateWrites:$allowExistingRootWrites -allowLegacyAdministrators:$true `
+            -allowLegacyAdministratorAncestors:($rootWasExplicit -or $ownsRegisteredRoot) `
+            -pathRole 'install-root' -phase 'directory-preflight'
+        if (-not $ownsRegisteredRoot) {
+            if (-not ($rootWasExplicit -or $ownsDefaultRoot)) {
+                throw "The existing install root had no NetRatel ownership evidence (phase=directory-preflight; role=install-root; reason=unowned-product-scope; normalization=not-attempted)."
+            }
+            if (-not (Test-NetRatelCustomInstallRootLayout $canonicalRoot 'directory-preflight' $trustedSids ($rootWasExplicit -or $ownsRegisteredRoot))) {
+                throw "The existing custom install root did not match the safe partial-install layout (phase=directory-preflight; role=install-root; reason=unowned-product-scope; normalization=not-attempted)."
+            }
+            $rootScopeAuthorized = $true
+        }
+    }
+    else {
+        $rootScopeAuthorized = $true
+        Assert-NetRatelProductPathAncestors $canonicalRoot 'install-root' 'directory-preflight' ([bool]$rootWasExplicit)
+    }
+
     $configuredServiceLogDir = Get-NetRatelServiceEnvironmentValue 'NetRatel_CLIENT_LOG_DIR'
     $explicitLogDir = -not [string]::IsNullOrWhiteSpace($env:NetRatel_LOG_DIR)
+    $canonicalDefaultLogDir = [System.IO.Path]::GetFullPath((Join-Path $env:ProgramData 'NetRatel\logs')).TrimEnd('\', '/')
     foreach ($path in @($RootDir, $UpdaterDir, $VersionsDir, $StagingDir, $FailedDir, $LogDir)) {
         $canonicalPath = [System.IO.Path]::GetFullPath($path)
-        $insideOwnedRoot = $ownsRegisteredRoot -and
+        $insideOwnedRoot = $rootScopeAuthorized -and
             ($canonicalPath.Equals($canonicalRoot, [StringComparison]::OrdinalIgnoreCase) -or
              $canonicalPath.StartsWith($canonicalRoot + [System.IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase))
-        $ownedServiceLogPath = $existingService -and $configuredServiceLogDir -and
-            [string]::Equals([System.IO.Path]::GetFullPath([string]$configuredServiceLogDir).TrimEnd('\', '/'), $canonicalPath.TrimEnd('\', '/'), [StringComparison]::OrdinalIgnoreCase)
+        $defaultLogPath = [string]::Equals($canonicalDefaultLogDir, $canonicalPath.TrimEnd('\', '/'), [StringComparison]::OrdinalIgnoreCase)
+        $serviceDefaultLogPath = $existingService -and -not $configuredServiceLogDir -and $defaultLogPath
+        $ownedServiceLogPath = ($existingService -and $configuredServiceLogDir -and
+            [string]::Equals([System.IO.Path]::GetFullPath([string]$configuredServiceLogDir).TrimEnd('\', '/'), $canonicalPath.TrimEnd('\', '/'), [StringComparison]::OrdinalIgnoreCase)) -or
+            $serviceDefaultLogPath
         $requestedLogPath = $explicitLogDir -and
             [string]::Equals([System.IO.Path]::GetFullPath([string]$env:NetRatel_LOG_DIR).TrimEnd('\', '/'), $canonicalPath.TrimEnd('\', '/'), [StringComparison]::OrdinalIgnoreCase)
         $explicitRootAncestor = $rootWasExplicit -and (Test-NetRatelSameOrAncestorPath $canonicalPath $canonicalRoot)
         $explicitRootChild = $rootWasExplicit -and (Test-NetRatelSameOrAncestorPath $canonicalRoot $canonicalPath)
         $explicitLogAncestor = $explicitLogDir -and (Test-NetRatelSameOrAncestorPath $canonicalPath ([System.IO.Path]::GetFullPath([string]$env:NetRatel_LOG_DIR)))
         $explicitLogChild = $explicitLogDir -and (Test-NetRatelSameOrAncestorPath ([System.IO.Path]::GetFullPath([string]$env:NetRatel_LOG_DIR)) $canonicalPath)
-        $allowLegacyAdministrators = [bool]($insideOwnedRoot -or $ownedServiceLogPath -or $requestedLogPath)
-        $allowLegacyAdministratorAncestors = [bool]($explicitRootAncestor -or $explicitRootChild -or $explicitLogAncestor -or $explicitLogChild)
-        if (Test-Path -LiteralPath $canonicalPath) {
-            Assert-NetRatelTrustedReadinessPath $canonicalPath $false $false $true $allowLegacyAdministrators $allowLegacyAdministratorAncestors
-            if ($insideOwnedRoot -or $ownedServiceLogPath -or $requestedLogPath) {
-                Set-NetRatelProtectedInstallDirectoryAcl $canonicalPath $trustedSids
+        $allowLegacyAdministrators = [bool]($insideOwnedRoot -or $ownedServiceLogPath -or $requestedLogPath -or $defaultLogPath)
+        $allowLegacyAdministratorAncestors = [bool]($explicitRootAncestor -or $explicitRootChild -or $explicitLogAncestor -or $explicitLogChild -or
+            ($insideOwnedRoot -and -not [string]::Equals($canonicalPath, $canonicalRoot, [StringComparison]::OrdinalIgnoreCase)) -or
+            $ownedServiceLogPath)
+        $repairEligible = [bool]($insideOwnedRoot -or $ownedServiceLogPath)
+        $pathRole = if ($insideOwnedRoot) {
+            if ([string]::Equals($canonicalPath, $canonicalRoot, [StringComparison]::OrdinalIgnoreCase)) { 'install-root' }
+            else { 'install-subdirectory' }
+        } elseif ($ownedServiceLogPath) { 'service-log-directory' }
+        elseif ($requestedLogPath) { 'requested-log-directory' }
+        elseif ($defaultLogPath) { 'default-log-directory' }
+        else { 'product-directory' }
+        Assert-NetRatelProductDirectoryBoundary $canonicalPath $pathRole 'directory-preflight'
+        $existingPath = $null
+        try { $existingPath = Get-Item -LiteralPath $canonicalPath -Force -ErrorAction Stop }
+        catch {
+            $missingPath = $_.CategoryInfo.Category -eq [System.Management.Automation.ErrorCategory]::ObjectNotFound -or
+                $_.Exception -is [System.Management.Automation.ItemNotFoundException] -or
+                $_.Exception -is [System.IO.FileNotFoundException] -or
+                $_.Exception -is [System.IO.DirectoryNotFoundException]
+            if (-not $missingPath) {
+                throw "The NetRatel product directory could not be inspected (phase=directory-preflight; role=$pathRole; reason=path-inspection-failed; normalization=not-attempted; exception=$($_.Exception.GetType().Name))."
+            }
+        }
+        if ($existingPath) {
+            $emptyCustomLog = $false
+            if ($requestedLogPath -and -not $ownedServiceLogPath -and -not $defaultLogPath) {
+                Assert-NetRatelTrustedReadinessPath -path $canonicalPath -leafFile:$false `
+                    -allowInheritedStateWrites:$true -allowLegacyAdministrators:$true `
+                    -allowLegacyAdministratorAncestors:$allowLegacyAdministratorAncestors `
+                    -pathRole $pathRole -phase 'directory-preflight'
+                $emptyCustomLog = Test-NetRatelDirectoryEmpty $canonicalPath $pathRole 'directory-preflight'
+                if (-not $emptyCustomLog) {
+                    throw "The existing custom log directory was not empty and had no registered service ownership evidence (phase=directory-preflight; role=$pathRole; reason=unowned-product-scope; normalization=not-attempted)."
+                }
+            }
+            $emptyUnownedDefaultLog = $false
+            if ($defaultLogPath -and -not $existingService) {
+                $emptyUnownedDefaultLog = Test-NetRatelDefaultLogLayout $canonicalPath 'directory-preflight'
+                if (-not $emptyUnownedDefaultLog) {
+                    throw "The existing default log directory did not match the safe partial-install layout (phase=directory-preflight; role=default-log-directory; reason=unowned-product-scope; normalization=not-attempted)."
+                }
+            }
+            $repairEligible = $repairEligible -or $emptyCustomLog -or $emptyUnownedDefaultLog
+            Assert-NetRatelTrustedReadinessPath -path $canonicalPath -leafFile:$false `
+                -allowInheritedStateWrites:$repairEligible `
+                -allowLegacyAdministrators:($allowLegacyAdministrators -or $repairEligible) `
+                -allowLegacyAdministratorAncestors:$allowLegacyAdministratorAncestors -pathRole $pathRole -phase 'directory-preflight'
+            if (-not $PreflightOnly -and $repairEligible) {
+                Write-Host "Phase: preparing owned paths; role=$pathRole."
+                Set-NetRatelProtectedPathAcl $canonicalPath $true $trustedSids $pathRole 'directory-normalization'
+                Assert-NetRatelTrustedReadinessPath -path $canonicalPath -leafFile:$false `
+                    -allowLegacyAdministratorAncestors:$allowLegacyAdministratorAncestors -pathRole $pathRole `
+                    -phase 'directory-verification' -normalizationAttempted:$true
             }
             continue
         }
 
         $pathRoot = [System.IO.Path]::GetPathRoot($canonicalPath)
         if ([string]::IsNullOrWhiteSpace($pathRoot)) { throw 'The package installation path has no filesystem root.' }
+        if (($requestedLogPath -or $explicitRootAncestor -or $explicitRootChild) -and
+            -not $ownedServiceLogPath -and -not $insideOwnedRoot -and -not $defaultLogPath) {
+            Assert-NetRatelProductPathAncestors $canonicalPath $pathRole 'directory-preflight' $allowLegacyAdministratorAncestors
+        }
         $currentPath = $pathRoot
         foreach ($component in $canonicalPath.Substring($pathRoot.Length).Split([char[]]@('\', '/'), [StringSplitOptions]::RemoveEmptyEntries)) {
             $currentPath = Join-Path $currentPath $component
-            if (Test-Path -LiteralPath $currentPath) {
+            $componentItem = $null
+            try { $componentItem = Get-Item -LiteralPath $currentPath -Force -ErrorAction Stop }
+            catch {
+                $missingComponent = $_.CategoryInfo.Category -eq [System.Management.Automation.ErrorCategory]::ObjectNotFound -or
+                    $_.Exception -is [System.Management.Automation.ItemNotFoundException] -or
+                    $_.Exception -is [System.IO.FileNotFoundException] -or
+                    $_.Exception -is [System.IO.DirectoryNotFoundException]
+                if (-not $missingComponent) {
+                    throw "A NetRatel product path ancestor could not be inspected (phase=directory-preflight; role=$pathRole; reason=path-inspection-failed; normalization=not-attempted; exception=$($_.Exception.GetType().Name))."
+                }
+            }
+            if ($componentItem) {
                 $isLeaf = [string]::Equals($currentPath, $canonicalPath, [StringComparison]::OrdinalIgnoreCase)
-                $allowLegacyAdministratorsOnPath = [bool]($allowLegacyAdministrators -and -not $isLeaf)
+                $allowLegacyAdministratorsOnPath = [bool]($allowLegacyAdministrators -and $isLeaf)
                 $allowLegacyAdministratorAncestorsOnPath = [bool](-not $isLeaf -and $allowLegacyAdministratorAncestors)
-                Assert-NetRatelTrustedReadinessPath $currentPath $false $false $isLeaf $allowLegacyAdministratorsOnPath $allowLegacyAdministratorAncestorsOnPath
+                Assert-NetRatelTrustedReadinessPath -path $currentPath -leafFile:$false -checkLeafWrite:$false `
+                    -allowLegacyAdministrators:$allowLegacyAdministratorsOnPath `
+                    -allowLegacyAdministratorAncestors:$allowLegacyAdministratorAncestorsOnPath `
+                    -pathRole $pathRole -phase 'directory-preflight'
                 continue
             }
+            if ($PreflightOnly) { break }
             New-NetRatelProtectedDirectory $currentPath $trustedSids ($allowLegacyAdministrators -or $allowLegacyAdministratorAncestors)
         }
     }
+}
+}
+catch {
+    # NetRatel installer preflight failure-result extension point.
+    throw
 }
 """
             : string.Empty;
 
         var serviceDirectoryInitialization = request.InstallAsService
-            ? "    Initialize-NetRatelProtectedInstallDirectories" + Environment.NewLine + "    Initialize-NetRatelProtectedStateDirectory"
+            ? "    Initialize-NetRatelProtectedStateDirectory" + Environment.NewLine + "    Initialize-NetRatelProtectedInstallDirectories -PreflightOnly"
             : "    New-Item -ItemType Directory -Path $RootDir, $UpdaterDir, $VersionsDir, $StagingDir, $FailedDir, $StateDir -Force | Out-Null";
+        var seedHandoffStartMarker = request.InstallAsService
+            ? "    # Seed handoff integration point."
+            : string.Empty;
+        var postLockStateTreeNormalization = request.InstallAsService
+            ? "    $script:InstallerLastCompletedPhase = 'update-lock-acquired'" + Environment.NewLine +
+              "    $script:InstallerPhase = 'owned-path-normalization'" + Environment.NewLine +
+              "    Write-Host 'Phase: preparing owned paths; role=update-state-tree under the updater lock.'" + Environment.NewLine +
+              "    # Shared state descendants and install directories are normalized only after the exclusive update lock is held." + Environment.NewLine +
+              "    Protect-NetRatelOwnedStateTree -path $StateDir -LockHeld -phase 'locked-state-tree-normalization'" + Environment.NewLine +
+              "    Protect-NetRatelOwnedStateTree -path $StateDir -ValidateOnly -LockHeld -RequireProtected -phase 'locked-state-tree-verification'" + Environment.NewLine +
+              "    Initialize-NetRatelProtectedInstallDirectories" + Environment.NewLine +
+              "    $script:InstallerLastCompletedPhase = 'owned-paths-prepared'"
+            : string.Empty;
 
         var serviceBlock = request.InstallAsService
             ? $$"""
@@ -1072,6 +1704,8 @@ function Initialize-NetRatelProtectedInstallDirectories {
                 $preservedClientEnvironment += $entry
             }
 
+            $script:InstallerPhase = 'installing-service'
+            Write-Host 'Phase: installing service.'
             $attemptId = [Guid]::NewGuid().ToString('D')
             $nonceBytes = New-Object byte[] 32
             $random = [System.Security.Cryptography.RandomNumberGenerator]::Create()
@@ -1177,6 +1811,7 @@ function Initialize-NetRatelProtectedInstallDirectories {
                     'config', $serviceName, 'binPath=', $candidateServiceImage,
                     'obj=', 'LocalSystem', 'start=', 'auto'))
                 Assert-NetRatelServiceConfiguration $candidateServiceImage 'LocalSystem' 'Auto'
+                $script:InstallerLastCompletedPhase = 'service-configured'
 
                 $hasPreservedLogDir = @($preservedClientEnvironment | Where-Object { $_ -match '^NetRatel_CLIENT_LOG_DIR=' }).Count -gt 0
                 $clientEnvironment = @()
@@ -1204,6 +1839,8 @@ function Initialize-NetRatelProtectedInstallDirectories {
                     expiresAtUtc = $requestedAt.AddSeconds({{request.ReadinessTimeoutSeconds}}).ToString('O')
                 } | ConvertTo-Json -Depth 4
                 Write-NetRatelProtectedReadinessRequest $requestPath $challenge (Get-NetRatelTrustedStateSids) $script:NetRatelStateAncestorAllowance
+                $script:InstallerPhase = 'service-enrollment-authentication'
+                Write-Host 'Phase: service enrollment and authentication.'
                 Start-Service -Name $serviceName -ErrorAction Stop
             }
             catch {
@@ -1347,6 +1984,9 @@ function Initialize-NetRatelProtectedInstallDirectories {
                 return $heartbeatSequence -ge 2
             }
 
+            $script:InstallerLastCompletedPhase = 'service-started'
+            $script:InstallerPhase = 'gateway-admission-heartbeat-readiness'
+            Write-Host 'Phase: gateway admission and heartbeat readiness.'
             Write-Host 'Waiting for the LocalSystem service to enroll, authenticate, gain gateway admission, and acknowledge two heartbeats...'
             $readinessDeadline = $requestedAt.AddSeconds({{request.ReadinessTimeoutSeconds}})
             $lastStage = 'service-started'
@@ -1434,6 +2074,7 @@ function Initialize-NetRatelProtectedInstallDirectories {
                 }
             }
             Write-Host "Gateway heartbeat ready: agentId=$($readyRecord.agentId), tenantId=$($readyRecord.tenantId), connectionEpoch=$($readyRecord.connectionEpoch)."
+            $script:InstallerLastCompletedPhase = 'gateway-heartbeat-ready'
             """
             : string.Empty;
 
@@ -1476,6 +2117,8 @@ $StagingDir = Join-Path $RootDir "staging"
 $FailedDir = Join-Path $RootDir "failed"
 $updateLock = $null
 $stageDir = $null
+$script:InstallerPhase = 'script-started'
+$script:InstallerLastCompletedPhase = 'script-started'
 
 Write-Host "Starting NetRatel Client deployment..."
 Write-Host "Enrollment code valid until {{request.ValidToUtc.UtcDateTime:O}}"
@@ -1628,11 +2271,32 @@ function Receive-NetRatelArtifactWithoutCurl {
     }
 }
 
+function Write-NetRatelInstallerFailureSummary([object] $failure) {
+    $failureType = 'unknown'
+    if ($null -ne $failure -and $null -ne $failure.Exception) { $failureType = $failure.Exception.GetType().Name }
+    $serviceState = 'not-applicable'
+    $serviceNameForSummary = {{(request.InstallAsService ? "'NetRatel.Client'" : "$null")}}
+    if ($serviceNameForSummary -and (Get-Command Get-CimInstance -ErrorAction SilentlyContinue)) {
+        try {
+            $installedService = Get-CimInstance Win32_Service -Filter "Name='$serviceNameForSummary'" -ErrorAction Stop
+            $serviceState = if ($installedService) { [string]$installedService.State } else { 'not-installed' }
+        }
+        catch { $serviceState = 'unknown' }
+    }
+    Write-Host "Installer stopped: phase=$script:InstallerPhase; lastCompleted=$script:InstallerLastCompletedPhase; serviceState=$serviceState; failureType=$failureType."
+}
+
 $tempDir = Join-Path $env:TEMP "netratel_install_$([Guid]::NewGuid())"
 try {
+    $script:InstallerPhase = 'directory-preflight'
+    Write-Host 'Phase: checking directories.'
     {{serviceDirectoryInitialization}}
+    $script:InstallerLastCompletedPhase = 'directory-preflight-complete'
     New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+    $script:InstallerPhase = 'update-lock-acquisition'
     {{updateLockBlock}}
+    {{postLockStateTreeNormalization}}
+{{seedHandoffStartMarker}}
     $resolvedVersion = $Version
     $zipPath = Join-Path $tempDir "netratel.zip"
     $responseHeadersPath = Join-Path $tempDir "netratel-response-headers.txt"
@@ -1642,6 +2306,8 @@ try {
         "X-NetRatel-Enrollment-Code" = $EnrollmentCode
     }
 
+    $script:InstallerPhase = 'artifact-download-and-verification'
+    Write-Host 'Phase: downloading and verifying the client package.'
     Write-Host "Downloading NetRatel Client package $resolvedVersion..."
     if (Get-Command curl.exe -ErrorAction SilentlyContinue) {
         & curl.exe -f --max-redirs 0 --connect-timeout 15 --max-time 120 `
@@ -1756,19 +2422,27 @@ try {
                 throw "Client package manifest does not match the requested runtime and version."
             }
             $resolvedVersion = $manifestVersion
+            $script:InstallerLastCompletedPhase = 'package-verified'
 
+    {{(request.InstallAsService ? string.Empty : "    $script:InstallerPhase = 'client-enrollment'" + Environment.NewLine + "    Write-Host 'Phase: enrolling client.'")}}
     {{enrollmentBlock}}
+    {{(request.InstallAsService ? string.Empty : "    $script:InstallerLastCompletedPhase = 'client-enrolled'")}}
     {{userInstallBlock}}
     {{serviceBlock}}
 
     Write-Host "{{(request.InstallAsService ? "NetRatel service installation complete; authenticated gateway heartbeat readiness was verified." : "NetRatel client installed and enrolled; no service readiness was requested.")}}"
+    $script:InstallerLastCompletedPhase = 'installation-complete'
+}
+catch {
+    Write-NetRatelInstallerFailureSummary $_
+    throw
 }
 finally {
-    if ($null -ne $updateLock) { $updateLock.Dispose() }
     if ($stageDir -and (Test-Path -LiteralPath $stageDir)) { Remove-Item -LiteralPath $stageDir -Recurse -Force }
     if (Test-Path $tempDir) {
         Remove-Item $tempDir -Recurse -Force
     }
+    if ($null -ne $updateLock) { $updateLock.Dispose() }
 }
 """;
     }

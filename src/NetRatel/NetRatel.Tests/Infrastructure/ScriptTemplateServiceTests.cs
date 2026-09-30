@@ -224,6 +224,8 @@ EnvironmentFile=-{{optionalEnvironmentFile}}
             InstallAsService: true,
             SilentInstall: true));
 
+        script.Should().NotContain("NetRatelSeedHandoff");
+        script.Should().Contain("catch {\n    # NetRatel installer preflight failure-result extension point.\n    throw\n}");
         script.Should().Contain("ENR-ABC123");
         script.Should().Contain("https://netratel.example.invalid");
         script.Should().Contain("netratel.enroll.json");
@@ -248,11 +250,18 @@ EnvironmentFile=-{{optionalEnvironmentFile}}
         script.Should().Contain("S-1-5-18");
         script.Should().Contain("NT SERVICE', 'TrustedInstaller");
         script.Should().Contain("function Test-NetRatelSameOrAncestorPath");
+        script.Should().Contain("function Test-NetRatelTrustedAdministratorSid");
+        script.Should().Contain("function Test-NetRatelTrustedPartialFileAcl");
+        script.Should().Contain("Test-NetRatelTrustedPartialFileAcl $lockItem.FullName $script:NetRatelStateAncestorAllowance 'updater-lock' $phase");
+        script.Should().Contain("Test-NetRatelTrustedPartialFileAcl $handoffFile.FullName $script:NetRatelStateAncestorAllowance 'seed-handoff-file' $phase");
+        script.Should().NotContain("Test-NetRatelProtectedAclMatches $lockItem.FullName");
+        script.Should().Contain("($rootWasExplicit -or $ownsRegisteredRoot)");
         script.Should().Contain("$explicitRootAncestor = $rootWasExplicit -and (Test-NetRatelSameOrAncestorPath $canonicalPath $canonicalRoot)");
         script.Should().Contain("New-NetRatelProtectedDirectory $currentPath $trustedSids ($allowLegacyAdministrators -or $allowLegacyAdministratorAncestors)");
         script.Should().Contain("Assert-NetRatelTrustedReadinessPath $path $false $false $true $false $allowLegacyAdministratorsOnParent");
+        script.Should().Contain("($isLeaf -and $allowLegacyAdministrators) -or");
         script.Should().Contain("(-not $isLeaf -and $allowLegacyAdministratorAncestors)");
-        script.Should().Contain("$script:NetRatelStateAncestorAllowance = [bool]($stateWasExplicit -or $trustedServiceState)");
+        script.Should().Contain("$script:NetRatelStateAncestorAllowance = [bool]($stateWasExplicit -or ($existingService -and ($ownsConfiguredState -or $ownsDefaultState)))");
         script.Should().Contain("Assert-NetRatelTrustedReadinessPath $readinessDir $false $false $true $false $script:NetRatelStateAncestorAllowance");
         script.Should().Contain("Assert-NetRatelTrustedReadinessPath $readinessFile $true $false $true $false $script:NetRatelStateAncestorAllowance");
         script.Should().Contain("function Write-NetRatelProtectedReadinessRequest");
@@ -263,19 +272,48 @@ EnvironmentFile=-{{optionalEnvironmentFile}}
         script.Should().Contain("Assert-NetRatelTrustedReadinessPath $path $true $false $true $false $allowLegacyAdministratorAncestors");
         script.Should().Contain("Write-NetRatelProtectedReadinessRequest $requestPath $challenge (Get-NetRatelTrustedStateSids) $script:NetRatelStateAncestorAllowance");
         script.Should().NotContain("Set-Content -LiteralPath $requestPath");
-        script.Should().Contain("Assert-NetRatelTrustedReadinessPath $canonicalState $false $false $true $false $script:NetRatelStateAncestorAllowance");
+        script.Should().Contain("Assert-NetRatelTrustedReadinessPath -path $canonicalState -leafFile:$false");
         script.Should().Contain("$acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])");
         script.Should().Contain("[System.IO.Directory]::CreateDirectory($path, $acl)");
-        script.Should().Contain("Protect-NetRatelOwnedStateTree $canonicalState $trustedSids");
+        script.Should().Contain("Protect-NetRatelOwnedStateTree -path $canonicalState -ValidateOnly -phase 'state-preflight'");
+        script.Should().Contain("Protect-NetRatelOwnedStateTree -path $StateDir -LockHeld -phase 'locked-state-tree-normalization'");
+        script.Should().Contain("Protect-NetRatelOwnedStateTree -path $StateDir -ValidateOnly -LockHeld -RequireProtected -phase 'locked-state-tree-verification'");
+        script.Should().Contain("-allowLegacyAdministratorAncestors:$script:NetRatelStateAncestorAllowance `");
+        script.Should().Contain("-pathRole $itemRole");
+        script.Should().Contain("$currentItem = Get-Item -LiteralPath $item.FullName -Force -ErrorAction Stop");
+        script.Should().Contain("reason=object-type-changed");
+        script.Should().Contain("reason=path-reparse-point");
+        script.Should().Contain("reason=path-outside-tree");
+        script.Should().Contain("Assert-NetRatelTrustedReadinessPath -path $currentPath -leafFile:$false -checkLeafWrite:$false");
+        script.Should().NotContain("checkAncestorWriteAccess");
         script.Should().Contain("Initialize-NetRatelProtectedInstallDirectories");
         script.Should().Contain("@($RootDir, $UpdaterDir, $VersionsDir, $StagingDir, $FailedDir, $LogDir)");
         var mainBodyStart = script.IndexOf("$tempDir = Join-Path $env:TEMP", StringComparison.Ordinal);
-        var installPathInitialization = script.IndexOf("Initialize-NetRatelProtectedInstallDirectories", mainBodyStart, StringComparison.Ordinal);
         var statePathInitialization = script.IndexOf("Initialize-NetRatelProtectedStateDirectory", mainBodyStart, StringComparison.Ordinal);
+        var installPathPreflight = script.IndexOf("Initialize-NetRatelProtectedInstallDirectories -PreflightOnly", mainBodyStart, StringComparison.Ordinal);
         var lockAcquisition = script.IndexOf("$updateLockPath = Join-Path $StateDir", mainBodyStart, StringComparison.Ordinal);
-        installPathInitialization.Should().BeGreaterThanOrEqualTo(mainBodyStart);
-        statePathInitialization.Should().BeGreaterThan(installPathInitialization);
-        lockAcquisition.Should().BeGreaterThan(statePathInitialization);
+        var postLockNormalization = script.IndexOf("Protect-NetRatelOwnedStateTree -path $StateDir -LockHeld", mainBodyStart, StringComparison.Ordinal);
+        var postLockVerification = script.IndexOf("-RequireProtected -phase 'locked-state-tree-verification'", mainBodyStart, StringComparison.Ordinal);
+        var postLockInstallNormalization = script.IndexOf("Initialize-NetRatelProtectedInstallDirectories\n", postLockVerification, StringComparison.Ordinal);
+        var artifactDownload = script.IndexOf("$script:InstallerPhase = 'artifact-download-and-verification'", mainBodyStart, StringComparison.Ordinal);
+        statePathInitialization.Should().BeGreaterThanOrEqualTo(mainBodyStart);
+        installPathPreflight.Should().BeGreaterThan(statePathInitialization);
+        lockAcquisition.Should().BeGreaterThan(installPathPreflight);
+        postLockNormalization.Should().BeGreaterThan(lockAcquisition);
+        postLockVerification.Should().BeGreaterThan(postLockNormalization);
+        postLockInstallNormalization.Should().BeGreaterThan(postLockVerification);
+        artifactDownload.Should().BeGreaterThan(postLockInstallNormalization);
+        var stateTreeFunctionStart = script.IndexOf("function Protect-NetRatelOwnedStateTree", StringComparison.Ordinal);
+        var finalTreeTypeGuard = script.IndexOf("reason=object-type-changed", stateTreeFunctionStart, StringComparison.Ordinal);
+        var finalTreeReparseGuard = script.IndexOf("reason=path-reparse-point", finalTreeTypeGuard, StringComparison.Ordinal);
+        var finalTreeEnumeration = script.IndexOf("Get-ChildItem -LiteralPath $item.FullName", finalTreeReparseGuard, StringComparison.Ordinal);
+        stateTreeFunctionStart.Should().BeGreaterThanOrEqualTo(0);
+        finalTreeTypeGuard.Should().BeGreaterThan(stateTreeFunctionStart);
+        finalTreeReparseGuard.Should().BeGreaterThan(finalTreeTypeGuard);
+        finalTreeEnumeration.Should().BeGreaterThan(finalTreeReparseGuard);
+        script.Should().Contain("$script:InstallerPhase = 'owned-path-normalization'");
+        script.Should().Contain("$script:InstallerLastCompletedPhase = 'update-lock-acquired'");
+        script.Should().Contain("Get-CimInstance Win32_Service -Filter \"Name='$serviceNameForSummary'\"");
         script.Should().NotContain("-Path $tempDir, $LogDir");
         script.Should().NotContain("New-Item -ItemType Directory -Path $tempDir, $RootDir, $StateDir");
         script.Should().NotContain("icacls.exe $readinessDir");
@@ -569,14 +607,19 @@ EnvironmentFile=-{{optionalEnvironmentFile}}
             "$protectedLeaf = " + PowerShellLiteral(protectedLeaf),
             "function Get-NetRatelTrustedStateSids { return @('S-1-5-18') }",
             "function Test-NetRatelLocalAdministratorMemberSid([string] $sid) { return $sid -eq 'S-1-5-21-local-admin' }",
+            "function Test-NetRatelTrustedAdministratorSid([string] $sid) { return Test-NetRatelLocalAdministratorMemberSid $sid }",
             "function Test-Path { [CmdletBinding()] param([string]$LiteralPath,[string]$PathType,[switch]$Force) return $true }",
-            "function Get-Item { [CmdletBinding()] param([string]$LiteralPath,[switch]$Force) $isFile = [string]::Equals($LiteralPath, " + PowerShellLiteral(readinessFile) + ", [StringComparison]::OrdinalIgnoreCase) -or [string]::Equals($LiteralPath, " + PowerShellLiteral(readyFile) + ", [StringComparison]::OrdinalIgnoreCase); [pscustomobject]@{ FullName=$LiteralPath; Attributes=$(if ($isFile) { [System.IO.FileAttributes]::Normal } else { [System.IO.FileAttributes]::Directory }); PSIsContainer=(-not $isFile) } }",
+            "function Get-Item { [CmdletBinding()] param([string]$LiteralPath,[switch]$Force) if ($script:inspectionFailurePath -and [string]::Equals($LiteralPath,$script:inspectionFailurePath,[StringComparison]::OrdinalIgnoreCase)) { throw [System.UnauthorizedAccessException]::new('synthetic access denied') }; $isFile = [string]::Equals($LiteralPath, " + PowerShellLiteral(readinessFile) + ", [StringComparison]::OrdinalIgnoreCase) -or [string]::Equals($LiteralPath, " + PowerShellLiteral(readyFile) + ", [StringComparison]::OrdinalIgnoreCase); [pscustomobject]@{ FullName=$LiteralPath; Attributes=$(if ($isFile) { [System.IO.FileAttributes]::Normal } else { [System.IO.FileAttributes]::Directory }); PSIsContainer=(-not $isFile) } }",
             "function Get-Acl { [CmdletBinding()] param([string]$LiteralPath)",
             "    $ownerSid = if ([string]::Equals($LiteralPath, $adminAncestor, [StringComparison]::OrdinalIgnoreCase)) { 'S-1-5-21-local-admin' } else { 'S-1-5-18' }",
             "    $rules = @()",
             "    $adminWriteLeaf = ($script:addAdminWriteToLeaf -and [string]::Equals($LiteralPath, $protectedLeaf, [StringComparison]::OrdinalIgnoreCase)) -or ($script:addAdminWriteToReadinessDirectory -and [string]::Equals($LiteralPath, " + PowerShellLiteral(readinessDirectory) + ", [StringComparison]::OrdinalIgnoreCase)) -or ($script:addAdminWriteToReadinessFile -and ([string]::Equals($LiteralPath, " + PowerShellLiteral(readinessFile) + ", [StringComparison]::OrdinalIgnoreCase) -or [string]::Equals($LiteralPath, " + PowerShellLiteral(readyFile) + ", [StringComparison]::OrdinalIgnoreCase)))",
             "    if ($ownerSid -eq 'S-1-5-21-local-admin' -or $adminWriteLeaf) {",
-            "        $rules += [pscustomobject]@{ AccessControlType=[System.Security.AccessControl.AccessControlType]::Allow; PropagationFlags=[System.Security.AccessControl.PropagationFlags]::None; IdentityReference=[pscustomobject]@{ Value='S-1-5-21-local-admin' }; FileSystemRights=[System.Security.AccessControl.FileSystemRights]::WriteData; IsInherited=$false }",
+            "        $rules += [pscustomobject]@{ AccessControlType=[System.Security.AccessControl.AccessControlType]::Allow; InheritanceFlags=[System.Security.AccessControl.InheritanceFlags]::None; PropagationFlags=[System.Security.AccessControl.PropagationFlags]::None; IdentityReference=[pscustomobject]@{ Value='S-1-5-21-local-admin' }; FileSystemRights=[System.Security.AccessControl.FileSystemRights]::WriteData; IsInherited=$false }",
+            "    }",
+            "    if (($script:addUsersWriteToAncestor -or $script:addUsersDeleteToAncestor) -and [string]::Equals($LiteralPath, $adminAncestor, [StringComparison]::OrdinalIgnoreCase)) {",
+            "        $userRights = if ($script:addUsersDeleteToAncestor) { [System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles } else { [System.Security.AccessControl.FileSystemRights]::WriteData }",
+            "        $rules += [pscustomobject]@{ AccessControlType=[System.Security.AccessControl.AccessControlType]::Allow; InheritanceFlags=[System.Security.AccessControl.InheritanceFlags]::None; PropagationFlags=[System.Security.AccessControl.PropagationFlags]::None; IdentityReference=[pscustomobject]@{ Value='S-1-5-32-545' }; FileSystemRights=$userRights; IsInherited=$true }",
             "    }",
             "    $acl = [pscustomobject]@{ OwnerSid=$ownerSid; Rules=$rules }",
             "    $acl | Add-Member ScriptMethod GetOwner { param($type) return [pscustomobject]@{ Value=$this.OwnerSid } }",
@@ -592,24 +635,40 @@ EnvironmentFile=-{{optionalEnvironmentFile}}
             "$unscopedAncestorError = $null",
             "try { Assert-NetRatelTrustedReadinessPath " + PowerShellLiteral(readinessDirectory) + " $false } catch { $unscopedAncestorError = $_.Exception.Message }",
             "if (-not $unscopedAncestorError) { throw 'A custom administrator-owned ancestor was accepted without explicit path provenance.' }",
-            "if ($unscopedAncestorError -notmatch 'scope=ancestor; component=\\d+; check=owner; exception=RuntimeException') { throw 'The unscoped ancestor rejection did not report its bounded owner-check category.' }",
+            "if ($unscopedAncestorError -notmatch 'phase=path-preflight; role=filesystem-path; scope=ancestor; component=\\d+; reason=untrusted-owner; normalization=not-attempted; exception=RuntimeException') { throw 'The unscoped ancestor rejection did not report its bounded owner-check category.' }",
             "if ($unscopedAncestorError.Contains($adminAncestor) -or $unscopedAncestorError.Contains('S-1-5-21-local-admin')) { throw 'The protected-path diagnostic disclosed a path or SID.' }",
+            "$leafOnlyAdministratorError = $null",
+            "try { Assert-NetRatelTrustedReadinessPath " + PowerShellLiteral(readinessFile) + " $true $false $true $true } catch { $leafOnlyAdministratorError = $_.Exception.Message }",
+            "if ($leafOnlyAdministratorError -notmatch 'scope=ancestor; component=\\d+; reason=untrusted-owner') { throw 'A leaf-only administrator allowance also admitted a shared ancestor.' }",
             "$script:addAdminWriteToLeaf = $true",
             "$leafWriteError = $null",
             "try { Assert-NetRatelTrustedReadinessPath $protectedLeaf $false $false $true $false $true } catch { $leafWriteError = $_.Exception.Message }",
             "if (-not $leafWriteError) { throw 'A protected leaf ACL was allowed to inherit individual-administrator write access.' }",
-            "if ($leafWriteError -notmatch 'scope=leaf; component=\\d+; check=leaf-write; exception=RuntimeException') { throw 'The protected leaf rejection did not report its bounded write-check category.' }",
+            "if ($leafWriteError -notmatch 'phase=path-preflight; role=filesystem-path; scope=leaf; component=\\d+; reason=leaf-write; normalization=not-attempted; exception=RuntimeException; aceRights=WriteData; aceRightsValue=2; aceInherited=false; aceInheritance=None; acePropagation=None') { throw 'The protected leaf rejection did not report its bounded write-check category and ACE permissions.' }",
+            "$script:addUsersWriteToAncestor = $true",
+            "Assert-NetRatelTrustedReadinessPath -path (Join-Path $adminAncestor 'custom') -leafFile:$false -checkLeafWrite:$false -allowLegacyAdministratorAncestors:$true",
+            "$script:addUsersDeleteToAncestor = $true",
+            "$ancestorDeleteError = $null",
+            "try { Assert-NetRatelTrustedReadinessPath -path (Join-Path $adminAncestor 'custom') -leafFile:$false -checkLeafWrite:$false -allowLegacyAdministratorAncestors:$true } catch { $ancestorDeleteError = $_.Exception.Message }",
+            "if ($ancestorDeleteError -notmatch 'scope=ancestor; component=\\d+; reason=replacement-access') { throw 'Dangerous replacement access on an ancestor was allowed when checking leaf writes was disabled.' }",
+            "$script:addUsersWriteToAncestor = $false",
+            "$script:addUsersDeleteToAncestor = $false",
             "$script:addAdminWriteToReadinessDirectory = $true",
             "$readinessDirectoryWriteError = $null",
             "try { Assert-NetRatelTrustedReadinessPath " + PowerShellLiteral(readinessDirectory) + " $false $false $true $false $true } catch { $readinessDirectoryWriteError = $_.Exception.Message }",
             "if (-not $readinessDirectoryWriteError) { throw 'A readiness directory accepted individual-administrator write access.' }",
-            "if ($readinessDirectoryWriteError -notmatch 'scope=leaf; component=\\d+; check=leaf-write; exception=RuntimeException') { throw 'The readiness-directory rejection did not report its bounded write-check category.' }",
+            "if ($readinessDirectoryWriteError -notmatch 'phase=path-preflight; role=filesystem-path; scope=leaf; component=\\d+; reason=leaf-write; normalization=not-attempted; exception=RuntimeException; aceRights=WriteData; aceRightsValue=2; aceInherited=false; aceInheritance=None; acePropagation=None') { throw 'The readiness-directory rejection did not report its bounded write-check category and ACE permissions.' }",
             "$script:addAdminWriteToReadinessDirectory = $false",
             "$script:addAdminWriteToReadinessFile = $true",
             "$readinessFileWriteError = $null",
             "try { Assert-NetRatelTrustedReadinessPath " + PowerShellLiteral(readinessFile) + " $true $false $true $false $true } catch { $readinessFileWriteError = $_.Exception.Message }",
             "if (-not $readinessFileWriteError) { throw 'A readiness file accepted individual-administrator write access.' }",
-            "if ($readinessFileWriteError -notmatch 'scope=leaf; component=\\d+; check=leaf-write; exception=RuntimeException') { throw 'The readiness-file rejection did not report its bounded write-check category.' }",
+            "if ($readinessFileWriteError -notmatch 'phase=path-preflight; role=filesystem-path; scope=leaf; component=\\d+; reason=leaf-write; normalization=not-attempted; exception=RuntimeException; aceRights=WriteData; aceRightsValue=2; aceInherited=false; aceInheritance=None; acePropagation=None') { throw 'The readiness-file rejection did not report its bounded write-check category and ACE permissions.' }",
+            "$script:inspectionFailurePath = " + PowerShellLiteral(Path.Combine(root, "synthetic-denied-path")),
+            "$inspectionFailureError = $null",
+            "try { Assert-NetRatelTrustedReadinessPath $script:inspectionFailurePath $false } catch { $inspectionFailureError = $_.Exception.Message }",
+            "if ($inspectionFailureError -notmatch 'reason=path-inspection-failed; normalization=not-attempted; exception=UnauthorizedAccessException') { throw 'The path inspection diagnostic lost its underlying access exception.' }",
+            "if ($inspectionFailureError.Contains($script:inspectionFailurePath)) { throw 'The path inspection diagnostic disclosed the inspected path.' }",
             "$script:addAdminWriteToReadinessFile = $false",
             "$root = Resolve-NetRatelInstallRoot " + PowerShellLiteral(requestedRoot) + " " + PowerShellLiteral(inheritedRoot) + " " + PowerShellLiteral(inheritedRoot) + " $false",
             "if (-not [string]::Equals([System.IO.Path]::GetFullPath($root), [System.IO.Path]::GetFullPath(" + PowerShellLiteral(inheritedRoot) + "), [StringComparison]::OrdinalIgnoreCase)) { throw 'Inherited package root was not retained.' }",
@@ -681,6 +740,131 @@ EnvironmentFile=-{{optionalEnvironmentFile}}
         {
             Directory.Delete(root, recursive: true);
         }
+    }
+
+    [Fact]
+    public async Task Build_WindowsInstallerAcceptsOnlyBoundedProtectedPartialInstallLayouts()
+    {
+        var script = new ScriptTemplateService().Build(new DeploymentScriptTemplateRequest(
+            4098, "win-x64", "ENR-ABC123", "https://netratel.example.invalid",
+            DateTimeOffset.UtcNow.AddHours(1), true, true, "1.2.3", new string('a', 64)));
+        var functionStart = script.IndexOf("function Test-NetRatelDirectoryEmpty", StringComparison.Ordinal);
+        var functionEnd = functionStart < 0 ? -1 : script.IndexOf("function Test-NetRatelDefaultLogLayout", functionStart, StringComparison.Ordinal);
+        Assert.True(functionStart >= 0 && functionEnd > functionStart,
+            "Partial-install eligibility helpers must remain isolated for behavior testing.");
+
+        var root = Path.Combine(Path.GetTempPath(), $"netratel-installer-partial-layout-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var harness = string.Join(Environment.NewLine,
+                "$ErrorActionPreference = 'Stop'",
+                script[functionStart..functionEnd],
+                "$script:NetRatelStateAncestorAllowance = $false",
+                "function Assert-NetRatelTrustedReadinessPath { param([string]$path,[switch]$leafFile,[switch]$allowMissingLeaf,[switch]$allowInheritedStateWrites,[switch]$checkLeafWrite,[switch]$allowLegacyAdministrators,[switch]$allowLegacyAdministratorAncestors,[string]$pathRole,[string]$phase,[switch]$normalizationAttempted); if ($leafFile -and $path -like '*unsafe-acl*') { throw 'synthetic unsafe ACL' } }",
+                "function Test-NetRatelProtectedAclMatches { param([string]$path,[bool]$isDirectory,[string[]]$trustedSids,[string]$pathRole,[string]$phase) return $true }",
+                "function Get-NetRatelTrustedStateSids { return @('S-1-5-18','S-1-5-32-544') }",
+                "function New-InstallRoot([string]$path) { New-Item -ItemType Directory -Path $path -Force | Out-Null; foreach ($name in @('updater','versions','staging','failed')) { New-Item -ItemType Directory -Path (Join-Path $path $name) | Out-Null } }",
+                "function Add-Tree([string]$path) { New-Item -ItemType Directory -Path $path -Force | Out-Null; Set-Content -LiteralPath (Join-Path $path 'payload.bin') -Value 'synthetic bytes' }",
+                "$trustedSids = @('S-1-5-18')",
+                "$phase = 'layout-test'",
+                "$valid = Join-Path " + PowerShellLiteral(root) + " 'valid'",
+                "New-InstallRoot $valid",
+                "Add-Tree (Join-Path $valid ('staging/install-' + [Guid]::NewGuid().ToString('N')))",
+                "Add-Tree (Join-Path $valid 'versions/1.2.3-rc.4+build.5')",
+                "Add-Tree (Join-Path $valid ('failed/1.2.3-installer-failed-' + [Guid]::NewGuid().ToString('D')))",
+                "Add-Tree (Join-Path $valid ('failed/1.2.2-replaced-' + [Guid]::NewGuid().ToString('N')))",
+                "if (-not (Test-NetRatelCustomInstallRootLayout $valid $phase $trustedSids)) { throw 'A generated partial staging, installed-version, or failed-version tree was rejected.' }",
+                "$invalidVersion = Join-Path " + PowerShellLiteral(root) + " 'invalid-version'",
+                "New-InstallRoot $invalidVersion",
+                "Add-Tree (Join-Path $invalidVersion 'versions/not-a-version')",
+                "if (Test-NetRatelCustomInstallRootLayout $invalidVersion $phase $trustedSids) { throw 'A non-semantic-version tree was accepted.' }",
+                "$invalidFailure = Join-Path " + PowerShellLiteral(root) + " 'invalid-failure'",
+                "New-InstallRoot $invalidFailure",
+                "Add-Tree (Join-Path $invalidFailure 'failed/1.2.3-installer-failed-not-a-guid')",
+                "if (Test-NetRatelCustomInstallRootLayout $invalidFailure $phase $trustedSids) { throw 'A failed tree without the generated attempt identifier was accepted.' }",
+                "$unexpected = Join-Path " + PowerShellLiteral(root) + " 'unexpected'",
+                "New-InstallRoot $unexpected",
+                "Set-Content -LiteralPath (Join-Path $unexpected 'unrelated.txt') -Value 'untrusted'",
+                "if (Test-NetRatelCustomInstallRootLayout $unexpected $phase $trustedSids) { throw 'An unrelated root entry was accepted.' }",
+                "$oversized = Join-Path " + PowerShellLiteral(root) + " 'oversized'",
+                "New-InstallRoot $oversized",
+                "for ($index = 0; $index -lt 17; $index++) { Add-Tree (Join-Path (Join-Path $oversized 'versions') ('1.0.' + $index)) }",
+                "if (Test-NetRatelCustomInstallRootLayout $oversized $phase $trustedSids) { throw 'An oversized version remnant list was accepted.' }",
+                "$updaterRemainder = Join-Path " + PowerShellLiteral(root) + " 'updater-remainder'",
+                "New-InstallRoot $updaterRemainder",
+                "$updaterScript = Join-Path (Join-Path $updaterRemainder 'updater') 'netratel-update.ps1'",
+                "Set-Content -LiteralPath $updaterScript -Value \"throw 'untrusted updater content must not execute during eligibility'\"",
+                "if (-not (Test-NetRatelCustomInstallRootLayout $updaterRemainder $phase $trustedSids)) { throw 'The exact protected updater-script crash remnant was rejected.' }",
+                "Set-Content -LiteralPath (Join-Path (Join-Path $updaterRemainder 'updater') 'unexpected.ps1') -Value 'unrelated'",
+                "if (Test-NetRatelCustomInstallRootLayout $updaterRemainder $phase $trustedSids) { throw 'An unrelated updater entry was accepted.' }",
+                "$unsafeUpdaterRemainder = Join-Path " + PowerShellLiteral(root) + " 'unsafe-acl-updater-remainder'",
+                "New-InstallRoot $unsafeUpdaterRemainder",
+                "Set-Content -LiteralPath (Join-Path (Join-Path $unsafeUpdaterRemainder 'updater') 'netratel-update.ps1') -Value 'synthetic unsafe ACL'",
+                "if (Test-NetRatelCustomInstallRootLayout $unsafeUpdaterRemainder $phase $trustedSids) { throw 'An updater remnant with untrusted write or replacement access was accepted.' }",
+                "$state = Join-Path " + PowerShellLiteral(root) + " 'partial-state'",
+                "New-Item -ItemType Directory -Path $state -Force | Out-Null",
+                "if (-not (Test-NetRatelCustomUpdateStateLayout $state $phase)) { throw 'An empty update-state directory was rejected.' }",
+                "New-Item -ItemType File -Path (Join-Path $state 'update.lock') | Out-Null",
+                "$handoffs = Join-Path $state 'install-handoffs'; New-Item -ItemType Directory -Path $handoffs | Out-Null",
+                "$handoffId = '0123456789abcdef0123456789abcdef'",
+                "Set-Content -LiteralPath (Join-Path $handoffs ('handoff-' + $handoffId + '.json')) -Value '{synthetic request}'",
+                "Set-Content -LiteralPath (Join-Path $handoffs ('handoff-' + $handoffId + '.ps1')) -Value \"throw 'untrusted handoff content must not execute during eligibility'\"",
+                "Set-Content -LiteralPath (Join-Path $handoffs ('handoff-' + $handoffId + '.result.json')) -Value '{synthetic result}'",
+                "Set-Content -LiteralPath (Join-Path $handoffs ('handoff-' + $handoffId + '.result.json.123.tmp')) -Value '{synthetic temp result}'",
+                "if (-not (Test-NetRatelCustomUpdateStateLayout $state $phase)) { throw 'Bounded protected handoff remnants were rejected.' }",
+                "Set-Content -LiteralPath (Join-Path $handoffs 'unrelated.txt') -Value 'untrusted'",
+                "if (Test-NetRatelCustomUpdateStateLayout $state $phase) { throw 'An unrelated state handoff file was accepted.' }",
+                "$unsafeFileState = Join-Path " + PowerShellLiteral(root) + " 'unsafe-acl-file-state'; New-Item -ItemType Directory -Path $unsafeFileState -Force | Out-Null",
+                "$unsafeHandoffs = Join-Path $unsafeFileState 'install-handoffs'; New-Item -ItemType Directory -Path $unsafeHandoffs | Out-Null",
+                "Set-Content -LiteralPath (Join-Path $unsafeHandoffs ('handoff-' + $handoffId + '.json')) -Value '{synthetic}'",
+                "if (Test-NetRatelCustomUpdateStateLayout $unsafeFileState $phase) { throw 'A handoff remnant with untrusted write or replacement access was accepted.' }",
+                "$badLock = Join-Path " + PowerShellLiteral(root) + " 'nonempty-lock-state'",
+                "New-Item -ItemType Directory -Path $badLock -Force | Out-Null",
+                "Set-Content -LiteralPath (Join-Path $badLock 'update.lock') -Value 'not empty'",
+                "if (Test-NetRatelCustomUpdateStateLayout $badLock $phase) { throw 'A nonempty update lock was accepted.' }",
+                "$unsafeLockState = Join-Path " + PowerShellLiteral(root) + " 'unsafe-acl-lock-state'; New-Item -ItemType Directory -Path $unsafeLockState -Force | Out-Null",
+                "New-Item -ItemType File -Path (Join-Path $unsafeLockState 'update.lock') | Out-Null",
+                "if (Test-NetRatelCustomUpdateStateLayout $unsafeLockState $phase) { throw 'A lock with untrusted write or replacement access was accepted.' }");
+            var harnessPath = Path.Combine(root, "verify-partial-layout.ps1");
+            await File.WriteAllTextAsync(harnessPath, harness);
+
+            var executable = OperatingSystem.IsWindows()
+                ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell", "v1.0", "powershell.exe")
+                : "pwsh";
+            using var process = new Process
+            {
+                StartInfo = new ProcessStartInfo(executable)
+                {
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false
+                }
+            };
+            process.StartInfo.ArgumentList.Add("-NoProfile");
+            process.StartInfo.ArgumentList.Add("-NonInteractive");
+            process.StartInfo.ArgumentList.Add("-File");
+            process.StartInfo.ArgumentList.Add(harnessPath);
+            try { process.Start(); }
+            catch (System.ComponentModel.Win32Exception) { Assert.Skip("PowerShell is required to test partial-install eligibility."); }
+
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            try { await process.WaitForExitAsync(timeout.Token); }
+            catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+            {
+                if (!process.HasExited)
+                {
+                    process.Kill(entireProcessTree: true);
+                    await process.WaitForExitAsync(CancellationToken.None);
+                }
+
+                throw new TimeoutException("Windows installer partial-layout checks did not finish within 20 seconds.");
+            }
+
+            Assert.True(process.ExitCode == 0,
+                "Windows installer partial-layout checks failed: " + await process.StandardError.ReadToEndAsync());
+        }
+        finally { Directory.Delete(root, recursive: true); }
     }
 
     [Fact]

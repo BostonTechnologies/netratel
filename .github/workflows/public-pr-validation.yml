@@ -255,17 +255,32 @@ jobs:
           NETRATEL_NATIVE_CLIENT_DIRECTORY="$PWD/artifacts/netratel-client-win-x64" \
           dotnet src/NetRatel/NetRatel.Tests/bin/Release/net10.0/NetRatel.Tests.dll \
             -method NetRatel.Tests.Infrastructure.WindowsInstallerNativeTests.GeneratedPowerShell51InstallerPreflightRepairsInheritedWritesOnDefaultProductDirectories \
-            -method NetRatel.Tests.Infrastructure.WindowsInstallerNativeTests.GeneratedServiceInstallerRequiresLocalSystemGatewayAdmissionAndAcknowledgedHeartbeats \
             -noLogo \
             -result-trx TestResults/native-windows/windows-installer-preflight.trx
-          python3 tools/ci/verify-mtp-trx.py TestResults/native-windows/windows-installer-preflight.trx \
-            --expected-executed 2
+          python3 tools/ci/verify-mtp-trx.py TestResults/native-windows/windows-installer-preflight.trx --expected-executed 1
+          dotnet src/NetRatel/NetRatel.Tests/bin/Release/net10.0/NetRatel.Tests.dll \
+            -method NetRatel.Tests.API.AgentUpdateScriptSeedServiceTests.Seeded_Windows_HandoffPreambleRejectsMalformedRequestBeforeInstallerPreflight \
+            -noLogo \
+            -result-trx TestResults/native-windows/windows-seed-handoff-rejection.trx
+          python3 tools/ci/verify-mtp-trx.py TestResults/native-windows/windows-seed-handoff-rejection.trx --expected-executed 1
+          NETRATEL_NATIVE_CLIENT_DIRECTORY="$PWD/artifacts/netratel-client-win-x64" \
+          dotnet src/NetRatel/NetRatel.Tests/bin/Release/net10.0/NetRatel.Tests.dll \
+            -method NetRatel.Tests.Infrastructure.WindowsInstallerNativeTests.GeneratedServiceInstallerRequiresLocalSystemGatewayAdmissionAndAcknowledgedHeartbeats \
+            -noLogo \
+            -result-trx TestResults/native-windows/windows-installer-service-repair.trx
+          python3 tools/ci/verify-mtp-trx.py TestResults/native-windows/windows-installer-service-repair.trx --expected-executed 1
+          NETRATEL_NATIVE_CLIENT_DIRECTORY="$PWD/artifacts/netratel-client-win-x64" \
+          dotnet src/NetRatel/NetRatel.Tests/bin/Release/net10.0/NetRatel.Tests.dll \
+            -method NetRatel.Tests.Infrastructure.WindowsInstallerNativeTests.GeneratedPowerShellInstallerDownloadsVerifiesAndEnrollsNativePackage \
+            -noLogo \
+            -result-trx TestResults/native-windows/windows-installer-download.trx
+          python3 tools/ci/verify-mtp-trx.py TestResults/native-windows/windows-installer-download.trx --expected-executed 3
       - name: Retain native Windows installer preflight receipt
         if: always() && matrix.runtime == 'win-x64'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: native-windows-installer-preflight
-          path: TestResults/native-windows/windows-installer-preflight.trx
+          path: TestResults/native-windows/*.trx
           if-no-files-found: warn
           retention-days: 14
       - name: Exercise macOS installer on native runner
