@@ -602,7 +602,7 @@ public sealed class WindowsInstallerNativeTests
             const AccessControlSections fixtureAclSections =
                 AccessControlSections.Access | AccessControlSections.Owner | AccessControlSections.Group;
             var ownerFixtureRoot = Path.Combine(customFixturePath, "untrusted owner fixture");
-            Directory.CreateDirectory(ownerFixtureRoot);
+            CreateProtectedWindowsFixtureDirectory(ownerFixtureRoot);
             var untrustedOwnerInstallRoot = Path.Combine(ownerFixtureRoot, "client root");
             Directory.CreateDirectory(untrustedOwnerInstallRoot);
             try
@@ -629,7 +629,7 @@ public sealed class WindowsInstallerNativeTests
             Assert.Contains("scope=leaf", ownerDiagnostic, StringComparison.Ordinal);
 
             var leafReparseFixtureRoot = Path.Combine(customFixturePath, "leaf reparse fixture");
-            Directory.CreateDirectory(leafReparseFixtureRoot);
+            CreateProtectedWindowsFixtureDirectory(leafReparseFixtureRoot);
             var leafReparseTarget = Path.Combine(leafReparseFixtureRoot, "leaf sentinel target");
             Directory.CreateDirectory(leafReparseTarget);
             var leafSentinelPath = Path.Combine(leafReparseTarget, "sentinel.txt");
@@ -653,7 +653,7 @@ public sealed class WindowsInstallerNativeTests
                 "Installer preflight must not rewrite the leaf junction target ACL.");
 
             var ancestorReparseFixtureRoot = Path.Combine(customFixturePath, "ancestor reparse fixture");
-            Directory.CreateDirectory(ancestorReparseFixtureRoot);
+            CreateProtectedWindowsFixtureDirectory(ancestorReparseFixtureRoot);
             var ancestorReparseTarget = Path.Combine(ancestorReparseFixtureRoot, "ancestor sentinel target");
             Directory.CreateDirectory(ancestorReparseTarget);
             var ancestorSentinelPath = Path.Combine(ancestorReparseTarget, "sentinel.txt");
@@ -762,8 +762,10 @@ public sealed class WindowsInstallerNativeTests
                 Assert.DoesNotContain(enrollmentCode, combined, StringComparison.Ordinal);
                 Assert.Contains("PowerShell edition: Desktop", captured.StandardOutput, StringComparison.Ordinal);
                 Assert.Contains("PowerShell version: 5.", captured.StandardOutput, StringComparison.Ordinal);
-                Assert.Contains("role=install-root", diagnostic, StringComparison.Ordinal);
-                Assert.Contains($"reason={expectedReason}", diagnostic, StringComparison.Ordinal);
+                Assert.True(diagnostic.Contains("role=install-root", StringComparison.Ordinal),
+                    $"The {role} path was rejected before the install-root guard; diagnostic={diagnostic}");
+                Assert.True(diagnostic.Contains($"reason={expectedReason}", StringComparison.Ordinal),
+                    $"The {role} path had an unexpected rejection reason; diagnostic={diagnostic}");
                 Assert.True(!diagnostic.Contains(usersSid.Value, StringComparison.Ordinal),
                     "The safe structured diagnostic must not expose the synthetic owner SID.");
                 Assert.True(!diagnostic.Contains(installPath, StringComparison.OrdinalIgnoreCase),
@@ -2340,6 +2342,58 @@ public sealed class WindowsInstallerNativeTests
             await stream.WriteAsync(headers, cancellationToken);
             if (body.Length > 0) await stream.WriteAsync(body, cancellationToken);
             await stream.FlushAsync(cancellationToken);
+        }
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static void CreateProtectedWindowsFixtureDirectory(string path)
+    {
+        if (Directory.Exists(path) || File.Exists(path))
+        {
+            throw new IOException("The protected native fixture path already exists.");
+        }
+
+        var administrators = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
+        var localSystem = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
+        var security = new DirectorySecurity();
+        security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+        security.SetOwner(administrators);
+        security.AddAccessRule(new FileSystemAccessRule(
+            administrators,
+            FileSystemRights.FullControl,
+            InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
+            PropagationFlags.None,
+            AccessControlType.Allow));
+        security.AddAccessRule(new FileSystemAccessRule(
+            localSystem,
+            FileSystemRights.FullControl,
+            InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
+            PropagationFlags.None,
+            AccessControlType.Allow));
+
+        var directory = new DirectoryInfo(path);
+        directory.Create(security);
+        var actualSecurity = directory.GetAccessControl();
+        var actualOwner = actualSecurity.GetOwner(typeof(SecurityIdentifier)) as SecurityIdentifier;
+        var actualRules = actualSecurity
+            .GetAccessRules(includeExplicit: true, includeInherited: true, typeof(SecurityIdentifier))
+            .Cast<FileSystemAccessRule>()
+            .ToArray();
+        var allowedSids = new HashSet<string>(StringComparer.Ordinal)
+        {
+            administrators.Value,
+            localSystem.Value
+        };
+        if (!actualSecurity.AreAccessRulesProtected || actualOwner?.Value != administrators.Value ||
+            actualRules.Any(rule => rule.IsInherited ||
+                rule.AccessControlType != AccessControlType.Allow ||
+                !allowedSids.Contains(rule.IdentityReference.Value)) ||
+            !actualRules.Any(rule => rule.IdentityReference.Value == administrators.Value &&
+                (rule.FileSystemRights & FileSystemRights.FullControl) == FileSystemRights.FullControl) ||
+            !actualRules.Any(rule => rule.IdentityReference.Value == localSystem.Value &&
+                (rule.FileSystemRights & FileSystemRights.FullControl) == FileSystemRights.FullControl))
+        {
+            throw new InvalidOperationException("The native fixture directory did not receive its protected administrator and SYSTEM ACL.");
         }
     }
 
