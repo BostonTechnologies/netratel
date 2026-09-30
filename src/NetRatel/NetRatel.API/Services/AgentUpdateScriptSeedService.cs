@@ -358,12 +358,13 @@ if ([string]::IsNullOrWhiteSpace($rawNetRatelSeedHandoffRequestPath)) {
     $handoffScriptPath = Join-Path $handoffDirectory "handoff-$handoffId.ps1"
     $handoffResultPath = Join-Path $handoffDirectory "handoff-$handoffId.result.json"
     $originProcess = Get-Process -Id $PID -ErrorAction Stop
+    $handoffCreatedAtUtc = [DateTimeOffset]::UtcNow
     $request = [ordered]@{
         schema = "netratel.seeded-update-handoff.v1"
         handoffId = $handoffId
         nonce = $handoffNonce
-        createdAtUtc = [DateTimeOffset]::UtcNow.ToString("O")
-        expiresAtUtc = [DateTimeOffset]::UtcNow.AddMinutes(2).ToString("O")
+        createdAtUtc = $handoffCreatedAtUtc.ToString("O")
+        expiresAtUtc = $handoffCreatedAtUtc.AddMinutes(2).ToString("O")
         sourceProcessId = [int]$PID
         sourceProcessStartedAtUtc = ([DateTimeOffset]$originProcess.StartTime.ToUniversalTime()).ToString("O")
         apiBase = $script:ApiBase

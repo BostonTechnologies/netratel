@@ -48,6 +48,10 @@ public sealed class AgentUpdateScriptSeedServiceTests
         windows.Should().Contain("Wait-NetRatelSeedOriginExit $sourceProcessId");
         windows.Should().Contain("WaitForExit(30000)");
         windows.Should().Contain("expiresAtUtc");
+        windows.Should().Contain("$handoffCreatedAtUtc = [DateTimeOffset]::UtcNow");
+        windows.Should().Contain("createdAtUtc = $handoffCreatedAtUtc.ToString(\"O\")");
+        windows.Should().Contain("expiresAtUtc = $handoffCreatedAtUtc.AddMinutes(2).ToString(\"O\")");
+        windows.Should().NotContain("expiresAtUtc = [DateTimeOffset]::UtcNow.AddMinutes(2).ToString(\"O\")");
         windows.Should().Contain("-NetRatelSeedHandoffStateDirectory `\"$stateDirectory`\"");
         windows.Should().Contain("RandomNumberGenerator]::Create()");
         windows.Should().Contain("Assert-NetRatelTrustedReadinessPath $handoffDirectory $false $false $true $false $allowLegacyStateAncestors");
