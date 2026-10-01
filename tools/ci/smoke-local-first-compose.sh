@@ -212,6 +212,13 @@ run_logged_discard() {
   fi
 }
 api_operator() { "${compose[@]}" exec -T api "$@"; }
+restart_ingress_container() {
+  if [[ "$web_url" != https://* ]]; then return 0; fi
+  local container_id
+  container_id="$("${compose[@]}" ps -q ingress)"
+  [[ -n "$container_id" ]] || { echo "HTTPS local-first journey has no ingress container to restart." >&2; return 1; }
+  printf '%s' "$container_id"
+}
 operator_help="$(run_logged_capture "read API operator help" api_operator dotnet NetRatel.API.dll --help)"
 if grep -Fq -- '--show-setup-code' <<<"$operator_help"; then
   echo "Passed smoke assertion: API help lists the setup-code operator." >&2
@@ -300,6 +307,7 @@ NETRATEL_LOCAL_FIRST_ADMIN_EMAIL="browser-admin@example.test" \
 NETRATEL_LOCAL_FIRST_ADMIN_PASSWORD="browser smoke local passphrase" \
 NETRATEL_LOCAL_FIRST_RESTART_API_CONTAINER="$("${compose[@]}" ps -q api)" \
 NETRATEL_LOCAL_FIRST_RESTART_WEB_CONTAINER="$("${compose[@]}" ps -q web)" \
+NETRATEL_LOCAL_FIRST_RESTART_INGRESS_CONTAINER="$(restart_ingress_container)" \
 NETRATEL_LOCAL_FIRST_INTEGRATION_CREDENTIALS_FILE="$credential_path" \
   dotnet test --project src/NetRatel/NetRatel.Web.PlaywrightTests/NetRatel.Web.PlaywrightTests.csproj \
     --configuration Release --no-build \
@@ -542,6 +550,7 @@ if [[ "${NETRATEL_LOCAL_FIRST_STATE_RESET_ACCEPTANCE:-false}" == true ]]; then
   NETRATEL_LOCAL_FIRST_ADMIN_PASSWORD="browser smoke local passphrase" \
   NETRATEL_LOCAL_FIRST_RESTART_API_CONTAINER="$("${compose[@]}" ps -q api)" \
   NETRATEL_LOCAL_FIRST_RESTART_WEB_CONTAINER="$("${compose[@]}" ps -q web)" \
+  NETRATEL_LOCAL_FIRST_RESTART_INGRESS_CONTAINER="$(restart_ingress_container)" \
   NETRATEL_LOCAL_FIRST_INTEGRATION_CREDENTIALS_FILE="$credential_path" \
     dotnet test --project src/NetRatel/NetRatel.Web.PlaywrightTests/NetRatel.Web.PlaywrightTests.csproj \
       --configuration Release --no-build \

@@ -74,6 +74,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         Assert.Equal(password, await page.GetByTestId("setup-confirm-password").InputValueAsync());
         var apiContainer = RequireValue("NETRATEL_LOCAL_FIRST_RESTART_API_CONTAINER");
         var webContainer = RequireValue("NETRATEL_LOCAL_FIRST_RESTART_WEB_CONTAINER");
+        var ingressContainer = Environment.GetEnvironmentVariable("NETRATEL_LOCAL_FIRST_RESTART_INGRESS_CONTAINER");
         var dropCommittedResponse = Environment.GetEnvironmentVariable("NETRATEL_LOCAL_FIRST_DROP_SETUP_RESPONSE") == "true";
         Task restartTask = Task.CompletedTask;
         const string initializeRoute = "**/api/v2/setup/initialize";
@@ -81,6 +82,8 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         {
             var committed = await route.FetchAsync();
             Assert.InRange(committed.Status, 200, 299);
+            if (!string.IsNullOrWhiteSpace(ingressContainer))
+                await RunDockerAsync("stop", ingressContainer);
             await RunDockerAsync("stop", apiContainer, webContainer);
             restartTask = Task.Run(async () =>
             {
@@ -100,7 +103,15 @@ public sealed class LocalFirstComposeBrowserSmokeTests
                     {
                         // Keep the disposable environment recoverable even when the API
                         // readiness probe fails; the test still fails on that probe.
-                        await RunDockerAsync("start", webContainer);
+                        try
+                        {
+                            await RunDockerAsync("start", webContainer);
+                        }
+                        finally
+                        {
+                            if (!string.IsNullOrWhiteSpace(ingressContainer))
+                                await RunDockerAsync("start", ingressContainer);
+                        }
                     }
                 }
             });

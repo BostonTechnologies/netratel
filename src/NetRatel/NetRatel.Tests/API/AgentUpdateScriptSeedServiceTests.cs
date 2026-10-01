@@ -34,22 +34,65 @@ public sealed class AgentUpdateScriptSeedServiceTests
         windows.Should().Contain("[int]$candidate.tenantId -ne $TenantId");
         windows.Should().Contain("Set-NetRatelSeedHandoffResult -State 'heartbeat_ready' -ReadyRecord $readyRecord");
         windows.Should().Contain("Set-NetRatelSeedHandoffResult -State \"handed_off\"");
+        windows.Should().Contain("Set-NetRatelSeedHandoffResult -State 'processing'");
+        windows.Should().Contain("$script:NetRatelSeedHandoffPreflightFailureCode = 'handoff_rejected'");
+        windows.Should().Contain("$rawNetRatelSeedHandoffRequestPath = $NetRatelSeedHandoffRequestPath");
+        windows.Should().Contain("$script:NetRatelSeedHandoffRequestPath = $ownedHandoffRequestPath");
+        windows.Should().Contain("# Validate detached child input before the installer performs service or path preflight.");
+        windows.Should().Contain("if (-not [string]::IsNullOrWhiteSpace($rawNetRatelSeedHandoffRequestPath)) {\n    Start-NetRatelSeedHandoff\n}");
+        windows.Should().Contain("$failureCode = if ($script:NetRatelSeedHandoffPreflightFailureCode)");
+        windows.Should().Contain("-FailureCode 'installer_failed' -ExceptionType $installerFailure.Exception.GetType().Name");
+        windows.Should().Contain("-FailureCode 'installer_failed' -ExceptionType $_.Exception.GetType().Name");
         windows.Should().Contain("Service readiness will be reported after a fresh SYSTEM gateway heartbeat acknowledgment.");
         windows.Should().Contain("Get-CimInstance Win32_Process -Filter \"ProcessId=$ProcessId\" -ErrorAction Stop");
         windows.Should().Contain("Wait-NetRatelSeedOriginExit $sourceProcessId");
         windows.Should().Contain("WaitForExit(30000)");
         windows.Should().Contain("expiresAtUtc");
+        windows.Should().Contain("$handoffCreatedAtUtc = [DateTimeOffset]::UtcNow");
+        windows.Should().Contain("createdAtUtc = $handoffCreatedAtUtc.ToString(\"O\")");
+        windows.Should().Contain("expiresAtUtc = $handoffCreatedAtUtc.AddMinutes(2).ToString(\"O\")");
+        windows.Should().NotContain("expiresAtUtc = [DateTimeOffset]::UtcNow.AddMinutes(2).ToString(\"O\")");
+        windows.Should().Contain("-NetRatelSeedHandoffStateDirectory `\"$stateDirectory`\"");
         windows.Should().Contain("RandomNumberGenerator]::Create()");
         windows.Should().Contain("Assert-NetRatelTrustedReadinessPath $handoffDirectory $false $false $true $false $allowLegacyStateAncestors");
         windows.Should().Contain("New-NetRatelProtectedDirectory $handoffDirectory (Get-NetRatelTrustedStateSids) $allowLegacyStateAncestors");
         windows.Should().Contain("$allowLegacyStateAncestors = [bool]$script:NetRatelStateAncestorAllowance");
+        windows.Should().Contain("function Assert-NetRatelSeedHandoffNoReparse");
+        windows.Should().Contain("Assert-NetRatelSeedHandoffNoReparse $requestPath $true");
+        windows.Should().Contain("Installer handoff state directory does not match the configured updater state path.");
         windows.Should().NotContain("icacls.exe $handoffDirectory");
-        var installPathInitialization = windows.IndexOf("Initialize-NetRatelProtectedInstallDirectories", StringComparison.Ordinal);
-        var statePathInitialization = windows.IndexOf("Initialize-NetRatelProtectedStateDirectory", installPathInitialization, StringComparison.Ordinal);
-        var handoffStart = windows.IndexOf("Start-NetRatelSeedHandoff", statePathInitialization, StringComparison.Ordinal);
-        installPathInitialization.Should().BeGreaterThanOrEqualTo(0);
-        statePathInitialization.Should().BeGreaterThan(installPathInitialization);
-        handoffStart.Should().BeGreaterThan(statePathInitialization);
+        var mainBodyStart = windows.IndexOf("$tempDir = Join-Path $env:TEMP", StringComparison.Ordinal);
+        var statePathInitialization = windows.IndexOf("Initialize-NetRatelProtectedStateDirectory", mainBodyStart, StringComparison.Ordinal);
+        var installPathPreflight = windows.IndexOf("Initialize-NetRatelProtectedInstallDirectories -PreflightOnly", mainBodyStart, StringComparison.Ordinal);
+        var lockAcquisition = windows.IndexOf("$updateLockPath = Join-Path $StateDir", mainBodyStart, StringComparison.Ordinal);
+        var postLockNormalization = windows.IndexOf("Protect-NetRatelOwnedStateTree -path $StateDir -LockHeld", mainBodyStart, StringComparison.Ordinal);
+        var handoffStart = windows.IndexOf("Start-NetRatelSeedHandoff", mainBodyStart, StringComparison.Ordinal);
+        var artifactDownload = windows.IndexOf("$script:InstallerPhase = 'artifact-download-and-verification'", mainBodyStart, StringComparison.Ordinal);
+        statePathInitialization.Should().BeGreaterThanOrEqualTo(mainBodyStart);
+        installPathPreflight.Should().BeGreaterThan(statePathInitialization);
+        lockAcquisition.Should().BeGreaterThan(installPathPreflight);
+        postLockNormalization.Should().BeGreaterThan(lockAcquisition);
+        handoffStart.Should().BeGreaterThan(postLockNormalization);
+        artifactDownload.Should().BeGreaterThan(handoffStart);
+        windows.Should().Contain("elseif ($null -ne $updateLock -and $script:NetRatelSeedHandoffResultPath)");
+        windows.Should().Contain("if ($script:NetRatelSeedHandoffMode -and $null -ne $updateLock)");
+        var requestPathResolution = windows.IndexOf("$requestPath = [System.IO.Path]::GetFullPath($rawNetRatelSeedHandoffRequestPath)", StringComparison.Ordinal);
+        var requestPathGuard = windows.IndexOf("Assert-NetRatelSeedHandoffNoReparse $requestPath $true", requestPathResolution, StringComparison.Ordinal);
+        var resultPathCapture = windows.IndexOf("$script:NetRatelSeedHandoffResultPath = Join-Path $expectedHandoffDirectory", requestPathGuard, StringComparison.Ordinal);
+        var requestRead = windows.IndexOf("$handoff = Get-Content -LiteralPath $ownedHandoffRequestPath", resultPathCapture, StringComparison.Ordinal);
+        requestPathResolution.Should().BeGreaterThanOrEqualTo(0);
+        requestPathGuard.Should().BeGreaterThan(requestPathResolution);
+        resultPathCapture.Should().BeGreaterThan(requestPathGuard);
+        requestRead.Should().BeGreaterThan(resultPathCapture);
+        var handoffPreambleStart = windows.IndexOf("$ownedHandoffRequestPath = $null", StringComparison.Ordinal);
+        var handoffPreamble = windows[handoffPreambleStart..mainBodyStart];
+        handoffPreamble.Should().Contain("$script:NetRatelSeedHandoffPreflightFailureCode = 'handoff_rejected'");
+        handoffPreamble.Should().NotContain("Set-NetRatelSeedHandoffResult -State 'processing'");
+        handoffPreamble.Should().Contain("Set-NetRatelSeedHandoffResult -State 'failed' -FailureCode 'handoff_rejected'");
+        handoffPreamble.Should().Contain("Remove-Item -LiteralPath $ownedHandoffRequestPath, $ownedHandoffScriptPath");
+        handoffPreamble.Should().Contain("Only these validated, uniquely named handoff files may be completed before the updater lock.");
+        windows.IndexOf("elseif ($null -ne $updateLock -and $script:NetRatelSeedHandoffResultPath)", StringComparison.Ordinal)
+            .Should().BeGreaterThan(postLockNormalization);
         windows.Should().Contain("-NetRatelSeedHandoffRequestPath");
         windows.Should().Contain("$EnrollmentCode = [string]$EnrollmentCode");
         windows.Should().Contain("enrollmentCode = $EnrollmentCode");
@@ -63,6 +106,76 @@ public sealed class AgentUpdateScriptSeedServiceTests
         argumentAssignment.Should().BeGreaterThanOrEqualTo(0);
         var argumentEnd = windows.IndexOf("$worker = Start-Process", argumentAssignment, StringComparison.Ordinal);
         windows[argumentAssignment..argumentEnd].Should().NotContain("$EnrollmentCode");
+    }
+
+    [Fact]
+    [Trait("category", "hosted")]
+    public async Task Seeded_Windows_HandoffPreambleRejectsMalformedRequestBeforeInstallerPreflight()
+    {
+        var seededContent = GetSeedScript("WindowsScript");
+        var manifestEnd = seededContent.IndexOf("#| END", StringComparison.Ordinal);
+        Assert.True(manifestEnd >= 0, "the seeded PowerShell script must contain its manifest boundary");
+        var scriptContent = seededContent[(manifestEnd + "#| END".Length)..].TrimStart('\r', '\n');
+        var root = Path.Combine(Path.GetTempPath(), $"netratel-seed-preamble-{Guid.NewGuid():N}");
+        var stateDirectory = Path.Combine(root, "update-state");
+        var handoffDirectory = Path.Combine(stateDirectory, "install-handoffs");
+        Directory.CreateDirectory(handoffDirectory);
+        try
+        {
+            const string handoffId = "0123456789abcdef0123456789abcdef";
+            var requestPath = Path.Combine(handoffDirectory, $"handoff-{handoffId}.json");
+            var scriptPath = Path.Combine(handoffDirectory, $"handoff-{handoffId}.ps1");
+            var resultPath = Path.Combine(handoffDirectory, $"handoff-{handoffId}.result.json");
+            var sentinelPath = Path.Combine(root, "unrelated.txt");
+            await File.WriteAllTextAsync(requestPath, "{ malformed request");
+            await File.WriteAllTextAsync(scriptPath, scriptContent);
+            await File.WriteAllTextAsync(sentinelPath, "leave this file untouched");
+
+            var start = new ProcessStartInfo("pwsh")
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false
+            };
+            start.ArgumentList.Add("-NoLogo");
+            start.ArgumentList.Add("-NoProfile");
+            start.ArgumentList.Add("-NonInteractive");
+            start.ArgumentList.Add("-File");
+            start.ArgumentList.Add(scriptPath);
+            start.ArgumentList.Add("-TenantId");
+            start.ArgumentList.Add("4098");
+            start.ArgumentList.Add("-NetRatelSeedHandoffRequestPath");
+            start.ArgumentList.Add(requestPath);
+            start.ArgumentList.Add("-NetRatelSeedHandoffStateDirectory");
+            start.ArgumentList.Add(stateDirectory);
+
+            var result = await RunBoundedProcessAsync(start);
+            result.ExitCode.Should().NotBe(0);
+            result.StandardOutput.Length.Should().BeLessThan(4096);
+            result.StandardError.Length.Should().BeLessThan(4096);
+            var safeOutput = result.StandardOutput.Replace(root, "<fixture>", StringComparison.OrdinalIgnoreCase);
+            safeOutput.Should().NotContain("Starting NetRatel Client deployment",
+                "the invalid detached handoff must be rejected before the installer body starts");
+            result.StandardError.Should().NotContain("Get-CimInstance", "the preamble must reject before Windows-only service preflight");
+            result.StandardError.Should().NotContain("ApiBase must be an absolute", "the detached handoff must be rejected before public seed parameter validation");
+            var safeError = result.StandardError.Replace(root, "<fixture>", StringComparison.OrdinalIgnoreCase);
+            File.Exists(requestPath).Should().BeFalse(
+                $"a validated handoff request is consumed when it is rejected; exit={result.ExitCode}; output={safeOutput}; error={safeError}");
+            File.Exists(scriptPath).Should().BeFalse("only the exact handoff script may be cleaned up");
+            File.Exists(resultPath).Should().BeTrue("the handed-off parent needs a terminal result even before the updater lock");
+            (await File.ReadAllTextAsync(sentinelPath)).Should().Be("leave this file untouched");
+
+            using var resultDocument = JsonDocument.Parse(await File.ReadAllTextAsync(resultPath));
+            var resultRoot = resultDocument.RootElement;
+            resultRoot.GetProperty("handoffId").GetString().Should().Be(handoffId);
+            resultRoot.GetProperty("state").GetString().Should().Be("failed");
+            resultRoot.GetProperty("failureCode").GetString().Should().Be("handoff_rejected");
+            resultRoot.GetProperty("exceptionType").GetString().Should().MatchRegex("^[A-Za-z0-9]{1,64}$");
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
     }
 
     [Fact]

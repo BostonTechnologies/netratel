@@ -97,6 +97,15 @@ public sealed class AgentUpdateScriptSeedService(IServiceScopeFactory scopeFacto
             "$Version = \"latest\"",
             "$Version = if ([string]::IsNullOrWhiteSpace($Version)) { \"latest\" } else { [string]$Version }");
         installer = ReplaceExactlyOnce(installer,
+            "# NetRatel seeded state-path validation extension point.",
+            "if ($script:NetRatelSeedHandoffMode) {\n" +
+            "    $handoffStatePath = [System.IO.Path]::GetFullPath([string]$NetRatelSeedHandoffStateDirectory).TrimEnd([char[]]@('\\', '/'))\n" +
+            "    $effectiveStatePath = [System.IO.Path]::GetFullPath([string]$StateDir).TrimEnd([char[]]@('\\', '/'))\n" +
+            "    if (-not [string]::Equals($handoffStatePath, $effectiveStatePath, [StringComparison]::OrdinalIgnoreCase)) {\n" +
+            "        throw 'Installer handoff state directory does not match the configured updater state path.'\n" +
+            "    }\n" +
+            "}");
+        installer = ReplaceExactlyOnce(installer,
             $"Write-Host \"Enrollment code valid until {validToPlaceholder}\"",
             "Write-Host \"Enrollment grant validity is enforced by the API.\"");
         installer = ReplaceExactlyOnce(installer,
@@ -125,29 +134,45 @@ public sealed class AgentUpdateScriptSeedService(IServiceScopeFactory scopeFacto
 
     private static string AddWindowsHandoffLifecycle(string installer)
     {
-        const string protectedPathInitialization = "    Initialize-NetRatelProtectedInstallDirectories\n    Initialize-NetRatelProtectedStateDirectory";
-        const string successMarker = "    Write-Host \"NetRatel service installation complete; authenticated gateway heartbeat readiness was verified.\"\n}";
-        const string finallyMarker = "finally {\n    if ($null -ne $updateLock) { $updateLock.Dispose() }";
-        const string finalCleanupMarker = "    if (Test-Path $tempDir) {\n        Remove-Item $tempDir -Recurse -Force\n    }\n}";
+        const string successMarker = "    Write-Host \"NetRatel service installation complete; authenticated gateway heartbeat readiness was verified.\"\n    $script:InstallerLastCompletedPhase = 'installation-complete'\n}";
+        const string handoffStartMarker = "    # Seed handoff integration point.";
+        const string preflightFailureMarker = "    # NetRatel installer preflight failure-result extension point.";
+        const string failureMarker = "catch {\n    Write-NetRatelInstallerFailureSummary $_\n    throw\n}\nfinally {\n    if ($stageDir -and (Test-Path -LiteralPath $stageDir)) { Remove-Item -LiteralPath $stageDir -Recurse -Force }\n    if (Test-Path $tempDir) {\n        Remove-Item $tempDir -Recurse -Force\n    }\n    if ($null -ne $updateLock) { $updateLock.Dispose() }";
 
-        installer = ReplaceExactlyOnce(installer, protectedPathInitialization,
-            protectedPathInitialization + "\n    Start-NetRatelSeedHandoff");
+        installer = ReplaceExactlyOnce(installer, handoffStartMarker,
+            "    Start-NetRatelSeedHandoff");
+        installer = ReplaceExactlyOnce(installer, preflightFailureMarker,
+            "    if ($script:NetRatelSeedHandoffMode -and $script:NetRatelSeedHandoffResultPath -and $null -eq $updateLock) {\n" +
+            "        try { Set-NetRatelSeedHandoffResult -State 'failed' -FailureCode 'installer_failed' -ExceptionType $_.Exception.GetType().Name }\n" +
+            "        catch { Write-Warning 'The installer could not record its preflight failure result.' }\n" +
+            "    }");
         installer = ReplaceExactlyOnce(installer, successMarker,
             "    Write-Host \"NetRatel service installation complete; authenticated gateway heartbeat readiness was verified.\"\n" +
+            "    $script:InstallerLastCompletedPhase = 'installation-complete'\n" +
             "    Set-NetRatelSeedHandoffResult -State 'heartbeat_ready' -ReadyRecord $readyRecord\n}");
-        installer = ReplaceExactlyOnce(installer, finallyMarker,
+        installer = ReplaceExactlyOnce(installer, failureMarker,
             "catch {\n" +
-            "    Set-NetRatelSeedHandoffResult -State 'failed' -FailureCode 'installer_failed' -ExceptionType $_.Exception.GetType().Name\n" +
-            "    throw\n}\n" +
-            "finally {\n    if ($null -ne $updateLock) { $updateLock.Dispose() }");
-        installer = ReplaceExactlyOnce(installer, finalCleanupMarker,
-            "    if (Test-Path $tempDir) {\n" +
-            "        Remove-Item $tempDir -Recurse -Force\n" +
+            "    $installerFailure = $_\n" +
+            "    Write-NetRatelInstallerFailureSummary $installerFailure\n" +
+            "    if ($script:NetRatelSeedHandoffMode -and $script:NetRatelSeedHandoffResultPath -and $null -eq $updateLock) {\n" +
+            "        try { Set-NetRatelSeedHandoffResult -State 'failed' -FailureCode 'installer_failed' -ExceptionType $installerFailure.Exception.GetType().Name }\n" +
+            "        catch { Write-Warning 'The installer could not record its preflight failure result.' }\n" +
             "    }\n" +
-            "    if ($script:NetRatelSeedHandoffMode) {\n" +
+            "    elseif ($null -ne $updateLock -and $script:NetRatelSeedHandoffResultPath) {\n" +
+            "        $failureCode = if ($script:NetRatelSeedHandoffPreflightFailureCode) { $script:NetRatelSeedHandoffPreflightFailureCode } else { 'installer_failed' }\n" +
+            "        $failureType = if ($script:NetRatelSeedHandoffPreflightExceptionType) { $script:NetRatelSeedHandoffPreflightExceptionType } else { $installerFailure.Exception.GetType().Name }\n" +
+            "        try { Set-NetRatelSeedHandoffResult -State 'failed' -FailureCode $failureCode -ExceptionType $failureType }\n" +
+            "        catch { Write-Warning 'The installer could not record its failure result.' }\n" +
+            "    }\n" +
+            "    throw\n}\n" +
+            "finally {\n" +
+            "    if ($stageDir -and (Test-Path -LiteralPath $stageDir)) { Remove-Item -LiteralPath $stageDir -Recurse -Force }\n" +
+            "    if (Test-Path $tempDir) {\n        Remove-Item $tempDir -Recurse -Force\n    }\n" +
+            "    if ($script:NetRatelSeedHandoffMode -and $null -ne $updateLock) {\n" +
             "        Remove-Item -LiteralPath $script:NetRatelSeedHandoffRequestPath -Force -ErrorAction SilentlyContinue\n" +
             "        Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue\n" +
-            "    }\n}");
+            "    }\n" +
+            "    if ($null -ne $updateLock) { $updateLock.Dispose() }");
         return installer;
     }
 
@@ -159,16 +184,20 @@ param(
     [string] $Runtime = "win-x64",
     [string] $Version = "latest",
     [string] $GatewayEndpoint = "",
-    [string] $NetRatelSeedHandoffRequestPath
+    [string] $NetRatelSeedHandoffRequestPath,
+    [string] $NetRatelSeedHandoffStateDirectory
 )
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
+$rawNetRatelSeedHandoffRequestPath = $NetRatelSeedHandoffRequestPath
 $script:NetRatelSeedHandoffMode = $false
 $script:NetRatelSeedHandoffRequestPath = $null
 $script:NetRatelSeedHandoffResultPath = $null
 $script:NetRatelSeedHandoffId = $null
 $script:NetRatelSeedHandoffTenantId = $TenantId
+$script:NetRatelSeedHandoffPreflightFailureCode = $null
+$script:NetRatelSeedHandoffPreflightExceptionType = $null
 
 function Get-NetRatelSeedApiBase([string] $Value) {
     try { $uri = [Uri]::new($Value.Trim(), [UriKind]::Absolute) }
@@ -226,6 +255,22 @@ function Wait-NetRatelSeedOriginExit([int] $ProcessId, [string] $ExpectedStarted
     }
 }
 
+function Assert-NetRatelSeedHandoffNoReparse([string] $Path, [bool] $LeafFile) {
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    $pathRoot = [System.IO.Path]::GetPathRoot($fullPath)
+    if ([string]::IsNullOrWhiteSpace($pathRoot)) { throw 'Installer handoff path has no filesystem root.' }
+    $currentPath = $pathRoot
+    foreach ($component in $fullPath.Substring($pathRoot.Length).Split([char[]]@('\', '/'), [StringSplitOptions]::RemoveEmptyEntries)) {
+        $currentPath = Join-Path $currentPath $component
+        $item = Get-Item -LiteralPath $currentPath -Force -ErrorAction Stop
+        if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 -or
+            ([string]::Equals($currentPath, $fullPath, [StringComparison]::OrdinalIgnoreCase) -and ($item.PSIsContainer -eq $LeafFile)) -or
+            (-not [string]::Equals($currentPath, $fullPath, [StringComparison]::OrdinalIgnoreCase) -and -not $item.PSIsContainer)) {
+            throw 'Installer handoff path contains a reparse point or unexpected object type.'
+        }
+    }
+}
+
 function Convert-NetRatelSeedProcessCreationTime([object] $Value) {
     if ($Value -is [DateTimeOffset]) { return $Value.ToUniversalTime() }
     if ($Value -is [DateTime]) { return [DateTimeOffset]$Value.ToUniversalTime() }
@@ -275,7 +320,15 @@ function Set-NetRatelSeedHandoffResult {
 }
 
 function Start-NetRatelSeedHandoff {
-if ([string]::IsNullOrWhiteSpace($NetRatelSeedHandoffRequestPath)) {
+if ($script:NetRatelSeedHandoffPreflightFailureCode) {
+    throw "Installer handoff validation failed."
+}
+if ($script:NetRatelSeedHandoffMode) {
+    Set-NetRatelSeedHandoffResult -State 'processing'
+    return
+}
+
+if ([string]::IsNullOrWhiteSpace($rawNetRatelSeedHandoffRequestPath)) {
     $script:ApiBase = Get-NetRatelSeedApiBase $ApiBase
     if ($TenantId -le 0) { throw "TenantId must be positive." }
     if ([string]::IsNullOrWhiteSpace($EnrollmentCode) -or $EnrollmentCode.Length -gt 512) { throw "EnrollmentCode is required." }
@@ -305,12 +358,13 @@ if ([string]::IsNullOrWhiteSpace($NetRatelSeedHandoffRequestPath)) {
     $handoffScriptPath = Join-Path $handoffDirectory "handoff-$handoffId.ps1"
     $handoffResultPath = Join-Path $handoffDirectory "handoff-$handoffId.result.json"
     $originProcess = Get-Process -Id $PID -ErrorAction Stop
+    $handoffCreatedAtUtc = [DateTimeOffset]::UtcNow
     $request = [ordered]@{
         schema = "netratel.seeded-update-handoff.v1"
         handoffId = $handoffId
         nonce = $handoffNonce
-        createdAtUtc = [DateTimeOffset]::UtcNow.ToString("O")
-        expiresAtUtc = [DateTimeOffset]::UtcNow.AddMinutes(2).ToString("O")
+        createdAtUtc = $handoffCreatedAtUtc.ToString("O")
+        expiresAtUtc = $handoffCreatedAtUtc.AddMinutes(2).ToString("O")
         sourceProcessId = [int]$PID
         sourceProcessStartedAtUtc = ([DateTimeOffset]$originProcess.StartTime.ToUniversalTime()).ToString("O")
         apiBase = $script:ApiBase
@@ -326,7 +380,7 @@ if ([string]::IsNullOrWhiteSpace($NetRatelSeedHandoffRequestPath)) {
         [System.IO.File]::WriteAllText($handoffRequestPath, ($request | ConvertTo-Json -Depth 4), [System.Text.UTF8Encoding]::new($false))
         $powershellPath = Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe"
         if (-not (Test-Path -LiteralPath $powershellPath -PathType Leaf)) { throw "Windows PowerShell could not be located for the detached installer." }
-        $arguments = "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$handoffScriptPath`" -NetRatelSeedHandoffRequestPath `"$handoffRequestPath`""
+        $arguments = "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$handoffScriptPath`" -NetRatelSeedHandoffRequestPath `"$handoffRequestPath`" -NetRatelSeedHandoffStateDirectory `"$stateDirectory`""
         $worker = Start-Process -FilePath $powershellPath -ArgumentList $arguments -WindowStyle Hidden -PassThru -ErrorAction Stop
         if (-not $worker -or $worker.Id -le 0) { throw "The independent installer process could not be started." }
         $script:NetRatelSeedHandoffId = $handoffId
@@ -345,17 +399,34 @@ if ([string]::IsNullOrWhiteSpace($NetRatelSeedHandoffRequestPath)) {
 $ownedHandoffRequestPath = $null
 $ownedHandoffScriptPath = $null
 try {
-    $stateDirectory = [System.IO.Path]::GetFullPath($StateDir)
+    if ([string]::IsNullOrWhiteSpace($NetRatelSeedHandoffStateDirectory) -or
+        -not [System.IO.Path]::IsPathRooted($NetRatelSeedHandoffStateDirectory)) {
+        throw "Installer handoff state directory is invalid."
+    }
+    $stateDirectory = [System.IO.Path]::GetFullPath($NetRatelSeedHandoffStateDirectory)
     $expectedHandoffDirectory = [System.IO.Path]::GetFullPath((Join-Path $stateDirectory "install-handoffs"))
-    $requestPath = [System.IO.Path]::GetFullPath($NetRatelSeedHandoffRequestPath)
+    $requestPath = [System.IO.Path]::GetFullPath($rawNetRatelSeedHandoffRequestPath)
     if (-not [string]::Equals([System.IO.Path]::GetDirectoryName($requestPath), $expectedHandoffDirectory, [StringComparison]::OrdinalIgnoreCase) -or
         [System.IO.Path]::GetFileName($requestPath) -notmatch '^handoff-(?<id>[a-f0-9]{32})\.json$') {
         throw "Installer handoff request is outside its protected directory or has an invalid name."
     }
+    Assert-NetRatelSeedHandoffNoReparse $stateDirectory $false
+    Assert-NetRatelSeedHandoffNoReparse $expectedHandoffDirectory $false
+    Assert-NetRatelSeedHandoffNoReparse $requestPath $true
     $ownedHandoffRequestPath = $requestPath
+    $script:NetRatelSeedHandoffRequestPath = $ownedHandoffRequestPath
     $handoffId = $Matches.id
     $ownedHandoffScriptPath = Join-Path $expectedHandoffDirectory "handoff-$handoffId.ps1"
+    Assert-NetRatelSeedHandoffNoReparse $ownedHandoffScriptPath $true
+    if ((Get-Item -LiteralPath $ownedHandoffRequestPath -Force -ErrorAction Stop).Length -gt 65536 -or
+        (Get-Item -LiteralPath $ownedHandoffScriptPath -Force -ErrorAction Stop).Length -gt 1048576) {
+        throw 'Installer handoff files exceed their bounded size limits.'
+    }
+    $script:NetRatelSeedHandoffMode = $true
+    $script:NetRatelSeedHandoffId = $handoffId
+    $script:NetRatelSeedHandoffResultPath = Join-Path $expectedHandoffDirectory "handoff-$handoffId.result.json"
     $handoff = Get-Content -LiteralPath $ownedHandoffRequestPath -Raw | ConvertFrom-Json -ErrorAction Stop
+    if ([int]$handoff.tenantId -gt 0) { $script:NetRatelSeedHandoffTenantId = [int]$handoff.tenantId }
     $now = [DateTimeOffset]::UtcNow
     $createdAt = [DateTimeOffset]::Parse([string]$handoff.createdAtUtc).ToUniversalTime()
     $expiresAt = [DateTimeOffset]::Parse([string]$handoff.expiresAtUtc).ToUniversalTime()
@@ -378,27 +449,35 @@ try {
     $script:Version = [string]$handoff.version
     $script:GatewayEndpoint = Get-NetRatelSeedGatewayEndpoint ([string]$handoff.gatewayEndpoint) $script:ApiBase
     Validate-NetRatelSeedHandoffParameters $script:Runtime $script:Version $script:EnrollmentCode
-    $script:NetRatelSeedHandoffMode = $true
-    $script:NetRatelSeedHandoffRequestPath = $ownedHandoffRequestPath
-    $script:NetRatelSeedHandoffId = $handoffId
     $script:NetRatelSeedHandoffTenantId = $TenantId
-    $script:NetRatelSeedHandoffResultPath = Join-Path $expectedHandoffDirectory "handoff-$handoffId.result.json"
 
     $sourceProcessId = [int]$handoff.sourceProcessId
     if ($sourceProcessId -le 0) { throw "Installer handoff origin process identity is invalid." }
     Wait-NetRatelSeedOriginExit $sourceProcessId ([string]$handoff.sourceProcessStartedAtUtc)
-    Set-NetRatelSeedHandoffResult -State "processing"
 }
 catch {
+    $script:NetRatelSeedHandoffPreflightFailureCode = 'handoff_rejected'
+    $script:NetRatelSeedHandoffPreflightExceptionType = $_.Exception.GetType().Name
     if ($ownedHandoffRequestPath) {
+        # Only these validated, uniquely named handoff files may be completed before the updater lock.
         $script:NetRatelSeedHandoffId = [System.IO.Path]::GetFileNameWithoutExtension($ownedHandoffRequestPath).Substring(8)
         $script:NetRatelSeedHandoffTenantId = $TenantId
         $script:NetRatelSeedHandoffResultPath = [System.IO.Path]::ChangeExtension($ownedHandoffRequestPath, ".result.json")
-    Set-NetRatelSeedHandoffResult -State "failed" -FailureCode "handoff_rejected" -ExceptionType $_.Exception.GetType().Name
-    Remove-Item -LiteralPath $ownedHandoffRequestPath, $ownedHandoffScriptPath -Force -ErrorAction SilentlyContinue
-}
+        try {
+            Set-NetRatelSeedHandoffResult -State 'failed' -FailureCode 'handoff_rejected' -ExceptionType $script:NetRatelSeedHandoffPreflightExceptionType
+        }
+        finally {
+            Remove-Item -LiteralPath $ownedHandoffRequestPath, $ownedHandoffScriptPath -Force -ErrorAction SilentlyContinue
+        }
+    }
     throw
 }
+}
+
+# Validate detached child input before the installer performs service or path preflight.
+# The ordinary parent handoff remains at the post-lock integration point.
+if (-not [string]::IsNullOrWhiteSpace($rawNetRatelSeedHandoffRequestPath)) {
+    Start-NetRatelSeedHandoff
 }
 """;
 
