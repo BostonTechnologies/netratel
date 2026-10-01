@@ -10,7 +10,10 @@
 <PageTitle>Access administration</PageTitle>
 
 <MudContainer MaxWidth="MaxWidth.False" Class="mt-4">
-    @if (_interactiveReady) { <span hidden data-testid="access-administration-client-ready"></span> }
+    @if (_interactiveReady)
+    {
+        <span hidden data-testid="access-administration-client-ready" data-scope-name="@ScopeName(_scopeTenantId)"></span>
+    }
     <MudStack Spacing="3">
         <MudPaper Class="pa-4">
             <MudText Typo="Typo.h4">Access administration</MudText>
