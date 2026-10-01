@@ -278,6 +278,28 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
 
 
 
+class GatewayDiagnosticTests(unittest.TestCase):
+    def test_diagnostics_do_not_disclose_log_payloads(self):
+        summarizer = module("summarize-gateway-log")
+        lines = [
+            "Bearer synthetic-sensitive-token https://private.example.invalid/secret\n",
+            "Command gateway admitted. authority=akka. tenantId=123\n",
+            'Command gateway session failed: RpcException: Status(StatusCode="Unavailable", Detail="synthetic-sensitive-token")\n',
+            "Gateway extension 'command' failed without ending presence: InvalidOperationException: private-path\n",
+        ]
+        self.assertEqual(summarizer.summarize(lines), [
+            "command_admitted", "command_transport_failed RpcException Unavailable",
+            "command_extension_failed InvalidOperationException",
+        ])
+
+    def test_diagnostics_retain_only_twenty_latest_events(self):
+        summarizer = module("summarize-gateway-log")
+        lines = ["Presence admitted.\n"] * 30 + ["Command gateway admitted. authority=akka.\n"]
+        events = summarizer.summarize(lines)
+        self.assertEqual(len(events), 20)
+        self.assertEqual(events[-1], "command_admitted")
+
+
 class PublishedClientPackFetchTests(unittest.TestCase):
     def setUp(self):
         self.fetcher = module("fetch-published-client-pack")
