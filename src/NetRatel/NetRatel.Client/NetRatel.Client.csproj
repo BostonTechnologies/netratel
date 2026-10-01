@@ -29,7 +29,7 @@
 
   <ItemGroup>
     <PackageReference Include="Google.Protobuf" Version="3.36.2" />
-    <PackageReference Include="Grpc.Net.Client" Version="2.83.0" />
+    <PackageReference Include="Grpc.Net.Client" Version="2.84.0" />
     <PackageReference Include="mcpdotnet" Version="1.2.0.1" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.12" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Ini" Version="10.0.12" />

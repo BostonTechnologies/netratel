@@ -3,7 +3,7 @@ using Grpc.Core;
 
 namespace NetRatel.API.Gateway;
 
-/// <summary>Joins both halves of a registration-owned RPC, including replacement and writer failure.</summary>
+/// <summary>Joins all workers of a registration-owned RPC, including replacement and worker failure.</summary>
 internal static class GatewayDuplexSession
 {
     private static readonly TimeSpan ShutdownTimeout = TimeSpan.FromSeconds(5);
@@ -13,15 +13,30 @@ internal static class GatewayDuplexSession
         Func<CancellationToken, Task> write,
         CancellationToken callCancellation,
         CancellationToken registrationCompletion,
+        ILogger logger) =>
+        await RunAsync([read, write], callCancellation, registrationCompletion, logger).ConfigureAwait(false);
+
+    public static async Task RunAsync(
+        Func<CancellationToken, Task> read,
+        Func<CancellationToken, Task> write,
+        Func<CancellationToken, Task> renew,
+        CancellationToken callCancellation,
+        CancellationToken registrationCompletion,
+        ILogger logger) =>
+        await RunAsync([read, write, renew], callCancellation, registrationCompletion, logger).ConfigureAwait(false);
+
+    private static async Task RunAsync(
+        IReadOnlyList<Func<CancellationToken, Task>> workers,
+        CancellationToken callCancellation,
+        CancellationToken registrationCompletion,
         ILogger logger)
     {
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(callCancellation, registrationCompletion);
-        var reader = InvokeAsync(read, cancellation.Token);
-        var writer = InvokeAsync(write, cancellation.Token);
+        var tasks = workers.Select(worker => InvokeAsync(worker, cancellation.Token)).ToArray();
         Exception? failure = null;
         try
         {
-            await (await Task.WhenAny(reader, writer).ConfigureAwait(false)).ConfigureAwait(false);
+            await (await Task.WhenAny(tasks).ConfigureAwait(false)).ConfigureAwait(false);
         }
         catch (Exception exception) when (IsCancellation(exception, cancellation.Token))
         {
@@ -34,7 +49,7 @@ internal static class GatewayDuplexSession
         finally
         {
             await cancellation.CancelAsync().ConfigureAwait(false);
-            var joined = Task.WhenAll(reader, writer);
+            var joined = Task.WhenAll(tasks);
             try
             {
                 await joined.WaitAsync(ShutdownTimeout).ConfigureAwait(false);

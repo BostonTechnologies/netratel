@@ -14,15 +14,12 @@ namespace NetRatel.API.Gateway;
 public sealed class AgentTerminalGatewayService(
     IClientPresenceRouter presenceRouter,
     IAgentTerminalSessionRegistry terminals,
-    NetRatelAkkaMigrationOptions options,
     IServiceScopeFactory scopes,
     ILogger<AgentTerminalGatewayService> logger)
     : AgentTerminalGateway.AgentTerminalGatewayBase
 {
     public override async Task Connect(IAsyncStreamReader<AgentTerminalFrame> requestStream, IServerStreamWriter<GatewayTerminalFrame> responseStream, ServerCallContext context)
     {
-        if (!options.IsTerminalAuthorityActive)
-            throw new RpcException(new Status(StatusCode.FailedPrecondition, "The terminal gateway is disabled."));
         if (!AgentGatewayIdentityResolver.TryResolve(context.GetHttpContext().User, out var identity, out var error) || identity is null)
             throw new RpcException(new Status(StatusCode.PermissionDenied, error));
         if (!await requestStream.MoveNext(context.CancellationToken).ConfigureAwait(false))
@@ -55,7 +52,7 @@ public sealed class AgentTerminalGatewayService(
             session.Client.AgentId,
             session.ConnectionId,
             session.ConnectionEpoch);
-        await responseStream.WriteAsync(NewFrame(session, 0, new GatewayTerminalFrame { Accepted = new TerminalConnectAccepted { TerminalAuthority = options.PresenceAuthority, MaximumFrameBytes = 16 * 1024, MaximumInFlightFrames = 64 } }), streamCancellation.Token).ConfigureAwait(false);
+        await responseStream.WriteAsync(NewFrame(session, 0, new GatewayTerminalFrame { Accepted = new TerminalConnectAccepted { TerminalAuthority = "akka", MaximumFrameBytes = 16 * 1024, MaximumInFlightFrames = 64 } }), streamCancellation.Token).ConfigureAwait(false);
         var writer = WriteAsync(registration, responseStream, streamCancellation, session);
         var reader = ReadInboundAsync(requestStream, session, registration, streamCancellation.Token);
         try
@@ -262,7 +259,7 @@ public sealed class AgentTerminalGatewayService(
 
     private async Task<Session> ValidateHello(AgentTerminalFrame frame, AuthenticatedAgentIdentity identity, CancellationToken ct)
     {
-        if (frame.PayloadCase != AgentTerminalFrame.PayloadOneofCase.Hello || !string.Equals(frame.ProtocolVersion, options.ProtocolVersion, StringComparison.Ordinal) || frame.TenantId != identity.TenantId || !Guid.TryParse(frame.ClientId, out var id) || id != identity.AgentId || !Guid.TryParse(frame.ConnectionId, out var connection) || connection == Guid.Empty || frame.ConnectionEpoch == 0 || frame.Sequence != 0)
+        if (frame.PayloadCase != AgentTerminalFrame.PayloadOneofCase.Hello || !string.Equals(frame.ProtocolVersion, NetRatelAkkaOptions.ProtocolVersion, StringComparison.Ordinal) || frame.TenantId != identity.TenantId || !Guid.TryParse(frame.ClientId, out var id) || id != identity.AgentId || !Guid.TryParse(frame.ConnectionId, out var connection) || connection == Guid.Empty || frame.ConnectionEpoch == 0 || frame.Sequence != 0)
             throw new RpcException(new Status(StatusCode.InvalidArgument, "The terminal hello does not match the authenticated agent identity."));
         var terminalCapability = frame.Hello.TerminalCapability;
         if (terminalCapability is not { Supported: true })
@@ -283,13 +280,13 @@ public sealed class AgentTerminalGatewayService(
     private async Task RequirePresenceAsync(Session session, CancellationToken cancellationToken)
     {
         var presence = await presenceRouter.GetSnapshotAsync(session.Client, cancellationToken).ConfigureAwait(false);
-        if (presence.Status != ShadowPresenceStatus.Online || presence.ConnectionId != session.ConnectionId ||
+        if (presence.Status != ClientPresenceStatus.Online || presence.ConnectionId != session.ConnectionId ||
             presence.ConnectionEpoch != checked((long)session.ConnectionEpoch))
         {
             throw new RpcException(new Status(StatusCode.Aborted, "The terminal gateway session is fenced by the active presence connection."));
         }
     }
-    private bool ValidFrame(AgentTerminalFrame f, Session s, ref ulong last) { if (!string.Equals(f.ProtocolVersion, options.ProtocolVersion, StringComparison.Ordinal) || f.TenantId != s.Client.TenantId || !string.Equals(f.ClientId, s.Client.AgentId.ToString("D"), StringComparison.OrdinalIgnoreCase) || f.ConnectionEpoch != s.ConnectionEpoch || !string.Equals(f.ConnectionId, s.ConnectionId.ToString("D"), StringComparison.OrdinalIgnoreCase) || f.Sequence == 0 || f.Sequence <= last) return false; last = f.Sequence; return true; }
+    private bool ValidFrame(AgentTerminalFrame f, Session s, ref ulong last) { if (!string.Equals(f.ProtocolVersion, NetRatelAkkaOptions.ProtocolVersion, StringComparison.Ordinal) || f.TenantId != s.Client.TenantId || !string.Equals(f.ClientId, s.Client.AgentId.ToString("D"), StringComparison.OrdinalIgnoreCase) || f.ConnectionEpoch != s.ConnectionEpoch || !string.Equals(f.ConnectionId, s.ConnectionId.ToString("D"), StringComparison.OrdinalIgnoreCase) || f.Sequence == 0 || f.Sequence <= last) return false; last = f.Sequence; return true; }
     private static GatewayTerminalFrame NewFrame(Session s, ulong sequence, GatewayTerminalFrame f) { f.ProtocolVersion = "1.0"; f.TenantId = s.Client.TenantId; f.ClientId = s.Client.AgentId.ToString("D"); f.ConnectionEpoch = s.ConnectionEpoch; f.ConnectionId = s.ConnectionId.ToString("D"); f.Sequence = sequence; return f; }
     private async Task WriteAsync(
         AgentTerminalGatewayRegistration registration,

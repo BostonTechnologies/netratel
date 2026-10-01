@@ -102,7 +102,6 @@
 
 @code {
   [CascadingParameter] public IMudDialogInstance MudDialog { get; set; } = default!;
-  [Parameter] public string ClientIdentityHex { get; set; } = string.Empty;
   [Parameter] public int? TenantId { get; set; }
   [Parameter] public Guid? AgentId { get; set; }
   [Parameter] public string? HostLabel { get; set; }
@@ -188,9 +187,13 @@
       _connectionLabel = "requested";
       var grid = _measuredGrid ?? new TerminalConsole.TerminalGridSize(Cols ?? 80, Rows ?? 24);
       var request = new OpenTerminalRequest(Shell, grid.Cols, grid.Rows, WorkingDirectory);
-      var response = TenantId is > 0 && AgentId is { } agentId && agentId != Guid.Empty
-        ? await Term.OpenGatewaySessionAsync(TenantId.Value, agentId, request)
-        : await Term.OpenSessionAsync(ClientIdentityHex, request);
+      if (TenantId is not > 0 || AgentId is not { } agentId || agentId == Guid.Empty)
+      {
+        _openError = "A tenant and Agent ID are required to open a terminal session.";
+        return;
+      }
+
+      var response = await Term.OpenGatewaySessionAsync(TenantId.Value, agentId, request);
       openedSessionId = response.SessionId;
       await PersistGatewayTerminalHandleAsync(response.SessionId);
 
@@ -275,8 +278,8 @@
     TerminalSessionDto? restored;
     try
     {
-      // A persisted handle must remain on V2. It must never use a coincident
-      // legacy session ID as an authority fallback after a circuit replacement.
+      // A persisted handle must be revalidated through the gateway before it
+      // is restored after a circuit replacement.
       restored = await Term.GetGatewaySessionAsync(handle.SessionId);
     }
     catch (Exception)

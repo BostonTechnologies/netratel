@@ -13,9 +13,21 @@ public class RedirectReissueHandler : DelegatingHandler
 
             if ((int)response.StatusCode is 307 or 308 && response.Headers.Location is Uri location)
             {
+                if (request.RequestUri is null || !Uri.TryCreate(request.RequestUri, location, out var targetUri)
+                    || !string.Equals(request.RequestUri.Host, targetUri.Host, StringComparison.OrdinalIgnoreCase))
+                {
+                    // Do not replay any caller credential to a different host.
+                    return response;
+                }
+
                 response.Dispose();
 
-                var newRequest = new HttpRequestMessage(request.Method, location);
+                var newRequest = new HttpRequestMessage(request.Method, targetUri);
+
+                if (request.Options.TryGetValue(OperatorApiCredential.RequestOptionsKey, out var credential))
+                {
+                    newRequest.Options.Set(OperatorApiCredential.RequestOptionsKey, credential);
+                }
 
                 if (request.Content is not null)
                 {
@@ -32,7 +44,9 @@ public class RedirectReissueHandler : DelegatingHandler
 
                 foreach (var header in request.Headers)
                 {
-                    if (string.Equals(header.Key, "Authorization", StringComparison.OrdinalIgnoreCase))
+                    if (string.Equals(header.Key, "Authorization", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(header.Key, "Cookie", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(header.Key, "X-NetRatel-Account-Request", StringComparison.OrdinalIgnoreCase))
                     {
                         continue;
                     }

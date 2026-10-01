@@ -5,7 +5,6 @@ using System.Linq;
 using System.Net.Http;
 using System.Text.Json;
 using System.Threading;
-using System.Threading.Channels;
 using System.Threading.Tasks;
 using Google.Protobuf;
 using Grpc.Core;
@@ -33,39 +32,29 @@ public sealed class AgentRemoteSupportGatewayClient(GatewayClientOptions options
 
     public async Task RunForPresenceSessionAsync(GatewayPresenceSession session, string accessToken, CancellationToken stoppingToken)
     {
-        if (!options.RemoteSupportGatewayEnabled)
-        {
-            return;
-        }
-
         if (!Uri.TryCreate(options.Endpoint, UriKind.Absolute, out var endpoint) || endpoint.Scheme != Uri.UriSchemeHttps)
         {
-            log("Remote-support gateway is disabled because Gateway:Endpoint is not an absolute HTTPS URL.");
-            return;
+            throw new InvalidOperationException("Gateway:Endpoint must be an absolute HTTPS URL.");
         }
 
-        using var transitionEffects = options.RemoteSupportV2MediaEnabled && options.RemoteSupportV2InventoryEnabled
+        using var transitionEffects = OperatingSystem.IsWindows()
             ? new RemoteSupportTransitionEffectQueue()
             : null;
-        using var v2Media = options.RemoteSupportV2MediaEnabled
-            ? new V2GatewayRemoteSupportBridge(EnsureGatewayHelperPipeHost, log, session, transitionEffects)
-            : null;
+        using var v2Media = new V2GatewayRemoteSupportBridge(EnsureGatewayHelperPipeHost, log, session, transitionEffects);
         var retryDelay = InitialRetryDelay;
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
                 var signalling = RunStreamAsync(endpoint, session, accessToken, v2Media, stoppingToken);
-                var preparation = options.RemoteSupportV2InventoryEnabled
-                    ? new AgentRemoteSupportPreparationGatewayClient(
+                var preparation = new AgentRemoteSupportPreparationGatewayClient(
                             options,
                             log,
                             EnsureGatewayHelperPipeHost,
-                            v2Media is null ? null : v2Media.RememberPreparedRouteAsync,
-                            v2Media is null ? null : v2Media.PrepareConsoleProviderAsync,
+                            v2Media.RememberPreparedRouteAsync,
+                            v2Media.PrepareConsoleProviderAsync,
                             transitionEffects)
-                        .RunForPresenceSessionAsync(endpoint, session, accessToken, stoppingToken)
-                    : Task.CompletedTask;
+                        .RunForPresenceSessionAsync(endpoint, session, accessToken, stoppingToken);
                 await Task.WhenAll(signalling, preparation).ConfigureAwait(false);
                 retryDelay = InitialRetryDelay;
             }
@@ -86,42 +75,14 @@ public sealed class AgentRemoteSupportGatewayClient(GatewayClientOptions options
         Uri endpoint,
         GatewayPresenceSession session,
         string accessToken,
-        V2GatewayRemoteSupportBridge? v2Media,
+        V2GatewayRemoteSupportBridge v2Media,
         CancellationToken stoppingToken)
     {
-        var helperPipeHost = EnsureGatewayHelperPipeHost();
         using var channel = GrpcChannel.ForAddress(endpoint);
         var client = new AgentRemoteSupportGateway.AgentRemoteSupportGatewayClient(channel);
         var headers = new Metadata { { "Authorization", $"Bearer {accessToken}" } };
         using var call = client.Connect(headers, cancellationToken: stoppingToken);
         using var writer = new RemoteSupportGatewayWriter(call.RequestStream, session, options.ProtocolVersion);
-        var localSignals = Channel.CreateBounded<RemoteSupportPipeSignal>(new BoundedChannelOptions(64)
-        {
-            // WebRTC signalling is ordered control data. Do not discard an
-            // SDP/ICE envelope under pressure: terminate this stream and let
-            // the presence-session retry establish a clean gateway session.
-            FullMode = BoundedChannelFullMode.Wait,
-            SingleReader = true,
-            SingleWriter = false,
-            AllowSynchronousContinuations = false
-        });
-        var localSignalOverflow = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        using var bridge = v2Media is null ? new GatewayRemoteSupportBridge(signal =>
-        {
-            if (localSignals.Writer.TryWrite(signal))
-            {
-                return true;
-            }
-
-            localSignalOverflow.TrySetException(new RpcException(new Status(
-                StatusCode.ResourceExhausted,
-                "The local remote-support signalling queue is full.")));
-            return false;
-        }, helperPipeHost) : null;
-        var localSignalWriter = bridge is null
-            ? Task.CompletedTask
-            : WriteLocalSignalsAsync(localSignals.Reader, writer, stoppingToken);
-
         try
         {
             await writer.WriteAsync(new AgentRemoteSupportFrame
@@ -138,21 +99,12 @@ public sealed class AgentRemoteSupportGatewayClient(GatewayClientOptions options
 
             ValidateAccepted(call.ResponseStream.Current, session);
             log($"Remote-support gateway admitted. authority={call.ResponseStream.Current.Accepted.SupportAuthority}.");
-            if (v2Media is not null)
-            {
-                await v2Media.AttachAsync(writer, stoppingToken).ConfigureAwait(false);
-            }
+            await v2Media.AttachAsync(writer, stoppingToken).ConfigureAwait(false);
 
             ulong lastServerSequence = 0;
             while (true)
             {
-                var nextFrame = call.ResponseStream.MoveNext(stoppingToken);
-                if (await Task.WhenAny(nextFrame, localSignalOverflow.Task).ConfigureAwait(false) == localSignalOverflow.Task)
-                {
-                    await localSignalOverflow.Task.ConfigureAwait(false);
-                }
-
-                if (!await nextFrame.ConfigureAwait(false))
+                if (!await call.ResponseStream.MoveNext(stoppingToken).ConfigureAwait(false))
                 {
                     break;
                 }
@@ -167,23 +119,8 @@ public sealed class AgentRemoteSupportGatewayClient(GatewayClientOptions options
                 lastServerSequence = frame.Sequence;
                 switch (frame.PayloadCase)
                 {
-                    case GatewayRemoteSupportFrame.PayloadOneofCase.Signal:
-                        if (bridge is null)
-                        {
-                            throw new RpcException(new Status(StatusCode.DataLoss, "The V2 media gateway returned a legacy signalling frame."));
-                        }
-
-                        await bridge.HandleAsync(frame.Signal, writer, stoppingToken).ConfigureAwait(false);
-                        break;
-                    case GatewayRemoteSupportFrame.PayloadOneofCase.V2Envelope when v2Media is not null:
+                    case GatewayRemoteSupportFrame.PayloadOneofCase.V2Envelope:
                         await v2Media.HandleAsync(frame.V2Envelope, stoppingToken).ConfigureAwait(false);
-                        break;
-                    case GatewayRemoteSupportFrame.PayloadOneofCase.Closed:
-                        if (bridge is not null)
-                        {
-                            await bridge.CloseAsync(frame.Closed.SessionId, frame.Closed.Reason).ConfigureAwait(false);
-                            await writer.WriteClosedAsync(frame.Closed.SessionId, "agent_acknowledged_close", stoppingToken).ConfigureAwait(false);
-                        }
                         break;
                     default:
                         throw new RpcException(new Status(StatusCode.DataLoss, "Remote-support gateway returned an unsupported frame."));
@@ -192,16 +129,7 @@ public sealed class AgentRemoteSupportGatewayClient(GatewayClientOptions options
         }
         finally
         {
-            v2Media?.Detach();
-            localSignals.Writer.TryComplete();
-            try
-            {
-                await localSignalWriter.ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-            {
-                log("Remote-support gateway local signal writer stopped with the owning presence session.");
-            }
+            v2Media.Detach();
             try
             {
                 await call.RequestStream.CompleteAsync().ConfigureAwait(false);
@@ -213,23 +141,12 @@ public sealed class AgentRemoteSupportGatewayClient(GatewayClientOptions options
         }
     }
 
-    private static async Task WriteLocalSignalsAsync(
-        ChannelReader<RemoteSupportPipeSignal> reader,
-        RemoteSupportGatewayWriter writer,
-        CancellationToken cancellationToken)
-    {
-        await foreach (var signal in reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
-        {
-            await writer.WriteSignalAsync(signal, cancellationToken).ConfigureAwait(false);
-        }
-    }
-
     private void ValidateAccepted(GatewayRemoteSupportFrame frame, GatewayPresenceSession session)
     {
         ValidateFrame(frame, session);
-        if (!GatewayAuthority.IsAkka(frame.Accepted.SupportAuthority))
+        if (!GatewayWireProtocol.HasAkkaAuthority(frame.Accepted.SupportAuthority))
         {
-            throw new RpcException(new Status(StatusCode.FailedPrecondition, "Remote-support gateway did not admit the expected authority."));
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, "Remote-support gateway returned an unsupported authority token."));
         }
     }
 
@@ -284,27 +201,7 @@ public sealed class AgentRemoteSupportGatewayClient(GatewayClientOptions options
     private sealed class RemoteSupportGatewayWriter(IClientStreamWriter<AgentRemoteSupportFrame> stream, GatewayPresenceSession session, string protocolVersion) : IDisposable
     {
         private readonly SemaphoreSlim _gate = new(1, 1);
-        private readonly ConcurrentDictionary<string, ulong> _sessionSequences = new(StringComparer.Ordinal);
         private ulong _sequence;
-
-        public async Task WriteSignalAsync(RemoteSupportPipeSignal signal, CancellationToken cancellationToken)
-        {
-            var sessionSequence = _sessionSequences.AddOrUpdate(signal.SessionId, 1, static (_, current) => current + 1);
-            await WriteAsync(new AgentRemoteSupportFrame
-            {
-                Signal = new RemoteSupportSignal
-                {
-                    SessionId = signal.SessionId,
-                    MessageId = Guid.NewGuid().ToString("N"),
-                    SignalType = signal.SignalType,
-                    SessionSequence = sessionSequence,
-                    Payload = ByteString.CopyFromUtf8(signal.PayloadJson)
-                }
-            }, cancellationToken).ConfigureAwait(false);
-        }
-
-        public Task WriteClosedAsync(string sessionId, string reason, CancellationToken cancellationToken) =>
-            WriteAsync(new AgentRemoteSupportFrame { Closed = new RemoteSupportSessionClosed { SessionId = sessionId, Reason = reason } }, cancellationToken);
 
         public Task WriteV2RegistrationAsync(RemoteSupportSessionKey session, long routeGeneration, CancellationToken cancellationToken) =>
             WriteAsync(new AgentRemoteSupportFrame
@@ -875,69 +772,4 @@ public sealed class AgentRemoteSupportGatewayClient(GatewayClientOptions options
         }
     }
 
-    private sealed class GatewayRemoteSupportBridge : IDisposable
-    {
-        private readonly Func<RemoteSupportPipeSignal, bool> _publish;
-        private readonly RemoteSupportSessionManager _providerRuntime;
-
-        public GatewayRemoteSupportBridge(
-            Func<RemoteSupportPipeSignal, bool> publish,
-            RemoteDesktopUserHelperPipeHost? helperPipeHost)
-        {
-            _publish = publish;
-            _providerRuntime = new RemoteSupportSessionManager(helperPipeHost, signal => PublishOrThrow(signal));
-        }
-
-        public async Task HandleAsync(RemoteSupportSignal signal, RemoteSupportGatewayWriter writer, CancellationToken cancellationToken)
-        {
-            if (signal.Payload.Length > 32 * 1024 || string.IsNullOrWhiteSpace(signal.SessionId) || string.IsNullOrWhiteSpace(signal.SignalType))
-            {
-                throw new RpcException(new Status(StatusCode.DataLoss, "Remote-support gateway returned an invalid signalling envelope."));
-            }
-
-            var payload = signal.Payload.ToStringUtf8();
-            switch (signal.SignalType.Trim().ToLowerInvariant())
-            {
-                case "open":
-                    _providerRuntime.OpenGatewaySession(signal.SessionId, payload);
-                    break;
-                case RemoteSupportSignalTypes.Offer:
-                    _providerRuntime.ProcessGatewaySignal(
-                        new RemoteSupportPipeSignal(signal.SessionId, signal.SignalType, payload),
-                        signal.SessionSequence);
-                    break;
-                case RemoteSupportSignalTypes.Ice:
-                    _providerRuntime.ProcessGatewaySignal(
-                        new RemoteSupportPipeSignal(signal.SessionId, signal.SignalType, payload),
-                        signal.SessionSequence);
-                    break;
-                case RemoteSupportSignalTypes.Close:
-                    _providerRuntime.CloseGatewaySession(signal.SessionId, "browser_closed");
-                    await writer.WriteClosedAsync(signal.SessionId, "browser_closed", cancellationToken).ConfigureAwait(false);
-                    break;
-                default:
-                    PublishOrThrow(new RemoteSupportPipeSignal(signal.SessionId, RemoteSupportSignalTypes.Error, "{\"code\":\"unsupported_signal\"}"));
-                    break;
-            }
-        }
-
-        public Task CloseAsync(string sessionId, string reason)
-        {
-            _providerRuntime.CloseGatewaySession(sessionId, reason);
-            return Task.CompletedTask;
-        }
-
-        private void PublishOrThrow(RemoteSupportPipeSignal signal)
-        {
-            if (!_publish(signal))
-            {
-                throw new RpcException(new Status(StatusCode.ResourceExhausted, "The local remote-support signalling queue is full."));
-            }
-        }
-
-        public void Dispose()
-        {
-            _providerRuntime.Dispose();
-        }
-    }
 }

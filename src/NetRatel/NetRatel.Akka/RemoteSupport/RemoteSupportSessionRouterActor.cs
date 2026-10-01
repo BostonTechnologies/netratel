@@ -88,9 +88,10 @@ public sealed class RemoteSupportSessionRouterActor : ReceiveActor
             var routeId = Guid.NewGuid();
             var events = Channel.CreateBounded<RemoteSupportBrowserLifecycleEvent>(new BoundedChannelOptions(32)
             {
-                FullMode = BoundedChannelFullMode.DropOldest,
+                FullMode = BoundedChannelFullMode.Wait,
                 SingleReader = true,
-                SingleWriter = true
+                SingleWriter = true,
+                AllowSynchronousContinuations = false
             });
             var edge = Context.ActorOf(RemoteSupportBrowserEdgeActor.Props(events), $"remote-support-browser-edge-{routeId:N}");
             var registration = await GetOrCreate(message.Session).Ask<RemoteSupportBrowserEdgeRegistration>(

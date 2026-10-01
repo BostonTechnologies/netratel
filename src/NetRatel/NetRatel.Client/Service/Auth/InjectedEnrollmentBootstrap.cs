@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using NetRatel.Application.ClientAuth;
 using NetRatel.Client.Service.Logging;
+using NetRatel.Shared.Client;
 
 namespace NetRatel.Client.Service.Auth;
 
@@ -101,27 +102,26 @@ public sealed class InjectedEnrollmentBootstrap : IInjectedEnrollmentBootstrap
             return "enrollment payload is expired or missing validToUtc.";
         }
 
-        if (!string.IsNullOrWhiteSpace(payload.Issuer))
+        if (string.IsNullOrWhiteSpace(payload.Issuer))
         {
-            var configured = NormalizeOrigin(options.ApiBaseUrl);
-            var issuer = NormalizeOrigin(payload.Issuer);
+            return "issuer is required.";
+        }
+
+        try
+        {
+            var configured = ClientEndpointAddress.NormalizeApiBase(options.ApiBaseUrl);
+            var issuer = ClientEndpointAddress.NormalizeApiBase(payload.Issuer);
             if (!string.Equals(configured, issuer, StringComparison.OrdinalIgnoreCase))
             {
                 return "issuer does not match the configured API base URL.";
             }
         }
-
-        return null;
-    }
-
-    private static string NormalizeOrigin(string value)
-    {
-        if (Uri.TryCreate(value, UriKind.Absolute, out var uri))
+        catch (ArgumentException)
         {
-            return $"{uri.Scheme}://{uri.Authority}";
+            return "issuer and configured API base URL must be an origin, optionally followed by /api.";
         }
 
-        return value.Trim().TrimEnd('/');
+        return null;
     }
 
     private static string ResolveExecutableDirectory()

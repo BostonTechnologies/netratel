@@ -42,7 +42,7 @@ public sealed record TelemetrySnapshot(
     IReadOnlyList<TelemetryDisk> Disks,
     IReadOnlyList<TelemetryNetwork> Networks,
     TelemetryTransportHealth? TransportHealth,
-    string Source = "akka-shadow",
+    string Source = "akka",
     bool IsAuthoritative = false);
 
 public enum TelemetryMessageDisposition

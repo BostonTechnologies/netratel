@@ -11,11 +11,11 @@ namespace NetRatel.Akka.Jobs;
 /// </summary>
 public sealed class JobCoordinatorActor : ReceiveActor
 {
-    private readonly IJobShadowPersistenceStore _persistenceStore;
+    private readonly IJobObservationStore _persistenceStore;
     private readonly DateTimeOffset _startedAtUtc = DateTimeOffset.UtcNow;
-    private int _activeShadowJobs;
-    private ulong _completedShadowJobs;
-    private ulong _failedShadowJobs;
+    private int _activeJobs;
+    private ulong _completedJobs;
+    private ulong _failedJobs;
     private int _activeJobSteps;
     private ulong _acceptedEvents;
     private ulong _invalidTransitions;
@@ -23,16 +23,16 @@ public sealed class JobCoordinatorActor : ReceiveActor
     private ulong _staleEvents;
     private ulong _missingCommandCorrelations;
 
-    public JobCoordinatorActor(IJobShadowPersistenceStore persistenceStore)
+    public JobCoordinatorActor(IJobObservationStore persistenceStore)
     {
         _persistenceStore = persistenceStore ?? throw new ArgumentNullException(nameof(persistenceStore));
-        Receive<RecordJobShadowObservation>(message =>
+        Receive<RecordJobObservation>(message =>
         {
             if (message.Observation.JobRunId == 0)
             {
-                Sender.Tell(new JobShadowMessageResult(
+                Sender.Tell(new JobMessageResult(
                     0,
-                    JobShadowMessageDisposition.IdentityMismatch,
+                    JobMessageDisposition.IdentityMismatch,
                     null,
                     0,
                     JobCommandCorrelationStatus.NotProvided,
@@ -41,9 +41,9 @@ public sealed class JobCoordinatorActor : ReceiveActor
             }
 
             GetOrCreateRunActor(message.Observation.JobRunId)
-                .Tell(new RoutedJobShadowRecord(message, Sender));
+                .Tell(new RoutedJobObservation(message, Sender));
         });
-        Receive<GetJobShadowState>(message =>
+        Receive<GetJobRunProjection>(message =>
         {
             var actor = GetRunActor(message.JobRunId);
             if (actor.IsNobody())
@@ -53,11 +53,11 @@ public sealed class JobCoordinatorActor : ReceiveActor
 
             actor.Forward(message);
         });
-        Receive<RoutedJobShadowResult>(HandleResult);
-        Receive<ProbeJobShadowRoute>(_ => Sender.Tell(CreateStatus()));
+        Receive<RoutedJobObservationResult>(HandleResult);
+        Receive<ProbeJobRuntime>(_ => Sender.Tell(CreateStatus()));
     }
 
-    public static Props Props(IJobShadowPersistenceStore persistenceStore) =>
+    public static Props Props(IJobObservationStore persistenceStore) =>
         global::Akka.Actor.Props.Create(() => new JobCoordinatorActor(persistenceStore));
 
     private IActorRef GetOrCreateRunActor(ulong jobRunId)
@@ -75,7 +75,7 @@ public sealed class JobCoordinatorActor : ReceiveActor
     private IActorRef GetRunActor(ulong jobRunId) =>
         Context.Child(CreateActorName(jobRunId));
 
-    private void HandleResult(RoutedJobShadowResult message)
+    private void HandleResult(RoutedJobObservationResult message)
     {
         if (message.RecoveredFromHistory)
         {
@@ -85,7 +85,7 @@ public sealed class JobCoordinatorActor : ReceiveActor
 
         switch (message.Result.Disposition)
         {
-            case JobShadowMessageDisposition.Accepted:
+            case JobMessageDisposition.Accepted:
                 _acceptedEvents = IncrementSaturating(_acceptedEvents);
                 UpdateRunCounts(message.PreviousStatus, message.CurrentStatus);
                 UpdateActiveStepCount(message.PreviousActiveSteps, message.CurrentActiveSteps);
@@ -95,14 +95,14 @@ public sealed class JobCoordinatorActor : ReceiveActor
                 }
 
                 break;
-            case JobShadowMessageDisposition.Duplicate:
+            case JobMessageDisposition.Duplicate:
                 _duplicateEvents = IncrementSaturating(_duplicateEvents);
                 break;
-            case JobShadowMessageDisposition.StaleEvent:
+            case JobMessageDisposition.StaleEvent:
                 _staleEvents = IncrementSaturating(_staleEvents);
                 break;
-            case JobShadowMessageDisposition.InvalidTransition:
-            case JobShadowMessageDisposition.IdentityMismatch:
+            case JobMessageDisposition.InvalidTransition:
+            case JobMessageDisposition.IdentityMismatch:
                 _invalidTransitions = IncrementSaturating(_invalidTransitions);
                 break;
         }
@@ -112,17 +112,17 @@ public sealed class JobCoordinatorActor : ReceiveActor
 
     private void AddRecoveredState(JobRunState? status, int activeSteps)
     {
-        if (IsActive(status) && _activeShadowJobs < int.MaxValue)
+        if (IsActive(status) && _activeJobs < int.MaxValue)
         {
-            _activeShadowJobs++;
+            _activeJobs++;
         }
         else if (status == JobRunState.Succeeded)
         {
-            _completedShadowJobs = IncrementSaturating(_completedShadowJobs);
+            _completedJobs = IncrementSaturating(_completedJobs);
         }
         else if (IsFailure(status))
         {
-            _failedShadowJobs = IncrementSaturating(_failedShadowJobs);
+            _failedJobs = IncrementSaturating(_failedJobs);
         }
 
         UpdateActiveStepCount(0, activeSteps);
@@ -130,24 +130,24 @@ public sealed class JobCoordinatorActor : ReceiveActor
 
     private void UpdateRunCounts(JobRunState? previous, JobRunState? current)
     {
-        if (!IsActive(previous) && IsActive(current) && _activeShadowJobs < int.MaxValue)
+        if (!IsActive(previous) && IsActive(current) && _activeJobs < int.MaxValue)
         {
-            _activeShadowJobs++;
+            _activeJobs++;
         }
-        else if (IsActive(previous) && IsTerminal(current) && _activeShadowJobs > 0)
+        else if (IsActive(previous) && IsTerminal(current) && _activeJobs > 0)
         {
-            _activeShadowJobs--;
+            _activeJobs--;
         }
 
         if (current == JobRunState.Succeeded && previous != JobRunState.Succeeded)
         {
             NetRatelAkkaTelemetry.JobCompleted();
-            _completedShadowJobs = IncrementSaturating(_completedShadowJobs);
+            _completedJobs = IncrementSaturating(_completedJobs);
         }
         else if (IsFailure(current) && !IsFailure(previous))
         {
             NetRatelAkkaTelemetry.JobFailed();
-            _failedShadowJobs = IncrementSaturating(_failedShadowJobs);
+            _failedJobs = IncrementSaturating(_failedJobs);
         }
 
         if (!IsActive(previous) && IsActive(current))
@@ -155,7 +155,7 @@ public sealed class JobCoordinatorActor : ReceiveActor
             NetRatelAkkaTelemetry.JobStarted();
         }
 
-        NetRatelAkkaTelemetry.SetJobsActive(_activeShadowJobs);
+        NetRatelAkkaTelemetry.SetJobsActive(_activeJobs);
     }
 
     private void UpdateActiveStepCount(int previous, int current)
@@ -173,11 +173,11 @@ public sealed class JobCoordinatorActor : ReceiveActor
         }
     }
 
-    private JobShadowRouteStatus CreateStatus() =>
+    private JobRuntimeStatus CreateStatus() =>
         new(
-            _activeShadowJobs,
-            _completedShadowJobs,
-            _failedShadowJobs,
+            _activeJobs,
+            _completedJobs,
+            _failedJobs,
             _activeJobSteps,
             _acceptedEvents,
             _invalidTransitions,
@@ -185,8 +185,8 @@ public sealed class JobCoordinatorActor : ReceiveActor
             _staleEvents,
             _missingCommandCorrelations,
             _startedAtUtc,
-            "local-shadow",
-            "unavailable");
+            "akka",
+            "akka");
 
     private static bool IsActive(JobRunState? status) =>
         status is JobRunState.Pending or JobRunState.Running;

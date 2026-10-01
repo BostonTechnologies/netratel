@@ -27,11 +27,36 @@ def product_version(root=ROOT):
     return prefix + (f"-{suffix}" if suffix else ""), bool(suffix)
 
 
+def validate_release_ref(version, ref_type, ref_name, expected_version):
+    if ref_type == "tag":
+        required_tag = f"v{version}"
+        if ref_name != required_tag:
+            raise ValueError(
+                f"Release tag '{ref_name}' does not match Directory.Build.props "
+                f"version '{version}'. Merge the version change first, then create "
+                f"'{required_tag}' at that merged commit. Do not move a published tag."
+            )
+    elif expected_version != version:
+        raise ValueError(
+            f"Requested release version '{expected_version}' does not match "
+            f"Directory.Build.props version '{version}'. Set expected_version to "
+            "the committed product version."
+        )
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest-output", type=Path)
+    parser.add_argument("--validate-release-ref", action="store_true")
     args = parser.parse_args()
     version, prerelease = product_version()
+    if args.validate_release_ref:
+        try:
+            validate_release_ref(version, os.environ.get("GITHUB_REF_TYPE", ""),
+                                 os.environ.get("GITHUB_REF_NAME", ""),
+                                 os.environ.get("NETRATEL_EXPECTED_VERSION", ""))
+        except ValueError as error:
+            parser.exit(1, f"Release source validation failed: {error}\n")
     if args.manifest_output:
         manifest = json.loads((ROOT / "release/release-manifest.json").read_text())
         if "version" in manifest or "prerelease" in manifest:

@@ -1,7 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using NetRatel.Akka.Configuration;
 using NetRatel.API.Gateway;
 using NetRatel.API.Middleware;
 using NetRatel.Application.Operations;
@@ -47,12 +46,11 @@ public static class McpOperatorCommandEndpoints
         IHostEnvironment environment,
         [FromServices] IClientPresenceRouter presence,
         IMcpOperatorRouteAdmission admission,
-        NetRatelAkkaMigrationOptions options,
         McpOperatorLocalAgentOptions localAgents,
         IAgentCommandAuthorityDispatcher dispatcher,
         CancellationToken cancellationToken)
     {
-        var admitted = await TryCreateContextAsync(http, environment, presence, admission, options, localAgents, dispatcher, tenantId, agentId,
+        var admitted = await TryCreateContextAsync(http, environment, presence, admission, localAgents, dispatcher, tenantId, agentId,
             "availability", cancellationToken).ConfigureAwait(false);
         if (admitted.Failure is { } failure)
             return failure;
@@ -77,7 +75,6 @@ public static class McpOperatorCommandEndpoints
         [FromServices] IClientPresenceRouter presence,
         IMcpOperatorRouteAdmission admission,
         IMcpOperatorConfirmationService confirmations,
-        NetRatelAkkaMigrationOptions options,
         McpOperatorLocalAgentOptions localAgents,
         IAgentCommandAuthorityDispatcher dispatcher,
         CancellationToken cancellationToken)
@@ -85,7 +82,7 @@ public static class McpOperatorCommandEndpoints
         // Preview evaluates the same destructive execution operation that the
         // confirmation will dispatch, while the delegation carries the
         // distinct preview verb bound by the MCP adapter.
-        var admitted = await TryCreateContextAsync(http, environment, presence, admission, options, localAgents, dispatcher, tenantId, agentId,
+        var admitted = await TryCreateContextAsync(http, environment, presence, admission, localAgents, dispatcher, tenantId, agentId,
             "execute", cancellationToken, delegatedOperation: "preview_execute").ConfigureAwait(false);
         if (admitted.Failure is { } failure)
             return failure;
@@ -131,12 +128,11 @@ public static class McpOperatorCommandEndpoints
         IMcpOperatorRouteAdmission admission,
         IMcpOperatorConfirmationService confirmations,
         IMcpOperatorCommandStore commands,
-        NetRatelAkkaMigrationOptions options,
         McpOperatorLocalAgentOptions localAgents,
         IAgentCommandAuthorityDispatcher dispatcher,
         CancellationToken cancellationToken)
     {
-        var admitted = await TryCreateContextAsync(http, environment, presence, admission, options, localAgents, dispatcher, tenantId, agentId,
+        var admitted = await TryCreateContextAsync(http, environment, presence, admission, localAgents, dispatcher, tenantId, agentId,
             "execute", cancellationToken).ConfigureAwait(false);
         if (admitted.Failure is { } failure)
             return failure;
@@ -240,14 +236,13 @@ public static class McpOperatorCommandEndpoints
         [FromServices] IClientPresenceRouter presence,
         IMcpOperatorRouteAdmission admission,
         IMcpOperatorCommandStore commands,
-        NetRatelAkkaMigrationOptions options,
         McpOperatorLocalAgentOptions localAgents,
         IAgentCommandAuthorityDispatcher dispatcher,
         [FromServices] IAgentCommandGatewaySessionRegistry commandSessions,
         CancellationToken cancellationToken)
     {
         var resolved = await RequireOwnedAsync("get", commandId, tenantId, agentId, http, environment, presence, admission,
-            commands, options, localAgents, dispatcher, commandSessions, cancellationToken).ConfigureAwait(false);
+            commands, localAgents, dispatcher, commandSessions, cancellationToken).ConfigureAwait(false);
         if (resolved.Failure is { } failure)
             return failure;
         try
@@ -270,14 +265,13 @@ public static class McpOperatorCommandEndpoints
         [FromServices] IClientPresenceRouter presence,
         IMcpOperatorRouteAdmission admission,
         IMcpOperatorCommandStore commands,
-        NetRatelAkkaMigrationOptions options,
         McpOperatorLocalAgentOptions localAgents,
         IAgentCommandAuthorityDispatcher dispatcher,
         [FromServices] IAgentCommandGatewaySessionRegistry commandSessions,
         CancellationToken cancellationToken)
     {
         var resolved = await RequireOwnedAsync("cancel", commandId, tenantId, agentId, http, environment, presence, admission,
-            commands, options, localAgents, dispatcher, commandSessions, cancellationToken).ConfigureAwait(false);
+            commands, localAgents, dispatcher, commandSessions, cancellationToken).ConfigureAwait(false);
         if (resolved.Failure is { } failure)
             return failure;
         if (!commandSessions.IsAvailable(new ClientKey(tenantId, agentId)))
@@ -312,13 +306,12 @@ public static class McpOperatorCommandEndpoints
         [FromServices] IClientPresenceRouter presence,
         IMcpOperatorRouteAdmission admission,
         IMcpOperatorCommandStore commands,
-        NetRatelAkkaMigrationOptions options,
         McpOperatorLocalAgentOptions localAgents,
         IAgentCommandAuthorityDispatcher dispatcher,
         [FromServices] IAgentCommandGatewaySessionRegistry commandSessions,
         CancellationToken cancellationToken)
     {
-        var admitted = await TryCreateContextAsync(http, environment, presence, admission, options, localAgents, dispatcher, tenantId, agentId,
+        var admitted = await TryCreateContextAsync(http, environment, presence, admission, localAgents, dispatcher, tenantId, agentId,
             operation, cancellationToken).ConfigureAwait(false);
         if (admitted.Context is not { } context)
             return new(null, null, admitted.Failure!);
@@ -358,7 +351,6 @@ public static class McpOperatorCommandEndpoints
         IHostEnvironment environment,
         [FromServices] IClientPresenceRouter presence,
         IMcpOperatorRouteAdmission admission,
-        NetRatelAkkaMigrationOptions options,
         McpOperatorLocalAgentOptions localAgents,
         IAgentCommandAuthorityDispatcher dispatcher,
         int tenantId,
@@ -388,8 +380,8 @@ public static class McpOperatorCommandEndpoints
         var client = new ClientKey(tenantId, agentId);
         var requiresLiveGateway = operation != "get";
         var online = !requiresLiveGateway ||
-            (await presence.GetSnapshotAsync(client, cancellationToken).ConfigureAwait(false)).Status == ShadowPresenceStatus.Online;
-        var available = !requiresLiveGateway || (options.IsCommandAuthorityActive && dispatcher.IsAvailable(client));
+            (await presence.GetSnapshotAsync(client, cancellationToken).ConfigureAwait(false)).Status == ClientPresenceStatus.Online;
+        var available = !requiresLiveGateway || dispatcher.IsAvailable(client);
         var routeRequest = new McpOperatorRouteAccessRequest(
             operatorEnvironment,
             new McpOperatorPrincipal(effectiveDelegation.Identity.Subject, effectiveDelegation.Identity.ClientId, effectiveDelegation.Identity.AuthorizedParty,

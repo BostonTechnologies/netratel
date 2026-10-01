@@ -3,6 +3,7 @@ using System.IO.Compression;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Security.Claims;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
@@ -365,9 +366,13 @@ public sealed class ClientDownloadEndpointTests
     }
 
     [Theory]
-    [InlineData("v1")]
-    [InlineData("v2")]
-    public async Task GetOnboardingDownload_WithEnrollmentCode_DoesNotConsumeCode(string apiVersion)
+    [InlineData("v1", "0.4.6")]
+    [InlineData("v1", "latest")]
+    [InlineData("v2", "0.4.6")]
+    [InlineData("v2", "latest")]
+    public async Task GetOnboardingDownload_WithEnrollmentCode_DoesNotConsumeCode_AndReturnsResolvedIntegrityMetadata(
+        string apiVersion,
+        string requestedVersion)
     {
         var root = Path.Combine(Path.GetTempPath(), "netratel-tests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
@@ -377,14 +382,15 @@ public sealed class ClientDownloadEndpointTests
         var versionDir = Path.Combine(storageRoot, rid, version);
         Directory.CreateDirectory(versionDir);
 
-        await File.WriteAllBytesAsync(Path.Combine(versionDir, "NetRatel.Client-win-x64-0.4.6.zip"), BuildBaseZip());
+        var archiveBytes = BuildBaseZip();
+        await File.WriteAllBytesAsync(Path.Combine(versionDir, "NetRatel.Client-win-x64-0.4.6.zip"), archiveBytes);
         var metadata = new
         {
             rid,
             version,
             fileName = "NetRatel.Client-win-x64-0.4.6.zip",
-            size = 123,
-            sha256 = "abc",
+            size = archiveBytes.LongLength,
+            sha256 = Convert.ToHexString(SHA256.HashData(archiveBytes)).ToLowerInvariant(),
             uploadedAt = DateTimeOffset.UtcNow,
             uploadedBy = "test",
             notes = "n",
@@ -411,17 +417,24 @@ public sealed class ClientDownloadEndpointTests
         }
 
         var client = app.GetTestClient();
-        using var request = new HttpRequestMessage(HttpMethod.Get, $"/api/{apiVersion}/client-artifacts/win-x64/0.4.6/onboarding-download");
+        using var request = new HttpRequestMessage(HttpMethod.Get, $"/api/{apiVersion}/client-artifacts/win-x64/{requestedVersion}/onboarding-download");
         request.Headers.Add("X-NetRatel-Tenant-Id", "4098");
         request.Headers.Add("X-NetRatel-Enrollment-Code", "ENR-TEST1");
         var response = await client.SendAsync(request);
 
         response.IsSuccessStatusCode.Should().BeTrue();
+        response.Headers.GetValues("X-NetRatel-Artifact-Rid").Should().Equal("win-x64");
+        response.Headers.GetValues("X-NetRatel-Artifact-Version").Should().Equal("0.4.6");
+        response.Headers.GetValues("X-NetRatel-Artifact-Sha256").Should().Equal(Convert.ToHexString(SHA256.HashData(archiveBytes)).ToLowerInvariant());
+        response.Headers.GetValues("X-NetRatel-Artifact-Size").Should().Equal(archiveBytes.LongLength.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        var downloadedArchive = await response.Content.ReadAsByteArrayAsync();
+        Convert.ToHexString(SHA256.HashData(downloadedArchive)).ToLowerInvariant()
+            .Should().Be(response.Headers.GetValues("X-NetRatel-Artifact-Sha256").Single());
         await using var verifyScope = app.Services.CreateAsyncScope();
         var verifyDb = verifyScope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
         var code = await verifyDb.EnrollmentCodes.SingleAsync();
         code.Uses.Should().Be(0);
-        var path = $"/api/{apiVersion}/client-artifacts/win-x64/0.4.6/onboarding-download";
+        var path = $"/api/{apiVersion}/client-artifacts/win-x64/{requestedVersion}/onboarding-download";
         (await client.GetAsync(path)).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
         using var wrongTenant = new HttpRequestMessage(HttpMethod.Get, path);
         wrongTenant.Headers.Add("X-NetRatel-Tenant-Id", "4099");

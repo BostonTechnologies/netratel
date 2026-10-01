@@ -7,6 +7,7 @@ using NetRatel.API.Models;
 using NetRatel.Application.Artifacts;
 using NetRatel.Infrastructure.Identity.Branding;
 using NetRatel.Infrastructure.Persistence;
+using NetRatel.Shared.Client;
 
 namespace NetRatel.API.Services;
 
@@ -33,7 +34,8 @@ public sealed class ClientInstallLinkService(
     IDataProtectionProvider protection,
     IDeploymentBrandingService branding,
     IConfiguration configuration,
-    TimeProvider clock)
+    TimeProvider clock,
+    ILogger<ClientInstallLinkService> logger)
 {
     private readonly IDataProtector _tokenProtector = protection.CreateProtector("NetRatel.ClientInstallGrant.Token.v1");
     private readonly IDataProtector _scriptProtector = protection.CreateProtector("NetRatel.ClientInstallGrant.Script.v1");
@@ -66,8 +68,23 @@ public sealed class ClientInstallLinkService(
             .SingleOrDefaultAsync(x => x.RequestKey == requestKey, ct);
         if (existing is not null) return ToResult(existing, fingerprint, replay: true);
 
-        var publicBase = ValidatedPublicBase(
-            (await branding.GetEffectiveAsync(ct).ConfigureAwait(false)).SiteUrl.Value);
+        var siteUrl = (await branding.GetEffectiveAsync(ct).ConfigureAwait(false)).SiteUrl.Value;
+        var publicWebBase = ValidatedPublicOrigin(siteUrl, "public web");
+        var configuredApiBase = configuration["ClientArtifacts:PublicBaseUrl"];
+        var apiEndpointSource = string.IsNullOrWhiteSpace(configuredApiBase)
+            ? "branding-site-url"
+            : "client-artifacts-public-base-url";
+        var publicApiBase = ValidatedPublicApiBase(
+            string.IsNullOrWhiteSpace(configuredApiBase) ? siteUrl : configuredApiBase);
+        var configuredGatewayEndpoint = configuration["ClientArtifacts:PublicGatewayBaseUrl"];
+        var gatewayEndpoint = string.IsNullOrWhiteSpace(configuredGatewayEndpoint)
+            ? null
+            : ValidatedPublicGatewayBase(configuredGatewayEndpoint);
+        if (gatewayEndpoint is not null &&
+            string.Equals(gatewayEndpoint, publicApiBase, StringComparison.OrdinalIgnoreCase))
+        {
+            gatewayEndpoint = null;
+        }
         var keysDirectory = configuration["DataProtection:KeysDirectory"];
         if (!string.IsNullOrWhiteSpace(keysDirectory) && !Path.IsPathRooted(keysDirectory))
             keysDirectory = Path.Combine(AppContext.BaseDirectory, keysDirectory);
@@ -95,9 +112,9 @@ public sealed class ClientInstallLinkService(
         var extension = templates.GetFileExtension(runtimeId);
         var expires = now.AddMinutes(validated.validForMinutes);
         var script = templates.Build(new DeploymentScriptTemplateRequest(
-            request.TenantId, runtimeId, code, publicBase, expires,
+            request.TenantId, runtimeId, code, publicApiBase, expires,
             request.InstallAsService, request.SilentInstall,
-            artifact.Version, artifact.Sha256));
+            artifact.Version, artifact.Sha256, gatewayEndpoint));
         var codeId = Guid.NewGuid();
         var grant = new ClientInstallGrant
         {
@@ -107,7 +124,7 @@ public sealed class ClientInstallLinkService(
             TenantId = request.TenantId, RuntimeId = runtimeId,
             ArtifactVersion = artifact.Version, ArtifactSha256 = artifact.Sha256,
             InstallAsService = request.InstallAsService, SilentInstall = request.SilentInstall,
-            PublicWebBaseUrl = publicBase, PublicApiBaseUrl = publicBase,
+            PublicWebBaseUrl = publicWebBase, PublicApiBaseUrl = publicApiBase,
             CreatedBy = createdBy, CreatedAtUtc = now, ExpiresAtUtc = expires,
             MaxUses = validated.maxUses
         };
@@ -135,6 +152,11 @@ public sealed class ClientInstallLinkService(
             if (existing is null) throw;
             return ToResult(existing, fingerprint, replay: true);
         }
+        logger.LogInformation(
+            "Public client install link created. tenantId={TenantId}, apiEndpointSource={ApiEndpointSource}, gatewayEndpointSource={GatewayEndpointSource}",
+            request.TenantId,
+            apiEndpointSource,
+            gatewayEndpoint is null ? "shared-api-origin" : "client-artifacts-public-gateway-base-url");
         return BuildResult(grant, token, script, extension, replay: false);
     }
 
@@ -223,7 +245,7 @@ public sealed class ClientInstallLinkService(
             (!code.MaxUses.HasValue || code.Uses < code.MaxUses.Value);
     }
 
-    private static string ValidatedPublicBase(string? value)
+    private static string ValidatedPublicOrigin(string? value, string endpointName)
     {
         if (string.IsNullOrWhiteSpace(value) || !Uri.TryCreate(value, UriKind.Absolute, out var uri) ||
             uri.Scheme != Uri.UriSchemeHttps || uri.Port != 443 || uri.UserInfo.Length != 0 ||
@@ -231,10 +253,23 @@ public sealed class ClientInstallLinkService(
             uri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase) ||
             uri.Host.EndsWith(".local", StringComparison.OrdinalIgnoreCase) ||
             uri.Host.EndsWith(".internal", StringComparison.OrdinalIgnoreCase) ||
-            uri.Query.Length != 0 || uri.Fragment.Length != 0)
+            uri.Query.Length != 0 || uri.Fragment.Length != 0 || uri.AbsolutePath.TrimEnd('/').Length != 0)
             throw new InvalidOperationException(
-                "Set Branding:SiteUrl to a public HTTPS origin before creating install links.");
-        return uri.GetLeftPart(UriPartial.Path).TrimEnd('/');
+                $"Set the public {endpointName} endpoint to a public HTTPS origin before creating install links.");
+        return uri.GetLeftPart(UriPartial.Authority);
+    }
+
+    private static string ValidatedPublicApiBase(string? value)
+    {
+        var normalized = ClientEndpointAddress.NormalizeApiBase(value);
+        var origin = ValidatedPublicOrigin(normalized, "API");
+        return origin;
+    }
+
+    private static string ValidatedPublicGatewayBase(string? value)
+    {
+        var normalized = ClientEndpointAddress.NormalizeGatewayBase(value);
+        return ValidatedPublicOrigin(normalized, "gateway");
     }
 
     private static string Hash(string value) =>

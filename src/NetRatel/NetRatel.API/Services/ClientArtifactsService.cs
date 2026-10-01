@@ -22,7 +22,6 @@ public sealed class ClientArtifactsOptions
     public string StorageRoot { get; set; } = Path.Combine("artifacts", "client-store");
     public string LegacyRoot { get; set; } = Path.Combine("artifacts", "client");
     public bool EnableFallbackScan { get; set; } = true;
-    public string? PublicBaseUrl { get; set; }
 
     // Test-only crash injection. Normal configuration cannot bind a delegate,
     // so production paths leave this unset.
@@ -1314,57 +1313,6 @@ public sealed class ClientArtifactsService : IClientArtifactsService
         => rid.StartsWith("win-", StringComparison.OrdinalIgnoreCase)
             ? "NetRatel.Client.exe"
             : "NetRatel.Client";
-
-    public static string BuildRawDownloadUrl(IConfiguration configuration, string rid, string version)
-    {
-        var baseUrl = ResolvePublicBaseUrl(configuration);
-
-        return $"{baseUrl.TrimEnd('/')}/api/v1/client-artifacts/{Uri.EscapeDataString(rid)}/{Uri.EscapeDataString(version)}/raw-download";
-    }
-
-    private string BuildRawDownloadUrl(string rid, string version)
-        => BuildRawDownloadUrl(_configuration, rid, version);
-
-    private static string ResolvePublicBaseUrl(IConfiguration configuration)
-    {
-        var candidates = new[]
-        {
-            configuration["ClientArtifacts:PublicBaseUrl"],
-            configuration["NetRatelApi:BaseUrl"],
-            configuration["ApiBaseUrl"],
-            configuration["AgentAuth:Issuer"],
-            configuration["ClientDefaults:Dev:ApiBaseUrl"],
-            "https://netratel.example.invalid"
-        };
-
-        foreach (var candidate in candidates)
-        {
-            if (string.IsNullOrWhiteSpace(candidate))
-            {
-                continue;
-            }
-
-            if (!Uri.TryCreate(candidate.Trim(), UriKind.Absolute, out var uri))
-            {
-                continue;
-            }
-
-            if (!string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) &&
-                !string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            if (uri.IsLoopback)
-            {
-                continue;
-            }
-
-            return uri.GetLeftPart(UriPartial.Authority);
-        }
-
-        return "https://netratel.example.invalid";
-    }
 
     private sealed class ClientArtifactMetadata
     {

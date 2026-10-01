@@ -1,7 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using NetRatel.Akka.Configuration;
 using NetRatel.API.Gateway;
 using NetRatel.API.Middleware;
 using NetRatel.API.Services;
@@ -139,9 +138,9 @@ public static class McpOperatorClientAdministrationEndpoints
             var item = projection.Items.SingleOrDefault(candidate => candidate.Client.TenantId == tenantId && candidate.Client.AgentId == agentId);
             var availability = files?.GetAvailability(new ClientKey(tenantId, agentId));
             var advertised = item?.Capabilities.Contains("file-gateway", StringComparer.OrdinalIgnoreCase) == true;
-            var fenceMatchesPresence = availability is not null && item is { Status: ShadowPresenceStatus.Online, ConnectionId: var connectionId, ConnectionEpoch: var epoch } &&
+            var fenceMatchesPresence = availability is not null && item is { Status: ClientPresenceStatus.Online, ConnectionId: var connectionId, ConnectionEpoch: var epoch } &&
                 connectionId == availability.ConnectionId && epoch == checked((long)availability.ConnectionEpoch);
-            var readinessReason = item?.Status != ShadowPresenceStatus.Online
+            var readinessReason = item?.Status != ClientPresenceStatus.Online
                 ? "file_gateway_presence_offline"
                 : !advertised
                     ? "file_gateway_not_advertised"
@@ -287,12 +286,12 @@ public static class McpOperatorClientAdministrationEndpoints
         [FromServices] McpOperatorLocalAgentOptions localAgents,
         [FromServices] IMcpOperatorRouteAdmission admission,
         [FromServices] IClientPresenceRouter presence,
-        [FromServices] NetRatelAkkaMigrationOptions options,
+        [FromServices] IAgentControlSessionRegistry controlSessions,
         [FromServices] IMcpOperatorConfirmationService confirmations,
         CancellationToken cancellationToken)
     {
         var admitted = await TryPingContextAsync(
-            tenantId, agentId, "preview_ping", http, environment, localAgents, admission, presence, options, cancellationToken).ConfigureAwait(false);
+            tenantId, agentId, "preview_ping", http, environment, localAgents, admission, presence, controlSessions, cancellationToken).ConfigureAwait(false);
         if (admitted.Failure is { } failure) return failure;
         var context = admitted.Context!;
         try
@@ -320,13 +319,12 @@ public static class McpOperatorClientAdministrationEndpoints
         [FromServices] McpOperatorLocalAgentOptions localAgents,
         [FromServices] IMcpOperatorRouteAdmission admission,
         [FromServices] IClientPresenceRouter presence,
-        [FromServices] NetRatelAkkaMigrationOptions options,
         [FromServices] IAgentControlSessionRegistry controlSessions,
         [FromServices] IMcpOperatorConfirmationService confirmations,
         CancellationToken cancellationToken)
     {
         var admitted = await TryPingContextAsync(
-            tenantId, agentId, "ping", http, environment, localAgents, admission, presence, options, cancellationToken).ConfigureAwait(false);
+            tenantId, agentId, "ping", http, environment, localAgents, admission, presence, controlSessions, cancellationToken).ConfigureAwait(false);
         if (admitted.Failure is { } failure) return failure;
         var context = admitted.Context!;
         if (!IsOpaque(request.PlanToken) || !IsOpaque(request.IdempotencyKey)) return Failure("confirmation_plan_invalid", context);
@@ -739,10 +737,11 @@ public static class McpOperatorClientAdministrationEndpoints
         McpOperatorLocalAgentOptions localAgents,
         IMcpOperatorRouteAdmission admission,
         [FromServices] IClientPresenceRouter presence,
-        NetRatelAkkaMigrationOptions options,
+        IAgentControlSessionRegistry controlSessions,
         CancellationToken cancellationToken)
     {
-        var snapshot = await presence.GetSnapshotAsync(new ClientKey(tenantId, agentId), cancellationToken).ConfigureAwait(false);
+        var client = new ClientKey(tenantId, agentId);
+        var snapshot = await presence.GetSnapshotAsync(client, cancellationToken).ConfigureAwait(false);
         return await TryContextAsync(
             "ping",
             tenantId,
@@ -753,8 +752,8 @@ public static class McpOperatorClientAdministrationEndpoints
             admission,
             cancellationToken,
             delegatedOperation,
-            snapshot.Status == ShadowPresenceStatus.Online,
-            options.IsPingAuthorityActive).ConfigureAwait(false);
+            snapshot.Status == ClientPresenceStatus.Online,
+            controlSessions.IsAvailable(client)).ConfigureAwait(false);
     }
 
     private static IResult Failure(string code, McpOperatorClientContext context)

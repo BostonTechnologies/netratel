@@ -6,7 +6,6 @@
 
 @inject ClientApiService ClientApi
 @inject IHttpClientFactory HttpClientFactory
-@inject ITokenProvider TokenProvider
 @inject ISnackbar Snackbar
 
 <MudDialog Class="client-log-dialog">
@@ -111,7 +110,7 @@
             MergeLogs(snapshot.Select(x => x.Line).ToList(), forwardingEnabled: true);
             _initialSnapshotLoaded = true;
 
-            _stream = new ClientLogStreamService(HttpClientFactory, TokenProvider);
+            _stream = new ClientLogStreamService(HttpClientFactory);
             await _stream.StartAsync(
                 Client.ClientIdentity,
                 OnClientLogEntryAsync,

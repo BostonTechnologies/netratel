@@ -345,7 +345,6 @@ public sealed class TerminalPresenceRecoveryTests : AsyncBunitContext
         public List<string> CloseCalls { get; } = [];
         public Dictionary<string, Channel<TerminalStreamMessage>> Streams { get; } = [];
         public Task EnsureSubscribedAsync(CancellationToken ct = default) => Task.CompletedTask;
-        public Task<TerminalOpenResponse> OpenSessionAsync(string identity, OpenTerminalRequest request, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<TerminalOpenResponse> OpenGatewaySessionAsync(int tenantId, Guid agentId, OpenTerminalRequest request, CancellationToken ct = default)
         {
             Opens.Add((tenantId, agentId, request));
@@ -373,7 +372,6 @@ public sealed class TerminalPresenceRecoveryTests : AsyncBunitContext
         public Task<TerminalActionResponse> SendInputAsync(string id, string data, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<ITerminalInputChannel> OpenInputChannelAsync(string id, Action<TerminalInputChannelStatus>? onStatus = null, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<TerminalActionResponse> ResizeAsync(string id, int cols, int rows, CancellationToken ct = default) => throw new NotSupportedException();
-        public Task<IReadOnlyList<TerminalSessionDto>> GetSessionsAsync(string identity, CancellationToken ct = default) => throw new NotSupportedException();
         public async IAsyncEnumerable<TerminalStreamMessage> StreamSessionAsync(string id, [EnumeratorCancellation] CancellationToken ct = default)
         {
             var stream = Channel.CreateUnbounded<TerminalStreamMessage>();

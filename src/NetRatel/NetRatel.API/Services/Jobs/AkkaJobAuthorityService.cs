@@ -1,7 +1,8 @@
-using NetRatel.Akka.Configuration;
 using NetRatel.Akka.Observability;
 using NetRatel.API.Gateway;
+using NetRatel.API.Realtime;
 using NetRatel.Application.Agents;
+using NetRatel.Application.Fanout;
 using NetRatel.Application.Jobs;
 using NetRatel.Application.Presence;
 using NetRatel.Shared.Contracts.Jobs;
@@ -16,7 +17,7 @@ public interface IAkkaJobAuthorityService
 }
 
 /// <summary>
-/// DEV-only runtime owner for a job run.  It records every transition through
+/// Runtime owner for a job run. It records every transition through
 /// the Akka job router before projecting it into the existing PostgreSQL job
 /// read model, and dispatches only to a fenced AgentJobGateway session.
 /// </summary>
@@ -25,24 +26,19 @@ public sealed class AkkaJobAuthorityService(
     IJobRunService jobRuns,
     JobTaskBridge taskBridge,
     IAgentJobGatewaySessionRegistry sessions,
-    IJobShadowRouter jobRouter,
+    IJobRuntimeRouter jobRouter,
+    IRealtimeFanoutSink fanout,
     JobAuthorityIdGenerator ids,
-    NetRatelAkkaMigrationOptions options,
     IHostEnvironment environment) : IAkkaJobAuthorityService
 {
     private const string Authority = "akka";
     private const string Feature = "jobs";
 
-    private sealed class JobShadowTransitionRejectedException(JobShadowMessageResult result)
+    private sealed class JobTransitionRejectedException(JobMessageResult result)
         : InvalidOperationException($"Job authority lifecycle transition was rejected: {result.Disposition}.");
 
     public async Task<JobRunInfo> StartAsync(ulong jobId, RunJobRequest request, CancellationToken cancellationToken)
     {
-        if (!options.IsJobAuthorityActive)
-        {
-            throw new InvalidOperationException("The job authority canary is disabled.");
-        }
-
         var definition = await jobDefinitions.GetDetailsAsync(jobId, cancellationToken).ConfigureAwait(false)
             ?? throw new KeyNotFoundException($"Job {jobId} was not found.");
         if (!definition.Job.TenantId.HasValue)
@@ -67,7 +63,7 @@ public sealed class AkkaJobAuthorityService(
         var client = new ClientKey(definition.Job.TenantId.Value, agentId);
         if (!sessions.IsAvailable(client))
         {
-            NetRatelAkkaTelemetry.RecordAuthorityFailure(Feature, Authority, fallbackUsed: false, environment.EnvironmentName);
+            NetRatelAkkaTelemetry.RecordAuthorityFailure(Feature, Authority, environment.EnvironmentName);
             throw new AgentJobGatewaySessionUnavailableException(client);
         }
 
@@ -107,13 +103,13 @@ public sealed class AkkaJobAuthorityService(
         {
             await RecordRunAsync(run, JobRunState.Pending, 0, createdAt, null, null, sourceEventId: 1, cancellationToken).ConfigureAwait(false); // queued
         }
-        catch (JobShadowTransitionRejectedException)
+        catch (JobTransitionRejectedException)
         {
             await FailBeforeDispatchAsync(run, cancellationToken).ConfigureAwait(false);
             throw;
         }
-        NetRatelAkkaTelemetry.RecordAuthorityRequest(Feature, Authority, fallbackUsed: false, environment.EnvironmentName);
-        NetRatelAkkaTelemetry.RecordAuthorityEvent(Feature, Authority, fallbackUsed: false, environment.EnvironmentName); // scheduled
+        NetRatelAkkaTelemetry.RecordAuthorityRequest(Feature, Authority, environment.EnvironmentName);
+        NetRatelAkkaTelemetry.RecordAuthorityEvent(Feature, Authority, environment.EnvironmentName); // scheduled
         return await DispatchNextAsync(run.Id, client, nextVersion: 3, nextSequence: 3, cancellationToken).ConfigureAwait(false);
     }
 
@@ -136,8 +132,8 @@ public sealed class AkkaJobAuthorityService(
             throw new InvalidOperationException("The job lifecycle request does not match the dispatched step.");
         }
 
-        NetRatelAkkaTelemetry.RecordAuthorityRequest(Feature, Authority, fallbackUsed: false, environment.EnvironmentName);
-        using var activity = NetRatelAkkaTelemetry.StartAuthorityActivity(Feature, Authority, lifecycle.Status.ToString(), fallbackUsed: false, environment.EnvironmentName);
+        NetRatelAkkaTelemetry.RecordAuthorityRequest(Feature, Authority, environment.EnvironmentName);
+        using var activity = NetRatelAkkaTelemetry.StartAuthorityActivity(Feature, Authority, lifecycle.Status.ToString(), environment.EnvironmentName);
 
         switch (lifecycle.Status)
         {
@@ -159,7 +155,7 @@ public sealed class AkkaJobAuthorityService(
                 throw new InvalidOperationException($"Unsupported agent job lifecycle status '{lifecycle.Status}'.");
         }
 
-        NetRatelAkkaTelemetry.RecordAuthorityEvent(Feature, Authority, fallbackUsed: false, environment.EnvironmentName);
+        NetRatelAkkaTelemetry.RecordAuthorityEvent(Feature, Authority, environment.EnvironmentName);
     }
 
     public async Task<bool> CancelAsync(ulong jobRunId, string reason, CancellationToken cancellationToken)
@@ -177,7 +173,7 @@ public sealed class AkkaJobAuthorityService(
         var client = new ClientKey(tenantId, agentId);
         if (!sessions.IsAvailable(client))
         {
-            NetRatelAkkaTelemetry.RecordAuthorityFailure(Feature, Authority, fallbackUsed: false, environment.EnvironmentName);
+            NetRatelAkkaTelemetry.RecordAuthorityFailure(Feature, Authority, environment.EnvironmentName);
             return false;
         }
 
@@ -200,7 +196,7 @@ public sealed class AkkaJobAuthorityService(
                 run.Id, run.JobId, run.TenantId, run.ClientIdentity, run.StartedBy, JobRunState.Succeeded, run.CurrentStepOrdinal,
                 run.CreatedAtUtc, run.StartedAtUtc ?? completedAt, completedAt, null, run.InputsJson, run.OptionsJson, run.AgentId), cancellationToken).ConfigureAwait(false);
             await RecordRunAsync(completed, JobRunState.Succeeded, completed.CurrentStepOrdinal, completed.CreatedAtUtc, completed.StartedAtUtc, completed.CompletedAtUtc, checked((long)nextSequence), cancellationToken).ConfigureAwait(false);
-            NetRatelAkkaTelemetry.JobAuthorityCompleted(Authority, fallbackUsed: false, environment.EnvironmentName);
+            NetRatelAkkaTelemetry.JobAuthorityCompleted(Authority, environment.EnvironmentName);
             NetRatelAkkaTelemetry.SetJobsAuthorityRunning(0);
             return completed;
         }
@@ -226,7 +222,7 @@ public sealed class AkkaJobAuthorityService(
         {
             await RecordRunAsync(running, JobRunState.Running, next.Ordinal, running.CreatedAtUtc, running.StartedAtUtc, null, checked((long)(nextSequence - 1)), cancellationToken).ConfigureAwait(false);
         }
-        catch (JobShadowTransitionRejectedException)
+        catch (JobTransitionRejectedException)
         {
             await FailBeforeDispatchAsync(running, cancellationToken).ConfigureAwait(false);
             throw;
@@ -350,19 +346,37 @@ public sealed class AkkaJobAuthorityService(
 
     private async Task RecordRunAsync(JobRunInfo run, JobRunState status, int currentOrdinal, DateTimeOffset createdAtUtc, DateTimeOffset? startedAtUtc, DateTimeOffset? completedAtUtc, long sourceEventId, CancellationToken cancellationToken)
     {
-        var result = await jobRouter.RecordAsync(new RecordJobShadowObservation(new JobRunShadowObservation(
+        var observation = new JobRunObservation(
             sourceEventId, run.Id, run.JobId, run.TenantId, run.ClientIdentity, run.StartedBy, status, currentOrdinal,
-            createdAtUtc, startedAtUtc, completedAtUtc, DateTimeOffset.UtcNow, $"akka-job-authority:{run.Id}", true)), cancellationToken).ConfigureAwait(false);
+            createdAtUtc, startedAtUtc, completedAtUtc, DateTimeOffset.UtcNow, $"akka-job-authority:{run.Id}", true);
+        var result = await jobRouter.RecordAsync(new RecordJobObservation(observation), cancellationToken).ConfigureAwait(false);
         RequireAccepted(result);
+        PublishFanout(observation, result);
     }
 
     private async Task RecordStepAsync(JobRunInfo run, JobStepRunInfo step, long sourceEventId, CancellationToken cancellationToken)
     {
-        var result = await jobRouter.RecordAsync(new RecordJobShadowObservation(new JobStepShadowObservation(
+        var observation = new JobStepObservation(
             sourceEventId, run.Id, run.JobId, run.TenantId, run.ClientIdentity, step.Id, step.JobStepId,
             step.Status, step.Ordinal, step.TaskRequestId, step.StartedAtUtc, step.CompletedAtUtc, DateTimeOffset.UtcNow,
-            $"akka-job-authority:{run.Id}", true)), cancellationToken).ConfigureAwait(false);
+            $"akka-job-authority:{run.Id}", true);
+        var result = await jobRouter.RecordAsync(new RecordJobObservation(observation), cancellationToken).ConfigureAwait(false);
         RequireAccepted(result);
+        PublishFanout(observation, result);
+    }
+
+    private void PublishFanout(IJobObservation observation, JobMessageResult result)
+    {
+        if (result.Disposition != JobMessageDisposition.Accepted)
+        {
+            return;
+        }
+
+        var envelope = RealtimeFanoutEnvelopeFactory.FromJob(observation, result);
+        if (envelope is not null)
+        {
+            fanout.TryEnqueueBestEffort(envelope);
+        }
     }
 
     private static void RequireRunTarget(JobRunInfo run, ClientKey client)
@@ -373,11 +387,11 @@ public sealed class AkkaJobAuthorityService(
         }
     }
 
-    private static void RequireAccepted(JobShadowMessageResult result)
+    private static void RequireAccepted(JobMessageResult result)
     {
-        if (result.Disposition is not JobShadowMessageDisposition.Accepted and not JobShadowMessageDisposition.Duplicate)
+        if (result.Disposition is not JobMessageDisposition.Accepted and not JobMessageDisposition.Duplicate)
         {
-            throw new JobShadowTransitionRejectedException(result);
+            throw new JobTransitionRejectedException(result);
         }
     }
 
@@ -392,17 +406,6 @@ public sealed class AkkaJobAuthorityService(
         string.Equals(status, "Failed", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(status, "Cancelled", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(status, "TimedOut", StringComparison.OrdinalIgnoreCase);
-}
-
-public sealed class UnavailableAkkaJobAuthorityService : IAkkaJobAuthorityService
-{
-    public Task<JobRunInfo> StartAsync(ulong jobId, RunJobRequest request, CancellationToken cancellationToken)
-        => Task.FromException<JobRunInfo>(new InvalidOperationException("The Akka job authority is unavailable."));
-
-    public Task RecordLifecycleAsync(ClientKey client, JobLifecycleUpdateEnvelope lifecycle, CancellationToken cancellationToken)
-        => Task.FromException(new InvalidOperationException("The Akka job authority is unavailable."));
-
-    public Task<bool> CancelAsync(ulong jobRunId, string reason, CancellationToken cancellationToken) => Task.FromResult(false);
 }
 
 public sealed record JobLifecycleUpdateEnvelope(

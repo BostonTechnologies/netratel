@@ -20,7 +20,6 @@ using NetRatel.API.Gateway;
 using NetRatel.API.Middleware;
 using NetRatel.API.Services;
 using NetRatel.AgentGateway.Contracts.V1;
-using NetRatel.Akka.Configuration;
 using NetRatel.Application.Operations;
 using NetRatel.Application.Presence;
 using NetRatel.Shared.Operations;
@@ -67,9 +66,9 @@ public sealed class McpOperatorRemoteSupportEndpointTests
     }
 
     [Fact]
-    public async Task Disabled_inventory_profile_starts_without_preparation_registration_and_reports_unavailability()
+    public async Task Missing_inventory_is_reported_by_the_required_preparation_service()
     {
-        using var app = await BuildAsync(new RecordingAdmission(), new Preparation(), inventoryEnabled: false);
+        using var app = await BuildAsync(new RecordingAdmission(), new Preparation { Available = false, HasInventory = false });
         var client = app.GetTestClient();
         foreach (var operation in new[] { "presence", "capabilities", "inventory" })
         {
@@ -78,7 +77,6 @@ public sealed class McpOperatorRemoteSupportEndpointTests
             response.StatusCode.Should().Be(HttpStatusCode.OK);
             if (operation == "presence") continue;
             var json = await response.Content.ReadFromJsonAsync<JsonElement>();
-            json.GetProperty("enabled").GetBoolean().Should().BeFalse();
             json.GetProperty("hasSnapshot").GetBoolean().Should().BeFalse();
             json.GetProperty("transportAvailable").GetBoolean().Should().BeFalse();
         }
@@ -141,7 +139,7 @@ public sealed class McpOperatorRemoteSupportEndpointTests
                     "https://mcp.dev.example/mcp", "dev", 42, target, "remote-support-test-correlation")));
     }
 
-    private static async Task<IHost> BuildAsync(RecordingAdmission admission, Preparation preparation, bool inventoryEnabled = true)
+    private static async Task<IHost> BuildAsync(RecordingAdmission admission, Preparation preparation)
     {
         return await Host.CreateDefaultBuilder().ConfigureWebHost(web =>
         {
@@ -157,11 +155,9 @@ public sealed class McpOperatorRemoteSupportEndpointTests
                 services.AddSingleton<McpOperatorDelegationTokenService>();
                 services.AddSingleton<IMcpOperatorRouteAdmission>(admission);
                 services.AddSingleton<IClientPresenceRouter>(new TestPresence(new ClientKey(42, Agent)));
-                if (inventoryEnabled) services.AddSingleton<IRemoteSupportV2PreparationRegistry>(preparation);
+                services.AddSingleton<IRemoteSupportV2PreparationRegistry>(preparation);
                 services.AddSingleton<IMcpOperatorConfirmationService>(new Confirmations());
                 services.AddSingleton(TimeProvider.System);
-                services.AddSingleton(new NetRatelAkkaMigrationOptions { Enabled = true, PresenceAuthorityEnabled = true,
-                    RemoteSupportGatewayEnabled = true, RemoteSupportAuthorityEnabled = true, RemoteSupportV2InventoryEnabled = inventoryEnabled });
             });
             web.Configure(app =>
             {
@@ -175,10 +171,11 @@ public sealed class McpOperatorRemoteSupportEndpointTests
     {
         public bool Available { get; init; } = true;
         public bool CloseChannel { get; init; }
+        public bool HasInventory { get; init; } = true;
         public int Refreshes { get; private set; }
-        public RemoteSupportTargetInventoryProjection? GetInventory(ClientKey client) => new(
+        public RemoteSupportTargetInventoryProjection? GetInventory(ClientKey client) => HasInventory ? new(
             new(2, client.TenantId, client.AgentId, 1, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddMinutes(1), []),
-            DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddMinutes(1));
+            DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddMinutes(1)) : null;
         public RemoteSupportV2CapabilitySnapshot? GetCapabilities(ClientKey client) => Available
             ? new(client.TenantId, client.AgentId, Guid.NewGuid(), 1, [], DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddMinutes(1)) : null;
         public Task RequestInventoryRefreshAsync(ClientKey client, CancellationToken cancellationToken)
@@ -283,7 +280,7 @@ public sealed class McpOperatorRemoteSupportEndpointTests
 
         public Task<ClientPresenceSnapshot> GetSnapshotAsync(ClientKey value, CancellationToken cancellationToken) => Task.FromResult(new ClientPresenceSnapshot(
             value,
-            value == client ? ShadowPresenceStatus.Online : ShadowPresenceStatus.Offline,
+            value == client ? ClientPresenceStatus.Online : ClientPresenceStatus.Offline,
             1,
             Guid.NewGuid(),
             1,

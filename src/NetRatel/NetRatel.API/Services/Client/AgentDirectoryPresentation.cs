@@ -58,6 +58,11 @@ public sealed record AgentDirectoryPresentation(
         {
             using var document = JsonDocument.Parse(json);
             var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                return new(null, null, null);
+            }
+
             return new(
                 ReadString(root, "hostName"),
                 ReadString(root, "os"),

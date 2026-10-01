@@ -1,4 +1,9 @@
+using System;
 using System.Collections.Concurrent;
+using System.IO;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using FluentAssertions;
 using Grpc.Core;
 using Grpc.Net.Client;
@@ -7,8 +12,10 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Configuration;
 using NetRatel.AgentGateway.Contracts.V1;
 using NetRatel.Application.ClientAuth;
+using NetRatel.Client;
 using NetRatel.Client.Service.Gateway;
 using Xunit;
 
@@ -16,6 +23,91 @@ namespace NetRatel.Tests.Client;
 
 public sealed class AgentGatewayPresenceClientTests
 {
+    [Theory]
+    [InlineData(null)]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task RunAsync_LegacyGatewaySelectorsCannotDisableAcceptedExtensions(bool? retiredBooleanValue)
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"netratel-presence-config-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var retiredSettings = new[]
+            {
+                "TelemetryShadowEnabled", "TelemetryAuthorityEnabled", "CommandAuthorityEnabled", "JobAuthorityEnabled",
+                "TerminalAuthorityEnabled", "ControlAuthorityEnabled", "FileAuthorityEnabled", "LogAuthorityEnabled",
+                "RemoteSupportAuthorityEnabled", "RemoteSupportV1Enabled", "ControlGatewayEnabled", "FileGatewayEnabled",
+                "LogGatewayEnabled", "RemoteSupportGatewayEnabled", "TerminalGatewayEnabled",
+                "RemoteSupportV2InventoryEnabled", "RemoteSupportV2MediaEnabled"
+            };
+            var booleanProperties = retiredBooleanValue is null
+                ? string.Empty
+                : "," + string.Join(",", retiredSettings.Select(name => $"\"{name}\":{retiredBooleanValue.Value.ToString().ToLowerInvariant()}"));
+            await File.WriteAllTextAsync(Path.Combine(root, "clientsettings.json"), $$"""
+                {
+                  "Client": { "ApiBaseUrl": "https://gateway.test" },
+                  "Gateway": {
+                    "ProtocolVersion": "1.0",
+                    "TelemetryFastIntervalSeconds": 19,
+                    "RequiredPresenceAuthority": "legacy-wire-label"{{booleanProperties}}
+                  },
+                  "Transport": { "Mode": "unsupported-old-mode" }
+                }
+                """);
+
+            var packagedDefaults = ClientConfigurationLoader.BuildPackagedDefaults(
+                Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../NetRatel.Client")), null);
+            var effectiveConfiguration = ClientConfigurationLoader.BuildEffectiveConfiguration(
+                packagedDefaults, new ConfigurationBuilder().Build(), root, []);
+            var options = ClientConfigurationLoader.LoadGatewayOptions(
+                effectiveConfiguration,
+                "https://gateway.test",
+                packagedDefaults,
+                new ConfigurationBuilder().Build(),
+                root,
+                []);
+            options.TelemetryFastIntervalSeconds.Should().Be(19);
+
+            var gateway = new RefreshGatewayService();
+            using var host = await BuildHostAsync(gateway);
+            using var stopping = new CancellationTokenSource();
+            var extensionStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var agent = new AgentGatewayPresenceClient(
+                options,
+                new StableTokenService(),
+                tenantId: 7,
+                agentId: Guid.NewGuid(),
+                agentVersion: "0.5.6-test",
+                terminalShells: [],
+                log: _ => { },
+                runForPresenceSession: (_, _, _) =>
+                {
+                    extensionStarted.TrySetResult();
+                    return Task.CompletedTask;
+                },
+                createChannel: _ => GrpcChannel.ForAddress("http://localhost",
+                    new GrpcChannelOptions { HttpHandler = host.GetTestServer().CreateHandler() }));
+
+            var run = agent.RunAsync(stopping.Token);
+            try
+            {
+                await extensionStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                options.Endpoint.Should().Be("https://gateway.test");
+                run.IsCompleted.Should().BeFalse();
+            }
+            finally
+            {
+                stopping.Cancel();
+                await run.WaitAsync(TimeSpan.FromSeconds(5));
+            }
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     [Fact]
     public async Task RunAsync_ReAdmitsAfterTokenRefresh_WhenAnExtensionDoesNotStop()
     {
@@ -27,8 +119,7 @@ public sealed class AgentGatewayPresenceClientTests
         var neverCompletingExtension = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var options = new GatewayClientOptions
         {
-            Endpoint = "https://gateway.test",
-            RequiredPresenceAuthority = GatewayAuthority.Akka
+            Endpoint = "https://gateway.test"
         };
         var agent = new AgentGatewayPresenceClient(
             options,
@@ -54,6 +145,197 @@ public sealed class AgentGatewayPresenceClientTests
         await runTask.WaitAsync(TimeSpan.FromSeconds(5));
     }
 
+    [Theory]
+    [InlineData("legacy-wire-label")]
+    [InlineData("Akka")]
+    [InlineData("")]
+    public async Task RunAsync_RejectsUnexpectedPresenceAuthorityWireValue(string authority)
+    {
+        var gateway = new RefreshGatewayService(authority);
+        using var host = await BuildHostAsync(gateway);
+        using var stopping = new CancellationTokenSource();
+        var logs = new ConcurrentQueue<string>();
+        var rejectedFrame = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var extensionStarts = 0;
+
+        var agent = new AgentGatewayPresenceClient(
+            new GatewayClientOptions { Endpoint = "https://gateway.test" },
+            new ExpiringTokenService(),
+            tenantId: 7,
+            agentId: Guid.NewGuid(),
+            agentVersion: "0.5.6-test",
+            terminalShells: [],
+            log: message =>
+            {
+                logs.Enqueue(message);
+                if (message.Contains("unsupported presence authority token", StringComparison.Ordinal))
+                    rejectedFrame.TrySetResult();
+            },
+            runForPresenceSession: (_, _, _) =>
+            {
+                Interlocked.Increment(ref extensionStarts);
+                return Task.CompletedTask;
+            },
+            createChannel: _ => GrpcChannel.ForAddress(
+                "http://localhost",
+                new GrpcChannelOptions { HttpHandler = host.GetTestServer().CreateHandler() }));
+
+        var run = agent.RunAsync(stopping.Token);
+        try
+        {
+            await rejectedFrame.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            logs.Should().Contain(message => message.Contains("Gateway session failed", StringComparison.Ordinal));
+            Volatile.Read(ref extensionStarts).Should().Be(0);
+        }
+        finally
+        {
+            stopping.Cancel();
+            await run.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+    }
+
+    [Fact]
+    public async Task RunAsync_DoesNotReportHeartbeatReadinessForMismatchedAcknowledgementSequence()
+    {
+        var gateway = new RefreshGatewayService(returnMismatchedHeartbeatSequence: true);
+        using var host = await BuildHostAsync(gateway);
+        using var stopping = new CancellationTokenSource();
+        var invalidAcknowledgement = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var reportedStages = new ConcurrentQueue<(string Stage, ulong? HeartbeatSequence)>();
+        var extensionStarts = 0;
+        var agent = new AgentGatewayPresenceClient(
+            new GatewayClientOptions { Endpoint = "https://gateway.test" },
+            new StableTokenService(),
+            tenantId: 7,
+            agentId: Guid.NewGuid(),
+            agentVersion: "0.5.6-test",
+            terminalShells: [],
+            log: message =>
+            {
+                if (message.Contains("invalid heartbeat acknowledgement", StringComparison.Ordinal))
+                    invalidAcknowledgement.TrySetResult();
+            },
+            runForPresenceSession: (_, _, _) =>
+            {
+                Interlocked.Increment(ref extensionStarts);
+                return Task.CompletedTask;
+            },
+            createChannel: _ => GrpcChannel.ForAddress(
+                "http://localhost",
+                new GrpcChannelOptions { HttpHandler = host.GetTestServer().CreateHandler() }),
+            reportReadinessWithHeartbeatSequence: (stage, _, _, _, _, heartbeatSequence) =>
+                reportedStages.Enqueue((stage, heartbeatSequence)));
+
+        var run = agent.RunAsync(stopping.Token);
+        try
+        {
+            await gateway.FirstHeartbeatReceived.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await invalidAcknowledgement.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            reportedStages.Should().NotContain(entry => entry.Stage == "heartbeat_ready");
+            Volatile.Read(ref extensionStarts).Should().Be(0);
+        }
+        finally
+        {
+            stopping.Cancel();
+            await run.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+    }
+
+    [Fact]
+    public async Task RunAsync_InvalidatesHeartbeatReadinessWhenSessionDisconnectsBeforeReconnect()
+    {
+        var gateway = new RefreshGatewayService(disconnectAfterFirstHeartbeat: true);
+        using var host = await BuildHostAsync(gateway);
+        using var stopping = new CancellationTokenSource();
+        var stages = new ConcurrentQueue<string>();
+        var extensionCleanupStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var extensionCleanupRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var disconnectedDuringExtensionCleanup = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondConnectionSecondHeartbeatReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var readinessEvents = new ConcurrentQueue<(string Stage, ulong? ConnectionEpoch, Guid? ConnectionId, ulong? HeartbeatSequence)>();
+        var sessionToken = CancellationToken.None;
+        var agent = new AgentGatewayPresenceClient(
+            new GatewayClientOptions { Endpoint = "https://gateway.test" },
+            new StableTokenService(),
+            tenantId: 7,
+            agentId: Guid.NewGuid(),
+            agentVersion: "0.5.6-test",
+            terminalShells: [],
+            log: _ => { },
+            runForPresenceSession: (_, _, token) =>
+            {
+                sessionToken = token;
+                return HoldExtensionUntilReleasedAsync(token, extensionCleanupStarted, extensionCleanupRelease);
+            },
+            createChannel: _ => GrpcChannel.ForAddress("http://localhost",
+                new GrpcChannelOptions { HttpHandler = host.GetTestServer().CreateHandler() }),
+            extensionShutdownTimeout: TimeSpan.FromSeconds(10),
+            reportReadiness: (stage, _, _, _, _) =>
+            {
+                stages.Enqueue(stage);
+                if (stage == "disconnected" && !sessionToken.IsCancellationRequested)
+                    disconnectedDuringExtensionCleanup.TrySetResult();
+            },
+            reportReadinessWithHeartbeatSequence: (stage, _, _, epoch, connectionId, heartbeatSequence) =>
+            {
+                readinessEvents.Enqueue((stage, epoch, connectionId, heartbeatSequence));
+                if (stage == "heartbeat_ready" && epoch == 2 && heartbeatSequence == 2)
+                    secondConnectionSecondHeartbeatReady.TrySetResult();
+            });
+
+        var run = agent.RunAsync(stopping.Token);
+        try
+        {
+            await disconnectedDuringExtensionCleanup.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await extensionCleanupStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            sessionToken.IsCancellationRequested.Should().BeTrue();
+            run.IsCompleted.Should().BeFalse("extension cleanup remains in progress after readiness was invalidated");
+            extensionCleanupRelease.TrySetResult();
+            await gateway.SecondConnectionSecondHeartbeatAcknowledged.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            await secondConnectionSecondHeartbeatReady.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            stages.ToArray().Should().ContainInOrder("admitted", "heartbeat_ready", "disconnected", "admitted", "heartbeat_ready");
+            var heartbeats = readinessEvents.Where(entry => entry.Stage == "heartbeat_ready").ToArray();
+            heartbeats.Select(entry => entry.HeartbeatSequence).Should().Equal((ulong?)1, (ulong?)1, (ulong?)2);
+            heartbeats[0].ConnectionEpoch.Should().Be(1);
+            heartbeats[1].ConnectionEpoch.Should().Be(2);
+            Assert.NotEqual(heartbeats[0].ConnectionId, heartbeats[1].ConnectionId);
+            heartbeats[1].ConnectionId.Should().Be(heartbeats[2].ConnectionId);
+        }
+        finally
+        {
+            stopping.Cancel();
+            extensionCleanupRelease.TrySetResult();
+            await run.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+    }
+
+    private static async Task HoldExtensionUntilReleasedAsync(
+        CancellationToken stoppingToken,
+        TaskCompletionSource cleanupStarted,
+        TaskCompletionSource cleanupRelease)
+    {
+        using var cancellationRegistration = stoppingToken.Register(
+            static state => ((TaskCompletionSource)state!).TrySetResult(), cleanupStarted);
+        await cleanupStarted.Task.ConfigureAwait(false);
+        await cleanupRelease.Task.ConfigureAwait(false);
+    }
+
+    [Fact]
+    public async Task RunAsync_RejectsH2cGatewayEndpoints()
+    {
+        var agent = new AgentGatewayPresenceClient(
+            new GatewayClientOptions { Endpoint = "h2c://api:9223" },
+            new ExpiringTokenService(),
+            tenantId: 7,
+            agentId: Guid.NewGuid(),
+            agentVersion: "0.5.6-test",
+            terminalShells: [],
+            log: _ => { });
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => agent.RunAsync(CancellationToken.None));
+    }
+
     [Fact]
     public async Task RunAsync_DisabledDuringRefresh_ReAdmitsAfterEnableWithoutRestart()
     {
@@ -63,7 +345,7 @@ public sealed class AgentGatewayPresenceClientTests
         var tokenService = new DisabledDuringRefreshTokenService();
         var logs = new ConcurrentQueue<string>();
         var agent = new AgentGatewayPresenceClient(
-            new GatewayClientOptions { Endpoint = "https://gateway.test", RequiredPresenceAuthority = GatewayAuthority.Akka },
+            new GatewayClientOptions { Endpoint = "https://gateway.test" },
             tokenService, 7, Guid.NewGuid(), "0.5.6-test", [], logs.Enqueue,
             createChannel: _ => GrpcChannel.ForAddress("http://localhost",
                 new GrpcChannelOptions { HttpHandler = host.GetTestServer().CreateHandler() }));
@@ -138,11 +420,36 @@ public sealed class AgentGatewayPresenceClientTests
         }
     }
 
+    private sealed class StableTokenService : IAgentTokenService
+    {
+        public Task<(string AccessToken, DateTimeOffset ExpiresAtUtc)> GetAccessTokenAsync(CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested();
+            return Task.FromResult(("test-token", DateTimeOffset.UtcNow.AddHours(1)));
+        }
+    }
+
     private sealed class RefreshGatewayService : global::NetRatel.AgentGateway.Contracts.V1.AgentGateway.AgentGatewayBase
     {
+        private readonly string _presenceAuthority;
+        private readonly bool _disconnectAfterFirstHeartbeat;
+        private readonly bool _returnMismatchedHeartbeatSequence;
         private int _connectionEpoch;
+        private int _disconnectIssued;
+
+        public RefreshGatewayService(
+            string presenceAuthority = "akka",
+            bool disconnectAfterFirstHeartbeat = false,
+            bool returnMismatchedHeartbeatSequence = false)
+        {
+            _presenceAuthority = presenceAuthority;
+            _disconnectAfterFirstHeartbeat = disconnectAfterFirstHeartbeat;
+            _returnMismatchedHeartbeatSequence = returnMismatchedHeartbeatSequence;
+        }
 
         public TaskCompletionSource SecondAdmission { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource FirstHeartbeatReceived { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource SecondConnectionSecondHeartbeatAcknowledged { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public override async Task Connect(
             IAsyncStreamReader<AgentFrame> requestStream,
@@ -167,7 +474,7 @@ public sealed class AgentGatewayPresenceClientTests
                 {
                     HeartbeatIntervalSeconds = 1,
                     HeartbeatTimeoutSeconds = 10,
-                    PresenceAuthority = GatewayAuthority.Akka
+                    PresenceAuthority = _presenceAuthority
                 }
             }).ConfigureAwait(false);
 
@@ -179,6 +486,7 @@ public sealed class AgentGatewayPresenceClientTests
                 {
                     var frame = requestStream.Current;
                     if (frame.PayloadCase is not AgentFrame.PayloadOneofCase.Heartbeat) continue;
+                    FirstHeartbeatReceived.TrySetResult();
 
                     await responseStream.WriteAsync(new GatewayFrame
                     {
@@ -188,12 +496,23 @@ public sealed class AgentGatewayPresenceClientTests
                         ConnectionEpoch = connectionEpoch,
                         ConnectionId = connectionId.ToString("D"),
                         OperationId = frame.OperationId,
-                        Sequence = frame.Sequence,
+                        Sequence = _returnMismatchedHeartbeatSequence ? frame.Sequence + 1 : frame.Sequence,
                         HeartbeatAccepted = new HeartbeatAccepted
                         {
-                            PresenceAuthority = GatewayAuthority.Akka
+                            PresenceAuthority = _presenceAuthority
                         }
                     }).ConfigureAwait(false);
+
+                    if (connectionEpoch == 1 && _disconnectAfterFirstHeartbeat &&
+                        Interlocked.Exchange(ref _disconnectIssued, 1) == 0)
+                    {
+                        return;
+                    }
+
+                    if (connectionEpoch >= 2)
+                    {
+                        if (frame.Sequence >= 2) SecondConnectionSecondHeartbeatAcknowledged.TrySetResult();
+                    }
                 }
             }
             catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)

@@ -49,7 +49,7 @@ public static class McpOperatorClientObservabilityEndpoints
         CancellationToken cancellationToken)
     {
         var admitted = await TryCreateReadContextAsync(
-            http, environment, presence, admission, tenantId, agentId, LogTool, "sources", observability.IsLogCapabilityAvailable, cancellationToken).ConfigureAwait(false);
+            http, environment, presence, admission, tenantId, agentId, LogTool, "sources", "log-gateway", cancellationToken).ConfigureAwait(false);
         if (admitted.Failure is { } failure)
             return failure;
 
@@ -135,7 +135,7 @@ public static class McpOperatorClientObservabilityEndpoints
             return GatewayFailure("invalid_log_query", MinimalContext(tenantId, agentId, LogTool, operation, http.TraceIdentifier));
 
         var admitted = await TryCreateReadContextAsync(
-            http, environment, presence, admission, tenantId, agentId, LogTool, operation, observability.IsLogCapabilityAvailable, cancellationToken).ConfigureAwait(false);
+            http, environment, presence, admission, tenantId, agentId, LogTool, operation, "log-gateway", cancellationToken).ConfigureAwait(false);
         if (admitted.Failure is { } failure)
             return failure;
 
@@ -180,7 +180,7 @@ public static class McpOperatorClientObservabilityEndpoints
             return GatewayFailure("invalid_log_query", MinimalContext(tenantId, agentId, LogTool, "tail", http.TraceIdentifier));
 
         var admitted = await TryCreateReadContextAsync(
-            http, environment, presence, admission, tenantId, agentId, LogTool, "tail", observability.IsLogCapabilityAvailable, cancellationToken).ConfigureAwait(false);
+            http, environment, presence, admission, tenantId, agentId, LogTool, "tail", "log-gateway", cancellationToken).ConfigureAwait(false);
         if (admitted.Failure is { } failure)
             return failure;
 
@@ -197,7 +197,7 @@ public static class McpOperatorClientObservabilityEndpoints
                 admission,
                 presence,
                 new ClientKey(tenantId, agentId),
-                () => observability.IsLogCapabilityAvailable,
+                "log-gateway",
                 context.Request,
                 token),
             cancellationToken).ConfigureAwait(false);
@@ -283,7 +283,7 @@ public static class McpOperatorClientObservabilityEndpoints
         CancellationToken cancellationToken)
     {
         var admitted = await TryCreateReadContextAsync(
-            http, environment, presence, admission, tenantId, agentId, tool, operation, observability.IsTelemetryCapabilityAvailable, cancellationToken).ConfigureAwait(false);
+            http, environment, presence, admission, tenantId, agentId, tool, operation, "telemetry-shadow", cancellationToken).ConfigureAwait(false);
         if (admitted.Failure is { } failure)
             return failure;
 
@@ -313,7 +313,7 @@ public static class McpOperatorClientObservabilityEndpoints
             return GatewayFailure("invalid_telemetry_window", MinimalContext(tenantId, agentId, TelemetryTool, "stream_window", http.TraceIdentifier));
 
         var admitted = await TryCreateReadContextAsync(
-            http, environment, presence, admission, tenantId, agentId, TelemetryTool, "stream_window", observability.IsTelemetryCapabilityAvailable, cancellationToken).ConfigureAwait(false);
+            http, environment, presence, admission, tenantId, agentId, TelemetryTool, "stream_window", "telemetry-shadow", cancellationToken).ConfigureAwait(false);
         if (admitted.Failure is { } failure)
             return failure;
 
@@ -329,7 +329,7 @@ public static class McpOperatorClientObservabilityEndpoints
                 admission,
                 presence,
                 new ClientKey(tenantId, agentId),
-                () => observability.IsTelemetryCapabilityAvailable,
+                "telemetry-shadow",
                 context.Request,
                 token),
             cancellationToken).ConfigureAwait(false);
@@ -368,7 +368,7 @@ public static class McpOperatorClientObservabilityEndpoints
             return GatewayFailure("invalid_log_query", fallback);
 
         var admitted = await TryCreateResyncContextAsync(
-            http, environment, presence, admission, tenantId, agentId, "preview_resync", observability.IsLogCapabilityAvailable, cancellationToken).ConfigureAwait(false);
+            http, environment, presence, admission, tenantId, agentId, "preview_resync", "log-gateway", cancellationToken).ConfigureAwait(false);
         if (admitted.Failure is { } failure)
             return failure;
 
@@ -417,7 +417,7 @@ public static class McpOperatorClientObservabilityEndpoints
         }
 
         var admitted = await TryCreateResyncContextAsync(
-            http, environment, presence, admission, tenantId, agentId, "confirm_resync", observability.IsLogCapabilityAvailable, cancellationToken).ConfigureAwait(false);
+            http, environment, presence, admission, tenantId, agentId, "confirm_resync", "log-gateway", cancellationToken).ConfigureAwait(false);
         if (admitted.Failure is { } failure)
             return failure;
 
@@ -454,7 +454,7 @@ public static class McpOperatorClientObservabilityEndpoints
                     admission,
                     presence,
                     new ClientKey(tenantId, agentId),
-                    () => observability.IsLogCapabilityAvailable,
+                    "log-gateway",
                     context.Request,
                     token),
                 cancellationToken).ConfigureAwait(false);
@@ -491,7 +491,7 @@ public static class McpOperatorClientObservabilityEndpoints
         Guid agentId,
         string tool,
         string operation,
-        bool capabilityAvailable,
+        string capabilityName,
         CancellationToken cancellationToken)
     {
         var fallback = MinimalContext(tenantId, agentId, tool, operation, http.TraceIdentifier);
@@ -520,7 +520,9 @@ public static class McpOperatorClientObservabilityEndpoints
             return Rejected("delegated_identity_invalid", fallback);
         }
 
-        var targetOnline = (await presence.GetSnapshotAsync(new ClientKey(tenantId, agentId), cancellationToken).ConfigureAwait(false)).Status == ShadowPresenceStatus.Online;
+        var target = await presence.GetSnapshotAsync(new ClientKey(tenantId, agentId), cancellationToken).ConfigureAwait(false);
+        var targetOnline = target.Status == ClientPresenceStatus.Online;
+        var capabilityAvailable = target.Capabilities.Contains(capabilityName, StringComparer.OrdinalIgnoreCase);
         var request = new McpOperatorRouteAccessRequest(
             operatorEnvironment.Value,
             new McpOperatorPrincipal(
@@ -559,7 +561,7 @@ public static class McpOperatorClientObservabilityEndpoints
         int tenantId,
         Guid agentId,
         string delegatedOperation,
-        bool capabilityAvailable,
+        string capabilityName,
         CancellationToken cancellationToken)
     {
         var fallback = MinimalContext(tenantId, agentId, LogTool, "resync", http.TraceIdentifier);
@@ -588,7 +590,9 @@ public static class McpOperatorClientObservabilityEndpoints
             return new(null, Failure("delegated_identity_invalid", fallback));
         }
 
-        var targetOnline = (await presence.GetSnapshotAsync(new ClientKey(tenantId, agentId), cancellationToken).ConfigureAwait(false)).Status == ShadowPresenceStatus.Online;
+        var target = await presence.GetSnapshotAsync(new ClientKey(tenantId, agentId), cancellationToken).ConfigureAwait(false);
+        var targetOnline = target.Status == ClientPresenceStatus.Online;
+        var capabilityAvailable = target.Capabilities.Contains(capabilityName, StringComparer.OrdinalIgnoreCase);
         var request = new McpOperatorRouteAccessRequest(
             operatorEnvironment.Value,
             new McpOperatorPrincipal(
@@ -639,15 +643,16 @@ public static class McpOperatorClientObservabilityEndpoints
         IMcpOperatorRouteAdmission admission,
         [FromServices] IClientPresenceRouter presence,
         ClientKey client,
-        Func<bool> capabilityAvailable,
+        string capabilityName,
         McpOperatorRouteAccessRequest request,
         CancellationToken cancellationToken)
     {
-        var targetOnline = (await presence.GetSnapshotAsync(client, cancellationToken).ConfigureAwait(false)).Status == ShadowPresenceStatus.Online;
+        var target = await presence.GetSnapshotAsync(client, cancellationToken).ConfigureAwait(false);
+        var targetOnline = target.Status == ClientPresenceStatus.Online;
         var currentRequest = request with
         {
             TargetOnline = targetOnline,
-            CapabilityAvailable = capabilityAvailable()
+            CapabilityAvailable = target.Capabilities.Contains(capabilityName, StringComparer.OrdinalIgnoreCase)
         };
         var reevaluated = await admission.EvaluateAsync(currentRequest, cancellationToken).ConfigureAwait(false);
         return reevaluated.Decision.IsAllowed

@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Concurrent;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
@@ -20,7 +19,6 @@ namespace NetRatel.Web.Services.Terminal;
 public interface ITerminalService
 {
     Task EnsureSubscribedAsync(CancellationToken ct = default);
-    Task<TerminalOpenResponse> OpenSessionAsync(string clientIdentityHex, OpenTerminalRequest request, CancellationToken ct = default);
     Task<TerminalOpenResponse> OpenGatewaySessionAsync(int tenantId, Guid agentId, OpenTerminalRequest request, CancellationToken ct = default);
     Task<TerminalActionResponse> CloseAsync(string sessionId, string? reason = null, CancellationToken ct = default);
     Task<TerminalActionResponse> RenewGatewayAttachmentAsync(string sessionId, ulong generation, CancellationToken ct = default) =>
@@ -37,11 +35,7 @@ public interface ITerminalService
     Task<ITerminalInputChannel> OpenInputChannelAsync(string sessionId, Action<TerminalInputChannelStatus>? onStatus = null, CancellationToken ct = default);
     Task<TerminalActionResponse> ResizeAsync(string sessionId, int cols, int rows, CancellationToken ct = default);
     IAsyncEnumerable<TerminalStreamMessage> StreamSessionAsync(string sessionId, CancellationToken ct = default);
-    Task<IReadOnlyList<TerminalSessionDto>> GetSessionsAsync(string clientIdentityHex, CancellationToken ct = default);
     Task<TerminalSessionDto?> GetSessionAsync(string sessionId, CancellationToken ct = default);
-    // Older test doubles and extension implementations predate the V2-only
-    // restore probe. Do not silently fall back to the legacy route: callers
-    // treat this explicit default failure as a recoverable gateway lookup.
     Task<TerminalSessionDto?> GetGatewaySessionAsync(string sessionId, CancellationToken ct = default) =>
         Task.FromException<TerminalSessionDto?>(new NotSupportedException("Gateway terminal session lookup is not available."));
 }
@@ -70,54 +64,34 @@ public sealed record TerminalInputChannelStatus(string State, string? Detail = n
 public sealed class TerminalService : ITerminalService
 {
     private readonly IHttpClientFactory _factory;
-    private readonly ITokenService _tokens;
+    private readonly OperatorApiCredentialProvider _credentials;
     private readonly ILogger<TerminalService> _logger;
-    // This is only a per-circuit optimization. A fresh circuit always probes V2
-    // before it can decide that the opaque session identifier belongs to V1.
-    private readonly ConcurrentDictionary<string, TerminalRoute> _sessionRoutes = new(StringComparer.Ordinal);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
-
-    private enum TerminalRoute
-    {
-        Legacy,
-        Gateway
-    }
 
     public TerminalService(
         IHttpClientFactory factory,
-        ITokenService tokens,
+        OperatorApiCredentialProvider credentials,
         ILogger<TerminalService> logger)
     {
         _factory = factory;
-        _tokens = tokens;
+        _credentials = credentials;
         _logger = logger;
     }
 
     public Task EnsureSubscribedAsync(CancellationToken ct = default) => Task.CompletedTask;
 
-    public async Task<TerminalOpenResponse> OpenSessionAsync(string clientIdentityHex, OpenTerminalRequest request, CancellationToken ct = default)
-    {
-        clientIdentityHex = NormalizeIdentityHex(clientIdentityHex);
-        var http = _factory.CreateClient("OrchestratorApi");
-        using var response = await http.PostAsJsonAsync($"/api/v1/clients/{clientIdentityHex}/terminal/open", request, ct).ConfigureAwait(false);
-        return await ReadAsync<TerminalOpenResponse>(response, ct).ConfigureAwait(false);
-    }
-
     public async Task<TerminalOpenResponse> OpenGatewaySessionAsync(int tenantId, Guid agentId, OpenTerminalRequest request, CancellationToken ct = default)
     {
         var http = _factory.CreateClient("OrchestratorApi");
         using var response = await http.PostAsJsonAsync($"/api/v2/agents/{tenantId}/{agentId:D}/terminal/sessions", request, ct).ConfigureAwait(false);
-        var opened = await ReadAsync<TerminalOpenResponse>(response, ct).ConfigureAwait(false);
-        _sessionRoutes[opened.SessionId] = TerminalRoute.Gateway;
-        return opened;
+        return await ReadAsync<TerminalOpenResponse>(response, ct).ConfigureAwait(false);
     }
 
     public async Task<TerminalActionResponse> CloseAsync(string sessionId, string? reason = null, CancellationToken ct = default)
     {
         var http = _factory.CreateClient("OrchestratorApi");
-        var route = await ResolveRouteAsync(sessionId, ct).ConfigureAwait(false);
         using var response = await http.PostAsJsonAsync(
-            route == TerminalRoute.Gateway ? $"/api/v2/gateway-terminal/{sessionId}/close" : $"/api/v1/terminal/{sessionId}/close",
+            $"/api/v2/gateway-terminal/{sessionId}/close",
             new CloseTerminalRequest(reason),
             ct).ConfigureAwait(false);
         return await ReadAsync<TerminalActionResponse>(response, ct).ConfigureAwait(false);
@@ -136,7 +110,6 @@ public sealed class TerminalService : ITerminalService
             $"/api/v2/gateway-terminal/{sessionId}/attachment/renew",
             new TerminalAttachmentRenewalRequest(generation),
             ct).ConfigureAwait(false);
-        _sessionRoutes[sessionId] = TerminalRoute.Gateway;
         return await ReadAsync<TerminalActionResponse>(response, ct).ConfigureAwait(false);
     }
 
@@ -163,7 +136,6 @@ public sealed class TerminalService : ITerminalService
                 ClaimOwnership = claimOwnership
             },
             ct).ConfigureAwait(false);
-        _sessionRoutes[sessionId] = TerminalRoute.Gateway;
         return await ReadAsync<TerminalActionResponse>(response, ct).ConfigureAwait(false);
     }
 
@@ -173,12 +145,12 @@ public sealed class TerminalService : ITerminalService
         CancellationToken ct = default)
     {
         var http = _factory.CreateClient("OrchestratorApi");
-        var route = await ResolveRouteAsync(sessionId, ct).ConfigureAwait(false);
-        var token = await _tokens.GetValidAccessTokenAsync().ConfigureAwait(false);
+        var credential = await _credentials.GetCurrentCredentialAsync(ct).ConfigureAwait(false)
+                         ?? throw new ReauthRequiredException("The operator session is not available for the terminal input connection.");
         var channel = new WebSocketTerminalInputChannel(
             sessionId,
-            BuildWebSocketUri(http.BaseAddress, route == TerminalRoute.Gateway ? $"/api/v2/gateway-terminal/{sessionId}/stdin/ws" : $"/api/v1/terminal/{sessionId}/stdin/ws"),
-            token,
+            BuildWebSocketUri(http.BaseAddress, $"/api/v2/gateway-terminal/{sessionId}/stdin/ws"),
+            credential,
             SendInputAsync,
             onStatus,
             _logger);
@@ -210,9 +182,8 @@ public sealed class TerminalService : ITerminalService
     public async Task<TerminalActionResponse> SendInputAsync(string sessionId, string data, CancellationToken ct = default)
     {
         using var http = _factory.CreateClient("OrchestratorApi");
-        var route = await ResolveRouteAsync(sessionId, ct).ConfigureAwait(false);
         using var response = await http.PostAsJsonAsync(
-            route == TerminalRoute.Gateway ? $"/api/v2/gateway-terminal/{sessionId}/stdin" : $"/api/v1/terminal/{sessionId}/stdin",
+            $"/api/v2/gateway-terminal/{sessionId}/stdin",
             new TerminalInputRequest(data),
             ct).ConfigureAwait(false);
         return await ReadAsync<TerminalActionResponse>(response, ct).ConfigureAwait(false);
@@ -221,9 +192,8 @@ public sealed class TerminalService : ITerminalService
     public async Task<TerminalActionResponse> ResizeAsync(string sessionId, int cols, int rows, CancellationToken ct = default)
     {
         using var http = _factory.CreateClient("OrchestratorApi");
-        var route = await ResolveRouteAsync(sessionId, ct).ConfigureAwait(false);
         using var response = await http.PostAsJsonAsync(
-            route == TerminalRoute.Gateway ? $"/api/v2/gateway-terminal/{sessionId}/resize" : $"/api/v1/terminal/{sessionId}/resize",
+            $"/api/v2/gateway-terminal/{sessionId}/resize",
             new TerminalResizeRequest(cols, rows),
             ct).ConfigureAwait(false);
         return await ReadAsync<TerminalActionResponse>(response, ct).ConfigureAwait(false);
@@ -232,10 +202,9 @@ public sealed class TerminalService : ITerminalService
     public async IAsyncEnumerable<TerminalStreamMessage> StreamSessionAsync(string sessionId, [EnumeratorCancellation] CancellationToken ct = default)
     {
         using var http = _factory.CreateClient("OrchestratorApiStreaming");
-        var route = await ResolveRouteAsync(sessionId, ct).ConfigureAwait(false);
         using var request = new HttpRequestMessage(
             HttpMethod.Get,
-            route == TerminalRoute.Gateway ? $"/api/v2/gateway-terminal/{sessionId}/stream" : $"/api/v1/terminal/{sessionId}/stream");
+            $"/api/v2/gateway-terminal/{sessionId}/stream");
         request.Headers.Accept.ParseAdd("text/event-stream");
 
         using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
@@ -351,53 +320,16 @@ public sealed class TerminalService : ITerminalService
         }
     }
 
-    public async Task<IReadOnlyList<TerminalSessionDto>> GetSessionsAsync(string clientIdentityHex, CancellationToken ct = default)
-    {
-        clientIdentityHex = NormalizeIdentityHex(clientIdentityHex);
-        using var http = _factory.CreateClient("OrchestratorApi");
-        var result = await http.GetFromJsonAsync<IReadOnlyList<TerminalSessionDto>>(
-            $"/api/v1/clients/{clientIdentityHex}/terminal/sessions",
-            cancellationToken: ct).ConfigureAwait(false);
-
-        return result ?? Array.Empty<TerminalSessionDto>();
-    }
-
     public async Task<TerminalSessionDto?> GetSessionAsync(string sessionId, CancellationToken ct = default)
     {
         using var http = _factory.CreateClient("OrchestratorApi");
-        if (_sessionRoutes.TryGetValue(sessionId, out var knownRoute))
-        {
-            using var knownResponse = await http.GetAsync(
-                knownRoute == TerminalRoute.Gateway ? $"/api/v2/gateway-terminal/{sessionId}" : $"/api/v1/terminal/{sessionId}",
-                ct).ConfigureAwait(false);
-            if (knownResponse.StatusCode == HttpStatusCode.NotFound)
-            {
-                return null;
-            }
-
-            return await ReadAsync<TerminalSessionDto>(knownResponse, ct).ConfigureAwait(false);
-        }
-
-        using var gatewayResponse = await http.GetAsync($"/api/v2/gateway-terminal/{sessionId}", ct).ConfigureAwait(false);
-        if (gatewayResponse.IsSuccessStatusCode)
-        {
-            _sessionRoutes[sessionId] = TerminalRoute.Gateway;
-            return await ReadAsync<TerminalSessionDto>(gatewayResponse, ct).ConfigureAwait(false);
-        }
-
-        if (gatewayResponse.StatusCode != HttpStatusCode.NotFound)
-        {
-            return await ReadAsync<TerminalSessionDto>(gatewayResponse, ct).ConfigureAwait(false);
-        }
-
-        using var legacyResponse = await http.GetAsync($"/api/v1/terminal/{sessionId}", ct).ConfigureAwait(false);
-        if (legacyResponse.StatusCode == HttpStatusCode.NotFound)
+        using var response = await http.GetAsync($"/api/v2/gateway-terminal/{sessionId}", ct).ConfigureAwait(false);
+        if (response.StatusCode == HttpStatusCode.NotFound)
         {
             return null;
         }
 
-        _sessionRoutes[sessionId] = TerminalRoute.Legacy;
-        return await ReadAsync<TerminalSessionDto>(legacyResponse, ct).ConfigureAwait(false);
+        return await ReadAsync<TerminalSessionDto>(response, ct).ConfigureAwait(false);
     }
 
     public async Task<TerminalSessionDto?> GetGatewaySessionAsync(string sessionId, CancellationToken ct = default)
@@ -406,11 +338,9 @@ public sealed class TerminalService : ITerminalService
         using var response = await http.GetAsync($"/api/v2/gateway-terminal/{sessionId}", ct).ConfigureAwait(false);
         if (response.StatusCode == HttpStatusCode.NotFound)
         {
-            _sessionRoutes.TryRemove(sessionId, out _);
             return null;
         }
 
-        _sessionRoutes[sessionId] = TerminalRoute.Gateway;
         return await ReadAsync<TerminalSessionDto>(response, ct).ConfigureAwait(false);
     }
 
@@ -462,36 +392,6 @@ public sealed class TerminalService : ITerminalService
         return string.IsNullOrWhiteSpace(sessionId) ? null : sessionId;
     }
 
-    private static string NormalizeIdentityHex(string value) =>
-        value.Replace("-", string.Empty, StringComparison.Ordinal).Trim().ToLowerInvariant();
-
-    private async Task<TerminalRoute> ResolveRouteAsync(string sessionId, CancellationToken ct)
-    {
-        if (_sessionRoutes.TryGetValue(sessionId, out var knownRoute))
-        {
-            return knownRoute;
-        }
-
-        using var http = _factory.CreateClient("OrchestratorApi");
-        using var response = await http.GetAsync($"/api/v2/gateway-terminal/{sessionId}", ct).ConfigureAwait(false);
-        if (response.IsSuccessStatusCode)
-        {
-            _sessionRoutes[sessionId] = TerminalRoute.Gateway;
-            return TerminalRoute.Gateway;
-        }
-
-        // A V2 route that reports anything except absence is still authoritative.
-        // In particular, a reconnecting transport must not be silently redirected
-        // into the unrelated V1 terminal API.
-        if (response.StatusCode != HttpStatusCode.NotFound)
-        {
-            return TerminalRoute.Gateway;
-        }
-
-        _sessionRoutes[sessionId] = TerminalRoute.Legacy;
-        return TerminalRoute.Legacy;
-    }
-
     private static Uri BuildWebSocketUri(Uri? baseAddress, string relativePath)
     {
         if (baseAddress is null)
@@ -516,7 +416,7 @@ public sealed class TerminalService : ITerminalService
 
         private readonly string _sessionId;
         private readonly Uri _uri;
-        private readonly string _token;
+        private readonly OperatorApiCredential _credential;
         private readonly Func<string, string, CancellationToken, Task<TerminalActionResponse>> _fallback;
         private readonly Action<TerminalInputChannelStatus>? _onStatus;
         private readonly ILogger _logger;
@@ -536,14 +436,14 @@ public sealed class TerminalService : ITerminalService
         public WebSocketTerminalInputChannel(
             string sessionId,
             Uri uri,
-            string token,
+            OperatorApiCredential credential,
             Func<string, string, CancellationToken, Task<TerminalActionResponse>> fallback,
             Action<TerminalInputChannelStatus>? onStatus,
             ILogger logger)
         {
             _sessionId = sessionId;
             _uri = uri;
-            _token = token;
+            _credential = credential;
             _fallback = fallback;
             _onStatus = onStatus;
             _logger = logger;
@@ -561,7 +461,20 @@ public sealed class TerminalService : ITerminalService
             _logger.LogInformation("[Terminal] Input websocket opening session={SessionId} uri={Uri}", _sessionId, _uri);
             try
             {
-                _socket.Options.SetRequestHeader("Authorization", $"Bearer {_token}");
+                if (_credential.Kind == OperatorApiCredentialKind.LocalSessionCookie)
+                {
+                    var cookieName = string.IsNullOrWhiteSpace(_credential.CookieName) ? "NetRatel.Local" : _credential.CookieName;
+                    _socket.Options.SetRequestHeader("Cookie", $"{cookieName}={_credential.Value}");
+                    _socket.Options.SetRequestHeader("X-NetRatel-Account-Request", "1");
+                }
+                else if (_credential.Kind == OperatorApiCredentialKind.Bearer)
+                {
+                    _socket.Options.SetRequestHeader("Authorization", $"Bearer {_credential.Value}");
+                }
+                else
+                {
+                    throw new ReauthRequiredException("The operator session is not available for the terminal input connection.");
+                }
                 await _socket.ConnectAsync(_uri, ct).ConfigureAwait(false);
                 _wasConnected = true;
                 _logger.LogInformation("[Terminal] Input websocket connected session={SessionId} state={State}", _sessionId, _socket.State);

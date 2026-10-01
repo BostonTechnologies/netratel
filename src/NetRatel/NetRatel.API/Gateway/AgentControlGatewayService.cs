@@ -17,7 +17,6 @@ public sealed class AgentControlGatewayService(
     IClientPresenceRouter presenceRouter,
     IAgentManagementService agentManagement,
     IAgentControlSessionRegistry controlSessions,
-    NetRatelAkkaMigrationOptions options,
     ILogger<AgentControlGatewayService> logger)
     : global::NetRatel.AgentGateway.Contracts.V1.AgentControlGateway.AgentControlGatewayBase
 {
@@ -26,11 +25,6 @@ public sealed class AgentControlGatewayService(
         IServerStreamWriter<GatewayControlFrame> responseStream,
         ServerCallContext context)
     {
-        if (!options.Enabled || !options.GatewayEnabled || !options.ControlGatewayEnabled)
-        {
-            throw new RpcException(new Status(StatusCode.FailedPrecondition, "The control gateway is disabled."));
-        }
-
         if (!AgentGatewayIdentityResolver.TryResolve(
                 context.GetHttpContext().User,
                 out var authenticatedIdentity,
@@ -72,7 +66,7 @@ public sealed class AgentControlGatewayService(
             RequireCurrent(registration);
             await responseStream.WriteAsync(new GatewayControlFrame
             {
-                ProtocolVersion = options.ProtocolVersion,
+                ProtocolVersion = NetRatelAkkaOptions.ProtocolVersion,
                 TenantId = session.Client.TenantId,
                 ClientId = session.Client.AgentId.ToString("D"),
                 ConnectionEpoch = session.ConnectionEpoch,
@@ -80,7 +74,7 @@ public sealed class AgentControlGatewayService(
                 Sequence = 0,
                 Accepted = new ControlAccepted
                 {
-                    ControlAuthority = options.IsPingAuthorityActive ? options.PresenceAuthority : "unavailable"
+                    ControlAuthority = "akka"
                 }
             }, admissionCancellation.Token).ConfigureAwait(false);
 
@@ -111,7 +105,7 @@ public sealed class AgentControlGatewayService(
         CancellationToken cancellationToken)
     {
         if (frame.PayloadCase != AgentControlFrame.PayloadOneofCase.Hello ||
-            !string.Equals(frame.ProtocolVersion, options.ProtocolVersion, StringComparison.Ordinal) ||
+            !string.Equals(frame.ProtocolVersion, NetRatelAkkaOptions.ProtocolVersion, StringComparison.Ordinal) ||
             frame.TenantId != identity.TenantId ||
             !Guid.TryParse(frame.ClientId, out var clientId) || clientId != identity.AgentId ||
             !Guid.TryParse(frame.ConnectionId, out var connectionId) || connectionId == Guid.Empty ||
@@ -123,7 +117,7 @@ public sealed class AgentControlGatewayService(
 
         var client = new ClientKey(identity.TenantId, identity.AgentId);
         var presence = await presenceRouter.GetSnapshotAsync(client, cancellationToken).ConfigureAwait(false);
-        if (presence.Status != ShadowPresenceStatus.Online ||
+        if (presence.Status != ClientPresenceStatus.Online ||
             presence.ConnectionId != connectionId ||
             presence.ConnectionEpoch != checked((long)frame.ConnectionEpoch))
         {
@@ -138,7 +132,7 @@ public sealed class AgentControlGatewayService(
     private async Task RequirePresenceAsync(ClientKey client, Guid connectionId, ulong connectionEpoch, CancellationToken cancellationToken)
     {
         var presence = await presenceRouter.GetSnapshotAsync(client, cancellationToken).ConfigureAwait(false);
-        if (presence.Status != ShadowPresenceStatus.Online || presence.ConnectionId != connectionId || presence.ConnectionEpoch != checked((long)connectionEpoch))
+        if (presence.Status != ClientPresenceStatus.Online || presence.ConnectionId != connectionId || presence.ConnectionEpoch != checked((long)connectionEpoch))
             throw new RpcException(new Status(StatusCode.Aborted, "The control gateway session is fenced by the active presence connection."));
     }
 
@@ -148,7 +142,7 @@ public sealed class AgentControlGatewayService(
         ref ulong lastInboundSequence,
         AgentControlSessionRegistration registration)
     {
-        if (!string.Equals(frame.ProtocolVersion, options.ProtocolVersion, StringComparison.Ordinal) ||
+        if (!string.Equals(frame.ProtocolVersion, NetRatelAkkaOptions.ProtocolVersion, StringComparison.Ordinal) ||
             frame.TenantId != session.Client.TenantId ||
             !string.Equals(frame.ClientId, session.Client.AgentId.ToString("D"), StringComparison.OrdinalIgnoreCase) ||
             frame.ConnectionEpoch != session.ConnectionEpoch ||

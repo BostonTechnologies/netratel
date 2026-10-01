@@ -2,8 +2,8 @@ using FluentAssertions;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
-using NetRatel.Akka.Configuration;
 using NetRatel.API.Gateway;
+using NetRatel.API.Realtime;
 using NetRatel.API.Services.Jobs;
 using NetRatel.Application.Jobs;
 using NetRatel.Application.Presence;
@@ -16,6 +16,29 @@ namespace NetRatel.Tests.API;
 public sealed class AkkaJobAuthorityServiceTests
 {
     [Fact]
+    public async Task AcceptedDurableTransitions_ArePublishedThroughTheCurrentSignalRFanout()
+    {
+        var fanout = new RecordingRealtimeFanoutSink();
+        var service = new AkkaJobAuthorityService(
+            new OneStepDefinitions(Guid.NewGuid()),
+            new InMemoryRuns(),
+            new JobTaskBridge(new EmptyScripts(), NullLogger<JobTaskBridge>.Instance),
+            new AvailableGateway(),
+            new AcceptingRouter(),
+            fanout,
+            new JobAuthorityIdGenerator(),
+            new TestHostEnvironment());
+
+        await service.StartAsync(41, new RunJobRequest("test", null, null), CancellationToken.None);
+
+        fanout.Envelopes.Should().NotBeEmpty();
+        fanout.Envelopes.Should().OnlyContain(envelope =>
+            envelope.IsValid &&
+            !envelope.IsAuthoritative &&
+            envelope.Category == NetRatel.Application.Fanout.RealtimeFanoutCategory.Job);
+    }
+
+    [Fact]
     public async Task StartAsync_WhenGatewayDisappearsDuringDispatch_TerminalizesThePersistedRun()
     {
         var agentId = Guid.NewGuid();
@@ -27,8 +50,8 @@ public sealed class AkkaJobAuthorityServiceTests
             new JobTaskBridge(new EmptyScripts(), NullLogger<JobTaskBridge>.Instance),
             new VanishingGateway(client),
             new AcceptingRouter(),
+            new RecordingRealtimeFanoutSink(),
             new JobAuthorityIdGenerator(),
-            new NetRatelAkkaMigrationOptions { Enabled = true, PresenceAuthorityEnabled = true, JobShadowEnabled = true, JobAuthorityEnabled = true },
             new TestHostEnvironment());
 
         var action = () => service.StartAsync(41, new RunJobRequest("test", null, null), CancellationToken.None);
@@ -41,7 +64,7 @@ public sealed class AkkaJobAuthorityServiceTests
     }
 
     [Fact]
-    public async Task StartAsync_WhenInitialShadowTransitionIsRejected_TerminalizesThePersistedRunBeforeDispatch()
+    public async Task StartAsync_WhenInitialJobTransitionIsRejected_TerminalizesThePersistedRunBeforeDispatch()
     {
         var agentId = Guid.NewGuid();
         var runs = new InMemoryRuns();
@@ -52,8 +75,8 @@ public sealed class AkkaJobAuthorityServiceTests
             new JobTaskBridge(new EmptyScripts(), NullLogger<JobTaskBridge>.Instance),
             gateway,
             new RejectingRouter(),
+            new RecordingRealtimeFanoutSink(),
             new JobAuthorityIdGenerator(),
-            new NetRatelAkkaMigrationOptions { Enabled = true, PresenceAuthorityEnabled = true, JobShadowEnabled = true, JobAuthorityEnabled = true },
             new TestHostEnvironment());
 
         var action = () => service.StartAsync(41, new RunJobRequest("test", null, null), CancellationToken.None);
@@ -78,8 +101,8 @@ public sealed class AkkaJobAuthorityServiceTests
             new JobTaskBridge(new EmptyScripts(), NullLogger<JobTaskBridge>.Instance),
             new AvailableGateway(),
             new AcceptingRouter(),
+            new RecordingRealtimeFanoutSink(),
             new JobAuthorityIdGenerator(),
-            new NetRatelAkkaMigrationOptions { Enabled = true, PresenceAuthorityEnabled = true, JobShadowEnabled = true, JobAuthorityEnabled = true },
             new TestHostEnvironment());
         await service.StartAsync(41, new RunJobRequest("test", null, null), CancellationToken.None);
         var run = runs.Run!;
@@ -121,8 +144,8 @@ public sealed class AkkaJobAuthorityServiceTests
             new JobTaskBridge(new EmptyScripts(), NullLogger<JobTaskBridge>.Instance),
             new AvailableGateway(),
             new AcceptingRouter(),
+            new RecordingRealtimeFanoutSink(),
             new JobAuthorityIdGenerator(),
-            new NetRatelAkkaMigrationOptions { Enabled = true, PresenceAuthorityEnabled = true, JobShadowEnabled = true, JobAuthorityEnabled = true },
             new TestHostEnvironment());
         await service.StartAsync(41, new RunJobRequest("test", null, null), CancellationToken.None);
         var run = runs.Run!;
@@ -237,18 +260,32 @@ public sealed class AkkaJobAuthorityServiceTests
         public Task<JobTaskLogInfo> AppendTaskLogAsync(AppendJobTaskLogCommand c, CancellationToken ct = default) => throw new NotSupportedException();
     }
 
-    private sealed class AcceptingRouter : IJobShadowRouter
+    private sealed class AcceptingRouter : IJobRuntimeRouter
     {
-        public Task<JobShadowMessageResult> RecordAsync(RecordJobShadowObservation m, CancellationToken ct) => Task.FromResult(new JobShadowMessageResult(m.Observation.JobRunId, JobShadowMessageDisposition.Accepted, null, 0, JobCommandCorrelationStatus.NotProvided, null));
-        public Task<JobRunShadowState> GetStateAsync(ulong id, CancellationToken ct) => throw new NotSupportedException();
-        public Task<JobShadowRouteStatus> ProbeAsync(CancellationToken ct) => throw new NotSupportedException();
+        public Task<JobMessageResult> RecordAsync(RecordJobObservation m, CancellationToken ct) => Task.FromResult(new JobMessageResult(m.Observation.JobRunId, JobMessageDisposition.Accepted, null, 0, JobCommandCorrelationStatus.NotProvided, null));
+        public Task<JobRunView> GetStateAsync(ulong id, CancellationToken ct) => throw new NotSupportedException();
+        public Task<JobRuntimeStatus> ProbeAsync(CancellationToken ct) => throw new NotSupportedException();
     }
 
-    private sealed class RejectingRouter : IJobShadowRouter
+    private sealed class RejectingRouter : IJobRuntimeRouter
     {
-        public Task<JobShadowMessageResult> RecordAsync(RecordJobShadowObservation m, CancellationToken ct) => Task.FromResult(new JobShadowMessageResult(m.Observation.JobRunId, JobShadowMessageDisposition.InvalidTransition, null, 0, JobCommandCorrelationStatus.NotProvided, null));
-        public Task<JobRunShadowState> GetStateAsync(ulong id, CancellationToken ct) => throw new NotSupportedException();
-        public Task<JobShadowRouteStatus> ProbeAsync(CancellationToken ct) => throw new NotSupportedException();
+        public Task<JobMessageResult> RecordAsync(RecordJobObservation m, CancellationToken ct) => Task.FromResult(new JobMessageResult(m.Observation.JobRunId, JobMessageDisposition.InvalidTransition, null, 0, JobCommandCorrelationStatus.NotProvided, null));
+        public Task<JobRunView> GetStateAsync(ulong id, CancellationToken ct) => throw new NotSupportedException();
+        public Task<JobRuntimeStatus> ProbeAsync(CancellationToken ct) => throw new NotSupportedException();
+    }
+
+    private sealed class RecordingRealtimeFanoutSink : IRealtimeFanoutSink
+    {
+        public List<NetRatel.Application.Fanout.RealtimeFanoutEnvelope> Envelopes { get; } = [];
+
+        public bool TryEnqueue(NetRatel.Application.Fanout.RealtimeFanoutEnvelope envelope)
+        {
+            Envelopes.Add(envelope);
+            return true;
+        }
+
+        public RealtimeFanoutHealthStatus GetStatus() =>
+            new(false, (ulong)Envelopes.Count, 0, 0, 0, 0, 0, 0, 0, 0, null, null, null, null, null);
     }
 
     private sealed class TestHostEnvironment : IHostEnvironment

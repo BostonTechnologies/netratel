@@ -20,7 +20,6 @@ using NetRatel.AgentGateway.Contracts.V1;
 using NetRatel.API.Endpoints.Client;
 using NetRatel.API.Gateway;
 using NetRatel.API.Middleware;
-using NetRatel.Akka.Configuration;
 using NetRatel.Application.Operations;
 using NetRatel.Application.Presence;
 using NetRatel.Shared.Operations;
@@ -571,15 +570,6 @@ public sealed partial class McpOperatorClientFileEndpointTests
     private static async Task<IHost> BuildAppAsync(Guid agentId, bool includeReadRoot, bool includeWriteRoot = true)
     {
         var client = new ClientKey(7, agentId);
-        var options = new NetRatelAkkaMigrationOptions
-        {
-            Enabled = true,
-            PresenceEnabled = true,
-            GatewayEnabled = true,
-            PresenceAuthorityEnabled = true,
-            FileGatewayEnabled = true,
-            FileBrowseAuthorityEnabled = true
-        };
         var builder = Host.CreateDefaultBuilder();
         builder.ConfigureWebHost(web =>
         {
@@ -590,7 +580,6 @@ public sealed partial class McpOperatorClientFileEndpointTests
                 services.AddRouting();
                 services.AddAuthentication("Test").AddScheme<AuthenticationSchemeOptions, TestAuthenticationHandler>("Test", _ => { });
                 services.AddAuthorization(policyOptions => policyOptions.AddPolicy("M2MOnly", policy => policy.RequireAuthenticatedUser()));
-                services.AddSingleton(options);
                 services.AddSingleton(new TestPresence(client));
                 services.AddSingleton<IClientPresenceRouter>(provider => provider.GetRequiredService<TestPresence>());
                 services.AddSingleton(new TestAdmission(includeReadRoot, includeWriteRoot));
@@ -674,7 +663,7 @@ public sealed partial class McpOperatorClientFileEndpointTests
 
         public Task<ClientPresenceSnapshot> GetSnapshotAsync(ClientKey value, CancellationToken cancellationToken) => Task.FromResult(new ClientPresenceSnapshot(
             value,
-            value == client ? ShadowPresenceStatus.Online : ShadowPresenceStatus.Offline,
+            value == client ? ClientPresenceStatus.Online : ClientPresenceStatus.Offline,
             1,
             Guid.NewGuid(),
             1,

@@ -67,7 +67,7 @@ public sealed class CommandPersistenceRecoveryTests
         try
         {
             var recoveredActor = recoveredSystem.ActorOf(CommandActor.Props(command, store));
-            var state = await recoveredActor.Ask<CommandShadowState>(new GetCommandShadowState(command));
+            var state = await recoveredActor.Ask<CommandState>(new GetCommandState(command));
 
             state.CurrentStatus.Should().Be(CommandLifecycleStatus.Completed);
             state.History.Select(item => item.Status).Should().Equal(lifecycle.Select(item => item.Status));
@@ -100,7 +100,7 @@ public sealed class CommandPersistenceRecoveryTests
             var actor = system.ActorOf(CommandActor.Props(lifecycle[0].Command, store));
             var result = await actor.Ask<CommandMessageResult>(
                 new RecordCommandLifecycleEvent(lifecycle[^1]));
-            var state = await actor.Ask<CommandShadowState>(new GetCommandShadowState(lifecycle[0].Command));
+            var state = await actor.Ask<CommandState>(new GetCommandState(lifecycle[0].Command));
 
             result.Disposition.Should().Be(CommandMessageDisposition.Duplicate);
             state.History.Should().HaveCount(4);

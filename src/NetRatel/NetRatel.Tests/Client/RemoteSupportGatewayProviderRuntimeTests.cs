@@ -8,21 +8,16 @@ namespace NetRatel.Tests.Client;
 public sealed class RemoteSupportGatewayProviderRuntimeTests
 {
     [Fact]
-    public void GatewayRuntime_OnUnsupportedPlatform_RejectsWithoutReadyOrFallback()
+    public async Task V2ConsolePreparation_OnUnsupportedPlatform_ReturnsNoProviderWithoutLegacyFallback()
     {
         if (OperatingSystem.IsWindows())
         {
             return;
         }
 
-        var emitted = new List<RemoteSupportPipeSignal>();
-        using var runtime = new RemoteSupportSessionManager(null, emitted.Add);
-
-        runtime.OpenGatewaySession("gateway-session", "{\"targetMode\":\"auto\"}");
-
-        emitted.Should().ContainSingle(signal => signal.SignalType == RemoteSupportSignalTypes.Reject)
-            .Which.PayloadJson.Should().Contain("native_webrtc_unsupported_os");
-        emitted.Should().NotContain(signal => signal.SignalType == RemoteSupportSignalTypes.Ready);
+        using var runtime = new RemoteSupportSessionManager(null, _ => { });
+        var provider = await runtime.PrepareV2ConsoleProviderAsync(null!, CancellationToken.None);
+        provider.Should().BeNull();
     }
 
     [Fact]
@@ -34,9 +29,13 @@ public sealed class RemoteSupportGatewayProviderRuntimeTests
             "src/NetRatel/NetRatel.Client/Service/Gateway/AgentRemoteSupportGatewayClient.cs"));
 
         gateway.Should().Contain("EnsureGatewayHelperPipeHost");
-        gateway.Should().Contain("OpenGatewaySession(signal.SessionId, payload)");
-        gateway.Should().Contain("ProcessGatewaySignal(");
-        gateway.Should().Contain("CloseGatewaySession(");
+        gateway.Should().Contain("using var v2Media = new V2GatewayRemoteSupportBridge");
+        gateway.Should().Contain("WriteV2RegistrationAsync");
+        gateway.Should().Contain("WriteV2EnvelopeAsync");
+        gateway.Should().NotContain("OpenGatewaySession");
+        gateway.Should().NotContain("ProcessGatewaySignal");
+        gateway.Should().NotContain("WriteSignalAsync");
+        gateway.Should().NotContain("WriteClosedAsync");
         gateway.Should().NotContain("RemoteSupportInteractiveWebRtcManager _webrtc");
         gateway.Should().NotContain("SignalBridgeStream");
     }

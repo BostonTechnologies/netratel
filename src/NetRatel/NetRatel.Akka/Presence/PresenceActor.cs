@@ -7,18 +7,17 @@ using NetRatel.Application.Presence;
 namespace NetRatel.Akka.Presence;
 
 /// <summary>
-/// Owns gateway presence state for one authenticated client. It remains a
-/// shadow unless the DEV-only presence authority flag is explicitly enabled.
+/// Owns gateway presence state for one authenticated client.
 /// </summary>
 public sealed class PresenceActor : ReceiveActor, IWithTimers
 {
     private const string ExpiryTimerKey = "gateway-presence-expiry";
     private readonly ClientKey _client;
-    private readonly NetRatelAkkaMigrationOptions _options;
+    private readonly NetRatelAkkaOptions _options;
     private readonly IActorRef _presenceReadModel;
     private readonly ILoggingAdapter _log = Context.GetLogger();
 
-    private ShadowPresenceStatus _status = ShadowPresenceStatus.Unknown;
+    private ClientPresenceStatus _status = ClientPresenceStatus.Unknown;
     private long _lastIssuedEpoch;
     private long? _activeEpoch;
     private Guid? _activeConnectionId;
@@ -30,7 +29,7 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
 
     public PresenceActor(
         ClientKey client,
-        NetRatelAkkaMigrationOptions options,
+        NetRatelAkkaOptions options,
         IActorRef presenceReadModel)
     {
         if (!client.IsValid)
@@ -53,7 +52,7 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
 
     public static Props Props(
         ClientKey client,
-        NetRatelAkkaMigrationOptions options,
+        NetRatelAkkaOptions options,
         IActorRef presenceReadModel) =>
         global::Akka.Actor.Props.Create(() => new PresenceActor(client, options, presenceReadModel));
 
@@ -85,8 +84,8 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
         _legacySpacetimeIdentity = string.IsNullOrWhiteSpace(message.LegacySpacetimeIdentity)
             ? null
             : message.LegacySpacetimeIdentity;
-        var wasOnline = _status == ShadowPresenceStatus.Online;
-        _status = ShadowPresenceStatus.Online;
+        var wasOnline = _status == ClientPresenceStatus.Online;
+        _status = ClientPresenceStatus.Online;
         if (!wasOnline)
         {
             NetRatelAkkaTelemetry.PresenceClientConnected();
@@ -97,7 +96,7 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
 
         _log.Info(
             "Gateway presence connected. authority={0}, client={1}, epoch={2}, connectionId={3}",
-            _options.PresenceAuthority,
+            "akka",
             _client,
             _lastIssuedEpoch,
             message.ConnectionId);
@@ -132,10 +131,10 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
             return;
         }
 
-        var wasOnline = _status == ShadowPresenceStatus.Online;
+        var wasOnline = _status == ClientPresenceStatus.Online;
         _lastAcceptedSequence = message.Sequence;
         _lastReceivedAtUtc = message.ReceivedAtUtc;
-        _status = ShadowPresenceStatus.Online;
+        _status = ClientPresenceStatus.Online;
         ScheduleExpiry(message.ConnectionEpoch, message.ConnectionId);
         if (!wasOnline)
         {
@@ -156,9 +155,9 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
             return;
         }
 
-        var wasOffline = _status == ShadowPresenceStatus.Offline;
+        var wasOffline = _status == ClientPresenceStatus.Offline;
         Timers.Cancel(ExpiryTimerKey);
-        _status = ShadowPresenceStatus.Offline;
+        _status = ClientPresenceStatus.Offline;
         _lastReceivedAtUtc = message.ReceivedAtUtc;
         if (!wasOffline)
         {
@@ -169,7 +168,7 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
 
         _log.Info(
             "Gateway presence disconnected. authority={0}, client={1}, epoch={2}, connectionId={3}, reason={4}",
-            _options.PresenceAuthority,
+            "akka",
             _client,
             message.ConnectionEpoch,
             message.ConnectionId,
@@ -185,12 +184,12 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
             return;
         }
 
-        if (_status == ShadowPresenceStatus.Offline)
+        if (_status == ClientPresenceStatus.Offline)
         {
             return;
         }
 
-        _status = ShadowPresenceStatus.Offline;
+        _status = ClientPresenceStatus.Offline;
         NetRatelAkkaTelemetry.PresenceClientHeartbeatExpired();
         PublishTransition(
             (_lastReceivedAtUtc ?? DateTimeOffset.UtcNow) + _options.HeartbeatTimeout,
@@ -199,7 +198,7 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
 
         _log.Warning(
             "Gateway heartbeat expired. authority={0}, client={1}, epoch={2}, connectionId={3}",
-            _options.PresenceAuthority,
+            "akka",
             _client,
             message.ConnectionEpoch,
             message.ConnectionId);
@@ -242,8 +241,8 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
             _agentVersion,
             _capabilities,
             _legacySpacetimeIdentity,
-            _options.PresenceAuthority,
-            IsAuthoritative: _options.IsPresenceAuthorityActive);
+            "akka",
+            IsAuthoritative: true);
 
     private void PublishReadModelSnapshot() =>
         _presenceReadModel.Tell(new TrackClientPresenceSnapshot(CreateSnapshot()), Self);
@@ -252,13 +251,13 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
     {
         if (_activeEpoch.HasValue)
         {
-            Context.System.EventStream.Publish(new ShadowPresenceChanged(
+            Context.System.EventStream.Publish(new ClientPresenceChanged(
                 _client,
                 _status,
                 _activeEpoch.Value,
                 changedAtUtc,
                 reason,
-                IsAuthoritative: _options.IsPresenceAuthorityActive));
+                IsAuthoritative: true));
         }
     }
 

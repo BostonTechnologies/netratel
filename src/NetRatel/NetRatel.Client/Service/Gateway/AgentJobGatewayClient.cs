@@ -28,11 +28,6 @@ public sealed class AgentJobGatewayClient(
 
     public async Task RunForPresenceSessionAsync(GatewayPresenceSession session, string accessToken, CancellationToken stoppingToken)
     {
-        if (!options.JobAuthorityEnabled)
-        {
-            return;
-        }
-
         if (!Uri.TryCreate(options.Endpoint, UriKind.Absolute, out var endpoint) || endpoint.Scheme != Uri.UriSchemeHttps)
         {
             log("Job gateway is disabled because Gateway:Endpoint is not an absolute HTTPS URL.");
@@ -116,7 +111,7 @@ public sealed class AgentJobGatewayClient(
             }
             catch (RpcException)
             {
-                // The gateway already closed the stream.
+                log("Job gateway stream had already closed before request completion.");
             }
         }
     }
@@ -237,9 +232,9 @@ public sealed class AgentJobGatewayClient(
 
         public void ValidateAccepted(GatewayJobFrame frame)
         {
-            if (!Matches(frame) || frame.Sequence != 0 || !GatewayAuthority.IsAkka(frame.Accepted.JobAuthority))
+            if (!Matches(frame) || frame.Sequence != 0 || !GatewayWireProtocol.HasAkkaAuthority(frame.Accepted.JobAuthority))
             {
-                throw new RpcException(new Status(StatusCode.FailedPrecondition, "Job gateway did not admit the required Akka authority."));
+                throw new RpcException(new Status(StatusCode.FailedPrecondition, "Job gateway returned an invalid authority acknowledgement."));
             }
         }
 

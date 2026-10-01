@@ -6,7 +6,6 @@ using System.Text;
 using System.Text.Json;
 using NetRatel.Application.ClientAuth;
 using NetRatel.Infrastructure.Services;
-using System.Text.RegularExpressions;
 
 namespace NetRatel.Infrastructure.Auth;
 
@@ -47,26 +46,32 @@ public sealed class ClientAgentTokenService : IAgentTokenService
             var response = await PostTokenWithRetryAsync(new TokenRequest(creds.Value.AgentId, creds.Value.RefreshToken), ct).ConfigureAwait(false);
             if (response.StatusCode == HttpStatusCode.Unauthorized)
             {
-                await _credentialStore.ClearRefreshCredentialsAsync().ConfigureAwait(false);
+                // A rejected/revoked refresh token is terminal for this stored
+                // identity. Keep it so a restart cannot mistake the install for
+                // a first run and consume a pending installer enrollment grant.
                 _cachedToken = null;
                 _expiresAtUtc = DateTimeOffset.MinValue;
                 var detail = await BuildErrorDetailAsync(response, "Refresh token is invalid or revoked.", ct).ConfigureAwait(false);
-                throw new AgentClientAuthException(detail, (int)response.StatusCode, shouldClearCredentials: true);
+                throw new AgentClientAuthException(detail, (int)response.StatusCode, shouldClearCredentials: false,
+                    code: "refresh_token_rejected");
             }
 
             if (response.StatusCode == HttpStatusCode.Forbidden)
             {
                 var payload = await TryReadProblemPayloadAsync(response, ct).ConfigureAwait(false);
-                var detail = payload?.Detail ?? payload?.Title ?? "Agent is disabled.";
-                // A disabled agent must retain its credential so that an administrator can
-                // re-enable it. An unknown agent is different: its server-side identity was
-                // deleted or replaced, so retaining the local credential can only cause a
-                // permanent restart loop. Clear it immediately and allow an explicitly
-                // supplied enrollment bootstrap to establish a new identity on the next run.
                 var agentWasDeleted = string.Equals(payload?.Code, "agent_not_found", StringComparison.OrdinalIgnoreCase);
+                var isDisabled = string.Equals(payload?.Code, "agent_disabled", StringComparison.OrdinalIgnoreCase);
+                var detail = agentWasDeleted
+                    ? "Agent identity was not found."
+                    : isDisabled
+                        ? "Agent is disabled."
+                        : "Agent token request was forbidden.";
+                // Do not mutate durable identity here. Startup may recover an unknown agent
+                // only after it validates and successfully consumes explicit enrollment input.
+                // Clearing first would make an invalid or absent grant look like a fresh
+                // install on the next service start.
                 if (agentWasDeleted)
                 {
-                    await _credentialStore.ClearRefreshCredentialsAsync().ConfigureAwait(false);
                     _cachedToken = null;
                     _expiresAtUtc = DateTimeOffset.MinValue;
                 }
@@ -74,7 +79,7 @@ public sealed class ClientAgentTokenService : IAgentTokenService
                 throw new AgentClientAuthException(
                     detail,
                     (int)response.StatusCode,
-                    shouldClearCredentials: agentWasDeleted,
+                    shouldClearCredentials: false,
                     code: payload?.Code);
             }
 
@@ -148,10 +153,8 @@ public sealed class ClientAgentTokenService : IAgentTokenService
     private static async Task<string> BuildErrorDetailAsync(HttpResponseMessage response, string fallback, CancellationToken ct)
     {
         var payload = await TryReadProblemPayloadAsync(response, ct).ConfigureAwait(false);
-        var detail = payload?.Detail ?? payload?.Title ?? fallback;
-        var correlation = payload?.CorrelationId;
-        var errorCode = payload?.Code;
-        var body = await TryReadRawBodyAsync(response, ct).ConfigureAwait(false);
+        var correlation = SafeDiagnosticToken(payload?.CorrelationId);
+        var errorCode = SafeDiagnosticToken(payload?.Code);
         var suffixParts = new List<string>();
         if (!string.IsNullOrWhiteSpace(errorCode))
         {
@@ -163,17 +166,12 @@ public sealed class ClientAgentTokenService : IAgentTokenService
             suffixParts.Add($"correlationId={correlation}");
         }
 
-        if (!string.IsNullOrWhiteSpace(body))
-        {
-            suffixParts.Add($"body={TrimForLog(body)}");
-        }
-
         if (suffixParts.Count == 0)
         {
-            return $"status={(int)response.StatusCode} {response.ReasonPhrase}; detail={detail}";
+            return $"status={(int)response.StatusCode}; detail={fallback}";
         }
 
-        return $"status={(int)response.StatusCode} {response.ReasonPhrase}; detail={detail}; {string.Join("; ", suffixParts)}";
+        return $"status={(int)response.StatusCode}; detail={fallback}; {string.Join("; ", suffixParts)}";
     }
 
     private static async Task<ProblemPayload?> TryReadProblemPayloadAsync(HttpResponseMessage response, CancellationToken ct)
@@ -188,43 +186,32 @@ public sealed class ClientAgentTokenService : IAgentTokenService
 
             using var doc = JsonDocument.Parse(body);
             var root = doc.RootElement;
-            string? title = root.TryGetProperty("title", out var titleValue) ? titleValue.GetString() : null;
-            string? detail = root.TryGetProperty("detail", out var detailValue) ? detailValue.GetString() : null;
-            string? code = root.TryGetProperty("code", out var codeValue) ? codeValue.GetString() : null;
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                return null;
+            }
+
+            static string? ReadStringProperty(JsonElement element, string name)
+                => element.ValueKind == JsonValueKind.Object && element.TryGetProperty(name, out var value) &&
+                   value.ValueKind == JsonValueKind.String
+                    ? value.GetString()
+                    : null;
+
+            var title = ReadStringProperty(root, "title");
+            var detail = ReadStringProperty(root, "detail");
+            var code = ReadStringProperty(root, "code");
             string? correlationId = null;
             if (root.TryGetProperty("extensions", out var ext) && ext.ValueKind == JsonValueKind.Object)
             {
-                if (ext.TryGetProperty("correlationId", out var corrExt))
-                {
-                    correlationId = corrExt.GetString();
-                }
-
-                if (string.IsNullOrWhiteSpace(code) && ext.TryGetProperty("code", out var codeExt))
-                {
-                    code = codeExt.GetString();
-                }
+                correlationId = ReadStringProperty(ext, "correlationId");
+                if (string.IsNullOrWhiteSpace(code)) code = ReadStringProperty(ext, "code");
             }
 
-            if (string.IsNullOrWhiteSpace(correlationId) && root.TryGetProperty("correlationId", out var corrValue))
-            {
-                correlationId = corrValue.GetString();
-            }
+            if (string.IsNullOrWhiteSpace(correlationId)) correlationId = ReadStringProperty(root, "correlationId");
 
             return new ProblemPayload(title, detail, code, correlationId);
         }
         catch (JsonException)
-        {
-            return null;
-        }
-    }
-
-    private static async Task<string?> TryReadRawBodyAsync(HttpResponseMessage response, CancellationToken ct)
-    {
-        try
-        {
-            return await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-        }
-        catch
         {
             return null;
         }
@@ -245,7 +232,7 @@ public sealed class ClientAgentTokenService : IAgentTokenService
         var body = JsonSerializer.Serialize(dto);
         if (!Guid.TryParse(request.AgentId, out var agentId))
         {
-            throw new AgentClientAuthException("Stored Agent identity is invalid.", shouldClearCredentials: true, code: "agent_id_invalid");
+                throw new AgentClientAuthException("Stored Agent identity is invalid.", shouldClearCredentials: false, code: "agent_id_invalid");
         }
 
         var bodyHash = PopSignatureService.ComputeTokenBodyHash(agentId, request.RefreshToken, ["netratel:connect"]);
@@ -268,24 +255,8 @@ public sealed class ClientAgentTokenService : IAgentTokenService
         return msg;
     }
 
-    private static string TrimForLog(string value)
-    {
-        const int max = 2048;
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return string.Empty;
-        }
-
-        var sanitized = RedactSecrets(value);
-        var compact = sanitized.Replace(Environment.NewLine, " ").Trim();
-        return compact.Length <= max ? compact : compact[..max] + "...";
-    }
-
-    private static string RedactSecrets(string value)
-    {
-        var result = value;
-        result = Regex.Replace(result, "(\"refreshToken\"\\s*:\\s*\")[^\"]+\"", "$1[REDACTED]\"", RegexOptions.IgnoreCase);
-        result = Regex.Replace(result, "(\"accessToken\"\\s*:\\s*\")[^\"]+\"", "$1[REDACTED]\"", RegexOptions.IgnoreCase);
-        return result;
-    }
+    private static string? SafeDiagnosticToken(string? value) =>
+        !string.IsNullOrWhiteSpace(value) && value.Length <= 64 && value.All(c => char.IsAsciiLetterOrDigit(c) || c is '_' or '-')
+            ? value
+            : null;
 }

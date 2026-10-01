@@ -14,7 +14,6 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using NetRatel.AgentGateway.Contracts.V1;
-using NetRatel.Akka.Configuration;
 using NetRatel.API.Endpoints;
 using NetRatel.API.Gateway;
 using NetRatel.API.Services;
@@ -162,18 +161,9 @@ public sealed class AgentTerminalGatewayAttachmentEndpointTests
                 services.AddAuthentication("Test")
                     .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>("Test", _ => { });
                 services.AddAuthorization(options =>
-                    options.AddPolicy("Operator", policy => policy.RequireAuthenticatedUser()));
+                    options.AddPolicy("TerminalSessionAccess", policy => policy.RequireAuthenticatedUser()));
                 services.AddSingleton<IAgentTerminalSessionRegistry>(terminals);
                 services.AddSingleton(attachments);
-                services.AddSingleton(new NetRatelAkkaMigrationOptions
-                {
-                    Enabled = true,
-                    PresenceEnabled = true,
-                    GatewayEnabled = true,
-                    TerminalGatewayEnabled = true,
-                    PresenceAuthorityEnabled = true,
-                    TerminalAuthorityEnabled = true
-                });
             });
             web.Configure(app =>
             {

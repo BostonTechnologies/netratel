@@ -3,6 +3,7 @@ name: netratel
 services:
   postgres:
     image: postgres:17-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-netratel}
       POSTGRES_USER: ${POSTGRES_USER:-netratel}

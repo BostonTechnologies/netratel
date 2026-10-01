@@ -6,16 +6,14 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 using NetRatel.API.Gateway;
 using NetRatel.API.Services;
-using NetRatel.Akka.Configuration;
 using NetRatel.Application.Presence;
 using NetRatel.Shared.Contracts.Terminals;
 
 namespace NetRatel.API.Endpoints;
 
 /// <summary>
-/// Operator-facing adapter for the fenced terminal gRPC transport. It has no
-/// SpacetimeDB or direct-tunnel dependency: when the authority flag is off,
-/// these V2 routes do not exist from the caller's perspective.
+/// Adapter for the fenced terminal gRPC transport. Session routes authorize
+/// against the tenant of the registered session before serving or changing it.
 /// </summary>
 public static class AgentTerminalGatewayEndpoints
 {
@@ -28,7 +26,7 @@ public static class AgentTerminalGatewayEndpoints
 
         var sessions = app.MapGroup("/api/v2/gateway-terminal/{sessionId}")
             .WithTags("Gateway Terminal")
-            .RequireAuthorization("Operator");
+            .RequireAuthorization("TerminalSessionAccess");
         sessions.MapGet("", GetAsync);
         sessions.MapPost("/close", CloseAsync);
         sessions.MapPost("/attachment/renew", RenewAttachmentAsync);
@@ -43,15 +41,10 @@ public static class AgentTerminalGatewayEndpoints
         int tenantId,
         Guid agentId,
         OpenTerminalRequest request,
-        NetRatelAkkaMigrationOptions options,
         [FromServices] IAgentTerminalSessionRegistry terminals,
         IServiceProvider services,
         CancellationToken cancellationToken)
     {
-        if (!options.IsTerminalAuthorityActive)
-        {
-            return Results.NotFound();
-        }
 
         var shell = request.ShellType?.Trim() ?? string.Empty;
 
@@ -71,14 +64,9 @@ public static class AgentTerminalGatewayEndpoints
 
     private static IResult GetAsync(
         string sessionId,
-        NetRatelAkkaMigrationOptions options,
         [FromServices] IAgentTerminalSessionRegistry terminals,
         IServiceProvider services)
     {
-        if (!options.IsTerminalAuthorityActive)
-        {
-            return Results.NotFound();
-        }
 
         if (terminals.Get(sessionId) is not { } session)
         {
@@ -90,9 +78,9 @@ public static class AgentTerminalGatewayEndpoints
         return Results.Ok(ToDto(session, BrowserAttachments(services)?.GetAttachmentLeaseId(session)));
     }
 
-    private static async Task<IResult> CloseAsync(string sessionId, CloseTerminalRequest? request, NetRatelAkkaMigrationOptions options, [FromServices] IAgentTerminalSessionRegistry terminals, IServiceProvider services, CancellationToken cancellationToken)
+    private static async Task<IResult> CloseAsync(string sessionId, CloseTerminalRequest? request, [FromServices] IAgentTerminalSessionRegistry terminals, IServiceProvider services, CancellationToken cancellationToken)
     {
-        if (!options.IsTerminalAuthorityActive) return Results.NotFound();
+
         if (terminals.Get(sessionId) is not { } session) return Results.NotFound();
         BrowserAttachments(services)?.MarkClosePending(session);
         try
@@ -112,14 +100,9 @@ public static class AgentTerminalGatewayEndpoints
     private static IResult RenewAttachmentAsync(
         string sessionId,
         TerminalAttachmentRenewalRequest request,
-        NetRatelAkkaMigrationOptions options,
         [FromServices] IAgentTerminalSessionRegistry terminals,
         IServiceProvider services)
     {
-        if (!options.IsTerminalAuthorityActive)
-        {
-            return Results.NotFound();
-        }
 
         if (request.Generation == 0 ||
             string.IsNullOrWhiteSpace(request.AttachmentLeaseId) ||
@@ -179,9 +162,9 @@ public static class AgentTerminalGatewayEndpoints
         };
     }
 
-    private static async Task<IResult> SendInputAsync(string sessionId, TerminalInputRequest request, NetRatelAkkaMigrationOptions options, [FromServices] IAgentTerminalSessionRegistry terminals, CancellationToken cancellationToken)
+    private static async Task<IResult> SendInputAsync(string sessionId, TerminalInputRequest request, [FromServices] IAgentTerminalSessionRegistry terminals, CancellationToken cancellationToken)
     {
-        if (!options.IsTerminalAuthorityActive) return Results.NotFound();
+
         if (string.IsNullOrEmpty(request?.Data)) return Results.BadRequest(new TerminalActionResponse(NewTrackingId(), "Input data is required.", sessionId));
         if (terminals.Get(sessionId) is not { } session) return Results.NotFound();
         try
@@ -193,9 +176,9 @@ public static class AgentTerminalGatewayEndpoints
         catch (ArgumentException exception) { return Results.BadRequest(new TerminalActionResponse(NewTrackingId(), exception.Message, sessionId)); }
     }
 
-    private static async Task<IResult> ResizeAsync(string sessionId, TerminalResizeRequest request, NetRatelAkkaMigrationOptions options, [FromServices] IAgentTerminalSessionRegistry terminals, CancellationToken cancellationToken)
+    private static async Task<IResult> ResizeAsync(string sessionId, TerminalResizeRequest request, [FromServices] IAgentTerminalSessionRegistry terminals, CancellationToken cancellationToken)
     {
-        if (!options.IsTerminalAuthorityActive) return Results.NotFound();
+
         if (terminals.Get(sessionId) is not { } session) return Results.NotFound();
         try
         {
@@ -209,10 +192,10 @@ public static class AgentTerminalGatewayEndpoints
         catch (TerminalGatewayActionException exception) { return GatewayFailure(exception, sessionId); }
     }
 
-    private static async Task<IResult> StreamInputWebSocketAsync(string sessionId, HttpContext httpContext, NetRatelAkkaMigrationOptions options, [FromServices] IAgentTerminalSessionRegistry terminals, ILoggerFactory loggerFactory, CancellationToken cancellationToken)
+    private static async Task<IResult> StreamInputWebSocketAsync(string sessionId, HttpContext httpContext, [FromServices] IAgentTerminalSessionRegistry terminals, ILoggerFactory loggerFactory, CancellationToken cancellationToken)
     {
         var logger = loggerFactory.CreateLogger("NetRatel.API.TerminalInputWebSocket");
-        if (!options.IsTerminalAuthorityActive) return Results.NotFound();
+
         if (!httpContext.WebSockets.IsWebSocketRequest) return Results.BadRequest(new TerminalActionResponse(NewTrackingId(), "Expected a websocket request.", sessionId));
         if (terminals.Get(sessionId) is not { } session) return Results.NotFound();
         if (session.State is "suspended") return GatewayFailure(new TerminalGatewayActionException("terminal_transport_reconnecting", "The terminal transport is reconnecting."), sessionId);
@@ -285,10 +268,10 @@ public static class AgentTerminalGatewayEndpoints
         return Results.Empty;
     }
 
-    private static async Task StreamAsync(string sessionId, HttpResponse response, NetRatelAkkaMigrationOptions options, [FromServices] IAgentTerminalSessionRegistry terminals, ILoggerFactory loggerFactory, CancellationToken cancellationToken)
+    private static async Task StreamAsync(string sessionId, HttpResponse response, [FromServices] IAgentTerminalSessionRegistry terminals, ILoggerFactory loggerFactory, CancellationToken cancellationToken)
     {
         var logger = loggerFactory.CreateLogger("NetRatel.API.TerminalStream");
-        if (!options.IsTerminalAuthorityActive || terminals.Get(sessionId) is not { } session)
+        if (terminals.Get(sessionId) is not { } session)
         {
             response.StatusCode = StatusCodes.Status404NotFound;
             return;

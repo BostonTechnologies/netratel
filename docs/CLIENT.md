@@ -17,6 +17,58 @@ them between machines or use an operator OIDC credential in their place. A
 Client that has not enrolled exits rather than starting an unauthenticated
 service.
 
+## API and gateway endpoints
+
+Set `Client:ApiBaseUrl` to the public HTTPS origin used for enrollment and HTTP
+API calls. The Client uses that same URL for its gRPC gateway when
+`Gateway:Endpoint` is absent or empty. Generated Windows, Linux and macOS
+service installers persist the API URL once; an explicit `Gateway:Endpoint`
+sets the gateway's public HTTPS address for deployments that publish it on a
+separate host. Gateway operations use the configured endpoint. Remote Support
+V2 follows the enrolled Client's advertised capabilities and platform; provider
+handover remains governed by the `RemoteSupport:Handover` policy. Terminal
+support depends on the Client host's available shell/PTY capabilities.
+
+For a shared public host, route the gateway's protobuf service namespace to the
+API's private h2c gateway listener. The connection path is:
+
+`Native Client -- HTTPS / HTTP/2 --> reverse proxy -- h2c --> API gateway listener`
+
+Keep the existing Web and REST routers separate. This compact Traefik
+file-provider fragment shows only the gateway router and service:
+
+```yaml
+http:
+  routers:
+    netratel-grpc:
+      rule: "Host(`netratel.example.com`) && PathPrefix(`/netratel.gateway.v1.`)"
+      entryPoints: [websecure]
+      priority: 100
+      service: netratel-grpc
+      tls: {}
+  services:
+    netratel-grpc:
+      loadBalancer:
+        servers:
+          - url: "h2c://api:9223"
+```
+
+The trailing dot in the gRPC `PathPrefix` keeps this router scoped to the
+protobuf package. The proxy terminates public TLS and uses h2c only on its
+private hop to the API listener. Do not add path rewriting. Set the entrypoint,
+TLS certificate configuration, backend address, and router priority for your
+deployment. Forwarding this package prefix does not bypass per-RPC
+authentication or the API's authenticated-peer, tenant, current-session, and
+protocol checks. If the gateway is instead on a dedicated public host, a
+Host-only router can send that host to the same h2c listener; set
+`Gateway:Endpoint` to its public HTTPS URL, for example
+`https://grpc.example.com`.
+
+Generated install links are immutable snapshots. After deploying an updated
+candidate, create a fresh link for validation; an existing link does not pick
+up a newer installer script. Never reuse an exposed or consumed enrollment
+grant.
+
 The package includes runtime-specific update helpers and a manifest. Preserve
 the existing installation identity and rollback material during an update; do
 not bypass ordinary downgrade protection or point a Client at an unapproved
@@ -35,7 +87,10 @@ archive SHA256 and local normalized artifact SHA256 can differ; each is checked
 at its own boundary. Importing leaves the currently offered update releases
 unchanged. The separate **Approve and publish for deployment** action records
 the operator and offers the pack only through existing enabled tenant update
-policies. Legacy offline upload remains available.
+policies. Legacy offline upload remains available, but it publishes immediately
+after manifest validation and bypasses GitHub publication verification and the
+saved automation policy. Use GitHub import when those checks and the
+instance-wide automation controls are required.
 
 Automation is instance-wide and starts **off**. Choose 12-hour or 24-hour UTC
 checks, then opt in to stable downloads. Prerelease downloads, automatic
@@ -128,5 +183,11 @@ stops being served when the grant expires, is revoked or is exhausted. Revoking
 also blocks enrollment from previously downloaded copies while leaving already
 enrolled machines intact. Configure a trusted HTTPS public Web origin and the
 public API/download origins before generating a link; a missing or unsafe
-public URL is reported as a configuration error. Keep capability URLs and
-generated script contents out of external reverse-proxy access logs.
+public URL is reported as a configuration error. Issued scripts are protected
+snapshots: a later template or package change does not rewrite an old link or
+archive. For recovery, revoke the old link from the management page (or the
+management revoke endpoint), confirm the tenant/runtime/origin/options, and
+generate a new link. Old packages remain supported until their link expires,
+is revoked, or is exhausted; do not edit a capability URL or downloaded script.
+Keep capability URLs and generated script contents out of external reverse-proxy
+access logs.

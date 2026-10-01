@@ -102,9 +102,6 @@ public sealed class TerminalConsoleLifecycleTests
 
         public Task EnsureSubscribedAsync(CancellationToken ct = default) => throw new NotSupportedException();
 
-        public Task<TerminalOpenResponse> OpenSessionAsync(string clientIdentityHex, OpenTerminalRequest request, CancellationToken ct = default) =>
-            throw new NotSupportedException();
-
         public Task<TerminalOpenResponse> OpenGatewaySessionAsync(int tenantId, Guid agentId, OpenTerminalRequest request, CancellationToken ct = default) =>
             throw new NotSupportedException();
 
@@ -133,9 +130,6 @@ public sealed class TerminalConsoleLifecycleTests
             await Task.CompletedTask;
             yield break;
         }
-
-        public Task<IReadOnlyList<TerminalSessionDto>> GetSessionsAsync(string clientIdentityHex, CancellationToken ct = default) =>
-            throw new NotSupportedException();
 
         public Task<TerminalSessionDto?> GetSessionAsync(string sessionId, CancellationToken ct = default) =>
             throw new NotSupportedException();

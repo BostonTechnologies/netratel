@@ -3,7 +3,6 @@ using System.Text;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using NetRatel.API.Gateway;
-using NetRatel.Akka.Configuration;
 using NetRatel.Application.Events;
 using NetRatel.Application.Operations;
 using NetRatel.Application.Presence;
@@ -26,17 +25,6 @@ public static class DevelopmentMcpFileGatewayEndpoints
 
     public static IEndpointRouteBuilder MapDevelopmentMcpFileGatewayEndpoints(this IEndpointRouteBuilder app)
     {
-        // The file gateway is optional in a Dev deployment. Do not register
-        // endpoint delegates that depend on its service when the authority is
-        // off: minimal-API parameter inference runs while constructing routes,
-        // before an endpoint can return its intended fail-closed response.
-        var options = app.ServiceProvider.GetRequiredService<NetRatelAkkaMigrationOptions>();
-        if (!options.IsFileBrowseAuthorityActive ||
-            app.ServiceProvider.GetService<IAgentFileGatewaySessionRegistry>() is null)
-        {
-            return app;
-        }
-
         var group = app.MapGroup("/api/v2/development/mcp/agents/{tenantId:int}/{agentId:guid}/files")
             .WithTags("Development MCP Files")
             .RequireAuthorization("Operator");
@@ -56,17 +44,11 @@ public static class DevelopmentMcpFileGatewayEndpoints
         [FromQuery] string path,
         [FromQuery] int? pageSize,
         HttpContext http,
-        NetRatelAkkaMigrationOptions options,
+        [FromServices] IAgentFileGatewaySessionRegistry sessions,
         ICorrelationContext correlation,
         IDevelopmentOperatorTargetAuthority targets,
         CancellationToken cancellationToken)
     {
-        var sessions = http.RequestServices.GetService<IAgentFileGatewaySessionRegistry>();
-        if (!options.IsFileBrowseAuthorityActive || sessions is null)
-        {
-            return Results.NotFound();
-        }
-
         if (pageSize is <= 0 or > MaximumPageSize)
         {
             return Problem(StatusCodes.Status400BadRequest, "invalid_page_size", "pageSize must be between 1 and 100 when supplied.");
@@ -108,17 +90,11 @@ public static class DevelopmentMcpFileGatewayEndpoints
         Guid agentId,
         [FromQuery] string path,
         HttpContext http,
-        NetRatelAkkaMigrationOptions options,
+        [FromServices] IAgentFileGatewaySessionRegistry sessions,
         ICorrelationContext correlation,
         IDevelopmentOperatorTargetAuthority targets,
         CancellationToken cancellationToken)
     {
-        var sessions = http.RequestServices.GetService<IAgentFileGatewaySessionRegistry>();
-        if (!options.IsFileBrowseAuthorityActive || sessions is null)
-        {
-            return Results.NotFound();
-        }
-
         if (await RequireFixtureAccessAsync(http, tenantId, agentId, path, DevelopmentOperatorOperation.FileRead, correlation, targets, cancellationToken).ConfigureAwait(false) is { } rejection)
         {
             return rejection;
@@ -199,18 +175,12 @@ public static class DevelopmentMcpFileGatewayEndpoints
         Guid agentId,
         DevelopmentMcpFileCollectRequest request,
         HttpContext http,
-        NetRatelAkkaMigrationOptions options,
+        [FromServices] IAgentFileGatewaySessionRegistry sessions,
         OrchestratorDbContext db,
         ICorrelationContext correlation,
         IDevelopmentOperatorTargetAuthority targets,
         CancellationToken cancellationToken)
     {
-        var sessions = http.RequestServices.GetService<IAgentFileGatewaySessionRegistry>();
-        if (!options.IsFileBrowseAuthorityActive || sessions is null)
-        {
-            return Results.NotFound();
-        }
-
         if (!TryGetFileName(request.Path, out var fileName))
         {
             return Problem(StatusCodes.Status400BadRequest, "invalid_path", "The fixture collection path must name a bounded file.");

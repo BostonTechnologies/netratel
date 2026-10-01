@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NetRatel OIDC smoke sign-in</title>
+</head>
+<body>
+  <main>
+    <h1>NetRatel OIDC smoke sign-in</h1>
+    <form method="post">
+      <label for="username">Synthetic test subject</label>
+      <input id="username" name="username" type="text" autocomplete="off" required>
+      <textarea id="claims" name="claims" hidden></textarea>
+      <button type="submit">Sign in</button>
+    </form>
+  </main>
+
+  <script id="oidc-claim-profiles" type="application/json">
+    {
+      "netratel-test-operator": {
+        "sub": "netratel-test-operator",
+        "preferred_username": "netratel-test-operator@example.test",
+        "roles": ["Operator"],
+        "aud": ["netratel-smoke-client", "netratel.api"]
+      },
+      "netratel-test-tenant-admin": {
+        "sub": "netratel-test-tenant-admin",
+        "preferred_username": "netratel-test-tenant-admin@example.test",
+        "aud": ["netratel-smoke-client", "netratel.api"]
+      },
+      "netratel-test-unprivileged": {
+        "sub": "netratel-test-unprivileged",
+        "preferred_username": "netratel-test-unprivileged@example.test",
+        "aud": ["netratel-smoke-client", "netratel.api"]
+      }
+    }
+  </script>
+  <script>
+    const claimProfiles = JSON.parse(document.getElementById("oidc-claim-profiles").textContent);
+    const usernameInput = document.getElementById("username");
+    const claimsInput = document.getElementById("claims");
+    const loginForm = document.querySelector("form");
+
+    function updateClaims() {
+      const profile = claimProfiles[usernameInput.value.trim()];
+      claimsInput.value = profile ? JSON.stringify(profile) : "";
+    }
+
+    usernameInput.addEventListener("input", updateClaims);
+    usernameInput.addEventListener("change", updateClaims);
+    loginForm.addEventListener("submit", updateClaims);
+    updateClaims();
+  </script>
+</body>
+</html>

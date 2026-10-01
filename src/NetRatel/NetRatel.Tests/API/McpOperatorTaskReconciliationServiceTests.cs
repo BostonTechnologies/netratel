@@ -48,7 +48,7 @@ public sealed class McpOperatorTaskReconciliationServiceTests
     [InlineData("agent")]
     [InlineData("command")]
     [InlineData("correlation")]
-    [InlineData("shadow")]
+    [InlineData("historical-provenance")]
     [InlineData("version")]
     [InlineData("sequence")]
     [InlineData("transition")]
@@ -71,7 +71,7 @@ public sealed class McpOperatorTaskReconciliationServiceTests
             case "agent": history[^1] = history[^1] with { Client = new ClientKey(task.TenantId, Guid.NewGuid()) }; break;
             case "command": history[^1] = history[^1] with { CommandId = Guid.NewGuid().ToString("N") }; break;
             case "correlation": history[^1] = history[^1] with { CorrelationId = "other-request" }; break;
-            case "shadow": history[2] = history[2] with { IsAuthoritative = false }; break;
+            case "historical-provenance": history[2] = history[2] with { IsAuthoritative = false }; break;
             case "version": history[^1] = history[^1] with { Version = 1 }; break;
             case "sequence": history[^1] = history[^1] with { Sequence = 1 }; break;
             case "transition": history[1] = history[1] with { Status = CommandLifecycleStatus.Completed }; break;

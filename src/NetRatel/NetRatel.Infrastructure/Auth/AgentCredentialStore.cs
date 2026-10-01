@@ -70,6 +70,12 @@ public sealed class AgentCredentialStore : IAgentCredentialStore, IAgentDeviceKe
             return;
         }
 
+        if (string.IsNullOrWhiteSpace(existing.PublicKey) || string.IsNullOrWhiteSpace(existing.PrivateKey))
+        {
+            throw new AgentCredentialStoreException(
+                "Refresh credentials cannot be cleared because this existing credential-only payload has no device key to preserve. Its bytes were left unchanged; provide a validated enrollment recovery before changing this installation identity.");
+        }
+
         var payload = new CredentialPayload(
             AgentId: null,
             RefreshToken: null,
@@ -375,7 +381,7 @@ public sealed class AgentCredentialStore : IAgentCredentialStore, IAgentDeviceKe
 
     private async Task<CredentialPayload?> TryLoadPayloadAsync()
     {
-        if (!File.Exists(_path))
+        if (!TryGetExistingCredentialFile(_path))
         {
             return await TryMigrateLegacyPathAsync().ConfigureAwait(false);
         }
@@ -402,25 +408,25 @@ public sealed class AgentCredentialStore : IAgentCredentialStore, IAgentDeviceKe
             var legacy = TryDeserialize(encrypted, LegacyStoProtection);
             if (legacy is null)
             {
-                return null;
+                throw new AgentCredentialStoreException();
             }
 
             await WritePayloadAsync(legacy, CancellationToken.None).ConfigureAwait(false);
             return legacy;
         }
-        catch (IOException)
+        catch (IOException exception)
         {
-            return null;
+            throw new AgentCredentialStoreException(exception);
         }
-        catch (UnauthorizedAccessException)
+        catch (UnauthorizedAccessException exception)
         {
-            return null;
+            throw new AgentCredentialStoreException(exception);
         }
     }
 
     private async Task<CredentialPayload?> TryMigrateLegacyPathAsync()
     {
-        if (string.IsNullOrWhiteSpace(_legacyPath) || !File.Exists(_legacyPath))
+        if (string.IsNullOrWhiteSpace(_legacyPath) || !TryGetExistingCredentialFile(_legacyPath))
         {
             return null;
         }
@@ -431,7 +437,7 @@ public sealed class AgentCredentialStore : IAgentCredentialStore, IAgentDeviceKe
             var payload = TryDeserialize(encrypted, CurrentProtection) ?? TryDeserialize(encrypted, LegacyStoProtection);
             if (payload is null)
             {
-                return null;
+                throw new AgentCredentialStoreException();
             }
 
             // WritePayloadAsync uses a temp file and atomic rename. The legacy file stays
@@ -441,13 +447,38 @@ public sealed class AgentCredentialStore : IAgentCredentialStore, IAgentDeviceKe
             TryDeleteLegacyPath(_legacyPath);
             return payload;
         }
-        catch (IOException)
+        catch (IOException exception)
         {
-            return null;
+            throw new AgentCredentialStoreException(exception);
         }
-        catch (UnauthorizedAccessException)
+        catch (UnauthorizedAccessException exception)
         {
-            return null;
+            throw new AgentCredentialStoreException(exception);
+        }
+    }
+
+    private static bool TryGetExistingCredentialFile(string path)
+    {
+        try
+        {
+            _ = File.GetAttributes(path);
+            return true;
+        }
+        catch (FileNotFoundException)
+        {
+            return false;
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return false;
+        }
+        catch (IOException exception)
+        {
+            throw new AgentCredentialStoreException(exception);
+        }
+        catch (UnauthorizedAccessException exception)
+        {
+            throw new AgentCredentialStoreException(exception);
         }
     }
 
@@ -468,7 +499,8 @@ public sealed class AgentCredentialStore : IAgentCredentialStore, IAgentDeviceKe
         try
         {
             var json = Unprotect(encrypted, protection);
-            return JsonSerializer.Deserialize<CredentialPayload>(json);
+            var payload = JsonSerializer.Deserialize<CredentialPayload>(json);
+            return HasRecognizedPayload(payload) ? payload : null;
         }
         catch (CryptographicException)
         {
@@ -478,6 +510,20 @@ public sealed class AgentCredentialStore : IAgentCredentialStore, IAgentDeviceKe
         {
             return null;
         }
+    }
+
+    private static bool HasRecognizedPayload(CredentialPayload? payload)
+    {
+        if (payload is null)
+        {
+            return false;
+        }
+
+        var hasCredentials = !string.IsNullOrWhiteSpace(payload.AgentId) &&
+            !string.IsNullOrWhiteSpace(payload.RefreshToken);
+        var hasDeviceKey = !string.IsNullOrWhiteSpace(payload.PublicKey) &&
+            !string.IsNullOrWhiteSpace(payload.PrivateKey);
+        return hasCredentials || hasDeviceKey;
     }
 
     private async Task WritePayloadAsync(CredentialPayload payload, CancellationToken ct)
@@ -516,4 +562,17 @@ public sealed class AgentCredentialStore : IAgentCredentialStore, IAgentDeviceKe
         string? KeyAlgorithm);
 
     private sealed record CredentialProtectionProfile(byte[] Entropy, string? LinuxUser, string KeyLabel);
+}
+
+public sealed class AgentCredentialStoreException : InvalidOperationException
+{
+    public AgentCredentialStoreException(Exception? innerException = null)
+        : this("An existing NetRatel credential file cannot be read or decrypted for the current service identity. Its bytes were preserved; no replacement installation identity was created.", innerException)
+    {
+    }
+
+    public AgentCredentialStoreException(string message, Exception? innerException = null)
+        : base(message, innerException)
+    {
+    }
 }

@@ -32,15 +32,9 @@ public sealed class AgentFileGatewayClient(
 
     public async Task RunForPresenceSessionAsync(GatewayPresenceSession session, string accessToken, CancellationToken stoppingToken)
     {
-        if (!options.FileGatewayEnabled)
-        {
-            return;
-        }
-
         if (!Uri.TryCreate(options.Endpoint, UriKind.Absolute, out var endpoint) || endpoint.Scheme != Uri.UriSchemeHttps)
         {
-            log("File gateway is disabled because Gateway:Endpoint is not an absolute HTTPS URL.");
-            return;
+            throw new InvalidOperationException("Gateway:Endpoint must be an absolute HTTPS URL.");
         }
 
         var retryDelay = InitialRetryDelay;
@@ -643,9 +637,9 @@ public sealed class AgentFileGatewayClient(
     private void ValidateAccepted(GatewayFileFrame frame, GatewayPresenceSession session)
     {
         ValidateFrame(frame, session);
-        if (!GatewayAuthority.IsAkka(frame.Accepted.FileAuthority))
+        if (!GatewayWireProtocol.HasAkkaAuthority(frame.Accepted.FileAuthority))
         {
-            throw new RpcException(new Status(StatusCode.FailedPrecondition, "File gateway did not admit the expected authority."));
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, "File gateway returned an unsupported authority token."));
         }
     }
 

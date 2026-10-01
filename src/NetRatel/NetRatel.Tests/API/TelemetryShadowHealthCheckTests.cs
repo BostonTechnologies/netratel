@@ -7,21 +7,21 @@ using Xunit;
 
 namespace NetRatel.Tests.API;
 
-public sealed class TelemetryShadowHealthCheckTests
+public sealed class TelemetryRuntimeHealthCheckTests
 {
     [Fact]
     public async Task CheckHealth_ReportsBoundedTelemetryDiagnostics()
     {
         var timestamp = DateTimeOffset.UtcNow;
-        var check = new TelemetryShadowHealthCheck(new ProbeTelemetryRouter(
+        var check = new TelemetryRuntimeHealthCheck(new ProbeTelemetryRouter(
             new ClientTelemetryRouteStatus(
                 3,
                 10,
                 2,
                 timestamp,
                 timestamp.AddMinutes(-1),
-                "local-shadow",
-                "spacetimedb")));
+                "akka",
+                "akka")));
 
         var result = await check.CheckHealthAsync(new HealthCheckContext());
 
@@ -29,13 +29,13 @@ public sealed class TelemetryShadowHealthCheckTests
         result.Data["activeTelemetryClients"].Should().Be(3);
         result.Data["acceptedCount"].Should().Be(10UL);
         result.Data["rejectedCount"].Should().Be(2UL);
-        result.Data["telemetryAuthority"].Should().Be("spacetimedb");
+        result.Data["telemetryAuthority"].Should().Be("akka");
     }
 
     [Fact]
     public async Task CheckHealth_IsUnhealthyWhenActorRouteCannotBeProbed()
     {
-        var check = new TelemetryShadowHealthCheck(new ProbeTelemetryRouter(
+        var check = new TelemetryRuntimeHealthCheck(new ProbeTelemetryRouter(
             new InvalidOperationException("probe failed")));
 
         var result = await check.CheckHealthAsync(new HealthCheckContext());

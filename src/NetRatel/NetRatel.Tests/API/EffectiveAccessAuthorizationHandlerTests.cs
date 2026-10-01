@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
+using NetRatel.API.Realtime;
 using NetRatel.API.Security.Authorization;
 using NetRatel.Infrastructure.Identity;
 using NetRatel.Infrastructure.Identity.Authorization;
@@ -69,16 +70,53 @@ public sealed class EffectiveAccessAuthorizationHandlerTests
         {
             PrincipalId = "tenant-principal", RoleId = role.Id, TenantId = 10
         });
+        db.IntegrationCredentials.Add(new IntegrationCredential
+        {
+            Id = "admin-credential",
+            PublicId = "admin-credential",
+            TokenPrefix = "nrt_ic_test",
+            SecretHash = "hash",
+            OwnerPrincipalId = "admin-principal",
+            Purpose = IntegrationCredentialPurpose.Api,
+            Name = "Realtime tenant grant only",
+            ExpiresAtUtc = DateTimeOffset.UtcNow.AddDays(1),
+            Grants = [new IntegrationCredentialGrant
+            {
+                CredentialId = "admin-credential",
+                TenantId = 10,
+                Permission = NetRatelPermissions.ClientManagement
+            }],
+            InstanceGrants = [new IntegrationCredentialInstanceGrant
+            {
+                CredentialId = "admin-credential",
+                Permission = NetRatelPermissions.ClientManagement
+            }]
+        });
         await db.SaveChangesAsync();
-        var handler = new EffectiveAccessHandler(new EffectiveAccessService(db, Configuration()));
+        var effectiveAccess = new EffectiveAccessService(db, Configuration());
+        var handler = new EffectiveAccessHandler(effectiveAccess);
+        var realtimeTenantAuthorizer = new RealtimeTenantAccessAuthorizer(effectiveAccess);
         var requirement = new EffectiveAccessRequirement(NetRatelPermissions.ClientManagement, instanceScope: true);
         var admin = new ClaimsPrincipal(new ClaimsIdentity([
             new Claim("netratel_principal_id", "admin-principal")], "local"));
         var tenantManager = new ClaimsPrincipal(new ClaimsIdentity([
             new Claim("netratel_principal_id", "tenant-principal")], "local"));
+        var attenuatedAdminCredential = new ClaimsPrincipal(new ClaimsIdentity([
+            new Claim("netratel_principal_id", "admin-principal"),
+            new Claim("netratel_integration_credential_id", "admin-credential")], "IntegrationCredential"));
 
         (await EvaluateAsync(handler, requirement, admin, 10)).Should().BeTrue();
         (await EvaluateAsync(handler, requirement, tenantManager, 10)).Should().BeFalse();
+        (await EvaluateAsync(handler, requirement, attenuatedAdminCredential, 10)).Should().BeFalse(
+            "an integration credential stays attenuated even when its owner is an instance administrator");
+
+        (await realtimeTenantAuthorizer.IsAuthorizedAsync(admin, 10)).Should().BeTrue();
+        (await realtimeTenantAuthorizer.IsAuthorizedAsync(admin, 11)).Should().BeTrue();
+        (await realtimeTenantAuthorizer.IsAuthorizedAsync(tenantManager, 10)).Should().BeTrue();
+        (await realtimeTenantAuthorizer.IsAuthorizedAsync(tenantManager, 11)).Should().BeFalse();
+        (await realtimeTenantAuthorizer.IsAuthorizedAsync(attenuatedAdminCredential, 10)).Should().BeTrue(
+            "the credential may use its exact tenant grant if admitted by an authorized caller policy");
+        (await realtimeTenantAuthorizer.IsAuthorizedAsync(attenuatedAdminCredential, 11)).Should().BeFalse();
     }
 
     private static async Task<bool> EvaluateAsync(EffectiveAccessHandler handler, IAuthorizationRequirement requirement, ClaimsPrincipal principal, int tenantId)

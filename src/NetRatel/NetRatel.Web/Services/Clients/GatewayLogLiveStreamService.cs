@@ -23,7 +23,7 @@ public interface IGatewayLogLiveStreamService
 /// </summary>
 public sealed class GatewayLogLiveStreamService(
     IHttpClientFactory clientFactory,
-    ITokenService tokens,
+    OperatorApiCredentialProvider credentials,
     ILogger<GatewayLogLiveStreamService> logger) : IGatewayLogLiveStreamService
 {
     public async Task<GatewayLogLiveSubscription> SubscribeAsync(
@@ -37,16 +37,9 @@ public sealed class GatewayLogLiveStreamService(
         var http = clientFactory.CreateClient("OrchestratorApi");
         if (http.BaseAddress is null) throw new InvalidOperationException("The OrchestratorApi base address is not configured.");
 
-        // Resolve the token while the circuit is active. The SignalR transport
-        // invokes its token callback from its background connection loop, where
-        // HttpContext is not guaranteed to be available.
-        var accessToken = await tokens.GetValidAccessTokenAsync().ConfigureAwait(false);
-
+        var hubUri = new Uri(http.BaseAddress, "/hubs/operations");
         var connection = new HubConnectionBuilder()
-            .WithUrl(new Uri(http.BaseAddress, "/hubs/operations"), options =>
-            {
-                options.AccessTokenProvider = () => Task.FromResult<string?>(accessToken);
-            })
+            .WithUrl(hubUri, options => OperatorApiHubAuthentication.Configure(options, hubUri, credentials))
             .WithAutomaticReconnect()
             .Build();
         connection.On<GatewayLogBatchDto>("LogBatch", onBatch);
