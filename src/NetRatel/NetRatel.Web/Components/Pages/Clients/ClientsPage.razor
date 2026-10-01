@@ -7,11 +7,20 @@
 
 @inject ClientPresentationService ClientPresentation
 @inject NavigationManager Navigation
-@inject ISnackbar Snackbar
+@inject ILogger<ClientsPage> Logger
 
 <PageTitle>Clients</PageTitle>
 
-<MudContainer MaxWidth="MaxWidth.False" Class="mt-4">
+@if (_interactiveReady)
+{
+    <span data-testid="clients-page-interactive" hidden></span>
+}
+
+<MudContainer MaxWidth="MaxWidth.False" Class="mt-4"
+              data-testid="client-directory-state"
+              data-load-count="@_loadCount"
+              data-last-load-trigger="@_lastLoadTrigger"
+              data-loading="@(_isLoading ? "true" : "false")">
     <MudPaper Elevation="2" Class="pa-4 mb-4">
         <MudGrid Spacing="3" Justify="Justify.FlexStart">
             <MudItem xs="12" sm="6" md="3">
@@ -19,7 +28,7 @@
                               Value="_search"
                               ValueChanged="OnSearchChanged"
                               Label="Search"
-                              Placeholder="Name, host, Agent ID, or tenant"
+                Placeholder="Name or host"
                               Adornment="Adornment.Start"
                               AdornmentIcon="@Icons.Material.Filled.Search"
                               Immediate="true"
@@ -45,7 +54,7 @@
             </MudItem>
             <MudItem xs="12" sm="12" md="3">
                 <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween" Class="clients-status-tools">
-                    <MudStack Spacing="0">
+                        <MudStack Spacing="0" Class="clients-status-filter">
                         <MudText Typo="Typo.caption">Status</MudText>
                         <MudStack Row="true" Spacing="1">
                             <MudChip T="string" Color="Color.Default" Variant="@GetStatusVariant(ClientStatusFilter.All)" OnClick="@(() => SelectedStatus = ClientStatusFilter.All)" aria-label="Show all clients">All</MudChip>
@@ -53,17 +62,19 @@
                             <MudChip T="string" Color="Color.Default" Variant="@GetStatusVariant(ClientStatusFilter.Offline)" OnClick="@(() => SelectedStatus = ClientStatusFilter.Offline)" aria-label="Show offline clients">Offline</MudChip>
                         </MudStack>
                     </MudStack>
-                    <MudIconButton Icon="@Icons.Material.Filled.Refresh"
-                                   Color="Color.Primary"
-                                   Variant="Variant.Outlined"
-                                   Disabled="@_isLoading"
-                                   OnClick="ReloadClientsAsync"
-                                   aria-label="Refresh clients" />
-                    <MudIconButton Icon="@(_view == ClientListView.Cards ? Icons.Material.Filled.TableRows : Icons.Material.Filled.GridView)"
-                                   Color="Color.Primary"
-                                   Variant="Variant.Outlined"
-                                   OnClick="ToggleView"
-                                   aria-label="Switch client view" />
+                    <MudStack Row="true" Spacing="1" Class="clients-view-tools">
+                        <MudIconButton Icon="@Icons.Material.Filled.Refresh"
+                                       Color="Color.Primary"
+                                       Variant="Variant.Outlined"
+                                       Disabled="@_isLoading"
+                                       OnClick="ReloadClientsAsync"
+                                       aria-label="Refresh clients" />
+                        <MudIconButton Icon="@(_view == ClientListView.Cards ? Icons.Material.Filled.TableRows : Icons.Material.Filled.GridView)"
+                                       Color="Color.Primary"
+                                       Variant="Variant.Outlined"
+                                       OnClick="ToggleView"
+                                       aria-label="Switch client view" />
+                    </MudStack>
                 </MudStack>
             </MudItem>
         </MudGrid>
@@ -71,18 +82,41 @@
 
     @if (_isLoading)
     {
-        <div class="d-flex align-center">
+        <div class="d-flex align-center" role="status" aria-live="polite" aria-busy="true">
             <MudProgressCircular Color="Color.Primary" Indeterminate="true" />
             <MudText Class="ml-2">Loading clients...</MudText>
         </div>
     }
-    else if (_gatewayUnavailable)
+    else if (_directoryFailure is { } failure)
     {
-        <MudAlert Severity="Severity.Error">The authoritative client directory is unavailable. No legacy client fallback is used.</MudAlert>
+        <div role="alert">
+            <MudAlert Severity="Severity.Error" Class="clients-directory-error">
+                <MudStack Spacing="2" AlignItems="AlignItems.Start">
+                    <MudText>@GetDirectoryFailureMessage(failure)</MudText>
+                    <MudButton Color="Color.Primary"
+                               Variant="Variant.Outlined"
+                               Disabled="@_isLoading"
+                               OnClick="ReloadClientsAsync"
+                               data-testid="retry-client-directory">
+                        Retry
+                    </MudButton>
+                </MudStack>
+            </MudAlert>
+        </div>
+    }
+    else if (_clients.Count == 0)
+    {
+        <div role="status" aria-live="polite">
+            <MudAlert Severity="Severity.Info">
+                No registered clients yet. Clients will appear here after they enroll.
+            </MudAlert>
+        </div>
     }
     else if (FilteredClients.Count == 0)
     {
-        <MudAlert Severity="Severity.Info">No clients match the active filters.</MudAlert>
+        <div role="status" aria-live="polite">
+            <MudAlert Severity="Severity.Info">No clients match the active filters.</MudAlert>
+        </div>
     }
     else
     {
@@ -106,7 +140,11 @@
 
     private IReadOnlyList<ClientPresentationModel> _clients = [];
     private bool _isLoading = true;
-    private bool _gatewayUnavailable;
+    private bool _loadStarted;
+    private int _loadCount;
+    private bool _interactiveReady;
+    private string _lastLoadTrigger = "initial";
+    private ClientPresentationFailure? _directoryFailure;
     private int? _selectedTenantId;
     private string? _selectedOs;
     private ClientStatusFilter _selectedStatus = ClientStatusFilter.All;
@@ -160,9 +198,21 @@
 
     protected override async Task OnInitializedAsync()
     {
-        await ReloadClientsAsync();
         _refreshLoop = new CancellationTokenSource();
-        _ = RefreshPeriodicallyAsync(_refreshLoop.Token);
+        var refreshToken = _refreshLoop.Token;
+        await ReloadClientsAsync(refreshToken, "initial");
+        _ = RefreshPeriodicallyAsync(refreshToken);
+    }
+
+    protected override Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            _interactiveReady = true;
+            StateHasChanged();
+        }
+
+        return Task.CompletedTask;
     }
 
     protected override void OnParametersSet()
@@ -171,24 +221,41 @@
         _view = NormalizeView(View);
     }
 
-    private async Task ReloadClientsAsync()
+    private Task ReloadClientsAsync() => ReloadClientsAsync(_refreshLoop?.Token ?? CancellationToken.None, "manual");
+
+    private async Task ReloadClientsAsync(CancellationToken cancellationToken, string trigger)
     {
+        if (_isLoading && _loadStarted)
+        {
+            return;
+        }
+
+        _loadStarted = true;
+        _lastLoadTrigger = trigger;
         _isLoading = true;
         try
         {
-            var result = await ClientPresentation.GetClientsAsync();
-            _gatewayUnavailable = !result.IsAvailable;
+            var result = await ClientPresentation.GetClientsAsync(cancellationToken);
+            _directoryFailure = result.Failure;
             _clients = result.Clients;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return;
         }
         catch (Exception exception)
         {
-            _gatewayUnavailable = true;
-            Snackbar.Add($"Failed to load clients: {exception.Message}", Severity.Error);
+            Logger.LogError(exception, "Could not load the authoritative client directory.");
+            _directoryFailure = new(ClientPresentationFailureKind.Unknown);
         }
         finally
         {
+            _loadCount++;
             _isLoading = false;
-            await InvokeAsync(StateHasChanged);
+            if (!cancellationToken.IsCancellationRequested)
+            {
+                await InvokeAsync(StateHasChanged);
+            }
         }
     }
 
@@ -199,7 +266,7 @@
         {
             while (await timer.WaitForNextTickAsync(cancellationToken))
             {
-                await ReloadClientsAsync();
+                await ReloadClientsAsync(cancellationToken, "periodic");
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -247,6 +314,19 @@
 
     private Variant GetStatusVariant(ClientStatusFilter status) =>
         _selectedStatus == status ? Variant.Filled : Variant.Outlined;
+
+    private static string GetDirectoryFailureMessage(ClientPresentationFailure failure) => failure.Kind switch
+    {
+        ClientPresentationFailureKind.AuthenticationRequired => "Your session is no longer authorized to read the client directory. Sign in again, then retry.",
+        ClientPresentationFailureKind.PermissionDenied => "Your account does not have permission to read the client directory. Ask an administrator to grant access.",
+        ClientPresentationFailureKind.RouteUnavailable => "The API does not expose the client directory route. Verify that the web app points to the expected API and retry.",
+        ClientPresentationFailureKind.Timeout => "The API did not respond in time. Check API health and connectivity, then retry.",
+        ClientPresentationFailureKind.BackendUnavailable => $"The API could not load the client directory (HTTP {(int?)failure.StatusCode}). Check API health and logs, then retry.",
+        ClientPresentationFailureKind.NetworkUnavailable => "The web app could not reach the API. Check web-to-API connectivity, then retry.",
+        ClientPresentationFailureKind.InvalidResponse => "The API returned an unreadable client directory response. Check that the web app and API versions match, then retry.",
+        ClientPresentationFailureKind.RequestRejected => $"The API rejected the client directory request (HTTP {(int?)failure.StatusCode}). Check the API request logs, then retry.",
+        _ => "The client directory could not be loaded. Check API health and connectivity, then retry."
+    };
 
     private enum ClientStatusFilter
     {

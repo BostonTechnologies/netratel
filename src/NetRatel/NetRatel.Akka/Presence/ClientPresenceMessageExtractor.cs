@@ -3,7 +3,7 @@ using NetRatel.Application.Presence;
 namespace NetRatel.Akka.Presence;
 
 /// <summary>
-/// Defines the stable entity identifier shared by the Phase 1 local router and
+/// Defines the stable entity identifier shared by the local router and
 /// the future cluster-sharding adapter.
 /// </summary>
 public sealed class ClientPresenceMessageExtractor

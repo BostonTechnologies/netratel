@@ -84,8 +84,8 @@ public sealed class ClientTelemetryRouterActor : ReceiveActor
             _rejectedCount,
             _lastUpdateTimestamp,
             _startedAtUtc,
-            "local-shadow",
-            "unavailable");
+            "akka",
+            "akka");
     }
 
     private static ulong IncrementSaturating(ulong value) =>

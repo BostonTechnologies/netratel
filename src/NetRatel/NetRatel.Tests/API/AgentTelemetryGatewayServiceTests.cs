@@ -8,7 +8,6 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging.Abstractions;
 using NetRatel.AgentGateway.Contracts.V1;
 using NetRatel.Akka.Configuration;
 using NetRatel.API.Gateway;
@@ -22,98 +21,6 @@ namespace NetRatel.Tests.API;
 
 public sealed class AgentTelemetryGatewayServiceTests
 {
-    [Fact]
-    public async Task PublishTelemetry_AcceptsAuthenticatedCurrentPresenceSession()
-    {
-        const int tenantId = 81;
-        var agentId = Guid.NewGuid();
-        var connectionId = Guid.NewGuid();
-        const long connectionEpoch = 4;
-        var telemetry = new RecordingTelemetryRouter();
-        var presence = new CurrentPresenceRouter(tenantId, agentId, connectionId, connectionEpoch);
-
-        using var host = await BuildHostAsync(
-            tenantId,
-            agentId,
-            presence,
-            telemetry,
-            telemetryEnabled: true);
-        using var channel = GrpcChannel.ForAddress(
-            "http://localhost",
-            new GrpcChannelOptions { HttpHandler = host.GetTestServer().CreateHandler() });
-        var client = new global::NetRatel.AgentGateway.Contracts.V1.AgentTelemetryGateway.AgentTelemetryGatewayClient(channel);
-        using var call = client.PublishTelemetry();
-
-        await call.RequestStream.WriteAsync(CreateFrame(
-            tenantId,
-            agentId,
-            connectionId,
-            connectionEpoch,
-            sequence: 1,
-            cpuUsage: 21));
-        await call.RequestStream.WriteAsync(CreateFrame(
-            tenantId,
-            agentId,
-            connectionId,
-            connectionEpoch,
-            sequence: 1,
-            cpuUsage: 99));
-        await call.RequestStream.CompleteAsync();
-
-        var summary = await call.ResponseAsync;
-        summary.AcceptedCount.Should().Be(1);
-        summary.RejectedCount.Should().Be(1);
-        summary.LastAcceptedSequence.Should().Be(1);
-        summary.TelemetryAuthority.Should().Be("unavailable");
-        telemetry.Latest.Should().NotBeNull();
-        telemetry.Latest!.Snapshot.Client.Should().Be(new ClientKey(tenantId, agentId));
-        telemetry.Latest.Snapshot.Cpu!.UsagePercent.Should().Be(21);
-        telemetry.Latest.Snapshot.Memory!.TotalMb.Should().Be(8192);
-        telemetry.Latest.Snapshot.Disks.Should().ContainSingle(disk => disk.Scope == "/");
-        telemetry.Latest.Snapshot.Networks.Should().ContainSingle(network => network.Scope == "eth0");
-        telemetry.Latest.Snapshot.TransportHealth!.AgentVersion.Should().Be("phase2-test");
-        telemetry.Latest.Snapshot.IsAuthoritative.Should().BeFalse();
-    }
-
-    [Fact]
-    public async Task PublishTelemetry_IsRejectedWhenFeatureFlagIsOff()
-    {
-        const int tenantId = 82;
-        var agentId = Guid.NewGuid();
-        var connectionId = Guid.NewGuid();
-        var telemetry = new RecordingTelemetryRouter();
-        var presence = new CurrentPresenceRouter(tenantId, agentId, connectionId, connectionEpoch: 1);
-
-        using var host = await BuildHostAsync(
-            tenantId,
-            agentId,
-            presence,
-            telemetry,
-            telemetryEnabled: false);
-        using var channel = GrpcChannel.ForAddress(
-            "http://localhost",
-            new GrpcChannelOptions { HttpHandler = host.GetTestServer().CreateHandler() });
-        var client = new global::NetRatel.AgentGateway.Contracts.V1.AgentTelemetryGateway.AgentTelemetryGatewayClient(channel);
-        using var call = client.PublishTelemetry();
-
-        var action = async () =>
-        {
-            await call.RequestStream.WriteAsync(CreateFrame(
-                tenantId,
-                agentId,
-                connectionId,
-                connectionEpoch: 1,
-                sequence: 1,
-                cpuUsage: 21));
-            await call.RequestStream.CompleteAsync();
-            await call.ResponseAsync;
-        };
-
-        var exception = await action.Should().ThrowAsync<RpcException>();
-        exception.Which.StatusCode.Should().Be(StatusCode.FailedPrecondition);
-        telemetry.Latest.Should().BeNull();
-    }
-
     [Fact]
     public async Task ConnectV2_AdmitsFencedAgentAndAcknowledgesAuthoritativeSnapshot()
     {
@@ -136,9 +43,7 @@ public sealed class AgentTelemetryGatewayServiceTests
             tenantId,
             agentId,
             presence,
-            telemetry,
-            telemetryEnabled: true,
-            telemetryAuthorityEnabled: true);
+            telemetry);
         using var channel = GrpcChannel.ForAddress(
             "http://localhost",
             new GrpcChannelOptions { HttpHandler = host.GetTestServer().CreateHandler() });
@@ -196,9 +101,7 @@ public sealed class AgentTelemetryGatewayServiceTests
             tenantId,
             agentId,
             presence,
-            telemetry,
-            telemetryEnabled: true,
-            telemetryAuthorityEnabled: true);
+            telemetry);
         var demand = host.Services.GetRequiredService<ITelemetryInteractiveDemandRegistry>();
         var lease = demand.Acquire(new ClientKey(tenantId, agentId), 1000);
         try
@@ -254,7 +157,7 @@ public sealed class AgentTelemetryGatewayServiceTests
             }
         };
         using var host = await BuildHostAsync(tenantId, agentId,
-            new CurrentPresenceRouter(tenantId, agentId, connectionId, 5), telemetry, true, true);
+            new CurrentPresenceRouter(tenantId, agentId, connectionId, 5), telemetry);
         using var channel = GrpcChannel.ForAddress("http://localhost",
             new GrpcChannelOptions { HttpHandler = host.GetTestServer().CreateHandler() });
         var gateway = new global::NetRatel.AgentGateway.Contracts.V1.AgentTelemetryGatewayV2.AgentTelemetryGatewayV2Client(channel);
@@ -314,7 +217,7 @@ public sealed class AgentTelemetryGatewayServiceTests
                 return snapshot;
             }
         };
-        using var host = await BuildHostAsync(client.TenantId, client.AgentId, presence, new RecordingTelemetryRouter(), true, true);
+        using var host = await BuildHostAsync(client.TenantId, client.AgentId, presence, new RecordingTelemetryRouter());
         using var channel = GrpcChannel.ForAddress("http://localhost",
             new GrpcChannelOptions { HttpHandler = host.GetTestServer().CreateHandler() });
         using var fileCall = new AgentFileGateway.AgentFileGatewayClient(channel).Connect();
@@ -348,7 +251,7 @@ public sealed class AgentTelemetryGatewayServiceTests
         var connectionId = Guid.NewGuid();
         var epoch = ambiguous ? 5UL : 4UL;
         using var host = await BuildHostAsync(client.TenantId, client.AgentId,
-            new CurrentPresenceRouter(client.TenantId, client.AgentId, connectionId, (long)epoch), new RecordingTelemetryRouter(), true, true);
+            new CurrentPresenceRouter(client.TenantId, client.AgentId, connectionId, (long)epoch), new RecordingTelemetryRouter());
         using var channel = GrpcChannel.ForAddress("http://localhost",
             new GrpcChannelOptions { HttpHandler = host.GetTestServer().CreateHandler() });
         using var currentFile = host.Services.GetRequiredService<IAgentFileGatewaySessionRegistry>().Register(client, Guid.NewGuid(), 5);
@@ -375,7 +278,7 @@ public sealed class AgentTelemetryGatewayServiceTests
         var client = new ClientKey(88, Guid.NewGuid());
         var connectionId = Guid.NewGuid();
         using var host = await BuildHostAsync(client.TenantId, client.AgentId,
-            new CurrentPresenceRouter(client.TenantId, client.AgentId, connectionId, 5), new RecordingTelemetryRouter(), true, true);
+            new CurrentPresenceRouter(client.TenantId, client.AgentId, connectionId, 5), new RecordingTelemetryRouter());
         using var channel = GrpcChannel.ForAddress("http://localhost",
             new GrpcChannelOptions { HttpHandler = host.GetTestServer().CreateHandler() });
         if (file)
@@ -484,9 +387,7 @@ public sealed class AgentTelemetryGatewayServiceTests
         int tenantId,
         Guid agentId,
         IClientPresenceRouter presence,
-        IClientTelemetryRouter telemetry,
-        bool telemetryEnabled,
-        bool telemetryAuthorityEnabled = false)
+        IClientTelemetryRouter telemetry)
     {
         var builder = Host.CreateDefaultBuilder();
         builder.ConfigureWebHost(web =>
@@ -512,19 +413,8 @@ public sealed class AgentTelemetryGatewayServiceTests
                 services.AddSingleton<IAgentFileGatewaySessionRegistry, AgentFileGatewaySessionRegistry>();
                 services.AddSingleton<IAgentManagementService>(
                     new ActiveAgentManagementService(tenantId, agentId));
-                services.AddSingleton(new NetRatelAkkaMigrationOptions
-                {
-                    Enabled = true,
-                    PresenceEnabled = true,
-                    GatewayEnabled = true,
-                    TelemetryShadowEnabled = telemetryEnabled,
-                    PresenceAuthorityEnabled = telemetryAuthorityEnabled,
-                    TelemetryAuthorityEnabled = telemetryAuthorityEnabled,
-                    FileGatewayEnabled = true,
-                    FileBrowseAuthorityEnabled = true
-                });
+                services.AddSingleton(new NetRatelAkkaOptions());
                 services.AddSingleton(TimeProvider.System);
-                services.AddSingleton(NullLogger<AgentTelemetryGatewayService>.Instance);
             });
 
             web.Configure(app =>
@@ -546,7 +436,6 @@ public sealed class AgentTelemetryGatewayServiceTests
                 app.UseAuthorization();
                 app.UseEndpoints(endpoints =>
                 {
-                    endpoints.MapGrpcService<AgentTelemetryGatewayService>();
                     endpoints.MapGrpcService<AgentTelemetryGatewayV2Service>();
                     endpoints.MapGrpcService<AgentFileGatewayService>();
                 });
@@ -601,7 +490,7 @@ public sealed class AgentTelemetryGatewayServiceTests
         public Func<int, ClientPresenceSnapshot, Task<ClientPresenceSnapshot>>? ReadSnapshot { get; init; }
         public Task<ClientPresenceSnapshot> GetSnapshotAsync(ClientKey client, CancellationToken cancellationToken)
         {
-            var snapshot = new ClientPresenceSnapshot(new ClientKey(tenantId, agentId), ShadowPresenceStatus.Online,
+            var snapshot = new ClientPresenceSnapshot(new ClientKey(tenantId, agentId), ClientPresenceStatus.Online,
                 connectionEpoch, connectionId, 0, DateTimeOffset.UtcNow, "phase2-test", ["presence", "telemetry"],
                 null, "akka-shadow", IsAuthoritative: false);
             var read = Interlocked.Increment(ref _reads);

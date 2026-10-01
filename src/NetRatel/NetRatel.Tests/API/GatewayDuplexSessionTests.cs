@@ -38,6 +38,43 @@ public sealed class GatewayDuplexSessionTests
     }
 
     [Fact]
+    public async Task ThreeWorkerCompletion_CancelsAndJoinsBothSiblings()
+    {
+        var completed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var siblingsStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var siblingStartCount = 0;
+        var joinedCount = 0;
+
+        async Task Sibling(CancellationToken cancellationToken)
+        {
+            if (Interlocked.Increment(ref siblingStartCount) == 2)
+                siblingsStarted.TrySetResult();
+            try
+            {
+                await new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously).Task
+                    .WaitAsync(cancellationToken);
+            }
+            finally
+            {
+                Interlocked.Increment(ref joinedCount);
+            }
+        }
+
+        var running = GatewayDuplexSession.RunAsync(
+            Sibling,
+            _ => completed.Task,
+            Sibling,
+            CancellationToken.None,
+            CancellationToken.None,
+            NullLogger.Instance);
+        await siblingsStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        completed.TrySetResult();
+
+        await running.WaitAsync(TimeSpan.FromSeconds(5));
+        joinedCount.Should().Be(2);
+    }
+
+    [Fact]
     public async Task Replacement_CancelsBothHalvesWithoutWaitingForClientEof()
     {
         using var replacement = new CancellationTokenSource();

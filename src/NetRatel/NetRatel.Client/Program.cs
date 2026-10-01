@@ -1,5 +1,4 @@
 using Humanizer;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Win32;
@@ -11,12 +10,14 @@ using NetRatel.Client.Service.Gateway;
 using NetRatel.Client.Service.Logging;
 using NetRatel.Client.Service.RemoteDesktop;
 using NetRatel.Client.Service.RemoteSupport;
+using NetRatel.Client.Service.Readiness;
 using NetRatel.Client.Service.Tasks;
 using NetRatel.Client.Service.Terminal;
 using NetRatel.Client.Service.Updates;
 using NetRatel.Client.Services;
 using NetRatel.Infrastructure.Auth;
 using NetRatel.Shared;
+using NetRatel.Shared.Client;
 using NetRatel.Shared.Service.ClientEnvironment;
 using NetRatel.Shared.Utils;
 using System;
@@ -227,31 +228,28 @@ async Task RunClientAsync()
     var dotnetEnvironment = Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT")
         ?? Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT");
 
-    // 1. Build a configuration object from appsettings.json
-    var configurationBuilder = new ConfigurationBuilder()
-        .SetBasePath(appBaseDir)
-        .AddJsonFile("appsettings.json", optional: false, reloadOnChange: false);
-    if (!string.IsNullOrWhiteSpace(dotnetEnvironment))
-    {
-        configurationBuilder.AddJsonFile($"appsettings.{dotnetEnvironment}.json", optional: true, reloadOnChange: false);
-    }
-
-    IConfiguration configuration = configurationBuilder
-        .AddEnvironmentVariables(prefix: "NetRatelCLIENT__")
-        .AddEnvironmentVariables()
-        .AddCommandLine(cliArgs)
-        .Build();
-    var cfg = LoadOptions(configuration, appBaseDir, cliArgs);
-    cfg.ApiBaseUrl = NormalizeApiBaseUrl(cfg.ApiBaseUrl);
-    var transportMode = configuration["Transport:Mode"] ?? "AkkaPresence";
-    var gatewayOptions = LoadGatewayOptions(configuration, cfg.ApiBaseUrl);
+    // Keep packaged defaults separate from explicit deployment configuration. The client
+    // loader uses this distinction to preserve a supported installation's legacy file.
+    var packagedDefaults = ClientConfigurationLoader.BuildPackagedDefaults(appBaseDir, dotnetEnvironment);
+    var deploymentOverrides = ClientConfigurationLoader.BuildDeploymentOverrides();
+    var configuration = ClientConfigurationLoader.BuildEffectiveConfiguration(
+        packagedDefaults,
+        deploymentOverrides,
+        appBaseDir,
+        cliArgs);
+    var cfg = ClientConfigurationLoader.Load(packagedDefaults, deploymentOverrides, appBaseDir, cliArgs);
+    cfg.ApiBaseUrl = ClientEndpointAddress.NormalizeApiBase(cfg.ApiBaseUrl);
+    var readinessReporter = WindowsStartupReadinessReporter.Create(
+        cfg.ServiceReadiness,
+        serviceMode,
+        message => LogManager.WriteLog(message));
+    readinessReporter.Report("service_started");
     GlobalContext.version = GetAgentVersion();
 
     LogManager.WriteLog($"[Client] RuntimeBaseDir={runtimeBaseDir}");
     LogManager.WriteLog($"[Client] AppBaseDir={appBaseDir}");
     LogManager.WriteLog($"[Client] LogFile={LogManager.LogFilePath}");
-    LogManager.WriteLog($"[Client] Tenant={cfg.TenantId}, Env={cfg.Environment}, API={cfg.ApiBaseUrl}");
-    LogManager.WriteLog($"[Client] TransportMode={transportMode}");
+    LogManager.WriteLog($"[Client] Env={cfg.Environment}, API={cfg.ApiBaseUrl}");
     LogManager.WriteLog($"Application {GlobalContext.version} starting.");
 
     var services = new ServiceCollection();
@@ -262,7 +260,7 @@ async Task RunClientAsync()
     {
         http.BaseAddress = new Uri(cfg.ApiBaseUrl.TrimEnd('/'));
         http.Timeout = TimeSpan.FromSeconds(30);
-    });
+    }).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
     services.AddScoped<IAgentEnrollmentService>(sp =>
         new AgentEnrollmentService(
             sp.GetRequiredService<IHttpClientFactory>().CreateClient("AgentAuthApi"),
@@ -295,7 +293,17 @@ async Task RunClientAsync()
     var tokenService = (ClientAgentTokenService)rootProvider.GetRequiredService<IAgentTokenService>();
     var injectedEnrollmentBootstrap = new InjectedEnrollmentBootstrap();
     var enrollmentCliCommand = new EnrollmentCliCommand();
-    var creds = await credentialStore.LoadAsync();
+    (string AgentId, string RefreshToken)? creds;
+    try
+    {
+        creds = await credentialStore.LoadAsync();
+    }
+    catch (AgentCredentialStoreException ex)
+    {
+        LogManager.WriteLog($"[Auth] Stored installation credentials were preserved but could not be safely loaded: {ex.Message}");
+        Environment.ExitCode = 12;
+        return;
+    }
     if (creds is null)
     {
         try
@@ -310,6 +318,11 @@ async Task RunClientAsync()
         {
             LogManager.WriteLog($"[Auth] Injected enrollment failed ({ex.Message}). Falling back to manual enrollment code entry.");
         }
+    }
+
+    if (creds is { } enrolledCredentials && Guid.TryParse(enrolledCredentials.AgentId, out var enrolledAgentId))
+    {
+        readinessReporter.Report("enrolled", enrolledAgentId);
     }
 
     var cliResult = await enrollmentCliCommand.TryExecuteAsync(
@@ -397,13 +410,31 @@ async Task RunClientAsync()
         }
     }
 
+    // Enrollment and auth-check commands only need the REST API. Resolve the
+    // HTTPS gateway endpoint when this process is actually going to run the
+    // operational agent session, so local HTTP enrollment remains supported.
+    var gatewayResolution = ClientConfigurationLoader.ResolveGatewayOptions(
+        configuration,
+        cfg.ApiBaseUrl,
+        packagedDefaults,
+        deploymentOverrides,
+        appBaseDir,
+        cliArgs);
+    var gatewayOptions = gatewayResolution.Options;
+
     string initialToken;
     try
     {
-        var tokenResult = await DisabledAgentTokenRetry.GetAccessTokenAsync(
-            tokenService, message => LogManager.WriteLog($"[Auth] {message}"), applicationStopping.Token);
+        var tokenResult = await StartupTokenAcquisition.GetAccessTokenAsync(
+            cfg,
+            tokenService,
+            enrollmentService,
+            credentialStore,
+            injectedEnrollmentBootstrap,
+            message => LogManager.WriteLog($"[Auth] {message}"),
+            applicationStopping.Token);
         initialToken = tokenResult.AccessToken;
-        LogManager.WriteLog($"[Auth] Access token acquired (expires {tokenResult.ExpiresAtUtc:u}; {AccessTokenAuditMetadata.Describe(initialToken)}).");
+        LogManager.WriteLog($"[Auth] Access token acquired (expiresAtUtc={tokenResult.ExpiresAtUtc:O}; {AccessTokenAuditMetadata.Describe(initialToken)}).");
     }
     catch (OperationCanceledException) when (applicationStopping.IsCancellationRequested)
     {
@@ -413,7 +444,16 @@ async Task RunClientAsync()
     {
         if (ex.ShouldClearCredentials)
         {
-            await credentialStore.ClearRefreshCredentialsAsync();
+            try
+            {
+                await credentialStore.ClearRefreshCredentialsAsync();
+            }
+            catch (AgentCredentialStoreException storeError)
+            {
+                LogManager.WriteLog($"[Auth] Refresh credentials were retained because the installation identity could not be preserved: {storeError.Message}");
+                Environment.ExitCode = 12;
+                return;
+            }
         }
         LogManager.WriteLog($"[Auth] Failed to acquire access token: {ex.Message}");
         Environment.ExitCode = 12;
@@ -425,147 +465,96 @@ async Task RunClientAsync()
     var tokenTenantId = TryGetTenantId(initialToken);
     LogManager.WriteLog($"[Auth] Token tenant_id={(tokenTenantId.HasValue ? tokenTenantId.Value.ToString() : "missing")}");
 
-    if (string.Equals(transportMode, "AkkaPresence", StringComparison.OrdinalIgnoreCase) ||
-        string.Equals(transportMode, "AkkaPresenceCanary", StringComparison.OrdinalIgnoreCase))
+    if (!tokenTenantId.HasValue)
     {
-        if (!tokenTenantId.HasValue)
-        {
-            LogManager.WriteLog("[Gateway] The agent token does not contain tenant_id. Exiting.");
-            Environment.ExitCode = 13;
-            return;
-        }
-
-        if (!Guid.TryParse(creds.Value.AgentId, out var agentId) || agentId == Guid.Empty)
-        {
-            LogManager.WriteLog("[Gateway] The enrolled agent ID is invalid. Exiting.");
-            Environment.ExitCode = 13;
-            return;
-        }
-
-        LogManager.WriteLog($"[Gateway] Starting authenticated Akka presence. Endpoint={gatewayOptions.Endpoint}, requiredAuthority={gatewayOptions.RequiredPresenceAuthority}");
-        var telemetryPublisher = new AgentGatewayTelemetryShadowPublisher(
-            gatewayOptions,
-            GetAgentVersion(),
-            message => LogManager.WriteLog($"[Gateway] {message}"));
-        var controlGateway = new AgentControlGatewayClient(
-            gatewayOptions,
-            message => LogManager.WriteLog($"[Gateway] {message}"));
-        var fileGateway = new AgentFileGatewayClient(
-            gatewayOptions,
-            new FileSystemService(),
-            message => LogManager.WriteLog($"[Gateway] {message}"));
-        var logGateway = new AgentLogGatewayClient(gatewayOptions);
-        var remoteSupportGateway = new AgentRemoteSupportGatewayClient(
-            gatewayOptions,
-            message => LogManager.WriteLog($"[Gateway] {message}"));
-        var terminalShells = ShellInventoryDetector.NormalizeKeywords(ShellInventoryDetector.Detect());
-        using var terminalGateway = new AgentTerminalGatewayClient(
-            gatewayOptions,
-            BuildTerminalHostOptions(cfg),
-            terminalShells,
-            message => LogManager.WriteLog($"[Gateway] {message}"));
-        var commandGateway = new AgentCommandGatewayClient(
-            gatewayOptions,
-            cfg.UseInProcPowerShell,
-            message => LogManager.WriteLog($"[Gateway] {message}"));
-        var jobGateway = new AgentJobGatewayClient(
-            gatewayOptions,
-            cfg.UseInProcPowerShell,
-            message => LogManager.WriteLog($"[Gateway] {message}"));
-        await using var updateCoordinator = new AkkaClientAutoUpdateCoordinator(
-            cfg,
-            GetAgentVersion(),
-            tokenService,
-            rootProvider.GetRequiredService<IHttpClientFactory>().CreateClient("AgentAuthApi"));
-        var gatewayExtensionSupervisor = new GatewayPresenceExtensionSupervisor(
-            message => LogManager.WriteLog($"[Gateway] {message}"));
-        var gatewayClient = new AgentGatewayPresenceClient(
-            gatewayOptions,
-            tokenService,
-            tokenTenantId.Value,
-            agentId,
-            GetAgentVersion(),
-            terminalShells,
-            message => LogManager.WriteLog($"[Gateway] {message}"),
-            (session, accessToken, stoppingToken) => gatewayExtensionSupervisor.RunForPresenceSessionAsync(
-                session,
-                accessToken,
-                stoppingToken,
-                [
-                    new GatewayPresenceExtension("telemetry", telemetryPublisher.RunForPresenceSessionAsync),
-                    new GatewayPresenceExtension("control", controlGateway.RunForPresenceSessionAsync),
-                    new GatewayPresenceExtension("file", fileGateway.RunForPresenceSessionAsync),
-                    new GatewayPresenceExtension("log", logGateway.RunForPresenceSessionAsync),
-                    new GatewayPresenceExtension("remote-support", remoteSupportGateway.RunForPresenceSessionAsync),
-                    new GatewayPresenceExtension("terminal", terminalGateway.RunForPresenceSessionAsync),
-                    new GatewayPresenceExtension("command", commandGateway.RunForPresenceSessionAsync),
-                    new GatewayPresenceExtension("job", jobGateway.RunForPresenceSessionAsync)
-                ]),
-            updateCoordinator);
-        await gatewayClient.RunAsync(applicationStopping.Token).ConfigureAwait(false);
+        LogManager.WriteLog("[Gateway] The agent token does not contain tenant_id. Exiting.");
+        Environment.ExitCode = 13;
         return;
     }
 
-    LogManager.WriteLog($"[Client] Unsupported Transport:Mode '{transportMode}'. Supported modes are AkkaPresence and the legacy AkkaPresenceCanary.");
-    Environment.ExitCode = 13;
+    try
+    {
+        creds = await credentialStore.LoadAsync();
+    }
+    catch (AgentCredentialStoreException ex)
+    {
+        LogManager.WriteLog($"[Gateway] Stored installation credentials were preserved but could not be safely loaded: {ex.Message}");
+        Environment.ExitCode = 13;
+        return;
+    }
+    if (creds is null || !Guid.TryParse(creds.Value.AgentId, out var agentId) || agentId == Guid.Empty)
+    {
+        LogManager.WriteLog("[Gateway] The enrolled agent ID is invalid. Exiting.");
+        Environment.ExitCode = 13;
+        return;
+    }
+
+    readinessReporter.Report("authenticated", agentId, tokenTenantId.Value);
+
+    LogManager.WriteLog($"[Gateway] Starting authenticated Akka presence. AgentId={agentId}, TenantId={tokenTenantId.Value}, endpointSource={gatewayResolution.Source}, Endpoint={gatewayOptions.Endpoint}");
+    var telemetryPublisher = new AgentGatewayTelemetryPublisher(
+        gatewayOptions,
+        GetAgentVersion(),
+        message => LogManager.WriteLog($"[Gateway] {message}"));
+    var controlGateway = new AgentControlGatewayClient(
+        gatewayOptions,
+        message => LogManager.WriteLog($"[Gateway] {message}"));
+    var fileGateway = new AgentFileGatewayClient(
+        gatewayOptions,
+        new FileSystemService(),
+        message => LogManager.WriteLog($"[Gateway] {message}"));
+    var logGateway = new AgentLogGatewayClient(gatewayOptions);
+    var remoteSupportGateway = new AgentRemoteSupportGatewayClient(
+        gatewayOptions,
+        message => LogManager.WriteLog($"[Gateway] {message}"));
+    var terminalShells = ShellInventoryDetector.NormalizeKeywords(ShellInventoryDetector.Detect());
+    using var terminalGateway = new AgentTerminalGatewayClient(
+        gatewayOptions,
+        BuildTerminalHostOptions(cfg),
+        terminalShells,
+        message => LogManager.WriteLog($"[Gateway] {message}"));
+    var commandGateway = new AgentCommandGatewayClient(
+        gatewayOptions,
+        cfg.UseInProcPowerShell,
+        message => LogManager.WriteLog($"[Gateway] {message}"));
+    var jobGateway = new AgentJobGatewayClient(
+        gatewayOptions,
+        cfg.UseInProcPowerShell,
+        message => LogManager.WriteLog($"[Gateway] {message}"));
+    await using var updateCoordinator = new AkkaClientAutoUpdateCoordinator(
+        cfg,
+        GetAgentVersion(),
+        tokenService,
+        rootProvider.GetRequiredService<IHttpClientFactory>().CreateClient("AgentAuthApi"));
+    var gatewayExtensionSupervisor = new GatewayPresenceExtensionSupervisor(
+        message => LogManager.WriteLog($"[Gateway] {message}"));
+    var gatewayClient = new AgentGatewayPresenceClient(
+        gatewayOptions,
+        tokenService,
+        tokenTenantId.Value,
+        agentId,
+        GetAgentVersion(),
+        terminalShells,
+        message => LogManager.WriteLog($"[Gateway] {message}"),
+        (session, accessToken, stoppingToken) => gatewayExtensionSupervisor.RunForPresenceSessionAsync(
+            session,
+            accessToken,
+            stoppingToken,
+            [
+                new GatewayPresenceExtension("telemetry", telemetryPublisher.RunForPresenceSessionAsync),
+                new GatewayPresenceExtension("control", controlGateway.RunForPresenceSessionAsync),
+                new GatewayPresenceExtension("file", fileGateway.RunForPresenceSessionAsync),
+                new GatewayPresenceExtension("log", logGateway.RunForPresenceSessionAsync),
+                new GatewayPresenceExtension("remote-support", remoteSupportGateway.RunForPresenceSessionAsync),
+                new GatewayPresenceExtension("terminal", terminalGateway.RunForPresenceSessionAsync),
+                new GatewayPresenceExtension("command", commandGateway.RunForPresenceSessionAsync),
+                new GatewayPresenceExtension("job", jobGateway.RunForPresenceSessionAsync)
+            ]),
+        updateCoordinator,
+        reportReadinessWithHeartbeatSequence: (stage, readyAgentId, readyTenantId, epoch, connectionId, heartbeatSequence) =>
+            readinessReporter.Report(stage, readyAgentId, readyTenantId, epoch, connectionId, heartbeatSequence));
+    await gatewayClient.RunAsync(applicationStopping.Token).ConfigureAwait(false);
     return;
-}
-
-static ClientOptions LoadOptions(IConfiguration? configuration, string appBaseDir, string[] args)
-{
-    var opts = new ClientOptions();
-    configuration?.GetSection("Client").Bind(opts);
-
-    var candidate = Path.Combine(appBaseDir, "clientsettings.json");
-    if (File.Exists(candidate))
-    {
-        var json = File.ReadAllText(candidate);
-        var legacy = JsonSerializer.Deserialize<ClientOptions>(json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-        if (legacy is not null)
-        {
-            if (legacy.TenantId != Guid.Empty) opts.TenantId = legacy.TenantId;
-            if (!string.IsNullOrWhiteSpace(legacy.ApiBaseUrl)) opts.ApiBaseUrl = legacy.ApiBaseUrl;
-            opts.Environment = legacy.Environment;
-            opts.UseInProcPowerShell = legacy.UseInProcPowerShell;
-            if (!string.IsNullOrWhiteSpace(legacy.TerminalBackendPreference)) opts.TerminalBackendPreference = legacy.TerminalBackendPreference;
-            opts.EnableNativeUnixPty = legacy.EnableNativeUnixPty;
-            if (legacy.TerminalGracefulExitTimeoutMs > 0) opts.TerminalGracefulExitTimeoutMs = legacy.TerminalGracefulExitTimeoutMs;
-            if (legacy.TerminalKillTimeoutMs > 0) opts.TerminalKillTimeoutMs = legacy.TerminalKillTimeoutMs;
-            if (!string.IsNullOrWhiteSpace(legacy.EnrollmentCode)) opts.EnrollmentCode = legacy.EnrollmentCode;
-            if (!string.IsNullOrWhiteSpace(legacy.AgentId)) opts.AgentId = legacy.AgentId;
-            if (legacy.AutoUpdate is not null) opts.AutoUpdate = legacy.AutoUpdate;
-        }
-    }
-
-    for (int i = 0; i < args.Length; i++)
-    {
-        switch (args[i])
-        {
-            case "--tenant" when i + 1 < args.Length && Guid.TryParse(args[i + 1], out var at):
-                opts.TenantId = at; i++; break;
-            case "--api" when i + 1 < args.Length:
-                opts.ApiBaseUrl = args[i + 1]; i++; break;
-            case "--env" when i + 1 < args.Length && Enum.TryParse<ClientEnvironment>(args[i + 1], true, out var aenv):
-                opts.Environment = aenv; i++; break;
-            case "--enrollment-code" when i + 1 < args.Length:
-                opts.EnrollmentCode = args[i + 1]; i++; break;
-            case "--enroll" when i + 1 < args.Length:
-                opts.EnrollmentCode = args[i + 1]; i++; break;
-            case "--agent-id" when i + 1 < args.Length:
-                opts.AgentId = args[i + 1]; i++; break;
-        }
-    }
-    return opts;
-}
-
-static GatewayClientOptions LoadGatewayOptions(IConfiguration configuration, string apiBaseUrl)
-{
-    var options = new GatewayClientOptions();
-    configuration.GetSection("Gateway").Bind(options);
-    options.Endpoint = string.IsNullOrWhiteSpace(options.Endpoint)
-        ? apiBaseUrl
-        : options.Endpoint;
-    return options;
 }
 
 static TerminalHostOptions BuildTerminalHostOptions(ClientOptions cfg)
@@ -733,10 +722,17 @@ static async Task<int> RunAuthCheckAsync(
     DateTimeOffset expiresAtUtc;
     try
     {
-        var token = await tokenService.GetAccessTokenAsync(ct);
+        var token = await StartupTokenAcquisition.GetAccessTokenAsync(
+            cfg,
+            tokenService,
+            enrollmentService,
+            credentialStore,
+            injectedEnrollmentBootstrap,
+            message => LogManager.WriteLog($"[AuthCheck] {message}"),
+            ct);
         accessToken = token.AccessToken;
         expiresAtUtc = token.ExpiresAtUtc;
-        LogManager.WriteLog($"[AuthCheck] Access token acquired. expiresAtUtc={expiresAtUtc:u}; {AccessTokenAuditMetadata.Describe(accessToken)}");
+        LogManager.WriteLog($"[AuthCheck] Access token acquired. expiresAtUtc={expiresAtUtc:O}; {AccessTokenAuditMetadata.Describe(accessToken)}");
     }
     catch (AgentClientAuthException ex)
     {
@@ -748,7 +744,15 @@ static async Task<int> RunAuthCheckAsync(
 
         if (ex.ShouldClearCredentials)
         {
-            await credentialStore.ClearRefreshCredentialsAsync();
+            try
+            {
+                await credentialStore.ClearRefreshCredentialsAsync();
+            }
+            catch (AgentCredentialStoreException storeError)
+            {
+                LogManager.WriteLog($"[AuthCheck] Refresh credentials were retained because the installation identity could not be preserved: {storeError.Message}");
+                return 12;
+            }
         }
 
         LogManager.WriteLog($"[AuthCheck] Token request failed: {ex.Message}");
@@ -849,16 +853,6 @@ static string? GetArgValue(string[] args, string key)
     }
 
     return null;
-}
-
-static string NormalizeApiBaseUrl(string value)
-{
-    if (string.IsNullOrWhiteSpace(value))
-    {
-        return value;
-    }
-
-    return value.Trim().TrimEnd('/');
 }
 
 static string ResolveExecutableDirectory(string fallback)
@@ -2022,7 +2016,7 @@ static int? TryGetTenantId(string token)
     {
         var jwt = new JwtSecurityTokenHandler().ReadJwtToken(token);
         var rawTenantId = jwt.Claims.FirstOrDefault(c => c.Type == "tenant_id")?.Value;
-        return int.TryParse(rawTenantId, out var tenantId) ? tenantId : null;
+        return int.TryParse(rawTenantId, out var tenantId) && tenantId > 0 ? tenantId : null;
     }
     catch
     {

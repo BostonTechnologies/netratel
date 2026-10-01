@@ -84,15 +84,9 @@ public sealed class AgentTerminalGatewayClient : IDisposable
 
     public async Task RunForPresenceSessionAsync(GatewayPresenceSession session, string accessToken, CancellationToken stoppingToken)
     {
-        if (!_options.TerminalGatewayEnabled || !_options.TerminalAuthorityEnabled)
-        {
-            return;
-        }
-
         if (!Uri.TryCreate(_options.Endpoint, UriKind.Absolute, out var endpoint) || endpoint.Scheme != Uri.UriSchemeHttps)
         {
-            _log("Terminal gateway is disabled because Gateway:Endpoint is not an absolute HTTPS URL.");
-            return;
+            throw new InvalidOperationException("Gateway:Endpoint must be an absolute HTTPS URL.");
         }
 
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, _disposeCts.Token);
@@ -880,9 +874,9 @@ public sealed class AgentTerminalGatewayClient : IDisposable
     private void ValidateAccepted(GatewayTerminalFrame frame, GatewayPresenceSession session)
     {
         ValidateFrame(frame, session);
-        if (!GatewayAuthority.IsAkka(frame.Accepted.TerminalAuthority))
+        if (!GatewayWireProtocol.HasAkkaAuthority(frame.Accepted.TerminalAuthority))
         {
-            throw new RpcException(new Status(StatusCode.FailedPrecondition, "Terminal gateway did not admit the expected authority."));
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, "Terminal gateway returned an unsupported authority token."));
         }
     }
 

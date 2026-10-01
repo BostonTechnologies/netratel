@@ -1,6 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
 using NetRatel.API.Gateway;
-using NetRatel.Akka.Configuration;
 using NetRatel.Akka.Observability;
 using NetRatel.Application.Presence;
 using NetRatel.Shared.Contracts.FileSystem;
@@ -8,8 +7,7 @@ using NetRatel.Shared.Contracts.FileSystem;
 namespace NetRatel.API.Endpoints.Client;
 
 /// <summary>
-/// Agent-ID keyed V2 file endpoints. They are additive and do not alter the
-/// primary client filesystem routes or any terminal transport.
+/// Agent-ID keyed V2 file endpoints.
 /// </summary>
 public static class AgentFileGatewayEndpoints
 {
@@ -33,29 +31,23 @@ public static class AgentFileGatewayEndpoints
         Guid agentId,
         [FromQuery] string path,
         [FromQuery] int? pageSize,
-        NetRatelAkkaMigrationOptions options,
         IHostEnvironment environment,
         IServiceProvider services,
         CancellationToken cancellationToken)
     {
-        if (!options.IsFileBrowseAuthorityActive)
-        {
-            return Results.NotFound();
-        }
-
         if (!IsAllowedPath(path))
         {
             return FileProblem("invalid_path");
         }
 
-        NetRatelAkkaTelemetry.RecordAuthorityRequest(Feature, Authority, fallbackUsed: false, environment.EnvironmentName);
+        NetRatelAkkaTelemetry.RecordAuthorityRequest(Feature, Authority, environment.EnvironmentName);
         using var activity = NetRatelAkkaTelemetry.StartAuthorityActivity(
-            Feature, Authority, "list", fallbackUsed: false, environment.EnvironmentName);
+            Feature, Authority, "list", environment.EnvironmentName);
         try
         {
             var sessions = services.GetRequiredService<IAgentFileGatewaySessionRegistry>();
             var entries = await sessions.ListAsync(new ClientKey(tenantId, agentId), path, pageSize ?? DefaultPageSize, cancellationToken).ConfigureAwait(false);
-            NetRatelAkkaTelemetry.RecordAuthorityEvent(Feature, Authority, fallbackUsed: false, environment.EnvironmentName);
+            NetRatelAkkaTelemetry.RecordAuthorityEvent(Feature, Authority, environment.EnvironmentName);
             return Results.Ok(new GatewayFileSystemListResponse(
                 tenantId,
                 agentId,
@@ -65,27 +57,27 @@ public static class AgentFileGatewayEndpoints
         }
         catch (AgentFileGatewaySessionUnavailableException)
         {
-            NetRatelAkkaTelemetry.RecordAuthorityFailure(Feature, Authority, fallbackUsed: false, environment.EnvironmentName);
+            NetRatelAkkaTelemetry.RecordAuthorityFailure(Feature, Authority, environment.EnvironmentName);
             return FileProblem("session_unavailable");
         }
         catch (AgentFileGatewayOperationException exception)
         {
-            NetRatelAkkaTelemetry.RecordAuthorityFailure(Feature, Authority, fallbackUsed: false, environment.EnvironmentName);
+            NetRatelAkkaTelemetry.RecordAuthorityFailure(Feature, Authority, environment.EnvironmentName);
             return FileProblem(exception.Code);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            NetRatelAkkaTelemetry.RecordAuthorityFailure(Feature, Authority, fallbackUsed: false, environment.EnvironmentName);
+            NetRatelAkkaTelemetry.RecordAuthorityFailure(Feature, Authority, environment.EnvironmentName);
             return Results.StatusCode(StatusCodes.Status499ClientClosedRequest);
         }
         catch (OperationCanceledException)
         {
-            NetRatelAkkaTelemetry.RecordAuthorityFailure(Feature, Authority, fallbackUsed: false, environment.EnvironmentName);
+            NetRatelAkkaTelemetry.RecordAuthorityFailure(Feature, Authority, environment.EnvironmentName);
             return FileProblem("session_unavailable");
         }
         catch
         {
-            NetRatelAkkaTelemetry.RecordAuthorityFailure(Feature, Authority, fallbackUsed: false, environment.EnvironmentName);
+            NetRatelAkkaTelemetry.RecordAuthorityFailure(Feature, Authority, environment.EnvironmentName);
             throw;
         }
     }
@@ -95,34 +87,27 @@ public static class AgentFileGatewayEndpoints
         Guid agentId,
         [FromQuery] string path,
         HttpContext context,
-        NetRatelAkkaMigrationOptions options,
         IHostEnvironment environment,
         IServiceProvider services,
         CancellationToken cancellationToken)
     {
         var response = context.Response;
-        if (!options.IsFileBrowseAuthorityActive)
-        {
-            response.StatusCode = StatusCodes.Status404NotFound;
-            return;
-        }
-
         if (!IsAllowedPath(path))
         {
             await FileProblem("invalid_path").ExecuteAsync(context).ConfigureAwait(false);
             return;
         }
 
-        NetRatelAkkaTelemetry.RecordAuthorityRequest(Feature, Authority, fallbackUsed: false, environment.EnvironmentName);
+        NetRatelAkkaTelemetry.RecordAuthorityRequest(Feature, Authority, environment.EnvironmentName);
         using var activity = NetRatelAkkaTelemetry.StartAuthorityActivity(
-            Feature, Authority, "read", fallbackUsed: false, environment.EnvironmentName);
+            Feature, Authority, "read", environment.EnvironmentName);
         GatewayFileReadOperation? operation = null;
         var completed = false;
         try
         {
             var sessions = services.GetRequiredService<IAgentFileGatewaySessionRegistry>();
             operation = await sessions.ReadAsync(new ClientKey(tenantId, agentId), path, cancellationToken).ConfigureAwait(false);
-            NetRatelAkkaTelemetry.RecordAuthorityEvent(Feature, Authority, fallbackUsed: false, environment.EnvironmentName);
+            NetRatelAkkaTelemetry.RecordAuthorityEvent(Feature, Authority, environment.EnvironmentName);
             response.StatusCode = StatusCodes.Status200OK;
             response.ContentType = "application/octet-stream";
             response.Headers.ContentDisposition = "attachment";
@@ -137,17 +122,17 @@ public static class AgentFileGatewayEndpoints
         }
         catch (AgentFileGatewaySessionUnavailableException)
         {
-            NetRatelAkkaTelemetry.RecordAuthorityFailure(Feature, Authority, fallbackUsed: false, environment.EnvironmentName);
+            NetRatelAkkaTelemetry.RecordAuthorityFailure(Feature, Authority, environment.EnvironmentName);
             await WriteFileProblemAsync(context, "session_unavailable").ConfigureAwait(false);
         }
         catch (AgentFileGatewayOperationException exception)
         {
-            NetRatelAkkaTelemetry.RecordAuthorityFailure(Feature, Authority, fallbackUsed: false, environment.EnvironmentName);
+            NetRatelAkkaTelemetry.RecordAuthorityFailure(Feature, Authority, environment.EnvironmentName);
             await WriteFileProblemAsync(context, exception.Code).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            NetRatelAkkaTelemetry.RecordAuthorityFailure(Feature, Authority, fallbackUsed: false, environment.EnvironmentName);
+            NetRatelAkkaTelemetry.RecordAuthorityFailure(Feature, Authority, environment.EnvironmentName);
             if (operation is not null)
             {
                 await operation.CancelAsync("operator_download_cancelled", CancellationToken.None).ConfigureAwait(false);
@@ -156,7 +141,7 @@ public static class AgentFileGatewayEndpoints
         }
         catch
         {
-            NetRatelAkkaTelemetry.RecordAuthorityFailure(Feature, Authority, fallbackUsed: false, environment.EnvironmentName);
+            NetRatelAkkaTelemetry.RecordAuthorityFailure(Feature, Authority, environment.EnvironmentName);
             throw;
         }
         finally
@@ -173,54 +158,48 @@ public static class AgentFileGatewayEndpoints
         Guid agentId,
         [FromQuery] string path,
         HttpContext http,
-        NetRatelAkkaMigrationOptions options,
         IHostEnvironment environment,
         IServiceProvider services,
         CancellationToken cancellationToken)
     {
-        if (!options.IsFileBrowseAuthorityActive)
-        {
-            return Results.NotFound();
-        }
-
         if (!IsAllowedPath(path))
         {
             return FileProblem("invalid_path");
         }
 
-        NetRatelAkkaTelemetry.RecordAuthorityRequest(Feature, Authority, fallbackUsed: false, environment.EnvironmentName);
+        NetRatelAkkaTelemetry.RecordAuthorityRequest(Feature, Authority, environment.EnvironmentName);
         using var activity = NetRatelAkkaTelemetry.StartAuthorityActivity(
-            Feature, Authority, "write", fallbackUsed: false, environment.EnvironmentName);
+            Feature, Authority, "write", environment.EnvironmentName);
         try
         {
             var sessions = services.GetRequiredService<IAgentFileGatewaySessionRegistry>();
             await sessions.WriteAsync(new ClientKey(tenantId, agentId), path, http.Request.Body, cancellationToken).ConfigureAwait(false);
-            NetRatelAkkaTelemetry.RecordAuthorityEvent(Feature, Authority, fallbackUsed: false, environment.EnvironmentName);
+            NetRatelAkkaTelemetry.RecordAuthorityEvent(Feature, Authority, environment.EnvironmentName);
             return Results.Ok(new GatewayFileSystemWriteResponse(tenantId, agentId, path, Authority));
         }
         catch (AgentFileGatewaySessionUnavailableException)
         {
-            NetRatelAkkaTelemetry.RecordAuthorityFailure(Feature, Authority, fallbackUsed: false, environment.EnvironmentName);
+            NetRatelAkkaTelemetry.RecordAuthorityFailure(Feature, Authority, environment.EnvironmentName);
             return FileProblem("session_unavailable");
         }
         catch (AgentFileGatewayOperationException exception)
         {
-            NetRatelAkkaTelemetry.RecordAuthorityFailure(Feature, Authority, fallbackUsed: false, environment.EnvironmentName);
+            NetRatelAkkaTelemetry.RecordAuthorityFailure(Feature, Authority, environment.EnvironmentName);
             return FileProblem(exception.Code);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            NetRatelAkkaTelemetry.RecordAuthorityFailure(Feature, Authority, fallbackUsed: false, environment.EnvironmentName);
+            NetRatelAkkaTelemetry.RecordAuthorityFailure(Feature, Authority, environment.EnvironmentName);
             return Results.StatusCode(StatusCodes.Status499ClientClosedRequest);
         }
         catch (OperationCanceledException)
         {
-            NetRatelAkkaTelemetry.RecordAuthorityFailure(Feature, Authority, fallbackUsed: false, environment.EnvironmentName);
+            NetRatelAkkaTelemetry.RecordAuthorityFailure(Feature, Authority, environment.EnvironmentName);
             return FileProblem("session_unavailable");
         }
         catch
         {
-            NetRatelAkkaTelemetry.RecordAuthorityFailure(Feature, Authority, fallbackUsed: false, environment.EnvironmentName);
+            NetRatelAkkaTelemetry.RecordAuthorityFailure(Feature, Authority, environment.EnvironmentName);
             throw;
         }
     }

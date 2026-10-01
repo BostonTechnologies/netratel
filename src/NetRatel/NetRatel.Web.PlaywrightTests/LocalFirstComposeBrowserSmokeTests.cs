@@ -74,6 +74,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         Assert.Equal(password, await page.GetByTestId("setup-confirm-password").InputValueAsync());
         var apiContainer = RequireValue("NETRATEL_LOCAL_FIRST_RESTART_API_CONTAINER");
         var webContainer = RequireValue("NETRATEL_LOCAL_FIRST_RESTART_WEB_CONTAINER");
+        var ingressContainer = Environment.GetEnvironmentVariable("NETRATEL_LOCAL_FIRST_RESTART_INGRESS_CONTAINER");
         var dropCommittedResponse = Environment.GetEnvironmentVariable("NETRATEL_LOCAL_FIRST_DROP_SETUP_RESPONSE") == "true";
         Task restartTask = Task.CompletedTask;
         const string initializeRoute = "**/api/v2/setup/initialize";
@@ -81,6 +82,8 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         {
             var committed = await route.FetchAsync();
             Assert.InRange(committed.Status, 200, 299);
+            if (!string.IsNullOrWhiteSpace(ingressContainer))
+                await RunDockerAsync("stop", ingressContainer);
             await RunDockerAsync("stop", apiContainer, webContainer);
             restartTask = Task.Run(async () =>
             {
@@ -91,7 +94,25 @@ public sealed class LocalFirstComposeBrowserSmokeTests
                 }
                 finally
                 {
-                    await RunDockerAsync("start", apiContainer, webContainer);
+                    try
+                    {
+                        await RunDockerAsync("start", apiContainer);
+                        await WaitForApiReadyAsync(apiContainer);
+                    }
+                    finally
+                    {
+                        // Keep the disposable environment recoverable even when the API
+                        // readiness probe fails; the test still fails on that probe.
+                        try
+                        {
+                            await RunDockerAsync("start", webContainer);
+                        }
+                        finally
+                        {
+                            if (!string.IsNullOrWhiteSpace(ingressContainer))
+                                await RunDockerAsync("start", ingressContainer);
+                        }
+                    }
                 }
             });
             if (dropCommittedResponse) await route.AbortAsync("failed");
@@ -176,6 +197,11 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             requireApplicationSurfaces: true,
             requireInput: false);
 
+        // The account created by the real setup flow is the persisted bootstrap
+        // instance administrator. Exercise initial, interactive, and periodic
+        // OrchestratorApi directory reads on its protected local-session cookie.
+        await OidcComposeBrowserSmokeTests.VerifyClientDirectoryCircuitAsync(page, webUrl, "Local bootstrap administrator");
+
         await VerifyDeploymentBrandingAsync(page, webUrl);
         if (Environment.GetEnvironmentVariable("NETRATEL_LOCAL_FIRST_NATIVE_INSTALL") == "true")
             await VerifyPublishedClientInstallAsync(browser, page, webUrl);
@@ -216,6 +242,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
 
     private static async Task RunDockerAsync(string operation, params string[] containerIds)
     {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(60));
         var start = new ProcessStartInfo("docker")
         {
             RedirectStandardOutput = true,
@@ -225,10 +252,63 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         start.ArgumentList.Add(operation);
         foreach (var containerId in containerIds) start.ArgumentList.Add(containerId);
         using var process = Process.Start(start) ?? throw new InvalidOperationException("Docker could not be started.");
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(60));
-        await process.WaitForExitAsync(deadline.Token);
+        var standardOutput = process.StandardOutput.ReadToEndAsync();
+        var standardError = process.StandardError.ReadToEndAsync();
+        try
+        {
+            await process.WaitForExitAsync(deadline.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            if (!process.HasExited)
+            {
+                try
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+                catch (InvalidOperationException)
+                {
+                    if (!process.HasExited) throw;
+                }
+            }
+
+            await process.WaitForExitAsync();
+            await Task.WhenAll(standardOutput, standardError);
+            throw new TimeoutException($"Docker {operation} did not finish within 60 seconds.");
+        }
+
+        await Task.WhenAll(standardOutput, standardError);
+        if (process.ExitCode != 0 && operation == "run")
+        {
+            throw new InvalidOperationException(
+                "The restarted API did not report isReady=true through /api/v2/setup/status within the bounded probe.");
+        }
+
         Assert.Equal(0, process.ExitCode);
     }
+
+    private static Task WaitForApiReadyAsync(string apiContainer) => RunDockerAsync(
+        "run",
+        "--rm",
+        "--network",
+        $"container:{apiContainer}",
+        "alpine:3.22",
+        "sh",
+        "-ceu",
+        """
+        attempt=0
+        while [ "$attempt" -lt 25 ]; do
+          status="$(wget -q -T 1 -O - http://127.0.0.1:9222/api/v2/setup/status 2>/dev/null)" || status=""
+          if printf '%s' "$status" | grep -Eq '"isReady"[[:space:]]*:[[:space:]]*true'; then
+            exit 0
+          fi
+          attempt=$((attempt + 1))
+          sleep 1
+        done
+        echo "API did not report isReady=true through /api/v2/setup/status within the bounded restart probe." >&2
+        exit 1
+        """);
+
     private static bool IgnoreSyntheticHttpsErrors => Environment.GetEnvironmentVariable("NETRATEL_LOCAL_FIRST_IGNORE_HTTPS_ERRORS") == "true";
 
     private static async Task CaptureReviewScreenshotAsync(IPage page, string name)
@@ -301,8 +381,11 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             State = WaitForSelectorState.Attached
         });
         await page.GetByRole(AriaRole.Button, new() { Name = "Advanced: upload artifact" }).ClickAsync();
+        await page.GetByRole(AriaRole.Menuitem, new() { Name = "Upload legacy artifact" }).ClickAsync();
         var uploadDialog = page.Locator(".mud-dialog:visible").Filter(new() { HasText = "Runtime Identifier" }).Last;
-        await uploadDialog.Locator(".mud-select").First.ClickAsync();
+        var runtimeSelector = page.GetByTestId("upload-runtime-selector");
+        await runtimeSelector.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        await runtimeSelector.Locator(".upload-runtime-select-control").ClickAsync();
         await page.GetByRole(AriaRole.Option, new() { Name = "Linux (x64)" }).ClickAsync();
         await uploadDialog.GetByRole(AriaRole.Textbox, new() { Name = "Version" }).FillAsync(version);
         using var buffer = new MemoryStream();
@@ -332,7 +415,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             Assert.Fail($"Disposable artifact upload failed: {await uploadError.InnerTextAsync()}");
         await uploadDialog.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Hidden });
 
-        await page.GetByRole(AriaRole.Tab, new() { Name = "Artifacts" }).ClickAsync();
+        await page.GetByRole(AriaRole.Tab, new() { Name = "Packages" }).ClickAsync();
         var artifactRow = page.GetByTestId("artifact-table").GetByRole(AriaRole.Row).Filter(new() { HasText = version });
         await artifactRow.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         await artifactRow.GetByRole(AriaRole.Button).Last.ClickAsync();
@@ -403,16 +486,17 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         {
             State = WaitForSelectorState.Attached
         });
-        var release = page.Locator(".client-github-release").Filter(new() { HasText = version });
+        var release = page.GetByTestId("github-release-table").GetByRole(AriaRole.Row)
+            .Filter(new() { HasText = version });
         await release.WaitForAsync(new LocatorWaitForOptions { Timeout = 60_000 });
         Assert.Contains("linux-x64", await release.InnerTextAsync());
-        await release.GetByRole(AriaRole.Button, new() { Name = "Download client pack to this instance" }).ClickAsync();
+        await release.GetByRole(AriaRole.Button, new() { Name = "Import pack", Exact = true }).ClickAsync();
         await page.WaitForFunctionAsync("""
-            version => Array.from(document.querySelectorAll('.client-github-release'))
-                .some(item => item.textContent?.includes(version) && item.textContent?.includes('Local state: Imported'))
+            version => Array.from(document.querySelectorAll('[data-testid="github-release-table"] tr'))
+                .some(item => item.textContent?.includes(version) && /Local:\s+(Imported|Published)/.test(item.textContent ?? ''))
             """, version, new PageWaitForFunctionOptions { Timeout = 300_000 });
 
-        await page.GetByRole(AriaRole.Tab, new() { Name = "Artifacts" }).ClickAsync();
+        await page.GetByRole(AriaRole.Tab, new() { Name = "Packages" }).ClickAsync();
         var artifact = page.GetByTestId("artifact-table").GetByRole(AriaRole.Row)
             .Filter(new() { HasText = version }).Filter(new() { HasText = "linux-x64" });
         await artifact.WaitForAsync(new LocatorWaitForOptions { Timeout = 30_000 });
@@ -888,62 +972,118 @@ public sealed class LocalFirstComposeBrowserSmokeTests
 
     private static async Task VerifyLocalAccountSecurityJourneyAsync(IBrowser browser, IPage page, Uri webUrl)
     {
-        const string secondUserEmail = "browser-local-operator@example.test";
-        const string secondUserPassword = "browser local operator passphrase";
-        const string changedPassword = "browser operator changed passphrase";
+        var administratorPage = page;
+        const string tenantAdministratorEmail = "browser-local-tenant-admin@example.test";
+        const string tenantAdministratorPassword = "browser local tenant administrator passphrase";
+        const string unprivilegedEmail = "browser-local-unprivileged@example.test";
+        const string unprivilegedPassword = "browser local unprivileged passphrase";
+        const string changedPassword = "browser tenant administrator changed passphrase";
 
         await page.GotoAsync(new Uri(webUrl, "admin/access").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
         await page.GetByTestId("create-local-user").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         await page.GetByTestId("access-administration-client-ready").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
-        await page.GetByTestId("local-user-display-name").FillAsync("Browser local operator");
+        await page.GetByTestId("local-user-display-name").FillAsync("Browser local tenant administrator");
         await page.GetByTestId("local-user-display-name").PressAsync("Tab");
-        await page.GetByTestId("local-user-email").FillAsync(secondUserEmail);
+        await page.GetByTestId("local-user-email").FillAsync(tenantAdministratorEmail);
         await page.GetByTestId("local-user-email").PressAsync("Tab");
         await page.GetByTestId("create-local-user").ClickAsync();
         var activation = page.GetByTestId("local-user-activation");
         await activation.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
-        var activationToken = await page.GetByTestId("local-user-activation-token").InputValueAsync();
-        Assert.False(string.IsNullOrWhiteSpace(activationToken));
+        await activation.GetByText(tenantAdministratorEmail).WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        var tenantAdministratorActivationToken = await page.GetByTestId("local-user-activation-token").InputValueAsync();
+        Assert.False(string.IsNullOrWhiteSpace(tenantAdministratorActivationToken));
 
         await page.GetByRole(AriaRole.Combobox, new PageGetByRoleOptions { Name = "Manage tenant", Exact = true }).ClickAsync();
         await page.GetByRole(AriaRole.Option, new PageGetByRoleOptions { Name = "Browser smoke tenant", Exact = true }).ClickAsync();
-        var localOperator = page.GetByText("Browser local operator", new PageGetByTextOptions { Exact = true });
-        await localOperator.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
-        await localOperator.ClickAsync();
+        var localTenantAdministrator = page.GetByText("Browser local tenant administrator", new PageGetByTextOptions { Exact = true });
+        await localTenantAdministrator.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        await localTenantAdministrator.ClickAsync();
         await page.GetByTestId("access-assignment-scope").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         Assert.Equal("Browser smoke tenant", await page.GetByTestId("access-assignment-scope").InnerTextAsync());
         await page.GetByRole(AriaRole.Combobox, new PageGetByRoleOptions { Name = "Role", Exact = true }).ClickAsync();
-        await page.GetByRole(AriaRole.Option, new PageGetByRoleOptions { Name = "Operator", Exact = true }).ClickAsync();
+        await page.GetByRole(AriaRole.Option, new PageGetByRoleOptions { Name = "TenantAdministrator", Exact = true }).ClickAsync();
         await page.GetByTestId("access-add-assignment").ClickAsync();
         var assignmentScope = page.Locator("[data-testid^='access-assignment-scope-assignment-']");
         await assignmentScope.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         Assert.Equal("Browser smoke tenant", await assignmentScope.InnerTextAsync());
 
+        await page.GetByTestId("local-user-display-name").FillAsync("Browser local user without a role");
+        await page.GetByTestId("local-user-display-name").PressAsync("Tab");
+        await page.GetByTestId("local-user-email").FillAsync(unprivilegedEmail);
+        await page.GetByTestId("local-user-email").PressAsync("Tab");
+        await page.GetByTestId("create-local-user").ClickAsync();
+        await activation.GetByText(unprivilegedEmail).WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        var unprivilegedActivationToken = await page.GetByTestId("local-user-activation-token").InputValueAsync();
+        Assert.False(string.IsNullOrWhiteSpace(unprivilegedActivationToken));
+
         // Simulate a separate browser receiving the handoff. Clearing cookies on the
         // administrator's page would retain its interactive Blazor circuit.
-        await using var operatorContext = await browser.NewContextAsync(new BrowserNewContextOptions
+        await using var tenantAdministratorContext = await browser.NewContextAsync(new BrowserNewContextOptions
         {
             IgnoreHTTPSErrors = IgnoreSyntheticHttpsErrors,
             ViewportSize = new ViewportSize { Width = 390, Height = 844 }
         });
-        page = await operatorContext.NewPageAsync();
+        page = await tenantAdministratorContext.NewPageAsync();
         page.SetDefaultTimeout(20_000);
         await page.GotoAsync(new Uri(webUrl, "activate").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
         await page.GetByTestId("local-account-activation-page").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         await page.GetByTestId("local-activation-client-ready").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
-        await page.GetByTestId("activation-email").FillAsync(secondUserEmail);
+        await page.GetByTestId("activation-email").FillAsync(tenantAdministratorEmail);
         await page.GetByTestId("activation-email").PressAsync("Tab");
-        await page.GetByTestId("activation-token").FillAsync(activationToken);
+        await page.GetByTestId("activation-token").FillAsync(tenantAdministratorActivationToken);
         await page.GetByTestId("activation-token").PressAsync("Tab");
-        await page.GetByTestId("activation-password").FillAsync(secondUserPassword);
+        await page.GetByTestId("activation-password").FillAsync(tenantAdministratorPassword);
         await page.GetByTestId("activation-password").PressAsync("Tab");
-        await page.GetByTestId("activation-confirm-password").FillAsync(secondUserPassword);
+        await page.GetByTestId("activation-confirm-password").FillAsync(tenantAdministratorPassword);
         await page.GetByTestId("activation-confirm-password").PressAsync("Tab");
         var activated = page.WaitForURLAsync("**/login", new PageWaitForURLOptions { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 30_000 });
         await page.GetByTestId("activate-local-account").ClickAsync();
         await activated;
 
-        await SignInLocallyAsync(page, secondUserEmail, secondUserPassword);
+        await SignInLocallyAsync(page, tenantAdministratorEmail, tenantAdministratorPassword);
+        await AssertLocalTenantScopeAsync(page, webUrl, "Browser smoke tenant");
+        await OidcComposeBrowserSmokeTests.VerifyClientDirectoryDeniedCircuitAsync(
+            page,
+            webUrl,
+            "Local tenant administrator scoped to Browser smoke tenant");
+
+        await using var unprivilegedContext = await browser.NewContextAsync(new BrowserNewContextOptions
+        {
+            IgnoreHTTPSErrors = IgnoreSyntheticHttpsErrors,
+            ViewportSize = new ViewportSize { Width = 390, Height = 844 }
+        });
+        var unprivilegedPage = await unprivilegedContext.NewPageAsync();
+        unprivilegedPage.SetDefaultTimeout(20_000);
+        await unprivilegedPage.GotoAsync(new Uri(webUrl, "activate").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await unprivilegedPage.GetByTestId("local-account-activation-page").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        await unprivilegedPage.GetByTestId("local-activation-client-ready").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
+        await unprivilegedPage.GetByTestId("activation-email").FillAsync(unprivilegedEmail);
+        await unprivilegedPage.GetByTestId("activation-email").PressAsync("Tab");
+        await unprivilegedPage.GetByTestId("activation-token").FillAsync(unprivilegedActivationToken);
+        await unprivilegedPage.GetByTestId("activation-token").PressAsync("Tab");
+        await unprivilegedPage.GetByTestId("activation-password").FillAsync(unprivilegedPassword);
+        await unprivilegedPage.GetByTestId("activation-password").PressAsync("Tab");
+        await unprivilegedPage.GetByTestId("activation-confirm-password").FillAsync(unprivilegedPassword);
+        await unprivilegedPage.GetByTestId("activation-confirm-password").PressAsync("Tab");
+        var unprivilegedActivated = unprivilegedPage.WaitForURLAsync("**/login", new PageWaitForURLOptions
+        {
+            WaitUntil = WaitUntilState.DOMContentLoaded,
+            Timeout = 30_000
+        });
+        await unprivilegedPage.GetByTestId("activate-local-account").ClickAsync();
+        await unprivilegedActivated;
+        await SignInLocallyAsync(unprivilegedPage, unprivilegedEmail, unprivilegedPassword);
+        await AssertLocalTenantScopeAsync(unprivilegedPage, webUrl, expectedTenantName: null);
+        await OidcComposeBrowserSmokeTests.VerifyClientDirectoryDeniedCircuitAsync(
+            unprivilegedPage,
+            webUrl,
+            "Local principal without an assigned role");
+
+        await OidcComposeBrowserSmokeTests.VerifyClientDirectoryCircuitAsync(
+            administratorPage,
+            webUrl,
+            "Local bootstrap administrator after restricted-user requests");
+
         await page.GotoAsync(new Uri(webUrl, "account/security").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
         await page.GetByTestId("account-security-page").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         await page.GetByTestId("account-security-client-ready").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
@@ -967,7 +1107,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await page.GetByTestId("open-password-dialog").ClickAsync();
         Assert.Equal(string.Empty, await page.GetByTestId("change-password-current").InputValueAsync());
         Assert.Equal(string.Empty, await page.GetByTestId("change-password-new").InputValueAsync());
-        await page.GetByTestId("change-password-current").FillAsync(secondUserPassword);
+        await page.GetByTestId("change-password-current").FillAsync(tenantAdministratorPassword);
         await page.GetByTestId("change-password-current").PressAsync("Tab");
         await page.GetByTestId("change-password-new").FillAsync(changedPassword);
         await page.GetByTestId("change-password-new").PressAsync("Tab");
@@ -976,7 +1116,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         var signedOutAfterPasswordChange = page.WaitForURLAsync("**/login", new PageWaitForURLOptions { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 30_000 });
         await page.GetByTestId("change-local-password").ClickAsync();
         await signedOutAfterPasswordChange;
-        await SignInLocallyAsync(page, secondUserEmail, changedPassword);
+        await SignInLocallyAsync(page, tenantAdministratorEmail, changedPassword);
         await page.GotoAsync(new Uri(webUrl, "account/security").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
         await page.GetByTestId("account-security-client-ready").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
         await page.GetByTestId("open-mfa-setup").ClickAsync();
@@ -1001,7 +1141,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await page.GetByTestId("finish-mfa-enrollment").ClickAsync();
         await signedOutAfterEnrollment;
 
-        await SignInWithSecondFactorAsync(page, secondUserEmail, changedPassword, recoveryCode, expectSuccess: true);
+        await SignInWithSecondFactorAsync(page, tenantAdministratorEmail, changedPassword, recoveryCode, expectSuccess: true);
         await page.GotoAsync(new Uri(webUrl, "account/security").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
         await page.GetByTestId("account-security-page").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         await page.GetByTestId("account-security-client-ready").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
@@ -1015,7 +1155,33 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await page.GetByTestId("disable-mfa").ClickAsync();
         await signedOutAfterDisable;
 
-        await SignInLocallyAsync(page, secondUserEmail, changedPassword);
+        await SignInLocallyAsync(page, tenantAdministratorEmail, changedPassword);
+    }
+
+    private static async Task AssertLocalTenantScopeAsync(IPage page, Uri webUrl, string? expectedTenantName)
+    {
+        if (expectedTenantName is null)
+        {
+            await page.GotoAsync(new Uri(webUrl, "admin/access").ToString(),
+                new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+            await page.GetByTestId("access-administration-client-ready").WaitForAsync(
+                new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
+            await page.GetByText("You do not have an access-administration tenant scope.", new() { Exact = true })
+                .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+            await page.GetByRole(AriaRole.Combobox, new PageGetByRoleOptions { Name = "Manage tenant", Exact = true }).ClickAsync();
+            Assert.Equal(0, await page.Locator("[data-testid^='access-scope-tenant-']").CountAsync());
+            return;
+        }
+
+        await page.GotoAsync(new Uri(webUrl, "admin/access").ToString(),
+            new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        await page.GetByTestId("access-administration-client-ready").WaitForAsync(
+            new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
+        await page.GetByRole(AriaRole.Combobox, new PageGetByRoleOptions { Name = "Manage tenant", Exact = true }).ClickAsync();
+        var scopedTenants = page.Locator("[data-testid^='access-scope-tenant-']");
+        await scopedTenants.First.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        Assert.Equal(1, await scopedTenants.CountAsync());
+        Assert.Equal(expectedTenantName, (await scopedTenants.First.InnerTextAsync()).Trim());
     }
 
     private static async Task SignInLocallyAsync(IPage page, string email, string password)

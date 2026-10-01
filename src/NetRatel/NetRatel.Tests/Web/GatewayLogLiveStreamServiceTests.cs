@@ -4,10 +4,12 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using NetRatel.Shared.Contracts;
 using NetRatel.Web.Services.Authentication;
 using NetRatel.Web.Services.Clients;
+using System.Security.Claims;
 using Xunit;
 
 namespace NetRatel.Tests.Web;
@@ -27,7 +29,7 @@ public sealed class GatewayLogLiveStreamServiceTests : IAsyncLifetime
         var received = new TaskCompletionSource<GatewayLogBatchDto>(TaskCreationOptions.RunContinuationsAsynchronously);
         var service = new GatewayLogLiveStreamService(
             new StaticHttpClientFactory(baseAddress),
-            new StaticTokenService(),
+            CreateCredentialProvider(),
             NullLogger<GatewayLogLiveStreamService>.Instance);
 
         await using var subscription = await service.SubscribeAsync(
@@ -83,6 +85,24 @@ public sealed class GatewayLogLiveStreamServiceTests : IAsyncLifetime
         false,
         0,
         false);
+
+    private static OperatorApiCredentialProvider CreateCredentialProvider()
+    {
+        var principal = new ClaimsPrincipal(new ClaimsIdentity(
+        [new Claim(ClaimTypes.NameIdentifier, "test-operator")],
+            "test-cookie"));
+        var state = new OperatorApiCredentialState();
+        state.BindPrincipal(principal);
+        state.SetCredential(principal, new OperatorApiCredential(
+            OperatorApiCredentialKind.Bearer,
+            "test-token",
+            DateTimeOffset.UtcNow.AddHours(1)));
+        return new OperatorApiCredentialProvider(
+            new HttpContextAccessor(),
+            new StaticTokenService(),
+            state,
+            new ConfigurationBuilder().Build());
+    }
 
     private sealed class StaticHttpClientFactory(Uri baseAddress) : IHttpClientFactory
     {

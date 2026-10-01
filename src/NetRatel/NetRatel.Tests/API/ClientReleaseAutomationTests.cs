@@ -8,7 +8,6 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using NetRatel.API.Models;
 using NetRatel.API.Services;
-using NetRatel.Akka.Configuration;
 using NetRatel.Infrastructure.Persistence;
 using NuGet.Versioning;
 using Testcontainers.PostgreSql;
@@ -191,13 +190,8 @@ public sealed class ClientReleaseAutomationTests : IAsyncLifetime
             .BuildServiceProvider();
         await using var scope = services.CreateAsyncScope();
         var dbForPublish = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
-        var options = new NetRatelAkkaMigrationOptions
-        {
-            Enabled = true, PresenceAuthorityEnabled = true,
-            GatewayEnabled = true, ClientUpdatesEnabled = true
-        };
         var catalog = new ClientUpdateCatalog(services.GetRequiredService<IServiceScopeFactory>(), clock);
-        var authority = new ClientUpdateAuthorityService(dbForPublish, catalog, options,
+        var authority = new ClientUpdateAuthorityService(dbForPublish, catalog,
             clock, NullLogger<ClientUpdateAuthorityService>.Instance);
         var item = new ClientPackPublishItem(new ClientArtifactSummaryDto
         {
@@ -246,13 +240,6 @@ public sealed class ClientReleaseAutomationTests : IAsyncLifetime
             .AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(_postgres.GetConnectionString()))
             .AddSingleton(clock)
             .AddSingleton<TimeProvider>(clock)
-            .AddSingleton(new NetRatelAkkaMigrationOptions
-            {
-                Enabled = true,
-                PresenceAuthorityEnabled = true,
-                GatewayEnabled = true,
-                ClientUpdatesEnabled = true
-            })
             .AddSingleton<ClientUpdateCatalog>()
             .AddSingleton<IClientUpdateCatalog>(provider => provider.GetRequiredService<ClientUpdateCatalog>())
             .AddSingleton<IGitHubClientReleaseCatalog>(new EmptyReleaseCatalog())
@@ -293,13 +280,6 @@ public sealed class ClientReleaseAutomationTests : IAsyncLifetime
             .AddLogging()
             .AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(_postgres.GetConnectionString()))
             .AddSingleton<TimeProvider>(clock)
-            .AddSingleton(new NetRatelAkkaMigrationOptions
-            {
-                Enabled = true,
-                PresenceAuthorityEnabled = true,
-                GatewayEnabled = true,
-                ClientUpdatesEnabled = true
-            })
             .AddSingleton<ClientUpdateCatalog>()
             .AddSingleton<IClientUpdateCatalog>(provider => provider.GetRequiredService<ClientUpdateCatalog>())
             .AddScoped<ClientUpdateAuthorityService>()
@@ -482,10 +462,7 @@ public sealed class ClientReleaseAutomationTests : IAsyncLifetime
         var catalog = new ClientUpdateCatalog(
             new ServiceCollection().AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(_postgres.GetConnectionString()))
                 .BuildServiceProvider().GetRequiredService<IServiceScopeFactory>(), clock);
-        return new ClientUpdateAuthorityService(db, catalog, new NetRatelAkkaMigrationOptions
-        {
-            Enabled = true, PresenceAuthorityEnabled = true, GatewayEnabled = true, ClientUpdatesEnabled = true
-        }, clock, NullLogger<ClientUpdateAuthorityService>.Instance);
+        return new ClientUpdateAuthorityService(db, catalog, clock, NullLogger<ClientUpdateAuthorityService>.Instance);
     }
 
     private static ClientReleaseImportOperation AddImportedOperation(

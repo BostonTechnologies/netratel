@@ -74,7 +74,7 @@ public sealed class McpOperatorJobEndpointTests
         builder.Services.AddSingleton<IMcpOperatorJobStore>(_ => throw new NotSupportedException());
         builder.Services.AddSingleton<IJobRunService>(_ => throw new NotSupportedException());
         builder.Services.AddSingleton<IAkkaJobAuthorityService>(_ => throw new NotSupportedException());
-        builder.Services.AddSingleton<NetRatelAkkaMigrationOptions>();
+        builder.Services.AddSingleton<NetRatelAkkaOptions>();
         builder.Services.AddSingleton(new McpOperatorLocalAgentOptions());
         builder.Services.AddSingleton<IAgentCommandAuthorityDispatcher>(_ => throw new NotSupportedException());
         var app = builder.Build();

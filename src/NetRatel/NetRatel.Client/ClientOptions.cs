@@ -16,6 +16,13 @@ public class ClientOptions
     public string? EnrollmentCode { get; set; }
     public string? AgentId { get; set; }
     public AutoUpdateOptions AutoUpdate { get; set; } = new();
+    public ServiceReadinessOptions ServiceReadiness { get; set; } = new();
+}
+
+public sealed class ServiceReadinessOptions
+{
+    public string RequestPath { get; set; } = string.Empty;
+    public string ReadyPath { get; set; } = string.Empty;
 }
 
 public sealed class AutoUpdateOptions
@@ -26,7 +33,6 @@ public sealed class AutoUpdateOptions
     public string RequestPath { get; set; } = "";
     public string ReadyPath { get; set; } = "";
     public string LinuxServiceName { get; set; } = "netratel-update.service";
-    public string WindowsServiceName { get; set; } = "NetRatel.Update";
     public string Channel { get; set; } = "Stable";
     public long MaximumArtifactBytes { get; set; } = 1_073_741_824;
     public int ActivationTimeoutSeconds { get; set; } = 180;

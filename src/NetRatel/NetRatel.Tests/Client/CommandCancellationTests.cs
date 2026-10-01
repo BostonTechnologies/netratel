@@ -1,5 +1,8 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Runtime.Versioning;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Text.Json;
 using FluentAssertions;
 using NetRatel.Client.Service.Shells;
@@ -12,6 +15,92 @@ namespace NetRatel.Tests.Client;
 
 public sealed class CommandCancellationTests
 {
+    [Fact]
+    public void Parameter_wrapper_temp_directory_is_private_to_its_owner_and_system_administrators()
+    {
+        var path = ExternalShellRunner.WritePrivateTemp(".ps1", "$__netratelParams['EnrollmentCode'] = 'sensitive-test-value'");
+        var directory = Path.GetDirectoryName(path)!;
+        try
+        {
+            File.ReadAllText(path).Should().Contain("sensitive-test-value");
+            if (OperatingSystem.IsWindows())
+            {
+                AssertWindowsPrivateDirectory(directory);
+            }
+            else
+            {
+                var mode = File.GetUnixFileMode(directory);
+                (mode & (UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute |
+                         UnixFileMode.OtherRead | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute)).Should().Be(0);
+                (mode & (UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute))
+                    .Should().Be(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            }
+        }
+        finally
+        {
+            ExternalShellRunner.TryDeletePrivateTemp(path);
+        }
+    }
+
+    [Fact]
+    [SupportedOSPlatform("linux")]
+    [SupportedOSPlatform("macos")]
+    public void Private_parameter_writer_rejects_an_untrusted_existing_unix_temp_root()
+    {
+        if (OperatingSystem.IsWindows()) Assert.Skip("The Unix private-temp parent check requires a Unix host.");
+
+        var root = Path.Combine(Path.GetTempPath(), $"netratel-unsafe-temp-root-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        File.SetUnixFileMode(root, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+                                   UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute |
+                                   UnixFileMode.OtherRead | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute);
+        try
+        {
+            var error = Assert.Throws<UnauthorizedAccessException>(() =>
+                ExternalShellRunner.WritePrivateTemp(".ps1", "sensitive", root));
+            Assert.Contains("canonical system temporary directory", error.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            File.SetUnixFileMode(root, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            Directory.Delete(root);
+        }
+    }
+
+    [Fact]
+    public async Task Bash_library_parameters_are_passed_through_the_child_environment_not_script_arguments()
+    {
+        if (OperatingSystem.IsWindows()) Assert.Skip("The Bash parameter contract requires a Unix host.");
+
+        var secret = "secret-with-'quotes'-$and";
+        var runner = new ExternalShellRunner();
+        var result = await runner.RunLibraryScriptAsync(
+            new ExecLibraryScriptPayload { ScriptType = ScriptType.Bash, Preferred = ShellExecutor.Auto },
+            "printf '%s' \"$EnrollmentCode\"",
+            CancellationToken.None,
+            new Dictionary<string, string> { ["EnrollmentCode"] = secret });
+
+        Assert.True(result.Success, string.Join(Environment.NewLine, result.Error));
+        Assert.Equal(secret, Assert.Single(result.Output));
+        Assert.DoesNotContain(secret, result.Arguments ?? string.Empty, StringComparison.Ordinal);
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static void AssertWindowsPrivateDirectory(string directory)
+    {
+        using var identity = WindowsIdentity.GetCurrent();
+        var security = new DirectoryInfo(directory).GetAccessControl();
+        security.AreAccessRulesProtected.Should().BeTrue();
+        var allowedSids = security.GetAccessRules(includeExplicit: true, includeInherited: false, typeof(SecurityIdentifier))
+            .Cast<FileSystemAccessRule>()
+            .Where(rule => rule.AccessControlType == AccessControlType.Allow && rule.FileSystemRights == FileSystemRights.FullControl)
+            .Select(rule => ((SecurityIdentifier)rule.IdentityReference).Value)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        allowedSids.Should().Contain(identity.User!.Value);
+        allowedSids.Should().Contain(new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null).Value);
+        allowedSids.Should().Contain(new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null).Value);
+    }
+
     [Fact]
     public async Task Queued_cancellation_is_registered_before_execution_and_repeated_requests_are_idempotent()
     {

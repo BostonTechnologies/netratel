@@ -3,7 +3,6 @@ using Microsoft.Extensions.Configuration;
 using NetRatel.AgentGateway.Contracts.V1;
 using NetRatel.API.Gateway;
 using NetRatel.API.Realtime;
-using NetRatel.API.Realtime.Shadow;
 using NetRatel.Application.Presence;
 using Xunit;
 
@@ -118,7 +117,7 @@ public sealed class GatewayRegistrationFenceMatrixTests
                     return new(r.RegistrationId, r.CompletionToken, () => r.IsCurrent, r.DisposeAsync);
                 };
             case "terminal":
-                var terminals = new AgentTerminalSessionRegistry(TimeProvider.System, NullShadowFanoutSink.Instance);
+                var terminals = new AgentTerminalSessionRegistry(TimeProvider.System, new RecordingRealtimeFanoutSink());
                 return (connection, epoch) =>
                 {
                     var r = terminals.Register(client, connection, epoch, ["bash"]);

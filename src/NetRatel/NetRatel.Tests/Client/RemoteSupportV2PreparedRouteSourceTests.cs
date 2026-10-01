@@ -27,9 +27,13 @@ public sealed class RemoteSupportV2PreparedRouteSourceTests
         var gateway = File.ReadAllText(Path.Combine(root, "src/NetRatel/NetRatel.Client/Service/Gateway/AgentRemoteSupportGatewayClient.cs"));
 
         gateway.Should().Contain("using var v2Media");
-        gateway.Should().Contain("v2Media?.Detach();");
+        gateway.Should().Contain("v2Media.Detach();");
         gateway.Should().Contain("_providerRuntime.Dispose();");
-        gateway.IndexOf("v2Media?.Detach();", StringComparison.Ordinal)
+        gateway.Should().NotContain("new GatewayRemoteSupportBridge(");
+        gateway.Should().NotContain("WriteSignalAsync");
+        gateway.Should().NotContain("WriteClosedAsync");
+        gateway.Should().Contain("using var v2Media = new V2GatewayRemoteSupportBridge");
+        gateway.IndexOf("v2Media.Detach();", StringComparison.Ordinal)
             .Should().BeLessThan(gateway.LastIndexOf("_providerRuntime.Dispose();", StringComparison.Ordinal));
     }
 }

@@ -9,7 +9,9 @@ public sealed record DeploymentScriptTemplateRequest(
     bool InstallAsService,
     bool SilentInstall,
     string? ArtifactVersion = null,
-    string? ArtifactSha256 = null);
+    string? ArtifactSha256 = null,
+    string? GatewayEndpoint = null,
+    int ReadinessTimeoutSeconds = 180);
 
 public interface IScriptTemplateService
 {

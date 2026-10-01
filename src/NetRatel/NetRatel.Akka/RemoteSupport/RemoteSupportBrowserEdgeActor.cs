@@ -15,7 +15,16 @@ internal sealed class RemoteSupportBrowserEdgeActor : ReceiveActor
     public RemoteSupportBrowserEdgeActor(Channel<RemoteSupportBrowserLifecycleEvent> events)
     {
         _events = events;
-        Receive<RemoteSupportBrowserEdgeEvent>(message => _events.Writer.TryWrite(message.Event));
+        Receive<RemoteSupportBrowserEdgeEvent>(message =>
+        {
+            if (_events.Writer.TryWrite(message.Event))
+            {
+                return;
+            }
+
+            _events.Writer.TryComplete(new RemoteSupportEdgeBufferOverflowException("browser lifecycle"));
+            Context.Stop(Self);
+        });
         Receive<GetRemoteSupportBrowserEdgeReader>(_ => Sender.Tell(_events.Reader));
         Receive<StopRemoteSupportBrowserEdge>(_ => Context.Stop(Self));
     }

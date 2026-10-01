@@ -8,7 +8,10 @@ services:
       - "${NETRATEL_OIDC_TEST_BIND_ADDRESS:-0.0.0.0}:${NETRATEL_OIDC_TEST_PORT:-8080}:8080"
     environment:
       JSON_CONFIG: >-
-        {"interactiveLogin":true,"tokenCallbacks":[{"issuerId":"default","requestMappings":[{"requestParam":"code","match":"*","claims":{"preferred_username":"netratel-test-operator@example.test","roles":["Operator"],"aud":["netratel-smoke-client","netratel.api"]}},{"requestParam":"client_id","match":"netratel-cli-smoke-client","claims":{"preferred_username":"netratel-cli-smoke@example.test","roles":["Operator"],"scope":"netratel.api","aud":["netratel.api"]}}]}]}
+        {"interactiveLogin":true,"loginPagePath":"/run/netratel-smoke/oidc-login.html","tokenCallbacks":[{"issuerId":"default","requestMappings":[{"requestParam":"client_id","match":"netratel-cli-smoke-client","claims":{"sub":"netratel-cli-smoke-client","preferred_username":"netratel-cli-smoke@example.test","roles":["Operator"],"scope":"netratel.api","aud":["netratel.api"]}}]}]}
+    configs:
+      - source: oidc_login_page
+        target: /run/netratel-smoke/oidc-login.html
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/isalive"]
       interval: 2s
@@ -32,18 +35,6 @@ services:
       # issuer names for this Compose overlay.
       Authentication__Oidc__ValidIssuers__0: http://host.docker.internal:${NETRATEL_OIDC_TEST_PORT:-8080}/default
       Authentication__Oidc__ValidIssuers__1: http://127.0.0.1:${NETRATEL_OIDC_TEST_PORT:-8080}/default
-      # The public runtime defaults these additive migration surfaces off. The
-      # disposable smoke enables only the presence, telemetry, and command
-      # authorities it verifies.
-      NetRatelAkkaMigration__Enabled: "true"
-      NetRatelAkkaMigration__PresenceEnabled: "true"
-      NetRatelAkkaMigration__GatewayEnabled: "true"
-      NetRatelAkkaMigration__PresenceAuthorityEnabled: "true"
-      NetRatelAkkaMigration__ClientUpdatesEnabled: ${NETRATEL_SMOKE_CLIENT_UPDATES_ENABLED:-false}
-      NetRatelAkkaMigration__TelemetryShadowEnabled: "true"
-      NetRatelAkkaMigration__TelemetryAuthorityEnabled: "true"
-      NetRatelAkkaMigration__CommandShadowEnabled: "true"
-      NetRatelAkkaMigration__CommandAuthorityEnabled: "true"
     volumes:
       - ${NETRATEL_SMOKE_TLS_CERT_PATH:-/tmp/netratel-compose-smoke-unavailable.pfx}:/run/netratel-smoke/tls.pfx:ro
     extra_hosts:
@@ -64,8 +55,13 @@ services:
       - ${NETRATEL_GATEWAY_PROXY_CONFIG_PATH:?set NETRATEL_GATEWAY_PROXY_CONFIG_PATH}:/etc/nginx/nginx.conf:ro
       - ${NETRATEL_SMOKE_TLS_CERTIFICATE_PATH:-/tmp/netratel-compose-smoke-unavailable.crt}:/run/netratel-smoke/tls.crt:ro
       - ${NETRATEL_SMOKE_TLS_KEY_PATH:-/tmp/netratel-compose-smoke-unavailable.key}:/run/netratel-smoke/tls.key:ro
+      - ${NETRATEL_PUBLIC_NGINX_CONFIG_PATH:?set NETRATEL_PUBLIC_NGINX_CONFIG_PATH}:/etc/nginx/conf.d/public.conf:ro
+      - ${NETRATEL_SMOKE_TLS_CERTIFICATE_PATH:-/tmp/netratel-compose-smoke-unavailable.crt}:/run/netratel-ingress/tls.crt:ro
+      - ${NETRATEL_SMOKE_TLS_KEY_PATH:-/tmp/netratel-compose-smoke-unavailable.key}:/run/netratel-ingress/tls.key:ro
     depends_on:
       api:
+        condition: service_started
+      web:
         condition: service_started
 
   web:
@@ -105,3 +101,7 @@ networks:
     ipam:
       config:
         - subnet: ${NETRATEL_SMOKE_WEB_PROXY_SUBNET:-172.29.243.0/24}
+
+configs:
+  oidc_login_page:
+    file: ${PWD}/tests/compose/oidc-smoke-login.html

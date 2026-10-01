@@ -77,6 +77,7 @@ jq -e '
   and .services.web.environment.Authentication__Local__AllowInsecureLocalhost == "false"
   and .services.web.environment.ForwardedHeaders__KnownProxies__0 == "172.29.20.10"
   and .services.web.environment.DataProtection__ApplicationName == "NetRatel-Keyring"
+  and (.services.api.networks | has("public-ingress"))
   and .services.ingress.restart == "unless-stopped"
 ' <<<"$public_rendered" >/dev/null || {
   echo "Release HTTPS profile does not retain the public origin, trusted proxy, and secure-cookie contract." >&2

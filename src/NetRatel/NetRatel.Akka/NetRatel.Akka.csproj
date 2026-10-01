@@ -11,6 +11,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="NetRatel.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Akka.Cluster.Hosting" Version="1.5.71" />
     <PackageReference Include="Akka.Hosting" Version="1.5.71" />
     <PackageReference Include="OpenTelemetry.Api" Version="1.19.1" />

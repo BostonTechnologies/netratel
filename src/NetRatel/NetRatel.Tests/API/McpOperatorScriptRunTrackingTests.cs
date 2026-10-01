@@ -17,7 +17,6 @@ using Microsoft.Extensions.Options;
 using NetRatel.API.Endpoints.Client;
 using NetRatel.API.Gateway;
 using NetRatel.API.Middleware;
-using NetRatel.Akka.Configuration;
 using NetRatel.Application.Events;
 using NetRatel.Application.Operations;
 using NetRatel.Application.Presence;
@@ -117,11 +116,6 @@ public sealed class McpOperatorScriptRunTrackingTests
         builder.Services.AddSingleton<IAgentCommandGatewaySessionRegistry>(_ => throw new NotSupportedException());
         builder.Services.AddSingleton<IEventRecorder, Events>();
         builder.Services.AddSingleton<McpOperatorLocalAgentOptions>();
-        builder.Services.AddSingleton(new NetRatelAkkaMigrationOptions
-        {
-            Enabled = true, PresenceEnabled = true, GatewayEnabled = true, PresenceAuthorityEnabled = true,
-            CommandShadowEnabled = true, CommandAuthorityEnabled = true
-        });
         var app = builder.Build();
         app.UseAuthentication();
         // Authentication/delegation cryptography has separate integration coverage; this fixture
@@ -203,7 +197,7 @@ public sealed class McpOperatorScriptRunTrackingTests
         public Task<PresenceMessageResult> EndSessionAsync(EndGatewayPresenceSession message, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<ClientPresenceRouteStatus> ProbeAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<ClientPresenceSnapshot> GetSnapshotAsync(ClientKey client, CancellationToken cancellationToken) => Task.FromResult(
-            new ClientPresenceSnapshot(client, ShadowPresenceStatus.Online, 1, Guid.NewGuid(), 1, DateTimeOffset.UtcNow, "test", [], null, "test", true));
+            new ClientPresenceSnapshot(client, ClientPresenceStatus.Online, 1, Guid.NewGuid(), 1, DateTimeOffset.UtcNow, "test", [], null, "test", true));
     }
     private sealed class Events : IEventRecorder
     {

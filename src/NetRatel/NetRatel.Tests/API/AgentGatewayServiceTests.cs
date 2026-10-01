@@ -21,12 +21,8 @@ namespace NetRatel.Tests.API;
 
 public sealed class AgentGatewayServiceTests
 {
-    [Theory]
-    [InlineData(false, "unavailable")]
-    [InlineData(true, "akka")]
-    public async Task Connect_AdmitsAuthenticatedAgentAndReportsConfiguredPresenceAuthority(
-        bool presenceAuthorityEnabled,
-        string expectedAuthority)
+    [Fact]
+    public async Task Connect_AdmitsAuthenticatedAgentAndReportsNormalPresenceAuthority()
     {
         const int tenantId = 73;
         var agentId = Guid.NewGuid();
@@ -38,8 +34,7 @@ public sealed class AgentGatewayServiceTests
         using var host = await BuildHostAsync(
             tenantId,
             agentId,
-            router,
-            presenceAuthorityEnabled);
+            router);
         using var channel = GrpcChannel.ForAddress(
             "http://localhost",
             new GrpcChannelOptions { HttpHandler = host.GetTestServer().CreateHandler() });
@@ -62,7 +57,7 @@ public sealed class AgentGatewayServiceTests
 
         (await call.ResponseStream.MoveNext(CancellationToken.None)).Should().BeTrue();
         var connected = call.ResponseStream.Current;
-        connected.Connected.PresenceAuthority.Should().Be(expectedAuthority);
+        connected.Connected.PresenceAuthority.Should().Be("akka");
         connected.ConnectionEpoch.Should().Be(1);
         Guid.Parse(connected.ConnectionId).Should().NotBeEmpty();
 
@@ -82,7 +77,7 @@ public sealed class AgentGatewayServiceTests
         var heartbeat = call.ResponseStream.Current;
         heartbeat.Sequence.Should().Be(1);
         heartbeat.HeartbeatAccepted.Duplicate.Should().BeFalse();
-        heartbeat.HeartbeatAccepted.PresenceAuthority.Should().Be(expectedAuthority);
+        heartbeat.HeartbeatAccepted.PresenceAuthority.Should().Be("akka");
 
         await call.RequestStream.CompleteAsync();
         (await call.ResponseStream.MoveNext(CancellationToken.None)).Should().BeFalse();
@@ -100,8 +95,7 @@ public sealed class AgentGatewayServiceTests
     private static async Task<IHost> BuildHostAsync(
         int tenantId,
         Guid agentId,
-        RecordingPresenceRouter router,
-        bool presenceAuthorityEnabled)
+        RecordingPresenceRouter router)
     {
         var builder = Host.CreateDefaultBuilder();
         builder.ConfigureWebHost(web =>
@@ -120,17 +114,13 @@ public sealed class AgentGatewayServiceTests
                 services.AddSingleton<IClientPresenceRouter>(router);
                 services.AddSingleton<IAgentManagementService>(
                     new ActiveAgentManagementService(tenantId, agentId));
-                services.AddSingleton(new NetRatelAkkaMigrationOptions
-                {
-                    Enabled = true,
-                    PresenceEnabled = true,
-                    GatewayEnabled = true,
-                    PresenceAuthorityEnabled = presenceAuthorityEnabled
-                });
+                services.AddSingleton(new NetRatelAkkaOptions());
                 services.AddSingleton(TimeProvider.System);
                 services.AddDbContext<OrchestratorDbContext>(options => options.UseInMemoryDatabase($"gateway-{Guid.NewGuid():N}"));
                 services.AddSingleton<IClientUpdateCatalog, EmptyClientUpdateCatalog>();
                 services.AddScoped<ClientUpdateAuthorityService>();
+                services.AddScoped<IClientUpdateActivationAuthority>(serviceProvider =>
+                    serviceProvider.GetRequiredService<ClientUpdateAuthorityService>());
                 services.AddSingleton(NullLogger<AgentGatewayService>.Instance);
             });
 

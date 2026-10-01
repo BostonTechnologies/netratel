@@ -3,7 +3,7 @@ using NetRatel.API.Endpoints.Auth;
 using NetRatel.API.Endpoints.Search;
 using NetRatel.API.Endpoints.Systems;
 using NetRatel.API.Gateway;
-using NetRatel.API.Realtime.Shadow;
+using NetRatel.API.Realtime;
 using NetRatel.API.Realtime.Operations;
 
 namespace NetRatel.API.Endpoints;
@@ -18,7 +18,7 @@ public static class ApiEndpointRegistrationExtensions
         app.MapHealthEndpoints();
         app.MapDocumentationEndpoints();
         app.MapAgentGatewayEndpoints();
-        app.MapSignalRShadowEndpoints();
+        app.MapAgentRemoteSupportV2Endpoints();
         app.MapSignalRAuthorityEndpoints();
         app.MapOperationsLogEndpoints();
 
@@ -26,7 +26,6 @@ public static class ApiEndpointRegistrationExtensions
         app.MapSecretEndpoints();
         app.MapScriptEndpoints();
         app.MapPrimaryClientAgentBindingReadEndpoints();
-        app.MapPrimaryClientGatewayCardReadEndpoints();
         app.MapMcpOperatorPolicyAdministrationEndpoints();
         app.MapMcpOperatorAccessEndpoints();
         app.MapMcpOperatorAuthenticationStatusEndpoints();
@@ -66,7 +65,6 @@ public static class ApiEndpointRegistrationExtensions
         app.MapAgentFileGatewayEndpoints();
         app.MapAgentLogGatewayEndpoints();
         app.MapAgentCommandGatewayEndpoints();
-        app.MapAgentRemoteSupportGatewayEndpoints();
         app.MapAgentTerminalGatewayEndpoints();
 
         app.MapClientArtifactsEndpoints();

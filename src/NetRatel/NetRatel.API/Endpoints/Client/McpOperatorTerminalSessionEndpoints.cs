@@ -1,7 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Globalization;
-using NetRatel.Akka.Configuration;
 using NetRatel.API.Gateway;
 using NetRatel.API.Middleware;
 using NetRatel.Application.Operations;
@@ -52,11 +51,10 @@ public static class McpOperatorTerminalSessionEndpoints
         [FromServices] IClientPresenceRouter presence,
         IMcpOperatorRouteAdmission admission,
         IMcpOperatorConfirmationService confirmations,
-        NetRatelAkkaMigrationOptions options,
         [FromServices] IAgentTerminalSessionRegistry terminals,
         CancellationToken cancellationToken)
     {
-        var admitted = await TryCreateContextAsync(http, environment, presence, admission, options, terminals, tenantId, agentId, "open", cancellationToken, "preview_open").ConfigureAwait(false);
+        var admitted = await TryCreateContextAsync(http, environment, presence, admission, terminals, tenantId, agentId, "open", cancellationToken, "preview_open").ConfigureAwait(false);
         if (admitted.Failure is { } failure) return failure;
         var context = admitted.Context!;
         if (!TryNormalizeOpen(request, context.Decision, out var open, out var reason))
@@ -96,11 +94,10 @@ public static class McpOperatorTerminalSessionEndpoints
         IMcpOperatorRouteAdmission admission,
         IMcpOperatorConfirmationService confirmations,
         IMcpOperatorTerminalSessionStore sessions,
-        NetRatelAkkaMigrationOptions options,
         [FromServices] IAgentTerminalSessionRegistry terminals,
         CancellationToken cancellationToken)
     {
-        var admitted = await TryCreateContextAsync(http, environment, presence, admission, options, terminals, tenantId, agentId, "open", cancellationToken).ConfigureAwait(false);
+        var admitted = await TryCreateContextAsync(http, environment, presence, admission, terminals, tenantId, agentId, "open", cancellationToken).ConfigureAwait(false);
         if (admitted.Failure is { } failure) return failure;
         var context = admitted.Context!;
         if (!HasPlanCredentials(request.PlanToken, request.IdempotencyKey))
@@ -197,9 +194,9 @@ public static class McpOperatorTerminalSessionEndpoints
     private static async Task<IResult> GetAsync(
         int tenantId, Guid agentId, string sessionId, HttpContext http, IHostEnvironment environment,
         [FromServices] IClientPresenceRouter presence, IMcpOperatorRouteAdmission admission, IMcpOperatorTerminalSessionStore sessions,
-        NetRatelAkkaMigrationOptions options, [FromServices] IAgentTerminalSessionRegistry terminals, CancellationToken cancellationToken)
+        [FromServices] IAgentTerminalSessionRegistry terminals, CancellationToken cancellationToken)
     {
-        var resolved = await RequireOwnedAsync("get", sessionId, tenantId, agentId, http, environment, presence, admission, sessions, options, terminals, cancellationToken).ConfigureAwait(false);
+        var resolved = await RequireOwnedAsync("get", sessionId, tenantId, agentId, http, environment, presence, admission, sessions, terminals, cancellationToken).ConfigureAwait(false);
         if (resolved.Failure is { } failure) return failure;
         try { await admission.RecordAcceptedAsync(resolved.Context!.Request, cancellationToken).ConfigureAwait(false); }
         catch (McpOperatorAdmissionRejectedException rejection) { return Failure(rejection.FailureCode, resolved.Context!); }
@@ -209,9 +206,9 @@ public static class McpOperatorTerminalSessionEndpoints
     private static async Task<IResult> DiagnosticsAsync(
         int tenantId, Guid agentId, string sessionId, HttpContext http, IHostEnvironment environment,
         [FromServices] IClientPresenceRouter presence, IMcpOperatorRouteAdmission admission, IMcpOperatorTerminalSessionStore sessions,
-        NetRatelAkkaMigrationOptions options, [FromServices] IAgentTerminalSessionRegistry terminals, CancellationToken cancellationToken)
+        [FromServices] IAgentTerminalSessionRegistry terminals, CancellationToken cancellationToken)
     {
-        var resolved = await RequireOwnedAsync("diagnostics", sessionId, tenantId, agentId, http, environment, presence, admission, sessions, options, terminals, cancellationToken).ConfigureAwait(false);
+        var resolved = await RequireOwnedAsync("diagnostics", sessionId, tenantId, agentId, http, environment, presence, admission, sessions, terminals, cancellationToken).ConfigureAwait(false);
         if (resolved.Failure is { } failure) return failure;
         try { await admission.RecordAcceptedAsync(resolved.Context!.Request, cancellationToken).ConfigureAwait(false); }
         catch (McpOperatorAdmissionRejectedException rejection) { return Failure(rejection.FailureCode, resolved.Context!); }
@@ -225,11 +222,11 @@ public static class McpOperatorTerminalSessionEndpoints
     private static async Task<IResult> SendInputAsync(
         int tenantId, Guid agentId, string sessionId, McpOperatorTerminalInputRequest request, HttpContext http, IHostEnvironment environment,
         [FromServices] IClientPresenceRouter presence, IMcpOperatorRouteAdmission admission, IMcpOperatorTerminalSessionStore sessions, IMcpOperatorTerminalActionStore actions,
-        NetRatelAkkaMigrationOptions options, [FromServices] IAgentTerminalSessionRegistry terminals, CancellationToken cancellationToken)
+        [FromServices] IAgentTerminalSessionRegistry terminals, CancellationToken cancellationToken)
     {
         if (!TryEncodeInput(request.Input, out var input))
             return GatewayFailure("terminal_input_invalid", MinimalContext(tenantId, agentId, "send_input", http.TraceIdentifier));
-        var resolved = await RequireOwnedAsync("send_input", sessionId, tenantId, agentId, http, environment, presence, admission, sessions, options, terminals, cancellationToken).ConfigureAwait(false);
+        var resolved = await RequireOwnedAsync("send_input", sessionId, tenantId, agentId, http, environment, presence, admission, sessions, terminals, cancellationToken).ConfigureAwait(false);
         if (resolved.Failure is { } failure) return failure;
         var context = resolved.Context!;
         var action = await actions.AdmitAsync(new McpOperatorTerminalActionAdmissionRequest(
@@ -272,11 +269,11 @@ public static class McpOperatorTerminalSessionEndpoints
     private static async Task<IResult> ResizeAsync(
         int tenantId, Guid agentId, string sessionId, McpOperatorTerminalResizeRequest request, HttpContext http, IHostEnvironment environment,
         [FromServices] IClientPresenceRouter presence, IMcpOperatorRouteAdmission admission, IMcpOperatorTerminalSessionStore sessions, IMcpOperatorTerminalActionStore actions,
-        NetRatelAkkaMigrationOptions options, [FromServices] IAgentTerminalSessionRegistry terminals, CancellationToken cancellationToken)
+        [FromServices] IAgentTerminalSessionRegistry terminals, CancellationToken cancellationToken)
     {
         if (request.Columns is < 40 or > 300 || request.Rows is < 10 or > 120)
             return GatewayFailure("terminal_resize_invalid", MinimalContext(tenantId, agentId, "resize", http.TraceIdentifier));
-        var resolved = await RequireOwnedAsync("resize", sessionId, tenantId, agentId, http, environment, presence, admission, sessions, options, terminals, cancellationToken).ConfigureAwait(false);
+        var resolved = await RequireOwnedAsync("resize", sessionId, tenantId, agentId, http, environment, presence, admission, sessions, terminals, cancellationToken).ConfigureAwait(false);
         if (resolved.Failure is { } failure) return failure;
         var context = resolved.Context!;
         var action = await actions.AdmitAsync(new McpOperatorTerminalActionAdmissionRequest(
@@ -319,9 +316,9 @@ public static class McpOperatorTerminalSessionEndpoints
     private static async Task<IResult> CloseAsync(
         int tenantId, Guid agentId, string sessionId, HttpContext http, IHostEnvironment environment,
         [FromServices] IClientPresenceRouter presence, IMcpOperatorRouteAdmission admission, IMcpOperatorTerminalSessionStore sessions, IMcpOperatorTerminalActionStore actions,
-        NetRatelAkkaMigrationOptions options, [FromServices] IAgentTerminalSessionRegistry terminals, CancellationToken cancellationToken)
+        [FromServices] IAgentTerminalSessionRegistry terminals, CancellationToken cancellationToken)
     {
-        var admitted = await TryCreateContextAsync(http, environment, presence, admission, options, terminals, tenantId, agentId, "close", cancellationToken).ConfigureAwait(false);
+        var admitted = await TryCreateContextAsync(http, environment, presence, admission, terminals, tenantId, agentId, "close", cancellationToken).ConfigureAwait(false);
         if (admitted.Failure is { } failure)
         {
             // Once an owned lease is closing, the durable expiry worker owns
@@ -417,13 +414,13 @@ public static class McpOperatorTerminalSessionEndpoints
     private static async Task<IResult> StreamWindowAsync(
         int tenantId, Guid agentId, string sessionId, int? windowSeconds, int? maxRecords, string? afterSequence, HttpContext http, IHostEnvironment environment,
         [FromServices] IClientPresenceRouter presence, IMcpOperatorRouteAdmission admission, IMcpOperatorTerminalSessionStore sessions,
-        NetRatelAkkaMigrationOptions options, [FromServices] IAgentTerminalSessionRegistry terminals, CancellationToken cancellationToken)
+        [FromServices] IAgentTerminalSessionRegistry terminals, CancellationToken cancellationToken)
     {
         var cursor = 0UL;
         if (windowSeconds is < 1 or > MaximumWindowSeconds || maxRecords is < 1 or > MaximumRecords ||
             (afterSequence is not null && !ulong.TryParse(afterSequence, NumberStyles.None, CultureInfo.InvariantCulture, out cursor)))
             return GatewayFailure("terminal_stream_invalid", MinimalContext(tenantId, agentId, "stream_window", http.TraceIdentifier));
-        var resolved = await RequireOwnedAsync("stream_window", sessionId, tenantId, agentId, http, environment, presence, admission, sessions, options, terminals, cancellationToken).ConfigureAwait(false);
+        var resolved = await RequireOwnedAsync("stream_window", sessionId, tenantId, agentId, http, environment, presence, admission, sessions, terminals, cancellationToken).ConfigureAwait(false);
         if (resolved.Failure is { } failure) return failure;
         var lease = await sessions.TouchAsync(sessionId, DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
         if (lease is null || lease.State == McpOperatorTerminalSessionState.Closing) return Failure("terminal_session_expired", resolved.Context!);
@@ -452,9 +449,9 @@ public static class McpOperatorTerminalSessionEndpoints
     private static async Task<McpOperatorTerminalRouteResult> RequireOwnedAsync(
         string operation, string sessionId, int tenantId, Guid agentId, HttpContext http, IHostEnvironment environment,
         [FromServices] IClientPresenceRouter presence, IMcpOperatorRouteAdmission admission, IMcpOperatorTerminalSessionStore sessions,
-        NetRatelAkkaMigrationOptions options, [FromServices] IAgentTerminalSessionRegistry terminals, CancellationToken cancellationToken)
+        [FromServices] IAgentTerminalSessionRegistry terminals, CancellationToken cancellationToken)
     {
-        var admitted = await TryCreateContextAsync(http, environment, presence, admission, options, terminals, tenantId, agentId, operation, cancellationToken).ConfigureAwait(false);
+        var admitted = await TryCreateContextAsync(http, environment, presence, admission, terminals, tenantId, agentId, operation, cancellationToken).ConfigureAwait(false);
         if (admitted.Context is not { } context)
             return new(null, null, admitted.Failure!);
         if (admitted.Failure is { } failure)
@@ -475,7 +472,7 @@ public static class McpOperatorTerminalSessionEndpoints
 
     private static async Task<McpOperatorTerminalContextResult> TryCreateContextAsync(
         HttpContext http, IHostEnvironment environment, [FromServices] IClientPresenceRouter presence, IMcpOperatorRouteAdmission admission,
-        NetRatelAkkaMigrationOptions options, [FromServices] IAgentTerminalSessionRegistry terminals, int tenantId, Guid agentId,
+        [FromServices] IAgentTerminalSessionRegistry terminals, int tenantId, Guid agentId,
         string operation, CancellationToken cancellationToken, string? delegatedOperation = null)
     {
         var fallback = MinimalContext(tenantId, agentId, operation, http.TraceIdentifier);
@@ -498,7 +495,7 @@ public static class McpOperatorTerminalSessionEndpoints
         {
             return new(null, Failure("delegated_identity_invalid", fallback));
         }
-        var online = (await presence.GetSnapshotAsync(new ClientKey(tenantId, agentId), cancellationToken).ConfigureAwait(false)).Status == ShadowPresenceStatus.Online;
+        var online = (await presence.GetSnapshotAsync(new ClientKey(tenantId, agentId), cancellationToken).ConfigureAwait(false)).Status == ClientPresenceStatus.Online;
         var availability = terminals.GetAvailability(new ClientKey(tenantId, agentId));
         var request = new McpOperatorRouteAccessRequest(
             operatorEnvironment,
@@ -506,7 +503,7 @@ public static class McpOperatorTerminalSessionEndpoints
                 effectiveDelegation.Identity.Groups.ToHashSet(StringComparer.Ordinal), effectiveDelegation.Identity.Roles.ToHashSet(StringComparer.Ordinal), effectiveDelegation.Identity.Scopes.ToHashSet(StringComparer.Ordinal)),
             effectiveDelegation.ServicePrincipal, effectiveDelegation.Resource!, effectiveDelegation.Instance!, Tool, operation, tenantId, agentId,
             new HashSet<string>([McpOperationAccessScopeNames.Canonical(access.RequiredScope)], StringComparer.Ordinal), effectiveDelegation.CorrelationId!, effectiveDelegation.RequestId,
-            online, options.IsTerminalAuthorityActive && availability is { SupportsIdempotentClose: true });
+            online, availability is { SupportsIdempotentClose: true });
         var evaluated = await admission.EvaluateAsync(request, cancellationToken).ConfigureAwait(false);
         var context = new McpOperatorTerminalContext(request, evaluated.Decision, McpOperationAccessScopeNames.Canonical(access.RequiredScope));
         return evaluated.Decision.IsAllowed

@@ -15,13 +15,15 @@ public sealed class AgentGatewayService(
     IClientPresenceRouter presenceRouter,
     IAgentManagementService agentManagement,
     IClientUpdateCatalog updateCatalog,
-    ClientUpdateAuthorityService updateAuthority,
-    NetRatelAkkaMigrationOptions options,
+    IClientUpdateActivationAuthority updateAuthority,
+    NetRatelAkkaOptions options,
     TimeProvider timeProvider,
     IHostEnvironment environment,
     ILogger<AgentGatewayService> logger)
     : global::NetRatel.AgentGateway.Contracts.V1.AgentGateway.AgentGatewayBase
 {
+    private const string Authority = "akka";
+
     public override async Task Connect(
         IAsyncStreamReader<AgentFrame> requestStream,
         IServerStreamWriter<GatewayFrame> responseStream,
@@ -47,7 +49,7 @@ public sealed class AgentGatewayService(
         ThrowIfInvalid(AgentGatewayProtocolValidator.ValidateHello(
             helloFrame,
             authenticatedIdentity,
-            options.ProtocolVersion));
+            NetRatelAkkaOptions.ProtocolVersion));
 
         // The authenticated stream gets a server-issued connection identifier.
         // The hello value is correlation only and cannot be reused to take over
@@ -55,8 +57,8 @@ public sealed class AgentGatewayService(
         var connectionId = Guid.NewGuid();
         var operationId = Guid.Parse(helloFrame.OperationId);
         var client = new ClientKey(authenticatedIdentity.TenantId, authenticatedIdentity.AgentId);
-        var responseAuthority = options.PresenceAuthority;
-        var operationalAuthority = options.OperationalPresenceAuthority;
+        var responseAuthority = Authority;
+        var operationalAuthority = Authority;
         var environmentName = environment.EnvironmentName;
         GatewayPresenceSessionStarted? session = null;
         Guid? activationAttemptId = null;
@@ -72,7 +74,7 @@ public sealed class AgentGatewayService(
                     client,
                     connectionId,
                     operationId,
-                    options.ProtocolVersion,
+                    NetRatelAkkaOptions.ProtocolVersion,
                     helloFrame.Hello.AgentVersion,
                     helloFrame.Hello.Capabilities.ToArray(),
                     NullIfWhiteSpace(helloFrame.Hello.LegacySpacetimeIdentity),
@@ -81,8 +83,7 @@ public sealed class AgentGatewayService(
                 environmentName,
                 context.CancellationToken).ConfigureAwait(false);
 
-            if (options.IsClientUpdateAuthorityActive &&
-                helloFrame.Hello.UpdateActivation is { } activation &&
+            if (helloFrame.Hello.UpdateActivation is { } activation &&
                 Guid.TryParse(activation.AttemptId, out var parsedAttemptId) &&
                 Guid.TryParse(activation.ReleaseId, out var parsedReleaseId))
             {
@@ -116,10 +117,13 @@ public sealed class AgentGatewayService(
             }
 
             logger.LogInformation(
-                "Agent gateway presence session admitted. authority={Authority}, fallbackUsed={FallbackUsed}, migrationPhase={MigrationPhase}",
+                "Agent gateway presence session admitted. authority={Authority}, tenantId={TenantId}, agentId={AgentId}, connectionId={ConnectionId}, authScheme={AuthScheme}, correlationId={CorrelationId}",
                 responseAuthority,
-                false,
-                "authority-spike");
+                client.TenantId,
+                client.AgentId,
+                connectionId,
+                context.GetHttpContext().User.Identity?.AuthenticationType ?? "unknown",
+                context.GetHttpContext().TraceIdentifier);
 
             var connected = new ConnectAccepted
             {
@@ -130,7 +134,7 @@ public sealed class AgentGatewayService(
             AddUpdateMetadata(connected, helloFrame.Hello, client);
             await responseStream.WriteAsync(new GatewayFrame
             {
-                ProtocolVersion = options.ProtocolVersion,
+                ProtocolVersion = NetRatelAkkaOptions.ProtocolVersion,
                 TenantId = client.TenantId,
                 ClientId = client.AgentId.ToString("D"),
                 ConnectionEpoch = checked((ulong)session.ConnectionEpoch),
@@ -146,7 +150,7 @@ public sealed class AgentGatewayService(
                 ThrowIfInvalid(AgentGatewayProtocolValidator.ValidateHeartbeat(
                     frame,
                     authenticatedIdentity,
-                    options.ProtocolVersion,
+                    NetRatelAkkaOptions.ProtocolVersion,
                     connectionId,
                     session.ConnectionEpoch));
 
@@ -214,7 +218,7 @@ public sealed class AgentGatewayService(
 
                 await responseStream.WriteAsync(new GatewayFrame
                 {
-                    ProtocolVersion = options.ProtocolVersion,
+                    ProtocolVersion = NetRatelAkkaOptions.ProtocolVersion,
                     TenantId = client.TenantId,
                     ClientId = client.AgentId.ToString("D"),
                     ConnectionEpoch = checked((ulong)session.ConnectionEpoch),
@@ -232,7 +236,7 @@ public sealed class AgentGatewayService(
         catch
         {
             NetRatelAkkaTelemetry.RecordAuthorityFailure(
-                "presence", operationalAuthority, fallbackUsed: false, environmentName);
+                "presence", operationalAuthority, environmentName);
             throw;
         }
         finally
@@ -254,7 +258,7 @@ public sealed class AgentGatewayService(
                 catch (Exception exception)
                 {
                     NetRatelAkkaTelemetry.RecordAuthorityFailure(
-                        "presence", operationalAuthority, fallbackUsed: false, environmentName);
+                        "presence", operationalAuthority, environmentName);
                     logger.LogWarning(
                         exception,
                         "Failed to close gateway presence session without fallback. tenantId={TenantId}, agentId={AgentId}, epoch={Epoch}, authority={Authority}",
@@ -277,14 +281,14 @@ public sealed class AgentGatewayService(
         CancellationToken cancellationToken)
     {
         NetRatelAkkaTelemetry.RecordAuthorityRequest(
-            "presence", authority, fallbackUsed: false, environmentName);
+            "presence", authority, environmentName);
         using var activity = NetRatelAkkaTelemetry.StartAuthorityActivity(
-            "presence", authority, "connect", fallbackUsed: false, environmentName);
+            "presence", authority, "connect", environmentName);
         try
         {
             var session = await presenceRouter.StartSessionAsync(message, cancellationToken).ConfigureAwait(false);
             NetRatelAkkaTelemetry.RecordAuthorityEvent(
-                "presence", authority, fallbackUsed: false, environmentName);
+                "presence", authority, environmentName);
             return session;
         }
         catch (Exception exception)
@@ -301,16 +305,16 @@ public sealed class AgentGatewayService(
         CancellationToken cancellationToken)
     {
         NetRatelAkkaTelemetry.RecordAuthorityRequest(
-            "presence", authority, fallbackUsed: false, environmentName);
+            "presence", authority, environmentName);
         using var activity = NetRatelAkkaTelemetry.StartAuthorityActivity(
-            "presence", authority, "heartbeat", fallbackUsed: false, environmentName);
+            "presence", authority, "heartbeat", environmentName);
         try
         {
             var result = await presenceRouter.RecordHeartbeatAsync(message, cancellationToken).ConfigureAwait(false);
             if (result.Disposition is PresenceMessageDisposition.Accepted or PresenceMessageDisposition.Duplicate)
             {
                 NetRatelAkkaTelemetry.RecordAuthorityEvent(
-                    "presence", authority, fallbackUsed: false, environmentName);
+                    "presence", authority, environmentName);
             }
             else
             {
@@ -334,14 +338,14 @@ public sealed class AgentGatewayService(
         string environmentName)
     {
         NetRatelAkkaTelemetry.RecordAuthorityRequest(
-            "presence", authority, fallbackUsed: false, environmentName);
+            "presence", authority, environmentName);
         using var activity = NetRatelAkkaTelemetry.StartAuthorityActivity(
-            "presence", authority, "disconnect", fallbackUsed: false, environmentName);
+            "presence", authority, "disconnect", environmentName);
         try
         {
             await presenceRouter.EndSessionAsync(message, CancellationToken.None).ConfigureAwait(false);
             NetRatelAkkaTelemetry.RecordAuthorityEvent(
-                "presence", authority, fallbackUsed: false, environmentName);
+                "presence", authority, environmentName);
         }
         catch (Exception exception)
         {
@@ -407,8 +411,7 @@ public sealed class AgentGatewayService(
 
     private (ClientUpdateOffer? Offer, ClientUpdatePolicy? Policy) ResolveUpdateMetadata(ConnectHello hello, ClientKey client)
     {
-        if (!options.IsClientUpdateAuthorityActive ||
-            !hello.Capabilities.Contains("client-auto-update-v2") ||
+        if (!hello.Capabilities.Contains("client-auto-update-v2") ||
             string.IsNullOrWhiteSpace(hello.RuntimeId))
         {
             return (null, null);

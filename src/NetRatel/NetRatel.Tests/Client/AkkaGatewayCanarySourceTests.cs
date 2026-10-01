@@ -11,8 +11,12 @@ public sealed class AkkaGatewayCanarySourceTests
     {
         var appSettings = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "../../../../NetRatel.Client/appsettings.json"));
 
-        appSettings.Should().Contain("\"Mode\": \"AkkaPresence\"");
-        appSettings.Should().Contain("\"RequiredPresenceAuthority\": \"akka\"");
+        appSettings.Should().NotContain("\"Transport\"");
+        appSettings.Should().NotContain("\"Endpoint\"");
+        appSettings.Should().NotContain("GatewayEnabled");
+        appSettings.Should().NotContain("AuthorityEnabled");
+        appSettings.Should().NotContain("ShadowEnabled");
+        appSettings.Should().Contain("\"Enabled\": false");
         appSettings.Should().NotContain("\"SpaceTime\"");
     }
 
@@ -28,62 +32,52 @@ public sealed class AkkaGatewayCanarySourceTests
     }
 
     [Fact]
-    public void Gateway_Client_Rejects_NonAkka_Authority_And_Has_No_Spacetime_Fallback()
+    public void Gateway_Client_Has_No_Selectable_Authority_Or_Spacetime_Fallback()
     {
         var source = File.ReadAllText(Path.Combine(
             AppContext.BaseDirectory,
             "../../../../NetRatel.Client/Service/Gateway/AgentGatewayPresenceClient.cs"));
 
-        source.Should().Contain("Gateway reported authority");
-        source.Should().Contain("Gateway changed authority");
+        source.Should().Contain("GatewayWireProtocol.HasAkkaAuthority");
+        source.Should().Contain("endpoint.Scheme != Uri.UriSchemeHttps");
         source.Should().Contain("no SpacetimeDB fallback");
         source.Should().NotContain("Only AkkaPresenceCanary is supported.");
     }
 
     [Fact]
-    public void Client_Runtime_Accepts_Normal_And_Legacy_Akka_Transport_During_Rollout()
+    public void Client_Runtime_Uses_Akka_Without_Transport_Selection()
     {
         var source = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "../../../../NetRatel.Client/Program.cs"));
 
-        source.Should().Contain("AkkaPresence\", StringComparison.OrdinalIgnoreCase");
-        source.Should().Contain("AkkaPresenceCanary\", StringComparison.OrdinalIgnoreCase");
-        source.Should().NotContain("Only AkkaPresenceCanary is supported.");
+        source.Should().NotContain("Transport:Mode");
+        source.Should().NotContain("AkkaPresenceCanary");
+        source.Should().NotContain("Unsupported Transport");
         source.Should().NotContain("SpacetimeDbService");
         source.Should().NotContain("ClientSpacetimeSubscriptions");
         source.Should().NotContain("--spacetime-check");
         source.Should().NotContain("#pragma warning disable CS0162");
     }
 
-    [Theory]
-    [InlineData("akka", true)]
-    [InlineData("akka-dev-canary", true)]
-    [InlineData("spacetimedb", false)]
-    public void Gateway_Authority_Accepts_The_Normal_Label_And_Legacy_Rollout_Label(string authority, bool expected) =>
-        GatewayAuthority.IsAkka(authority).Should().Be(expected);
-
-    [Theory]
-    [InlineData("akka", "akka-dev-canary", true)]
-    [InlineData("akka-dev-canary", "akka", true)]
-    [InlineData("spacetimedb", "akka", false)]
-    [InlineData("akka", "spacetimedb", false)]
-    public void Gateway_Authority_Only_Equates_The_Two_Akka_Labels(
-        string reportedAuthority,
-        string requiredAuthority,
-        bool expected) =>
-        GatewayAuthority.MatchesRequired(reportedAuthority, requiredAuthority).Should().Be(expected);
-
     [Fact]
-    public void Gateway_Telemetry_Shadow_Uses_The_Authenticated_Presence_Session_Without_A_Spacetime_Reducer()
+    public void Gateway_Telemetry_Uses_V2_With_Rate_Control_And_No_Legacy_Client_Stream()
     {
+        var presenceSource = File.ReadAllText(Path.Combine(
+            AppContext.BaseDirectory,
+            "../../../../NetRatel.Client/Service/Gateway/AgentGatewayPresenceClient.cs"));
         var source = File.ReadAllText(Path.Combine(
             AppContext.BaseDirectory,
-            "../../../../NetRatel.Client/Service/Gateway/AgentGatewayTelemetryShadowPublisher.cs"));
+            "../../../../NetRatel.Client/Service/Gateway/AgentGatewayTelemetryPublisher.cs"));
 
-        source.Should().Contain("AgentTelemetryGatewayClient");
+        presenceSource.Should().Contain("hello.Capabilities.Add(\"telemetry-shadow\")");
+        source.Should().Contain("AgentTelemetryGatewayV2");
+        source.Should().Contain("SnapshotAccepted");
+        source.Should().Contain("TelemetrySamplingPolicy");
+        source.Should().Contain("telemetry-rate-control-v1");
         source.Should().Contain("ConnectionEpoch = session.ConnectionEpoch");
         source.Should().Contain("ConnectionId = session.ConnectionId.ToString");
         source.Should().NotContain("using Spacetime");
-        source.Should().NotContain("PublishAgentTelemetry");
+        source.Should().NotContain("AgentTelemetryGateway.AgentTelemetryGatewayClient");
+        source.Should().NotContain("PublishTelemetry(");
     }
 
     [Fact]

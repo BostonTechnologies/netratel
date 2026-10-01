@@ -11,7 +11,7 @@ using NetRatel.Application.Telemetry;
 
 namespace NetRatel.API.Gateway;
 
-/// <summary>Fenced, acknowledged telemetry authority stream for gateway-native agents.</summary>
+/// <summary>Fenced, acknowledged telemetry stream for gateway-native agents.</summary>
 [Authorize(Policy = "AgentGatewayAccess")]
 public sealed class AgentTelemetryGatewayV2Service(
     IClientTelemetryRouter telemetryRouter,
@@ -20,7 +20,7 @@ public sealed class AgentTelemetryGatewayV2Service(
     IAgentTelemetryCompatibilityRegistry compatibilityRegistry,
     IGatewayTelemetryLiveRegistry liveRegistry,
     IAgentTelemetryGatewaySessionRegistry sessions,
-    NetRatelAkkaMigrationOptions options,
+    NetRatelAkkaOptions options,
     TimeProvider timeProvider,
     IHostEnvironment environment,
     ILogger<AgentTelemetryGatewayV2Service> logger)
@@ -31,11 +31,6 @@ public sealed class AgentTelemetryGatewayV2Service(
         IServerStreamWriter<GatewayTelemetryFrame> responseStream,
         ServerCallContext context)
     {
-        if (!options.IsTelemetryAuthorityActive)
-        {
-            throw new RpcException(new Status(StatusCode.FailedPrecondition, "The telemetry authority canary is disabled."));
-        }
-
         if (!AgentGatewayIdentityResolver.TryResolve(context.GetHttpContext().User, out var identity, out var error) || identity is null)
         {
             throw new RpcException(new Status(StatusCode.PermissionDenied, error));
@@ -93,13 +88,13 @@ public sealed class AgentTelemetryGatewayV2Service(
             {
                 await registration.EnqueueReliableAsync(new GatewayTelemetryFrame
                 {
-                    ProtocolVersion = options.ProtocolVersion,
+                    ProtocolVersion = NetRatelAkkaOptions.ProtocolVersion,
                     TenantId = client.TenantId,
                     ClientId = client.AgentId.ToString("D"),
                     ConnectionEpoch = hello.ConnectionEpoch,
                     ConnectionId = hello.ConnectionId,
                     Sequence = 0,
-                    Accepted = new TelemetryConnectAccepted { TelemetryAuthority = options.PresenceAuthority, MaximumInFlightFrames = 1 }
+                    Accepted = new TelemetryConnectAccepted { TelemetryAuthority = "akka", MaximumInFlightFrames = 1 }
                 }, admissionCancellation.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (registration.CompletionToken.IsCancellationRequested && !context.CancellationToken.IsCancellationRequested)
@@ -122,19 +117,18 @@ public sealed class AgentTelemetryGatewayV2Service(
                         throw new RpcException(new Status(StatusCode.InvalidArgument, "The telemetry snapshot envelope is invalid or stale."));
                     }
 
-                    AgentTelemetryGatewayService.ThrowIfInvalid(AgentTelemetryProtocolValidator.Validate(
-                        envelope.Snapshot, identity, options.ProtocolVersion, options.MaxTelemetryScopesPerFrame));
+                    AgentTelemetryGatewayMapper.ThrowIfInvalid(AgentTelemetryProtocolValidator.Validate(
+                        envelope.Snapshot, identity, NetRatelAkkaOptions.ProtocolVersion, options.MaxTelemetryScopesPerFrame));
                     await RequireActivePresenceAsync(client, envelope.ConnectionId, envelope.ConnectionEpoch, cancellationToken).ConfigureAwait(false);
                     if (!registration.IsCurrent)
                     {
                         throw new RpcException(new Status(StatusCode.Aborted, "Telemetry session has been replaced."));
                     }
-                    var snapshot = AgentTelemetryGatewayService.MapSnapshot(
+                    var snapshot = AgentTelemetryGatewayMapper.MapSnapshot(
                         envelope.Snapshot,
                         client,
                         checked((long)envelope.ConnectionEpoch),
-                        timeProvider.GetUtcNow(),
-                        true);
+                        timeProvider.GetUtcNow());
                     var result = await telemetryRouter.RecordAsync(new RecordTelemetrySnapshot(snapshot), cancellationToken).ConfigureAwait(false);
                     if (!registration.TryPublish(() =>
                     {
@@ -148,13 +142,13 @@ public sealed class AgentTelemetryGatewayV2Service(
                         throw new RpcException(new Status(StatusCode.Aborted, "Telemetry registration has been replaced."));
                     }
                     using var activity = NetRatelAkkaTelemetry.StartAuthorityActivity(
-                        "telemetry", options.PresenceAuthority, "snapshot", fallbackUsed: false, environment.EnvironmentName);
-                    NetRatelAkkaTelemetry.RecordAuthorityRequest("telemetry", options.PresenceAuthority, fallbackUsed: false, environment.EnvironmentName);
-                    NetRatelAkkaTelemetry.RecordAuthorityEvent("telemetry", options.PresenceAuthority, fallbackUsed: false, environment.EnvironmentName);
+                        "telemetry", "akka", "snapshot", environment.EnvironmentName);
+                    NetRatelAkkaTelemetry.RecordAuthorityRequest("telemetry", "akka", environment.EnvironmentName);
+                    NetRatelAkkaTelemetry.RecordAuthorityEvent("telemetry", "akka", environment.EnvironmentName);
                     lastSequence = envelope.Sequence;
                     await registration.EnqueueReliableAsync(new GatewayTelemetryFrame
                     {
-                        ProtocolVersion = options.ProtocolVersion,
+                        ProtocolVersion = NetRatelAkkaOptions.ProtocolVersion,
                         TenantId = client.TenantId,
                         ClientId = client.AgentId.ToString("D"),
                         ConnectionEpoch = envelope.ConnectionEpoch,
@@ -178,7 +172,7 @@ public sealed class AgentTelemetryGatewayV2Service(
     }
 
     private bool MatchesSession(AgentTelemetryFrame frame, ClientKey client) =>
-        string.Equals(frame.ProtocolVersion, options.ProtocolVersion, StringComparison.Ordinal) &&
+        string.Equals(frame.ProtocolVersion, NetRatelAkkaOptions.ProtocolVersion, StringComparison.Ordinal) &&
         frame.TenantId == client.TenantId &&
         string.Equals(frame.ClientId, client.AgentId.ToString("D"), StringComparison.OrdinalIgnoreCase) &&
         Guid.TryParse(frame.ConnectionId, out var connectionId) && connectionId != Guid.Empty && frame.ConnectionEpoch > 0;
@@ -186,7 +180,7 @@ public sealed class AgentTelemetryGatewayV2Service(
     private async Task RequireActivePresenceAsync(ClientKey client, string connectionId, ulong connectionEpoch, CancellationToken cancellationToken)
     {
         var presence = await presenceRouter.GetSnapshotAsync(client, cancellationToken).ConfigureAwait(false);
-        if (presence.Status != ShadowPresenceStatus.Online || !Guid.TryParse(connectionId, out var id) ||
+        if (presence.Status != ClientPresenceStatus.Online || !Guid.TryParse(connectionId, out var id) ||
             presence.ConnectionId != id || presence.ConnectionEpoch != checked((long)connectionEpoch))
         {
             throw new RpcException(new Status(StatusCode.Aborted, "Telemetry session is fenced by the active presence connection."));

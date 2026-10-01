@@ -11,6 +11,12 @@ FROM mcr.microsoft.com/dotnet/aspnet:10.0-noble AS final
 ARG APP_USER=app
 ARG APP_UID=2000
 ARG APP_GID=2000
+# Npgsql probes the platform GSSAPI provider while the migration service
+# initializes its shared infrastructure. Keep the release migration image
+# aligned with the API image's negotiated-authentication runtime dependency.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libgssapi-krb5-2 \
+ && rm -rf /var/lib/apt/lists/*
 RUN set -eux; \
     if ! getent group "${APP_USER}" >/dev/null; then \
         groupadd -g "${APP_GID}" "${APP_USER}" || groupadd "${APP_USER}"; \

@@ -548,6 +548,26 @@ public static class ClientArtifactsEndpoints
         {
             await enrollmentCodes.ValidateActiveCodeAsync(enrollmentCode ?? string.Empty, tenantId, ct);
             var download = await service.DownloadRawAsync(rid, version, ct);
+            var metadata = download.Metadata;
+            if (metadata is null || metadata.Size <= 0 ||
+                !string.Equals(metadata.Rid, rid, StringComparison.OrdinalIgnoreCase) ||
+                string.IsNullOrWhiteSpace(metadata.Version) ||
+                string.IsNullOrWhiteSpace(metadata.Sha256) || metadata.Sha256.Length != 64 ||
+                !metadata.Sha256.All(Uri.IsHexDigit))
+            {
+                await download.Content.DisposeAsync();
+                return Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable,
+                    title: "Verified artifact metadata is unavailable");
+            }
+
+            // These headers are returned only on the existing enrollment-code protected
+            // download. They pin `latest` to the exact bytes served by this same request,
+            // without adding an anonymous metadata lookup or a guessed-host retry.
+            http.Response.Headers["X-NetRatel-Artifact-Rid"] = metadata.Rid;
+            http.Response.Headers["X-NetRatel-Artifact-Version"] = metadata.Version;
+            http.Response.Headers["X-NetRatel-Artifact-Sha256"] = metadata.Sha256;
+            http.Response.Headers["X-NetRatel-Artifact-Size"] = metadata.Size.ToString(System.Globalization.CultureInfo.InvariantCulture);
             return Results.Stream(download.Content, download.ContentType, download.FileName);
         }
         catch (AgentAuthException ex)

@@ -37,7 +37,7 @@ public static class LogManager
 
             if (!string.IsNullOrWhiteSpace(error))
             {
-                Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} - [LoggingError] {error}");
+                Console.WriteLine($"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss.fff zzz} - [LoggingError] {error}");
             }
         }
     }
@@ -87,7 +87,7 @@ public static class LogManager
     public static void WriteLog(string message)
     {
         var timestampUtc = DateTimeOffset.UtcNow;
-        var entry = $"{timestampUtc.LocalDateTime:yyyy-MM-dd HH:mm:ss.fff} - {message}";
+        var entry = $"{timestampUtc.ToLocalTime():yyyy-MM-dd HH:mm:ss.fff zzz} - {message}";
         lock (Sync)
         {
             try
@@ -97,7 +97,7 @@ public static class LogManager
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} - [LoggingError] {ex.Message}");
+                Console.WriteLine($"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss.fff zzz} - [LoggingError] {ex.Message}");
             }
         }
 

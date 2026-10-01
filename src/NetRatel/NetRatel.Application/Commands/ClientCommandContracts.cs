@@ -41,7 +41,7 @@ public sealed record CommandLifecycleEvent(
     ulong Version,
     ulong Sequence,
     CommandLifecycleStatus Status,
-    string Source = "akka-shadow",
+    string Source = "akka",
     bool IsAuthoritative = false)
 {
     public CommandKey Command => new(Client.TenantId, CommandId);
@@ -57,7 +57,7 @@ public sealed record RecordCommandLifecycleEvent(CommandLifecycleEvent Event) : 
     public CommandKey Command => Event.Command;
 }
 
-public sealed record GetCommandShadowState(CommandKey Command) : IClientCommandMessage;
+public sealed record GetCommandState(CommandKey Command) : IClientCommandMessage;
 
 public sealed record CommandMessageResult(
     CommandKey Command,
@@ -73,7 +73,7 @@ public sealed record CommandHistoryEntry(
     ulong Version,
     ulong Sequence);
 
-public sealed record CommandShadowState(
+public sealed record CommandState(
     CommandKey Command,
     ClientKey? Client,
     string? CorrelationId,
@@ -103,7 +103,7 @@ public interface IClientCommandRouter
         RecordCommandLifecycleEvent message,
         CancellationToken cancellationToken);
 
-    Task<CommandShadowState> GetStateAsync(
+    Task<CommandState> GetStateAsync(
         CommandKey command,
         CancellationToken cancellationToken);
 

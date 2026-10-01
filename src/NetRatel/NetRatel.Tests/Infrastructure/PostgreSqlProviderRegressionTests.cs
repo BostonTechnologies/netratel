@@ -3,16 +3,13 @@ using FluentAssertions;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using NetRatel.API.Bootstrap;
 using NetRatel.API.Endpoints.Search;
-using NetRatel.API.Services.Terminal;
 using NetRatel.Infrastructure.Identity;
 using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.Services;
-using NetRatel.Shared.Contracts.Terminals;
 using Xunit;
 
 namespace NetRatel.Tests.Infrastructure;
@@ -183,7 +180,7 @@ public sealed class PostgreSqlProviderRegressionTests(PostgreSqlPersistenceFixtu
     }
 
     [Fact]
-    public async Task PostgreSql_migrations_preserve_identity_scope_search_sorting_and_terminal_settings_after_restart()
+    public async Task PostgreSql_migrations_preserve_identity_scope_search_sorting_and_legacy_terminal_settings_after_restart()
     {
         var connectionString = await postgres.CreateDatabaseAsync();
         var applicationOptions = new DbContextOptionsBuilder<OrchestratorDbContext>().UseNpgsql(connectionString).Options;
@@ -229,21 +226,56 @@ public sealed class PostgreSqlProviderRegressionTests(PostgreSqlPersistenceFixtu
             (await GlobalSearchEndpoints.BuildJobQuery(db, "LINUX").ToListAsync()).Should().BeEmpty();
             (await GlobalSearchEndpoints.BuildRequestQuery(db, "LINUX").ToListAsync()).Should().BeEmpty();
             (await GlobalSearchEndpoints.BuildTaskQuery(db, "LINUX").ToListAsync()).Should().BeEmpty();
-            var terminal = new ClientTerminalSettingsService(db, NullLogger<ClientTerminalSettingsService>.Instance);
-            await terminal.SetOverrideAsync("Field-Linux-Agent", TerminalTransportKind.ApiWebSocket, TestContext.Current.CancellationToken);
+            await SeedLegacyTerminalSettingAsync(db, TestContext.Current.CancellationToken);
         }
 
         await using var restarted = new OrchestratorDbContext(applicationOptions);
         await restarted.Database.MigrateAsync();
         (await restarted.Agents.CountAsync()).Should().Be(2);
-        var restoredTerminal = new ClientTerminalSettingsService(restarted, NullLogger<ClientTerminalSettingsService>.Instance);
-        (await restoredTerminal.GetOverridesAsync(["field-linux-agent"], TestContext.Current.CancellationToken))
-            .Should().ContainSingle().Which.Value.Should().Be(TerminalTransportKind.ApiWebSocket);
+        (await ReadLegacyTerminalSettingAsync(restarted, TestContext.Current.CancellationToken))
+            .Should().Be(("fieldlinuxagent", "Spacetime"), "existing opaque terminal settings must survive unrelated migrations unchanged");
         await using var restartedIdentity = new NetRatelIdentityDbContext(identityOptions);
         (await restartedIdentity.Users.SingleAsync()).PrincipalId.Should().Be(principalId);
         var access = new EffectiveAccessService(restartedIdentity, new ConfigurationBuilder().Build());
         var principal = new ClaimsPrincipal(new ClaimsIdentity([new Claim("netratel_principal_id", principalId)], "local"));
         (await access.AuthorizeAsync(principal, NetRatelPermissions.TelemetryRead, tenantId: 1)).Should().BeTrue();
         (await access.AuthorizeAsync(principal, NetRatelPermissions.TelemetryRead, tenantId: 2)).Should().BeFalse();
+    }
+
+    private static async Task SeedLegacyTerminalSettingAsync(OrchestratorDbContext db, CancellationToken ct)
+    {
+        await db.Database.ExecuteSqlRawAsync("""
+            create table "ClientTerminalSettings" (
+                "ClientIdentity" text primary key,
+                "TerminalTransportOverride" text null,
+                "UpdatedAtUtc" timestamp with time zone not null default now()
+            );
+            """, ct);
+        await db.Database.ExecuteSqlRawAsync("""
+            insert into "ClientTerminalSettings" ("ClientIdentity", "TerminalTransportOverride")
+            values ('fieldlinuxagent', 'Spacetime');
+            """, ct);
+    }
+
+    private static async Task<(string ClientIdentity, string? Transport)> ReadLegacyTerminalSettingAsync(
+        OrchestratorDbContext db,
+        CancellationToken ct)
+    {
+        var connection = db.Database.GetDbConnection();
+        await db.Database.OpenConnectionAsync(ct);
+        try
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = "select \"ClientIdentity\", \"TerminalTransportOverride\" from \"ClientTerminalSettings\"";
+            await using var reader = await command.ExecuteReaderAsync(ct);
+            (await reader.ReadAsync(ct)).Should().BeTrue();
+            var result = (reader.GetString(0), reader.IsDBNull(1) ? null : reader.GetString(1));
+            (await reader.ReadAsync(ct)).Should().BeFalse();
+            return result;
+        }
+        finally
+        {
+            await db.Database.CloseConnectionAsync();
+        }
     }
 }

@@ -3,7 +3,6 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using NetRatel.API.Gateway;
 using NetRatel.API.Services;
-using NetRatel.Akka.Configuration;
 using NetRatel.Infrastructure.Persistence;
 using Testcontainers.PostgreSql;
 using Xunit;
@@ -254,13 +253,6 @@ public sealed class ClientUpdatePostgresTests : IAsyncLifetime
     private static ClientUpdateAuthorityService Authority(OrchestratorDbContext db) => new(
         db,
         new NoOpCatalog(),
-        new NetRatelAkkaMigrationOptions
-        {
-            Enabled = true,
-            GatewayEnabled = true,
-            ClientUpdatesEnabled = true,
-            PresenceAuthorityEnabled = true
-        },
         TimeProvider.System,
         NullLogger<ClientUpdateAuthorityService>.Instance);
 

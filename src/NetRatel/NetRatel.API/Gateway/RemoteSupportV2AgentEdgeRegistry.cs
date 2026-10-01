@@ -22,7 +22,7 @@ public interface IRemoteSupportV2AgentEdgeRegistry
 public sealed class RemoteSupportV2AgentEdgeRegistry(
     ActorSystem actorSystem,
     IRequiredActor<RemoteSupportSessionAuthorityRegion> authorityRegion,
-    NetRatel.Akka.Configuration.NetRatelAkkaMigrationOptions options)
+    NetRatel.Akka.Configuration.NetRatelAkkaOptions options)
     : IRemoteSupportV2AgentEdgeRegistry
 {
     private readonly ConcurrentDictionary<ClientKey, Connection> _connections = [];

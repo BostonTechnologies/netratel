@@ -8,6 +8,49 @@ are not a usable production configuration.
 The running [API reference](API_REFERENCE.md) identifies the credential scheme
 accepted by each operation; it is a contract viewer, not a secret store.
 
+## Native Client configuration precedence
+
+The Client reads configuration in this order, from lowest to highest
+precedence:
+
+1. Packaged `appsettings.json` and optional `appsettings.{Environment}.json`.
+2. The installed `clientsettings.json` written by an older supported package.
+3. Explicit deployment values from `NetRatelCLIENT__...` service variables or
+   ordinary `Client__...` environment variables.
+4. Explicit command-line values such as `--api`, `--tenant`, and
+   `--enrollment-code`.
+
+The packaged files are defaults, not deployment choices. An ordinary restart
+therefore keeps a valid installed URL, tenant, identity, and non-default
+behavior when a new package contains placeholder defaults. Service/environment
+values remain authoritative when an operator intentionally changes the
+deployment, and command-line values remain the highest-precedence one-shot
+selection. Enrollment credentials and the installation identity are persisted
+separately; changing a package or repairing its updater does not silently
+reset them.
+
+For the Client, an absent or empty `Gateway:Endpoint` uses the effective
+`Client:ApiBaseUrl` after the precedence above. Same-origin installations need
+only the API URL. A split-host deployment can set an explicit HTTPS gateway
+override through `NetRatelCLIENT__Gateway__Endpoint` (or
+`Gateway__Endpoint`) or the command line (`--Gateway:Endpoint=https://...`).
+The generated Windows, systemd, and launchd service templates persist the API
+URL once and preserve an explicitly configured gateway endpoint when rewriting
+an existing service. If an operator intentionally changes the instance URL,
+verify the tenant and issuer/origin contract before restarting the service and
+retain the existing identity unless a deliberate identity reset is required.
+Existing systemd `EnvironmentFile=` entries remain explicit deployment
+overrides and keep their precedence over the generated unit value; update the
+referenced file too when repointing such an installation. Installer rewrites
+preserve those directives without editing the referenced files.
+
+The API image also installs `libgssapi-krb5-2` before dropping to its non-root
+runtime user. The release image gate first loads `libgssapi_krb5.so.2` as UID
+1654 and then runs the API assembly's negotiated-authentication smoke path.
+The latter may report `UnknownCredentials` in a credentialless disposable
+container: that result means the native GSSAPI path was reached; missing
+libraries, unsupported negotiation, and unexpected status codes fail the gate.
+
 ## Required persistent state
 
 - PostgreSQL is the only supported application and identity database.
@@ -23,7 +66,10 @@ accepted by each operation; it is a contract viewer, not a secret store.
 - `AgentAuth:PrivateKeyPath` points to a deployment-supplied ES256 private key
   used only for native-agent token issuance. Mount it read-only and keep it out
   of the repository and ordinary application data volume. Generate a distinct
-  key for each instance through your approved secret-management process.
+  key for each instance through your approved secret-management process. When
+  this setting is absent, the API preserves the deployed signing-key file
+  fallback at `/app/storage/keys/spacetime-es256-private.pem` for existing
+  instances; it is a file-location compatibility rule, not a runtime selector.
 
 Back up PostgreSQL and persistent key/artifact volumes
 together. Replacing a Data Protection key ring invalidates cookies and
@@ -31,14 +77,21 @@ protected state.
 
 ## Public client install links
 
-The API derives both the public install-link Web URL and the client API base
-from the effective administrator `Site URL` under `/admin/branding`. Set that
-value to the canonical public HTTPS origin reachable by a new client. Include a
-supported external base path when the reverse proxy maps it to the corresponding
-application routes. The API rejects a missing, HTTP, localhost, private DNS
-suffix, credential-bearing, query-bearing, or fragment-bearing Site URL before
-it creates an install grant. No separate public URL environment variables are
-required.
+The effective administrator `Site URL` under `/admin/branding` supplies the
+public HTTPS origin for install-link URLs and, by default, the Client API
+endpoint. Set it to the canonical public origin with no path, credentials,
+query, or fragment; the application routes install links and API calls from
+their known paths. The API rejects a missing, HTTP, localhost, private DNS
+suffix, credential-bearing, path-bearing, query-bearing, or fragment-bearing
+Site URL before it creates an install grant.
+
+When the native Client uses a separate public API host, set the API-side
+`ClientArtifacts:PublicBaseUrl` to that HTTPS API origin. An optional `/api`
+suffix is accepted and normalized away; arbitrary paths are rejected. A
+separate public gateway origin can be set with
+`ClientArtifacts:PublicGatewayBaseUrl`. These values describe the addresses
+embedded in new Client installs. They are independent of the Web-to-API
+internal address and the OIDC issuer URL.
 
 The API stores each generated script and capability token with ASP.NET Data
 Protection in PostgreSQL; the corresponding key ring in
@@ -56,6 +109,16 @@ no-index headers. Externally managed proxy logs are outside application
 logging control and require their own redaction rule. The supplied public
 HTTPS Compose ingress suppresses access and error logs for this path; the
 API also redacts its own request log and omits these URL-bearing HTTP spans.
+
+Generated links contain immutable protected script snapshots. Updating the
+installer template or publishing a replacement package does not rewrite an
+issued script or archive. Revoke a link from the Clients management page (or
+`POST /api/v1/client-install-links/{id}/revoke`) and generate a new link after
+confirming the artifact, tenant, public origin, expiry, and service options.
+Older links remain supported until they expire, are revoked, or exhaust their
+enrollment allowance; an old package can still be recovered by starting a new
+link generation rather than editing the protected URL or manually replacing
+the downloaded script.
 
 An operator can generate a link from **Clients → Artifacts → Generate script**,
 inspect and copy its script and command, explicitly download the same script,

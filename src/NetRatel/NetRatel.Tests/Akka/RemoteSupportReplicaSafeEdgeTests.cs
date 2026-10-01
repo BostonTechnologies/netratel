@@ -9,42 +9,35 @@ namespace NetRatel.Tests.Akka;
 public sealed class RemoteSupportReplicaSafeEdgeTests
 {
     [Fact]
-    public void ReplicaSafeEdge_RequiresTheLifecycleAuthority()
+    public void ClusteredRuntime_RequiresDeploymentManagedSeedNodes()
     {
-        var options = ReplicaSafeOptions();
-        var result = new NetRatelAkkaMigrationOptionsValidator().Validate(null, options);
+        var options = new NetRatelAkkaOptions
+        {
+            Cluster = new NetRatelAkkaClusterOptions { Port = 2551 }
+        };
 
-        result.Succeeded.Should().BeTrue();
-
-        options.RemoteSupportV2LifecycleAuthorityEnabled = false;
-        result = new NetRatelAkkaMigrationOptionsValidator().Validate(null, options);
-
-        result.Succeeded.Should().BeFalse();
-        result.FailureMessage.Should().Contain("RemoteSupportV2LifecycleAuthorityEnabled");
-    }
-
-    [Fact]
-    public void MultiNodeReplicaSafeEdge_RequiresDeploymentManagedSeedNodes()
-    {
-        var options = ReplicaSafeOptions();
-        options.RemoteSupportV2Cluster.AllowSingleNode = false;
-
-        var result = new NetRatelAkkaMigrationOptionsValidator().Validate(null, options);
+        var result = new NetRatelAkkaOptionsValidator().Validate(null, options);
 
         result.Succeeded.Should().BeFalse();
         result.FailureMessage.Should().Contain("SeedNodes");
     }
 
     [Fact]
-    public void ReplicaSafeEdge_RequiresARealRenewalInterval()
+    public void ClusteredRuntime_RequiresSeedAddressesForTheConfiguredActorSystem()
     {
-        var options = ReplicaSafeOptions();
-        options.RemoteSupportV2AgentEdgeRenewalInterval = TimeSpan.Zero;
+        var options = new NetRatelAkkaOptions
+        {
+            Cluster = new NetRatelAkkaClusterOptions
+            {
+                Port = 2551,
+                SeedNodes = ["akka.tcp://OtherSystem@127.0.0.1:2552"]
+            }
+        };
 
-        var result = new NetRatelAkkaMigrationOptionsValidator().Validate(null, options);
+        var result = new NetRatelAkkaOptionsValidator().Validate(null, options);
 
         result.Succeeded.Should().BeFalse();
-        result.FailureMessage.Should().Contain("RemoteSupportV2AgentEdgeRenewalInterval");
+        result.FailureMessage.Should().Contain("NetRatel");
     }
 
     [Fact]
@@ -59,15 +52,20 @@ public sealed class RemoteSupportReplicaSafeEdgeTests
         extractor.EntityMessage(envelope).Should().BeSameAs(envelope);
     }
 
-    private static NetRatelAkkaMigrationOptions ReplicaSafeOptions() => new()
+    [Fact]
+    public void NormalRuntime_ValidatesItsRenewalTuningRange()
     {
-        Enabled = true,
-        PresenceEnabled = true,
-        GatewayEnabled = true,
-        RemoteSupportGatewayEnabled = true,
-        PresenceAuthorityEnabled = true,
-        RemoteSupportAuthorityEnabled = true,
-        RemoteSupportV2LifecycleAuthorityEnabled = true,
-        RemoteSupportV2ReplicaSafeEdgeEnabled = true
-    };
+        var options = new NetRatelAkkaOptions { RemoteSupportAgentEdgeRenewalSeconds = 0 };
+        var validationResults = new List<System.ComponentModel.DataAnnotations.ValidationResult>();
+
+        var valid = System.ComponentModel.DataAnnotations.Validator.TryValidateObject(
+            options,
+            new System.ComponentModel.DataAnnotations.ValidationContext(options),
+            validationResults,
+            validateAllProperties: true);
+
+        valid.Should().BeFalse();
+        validationResults.Should().Contain(result =>
+            result.MemberNames.Contains(nameof(NetRatelAkkaOptions.RemoteSupportAgentEdgeRenewalSeconds)));
+    }
 }

@@ -18,9 +18,8 @@ public sealed class UploadsApiClient : IDisposable, IUploadsApiClient
 
     public UploadsApiClient(
         IConfiguration cfg,
-        ITokenService tokenService,
-        ILogger<TokenAuthorizationHandler> tokenLogger,
-        IHttpContextAccessor httpContextAccessor)
+        OperatorApiCredentialProvider credentials,
+        ILogger<TokenAuthorizationHandler> tokenLogger)
     {
         // Base transport
         var sockets = new SocketsHttpHandler
@@ -34,18 +33,20 @@ public sealed class UploadsApiClient : IDisposable, IUploadsApiClient
         // Your redirect re-issuer (avoid replaying huge multipart bodies if you like)
         var redirect = new RedirectReissueHandler
         {
-            InnerHandler = sockets
+            InnerHandler = new TokenAuthorizationHandler(tokenLogger)
+            {
+                InnerHandler = sockets
+            }
         };
 
-        // Your token injector
-        var token = new TokenAuthorizationHandler(tokenService, tokenLogger, httpContextAccessor, cfg)
+        var forwarding = new OperatorApiCredentialForwardingHandler(credentials)
         {
             InnerHandler = redirect
         };
 
-        _rootHandler = token;
+        _rootHandler = forwarding;
 
-        Http = new HttpClient(token, disposeHandler: false)
+        Http = new HttpClient(forwarding, disposeHandler: false)
         {
             BaseAddress = new Uri(cfg["ApiBaseUrl"] ?? "https://localhost:5001/"),
             Timeout = Timeout.InfiniteTimeSpan // critical for streaming uploads

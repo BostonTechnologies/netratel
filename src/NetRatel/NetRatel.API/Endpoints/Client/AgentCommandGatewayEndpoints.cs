@@ -1,6 +1,6 @@
+using Akka.Actor;
 using Microsoft.AspNetCore.Mvc;
 using NetRatel.API.Gateway;
-using NetRatel.Akka.Configuration;
 using NetRatel.Akka.Observability;
 using NetRatel.Application.Commands;
 using NetRatel.Application.Presence;
@@ -8,9 +8,8 @@ using NetRatel.Application.Presence;
 namespace NetRatel.API.Endpoints.Client;
 
 /// <summary>
-/// Explicit Agent-ID keyed command authority surface. It is additive while the
-/// DEV flag is off and deliberately returns a conflict when the admitted
-/// command stream is unavailable instead of writing a legacy dispatch row.
+/// Explicit Agent-ID keyed command surface. It returns a conflict when the
+/// admitted command stream is unavailable instead of writing a legacy dispatch row.
 /// </summary>
 public static class AgentCommandGatewayEndpoints
 {
@@ -30,7 +29,8 @@ public static class AgentCommandGatewayEndpoints
             .Produces(StatusCodes.Status202Accepted)
             .Produces(StatusCodes.Status409Conflict);
         group.MapGet("/{commandId}", GetAsync)
-            .Produces<CommandShadowState>(StatusCodes.Status200OK);
+            .Produces<CommandState>(StatusCodes.Status200OK)
+            .ProducesProblem(StatusCodes.Status503ServiceUnavailable);
         return app;
     }
 
@@ -38,16 +38,10 @@ public static class AgentCommandGatewayEndpoints
         int tenantId,
         Guid agentId,
         [FromBody] GatewayCommandDispatchRequest request,
-        NetRatelAkkaMigrationOptions options,
         IHostEnvironment environment,
-        IAgentCommandAuthorityDispatcher dispatcher,
+        [FromServices] IAgentCommandAuthorityDispatcher dispatcher,
         CancellationToken cancellationToken)
     {
-        if (!options.IsCommandAuthorityActive)
-        {
-            return Results.NotFound();
-        }
-
         if (string.IsNullOrWhiteSpace(request.TaskType) || request.TaskType.Length > 128 || request.PayloadJson?.Length > 64 * 1024)
         {
             return Results.BadRequest("A bounded task_type and payload_json are required.");
@@ -63,7 +57,7 @@ public static class AgentCommandGatewayEndpoints
         }
         catch (AgentCommandGatewaySessionUnavailableException exception)
         {
-            NetRatelAkkaTelemetry.RecordAuthorityFailure(Feature, Authority, fallbackUsed: false, environment.EnvironmentName);
+            NetRatelAkkaTelemetry.RecordAuthorityFailure(Feature, Authority, environment.EnvironmentName);
             return Results.Conflict(new { code = "agent_command_session_unavailable", detail = exception.Message });
         }
     }
@@ -73,26 +67,20 @@ public static class AgentCommandGatewayEndpoints
         Guid agentId,
         string commandId,
         [FromBody] GatewayCommandCancelRequest? request,
-        NetRatelAkkaMigrationOptions options,
         IHostEnvironment environment,
         [FromServices] IAgentCommandGatewaySessionRegistry sessions,
         CancellationToken cancellationToken)
     {
-        if (!options.IsCommandAuthorityActive)
-        {
-            return Results.NotFound();
-        }
-
         var client = new ClientKey(tenantId, agentId);
         if (!sessions.IsAvailable(client))
         {
-            NetRatelAkkaTelemetry.RecordAuthorityFailure(Feature, Authority, fallbackUsed: false, environment.EnvironmentName);
+            NetRatelAkkaTelemetry.RecordAuthorityFailure(Feature, Authority, environment.EnvironmentName);
             return Results.Conflict(new { code = "agent_command_session_unavailable" });
         }
 
         var reason = string.IsNullOrWhiteSpace(request?.Reason) ? "operator_cancelled" : request.Reason.Trim();
         await sessions.CancelAsync(client, commandId, reason, cancellationToken).ConfigureAwait(false);
-        NetRatelAkkaTelemetry.RecordAuthorityEvent(Feature, Authority, fallbackUsed: false, environment.EnvironmentName);
+        NetRatelAkkaTelemetry.RecordAuthorityEvent(Feature, Authority, environment.EnvironmentName);
         return Results.Accepted();
     }
 
@@ -100,20 +88,31 @@ public static class AgentCommandGatewayEndpoints
         int tenantId,
         Guid agentId,
         string commandId,
-        NetRatelAkkaMigrationOptions options,
         [FromServices] IClientCommandRouter commandRouter,
         CancellationToken cancellationToken)
     {
-        if (!options.IsCommandAuthorityActive)
+        try
         {
-            return Results.NotFound();
-        }
+            var state = await commandRouter.GetStateAsync(new CommandKey(tenantId, commandId), cancellationToken).ConfigureAwait(false);
+            if (string.Equals(state.Source, "akka-persistence-unavailable", StringComparison.Ordinal))
+            {
+                return CommandStateUnavailable();
+            }
 
-        var state = await commandRouter.GetStateAsync(new CommandKey(tenantId, commandId), cancellationToken).ConfigureAwait(false);
-        return state.Client == new ClientKey(tenantId, agentId) && state.IsAuthoritative
-            ? Results.Ok(state)
-            : Results.NotFound();
+            return state.Client == new ClientKey(tenantId, agentId)
+                ? Results.Ok(state)
+                : Results.NotFound();
+        }
+        catch (AskTimeoutException)
+        {
+            return CommandStateUnavailable();
+        }
     }
+
+    private static IResult CommandStateUnavailable() => Results.Problem(
+        title: "Command state is temporarily unavailable.",
+        detail: "The command state store is unavailable.",
+        statusCode: StatusCodes.Status503ServiceUnavailable);
 
 }
 
