@@ -625,6 +625,10 @@ dispatch_disposable_command() {
       "$response_code" "${presence_status:-unavailable}" "${presence_state:-unavailable}" \
       "$(gateway_client_container_state)" >&2
   fi
+  # Never publish raw Client logs here: they may contain enrollment or request
+  # data. Retain only bounded, allowlisted transport/lifecycle classifications.
+  docker logs --tail 500 "$gateway_client" 2>&1 |
+    python3 "$root/tools/ci/summarize-gateway-log.py" >&2 || true
   return 1
 }
 
