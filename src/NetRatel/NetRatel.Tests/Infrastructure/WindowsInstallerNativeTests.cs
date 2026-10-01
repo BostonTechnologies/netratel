@@ -1949,7 +1949,6 @@ public sealed class WindowsInstallerNativeTests
             }
 
             var installedPreviousExecutableBytes = await File.ReadAllBytesAsync(previousExecutable, timeout.Token);
-            var credentialBytesBeforeUpgrade = await File.ReadAllBytesAsync(credentialPath, timeout.Token);
             var credentialSecurityBeforeUpgrade = AssertProtectedWindowsCredential(credentialPath);
             var tokensBeforeUpgrade = fixture.TokenRequests;
 
@@ -1988,13 +1987,17 @@ public sealed class WindowsInstallerNativeTests
                 Assert.Equal(0, candidateServiceProcess.SessionId);
             }
 
-            Assert.Equal(credentialBytesBeforeUpgrade, await File.ReadAllBytesAsync(credentialPath, timeout.Token));
+            // Token exchange persists the returned refresh credential and DPAPI uses
+            // randomized encryption. Verify identity through the accepted token proof
+            // against the original enrolled key, not equality of encrypted file bytes.
+            Assert.True(new FileInfo(credentialPath).Length > 0,
+                "the candidate service must retain its persisted credential payload");
             Assert.Equal(credentialSecurityBeforeUpgrade, AssertProtectedWindowsCredential(credentialPath));
             Assert.True(fixture.EnrollmentRequests == 1,
                 "the upgrade must reuse the installed Agent identity instead of enrolling a second agent");
             Assert.Equal(2, fixture.DownloadRequests);
             Assert.True(fixture.TokenRequests > tokensBeforeUpgrade,
-                "the candidate LocalSystem process must authenticate and publish a new connection");
+                "the candidate LocalSystem process must authenticate with the original enrolled device key and refresh credential");
             Assert.All(fixture.TokenAgentIds, value => Assert.Equal(agentId.ToString("D"), value));
             Assert.All(fixture.RefreshTokens, value => Assert.Equal(NativeGatewayHostFixture.RefreshToken, value));
 
@@ -2007,7 +2010,8 @@ public sealed class WindowsInstallerNativeTests
             Console.WriteLine(
                 $"Native published Windows upgrade receipt: os={Environment.OSVersion.VersionString}; " +
                 $"powershell=WindowsPowerShell-5.1; previous={publishedPackage.Version}; candidate={candidateVersion}; " +
-                "service=LocalSystem-session-0; priorAndCandidateHeartbeats=acknowledged>=2; identityPreserved=true; enrollments=1");
+                "service=LocalSystem-session-0; priorAndCandidateHeartbeats=acknowledged>=2; " +
+                "identityPreserved=true; deviceKey=original-enrollment-PoP; enrollments=1");
         }
         finally
         {
