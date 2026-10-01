@@ -1225,6 +1225,44 @@ class ProductVersionTests(unittest.TestCase):
         subprocess.run(["python3", str(helper), "--manifest-output", str(output)], check=True)
         self.assertFalse(json.loads(output.read_text())["prerelease"])
 
+    def test_release_preflight_uses_tagged_props_and_rejects_a_mismatched_tag(self):
+        helper = self.root / "tools/ci/product-version.py"
+        version = subprocess.check_output([sys.executable, str(helper)], text=True).strip()
+        for tag in ("v9.9.9-rc.999", version):
+            with self.subTest(tag=tag):
+                result = subprocess.run(
+                    [sys.executable, str(helper), "--validate-release-ref"],
+                    env={**os.environ, "GITHUB_REF_TYPE": "tag", "GITHUB_REF_NAME": tag},
+                    capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(result.stdout, "")
+                self.assertIn(f"'v{version}'", result.stderr)
+                self.assertIn("Merge the version change first", result.stderr)
+
+        result = subprocess.run(
+            [sys.executable, str(helper), "--validate-release-ref"],
+            env={**os.environ, "GITHUB_REF_TYPE": "tag", "GITHUB_REF_NAME": f"v{version}"},
+            capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), version)
+
+    def test_release_rehearsal_requires_the_committed_version(self):
+        helper = self.root / "tools/ci/product-version.py"
+        version = subprocess.check_output([sys.executable, str(helper)], text=True).strip()
+        for expected in ("", "9.9.9", version):
+            with self.subTest(expected=expected):
+                result = subprocess.run(
+                    [sys.executable, str(helper), "--validate-release-ref"],
+                    env={**os.environ, "GITHUB_REF_TYPE": "branch", "GITHUB_REF_NAME": "main",
+                         "NETRATEL_EXPECTED_VERSION": expected},
+                    capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0 if expected == version else 1, result.stderr)
+                if expected == version:
+                    self.assertEqual(result.stdout.strip(), version)
+                else:
+                    self.assertEqual(result.stdout, "")
+                    self.assertIn("Directory.Build.props", result.stderr)
+
     def test_conditional_nested_and_malformed_overrides_fail(self):
         for contents in ('<Project><PropertyGroup><Version Condition="true">9.0.0</Version></PropertyGroup></Project>',
                          '<Project><PropertyGroup><PackageVersion>9.0.0</PackageVersion></PropertyGroup></Project>',
