@@ -27,6 +27,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+      - id: version
+        name: Validate tag against Directory.Build.props
+        env:
+          NETRATEL_EXPECTED_VERSION: ${{ inputs.expected_version }}
+        run: |
+          version="$(python3 tools/ci/product-version.py --validate-release-ref)"
+          printf 'value=%s\n' "$version" >> "$GITHUB_OUTPUT"
       - name: Scan repository with Gitleaks
         run: >-
           docker run --rm --volume "$GITHUB_WORKSPACE:/repo:ro" --workdir /repo
@@ -35,16 +42,6 @@ jobs:
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
           global-json-file: global.json
-      - id: version
-        run: |
-          version="$(python3 tools/ci/product-version.py)"
-          [[ "$version" != null && -n "$version" ]]
-          if [[ "${GITHUB_REF_TYPE}" == tag ]]; then
-            [[ "${GITHUB_REF_NAME#v}" == "$version" ]]
-          else
-            [[ "${{ inputs.expected_version }}" == "$version" ]]
-          fi
-          printf 'value=%s\n' "$version" >> "$GITHUB_OUTPUT"
       - name: Require public main ancestry
         if: github.ref_type == 'tag'
         run: |

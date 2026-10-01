@@ -64,6 +64,28 @@ digests. It is intentionally a deployment bundle, not a source-build recipe.
 Edit `Directory.Build.props` to set the product version, merge the reviewed
 source, and create the matching `v<version>` tag. The tag-triggered `Release build`
 workflow builds and tests the deliverables but does not publish them.
+`Directory.Build.targets` adds build metadata; it does not need a version edit.
+The tag freezes the source commit when it is created. Publishing a draft that
+already has a tag does not retarget it to the latest `main`.
+
+After the version PR is merged, use an up-to-date, clean checkout of `main`:
+
+```sh
+git switch main
+git pull --ff-only origin main
+version="$(python3 tools/ci/product-version.py)"
+tag="v$version"
+git tag "$tag"
+git push origin "refs/tags/$tag"
+gh release create "$tag" --verify-tag --draft --prerelease --generate-notes
+```
+
+Review the draft and wait for that tag's `Release build` to pass, then publish
+the draft in GitHub's Releases page. For a stable version (empty
+`VersionSuffix`), omit `--prerelease`. If a published tag points to the wrong
+source version or predates the intended fix, increment `VersionSuffix` through
+a new PR and cut a new tag; retain the earlier tag and release as history.
+
 The publication workflow waits for that exact tag-triggered build when a
 release is published, so the GitHub release may be published immediately after
 the tag is pushed. The tag must be exactly `v<version>`; a different tag is
