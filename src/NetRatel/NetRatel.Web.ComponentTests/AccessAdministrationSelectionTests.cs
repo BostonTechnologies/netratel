@@ -1,6 +1,7 @@
 using Bunit;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
+using MudBlazor;
 using MudBlazor.Services;
 using NetRatel.Web.Components.Pages.Settings;
 using NetRatel.Web.Services.Access;
@@ -10,6 +11,39 @@ namespace NetRatel.Web.ComponentTests;
 
 public sealed class AccessAdministrationSelectionTests : AsyncBunitContext
 {
+    [Fact]
+    public async Task Scope_marker_changes_only_after_the_server_clears_the_previous_selection()
+    {
+        JSInterop.Mode = JSRuntimeMode.Loose;
+        Services.AddMudServices(options => options.PopoverOptions.CheckForPopoverProvider = false);
+        var access = new DelayedAccessAdministrationApiService();
+        Services.AddSingleton<IAccessAdministrationApiService>(access);
+        var cut = Render<AccessAdministration>();
+        cut.WaitForAssertion(() => cut.FindAll(".mud-list-item").Should().HaveCount(2));
+        cut.FindAll(".mud-list-item")[0].Click();
+        access.Complete("principal-a", "Previous assignment");
+        cut.WaitForAssertion(() => cut.Markup.Should().Contain("Previous assignment"));
+
+        var pendingUsers = new TaskCompletionSource<IReadOnlyList<LocalUserAccessDto>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        access.PendingUsers = pendingUsers;
+        var change = cut.InvokeAsync(() => cut.FindComponent<MudSelect<int?>>().Instance.ValueChanged.InvokeAsync(8));
+
+        try
+        {
+            cut.WaitForAssertion(() =>
+            {
+                cut.Find("[data-testid='access-administration-client-ready']").GetAttribute("data-scope-name").Should().Be("Tenant Eight");
+                cut.FindAll("[data-testid='access-assignment-scope']").Should().BeEmpty();
+                cut.Markup.Should().NotContain("Previous assignment");
+            });
+        }
+        finally
+        {
+            pendingUsers.TrySetResult([]);
+            await change;
+        }
+    }
+
     [Fact]
     public void Creating_a_local_user_reveals_only_its_activation_handoff_after_success()
     {
@@ -88,9 +122,10 @@ public sealed class AccessAdministrationSelectionTests : AsyncBunitContext
         public (string DisplayName, string Email)? Created { get; private set; }
         public int? LastRoleScope { get; private set; }
         public int? LastUserScope { get; private set; }
+        public TaskCompletionSource<IReadOnlyList<LocalUserAccessDto>>? PendingUsers { get; set; }
 
         public Task<IReadOnlyList<AccessTenantDto>> GetTenantsAsync(CancellationToken cancellationToken = default) =>
-            Task.FromResult<IReadOnlyList<AccessTenantDto>>([new(7, "Tenant Seven")]);
+            Task.FromResult<IReadOnlyList<AccessTenantDto>>([new(7, "Tenant Seven"), new(8, "Tenant Eight")]);
 
         public Task<IReadOnlyList<AccessRoleDto>> GetRolesAsync(int? tenantId, CancellationToken cancellationToken = default)
         {
@@ -104,6 +139,8 @@ public sealed class AccessAdministrationSelectionTests : AsyncBunitContext
         public Task<IReadOnlyList<LocalUserAccessDto>> GetUsersAsync(int? tenantId, CancellationToken cancellationToken = default)
         {
             LastUserScope = tenantId;
+            if (PendingUsers is not null)
+                return PendingUsers.Task;
             return Task.FromResult<IReadOnlyList<LocalUserAccessDto>>(
             [
                 new("user-a", "principal-a", "a@example.test", "User A", true, false),

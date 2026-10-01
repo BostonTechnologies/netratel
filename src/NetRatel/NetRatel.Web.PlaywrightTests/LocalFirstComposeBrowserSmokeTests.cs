@@ -995,6 +995,11 @@ public sealed class LocalFirstComposeBrowserSmokeTests
 
         await page.GetByRole(AriaRole.Combobox, new PageGetByRoleOptions { Name = "Manage tenant", Exact = true }).ClickAsync();
         await page.GetByRole(AriaRole.Option, new PageGetByRoleOptions { Name = "Browser smoke tenant", Exact = true }).ClickAsync();
+        // MudSelect can finish the browser click before its server callback
+        // clears the old selection. Wait for the server-applied scope before
+        // clicking a user, or that callback can clear the new selection.
+        await page.Locator("[data-testid='access-administration-client-ready'][data-scope-name='Browser smoke tenant']")
+            .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
         var localTenantAdministrator = page.GetByText("Browser local tenant administrator", new PageGetByTextOptions { Exact = true });
         await localTenantAdministrator.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         await localTenantAdministrator.ClickAsync();

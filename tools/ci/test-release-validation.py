@@ -57,6 +57,7 @@ class PublicGatewayRouteTests(unittest.TestCase):
         prefix, location_body = grpc_locations[0]
         self.assertEqual(prefix, f"/{package.group(1)}.")
         self.assertRegex(location_body, r"(?m)^[ \t]*grpc_pass\s+grpc://api:9223\s*;")
+        self.assertRegex(location_body, r"(?m)^[ \t]*client_body_timeout\s+3600s\s*;")
         for method_path in method_paths:
             with self.subTest(method_path=method_path):
                 self.assertTrue(method_path.startswith(prefix), f"{method_path} misses the public gRPC location.")
