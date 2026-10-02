@@ -42,6 +42,8 @@ public sealed class ClientCardGridTests : AsyncBunitContext
         cut.Find("button[aria-label='Open file browser']").Should().NotBeNull();
         cut.Find("button[aria-label='Open remote support']").Should().NotBeNull();
         cut.Find("button[aria-label='Copy host']").Should().NotBeNull();
+        cut.Find("button[aria-label='Open client services']").Should().NotBeNull();
+        cut.FindAll("button[aria-label='Ping client']").Should().BeEmpty();
         cut.FindAll(".client-card").Should().ContainSingle();
         var card = cut.Find("[data-testid='client-card']");
         card.GetAttribute("data-agent-id").Should().Be(AgentId.ToString("D"));
@@ -61,6 +63,19 @@ public sealed class ClientCardGridTests : AsyncBunitContext
         var cut = RenderGrid(online, capabilities, new GatewayTerminalCapabilityDto(true, ["bash"], true, null, DateTimeOffset.UtcNow));
 
         cut.Find("button[aria-label='Open terminal']").HasAttribute("disabled").Should().BeTrue();
+        cut.Find("button[aria-label='Open client services']").HasAttribute("disabled").Should().BeFalse();
+    }
+
+    [Fact]
+    public void Table_Services_Remain_Viewable_Offline_And_Automatic_Latency_Remains_Present()
+    {
+        var cut = Render<ClientGridView>(parameters => parameters.Add(component => component.Clients,
+            [new ClientPresentationModel(3, AgentId, "offline", "offline", "Tenant", "Linux", "x64", false, true,
+                DateTimeOffset.UtcNow, "fixture", [], null, null, LatencyMilliseconds: 12,
+                LatencyMeasuredAtUtc: DateTimeOffset.UtcNow, LatencyExpiresAtUtc: DateTimeOffset.UtcNow.AddMinutes(1))]));
+        cut.Find("button[aria-label='Open client services']").HasAttribute("disabled").Should().BeFalse();
+        cut.FindAll("button[aria-label='Ping client']").Should().BeEmpty();
+        cut.Find("[data-testid='client-latency']").Should().NotBeNull();
     }
 
     private IRenderedComponent<ClientCardGrid> RenderGrid(bool online, IReadOnlyList<string> capabilities, GatewayTerminalCapabilityDto terminal) =>

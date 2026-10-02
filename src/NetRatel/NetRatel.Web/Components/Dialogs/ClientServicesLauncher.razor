@@ -1,0 +1,57 @@
+@implements IDisposable
+@inject IDialogService DialogService
+
+<MudTooltip Text="Services">
+    <MudIconButton @ref="_button" Icon="@Icons.Material.Filled.MiscellaneousServices" Size="Size.Small"
+                   Color="Color.Default" OnClick="OpenAsync" aria-label="Open client services" data-testid="client-services-launcher" />
+</MudTooltip>
+
+@code {
+    [Parameter, EditorRequired] public int TenantId { get; set; }
+    [Parameter, EditorRequired] public Guid AgentId { get; set; }
+    [Parameter] public string HostLabel { get; set; } = "Client";
+    [Parameter] public string TenantLabel { get; set; } = "";
+    private MudIconButton? _button;
+    private IDialogReference? _dialog;
+    private int _activeTenant;
+    private Guid _activeAgent;
+    private bool _opening;
+    private bool _disposed;
+
+    protected override void OnParametersSet()
+    {
+        if (_activeTenant != TenantId || _activeAgent != AgentId) _dialog?.Close();
+        _activeTenant = TenantId;
+        _activeAgent = AgentId;
+    }
+
+    private async Task OpenAsync()
+    {
+        if (_opening || _disposed) return;
+        _opening = true;
+        var tenantId = TenantId;
+        var agentId = AgentId;
+        try
+        {
+            var parameters = new DialogParameters<ClientServicesDialog>
+            {
+                { dialog => dialog.TenantId, tenantId }, { dialog => dialog.AgentId, agentId },
+                { dialog => dialog.HostLabel, HostLabel }, { dialog => dialog.TenantLabel, TenantLabel }
+            };
+            var dialog = await DialogService.ShowAsync<ClientServicesDialog>("Services", parameters,
+                new DialogOptions { FullScreen = true, FullWidth = true, CloseOnEscapeKey = true, CloseButton = false, NoHeader = true });
+            _dialog = dialog;
+            if (_disposed || TenantId != tenantId || AgentId != agentId) dialog.Close();
+            await dialog.Result;
+            _dialog = null;
+            if (!_disposed && _button is not null) await _button.FocusAsync();
+        }
+        finally { _opening = false; }
+    }
+
+    public void Dispose()
+    {
+        _disposed = true;
+        _dialog?.Close();
+    }
+}

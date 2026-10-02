@@ -1145,6 +1145,26 @@ body {
     overflow-wrap: anywhere;
 }
 
+/* MudDialog renders outside the component's CSS scope. Services must fill the
+   viewport, including where the general mobile dialog rule adds a margin. */
+.mud-dialog.client-services-dialog.mud-dialog-fullscreen {
+    width: 100vw !important;
+    height: 100dvh;
+    max-width: none;
+    max-height: 100dvh;
+    margin: 0;
+    border-radius: 0;
+    overflow: hidden;
+}
+
+.mud-dialog.client-services-dialog .mud-dialog-content {
+    flex: 1 1 auto;
+    height: 100%;
+    min-height: 0;
+    padding: 0;
+    overflow: hidden;
+}
+
 pre,
 code,
 .monaco-editor-container,
