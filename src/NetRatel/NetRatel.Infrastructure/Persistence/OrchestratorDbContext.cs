@@ -63,6 +63,16 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
     public DbSet<ClientWindowsSessionSnapshot> ClientWindowsSessionSnapshots => Set<ClientWindowsSessionSnapshot>();
     public DbSet<ClientServicesSnapshotRecord> ClientServicesSnapshots => Set<ClientServicesSnapshotRecord>();
     public DbSet<ClientConnectionEpochRecord> ClientConnectionEpochs => Set<ClientConnectionEpochRecord>();
+    public DbSet<MonitoringTenantConfigurationRecord> MonitoringTenantConfigurations => Set<MonitoringTenantConfigurationRecord>();
+    public DbSet<MonitoringRuleRecord> MonitoringRules => Set<MonitoringRuleRecord>();
+    public DbSet<MonitoringGroupRecord> MonitoringGroups => Set<MonitoringGroupRecord>();
+    public DbSet<MonitoringBypassRecord> MonitoringBypasses => Set<MonitoringBypassRecord>();
+    public DbSet<MonitoringEvidenceStreamRecord> MonitoringEvidenceStreams => Set<MonitoringEvidenceStreamRecord>();
+    public DbSet<MonitoringSeriesRecord> MonitoringSeries => Set<MonitoringSeriesRecord>();
+    public DbSet<MonitoringOccurrenceRecord> MonitoringOccurrences => Set<MonitoringOccurrenceRecord>();
+    public DbSet<MonitoringEventRecord> MonitoringEvents => Set<MonitoringEventRecord>();
+    public DbSet<MonitoringFlowOutboxRecord> MonitoringFlowOutbox => Set<MonitoringFlowOutboxRecord>();
+    public DbSet<MonitoringAuditRecord> MonitoringAudits => Set<MonitoringAuditRecord>();
     public DbSet<ClientWindowsSessionInventoryRefresh> ClientWindowsSessionInventoryRefreshes => Set<ClientWindowsSessionInventoryRefresh>();
     public DbSet<RemoteSupportTargetSelectionEvent> RemoteSupportTargetSelectionEvents => Set<RemoteSupportTargetSelectionEvent>();
     public DbSet<RemoteSupportSessionRecord> RemoteSupportSessions => Set<RemoteSupportSessionRecord>();
@@ -101,6 +111,7 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        MonitoringPersistenceModel.Configure(modelBuilder);
         modelBuilder.Entity<ClientConnectionEpochRecord>(entity =>
         {
             entity.ToTable("ClientConnectionEpochs");

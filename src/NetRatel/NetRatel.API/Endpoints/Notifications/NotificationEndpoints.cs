@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 using NetRatel.Application.Notifications;
 using NetRatel.Application.Observability;
 using NetRatel.API.Services.Orchestration;
+using NetRatel.Shared.Contracts.Monitoring;
 
 namespace NetRatel.API.Endpoints;
 
@@ -183,6 +184,10 @@ public static class NotificationEndpoints
             INetRatelNotificationService notifications,
             CancellationToken ct = default) =>
         {
+            // Scoped monitoring mirrors are excluded by the legacy reader. Do
+            // not let a guessed ID bypass that boundary through a mutation.
+            var item = await notifications.GetByIdAsync(id, "system.events.viewer", ct);
+            if (item is null) return Results.NotFound();
             await notifications.DisableAsync(id, ct);
             return Results.Accepted();
         });
@@ -219,6 +224,9 @@ public static class NotificationEndpoints
         {
             await foreach (var notification in reader.ReadAllAsync(token))
             {
+                // Monitoring has exact-tenant authorization on its own durable
+                // read path. The legacy global bus must never disclose it.
+                if (notification.EventType.StartsWith(MonitoringLimits.NotificationEventPrefix, StringComparison.Ordinal)) continue;
                 if (!string.IsNullOrWhiteSpace(eventType) &&
                     !string.Equals(notification.EventType, eventType, StringComparison.OrdinalIgnoreCase))
                 {

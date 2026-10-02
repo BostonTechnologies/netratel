@@ -18,7 +18,9 @@ public sealed record TelemetryDisk(
     double TotalGb,
     double UsedGb,
     double FreeGb,
-    double UsagePercent);
+    double UsagePercent,
+    ulong? TotalBytes = null,
+    ulong? FreeBytes = null);
 
 public sealed record TelemetryNetwork(
     string Scope,

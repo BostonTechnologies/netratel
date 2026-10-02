@@ -41,7 +41,9 @@ internal static class AgentTelemetryGatewayMapper
                 disk.TotalGb,
                 disk.UsedGb,
                 disk.FreeGb,
-                disk.UsagePercent)).ToArray(),
+                disk.UsagePercent,
+                disk.HasTotalBytes ? disk.TotalBytes : null,
+                disk.HasFreeBytes ? disk.FreeBytes : null)).ToArray(),
             frame.Networks.Select(network => new ApplicationTelemetryNetwork(
                 network.Scope.Trim(),
                 network.RxBytesPerSec,

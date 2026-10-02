@@ -7,11 +7,13 @@ using NetRatel.API.Realtime.Operations;
 using NetRatel.API.Services;
 using NetRatel.API.Services.Jobs;
 using NetRatel.API.Services.Terminal;
+using NetRatel.API.Services.Monitoring;
 using NetRatel.Akka.Configuration;
 using NetRatel.Akka.Hosting;
 using NetRatel.Akka.Observability;
 using NetRatel.Application.Commands;
 using NetRatel.Application.Services;
+using NetRatel.Application.Monitoring;
 
 namespace NetRatel.API.Gateway;
 
@@ -58,7 +60,14 @@ public static class NetRatelAkkaRuntimeRegistration
         services.TryAddSingleton<AgentTelemetryGatewaySessionRegistry>();
         services.TryAddSingleton<IAgentTelemetryGatewaySessionRegistry>(serviceProvider =>
             serviceProvider.GetRequiredService<AgentTelemetryGatewaySessionRegistry>());
-        services.TryAddSingleton<IClientServiceWatchPolicySource, EmptyClientServiceWatchPolicySource>();
+        services.TryAddSingleton<IMonitoringClientDirectory, MonitoringClientDirectory>();
+        services.TryAddSingleton<IMonitoringPublishedFlowProvider, UnavailableMonitoringPublishedFlowProvider>();
+        services.TryAddScoped<IMonitoringResourceAuthorizer, MonitoringResourceAuthorizer>();
+        services.TryAddScoped<IMonitoringTenantCatalog, MonitoringTenantCatalog>();
+        services.TryAddScoped<MonitoringApiService>();
+        services.TryAddSingleton<IClientServiceWatchPolicySource, MonitoringServiceWatchPolicySource>();
+        services.TryAddSingleton<MonitoringWatchPolicyReconciler>();
+        services.AddSingleton<IHostedService>(provider => provider.GetRequiredService<MonitoringWatchPolicyReconciler>());
         services.TryAddSingleton<ClientServicesCoordinator>();
 
         services.TryAddSingleton<AgentControlSessionRegistry>();

@@ -982,6 +982,7 @@ app.UseExceptionHandler(errorApp =>
     });
 });
 app.UseMiddleware<NetRatel.API.Middleware.ExceptionNotificationMiddleware>();
+app.UseMiddleware<NetRatel.API.Middleware.MonitoringHttpBoundsMiddleware>();
 app.UseHttpsRedirection();
 app.UseCors();
 app.UseWebSockets();

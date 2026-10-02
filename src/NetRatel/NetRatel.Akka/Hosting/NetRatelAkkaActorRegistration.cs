@@ -7,12 +7,14 @@ using Microsoft.Extensions.DependencyInjection;
 using NetRatel.Akka.Commands;
 using NetRatel.Akka.Configuration;
 using NetRatel.Akka.Jobs;
+using NetRatel.Akka.Monitoring;
 using NetRatel.Akka.Presence;
 using NetRatel.Akka.RemoteSupport;
 using NetRatel.Akka.Services;
 using NetRatel.Akka.Telemetry;
 using NetRatel.Application.Commands;
 using NetRatel.Application.Jobs;
+using NetRatel.Application.Monitoring;
 using NetRatel.Application.Presence;
 using NetRatel.Application.RemoteSupport;
 using NetRatel.Application.Services;
@@ -32,6 +34,9 @@ public sealed class ClientTelemetryRegion;
 
 /// <summary>Marker for the bounded local services projection region.</summary>
 public sealed class ClientServicesRegion;
+
+/// <summary>Marker for the bounded local monitoring runtime.</summary>
+public sealed class ClientMonitoringRegion;
 
 /// <summary>Marker used for type-safe access to the local command region.</summary>
 public sealed class ClientCommandRegion;
@@ -58,6 +63,9 @@ public static class NetRatelAkkaActorRegistration
             var jobObservations = serviceProvider.GetRequiredService<IJobObservationStore>();
             var remoteSupportLifecycle = serviceProvider.GetRequiredService<IRemoteSupportLifecycleStore>();
             var servicesStore = serviceProvider.GetRequiredService<IClientServicesStore>();
+            var monitoringStore = serviceProvider.GetRequiredService<IMonitoringStore>();
+            var monitoringConfiguration = serviceProvider.GetRequiredService<IMonitoringConfigurationStore>();
+            var monitoringDirectory = serviceProvider.GetRequiredService<IMonitoringClientDirectory>();
             var connectionEpochs = serviceProvider.GetRequiredService<IClientConnectionEpochStore>();
             var timeProvider = serviceProvider.GetRequiredService<TimeProvider>();
             akka
@@ -94,6 +102,9 @@ public static class NetRatelAkkaActorRegistration
                     var servicesRegion = system.ActorOf(
                         ClientServicesRouterActor.Props(servicesStore, timeProvider), "client-services");
                     registry.Register<ClientServicesRegion>(servicesRegion);
+
+                    var monitoringRegion = system.ActorOf(ClientMonitoringRouterActor.Props(monitoringStore, monitoringConfiguration, monitoringDirectory, timeProvider), "client-monitoring");
+                    registry.Register<ClientMonitoringRegion>(monitoringRegion);
 
                     var commandRegion = system.ActorOf(
                         ClientCommandRouterActor.Props(commandPersistence),
@@ -141,6 +152,9 @@ public static class NetRatelAkkaActorRegistration
             new AkkaClientServicesRouter(
                 serviceProvider.GetRequiredService<IRequiredActor<ClientServicesRegion>>(),
                 serviceProvider.GetRequiredService<NetRatelAkkaOptions>().AskTimeout));
+        services.AddSingleton<IMonitoringRuntime>(serviceProvider =>
+            new AkkaMonitoringRuntime(serviceProvider.GetRequiredService<IRequiredActor<ClientMonitoringRegion>>(),
+                serviceProvider.GetRequiredService<IMonitoringStore>(), serviceProvider.GetRequiredService<NetRatelAkkaOptions>().AskTimeout));
         services.AddSingleton<IJobRuntimeRouter>(serviceProvider =>
             new AkkaJobRuntimeRouter(
                 serviceProvider.GetRequiredService<IRequiredActor<JobRuntimeRegion>>(),
@@ -522,5 +536,14 @@ internal sealed class AkkaClientPresenceReadModel : IClientPresenceReadModel
                 _askTimeout,
                 cancellationToken)
             .ConfigureAwait(false);
+    }
+
+    public async Task<ClientPresenceSnapshot?> GetClientSnapshotAsync(ClientKey client, CancellationToken cancellationToken)
+    {
+        if (!client.IsValid) throw new ArgumentException("invalid_client");
+        var region = await _region.GetAsync(cancellationToken).ConfigureAwait(false);
+        var result = await region.Ask<ClientPresenceReadModelPointSnapshot>(new GetClientPresenceReadModelByKey(client),
+            _askTimeout, cancellationToken).ConfigureAwait(false);
+        return result.Client == client ? result.Snapshot : throw new InvalidOperationException("wrong_presence_point_client");
     }
 }

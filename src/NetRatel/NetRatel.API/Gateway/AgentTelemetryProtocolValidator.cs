@@ -120,7 +120,9 @@ public static class AgentTelemetryProtocolValidator
                 !IsNonNegativeFinite(disk.TotalGb) ||
                 !IsNonNegativeFinite(disk.UsedGb) ||
                 !IsNonNegativeFinite(disk.FreeGb) ||
-                !IsPercentage(disk.UsagePercent)))
+                !IsPercentage(disk.UsagePercent) ||
+                disk.HasTotalBytes != disk.HasFreeBytes ||
+                (disk.HasTotalBytes && (disk.TotalBytes == 0 || disk.FreeBytes > disk.TotalBytes))))
         {
             return Invalid(StatusCode.InvalidArgument, "Disk telemetry contains an unsupported value or duplicate scope.");
         }
