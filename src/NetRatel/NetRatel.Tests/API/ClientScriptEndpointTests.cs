@@ -55,14 +55,14 @@ public sealed class ClientScriptEndpointTests
             script.Should().Contain("win-x64");
             script.Should().Contain("/api/v1/client-artifacts/");
             script.Should().Contain("0.4.10");
-            script.Should().Contain("abc123");
+            script.Should().Contain(new string('a', 64));
             script.Should().Contain("/onboarding-download");
             script.Should().Contain("X-NetRatel-Enrollment-Code");
             script.Should().NotContain("/latest");
             script.Should().NotContain("/api/v1/client/download");
             script.Should().NotContain("eyJ"); // heuristic JWT prefix
-            script.Should().Contain("$ApiBase = \"https://netratel.example.invalid\"");
-            script.Should().Contain("$GatewayEndpoint = \"\"");
+            script.Should().Contain("$ApiBase = 'https://netratel.example.invalid'");
+            script.Should().Contain("$GatewayEndpoint = ''");
             script.Should().NotContain("NetRatelCLIENT__Gateway__Endpoint=https://netratel.example.invalid");
 
             await using var scope = app.Services.CreateAsyncScope();
@@ -94,8 +94,8 @@ public sealed class ClientScriptEndpointTests
 
         response.IsSuccessStatusCode.Should().BeTrue();
         var script = await response.Content.ReadAsStringAsync();
-        script.Should().Contain("$ApiBase = \"https://public-api.example.test\"");
-        script.Should().Contain("$GatewayEndpoint = \"https://public-gateway.example.test\"");
+        script.Should().Contain("$ApiBase = 'https://public-api.example.test'");
+        script.Should().Contain("$GatewayEndpoint = 'https://public-gateway.example.test'");
         script.Should().NotContain("public-api.example.test/api/api");
     }
 
@@ -120,8 +120,8 @@ public sealed class ClientScriptEndpointTests
 
         response.IsSuccessStatusCode.Should().BeTrue();
         var script = await response.Content.ReadAsStringAsync();
-        script.Should().Contain("$ApiBase = \"https://same-origin.example.test\"");
-        script.Should().Contain("$GatewayEndpoint = \"\"");
+        script.Should().Contain("$ApiBase = 'https://same-origin.example.test'");
+        script.Should().Contain("$GatewayEndpoint = ''");
         script.Should().NotContain("NetRatelCLIENT__Gateway__Endpoint=https://same-origin.example.test");
     }
 
@@ -143,8 +143,8 @@ public sealed class ClientScriptEndpointTests
 
         response.IsSuccessStatusCode.Should().BeTrue();
         var script = await response.Content.ReadAsStringAsync();
-        script.Should().Contain("VERSION=\"0.4.131-rc.1\"");
-        script.Should().Contain("EXPECTED_SHA=\"abc123\"");
+        script.Should().Contain("VERSION='0.4.131-rc.1'");
+        script.Should().Contain("EXPECTED_SHA='" + new string('a', 64) + "'");
     }
 
     [Fact]
@@ -162,6 +162,28 @@ public sealed class ClientScriptEndpointTests
             ValidForMinutes = 60,
             MaxUses = 1
         }, CancellationToken.None)).Should().ThrowAsync<FileNotFoundException>();
+
+        var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+        (await db.EnrollmentCodes.CountAsync()).Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData("http://public-api.example.test", null)]
+    [InlineData("https://localhost", null)]
+    [InlineData("https://public-api.example.test", "https://gateway.example.internal")]
+    public async Task NonPublicEndpoint_DoesNotIssueAnEnrollmentCode(string api, string? gateway)
+    {
+        using var app = await BuildAppAsync(publicApiBase: api, publicGatewayBase: gateway);
+        await using var scope = app.Services.CreateAsyncScope();
+        var scripts = scope.ServiceProvider.GetRequiredService<IClientScriptService>();
+
+        await FluentActions.Invoking(() => scripts.GenerateAsync(new ClientScriptRequest
+        {
+            TenantId = 4098,
+            RuntimeId = "linux-x64",
+            ValidForMinutes = 60,
+            MaxUses = 1
+        }, CancellationToken.None)).Should().ThrowAsync<InvalidOperationException>();
 
         var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
         (await db.EnrollmentCodes.CountAsync()).Should().Be(0);
@@ -260,7 +282,7 @@ public sealed class ClientScriptEndpointTests
                 Version = "0.4.10",
                 FileName = "NetRatel.Client-win-x64-0.4.10.zip",
                 Size = 123,
-                Sha256 = "abc123",
+                Sha256 = new string('a', 64),
                 UploadedAt = DateTimeOffset.UtcNow,
                 Notes = null
             });
@@ -271,7 +293,7 @@ public sealed class ClientScriptEndpointTests
                 Version = version,
                 FileName = $"NetRatel.Client-{rid}-{version}.zip",
                 Size = 123,
-                Sha256 = "abc123",
+                Sha256 = new string('a', 64),
                 UploadedAt = DateTimeOffset.UtcNow,
                 Notes = null
             });

@@ -16,13 +16,6 @@ public class ClientOptions
     public string? EnrollmentCode { get; set; }
     public string? AgentId { get; set; }
     public AutoUpdateOptions AutoUpdate { get; set; } = new();
-    public ServiceReadinessOptions ServiceReadiness { get; set; } = new();
-}
-
-public sealed class ServiceReadinessOptions
-{
-    public string RequestPath { get; set; } = string.Empty;
-    public string ReadyPath { get; set; } = string.Empty;
 }
 
 public sealed class AutoUpdateOptions

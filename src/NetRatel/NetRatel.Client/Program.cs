@@ -10,7 +10,6 @@ using NetRatel.Client.Service.Gateway;
 using NetRatel.Client.Service.Logging;
 using NetRatel.Client.Service.RemoteDesktop;
 using NetRatel.Client.Service.RemoteSupport;
-using NetRatel.Client.Service.Readiness;
 using NetRatel.Client.Service.Tasks;
 using NetRatel.Client.Service.Terminal;
 using NetRatel.Client.Service.Updates;
@@ -237,19 +236,15 @@ async Task RunClientAsync()
         deploymentOverrides,
         appBaseDir,
         cliArgs);
-    var cfg = ClientConfigurationLoader.Load(packagedDefaults, deploymentOverrides, appBaseDir, cliArgs);
+    var clientResolution = ClientConfigurationLoader.ResolveClientOptions(packagedDefaults, deploymentOverrides, appBaseDir, cliArgs);
+    var cfg = clientResolution.Options;
     cfg.ApiBaseUrl = ClientEndpointAddress.NormalizeApiBase(cfg.ApiBaseUrl);
-    var readinessReporter = WindowsStartupReadinessReporter.Create(
-        cfg.ServiceReadiness,
-        serviceMode,
-        message => LogManager.WriteLog(message));
-    readinessReporter.Report("service_started");
     GlobalContext.version = GetAgentVersion();
 
     LogManager.WriteLog($"[Client] RuntimeBaseDir={runtimeBaseDir}");
     LogManager.WriteLog($"[Client] AppBaseDir={appBaseDir}");
     LogManager.WriteLog($"[Client] LogFile={LogManager.LogFilePath}");
-    LogManager.WriteLog($"[Client] Env={cfg.Environment}, API={cfg.ApiBaseUrl}");
+    LogManager.WriteLog($"[Client] Env={cfg.Environment}, API={cfg.ApiBaseUrl}, apiSource={clientResolution.ApiBaseUrlSource}");
     LogManager.WriteLog($"Application {GlobalContext.version} starting.");
 
     var services = new ServiceCollection();
@@ -318,11 +313,6 @@ async Task RunClientAsync()
         {
             LogManager.WriteLog($"[Auth] Injected enrollment failed ({ex.Message}). Falling back to manual enrollment code entry.");
         }
-    }
-
-    if (creds is { } enrolledCredentials && Guid.TryParse(enrolledCredentials.AgentId, out var enrolledAgentId))
-    {
-        readinessReporter.Report("enrolled", enrolledAgentId);
     }
 
     var cliResult = await enrollmentCliCommand.TryExecuteAsync(
@@ -489,8 +479,6 @@ async Task RunClientAsync()
         return;
     }
 
-    readinessReporter.Report("authenticated", agentId, tokenTenantId.Value);
-
     LogManager.WriteLog($"[Gateway] Starting authenticated Akka presence. AgentId={agentId}, TenantId={tokenTenantId.Value}, endpointSource={gatewayResolution.Source}, Endpoint={gatewayOptions.Endpoint}");
     var telemetryPublisher = new AgentGatewayTelemetryPublisher(
         gatewayOptions,
@@ -550,9 +538,7 @@ async Task RunClientAsync()
                 new GatewayPresenceExtension("command", commandGateway.RunForPresenceSessionAsync),
                 new GatewayPresenceExtension("job", jobGateway.RunForPresenceSessionAsync)
             ]),
-        updateCoordinator,
-        reportReadinessWithHeartbeatSequence: (stage, readyAgentId, readyTenantId, epoch, connectionId, heartbeatSequence) =>
-            readinessReporter.Report(stage, readyAgentId, readyTenantId, epoch, connectionId, heartbeatSequence));
+        updateCoordinator);
     await gatewayClient.RunAsync(applicationStopping.Token).ConfigureAwait(false);
     return;
 }

@@ -12,6 +12,7 @@ namespace NetRatel.Client;
 internal static class ClientConfigurationLoader
 {
     internal sealed record GatewayOptionsResolution(GatewayClientOptions Options, string Source);
+    internal sealed record ClientOptionsResolution(ClientOptions Options, string ApiBaseUrlSource);
 
     internal static IConfiguration BuildPackagedDefaults(string appBaseDir, string? environmentName)
     {
@@ -199,8 +200,16 @@ internal static class ClientConfigurationLoader
         IConfiguration? deploymentOverrides,
         string appBaseDir,
         IReadOnlyList<string> args)
+        => ResolveClientOptions(packagedDefaults, deploymentOverrides, appBaseDir, args).Options;
+
+    internal static ClientOptionsResolution ResolveClientOptions(
+        IConfiguration? packagedDefaults,
+        IConfiguration? deploymentOverrides,
+        string appBaseDir,
+        IReadOnlyList<string> args)
     {
         var options = new ClientOptions();
+        var apiSource = packagedDefaults?["Client:ApiBaseUrl"] is null ? "default" : "packaged-defaults";
 
         // These are intentionally separate configuration layers. The packaged appsettings
         // file is a safe fallback for a fresh install, not an explicit deployment choice.
@@ -222,12 +231,14 @@ internal static class ClientConfigurationLoader
                 ? legacy.GetSection("Client")
                 : legacy;
             legacyConfiguration.Bind(options);
+            if (legacyConfiguration["ApiBaseUrl"] is not null) apiSource = "installed-settings";
         }
 
         // Environment/service configuration is the explicit deployment contract. Apply it
         // after the installed file so service-installed values win without treating packaged
         // placeholders as an override.
         deploymentOverrides?.GetSection("Client").Bind(options);
+        if (deploymentOverrides?["Client:ApiBaseUrl"] is not null) apiSource = "deployment-configuration";
 
         for (var i = 0; i < args.Count; i++)
         {
@@ -239,6 +250,7 @@ internal static class ClientConfigurationLoader
                     break;
                 case "--api" when i + 1 < args.Count:
                     options.ApiBaseUrl = args[i + 1];
+                    apiSource = "command-line";
                     i++;
                     break;
                 case "--env" when i + 1 < args.Count && Enum.TryParse<ClientEnvironment>(args[i + 1], true, out var environment):
@@ -261,6 +273,6 @@ internal static class ClientConfigurationLoader
         }
 
         options.ApiBaseUrl = ClientEndpointAddress.NormalizeApiBase(options.ApiBaseUrl);
-        return options;
+        return new ClientOptionsResolution(options, apiSource);
     }
 }
