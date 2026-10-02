@@ -24,6 +24,62 @@ namespace NetRatel.Tests.Client;
 
 public sealed class AgentGatewayPresenceClientTests
 {
+    [Fact]
+    public async Task RunAsync_ReportsOnlyPreviousValidatedHeartbeatRoundTrip_InSamePresenceSession()
+    {
+        var gateway = new RefreshGatewayService();
+        using var host = await BuildHostAsync(gateway);
+        using var stopping = new CancellationTokenSource();
+        var logs = new ConcurrentQueue<string>();
+        var agentId = Guid.NewGuid();
+        var agent = new AgentGatewayPresenceClient(
+            new GatewayClientOptions { Endpoint = "https://gateway.test" },
+            new StableTokenService(), 7, agentId, "test", [], logs.Enqueue,
+            createHttpHandler: _ => host.GetTestServer().CreateHandler());
+
+        var run = agent.RunAsync(stopping.Token);
+        try
+        {
+            await gateway.SecondHeartbeatReceived.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var frames = gateway.Heartbeats.ToArray();
+            frames.Should().HaveCount(2);
+            frames[0].Heartbeat.HasAcknowledgedHeartbeatRoundTripMs.Should().BeFalse();
+            frames[0].Heartbeat.AcknowledgedHeartbeatSequence.Should().Be(0);
+            frames[1].Heartbeat.HasAcknowledgedHeartbeatRoundTripMs.Should().BeTrue();
+            frames[1].Heartbeat.AcknowledgedHeartbeatSequence.Should().Be(frames[0].Sequence);
+            frames[1].Heartbeat.AcknowledgedHeartbeatRoundTripMs.Should().BeInRange(0, 10000);
+            frames.Should().OnlyContain(frame => frame.ClientId == agentId.ToString("D") && frame.TenantId == 7);
+            frames[0].ConnectionEpoch.Should().Be(frames[1].ConnectionEpoch);
+            gateway.Hellos.Should().ContainSingle().Which.Hello.Capabilities.Should().Contain("heartbeat-latency");
+            logs.Should().NotContain(message => message.StartsWith("Gateway session failed", StringComparison.Ordinal));
+        }
+        finally
+        {
+            stopping.Cancel();
+            await run.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+    }
+
+    [Fact]
+    public async Task RunAsync_CancellationBeforeHeartbeatAcknowledgement_CannotReportLatency()
+    {
+        var gateway = new RefreshGatewayService(holdFirstHeartbeatAcknowledgement: true);
+        using var host = await BuildHostAsync(gateway);
+        using var stopping = new CancellationTokenSource();
+        var agent = new AgentGatewayPresenceClient(
+            new GatewayClientOptions { Endpoint = "https://gateway.test" },
+            new StableTokenService(), 7, Guid.NewGuid(), "test", [], _ => { },
+            createHttpHandler: _ => host.GetTestServer().CreateHandler());
+
+        var run = agent.RunAsync(stopping.Token);
+        await gateway.FirstHeartbeatReceived.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        stopping.Cancel();
+        await run.WaitAsync(TimeSpan.FromSeconds(5));
+
+        gateway.Heartbeats.Should().ContainSingle().Which.Heartbeat.HasAcknowledgedHeartbeatRoundTripMs.Should().BeFalse();
+        gateway.SecondHeartbeatReceived.Task.IsCompleted.Should().BeFalse();
+    }
+
     [Theory]
     [InlineData(null)]
     [InlineData(true)]
@@ -243,6 +299,8 @@ public sealed class AgentGatewayPresenceClientTests
 
             updateHandler.Events.Should().Contain(entry => entry.Event == "sent" && entry.Epoch == 1);
             updateHandler.Events.Should().NotContain(entry => entry.Event == "accepted");
+            gateway.Heartbeats.Should().ContainSingle().Which.Heartbeat.HasAcknowledgedHeartbeatRoundTripMs.Should().BeFalse();
+            gateway.SecondHeartbeatReceived.Task.IsCompleted.Should().BeFalse("an invalid ACK cannot produce a latency report");
             Volatile.Read(ref extensionStarts).Should().Be(0);
         }
         finally
@@ -305,6 +363,9 @@ public sealed class AgentGatewayPresenceClientTests
             admittedSessions[0].ConnectionEpoch.Should().Be(1);
             admittedSessions[1].ConnectionEpoch.Should().Be(2);
             admittedSessions[0].ConnectionId.Should().NotBe(admittedSessions[1].ConnectionId);
+            gateway.Heartbeats.Where(frame => frame.Sequence == 1).Should().HaveCount(2)
+                .And.OnlyContain(frame => !frame.Heartbeat.HasAcknowledgedHeartbeatRoundTripMs,
+                    "a reconnect resets the previous connection's latency sample");
         }
         finally
         {
@@ -454,21 +515,27 @@ public sealed class AgentGatewayPresenceClientTests
         private readonly string _presenceAuthority;
         private readonly bool _disconnectAfterFirstHeartbeat;
         private readonly string? _heartbeatMismatch;
+        private readonly bool _holdFirstHeartbeatAcknowledgement;
         private int _connectionEpoch;
         private int _disconnectIssued;
 
         public RefreshGatewayService(
             string presenceAuthority = "akka",
             bool disconnectAfterFirstHeartbeat = false,
-            string? heartbeatMismatch = null)
+            string? heartbeatMismatch = null,
+            bool holdFirstHeartbeatAcknowledgement = false)
         {
             _presenceAuthority = presenceAuthority;
             _disconnectAfterFirstHeartbeat = disconnectAfterFirstHeartbeat;
             _heartbeatMismatch = heartbeatMismatch;
+            _holdFirstHeartbeatAcknowledgement = holdFirstHeartbeatAcknowledgement;
         }
 
         public TaskCompletionSource SecondAdmission { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource FirstHeartbeatReceived { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource SecondHeartbeatReceived { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public ConcurrentQueue<AgentFrame> Heartbeats { get; } = new();
+        public ConcurrentQueue<AgentFrame> Hellos { get; } = new();
 
         public override async Task Connect(
             IAsyncStreamReader<AgentFrame> requestStream,
@@ -478,6 +545,7 @@ public sealed class AgentGatewayPresenceClientTests
             if (!await requestStream.MoveNext(context.CancellationToken).ConfigureAwait(false)) return;
 
             var hello = requestStream.Current;
+            Hellos.Enqueue(hello);
             var connectionEpoch = checked((ulong)Interlocked.Increment(ref _connectionEpoch));
             var connectionId = Guid.NewGuid();
             await responseStream.WriteAsync(new GatewayFrame
@@ -505,7 +573,11 @@ public sealed class AgentGatewayPresenceClientTests
                 {
                     var frame = requestStream.Current;
                     if (frame.PayloadCase is not AgentFrame.PayloadOneofCase.Heartbeat) continue;
+                    Heartbeats.Enqueue(frame.Clone());
                     FirstHeartbeatReceived.TrySetResult();
+                    if (Heartbeats.Count >= 2) SecondHeartbeatReceived.TrySetResult();
+                    if (_holdFirstHeartbeatAcknowledgement)
+                        await Task.Delay(Timeout.InfiniteTimeSpan, context.CancellationToken).ConfigureAwait(false);
 
                     await responseStream.WriteAsync(new GatewayFrame
                     {

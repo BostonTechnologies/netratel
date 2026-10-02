@@ -19,7 +19,7 @@ public sealed record ClientInstallLinkResult(
     Guid Id, int TenantId, string RuntimeId, string ArtifactVersion, string ArtifactSha256,
     DateTimeOffset ExpiresAtUtc, int MaxUses, int RemainingUses,
     bool InstallAsService, bool SilentInstall, string PublicUrl, string InstallCommand,
-    string Script, bool Replay);
+    string Script, bool Replay, ClientInstallEndpointSummary Endpoints);
 
 public sealed record ClientInstallLinkMetadata(
     Guid Id, int TenantId, string RuntimeId, string ArtifactVersion,
@@ -68,23 +68,7 @@ public sealed class ClientInstallLinkService(
             .SingleOrDefaultAsync(x => x.RequestKey == requestKey, ct);
         if (existing is not null) return ToResult(existing, fingerprint, replay: true);
 
-        var siteUrl = (await branding.GetEffectiveAsync(ct).ConfigureAwait(false)).SiteUrl.Value;
-        var publicWebBase = ValidatedPublicOrigin(siteUrl, "public web");
-        var configuredApiBase = configuration["ClientArtifacts:PublicBaseUrl"];
-        var apiEndpointSource = string.IsNullOrWhiteSpace(configuredApiBase)
-            ? "branding-site-url"
-            : "client-artifacts-public-base-url";
-        var publicApiBase = ValidatedPublicApiBase(
-            string.IsNullOrWhiteSpace(configuredApiBase) ? siteUrl : configuredApiBase);
-        var configuredGatewayEndpoint = configuration["ClientArtifacts:PublicGatewayBaseUrl"];
-        var gatewayEndpoint = string.IsNullOrWhiteSpace(configuredGatewayEndpoint)
-            ? null
-            : ValidatedPublicGatewayBase(configuredGatewayEndpoint);
-        if (gatewayEndpoint is not null &&
-            string.Equals(gatewayEndpoint, publicApiBase, StringComparison.OrdinalIgnoreCase))
-        {
-            gatewayEndpoint = null;
-        }
+        var endpoints = await ResolveEndpointsAsync(ct);
         var keysDirectory = configuration["DataProtection:KeysDirectory"];
         if (!string.IsNullOrWhiteSpace(keysDirectory) && !Path.IsPathRooted(keysDirectory))
             keysDirectory = Path.Combine(AppContext.BaseDirectory, keysDirectory);
@@ -112,9 +96,9 @@ public sealed class ClientInstallLinkService(
         var extension = templates.GetFileExtension(runtimeId);
         var expires = now.AddMinutes(validated.validForMinutes);
         var script = templates.Build(new DeploymentScriptTemplateRequest(
-            request.TenantId, runtimeId, code, publicApiBase, expires,
+            request.TenantId, runtimeId, code, endpoints.PublicApiBaseUrl, expires,
             request.InstallAsService, request.SilentInstall,
-            artifact.Version, artifact.Sha256, gatewayEndpoint));
+            artifact.Version, artifact.Sha256, ClientInstallEndpointResolver.GatewayOverride(endpoints)));
         var codeId = Guid.NewGuid();
         var grant = new ClientInstallGrant
         {
@@ -124,7 +108,10 @@ public sealed class ClientInstallLinkService(
             TenantId = request.TenantId, RuntimeId = runtimeId,
             ArtifactVersion = artifact.Version, ArtifactSha256 = artifact.Sha256,
             InstallAsService = request.InstallAsService, SilentInstall = request.SilentInstall,
-            PublicWebBaseUrl = publicWebBase, PublicApiBaseUrl = publicApiBase,
+            PublicWebBaseUrl = endpoints.PublicWebBaseUrl, PublicApiBaseUrl = endpoints.PublicApiBaseUrl,
+            EffectiveGatewayBaseUrl = endpoints.EffectiveGatewayBaseUrl,
+            PublicWebSource = endpoints.PublicWebSource, PublicApiSource = endpoints.PublicApiSource,
+            GatewaySource = endpoints.GatewaySource,
             CreatedBy = createdBy, CreatedAtUtc = now, ExpiresAtUtc = expires,
             MaxUses = validated.maxUses
         };
@@ -155,10 +142,19 @@ public sealed class ClientInstallLinkService(
         logger.LogInformation(
             "Public client install link created. tenantId={TenantId}, apiEndpointSource={ApiEndpointSource}, gatewayEndpointSource={GatewayEndpointSource}",
             request.TenantId,
-            apiEndpointSource,
-            gatewayEndpoint is null ? "shared-api-origin" : "client-artifacts-public-gateway-base-url");
+            endpoints.PublicApiSource, endpoints.GatewaySource);
         return BuildResult(grant, token, script, extension, replay: false);
     }
+
+    public async Task<ClientInstallEndpointSummary> PreviewEndpointsAsync(int tenantId, CancellationToken ct)
+    {
+        if (tenantId <= 0 || !await tenants.TenantExistsAsync(tenantId, ct))
+            throw new RequestValidationException("tenantId", "The selected tenant does not exist.");
+        return await ResolveEndpointsAsync(ct);
+    }
+
+    private async Task<ClientInstallEndpointSummary> ResolveEndpointsAsync(CancellationToken ct) =>
+        ClientInstallEndpointResolver.Resolve(configuration, await branding.GetEffectiveAsync(ct).ConfigureAwait(false));
 
     public async Task<(string Script, string Extension)?> GetPublicScriptAsync(string token, string extension, CancellationToken ct)
     {
@@ -228,7 +224,9 @@ public sealed class ClientInstallLinkService(
         return new ClientInstallLinkResult(grant.Id, grant.TenantId, grant.RuntimeId,
             grant.ArtifactVersion, grant.ArtifactSha256, grant.ExpiresAtUtc,
             grant.MaxUses, Math.Max(0, grant.MaxUses - (grant.EnrollmentCode?.Uses ?? 0)),
-            grant.InstallAsService, grant.SilentInstall, url, command, script, replay);
+            grant.InstallAsService, grant.SilentInstall, url, command, script, replay,
+            new(grant.PublicWebBaseUrl, grant.PublicApiBaseUrl, grant.EffectiveGatewayBaseUrl,
+                grant.PublicWebSource, grant.PublicApiSource, grant.GatewaySource));
     }
 
     private ClientInstallLinkMetadata ToMetadata(ClientInstallGrant grant) =>
@@ -243,33 +241,6 @@ public sealed class ClientInstallLinkService(
         return grant.RevokedAtUtc is null && grant.ExpiresAtUtc > now &&
             code.RevokedAtUtc is null && code.ValidFromUtc <= now && code.ValidToUtc > now &&
             (!code.MaxUses.HasValue || code.Uses < code.MaxUses.Value);
-    }
-
-    private static string ValidatedPublicOrigin(string? value, string endpointName)
-    {
-        if (string.IsNullOrWhiteSpace(value) || !Uri.TryCreate(value, UriKind.Absolute, out var uri) ||
-            uri.Scheme != Uri.UriSchemeHttps || uri.Port != 443 || uri.UserInfo.Length != 0 ||
-            uri.HostNameType != UriHostNameType.Dns || !uri.Host.Contains('.') ||
-            uri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase) ||
-            uri.Host.EndsWith(".local", StringComparison.OrdinalIgnoreCase) ||
-            uri.Host.EndsWith(".internal", StringComparison.OrdinalIgnoreCase) ||
-            uri.Query.Length != 0 || uri.Fragment.Length != 0 || uri.AbsolutePath.TrimEnd('/').Length != 0)
-            throw new InvalidOperationException(
-                $"Set the public {endpointName} endpoint to a public HTTPS origin before creating install links.");
-        return uri.GetLeftPart(UriPartial.Authority);
-    }
-
-    private static string ValidatedPublicApiBase(string? value)
-    {
-        var normalized = ClientEndpointAddress.NormalizeApiBase(value);
-        var origin = ValidatedPublicOrigin(normalized, "API");
-        return origin;
-    }
-
-    private static string ValidatedPublicGatewayBase(string? value)
-    {
-        var normalized = ClientEndpointAddress.NormalizeGatewayBase(value);
-        return ValidatedPublicOrigin(normalized, "gateway");
     }
 
     private static string Hash(string value) =>

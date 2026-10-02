@@ -10,6 +10,7 @@ using Microsoft.AspNetCore.Components.Forms;
 using MudBlazor;
 using Microsoft.JSInterop;
 using NetRatel.Shared;
+using NetRatel.Shared.Client;
 
 namespace NetRatel.Web.Services;
 
@@ -72,6 +73,8 @@ public interface IClientArtifactsService
     Task DownloadAsync(string rid, string version, CancellationToken ct = default);
     Task DownloadClientPackageAsync(ClientPackageDownloadRequest request, CancellationToken ct = default);
     Task DownloadDeploymentScriptAsync(ClientScriptGenerateRequest request, CancellationToken ct = default);
+    Task<ClientInstallEndpointSummary?> PreviewInstallEndpointsAsync(int tenantId, CancellationToken ct = default) =>
+        Task.FromResult<ClientInstallEndpointSummary?>(null);
     Task<ClientInstallLinkResultModel> GenerateInstallLinkAsync(ClientScriptGenerateRequest request, CancellationToken ct = default) =>
         throw new NotSupportedException();
     Task DownloadGeneratedInstallScriptAsync(ClientInstallLinkResultModel result, CancellationToken ct = default) =>
@@ -438,6 +441,16 @@ public class ClientArtifactsService : IClientArtifactsService
                 ?? $"Install link generation failed with HTTP {(int)response.StatusCode}.");
         return await response.Content.ReadFromJsonAsync<ClientInstallLinkResultModel>(cancellationToken: ct)
             ?? throw new HttpRequestException("The install link response was empty.");
+    }
+
+    public async Task<ClientInstallEndpointSummary?> PreviewInstallEndpointsAsync(int tenantId, CancellationToken ct = default)
+    {
+        using var response = await _uploads.Http.GetAsync($"/api/v1/client-install-links/endpoints/{tenantId}", ct);
+        if (!response.IsSuccessStatusCode)
+            throw new HttpRequestException(await TryReadProblemAsync(response, ct)
+                ?? $"Endpoint preview failed with HTTP {(int)response.StatusCode}.");
+        return await response.Content.ReadFromJsonAsync<ClientInstallEndpointSummary>(cancellationToken: ct)
+            ?? throw new HttpRequestException("The endpoint preview response was empty.");
     }
 
     public async Task DownloadGeneratedInstallScriptAsync(ClientInstallLinkResultModel result, CancellationToken ct = default)
@@ -807,6 +820,7 @@ public sealed class ClientInstallLinkResultModel
     public string InstallCommand { get; set; } = string.Empty;
     public string Script { get; set; } = string.Empty;
     public bool Replay { get; set; }
+    public ClientInstallEndpointSummary? Endpoints { get; set; }
 }
 
 public sealed class ClientInstallLinkMetadataModel

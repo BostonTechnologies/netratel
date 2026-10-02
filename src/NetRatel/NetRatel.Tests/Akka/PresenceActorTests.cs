@@ -210,7 +210,7 @@ public sealed class PresenceActorTests : IAsyncLifetime
         _system.EventStream.Subscribe(observer, typeof(ClientPresenceChanged));
         var actor = _system.ActorOf(ClientActor.Props(client, options));
 
-        await actor.Ask<GatewayPresenceSessionStarted>(new StartGatewayPresenceSession(
+        var session = await actor.Ask<GatewayPresenceSessionStarted>(new StartGatewayPresenceSession(
             client,
             connectionId,
             Guid.NewGuid(),
@@ -220,12 +220,19 @@ public sealed class PresenceActorTests : IAsyncLifetime
             null,
             DateTimeOffset.UtcNow));
 
+        var measuredAt = DateTimeOffset.UtcNow;
+        await actor.Ask<PresenceMessageResult>(new RecordGatewayHeartbeat(
+            client, connectionId, session.ConnectionEpoch, Guid.NewGuid(), 1, measuredAt, 10, measuredAt));
+
         var transition = await offlineTransition.Task.WaitAsync(TimeSpan.FromSeconds(3));
         var snapshot = await actor.Ask<ClientPresenceSnapshot>(new GetClientPresence(client));
 
         transition.Reason.Should().Be("heartbeat-expired");
         snapshot.Status.Should().Be(ClientPresenceStatus.Offline);
         snapshot.IsAuthoritative.Should().BeTrue();
+        snapshot.LatencyMilliseconds.Should().BeNull();
+        snapshot.LatencyMeasuredAtUtc.Should().BeNull();
+        snapshot.LatencyExpiresAtUtc.Should().BeNull();
     }
 
     [Fact]
@@ -253,6 +260,79 @@ public sealed class PresenceActorTests : IAsyncLifetime
             snapshot.Client == client &&
             snapshot.Status == ClientPresenceStatus.Online &&
             snapshot.AgentVersion == "0.4.94");
+    }
+
+    [Fact]
+    public async Task HeartbeatLatency_UpdatesTheSnapshot_AndFencesDuplicateAndPreviousSessionSamples()
+    {
+        var client = new ClientKey(31, Guid.NewGuid());
+        var connectionId = Guid.NewGuid();
+        var options = CreateOptions();
+        var actor = _system.ActorOf(ClientActor.Props(client, options));
+        var now = DateTimeOffset.UtcNow;
+        var session = await actor.Ask<GatewayPresenceSessionStarted>(new StartGatewayPresenceSession(
+            client, connectionId, Guid.NewGuid(), "1.0", "latency-test", ["presence"], null, now));
+
+        await actor.Ask<PresenceMessageResult>(new RecordGatewayHeartbeat(
+            client, connectionId, session.ConnectionEpoch, Guid.NewGuid(), 1, now.AddSeconds(15), 18.75, now));
+        var first = await actor.Ask<ClientPresenceSnapshot>(new GetClientPresence(client));
+        first.LatencyMilliseconds.Should().Be(18.75);
+        first.LatencyMeasuredAtUtc.Should().Be(now);
+        first.LatencyExpiresAtUtc.Should().Be(now + options.HeartbeatTimeout);
+
+        var duplicate = await actor.Ask<PresenceMessageResult>(new RecordGatewayHeartbeat(
+            client, connectionId, session.ConnectionEpoch, Guid.NewGuid(), 1, now.AddSeconds(16), 999, now.AddSeconds(1)));
+        duplicate.Disposition.Should().Be(PresenceMessageDisposition.Duplicate);
+        (await actor.Ask<ClientPresenceSnapshot>(new GetClientPresence(client))).LatencyMilliseconds.Should().Be(18.75);
+
+        await actor.Ask<PresenceMessageResult>(new RecordGatewayHeartbeat(
+            client, connectionId, session.ConnectionEpoch, Guid.NewGuid(), 2, now.AddSeconds(30), 24.5, now.AddSeconds(15)));
+        (await actor.Ask<ClientPresenceSnapshot>(new GetClientPresence(client))).LatencyMilliseconds.Should().Be(24.5);
+
+        var replacement = await actor.Ask<GatewayPresenceSessionStarted>(new StartGatewayPresenceSession(
+            client, Guid.NewGuid(), Guid.NewGuid(), "1.0", "latency-test", ["presence"], null, now.AddSeconds(31)));
+        var stale = await actor.Ask<PresenceMessageResult>(new RecordGatewayHeartbeat(
+            client, connectionId, session.ConnectionEpoch, Guid.NewGuid(), 3, now.AddSeconds(32), 50, now.AddSeconds(30)));
+        stale.Disposition.Should().Be(PresenceMessageDisposition.StaleConnectionEpoch);
+        replacement.ConnectionEpoch.Should().BeGreaterThan(session.ConnectionEpoch);
+        var reconnected = await actor.Ask<ClientPresenceSnapshot>(new GetClientPresence(client));
+        reconnected.LatencyMilliseconds.Should().BeNull();
+        reconnected.LatencyMeasuredAtUtc.Should().BeNull();
+        reconnected.LatencyExpiresAtUtc.Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(double.NaN)]
+    [InlineData(double.PositiveInfinity)]
+    [InlineData(double.MaxValue)]
+    public async Task InvalidHeartbeatLatency_DoesNotInterruptPresenceOrRefreshThePreviousSample(double invalidLatency)
+    {
+        var client = new ClientKey(32, Guid.NewGuid());
+        var connectionId = Guid.NewGuid();
+        var options = CreateOptions();
+        var actor = _system.ActorOf(ClientActor.Props(client, options));
+        var now = DateTimeOffset.UtcNow;
+        var session = await actor.Ask<GatewayPresenceSessionStarted>(new StartGatewayPresenceSession(
+            client, connectionId, Guid.NewGuid(), "1.0", "latency-test", ["presence"], null, now));
+        await actor.Ask<PresenceMessageResult>(new RecordGatewayHeartbeat(
+            client, connectionId, session.ConnectionEpoch, Guid.NewGuid(), 1, now.AddSeconds(1), 10, now));
+        var result = await actor.Ask<PresenceMessageResult>(new RecordGatewayHeartbeat(
+            client, connectionId, session.ConnectionEpoch, Guid.NewGuid(), 2, now.AddSeconds(15), invalidLatency, now.AddSeconds(14)));
+
+        result.Disposition.Should().Be(PresenceMessageDisposition.Accepted);
+        var snapshot = await actor.Ask<ClientPresenceSnapshot>(new GetClientPresence(client));
+        snapshot.Status.Should().Be(ClientPresenceStatus.Online);
+        snapshot.LatencyMilliseconds.Should().Be(10);
+        snapshot.LatencyMeasuredAtUtc.Should().Be(now);
+        snapshot.LatencyExpiresAtUtc.Should().Be(now + options.HeartbeatTimeout);
+
+        await actor.Ask<PresenceMessageResult>(new EndGatewayPresenceSession(
+            client, connectionId, session.ConnectionEpoch, "test", now.AddSeconds(16)));
+        var offline = await actor.Ask<ClientPresenceSnapshot>(new GetClientPresence(client));
+        offline.LatencyMilliseconds.Should().BeNull();
+        offline.LatencyMeasuredAtUtc.Should().BeNull();
+        offline.LatencyExpiresAtUtc.Should().BeNull();
     }
 
     private static NetRatelAkkaOptions CreateOptions() => new()

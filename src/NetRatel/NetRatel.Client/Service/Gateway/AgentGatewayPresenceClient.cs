@@ -7,6 +7,7 @@ using NetRatel.Client.Service.Updates;
 using NetRatel.Client.Service.Auth;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
 using System.Threading;
@@ -30,7 +31,8 @@ public sealed class AgentGatewayPresenceClient(
     Func<GatewayPresenceSession, string, CancellationToken, Task>? runForPresenceSession = null,
     IAgentGatewayUpdateHandler? updateHandler = null,
     Func<Uri, GrpcChannel>? createChannel = null,
-    TimeSpan? extensionShutdownTimeout = null)
+    TimeSpan? extensionShutdownTimeout = null,
+    Func<Uri, HttpMessageHandler>? createHttpHandler = null)
 {
     private static readonly TimeSpan InitialRetryDelay = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan MaximumRetryDelay = TimeSpan.FromSeconds(30);
@@ -40,26 +42,46 @@ public sealed class AgentGatewayPresenceClient(
     public async Task RunAsync(CancellationToken stoppingToken)
     {
         var retryDelay = InitialRetryDelay;
+        string? lastFailureKey = null;
+        long lastFailureLog = 0;
+        var suppressedFailures = 0;
         while (!stoppingToken.IsCancellationRequested)
         {
+            GatewaySessionDiagnostics? diagnostics = null;
             try
             {
                 var token = await DisabledAgentTokenRetry.GetAccessTokenAsync(tokenService, log, stoppingToken).ConfigureAwait(false);
-                await RunSessionAsync(token.AccessToken, token.ExpiresAtUtc, stoppingToken).ConfigureAwait(false);
+                diagnostics = new GatewaySessionDiagnostics(options.Endpoint);
+                await RunSessionAsync(token.AccessToken, token.ExpiresAtUtc, diagnostics, stoppingToken).ConfigureAwait(false);
                 retryDelay = InitialRetryDelay;
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
                 break;
             }
+            catch (RpcException exception) when (stoppingToken.IsCancellationRequested && exception.StatusCode == StatusCode.Cancelled)
+            {
+                break;
+            }
             catch (AgentClientAuthException exception)
             {
-                log($"Agent token acquisition failed: {exception.Message}");
+                log($"Agent token acquisition failed: {exception.GetType().Name}; presence remains offline.");
                 throw;
             }
             catch (Exception exception) when (exception is RpcException or HttpRequestException or IOException or OperationCanceledException)
             {
-                log($"Gateway session failed: {exception.GetType().Name}: {exception.Message}. Retrying in {retryDelay.TotalSeconds:0}s.");
+                var failure = (diagnostics ?? new GatewaySessionDiagnostics(options.Endpoint)).Failure(exception, retryDelay);
+                if (failure.Key != lastFailureKey || Stopwatch.GetElapsedTime(lastFailureLog) >= TimeSpan.FromSeconds(30))
+                {
+                    log($"{failure.Message} suppressedRepeatedFailures={suppressedFailures}.");
+                    lastFailureKey = failure.Key;
+                    lastFailureLog = Stopwatch.GetTimestamp();
+                    suppressedFailures = 0;
+                }
+                else
+                {
+                    suppressedFailures++;
+                }
                 try
                 {
                     await Task.Delay(retryDelay, stoppingToken).ConfigureAwait(false);
@@ -74,14 +96,20 @@ public sealed class AgentGatewayPresenceClient(
         }
     }
 
-    private async Task RunSessionAsync(string accessToken, DateTimeOffset expiresAtUtc, CancellationToken stoppingToken)
+    private async Task RunSessionAsync(string accessToken, DateTimeOffset expiresAtUtc, GatewaySessionDiagnostics diagnostics, CancellationToken stoppingToken)
     {
         if (!Uri.TryCreate(options.Endpoint, UriKind.Absolute, out var endpoint) || endpoint.Scheme != Uri.UriSchemeHttps)
         {
             throw new InvalidOperationException("Gateway:Endpoint must be an absolute HTTPS URL.");
         }
 
-        using var channel = createChannel?.Invoke(endpoint) ?? GrpcChannel.ForAddress(endpoint);
+        using var channel = createChannel?.Invoke(endpoint) ?? GrpcChannel.ForAddress(endpoint,
+            new GrpcChannelOptions
+            {
+                HttpHandler = new GatewayHttpDiagnosticsHandler(diagnostics,
+                    createHttpHandler?.Invoke(endpoint) ?? new SocketsHttpHandler { EnableMultipleHttp2Connections = true }),
+                DisposeHttpClient = true
+            });
         var client = new global::NetRatel.AgentGateway.Contracts.V1.AgentGateway.AgentGatewayClient(channel);
         var headers = new Metadata { { "Authorization", $"Bearer {accessToken}" } };
         using var call = client.Connect(headers, cancellationToken: stoppingToken);
@@ -95,6 +123,7 @@ public sealed class AgentGatewayPresenceClient(
                 AgentVersion = agentVersion
             };
             hello.Capabilities.Add("presence");
+            hello.Capabilities.Add("heartbeat-latency");
             // Retain this legacy wire token verbatim; telemetry itself now uses the V2 stream.
             hello.Capabilities.Add("telemetry-shadow");
             hello.Capabilities.Add("file-gateway");
@@ -127,9 +156,10 @@ public sealed class AgentGatewayPresenceClient(
             }
 
             var accepted = call.ResponseStream.Current;
-            ValidateConnectedFrame(accepted, operationId);
+            ValidateConnectedFrame(accepted, operationId, diagnostics);
             if (!GatewayWireProtocol.HasAkkaAuthority(accepted.Connected.PresenceAuthority))
             {
+                diagnostics.ProtocolFailure("unsupported presence authority token");
                 throw new RpcException(new Status(
                     StatusCode.FailedPrecondition,
                     "Gateway returned an unsupported presence authority token."));
@@ -142,7 +172,8 @@ public sealed class AgentGatewayPresenceClient(
                 confirmation: null);
             updateHandler?.OnPresenceConnected(accepted.ConnectionEpoch);
             var acceptedConnectionId = Guid.Parse(accepted.ConnectionId);
-            log($"Presence admitted. connectionEpoch={accepted.ConnectionEpoch}, heartbeatInterval={heartbeatInterval.TotalSeconds:0}s.");
+            diagnostics.Admitted(acceptedConnectionId);
+            log($"Presence admitted. {diagnostics.AdmissionSummary}, connectionEpoch={accepted.ConnectionEpoch}, heartbeatInterval={heartbeatInterval.TotalSeconds:0}s.");
 
             using var sessionStopping = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
             var session = new GatewayPresenceSession(
@@ -151,6 +182,9 @@ public sealed class AgentGatewayPresenceClient(
                 accepted.ConnectionEpoch,
                 acceptedConnectionId);
             ulong sequence = 0;
+            double? lastAcknowledgedRoundTripMs = null;
+            ulong lastAcknowledgedSequence = 0;
+            var maximumReportedRoundTripMs = TimeSpan.FromSeconds(Math.Clamp((int)accepted.Connected.HeartbeatTimeoutSeconds, 1, 300)).TotalMilliseconds;
             Task? sessionTask = null;
             try
             {
@@ -158,6 +192,16 @@ public sealed class AgentGatewayPresenceClient(
                 {
                     var heartbeatOperationId = Guid.NewGuid();
                     updateHandler?.OnActivationHeartbeatSent(accepted.ConnectionEpoch);
+                    var presenceHeartbeat = new PresenceHeartbeat
+                    {
+                        ObservedAtUtc = Timestamp.FromDateTimeOffset(DateTimeOffset.UtcNow)
+                    };
+                    if (lastAcknowledgedRoundTripMs is { } roundTripMs)
+                    {
+                        presenceHeartbeat.AcknowledgedHeartbeatRoundTripMs = roundTripMs;
+                        presenceHeartbeat.AcknowledgedHeartbeatSequence = lastAcknowledgedSequence;
+                    }
+                    var heartbeatStarted = Stopwatch.GetTimestamp();
                     await call.RequestStream.WriteAsync(new AgentFrame
                     {
                         ProtocolVersion = options.ProtocolVersion,
@@ -167,10 +211,7 @@ public sealed class AgentGatewayPresenceClient(
                         ConnectionId = accepted.ConnectionId,
                         OperationId = heartbeatOperationId.ToString("D"),
                         Sequence = heartbeatSequence,
-                        Heartbeat = new PresenceHeartbeat
-                        {
-                            ObservedAtUtc = Timestamp.FromDateTimeOffset(DateTimeOffset.UtcNow)
-                        }
+                        Heartbeat = presenceHeartbeat
                     }).ConfigureAwait(false);
 
                     if (!await call.ResponseStream.MoveNext(stoppingToken).ConfigureAwait(false) ||
@@ -180,14 +221,20 @@ public sealed class AgentGatewayPresenceClient(
                     }
 
                     var heartbeat = call.ResponseStream.Current;
-                    ValidateHeartbeatFrame(heartbeat, accepted, heartbeatOperationId, heartbeatSequence);
+                    ValidateHeartbeatFrame(heartbeat, accepted, heartbeatOperationId, heartbeatSequence, diagnostics);
                     if (!GatewayWireProtocol.HasAkkaAuthority(heartbeat.HeartbeatAccepted.PresenceAuthority))
                     {
+                        diagnostics.ProtocolFailure("unsupported heartbeat authority token");
                         throw new RpcException(new Status(
                             StatusCode.FailedPrecondition,
                             "Gateway returned an unsupported heartbeat authority token."));
                     }
 
+                    diagnostics.AcknowledgeHeartbeat();
+                    var measuredRoundTripMs = Stopwatch.GetElapsedTime(heartbeatStarted).TotalMilliseconds;
+                    lastAcknowledgedRoundTripMs = double.IsFinite(measuredRoundTripMs) && measuredRoundTripMs >= 0 && measuredRoundTripMs <= maximumReportedRoundTripMs
+                        ? measuredRoundTripMs : null;
+                    lastAcknowledgedSequence = heartbeatSequence;
                     updateHandler?.OnActivationHeartbeatAccepted(accepted.ConnectionEpoch);
                     NotifyUpdateHandler(
                         heartbeat.HeartbeatAccepted.UpdateOffer,
@@ -213,11 +260,22 @@ public sealed class AgentGatewayPresenceClient(
                     await SendHeartbeatAsync(++sequence).ConfigureAwait(false);
                 }
             }
+            catch
+            {
+                // Record transport timing before optional extension shutdown consumes time.
+                diagnostics.SessionFailed();
+                throw;
+            }
             finally
             {
                 sessionStopping.Cancel();
                 await StopSessionExtensionsAsync(sessionTask, sessionStopping.Token, stoppingToken).ConfigureAwait(false);
             }
+        }
+        catch
+        {
+            diagnostics.SessionFailed();
+            throw;
         }
         finally
         {
@@ -225,7 +283,7 @@ public sealed class AgentGatewayPresenceClient(
             {
                 await call.RequestStream.CompleteAsync().ConfigureAwait(false);
             }
-            catch (RpcException)
+            catch (Exception exception) when (exception is RpcException or HttpRequestException or IOException)
             {
                 // The server already closed the stream; there is nothing left to acknowledge.
                 log("Gateway stream was already closed before a graceful completion could be sent.");
@@ -271,7 +329,7 @@ public sealed class AgentGatewayPresenceClient(
         catch (Exception exception)
         {
             // A non-authoritative extension must not take down the fenced presence stream.
-            log($"Non-presence gateway session extension ended unexpectedly: {exception.GetType().Name}: {exception.Message}");
+            log($"Non-presence gateway session extension ended unexpectedly: {exception.GetType().Name}.");
         }
     }
 
@@ -296,11 +354,11 @@ public sealed class AgentGatewayPresenceClient(
         catch (Exception exception)
         {
             updateHandler?.RecordAcknowledgementFailure(exception);
-            log($"Client update acknowledgement was ignored without affecting presence: {exception.GetType().Name}: {exception.Message}");
+            log($"Client update acknowledgement was ignored without affecting presence: {exception.GetType().Name}.");
         }
     }
 
-    private void ValidateConnectedFrame(GatewayFrame frame, Guid operationId)
+    private void ValidateConnectedFrame(GatewayFrame frame, Guid operationId, GatewaySessionDiagnostics diagnostics)
     {
         if (!string.Equals(frame.ProtocolVersion, options.ProtocolVersion, StringComparison.Ordinal) ||
             frame.TenantId != tenantId ||
@@ -309,11 +367,12 @@ public sealed class AgentGatewayPresenceClient(
             !string.Equals(frame.OperationId, operationId.ToString("D"), StringComparison.OrdinalIgnoreCase) ||
             frame.ConnectionEpoch == 0 || frame.Sequence != 0)
         {
+            diagnostics.ProtocolFailure("invalid connect acknowledgement");
             throw new RpcException(new Status(StatusCode.DataLoss, "Gateway returned an invalid connect acknowledgement."));
         }
     }
 
-    private void ValidateHeartbeatFrame(GatewayFrame frame, GatewayFrame accepted, Guid operationId, ulong sequence)
+    private void ValidateHeartbeatFrame(GatewayFrame frame, GatewayFrame accepted, Guid operationId, ulong sequence, GatewaySessionDiagnostics diagnostics)
     {
         if (!string.Equals(frame.ProtocolVersion, options.ProtocolVersion, StringComparison.Ordinal) ||
             frame.TenantId != tenantId ||
@@ -323,6 +382,7 @@ public sealed class AgentGatewayPresenceClient(
             !string.Equals(frame.OperationId, operationId.ToString("D"), StringComparison.OrdinalIgnoreCase) ||
             frame.Sequence != sequence)
         {
+            diagnostics.ProtocolFailure("invalid heartbeat acknowledgement");
             throw new RpcException(new Status(StatusCode.DataLoss, "Gateway returned an invalid heartbeat acknowledgement."));
         }
     }

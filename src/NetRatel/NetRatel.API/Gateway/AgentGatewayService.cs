@@ -144,6 +144,8 @@ public sealed class AgentGatewayService(
                 Connected = connected
             }).ConfigureAwait(false);
 
+            ulong lastAcknowledgedSequence = 0;
+            DateTimeOffset? lastAcknowledgedAtUtc = null;
             while (await requestStream.MoveNext(context.CancellationToken).ConfigureAwait(false))
             {
                 var frame = requestStream.Current;
@@ -156,6 +158,19 @@ public sealed class AgentGatewayService(
 
                 var heartbeatOperationId = Guid.Parse(frame.OperationId);
                 var heartbeatReceivedAtUtc = timeProvider.GetUtcNow();
+                // Accept only a bounded measurement of an ACK this stream has
+                // actually sent. Agent wall-clock timestamps never measure RTT.
+                var reportedLatency = frame.Heartbeat.HasAcknowledgedHeartbeatRoundTripMs
+                    ? frame.Heartbeat.AcknowledgedHeartbeatRoundTripMs
+                    : (double?)null;
+                var latencyIsValid = lastAcknowledgedSequence > 0 &&
+                    frame.Sequence > lastAcknowledgedSequence &&
+                    frame.Heartbeat.AcknowledgedHeartbeatSequence == lastAcknowledgedSequence &&
+                    reportedLatency is { } latency && double.IsFinite(latency) &&
+                    latency >= 0 && latency <= options.HeartbeatTimeout.TotalMilliseconds &&
+                    lastAcknowledgedAtUtc is { } measuredAt &&
+                    measuredAt <= heartbeatReceivedAtUtc &&
+                    heartbeatReceivedAtUtc - measuredAt <= options.HeartbeatTimeout;
                 var result = await RecordPresenceHeartbeatAsync(
                     new RecordGatewayHeartbeat(
                         client,
@@ -163,7 +178,9 @@ public sealed class AgentGatewayService(
                         session.ConnectionEpoch,
                         heartbeatOperationId,
                         frame.Sequence,
-                        heartbeatReceivedAtUtc),
+                        heartbeatReceivedAtUtc,
+                        HeartbeatRoundTripMilliseconds: latencyIsValid ? reportedLatency : null,
+                        LatencyMeasuredAtUtc: latencyIsValid ? lastAcknowledgedAtUtc : null),
                     operationalAuthority,
                     environmentName,
                     context.CancellationToken).ConfigureAwait(false);
@@ -227,6 +244,11 @@ public sealed class AgentGatewayService(
                     Sequence = frame.Sequence,
                     HeartbeatAccepted = heartbeatAccepted
                 }).ConfigureAwait(false);
+                if (result.Disposition == PresenceMessageDisposition.Accepted)
+                {
+                    lastAcknowledgedSequence = frame.Sequence;
+                    lastAcknowledgedAtUtc = timeProvider.GetUtcNow();
+                }
             }
         }
         catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)

@@ -61,7 +61,7 @@
                                     <span class="client-meta-value" title="@ClientPresentationFormatting.OperatingSystem(client)">@ClientPresentationFormatting.OperatingSystem(client)</span>
 
                                     <span class="client-meta-label">Latency</span>
-                                    <span class="client-meta-value">@FormatLatency(client)</span>
+                                    <span class="client-meta-value" data-testid="client-latency" title="Automatic gateway heartbeat round trip">@ClientPresentationFormatting.Latency(client, DateTimeOffset.UtcNow)</span>
 
                                     <span class="client-meta-label">Last heartbeat</span>
                                     <span class="client-meta-value">@ClientPresentationFormatting.Heartbeat(client.LastHeartbeatUtc)</span>
@@ -204,19 +204,9 @@
     [Parameter, EditorRequired] public IReadOnlyList<ClientPresentationModel> Clients { get; set; } = [];
     [Parameter] public EventCallback RefreshRequested { get; set; }
 
-    private readonly Dictionary<(int TenantId, Guid AgentId), double> _latencyByAgent = [];
-
     private static string GetInitials(string name) => string.IsNullOrWhiteSpace(name)
         ? "?"
         : string.Concat(name.Split(' ', StringSplitOptions.RemoveEmptyEntries).Take(2).Select(part => char.ToUpperInvariant(part[0])));
-
-    private string FormatLatency(ClientPresentationModel client)
-    {
-        var latency = _latencyByAgent.TryGetValue((client.TenantId, client.AgentId), out var measuredLatency)
-            ? measuredLatency
-            : (double?)null;
-        return ClientPresentationFormatting.Latency(client.Online, latency);
-    }
 
     private static Color GetUtilizationColor(double? value) => value switch
     {
@@ -257,9 +247,7 @@
         try
         {
             var result = await GatewayActions.PingAsync(client.TenantId, client.AgentId);
-            _latencyByAgent[(client.TenantId, client.AgentId)] = result.RoundTripMilliseconds;
             Snackbar.Add($"Gateway ping: {result.RoundTripMilliseconds:0} ms ({result.Authority}).", Severity.Success);
-            await InvokeAsync(StateHasChanged);
         }
         catch (Exception exception)
         {

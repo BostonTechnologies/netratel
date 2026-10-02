@@ -321,7 +321,7 @@
             {
             <MudText Typo="Typo.body2">The public install URL can be used by anyone holding it until the enrollment allowance expires or is revoked.</MudText>
             <MudText Typo="Typo.body2">Selected artifact: @_scriptRuntimeId @(_scriptArtifactVersion ?? "latest")</MudText>
-            <MudSelect T="int?" Label="Tenant" @bind-Value="_selectedTenantId" Required="true">
+            <MudSelect T="int?" Label="Tenant" @bind-Value="_selectedTenantId" @bind-Value:after="LoadEndpointPreviewAsync" Required="true">
                 @foreach (var tenant in _tenants) { <MudSelectItem T="int?" Value="@tenant.TenantId">@tenant.Name (@tenant.TenantId)</MudSelectItem> }
             </MudSelect>
             <MudSelect T="string" Label="Runtime" Value="_scriptRuntimeId" ValueChanged="OnScriptRuntimeChanged">
@@ -333,6 +333,9 @@
             <MudNumericField T="int" Label="Max uses" Min="1" @bind-Value="_scriptMaxUses" />
             <MudCheckBox T="bool" Label="Install as Service" @bind-Value="_scriptInstallAsService" />
             <MudCheckBox T="bool" Label="Silent install" @bind-Value="_scriptSilentInstall" />
+            @if (_endpointPreviewLoading) { <MudText Typo="Typo.caption" role="status">Resolving public endpoints…</MudText> }
+            @if (_endpointPreview is not null) { <ClientEndpointSummary Endpoints="_endpointPreview" Label="Endpoint preview" /> }
+            @if (!string.IsNullOrWhiteSpace(_endpointPreviewError)) { <MudAlert Severity="Severity.Error">@_endpointPreviewError</MudAlert> }
             }
             @if (_scriptGenerating) { <div role="status"><MudProgressLinear Indeterminate="true" /><MudText>Generating protected install link…</MudText></div> }
             @if (!string.IsNullOrWhiteSpace(_scriptError)) { <MudAlert Severity="Severity.Error">@_scriptError</MudAlert> }
@@ -342,16 +345,16 @@
                 @if (_scriptResultRevoked) { <MudAlert Severity="Severity.Warning">This link has been revoked. Existing enrolled clients remain active.</MudAlert> }
                 <MudText Typo="Typo.subtitle1">Generated install link</MudText>
                 <MudText Typo="Typo.body2">Tenant @_scriptResult.TenantId · @_scriptResult.RuntimeId · @_scriptResult.ArtifactVersion</MudText>
+                @if (_scriptResult.Endpoints is not null) { <ClientEndpointSummary Endpoints="_scriptResult.Endpoints" Label="Endpoints stored with this link" /> }
+                @if (_endpointPreviewChanged) { <MudAlert Severity="Severity.Info">The endpoints differ from the preview. This link uses the stored values shown above.</MudAlert> }
                 <MudText Typo="Typo.body2">Expires @_scriptResult.ExpiresAtUtc.UtcDateTime.ToString("u") UTC (@_scriptResult.ExpiresAtUtc.ToLocalTime().ToString("g") local). @_scriptResult.RemainingUses of @_scriptResult.MaxUses enrollments remain.</MudText>
                 <MudButton Size="Size.Small" Variant="Variant.Text" OnClick="RefreshGeneratedLinkAsync">Refresh status</MudButton>
                 <MudText Typo="Typo.caption">Fetching, previewing, copying, and downloading the script do not spend an enrollment use. Service installation may require administrator or root privileges.</MudText>
-                <MudTextField T="string" Label="Install command" Value="_scriptResult.InstallCommand" ReadOnly="true" Lines="2" Class="client-script-output" />
-                <MudButton Size="Size.Small" Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.ContentCopy" OnClick="@(() => CopyInstallTextAsync(_scriptResult.InstallCommand))">Copy command</MudButton>
-                <MudTextField T="string" Label="Public script URL" Value="_scriptResult.PublicUrl" ReadOnly="true" Lines="2" Class="client-script-output" />
-                <MudButton Size="Size.Small" Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.ContentCopy" OnClick="@(() => CopyInstallTextAsync(_scriptResult.PublicUrl))">Copy URL</MudButton>
+                <InstallCodeBlock Label="Install command" Value="@_scriptResult.InstallCommand" CopyLabel="Copy command" OnCopy="CopyInstallTextAsync" />
+                <InstallCodeBlock Label="Public script URL" Value="@_scriptResult.PublicUrl" CopyLabel="Copy URL" OnCopy="CopyInstallTextAsync" />
                 @if (!string.IsNullOrWhiteSpace(_scriptCopyMessage)) { <MudText Typo="Typo.caption" role="status">@_scriptCopyMessage</MudText> }
                 <MudText Typo="Typo.subtitle2">Script preview</MudText>
-                <pre class="client-script-preview" aria-label="Generated script preview">@_scriptResult.Script</pre>
+                <GeneratedInstallScriptPreview @key="_scriptResult.Id" Script="@_scriptResult.Script" RuntimeId="@_scriptResult.RuntimeId" />
                 <MudStack Row="true" Class="flex-wrap" Spacing="1">
                     <MudChip T="string" OnClick="DownloadGeneratedScriptAsync" Icon="@Icons.Material.Filled.Download" Color="Color.Primary">Download script</MudChip>
                     <MudButton Size="Size.Small" Variant="Variant.Outlined" Color="Color.Error" Disabled="_scriptResultRevoked" OnClick="RevokeGeneratedLinkAsync">Revoke link</MudButton>
@@ -450,6 +453,11 @@
     private bool _scriptInstallAsService = true;
     private bool _scriptSilentInstall = true;
     private ClientInstallLinkResultModel? _scriptResult;
+    private NetRatel.Shared.Client.ClientInstallEndpointSummary? _endpointPreview;
+    private string? _endpointPreviewError;
+    private bool _endpointPreviewLoading;
+    private bool _endpointPreviewChanged;
+    private int _endpointPreviewRequest;
     private string? _scriptResultFingerprint;
     private string? _scriptRequestFingerprint;
     private string? _scriptRequestKey;
@@ -997,7 +1005,7 @@
     private async Task OnUploaded() { await ResetAndReloadAsync(_artifactTable); await ResetAndReloadAsync(_releaseTable); }
     private void OpenDownload(ClientArtifactSummaryModel item) { _selectedItem = item; _selectedRuntimeId = item.Rid; _downloadDialogOpen = true; }
     private void CloseDownloadDialog() => _downloadDialogOpen = false;
-    private void OpenScript(ClientArtifactSummaryModel item)
+    private async Task OpenScript(ClientArtifactSummaryModel item)
     {
         _scriptRuntimeId = item.Rid;
         _scriptArtifactVersion = item.Version;
@@ -1011,6 +1019,28 @@
         _scriptResultRevoked = false;
         _scriptLinks = null;
         _scriptDialogOpen = true;
+        _endpointPreviewChanged = false;
+        await LoadEndpointPreviewAsync();
+    }
+
+    private async Task LoadEndpointPreviewAsync()
+    {
+        var request = ++_endpointPreviewRequest;
+        var tenant = _selectedTenantId;
+        _endpointPreview = null;
+        _endpointPreviewError = null;
+        _endpointPreviewLoading = tenant.HasValue;
+        if (!tenant.HasValue) return;
+        try
+        {
+            var preview = await Artifacts.PreviewInstallEndpointsAsync(tenant.Value);
+            if (request == _endpointPreviewRequest) _endpointPreview = preview;
+        }
+        catch (HttpRequestException exception)
+        {
+            if (request == _endpointPreviewRequest) _endpointPreviewError = exception.Message;
+        }
+        finally { if (request == _endpointPreviewRequest) _endpointPreviewLoading = false; }
     }
     private void OnScriptRuntimeChanged(string runtimeId) { _scriptRuntimeId = runtimeId; _scriptArtifactVersion = null; }
     private void CloseScriptDialog() => _scriptDialogOpen = false;
@@ -1024,7 +1054,7 @@
     }
 
     private bool CanDownload() => _selectedTenantId.HasValue && !string.IsNullOrWhiteSpace(_selectedRuntimeId) && (!_injectEnrollment || (_validityMinutes is >= 5 && _maxUses >= 1));
-    private bool CanGenerateScript() => _selectedTenantId.HasValue && !string.IsNullOrWhiteSpace(_scriptRuntimeId) && _scriptValidityMinutes is >= 5 and <= 10080 && _scriptMaxUses >= 1;
+    private bool CanGenerateScript() => _selectedTenantId.HasValue && !string.IsNullOrWhiteSpace(_scriptRuntimeId) && _scriptValidityMinutes is >= 5 and <= 10080 && _scriptMaxUses >= 1 && !_endpointPreviewLoading && _endpointPreviewError is null;
 
     private async Task GenerateScriptAsync()
     {
@@ -1047,6 +1077,8 @@
                 SilentInstall = _scriptSilentInstall, IdempotencyKey = _scriptRequestKey!
             });
             _scriptResultFingerprint = fingerprint;
+            _endpointPreviewChanged = _endpointPreview is not null && _scriptResult.Endpoints is not null &&
+                _endpointPreview != _scriptResult.Endpoints;
             _scriptEditing = false;
             _scriptResultRevoked = false;
         }
@@ -1149,8 +1181,6 @@
     .client-deployment-dialog { max-width: min(100%, 960px); }
     .client-deployment-dialog .mud-dialog-content { min-width: 0; max-height: calc(100dvh - 160px); overflow-y: auto; overflow-wrap: anywhere; }
     .client-deployment-dialog .mud-dialog-actions { flex-wrap: wrap; }
-    .client-script-output { min-width: 0; overflow-wrap: anywhere; }
-    .client-script-preview { max-width: 100%; max-height: 240px; overflow: auto; padding: 0.75rem; border: 1px solid var(--mud-palette-divider); white-space: pre-wrap; overflow-wrap: anywhere; }
 
     @@media (max-width: 600px) {
         .client-mgmt-hero, .client-mgmt-surface { padding-left: 0.75rem !important; padding-right: 0.75rem !important; }

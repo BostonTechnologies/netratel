@@ -46,6 +46,7 @@ public static class LogManager
     {
         try
         {
+            if (OperatingSystem.IsWindows()) NetRatel.Infrastructure.Auth.WindowsAgentDataDirectory.EnsureForPath(folderPath);
             Directory.CreateDirectory(folderPath);
             var prefix = SanitizeLogFilePrefix(logFilePrefix);
             var filePath = Path.Combine(folderPath, $"{prefix}-{DateTime.UtcNow:yyyyMMdd}.log");

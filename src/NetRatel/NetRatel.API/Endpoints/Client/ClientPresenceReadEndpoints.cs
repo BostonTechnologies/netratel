@@ -196,7 +196,10 @@ public static class ClientPresenceReadEndpoints
             Revision: revision,
             Terminal: terminal,
             TenantName: agent.TenantName,
-            File: file);
+            File: file,
+            LatencyMilliseconds: snapshot?.LatencyMilliseconds,
+            LatencyMeasuredAtUtc: snapshot?.LatencyMeasuredAtUtc,
+            LatencyExpiresAtUtc: snapshot?.LatencyExpiresAtUtc);
     }
 
     private static GatewayFileCapabilityDto MapFile(

@@ -93,6 +93,47 @@ separate public gateway origin can be set with
 embedded in new Client installs. They are independent of the Web-to-API
 internal address and the OIDC issuer URL.
 
+Set these on the **API backend**, using environment keys
+`ClientArtifacts__PublicBaseUrl` and `ClientArtifacts__PublicGatewayBaseUrl`.
+For a shared public REST/gRPC hostname, for example:
+
+```text
+ClientArtifacts__PublicBaseUrl=https://api.example.invalid
+```
+
+An absent or blank gateway override means that the effective gRPC origin is
+the API origin. For a separate gateway hostname:
+
+```text
+ClientArtifacts__PublicBaseUrl=https://api.example.invalid
+ClientArtifacts__PublicGatewayBaseUrl=https://gateway.example.invalid
+```
+
+The generation dialog previews the public Web/install-link, REST/enrollment/
+artifact, and effective gRPC origins with their sources. Preview requires the
+same operator permission as creation, verifies the selected tenant, and
+does not issue an enrollment code, create a grant, or contact these origins.
+Creation resolves the current settings again and displays the values stored
+with the newly generated link. Retrying the same request returns its original
+script and endpoint snapshot, even after settings change. Older links retain
+their recorded Web/API values; an unrecorded gateway or source is shown as
+unknown rather than inferred from today's settings. Generate a fresh link
+to pick up changed settings or installer templates.
+
+These values describe the backend's installer selection for a new client.
+Repair/update preserves a trusted existing explicit split gateway when the
+link supplies no separate override, and deployment/command-line settings
+retain their supported precedence. Check the installer's resolved-gateway
+diagnostic and the client's effective configuration after restart; preview
+does not inspect or change the target machine's existing settings.
+
+Keep the public install URL on the branding Web origin (for example,
+`https://web.example.invalid`). Route REST `/api/*` to the private REST listener
+and gRPC `/netratel.gateway.v1.*` to the private **h2c** gateway listener,
+preserving the dotted prefix and the entire request path. REST and gRPC may
+share a public hostname but remain distinct backend listeners. Do not use
+the internal Web-to-API URL or OIDC issuer as the public client endpoint.
+
 The API stores each generated script and capability token with ASP.NET Data
 Protection in PostgreSQL; the corresponding key ring in
 `DataProtection__KeysDirectory` must be persistent and shared by all API

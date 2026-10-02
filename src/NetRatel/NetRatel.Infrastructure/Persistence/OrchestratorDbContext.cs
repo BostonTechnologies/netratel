@@ -997,6 +997,10 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
             entity.Property(x => x.ArtifactSha256).HasMaxLength(64).IsRequired();
             entity.Property(x => x.PublicWebBaseUrl).HasMaxLength(2048).IsRequired();
             entity.Property(x => x.PublicApiBaseUrl).HasMaxLength(2048).IsRequired();
+            entity.Property(x => x.EffectiveGatewayBaseUrl).HasMaxLength(2048);
+            entity.Property(x => x.PublicWebSource).HasMaxLength(64);
+            entity.Property(x => x.PublicApiSource).HasMaxLength(64);
+            entity.Property(x => x.GatewaySource).HasMaxLength(64);
             entity.Property(x => x.CreatedBy).HasMaxLength(256).IsRequired();
             entity.Property(x => x.RevokedBy).HasMaxLength(256);
             entity.HasIndex(x => x.TokenHash).IsUnique();

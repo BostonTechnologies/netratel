@@ -17,12 +17,34 @@ public static class ClientPresentationFormatting
             : "n/a";
     }
 
-    public static string Latency(bool online, double? milliseconds) => milliseconds switch
+    public static string Latency(bool online, double? milliseconds)
     {
-        not null => $"{milliseconds.Value:0} ms",
-        null when online => "ping to measure",
-        _ => "n/a"
-    };
+        if (!online) return "n/a";
+        return milliseconds is { } value && double.IsFinite(value) && value >= 0
+            ? $"{value:0} ms"
+            : "waiting for heartbeat";
+    }
+
+    public static string Latency(ClientPresentationModel client, DateTimeOffset nowUtc)
+    {
+        if (!client.Online) return "n/a";
+        if (client.LatencyMilliseconds is not null &&
+            client.LatencyExpiresAtUtc is { } expiresAt && nowUtc >= expiresAt)
+        {
+            return "stale";
+        }
+
+        if (client.LatencyMilliseconds is null &&
+            !client.Capabilities.Contains("heartbeat-latency", StringComparer.OrdinalIgnoreCase))
+        {
+            return "upgrade required";
+        }
+
+        return Latency(client.Online,
+            client.LatencyMeasuredAtUtc.HasValue && client.LatencyExpiresAtUtc.HasValue
+                ? client.LatencyMilliseconds
+                : null);
+    }
 
     public static string Version(string? value)
     {

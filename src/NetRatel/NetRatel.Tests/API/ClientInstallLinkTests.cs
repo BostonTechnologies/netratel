@@ -3,6 +3,11 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Net.Http.Headers;
+using System.Net.Http.Json;
+using System.Security.Claims;
+using System.Text.Encodings.Web;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -13,6 +18,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using NetRatel.API.Models;
 using NetRatel.API.Endpoints;
 using NetRatel.API.Middleware;
@@ -23,6 +29,7 @@ using NetRatel.Infrastructure.Artifacts;
 using NetRatel.Infrastructure.Identity.Branding;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.Services;
+using NetRatel.Shared.Client;
 using Testcontainers.PostgreSql;
 using System.Threading.RateLimiting;
 using Xunit;
@@ -73,6 +80,71 @@ public sealed class ClientInstallLinkTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task PreviewDoesNotMintGrantsAndCreationReresolvesWhileReplayKeepsTheOriginalEndpoints()
+    {
+        await using var services = BuildServices(Keys);
+        await using var scope = services.CreateAsyncScope();
+        var links = scope.ServiceProvider.GetRequiredService<ClientInstallLinkService>();
+        var configuration = services.GetRequiredService<IConfiguration>();
+        var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+
+        var preview = await links.PreviewEndpointsAsync(21, TestContext.Current.CancellationToken);
+        Assert.Equal("https://netratel.example", preview.EffectiveGatewayBaseUrl);
+        Assert.Equal("branding-site-url", preview.PublicApiSource);
+        Assert.Equal("shared-api-origin", preview.GatewaySource);
+        Assert.Equal(0, await db.ClientInstallGrants.CountAsync());
+        Assert.Equal(0, await db.EnrollmentCodes.CountAsync());
+
+        configuration["ClientArtifacts:PublicBaseUrl"] = "https://api.example.invalid/api/";
+        configuration["ClientArtifacts:PublicGatewayBaseUrl"] = "https://gateway.example.invalid/";
+        var request = Request();
+        var created = await links.CreateAsync(request, "fixture-admin", TestContext.Current.CancellationToken);
+        Assert.NotEqual(preview, created.Endpoints);
+        Assert.Equal(preview.PublicWebBaseUrl, created.Endpoints.PublicWebBaseUrl);
+        Assert.Equal("https://api.example.invalid", created.Endpoints.PublicApiBaseUrl);
+        Assert.Equal("https://gateway.example.invalid", created.Endpoints.EffectiveGatewayBaseUrl);
+        Assert.Equal("client-artifacts-public-base-url", created.Endpoints.PublicApiSource);
+        Assert.Equal("client-artifacts-public-gateway-base-url", created.Endpoints.GatewaySource);
+        Assert.Contains("API_BASE='https://api.example.invalid'", created.Script);
+        Assert.Contains("GATEWAY_ENDPOINT='https://gateway.example.invalid'", created.Script);
+
+        // A replay must not resolve even invalid current settings or rewrite its script.
+        configuration["ClientArtifacts:PublicBaseUrl"] = "http://localhost:1234";
+        configuration["ClientArtifacts:PublicGatewayBaseUrl"] = null;
+        var replay = await links.CreateAsync(request, "fixture-admin", TestContext.Current.CancellationToken);
+        Assert.Equal(created.Endpoints, replay.Endpoints);
+        Assert.Equal(created.Script, replay.Script);
+        Assert.Equal(created.PublicUrl, replay.PublicUrl);
+        Assert.Equal(1, await db.ClientInstallGrants.CountAsync());
+        Assert.Equal(0, (await db.EnrollmentCodes.SingleAsync()).Uses);
+    }
+
+    [Fact]
+    public async Task OlderSnapshotReplayLeavesUnrecordedGatewayAndProvenanceUnknown()
+    {
+        await using var services = BuildServices(Keys);
+        await using var scope = services.CreateAsyncScope();
+        var links = scope.ServiceProvider.GetRequiredService<ClientInstallLinkService>();
+        var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+        var request = Request();
+        var created = await links.CreateAsync(request, "fixture-admin", TestContext.Current.CancellationToken);
+        var grant = await db.ClientInstallGrants.SingleAsync();
+        grant.EffectiveGatewayBaseUrl = null;
+        grant.PublicWebSource = grant.PublicApiSource = grant.GatewaySource = null;
+        await db.SaveChangesAsync();
+        services.GetRequiredService<IConfiguration>()["ClientArtifacts:PublicGatewayBaseUrl"] = "https://changed.example.invalid";
+
+        var replay = await links.CreateAsync(request, "fixture-admin", TestContext.Current.CancellationToken);
+        Assert.Equal(created.Endpoints.PublicWebBaseUrl, replay.Endpoints.PublicWebBaseUrl);
+        Assert.Equal(created.Endpoints.PublicApiBaseUrl, replay.Endpoints.PublicApiBaseUrl);
+        Assert.Null(replay.Endpoints.EffectiveGatewayBaseUrl);
+        Assert.Null(replay.Endpoints.PublicWebSource);
+        Assert.Null(replay.Endpoints.PublicApiSource);
+        Assert.Null(replay.Endpoints.GatewaySource);
+        Assert.Equal(created.Script, replay.Script);
+    }
+
+    [Fact]
     public async Task ProtectedGrantFetchDoesNotSpendUsesAndIdempotencyReturnsTheSameCapability()
     {
         await using var services = BuildServices(Keys);
@@ -90,6 +162,7 @@ public sealed class ClientInstallLinkTests : IAsyncLifetime
         Assert.DoesNotContain("NetRatelCLIENT__Gateway__Endpoint=https://netratel.example", created.Script);
         Assert.Equal(created.PublicUrl, replay.PublicUrl);
         Assert.Equal(created.Script, replay.Script);
+        Assert.Equal(created.Endpoints, replay.Endpoints);
         Assert.Equal(1, await db.ClientInstallGrants.CountAsync());
 
         var grant = await db.ClientInstallGrants.AsNoTracking().Include(x => x.EnrollmentCode).SingleAsync();
@@ -153,6 +226,8 @@ public sealed class ClientInstallLinkTests : IAsyncLifetime
 
         Assert.Contains("API_BASE='https://shared.example.test'", created.Script);
         Assert.Contains("GATEWAY_ENDPOINT=''", created.Script);
+        Assert.Equal("https://shared.example.test", created.Endpoints.EffectiveGatewayBaseUrl);
+        Assert.Equal("client-artifacts-public-gateway-base-url", created.Endpoints.GatewaySource);
         Assert.DoesNotContain("NetRatelCLIENT__Gateway__Endpoint=https://shared.example.test", created.Script);
     }
 
@@ -249,8 +324,10 @@ public sealed class ClientInstallLinkTests : IAsyncLifetime
         builder.Services.AddScoped<ClientInstallLinkService>();
         builder.Services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo(Keys))
             .SetApplicationName("NetRatel-Link-Test");
+        builder.Services.AddAuthentication("Fixture")
+            .AddScheme<AuthenticationSchemeOptions, FixtureAuthenticationHandler>("Fixture", _ => { });
         builder.Services.AddAuthorization(options => options.AddPolicy("ClientArtifactsWrite",
-            policy => policy.RequireAuthenticatedUser()));
+            policy => policy.RequireAuthenticatedUser().RequireClaim("permission", "client-management")));
         builder.Services.AddRateLimiter(options => options.AddPolicy("public-client-install", _ =>
             RateLimitPartition.GetFixedWindowLimiter("fixture", _ => new FixedWindowRateLimiterOptions
             {
@@ -259,15 +336,31 @@ public sealed class ClientInstallLinkTests : IAsyncLifetime
         await using var app = builder.Build();
         app.UseRouting();
         app.UseRateLimiter();
+        app.UseAuthentication();
         app.UseAuthorization();
         app.MapClientInstallLinkEndpoints();
         await app.StartAsync();
 
         await using var scope = app.Services.CreateAsyncScope();
+        var client = app.GetTestClient();
+        const string previewPath = "/api/v1/client-install-links/endpoints/21";
+        Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync(previewPath)).StatusCode);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Denied");
+        Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync(previewPath)).StatusCode);
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Fixture");
+        var previewResponse = await client.GetAsync(previewPath);
+        Assert.Equal(HttpStatusCode.OK, previewResponse.StatusCode);
+        Assert.Equal("no-store", previewResponse.Headers.CacheControl?.ToString());
+        var preview = await previewResponse.Content.ReadFromJsonAsync<ClientInstallEndpointSummary>();
+        Assert.Equal("https://netratel.example", preview!.PublicWebBaseUrl);
+        Assert.Equal(preview.PublicApiBaseUrl, preview.EffectiveGatewayBaseUrl);
+        Assert.Equal(HttpStatusCode.BadRequest, (await client.GetAsync("/api/v1/client-install-links/endpoints/999")).StatusCode);
+        Assert.Equal(0, await scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>().ClientInstallGrants.CountAsync());
+        Assert.Equal(0, await scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>().EnrollmentCodes.CountAsync());
+        client.DefaultRequestHeaders.Authorization = null;
         var created = await scope.ServiceProvider.GetRequiredService<ClientInstallLinkService>()
             .CreateAsync(Request(), "fixture-admin", TestContext.Current.CancellationToken);
         var path = new Uri(created.PublicUrl).PathAndQuery;
-        var client = app.GetTestClient();
         var response = await client.GetAsync(path);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.StartsWith("text/x-shellscript", response.Content.Headers.ContentType?.MediaType);
@@ -411,6 +504,21 @@ public sealed class ClientInstallLinkTests : IAsyncLifetime
     {
         public Task<bool> TenantExistsAsync(int tenantId, CancellationToken ct = default) =>
             Task.FromResult(tenantId == 21);
+    }
+
+    private sealed class FixtureAuthenticationHandler(
+        IOptionsMonitor<AuthenticationSchemeOptions> options, ILoggerFactory logger, UrlEncoder encoder)
+        : AuthenticationHandler<AuthenticationSchemeOptions>(options, logger, encoder)
+    {
+        protected override Task<AuthenticateResult> HandleAuthenticateAsync()
+        {
+            var header = Request.Headers.Authorization.ToString();
+            if (header is not ("Fixture" or "Denied")) return Task.FromResult(AuthenticateResult.NoResult());
+            var claims = new List<Claim> { new(ClaimTypes.NameIdentifier, "fixture-admin") };
+            if (header == "Fixture") claims.Add(new("permission", "client-management"));
+            return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(
+                new ClaimsPrincipal(new ClaimsIdentity(claims, Scheme.Name)), Scheme.Name)));
+        }
     }
 
     private sealed class CapturingLogger : ILogger<CorrelationLoggingMiddleware>

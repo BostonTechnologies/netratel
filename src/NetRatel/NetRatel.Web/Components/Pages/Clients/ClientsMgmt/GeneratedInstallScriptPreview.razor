@@ -1,0 +1,44 @@
+@using BlazorMonaco.Editor
+@implements IAsyncDisposable
+@inject ILogger<GeneratedInstallScriptPreview> Logger
+
+<div class="generated-install-script-preview" aria-label="Generated script preview">
+    <StandaloneCodeEditor @ref="_editor"
+                          Id="@_editorId"
+                          ConstructionOptions="BuildEditorOptions" />
+</div>
+
+@code {
+    [Parameter] public string Script { get; set; } = string.Empty;
+    [Parameter] public string RuntimeId { get; set; } = string.Empty;
+
+    private readonly string _editorId = $"generated-install-script-{Guid.NewGuid():N}";
+    private StandaloneCodeEditor? _editor;
+
+    private StandaloneEditorConstructionOptions BuildEditorOptions(StandaloneCodeEditor _) => new()
+    {
+        Theme = "vs-dark",
+        AutomaticLayout = true,
+        ReadOnly = true,
+        Language = RuntimeId.StartsWith("win-", StringComparison.OrdinalIgnoreCase) ? "powershell" : "shell",
+        Value = Script,
+        ScrollBeyondLastLine = false
+    };
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_editor is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await _editor.DisposeEditor();
+        }
+        catch (JSDisconnectedException exception)
+        {
+            Logger.LogDebug(exception, "The browser circuit closed before the generated-script editor disposed.");
+        }
+    }
+}

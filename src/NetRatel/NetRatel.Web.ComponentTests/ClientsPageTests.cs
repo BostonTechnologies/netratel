@@ -62,6 +62,24 @@ public sealed class ClientsPageTests : AsyncBunitContext
         ((StubHttpClientFactory)factory).RequestedPaths.Should().OnlyContain(path => path.StartsWith("/api/v2/", StringComparison.Ordinal));
     }
 
+    [Theory]
+    [InlineData("cards")]
+    [InlineData("table")]
+    public void ClientsPage_RendersAndUpdatesHeartbeatLatencyWithoutSendingPerClientProbes(string view)
+    {
+        var factory = (StubHttpClientFactory)Services.GetRequiredService<IHttpClientFactory>();
+        factory.LatencyMilliseconds = 18.75;
+        var cut = RenderClientsRoute(search: "gateway-agent-01", view: view);
+        cut.WaitForAssertion(() => cut.Find("[data-testid='client-latency']").TextContent.Should().Be("19 ms"));
+
+        factory.LatencyMilliseconds = 9.25;
+        cut.Find("button[aria-label='Refresh clients']").Click();
+        cut.WaitForAssertion(() => cut.Find("[data-testid='client-latency']").TextContent.Should().Be("9 ms"));
+
+        factory.RequestedPaths.Should().OnlyContain(path =>
+            path == "/api/v2/client-presence" || path == "/api/v2/agent-telemetry");
+    }
+
     [Fact]
     public void ClientsPage_Renders_Table_When_View_Query_Is_Table()
     {
@@ -324,6 +342,7 @@ public sealed class ClientsPageTests : AsyncBunitContext
         public bool TelemetryTimesOut { get; set; }
         public bool BlockTelemetryRequest { get; set; }
         public string? TelemetryResponseJson { get; set; }
+        public double? LatencyMilliseconds { get; set; }
         public TaskCompletionSource TelemetryRequestStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public HttpClient CreateClient(string name) => new(new StubHandler(this))
@@ -433,7 +452,10 @@ public sealed class ClientsPageTests : AsyncBunitContext
                 [
                     new ClientPresenceDto($"gateway:3:{AgentId:D}", 3, AgentId, "gateway-agent-01", "gateway-agent-01", "Linux", "x64", true, true,
                         DateTimeOffset.UtcNow, "0.4.101", ["terminal-gateway", "file-gateway", "remote-support-gateway"], "gateway", "akka", true, 12,
-                        new GatewayTerminalCapabilityDto(true, ["bash", "sh"], true, null, DateTimeOffset.UtcNow), "NetRatel"),
+                        new GatewayTerminalCapabilityDto(true, ["bash", "sh"], true, null, DateTimeOffset.UtcNow), "NetRatel",
+                        LatencyMilliseconds: factory.LatencyMilliseconds,
+                        LatencyMeasuredAtUtc: factory.LatencyMilliseconds.HasValue ? DateTimeOffset.UtcNow.AddSeconds(-15) : null,
+                        LatencyExpiresAtUtc: factory.LatencyMilliseconds.HasValue ? DateTimeOffset.UtcNow.AddSeconds(35) : null),
                     new ClientPresenceDto("gateway:3:offline", 3, Guid.Parse("99f5a0b0-5e61-4039-8d09-6c9d44c7c100"), "registered-offline-agent", null, "Linux", "x64", false, true,
                         null, null, [], "gateway", "unobserved", false, 12, null, "NetRatel")
                 ]),

@@ -7,6 +7,7 @@ using Microsoft.Extensions.DependencyInjection;
 using MudBlazor;
 using MudBlazor.Services;
 using NetRatel.Shared.Contracts;
+using NetRatel.Shared.Client;
 using NetRatel.Shared.Contracts.Requests;
 using NetRatel.Web.Components.Pages.Clients.ClientsMgmt;
 using NetRatel.Web.Services;
@@ -28,6 +29,35 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
         Services.AddLogging();
         Services.AddSingleton<IClientArtifactsService>(_artifacts);
         Services.AddSingleton<ITenantApiService>(new StubTenantApiService());
+    }
+
+    [Fact]
+    public async Task GenerationDisplaysTheCreatedSnapshotWhenConfigurationChangesAfterPreview()
+    {
+        var dialogProvider = Render<MudDialogProvider>();
+        var cut = Render<ClientsMgmt>();
+        cut.WaitForAssertion(() => typeof(ClientsMgmt)
+            .GetField("_selectedTenantId", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(cut.Instance).Should().Be(7));
+        var open = typeof(ClientsMgmt).GetMethod("OpenScript", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        await cut.InvokeAsync(async () => await (Task)open.Invoke(cut.Instance,
+            [new ClientArtifactSummaryModel { Rid = "win-x64", Version = "0.4.102" }])!);
+        cut.Render();
+        dialogProvider.WaitForAssertion(() => dialogProvider.FindComponent<ClientEndpointSummary>()
+            .Instance.Endpoints.Should().Be(_artifacts.EndpointPreview));
+        _artifacts.GeneratedLinkCalls.Should().Be(0, "preview must not create a link");
+
+        await dialogProvider.InvokeAsync(() => dialogProvider.FindAll("button")
+            .Single(button => button.TextContent.Trim() == "Generate link").Click());
+        dialogProvider.WaitForAssertion(() =>
+        {
+            dialogProvider.FindComponent<ClientEndpointSummary>().Instance.Endpoints.Should().Be(_artifacts.GeneratedLink.Endpoints);
+            dialogProvider.Markup.Should().Contain("The endpoints differ from the preview");
+            dialogProvider.FindComponent<GeneratedInstallScriptPreview>().Instance.Script.Should().Be(_artifacts.GeneratedLink.Script);
+            dialogProvider.FindComponents<InstallCodeBlock>().Select(component => component.Instance.Value)
+                .Should().Equal(_artifacts.GeneratedLink.InstallCommand, _artifacts.GeneratedLink.PublicUrl);
+        });
+        _artifacts.GeneratedLinkCalls.Should().Be(1);
     }
 
     [Fact]
@@ -368,6 +398,26 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
 
     private sealed class StubClientArtifactsService : IClientArtifactsService
     {
+        public ClientInstallEndpointSummary EndpointPreview { get; } = new(
+            "https://web.example.invalid", "https://preview-api.example.invalid", "https://preview-api.example.invalid",
+            "branding-site-url:administrator", "client-artifacts-public-base-url", "shared-api-origin");
+        public ClientInstallLinkResultModel GeneratedLink { get; } = new()
+        {
+            Id = Guid.Parse("fca61d16-7f70-4f96-b226-f15cc36a209c"), TenantId = 7, RuntimeId = "win-x64", ArtifactVersion = "0.4.102",
+            ExpiresAtUtc = DateTimeOffset.UtcNow.AddHours(1), MaxUses = 1, RemainingUses = 1,
+            InstallCommand = "fixture first line\nfixture second line", PublicUrl = "https://web.example.invalid/clients/install/fixture.ps1",
+            Script = "Write-Output 'fixture'\n",
+            Endpoints = new("https://web.example.invalid", "https://created-api.example.invalid", "https://created-gateway.example.invalid",
+                "branding-site-url:administrator", "client-artifacts-public-base-url", "client-artifacts-public-gateway-base-url")
+        };
+        public int GeneratedLinkCalls { get; private set; }
+        public Task<ClientInstallEndpointSummary?> PreviewInstallEndpointsAsync(int tenantId, CancellationToken ct = default) =>
+            Task.FromResult<ClientInstallEndpointSummary?>(EndpointPreview);
+        public Task<ClientInstallLinkResultModel> GenerateInstallLinkAsync(ClientScriptGenerateRequest request, CancellationToken ct = default)
+        {
+            GeneratedLinkCalls++;
+            return Task.FromResult(GeneratedLink);
+        }
         private ClientReleaseAutomationModel _automation = new();
         private readonly Queue<Task<ClientReleaseAutomationModel>> _automationReads = new();
         private readonly Queue<Task<ClientReleaseAutomationModel>> _automationSaves = new();

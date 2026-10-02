@@ -22,7 +22,10 @@ public sealed record ClientPresentationModel(
     IReadOnlyList<string> Capabilities,
     GatewayTerminalCapabilityDto? Terminal,
     GatewayTelemetrySummary? Telemetry,
-    GatewayFileCapabilityDto? File = null)
+    GatewayFileCapabilityDto? File = null,
+    double? LatencyMilliseconds = null,
+    DateTimeOffset? LatencyMeasuredAtUtc = null,
+    DateTimeOffset? LatencyExpiresAtUtc = null)
 {
     public bool CanUseTerminal =>
         Online && Capabilities.Contains("terminal-gateway", StringComparer.OrdinalIgnoreCase) &&

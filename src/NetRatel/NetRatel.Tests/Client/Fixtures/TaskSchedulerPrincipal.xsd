@@ -1,0 +1,89 @@
+<?xml version='1.0' encoding='utf-8'?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="http://schemas.microsoft.com/windows/2004/02/mit/task" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task" elementFormDefault="qualified">
+  <!-- Microsoft Task Scheduler principalType and dependencies, captured 2026-10-02.
+ Source: https://learn.microsoft.com/en-us/windows/win32/taskschd/task-scheduler-schema
+ Definitions below are unchanged; the global Principal element is the test entry point.
+ This excerpt validates the principal only, not native registration or the entire Task v1.4 document. -->
+  <xs:element name="Principal" type="principalType" />
+  <xs:simpleType name="nonEmptyString">
+    <xs:restriction base="xs:string">
+      <xs:minLength value="1" />
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:complexType name="principalType">
+    <xs:all>
+      <xs:element name="UserId" type="nonEmptyString" minOccurs="0" />
+      <xs:element name="LogonType" type="logonType" minOccurs="0" maxOccurs="1" />
+      <xs:element name="GroupId" type="nonEmptyString" minOccurs="0" />
+      <xs:element name="DisplayName" type="xs:string" minOccurs="0" />
+      <xs:element name="RunLevel" type="runLevelType" minOccurs="0" maxOccurs="1" />
+      <xs:element name="ProcessTokenSidType" type="processTokenSidType" minOccurs="0" maxOccurs="1" />
+      <xs:element name="RequiredPrivileges" type="requiredPrivilegesType" minOccurs="0" />
+    </xs:all>
+    <xs:attribute name="id" type="xs:ID" use="optional" />
+  </xs:complexType>
+  <xs:simpleType name="logonType">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="S4U" />
+      <xs:enumeration value="Password" />
+      <xs:enumeration value="InteractiveToken" />
+      <xs:enumeration value="InteractiveTokenOrPassword" />
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="runLevelType">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="LeastPrivilege" />
+      <xs:enumeration value="HighestAvailable" />
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="processTokenSidType">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="None" />
+      <xs:enumeration value="Unrestricted" />
+    </xs:restriction>
+  </xs:simpleType>
+  <xs:complexType name="requiredPrivilegesType">
+    <xs:sequence>
+      <xs:element name="Privilege" type="privilegeType" minOccurs="1" maxOccurs="64" />
+    </xs:sequence>
+  </xs:complexType>
+  <xs:simpleType name="privilegeType">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="SeCreateTokenPrivilege" />
+      <xs:enumeration value="SeAssignPrimaryTokenPrivilege" />
+      <xs:enumeration value="SeLockMemoryPrivilege" />
+      <xs:enumeration value="SeIncreaseQuotaPrivilege" />
+      <xs:enumeration value="SeUnsolicitedInputPrivilege" />
+      <xs:enumeration value="SeMachineAccountPrivilege" />
+      <xs:enumeration value="SeTcbPrivilege" />
+      <xs:enumeration value="SeSecurityPrivilege" />
+      <xs:enumeration value="SeTakeOwnershipPrivilege" />
+      <xs:enumeration value="SeLoadDriverPrivilege" />
+      <xs:enumeration value="SeSystemProfilePrivilege" />
+      <xs:enumeration value="SeSystemtimePrivilege" />
+      <xs:enumeration value="SeProfileSingleProcessPrivilege" />
+      <xs:enumeration value="SeIncreaseBasePriorityPrivilege" />
+      <xs:enumeration value="SeCreatePagefilePrivilege" />
+      <xs:enumeration value="SeCreatePermanentPrivilege" />
+      <xs:enumeration value="SeBackupPrivilege" />
+      <xs:enumeration value="SeRestorePrivilege" />
+      <xs:enumeration value="SeShutdownPrivilege" />
+      <xs:enumeration value="SeDebugPrivilege" />
+      <xs:enumeration value="SeAuditPrivilege" />
+      <xs:enumeration value="SeSystemEnvironmentPrivilege" />
+      <xs:enumeration value="SeChangeNotifyPrivilege" />
+      <xs:enumeration value="SeRemoteShutdownPrivilege" />
+      <xs:enumeration value="SeUndockPrivilege" />
+      <xs:enumeration value="SeSyncAgentPrivilege" />
+      <xs:enumeration value="SeEnableDelegationPrivilege" />
+      <xs:enumeration value="SeManageVolumePrivilege" />
+      <xs:enumeration value="SeImpersonatePrivilege" />
+      <xs:enumeration value="SeCreateGlobalPrivilege" />
+      <xs:enumeration value="SeTrustedCredManAccessPrivilege" />
+      <xs:enumeration value="SeRelabelPrivilege" />
+      <xs:enumeration value="SeIncreaseWorkingSetPrivilege" />
+      <xs:enumeration value="SeTimeZonePrivilege" />
+      <xs:enumeration value="SeCreateSymbolicLinkPrivilege" />
+    </xs:restriction>
+  </xs:simpleType>
+</xs:schema>

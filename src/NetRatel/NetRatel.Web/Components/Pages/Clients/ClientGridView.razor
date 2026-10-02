@@ -50,7 +50,7 @@
         </MudTd>
         <MudTd DataLabel="Tenant"><span class="client-table-value" title="@context.TenantName">@(context.TenantName ?? $"Tenant {context.TenantId}")</span></MudTd>
         <MudTd DataLabel="OS"><span class="client-table-value" title="@ClientPresentationFormatting.OperatingSystem(context)">@ClientPresentationFormatting.OperatingSystem(context)</span></MudTd>
-        <MudTd DataLabel="Latency">@FormatLatency(context)</MudTd>
+        <MudTd DataLabel="Latency"><span data-testid="client-latency" title="Automatic gateway heartbeat round trip">@ClientPresentationFormatting.Latency(context, DateTimeOffset.UtcNow)</span></MudTd>
         <MudTd DataLabel="Heartbeat">@ClientPresentationFormatting.Heartbeat(context.LastHeartbeatUtc)</MudTd>
         <MudTd DataLabel="Telemetry">@ClientPresentationFormatting.TelemetryAge(context.Telemetry?.ReceivedAtUtc, DateTimeOffset.UtcNow)</MudTd>
         <MudTd DataLabel="Version">
@@ -87,16 +87,6 @@
 @code {
     [Parameter, EditorRequired] public IReadOnlyList<ClientPresentationModel> Clients { get; set; } = [];
     [Parameter] public EventCallback RefreshRequested { get; set; }
-
-    private readonly Dictionary<(int TenantId, Guid AgentId), double> _latencyByAgent = [];
-
-    private string FormatLatency(ClientPresentationModel client)
-    {
-        var latency = _latencyByAgent.TryGetValue((client.TenantId, client.AgentId), out var measuredLatency)
-            ? measuredLatency
-            : (double?)null;
-        return ClientPresentationFormatting.Latency(client.Online, latency);
-    }
 
     private async Task CopyHostAsync(ClientPresentationModel client)
     {
@@ -148,9 +138,7 @@
         try
         {
             var result = await GatewayActions.PingAsync(client.TenantId, client.AgentId);
-            _latencyByAgent[(client.TenantId, client.AgentId)] = result.RoundTripMilliseconds;
             Snackbar.Add($"Ping: {result.RoundTripMilliseconds:0} ms ({result.Authority}).", Severity.Success);
-            await InvokeAsync(StateHasChanged);
         }
         catch (Exception exception)
         {

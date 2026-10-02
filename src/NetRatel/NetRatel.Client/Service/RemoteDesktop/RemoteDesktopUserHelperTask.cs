@@ -62,6 +62,17 @@ internal sealed class RemoteDesktopUserHelperTask
     public void EnsureLauncherAndRunKey()
     {
         Directory.CreateDirectory(_launcherDirectory);
+        // The protected product root only grants traversal to interactive
+        // users. Launchers need read/execute access, never write access.
+        var launcherDirectory = new DirectoryInfo(_launcherDirectory);
+        var launcherSecurity = launcherDirectory.GetAccessControl();
+        launcherSecurity.AddAccessRule(new FileSystemAccessRule(
+            new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null),
+            FileSystemRights.ReadAndExecute,
+            InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
+            PropagationFlags.None,
+            AccessControlType.Allow));
+        launcherDirectory.SetAccessControl(launcherSecurity);
         EnsureHelperLogDirectory();
         WriteLauncher();
         RegisterRunKey();
@@ -75,15 +86,10 @@ internal sealed class RemoteDesktopUserHelperTask
         }
         catch (Exception ex)
         {
-            LogManager.WriteLog($"[RemoteDesktop] Helper task XML registration warning; trying CLI fallback: {ex.Message}");
-            try
-            {
-                RegisterTaskFromCli();
-            }
-            catch (Exception cliEx)
-            {
-                LogManager.WriteLog($"[RemoteDesktop] Helper task CLI registration warning; continuing without scheduled task: {cliEx.Message}");
-            }
+            // schtasks /Create without an explicit principal uses the caller's
+            // account, which can be SYSTEM here. Keep the group task and the
+            // independent interactive-logon Run bootstrap instead.
+            LogManager.WriteLog($"[RemoteDesktop] Helper task XML registration failed; interactive helper task is not confirmed: {ex.Message}");
         }
     }
 
@@ -275,35 +281,22 @@ internal sealed class RemoteDesktopUserHelperTask
         var xml = BuildTaskXml("wscript.exe", $"//B {Quote(_hiddenLauncherPath)}");
         File.WriteAllText(xmlPath, xml, Encoding.UTF8);
 
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = "schtasks.exe",
-            Arguments = $"/Create /TN {Quote(RemoteDesktopUserHelperConstants.TaskName)} /XML {Quote(xmlPath)} /F",
-            UseShellExecute = false,
-            RedirectStandardError = true,
-            RedirectStandardOutput = true,
-            CreateNoWindow = true
-        };
-
+        var startInfo = BuildRegistrationStartInfo(xmlPath);
         var result = RunProcess(startInfo, "register remote desktop helper task from XML");
         LogManager.WriteLog($"[RemoteDesktop] User helper scheduled task registered from XML task={RemoteDesktopUserHelperConstants.TaskName} output={TrimForLog(result.Output)}");
     }
 
-    private void RegisterTaskFromCli()
+    internal static ProcessStartInfo BuildRegistrationStartInfo(string xmlPath)
     {
-        var action = $"wscript.exe //B {Quote(_hiddenLauncherPath)}";
-        var startInfo = new ProcessStartInfo
+        return new ProcessStartInfo
         {
             FileName = "schtasks.exe",
-            Arguments = $"/Create /TN {Quote(RemoteDesktopUserHelperConstants.TaskName)} /SC ONLOGON /TR {Quote(action)} /F",
+            ArgumentList = { "/Create", "/TN", RemoteDesktopUserHelperConstants.TaskName, "/XML", xmlPath, "/F" },
             UseShellExecute = false,
             RedirectStandardError = true,
             RedirectStandardOutput = true,
             CreateNoWindow = true
         };
-
-        var result = RunProcess(startInfo, "register remote desktop helper task from CLI");
-        LogManager.WriteLog($"[RemoteDesktop] User helper scheduled task registered from CLI task={RemoteDesktopUserHelperConstants.TaskName} output={TrimForLog(result.Output)}");
     }
 
     private static ProcessResult RunProcess(ProcessStartInfo startInfo, string operation)
@@ -333,7 +326,7 @@ internal sealed class RemoteDesktopUserHelperTask
         return new ProcessResult(output, error);
     }
 
-    private static string BuildTaskXml(string command, string arguments)
+    internal static string BuildTaskXml(string command, string arguments)
     {
         var escapedCommand = SecurityElement.Escape(command) ?? command;
         var escapedArguments = SecurityElement.Escape(arguments) ?? arguments;
@@ -352,7 +345,6 @@ internal sealed class RemoteDesktopUserHelperTask
   <Principals>
     <Principal id="Users">
       <GroupId>S-1-5-32-545</GroupId>
-      <LogonType>Group</LogonType>
       <RunLevel>LeastPrivilege</RunLevel>
     </Principal>
   </Principals>

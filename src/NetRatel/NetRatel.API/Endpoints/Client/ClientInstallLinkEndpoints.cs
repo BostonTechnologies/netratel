@@ -4,6 +4,7 @@ using System.Text;
 using Microsoft.AspNetCore.Mvc;
 using NetRatel.API.Models;
 using NetRatel.API.Services;
+using NetRatel.Shared.Client;
 
 namespace NetRatel.API.Endpoints;
 
@@ -14,6 +15,19 @@ public static class ClientInstallLinkEndpoints
         var management = app.MapGroup("/api/v1/client-install-links")
             .WithTags("Client Onboarding")
             .RequireAuthorization("ClientArtifactsWrite");
+
+        management.MapGet("endpoints/{tenantId:int}", async (
+            int tenantId, HttpContext http,
+            [FromServices] ClientInstallLinkService links, CancellationToken ct) =>
+        {
+            if (OperatorIdentity(http) is null) return Results.Forbid();
+            http.Response.Headers.CacheControl = "no-store";
+            try { return Results.Ok(await links.PreviewEndpointsAsync(tenantId, ct)); }
+            catch (RequestValidationException exception) { return Results.BadRequest(new { message = exception.Message }); }
+            catch (InvalidOperationException exception) { return Results.Conflict(new { message = exception.Message }); }
+        })
+        .WithName("ClientInstallLinks_EndpointPreview")
+        .Produces<ClientInstallEndpointSummary>();
 
         management.MapPost(string.Empty, async (
             ClientInstallLinkCreateRequest request, HttpContext http,

@@ -249,6 +249,27 @@ jobs:
               "artifacts/netratel-client-${{ matrix.runtime }}/NetRatel.Client" --version
               ;;
           esac
+      - name: Exercise offline Windows installer preflight and ACL fixtures
+        if: matrix.runtime == 'win-x64'
+        shell: bash
+        run: |
+          dotnet build src/NetRatel/NetRatel.Tests/NetRatel.Tests.csproj --configuration Release
+          mkdir -p TestResults/native-windows-offline
+          dotnet src/NetRatel/NetRatel.Tests/bin/Release/net10.0/NetRatel.Tests.dll \
+            -method NetRatel.Tests.Infrastructure.WindowsInstallerTemplateTests.CleanWindowsPowerShellResolvesProductionServiceControllerTypesWithoutServiceMutation \
+            -method NetRatel.Tests.Infrastructure.WindowsLegacyAclRepairTests.NativeOfflineLegacyAclRepairPreservesIdentityAndHelperAccess \
+            -method NetRatel.Tests.Infrastructure.WindowsLegacyAclRepairTests.NativeFreshCanonicalRootCreationDoesNotInheritUsersWrites \
+            -result-trx TestResults/native-windows-offline/installer-preflight.trx
+          python3 tools/ci/verify-mtp-trx.py TestResults/native-windows-offline/installer-preflight.trx \
+            --expected-executed 4
+      - name: Retain Windows offline type-resolution receipt
+        if: always() && matrix.runtime == 'win-x64'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-client-windows-offline-tests
+          path: TestResults/native-windows-offline/installer-preflight.trx
+          if-no-files-found: error
+          retention-days: 14
       - name: Exercise macOS installer and private helper on native runner
         if: matrix.runtime == 'osx-arm64'
         shell: bash

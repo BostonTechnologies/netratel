@@ -29,28 +29,37 @@ function Get-CanonicalPath([string]$Path) {
     return $full.TrimEnd('\', '/')
 }
 
-# Inspect ancestors without changing their permissions. At the owned leaf also
-# reject write access; ProgramData may legitimately allow creating sibling folders.
-function Assert-OwnedPath([string]$Path, [switch]$AllowMissing, [switch]$File) {
+function Get-PathDiagnostic([string]$Path, [string]$Role, $Acl, $Rule, [string]$Reason) {
+    $safe = [regex]::Replace($Path, '[\x00-\x1f\x7f]', '?')
+    if ($safe.Length -gt 300) { $safe = $safe.Substring(0, 300) + '...' }
+    $detail = "Owned-path rejection: path='$safe'; role=$Role; reason=$Reason"
+    if ($Acl) { $detail += '; ownerSid=' + $Acl.GetOwner([Security.Principal.SecurityIdentifier]).Value }
+    if ($Rule) { $detail += "; aceSid=$($Rule.IdentityReference.Value); type=$($Rule.AccessControlType); rights=$($Rule.FileSystemRights) ($([int]$Rule.FileSystemRights)); inherited=$($Rule.IsInherited); inheritance=$($Rule.InheritanceFlags); propagation=$($Rule.PropagationFlags)" }
+    return $detail
+}
+
+# Inspect ancestors without changing them. ProgramData may allow creating siblings.
+function Assert-OwnedPath([string]$Path, [switch]$AllowMissing, [switch]$File, [switch]$AncestorsOnly) {
     $leaf = Get-CanonicalPath $Path
-    $component = $leaf
+    $component = if ($AncestorsOnly) { [IO.Path]::GetDirectoryName($leaf) } else { $leaf }
     while ($component) {
+        $role = if ($component -eq $leaf) { 'leaf' } else { 'ancestor' }
         if (Test-Path -LiteralPath $component) {
             $item = Get-Item -LiteralPath $component -Force
-            if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'An installation path is a reparse point; choose a trusted local path.' }
-            if ($component -eq $leaf -and $item.PSIsContainer -eq [bool]$File) { throw 'An owned path has the wrong file type.' }
+            if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw (Get-PathDiagnostic $component $role $null $null 'reparse point') }
+            if ($component -eq $leaf -and $item.PSIsContainer -eq [bool]$File) { throw (Get-PathDiagnostic $component $role $null $null 'unexpected object type') }
             $acl = Get-Acl -LiteralPath $component
-            if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -notin $trustedSids) { throw 'An installation path has an untrusted owner.' }
+            if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -notin $trustedSids) { throw (Get-PathDiagnostic $component $role $acl $null 'untrusted owner') }
             foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
-                if ($rule.AccessControlType -ne 'Allow' -or ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly)) { continue }
+                if ($rule.AccessControlType -ne 'Allow' -or ($role -eq 'ancestor' -and ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly))) { continue }
                 $unsafe = 0x000D0040 # Delete, DeleteSubdirectoriesAndFiles, ChangePermissions, TakeOwnership.
-                if ($component -eq $leaf) { $unsafe = $unsafe -bor 0x116 } # WriteData, AppendData, WriteExtendedAttributes, WriteAttributes.
+                if ($component -eq $leaf) { $unsafe = $unsafe -bor 0x116 }
                 if ($rule.IdentityReference.Value -notin $trustedSids -and ([int]$rule.FileSystemRights -band $unsafe)) {
-                    throw 'An installation path permits untrusted modification; correct its owned-path permissions first.'
+                    throw (Get-PathDiagnostic $component $role $acl $rule 'untrusted modification; inspect NetRatel_LEGACY_ACL_REPAIR=preview for canonical legacy paths')
                 }
             }
         }
-        elseif ($component -eq $leaf -and -not $AllowMissing) { throw 'An expected owned path is missing.' }
+        elseif ($component -eq $leaf -and -not $AllowMissing) { throw (Get-PathDiagnostic $component $role $null $null 'missing object') }
         $parent = [IO.Path]::GetDirectoryName($component)
         if ($parent -eq $component) { break }
         $component = $parent
@@ -68,6 +77,10 @@ function New-OwnedDirectory([string]$Path) {
     foreach ($sid in @('S-1-5-18', 'S-1-5-32-544')) {
         $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
             [Security.Principal.SecurityIdentifier]::new($sid), 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow'))
+    }
+    if ($Path -eq (Get-LegacyAclRoot)) {
+        $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+            [Security.Principal.SecurityIdentifier]::new('S-1-5-32-545'), 'Traverse', 'ContainerInherit', 'None', 'Allow'))
     }
     [void][IO.Directory]::CreateDirectory($Path, $acl)
     Assert-OwnedPath $Path
@@ -100,6 +113,93 @@ function Write-PrivateFile([string]$Path, [string]$Text) {
         [IO.FileShare]::None, 4096, [IO.FileOptions]::WriteThrough, $acl)
     try { $bytes = [Text.UTF8Encoding]::new($false).GetBytes($Text); $stream.Write($bytes, 0, $bytes.Length) }
     finally { $stream.Dispose() }
+}
+
+# Fixed product roots only; no caller-supplied repair target or recursive ACL reset.
+function Get-LegacyAclRoot { return Get-CanonicalPath (Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) 'NetRatel') }
+function Get-LegacyAclRecoveryRoot { return Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'NetRatel\acl-repair' }
+
+function Get-LegacyAclPlan {
+    $root = Get-LegacyAclRoot
+    Assert-OwnedPath $root -AllowMissing -AncestorsOnly
+    if (-not (Test-Path -LiteralPath $root)) { return }
+    $queue = [Collections.Generic.Queue[string]]::new()
+    $queue.Enqueue($root)
+    $count = 0
+    while ($queue.Count) {
+        $path = $queue.Dequeue()
+        if (++$count -gt 4096) { throw 'Legacy ACL repair exceeds the bounded 4096-object canonical tree.' }
+        $relative = $path.Substring($root.Length).TrimStart('\').ToLowerInvariant()
+        if ($relative -and $relative -notmatch '^(agent\.dat(?:\.[a-f0-9]{32}\.tmp)?|\.netratel-credential-machine-id|update(?:\\.*)?|logs(?:\\.*)?|remote-desktop(?:\\.*)?|client(?:\\(?:logs(?:\\(?:service|remote-support-console-provider|remote-desktop-helper)(?:\\.*)?)?|diagnostics(?:\\.*)?|remote-(?:desktop|support|support-firewall)-state\.json))?)$') { throw (Get-PathDiagnostic $path 'leaf' $null $null 'unrecognized canonical layout; manual review required') }
+        $item = Get-Item -LiteralPath $path -Force
+        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw (Get-PathDiagnostic $path 'leaf' $null $null 'reparse point') }
+        if ((($relative -in @('', 'update', 'logs', 'remote-desktop', 'client', 'client\logs', 'client\logs\remote-desktop-helper', 'client\logs\service', 'client\logs\remote-support-console-provider', 'client\diagnostics')) -and -not $item.PSIsContainer) -or
+            (($relative -match '^(agent\.dat(?:\.[a-f0-9]{32}\.tmp)?|\.netratel-credential-machine-id|client\\remote-(?:desktop|support|support-firewall)-state\.json)$') -and $item.PSIsContainer)) { throw (Get-PathDiagnostic $path 'leaf' $null $null 'unexpected canonical object type') }
+        $acl = Get-Acl -LiteralPath $path -Audit
+        if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -notin $trustedSids) { throw (Get-PathDiagnostic $path 'leaf' $acl $null 'untrusted owner; ownership is never changed by repair') }
+        $remove = @()
+        foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+            $rights = [int]$rule.FileSystemRights
+            if ($rule.AccessControlType -eq 'Deny' -and $rule.IdentityReference.Value -in $trustedSids -and ($rights -band 0x1F01FF)) { throw (Get-PathDiagnostic $path 'leaf' $acl $rule 'conflicting trusted-account deny') }
+            if ($rule.AccessControlType -ne 'Allow' -or $rule.IdentityReference.Value -in $trustedSids -or -not ($rights -band 0xD0156)) { continue }
+            $helperLog = $relative -match '^client\\logs\\remote-desktop-helper(?:\\|$)'
+            $usersModify = $rule.IdentityReference.Value -eq 'S-1-5-32-545' -and -not ($rights -band (-bnot 0x1301BF))
+            if ($helperLog -and $usersModify) { continue } # Intentional isolated interactive-user logs.
+            if (-not $rule.IsInherited -or -not $usersModify) { throw (Get-PathDiagnostic $path 'leaf' $acl $rule 'not a reviewed inherited BUILTIN Users write pattern') }
+            $remove += $rule
+        }
+        if ($remove.Count) { [pscustomobject]@{ Path=$path; Sddl=$acl.GetSecurityDescriptorSddlForm('All'); Remove=$remove } }
+        if ($item.PSIsContainer -and $relative -ne 'client\logs\remote-desktop-helper') { foreach ($child in Get-ChildItem -LiteralPath $path -Force) { $queue.Enqueue($child.FullName) } }
+    }
+}
+
+function Assert-LegacyAclOffline {
+    $service = Get-CimInstance Win32_Service -Filter "Name='NetRatel.Client'" -OperationTimeoutSec 10
+    if ($service -and $service.State -ne 'Stopped') { throw 'Legacy ACL apply requires the NetRatel.Client service stopped by the operator; preview is read-only.' }
+    foreach ($process in Get-CimInstance Win32_Process -OperationTimeoutSec 10) {
+        if ($process.Name -eq 'NetRatel.Client.exe' -or ($process.Name -match '^(powershell|pwsh)(\.exe)?$' -and (-not $process.CommandLine -or $process.CommandLine -match 'netratel-update\.ps1|NetRatelSeedHandoffRequestPath'))) { throw 'Legacy ACL apply requires no active NetRatel client/updater process; an unsafe updater lock is never opened.' }
+    }
+}
+
+function Invoke-LegacyAclRepair([string]$Mode) {
+    if ($Mode -notin @('preview', 'apply')) { throw 'Use NetRatel_LEGACY_ACL_REPAIR=preview or apply; it repairs only the canonical offline product tree.' }
+    $plan = @(Get-LegacyAclPlan)
+    foreach ($entry in $plan) { foreach ($rule in $entry.Remove) { Write-Host (Get-PathDiagnostic $entry.Path 'leaf' (Get-Acl -LiteralPath $entry.Path) $rule 'eligible inherited-write repair') } }
+    if ($Mode -eq 'preview') { Write-Host "Legacy ACL preview: $($plan.Count) descriptor(s) eligible; no files, locks or ACLs changed."; return }
+    if (-not $plan.Count) { Write-Host 'Legacy ACL repair: already safe; no changes.'; return }
+    Assert-LegacyAclOffline
+    $recovery = Get-LegacyAclRecoveryRoot
+    New-OwnedDirectory $recovery
+    $recoveryLock = Join-Path $recovery 'repair.lock'
+    Assert-OwnedPath $recoveryLock -AllowMissing -File
+    $lock = [IO.File]::Open($recoveryLock, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    try {
+        Assert-LegacyAclOffline
+        $current = @(Get-LegacyAclPlan)
+        if (($current | Select-Object Path,Sddl | ConvertTo-Json -Depth 3 -Compress) -ne ($plan | Select-Object Path,Sddl | ConvertTo-Json -Depth 3 -Compress)) { throw 'The canonical ACL tree changed during repair preparation; preview again.' }
+        $backup = Join-Path $recovery ([Guid]::NewGuid().ToString('N') + '.json')
+        Write-PrivateFile $backup (($plan | Select-Object Path,Sddl | ConvertTo-Json -Depth 3) + "`n")
+        foreach ($entry in $plan) {
+            $item = Get-Item -LiteralPath $entry.Path -Force
+            if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw (Get-PathDiagnostic $entry.Path 'leaf' $null $null 'path changed to a reparse point during repair') }
+            $acl = Get-Acl -LiteralPath $entry.Path -Audit
+            if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -notin $trustedSids) { throw (Get-PathDiagnostic $entry.Path 'leaf' $acl $null 'owner changed during repair') }
+            # Parent changes can remove inherited ACEs from children; protect remaining
+            # inheritance while preserving every unrelated rule, then remove eligible ACEs.
+            $acl.SetAccessRuleProtection($true, $true)
+            foreach ($rule in @($acl.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier]))) {
+                if ($rule.IdentityReference.Value -eq 'S-1-5-32-545' -and ([int]$rule.FileSystemRights -band 0xD0156) -and -not ([int]$rule.FileSystemRights -band (-bnot 0x1301BF))) {
+                    $acl.RemoveAccessRuleSpecific($rule)
+                    $read = [int]$rule.FileSystemRights -band 0x1200A9
+                    if ($read) { $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($rule.IdentityReference, $read, $rule.InheritanceFlags, $rule.PropagationFlags, 'Allow')) }
+                }
+            }
+            Set-Acl -LiteralPath $entry.Path -AclObject $acl
+        }
+        if (@(Get-LegacyAclPlan).Count) { throw 'Legacy ACL repair failed revalidation; protected original descriptors were retained.' }
+        Write-Host "Legacy ACL repair complete; descriptors=$backup. Binary rollback does not restore known-insecure ACLs."
+    }
+    finally { $lock.Dispose() }
 }
 
 function Get-ServiceEnvironment([string]$Name) {
@@ -180,14 +280,25 @@ function Invoke-ServiceControl([string[]]$Arguments) {
     finally { $process.Dispose() }
 }
 
+function Initialize-ServiceController {
+    try {
+        Add-Type -AssemblyName System.ServiceProcess -ErrorAction Stop
+        $null = [System.ServiceProcess.ServiceController]
+        $null = [System.ServiceProcess.ServiceControllerStatus]
+    }
+    catch {
+        throw [InvalidOperationException]::new('System.ServiceProcess could not be loaded. Repair the Windows .NET Framework installation and retry in clean Windows PowerShell 5.1 before changing the service.', $_.Exception)
+    }
+}
+
 function Set-ServiceState([string]$State, [string]$Name = $serviceName) {
-    $controller = [ServiceProcess.ServiceController]::new($Name)
+    $controller = [System.ServiceProcess.ServiceController]::new($Name)
     try {
         $controller.Refresh()
         if ([string]$controller.Status -ne $State) {
             if ($State -eq 'Stopped' -and $controller.Status -ne 'StopPending') { $controller.Stop() }
             elseif ($State -eq 'Running' -and $controller.Status -ne 'StartPending') { $controller.Start() }
-            $controller.WaitForStatus([ServiceProcess.ServiceControllerStatus]([Enum]::Parse([ServiceProcess.ServiceControllerStatus], $State)), [TimeSpan]::FromSeconds(60))
+            $controller.WaitForStatus([System.ServiceProcess.ServiceControllerStatus]([Enum]::Parse([System.ServiceProcess.ServiceControllerStatus], $State)), [TimeSpan]::FromSeconds(60))
         }
     }
     finally { $controller.Dispose() }
@@ -244,12 +355,17 @@ function Expand-Artifact([string]$ZipPath, [string]$StageDir) {
 try {
     @@SEED_INITIALIZE@@
     if ($env:OS -ne 'Windows_NT' -or $PSVersionTable.PSVersion.Major -lt 5) { throw 'Run this installer using Windows PowerShell 5.1 or later on Windows.' }
+    Initialize-ServiceController
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     if (-not ([Security.Principal.WindowsPrincipal]::new($identity)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Run Windows PowerShell as Administrator.' }
     $trustedSids += $identity.User.Value
-    $trustedSids += ([Security.Principal.NTAccount]::new('NT SERVICE', 'TrustedInstaller')).Translate([Security.Principal.SecurityIdentifier]).Value
+    $trustedSids += 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464' # TrustedInstaller service SID.
     $administrators = Get-CimInstance Win32_Group -Filter "SID='S-1-5-32-544'" -OperationTimeoutSec 10
     $trustedSids += @(Get-CimAssociatedInstance -InputObject $administrators -Association Win32_GroupUser -ResultClassName Win32_UserAccount -OperationTimeoutSec 10 | Select-Object -ExpandProperty SID)
+    if ($env:NetRatel_LEGACY_ACL_REPAIR) {
+        Invoke-LegacyAclRepair $env:NetRatel_LEGACY_ACL_REPAIR
+        if ($env:NetRatel_LEGACY_ACL_REPAIR -eq 'preview') { return }
+    }
     $ApiBase = Get-Origin $ApiBase
     if ($GatewayEndpoint) { $GatewayEndpoint = Get-Origin $GatewayEndpoint -Gateway }
     if ($Runtime -notin @('win-x64', 'win-arm64') -or ($Version -ne 'latest' -and $Version -notmatch $versionPattern) -or
@@ -516,7 +632,7 @@ catch {
     if ($_.Exception.Message -notmatch '(?i)(https?://|bearer|token|secret|password|enrollment.?code)') { Write-Host $_.Exception.Message }
     Write-Diagnostics
     @@SEED_FAILURE@@
-    throw "NetRatel installation failed during $phase; inspect the safe diagnostics above."
+    throw
 }
 finally {
     foreach ($temporary in @($stageDir, $downloadDir)) {

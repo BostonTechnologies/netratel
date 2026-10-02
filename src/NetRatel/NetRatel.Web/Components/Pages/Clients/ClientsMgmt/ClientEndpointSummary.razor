@@ -1,0 +1,40 @@
+@using NetRatel.Shared.Client
+
+<div class="client-endpoint-summary" aria-label="@Label">
+    <MudText Typo="Typo.subtitle2">@Label</MudText>
+    <dl>
+        <dt>Web / install links</dt>
+        <dd><code>@Endpoints.PublicWebBaseUrl</code><small>@SourceLabel(Endpoints.PublicWebSource)</small></dd>
+        <dt>REST / enrollment / artifacts</dt>
+        <dd><code>@Endpoints.PublicApiBaseUrl</code><small>@SourceLabel(Endpoints.PublicApiSource)</small></dd>
+        <dt>gRPC gateway</dt>
+        <dd><code>@(Endpoints.EffectiveGatewayBaseUrl ?? "Not recorded in this older link")</code><small>@SourceLabel(Endpoints.GatewaySource)</small></dd>
+    </dl>
+    <MudText Typo="Typo.caption">Repairs retain an existing explicit gateway when this link supplies no separate override. Check the installer's resolved gateway after restart.</MudText>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public ClientInstallEndpointSummary Endpoints { get; set; } = default!;
+    [Parameter] public string Label { get; set; } = "Public endpoints";
+
+    private static string SourceLabel(string? source) => source switch
+    {
+        "branding-site-url" => "Branding Site URL fallback",
+        "client-artifacts-public-base-url" => "ClientArtifacts:PublicBaseUrl override",
+        "client-artifacts-public-gateway-base-url" => "ClientArtifacts:PublicGatewayBaseUrl override",
+        "shared-api-origin" => "Derived from the API origin",
+        null => "Source not recorded in this older link",
+        _ when source.StartsWith("branding-site-url:", StringComparison.Ordinal) =>
+            $"Branding Site URL · {source["branding-site-url:".Length..]}",
+        _ => "Recorded source unavailable"
+    };
+}
+
+<style>
+    .client-endpoint-summary { border: 1px solid var(--mud-palette-divider); border-radius: 4px; padding: 0.5rem 0.75rem; min-width: 0; }
+    .client-endpoint-summary dl { display: grid; grid-template-columns: minmax(9rem, auto) minmax(0, 1fr); gap: 0.35rem 1rem; margin: 0.35rem 0 0; font-size: 0.8rem; }
+    .client-endpoint-summary dt { color: var(--mud-palette-text-secondary); }
+    .client-endpoint-summary dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+    .client-endpoint-summary small { display: block; color: var(--mud-palette-text-secondary); }
+    @@media (max-width: 600px) { .client-endpoint-summary dl { grid-template-columns: minmax(0, 1fr); gap: 0.15rem; } .client-endpoint-summary dd { margin-bottom: 0.25rem; } }
+</style>
