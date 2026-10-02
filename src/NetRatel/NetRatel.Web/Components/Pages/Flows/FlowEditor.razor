@@ -1,0 +1,309 @@
+@using System.Globalization
+@using System.Text.Json
+@using NetRatel.Shared.Contracts.Flows
+@using NetRatel.Web.Services.Flows
+@using VeloxDev.WorkflowSystem
+@implements IAsyncDisposable
+@inject IFlowApiService Api
+
+<section class="flow-editor" data-testid="flow-editor" @onkeydown="KeyDown">
+    <header class="flow-editor-header">
+        <div><h2>@(ReadOnly ? "Published version" : "Flow draft")</h2><p>@TenantName · @(_current?.Name ?? Definition.Name)</p></div>
+        <button type="button" @ref="_closeButton" @onclick="RequestClose" data-testid="flow-close">Close editor</button>
+    </header>
+    @if (_confirmClose)
+    {
+        <div role="alert" class="flow-notice" data-testid="flow-unsaved">Unsaved changes are preserved until you choose.
+            <button type="button" @onclick="() => _confirmClose = false">Keep editing</button>
+            <button type="button" @onclick="DiscardClose" data-testid="flow-discard">Discard changes and close</button>
+        </div>
+    }
+    @if (_error is not null) { <div role="alert" class="flow-error" data-testid="flow-error">@_error</div> }
+    @if (_loading) { <p role="status">Loading workflow…</p> }
+    else if (_adapter is not null && _current is not null)
+    {
+        <div class="flow-toolbar">
+            <label class="flow-name">Flow name<input @bind="_name" @bind:event="oninput" @bind:after="CheckDirty" maxlength="@FlowLimits.MaximumNameLength" disabled="@(ReadOnly || _busy || !CanEdit)" data-testid="flow-name" /></label>
+            <span role="status" data-testid="flow-dirty">@(ReadOnly ? $"Immutable version {VersionNumber}" : _dirty ? "Unsaved changes" : $"Saved draft · revision {_current.Revision}")</span>
+            @if (!ReadOnly)
+            {
+                <button type="button" @onclick="SaveAsync" disabled="@(_busy || !CanEdit || !_dirty)" data-testid="flow-save">@(_busy && _operation == "save" ? "Saving…" : "Save draft")</button>
+                <button type="button" @onclick="ValidateAsync" disabled="@_busy" data-testid="flow-validate">Validate</button>
+                <button type="button" @onclick="() => _showDryRun = !_showDryRun" disabled="@_busy" aria-expanded="@(_showDryRun ? "true" : "false")" data-testid="flow-dry-run-toggle">Dry run</button>
+                <button type="button" @onclick="PublishAsync" disabled="@(_busy || _dirty || !CanPublish)" data-testid="flow-publish">Publish immutable version</button>
+                <button type="button" @onclick="ReloadAsync" disabled="@_busy" data-testid="flow-reload">Reload saved draft</button>
+            }
+            <button type="button" @onclick="() => _showProperties = !_showProperties" aria-expanded="@(_showProperties ? "true" : "false")" data-testid="flow-properties-toggle">Properties</button>
+        </div>
+        @if (_confirmReload)
+        {
+            <div role="alert" class="flow-notice" data-testid="flow-reload-confirm">Reloading discards unsaved changes.
+                <button type="button" @onclick="() => _confirmReload = false">Keep editing</button>
+                <button type="button" @onclick="ReloadConfirmedAsync" data-testid="flow-reload-discard">Discard and reload</button>
+            </div>
+        }
+        @if (_message is not null) { <p role="status" class="flow-notice" data-testid="flow-result">@_message</p> }
+        @if (ReadOnly) { <p class="flow-notice">This published graph is immutable. Draft edits and new versions cannot change its definition.</p> }
+        else { <p class="flow-inert">Save, Validate and Dry run send no incidents. Publishing freezes a definition; monitoring rules select a published version for server execution.</p> }
+        @if (_issues.Count > 0)
+        {
+            <ul class="flow-issues" data-testid="flow-validation-issues">@foreach (var issue in _issues) { <li>@IssueText(issue) @NodeLabel(issue.NodeId)</li> }</ul>
+        }
+        @if (_showDryRun && !ReadOnly)
+        {
+            <fieldset class="flow-dry-run" disabled="@_busy" data-testid="flow-dry-run-form"><legend>Sample alert — preview only</legend>
+                <label>Rule name<input @bind="_sampleRule" /></label><label>Client name<input @bind="_sampleClient" /></label>
+                <label>Resource<input @bind="_sampleResource" /></label><label>Metric<input @bind="_sampleMetric" /></label>
+                <label>Severity<select @bind="_sampleSeverity"><option>warning</option><option>critical</option><option>info</option></select></label>
+                <label>Numeric value<input type="number" step="any" @bind="_sampleValue" /></label>
+                <label>Service state<input @bind="_sampleService" /></label>
+                <button type="button" @onclick="DryRunAsync" data-testid="flow-dry-run">Preview sample</button>
+                @if (_preview is not null)
+                {
+                    <div role="status" data-testid="flow-preview">@(_preview.Skipped ? "Skipped by condition" : _preview.Valid ? "Preview only — no incident sent" : "Preview could not validate the graph")
+                        @if (_preview.Incident is { } fields) { <p><strong>@fields.Title</strong></p><p>@fields.Description</p><p>Priority: @(fields.Priority?.ToString() ?? "Connector default")</p> }
+                    </div>
+                }
+            </fieldset>
+        }
+        <div class="flow-workspace @(_showProperties ? "" : "properties-collapsed")">
+            <aside class="flow-library" aria-label="Node library">
+                <h3>Nodes</h3>
+                @foreach (var kind in Enum.GetValues<FlowNodeKind>())
+                {
+                    <button type="button" @onclick="() => AddNodeAsync(kind)" disabled="@(ReadOnly || !CanEdit || _busy || _adapter.Tree.Nodes.Count >= FlowLimits.MaximumNodes)" data-testid="@($"flow-add-{kind}")">@FlowCanvas.KindLabel(kind)</button>
+                }
+                <p>@_adapter.Tree.Nodes.Count / @FlowLimits.MaximumNodes nodes</p>
+                <label>Selected node<select value="@(_selected?.ToString() ?? "")" @onchange="SelectNode" data-testid="flow-select-node"><option value="">Choose a node</option>
+                    @foreach (var n in _adapter.Capture().Nodes) { <option value="@n.Id">@n.Name</option> }
+                </select></label>
+            </aside>
+            <div class="flow-canvas-column"><FlowCanvas @key="_adapter" @ref="_canvas" Adapter="_adapter" ReadOnly="@(ReadOnly || !CanEdit || _busy)" SelectedNodeId="_selected" Selected="SelectNodeAsync" Changed="CheckDirty" InitialViewport="_initialViewport" /></div>
+            @if (_showProperties)
+            {
+                <aside class="flow-properties" aria-label="Node properties" data-testid="flow-properties">
+                    <h3>Properties</h3>
+                    @if (SelectedDefinition is { } selected)
+                    {
+                        <fieldset disabled="@(ReadOnly || !CanEdit || _busy)">
+                            <legend>@FlowCanvas.KindLabel(selected.Kind)</legend>
+                            <label>Node name<input value="@selected.Name" @onchange="e => UpdateNode(selected with { Name = e.Value?.ToString() ?? string.Empty })" maxlength="@FlowLimits.MaximumNameLength" data-testid="flow-node-name" /></label>
+                            <div class="flow-coordinates"><label>X<input type="number" value="@Number(selected.Position.X)" @onchange="e => MoveNodeAsync(selected, true, e)" data-testid="flow-node-x" /></label>
+                            <label>Y<input type="number" value="@Number(selected.Position.Y)" @onchange="e => MoveNodeAsync(selected, false, e)" data-testid="flow-node-y" /></label></div>
+                            @if (selected.Kind == FlowNodeKind.Condition)
+                            {
+                                var condition = selected.Condition ?? new(FlowValueField.NumericValue, FlowComparison.GreaterThan, 90);
+                                <label>Field<select value="@((int)condition.Field)" @onchange="e => UpdateConditionField(selected, e)" data-testid="flow-condition-field">@foreach (var field in Enum.GetValues<FlowValueField>()) { <option value="@((int)field)">@field</option> }</select></label>
+                                <label>Comparison<select value="@((int)condition.Comparison)" @onchange="e => UpdateConditionComparison(selected, e)">@foreach (var comparison in Enum.GetValues<FlowComparison>()) { <option value="@((int)comparison)">@comparison</option> }</select></label>
+                                @if (condition.Field == FlowValueField.NumericValue)
+                                { <label>Value<input type="number" step="any" value="@condition.NumericValue" @onchange="e => UpdateConditionNumber(selected, e)" data-testid="flow-condition-value" /></label> }
+                                else
+                                { <label>Value<input value="@condition.TextValue" @onchange="e => UpdateNode(selected with { Condition = condition with { TextValue = e.Value?.ToString(), NumericValue = null } })" /></label> }
+                            }
+                            @if (selected.Kind == FlowNodeKind.MapIncident)
+                            {
+                                var mapping = selected.Mapping ?? new("{ruleName}: {resource}", "{clientName} — {metric}: {value}");
+                                <label>Incident title<input value="@mapping.TitleTemplate" maxlength="@FlowLimits.MaximumTitleLength" @onchange="e => UpdateNode(selected with { Mapping = mapping with { TitleTemplate = e.Value?.ToString() ?? string.Empty } })" data-testid="flow-mapping-title" /></label>
+                                <label>Description<textarea maxlength="@FlowLimits.MaximumTemplateLength" @onchange="e => UpdateNode(selected with { Mapping = mapping with { DescriptionTemplate = e.Value?.ToString() ?? string.Empty } })">@mapping.DescriptionTemplate</textarea></label>
+                                <label>Priority<select value="@(mapping.Priority?.ToString() ?? "")" @onchange="e => UpdatePriority(selected, e)"><option value="">Connector default</option><option value="0">Low</option><option value="1">Normal</option><option value="2">High</option><option value="3">Urgent</option></select></label>
+                                <p class="flow-help">Fields: {ruleName}, {clientName}, {resource}, {metric}, {severity}, {value}, {serviceState}, {occurredAt}.</p>
+                            }
+                            @if (selected.Kind == FlowNodeKind.CreateIncident)
+                            {
+                                <label>RatelDesk connector<select value="@(selected.ConnectorId?.ToString() ?? "")" @onchange="e => SelectConnector(selected, e)" data-testid="flow-connector"><option value="">Choose an available reference</option>
+                                    @foreach (var connector in Connectors.Where(c => c.TenantId == Definition.TenantId)) { <option value="@connector.Id">@connector.Name @(connector.CanExecute && connector.Enabled ? "" : "(unavailable)")</option> }
+                                </select></label>
+                                @if (SelectedConnector(selected) is { } reference)
+                                { <p role="status" data-testid="flow-connector-status">@(reference.Enabled && reference.CanExecute ? "Available for authorized server execution" : $"Unavailable: {reference.UnavailableReason ?? (reference.Enabled ? "Receiver capability is not verified" : "Connector disabled")}")</p> }
+                                else { <p role="status" data-testid="flow-connector-status">No owned connector reference is available. Configure one in Flows connectors before publishing this action.</p> }
+                                <a href="@($"/flows/connectors?tenantId={Definition.TenantId}")">Manage RatelDesk connectors</a>
+                            }
+                            <button type="button" @onclick="() => RemoveNodeAsync(selected.Id)" data-testid="flow-remove-node">Remove node</button>
+                        </fieldset>
+                    }
+                    else { <p>Select a node on the canvas or in the node list.</p> }
+                    <fieldset disabled="@(ReadOnly || !CanEdit || _busy)" class="flow-connections"><legend>Connections</legend>
+                        <label>From<select @bind="_from" data-testid="flow-connect-from"><option value="">Choose output</option>@foreach (var n in _adapter.Capture().Nodes.Where(n => n.Kind != FlowNodeKind.CreateIncident)) { <option value="@n.Id">@n.Name · @FlowCanvasAdapter.OutputType(n.Kind)</option> }</select></label>
+                        <label>To<select @bind="_to" data-testid="flow-connect-to"><option value="">Choose input</option>@foreach (var n in _adapter.Capture().Nodes.Where(n => n.Kind != FlowNodeKind.AlertRaised)) { <option value="@n.Id">@n.Name · @FlowCanvasAdapter.InputType(n.Kind)</option> }</select></label>
+                        <button type="button" @onclick="ConnectAsync" data-testid="flow-connect">Connect ports</button>
+                        @foreach (var edge in _adapter.Capture().Edges)
+                        { <p class="flow-edge">@NodeLabel(edge.SourceNodeId) → @NodeLabel(edge.TargetNodeId)<button type="button" @onclick="() => DisconnectAsync(edge)" aria-label="@($"Disconnect {NodeLabel(edge.SourceNodeId)} from {NodeLabel(edge.TargetNodeId)}")">Remove</button></p> }
+                    </fieldset>
+                </aside>
+            }
+        </div>
+    }
+</section>
+
+@code {
+    [Parameter, EditorRequired] public FlowDefinitionDto Definition { get; set; } = default!;
+    [Parameter] public string TenantName { get; set; } = "";
+    [Parameter] public IReadOnlyList<FlowConnectorReferenceDto> Connectors { get; set; } = [];
+    [Parameter] public bool CanEdit { get; set; }
+    [Parameter] public bool CanPublish { get; set; }
+    [Parameter] public bool ReadOnly { get; set; }
+    [Parameter] public int VersionNumber { get; set; }
+    [Parameter] public EventCallback<FlowDefinitionDto> Saved { get; set; }
+    [Parameter] public EventCallback Closed { get; set; }
+    [Parameter] public EventCallback<bool> DirtyChanged { get; set; }
+    private FlowDefinitionDto? _current;
+    private FlowCanvasAdapter? _adapter;
+    private FlowCanvas? _canvas;
+    private FlowViewportDto _initialViewport = new();
+    private Guid? _selected;
+    private string _name = "", _baseline = "", _from = "", _to = "";
+    private bool _dirty, _busy, _loading, _disposed, _showProperties = true, _confirmClose, _confirmReload, _showDryRun, _focusPending;
+    private string? _error, _message, _operation;
+    private IReadOnlyList<FlowValidationIssueDto> _issues = [];
+    private FlowDryRunResultDto? _preview;
+    private CancellationTokenSource _lifetime = new();
+    private int _generation;
+    private ElementReference _closeButton;
+    private string _sampleRule = "Disk capacity", _sampleClient = "Sample client", _sampleResource = "/", _sampleMetric = "disk.used.percent", _sampleSeverity = "warning", _sampleService = "";
+    private double? _sampleValue = 95;
+    private readonly Guid _sampleAgentId = Guid.NewGuid(), _sampleRuleId = Guid.NewGuid();
+    private FlowNodeDto? SelectedDefinition => _adapter?.Capture().Nodes.FirstOrDefault(n => n.Id == _selected);
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_current?.Id == Definition.Id && _current.TenantId == Definition.TenantId && _current.Revision == Definition.Revision) return;
+        _lifetime.Cancel(); _lifetime.Dispose(); _lifetime = new(); var generation = ++_generation;
+        _loading = true; _error = null; _busy = false;
+        await ReplaceAsync(Definition, generation, _lifetime.Token);
+    }
+    private async Task ReplaceAsync(FlowDefinitionDto definition, int generation, CancellationToken token)
+    {
+        var replacement = new FlowCanvasAdapter();
+        try
+        {
+            await replacement.RestoreAsync(definition.Draft, token);
+            if (!Current(generation, definition.TenantId, definition.Id)) { await replacement.DisposeAsync(); return; }
+            var old = _adapter; _adapter = replacement; _canvas = null; _current = definition; _name = definition.Name;
+            _initialViewport = definition.Draft.Viewport; _selected = definition.Draft.Nodes.FirstOrDefault()?.Id;
+            _baseline = Fingerprint(definition.Name, definition.Draft); _dirty = false; _confirmReload = false; _issues = []; _preview = null; _focusPending = true;
+            if (old is not null) await old.DisposeAsync();
+            await DirtyChanged.InvokeAsync(false);
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { await replacement.DisposeAsync(); }
+        catch (Exception) { await replacement.DisposeAsync(); if (Current(generation, definition.TenantId, definition.Id)) _error = "The draft cannot be displayed safely. Reload the saved flow or contact an administrator."; }
+        finally { if (Current(generation, definition.TenantId, definition.Id)) _loading = false; }
+    }
+    private bool Current(int generation, int tenant, Guid id) => !_disposed && generation == _generation && Definition.TenantId == tenant && Definition.Id == id;
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    { if (_focusPending && !_loading) { _focusPending = false; await _closeButton.FocusAsync(); } }
+    private static string Fingerprint(string name, FlowGraphDto graph) => name + "\n" + JsonSerializer.Serialize(graph);
+    private async Task CheckDirty()
+    {
+        if (ReadOnly || _adapter is null || _disposed) return;
+        var next = Fingerprint(_name, _canvas?.CaptureCurrent() ?? _adapter.Capture(_initialViewport.ScrollX, _initialViewport.ScrollY)) != _baseline;
+        if (next == _dirty) return; _dirty = next; await DirtyChanged.InvokeAsync(next);
+    }
+    private async Task CommandAsync(string operation, Func<int, Guid, CancellationToken, Task> command)
+    {
+        if (_busy || _disposed || _current is null) return;
+        var generation = _generation; var tenant = _current.TenantId; var id = _current.Id;
+        _busy = true; _operation = operation; _error = null; _message = null; _issues = [];
+        try { await command(tenant, id, _lifetime.Token); }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+        catch (HttpRequestException exception) { if (Current(generation, tenant, id)) _error = exception is FlowApiException ? exception.Message : "The flow request failed. Your unsaved edits are preserved. Try again."; }
+        catch (InvalidOperationException exception) when (operation is "connect" or "add") { if (Current(generation, tenant, id)) _error = exception.Message; }
+        catch (Exception) { if (Current(generation, tenant, id)) _error = "The workflow operation could not finish. Your unsaved edits are preserved."; }
+        finally { if (Current(generation, tenant, id)) { _busy = false; _operation = null; } }
+    }
+    private async Task<FlowGraphDto> CaptureAsync() => _canvas is not null ? await _canvas.CaptureAsync() : _adapter!.Capture(_initialViewport.ScrollX, _initialViewport.ScrollY);
+    private Task SaveAsync() => !CanEdit || ReadOnly ? Task.CompletedTask : CommandAsync("save", async (tenant, id, token) =>
+    {
+        var generation = _generation; var nameAtSubmit = _name; var graph = await CaptureAsync();
+        var result = FlowGraphValidator.ValidateDraft(graph);
+        if (!result.Valid) { _issues = result.Issues; _message = "The draft has unsafe or invalid fields. Correct these before saving."; return; }
+        var saved = await Api.SaveAsync(tenant, id, new(_current!.Revision, nameAtSubmit, graph), token);
+        if (!Current(generation, tenant, id) || saved.TenantId != tenant || saved.Id != id || saved.Revision <= _current.Revision) return;
+        _current = saved; if (_name == nameAtSubmit) _name = saved.Name; _baseline = Fingerprint(saved.Name, saved.Draft);
+        _dirty = Fingerprint(_name, _canvas?.CaptureCurrent() ?? _adapter!.Capture(_initialViewport.ScrollX, _initialViewport.ScrollY)) != _baseline;
+        _message = _dirty ? "Submitted draft saved. Newer canvas changes remain unsaved. No action ran." : "Draft saved. No action ran.";
+        await DirtyChanged.InvokeAsync(_dirty); await Saved.InvokeAsync(saved);
+    });
+    private Task ValidateAsync() => CommandAsync("validate", async (tenant, id, token) =>
+    {
+        var generation = _generation; var result = await Api.ValidateAsync(tenant, await CaptureAsync(), token);
+        if (!Current(generation, tenant, id)) return; _issues = result.Issues; _message = result.Valid ? "Valid complete graph. No action ran." : "Complete graph validation found issues.";
+    });
+    private Task DryRunAsync() => CommandAsync("preview", async (tenant, id, token) =>
+    {
+        var generation = _generation;
+        var input = new FlowEventDataDto(_sampleAgentId, _sampleRuleId, _sampleRule, _sampleClient, _sampleResource, _sampleMetric, _sampleSeverity, _sampleValue, string.IsNullOrWhiteSpace(_sampleService) ? null : _sampleService, DateTimeOffset.UtcNow);
+        var result = await Api.DryRunAsync(tenant, new(await CaptureAsync(), input), token);
+        if (!Current(generation, tenant, id)) return; _preview = result; _issues = result.Issues;
+    });
+    private Task PublishAsync() => ReadOnly || !CanPublish || _dirty ? Task.CompletedTask : CommandAsync("publish", async (tenant, id, token) =>
+    {
+        var generation = _generation; var version = await Api.PublishAsync(tenant, id, new(_current!.Revision), token);
+        if (!Current(generation, tenant, id) || version.TenantId != tenant || version.FlowId != id) return;
+        var saved = await Api.GetAsync(tenant, id, token);
+        if (!Current(generation, tenant, id) || saved.TenantId != tenant || saved.Id != id || saved.Revision <= _current.Revision) return;
+        _current = saved; _message = $"Published immutable version {version.VersionNumber}. No action ran."; await Saved.InvokeAsync(saved);
+    });
+    private Task ReloadAsync() { if (_dirty) { _confirmReload = true; return Task.CompletedTask; } return ReloadConfirmedAsync(); }
+    private Task ReloadConfirmedAsync() => CommandAsync("reload", async (tenant, id, token) =>
+    {
+        var generation = _generation; var saved = await Api.GetAsync(tenant, id, token);
+        if (!Current(generation, tenant, id) || saved.Id != id || saved.TenantId != tenant || saved.Revision < _current!.Revision) return;
+        await ReplaceAsync(saved, generation, token); _message = "Saved draft reloaded.";
+    });
+    private async Task RequestClose() { if (_dirty) { _confirmClose = true; return; } await DiscardClose(); }
+    private async Task DiscardClose() { _lifetime.Cancel(); ++_generation; await DirtyChanged.InvokeAsync(false); await Closed.InvokeAsync(); }
+    private Task KeyDown(KeyboardEventArgs args) => args.Key == "Escape" ? RequestClose() : Task.CompletedTask;
+    private void SelectNode(ChangeEventArgs args) { _selected = Guid.TryParse(args.Value?.ToString(), out var id) ? id : null; _showProperties = true; }
+    private Task SelectNodeAsync(Guid id) { _selected = id; _showProperties = true; return Task.CompletedTask; }
+    private void UpdateNode(FlowNodeDto node) { if (ReadOnly || !CanEdit || _busy || _adapter is null) return; _adapter.Update(node); _ = CheckDirty(); }
+    private Task MoveNodeAsync(FlowNodeDto definition, bool x, ChangeEventArgs args) => CommandAsync("move", async (tenant, id, token) =>
+    {
+        if (ReadOnly || !CanEdit || _adapter is null || !double.TryParse(args.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var value) || !double.IsFinite(value) || Math.Abs(value) > 20000) { _error = "Coordinates must be finite numbers within the canvas bounds."; return; }
+        var generation = _generation;
+        var position = x ? definition.Position with { X = value } : definition.Position with { Y = value };
+        var node = _adapter.Metadata.Single(p => p.Value.Id == definition.Id).Key;
+        await FlowCanvasAdapter.CompleteAsync(node.SetAnchorCommand, new VeloxDev.WorkflowSystem.Anchor(position.X, position.Y), token);
+        if (Current(generation, tenant, id)) await CheckDirty();
+    });
+    private Task AddNodeAsync(FlowNodeKind kind) => CommandAsync("add", async (tenant, id, token) =>
+    {
+        if (!CanEdit || ReadOnly || _adapter is null) return;
+        var generation = _generation; var adapter = _adapter;
+        var definition = new FlowNodeDto(Guid.NewGuid(), kind, FlowCanvas.KindLabel(kind), new(70 + _adapter.Tree.Nodes.Count * 260, 140),
+            kind == FlowNodeKind.Condition ? new(FlowValueField.NumericValue, FlowComparison.GreaterThan, 90) : null,
+            kind == FlowNodeKind.MapIncident ? new("{ruleName}: {resource}", "{clientName} — {metric}: {value}") : null);
+        await adapter.AddAsync(definition, token); if (!Current(generation, tenant, id)) return; _selected = definition.Id; await CheckDirty();
+    });
+    private Task RemoveNodeAsync(Guid node) => CommandAsync("remove", async (tenant, id, token) => { if (!CanEdit || ReadOnly) return; var generation = _generation; await _adapter!.RemoveAsync(node, token); if (!Current(generation, tenant, id)) return; _selected = null; await CheckDirty(); });
+    private Task ConnectAsync() => CommandAsync("connect", async (tenant, id, token) =>
+    { if (!CanEdit || ReadOnly || !Guid.TryParse(_from, out var from) || !Guid.TryParse(_to, out var to)) { _error = "Select an output and an input."; return; } var generation = _generation; await _adapter!.ConnectAsync(from, to, token); if (Current(generation, tenant, id)) await CheckDirty(); });
+    private Task DisconnectAsync(FlowEdgeDto edge) => CommandAsync("disconnect", async (tenant, id, token) => { if (!CanEdit || ReadOnly) return; var generation = _generation; await _adapter!.DisconnectAsync(edge, token); if (Current(generation, tenant, id)) await CheckDirty(); });
+    private void UpdateConditionField(FlowNodeDto node, ChangeEventArgs e) { if (Enum.TryParse<FlowValueField>(e.Value?.ToString(), out var field)) UpdateNode(node with { Condition = field == FlowValueField.NumericValue ? new(field, FlowComparison.GreaterThan, 90) : new(field, FlowComparison.Equal, null, "") }); }
+    private void UpdateConditionComparison(FlowNodeDto node, ChangeEventArgs e) { if (Enum.TryParse<FlowComparison>(e.Value?.ToString(), out var comparison)) UpdateNode(node with { Condition = (node.Condition ?? new(FlowValueField.NumericValue, comparison, 90)) with { Comparison = comparison } }); }
+    private void UpdateConditionNumber(FlowNodeDto node, ChangeEventArgs e)
+    {
+        if (ReadOnly || !CanEdit || _busy || _adapter is null) return;
+        if (!double.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var value) || !double.IsFinite(value))
+        { _error = "Condition values must be finite numbers. The previous valid value is preserved."; return; }
+        _error = null;
+        UpdateNode(node with { Condition = (node.Condition ?? new(FlowValueField.NumericValue, FlowComparison.GreaterThan)) with { NumericValue = value, TextValue = null } });
+    }
+    private void UpdatePriority(FlowNodeDto node, ChangeEventArgs e) => UpdateNode(node with { Mapping = (node.Mapping ?? new("{ruleName}", "")) with { Priority = int.TryParse(e.Value?.ToString(), out var priority) ? priority : null } });
+    private void SelectConnector(FlowNodeDto node, ChangeEventArgs e)
+    {
+        var reference = Guid.TryParse(e.Value?.ToString(), out var id) ? Connectors.FirstOrDefault(c => c.Id == id && c.TenantId == Definition.TenantId) : null;
+        UpdateNode(node with { ConnectorId = reference?.Id, ConnectorRevision = reference is { Revision: > 0 } ? reference.Revision : null });
+    }
+    private FlowConnectorReferenceDto? SelectedConnector(FlowNodeDto node) => Connectors.FirstOrDefault(c => c.Id == node.ConnectorId && c.TenantId == Definition.TenantId);
+    private string NodeLabel(Guid? id) => id is null ? "" : _adapter?.Metadata.Values.FirstOrDefault(n => n.Id == id)?.Name ?? "Unknown node";
+    private static string Number(double value) => value.ToString("0.######", CultureInfo.InvariantCulture);
+    private static string IssueText(FlowValidationIssueDto issue) => issue.Code switch
+    {
+        "connector-required" or "connector-reference" or "connector-revision-required" => "Select an owned connector reference.",
+        "unreachable-path" or "input-path" or "output-path" => "Connect every node in one path from Alert raised to Create incident.",
+        "typed-port" => "Connect compatible alert or incident ports.", "fanout" => "Each port supports one connection.", "cycle" => "Remove the cyclic connection.",
+        "mapping" or "mapping-required" => "Check incident templates and approved fields.", "condition" or "condition-required" => "Check condition field, comparison and value.",
+        "node-catalogue" => "Use one trigger, one mapping, one action and at most one condition.", "graph-limit" or "graph-bytes" => "The draft exceeds the bounded graph size.",
+        "node-layout" or "viewport-limit" => "Check node names and finite canvas geometry.", _ => "The graph contains an invalid definition (" + issue.Code + ")."
+    };
+    public async ValueTask DisposeAsync() { _disposed = true; ++_generation; _lifetime.Cancel(); _lifetime.Dispose(); if (_adapter is not null) await _adapter.DisposeAsync(); }
+}

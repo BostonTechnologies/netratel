@@ -27,6 +27,7 @@ using NetRatel.Infrastructure;
 using NetRatel.API.Realtime;
 using NetRatel.API.Services;
 using NetRatel.API.Services.Jobs;
+using NetRatel.API.Services.Monitoring;
 using NetRatel.API.Services.Operations;
 using NetRatel.API.Models;
 using NetRatel.API.Security;
@@ -857,9 +858,11 @@ builder.Services.AddAuthentication()
 builder.Services.AddSingleton<IConfigureOptions<JwtBearerOptions>, M2MJwtBearerOptionsConfigurator>();
 
 builder.Services.AddHostedService<OutboxProcessor>();
+builder.Services.AddHostedService<NetRatel.Infrastructure.Flows.FlowRunWorker>();
 builder.Services.AddHostedService<GlobalSearchQueryWarmupService>();
 builder.Services.AddNetRatelApplication();
 builder.Services.AddNetRatelInfrastructure(builder.Configuration);
+builder.Services.AddMonitoringFlowBridge();
 builder.Services.AddIdentityCore<LocalUser>(options =>
     {
         options.User.RequireUniqueEmail = true;
@@ -933,6 +936,7 @@ app.UseResponseCompression();
 
 app.UseMiddleware<NetRatel.API.Middleware.CorrelationIdMiddleware>();
 app.UseMiddleware<NetRatel.API.Middleware.CorrelationLoggingMiddleware>();
+app.UseMiddleware<NetRatel.API.Middleware.FlowRequestBodyLimitMiddleware>();
 
 app.MapApiEndpoints();
 app.MapReadyBootstrapStatus(bootstrapDescriptor);

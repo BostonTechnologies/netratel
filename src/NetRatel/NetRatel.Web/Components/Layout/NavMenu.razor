@@ -4,6 +4,7 @@
 @inject NetRatel.Web.Services.Access.IAccessAdministrationApiService AccessApi
 @inject IDeploymentBrandingApiService BrandingApi
 @inject ILogger<NavMenu> Logger
+@inject NetRatel.Web.Services.Flows.IFlowApiService FlowApi
 
 <MudNavMenu Class="netratel-nav">
     <a class="netratel-nav-brand" href="/" aria-label="@($"{ApplicationName} home")">
@@ -33,6 +34,10 @@
 
             <div class="nav-section-heading"><span>Signals</span></div>
             <MudNavLink Href="/notifications" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Notifications">Notifications</MudNavLink>
+            @if (canReadFlows)
+            {
+                <MudNavLink Href="/flows" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.AccountTree">Flows</MudNavLink>
+            }
             <MudNavGroup Title="AI Ops" Expanded="false">
                 <MudNavLink Href="/ai/ops" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Insights">MCP Tools</MudNavLink>
             </MudNavGroup>
@@ -72,6 +77,7 @@
     private string? currentUrl;
     private string? userName;
     private bool canAdministerAccess;
+    private bool canReadFlows;
     private EffectiveDeploymentBranding? _branding;
     private string ApplicationName => _branding?.ApplicationName.Value ?? "NetRatel";
     private string CompactLogoUrl => _branding?.CompactLogoUrl.Value ?? "brand/netratel-mark-64.png";
@@ -85,6 +91,8 @@
         userName = authState.User.Identity?.Name;
         if (authState.User.Identity?.IsAuthenticated == true)
         {
+            try { canReadFlows = (await FlowApi.GetTenantsAsync()).Count > 0; }
+            catch (HttpRequestException) { canReadFlows = false; }
             try
             {
                 canAdministerAccess = (await AccessApi.GetSelfAsync()).IsInstanceAdministrator;

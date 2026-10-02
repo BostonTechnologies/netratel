@@ -76,6 +76,32 @@ do not consume enrollment uses. Clients should treat the URL as a bearer
 capability and must not log it. The prior client-script file-response route
 retains its existing response type for compatibility.
 
+## Flows (0.1.1 beta)
+
+`GET /api/v1/flows/tenants` returns tenants paired with `flow.read` authority
+and their effective edit/publish/execute flags. All other routes are under
+`/api/v1/tenants/{tenantId}/flows`; the tenant permission is checked before
+definition, version or run disclosure.
+
+| Route | Permission and behavior |
+| --- | --- |
+| `GET /`, `/template`, `/connectors`, `/{flowId}` | `flow.read`; bounded definitions, named template or currently authorized connector references. |
+| `POST /validate`, `/dry-run` | `flow.read`; canonical validation and pure inert DTO preview. |
+| `POST /`, `PUT /{flowId}/draft`, `POST /{flowId}/clone`, `PUT /{flowId}/enabled` | `flow.edit`; create or mutate an inert draft using `expectedRevision` for existing definitions. |
+| `POST /{flowId}/publish` | `flow.publish`; create an immutable version after current connector authority/capability/revision checks. |
+| `GET /{flowId}/versions`, `/{flowId}/runs`, `/{flowId}/runs/{runId}` | `flow.read`; bounded version and execution history. |
+| `GET /versions/{versionId}`, `/runs/{runId}` | `flow.read`; direct paired-tenant lookup for monitoring deep links. |
+
+Successful mutations return the canonical `FlowDefinitionDto`; publish
+returns `FlowVersionDto`. Writes expose a bounded safe `code` on rejected
+requests: 409 for revision conflicts, 429 for capacity, and 422 for unavailable
+or unauthorized connector dependencies. An unverified RatelDesk receiver
+returns `receiver-idempotency-unverified` and preserves the draft. Flow write
+bodies are bounded before JSON binding, including chunked streams. There is
+no browser/API execute route. The monitoring ingress and backend worker own
+durable execution. See [Flows](FLOWS.md) for schema bounds, authority,
+receipts/recovery, VeloxDev version and the receiver dependency.
+
 ## Release verification
 
 The protected release and PR workflows validate the generated surface with

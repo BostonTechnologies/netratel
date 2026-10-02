@@ -89,6 +89,8 @@ public sealed class MonitoringApiService(IMonitoringResourceAuthorizer authoriza
     public async Task<ImmutableArray<MonitoringPublishedFlowDto>> GetPublishedFlowsAsync(int tenantId, ClaimsPrincipal user, CancellationToken cancellationToken)
     {
         await RequireReadOrManageAsync(user, tenantId, cancellationToken).ConfigureAwait(false);
+        if (!await access.AuthorizeAsync(user, NetRatelPermissions.FlowRead, tenantId, cancellationToken).ConfigureAwait(false) ||
+            !await access.AuthorizeAsync(user, NetRatelPermissions.FlowExecute, tenantId, cancellationToken).ConfigureAwait(false)) return [];
         return Bounded(await flows.ListPublishedAsync(tenantId, MonitoringLimits.MaximumRowsPerRead, cancellationToken).ConfigureAwait(false));
     }
 
@@ -171,8 +173,12 @@ public sealed class MonitoringApiService(IMonitoringResourceAuthorizer authoriza
         };
         if (rule.FreshnessBudget < minimumFreshness) throw new MonitoringApiException(400, "monitoring_freshness_below_collection_cadence");
         await ResolveTargetsAsync(tenantId, rule.Targets, current, user, NetRatelPermissions.MonitoringManage, cancellationToken).ConfigureAwait(false);
-        if (rule.PublishedFlowVersionId is Guid flowId && !await flows.IsPublishedAsync(tenantId, flowId, cancellationToken).ConfigureAwait(false))
-            throw new MonitoringApiException(400, "published_flow_unavailable");
+        if (rule.PublishedFlowVersionId is Guid flowId && existing?.PublishedFlowVersionId != flowId)
+        {
+            await RequireFlowSelectionAuthorityAsync(user, tenantId, cancellationToken).ConfigureAwait(false);
+            if (!await flows.IsPublishedAsync(tenantId, flowId, cancellationToken).ConfigureAwait(false))
+                throw new MonitoringApiException(400, "published_flow_unavailable");
+        }
         var candidate = current with { Rules = current.Rules.Where(item => item.RuleId != ruleId).Append(rule).ToImmutableArray() };
         await ValidateCandidateAsync(candidate, cancellationToken).ConfigureAwait(false);
         var saved = await configurations.SaveRuleAsync(new(rule, request.ExpectedConfigurationRevision, operatorId, request.Reason, request.ResetPolicy), cancellationToken).ConfigureAwait(false);
@@ -368,6 +374,13 @@ public sealed class MonitoringApiService(IMonitoringResourceAuthorizer authoriza
     private async Task RequireAsync(ClaimsPrincipal user, string permission, MonitoringResource resource, CancellationToken cancellationToken)
     {
         if (!await AllowedAsync(user, permission, resource, cancellationToken).ConfigureAwait(false)) throw new MonitoringApiException(403, "monitoring_permission_required");
+    }
+
+    private async Task RequireFlowSelectionAuthorityAsync(ClaimsPrincipal user, int tenantId, CancellationToken cancellationToken)
+    {
+        if (!await access.AuthorizeAsync(user, NetRatelPermissions.FlowRead, tenantId, cancellationToken).ConfigureAwait(false) ||
+            !await access.AuthorizeAsync(user, NetRatelPermissions.FlowExecute, tenantId, cancellationToken).ConfigureAwait(false))
+            throw new MonitoringApiException(403, "flow_selection_permission_required");
     }
 
     private async Task RequireReadOrManageAsync(ClaimsPrincipal user, int tenantId, CancellationToken cancellationToken)

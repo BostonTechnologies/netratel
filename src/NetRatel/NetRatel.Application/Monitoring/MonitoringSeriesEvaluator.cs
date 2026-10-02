@@ -231,16 +231,22 @@ public sealed class MonitoringSeriesEvaluator(TimeProvider timeProvider, Func<Gu
     private static bool SameArray<T>(ImmutableArray<T> left, ImmutableArray<T> right) =>
         left.IsDefault == right.IsDefault && (left.IsDefault || left.SequenceEqual(right));
 
-    public MonitoringEvaluationResult RecordFlowOutcome(MonitoringSeriesState state, Guid occurrenceId, Guid eventId, MonitoringFlowOutcomeDto outcome)
+    /// <summary>Validates receipt data before any identical-outcome fast path.</summary>
+    public static void RequireFlowOutcome(MonitoringFlowOutcomeDto outcome, DateTimeOffset now)
     {
         if (outcome.FlowRunId == Guid.Empty ||
             (outcome.FlowRunId is null && (outcome.Outcome is MonitoringFlowOutcomeKind.Succeeded or MonitoringFlowOutcomeKind.Skipped || outcome.Code is null)) ||
             !Enum.IsDefined(outcome.Outcome) || outcome.OccurredAtUtc == default ||
-            outcome.OccurredAtUtc > timeProvider.GetUtcNow() || (outcome.Code is { } code &&
+            outcome.OccurredAtUtc > now || (outcome.Code is { } code &&
                 (code.Length == 0 || code.Length > 64 || code.Any(character => character is not (>= 'a' and <= 'z' or >= '0' and <= '9' or '_' or '-')))))
             throw new ArgumentException("invalid_flow_outcome");
         if (outcome.Receipt is { } receipt && (outcome.Outcome != MonitoringFlowOutcomeKind.Succeeded ||
             !MonitoringContractValidator.TryValidateIncidentReceipt(receipt, out _))) throw new ArgumentException("invalid_incident_receipt");
+    }
+
+    public MonitoringEvaluationResult RecordFlowOutcome(MonitoringSeriesState state, Guid occurrenceId, Guid eventId, MonitoringFlowOutcomeDto outcome)
+    {
+        RequireFlowOutcome(outcome, timeProvider.GetUtcNow());
         if (state.Occurrence?.OccurrenceId != occurrenceId || state.Occurrence.RaisedEventId != eventId || state.Occurrence.PinnedRule.PublishedFlowVersionId is null)
             throw new ArgumentException("invalid_flow_occurrence");
         if (state.Occurrence.FlowOutcome is null && state.Occurrence.FlowDispatchDisposition != MonitoringFlowDispatchDisposition.Enqueued)

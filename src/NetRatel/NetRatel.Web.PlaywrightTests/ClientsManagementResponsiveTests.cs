@@ -1490,6 +1490,7 @@ public sealed class ClientsManagementBrowserFixture : IAsyncLifetime
 
 [Route("/clients/mgmt")]
 [Route("/clients")]
+[Route("/flows")]
 public sealed class ClientsManagementFixtureApp : ComponentBase
 {
     protected override void BuildRenderTree(RenderTreeBuilder builder)
@@ -1507,6 +1508,7 @@ public sealed class ClientsManagementFixtureApp : ComponentBase
         AddStylesheet(builder, "/css/clients-presentation.css");
         AddStylesheet(builder, "/NetRatel.Web.styles.css");
         AddStylesheet(builder, "/_content/MudBlazor/MudBlazor.min.css");
+        AddStylesheet(builder, "/_content/VeloxDev.Razor/veloxdev.workflow.css");
         builder.OpenElement(17, "script");
         builder.AddAttribute(18, "src", "/js/theme-preference.js");
         builder.CloseElement();
@@ -1560,6 +1562,7 @@ internal sealed class ClientsManagementFixtureHost : IAsyncDisposable
     public FixtureClientArtifactsService Data { get; }
     public ClientDirectoryFixtureData ClientDirectory { get; }
     public FixtureClientServicesService ServicesData => _application.Services.GetRequiredService<FixtureClientServicesService>();
+    public FixtureFlowApiService FlowsData => _application.Services.GetRequiredService<FixtureFlowApiService>();
     public IReadOnlyList<string> StartupServerDiagnostics => _serverDiagnostics.Snapshot();
 
     public static async Task<ClientsManagementFixtureHost> StartAsync()
@@ -1584,6 +1587,8 @@ internal sealed class ClientsManagementFixtureHost : IAsyncDisposable
         builder.Services.AddSingleton<FixtureClientServicesService>();
         builder.Services.AddSingleton<IClientServicesApiService>(services => services.GetRequiredService<FixtureClientServicesService>());
         builder.Services.AddSingleton<IClientServicesLiveStreamService>(services => services.GetRequiredService<FixtureClientServicesService>());
+        builder.Services.AddSingleton<FixtureFlowApiService>();
+        builder.Services.AddSingleton<NetRatel.Web.Services.Flows.IFlowApiService>(services => services.GetRequiredService<FixtureFlowApiService>());
         builder.Services.AddSingleton<IClientArtifactsService>(services => services.GetRequiredService<FixtureClientArtifactsService>());
         builder.Services.AddSingleton<ITenantApiService, FixtureTenantApiService>();
         builder.Services.AddSingleton<IDeploymentBrandingApiService, FixtureBrandingApiService>();
@@ -1603,6 +1608,7 @@ internal sealed class ClientsManagementFixtureHost : IAsyncDisposable
         application.MapGet("/NetRatel.Web.styles.css", () => Results.File(ResolveWebAsset("obj/{0}/net10.0/scopedcss/bundle/NetRatel.Web.styles.css", "Debug"), "text/css"));
         application.MapGet("/js/theme-preference.js", () => Results.File(ResolveWebAsset("wwwroot/js/theme-preference.js"), "text/javascript"));
         application.MapGet("/js/global-search-hotkeys.js", () => Results.File(ResolveWebAsset("wwwroot/js/global-search-hotkeys.js"), "text/javascript"));
+        application.MapGet("/js/flows-editor.js", () => Results.File(ResolveWebAsset("wwwroot/js/flows-editor.js"), "text/javascript"));
         application.UseStaticFiles(new StaticFileOptions { FileProvider = ResolveStaticAssetProvider() });
         application.UseAuthentication();
         application.UseAuthorization();

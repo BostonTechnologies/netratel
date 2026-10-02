@@ -7,6 +7,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="VeloxDev.Core" Version="8.0.0" />
     <PackageReference Include="Microsoft.AspNetCore.Identity.EntityFrameworkCore" Version="10.0.12" />
     <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.12" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.12">
@@ -29,6 +30,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Content Include="../../../docs/THIRD-PARTY-NOTICES.txt" Link="THIRD-PARTY-NOTICES.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <EmbeddedResource Include="Artifacts/Templates/install.ps1" LogicalName="NetRatel.Installers.install.ps1" />
     <EmbeddedResource Include="Artifacts/Templates/install-linux.sh" LogicalName="NetRatel.Installers.install-linux.sh" />
   </ItemGroup>

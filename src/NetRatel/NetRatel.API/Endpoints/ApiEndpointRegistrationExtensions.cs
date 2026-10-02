@@ -63,6 +63,7 @@ public static class ApiEndpointRegistrationExtensions
         app.MapAgentTelemetryReadEndpoints();
         app.MapClientServicesEndpoints();
         NetRatel.API.Endpoints.Monitoring.MonitoringEndpoints.MapMonitoringEndpoints(app);
+        app.MapFlowEndpoints();
         app.MapTelemetryEndpoints();
         app.MapAgentFileGatewayEndpoints();
         app.MapAgentLogGatewayEndpoints();
