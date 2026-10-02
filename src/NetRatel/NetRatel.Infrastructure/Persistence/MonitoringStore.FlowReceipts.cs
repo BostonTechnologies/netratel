@@ -64,6 +64,7 @@ public sealed partial class MonitoringStore
         RequireSeries(receipt.Intent.Series);
         if (receipt.FlowRunId == Guid.Empty || outcome.FlowRunId is not Guid realRunId || realRunId == Guid.Empty ||
             receipt.FlowRunId is { } expectedRun && expectedRun != realRunId) throw new ArgumentException("exact_flow_run_outcome_required");
+        MonitoringSeriesEvaluator.RequireFlowOutcome(outcome, timeProvider.GetUtcNow());
         await using var scope = scopeFactory.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
@@ -77,7 +78,10 @@ public sealed partial class MonitoringStore
             row.FlowRunId = realRunId; row.HandedOffAtUtc = NormalizeDatabaseTime(timeProvider.GetUtcNow());
         }
         var prior = row.OutcomeJson is null ? null : Deserialize<MonitoringFlowOutcomeDto>(row.OutcomeJson);
-        if (prior == outcome) return true;
+        if (prior is not null && outcome.OccurredAtUtc < prior.OccurredAtUtc) return false;
+        // Polling the same terminal receipt retains its first observation time
+        // and cannot advance state revisions, lease fences or episode history.
+        if (prior is not null && (prior with { OccurredAtUtc = outcome.OccurredAtUtc }) == outcome) return true;
         if (row.Status is not (MonitoringOutboxStatus.Pending or MonitoringOutboxStatus.Leased or MonitoringOutboxStatus.DeliveryUnknown) ||
             prior is not null && prior.Outcome != MonitoringFlowOutcomeKind.DeliveryUnknown) return false;
         if (series is not null && ReadState(series).Occurrence?.OccurrenceId == receipt.Intent.OccurrenceId)

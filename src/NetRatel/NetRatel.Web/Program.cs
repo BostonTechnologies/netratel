@@ -24,6 +24,7 @@ using NetRatel.Web.Services.Terminal;
 using NetRatel.Web.Services.Jobs;
 using NetRatel.Web.Services.FileSystem;
 using NetRatel.Web.Services.RemoteSupport;
+using NetRatel.Web.Services.Flows;
 
 using System.Security.Claims;
 using System.Threading;
@@ -95,6 +96,7 @@ builder.Services.AddScoped<GatewayTelemetryApiService>();
 builder.Services.AddScoped<GatewayTelemetryLiveStreamService>();
 builder.Services.AddScoped<IClientServicesApiService, ClientServicesApiService>();
 builder.Services.AddScoped<IClientServicesLiveStreamService, ClientServicesLiveStreamService>();
+builder.Services.AddScoped<NetRatel.Web.Services.Flows.IFlowApiService, NetRatel.Web.Services.Flows.FlowApiService>();
 builder.Services.AddTransient<TelemetryOverviewStreamService>();
 builder.Services.AddTransient<ClientTelemetryStreamService>();
 builder.Services.AddScoped<TenantApiService>();
@@ -327,6 +329,8 @@ builder.Services.AddHttpClient("OrchestratorApiStreaming", c =>
 .AddHttpMessageHandler<RedirectReissueHandler>()
 .AddHttpMessageHandler<TokenAuthorizationHandler>()
 .RemoveAllResilienceHandlers();
+
+builder.Services.AddFlowsApiClient(builder.Configuration);
 
 builder.Services.AddHttpClient("Bff", (sp, c) =>
 {

@@ -19,6 +19,7 @@ using NetRatel.Infrastructure.Identity.Branding;
 using NetRatel.Infrastructure.Artifacts;
 using NetRatel.Infrastructure.Notifications;
 using NetRatel.Infrastructure.Persistence;
+using NetRatel.Infrastructure.Flows;
 using NetRatel.Infrastructure.Requests;
 using NetRatel.Infrastructure.Services;
 using NetRatel.Shared.Operations;
@@ -51,6 +52,7 @@ public static class DependencyInjection
         services.AddNetRatelJobObservationPersistence();
         services.AddNetRatelClientServicesPersistence();
         services.AddNetRatelMonitoringPersistence();
+        services.AddNetRatelFlows();
         services.AddNetRatelRemoteSupportLifecycle();
 
         services.AddSingleton<INetRatelNotificationEventBus, NetRatelNotificationEventBus>();

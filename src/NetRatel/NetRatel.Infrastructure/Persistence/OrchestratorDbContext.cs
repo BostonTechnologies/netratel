@@ -73,6 +73,12 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
     public DbSet<MonitoringEventRecord> MonitoringEvents => Set<MonitoringEventRecord>();
     public DbSet<MonitoringFlowOutboxRecord> MonitoringFlowOutbox => Set<MonitoringFlowOutboxRecord>();
     public DbSet<MonitoringAuditRecord> MonitoringAudits => Set<MonitoringAuditRecord>();
+    public DbSet<FlowDefinitionRecord> FlowDefinitions => Set<FlowDefinitionRecord>();
+    public DbSet<FlowVersionRecord> FlowVersions => Set<FlowVersionRecord>();
+    public DbSet<FlowRunRecord> FlowRuns => Set<FlowRunRecord>();
+    public DbSet<FlowActionRecord> FlowActions => Set<FlowActionRecord>();
+    public DbSet<FlowAuditRecord> FlowAudits => Set<FlowAuditRecord>();
+    public DbSet<FlowRuntimeIdentityRecord> FlowRuntimeIdentity => Set<FlowRuntimeIdentityRecord>();
     public DbSet<ClientWindowsSessionInventoryRefresh> ClientWindowsSessionInventoryRefreshes => Set<ClientWindowsSessionInventoryRefresh>();
     public DbSet<RemoteSupportTargetSelectionEvent> RemoteSupportTargetSelectionEvents => Set<RemoteSupportTargetSelectionEvent>();
     public DbSet<RemoteSupportSessionRecord> RemoteSupportSessions => Set<RemoteSupportSessionRecord>();
@@ -112,6 +118,7 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         MonitoringPersistenceModel.Configure(modelBuilder);
+        FlowPersistenceModel.Configure(modelBuilder);
         modelBuilder.Entity<ClientConnectionEpochRecord>(entity =>
         {
             entity.ToTable("ClientConnectionEpochs");
