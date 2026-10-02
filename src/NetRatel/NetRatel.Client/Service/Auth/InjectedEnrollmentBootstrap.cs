@@ -51,10 +51,29 @@ public sealed class InjectedEnrollmentBootstrap : IInjectedEnrollmentBootstrap
         try
         {
             var json = await _fileSystem.ReadAllTextAsync(enrollPath, ct);
-            var payload = JsonSerializer.Deserialize<InjectedEnrollmentPayload>(json, new JsonSerializerOptions
+            // Parse syntax separately so a strict field conversion failure does not
+            // hide the producer contract defect behind a malformed-JSON message.
+            using var document = JsonDocument.Parse(json);
+            if (document.RootElement.ValueKind is not (JsonValueKind.Object or JsonValueKind.Null))
             {
-                PropertyNameCaseInsensitive = true
-            });
+                _diagnostic($"[Auth] Ignoring netratel.enroll.json: invalid payload type (expected=Object; actual={document.RootElement.ValueKind}).");
+                return null;
+            }
+
+            InjectedEnrollmentPayload? payload;
+            try
+            {
+                payload = document.RootElement.Deserialize<InjectedEnrollmentPayload>(new JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true
+                });
+            }
+            catch (JsonException ex)
+            {
+                _diagnostic("[Auth] Ignoring netratel.enroll.json: " + GetInvalidFieldTypeReason(document.RootElement, ex.Path));
+                return null;
+            }
+
             if (payload is null)
             {
                 _diagnostic("[Auth] Ignoring netratel.enroll.json: payload is empty.");
@@ -75,14 +94,38 @@ public sealed class InjectedEnrollmentBootstrap : IInjectedEnrollmentBootstrap
         }
         catch (JsonException)
         {
-            _diagnostic("[Auth] Ignoring netratel.enroll.json: malformed JSON.");
+            _diagnostic("[Auth] Ignoring netratel.enroll.json: malformed JSON syntax.");
             return null;
         }
-        catch (IOException ex)
+        catch (IOException)
         {
-            _diagnostic($"[Auth] Ignoring netratel.enroll.json: unable to read enrollment file ({ex.Message}).");
+            _diagnostic("[Auth] Ignoring netratel.enroll.json: unable to read enrollment file (I/O failure).");
             return null;
         }
+    }
+
+    private static string GetInvalidFieldTypeReason(JsonElement root, string? path)
+    {
+        // Never print the exception, its path, or a JSON value. Only these known
+        // contract fields and types are safe to include in installer diagnostics.
+        foreach (var (field, expected) in new[]
+                 {
+                     ("schema", "String"), ("tenantId", "Int32"),
+                     ("enrollmentCode", "String"), ("issuer", "String"),
+                     ("createdAtUtc", "DateTime"), ("validToUtc", "DateTime")
+                 })
+        {
+            if (!string.Equals(path, "$." + field, StringComparison.OrdinalIgnoreCase)) continue;
+            var actual = JsonValueKind.Undefined;
+            foreach (var property in root.EnumerateObject())
+            {
+                if (string.Equals(property.Name, field, StringComparison.OrdinalIgnoreCase))
+                    actual = property.Value.ValueKind;
+            }
+            return $"invalid field/type (field={field}; expected={expected}; actual={actual}).";
+        }
+
+        return "invalid payload field/type.";
     }
 
     private static string? GetInvalidPayloadReason(ClientOptions options, InjectedEnrollmentPayload payload)

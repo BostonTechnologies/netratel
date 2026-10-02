@@ -1,5 +1,10 @@
 # NetRatel
 
+> [!WARNING]
+> 🟠 **Early development:** NetRatel is under active development. Features and
+> installation behavior may change, and prerelease builds can contain defects.
+> Evaluate RC.17 on disposable systems before using it on managed machines.
+
 <img src="docs/assets/netratel/netratel-readme-hero.webp" width="960" alt="NetRatel — secure, connected automation" />
 
 NetRatel is a self-hosted application for managing computers and automating

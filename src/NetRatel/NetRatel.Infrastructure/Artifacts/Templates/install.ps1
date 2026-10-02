@@ -3,7 +3,7 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $ApiBase = @@API_BASE_URL@@
 $GatewayEndpoint = @@GATEWAY_ENDPOINT@@
-$TenantId = @@TENANT_ID@@
+[int]$TenantId = @@TENANT_ID@@
 $EnrollmentCode = @@ENROLLMENT_CODE@@
 $Runtime = @@RUNTIME_ID@@
 $Version = @@ARTIFACT_VERSION@@
@@ -307,6 +307,34 @@ function Set-ServiceState([string]$State, [string]$Name = $serviceName) {
     finally { $controller.Dispose() }
 }
 
+function Get-SafeDiagnosticLine([string]$Line) {
+    # Only these fixed Auth messages may bypass the sensitive-line filter.
+    # Anchor the entire message, including the optional production timestamp.
+    $message = $Line -replace '^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} [+-]\d{2}:\d{2} - ', ''
+    $known = @(
+        '[Auth] Enrollment is required before starting the service. Run NetRatel.Client --enroll <code> --api <url>. Exiting.',
+        '[Auth] Enrollment code is required for first run. Exiting.',
+        '[Auth] Enrollment credentials were not persisted. Exiting.',
+        '[Auth] Ignoring netratel.enroll.json: payload is empty.',
+        '[Auth] Ignoring netratel.enroll.json: malformed JSON syntax.',
+        '[Auth] Ignoring netratel.enroll.json: invalid payload field/type.',
+        '[Auth] Ignoring netratel.enroll.json: unable to read enrollment file (I/O failure).',
+        '[Auth] Ignoring netratel.enroll.json: schema must be netratel.enroll.v1.',
+        '[Auth] Ignoring netratel.enroll.json: tenantId and enrollmentCode are required.',
+        '[Auth] Ignoring netratel.enroll.json: enrollment payload is expired or missing validToUtc.',
+        '[Auth] Ignoring netratel.enroll.json: issuer is required.',
+        '[Auth] Ignoring netratel.enroll.json: issuer does not match the configured API base URL.',
+        '[Auth] Ignoring netratel.enroll.json: issuer and configured API base URL must be an origin, optionally followed by /api.'
+    )
+    if ($EnrollmentCode -and $Line.Contains($EnrollmentCode)) { return '[redacted sensitive log line]' }
+    if ($known -ccontains $message -or
+        $message -cmatch '^\[Auth\] Ignoring netratel\.enroll\.json: invalid field/type \(field=(schema|tenantId|enrollmentCode|issuer|createdAtUtc|validToUtc); expected=(String|Int32|DateTime); actual=(Object|Array|String|Number|True|False|Null|Undefined)\)\.$' -or
+        $message -cmatch '^\[Auth\] Ignoring netratel\.enroll\.json: invalid payload type \(expected=Object; actual=(Array|String|Number|True|False|Null|Undefined)\)\.$') { return $message }
+    if ($Line -match '(?i)(bearer|token|secret|password|key|enroll|authorization|capability|grant)') { return '[redacted sensitive log line]' }
+    $safe = [regex]::Replace($Line, 'https?://[^\s]+', '[redacted-url]')
+    return $safe.Substring(0, [Math]::Min(500, $safe.Length))
+}
+
 function Write-Diagnostics {
     try {
         $service = Get-CimInstance Win32_Service -Filter "Name='$serviceName'" -OperationTimeoutSec 10
@@ -318,10 +346,7 @@ function Write-Diagnostics {
             Assert-OwnedPath $latest.FullName -File
             Write-Host "Client log tail: $($latest.FullName)"
             foreach ($line in Get-Content -LiteralPath $latest.FullName -Tail 40) {
-                if ($line -match '(?i)(bearer|token|secret|password|key|enroll|authorization|capability|grant)') { Write-Host '[redacted sensitive log line]'; continue }
-                $safe = [regex]::Replace($line, '(https?://[^/\s?#]+)[^\s]*', '$1/[redacted-path]')
-                if ($EnrollmentCode) { $safe = $safe.Replace($EnrollmentCode, '[redacted]') }
-                Write-Host $safe.Substring(0, [Math]::Min(500, $safe.Length))
+                Write-Host (Get-SafeDiagnosticLine $line)
             }
         }
     }
@@ -544,7 +569,7 @@ try {
         $activated = $true
         $exe = Join-Path $target 'NetRatel.Client.exe'
         if ($InstallAsService) {
-            $enrollment = @{ schema = 'netratel.enroll.v1'; tenantId = $TenantId; enrollmentCode = $EnrollmentCode; issuer = $ApiBase; createdAtUtc = [DateTimeOffset]::UtcNow.ToString('O'); validToUtc = $ValidToUtc } | ConvertTo-Json
+            $enrollment = @{ schema = 'netratel.enroll.v1'; tenantId = [int]$TenantId; enrollmentCode = $EnrollmentCode; issuer = $ApiBase; createdAtUtc = [DateTimeOffset]::UtcNow.ToString('O'); validToUtc = $ValidToUtc } | ConvertTo-Json
             Write-PrivateFile (Join-Path $target 'netratel.enroll.json') $enrollment
             $updaterSource = Join-Path $target 'updater\netratel-update.ps1'
             Assert-OwnedPath $updaterSource -File
@@ -594,6 +619,7 @@ try {
         }
     }
     catch {
+        $startupFailure = $_
         Write-Diagnostics
         if ($stopAttempted -and -not $cutover -and $previousRunning) {
             try { Set-ServiceState 'Stopped'; Set-ServiceState 'Running'; Write-Host 'The previous service was restarted; package files were untouched.' }
@@ -626,16 +652,17 @@ try {
             catch { Write-Host 'Rollback could not complete safely; retained packages require manual inspection.' }
         }
         else { Write-Host 'No safe cutover rollback was available; retained packages require manual inspection.' }
-        throw
+        throw $startupFailure
     }
     @@SEED_SUCCESS@@
 }
 catch {
-    Write-Host "Installer stopped during $phase ($($_.Exception.GetType().Name))."
-    if ($_.Exception.Message -notmatch '(?i)(https?://|bearer|token|secret|password|enrollment.?code)') { Write-Host $_.Exception.Message }
+    $installerFailure = $_
+    Write-Host "Installer stopped during $phase ($($installerFailure.Exception.GetType().Name))."
+    if ($installerFailure.Exception.Message -notmatch '(?i)(https?://|bearer|token|secret|password|enrollment.?code)') { Write-Host $installerFailure.Exception.Message }
     Write-Diagnostics
     @@SEED_FAILURE@@
-    throw
+    throw $installerFailure
 }
 finally {
     foreach ($temporary in @($stageDir, $downloadDir)) {
