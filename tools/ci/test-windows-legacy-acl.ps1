@@ -146,8 +146,11 @@ try {
     $backups = @(Get-ChildItem $script:recovery -Filter '*.json')
     if ($backups.Count -ne 1) { throw 'Missing exact descriptor snapshot.' }
     Assert-OwnedPath $backups[0].FullName -File
-    $saved = @(Get-Content $backups[0].FullName -Raw | ConvertFrom-Json)
-    if (($saved | Where-Object Path -eq $script:root).Sddl -ne $rootBefore) { throw 'Original descriptor snapshot did not match.' }
+    # PS5.1 emits the JSON array as one pipeline object. Assign that array
+    # directly before enumerating; @() around the pipeline nests it instead.
+    $saved = ConvertFrom-Json -InputObject (Get-Content $backups[0].FullName -Raw)
+    $savedRoot = @($saved | Where-Object Path -eq $script:root)
+    if ($savedRoot.Count -ne 1 -or $savedRoot[0].Sddl -ne $rootBefore) { throw 'Original descriptor snapshot did not match.' }
     $usersHelper = @((Get-Acl -LiteralPath $helper).GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]) | Where-Object { $_.IdentityReference.Value -eq 'S-1-5-32-545' -and ($_.FileSystemRights -band [Security.AccessControl.FileSystemRights]::WriteData) })
     if (-not $usersHelper.Count) { throw 'Intentional helper-log Users write access was removed.' }
     $after = (Get-Acl -LiteralPath $script:root -Audit).Sddl
