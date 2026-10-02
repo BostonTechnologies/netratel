@@ -30,7 +30,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Content Include="../../../THIRD-PARTY-NOTICES.txt" Link="THIRD-PARTY-NOTICES.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="../../../docs/THIRD-PARTY-NOTICES.txt" Link="THIRD-PARTY-NOTICES.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <EmbeddedResource Include="Artifacts/Templates/install.ps1" LogicalName="NetRatel.Installers.install.ps1" />
     <EmbeddedResource Include="Artifacts/Templates/install-linux.sh" LogicalName="NetRatel.Installers.install-linux.sh" />
   </ItemGroup>
