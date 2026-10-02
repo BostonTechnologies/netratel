@@ -75,7 +75,8 @@
                 </MudTooltip>
                 <MudTooltip Text="@context.FilesystemUnavailableReason"><MudIconButton Icon="@Icons.Material.Filled.FolderOpen" Size="Size.Small" Disabled="@(!context.CanUseFilesystem)" OnClick="@(() => OpenFilesAsync(context))" aria-label="Open file browser" /></MudTooltip>
                 <MudTooltip Text="Remote support"><MudIconButton Icon="@Icons.Material.Filled.SupportAgent" Size="Size.Small" Disabled="@(!context.CanUseRemoteSupport)" OnClick="@(() => OpenRemoteSupportAsync(context))" aria-label="Open remote support" /></MudTooltip>
-                <MudTooltip Text="Ping"><MudIconButton Icon="@Icons.Material.Filled.NetworkPing" Size="Size.Small" Disabled="@(!context.Online)" OnClick="@(() => PingAsync(context))" aria-label="Ping client" /></MudTooltip>
+                <ClientServicesLauncher @key="(context.TenantId, context.AgentId)" TenantId="@context.TenantId" AgentId="@context.AgentId"
+                                        HostLabel="@context.HostName" TenantLabel="@context.TenantName" />
             </MudStack>
         </MudTd>
     </RowTemplate>
@@ -133,16 +134,4 @@
             RemoteSupportDialogLauncher.CreateParameters(client), RemoteSupportDialogLauncher.CreateOptions());
     }
 
-    private async Task PingAsync(ClientPresentationModel client)
-    {
-        try
-        {
-            var result = await GatewayActions.PingAsync(client.TenantId, client.AgentId);
-            Snackbar.Add($"Ping: {result.RoundTripMilliseconds:0} ms ({result.Authority}).", Severity.Success);
-        }
-        catch (Exception exception)
-        {
-            Snackbar.Add($"Ping failed: {exception.Message}", Severity.Error);
-        }
-    }
 }

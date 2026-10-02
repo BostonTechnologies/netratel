@@ -21,7 +21,10 @@ public sealed class ClientPresentationParitySourceTests
             ">Telemetry<",
             ">Version<",
             "ClientPresentationFormatting.Version",
-            "GatewayActions.PingAsync(client.TenantId, client.AgentId)",
+            "ClientPresentationFormatting.Latency(client, DateTimeOffset.UtcNow)",
+            "ClientServicesLauncher",
+            "TenantId=\"@client.TenantId\"",
+            "AgentId=\"@client.AgentId\"",
             "GatewayTelemetryDialog",
             "ClientTerminalSessionDialog",
             "ClientFileSystemViewer",
@@ -30,6 +33,7 @@ public sealed class ClientPresentationParitySourceTests
             ">Disk<");
         source.Should().NotContain("/api/v1/clients");
         source.Should().NotContain("SpacetimeDbService");
+        source.Should().NotContain("GatewayActions.PingAsync");
     }
 
     [Fact]
@@ -89,7 +93,10 @@ public sealed class ClientPresentationParitySourceTests
             "SelectedTenantId",
             "SelectedOs",
             "ClientStatusFilter");
-        table.Should().ContainAll(">Host / IP<", ">Latency<", "ClientPresentationFormatting.Version", "GatewayActions.PingAsync(client.TenantId, client.AgentId)");
+        table.Should().ContainAll(">Host / IP<", ">Latency<", "ClientPresentationFormatting.Version",
+            "ClientPresentationFormatting.Latency(context, DateTimeOffset.UtcNow)", "ClientServicesLauncher",
+            "TenantId=\"@context.TenantId\"", "AgentId=\"@context.AgentId\"");
+        table.Should().NotContain("GatewayActions.PingAsync");
         presentation.Should().Contain("GetDirectoryAsync");
         presentation.Should().Contain("(client.TenantId, client.AgentId)");
         presentation.Should().NotContain("GroupBy(client => client.HostName");

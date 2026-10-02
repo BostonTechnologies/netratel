@@ -11,6 +11,7 @@ using NetRatel.Akka.Configuration;
 using NetRatel.Akka.Hosting;
 using NetRatel.Akka.Observability;
 using NetRatel.Application.Commands;
+using NetRatel.Application.Services;
 
 namespace NetRatel.API.Gateway;
 
@@ -57,6 +58,8 @@ public static class NetRatelAkkaRuntimeRegistration
         services.TryAddSingleton<AgentTelemetryGatewaySessionRegistry>();
         services.TryAddSingleton<IAgentTelemetryGatewaySessionRegistry>(serviceProvider =>
             serviceProvider.GetRequiredService<AgentTelemetryGatewaySessionRegistry>());
+        services.TryAddSingleton<IClientServiceWatchPolicySource, EmptyClientServiceWatchPolicySource>();
+        services.TryAddSingleton<ClientServicesCoordinator>();
 
         services.TryAddSingleton<AgentControlSessionRegistry>();
         services.TryAddSingleton<IAgentControlSessionRegistry>(serviceProvider =>

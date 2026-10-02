@@ -39,6 +39,7 @@ using NetRatel.Web.Services.Notifications;
 using NetRatel.Web.Services.Search;
 using NetRatel.Web.Services.Tenants;
 using NetRatel.Web.Services.Telemetry;
+using NetRatel.Web.Services.Services;
 using NetRatel.Web.Components;
 
 namespace NetRatel.Web.PlaywrightTests;
@@ -1558,6 +1559,7 @@ internal sealed class ClientsManagementFixtureHost : IAsyncDisposable
     public string BaseAddress { get; }
     public FixtureClientArtifactsService Data { get; }
     public ClientDirectoryFixtureData ClientDirectory { get; }
+    public FixtureClientServicesService ServicesData => _application.Services.GetRequiredService<FixtureClientServicesService>();
     public IReadOnlyList<string> StartupServerDiagnostics => _serverDiagnostics.Snapshot();
 
     public static async Task<ClientsManagementFixtureHost> StartAsync()
@@ -1579,6 +1581,9 @@ internal sealed class ClientsManagementFixtureHost : IAsyncDisposable
         builder.Services.AddScoped<ClientPresentationService>();
         builder.Services.AddScoped<GatewayTelemetryApiService>();
         builder.Services.AddScoped<GatewayClientActionApiService>();
+        builder.Services.AddSingleton<FixtureClientServicesService>();
+        builder.Services.AddSingleton<IClientServicesApiService>(services => services.GetRequiredService<FixtureClientServicesService>());
+        builder.Services.AddSingleton<IClientServicesLiveStreamService>(services => services.GetRequiredService<FixtureClientServicesService>());
         builder.Services.AddSingleton<IClientArtifactsService>(services => services.GetRequiredService<FixtureClientArtifactsService>());
         builder.Services.AddSingleton<ITenantApiService, FixtureTenantApiService>();
         builder.Services.AddSingleton<IDeploymentBrandingApiService, FixtureBrandingApiService>();

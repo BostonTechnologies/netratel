@@ -9,11 +9,13 @@ using NetRatel.Akka.Configuration;
 using NetRatel.Akka.Jobs;
 using NetRatel.Akka.Presence;
 using NetRatel.Akka.RemoteSupport;
+using NetRatel.Akka.Services;
 using NetRatel.Akka.Telemetry;
 using NetRatel.Application.Commands;
 using NetRatel.Application.Jobs;
 using NetRatel.Application.Presence;
 using NetRatel.Application.RemoteSupport;
+using NetRatel.Application.Services;
 using NetRatel.Application.Telemetry;
 using NetRatel.Shared.Contracts.RemoteSupport;
 
@@ -27,6 +29,9 @@ public sealed class ClientPresenceReadModelRegion;
 
 /// <summary>Marker used for type-safe access to the local telemetry region.</summary>
 public sealed class ClientTelemetryRegion;
+
+/// <summary>Marker for the bounded local services projection region.</summary>
+public sealed class ClientServicesRegion;
 
 /// <summary>Marker used for type-safe access to the local command region.</summary>
 public sealed class ClientCommandRegion;
@@ -52,6 +57,9 @@ public static class NetRatelAkkaActorRegistration
             var commandPersistence = serviceProvider.GetRequiredService<ICommandPersistenceStore>();
             var jobObservations = serviceProvider.GetRequiredService<IJobObservationStore>();
             var remoteSupportLifecycle = serviceProvider.GetRequiredService<IRemoteSupportLifecycleStore>();
+            var servicesStore = serviceProvider.GetRequiredService<IClientServicesStore>();
+            var connectionEpochs = serviceProvider.GetRequiredService<IClientConnectionEpochStore>();
+            var timeProvider = serviceProvider.GetRequiredService<TimeProvider>();
             akka
                 .WithActorSystemLivenessCheck();
 
@@ -74,7 +82,7 @@ public static class NetRatelAkkaActorRegistration
                         "client-presence-read-model");
                     registry.Register<ClientPresenceReadModelRegion>(presenceReadModel);
                     var presenceRegion = system.ActorOf(
-                        ClientPresenceRouterActor.Props(options, presenceReadModel),
+                        ClientPresenceRouterActor.Props(options, presenceReadModel, connectionEpochs),
                         "client-presence");
                     registry.Register<ClientPresenceRegion>(presenceRegion);
 
@@ -82,6 +90,10 @@ public static class NetRatelAkkaActorRegistration
                         ClientTelemetryRouterActor.Props(),
                         "client-telemetry");
                     registry.Register<ClientTelemetryRegion>(telemetryRegion);
+
+                    var servicesRegion = system.ActorOf(
+                        ClientServicesRouterActor.Props(servicesStore, timeProvider), "client-services");
+                    registry.Register<ClientServicesRegion>(servicesRegion);
 
                     var commandRegion = system.ActorOf(
                         ClientCommandRouterActor.Props(commandPersistence),
@@ -125,6 +137,10 @@ public static class NetRatelAkkaActorRegistration
             new AkkaClientCommandRouter(
                 serviceProvider.GetRequiredService<IRequiredActor<ClientCommandRegion>>(),
                 serviceProvider.GetRequiredService<NetRatelAkkaOptions>().AskTimeout));
+        services.AddSingleton<IClientServicesRouter>(serviceProvider =>
+            new AkkaClientServicesRouter(
+                serviceProvider.GetRequiredService<IRequiredActor<ClientServicesRegion>>(),
+                serviceProvider.GetRequiredService<NetRatelAkkaOptions>().AskTimeout));
         services.AddSingleton<IJobRuntimeRouter>(serviceProvider =>
             new AkkaJobRuntimeRouter(
                 serviceProvider.GetRequiredService<IRequiredActor<JobRuntimeRegion>>(),
@@ -135,6 +151,27 @@ public static class NetRatelAkkaActorRegistration
                 serviceProvider.GetRequiredService<NetRatelAkkaOptions>().AskTimeout));
 
         return services;
+    }
+}
+
+internal sealed class AkkaClientServicesRouter(IRequiredActor<ClientServicesRegion> region, TimeSpan askTimeout) : IClientServicesRouter
+{
+    public async Task<ClientServicesMessageResult> RecordAsync(RecordClientServicesChunk message, CancellationToken cancellationToken)
+    {
+        var actor = await region.GetAsync(cancellationToken).ConfigureAwait(false);
+        return await actor.Ask<ClientServicesMessageResult>(message, askTimeout, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<ClientServicesState> GetSnapshotAsync(ClientKey client, CancellationToken cancellationToken)
+    {
+        var actor = await region.GetAsync(cancellationToken).ConfigureAwait(false);
+        return await actor.Ask<ClientServicesState>(new GetClientServices(client), askTimeout, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<ClientServicesState> UpdateWatchPolicyAsync(ClientServiceWatchPolicy policy, CancellationToken cancellationToken)
+    {
+        var actor = await region.GetAsync(cancellationToken).ConfigureAwait(false);
+        return await actor.Ask<ClientServicesState>(new UpdateClientServiceWatchPolicy(policy), askTimeout, cancellationToken).ConfigureAwait(false);
     }
 }
 

@@ -11,6 +11,7 @@ using NetRatel.Application.Commands;
 using NetRatel.Application.Jobs;
 using NetRatel.Application.Presence;
 using NetRatel.Application.RemoteSupport;
+using NetRatel.Application.Services;
 using NetRatel.Application.Telemetry;
 using NetRatel.Shared.Contracts.RemoteSupport;
 using NetRatel.Tests.Akka;
@@ -37,6 +38,8 @@ public sealed class RealtimeRegistrationAndScopeAuditTests
                 services.AddSingleton<ICommandPersistenceStore>(new TestCommandPersistenceStore());
                 services.AddSingleton<IJobObservationStore>(new StartupJobPersistenceStore());
                 services.AddSingleton<IRemoteSupportLifecycleStore>(new StartupRemoteSupportLifecycleStore());
+                services.AddSingleton<IClientServicesStore>(new MemoryServicesStore());
+                services.AddSingleton<IClientConnectionEpochStore>(new MemoryConnectionEpochStore());
                 services.AddNetRatelAkkaRuntime(configuration);
             })
             .Build();
@@ -66,6 +69,10 @@ public sealed class RealtimeRegistrationAndScopeAuditTests
             var telemetry = await provider.GetRequiredService<IClientTelemetryRouter>()
                 .ProbeAsync(CancellationToken.None);
             telemetry.Authority.Should().Be("akka");
+
+            var servicesState = await provider.GetRequiredService<IClientServicesRouter>()
+                .GetSnapshotAsync(new ClientKey(1, Guid.NewGuid()), CancellationToken.None);
+            servicesState.LastCompleteInventory.Should().BeNull();
 
             var commands = await provider.GetRequiredService<IClientCommandRouter>()
                 .ProbeAsync(CancellationToken.None);
