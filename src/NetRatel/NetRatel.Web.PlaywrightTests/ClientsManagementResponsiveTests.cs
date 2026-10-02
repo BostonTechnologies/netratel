@@ -1614,6 +1614,7 @@ internal sealed class ClientsManagementFixtureHost : IAsyncDisposable
         application.MapGet("/js/theme-preference.js", () => Results.File(ResolveWebAsset("wwwroot/js/theme-preference.js"), "text/javascript"));
         application.MapGet("/js/global-search-hotkeys.js", () => Results.File(ResolveWebAsset("wwwroot/js/global-search-hotkeys.js"), "text/javascript"));
         application.MapGet("/js/flows-editor.js", () => Results.File(ResolveWebAsset("wwwroot/js/flows-editor.js"), "text/javascript"));
+        application.MapGet("/js/client-services-focus.js", () => Results.File(ResolveWebAsset("wwwroot/js/client-services-focus.js"), "text/javascript"));
         application.UseStaticFiles(new StaticFileOptions { FileProvider = ResolveStaticAssetProvider() });
         application.UseAuthentication();
         application.UseAuthorization();

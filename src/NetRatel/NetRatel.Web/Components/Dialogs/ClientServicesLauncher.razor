@@ -1,5 +1,6 @@
 @implements IDisposable
 @inject IDialogService DialogService
+@inject IJSRuntime JS
 
 <MudTooltip Text="Services">
     <MudIconButton @ref="_button" Icon="@Icons.Material.Filled.MiscellaneousServices" Size="Size.Small"
@@ -15,12 +16,17 @@
     private IDialogReference? _dialog;
     private int _activeTenant;
     private Guid _activeAgent;
+    private long _scopeGeneration;
     private bool _opening;
     private bool _disposed;
 
     protected override void OnParametersSet()
     {
-        if (_activeTenant != TenantId || _activeAgent != AgentId) _dialog?.Close();
+        if (_activeTenant != TenantId || _activeAgent != AgentId)
+        {
+            _scopeGeneration++;
+            _dialog?.Close();
+        }
         _activeTenant = TenantId;
         _activeAgent = AgentId;
     }
@@ -31,6 +37,7 @@
         _opening = true;
         var tenantId = TenantId;
         var agentId = AgentId;
+        var scopeGeneration = _scopeGeneration;
         try
         {
             var parameters = new DialogParameters<ClientServicesDialog>
@@ -41,17 +48,29 @@
             var dialog = await DialogService.ShowAsync<ClientServicesDialog>("Services", parameters,
                 new DialogOptions { FullScreen = true, FullWidth = true, CloseOnEscapeKey = true, CloseButton = false, NoHeader = true });
             _dialog = dialog;
-            if (_disposed || TenantId != tenantId || AgentId != agentId) dialog.Close();
+            if (!IsCurrentScope(scopeGeneration, tenantId, agentId)) dialog.Close();
             await dialog.Result;
-            _dialog = null;
-            if (!_disposed && _button is not null) await _button.FocusAsync();
+            if (ReferenceEquals(_dialog, dialog)) _dialog = null;
+            if (!IsCurrentScope(scopeGeneration, tenantId, agentId)) return;
+
+            // Result completes before the provider removes the dialog and its focus trap.
+            // Restore only after that exact DOM root is gone, so a late trap cannot steal focus.
+            await using var focusModule = await JS.InvokeAsync<IJSObjectReference>("import", "./js/client-services-focus.js");
+            if (!IsCurrentScope(scopeGeneration, tenantId, agentId)) return;
+            await focusModule.InvokeVoidAsync("waitForDismissal", dialog.Id.ToString("N"));
+            if (IsCurrentScope(scopeGeneration, tenantId, agentId) && _button is not null) await _button.FocusAsync();
         }
+        catch (JSDisconnectedException) { }
         finally { _opening = false; }
     }
+
+    private bool IsCurrentScope(long generation, int tenantId, Guid agentId) =>
+        !_disposed && generation == _scopeGeneration && TenantId == tenantId && AgentId == agentId;
 
     public void Dispose()
     {
         _disposed = true;
+        _scopeGeneration++;
         _dialog?.Close();
     }
 }

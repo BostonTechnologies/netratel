@@ -34,8 +34,37 @@ public sealed class MonitoringResponsiveTests(ClientsManagementBrowserFixture br
         await Assertions.Expect(page.GetByTestId("monitoring-series-row").Last).ToHaveAttributeAsync("data-health", "Unknown");
 
         var serviceButton = page.GetByTestId("monitoring-services").First.Locator("button");
-        await serviceButton.FocusAsync(); await page.Keyboard.PressAsync("Enter");
+        await page.EvaluateAsync("""
+            () => {
+                const launcher=document.querySelector('[data-testid="monitoring-services"] button');
+                window.__monitoringServicesFocus={launcher, events:[],nativeRestoreDepth:0,opened:false,manualRestoresBeforeRemoval:[]};
+                const describe=e=>({tag:e?.tagName,id:e?.id,testId:e?.dataset?.testid,label:e?.getAttribute?.('aria-label'),text:e?.textContent?.trim().slice(0,60),connected:e?.isConnected});
+                for(const name of ['saveFocus','restoreFocus','focus']) {
+                    const original=window.mudElementRef[name];
+                    window.mudElementRef[name]=function(element,...args) {
+                        window.__monitoringServicesFocus.events.push({kind:'mud.'+name,at:performance.now(),target:describe(element),saved:describe(element?.mudblazor_savedFocus),active:describe(document.activeElement),dialogs:document.querySelectorAll('.mud-dialog').length});
+                        if(name==='restoreFocus') window.__monitoringServicesFocus.nativeRestoreDepth++;
+                        try { return original.call(this,element,...args); }
+                        finally { if(name==='restoreFocus') window.__monitoringServicesFocus.nativeRestoreDepth--; }
+                    };
+                }
+                const originalFocus=HTMLElement.prototype.focus;
+                HTMLElement.prototype.focus=function(...args) {
+                    const trace=window.__monitoringServicesFocus;
+                    if(this===trace.launcher&&trace.opened&&trace.nativeRestoreDepth===0&&document.getElementById(trace.dialogId))
+                        trace.manualRestoresBeforeRemoval.push({at:performance.now(),dialogId:trace.dialogId});
+                    return originalFocus.apply(this,args);
+                };
+                for(const kind of ['focusin','focusout']) document.addEventListener(kind,e=>{
+                    const trace=window.__monitoringServicesFocus;
+                    trace.events.push({kind,at:performance.now(),target:describe(e.target),related:describe(e.relatedTarget),launcherConnected:trace.launcher.isConnected});
+                },true);
+            }
+            """);
+        await serviceButton.FocusAsync(); await Assertions.Expect(serviceButton).ToBeFocusedAsync();
+        await page.Keyboard.PressAsync("Enter");
         await page.GetByTestId("client-services-dialog").WaitForAsync(); await page.GetByTestId("service-row").First.WaitForAsync();
+        await page.GetByTestId("client-services-dialog").EvaluateAsync("e => {const trace=window.__monitoringServicesFocus;trace.dialogId=e.closest('.mud-dialog').id;trace.opened=true}");
         await page.WaitForFunctionAsync("""
             () => { const e = document.querySelector('[data-testid="client-services-dialog"]');
                 if (!e) return false; const dialog=e.closest('.mud-dialog')??e, r=e.getBoundingClientRect();
@@ -51,7 +80,23 @@ public sealed class MonitoringResponsiveTests(ClientsManagementBrowserFixture br
         var servicesGeometry = await page.GetByTestId("client-services-dialog").EvaluateAsync<string>("e => JSON.stringify({viewport:[innerWidth,innerHeight],rect:e.getBoundingClientRect().toJSON(),position:getComputedStyle(e).position,transform:getComputedStyle(e).transform},null,2)");
         await File.WriteAllTextAsync(Path.Combine(evidenceRoot, $"monitoring-services-{width}-{height}-{theme}-dpr{scale}.json"), servicesGeometry);
         await page.ScreenshotAsync(new() { Path = Path.Combine(evidenceRoot, $"monitoring-services-{width}-{height}-{theme}-dpr{scale}.png"), Animations = ScreenshotAnimations.Disabled });
-        await page.GetByTestId("close-services").ClickAsync(); await Assertions.Expect(serviceButton).ToBeFocusedAsync();
+        try
+        {
+            await page.GetByTestId("close-services").ClickAsync();
+            await page.GetByTestId("client-services-dialog").WaitForAsync(new() { State = WaitForSelectorState.Detached });
+            await Assertions.Expect(serviceButton).ToBeFocusedAsync();
+            Assert.Equal(0, await page.EvaluateAsync<int>("() => window.__monitoringServicesFocus.manualRestoresBeforeRemoval.length"));
+        }
+        finally
+        {
+            var trace = await page.EvaluateAsync<string>("""
+                () => { const trace=window.__monitoringServicesFocus,e=document.activeElement;
+                    return JSON.stringify({active:{tag:e?.tagName,id:e?.id,testId:e?.dataset?.testid,label:e?.getAttribute?.('aria-label')},
+                      launcherConnected:trace.launcher.isConnected,launcherIsOriginal:trace.launcher===document.querySelector('[data-testid="monitoring-services"] button'),
+                      dialogCount:document.querySelectorAll('.mud-dialog').length,manualRestoresBeforeRemoval:trace.manualRestoresBeforeRemoval,events:trace.events},null,2); }
+                """);
+            await File.WriteAllTextAsync(Path.Combine(evidenceRoot, $"monitoring-services-focus-{width}-{height}-{theme}-dpr{scale}.json"), trace);
+        }
 
         await page.GetByTestId("monitoring-tab-manage").ClickAsync();
         await page.GetByTestId("monitoring-new-rule").FocusAsync(); await page.Keyboard.PressAsync("Enter");
@@ -156,8 +201,14 @@ public sealed class MonitoringResponsiveTests(ClientsManagementBrowserFixture br
     private static async Task SetTheme(IPage page, string theme)
     {
         var mobile = await page.GetByTestId("mobile-overflow").IsVisibleAsync();
-        await page.GetByTestId(mobile ? "mobile-overflow" : "theme-preference-menu").ClickAsync();
-        await page.GetByTestId($"{(mobile ? "mobile-theme-option" : "theme-option")}-{theme}").ClickAsync();
+        var menu = page.GetByTestId(mobile ? "mobile-overflow" : "theme-preference-menu");
+        await menu.ClickAsync();
+        var option = page.GetByTestId($"{(mobile ? "mobile-theme-option" : "theme-option")}-{theme}");
+        await option.ClickAsync();
+        // The theme handler runs before native menu dismissal restores its activator.
+        // Complete that keyboard handoff before focusing the next control.
+        await Assertions.Expect(option).ToBeHiddenAsync();
+        await Assertions.Expect(menu.Locator("button").First).ToBeFocusedAsync();
         if (theme == "system") await page.EmulateMediaAsync(new() { ColorScheme = ColorScheme.Dark });
         await page.Locator($"html[data-netratel-theme='{(theme == "system" ? "dark" : theme)}']").WaitForAsync();
     }
