@@ -5,6 +5,7 @@
 @inject IDeploymentBrandingApiService BrandingApi
 @inject ILogger<NavMenu> Logger
 @inject NetRatel.Web.Services.Flows.IFlowApiService FlowApi
+@inject IServiceProvider Services
 
 <MudNavMenu Class="netratel-nav">
     <a class="netratel-nav-brand" href="/" aria-label="@($"{ApplicationName} home")">
@@ -34,6 +35,7 @@
 
             <div class="nav-section-heading"><span>Signals</span></div>
             <MudNavLink Href="/notifications" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Notifications">Notifications</MudNavLink>
+            @if (canReadMonitoring) { <MudNavLink Href="/monitoring" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.MonitorHeart">Monitoring</MudNavLink> }
             @if (canReadFlows)
             {
                 <MudNavLink Href="/flows" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.AccountTree">Flows</MudNavLink>
@@ -78,6 +80,7 @@
     private string? userName;
     private bool canAdministerAccess;
     private bool canReadFlows;
+    private bool canReadMonitoring;
     private EffectiveDeploymentBranding? _branding;
     private string ApplicationName => _branding?.ApplicationName.Value ?? "NetRatel";
     private string CompactLogoUrl => _branding?.CompactLogoUrl.Value ?? "brand/netratel-mark-64.png";
@@ -102,6 +105,8 @@
                 canAdministerAccess = false;
             }
         }
+        try { var monitoring = Services.GetService<NetRatel.Web.Services.Monitoring.IMonitoringApiService>(); canReadMonitoring = authState.User.Identity?.IsAuthenticated == true && monitoring is not null && (await monitoring.GetTenantsAsync()).Count > 0; }
+        catch (Exception error) when (error is HttpRequestException or System.Text.Json.JsonException) { canReadMonitoring = false; }
         try
         {
             ApplyBranding(await BrandingApi.GetPublicAsync());

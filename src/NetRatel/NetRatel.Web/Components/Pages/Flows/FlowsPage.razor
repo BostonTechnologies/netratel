@@ -93,9 +93,21 @@
                     <div data-testid="flow-run-result"><h3>@_runDetail.Run.Status</h3><p>@_runDetail.Run.Code · @(_runDetail.Run.CompletedAtUtc?.ToString("u") ?? "Not completed")</p>
                         <p>@_runDetail.Input.RuleName · @_runDetail.Input.ClientName · @_runDetail.Input.Resource · @_runDetail.Input.Metric · @_runDetail.Input.Severity</p>
                         <p>Observed: @(_runDetail.Input.NumericValue?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? _runDetail.Input.ServiceState ?? "Unknown") at @_runDetail.Input.ObservedAtUtc.ToString("u")</p>
-                        @foreach (var action in _runDetail.Actions) { <p>@action.Status · attempts @action.Attempts · @action.Code
-                            @if (action.Receipt is { } receipt) { <span>Incident @receipt.IncidentId</span>@if (SafeReceiptLink(receipt.SafeLink) is { } link) { <a href="@link" target="_blank" rel="noopener noreferrer">Open incident</a> } }
-                        </p> }
+                        @foreach (var action in _runDetail.Actions)
+                        {
+                            <section class="flow-run-action" aria-label="Action result" data-testid="flow-action-result">
+                                <p>Status: @action.Status · Attempts: @action.Attempts</p>
+                                @if (!string.IsNullOrWhiteSpace(action.Code)) { <p>Code: <code data-testid="flow-action-code">@action.Code</code></p> }
+                                @if (action.Receipt is { } receipt)
+                                {
+                                    <dl class="flow-action-receipt">
+                                        <div><dt>Incident ID</dt><dd data-testid="flow-incident-id">@receipt.IncidentId</dd></div>
+                                        @if (!string.IsNullOrWhiteSpace(receipt.TrackingId)) { <div><dt>Tracking number</dt><dd data-testid="flow-incident-tracking">@receipt.TrackingId</dd></div> }
+                                    </dl>
+                                    @if (SafeReceiptLink(receipt.SafeLink) is { } link) { <p><a href="@link" target="_blank" rel="noopener noreferrer">Open incident</a></p> }
+                                }
+                            </section>
+                        }
                     </div>
                 }
             </section>

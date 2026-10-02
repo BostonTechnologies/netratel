@@ -36,6 +36,7 @@ using NetRatel.Web.Services.Notifications;
 using NetRatel.Web.Services.Enrollment;
 using NetRatel.Web.Services.Telemetry;
 using NetRatel.Web.Services.Services;
+using NetRatel.Web.Services.Monitoring;
 using NetRatel.Web.Configuration;
 using NetRatel.Web.Services.Search;
 using NetRatel.Web.Services.Access;
@@ -95,6 +96,7 @@ builder.Services.AddScoped<TelemetryApiService>();
 builder.Services.AddScoped<GatewayTelemetryApiService>();
 builder.Services.AddScoped<GatewayTelemetryLiveStreamService>();
 builder.Services.AddScoped<IClientServicesApiService, ClientServicesApiService>();
+builder.Services.AddScoped<IMonitoringApiService, MonitoringApiService>();
 builder.Services.AddScoped<IClientServicesLiveStreamService, ClientServicesLiveStreamService>();
 builder.Services.AddScoped<NetRatel.Web.Services.Flows.IFlowApiService, NetRatel.Web.Services.Flows.FlowApiService>();
 builder.Services.AddTransient<TelemetryOverviewStreamService>();
@@ -331,6 +333,7 @@ builder.Services.AddHttpClient("OrchestratorApiStreaming", c =>
 .RemoveAllResilienceHandlers();
 
 builder.Services.AddFlowsApiClient(builder.Configuration);
+builder.Services.AddMonitoringApiClient(builder.Configuration);
 
 builder.Services.AddHttpClient("Bff", (sp, c) =>
 {

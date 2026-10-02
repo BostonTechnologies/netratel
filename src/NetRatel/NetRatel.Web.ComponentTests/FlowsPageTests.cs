@@ -63,6 +63,36 @@ public sealed class FlowsPageTests : AsyncBunitContext
         lookups.Should().Be(1);
     }
 
+    [Theory]
+    [InlineData("NR-2026-000123", "https://fixture.invalid/incidents/123", true)]
+    [InlineData(null, "javascript:alert(1)", false)]
+    public async Task Run_Receipt_Separates_Code_Identity_Tracking_And_The_Optional_Safe_Link(string? tracking, string link, bool hasLink)
+    {
+        var version = Version(1, "Receipt graph"); var definition = FlowEditorTests.Definition(); var runId = Guid.NewGuid();
+        var run = new FlowRunDetailDto(new(runId, definition.Id, version.Id, Guid.NewGuid(), Guid.NewGuid(), FlowRunStatus.Succeeded, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, "incident-created"),
+            new(Guid.NewGuid(), Guid.NewGuid(), "CPU rule", "SQL server", "cpu", "cpu.usage.percent", "warning", 96, null, DateTimeOffset.UtcNow),
+            [new(Guid.NewGuid(), "action", FlowActionStatus.Succeeded, 1, 1, "incident-created", new("123", tracking, link))]);
+        _api.RunLookup = (tenant, id, _) => { tenant.Should().Be(17); id.Should().Be(runId); return Task.FromResult(run); };
+        _api.VersionLookup = (_, _, _) => Task.FromResult(version);
+        Services.GetRequiredService<NavigationManager>().NavigateTo($"/flows?tenantId=17&run={runId:D}");
+        var cut = Render<FlowsPage>();
+        await cut.WaitForAssertionAsync(() => cut.Find("[data-testid=flow-action-result]").TextContent.Should().Contain("Status: Succeeded · Attempts: 1"));
+        var result = cut.Find("[data-testid=flow-action-result]");
+        result.QuerySelector("[data-testid=flow-action-code]")!.TextContent.Should().Be("incident-created");
+        result.QuerySelector("[data-testid=flow-incident-id]")!.TextContent.Should().Be("123");
+        result.QuerySelectorAll("dt").Select(e => e.TextContent).Should().Contain("Incident ID");
+        if (tracking is not null)
+        {
+            result.QuerySelectorAll("dt").Select(e => e.TextContent).Should().Contain("Tracking number");
+            result.QuerySelector("[data-testid=flow-incident-tracking]")!.TextContent.Should().Be(tracking);
+        }
+        else result.QuerySelector("[data-testid=flow-incident-tracking]").Should().BeNull();
+        var anchor = result.QuerySelector("a");
+        if (hasLink) { anchor!.GetAttribute("href").Should().Be(link); anchor.GetAttribute("rel").Should().Be("noopener noreferrer"); }
+        else anchor.Should().BeNull();
+        _api.SaveCalls.Should().Be(0); _api.PublishCalls.Should().Be(0);
+    }
+
     private static FlowVersionDto Version(int number, string triggerName)
     {
         var definition = FlowEditorTests.Definition();
