@@ -5,6 +5,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using NetRatel.Application.Artifacts;
+using NetRatel.Client;
 using NetRatel.Infrastructure.Artifacts;
 using Xunit;
 
@@ -170,6 +171,38 @@ public sealed class LinuxInstallerTransactionTests
         Assert.Equal(0, fixture.CountSystemctlCalls("stop"));
     }
 
+    [Theory]
+    [InlineData("flat_settings_with_api")]
+    [InlineData("flat_settings_without_api")]
+    [InlineData("flat_settings_empty_client")]
+    [SupportedOSPlatform("linux")]
+    public async Task Build_Bash_PreservesFlatSettingsAsAnEffectiveRuntimeLayer(string configurationCase)
+    {
+        if (!OperatingSystem.IsLinux()) Assert.Skip("The generated systemd transaction test requires Linux.");
+        using var fixture = LinuxInstallerFixture.Create(configurationCase);
+        var result = await fixture.RunInstallerAsync();
+        Assert.Equal(0, result.ExitCode);
+
+        using var settings = JsonDocument.Parse(await File.ReadAllTextAsync(fixture.OldSettingsPath));
+        if (configurationCase == "flat_settings_empty_client")
+            Assert.Empty(settings.RootElement.GetProperty("Client").EnumerateObject());
+        else
+            Assert.False(settings.RootElement.TryGetProperty("Client", out _));
+        Assert.Equal(ApiBase, settings.RootElement.GetProperty("ApiBaseUrl").GetString());
+        Assert.Equal("https://gateway.example.invalid", settings.RootElement.GetProperty("Gateway").GetProperty("Endpoint").GetString());
+
+        var loaded = ClientConfigurationLoader.Load(configuration: null, fixture.OldVersionDirectory, Array.Empty<string>());
+        Assert.Equal(ApiBase, loaded.ApiBaseUrl);
+        Assert.Equal(3210, loaded.TerminalGracefulExitTimeoutMs);
+        Assert.False(loaded.EnableNativeUnixPty);
+        Assert.Equal("fixture-existing-agent", loaded.AgentId);
+        Assert.Equal("Disabled", loaded.AutoUpdate.Mode);
+        Assert.Equal("Prerelease", loaded.AutoUpdate.Channel);
+        Assert.Equal(fixture.StateDirectory, loaded.AutoUpdate.StateDirectory);
+        Assert.Equal(Path.Combine(fixture.StateDirectory, "flat-request.json"), loaded.AutoUpdate.RequestPath);
+        Assert.Equal(Path.Combine(fixture.StateDirectory, "flat-ready.json"), loaded.AutoUpdate.ReadyPath);
+    }
+
     private static void AssertCurrentLinkTargets(string currentLinkPath, string expectedTarget)
     {
         var resolved = new DirectoryInfo(currentLinkPath).ResolveLinkTarget(returnFinalTarget: true);
@@ -290,6 +323,25 @@ public sealed class LinuxInstallerTransactionTests
                     File.Delete(ClientUnitPath);
                     File.Delete(UpdateUnitPath);
                     Directory.Delete(CurrentLinkPath);
+                }
+                if (failureCase.StartsWith("flat_settings_", StringComparison.Ordinal))
+                {
+                    var settings = new Dictionary<string, object>
+                    {
+                        ["AgentId"] = "fixture-existing-agent",
+                        ["TerminalGracefulExitTimeoutMs"] = 3210,
+                        ["EnableNativeUnixPty"] = false,
+                        ["AutoUpdate"] = new
+                        {
+                            Mode = "Disabled", Channel = "Prerelease", StateDirectory,
+                            RequestPath = Path.Combine(StateDirectory, "flat-request.json"),
+                            ReadyPath = Path.Combine(StateDirectory, "flat-ready.json")
+                        },
+                        ["Gateway"] = new { Endpoint = "https://gateway.example.invalid" }
+                    };
+                    if (failureCase == "flat_settings_with_api") settings["ApiBaseUrl"] = "https://previous.example.invalid";
+                    if (failureCase == "flat_settings_empty_client") settings["Client"] = new Dictionary<string, object>();
+                    WritePrivateFile(OldSettingsPath, JsonSerializer.SerializeToUtf8Bytes(settings), PrivateFileMode);
                 }
 
                 CustomizationPath = Path.Combine(_root, "custom.env");

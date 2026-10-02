@@ -348,7 +348,10 @@ if previous:
         if os.path.isfile(filename):
             with open(filename, encoding='utf-8-sig') as stream:
                 data = json.load(stream)
-            client = next((v for k, v in data.items() if k.lower() == 'client'), data)
+            nested_client = next((v for k, v in data.items() if k.lower() == 'client'), None)
+            if nested_client is not None and not isinstance(nested_client, dict):
+                reject('The existing Client configuration must be an object or null.')
+            client = nested_client or data
             configured = next((v for k, v in client.items() if k.lower() == 'autoupdate'), {})
             auto_update.update({k.lower(): v for k, v in configured.items()})
 client_state = environment.get('NetRatelCLIENT__Client__AutoUpdate__StateDirectory') or auto_update.get('statedirectory')
@@ -539,7 +542,12 @@ def set_value(mapping, name, value):
         if key.lower() == name.lower():
             del mapping[key]
     mapping[name] = value
-client = settings if any(k.lower() == 'apibaseurl' for k in settings) and not any(k.lower() == 'client' for k in settings) else section('Client')
+# The runtime uses the flat root when Client has no children. Keep that shape
+# so adding an API setting cannot hide existing root tunables or update policy.
+nested_client = next((v for k, v in settings.items() if k.lower() == 'client'), None)
+if nested_client is not None and not isinstance(nested_client, dict):
+    reject('The existing Client configuration must be an object or null.')
+client = nested_client or settings
 gateway = section('Gateway')
 old_api = next((v for k, v in client.items() if k.lower() == 'apibaseurl'), '')
 settings_gateway = next((v for k, v in gateway.items() if k.lower() == 'endpoint'), '')

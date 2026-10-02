@@ -28,6 +28,7 @@ The public RC.14 `publication.json` binds packages/build receipt `36859455498` a
 - Seed scripts use explicit `IsUpdateSeed` rendering, replacing message/marker substitutions. Protected detached handoff, process identity, owned paths, configuration hashes and attempt cleanup remain. Their result reports local activation, not an installer heartbeat receipt. An explicit same-origin gateway override remains explicit.
 - Removed the installer timeout DTO field, readiness options/reporter, Program integration, callback-only presence subscriptions and obsolete reporter tests. Kept real heartbeat sequence/protocol/tenant/agent/connection/epoch validation, `OnActivationHeartbeatAccepted`, update approval, activation confirmation and rollback. A missing challenge file is no longer a service startup dependency.
 - Client startup now records the effective normalized API source alongside the existing gateway source. Installer output separates local installation/startup, enrollment and online facts; failure tails are bounded and redact credentials/capability URLs. No generic identity reset or stale credential restoration was added.
+- Review exposed a repair regression in the replacement templates: adding a populated `Client` section could hide legacy flat settings. Both installers now preserve the runtime's flat/nested binding shape, including an empty `Client` object, and resolve existing updater paths before locking. Seven added cases exercise rendered code and the real configuration loader to verify identity, tunables, gateway pins and update policy/path preservation.
 
 ## Adjacent runtime inventory
 
@@ -48,14 +49,14 @@ Generated counts use synthetic tenant/grant/origin/hash inputs, the same UTC val
 
 | Generated output | Before lines / bytes / functions | After lines / bytes / functions |
 | --- | --- | --- |
-| Windows service | 2,326 / 132,201 / 43 | 522 / 36,700 / 13 |
-| Windows non-service | 410 / 18,049 / 6 | 522 / 36,701 / 13 |
-| Linux service | 1,125 / 50,034 / 7 | 675 / 40,156 / 7 |
-| Linux non-service | 392 / 16,230 / 3 | 675 / 40,157 / 7 |
+| Windows service | 2,326 / 132,201 / 43 | 529 / 37,101 / 14 |
+| Windows non-service | 410 / 18,049 / 6 | 529 / 37,102 / 14 |
+| Linux service | 1,125 / 50,034 / 7 | 683 / 40,653 / 7 |
+| Linux non-service | 392 / 16,230 / 3 | 683 / 40,654 / 7 |
 | macOS service | 250 / 12,208 / 3 | 303 / 15,226 / 4 |
 | macOS non-service | 88 / 4,380 / 3 | 121 / 5,732 / 4 |
 
-The maintained installer/seed/readiness implementation file set totals **5,521 lines / 299,793 bytes before**, **2,387 lines / 140,803 bytes after**. This includes the renderer with macOS, both complete resources and all embedded Python, request interface, seed service and removed reporter; no helper is hidden outside this total. Seeds reduce from 1,329 to 746 source lines. Tests and unchanged genuine updater implementations are excluded from this implementation metric. Adjacent client caller changes primarily delete reporter plumbing and add the small API-source resolution result.
+The maintained installer/seed/readiness implementation file set totals **5,521 lines / 299,793 bytes before**, **2,402 lines / 141,701 bytes after**. This includes the renderer with macOS, both complete resources and all embedded Python, request interface, seed service and removed reporter; no helper is hidden outside this total. Seeds reduce from 1,329 to 746 source lines. Tests and unchanged genuine updater implementations are excluded from this implementation metric. Adjacent client caller changes primarily delete reporter plumbing and add the small API-source resolution result.
 
 Windows exceeds the preferred 250–400 line target to retain owned-path/credential checks, artifact validation, configuration precedence, updater handoff and safe repair/rollback. Linux shares one flow between modes and retains ordinary systemd customization checks. Statements were not minified to meet a count; non-service outputs share the resources rather than duplicating maintained installers.
 
@@ -77,7 +78,7 @@ Local commands/results (with the pinned SDK and `NETRATEL_TEST_POWERSHELL` selec
 | `python3 tools/ci/test-release-validation.py` | 57/57 passed, including updated resource/retired-selector guards. |
 | `tools/ci/check-public-disclosure.sh` and `tools/ci/test-public-disclosure.sh` | Passed. |
 | Main project, Debug/no-build, `--filter-not-trait category=compose category=hosted` | 1,959/1,963 passed, zero skipped; see qualification below. |
-| Affected installer/API/client classes, Debug/no-build | Final 207/207 passed, zero skipped. |
+| Affected installer/API/client classes, Debug/no-build | Final 214/214 passed, zero skipped, including the seven flat-settings correction cases. |
 | API integration project, Debug/no-build, same generic category exclusions | Final 19/19 passed, zero skipped. |
 | Web component project, Debug/no-build, same generic category exclusions | 229/229 passed, zero skipped. |
 | Web Playwright project, Debug/no-build, same generic category exclusions | 39/39 passed, zero skipped. |

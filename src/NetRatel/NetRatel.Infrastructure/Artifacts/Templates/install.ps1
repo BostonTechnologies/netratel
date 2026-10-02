@@ -146,6 +146,20 @@ function Get-Origin([string]$Value, [switch]$Gateway) {
     return $uri.GetLeftPart([UriPartial]::Authority)
 }
 
+function Update-ClientSettings($Settings, [string]$ApiBase, [string]$GatewayEndpoint) {
+    # Keep the legacy flat shape: introducing Client would hide its other options.
+    $client = if ($Settings.Client -and @($Settings.Client.PSObject.Properties).Count) { $Settings.Client } else { $Settings }
+    $oldApi = [string]$client.ApiBaseUrl
+    if (-not $oldApi) { $oldApi = [string]$Settings.ApiBaseUrl }
+    if ($oldApi -and $Settings.Gateway.Endpoint -and (Get-Origin $Settings.Gateway.Endpoint -Gateway) -eq (Get-Origin $oldApi)) { $Settings.Gateway.PSObject.Properties.Remove('Endpoint') }
+    $client | Add-Member -NotePropertyName ApiBaseUrl -NotePropertyValue $ApiBase -Force
+    if ($GatewayEndpoint) {
+        if (-not $Settings.Gateway) { $Settings | Add-Member -NotePropertyName Gateway -NotePropertyValue ([pscustomobject]@{}) -Force }
+        $Settings.Gateway | Add-Member -NotePropertyName Endpoint -NotePropertyValue $GatewayEndpoint -Force
+    }
+    return $Settings
+}
+
 function Invoke-ServiceControl([string[]]$Arguments) {
     # Windows command-line escaping, including the quotes inside the SCM image path.
     $quoted = foreach ($argument in $Arguments) { '"' + [regex]::Replace([regex]::Replace($argument, '(\\*)"', '$1$1\"'), '(\\+)$', '$1$1') + '"' }
@@ -276,12 +290,13 @@ try {
             }
         }
     }
+    $installedClient = if ($installedSettings.Client -and @($installedSettings.Client.PSObject.Properties).Count) { $installedSettings.Client } else { $installedSettings }
     $configuredState = Get-ClientSetting 'Client__AutoUpdate__StateDirectory'
-    if (-not $configuredState) { $configuredState = $installedSettings.Client.AutoUpdate.StateDirectory }
+    if (-not $configuredState) { $configuredState = $installedClient.AutoUpdate.StateDirectory }
     if (-not $configuredState) { $configuredState = $installedDefaults.Client.AutoUpdate.StateDirectory }
     $StateDir = Resolve-PathSetting $env:NetRatel_STATE @((Get-ServiceEnvironment 'NetRatel_UPDATE_STATE'), $configuredState) (Join-Path $env:ProgramData 'NetRatel\update') 'updater state'
     $clientRequest = Get-ClientSetting 'Client__AutoUpdate__RequestPath'
-    if (-not $clientRequest) { $clientRequest = $installedSettings.Client.AutoUpdate.RequestPath }
+    if (-not $clientRequest) { $clientRequest = $installedClient.AutoUpdate.RequestPath }
     if (-not $clientRequest) { $clientRequest = $installedDefaults.Client.AutoUpdate.RequestPath }
     $updateRequest = Resolve-PathSetting '' @((Get-ServiceEnvironment 'NetRatel_UPDATE_REQUEST'), $clientRequest) (Join-Path $StateDir 'request.json') 'updater request'
     $LogDir = Resolve-PathSetting $env:NetRatel_LOG_DIR @((Get-ServiceEnvironment 'NetRatel_CLIENT_LOG_DIR')) (Join-Path $env:ProgramData 'NetRatel\logs') 'client log'
@@ -381,15 +396,7 @@ try {
         Copy-Item -LiteralPath (Join-Path $previousDir 'clientsettings.json') -Destination $settingsPath -Force
     }
     $settings = if (Test-Path -LiteralPath $settingsPath) { Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json } else { [pscustomobject]@{} }
-    if (-not $settings.Client) { $settings | Add-Member -NotePropertyName Client -NotePropertyValue ([pscustomobject]@{}) -Force }
-    $oldApi = [string]$settings.Client.ApiBaseUrl
-    if (-not $oldApi) { $oldApi = [string]$settings.ApiBaseUrl }
-    if ($oldApi -and $settings.Gateway.Endpoint -and (Get-Origin $settings.Gateway.Endpoint -Gateway) -eq (Get-Origin $oldApi)) { $settings.Gateway.PSObject.Properties.Remove('Endpoint') }
-    $settings.Client | Add-Member -NotePropertyName ApiBaseUrl -NotePropertyValue $ApiBase -Force
-    if ($GatewayEndpoint) {
-        if (-not $settings.Gateway) { $settings | Add-Member -NotePropertyName Gateway -NotePropertyValue ([pscustomobject]@{}) -Force }
-        $settings.Gateway | Add-Member -NotePropertyName Endpoint -NotePropertyValue $GatewayEndpoint -Force
-    }
+    $settings = Update-ClientSettings $settings $ApiBase $GatewayEndpoint
     $settings | ConvertTo-Json -Depth 32 | Set-Content -LiteralPath $settingsPath -Encoding UTF8
     $gatewaySource = 'API default'
     $effectiveGateway = $ApiBase

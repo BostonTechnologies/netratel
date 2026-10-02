@@ -1,8 +1,11 @@
 using System.Diagnostics;
 using System.IO.Compression;
+using System.Text.Json;
 using FluentAssertions;
 using NetRatel.Application.Artifacts;
+using NetRatel.Client;
 using NetRatel.Infrastructure.Artifacts;
+using NetRatel.Shared;
 using Xunit;
 
 namespace NetRatel.Tests.Infrastructure;
@@ -121,6 +124,48 @@ public sealed class WindowsInstallerTemplateTests
                 if (-not $rejected) { throw 'Ambiguous updater environment aliases were accepted.' }
                 """);
             result.ExitCode.Should().Be(0, result.Output);
+        });
+    }
+
+    [Theory]
+    [InlineData(false, false, "")]
+    [InlineData(false, true, "")]
+    [InlineData(true, false, "")]
+    [InlineData(false, false, "https://requested-gateway.example")]
+    public async Task RenderedSettingsUpdatePreservesLegacyShapeAndRuntimeTunables(bool nested, bool emptyClient, string gateway)
+    {
+        await WithFixture(async root =>
+        {
+            var client = new Dictionary<string, object>
+            {
+                ["ApiBaseUrl"] = "https://previous-api.example",
+                ["Environment"] = "Prod",
+                ["TerminalGracefulExitTimeoutMs"] = 3210,
+                ["AutoUpdate"] = new { StateDirectory = "C:\\owned\\state", Channel = "Preview", ActivationTimeoutSeconds = 47 }
+            };
+            var settings = nested ? new Dictionary<string, object> { ["Client"] = client } : new Dictionary<string, object>(client);
+            if (emptyClient) settings["Client"] = new Dictionary<string, object>();
+            settings["Gateway"] = new { Endpoint = "https://pinned-gateway.example" };
+            var inputPath = Path.Combine(root, "before.json");
+            var outputPath = Path.Combine(root, "clientsettings.json");
+            await File.WriteAllTextAsync(inputPath, JsonSerializer.Serialize(settings));
+            var result = await RunFunctions(root, """
+                $settings = [IO.File]::ReadAllText($args[1]) | ConvertFrom-Json
+                $updated = Update-ClientSettings $settings 'https://new-api.example' $args[3]
+                [IO.File]::WriteAllText($args[2], ($updated | ConvertTo-Json -Depth 32))
+                """, inputPath, outputPath, gateway);
+            result.ExitCode.Should().Be(0, result.Output);
+            var options = ClientConfigurationLoader.Load(null, root, []);
+            options.ApiBaseUrl.Should().Be("https://new-api.example");
+            options.Environment.Should().Be(ClientEnvironment.Prod);
+            options.TerminalGracefulExitTimeoutMs.Should().Be(3210);
+            options.AutoUpdate.StateDirectory.Should().Be("C:\\owned\\state");
+            options.AutoUpdate.Channel.Should().Be("Preview");
+            options.AutoUpdate.ActivationTimeoutSeconds.Should().Be(47);
+            using var document = JsonDocument.Parse(await File.ReadAllTextAsync(outputPath));
+            document.RootElement.GetProperty("Gateway").GetProperty("Endpoint").GetString()
+                .Should().Be(gateway.Length == 0 ? "https://pinned-gateway.example" : gateway);
+            if (!nested && !emptyClient) document.RootElement.TryGetProperty("Client", out _).Should().BeFalse();
         });
     }
 
