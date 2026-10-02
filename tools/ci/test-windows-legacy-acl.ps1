@@ -107,6 +107,10 @@ try {
     $parent = Get-Acl -LiteralPath $script:fixtureBase
     $parent.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
         [Security.Principal.SecurityIdentifier]::new('S-1-5-32-545'), 'Modify', 'ContainerInherit,ObjectInherit', 'InheritOnly', 'Allow'))
+    $parent.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+        [Security.Principal.SecurityIdentifier]::new('S-1-1-0'), 'ReadAndExecute', 'ContainerInherit,ObjectInherit', 'InheritOnly', 'Allow'))
+    $parent.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+        [Security.Principal.SecurityIdentifier]::new('S-1-5-32-545'), 'WriteExtendedAttributes', 'ContainerInherit,ObjectInherit', 'InheritOnly', 'Deny'))
     Set-Acl -LiteralPath $script:fixtureBase -AclObject $parent
     [void][IO.Directory]::CreateDirectory($script:root)
     $credential = Join-Path $script:root 'agent.dat'
@@ -134,6 +138,9 @@ try {
     Invoke-LegacyAclRepair 'apply'
     Assert-OwnedPath $script:root
     Assert-OwnedPath $credential -File
+    $rootRules = @((Get-Acl -LiteralPath $script:root).GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]))
+    if (-not @($rootRules | Where-Object { $_.IdentityReference.Value -eq 'S-1-1-0' -and $_.AccessControlType -eq 'Allow' -and ([int]$_.FileSystemRights -band 0x1200A9) -eq 0x1200A9 }).Count) { throw 'Repair removed unrelated inherited read access.' }
+    if (-not @($rootRules | Where-Object { $_.IdentityReference.Value -eq 'S-1-5-32-545' -and $_.AccessControlType -eq 'Deny' -and ([int]$_.FileSystemRights -band 0x10) }).Count) { throw 'Repair removed an unrelated inherited deny.' }
     if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($credential)) -ne $credentialBytes) { throw 'Repair changed credential bytes.' }
     if ((Get-Acl -LiteralPath $script:fixtureBase -Audit).Sddl -ne $parentBefore) { throw 'Repair changed an ancestor.' }
     $backups = @(Get-ChildItem $script:recovery -Filter '*.json')

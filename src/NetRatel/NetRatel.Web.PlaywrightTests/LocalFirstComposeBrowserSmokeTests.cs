@@ -427,12 +427,12 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await page.GetByRole(AriaRole.Button, new() { Name = "Generate link" }).ClickAsync();
         await page.GetByText("Generated install link", new() { Exact = true }).WaitForAsync();
         Assert.Equal(0, downloads);
-        var publicUrl = await page.GetByRole(AriaRole.Textbox, new() { Name = "Public script URL" }).InputValueAsync();
-        var command = await page.GetByRole(AriaRole.Textbox, new() { Name = "Install command" }).InputValueAsync();
+        var publicUrl = await page.GetByLabel("Public script URL", new() { Exact = true }).Locator("code").InnerTextAsync();
+        var command = await page.GetByLabel("Install command", new() { Exact = true }).Locator("code").InnerTextAsync();
         var publicOrigin = InstallLinkPublicOrigin();
         Assert.StartsWith(publicOrigin + "/clients/install/", publicUrl);
         Assert.Contains(publicUrl, command);
-        Assert.Contains(version, await page.GetByLabel("Generated script preview").InnerTextAsync());
+        var previewScript = await ReadGeneratedScriptPreviewAsync(page, version);
         await AssertDialogLayoutAsync(page, "deployment-script-result", captureSafeContent: false);
 
         await using var anonymous = await browser.NewContextAsync(new BrowserNewContextOptions
@@ -444,6 +444,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         var firstFetch = await anonymous.APIRequest.GetAsync(routedUrl);
         Assert.True(firstFetch.Ok, "The public script must be reachable through Web routing without an authentication cookie.");
         var fetchedScript = await firstFetch.TextAsync();
+        Assert.Equal(fetchedScript, previewScript);
         Assert.StartsWith("#!/usr/bin/env bash", fetchedScript);
         Assert.Contains("no-store", firstFetch.Headers["cache-control"]);
         var head = await anonymous.APIRequest.HeadAsync(routedUrl);
@@ -460,7 +461,10 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await page.GetByRole(AriaRole.Button, new() { Name = "Copy URL" }).ClickAsync();
         var copyStatus = page.GetByRole(AriaRole.Status).Last;
         await copyStatus.WaitForAsync();
-        Assert.Contains("copy", (await copyStatus.InnerTextAsync()).ToLowerInvariant());
+        Assert.Contains(await copyStatus.InnerTextAsync(), new[]
+        {
+            "Copied to clipboard.", "Clipboard unavailable. Select and copy the text above."
+        });
         await page.GetByRole(AriaRole.Button, new() { Name = "Refresh status" }).ClickAsync();
         await page.GetByText("1 of 1 enrollments remain.", new() { Exact = false }).WaitForAsync();
         await page.GetByRole(AriaRole.Button, new() { Name = "Revoke link" }).ClickAsync();
@@ -506,12 +510,13 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await dialog.GetByRole(AriaRole.Checkbox, new() { Name = "Install as Service" }).UncheckAsync();
         await dialog.GetByRole(AriaRole.Button, new() { Name = "Generate link" }).ClickAsync();
         await page.GetByText("Generated install link", new() { Exact = true }).WaitForAsync();
-        var command = await dialog.GetByRole(AriaRole.Textbox, new() { Name = "Install command" }).InputValueAsync();
-        var publicUrl = await dialog.GetByRole(AriaRole.Textbox, new() { Name = "Public script URL" }).InputValueAsync();
+        var command = await dialog.GetByLabel("Install command", new() { Exact = true }).Locator("code").InnerTextAsync();
+        var publicUrl = await dialog.GetByLabel("Public script URL", new() { Exact = true }).Locator("code").InnerTextAsync();
         Assert.StartsWith(webUrl.GetLeftPart(UriPartial.Authority) + "/clients/install/", publicUrl);
         Assert.Contains(publicUrl, command);
         Assert.Contains("curl -fsSL", command);
         Assert.Contains("pipefail", command);
+        await ReadGeneratedScriptPreviewAsync(page, version);
         await using var anonymous = await browser.NewContextAsync(new BrowserNewContextOptions
         {
             IgnoreHTTPSErrors = IgnoreSyntheticHttpsErrors
@@ -561,6 +566,42 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             }
         }
         await dialog.GetByRole(AriaRole.Button, new() { Name = "Close", Exact = true }).ClickAsync();
+    }
+
+    private static async Task<string> ReadGeneratedScriptPreviewAsync(IPage page, string version)
+    {
+        // Read the live model: Monaco virtualizes its rendered lines, so InnerText
+        // cannot prove that the complete generated script is present.
+        await page.WaitForFunctionAsync("""
+            () => {
+                const container = document.querySelector('.generated-install-script-preview .monaco-editor-container');
+                const editor = container && window.blazorMonaco?.editor?.getEditor(container.id, true);
+                return !!editor?.getModel() && editor.getValue().length > 0;
+            }
+            """);
+        var preview = page.GetByLabel("Generated script preview", new() { Exact = true });
+        Assert.True(await preview.EvaluateAsync<bool>("""
+            element => {
+                const container = element.querySelector('.monaco-editor-container');
+                const editor = window.blazorMonaco.editor.getEditor(container.id);
+                const bounds = element.getBoundingClientRect();
+                const viewport = editor.getDomNode().getBoundingClientRect();
+                return editor.getRawOptions().readOnly === true && editor.getModel().getLanguageId() === 'shell'
+                    && viewport.height > 0 && viewport.bottom <= bounds.bottom;
+            }
+            """), "The actual generated Bash editor must be read-only and fit inside its preview.");
+        var script = await preview.EvaluateAsync<string>("""
+            element => window.blazorMonaco.editor.getEditor(element.querySelector('.monaco-editor-container').id).getValue()
+            """);
+        Assert.Contains(version, script);
+        await preview.EvaluateAsync("""
+            element => window.blazorMonaco.editor.getEditor(element.querySelector('.monaco-editor-container').id).focus()
+            """);
+        await page.Keyboard.TypeAsync("read-only probe");
+        Assert.Equal(script, await preview.EvaluateAsync<string>("""
+            element => window.blazorMonaco.editor.getEditor(element.querySelector('.monaco-editor-container').id).getValue()
+            """));
+        return script;
     }
 
     private static async Task RunIsolatedNativeCommandAsync(string username, string executable, IReadOnlyList<string> arguments,

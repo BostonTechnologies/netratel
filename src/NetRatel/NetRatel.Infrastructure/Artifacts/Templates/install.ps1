@@ -184,15 +184,18 @@ function Invoke-LegacyAclRepair([string]$Mode) {
             if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw (Get-PathDiagnostic $entry.Path 'leaf' $null $null 'path changed to a reparse point during repair') }
             $acl = Get-Acl -LiteralPath $entry.Path -Audit
             if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -notin $trustedSids) { throw (Get-PathDiagnostic $entry.Path 'leaf' $acl $null 'owner changed during repair') }
-            # Parent changes can remove inherited ACEs from children; protect remaining
-            # inheritance while preserving every unrelated rule, then remove eligible ACEs.
-            $acl.SetAccessRuleProtection($true, $true)
-            foreach ($rule in @($acl.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier]))) {
-                if ($rule.IdentityReference.Value -eq 'S-1-5-32-545' -and ([int]$rule.FileSystemRights -band 0xD0156) -and -not ([int]$rule.FileSystemRights -band (-bnot 0x1301BF))) {
-                    $acl.RemoveAccessRuleSpecific($rule)
-                    $read = [int]$rule.FileSystemRights -band 0x1200A9
-                    if ($read) { $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($rule.IdentityReference, $read, $rule.InheritanceFlags, $rule.PropagationFlags, 'Allow')) }
+            # Snapshot inherited ACEs before protection: .NET Framework retains their
+            # inherited flag in memory when asked to preserve inheritance. Rebuild them
+            # explicitly in one write, reducing only reviewed Users Allow write rights.
+            # Parent repairs may already have removed unsafe inheritance from children.
+            $inherited = @($acl.GetAccessRules($false, $true, [Security.Principal.SecurityIdentifier]))
+            $acl.SetAccessRuleProtection($true, $false)
+            foreach ($rule in $inherited) {
+                $rights = [int]$rule.FileSystemRights
+                if ($rule.AccessControlType -eq 'Allow' -and $rule.IdentityReference.Value -eq 'S-1-5-32-545' -and ($rights -band 0xD0156) -and -not ($rights -band (-bnot 0x1301BF))) {
+                    $rights = $rights -band 0x1200A9
                 }
+                if ($rights) { $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($rule.IdentityReference, $rights, $rule.InheritanceFlags, $rule.PropagationFlags, $rule.AccessControlType)) }
             }
             Set-Acl -LiteralPath $entry.Path -AclObject $acl
         }

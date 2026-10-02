@@ -46,7 +46,9 @@ public sealed class WindowsLegacyAclRepairTests
             parent.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier("S-1-5-32-545"), FileSystemRights.Modify,
                 InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit, PropagationFlags.InheritOnly, AccessControlType.Allow));
             new DirectoryInfo(fixture).SetAccessControl(parent);
-            var before = parent.GetSecurityDescriptorSddlForm(AccessControlSections.All);
+            // The kernel may set auto-inheritance flags while persisting the fixture.
+            // Compare the actual on-disk descriptor before and after the product call.
+            var before = new DirectoryInfo(fixture).GetAccessControl().GetSecurityDescriptorSddlForm(AccessControlSections.All);
             var root = Path.Combine(fixture, "NetRatel");
             // Test-only injection into the private creation core. Public production callers
             // select only Environment.SpecialFolder.CommonApplicationData/NetRatel.
