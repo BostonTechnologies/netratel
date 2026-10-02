@@ -16,12 +16,14 @@ internal sealed class FixtureFlowApiService : IFlowApiService
     public FlowGraphDto? SavedGraph { get; private set; }
     public TaskCompletionSource<FlowDefinitionDto>? SavePending { get; set; }
     public bool ConflictNextSave { get; set; }
-    public FixtureFlowApiService()
+    private readonly int _tenantId;
+    public FixtureFlowApiService(int tenantId = 17)
     {
-        var flow = new FlowDefinitionDto(Guid.NewGuid(), 17, "Incident from alert", 1, false, FlowGraphTemplates.IncidentFromAlert(), null, 0, DateTimeOffset.UtcNow);
+        _tenantId = tenantId;
+        var flow = new FlowDefinitionDto(Guid.NewGuid(), tenantId, "Incident from alert", 1, false, FlowGraphTemplates.IncidentFromAlert(), null, 0, DateTimeOffset.UtcNow);
         _definitions[flow.Id] = flow;
     }
-    public Task<IReadOnlyList<FlowTenantAccessDto>> GetTenantsAsync(CancellationToken token = default) => Task.FromResult<IReadOnlyList<FlowTenantAccessDto>>([new(17, "Tenant 17", true, true, true), new(23, "Tenant 23", true, false, false)]);
+    public Task<IReadOnlyList<FlowTenantAccessDto>> GetTenantsAsync(CancellationToken token = default) => Task.FromResult<IReadOnlyList<FlowTenantAccessDto>>([new(_tenantId, $"Tenant {_tenantId}", true, true, true), new(23, "Tenant 23", true, false, false)]);
     public Task<IReadOnlyList<FlowDefinitionDto>> ListAsync(int tenantId, CancellationToken token = default) => Task.FromResult<IReadOnlyList<FlowDefinitionDto>>(_definitions.Values.Where(f => f.TenantId == tenantId).ToArray());
     public Task<FlowDefinitionDto> GetAsync(int tenantId, Guid flowId, CancellationToken token = default) => Task.FromResult(Find(tenantId, flowId));
     public Task<FlowDefinitionDto> CreateAsync(int tenantId, FlowCreateRequest request, CancellationToken token = default)
@@ -77,13 +79,15 @@ internal sealed class FixtureFlowApiService : IFlowApiService
     { VersionLookups++; return Task.FromResult(_versions.Values.SelectMany(v => v).FirstOrDefault(v => v.TenantId == tenantId && v.Id == versionId) ?? throw new FlowApiException(HttpStatusCode.NotFound)); }
     public Task<FlowRunDetailDto> GetRunByIdAsync(int tenantId, Guid runId, CancellationToken token = default)
     { RunLookups++; if (_runs.TryGetValue(runId, out var run) && Find(tenantId, run.Run.FlowId).TenantId == tenantId) return Task.FromResult(run); throw new FlowApiException(HttpStatusCode.NotFound); }
-    public void SeedRun()
+    public FlowRunDetailDto SeedRun(FlowEventDataDto? input = null, Guid? eventId = null, Guid? occurrenceId = null)
     {
         SeedPublishedVersion(); var flow = _definitions.Values.First();
-        var summary = new FlowRunSummaryDto(Guid.NewGuid(), flow.Id, SeededVersionId!.Value, Guid.NewGuid(), Guid.NewGuid(), FlowRunStatus.Succeeded, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, "incident-created");
+        input ??= new(Guid.NewGuid(), Guid.NewGuid(), "Disk capacity", "Fixture client", "/", "disk.used.percent", "warning", 95, null, DateTimeOffset.UtcNow);
+        var summary = new FlowRunSummaryDto(Guid.NewGuid(), flow.Id, SeededVersionId!.Value, eventId ?? Guid.NewGuid(), occurrenceId ?? Guid.NewGuid(), FlowRunStatus.Succeeded, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, "incident-created");
         SeededRunId = summary.Id;
-        _runs[summary.Id] = new(summary, new(Guid.NewGuid(), Guid.NewGuid(), "Disk capacity", "Fixture client", "/", "disk.used.percent", "warning", 95, null, DateTimeOffset.UtcNow),
+        _runs[summary.Id] = new(summary, input,
             [new(flow.Draft.Nodes.Single(n => n.Kind == FlowNodeKind.CreateIncident).Id, "fixture-action", FlowActionStatus.Succeeded, 1, 1, "incident-created", new("123", SafeLink: "https://fixture.invalid/incidents/123"))]);
+        return _runs[summary.Id];
     }
     private FlowDefinitionDto Find(int tenant, Guid id) => _definitions.TryGetValue(id, out var flow) && flow.TenantId == tenant ? flow : throw new FlowApiException(HttpStatusCode.NotFound);
 }

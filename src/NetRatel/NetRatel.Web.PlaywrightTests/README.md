@@ -13,6 +13,9 @@ The checks cover:
 - preserved dirty edits on close, revision conflicts and tenant changes, inert validation/sample preview, independent clone, immutable published history and keyboard focus restoration;
 - tenant-scoped Monitoring links to immutable versions and actual run receipts without history fanout, plus wrong-tenant lookup rejection;
 - dialog/viewport geometry, usable mobile charts and controls, document horizontal overflow, and visible Blazor error UI;
+- Monitoring tenant-scoped counts, exact rule/group/bypass editors, manual clear/refire history, honest Unknown evidence, cached Services launch, failed draft retention, guarded duplicate saves and late-tenant response cancellation;
+- Monitoring at desktop with drawer open, light/dark/system themes, narrow viewports and the same true 200% zoom-equivalent geometry;
+- the combined Monitoring/Flows route and service registrations, ordered Signals navigation, and an actual occurrence-link journey through its paired run receipt and immutable published graph;
 - screenshots written to `TestResults/playwright` for visual review.
 
 Build the project and install its pinned Chromium version once:

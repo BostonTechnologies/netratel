@@ -1491,6 +1491,7 @@ public sealed class ClientsManagementBrowserFixture : IAsyncLifetime
 [Route("/clients/mgmt")]
 [Route("/clients")]
 [Route("/flows")]
+[Route("/monitoring")]
 public sealed class ClientsManagementFixtureApp : ComponentBase
 {
     protected override void BuildRenderTree(RenderTreeBuilder builder)
@@ -1563,9 +1564,10 @@ internal sealed class ClientsManagementFixtureHost : IAsyncDisposable
     public ClientDirectoryFixtureData ClientDirectory { get; }
     public FixtureClientServicesService ServicesData => _application.Services.GetRequiredService<FixtureClientServicesService>();
     public FixtureFlowApiService FlowsData => _application.Services.GetRequiredService<FixtureFlowApiService>();
+    public FixtureMonitoringApi MonitoringData => _application.Services.GetRequiredService<FixtureMonitoringApi>();
     public IReadOnlyList<string> StartupServerDiagnostics => _serverDiagnostics.Snapshot();
 
-    public static async Task<ClientsManagementFixtureHost> StartAsync()
+    public static async Task<ClientsManagementFixtureHost> StartAsync(Action<IServiceCollection>? configureServices = null)
     {
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = "Development" });
         var serverDiagnostics = new FixtureServerDiagnosticLoggerProvider();
@@ -1589,6 +1591,8 @@ internal sealed class ClientsManagementFixtureHost : IAsyncDisposable
         builder.Services.AddSingleton<IClientServicesLiveStreamService>(services => services.GetRequiredService<FixtureClientServicesService>());
         builder.Services.AddSingleton<FixtureFlowApiService>();
         builder.Services.AddSingleton<NetRatel.Web.Services.Flows.IFlowApiService>(services => services.GetRequiredService<FixtureFlowApiService>());
+        builder.Services.AddSingleton<FixtureMonitoringApi>();
+        builder.Services.AddSingleton<NetRatel.Web.Services.Monitoring.IMonitoringApiService>(services => services.GetRequiredService<FixtureMonitoringApi>());
         builder.Services.AddSingleton<IClientArtifactsService>(services => services.GetRequiredService<FixtureClientArtifactsService>());
         builder.Services.AddSingleton<ITenantApiService, FixtureTenantApiService>();
         builder.Services.AddSingleton<IDeploymentBrandingApiService, FixtureBrandingApiService>();
@@ -1598,6 +1602,7 @@ internal sealed class ClientsManagementFixtureHost : IAsyncDisposable
         builder.Services.AddSingleton<NetRatelNotificationEventBus>();
         builder.Services.AddSingleton<IGlobalSearchService, FixtureGlobalSearchService>();
 
+        configureServices?.Invoke(builder.Services);
         var application = builder.Build();
         application.MapGet("/_framework/blazor.web.js", () => Results.File(ResolveStaticAsset("_framework/blazor.web.js"), "text/javascript"));
         application.MapGet("/_content/MudBlazor/MudBlazor.min.css", () => Results.File(ResolveMudBlazorStylesheet(), "text/css"));

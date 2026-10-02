@@ -150,6 +150,10 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
         await page.GetByTestId("flow-name").FillAsync("My preserved changes"); fixture.FlowsData.ConflictNextSave = true;
         await page.GetByTestId("flow-save").ClickAsync(); await Assertions.Expect(page.GetByTestId("flow-error")).ToContainTextAsync("changed in another session");
         await Assertions.Expect(page.GetByTestId("flow-name")).ToHaveValueAsync("My preserved changes");
+        // Disabling Save during the request may move browser focus to the document.
+        // Escape is an editor keyboard action, so focus a real editor control first.
+        await page.GetByTestId("flow-close").FocusAsync();
+        await Assertions.Expect(page.GetByTestId("flow-close")).ToBeFocusedAsync();
         await page.Keyboard.PressAsync("Escape"); await page.GetByTestId("flow-unsaved").WaitForAsync();
         await page.GetByRole(AriaRole.Button, new() { Name = "Keep editing", Exact = true }).ClickAsync();
         await page.GetByTestId("flow-tenant").SelectOptionAsync("23"); await page.GetByTestId("flow-tenant-unsaved").WaitForAsync();
