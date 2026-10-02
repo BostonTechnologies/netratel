@@ -138,7 +138,7 @@ public static class NetRatelAkkaActorRegistration
                 serviceProvider.GetRequiredService<NetRatelAkkaOptions>().AskTimeout));
         services.AddSingleton<IClientPresenceReadModel>(serviceProvider =>
             new AkkaClientPresenceReadModel(
-                serviceProvider.GetRequiredService<IRequiredActor<ClientPresenceReadModelRegion>>(),
+                () => serviceProvider.GetRequiredService<IRequiredActor<ClientPresenceReadModelRegion>>(),
                 serviceProvider.GetRequiredService<NetRatelAkkaOptions>().AskTimeout));
         services.AddSingleton<IClientTelemetryRouter>(serviceProvider =>
             new AkkaClientTelemetryRouter(
@@ -517,20 +517,22 @@ internal sealed class AkkaClientPresenceRouter : IClientPresenceRouter
 
 internal sealed class AkkaClientPresenceReadModel : IClientPresenceReadModel
 {
-    private readonly IRequiredActor<ClientPresenceReadModelRegion> _region;
+    private readonly Lazy<IRequiredActor<ClientPresenceReadModelRegion>> _region;
     private readonly TimeSpan _askTimeout;
 
     public AkkaClientPresenceReadModel(
-        IRequiredActor<ClientPresenceReadModelRegion> region,
+        Func<IRequiredActor<ClientPresenceReadModelRegion>> regionFactory,
         TimeSpan askTimeout)
     {
-        _region = region;
+        // Monitoring directory construction occurs during ActorSystem configuration.
+        // Resolve the required actor only on a read, after the system can register it.
+        _region = new(regionFactory);
         _askTimeout = askTimeout;
     }
 
     public async Task<ClientPresenceReadModelSnapshot> GetSnapshotAsync(CancellationToken cancellationToken)
     {
-        var region = await _region.GetAsync(cancellationToken).ConfigureAwait(false);
+        var region = await _region.Value.GetAsync(cancellationToken).ConfigureAwait(false);
         return await region.Ask<ClientPresenceReadModelSnapshot>(
                 new GetClientPresenceReadModel(),
                 _askTimeout,
@@ -541,7 +543,7 @@ internal sealed class AkkaClientPresenceReadModel : IClientPresenceReadModel
     public async Task<ClientPresenceSnapshot?> GetClientSnapshotAsync(ClientKey client, CancellationToken cancellationToken)
     {
         if (!client.IsValid) throw new ArgumentException("invalid_client");
-        var region = await _region.GetAsync(cancellationToken).ConfigureAwait(false);
+        var region = await _region.Value.GetAsync(cancellationToken).ConfigureAwait(false);
         var result = await region.Ask<ClientPresenceReadModelPointSnapshot>(new GetClientPresenceReadModelByKey(client),
             _askTimeout, cancellationToken).ConfigureAwait(false);
         return result.Client == client ? result.Snapshot : throw new InvalidOperationException("wrong_presence_point_client");

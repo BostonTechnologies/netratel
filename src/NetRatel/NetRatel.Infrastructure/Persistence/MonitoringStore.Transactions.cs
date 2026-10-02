@@ -175,8 +175,9 @@ public sealed partial class MonitoringStore
             SELECT COALESCE(SUM(OCTET_LENGTH("StateJson"::text)), 0)::bigint AS "Value" FROM "MonitoringSeries"
             WHERE "TenantId" = {state.Series.TenantId} AND "AgentId" = {state.Series.AgentId}
             """).SingleAsync(ct).ConfigureAwait(false);
-        var nextBytes = await db.Database.SqlQuery<long>($"""SELECT OCTET_LENGTH(({stateJson}::jsonb)::text)::bigint AS "Value"""
-            ).SingleAsync(ct).ConfigureAwait(false);
+        var nextBytes = await db.Database.SqlQuery<long>($"""
+            SELECT OCTET_LENGTH(({stateJson}::jsonb)::text)::bigint AS "Value"
+            """).SingleAsync(ct).ConfigureAwait(false);
         var previousBytes = row.StateRevision == 0 ? 0 : System.Text.Encoding.UTF8.GetByteCount(row.StateJson);
         if (clientBytes - previousBytes + nextBytes > MaximumAggregateBytes - 1024) throw new InvalidOperationException("monitoring_client_state_size_exceeded");
         ApplyState(row, state, now);

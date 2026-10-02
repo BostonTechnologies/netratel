@@ -1,6 +1,5 @@
 using System.Collections.Immutable;
 using System.Security.Claims;
-using System.Text.Json;
 using NetRatel.API.Gateway;
 using NetRatel.Application.Agents;
 using NetRatel.Application.Monitoring;
@@ -21,7 +20,6 @@ public sealed class MonitoringApiService(IMonitoringResourceAuthorizer authoriza
     MonitoringWatchPolicyReconciler watches, TimeProvider timeProvider, ILogger<MonitoringApiService> logger)
 {
     public const int MaximumHttpBytes = 4 * 1024 * 1024;
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     public async Task<ImmutableArray<MonitoringTenantDto>> GetTenantsAsync(ClaimsPrincipal user, CancellationToken cancellationToken)
     {
@@ -149,6 +147,10 @@ public sealed class MonitoringApiService(IMonitoringResourceAuthorizer authoriza
         var existing = current.Rules.SingleOrDefault(rule => rule.RuleId == ruleId);
         var rule = request.Rule with
         {
+            Condition = request.Rule.Condition with
+            {
+                ExpectedServiceStates = request.Rule.Condition.ExpectedServiceStates.IsDefault ? [] : request.Rule.Condition.ExpectedServiceStates
+            },
             ExecutionPrincipalId = request.Rule.PublishedFlowVersionId is null ? null : existing?.PublishedFlowVersionId == request.Rule.PublishedFlowVersionId
                 ? existing.ExecutionPrincipalId : user.FindFirstValue("netratel_principal_id"),
             ExecutionCredentialId = request.Rule.PublishedFlowVersionId is null ? null : existing?.PublishedFlowVersionId == request.Rule.PublishedFlowVersionId
@@ -390,9 +392,5 @@ public sealed class MonitoringApiService(IMonitoringResourceAuthorizer authoriza
     private static MonitoringConfigurationDto ToDto(MonitoringConfigurationSnapshot configuration) => new(configuration.TenantId,
         configuration.Revision, configuration.Rules, configuration.Groups, configuration.Bypasses, configuration.GeneratedAtUtc);
 
-    public static T Bounded<T>(T value)
-    {
-        if (JsonSerializer.SerializeToUtf8Bytes(value, JsonOptions).Length > MaximumHttpBytes) throw new MonitoringApiException(413, "monitoring_payload_capacity_exceeded");
-        return value;
-    }
+    public static T Bounded<T>(T value) => MonitoringHttpSerialization.NormalizeBounded(value, MaximumHttpBytes);
 }

@@ -28,7 +28,9 @@ public sealed class MonitoringStorePostgresTests(PostgreSqlPersistenceFixture fi
         await using var rig = await CreateRigAsync(flow: true);
         await using (var scope = rig.Provider.CreateAsyncScope())
             scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>().Database.HasPendingModelChanges().Should().BeFalse();
-        var first = rig.Evaluator.Evaluate(rig.Evaluator.CreateInitial(rig.Key, rig.Rule), rig.Rule, rig.Observation(1), 1, rig.Fence.EvidenceStreamId, []);
+        var initial = rig.Evaluator.CreateInitial(rig.Key, rig.Rule);
+        rig.Time.Advance(TimeSpan.FromSeconds(1));
+        var first = rig.Evaluator.Evaluate(initial, rig.Rule, rig.Observation(1), 1, rig.Fence.EvidenceStreamId, []);
         (await rig.Store.CommitAsync(new(first, 1, rig.Fence), default)).Disposition.Should().Be(MonitoringStoreWriteDisposition.Stored);
         rig.Time.Advance(TimeSpan.FromSeconds(1));
         var raised = rig.Evaluator.Evaluate(first.State, rig.Rule, rig.Observation(2), 1, rig.Fence.EvidenceStreamId, []);
@@ -160,16 +162,23 @@ public sealed class MonitoringStorePostgresTests(PostgreSqlPersistenceFixture fi
         {
             var actor = system.ActorOf(ClientMonitoringRouterActor.Props(rig.Store, rig.Provider.GetRequiredService<IMonitoringConfigurationStore>(), rig.Directory, rig.Time));
             (await actor.Ask<MonitoringInputResult>(new BeginMonitoringStream(rig.Fence))).Disposition.Should().Be(MonitoringInputDisposition.Accepted);
-            await actor.Ask<MonitoringInputResult>(new RecordMonitoringTelemetry(rig.Telemetry(1)));
+            (await actor.Ask<MonitoringInputResult>(new RecordMonitoringTelemetry(rig.Telemetry(1)))).Disposition.Should().Be(MonitoringInputDisposition.Accepted);
+            (await actor.Ask<ImmutableArray<MonitoringSeriesState>>(new GetClientMonitoring(rig.Client))).Single().EvidenceQuality.Should().Be(MonitoringEvidenceQuality.Unknown);
+            rig.Time.Advance(TimeSpan.FromSeconds(1));
+            (await actor.Ask<MonitoringInputResult>(new RecordMonitoringTelemetry(rig.Telemetry(2)))).Disposition.Should().Be(MonitoringInputDisposition.Accepted);
             (await actor.Ask<ImmutableArray<MonitoringSeriesState>>(new GetClientMonitoring(rig.Client))).Single().Phase.Should().Be(MonitoringPhase.Pending);
             await actor.GracefulStop(TimeSpan.FromSeconds(3));
             rig.Time.Advance(TimeSpan.FromSeconds(1));
             actor = system.ActorOf(ClientMonitoringRouterActor.Props(rig.Store, rig.Provider.GetRequiredService<IMonitoringConfigurationStore>(), rig.Directory, rig.Time));
-            await actor.Ask<MonitoringInputResult>(new RecordMonitoringTelemetry(rig.Telemetry(2)));
+            var afterRestart = (await actor.Ask<ImmutableArray<MonitoringSeriesState>>(new GetClientMonitoring(rig.Client))).Single();
+            afterRestart.EvidenceQuality.Should().Be(MonitoringEvidenceQuality.Unknown);
+            afterRestart.Occurrence.Should().BeNull();
+            rig.Time.Advance(TimeSpan.FromSeconds(1));
+            (await actor.Ask<MonitoringInputResult>(new RecordMonitoringTelemetry(rig.Telemetry(3)))).Disposition.Should().Be(MonitoringInputDisposition.Accepted);
             var pending = (await actor.Ask<ImmutableArray<MonitoringSeriesState>>(new GetClientMonitoring(rig.Client))).Single();
             pending.Phase.Should().Be(MonitoringPhase.Pending); pending.Occurrence.Should().BeNull();
             rig.Time.Advance(TimeSpan.FromSeconds(1));
-            await actor.Ask<MonitoringInputResult>(new RecordMonitoringTelemetry(rig.Telemetry(3)));
+            (await actor.Ask<MonitoringInputResult>(new RecordMonitoringTelemetry(rig.Telemetry(4)))).Disposition.Should().Be(MonitoringInputDisposition.Accepted);
             var firing = (await actor.Ask<ImmutableArray<MonitoringSeriesState>>(new GetClientMonitoring(rig.Client))).Single();
             firing.Phase.Should().Be(MonitoringPhase.Firing);
             await actor.GracefulStop(TimeSpan.FromSeconds(3));
@@ -550,10 +559,14 @@ public sealed class MonitoringStorePostgresTests(PostgreSqlPersistenceFixture fi
         .AddNetRatelClientServicesPersistence().AddNetRatelMonitoringPersistence().BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
     private static async Task<MonitoringSeriesState> FireAsync(Rig rig)
     {
-        var pending = rig.Evaluator.Evaluate(rig.Evaluator.CreateInitial(rig.Key, rig.Rule), rig.Rule, rig.Observation(1), 1, rig.Fence.EvidenceStreamId, []);
+        var initial = rig.Evaluator.CreateInitial(rig.Key, rig.Rule);
+        rig.Time.Advance(TimeSpan.FromSeconds(1));
+        var pending = rig.Evaluator.Evaluate(initial, rig.Rule, rig.Observation(1), 1, rig.Fence.EvidenceStreamId, []);
+        pending.State.Phase.Should().Be(MonitoringPhase.Pending);
         (await rig.Store.CommitAsync(new(pending, 1, rig.Fence), default)).Disposition.Should().Be(MonitoringStoreWriteDisposition.Stored);
         rig.Time.Advance(TimeSpan.FromSeconds(1));
         var firing = rig.Evaluator.Evaluate(pending.State, rig.Rule, rig.Observation(2), 1, rig.Fence.EvidenceStreamId, []);
+        firing.State.Phase.Should().Be(MonitoringPhase.Firing);
         (await rig.Store.CommitAsync(new(firing, 1, rig.Fence), default)).Disposition.Should().Be(MonitoringStoreWriteDisposition.Stored);
         return firing.State;
     }

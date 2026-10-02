@@ -38,6 +38,33 @@ public sealed class MonitoringApiTests
     private static ClaimsPrincipal User => new(new ClaimsIdentity([new Claim("netratel_principal_id", OperatorId.ToString("N"))], "Test"));
 
     [Fact]
+    public async Task OmittedOptionalImmutableCollectionsAreInitializedBeforePersistenceAndActualHttpSerialization()
+    {
+        var fixture = new Fixture();
+        var omitted = fixture.Rule with { Condition = fixture.Rule.Condition with { ExpectedServiceStates = default } };
+        await fixture.Api.SaveRuleAsync(7, omitted.RuleId, new(omitted, 0, "save numeric condition with omitted optional states"), User, default);
+        fixture.Config.SavedRule!.Rule.Condition.ExpectedServiceStates.IsDefault.Should().BeFalse();
+        fixture.Config.SavedRule.Rule.Condition.ExpectedServiceStates.Should().BeEmpty();
+        // Exercise an omitted optional collection in a cached DTO as well.
+        fixture.Config.Current = fixture.Config.Current with { Rules = [omitted] };
+        using var host = await HostAsync(fixture);
+        var http = host.GetTestClient();
+        http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test");
+        var configuration = await http.GetFromJsonAsync<MonitoringConfigurationDto>("/api/v2/tenants/7/monitoring/configuration");
+        configuration!.Rules.Single().Condition.ExpectedServiceStates.IsDefault.Should().BeFalse();
+        using var result = await http.PostAsJsonAsync($"/api/v2/tenants/7/monitoring/agents/{fixture.AgentId}/rules/{omitted.RuleId}/clear?resourceKey=cpu",
+            new MonitoringOperatorActionDto(Guid.NewGuid(), "clear via actual HTTP"));
+        result.StatusCode.Should().Be(HttpStatusCode.OK);
+        var state = await result.Content.ReadFromJsonAsync<MonitoringSeriesState>();
+        state!.ApplicableBypassIds.IsDefault.Should().BeFalse();
+        state.ApplicableBypassIds.Should().BeEmpty();
+        var invalid = fixture.Rule with { RuleId = Guid.NewGuid(), Targets = fixture.Rule.Targets with { AgentIds = default } };
+        Func<Task> invalidTargets = async () => await fixture.Api.SaveRuleAsync(7, invalid.RuleId, new(invalid, 1, "missing required target collection"), User, default);
+        await invalidTargets.Should().ThrowAsync<ArgumentException>();
+        fixture.Config.Writes.Should().Be(1);
+    }
+
+    [Fact]
     public async Task HttpReadRequiresAuthenticationAndExactTenantPermissionBeforeStorage()
     {
         var fixture = new Fixture();
