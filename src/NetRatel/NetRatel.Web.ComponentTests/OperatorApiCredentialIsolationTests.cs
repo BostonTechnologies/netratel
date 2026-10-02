@@ -68,8 +68,10 @@ public sealed class OperatorApiCredentialIsolationTests
         GC.KeepAlive(circuitHandler);
     }
 
-    [Fact]
-    public async Task Pooled_factory_keeps_two_circuit_tokens_isolated_when_http_context_is_absent_and_auth_updates_arrive_out_of_order()
+    [Theory]
+    [InlineData("OrchestratorApi")]
+    [InlineData("RatelDeskConnectorApi")]
+    public async Task Pooled_factory_keeps_two_circuit_tokens_isolated_when_http_context_is_absent_and_auth_updates_arrive_out_of_order(string clientName)
     {
         var requests = new ConcurrentQueue<ObservedRequest>();
         using var services = CreateServices(
@@ -108,8 +110,8 @@ public sealed class OperatorApiCredentialIsolationTests
         // Once the initial request contexts disappear, each circuit must still
         // forward its own protected server-side credential.
         accessor.HttpContext = null;
-        using var aliceClient = aliceScope.ServiceProvider.GetRequiredService<IHttpClientFactory>().CreateClient("OrchestratorApi");
-        using var bobClient = bobScope.ServiceProvider.GetRequiredService<IHttpClientFactory>().CreateClient("OrchestratorApi");
+        using var aliceClient = aliceScope.ServiceProvider.GetRequiredService<IHttpClientFactory>().CreateClient(clientName);
+        using var bobClient = bobScope.ServiceProvider.GetRequiredService<IHttpClientFactory>().CreateClient(clientName);
         using (var response = await aliceClient.GetAsync("api/v2/client-presence"))
         {
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -305,6 +307,7 @@ public sealed class OperatorApiCredentialIsolationTests
         services.AddTransient<RedirectReissueHandler>();
         services.AddTransient<TokenAuthorizationHandler>();
         AddOperatorApiClient(services, "OrchestratorApi", baseAddress, primaryHandler);
+        AddOperatorApiClient(services, "RatelDeskConnectorApi", baseAddress, primaryHandler);
         var downloadClientName = typeof(IWebClientDownloadService).Name;
         AddOperatorApiClient(services, downloadClientName, baseAddress, primaryHandler);
         services.AddScoped<IWebClientDownloadService>(provider => new WebClientDownloadService(

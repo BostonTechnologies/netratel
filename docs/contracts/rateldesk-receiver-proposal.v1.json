@@ -1,0 +1,20 @@
+{
+  "schema": "netratel.rateldesk.receiver.proposal.v1",
+  "status": "proposal-only-not-implemented-or-negotiated",
+  "reviewedReceiverCommit": "9a9a8abd2578dc31d1ec500dd3893478f8fa2749",
+  "normalCreateEndpoint": "/api/v1/incidents/",
+  "requiresSeparateReceiverScope": true,
+  "requiredGuarantees": [
+    "Authenticated API-purpose credential plus current organization/customer authorization before receipt disclosure",
+    "Authorized source-instance namespace plus stable action key and canonical semantic payload fingerprint",
+    "Same source/key/fingerprint returns original incident ID and tracking ID",
+    "Same source/key with different semantic fingerprint fails without another side effect",
+    "Incident, receipt and deterministic confirmation outbox effect commit atomically",
+    "Concurrent replay, response loss after commit and process restart preserve one incident and one confirmation enqueue",
+    "A read-only versioned capability and target-validation response explicitly establishes these guarantees",
+    "Authenticated receipt reconciliation handles an ambiguous result without changing the action key"
+  ],
+  "productionCapabilityEndpoint": null,
+  "productionIdempotencyHeaders": null,
+  "automaticDeliveryEnabled": false
+}

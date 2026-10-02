@@ -62,6 +62,7 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
     public DbSet<JobShadowObservationRecord> JobShadowObservations => Set<JobShadowObservationRecord>();
     public DbSet<ClientWindowsSessionSnapshot> ClientWindowsSessionSnapshots => Set<ClientWindowsSessionSnapshot>();
     public DbSet<ClientServicesSnapshotRecord> ClientServicesSnapshots => Set<ClientServicesSnapshotRecord>();
+    public DbSet<RatelDeskConnectorRecord> RatelDeskConnectors => Set<RatelDeskConnectorRecord>();
     public DbSet<ClientConnectionEpochRecord> ClientConnectionEpochs => Set<ClientConnectionEpochRecord>();
     public DbSet<MonitoringTenantConfigurationRecord> MonitoringTenantConfigurations => Set<MonitoringTenantConfigurationRecord>();
     public DbSet<MonitoringRuleRecord> MonitoringRules => Set<MonitoringRuleRecord>();
@@ -119,6 +120,14 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
     {
         MonitoringPersistenceModel.Configure(modelBuilder);
         FlowPersistenceModel.Configure(modelBuilder);
+        modelBuilder.Entity<RatelDeskConnectorRecord>(entity =>
+        {
+            entity.ToTable("RatelDeskConnectors");
+            entity.HasKey(record => new { record.TenantId, record.Id });
+            entity.Property(record => record.RowVersion).IsConcurrencyToken();
+            entity.Property(record => record.OwnerPrincipalId).HasMaxLength(32).IsRequired();
+            entity.Property(record => record.ConfigurationJson).HasColumnType("jsonb").IsRequired();
+        });
         modelBuilder.Entity<ClientConnectionEpochRecord>(entity =>
         {
             entity.ToTable("ClientConnectionEpochs");
