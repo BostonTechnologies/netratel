@@ -85,8 +85,8 @@ public sealed class ClientInstallLinkTests : IAsyncLifetime
         var replay = await links.CreateAsync(request, "fixture-admin", TestContext.Current.CancellationToken);
         Assert.True(replay.Replay);
         Assert.StartsWith("https://netratel.example/clients/install/", created.PublicUrl);
-        Assert.Contains("API_BASE=\"https://netratel.example\"", created.Script);
-        Assert.Contains("GATEWAY_ENDPOINT=\"\"", created.Script);
+        Assert.Contains("API_BASE='https://netratel.example'", created.Script);
+        Assert.Contains("GATEWAY_ENDPOINT=''", created.Script);
         Assert.DoesNotContain("NetRatelCLIENT__Gateway__Endpoint=https://netratel.example", created.Script);
         Assert.Equal(created.PublicUrl, replay.PublicUrl);
         Assert.Equal(created.Script, replay.Script);
@@ -131,8 +131,8 @@ public sealed class ClientInstallLinkTests : IAsyncLifetime
         var created = await links.CreateAsync(request, "fixture-admin", TestContext.Current.CancellationToken);
         var replay = await links.CreateAsync(request, "fixture-admin", TestContext.Current.CancellationToken);
 
-        Assert.Contains("API_BASE=\"https://public-api.example.test\"", created.Script);
-        Assert.Contains("GATEWAY_ENDPOINT=\"https://public-gateway.example.test\"", created.Script);
+        Assert.Contains("API_BASE='https://public-api.example.test'", created.Script);
+        Assert.Contains("GATEWAY_ENDPOINT='https://public-gateway.example.test'", created.Script);
         Assert.DoesNotContain("public-api.example.test/api/api", created.Script);
         Assert.Equal(created.Script, replay.Script);
         Assert.Equal(created.PublicUrl, replay.PublicUrl);
@@ -151,8 +151,8 @@ public sealed class ClientInstallLinkTests : IAsyncLifetime
 
         var created = await links.CreateAsync(Request(), "fixture-admin", TestContext.Current.CancellationToken);
 
-        Assert.Contains("API_BASE=\"https://shared.example.test\"", created.Script);
-        Assert.Contains("GATEWAY_ENDPOINT=\"\"", created.Script);
+        Assert.Contains("API_BASE='https://shared.example.test'", created.Script);
+        Assert.Contains("GATEWAY_ENDPOINT=''", created.Script);
         Assert.DoesNotContain("NetRatelCLIENT__Gateway__Endpoint=https://shared.example.test", created.Script);
     }
 

@@ -408,26 +408,6 @@ class PublishedClientPackFetchTests(unittest.TestCase):
         ])
 
 
-class PublishedWindowsUpgradeWorkflowTests(unittest.TestCase):
-    def test_windows_client_lane_fetches_publication_fixture_and_retains_upgrade_receipt(self):
-        source = (ROOT / ".github/workflows/public-pr-validation.yml").read_text(encoding="utf-8")
-        fetch_step = source.index("name: Fetch latest completed public Windows client pack")
-        native_step = source.index("name: Run native Windows installer preflight ACL regression")
-        repair_test = source.index("GeneratedServiceInstallerRequiresLocalSystemGatewayAdmissionAndAcknowledgedHeartbeats")
-        upgrade_test = source.index("GeneratedServiceInstallerUpgradesPublishedPreviousVersionAndPreservesIdentity")
-        upgrade_receipt = source.index("windows-installer-published-upgrade.trx")
-        self.assertLess(fetch_step, native_step)
-        self.assertLess(repair_test, upgrade_test)
-        self.assertLess(upgrade_test, upgrade_receipt)
-        self.assertIn("GH_TOKEN: ${{ github.token }}", source[fetch_step:native_step])
-        self.assertIn("--runtime win-x64", source[fetch_step:native_step])
-        fixture_env = source.index("NETRATEL_RELEASE_FIXTURE_DIR=\"$RUNNER_TEMP/published-client-pack\"")
-        upgrade_setup = source[fixture_env:upgrade_test]
-        self.assertIn("NETRATEL_NATIVE_CLIENT_DIRECTORY=\"$PWD/artifacts/netratel-client-win-x64\"", upgrade_setup)
-        self.assertIn("--expected-executed 1", source[upgrade_receipt:upgrade_receipt + 180])
-        self.assertIn("path: TestResults/native-windows/*.trx", source)
-
-
 class ChromiumNssSmokeTests(unittest.TestCase):
     def test_nss_helper_creates_and_removes_only_its_private_store_and_rejects_legacy_precedence(self):
         helper = ROOT / "tools/ci/chromium-nss-trust.sh"
@@ -826,38 +806,12 @@ class RuntimeSelectorRetirementTests(unittest.TestCase):
 
         relative = "src/NetRatel/NetRatel.Infrastructure/Artifacts/ScriptTemplateService.cs"
         content = (ROOT / relative).read_text(encoding="utf-8")
-        powershell_cleanup = content.index("function Remove-RetiredClientSettings")
-        powershell_property_start = content.index("$name -in @(", powershell_cleanup)
-        powershell_property_end = content.index(")) {", powershell_property_start) + 4
-        add(relative, content, "PowerShell JSON property cleanup inventory",
-            powershell_property_start, powershell_property_end)
-        marker(relative, content, "PowerShell service-environment cleanup inventory",
-               "$retiredClientSettings = @(", "\n            foreach ($entry in $existingServiceEnvironment) {")
-        first_retired = content.index("            retired = {")
-        marker(relative, content, "Linux service-environment and JSON cleanup inventories",
-               "            retired = {", "            retired_json_gateway = {", first_retired)
-        linux_json = content.index("            retired_json_gateway = {", first_retired)
-        marker(relative, content, "Linux nested JSON cleanup inventory",
-               "            retired_json_gateway = {", "            def words(value):", linux_json)
-        final_retired = content.rindex("            retired = {")
-        marker(relative, content, "macOS service-environment and JSON cleanup inventories",
-               "            retired = {", "            retired_json_gateway = {", final_retired)
-        macos_json = content.index("            retired_json_gateway = {", final_retired)
+        # Windows and Linux are resource templates with inert historical keys;
+        # only the retained macOS flow still cleans exact legacy properties.
+        marker(relative, content, "macOS service-environment cleanup inventory",
+               "            retired = {", "            retired_json_gateway = {")
         marker(relative, content, "macOS nested JSON cleanup inventory",
-               "            retired_json_gateway = {", "            environment = {", macos_json)
-        json_inventory_starts = [
-            match.start()
-            for match in re.finditer(r"(?m)^ {12}retired_json_gateway = \{", content)
-        ]
-        if len(json_inventory_starts) != 3:
-            raise AssertionError("The generated Linux, Windows, and macOS installers must each have one JSON cleanup inventory.")
-        windows_json_start = json_inventory_starts[1]
-        windows_json_end = content.index("\n            }", windows_json_start) + len("\n            }")
-        add(relative, content, "Windows installer nested JSON cleanup inventory",
-            windows_json_start, windows_json_end)
-        inline_json_retired = content.index("                retired = {\"requiredpresenceauthority\"}")
-        inline_end = content.index("\n", inline_json_retired)
-        add(relative, content, "Linux nested JSON cleanup value", inline_json_retired, inline_end)
+               "            retired_json_gateway = {", "            environment = {")
 
         relative = "src/NetRatel/NetRatel.Client/tools/netratel-update.ps1"
         content = (ROOT / relative).read_text(encoding="utf-8")
@@ -885,23 +839,6 @@ class RuntimeSelectorRetirementTests(unittest.TestCase):
         content = (ROOT / relative).read_text(encoding="utf-8")
         marker(relative, content, "API integration fixture environment snapshot keys",
                "RetiredSelectorConfigurationKeys { get; } = Array.AsReadOnly<string>(\n    [", "    ]);")
-
-        relative = "src/NetRatel/NetRatel.Tests/API/AgentUpdateScriptSeedServiceTests.cs"
-        content = (ROOT / relative).read_text(encoding="utf-8")
-        member(relative, content, "seeded Linux updater uses shared verified installer and protected handoff",
-               "public async Task Seeded_Linux_Update_UsesSharedVerifiedInstallerAndProtectedDetachedHandoff(")
-        member(relative, content, "seeded Linux worker rejects a changed service process identity",
-               "public async Task Seeded_Linux_WorkerRejectsChangedServiceProcessIdentity(")
-        member(relative, content, "seeded Linux updater asserts retired selectors are absent",
-               "private static void AssertNoRetiredLinuxSelectors(string script)")
-        fixture_start = content.index("private static async Task<LinuxSeedFixture> CreateLinuxSeedFixtureAsync(")
-        fixture_settings_start = content.index(
-            'await File.WriteAllTextAsync(Path.Combine(installedVersion, "clientsettings.json"), """',
-            fixture_start,
-        )
-        fixture_settings_end = content.index('\n            """);', fixture_settings_start)
-        add(relative, content, "seeded Linux fixture legacy client-settings input",
-            fixture_settings_start, fixture_settings_end)
 
         relative = "src/NetRatel/NetRatel.Tests/API/ApiEndpointRegistrationSourceTests.cs"
         content = (ROOT / relative).read_text(encoding="utf-8")
@@ -933,12 +870,10 @@ class RuntimeSelectorRetirementTests(unittest.TestCase):
 
         relative = "src/NetRatel/NetRatel.Tests/Infrastructure/ScriptTemplateServiceTests.cs"
         content = (ROOT / relative).read_text(encoding="utf-8")
-        member(relative, content, "Linux installer retires stale values while preserving ordinary settings",
-               "public async Task Build_Bash_InstallsAnExactArtifactAtomically_AndStartsTheNewUnit(")
         member(relative, content, "macOS installer retires stale values while preserving ordinary settings",
                "public async Task Build_MacOS_Service_Preserves_Only_ExplicitSplitGateway(")
         member(relative, content, "generated installer has no retired client defaults",
-               "private static void AssertNoRetiredClientDefaults(")
+               "private static void AssertNoRetiredDefaults(")
 
         relative = "docs/RC11_AKKA_RUNTIME_REFACTOR.md"
         content = (ROOT / relative).read_text(encoding="utf-8")
@@ -995,82 +930,45 @@ class RuntimeSelectorRetirementTests(unittest.TestCase):
 
         template_path = ROOT / "src/NetRatel/NetRatel.Infrastructure/Artifacts/ScriptTemplateService.cs"
         template = template_path.read_text(encoding="utf-8")
-        ps_function = template[template.index("function Remove-RetiredClientSettings"):template.index("$stageClientSettingsPath =")]
-        property_list = ps_function.split("$name -in @(", 1)[1].split(")) {", 1)[0]
-        property_names = {value.lower() for value in re.findall(r"'([^']+)'", property_list)}
-        self.assertEqual(expected_properties, property_names)
-        self.assertIn("$settings.Transport.PSObject.Properties.Remove('Mode')", ps_function)
-
-        ps_environment = set_body(template, "$retiredClientSettings = @(", r"\)")
-        self.assertEqual(expected_environment, ps_environment)
-
         retired_lists = [match.start() for match in re.finditer(r"(?m)^ {12}retired = \{", template)]
-        self.assertEqual(2, len(retired_lists), "Linux and macOS must each have one explicit environment retirement inventory.")
-        for start in retired_lists:
-            values = set_body(template, "retired = {", r"(?m)^ {12}\}", start)
-            self.assertEqual(expected_environment, values)
+        self.assertEqual(1, len(retired_lists), "Only the preserved macOS template retains environment cleanup.")
+        self.assertEqual(expected_environment,
+                         set_body(template, "retired = {", r"(?m)^ {12}\}", retired_lists[0]))
         json_lists = [match.start() for match in re.finditer(r"(?m)^ {12}retired_json_gateway = \{", template)]
-        self.assertEqual(3, len(json_lists), "Windows, Linux, and macOS each have one exact JSON-property retirement inventory.")
-        for start in json_lists:
-            values = set_body(template, "retired_json_gateway = {", r"(?m)^ {12}\}", start)
-            self.assertEqual(expected_properties, values)
+        self.assertEqual(1, len(json_lists), "Only the preserved macOS template retains exact JSON cleanup.")
+        self.assertEqual(expected_properties,
+                         set_body(template, "retired_json_gateway = {", r"(?m)^ {12}\}", json_lists[0]))
 
-        api_seed_path = ROOT / "src/NetRatel/NetRatel.API/Services/AgentUpdateScriptSeedService.cs"
-        api_seed = api_seed_path.read_text(encoding="utf-8")
-        seed_start, seed_end = self._csharp_member_region(
-            api_seed, "private static SeedScript BuildLinuxScript()")
-        linux_seed_builder = api_seed[seed_start:seed_end]
-        self.assertEqual(1, linux_seed_builder.count(
-            "new NetRatel.Infrastructure.Artifacts.ScriptTemplateService().Build("))
-        self.assertIn("new NetRatel.Application.Artifacts.DeploymentScriptTemplateRequest(", linux_seed_builder)
-        self.assertIn('"linux-x64"', linux_seed_builder)
-        self.assertIn("InstallAsService: true", linux_seed_builder)
-        self.assertIn("LinuxScriptManifest + Environment.NewLine + content", linux_seed_builder)
-        self.assertNotIn("retired = {", linux_seed_builder)
-        self.assertNotIn("retired_json_gateway", linux_seed_builder)
-        self.assertNotIn("Remove-RetiredClientSettings", linux_seed_builder)
+        resources = {"install.ps1", "install-linux.sh"}
+        resource_root = template_path.parent / "Templates"
+        self.assertEqual(resources, {path.name for path in resource_root.iterdir() if path.is_file()},
+                         "The resource inventory must contain just the two maintained installer entry points.")
+        project = (template_path.parents[1] / "NetRatel.Infrastructure.csproj").read_text(encoding="utf-8")
+        for name in resources:
+            resource = (resource_root / name).read_text(encoding="utf-8")
+            self.assertIsNone(self.retired_selector_pattern.search(resource),
+                              "Resource installers must not emit retired selectors or hide a migration engine: " + name)
+            self.assertIn('Include="Artifacts/Templates/' + name + '"', project)
+            self.assertIn('LogicalName="NetRatel.Installers.' + name + '"', project)
+        render_start, render_end = self._csharp_member_region(
+            template, "private static string Render(DeploymentScriptTemplateRequest request, bool windows)")
+        renderer = template[render_start:render_end]
+        self.assertIn('windows ? "install.ps1" : "install-linux.sh"', renderer)
+        self.assertIn('GetManifestResourceStream("NetRatel.Installers." + name)', renderer)
+        self.assertIn("Regex.Replace(reader.ReadToEnd()", renderer)
 
-        seed_test_path = ROOT / "src/NetRatel/NetRatel.Tests/API/AgentUpdateScriptSeedServiceTests.cs"
-        seed_tests = seed_test_path.read_text(encoding="utf-8")
-        update_test_start, update_test_end = self._csharp_member_region(
-            seed_tests, "public async Task Seeded_Linux_Update_UsesSharedVerifiedInstallerAndProtectedDetachedHandoff(")
-        update_test = seed_tests[update_test_start:update_test_end]
-        self.assertIn("AssertNoRetiredLinuxSelectors(script);", update_test)
-        self.assertIn("CreateLinuxSeedFixtureAsync(script)", update_test)
-        worker_test_start, worker_test_end = self._csharp_member_region(
-            seed_tests, "public async Task Seeded_Linux_WorkerRejectsChangedServiceProcessIdentity(")
-        worker_test = seed_tests[worker_test_start:worker_test_end]
-        self.assertIn("CreateLinuxSeedFixtureAsync(GetSeedScript(\"LinuxScript\"))", worker_test)
-        fixture_wrapper_start, fixture_wrapper_end = self._csharp_member_region(
-            seed_tests, "private static async Task<LinuxSeedFixture> CreateLinuxSeedFixtureAsync(")
-        fixture_wrapper = seed_tests[fixture_wrapper_start:fixture_wrapper_end]
-        self.assertIn("CreateLinuxSeedFixtureCoreAsync(root, script)", fixture_wrapper)
-        fixture_method_start, fixture_method_end = self._csharp_member_region(
-            seed_tests, "private static async Task<LinuxSeedFixture> CreateLinuxSeedFixtureCoreAsync(")
-        fixture_method = seed_tests[fixture_method_start:fixture_method_end]
-        fixture_settings_start = fixture_method.index(
-            'await File.WriteAllTextAsync(Path.Combine(installedVersion, "clientsettings.json"), """')
-        fixture_settings_end = fixture_method.index('\n            """);', fixture_settings_start)
-        fixture_settings = fixture_method[fixture_settings_start:fixture_settings_end]
-        self.assertEqual(1, fixture_settings.count('"Transport": { "Mode": "AkkaPresence" }'))
-
-        template_build_start, template_build_end = self._csharp_member_region(
-            template, "public string Build(DeploymentScriptTemplateRequest request)")
-        template_build = template[template_build_start:template_build_end]
-        self.assertIn('request.RuntimeId.StartsWith("linux-", StringComparison.OrdinalIgnoreCase)', template_build)
-        self.assertIn("return BuildBash(request);", template_build)
-        bash_start = template.index("private static string BuildBash(")
-        bash_end = template.index("private static string BuildMacBash(", bash_start)
-        linux_bash_template = template[bash_start:bash_end]
-        preparation_start = linux_bash_template.index("var preparationBlock = request.InstallAsService")
-        service_block_start = linux_bash_template.index("var serviceBlock = request.InstallAsService", preparation_start)
-        preparation_source = linux_bash_template[preparation_start:service_block_start]
-        self.assertEqual(1, linux_bash_template.count("var preparationBlock = request.InstallAsService"))
-        self.assertEqual(1, linux_bash_template.count("{{preparationBlock}}"))
-        self.assertEqual(1, preparation_source.count('preserved_client_environment="$(python3'))
-        self.assertEqual(1, preparation_source.count('settings_migration="$(python3'))
-        self.assertEqual(1, preparation_source.count("setting in retired"))
-        self.assertEqual(1, preparation_source.count("if lowered in retired_json_gateway:"))
+        api_seed = (ROOT / "src/NetRatel/NetRatel.API/Services/AgentUpdateScriptSeedService.cs").read_text(encoding="utf-8")
+        shared_start, shared_end = self._csharp_member_region(
+            api_seed, "private static string BuildSeedInstaller(string runtime)")
+        shared_renderer = api_seed[shared_start:shared_end]
+        self.assertEqual(1, shared_renderer.count("new NetRatel.Infrastructure.Artifacts.ScriptTemplateService().Build("))
+        self.assertIn("IsUpdateSeed: true", shared_renderer)
+        for platform, runtime in (("Windows", "win-x64"), ("Linux", "linux-x64")):
+            start, end = self._csharp_member_region(api_seed, "private static SeedScript Build" + platform + "Script()")
+            builder = api_seed[start:end]
+            self.assertIn('BuildSeedInstaller("' + runtime + '")', builder)
+            self.assertIsNone(self.retired_selector_pattern.search(builder),
+                              "Seeds must share rendering without a second retired-selector migration path.")
 
         updater_path = ROOT / "src/NetRatel/NetRatel.Client/tools/netratel-update.ps1"
         updater = updater_path.read_text(encoding="utf-8")

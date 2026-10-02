@@ -25,3 +25,9 @@ or managed Client.
 CI builds final Client packages on matching Linux, Windows, and macOS runners,
 and runs source- and release-image Compose rehearsals. See
 [release engineering](RELEASES.md) for its artifact and provenance checks.
+
+Windows/WSL/public-HTTPS Client enrollment and lifecycle journeys through OS
+services require explicit owner approval before adding or reinstating CI. Keep
+ordinary build, packaging, checksum, release-source/version, focused offline
+unit/security/contract tests and established server checks. Owner-run manual
+acceptance covers installation, repair, enrollment and online service behavior.

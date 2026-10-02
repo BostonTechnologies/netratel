@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
@@ -26,6 +26,11 @@
   <ItemGroup>
     <ProjectReference Include="..\NetRatel.Application\NetRatel.Application.csproj" />
     <ProjectReference Include="..\NetRatel.Shared\NetRatel.Shared.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Artifacts/Templates/install.ps1" LogicalName="NetRatel.Installers.install.ps1" />
+    <EmbeddedResource Include="Artifacts/Templates/install-linux.sh" LogicalName="NetRatel.Installers.install-linux.sh" />
   </ItemGroup>
 
 </Project>

@@ -11,7 +11,7 @@ public sealed record DeploymentScriptTemplateRequest(
     string? ArtifactVersion = null,
     string? ArtifactSha256 = null,
     string? GatewayEndpoint = null,
-    int ReadinessTimeoutSeconds = 180);
+    bool IsUpdateSeed = false);
 
 public interface IScriptTemplateService
 {

@@ -59,7 +59,8 @@ public sealed class LinuxInstallerTransactionTests
         var result = await fixture.RunInstallerAsync();
 
         Assert.Equal(0, result.ExitCode);
-        Assert.Contains($"NetRatel Linux client installed as {Version}.", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains($"Resolved version: {Version}", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("Enrollment and online gateway state remain unverified", result.StandardOutput, StringComparison.Ordinal);
         Assert.Equal(1, fixture.CountSystemctlCalls("stop netratel-client.service"));
         Assert.True(fixture.CountSystemctlCalls("start netratel-client.service") >= 1);
         Assert.True(fixture.ClientServiceIsActive);
@@ -77,8 +78,8 @@ public sealed class LinuxInstallerTransactionTests
         Assert.Equal(ApiBase, installedSettings.RootElement.GetProperty("Client").GetProperty("ApiBaseUrl").GetString());
 
         var installedUnit = await File.ReadAllTextAsync(fixture.ClientUnitPath);
-        Assert.Contains($"WorkingDirectory={fixture.InstallRoot}/current", installedUnit, StringComparison.Ordinal);
-        Assert.Contains($"ExecStart={fixture.LauncherPath}", installedUnit, StringComparison.Ordinal);
+        Assert.Contains($"WorkingDirectory=\"{fixture.InstallRoot}/current\"", installedUnit, StringComparison.Ordinal);
+        Assert.Contains($"ExecStart=\"{fixture.LauncherPath}\"", installedUnit, StringComparison.Ordinal);
         Assert.True(File.Exists(fixture.LauncherPath));
         Assert.True((File.GetUnixFileMode(fixture.LauncherPath) & UnixFileMode.UserExecute) != 0);
     }
@@ -96,11 +97,77 @@ public sealed class LinuxInstallerTransactionTests
 
         Assert.Equal(1, result.ExitCode);
         Assert.Contains("previous installation was restored", result.StandardError, StringComparison.OrdinalIgnoreCase);
-        Assert.Equal(1, fixture.CountSystemctlCalls("stop netratel-client.service"));
+        Assert.Equal(2, fixture.CountSystemctlCalls("stop netratel-client.service"));
         Assert.True(fixture.CountSystemctlCalls("start netratel-client.service") >= 2);
         Assert.True(fixture.ClientServiceIsActive, "rollback must restart the previously active service");
         fixture.AssertInstalledStateEquals(before);
         fixture.AssertInstalledFilesUnchangedAtFirstStop(before);
+    }
+
+    [Theory]
+    [InlineData("supported_environment_file")]
+    [InlineData("supported_dropin")]
+    [SupportedOSPlatform("linux")]
+    public async Task Build_Bash_PreservesSupportedServiceCustomization(string customization)
+    {
+        if (!OperatingSystem.IsLinux()) Assert.Skip("The generated systemd transaction test requires Linux.");
+        using var fixture = LinuxInstallerFixture.Create(customization);
+        var customizationBytes = File.ReadAllBytes(fixture.CustomizationPath);
+        var result = await fixture.RunInstallerAsync();
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal(customizationBytes, File.ReadAllBytes(fixture.CustomizationPath));
+        Assert.Contains("Custom__Value=kept value", await File.ReadAllTextAsync(fixture.ClientUnitPath), StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("conflicting_environment_file", "requested endpoint conflicts")]
+    [InlineData("conflicting_dropin_identity", "service identity is not root")]
+    [InlineData("unsafe_archive", "unsafe path")]
+    [InlineData("wrong_checksum", "SHA-256 verification")]
+    [SupportedOSPlatform("linux")]
+    public async Task Build_Bash_RejectsUnsafeOrUnsupportedInputBeforeStoppingService(string failureCase, string diagnostic)
+    {
+        if (!OperatingSystem.IsLinux()) Assert.Skip("The generated systemd transaction test requires Linux.");
+        using var fixture = LinuxInstallerFixture.Create(failureCase);
+        var before = fixture.CaptureInstalledState();
+        var result = await fixture.RunInstallerAsync();
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Contains(diagnostic, result.StandardError, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, fixture.CountSystemctlCalls("stop netratel-client.service"));
+        fixture.AssertInstalledStateEquals(before);
+    }
+
+    [Fact]
+    [SupportedOSPlatform("linux")]
+    public async Task Build_Bash_PreservesInstalledCustomUpdaterPathsAndPolicy()
+    {
+        if (!OperatingSystem.IsLinux()) Assert.Skip("The generated systemd transaction test requires Linux.");
+        using var fixture = LinuxInstallerFixture.Create("installed_update_paths");
+        var result = await fixture.RunInstallerAsync();
+        Assert.Equal(0, result.ExitCode);
+        var clientUnit = await File.ReadAllTextAsync(fixture.ClientUnitPath);
+        var updaterUnit = await File.ReadAllTextAsync(fixture.UpdateUnitPath);
+        Assert.Contains($"NetRatelCLIENT__Client__AutoUpdate__RequestPath={fixture.StateDirectory}/custom-request.json", clientUnit, StringComparison.Ordinal);
+        Assert.Contains($"NetRatelCLIENT__Client__AutoUpdate__ReadyPath={fixture.StateDirectory}/custom-ready.json", clientUnit, StringComparison.Ordinal);
+        Assert.Contains("NetRatelCLIENT__Client__AutoUpdate__Mode=Disabled", clientUnit, StringComparison.Ordinal);
+        Assert.Contains($"NetRatel_UPDATE_REQUEST={fixture.StateDirectory}/custom-request.json", updaterUnit, StringComparison.Ordinal);
+        Assert.True(File.Exists(Path.Combine(fixture.StateDirectory, "update.lock")));
+    }
+
+    [Fact]
+    [SupportedOSPlatform("linux")]
+    public async Task Build_Bash_RepairsUserModeSameVersionWithoutAServiceOrCurrentPointer()
+    {
+        if (!OperatingSystem.IsLinux()) Assert.Skip("The generated user installer transaction test requires Linux.");
+        using var fixture = LinuxInstallerFixture.Create("user_same_version");
+        var result = await fixture.RunInstallerAsync();
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("Online gateway state remains unverified", result.StandardOutput, StringComparison.Ordinal);
+        using var settings = JsonDocument.Parse(await File.ReadAllTextAsync(fixture.OldSettingsPath));
+        Assert.Equal("fixture-existing-agent", settings.RootElement.GetProperty("AgentId").GetString());
+        Assert.False(File.Exists(fixture.ClientUnitPath));
+        Assert.False(Directory.Exists(fixture.CurrentLinkPath));
+        Assert.Equal(0, fixture.CountSystemctlCalls("stop"));
     }
 
     private static void AssertCurrentLinkTargets(string currentLinkPath, string expectedTarget)
@@ -202,8 +269,47 @@ public sealed class LinuxInstallerTransactionTests
                     "[Service]",
                     $"ExecStart={UpdaterPath}"
                 })), PrivateFileMode);
+                if (failureCase == "installed_update_paths")
+                {
+                    WritePrivateFile(OldSettingsPath, JsonSerializer.SerializeToUtf8Bytes(new
+                    {
+                        Client = new
+                        {
+                            ApiBaseUrl = ApiBase,
+                            AutoUpdate = new
+                            {
+                                Mode = "Disabled", StateDirectory,
+                                RequestPath = Path.Combine(StateDirectory, "custom-request.json"),
+                                ReadyPath = Path.Combine(StateDirectory, "custom-ready.json")
+                            }
+                        }
+                    }), PrivateFileMode);
+                }
+                if (failureCase == "user_same_version")
+                {
+                    File.Delete(ClientUnitPath);
+                    File.Delete(UpdateUnitPath);
+                    Directory.Delete(CurrentLinkPath);
+                }
 
-                WritePrivateFile(_artifactPath, CreatePackage(_candidateExecutable), PrivateFileMode);
+                CustomizationPath = Path.Combine(_root, "custom.env");
+                if (failureCase is "supported_environment_file" or "conflicting_environment_file")
+                {
+                    File.AppendAllText(ClientUnitPath, $"\nEnvironmentFile={CustomizationPath}\n");
+                    var customApi = failureCase == "conflicting_environment_file" ? "https://other.example.invalid" : ApiBase;
+                    WritePrivateFile(CustomizationPath, Encoding.UTF8.GetBytes($"Custom__Value='kept value'\nNetRatelCLIENT__Client__ApiBaseUrl={customApi}\n"), PrivateFileMode);
+                }
+                else if (failureCase is "supported_dropin" or "conflicting_dropin_identity")
+                {
+                    var dropinDirectory = Path.Combine(UnitDirectory, "netratel-client.service.d");
+                    CreatePrivateDirectory(dropinDirectory);
+                    CustomizationPath = Path.Combine(dropinDirectory, "custom.conf");
+                    WritePrivateFile(CustomizationPath, Encoding.UTF8.GetBytes(failureCase == "supported_dropin"
+                        ? "[Service]\nRestartSec=13\nEnvironment=Custom__Value=\"kept value\"\n"
+                        : "[Service]\nUser=other-service-user\n"), PrivateFileMode);
+                }
+
+                WritePrivateFile(_artifactPath, CreatePackage(_candidateExecutable, failureCase == "unsafe_archive"), PrivateFileMode);
                 var artifactBytes = File.ReadAllBytes(_artifactPath);
                 var sha = Convert.ToHexString(SHA256.HashData(artifactBytes)).ToLowerInvariant();
                 var size = artifactBytes.LongLength.ToString(System.Globalization.CultureInfo.InvariantCulture);
@@ -213,7 +319,7 @@ public sealed class LinuxInstallerTransactionTests
                     EnrollmentCode: "ENR-SYNTHETIC-LINUX-TRANSACTION",
                     ApiBaseUrl: ApiBase,
                     ValidToUtc: DateTimeOffset.UtcNow.AddHours(1),
-                    InstallAsService: true,
+                    InstallAsService: failureCase != "user_same_version",
                     SilentInstall: true,
                     ArtifactVersion: Version,
                     ArtifactSha256: sha));
@@ -245,6 +351,7 @@ public sealed class LinuxInstallerTransactionTests
         public string ClientUnitPath { get; }
         public string UpdateUnitPath { get; }
         public string ScriptPath { get; }
+        public string CustomizationPath { get; }
         public bool ClientServiceIsActive => File.Exists(_activeServiceMarkerPath);
         public bool FirstStopSnapshotExists => File.Exists(_preStopHashesPath);
 
@@ -274,6 +381,7 @@ public sealed class LinuxInstallerTransactionTests
             startInfo.Environment["FIXTURE_CALLS"] = _systemctlCallsPath;
             startInfo.Environment["FIXTURE_UNIT"] = ClientUnitPath;
             startInfo.Environment["FIXTURE_CASE"] = _failureCase;
+            startInfo.Environment["FIXTURE_DROPIN"] = _failureCase.Contains("dropin", StringComparison.Ordinal) ? CustomizationPath : "";
             startInfo.Environment["FIXTURE_ACTIVE"] = _activeServiceMarkerPath;
             startInfo.Environment["FIXTURE_OLD_EXECUTABLE"] = OldExecutablePath;
             startInfo.Environment["FIXTURE_OLD_MANIFEST"] = OldManifestPath;
@@ -388,13 +496,15 @@ public sealed class LinuxInstallerTransactionTests
             commitSha = new string(commitCharacter, 40)
         });
 
-        private static byte[] CreatePackage(byte[] executableBytes)
+        private static byte[] CreatePackage(byte[] executableBytes, bool unsafePath)
         {
             using var output = new MemoryStream();
             using (var archive = new ZipArchive(output, ZipArchiveMode.Create, leaveOpen: true))
             {
                 WriteZipEntry(archive, "netratel-client-manifest.json", CreateManifest('b'));
                 WriteZipEntry(archive, "NetRatel.Client", executableBytes);
+                WriteZipEntry(archive, "updater/netratel-update.sh", Encoding.UTF8.GetBytes("#!/usr/bin/env bash\n# candidate updater\nexit 0\n"));
+                if (unsafePath) WriteZipEntry(archive, "../outside", Encoding.UTF8.GetBytes("outside"));
             }
             return output.ToArray();
         }
@@ -420,6 +530,7 @@ public sealed class LinuxInstallerTransactionTests
               esac
             done
             cp -- "$FIXTURE_ARCHIVE" "$output"
+            if [ "$FIXTURE_CASE" = "wrong_checksum" ]; then printf 'different bytes' >> "$output"; fi
             printf 'HTTP/1.1 200 OK\r\nX-NetRatel-Artifact-Rid: linux-x64\r\nX-NetRatel-Artifact-Version: 1.2.3\r\nX-NetRatel-Artifact-Sha256: %s\r\nX-NetRatel-Artifact-Size: %s\r\n\r\n' "$FIXTURE_SHA" "$FIXTURE_SIZE" > "$headers"
             """;
 
@@ -449,13 +560,13 @@ public sealed class LinuxInstallerTransactionTests
                 esac
                 case "$property" in
                   FragmentPath)
-                    [ "$unit" = "netratel-client.service" ] || exit 2
-                    printf '%s\n' "$FIXTURE_UNIT";;
+                    if [ "$unit" = "netratel-client.service" ]; then printf '%s\n' "$FIXTURE_UNIT"; else printf '%s\n' "$FIXTURE_OLD_UPDATE_UNIT"; fi;;
                   LoadState) printf 'loaded\n';;
                   MainPID)
                     [ "$unit" = "netratel-client.service" ] || exit 2
                     if [ -f "$FIXTURE_ACTIVE" ]; then printf '123\n'; else printf '0\n'; fi;;
-                  DropInPaths) exit 0;;
+                  DropInPaths)
+                    if [ "$unit" = "netratel-client.service" ]; then printf '%s\n' "$FIXTURE_DROPIN"; fi;;
                   *) exit 2;;
                 esac;;
               is-active)
@@ -463,7 +574,7 @@ public sealed class LinuxInstallerTransactionTests
                 if [ -f "$FIXTURE_ACTIVE" ]; then exit 0; else exit 3; fi;;
               is-enabled) exit 0;;
               stop)
-                if [ "$2" = "netratel-client.service" ]; then
+                if [ "$2" = "netratel-client.service" ] && [ ! -f "$FIXTURE_PRESTOP_HASHES" ]; then
                   sha256sum -- \
                     "$FIXTURE_OLD_EXECUTABLE" "$FIXTURE_OLD_MANIFEST" "$FIXTURE_OLD_SETTINGS" \
                     "$FIXTURE_OLD_LAUNCHER" "$FIXTURE_OLD_UPDATER" \

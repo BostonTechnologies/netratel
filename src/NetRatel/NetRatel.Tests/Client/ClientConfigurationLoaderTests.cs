@@ -26,6 +26,45 @@ public sealed class ClientConfigurationLoaderTests
     private static string ClientProjectDirectory =>
         Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../NetRatel.Client"));
 
+    [Theory]
+    [InlineData("packaged-defaults", false)]
+    [InlineData("installed-settings", false)]
+    [InlineData("installed-settings", true)]
+    [InlineData("deployment-configuration", false)]
+    [InlineData("command-line", false)]
+    public void ResolveClientOptions_ReportsTheEffectiveApiOriginAndItsSource(string source, bool nestedInstalledSettings)
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"netratel-api-source-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var packaged = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Client:ApiBaseUrl"] = "https://packaged-defaults.example.invalid/api/"
+            }).Build();
+            if (source != "packaged-defaults")
+            {
+                File.WriteAllText(Path.Combine(root, "clientsettings.json"), nestedInstalledSettings
+                    ? """{ "Client": { "ApiBaseUrl": "https://installed-settings.example.invalid/api/" } }"""
+                    : """{ "apiBaseUrl": "https://installed-settings.example.invalid/api/" }""");
+            }
+            var deploymentValues = new Dictionary<string, string?>();
+            if (source is "deployment-configuration" or "command-line")
+                deploymentValues["Client:ApiBaseUrl"] = "https://deployment-configuration.example.invalid/api/";
+            var deployment = new ConfigurationBuilder().AddInMemoryCollection(deploymentValues).Build();
+            string[] args = source == "command-line" ? ["--api", "https://command-line.example.invalid/api/"] : [];
+
+            var resolution = ClientConfigurationLoader.ResolveClientOptions(packaged, deployment, root, args);
+
+            resolution.ApiBaseUrlSource.Should().Be(source);
+            resolution.Options.ApiBaseUrl.Should().Be($"https://{source}.example.invalid");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     [Fact]
     public void Load_PackagedDefaultsAndLegacySettings_PreserveInstalledValuesWithoutOverrides()
     {
