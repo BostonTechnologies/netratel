@@ -16,6 +16,81 @@ namespace NetRatel.Tests.Infrastructure;
 // its entry point, enroll a client, contact an endpoint, or change an OS service.
 public sealed class WindowsInstallerTemplateTests
 {
+    [Fact]
+    public async Task RenderedDiagnosticsKeepFixedAuthMessagesAndHideSecretCanaries()
+    {
+        await WithFixture(async root =>
+        {
+            var result = await RunFunctions(root, """
+                $EnrollmentCode = 'SYNTHETIC-CANARY-GRANT'
+                $benign = @(
+                    '[Auth] Enrollment is required before starting the service. Run NetRatel.Client --enroll <code> --api <url>. Exiting.',
+                    '[Auth] Ignoring netratel.enroll.json: malformed JSON syntax.',
+                    '[Auth] Ignoring netratel.enroll.json: invalid field/type (field=tenantId; expected=Int32; actual=String).',
+                    '[Auth] Ignoring netratel.enroll.json: unable to read enrollment file (I/O failure).'
+                )
+                foreach ($message in $benign) {
+                    if ((Get-SafeDiagnosticLine $message) -cne $message) { throw 'A fixed Auth diagnostic was hidden.' }
+                    if ((Get-SafeDiagnosticLine ('2026-10-02 10:20:30.123 +02:00 - ' + $message)) -cne $message) { throw 'Production timestamp affected safe diagnostics.' }
+                }
+                $unsafe = @(
+                    'Bearer SYNTHETIC-CANARY-AUTH',
+                    'refreshToken=SYNTHETIC-CANARY-REFRESH',
+                    'password=SYNTHETIC-CANARY-PASSWORD',
+                    'grant=SYNTHETIC-CANARY-CAPABILITY',
+                    'https://user:SYNTHETIC-CANARY-URL@api.example/path?value=SYNTHETIC-CANARY-QUERY',
+                    'plain SYNTHETIC-CANARY-GRANT',
+                    '[Auth] Ignoring netratel.enroll.json: invalid field/type (field=SYNTHETIC-CANARY-FIELD; expected=Int32; actual=String).',
+                    ($benign[0] + ' SYNTHETIC-CANARY-SUFFIX'),
+                    ('SYNTHETIC-CANARY-PREFIX ' + $benign[0])
+                )
+                foreach ($line in $unsafe) { Write-Output (Get-SafeDiagnosticLine $line) }
+                foreach ($message in $benign) { Write-Output (Get-SafeDiagnosticLine $message) }
+                """);
+            result.ExitCode.Should().Be(0, result.Output);
+            result.Output.Should().NotContain("SYNTHETIC-CANARY");
+            result.Output.Should().Contain("Enrollment is required before starting the service")
+                .And.Contain("field=tenantId; expected=Int32; actual=String")
+                .And.Contain("malformed JSON syntax");
+        });
+    }
+
+    [Fact]
+    public async Task RenderedRollbackPreservesOriginalStartupFailureAfterNestedFailures()
+    {
+        await WithFixture(async root =>
+        {
+            var result = await RunFunctions(root, """
+                $clauses = @($ast.FindAll({ param($node)
+                    $node -is [Management.Automation.Language.CatchClauseAst] -and
+                    $node.Body.Extent.Text.Contains('$startupFailure = $_')
+                }, $true))
+                if ($clauses.Count -ne 1) { throw 'The actual startup catch was not selected.' }
+                function Write-Diagnostics { try { throw 'synthetic diagnostic failure' } catch {} }
+                function Set-ServiceState { return }
+                function Invoke-ServiceControl { throw 'synthetic rollback failure' }
+                $stopAttempted = $true
+                $cutover = $true
+                $script:serviceControlExited = $true
+                $InstallAsService = $true
+                $created = $true
+                $serviceName = 'synthetic-offline-service'
+                $failure = [InvalidOperationException]::new('synthetic startup exit 78')
+                try {
+                    & ([scriptblock]::Create('try { throw $failure } ' + $clauses[0].Extent.Text))
+                }
+                catch {
+                    if ($_.Exception -ne $failure -or $_.Exception.Message -ne 'synthetic startup exit 78') { throw 'Startup cause was replaced.' }
+                    Write-Output 'Original startup exit 78 preserved.'
+                    exit 0
+                }
+                throw 'Startup failure became success.'
+                """);
+            result.ExitCode.Should().Be(0, result.Output);
+            result.Output.Should().Contain("Original startup exit 78 preserved.");
+        });
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

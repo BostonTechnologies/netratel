@@ -30,7 +30,7 @@ public sealed class AgentUpdateScriptSeedServiceTests
         }
         var windows = GetSeedScript("WindowsScript");
         windows.Should().Contain("Set-NetRatelSeedHandoffResult -State 'installed_started'");
-        windows.Should().Contain("Complete-NetRatelSeedFailure $_");
+        windows.Should().Contain("Complete-NetRatelSeedFailure $installerFailure");
         windows.Should().Contain("Remove-NetRatelSeedHandoffFiles");
         windows.Should().NotContain("Initialize-NetRatelSeedHandoff");
         windows.Should().NotContain("Assert-NetRatelTrustedReadinessPath");

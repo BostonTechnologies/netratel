@@ -74,7 +74,9 @@ public sealed class ScriptTemplateService : IScriptTemplateService
         {
             ["API_BASE_URL"] = Input(request.ApiBaseUrl, "ApiBase"),
             ["GATEWAY_ENDPOINT"] = Input(request.GatewayEndpoint ?? "", "GatewayEndpoint"),
-            ["TENANT_ID"] = request.IsUpdateSeed && windows ? "$TenantId" : Input(request.TenantId.ToString(CultureInfo.InvariantCulture), "TenantId"),
+            ["TENANT_ID"] = windows
+                ? request.IsUpdateSeed ? "$TenantId" : request.TenantId.ToString(CultureInfo.InvariantCulture)
+                : Input(request.TenantId.ToString(CultureInfo.InvariantCulture), "TenantId"),
             ["ENROLLMENT_CODE"] = Input(request.EnrollmentCode, "EnrollmentCode"),
             ["RUNTIME_ID"] = Input(request.RuntimeId, "Runtime"),
             ["ARTIFACT_VERSION"] = Input(request.ArtifactVersion ?? "latest", "Version"),
@@ -88,7 +90,7 @@ public sealed class ScriptTemplateService : IScriptTemplateService
             ["SEED_INITIALIZE"] = "",
             ["SEED_BEFORE_MUTATION"] = request.IsUpdateSeed && windows ? "Start-NetRatelSeedHandoff" : "",
             ["SEED_SUCCESS"] = request.IsUpdateSeed && windows ? "Set-NetRatelSeedHandoffResult -State 'installed_started'" : "",
-            ["SEED_FAILURE"] = request.IsUpdateSeed && windows ? "Complete-NetRatelSeedFailure $_" : "",
+            ["SEED_FAILURE"] = request.IsUpdateSeed && windows ? "Complete-NetRatelSeedFailure $installerFailure" : "",
             ["SEED_CLEANUP"] = request.IsUpdateSeed && windows ? "Remove-NetRatelSeedHandoffFiles" : ""
         };
         var name = windows ? "install.ps1" : "install-linux.sh";
