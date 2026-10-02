@@ -58,7 +58,9 @@ public sealed record RecordGatewayHeartbeat(
     long ConnectionEpoch,
     Guid OperationId,
     ulong Sequence,
-    DateTimeOffset ReceivedAtUtc) : IClientPresenceMessage;
+    DateTimeOffset ReceivedAtUtc,
+    double? HeartbeatRoundTripMilliseconds = null,
+    DateTimeOffset? LatencyMeasuredAtUtc = null) : IClientPresenceMessage;
 
 public sealed record EndGatewayPresenceSession(
     ClientKey Client,
@@ -86,7 +88,10 @@ public sealed record ClientPresenceSnapshot(
     IReadOnlyList<string> Capabilities,
     string? LegacySpacetimeIdentity,
     string Source,
-    bool IsAuthoritative);
+    bool IsAuthoritative,
+    double? LatencyMilliseconds = null,
+    DateTimeOffset? LatencyMeasuredAtUtc = null,
+    DateTimeOffset? LatencyExpiresAtUtc = null);
 
 public sealed record ProbeClientPresenceRoute;
 

@@ -1,0 +1,19 @@
+<div class="install-code-field">
+    <MudText Typo="Typo.caption">@Label</MudText>
+    <div class="install-code-block">
+        <pre aria-label="@Label" tabindex="0"><code>@Value</code></pre>
+        <MudTooltip Text="@CopyLabel">
+            <MudIconButton Icon="@Icons.Material.Filled.ContentCopy"
+                           Size="Size.Small"
+                           aria-label="@CopyLabel"
+                           OnClick="@(() => OnCopy.InvokeAsync(Value))" />
+        </MudTooltip>
+    </div>
+</div>
+
+@code {
+    [Parameter] public string Label { get; set; } = string.Empty;
+    [Parameter] public string Value { get; set; } = string.Empty;
+    [Parameter] public string CopyLabel { get; set; } = "Copy";
+    [Parameter] public EventCallback<string> OnCopy { get; set; }
+}

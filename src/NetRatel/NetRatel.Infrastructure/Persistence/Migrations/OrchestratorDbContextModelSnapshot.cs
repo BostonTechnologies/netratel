@@ -361,6 +361,14 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("EnrollmentCodeId")
                         .HasColumnType("uuid");
 
+                    b.Property<string>("EffectiveGatewayBaseUrl")
+                        .HasMaxLength(2048)
+                        .HasColumnType("character varying(2048)");
+
+                    b.Property<string>("GatewaySource")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
                     b.Property<DateTimeOffset>("ExpiresAtUtc")
                         .HasColumnType("timestamp with time zone");
 
@@ -383,10 +391,18 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                         .HasMaxLength(2048)
                         .HasColumnType("character varying(2048)");
 
+                    b.Property<string>("PublicApiSource")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
                     b.Property<string>("PublicWebBaseUrl")
                         .IsRequired()
                         .HasMaxLength(2048)
                         .HasColumnType("character varying(2048)");
+
+                    b.Property<string>("PublicWebSource")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
 
                     b.Property<string>("RequestFingerprint")
                         .IsRequired()

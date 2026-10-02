@@ -23,6 +23,8 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
     private Guid? _activeConnectionId;
     private ulong _lastAcceptedSequence;
     private DateTimeOffset? _lastReceivedAtUtc;
+    private double? _latencyMilliseconds;
+    private DateTimeOffset? _latencyMeasuredAtUtc;
     private string? _agentVersion;
     private IReadOnlyList<string> _capabilities = Array.Empty<string>();
     private string? _legacySpacetimeIdentity;
@@ -76,6 +78,7 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
         _activeConnectionId = message.ConnectionId;
         _lastAcceptedSequence = 0;
         _lastReceivedAtUtc = message.ReceivedAtUtc;
+        ClearLatency();
         _agentVersion = string.IsNullOrWhiteSpace(message.AgentVersion) ? null : message.AgentVersion;
         _capabilities = message.Capabilities
             .Where(capability => !string.IsNullOrWhiteSpace(capability))
@@ -134,6 +137,14 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
         var wasOnline = _status == ClientPresenceStatus.Online;
         _lastAcceptedSequence = message.Sequence;
         _lastReceivedAtUtc = message.ReceivedAtUtc;
+        if (message.HeartbeatRoundTripMilliseconds is { } latency &&
+            double.IsFinite(latency) && latency >= 0 && latency <= _options.HeartbeatTimeout.TotalMilliseconds &&
+            message.LatencyMeasuredAtUtc is { } measuredAt && measuredAt <= message.ReceivedAtUtc &&
+            message.ReceivedAtUtc - measuredAt <= _options.HeartbeatTimeout)
+        {
+            _latencyMilliseconds = latency;
+            _latencyMeasuredAtUtc = measuredAt;
+        }
         _status = ClientPresenceStatus.Online;
         ScheduleExpiry(message.ConnectionEpoch, message.ConnectionId);
         if (!wasOnline)
@@ -158,6 +169,7 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
         var wasOffline = _status == ClientPresenceStatus.Offline;
         Timers.Cancel(ExpiryTimerKey);
         _status = ClientPresenceStatus.Offline;
+        ClearLatency();
         _lastReceivedAtUtc = message.ReceivedAtUtc;
         if (!wasOffline)
         {
@@ -190,6 +202,7 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
         }
 
         _status = ClientPresenceStatus.Offline;
+        ClearLatency();
         NetRatelAkkaTelemetry.PresenceClientHeartbeatExpired();
         PublishTransition(
             (_lastReceivedAtUtc ?? DateTimeOffset.UtcNow) + _options.HeartbeatTimeout,
@@ -242,7 +255,16 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
             _capabilities,
             _legacySpacetimeIdentity,
             "akka",
-            IsAuthoritative: true);
+            IsAuthoritative: true,
+            LatencyMilliseconds: _latencyMilliseconds,
+            LatencyMeasuredAtUtc: _latencyMeasuredAtUtc,
+            LatencyExpiresAtUtc: _latencyMeasuredAtUtc + _options.HeartbeatTimeout);
+
+    private void ClearLatency()
+    {
+        _latencyMilliseconds = null;
+        _latencyMeasuredAtUtc = null;
+    }
 
     private void PublishReadModelSnapshot() =>
         _presenceReadModel.Tell(new TrackClientPresenceSnapshot(CreateSnapshot()), Self);

@@ -1,5 +1,6 @@
 using FluentAssertions;
 using NetRatel.Web.Components.Pages.Clients;
+using NetRatel.Web.Models.Clients;
 using Xunit;
 
 namespace NetRatel.Tests.Client;
@@ -110,11 +111,32 @@ public sealed class ClientPresentationParitySourceTests
         var now = new DateTimeOffset(2026, 8, 18, 12, 0, 0, TimeSpan.Zero);
 
         ClientPresentationFormatting.Latency(true, 18.4).Should().Be("18 ms");
-        ClientPresentationFormatting.Latency(true, null).Should().Be("ping to measure");
+        ClientPresentationFormatting.Latency(true, null).Should().Be("waiting for heartbeat");
         ClientPresentationFormatting.Latency(false, null).Should().Be("n/a");
         ClientPresentationFormatting.TelemetryAge(null, now).Should().Be("waiting");
         ClientPresentationFormatting.TelemetryAge(now.AddSeconds(-20), now).Should().Be("just now");
         ClientPresentationFormatting.TelemetryAge(now.AddMinutes(-5), now).Should().Be("5m ago");
+    }
+
+    [Fact]
+    public void AutomaticLatencyFormatter_DistinguishesFreshStaleUnmeasuredAndOfflineClients()
+    {
+        var measuredAt = new DateTimeOffset(2026, 10, 2, 12, 0, 0, TimeSpan.Zero);
+        var expiresAt = measuredAt.AddSeconds(50);
+        var client = new ClientPresentationModel(
+            3, Guid.NewGuid(), "agent", "agent", "tenant", "Linux", "x64", true, true,
+            measuredAt, "latency-test", ["heartbeat-latency"], null, null,
+            LatencyMilliseconds: 18.75, LatencyMeasuredAtUtc: measuredAt, LatencyExpiresAtUtc: expiresAt);
+
+        ClientPresentationFormatting.Latency(client, measuredAt.AddSeconds(15)).Should().Be("19 ms");
+        ClientPresentationFormatting.Latency(client, expiresAt).Should().Be("stale");
+        ClientPresentationFormatting.Latency(client with { Online = false }, measuredAt.AddSeconds(15)).Should().Be("n/a");
+        ClientPresentationFormatting.Latency(client with { LatencyMeasuredAtUtc = null }, measuredAt.AddSeconds(15))
+            .Should().Be("waiting for heartbeat");
+        ClientPresentationFormatting.Latency(client with { LatencyMilliseconds = double.NaN }, measuredAt.AddSeconds(15))
+            .Should().Be("waiting for heartbeat");
+        ClientPresentationFormatting.Latency(client with { LatencyMilliseconds = null, Capabilities = [] }, measuredAt.AddSeconds(15))
+            .Should().Be("upgrade required");
     }
 
     private static string ReadRepositoryFile(params string[] segments)

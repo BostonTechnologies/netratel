@@ -73,7 +73,10 @@ public sealed class ClientPresentationService(
                 client.Capabilities,
                 client.Terminal,
                 telemetryByAgent.GetValueOrDefault((client.TenantId, client.AgentId)),
-                client.File))
+                client.File,
+                client.LatencyMilliseconds,
+                client.LatencyMeasuredAtUtc,
+                client.LatencyExpiresAtUtc))
             .OrderBy(client => client.DisplayName, StringComparer.OrdinalIgnoreCase)
             .ThenBy(client => client.TenantId)
             .ThenBy(client => client.AgentId)

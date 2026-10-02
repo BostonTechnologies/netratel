@@ -1,8 +1,10 @@
 using System.Diagnostics;
 using System.IO.Compression;
+using System.Reflection;
 using System.Text.Json;
 using FluentAssertions;
 using NetRatel.Application.Artifacts;
+using NetRatel.API.Services;
 using NetRatel.Client;
 using NetRatel.Infrastructure.Artifacts;
 using NetRatel.Shared;
@@ -14,6 +16,58 @@ namespace NetRatel.Tests.Infrastructure;
 // its entry point, enroll a client, contact an endpoint, or change an OS service.
 public sealed class WindowsInstallerTemplateTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    [Trait("category", "hosted")]
+    public async Task CleanWindowsPowerShellResolvesProductionServiceControllerTypesWithoutServiceMutation(bool seeded)
+    {
+        await WithFixture(async root =>
+        {
+            var result = await RunRenderedFunctions(root, ServiceControllerScript(seeded), """
+                if ($PSVersionTable.PSEdition -ne 'Desktop' -or $PSVersionTable.PSVersion.Major -ne 5 -or $PSVersionTable.PSVersion.Minor -ne 1) {
+                    throw 'This regression requires native Windows PowerShell 5.1.'
+                }
+                Initialize-ServiceController
+                if ([System.ServiceProcess.ServiceController].Assembly.GetName().Name -ne 'System.ServiceProcess') { throw 'Framework assembly not loaded.' }
+                if ([System.ServiceProcess.ServiceControllerStatus]::Running -ne 4) { throw 'Status enum unresolved.' }
+                """, "powershell.exe");
+            result.ExitCode.Should().Be(0, result.Output);
+        });
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ServiceControllerAssemblyFailurePreservesCauseBeforeServiceMutation(bool seeded)
+    {
+        await WithFixture(async root =>
+        {
+            var result = await RunRenderedFunctions(root, ServiceControllerScript(seeded), """
+                function Add-Type { throw [IO.FileNotFoundException]::new('synthetic assembly unavailable') }
+                function Set-ServiceState { throw 'Service mutation must not run.' }
+                try { Initialize-ServiceController; Set-ServiceState 'Stopped' }
+                catch {
+                    if ($_.Exception.Message -notmatch 'Repair the Windows .NET Framework') { throw }
+                    if ($_.Exception.InnerException.Message -ne 'synthetic assembly unavailable') { throw 'Original assembly failure was lost.' }
+                    exit 0
+                }
+                throw 'Assembly initialization unexpectedly succeeded.'
+                """);
+            result.ExitCode.Should().Be(0, result.Output);
+        });
+    }
+
+    private static string ServiceControllerScript(bool seeded)
+    {
+        if (!seeded) return new ScriptTemplateService().Build(new DeploymentScriptTemplateRequest(
+            2, "win-x64", "ENR-SYNTHETIC", "https://api.example", DateTimeOffset.UtcNow.AddHours(1), true, true));
+        var seed = typeof(AgentUpdateScriptSeedService).GetField("WindowsScript", BindingFlags.Static | BindingFlags.NonPublic)!.GetValue(null)!;
+        var content = (string)seed.GetType().GetProperty("Content")!.GetValue(seed)!;
+        var manifestEnd = content.IndexOf("#| END", StringComparison.Ordinal);
+        return content[(manifestEnd + "#| END".Length)..].TrimStart('\r', '\n');
+    }
+
     [Theory]
     [InlineData("../escape.dll")]
     [InlineData("/absolute.dll")]
@@ -191,12 +245,15 @@ public sealed class WindowsInstallerTemplateTests
 
     private static async Task<(int ExitCode, string Output)> RunFunctions(string root, string probe, params string[] arguments)
     {
-        var shell = Environment.GetEnvironmentVariable("NETRATEL_TEST_POWERSHELL")
-                    ?? (OperatingSystem.IsWindows() ? "powershell.exe" : "pwsh");
+        return await RunRenderedFunctions(root, ServiceControllerScript(false), probe, arguments: arguments);
+    }
+
+    private static async Task<(int ExitCode, string Output)> RunRenderedFunctions(string root, string script, string probe, string? shell = null, params string[] arguments)
+    {
+        shell ??= Environment.GetEnvironmentVariable("NETRATEL_TEST_POWERSHELL")
+                  ?? (OperatingSystem.IsWindows() ? "powershell.exe" : "pwsh");
         var scriptPath = Path.Combine(root, "installer.ps1");
         var probePath = Path.Combine(root, "probe.ps1");
-        var script = new ScriptTemplateService().Build(new DeploymentScriptTemplateRequest(
-            2, "win-x64", "ENR-SYNTHETIC", "https://api.example", DateTimeOffset.UtcNow.AddHours(1), true, true));
         await File.WriteAllTextAsync(scriptPath, script);
         await File.WriteAllTextAsync(probePath, """
             $ErrorActionPreference = 'Stop'

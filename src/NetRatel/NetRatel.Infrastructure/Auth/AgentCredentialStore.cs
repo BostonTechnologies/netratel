@@ -533,6 +533,7 @@ public sealed class AgentCredentialStore : IAgentCredentialStore, IAgentDeviceKe
         var directory = Path.GetDirectoryName(_path);
         if (!string.IsNullOrWhiteSpace(directory))
         {
+            if (OperatingSystem.IsWindows()) WindowsAgentDataDirectory.EnsureForPath(directory);
             Directory.CreateDirectory(directory);
         }
 

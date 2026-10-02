@@ -1,0 +1,13 @@
+.generated-install-script-preview {
+    width: 100%;
+    height: clamp(14rem, 34dvh, 22rem);
+    min-width: 0;
+    overflow: hidden;
+    border: 1px solid var(--mud-palette-divider);
+    border-radius: var(--netratel-radius-control, 6px);
+}
+
+.generated-install-script-preview ::deep .monaco-editor-container {
+    width: 100%;
+    height: 100% !important;
+}

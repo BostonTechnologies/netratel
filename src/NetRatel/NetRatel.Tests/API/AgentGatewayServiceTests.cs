@@ -92,6 +92,73 @@ public sealed class AgentGatewayServiceTests
         router.Ended!.Reason.Should().Be("stream_closed");
     }
 
+    [Theory]
+    [InlineData(18.75, 1UL, true)]
+    [InlineData(0, 1UL, true)]
+    [InlineData(18.75, 0UL, false)]
+    [InlineData(18.75, 2UL, false)]
+    [InlineData(-1, 1UL, false)]
+    [InlineData(double.NaN, 1UL, false)]
+    [InlineData(double.PositiveInfinity, 1UL, false)]
+    [InlineData(double.MaxValue, 1UL, false)]
+    public async Task Connect_ProjectsOnlyBoundedLatencyOfAnAcknowledgedHeartbeat(
+        double milliseconds, ulong acknowledgedSequence, bool validSample)
+    {
+        const int tenantId = 74;
+        var agentId = Guid.NewGuid();
+        var router = new RecordingPresenceRouter();
+        using var host = await BuildHostAsync(tenantId, agentId, router);
+        using var channel = GrpcChannel.ForAddress("http://localhost",
+            new GrpcChannelOptions { HttpHandler = host.GetTestServer().CreateHandler() });
+        var gateway = new global::NetRatel.AgentGateway.Contracts.V1.AgentGateway.AgentGatewayClient(channel);
+        using var call = gateway.Connect();
+        await call.RequestStream.WriteAsync(new AgentFrame
+        {
+            ProtocolVersion = "1.0", TenantId = tenantId, ClientId = agentId.ToString("D"),
+            ConnectionId = Guid.NewGuid().ToString("D"), OperationId = Guid.NewGuid().ToString("D"),
+            Hello = new ConnectHello { AgentVersion = "latency-test" }
+        });
+        (await call.ResponseStream.MoveNext(CancellationToken.None)).Should().BeTrue();
+        var connected = call.ResponseStream.Current;
+
+        AgentFrame Heartbeat(ulong sequence, PresenceHeartbeat payload) => new()
+        {
+            ProtocolVersion = "1.0", TenantId = tenantId, ClientId = agentId.ToString("D"),
+            ConnectionId = connected.ConnectionId, ConnectionEpoch = connected.ConnectionEpoch,
+            OperationId = Guid.NewGuid().ToString("D"), Sequence = sequence, Heartbeat = payload
+        };
+
+        // There is no previous heartbeat ACK on this stream yet.
+        await call.RequestStream.WriteAsync(Heartbeat(1, new PresenceHeartbeat
+        {
+            AcknowledgedHeartbeatSequence = 1, AcknowledgedHeartbeatRoundTripMs = 5
+        }));
+        (await call.ResponseStream.MoveNext(CancellationToken.None)).Should().BeTrue();
+        router.Heartbeat!.HeartbeatRoundTripMilliseconds.Should().BeNull();
+        router.Heartbeat.LatencyMeasuredAtUtc.Should().BeNull();
+
+        await call.RequestStream.WriteAsync(Heartbeat(2, new PresenceHeartbeat
+        {
+            AcknowledgedHeartbeatSequence = acknowledgedSequence,
+            AcknowledgedHeartbeatRoundTripMs = milliseconds
+        }));
+        (await call.ResponseStream.MoveNext(CancellationToken.None)).Should().BeTrue();
+        call.ResponseStream.Current.HeartbeatAccepted.PresenceAuthority.Should().Be("akka");
+        router.Heartbeat!.HeartbeatRoundTripMilliseconds.Should().Be(validSample ? milliseconds : null);
+        if (validSample)
+        {
+            router.Heartbeat.LatencyMeasuredAtUtc.Should().NotBeNull();
+            router.Heartbeat.LatencyMeasuredAtUtc!.Value.Should().BeOnOrBefore(router.Heartbeat.ReceivedAtUtc);
+        }
+        else
+        {
+            router.Heartbeat.LatencyMeasuredAtUtc.Should().BeNull();
+        }
+
+        await call.RequestStream.CompleteAsync();
+        (await call.ResponseStream.MoveNext(CancellationToken.None)).Should().BeFalse();
+    }
+
     private static async Task<IHost> BuildHostAsync(
         int tenantId,
         Guid agentId,

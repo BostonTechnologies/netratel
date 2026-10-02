@@ -54,15 +54,8 @@ public sealed class ClientScriptService : IClientScriptService
             throw new RequestValidationException("tenantId", $"Tenant '{request.TenantId}' does not exist.");
         }
 
-        var effectiveSiteUrl = (await _branding.GetEffectiveAsync(ct).ConfigureAwait(false)).SiteUrl.Value;
-        var configuredApiBase = _configuration["ClientArtifacts:PublicBaseUrl"];
-        var apiEndpointSource = string.IsNullOrWhiteSpace(configuredApiBase)
-            ? "branding-site-url"
-            : "client-artifacts-public-base-url";
-        var apiBase = ResolvePublicApiBase(
-            string.IsNullOrWhiteSpace(configuredApiBase) ? effectiveSiteUrl : configuredApiBase);
-        var gatewayEndpoint = ResolveOptionalGatewayEndpoint(
-            _configuration["ClientArtifacts:PublicGatewayBaseUrl"], apiBase);
+        var endpoints = ClientInstallEndpointResolver.Resolve(_configuration,
+            await _branding.GetEffectiveAsync(ct).ConfigureAwait(false));
         var artifact = string.IsNullOrWhiteSpace(request.ArtifactVersion)
             ? await _artifactsService.GetLatestAsync(request.RuntimeId, ct)
             : await _artifactsService.GetMetadataAsync(request.RuntimeId, request.ArtifactVersion, ct);
@@ -87,13 +80,13 @@ public sealed class ClientScriptService : IClientScriptService
                 request.TenantId,
                 request.RuntimeId,
                 issue.Code,
-                apiBase,
+                endpoints.PublicApiBaseUrl,
                 issue.ValidToUtc,
                 request.InstallAsService,
                 request.SilentInstall,
                 artifact.Version,
                 artifact.Sha256,
-                gatewayEndpoint));
+                ClientInstallEndpointResolver.GatewayOverride(endpoints)));
 
         _logger.LogInformation(
             "Deployment script generated. tenantId={TenantId}, runtimeId={RuntimeId}, version={Version}, enrollmentCodeId={EnrollmentCodeId}, apiEndpointSource={ApiEndpointSource}, gatewayEndpointSource={GatewayEndpointSource}",
@@ -101,8 +94,7 @@ public sealed class ClientScriptService : IClientScriptService
             request.RuntimeId,
             artifact.Version,
             issue.EnrollmentCodeId,
-            apiEndpointSource,
-            gatewayEndpoint is null ? "shared-api-origin" : "client-artifacts-public-gateway-base-url");
+            endpoints.PublicApiSource, endpoints.GatewaySource);
 
         var ext = _templateService.GetFileExtension(request.RuntimeId);
         var fileName = $"netratel-install-{request.TenantId}.{ext}";
@@ -114,29 +106,4 @@ public sealed class ClientScriptService : IClientScriptService
             issue.ValidToUtc);
     }
 
-    private static string ResolvePublicApiBase(string? value)
-    {
-        var apiBase = ClientEndpointAddress.NormalizeApiBase(value);
-        var uri = new Uri(apiBase, UriKind.Absolute);
-        if (uri.Scheme != Uri.UriSchemeHttps || uri.Port != 443 ||
-            uri.HostNameType != UriHostNameType.Dns || !uri.Host.Contains('.') ||
-            uri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase) ||
-            uri.Host.EndsWith(".local", StringComparison.OrdinalIgnoreCase) ||
-            uri.Host.EndsWith(".internal", StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException("The public API endpoint must be a public HTTPS origin.");
-        return apiBase;
-    }
-
-    private static string? ResolveOptionalGatewayEndpoint(string? value, string apiBase)
-    {
-        if (string.IsNullOrWhiteSpace(value)) return null;
-        var endpoint = ClientEndpointAddress.NormalizeGatewayBase(value);
-        if (string.Equals(endpoint, apiBase, StringComparison.OrdinalIgnoreCase)) return null;
-        var uri = new Uri(endpoint, UriKind.Absolute);
-        if (uri.Port != 443 || uri.IsLoopback || uri.HostNameType != UriHostNameType.Dns ||
-            !uri.Host.Contains('.') || uri.Host.EndsWith(".local", StringComparison.OrdinalIgnoreCase) ||
-            uri.Host.EndsWith(".internal", StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException("The public gateway endpoint must be a public HTTPS origin.");
-        return endpoint;
-    }
 }

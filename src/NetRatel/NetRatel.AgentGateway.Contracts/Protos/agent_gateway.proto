@@ -156,6 +156,11 @@ message PresenceHeartbeat {
   // Agent time is retained only for diagnostics. Presence expiry uses the
   // gateway receipt time to avoid trusting a remote clock.
   google.protobuf.Timestamp observed_at_utc = 1;
+  // Monotonic elapsed time from sending the previous heartbeat to receiving
+  // its validated acknowledgement. Piggybacking avoids extra latency probes.
+  // Absence preserves compatibility with agents that do not report latency.
+  optional double acknowledged_heartbeat_round_trip_ms = 2;
+  uint64 acknowledged_heartbeat_sequence = 3;
 }
 
 message GatewayFrame {

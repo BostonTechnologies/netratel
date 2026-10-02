@@ -18,6 +18,10 @@ public sealed class ClientInstallGrant
     public bool SilentInstall { get; set; }
     public string PublicWebBaseUrl { get; set; } = string.Empty;
     public string PublicApiBaseUrl { get; set; } = string.Empty;
+    public string? EffectiveGatewayBaseUrl { get; set; }
+    public string? PublicWebSource { get; set; }
+    public string? PublicApiSource { get; set; }
+    public string? GatewaySource { get; set; }
     public string CreatedBy { get; set; } = string.Empty;
     public DateTimeOffset CreatedAtUtc { get; set; }
     public DateTimeOffset ExpiresAtUtc { get; set; }

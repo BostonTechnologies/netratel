@@ -171,6 +171,11 @@ public sealed class ClientScriptEndpointTests
     [InlineData("http://public-api.example.test", null)]
     [InlineData("https://localhost", null)]
     [InlineData("https://public-api.example.test", "https://gateway.example.internal")]
+    [InlineData("https://user:password@public-api.example.invalid", null)]
+    [InlineData("https://public-api.example.invalid/api/api", null)]
+    [InlineData("https://public-api.example.invalid?secret=example", null)]
+    [InlineData("https://public-api.example.invalid", "http://gateway.example.invalid")]
+    [InlineData("https://public-api.example.invalid", "https://gateway.example.invalid/netratel.gateway.v1.AgentGateway")]
     public async Task NonPublicEndpoint_DoesNotIssueAnEnrollmentCode(string api, string? gateway)
     {
         using var app = await BuildAppAsync(publicApiBase: api, publicGatewayBase: gateway);

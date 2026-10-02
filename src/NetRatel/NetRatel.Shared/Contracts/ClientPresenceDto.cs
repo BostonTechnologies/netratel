@@ -24,7 +24,10 @@ public sealed record ClientPresenceDto(
     long Revision,
     GatewayTerminalCapabilityDto? Terminal = null,
     string? TenantName = null,
-    GatewayFileCapabilityDto? File = null);
+    GatewayFileCapabilityDto? File = null,
+    double? LatencyMilliseconds = null,
+    DateTimeOffset? LatencyMeasuredAtUtc = null,
+    DateTimeOffset? LatencyExpiresAtUtc = null);
 
 public sealed record GatewayTerminalCapabilityDto(
     bool Supported,
