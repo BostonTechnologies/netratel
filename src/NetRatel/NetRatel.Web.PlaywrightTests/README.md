@@ -12,6 +12,7 @@ The checks cover:
 - Flows with the desktop navigation drawer open, narrow layouts, light/dark/system themes and the same paired viewport/device-scale 200% zoom equivalents; every editor control is reachable and Fit graph places all native nodes inside the canvas with their headers and ports unobscured by the collapsible native overview;
 - preserved dirty edits on close, revision conflicts and tenant changes, inert validation/sample preview, independent clone, immutable published history and keyboard focus restoration;
 - tenant-scoped Monitoring links to immutable versions and actual run receipts without history fanout, plus wrong-tenant lookup rejection;
+- tenant-authorized RatelDesk connector setup through real Routes/MainLayout, explicit mappings, read-only validation, inert preview, password rotation, dirty/conflict retention, pending-write guards, tenant changes and the same 200% zoom equivalents;
 - dialog/viewport geometry, usable mobile charts and controls, document horizontal overflow, and visible Blazor error UI;
 - Monitoring tenant-scoped counts, exact rule/group/bypass editors, manual clear/refire history, honest Unknown evidence, cached Services launch, failed draft retention, guarded duplicate saves and late-tenant response cancellation;
 - Monitoring at desktop with drawer open, light/dark/system themes, narrow viewports and the same true 200% zoom-equivalent geometry;

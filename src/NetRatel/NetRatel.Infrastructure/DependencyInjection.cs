@@ -22,6 +22,7 @@ using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.Flows;
 using NetRatel.Infrastructure.Requests;
 using NetRatel.Infrastructure.Services;
+using NetRatel.Infrastructure.RatelDesk;
 using NetRatel.Shared.Operations;
 
 namespace NetRatel.Infrastructure;
@@ -53,6 +54,7 @@ public static class DependencyInjection
         services.AddNetRatelClientServicesPersistence();
         services.AddNetRatelMonitoringPersistence();
         services.AddNetRatelFlows();
+        services.AddRatelDeskConnector();
         services.AddNetRatelRemoteSupportLifecycle();
 
         services.AddSingleton<INetRatelNotificationEventBus, NetRatelNotificationEventBus>();

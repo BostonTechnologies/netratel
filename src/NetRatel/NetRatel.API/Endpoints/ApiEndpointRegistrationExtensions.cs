@@ -2,6 +2,7 @@ using NetRatel.API.Endpoints.Client;
 using NetRatel.API.Endpoints.Auth;
 using NetRatel.API.Endpoints.Search;
 using NetRatel.API.Endpoints.Systems;
+using NetRatel.API.Endpoints.RatelDesk;
 using NetRatel.API.Gateway;
 using NetRatel.API.Realtime;
 using NetRatel.API.Realtime.Operations;
@@ -24,6 +25,7 @@ public static class ApiEndpointRegistrationExtensions
 
         app.MapTenantEndpoints();
         app.MapSecretEndpoints();
+        app.MapRatelDeskConnectorEndpoints();
         app.MapScriptEndpoints();
         app.MapPrimaryClientAgentBindingReadEndpoints();
         app.MapMcpOperatorPolicyAdministrationEndpoints();

@@ -1,0 +1,273 @@
+@page "/flows/connectors"
+@attribute [Authorize]
+@rendermode InteractiveServer
+@implements IDisposable
+@using NetRatel.Shared.Contracts.RatelDesk
+@using NetRatel.Web.Services.RatelDesk
+@inject IRatelDeskConnectorApiService Api
+
+<PageTitle>RatelDesk connectors</PageTitle>
+<main class="rd-connectors">
+    <h1>RatelDesk connectors</h1>
+    <p>Configure an incident destination for a tenant. <a href="@(_tenantId > 0 ? $"/flows?tenantId={_tenantId}" : "/flows")">Return to Flows</a></p>
+    <div class="rd-notice" role="status" data-testid="receiver-unavailable">
+        Automatic delivery is unavailable: RatelDesk has no verified receiver idempotency capability.
+        Saving settings or validating a mapping does not enable incident delivery.
+    </div>
+    @if (_error is not null) { <div class="rd-error" role="alert">@_error</div> }
+    @if (_notice is not null) { <p role="status" data-testid="connector-notice">@_notice</p> }
+    @if (_tenants.Count == 0 && !_loading) { <p>No tenants with connector management access are available.</p> }
+    <label for="rd-tenant">Tenant</label>
+    <select id="rd-tenant" value="@_tenantId" @onchange="TenantChangedAsync" disabled="@(_loading || _busy)" data-testid="connector-tenant">
+        <option value="0">Choose a tenant</option>
+        @foreach (var tenant in _tenants) { <option value="@tenant.TenantId">@tenant.TenantId · @tenant.Name</option> }
+    </select>
+    @if (_pendingTenant is not null)
+    {
+        <div class="rd-notice" role="alert">
+            Discard the unsaved settings and change tenant?
+            <button @onclick="KeepEditing">Keep editing</button>
+            <button @onclick="DiscardAndChangeAsync">Discard and change tenant</button>
+        </div>
+    }
+    @if (_loading) { <p aria-live="polite">Loading connector settings…</p> }
+    @if (_tenantId > 0 && !_loading)
+    {
+        <div class="rd-toolbar">
+            <label for="rd-selection">Connector</label>
+            <select id="rd-selection" value="@_id" @onchange="ConnectorChanged" disabled="@(_busy || _dirty)">
+                <option value="@(_saved is null ? _id : Guid.Empty)">New connector</option>
+                @foreach (var connector in _connectors) { <option value="@connector.Id">@connector.Configuration.Name</option> }
+            </select>
+            <button @onclick="NewConnector" disabled="@(_busy || _dirty)">New connector</button>
+        </div>
+        <fieldset disabled="@_busy" @oninput="MarkDirty" @onchange="MarkDirty" class="rd-grid">
+            <legend>Destination and mapping</legend>
+            <label>Name <input @bind="_name" maxlength="128" data-testid="connector-name" /></label>
+            <label>Approved HTTPS origin <input @bind="_origin" type="url" maxlength="256" placeholder="https://desk.example.com" /></label>
+            <p class="rd-wide">Use an HTTPS origin approved by the NetRatel operator. Enter organization and customer IDs explicitly.</p>
+            <label>Organization ID <input @bind="_organization" maxlength="128" /></label>
+            <label>Customer ID <input @bind="_customer" maxlength="128" /></label>
+            <label>Assignment ID (optional) <input @bind="_assignment" maxlength="128" /></label>
+            <label>Category IDs (optional, comma separated GUIDs) <input @bind="_categories" maxlength="640" /></label>
+            <label>Information priority <select @bind="_information" aria-label="Information priority">@PriorityOptions()</select></label>
+            <label>Warning priority <select @bind="_warning" aria-label="Warning priority">@PriorityOptions()</select></label>
+            <label>Error priority <select @bind="_errorPriority" aria-label="Error priority">@PriorityOptions()</select></label>
+            <label>Critical priority <select @bind="_critical" aria-label="Critical priority">@PriorityOptions()</select></label>
+            <label class="rd-wide"><input type="checkbox" @bind="_enabled" /> Configuration enabled</label>
+        </fieldset>
+        <button @onclick="SaveAsync" disabled="@_busy" data-testid="connector-save">Save settings</button>
+        @if (_saved is not null)
+        {
+            <p data-testid="connector-revisions">Settings revision @_saved.Revision · Credential @(_saved.HasCredential ? "stored" : "required") · Credential revision @_saved.CredentialRevision</p>
+            <fieldset disabled="@(_busy || _dirty)">
+                <legend>RatelDesk API credential</legend>
+                <label for="rd-credential">@(_saved.HasCredential ? "Replacement API-purpose credential" : "API-purpose credential")</label>
+                <input @key="_credentialInputRevision" id="rd-credential" type="password" autocomplete="new-password" maxlength="512" @oninput="CredentialChanged" data-testid="connector-credential" />
+                <button @onclick="RotateAsync" disabled="@(_busy || _dirty || string.IsNullOrWhiteSpace(_credential))" data-testid="connector-rotate">@(_saved.HasCredential ? "Rotate credential" : "Store credential")</button>
+                <p>The credential is stored protected. Saved settings return only its presence and revision.</p>
+            </fieldset>
+            <button @onclick="TestAsync" disabled="@(_busy || _dirty || !_saved.HasCredential)" data-testid="connector-test">Validate saved mapping (read only)</button>
+            <p>This reads organizations, customers, assignments and categories. It creates no incident.</p>
+            <fieldset disabled="@_busy" class="rd-grid">
+                <legend>Incident preview</legend>
+                <label>Title <input @bind="_previewTitle" maxlength="200" /></label>
+                <label>Priority <select @bind="_previewPriority">@PriorityOptions()</select></label>
+                <label class="rd-wide">Description <textarea @bind="_previewDescription" maxlength="8000"></textarea></label>
+            </fieldset>
+            <button @onclick="DryRunAsync" disabled="@(_busy || _dirty)" data-testid="connector-dry-run">Preview sanitized payload</button>
+            @if (_preview is not null)
+            {
+                <div class="rd-preview" data-testid="connector-preview">
+                    <h2>Preview only — no incident sent</h2>
+                    <dl>
+                        <dt>Title</dt><dd>@_preview.Payload.Title</dd>
+                        <dt>Description</dt><dd class="rd-description">@_preview.Payload.Description</dd>
+                        <dt>Priority</dt><dd>@_preview.Payload.Priority</dd>
+                        <dt>Organization / customer</dt><dd>@_preview.Payload.OrganizationId / @_preview.Payload.CustomerId</dd>
+                        <dt>Assignment</dt><dd>@(_preview.Payload.AssignedToId ?? "None")</dd>
+                        <dt>Categories</dt><dd>@string.Join(", ", _preview.Payload.CategoryIds)</dd>
+                        <dt>Preview receipt</dt><dd>dry-run-only</dd>
+                    </dl>
+                </div>
+            }
+        }
+    }
+</main>
+
+@code {
+    [SupplyParameterFromQuery(Name = "tenantId")] public int? RequestedTenantId { get; set; }
+    private IReadOnlyList<RatelDeskConnectorTenantDto> _tenants = [];
+    private IReadOnlyList<RatelDeskConnectorDto> _connectors = [];
+    private CancellationTokenSource _scope = new();
+    private int _generation, _tenantId, _credentialInputRevision;
+    private int? _pendingTenant, _requestedTenantProcessed;
+    private bool _initialized, _loading = true, _busy, _disposed, _dirty, _enabled = true;
+    private Guid _id;
+    private RatelDeskConnectorDto? _saved;
+    private RatelDeskDryRunResult? _preview;
+    private string? _error, _notice, _credential;
+    private string _name = "", _origin = "", _organization = "", _customer = "", _assignment = "", _categories = "";
+    private int _information, _warning = 1, _errorPriority = 2, _critical = 3, _previewPriority = 1;
+    private string _previewTitle = "NetRatel alert preview", _previewDescription = "Preview only. No incident will be created.";
+
+    protected override async Task OnInitializedAsync()
+    {
+        _requestedTenantProcessed = RequestedTenantId;
+        var generation = _generation;
+        try
+        {
+            var tenants = await Api.GetTenantsAsync(_scope.Token);
+            if (!Current(generation)) return;
+            _tenants = tenants.Where(t => t.TenantId > 0).ToArray();
+            var id = RequestedTenantId is { } requested ? (_tenants.Any(t => t.TenantId == requested) ? requested : 0) : _tenants.FirstOrDefault()?.TenantId ?? 0;
+            if (RequestedTenantId is not null && id == 0) _error = "The requested tenant is not available with your current connector management access.";
+            if (id > 0) await LoadTenantAsync(id);
+        }
+        catch (Exception e) when (IsExpected(e)) { if (Current(generation)) _error = ErrorText(e); }
+        finally { if (Current(generation)) _loading = false; _initialized = true; }
+    }
+    protected override Task OnParametersSetAsync() => ApplyRequestedTenantAsync();
+    private async Task ApplyRequestedTenantAsync()
+    {
+        if (!_initialized || _disposed || _busy || RequestedTenantId == _requestedTenantProcessed) return;
+        _requestedTenantProcessed = RequestedTenantId;
+        if (RequestedTenantId is not { } id || id == _tenantId) return;
+        if (!_tenants.Any(t => t.TenantId == id))
+        { _error = "The requested tenant is not available with your current connector management access."; return; }
+        await TenantChangedAsync(new ChangeEventArgs { Value = id.ToString(System.Globalization.CultureInfo.InvariantCulture) });
+    }
+    private static RenderFragment PriorityOptions() => @<text>
+        <option value="0">Low (0)</option><option value="1">Medium (1)</option><option value="2">High (2)</option><option value="3">Critical (3)</option>
+    </text>;
+    private async Task TenantChangedAsync(ChangeEventArgs e)
+    {
+        if (_busy || _disposed || !int.TryParse(e.Value?.ToString(), out var id) || id == _tenantId || !_tenants.Any(t => t.TenantId == id)) return;
+        if (_dirty) { _pendingTenant = id; return; }
+        await LoadTenantAsync(id);
+    }
+    private void KeepEditing() => _pendingTenant = null;
+    private async Task DiscardAndChangeAsync()
+    {
+        if (_busy || _pendingTenant is not { } id) return;
+        _pendingTenant = null; await LoadTenantAsync(id);
+    }
+    private async Task LoadTenantAsync(int id)
+    {
+        _scope.Cancel(); _scope.Dispose(); _scope = new(); var generation = ++_generation;
+        _tenantId = id; _loading = true; _error = _notice = null; _connectors = []; ResetDraft();
+        try
+        {
+            var list = await Api.ListAsync(id, _scope.Token);
+            if (!Current(generation)) return;
+            if (list.Any(c => c.TenantId != id)) throw new RatelDeskConnectorApiException("invalid-response");
+            _connectors = list;
+            if (list.Count > 0) Apply(list[0]);
+        }
+        catch (Exception e) when (IsExpected(e)) { if (Current(generation)) _error = ErrorText(e); }
+        finally { if (Current(generation)) _loading = false; }
+    }
+    private void ConnectorChanged(ChangeEventArgs e)
+    {
+        if (_busy || _dirty || !Guid.TryParse(e.Value?.ToString(), out var id)) return;
+        if (id == Guid.Empty) NewConnector(); else if (_connectors.FirstOrDefault(c => c.Id == id) is { } connector) Apply(connector);
+    }
+    private void NewConnector() { if (!_busy && !_dirty) { ResetDraft(); _error = _notice = null; } }
+    private void ResetDraft()
+    {
+        _id = Guid.Empty; _saved = null; _preview = null; _dirty = false; ForgetCredential();
+        _name = _origin = _organization = _customer = _assignment = _categories = "";
+        _information = 0; _warning = 1; _errorPriority = 2; _critical = 3; _enabled = true;
+    }
+    private void Apply(RatelDeskConnectorDto dto)
+    {
+        _id = dto.Id; _saved = dto; _dirty = false; _preview = null; ForgetCredential();
+        var c = dto.Configuration;
+        _name = c.Name; _origin = c.Origin; _organization = c.OrganizationId; _customer = c.CustomerId;
+        _assignment = c.AssignedToId ?? ""; _categories = string.Join(", ", c.CategoryIds);
+        _information = c.Priorities.Information; _warning = c.Priorities.Warning; _errorPriority = c.Priorities.Error; _critical = c.Priorities.Critical; _enabled = c.Enabled;
+    }
+    private void MarkDirty() { _dirty = true; _preview = null; _notice = null; }
+    private void CredentialChanged(ChangeEventArgs e) => _credential = e.Value?.ToString();
+    private void ForgetCredential() { _credential = null; _credentialInputRevision++; }
+    private async Task SaveAsync()
+    {
+        if (!CanStart()) return;
+        Guid[] categories;
+        try { categories = string.IsNullOrWhiteSpace(_categories) ? [] : _categories.Split(',', StringSplitOptions.TrimEntries).Select(Guid.Parse).ToArray(); }
+        catch (FormatException) { _error = "Enter category IDs as comma separated GUIDs."; return; }
+        var id = _id == Guid.Empty ? Guid.NewGuid() : _id;
+        _id = id; // Preserve a new connector's identity if a response is lost after its revision-fenced write.
+        var request = new SaveRatelDeskConnectorRequest(_saved?.Revision ?? 0, new(_name.Trim(), _origin.Trim(), _organization.Trim(), _customer.Trim(),
+            string.IsNullOrWhiteSpace(_assignment) ? null : _assignment.Trim(), categories, new(_information, _warning, _errorPriority, _critical), _enabled));
+        await RunAsync(async (tenant, ct) =>
+        {
+            var dto = await Api.SaveAsync(tenant, id, request, ct);
+            ValidateDto(dto, tenant, id);
+            return () => { Upsert(dto); Apply(dto); _notice = "Settings saved. Automatic delivery remains unavailable."; };
+        });
+    }
+    private async Task RotateAsync()
+    {
+        if (!CanStart() || _saved is null || _dirty || string.IsNullOrWhiteSpace(_credential)) return;
+        var id = _saved.Id;
+        var request = new RotateRatelDeskConnectorCredentialRequest(_saved.CredentialRevision, _credential);
+        ForgetCredential();
+        await RunAsync(async (tenant, ct) =>
+        {
+            var dto = await Api.RotateAsync(tenant, id, request, ct); ValidateDto(dto, tenant, id);
+            return () => { Upsert(dto); Apply(dto); _notice = "Credential stored protected. Automatic delivery remains unavailable."; };
+        });
+    }
+    private async Task TestAsync()
+    {
+        if (!CanStart() || _saved is null || _dirty || !_saved.HasCredential) return;
+        var id = _saved.Id;
+        await RunAsync(async (tenant, ct) =>
+        {
+            var result = await Api.TestAsync(tenant, id, ct);
+            return () => _notice = result.Status switch
+            {
+                RatelDeskConnectionTestStatus.MappingValidated => "Saved mapping validated through read-only lookups. Automatic delivery remains unavailable.",
+                RatelDeskConnectionTestStatus.AuthenticationRejected => "RatelDesk rejected the API credential. Check its purpose and current access.",
+                RatelDeskConnectionTestStatus.MappingRejected => "The saved mapping could not be validated. Check organization, customer, assignment and categories.",
+                _ => "The read-only check is unavailable. Check the saved credential, operator-approved origin and current access."
+            };
+        });
+    }
+    private async Task DryRunAsync()
+    {
+        if (!CanStart() || _saved is null || _dirty) return;
+        var id = _saved.Id; var request = new RatelDeskDryRunRequest(_previewTitle, _previewDescription, _previewPriority);
+        await RunAsync(async (tenant, ct) =>
+        {
+            var result = await Api.DryRunAsync(tenant, id, request, ct);
+            if (result.SendsIncident || result.AutomaticDeliveryAvailable || result.FakeIncidentId != "dry-run-only") throw new RatelDeskConnectorApiException("invalid-response");
+            return () => { _preview = result; _notice = "Preview prepared. No incident sent."; };
+        });
+    }
+    private async Task RunAsync(Func<int, CancellationToken, Task<Action>> action)
+    {
+        var generation = _generation; var tenant = _tenantId; _busy = true; _error = _notice = null;
+        try { var apply = await action(tenant, _scope.Token); if (Current(generation)) apply(); }
+        catch (Exception e) when (IsExpected(e)) { if (Current(generation)) _error = ErrorText(e); }
+        finally { if (Current(generation)) { _busy = false; await ApplyRequestedTenantAsync(); } }
+    }
+    private bool CanStart() => !_disposed && !_busy && !_loading && _tenantId > 0;
+    private bool Current(int generation) => !_disposed && generation == _generation;
+    private void Upsert(RatelDeskConnectorDto dto) => _connectors = _connectors.Where(c => c.Id != dto.Id).Append(dto).OrderBy(c => c.Configuration.Name).ToArray();
+    private static void ValidateDto(RatelDeskConnectorDto dto, int tenant, Guid id)
+    { if (dto.TenantId != tenant || dto.Id != id) throw new RatelDeskConnectorApiException("invalid-response"); }
+    private static bool IsExpected(Exception e) => e is RatelDeskConnectorApiException or HttpRequestException or IOException or OperationCanceledException;
+    private static string ErrorText(Exception e) => e is RatelDeskConnectorApiException api ? api.Code switch
+    {
+        "connector-conflict" => "The saved revision changed. Your draft is retained; reload this page before applying it again.",
+        "invalid-connector-request" => "Review the approved HTTPS origin, required IDs, category IDs and priorities. Your settings draft is retained.",
+        "access-denied" => "Your current access does not allow this connector operation.",
+        "connector-not-found" => "This connector is no longer available.",
+        "connector-capacity-exhausted" => "The tenant connector limit has been reached or exceeded. Your draft is retained; contact an administrator before adding another connector.",
+        "connector-busy" => "The connector is busy. Try again later.",
+        _ => "The connector response could not be verified. Your settings draft is retained."
+    } : "The connector request did not complete. Your settings draft is retained; check the current saved revision before retrying a write.";
+    public void Dispose() { if (_disposed) return; _disposed = true; _generation++; _scope.Cancel(); _scope.Dispose(); ForgetCredential(); _preview = null; }
+}
