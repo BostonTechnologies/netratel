@@ -154,6 +154,7 @@ internal sealed class FakeFlowApi : IFlowApiService
     public FlowSaveDraftRequest? LastSave;
     public TaskCompletionSource<FlowDefinitionDto>? SavePending;
     public Func<int, Guid, CancellationToken, Task<FlowVersionDto>>? VersionLookup;
+    public Func<int, Guid, CancellationToken, Task<FlowRunDetailDto>>? RunLookup;
     public Task<IReadOnlyList<FlowTenantAccessDto>> GetTenantsAsync(CancellationToken token = default) => Task.FromResult<IReadOnlyList<FlowTenantAccessDto>>([new(17, "Tenant 17", true, true, true)]);
     public Task<IReadOnlyList<FlowDefinitionDto>> ListAsync(int tenantId, CancellationToken token = default) => Task.FromResult<IReadOnlyList<FlowDefinitionDto>>([FlowEditorTests.Definition()]);
     public Task<FlowDefinitionDto> GetAsync(int tenantId, Guid flowId, CancellationToken token = default) => Task.FromResult(FlowEditorTests.Definition());
@@ -170,5 +171,5 @@ internal sealed class FakeFlowApi : IFlowApiService
     public Task<IReadOnlyList<FlowRunSummaryDto>> GetRunsAsync(int tenantId, Guid flowId, CancellationToken token = default) => Task.FromResult<IReadOnlyList<FlowRunSummaryDto>>([]);
     public Task<FlowRunDetailDto> GetRunAsync(int tenantId, Guid flowId, Guid runId, CancellationToken token = default) => throw new NotSupportedException();
     public Task<FlowVersionDto> GetVersionAsync(int tenantId, Guid versionId, CancellationToken token = default) => VersionLookup?.Invoke(tenantId, versionId, token) ?? throw new NotSupportedException();
-    public Task<FlowRunDetailDto> GetRunByIdAsync(int tenantId, Guid runId, CancellationToken token = default) => throw new NotSupportedException();
+    public Task<FlowRunDetailDto> GetRunByIdAsync(int tenantId, Guid runId, CancellationToken token = default) => RunLookup?.Invoke(tenantId, runId, token) ?? throw new NotSupportedException();
 }

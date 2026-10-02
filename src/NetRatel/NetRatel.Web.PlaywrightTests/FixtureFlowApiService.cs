@@ -86,7 +86,7 @@ internal sealed class FixtureFlowApiService : IFlowApiService
         var summary = new FlowRunSummaryDto(Guid.NewGuid(), flow.Id, SeededVersionId!.Value, eventId ?? Guid.NewGuid(), occurrenceId ?? Guid.NewGuid(), FlowRunStatus.Succeeded, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, "incident-created");
         SeededRunId = summary.Id;
         _runs[summary.Id] = new(summary, input,
-            [new(flow.Draft.Nodes.Single(n => n.Kind == FlowNodeKind.CreateIncident).Id, "fixture-action", FlowActionStatus.Succeeded, 1, 1, "incident-created", new("123", SafeLink: "https://fixture.invalid/incidents/123"))]);
+            [new(flow.Draft.Nodes.Single(n => n.Kind == FlowNodeKind.CreateIncident).Id, "fixture-action", FlowActionStatus.Succeeded, 1, 1, "incident-created", new("123", TrackingId: "NR-2026-000123", SafeLink: "https://fixture.invalid/incidents/123"))]);
         return _runs[summary.Id];
     }
     private FlowDefinitionDto Find(int tenant, Guid id) => _definitions.TryGetValue(id, out var flow) && flow.TenantId == tenant ? flow : throw new FlowApiException(HttpStatusCode.NotFound);
