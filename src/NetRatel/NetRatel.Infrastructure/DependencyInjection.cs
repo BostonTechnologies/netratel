@@ -50,6 +50,7 @@ public static class DependencyInjection
         services.AddNetRatelCommandPersistence();
         services.AddNetRatelJobObservationPersistence();
         services.AddNetRatelClientServicesPersistence();
+        services.AddNetRatelMonitoringPersistence();
         services.AddNetRatelRemoteSupportLifecycle();
 
         services.AddSingleton<INetRatelNotificationEventBus, NetRatelNotificationEventBus>();

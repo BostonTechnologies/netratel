@@ -201,16 +201,7 @@ public sealed class AgentGatewayTelemetryPublisher(
                 if (includeSlow) nextSlowSampleAtUtc = now.Add(slowInterval);
                 var sequence = sequenceCursor.Next();
                 var snapshot = collector.CreateFrame(session, sequence, now, includeSlow);
-                await SendAcknowledgedAsync(new AgentTelemetryFrame
-                {
-                    ProtocolVersion = options.ProtocolVersion,
-                    TenantId = session.TenantId,
-                    ClientId = session.AgentId.ToString("D"),
-                    ConnectionEpoch = session.ConnectionEpoch,
-                    ConnectionId = session.ConnectionId.ToString("D"),
-                    Sequence = sequence,
-                    Snapshot = snapshot
-                }).ConfigureAwait(false);
+                await SendAcknowledgedAsync(TelemetrySnapshotSerializer.CreateEnvelope(snapshot, session, options.ProtocolVersion)).ConfigureAwait(false);
                 if (servicesEnabled && services.TryTakeCompleted(out var collection) && collection is not null)
                 {
                     foreach (var chunk in ServiceSnapshotSerializer.CreateChunks(collection, session, options.ProtocolVersion))
@@ -497,8 +488,11 @@ internal sealed class GatewayTelemetrySnapshotCollector(string agentVersion, Act
                     continue;
                 }
 
-                var totalGb = drive.TotalSize / 1024d / 1024d / 1024d;
-                var freeGb = drive.AvailableFreeSpace / 1024d / 1024d / 1024d;
+                var totalBytes = drive.TotalSize;
+                var freeBytes = drive.AvailableFreeSpace;
+                if (freeBytes < 0 || freeBytes > totalBytes) continue;
+                var totalGb = totalBytes / 1024d / 1024d / 1024d;
+                var freeGb = freeBytes / 1024d / 1024d / 1024d;
                 var usedGb = Math.Max(0, totalGb - freeGb);
                 var scope = NormalizeDiskScope(string.IsNullOrWhiteSpace(drive.Name) ? drive.RootDirectory.FullName : drive.Name);
                 if (string.IsNullOrEmpty(scope) || !scopes.Add(scope) || disks.Count >= MaximumScopesPerFrame)
@@ -509,6 +503,8 @@ internal sealed class GatewayTelemetrySnapshotCollector(string agentVersion, Act
                 disks.Add(new TelemetryDisk
                 {
                     Scope = scope,
+                    TotalBytes = checked((ulong)totalBytes),
+                    FreeBytes = checked((ulong)freeBytes),
                     TotalGb = Math.Round(totalGb, 1),
                     UsedGb = Math.Round(usedGb, 1),
                     FreeGb = Math.Round(freeGb, 1),

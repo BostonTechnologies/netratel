@@ -19,11 +19,15 @@ public interface IAgentTelemetryGatewaySessionRegistry
     AgentTelemetryGatewaySessionRegistration Register(ClientKey client, Guid connectionId, ulong connectionEpoch, bool supportsDynamicSampling, string agentVersion, bool provisional, bool supportsServices) =>
         Register(client, connectionId, connectionEpoch, supportsDynamicSampling, agentVersion, provisional);
     AgentTelemetryGatewaySessionStatus GetStatus(ClientKey client);
+    AgentTelemetryGatewayServicesSessionPage GetServicesSessions(int maximumCount, ClientKey? after = null) => new([], null);
     void PublishPolicy(ClientKey client, TelemetrySamplingPolicyState policy);
     bool TryPublishServicesPolicy(ClientKey client, ClientServiceWatchPolicyDto policy) => false;
     bool TryPublishServicesPolicy(ClientKey client, ClientServiceWatchPolicyDto policy, Guid expectedRegistrationId) =>
         GetStatus(client).RegistrationId == expectedRegistrationId && TryPublishServicesPolicy(client, policy);
 }
+
+public sealed record AgentTelemetryGatewayServicesSession(ClientKey Client, Guid RegistrationId);
+public sealed record AgentTelemetryGatewayServicesSessionPage(IReadOnlyList<AgentTelemetryGatewayServicesSession> Items, ClientKey? NextCursor);
 
 public sealed record AgentTelemetryGatewaySessionStatus(
     bool Connected,
@@ -39,6 +43,9 @@ public sealed record AgentTelemetryGatewaySessionStatus(
 public sealed class AgentTelemetryGatewaySessionRegistry : IAgentTelemetryGatewaySessionRegistry
 {
     private readonly ConcurrentDictionary<ClientKey, Session> _sessions = [];
+    private static readonly IComparer<ClientKey> ClientOrder = Comparer<ClientKey>.Create((left, right) =>
+        left.TenantId != right.TenantId ? left.TenantId.CompareTo(right.TenantId) : left.AgentId.CompareTo(right.AgentId));
+    private readonly SortedSet<ClientKey> _servicesClients = new(ClientOrder);
     private readonly object _registrationGate = new();
     private readonly ITelemetryInteractiveDemandRegistry _demand;
     private readonly IGatewayTelemetryLiveRegistry _live;
@@ -74,6 +81,7 @@ public sealed class AgentTelemetryGatewaySessionRegistry : IAgentTelemetryGatewa
                     }
                     if (_sessions.TryUpdate(client, replacement, current))
                     {
+                        _servicesClients.Remove(client);
                         current.Complete();
                         break;
                     }
@@ -98,6 +106,7 @@ public sealed class AgentTelemetryGatewaySessionRegistry : IAgentTelemetryGatewa
         {
             if (!IsCurrent(client, session)) return false;
             session.Active = true;
+            if (session.SupportsServices) _servicesClients.Add(client);
             var policy = _demand.GetPolicy(client);
             session.PublishPolicy(policy);
             PublishMode(client, session, policy);
@@ -127,6 +136,27 @@ public sealed class AgentTelemetryGatewaySessionRegistry : IAgentTelemetryGatewa
                     SupportsServices = session.SupportsServices, ConnectionId = session.ConnectionId, RegistrationId = session.RegistrationId
                 }
                 : new(false, false, null, null);
+        }
+    }
+
+    public AgentTelemetryGatewayServicesSessionPage GetServicesSessions(int maximumCount, ClientKey? after = null)
+    {
+        if (maximumCount is < 1 or > 128 || (after is { } cursor && !cursor.IsValid)) throw new ArgumentOutOfRangeException(nameof(maximumCount));
+        lock (_registrationGate)
+        {
+            if (_servicesClients.Count == 0 || (after is { } last && ClientOrder.Compare(last, _servicesClients.Max) >= 0)) return new([], null);
+            var view = after is { } lower ? _servicesClients.GetViewBetween(lower, _servicesClients.Max) : _servicesClients;
+            var page = new List<AgentTelemetryGatewayServicesSession>(maximumCount + 1);
+            foreach (var client in view)
+            {
+                if (after is { } previous && ClientOrder.Compare(client, previous) <= 0) continue;
+                if (_sessions.TryGetValue(client, out var session) && session.Active && session.SupportsServices && !session.CompletionToken.IsCancellationRequested)
+                    page.Add(new(client, session.RegistrationId));
+                if (page.Count > maximumCount) break;
+            }
+            var more = page.Count > maximumCount;
+            if (more) page.RemoveAt(maximumCount);
+            return new(page, more ? page[^1].Client : null);
         }
     }
 
@@ -165,6 +195,7 @@ public sealed class AgentTelemetryGatewaySessionRegistry : IAgentTelemetryGatewa
         {
             if (((ICollection<KeyValuePair<ClientKey, Session>>)_sessions).Remove(new(client, session)))
             {
+                _servicesClients.Remove(client);
                 session.Complete();
                 var policy = _demand.GetPolicy(client);
                 _live.PublishMode(client, new GatewayTelemetryLiveMode(

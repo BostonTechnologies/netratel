@@ -8,6 +8,12 @@ public static class IntegrationPermissionCatalog
     public static IReadOnlyList<IntegrationPermissionDescriptor> Delegable { get; } =
     [
         new(NetRatelPermissions.TelemetryRead, "Read telemetry", "View status and performance information."),
+        new(NetRatelPermissions.MonitoringRead, "Read monitoring", "View rules and alert episodes within the granted tenant."),
+        new(NetRatelPermissions.MonitoringManage, "Manage monitoring", "Create or change rules and static target groups within the granted tenant."),
+        new(NetRatelPermissions.MonitoringAcknowledge, "Acknowledge alerts", "Acknowledge an active monitoring occurrence."),
+        new(NetRatelPermissions.MonitoringClear, "Clear alerts", "Close an active occurrence with an audited reason and require a new breach window."),
+        new(NetRatelPermissions.MonitoringBypass, "Silence monitoring", "Create or revoke an audited scoped monitoring silence."),
+        new(NetRatelPermissions.MonitoringAllTargets, "Monitor all tenant clients", "Select every eligible tenant client, including future registrations."),
         new(NetRatelPermissions.FileRead, "Read files", "Browse and download permitted files."),
         new(NetRatelPermissions.FileWrite, "Write files", "Upload or change permitted files."),
         new(NetRatelPermissions.FileDelete, "Delete files", "Remove permitted files."),

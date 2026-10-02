@@ -229,6 +229,8 @@ message TelemetryDisk {
   double used_gb = 3;
   double free_gb = 4;
   double usage_percent = 5;
+  optional uint64 total_bytes = 6;
+  optional uint64 free_bytes = 7;
 }
 
 message TelemetryNetwork {

@@ -26,6 +26,8 @@ public sealed class PresenceReadModelActor : ReceiveActor
                 .OrderBy(snapshot => snapshot.Client.TenantId)
                 .ThenBy(snapshot => snapshot.Client.AgentId)
                 .ToArray())));
+        Receive<GetClientPresenceReadModelByKey>(message => Sender.Tell(
+            new ClientPresenceReadModelPointSnapshot(message.Client, _snapshots.GetValueOrDefault(message.Client))));
     }
 
     public static Props Props() => global::Akka.Actor.Props.Create(() => new PresenceReadModelActor());

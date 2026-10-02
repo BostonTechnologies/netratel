@@ -40,6 +40,9 @@ public sealed class RealtimeRegistrationAndScopeAuditTests
                 services.AddSingleton<IRemoteSupportLifecycleStore>(new StartupRemoteSupportLifecycleStore());
                 services.AddSingleton<IClientServicesStore>(new MemoryServicesStore());
                 services.AddSingleton<IClientConnectionEpochStore>(new MemoryConnectionEpochStore());
+                // Monitoring stores own scoped operations and stay dormant in
+                // this actor-registration fixture; no database operation runs.
+                NetRatel.Infrastructure.Persistence.MonitoringPersistenceRegistration.AddNetRatelMonitoringPersistence(services);
                 services.AddNetRatelAkkaRuntime(configuration);
             })
             .Build();

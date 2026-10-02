@@ -12,6 +12,47 @@ namespace NetRatel.Tests.API;
 public sealed class AgentTelemetryGatewaySessionRegistryTests
 {
     [Fact]
+    public async Task ServicesKeysetPagesVisitEveryActiveRegistrationAndExcludeProvisionalOrUnsupportedClients()
+    {
+        var registry = new AgentTelemetryGatewaySessionRegistry(CreateDemand(), new GatewayTelemetryLiveRegistry());
+        var clients = Enumerable.Range(0, 257).Select(_ => new ClientKey(12, Guid.NewGuid()))
+            .OrderBy(client => client.AgentId).ToArray();
+        var registrations = new List<AgentTelemetryGatewaySessionRegistration>();
+        try
+        {
+            foreach (var client in clients)
+                registrations.Add(registry.Register(client, Guid.NewGuid(), 1, false, "services", false, true));
+            registrations.Add(registry.Register(new ClientKey(12, Guid.NewGuid()), Guid.NewGuid(), 1, false, "legacy"));
+            registrations.Add(registry.Register(new ClientKey(12, Guid.NewGuid()), Guid.NewGuid(), 1, false, "pending", true, true));
+
+            var first = registry.GetServicesSessions(128);
+            first.Items.Select(item => item.Client).Should().Equal(clients.Take(128));
+            first.NextCursor.Should().Be(clients[127]);
+
+            // Replacing and later disposing a visited stream cannot delete its
+            // active replacement from the indexed registration set.
+            var old = registrations[0];
+            var replacement = registry.Register(clients[0], Guid.NewGuid(), 2, false, "replacement", false, true);
+            registrations.Add(replacement);
+            await old.DisposeAsync();
+            registry.GetServicesSessions(1).Items.Single().RegistrationId.Should().Be(replacement.RegistrationId);
+
+            var second = registry.GetServicesSessions(128, first.NextCursor);
+            var final = registry.GetServicesSessions(128, second.NextCursor);
+            second.Items.Select(item => item.Client).Should().Equal(clients.Skip(128).Take(128));
+            final.Items.Select(item => item.Client).Should().Equal(clients.Skip(256));
+            final.NextCursor.Should().BeNull();
+            first.Items.Concat(second.Items).Concat(final.Items).Select(item => item.Client)
+                .Should().OnlyHaveUniqueItems().And.HaveCount(257);
+            registry.GetServicesSessions(128, clients[^1]).Items.Should().BeEmpty();
+        }
+        finally
+        {
+            foreach (var registration in registrations) await registration.DisposeAsync();
+        }
+    }
+
+    [Fact]
     public async Task ServicesPoliciesCoalesceWithoutLosingRefreshOrReliableAcknowledgements()
     {
         var registry = new AgentTelemetryGatewaySessionRegistry(CreateDemand(), new GatewayTelemetryLiveRegistry());

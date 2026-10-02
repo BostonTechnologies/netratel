@@ -7,6 +7,12 @@ public static class NetRatelPermissions
     public const string UserRoleAdministration = "identity.admin";
     public const string ClientManagement = "client.manage";
     public const string TelemetryRead = "telemetry.read";
+    public const string MonitoringRead = "monitoring.read";
+    public const string MonitoringManage = "monitoring.manage";
+    public const string MonitoringAcknowledge = "monitoring.ack";
+    public const string MonitoringClear = "monitoring.clear";
+    public const string MonitoringBypass = "monitoring.bypass";
+    public const string MonitoringAllTargets = "monitoring.targets.all";
     public const string ScriptEdit = "script.edit";
     public const string ScriptExecute = "script.execute";
     public const string JobManagement = "job.manage";
@@ -26,7 +32,9 @@ public static class NetRatelPermissions
     public static IReadOnlySet<string> All { get; } = new HashSet<string>(StringComparer.Ordinal)
     {
         TenantAdministration, UserRoleAdministration, ClientManagement,
-        TelemetryRead, ScriptEdit, ScriptExecute, JobManagement, TerminalAccess,
+        TelemetryRead, MonitoringRead, MonitoringManage, MonitoringAcknowledge,
+        MonitoringClear, MonitoringBypass, MonitoringAllTargets,
+        ScriptEdit, ScriptExecute, JobManagement, TerminalAccess,
         FileRead, FileWrite, FileDelete, RemoteSupport, SecretUse, SecretReveal,
         AuditRead, IntegrationManagement, ArtifactPublication, McpPolicyAdministration, McpDiscoveryRead
     };
