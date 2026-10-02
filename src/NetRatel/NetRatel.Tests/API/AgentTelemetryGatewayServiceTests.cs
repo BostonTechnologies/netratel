@@ -15,12 +15,129 @@ using NetRatel.API.Realtime;
 using NetRatel.Application.Agents;
 using NetRatel.Application.Presence;
 using NetRatel.Application.Telemetry;
+using NetRatel.Application.Services;
+using NetRatel.API.Services;
+using NetRatel.Shared.Contracts.Services;
 using Xunit;
 
 namespace NetRatel.Tests.API;
 
 public sealed class AgentTelemetryGatewayServiceTests
 {
+    [Fact]
+    public async Task ServicesCapabilityIsTwoSidedAndSharesSnapshotSequenceAndAcknowledgements()
+    {
+        var key = new ClientKey(89, Guid.NewGuid());
+        var connection = Guid.NewGuid();
+        var services = new RecordingServicesRouter();
+        var telemetry = new RecordingTelemetryRouter();
+        using var host = await BuildHostAsync(key.TenantId, key.AgentId,
+            new CurrentPresenceRouter(key.TenantId, key.AgentId, connection, 5), telemetry, services);
+        using var channel = GrpcChannel.ForAddress("http://localhost", new GrpcChannelOptions { HttpHandler = host.GetTestServer().CreateHandler() });
+        using var call = new global::NetRatel.AgentGateway.Contracts.V1.AgentTelemetryGatewayV2.AgentTelemetryGatewayV2Client(channel).Connect();
+        var hello = TelemetryHello(key, connection, 5);
+        hello.Hello.Capabilities.Add(ClientServicesLimits.Capability);
+        await call.RequestStream.WriteAsync(hello);
+        (await call.ResponseStream.MoveNext(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5))).Should().BeTrue();
+        call.ResponseStream.Current.Accepted.AcceptedCapabilities.Should().Contain(ClientServicesLimits.Capability);
+        (await call.ResponseStream.MoveNext(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5))).Should().BeTrue();
+        call.ResponseStream.Current.ServiceWatchPolicy.ServiceNames.Should().BeEmpty("inventory discovery does not imply monitoring");
+
+        await call.RequestStream.WriteAsync(new AgentTelemetryFrame
+        {
+            ProtocolVersion = "1.0", TenantId = key.TenantId, ClientId = key.AgentId.ToString("D"),
+            ConnectionId = connection.ToString("D"), ConnectionEpoch = 5, Sequence = 1,
+            Snapshot = CreateFrame(key.TenantId, key.AgentId, connection, 5, 1, 12)
+        });
+        (await call.ResponseStream.MoveNext(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5))).Should().BeTrue();
+        call.ResponseStream.Current.SnapshotAccepted.AcceptedSequence.Should().Be(1);
+        await call.RequestStream.WriteAsync(ServicesFrame(key, connection, 2));
+        (await call.ResponseStream.MoveNext(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5))).Should().BeTrue();
+        call.ResponseStream.Current.SnapshotAccepted.AcceptedSequence.Should().Be(2);
+        call.ResponseStream.Current.SnapshotAccepted.AvailableCredits.Should().Be(1);
+        services.Chunks.Should().ContainSingle().Which.Client.Should().Be(key);
+        services.Chunks.Single().Sequence.Should().Be(2);
+        services.Chunks.Single().Services.Single().State.Should().Be(ClientServiceState.Stopped);
+        telemetry.Latest!.Snapshot.Sequence.Should().Be(1);
+    }
+
+    [Theory]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public async Task ServicesFramesRequireBothEndpointsToSupportCapability(bool clientCapable, bool serverCapable)
+    {
+        var key = new ClientKey(90, Guid.NewGuid());
+        var connection = Guid.NewGuid();
+        var services = new RecordingServicesRouter();
+        using var host = await BuildHostAsync(key.TenantId, key.AgentId,
+            new CurrentPresenceRouter(key.TenantId, key.AgentId, connection, 5), new RecordingTelemetryRouter(), serverCapable ? services : null);
+        using var channel = GrpcChannel.ForAddress("http://localhost", new GrpcChannelOptions { HttpHandler = host.GetTestServer().CreateHandler() });
+        using var call = new global::NetRatel.AgentGateway.Contracts.V1.AgentTelemetryGatewayV2.AgentTelemetryGatewayV2Client(channel).Connect();
+        var hello = TelemetryHello(key, connection, 5);
+        if (clientCapable) hello.Hello.Capabilities.Add(ClientServicesLimits.Capability);
+        await call.RequestStream.WriteAsync(hello);
+        (await call.ResponseStream.MoveNext(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5))).Should().BeTrue();
+        call.ResponseStream.Current.Accepted.AcceptedCapabilities.Should().BeEmpty();
+        await call.RequestStream.WriteAsync(ServicesFrame(key, connection, 1));
+        var read = async () => await call.ResponseStream.MoveNext(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+        (await read.Should().ThrowAsync<RpcException>()).Which.StatusCode.Should().Be(StatusCode.FailedPrecondition);
+        services.Chunks.Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData("cross-tenant", StatusCode.InvalidArgument)]
+    [InlineData("wrong-connection", StatusCode.InvalidArgument)]
+    [InlineData("oversized", StatusCode.ResourceExhausted)]
+    [InlineData("missing-unconfirmed", StatusCode.InvalidArgument)]
+    public async Task ServicesValidationRejectsUnsafeFramesBeforeProjection(string defect, StatusCode expected)
+    {
+        var key = new ClientKey(91, Guid.NewGuid());
+        var connection = Guid.NewGuid();
+        var services = new RecordingServicesRouter();
+        using var host = await BuildHostAsync(key.TenantId, key.AgentId,
+            new CurrentPresenceRouter(key.TenantId, key.AgentId, connection, 5), new RecordingTelemetryRouter(), services);
+        using var channel = GrpcChannel.ForAddress("http://localhost", new GrpcChannelOptions { HttpHandler = host.GetTestServer().CreateHandler() });
+        using var call = new global::NetRatel.AgentGateway.Contracts.V1.AgentTelemetryGatewayV2.AgentTelemetryGatewayV2Client(channel).Connect();
+        var hello = TelemetryHello(key, connection, 5);
+        hello.Hello.Capabilities.Add(ClientServicesLimits.Capability);
+        await call.RequestStream.WriteAsync(hello);
+        (await call.ResponseStream.MoveNext(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5))).Should().BeTrue();
+        (await call.ResponseStream.MoveNext(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5))).Should().BeTrue();
+        var frame = ServicesFrame(key, connection, 1);
+        if (defect == "cross-tenant") frame.TenantId++;
+        if (defect == "wrong-connection") frame.ConnectionId = Guid.NewGuid().ToString("D");
+        if (defect == "oversized")
+            for (var index = 0; index < 30; index++)
+                frame.ServicesChunk.Services.Add(new ServiceObservation
+                {
+                    Name = "service-" + index, DisplayName = new string('d', 512), Platform = ServicePlatform.Windows,
+                    State = ServiceState.Stopped, ObservedAtUtc = Timestamp.FromDateTimeOffset(DateTimeOffset.UtcNow)
+                });
+        if (defect == "missing-unconfirmed") frame.ServicesChunk.Services[0].State = ServiceState.Missing;
+        await call.RequestStream.WriteAsync(frame);
+        var read = async () => await call.ResponseStream.MoveNext(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+        (await read.Should().ThrowAsync<RpcException>()).Which.StatusCode.Should().Be(expected);
+        services.Chunks.Should().BeEmpty();
+    }
+
+    private static AgentTelemetryFrame ServicesFrame(ClientKey client, Guid connection, ulong sequence) => new()
+    {
+        ProtocolVersion = "1.0", TenantId = client.TenantId, ClientId = client.AgentId.ToString("D"),
+        ConnectionId = connection.ToString("D"), ConnectionEpoch = 5, Sequence = sequence,
+        ServicesChunk = new ServiceSnapshotChunk
+        {
+            CollectionId = Guid.NewGuid().ToString("D"), Kind = ServiceSnapshotType.Inventory,
+            Status = ServiceCollectionCompleteness.Complete, IsFinal = true,
+            ObservedAtUtc = Timestamp.FromDateTimeOffset(DateTimeOffset.UtcNow),
+            Services = { new ServiceObservation
+            {
+                Name = "synthetic-stopped", DisplayName = "Synthetic stopped service", Platform = ServicePlatform.Windows,
+                State = ServiceState.Stopped, RawState = "Stopped", StartMode = "Automatic",
+                ObservedAtUtc = Timestamp.FromDateTimeOffset(DateTimeOffset.UtcNow)
+            } }
+        }
+    };
+
     [Fact]
     public async Task ConnectV2_AdmitsFencedAgentAndAcknowledgesAuthoritativeSnapshot()
     {
@@ -387,7 +504,8 @@ public sealed class AgentTelemetryGatewayServiceTests
         int tenantId,
         Guid agentId,
         IClientPresenceRouter presence,
-        IClientTelemetryRouter telemetry)
+        IClientTelemetryRouter telemetry,
+        IClientServicesRouter? servicesRouter = null)
     {
         var builder = Host.CreateDefaultBuilder();
         builder.ConfigureWebHost(web =>
@@ -405,6 +523,11 @@ public sealed class AgentTelemetryGatewayServiceTests
                 services.AddGrpc();
                 services.AddSingleton(presence);
                 services.AddSingleton(telemetry);
+                if (servicesRouter is not null)
+                {
+                    services.AddSingleton(servicesRouter);
+                    services.AddSingleton<IClientServiceWatchPolicySource, EmptyClientServiceWatchPolicySource>();
+                }
                 services.AddSingleton<IAgentTelemetryCompatibilityRegistry, GatewayTelemetryCompatibilityRegistry>();
                 services.AddSingleton<IGatewayTelemetryLiveRegistry, GatewayTelemetryLiveRegistry>();
                 services.AddSingleton<TelemetryInteractiveDemandRegistry>();
@@ -511,6 +634,18 @@ public sealed class AgentTelemetryGatewayServiceTests
 
         public Task<ClientPresenceRouteStatus> ProbeAsync(CancellationToken cancellationToken) =>
             throw new NotSupportedException();
+    }
+
+    private sealed class RecordingServicesRouter : IClientServicesRouter
+    {
+        public List<ClientServicesChunk> Chunks { get; } = [];
+        public Task<ClientServicesMessageResult> RecordAsync(RecordClientServicesChunk message, CancellationToken cancellationToken)
+        {
+            Chunks.Add(message.Chunk);
+            return Task.FromResult(new ClientServicesMessageResult(message.Client, ClientServicesMessageDisposition.Accepted, message.Chunk.Sequence));
+        }
+        public Task<ClientServicesState> GetSnapshotAsync(ClientKey client, CancellationToken cancellationToken) => Task.FromResult(ClientServicesState.Empty(client));
+        public Task<ClientServicesState> UpdateWatchPolicyAsync(ClientServiceWatchPolicy policy, CancellationToken cancellationToken) => Task.FromResult(ClientServicesState.Empty(policy.Client));
     }
 
     private sealed class ActiveAgentManagementService(int tenantId, Guid agentId) : IAgentManagementService

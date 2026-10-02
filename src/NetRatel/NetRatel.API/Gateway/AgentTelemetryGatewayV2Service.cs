@@ -8,6 +8,9 @@ using NetRatel.Akka.Observability;
 using NetRatel.Application.Agents;
 using NetRatel.Application.Presence;
 using NetRatel.Application.Telemetry;
+using NetRatel.Application.Services;
+using NetRatel.API.Services;
+using NetRatel.Shared.Contracts.Services;
 
 namespace NetRatel.API.Gateway;
 
@@ -23,7 +26,9 @@ public sealed class AgentTelemetryGatewayV2Service(
     NetRatelAkkaOptions options,
     TimeProvider timeProvider,
     IHostEnvironment environment,
-    ILogger<AgentTelemetryGatewayV2Service> logger)
+    ILogger<AgentTelemetryGatewayV2Service> logger,
+    IClientServicesRouter? servicesRouter = null,
+    IClientServiceWatchPolicySource? watchPolicySource = null)
     : global::NetRatel.AgentGateway.Contracts.V1.AgentTelemetryGatewayV2.AgentTelemetryGatewayV2Base
 {
     public override async Task Connect(
@@ -58,10 +63,12 @@ public sealed class AgentTelemetryGatewayV2Service(
         await RequireActivePresenceAsync(client, hello.ConnectionId, hello.ConnectionEpoch, context.CancellationToken).ConfigureAwait(false);
         var connectionId = Guid.Parse(hello.ConnectionId);
         var supportsDynamicSampling = hello.Hello.Capabilities.Contains("telemetry-rate-control-v1", StringComparer.Ordinal);
+        var supportsServices = servicesRouter is not null && watchPolicySource is not null &&
+            hello.Hello.Capabilities.Contains(ClientServicesLimits.Capability, StringComparer.Ordinal);
         AgentTelemetryGatewaySessionRegistration registration;
         try
         {
-            registration = sessions.Register(client, connectionId, hello.ConnectionEpoch, supportsDynamicSampling, hello.Hello.AgentVersion, provisional: true);
+            registration = sessions.Register(client, connectionId, hello.ConnectionEpoch, supportsDynamicSampling, hello.Hello.AgentVersion, provisional: true, supportsServices);
         }
         catch (AgentGatewayRegistrationFencedException exception)
         {
@@ -86,6 +93,8 @@ public sealed class AgentTelemetryGatewayV2Service(
 
             try
             {
+                var accepted = new TelemetryConnectAccepted { TelemetryAuthority = "akka", MaximumInFlightFrames = 1 };
+                if (registration.SupportsServices) accepted.AcceptedCapabilities.Add(ClientServicesLimits.Capability);
                 await registration.EnqueueReliableAsync(new GatewayTelemetryFrame
                 {
                     ProtocolVersion = NetRatelAkkaOptions.ProtocolVersion,
@@ -94,8 +103,19 @@ public sealed class AgentTelemetryGatewayV2Service(
                     ConnectionEpoch = hello.ConnectionEpoch,
                     ConnectionId = hello.ConnectionId,
                     Sequence = 0,
-                    Accepted = new TelemetryConnectAccepted { TelemetryAuthority = "akka", MaximumInFlightFrames = 1 }
+                    Accepted = accepted
                 }, admissionCancellation.Token).ConfigureAwait(false);
+                if (registration.SupportsServices)
+                {
+                    var policy = await watchPolicySource!.GetPolicyAsync(client, admissionCancellation.Token).ConfigureAwait(false);
+                    if (policy.Client != client || !ClientServicesCoordinator.IsValidPolicy(policy.Policy, timeProvider.GetUtcNow()))
+                        throw new RpcException(new Status(StatusCode.Unavailable, "The services watch policy is unavailable."));
+                    await servicesRouter!.UpdateWatchPolicyAsync(policy, admissionCancellation.Token).ConfigureAwait(false);
+                    var queued = false;
+                    if (!registration.TryPublish(() => queued = sessions.TryPublishServicesPolicy(client, policy.Policy)))
+                        throw new RpcException(new Status(StatusCode.Aborted, "Telemetry registration has been replaced."));
+                    if (!queued) throw new RpcException(new Status(StatusCode.Unavailable, "The services policy could not be admitted."));
+                }
             }
             catch (OperationCanceledException) when (registration.CompletionToken.IsCancellationRequested && !context.CancellationToken.IsCancellationRequested)
             {
@@ -108,43 +128,69 @@ public sealed class AgentTelemetryGatewayV2Service(
                 while (await requestStream.MoveNext(cancellationToken).ConfigureAwait(false))
                 {
                     var envelope = requestStream.Current;
-                    if (envelope.PayloadCase != AgentTelemetryFrame.PayloadOneofCase.Snapshot ||
+                    var isServices = envelope.PayloadCase == AgentTelemetryFrame.PayloadOneofCase.ServicesChunk;
+                    if ((!isServices && envelope.PayloadCase != AgentTelemetryFrame.PayloadOneofCase.Snapshot) ||
                         !MatchesSession(envelope, client) || envelope.ConnectionEpoch != hello.ConnectionEpoch ||
-                        !string.Equals(envelope.ConnectionId, hello.ConnectionId, StringComparison.OrdinalIgnoreCase) || envelope.Sequence == 0 || envelope.Sequence <= lastSequence ||
+                        !string.Equals(envelope.ConnectionId, hello.ConnectionId, StringComparison.OrdinalIgnoreCase) || envelope.Sequence == 0 || envelope.Sequence <= lastSequence)
+                        throw new RpcException(new Status(StatusCode.InvalidArgument, "The telemetry envelope is invalid or stale."));
+                    if (isServices && !registration.SupportsServices)
+                        throw new RpcException(new Status(StatusCode.FailedPrecondition, "Services capability was not negotiated."));
+                    if (!isServices && (
                         envelope.Snapshot.Sequence != envelope.Sequence || envelope.Snapshot.ConnectionEpoch != envelope.ConnectionEpoch ||
-                        !string.Equals(envelope.Snapshot.ConnectionId, envelope.ConnectionId, StringComparison.OrdinalIgnoreCase))
+                        !string.Equals(envelope.Snapshot.ConnectionId, envelope.ConnectionId, StringComparison.OrdinalIgnoreCase)))
                     {
                         throw new RpcException(new Status(StatusCode.InvalidArgument, "The telemetry snapshot envelope is invalid or stale."));
                     }
 
-                    AgentTelemetryGatewayMapper.ThrowIfInvalid(AgentTelemetryProtocolValidator.Validate(
+                    if (!isServices) AgentTelemetryGatewayMapper.ThrowIfInvalid(AgentTelemetryProtocolValidator.Validate(
                         envelope.Snapshot, identity, NetRatelAkkaOptions.ProtocolVersion, options.MaxTelemetryScopesPerFrame));
                     await RequireActivePresenceAsync(client, envelope.ConnectionId, envelope.ConnectionEpoch, cancellationToken).ConfigureAwait(false);
                     if (!registration.IsCurrent)
                     {
                         throw new RpcException(new Status(StatusCode.Aborted, "Telemetry session has been replaced."));
                     }
-                    var snapshot = AgentTelemetryGatewayMapper.MapSnapshot(
-                        envelope.Snapshot,
-                        client,
-                        checked((long)envelope.ConnectionEpoch),
-                        timeProvider.GetUtcNow());
-                    var result = await telemetryRouter.RecordAsync(new RecordTelemetrySnapshot(snapshot), cancellationToken).ConfigureAwait(false);
-                    if (!registration.TryPublish(() =>
+                    ulong acceptedSequence;
+                    if (isServices)
                     {
-                        if (result.Disposition == TelemetryMessageDisposition.Accepted)
-                        {
-                            compatibilityRegistry.Upsert(snapshot);
-                            liveRegistry.PublishAccepted(snapshot);
-                        }
-                    }))
-                    {
-                        throw new RpcException(new Status(StatusCode.Aborted, "Telemetry registration has been replaced."));
+                        var chunk = ClientServicesGatewayMapper.Map(envelope, client, timeProvider.GetUtcNow());
+                        var servicesResult = await servicesRouter!.RecordAsync(new(chunk), cancellationToken).ConfigureAwait(false);
+                        if (servicesResult.Disposition != ClientServicesMessageDisposition.Accepted)
+                            throw new RpcException(new Status(servicesResult.Disposition switch
+                            {
+                                ClientServicesMessageDisposition.PersistenceUnavailable => StatusCode.Unavailable,
+                                ClientServicesMessageDisposition.CapacityExceeded => StatusCode.ResourceExhausted,
+                                ClientServicesMessageDisposition.Invalid => StatusCode.InvalidArgument,
+                                _ => StatusCode.Aborted
+                            }, "The services chunk was rejected by its projection fence."));
+                        if (!registration.TryPublish(() => { }))
+                            throw new RpcException(new Status(StatusCode.Aborted, "Telemetry registration has been replaced."));
+                        acceptedSequence = servicesResult.LastAcceptedSequence;
                     }
-                    using var activity = NetRatelAkkaTelemetry.StartAuthorityActivity(
-                        "telemetry", "akka", "snapshot", environment.EnvironmentName);
-                    NetRatelAkkaTelemetry.RecordAuthorityRequest("telemetry", "akka", environment.EnvironmentName);
-                    NetRatelAkkaTelemetry.RecordAuthorityEvent("telemetry", "akka", environment.EnvironmentName);
+                    else
+                    {
+                        var snapshot = AgentTelemetryGatewayMapper.MapSnapshot(
+                            envelope.Snapshot,
+                            client,
+                            checked((long)envelope.ConnectionEpoch),
+                            timeProvider.GetUtcNow());
+                        var result = await telemetryRouter.RecordAsync(new RecordTelemetrySnapshot(snapshot), cancellationToken).ConfigureAwait(false);
+                        if (!registration.TryPublish(() =>
+                        {
+                            if (result.Disposition == TelemetryMessageDisposition.Accepted)
+                            {
+                                compatibilityRegistry.Upsert(snapshot);
+                                liveRegistry.PublishAccepted(snapshot);
+                            }
+                        }))
+                        {
+                            throw new RpcException(new Status(StatusCode.Aborted, "Telemetry registration has been replaced."));
+                        }
+                        using var activity = NetRatelAkkaTelemetry.StartAuthorityActivity(
+                            "telemetry", "akka", "snapshot", environment.EnvironmentName);
+                        NetRatelAkkaTelemetry.RecordAuthorityRequest("telemetry", "akka", environment.EnvironmentName);
+                        NetRatelAkkaTelemetry.RecordAuthorityEvent("telemetry", "akka", environment.EnvironmentName);
+                        acceptedSequence = result.LastAcceptedSequence;
+                    }
                     lastSequence = envelope.Sequence;
                     await registration.EnqueueReliableAsync(new GatewayTelemetryFrame
                     {
@@ -154,7 +200,7 @@ public sealed class AgentTelemetryGatewayV2Service(
                         ConnectionEpoch = envelope.ConnectionEpoch,
                         ConnectionId = envelope.ConnectionId,
                         Sequence = envelope.Sequence,
-                        SnapshotAccepted = new TelemetrySnapshotAccepted { AcceptedSequence = result.LastAcceptedSequence, AvailableCredits = 1 }
+                        SnapshotAccepted = new TelemetrySnapshotAccepted { AcceptedSequence = acceptedSequence, AvailableCredits = 1 }
                     }, cancellationToken).ConfigureAwait(false);
                 }
             },
@@ -175,7 +221,7 @@ public sealed class AgentTelemetryGatewayV2Service(
         string.Equals(frame.ProtocolVersion, NetRatelAkkaOptions.ProtocolVersion, StringComparison.Ordinal) &&
         frame.TenantId == client.TenantId &&
         string.Equals(frame.ClientId, client.AgentId.ToString("D"), StringComparison.OrdinalIgnoreCase) &&
-        Guid.TryParse(frame.ConnectionId, out var connectionId) && connectionId != Guid.Empty && frame.ConnectionEpoch > 0;
+        Guid.TryParse(frame.ConnectionId, out var connectionId) && connectionId != Guid.Empty && frame.ConnectionEpoch is > 0 and <= long.MaxValue;
 
     private async Task RequireActivePresenceAsync(ClientKey client, string connectionId, ulong connectionEpoch, CancellationToken cancellationToken)
     {

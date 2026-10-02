@@ -905,6 +905,52 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.ToTable("ClientWindowsSessionInventoryRefreshes", (string)null);
                 });
 
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ClientConnectionEpochRecord", b =>
+                {
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("AgentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<long>("LastIssuedEpoch")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("TenantId", "AgentId");
+
+                    b.ToTable("ClientConnectionEpochs", (string)null);
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ClientServicesSnapshotRecord", b =>
+                {
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("AgentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<long>("ConnectionEpoch")
+                        .HasColumnType("bigint");
+
+                    b.Property<decimal>("LastAcceptedSequence")
+                        .HasColumnType("numeric(20,0)");
+
+                    b.Property<long>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("StateJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<DateTimeOffset>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("TenantId", "AgentId");
+
+                    b.ToTable("ClientServicesSnapshots", (string)null);
+                });
+
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ClientWindowsSessionSnapshot", b =>
                 {
                     b.Property<Guid>("Id")

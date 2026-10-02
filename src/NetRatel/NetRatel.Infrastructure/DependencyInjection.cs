@@ -49,6 +49,7 @@ public static class DependencyInjection
         services.AddScoped<IDeploymentBrandingService, DeploymentBrandingService>();
         services.AddNetRatelCommandPersistence();
         services.AddNetRatelJobObservationPersistence();
+        services.AddNetRatelClientServicesPersistence();
         services.AddNetRatelRemoteSupportLifecycle();
 
         services.AddSingleton<INetRatelNotificationEventBus, NetRatelNotificationEventBus>();

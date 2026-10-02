@@ -15,15 +15,18 @@ public sealed class ClientPresenceRouterActor : ReceiveActor
 {
     private readonly NetRatelAkkaOptions _options;
     private readonly IActorRef _presenceReadModel;
+    private readonly IClientConnectionEpochStore? _epochStore;
     private readonly ClientPresenceMessageExtractor _extractor = new();
     private readonly DateTimeOffset _startedAtUtc = DateTimeOffset.UtcNow;
 
     public ClientPresenceRouterActor(
         NetRatelAkkaOptions options,
-        IActorRef presenceReadModel)
+        IActorRef presenceReadModel,
+        IClientConnectionEpochStore? epochStore = null)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _presenceReadModel = presenceReadModel ?? throw new ArgumentNullException(nameof(presenceReadModel));
+        _epochStore = epochStore;
 
         Receive<IClientPresenceMessage>(message => GetClientActor(message).Forward(message));
         Receive<ProbeClientPresenceRoute>(_ =>
@@ -39,8 +42,9 @@ public sealed class ClientPresenceRouterActor : ReceiveActor
 
     public static Props Props(
         NetRatelAkkaOptions options,
-        IActorRef presenceReadModel) =>
-        global::Akka.Actor.Props.Create(() => new ClientPresenceRouterActor(options, presenceReadModel));
+        IActorRef presenceReadModel,
+        IClientConnectionEpochStore? epochStore = null) =>
+        global::Akka.Actor.Props.Create(() => new ClientPresenceRouterActor(options, presenceReadModel, epochStore));
 
     private IActorRef GetClientActor(IClientPresenceMessage message)
     {
@@ -53,7 +57,7 @@ public sealed class ClientPresenceRouterActor : ReceiveActor
         }
 
         using var activity = NetRatelAkkaTelemetry.StartActivity("akka.actor.create", "presence");
-        var actor = Context.ActorOf(ClientActor.Props(message.Client, _options, _presenceReadModel), actorName);
+        var actor = Context.ActorOf(ClientActor.Props(message.Client, _options, _presenceReadModel, _epochStore), actorName);
         NetRatelAkkaTelemetry.SetPresenceActiveClients(Context.GetChildren().Count());
         return actor;
     }

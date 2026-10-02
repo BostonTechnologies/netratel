@@ -15,6 +15,8 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
     private readonly ClientKey _client;
     private readonly NetRatelAkkaOptions _options;
     private readonly IActorRef _presenceReadModel;
+    private readonly IClientConnectionEpochStore? _epochStore;
+    private readonly CancellationTokenSource _stopping = new();
     private readonly ILoggingAdapter _log = Context.GetLogger();
 
     private ClientPresenceStatus _status = ClientPresenceStatus.Unknown;
@@ -32,7 +34,8 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
     public PresenceActor(
         ClientKey client,
         NetRatelAkkaOptions options,
-        IActorRef presenceReadModel)
+        IActorRef presenceReadModel,
+        IClientConnectionEpochStore? epochStore = null)
     {
         if (!client.IsValid)
         {
@@ -42,8 +45,9 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
         _client = client;
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _presenceReadModel = presenceReadModel ?? throw new ArgumentNullException(nameof(presenceReadModel));
+        _epochStore = epochStore;
 
-        Receive<StartGatewayPresenceSession>(HandleStartSession);
+        ReceiveAsync<StartGatewayPresenceSession>(HandleStartSessionAsync);
         Receive<RecordGatewayHeartbeat>(HandleHeartbeat);
         Receive<EndGatewayPresenceSession>(HandleEndSession);
         Receive<GetClientPresence>(_ => Sender.Tell(CreateSnapshot()));
@@ -52,19 +56,28 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
 
     public ITimerScheduler Timers { get; set; } = null!;
 
+    protected override void PostStop()
+    {
+        _stopping.Cancel();
+        _stopping.Dispose();
+        base.PostStop();
+    }
+
     public static Props Props(
         ClientKey client,
         NetRatelAkkaOptions options,
-        IActorRef presenceReadModel) =>
-        global::Akka.Actor.Props.Create(() => new PresenceActor(client, options, presenceReadModel));
+        IActorRef presenceReadModel,
+        IClientConnectionEpochStore? epochStore = null) =>
+        global::Akka.Actor.Props.Create(() => new PresenceActor(client, options, presenceReadModel, epochStore));
 
-    private void HandleStartSession(StartGatewayPresenceSession message)
+    private async Task HandleStartSessionAsync(StartGatewayPresenceSession message)
     {
+        var replyTo = Sender;
         EnsureClient(message.Client);
 
         if (_activeConnectionId == message.ConnectionId && _activeEpoch.HasValue)
         {
-            Sender.Tell(new GatewayPresenceSessionStarted(
+            replyTo.Tell(new GatewayPresenceSessionStarted(
                 _client,
                 message.ConnectionId,
                 _activeEpoch.Value,
@@ -73,7 +86,22 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
             return;
         }
 
-        _lastIssuedEpoch = checked(_lastIssuedEpoch + 1);
+        try
+        {
+            // Omission of the store is an isolated actor-test seam. Production Hosting always
+            // passes the persisted allocator; local test systems retain predictable epochs.
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(_stopping.Token);
+            timeout.CancelAfter(TimeSpan.FromTicks(Math.Min(TimeSpan.FromSeconds(10).Ticks, _options.AskTimeout.Ticks / 2)));
+            var allocatedEpoch = _epochStore is null ? checked(_lastIssuedEpoch + 1)
+                : await _epochStore.AllocateAsync(_client, _lastIssuedEpoch, timeout.Token).WaitAsync(timeout.Token);
+            if (allocatedEpoch <= _lastIssuedEpoch) throw new InvalidOperationException("Connection epoch did not advance.");
+            _lastIssuedEpoch = allocatedEpoch;
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            replyTo.Tell(new Status.Failure(new InvalidOperationException("Gateway connection epoch allocation failed.", exception)));
+            return;
+        }
         _activeEpoch = _lastIssuedEpoch;
         _activeConnectionId = message.ConnectionId;
         _lastAcceptedSequence = 0;
@@ -104,7 +132,7 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
             _lastIssuedEpoch,
             message.ConnectionId);
 
-        Sender.Tell(new GatewayPresenceSessionStarted(
+        replyTo.Tell(new GatewayPresenceSessionStarted(
             _client,
             message.ConnectionId,
             _lastIssuedEpoch,

@@ -5,11 +5,50 @@ using NetRatel.API.Gateway;
 using NetRatel.API.Realtime;
 using NetRatel.Application.Presence;
 using Xunit;
+using NetRatel.Shared.Contracts.Services;
 
 namespace NetRatel.Tests.API;
 
 public sealed class AgentTelemetryGatewaySessionRegistryTests
 {
+    [Fact]
+    public async Task ServicesPoliciesCoalesceWithoutLosingRefreshOrReliableAcknowledgements()
+    {
+        var registry = new AgentTelemetryGatewaySessionRegistry(CreateDemand(), new GatewayTelemetryLiveRegistry());
+        var client = new ClientKey(12, Guid.NewGuid());
+        await using var session = registry.Register(client, Guid.NewGuid(), 1, false, "services", false, true);
+        var refresh = Guid.NewGuid();
+        var policy = new ClientServiceWatchPolicyDto(1, ["synthetic.service"], 30, 900, DateTimeOffset.UtcNow.AddMinutes(1), refresh);
+        registry.TryPublishServicesPolicy(client, policy).Should().BeTrue();
+        for (ulong revision = 2; revision <= 1000; revision++)
+            registry.TryPublishServicesPolicy(client, policy with { Revision = revision, RefreshRequestId = null }).Should().BeTrue();
+        await session.EnqueueReliableAsync(new GatewayTelemetryFrame { SnapshotAccepted = new() { AcceptedSequence = 3, AvailableCredits = 1 } }, CancellationToken.None);
+        await using var reader = session.ReadOutboundAsync(CancellationToken.None).GetAsyncEnumerator();
+        (await reader.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(2))).Should().BeTrue();
+        reader.Current.SnapshotAccepted.AcceptedSequence.Should().Be(3);
+        (await reader.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(2))).Should().BeTrue();
+        reader.Current.ServiceWatchPolicy.Revision.Should().Be(1000);
+        reader.Current.ServiceWatchPolicy.RefreshRequestId.Should().Be(refresh.ToString("D"));
+        registry.GetStatus(client).SupportsServices.Should().BeTrue();
+        registry.TryPublishServicesPolicy(client, policy with { Revision = 999 }).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task OldClientsAndOversizedOrUnsafeWatchSelectionAreNeverSentPolicies()
+    {
+        var registry = new AgentTelemetryGatewaySessionRegistry(CreateDemand(), new GatewayTelemetryLiveRegistry());
+        var client = new ClientKey(12, Guid.NewGuid());
+        var connection = Guid.NewGuid();
+        await using var old = registry.Register(client, connection, 1, false, "old");
+        var policy = new ClientServiceWatchPolicyDto(1, [], 30, 900, DateTimeOffset.UtcNow.AddMinutes(1));
+        registry.TryPublishServicesPolicy(client, policy).Should().BeFalse();
+        await using var current = registry.Register(client, connection, 2, false, "new", false, true);
+        registry.TryPublishServicesPolicy(client, policy with { ServiceNames = ["../unsafe.service"] }).Should().BeFalse();
+        var names = Enumerable.Range(0, 64).Select(index => new string('界', 245) + index).ToArray();
+        registry.TryPublishServicesPolicy(client, policy with { ServiceNames = names }).Should().BeFalse();
+        registry.TryPublishServicesPolicy(client, policy with { ServiceNames = ["synthetic.service"] }).Should().BeTrue();
+    }
+
     [Fact]
     public async Task CapableLateSession_ReceivesCurrentPolicy_AndNewerPolicyWins()
     {
@@ -47,7 +86,8 @@ public sealed class AgentTelemetryGatewaySessionRegistryTests
         await oldSession.DisposeAsync();
 
         newSession.IsCurrent.Should().BeTrue();
-        registry.GetStatus(client).Should().Be(new AgentTelemetryGatewaySessionStatus(true, true, "new", 2));
+        registry.GetStatus(client).Should().Be(new AgentTelemetryGatewaySessionStatus(true, true, "new", 2)
+        { ConnectionId = newConnection, RegistrationId = newSession.RegistrationId });
     }
 
     [Fact]
@@ -67,7 +107,8 @@ public sealed class AgentTelemetryGatewaySessionRegistryTests
         ambiguousFence.Should().Throw<AgentGatewayRegistrationFencedException>();
 
         reconnect.IsCurrent.Should().BeTrue();
-        registry.GetStatus(client).Should().Be(new AgentTelemetryGatewaySessionStatus(true, true, "reconnect", 5));
+        registry.GetStatus(client).Should().Be(new AgentTelemetryGatewaySessionStatus(true, true, "reconnect", 5)
+        { ConnectionId = connection, RegistrationId = reconnect.RegistrationId });
     }
 
     [Fact]
