@@ -48,7 +48,7 @@ tar -xzf "$bundle" -C "$bundle_extract_directory"
 [[ -f "$bundle_extract_directory/compose.images.yaml" ]] || { echo "The extracted release bundle is missing compose.images.yaml." >&2; exit 1; }
 
 legacy_compose=(docker compose --project-name "$project" -f release/compose.images.yaml \
-  -f tests/compose/oidc-smoke.compose.yaml -f tests/compose/prior-release-endpoints.compose.yaml)
+  -f tests/compose/prior-release-endpoints.compose.yaml -f tests/compose/oidc-smoke.compose.yaml)
 current_compose=(docker compose --project-name "$project" -f "$bundle_extract_directory/compose.images.yaml" -f tests/compose/oidc-smoke.compose.yaml)
 
 cleanup() {

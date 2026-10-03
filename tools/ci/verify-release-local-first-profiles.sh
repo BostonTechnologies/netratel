@@ -98,12 +98,19 @@ jq -e '
 
 prior_endpoints="$(NETRATEL_PUBLIC_ORIGIN= NETRATEL_PUBLIC_GATEWAY_ORIGIN= \
   compose -f "$temporary_dir/compose.images.yaml" -f "$root/tests/compose/prior-release-endpoints.compose.yaml" config --format json)"
-jq -e '
-  (.services.api.environment | has("Branding__SiteUrl") | not)
-  and (.services.api.environment | has("Branding__GatewayUrl") | not)
-' <<<"$prior_endpoints" >/dev/null || {
-  echo "Prior-image upgrade seed must not inherit candidate endpoint configuration." >&2
-  exit 1
-}
+prior_oidc_endpoints="$(NETRATEL_PUBLIC_ORIGIN= NETRATEL_PUBLIC_GATEWAY_ORIGIN= \
+  NETRATEL_GATEWAY_PROXY_CONFIG_PATH="$root/tests/compose/gateway-proxy.nginx.conf" \
+  NETRATEL_PUBLIC_NGINX_CONFIG_PATH="$temporary_dir/nginx.public-https.conf" \
+  compose -f "$temporary_dir/compose.images.yaml" -f "$root/tests/compose/prior-release-endpoints.compose.yaml" \
+    -f "$root/tests/compose/oidc-smoke.compose.yaml" config --format json)"
+for prior_configuration in "$prior_endpoints" "$prior_oidc_endpoints"; do
+  jq -e '
+    (.services.api.environment | has("Branding__SiteUrl") | not)
+    and (.services.api.environment | has("Branding__GatewayUrl") | not)
+  ' <<<"$prior_configuration" >/dev/null || {
+    echo "Prior-image upgrade seed must not inherit candidate endpoint configuration." >&2
+    exit 1
+  }
+done
 
 echo "Validated local-first Compose profiles from extracted release bundle."
