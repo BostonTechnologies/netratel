@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 usage() {
   echo "Usage: $0 --bundle <netratel-compose.tar.gz>" >&2
@@ -81,6 +82,27 @@ jq -e '
   and .services.ingress.restart == "unless-stopped"
 ' <<<"$public_rendered" >/dev/null || {
   echo "Release HTTPS profile does not retain the public origin, trusted proxy, and secure-cookie contract." >&2
+  exit 1
+}
+
+blank_endpoints="$(NETRATEL_PUBLIC_ORIGIN= NETRATEL_PUBLIC_GATEWAY_ORIGIN= \
+  compose -f "$temporary_dir/compose.images.yaml" config --format json)"
+jq -e '
+  .services.api.environment.Branding__SiteUrl == ""
+  and .services.api.environment.Branding__GatewayUrl == ""
+  and .services.web.environment.ApiBaseUrl == "http://api:9222"
+' <<<"$blank_endpoints" >/dev/null || {
+  echo "Optional public endpoints must bind on API and preserve the internal Web API address." >&2
+  exit 1
+}
+
+prior_endpoints="$(NETRATEL_PUBLIC_ORIGIN= NETRATEL_PUBLIC_GATEWAY_ORIGIN= \
+  compose -f "$temporary_dir/compose.images.yaml" -f "$root/tests/compose/prior-release-endpoints.compose.yaml" config --format json)"
+jq -e '
+  (.services.api.environment | has("Branding__SiteUrl") | not)
+  and (.services.api.environment | has("Branding__GatewayUrl") | not)
+' <<<"$prior_endpoints" >/dev/null || {
+  echo "Prior-image upgrade seed must not inherit candidate endpoint configuration." >&2
   exit 1
 }
 
