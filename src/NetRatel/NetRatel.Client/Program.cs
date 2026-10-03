@@ -1,6 +1,7 @@
 using Humanizer;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
 using Microsoft.Win32;
 using NetRatel.Application.ClientAuth;
 using NetRatel.Client;
@@ -248,7 +249,8 @@ async Task RunClientAsync()
     LogManager.WriteLog($"Application {GlobalContext.version} starting.");
 
     var services = new ServiceCollection();
-    services.AddSingleton(cfg);
+    services.AddSingleton(clientResolution.ConfiguredOptions);
+    services.AddSingleton(sp => sp.GetRequiredService<IOptions<ClientOptions>>().Value);
     services.AddSingleton<IAgentCredentialStore, AgentCredentialStore>();
     services.AddSingleton<IAgentDeviceKeyStore>(sp => (IAgentDeviceKeyStore)sp.GetRequiredService<IAgentCredentialStore>());
     services.AddHttpClient("AgentAuthApi", http =>

@@ -21,10 +21,13 @@ service.
 
 Set `Client:ApiBaseUrl` to the public HTTPS origin used for enrollment and HTTP
 API calls. The Client uses that same URL for its gRPC gateway when
-`Gateway:Endpoint` is absent or empty. Generated Windows, Linux and macOS
-service installers persist the API URL once; an explicit `Gateway:Endpoint`
-sets the gateway's public HTTPS address for deployments that publish it on a
-separate host. Gateway operations use the configured endpoint. Remote Support
+`Gateway:Endpoint` is absent or empty in an existing/manual configuration.
+New public installers require explicit Site URL and Gateway URL values on
+Branding, or the API deployment options `Branding__SiteUrl` and
+`Branding__GatewayUrl`. Windows, Linux and macOS installers persist both
+addresses, including an explicit same-host gateway. For native Client Docker
+deployments, set `NetRatelCLIENT__Client__ApiBaseUrl` and
+`NetRatelCLIENT__Gateway__Endpoint`. Gateway operations use the configured endpoint. Remote Support
 V2 follows the enrolled Client's advertised capabilities and platform; provider
 handover remains governed by the `RemoteSupport:Handover` policy. Terminal
 support depends on the Client host's available shell/PTY capabilities.

@@ -446,6 +446,8 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         var fetchedScript = await firstFetch.TextAsync();
         Assert.Equal(fetchedScript, previewScript);
         Assert.StartsWith("#!/usr/bin/env bash", fetchedScript);
+        Assert.Contains($"API_BASE='{publicOrigin}'", fetchedScript);
+        Assert.Contains($"GATEWAY_ENDPOINT='{publicOrigin}'", fetchedScript);
         Assert.Contains("no-store", firstFetch.Headers["cache-control"]);
         var head = await anonymous.APIRequest.HeadAsync(routedUrl);
         Assert.True(head.Ok);
@@ -816,7 +818,14 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         var applicationName = page.GetByLabel("Application name");
         await applicationName.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         await applicationName.FillAsync("Browser branding example");
-        await page.GetByLabel("Site URL").FillAsync(InstallLinkPublicOrigin());
+        foreach (var label in new[] { "Site URL", "Gateway URL" })
+        {
+            var field = page.GetByLabel(label);
+            if (await field.IsDisabledAsync())
+                Assert.Equal(InstallLinkPublicOrigin(), await field.InputValueAsync());
+            else
+                await field.FillAsync(InstallLinkPublicOrigin());
+        }
         await applicationName.PressAsync("Tab");
         await page.GetByTestId("branding-save").ClickAsync();
         await page.GetByText("Branding saved.", new PageGetByTextOptions { Exact = false })
@@ -837,6 +846,8 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             var preview = page.GetByTestId("branding-preview");
             await preview.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
             Assert.Contains("Browser branding example", await preview.InnerTextAsync());
+            Assert.Equal(InstallLinkPublicOrigin(), await page.GetByLabel("Site URL").InputValueAsync());
+            Assert.Equal(InstallLinkPublicOrigin(), await page.GetByLabel("Gateway URL").InputValueAsync());
             await page.ScreenshotAsync(new PageScreenshotOptions
             {
                 Path = Path.Combine(directory, $"custom-{theme}-{name}.png"),
