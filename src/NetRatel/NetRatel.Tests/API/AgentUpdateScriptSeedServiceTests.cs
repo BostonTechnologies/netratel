@@ -132,13 +132,15 @@ public sealed class AgentUpdateScriptSeedServiceTests
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
     [SupportedOSPlatform("linux")]
-    public async Task Linux_seed_preserves_quoted_custom_paths_and_hands_off_private_parameters_without_secret_arguments(bool updaterOnlyState)
+    public async Task Linux_seed_preserves_custom_scalar_paths_and_legacy_units_without_secret_arguments(bool updaterOnlyState, bool legacyQuotes)
     {
         if (!OperatingSystem.IsLinux()) Assert.Skip("The temporary-filesystem handoff probe requires Linux.");
-        var fixture = await FixtureAsync(updaterOnlyState);
+        var fixture = await FixtureAsync(updaterOnlyState, legacyQuotes, escapedRoot: !legacyQuotes);
         try
         {
             var result = await DispatchAsync(fixture);
@@ -224,13 +226,13 @@ public sealed class AgentUpdateScriptSeedServiceTests
     private sealed record Fixture(string Root, string Bin, string Client, string State, string Unit, string Script, string Arguments, string Secret);
 
     [SupportedOSPlatform("linux")]
-    private static async Task<Fixture> FixtureAsync(bool updaterOnlyState = false)
+    private static async Task<Fixture> FixtureAsync(bool updaterOnlyState = false, bool legacyQuotes = false, bool escapedRoot = false)
     {
         var root = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), "netratel seed-" + Guid.NewGuid().ToString("N"))).FullName;
         File.SetUnixFileMode(root, (UnixFileMode)0x1C0);
         var bin = Directory.CreateDirectory(Path.Combine(root, "bin")).FullName;
-        var client = Directory.CreateDirectory(Path.Combine(root, "client")).FullName;
-        var state = Directory.CreateDirectory(Path.Combine(root, "state")).FullName;
+        var client = Directory.CreateDirectory(Path.Combine(root, escapedRoot ? "client-é" : "client")).FullName;
+        var state = Directory.CreateDirectory(Path.Combine(root, escapedRoot ? "state-é\\folder" : "state")).FullName;
         File.SetUnixFileMode(state, (UnixFileMode)0x1C0);
         var versions = Directory.CreateDirectory(Path.Combine(client, "versions", "1.2.3")).FullName;
         Directory.CreateSymbolicLink(Path.Combine(client, "current"), versions);
@@ -238,16 +240,16 @@ public sealed class AgentUpdateScriptSeedServiceTests
         var unit = Path.Combine(units, "netratel-client.service");
         await File.WriteAllTextAsync(unit, $$"""
 [Service]
-WorkingDirectory="{{client}}/current"
-ExecStart="{{client}}/netratel-client-start.sh"
-Environment="NetRatelCLIENT__Client__AutoUpdate__StateDirectory={{state}}"
+WorkingDirectory={{(legacyQuotes ? "\"" + client + "/current\"" : client + "/current")}}
+ExecStart="{{client.Replace("\\", "\\\\", StringComparison.Ordinal)}}/netratel-client-start.sh"
+Environment="NetRatelCLIENT__Client__AutoUpdate__StateDirectory={{state.Replace("\\", "\\\\", StringComparison.Ordinal)}}"
 """);
         if (updaterOnlyState)
         {
             var unitText = await File.ReadAllTextAsync(unit);
             await File.WriteAllTextAsync(unit, unitText[..unitText.IndexOf("Environment=", StringComparison.Ordinal)]);
             await File.WriteAllTextAsync(Path.Combine(units, "netratel-update.service"),
-                "[Service]\nEnvironment=\"NetRatel_UPDATE_STATE=" + state + "\"\n");
+                "[Service]\nEnvironment=\"NetRatel_UPDATE_STATE=" + state.Replace("\\", "\\\\", StringComparison.Ordinal) + "\"\n");
         }
         var script = Path.Combine(root, "seed.sh");
         var text = GetSeedScript("LinuxScript");

@@ -80,7 +80,7 @@ public sealed class LinuxInstallerTransactionTests
         Assert.Equal(ApiBase, installedSettings.RootElement.GetProperty("Client").GetProperty("ApiBaseUrl").GetString());
 
         var installedUnit = await File.ReadAllTextAsync(fixture.ClientUnitPath);
-        Assert.Contains($"WorkingDirectory=\"{fixture.InstallRoot}/current\"", installedUnit, StringComparison.Ordinal);
+        Assert.Contains($"WorkingDirectory={fixture.InstallRoot}/current", installedUnit, StringComparison.Ordinal);
         Assert.Contains($"ExecStart=\"{fixture.LauncherPath}\"", installedUnit, StringComparison.Ordinal);
         Assert.True(File.Exists(fixture.LauncherPath));
         Assert.True((File.GetUnixFileMode(fixture.LauncherPath) & UnixFileMode.UserExecute) != 0);
@@ -99,7 +99,7 @@ public sealed class LinuxInstallerTransactionTests
 
         Assert.Equal(1, result.ExitCode);
         Assert.Contains("previous installation was restored", result.StandardError, StringComparison.OrdinalIgnoreCase);
-        Assert.Equal(2, fixture.CountSystemctlCalls("stop netratel-client.service"));
+        Assert.Equal(1, fixture.CountSystemctlCalls("stop netratel-client.service"));
         Assert.True(fixture.CountSystemctlCalls("start netratel-client.service") >= 2);
         Assert.True(fixture.ClientServiceIsActive, "rollback must restart the previously active service");
         fixture.AssertInstalledStateEquals(before);
@@ -154,6 +154,198 @@ public sealed class LinuxInstallerTransactionTests
         Assert.Contains("NetRatelCLIENT__Client__AutoUpdate__Mode=Disabled", clientUnit, StringComparison.Ordinal);
         Assert.Contains($"NetRatel_UPDATE_REQUEST={fixture.StateDirectory}/custom-request.json", updaterUnit, StringComparison.Ordinal);
         Assert.True(File.Exists(Path.Combine(fixture.StateDirectory, "update.lock")));
+    }
+
+    [Theory]
+    [InlineData(false, "successful_replacement")]
+    [InlineData(true, "successful_replacement")]
+    [InlineData(false, "escaped_path")]
+    [InlineData(true, "escaped_path")]
+    [SupportedOSPlatform("linux")]
+    public async Task Rendered_normal_and_seeded_units_roundtrip_through_native_systemd(bool seed, string scenario)
+    {
+        if (!OperatingSystem.IsLinux()) Assert.Skip("Native systemd parsing requires Linux.");
+        using var fixture = LinuxInstallerFixture.Create(scenario, seed: seed);
+        var result = await fixture.RunInstallerAsync();
+        Assert.True(result.ExitCode == 0, $"Exit={result.ExitCode}; {result.StandardOutput}\n{result.StandardError}");
+        Assert.Contains("validating staged systemd units", result.StandardOutput);
+        var parsed = await fixture.ParseInstalledUnitsAsync();
+        Assert.Equal(0, parsed.ExitCode);
+        Assert.Contains($"WorkingDirectory: {fixture.InstallRoot}/current\n", parsed.StandardOutput);
+        Assert.Contains($"NetRatel_UPDATE_ROOT={fixture.InstallRoot}", parsed.StandardOutput);
+        Assert.Contains($"NetRatelCLIENT__Client__AutoUpdate__StateDirectory={fixture.StateDirectory}", parsed.StandardOutput);
+        // Repair must consume its own quoted command/environment values and scalar path.
+        var repair = await fixture.RunInstallerAsync();
+        Assert.Equal(0, repair.ExitCode);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    [SupportedOSPlatform("linux")]
+    public async Task Production_unit_producer_preserves_default_path_semantics(bool seed)
+    {
+        if (!OperatingSystem.IsLinux()) Assert.Skip("Native systemd parsing requires Linux.");
+        using var fixture = LinuxInstallerFixture.Create("successful_replacement", seed: seed);
+        var parsed = await fixture.RenderAndParseDefaultUnitsAsync();
+        Assert.Equal(0, parsed.ExitCode);
+        Assert.Contains("WorkingDirectory: /opt/netratel/client/current\n", parsed.StandardOutput);
+        Assert.Contains("/opt/netratel/client/netratel-client-start.sh", parsed.StandardOutput);
+        Assert.Contains("NetRatel_UPDATE_ROOT=/opt/netratel/client", parsed.StandardOutput);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    [SupportedOSPlatform("linux")]
+    public async Task Native_parser_retains_literal_backslash_directory_but_rejects_backslash_executable(bool seed)
+    {
+        if (!OperatingSystem.IsLinux()) Assert.Skip("Native systemd parsing requires Linux.");
+        using var fixture = LinuxInstallerFixture.Create("successful_replacement", seed: seed);
+        const string root = "/opt/netratel/client\\root";
+        var original = await fixture.RenderAndParseDefaultUnitsAsync(root);
+        Assert.NotEqual(0, original.ExitCode);
+        Assert.Contains("Executable path contains special characters", original.StandardError);
+        // Only the fixture executable is replaced. The actual production-rendered
+        // WorkingDirectory and Environment bytes remain unchanged for this probe.
+        var scalar = await fixture.RenderAndParseDefaultUnitsAsync(root, fixtureExecutableOverride: true);
+        Assert.Equal(0, scalar.ExitCode);
+        Assert.Contains($"WorkingDirectory: {root}/current\n", scalar.StandardOutput);
+        Assert.Contains($"NetRatel_UPDATE_ROOT={root}", scalar.StandardOutput);
+    }
+
+    [Theory]
+    [InlineData("relative-path")]
+    [InlineData("/private/path\nwith-newline")]
+    [InlineData("/private/path%t")]
+    [SupportedOSPlatform("linux")]
+    public async Task Unsupported_managed_paths_fail_before_stopping_or_mutating(string path)
+    {
+        if (!OperatingSystem.IsLinux()) Assert.Skip("The generated systemd transaction test requires Linux.");
+        using var fixture = LinuxInstallerFixture.Create("successful_replacement");
+        var before = fixture.CaptureInstalledState();
+        var result = await fixture.RunInstallerAsync(path);
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("must be an absolute path without control characters or systemd specifiers", result.StandardError);
+        fixture.AssertInstalledStateEquals(before);
+        Assert.Equal(0, fixture.CountSystemctlCalls("stop"));
+    }
+
+    [Fact]
+    [SupportedOSPlatform("linux")]
+    public async Task Native_unsupported_backslash_executable_root_is_rejected_before_mutation()
+    {
+        if (!OperatingSystem.IsLinux()) Assert.Skip("The generated systemd transaction test requires Linux.");
+        using var fixture = LinuxInstallerFixture.Create("successful_replacement");
+        var before = fixture.CaptureInstalledState();
+        var result = await fixture.RunInstallerAsync("/private/client\\root");
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("Systemd executable roots cannot contain a backslash", result.StandardError);
+        fixture.AssertInstalledStateEquals(before);
+        Assert.Equal(0, fixture.CountSystemctlCalls("stop"));
+    }
+
+    [Theory]
+    [InlineData("inactive_unknown_state", 0, "process state is unknown")]
+    [InlineData("failed_child_stop_failure", 1, "did not stop")]
+    [SupportedOSPlatform("linux")]
+    public async Task Inactive_unit_cannot_bypass_owned_process_verification_before_replacement(string scenario, int expectedStops, string diagnostic)
+    {
+        if (!OperatingSystem.IsLinux()) Assert.Skip("The generated systemd transaction test requires Linux.");
+        using var fixture = LinuxInstallerFixture.Create(scenario);
+        var before = fixture.CaptureInstalledState();
+        Assert.False(fixture.ClientServiceIsActive);
+        var result = await fixture.RunInstallerAsync();
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains(diagnostic, result.StandardError);
+        Assert.Equal(expectedStops, fixture.CountSystemctlCalls("stop"));
+        Assert.Equal(0, fixture.CountSystemctlCalls("start"));
+        fixture.AssertInstalledStateEquals(before);
+        if (expectedStops != 0) fixture.AssertInstalledFilesUnchangedAtFirstStop(before);
+    }
+
+    [Theory]
+    [InlineData("fresh_activation_failure", 23)]
+    [InlineData("fresh_bad_setting", 23)]
+    [InlineData("fresh_reload_failure", 24)]
+    [SupportedOSPlatform("linux")]
+    public async Task Fresh_activation_failure_removes_only_attempt_files_and_enablement(string scenario, int exitCode)
+    {
+        if (!OperatingSystem.IsLinux()) Assert.Skip("The generated systemd transaction test requires Linux.");
+        using var fixture = LinuxInstallerFixture.Create(scenario);
+        var before = fixture.CaptureInstalledState();
+        var result = await fixture.RunInstallerAsync();
+        Assert.Equal(exitCode, result.ExitCode);
+        Assert.Contains($"Local activation failed (exit status {exitCode})", result.StandardError);
+        Assert.Contains("new installation was removed", result.StandardError);
+        Assert.DoesNotContain("previous installation was restored", result.StandardError);
+        Assert.DoesNotContain("Rollback is incomplete", result.StandardError);
+        fixture.AssertInstalledStateEquals(before);
+        Assert.False(fixture.ClientServiceIsActive);
+        Assert.Empty(fixture.RecoveryDirectories);
+        Assert.True(File.Exists(Path.Combine(fixture.StateDirectory, "update.lock")));
+        var expectedDisable = scenario == "fresh_reload_failure" ? 0 : 1;
+        Assert.Equal(expectedDisable, fixture.CountSystemctlCalls("disable netratel-client.service"));
+    }
+
+    [Theory]
+    [InlineData("active_start_failure", 23)]
+    [InlineData("reload_failure", 24)]
+    [InlineData("existing_stopped_failure", 23)]
+    [InlineData("existing_disabled_failure", 23)]
+    [InlineData("active_start_failure_stop_error", 23)]
+    [SupportedOSPlatform("linux")]
+    public async Task Existing_activation_failure_restores_original_running_or_stopped_state(string scenario, int exitCode)
+    {
+        if (!OperatingSystem.IsLinux()) Assert.Skip("The generated systemd transaction test requires Linux.");
+        using var fixture = LinuxInstallerFixture.Create(scenario);
+        var before = fixture.CaptureInstalledState();
+        var wasActive = fixture.ClientServiceIsActive;
+        var result = await fixture.RunInstallerAsync();
+        Assert.Equal(exitCode, result.ExitCode);
+        Assert.Contains("previous installation was restored", result.StandardError);
+        Assert.DoesNotContain("Rollback is incomplete", result.StandardError);
+        fixture.AssertInstalledStateEquals(before);
+        Assert.Equal(wasActive, fixture.ClientServiceIsActive);
+        Assert.Empty(fixture.RecoveryDirectories);
+    }
+
+    [Theory]
+    [InlineData("fresh_manager_unavailable")]
+    [InlineData("manager_unavailable")]
+    [InlineData("rollback_reload_failure")]
+    [InlineData("fresh_unclassified_state")]
+    [InlineData("fresh_control_process")]
+    [InlineData("fresh_unknown_cgroup")]
+    [SupportedOSPlatform("linux")]
+    public async Task Unknown_manager_or_failed_rollback_preserves_recovery_and_original_failure(string scenario)
+    {
+        if (!OperatingSystem.IsLinux()) Assert.Skip("The generated systemd transaction test requires Linux.");
+        using var fixture = LinuxInstallerFixture.Create(scenario);
+        var result = await fixture.RunInstallerAsync();
+        Assert.Equal(23, result.ExitCode);
+        Assert.Contains("Local activation failed (exit status 23)", result.StandardError);
+        Assert.Contains("Rollback is incomplete", result.StandardError);
+        Assert.Single(fixture.RecoveryDirectories);
+        var expectedStops = scenario is "fresh_manager_unavailable" or "fresh_unclassified_state" or "fresh_unknown_cgroup" ? 0 : 1;
+        Assert.Equal(expectedStops, fixture.CountSystemctlCalls("stop netratel-client.service"));
+    }
+
+    [Theory]
+    [InlineData("invalid_unit")]
+    [InlineData("fresh_invalid_unit")]
+    [SupportedOSPlatform("linux")]
+    public async Task Native_parser_rejects_invalid_staged_unit_before_stop_or_activation(string scenario)
+    {
+        if (!OperatingSystem.IsLinux()) Assert.Skip("Native systemd parsing requires Linux.");
+        using var fixture = LinuxInstallerFixture.Create(scenario);
+        var before = fixture.CaptureInstalledState();
+        var result = await fixture.RunInstallerAsync();
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("Staged systemd unit validation failed", result.StandardError);
+        fixture.AssertInstalledStateEquals(before);
+        Assert.Equal(0, fixture.CountSystemctlCalls("stop"));
+        Assert.Equal(0, fixture.CountSystemctlCalls("start"));
     }
 
     [Fact]
@@ -243,23 +435,26 @@ public sealed class LinuxInstallerTransactionTests
         private readonly string _root;
         private readonly string _systemctlCallsPath;
         private readonly string _activeServiceMarkerPath;
+        private readonly string _enabledServiceMarkerPath;
         private readonly string _preStopHashesPath;
         private readonly string _preStopLinkPath;
         private readonly string _artifactPath;
         private readonly string _failureCase;
         private readonly byte[] _candidateExecutable;
+        private readonly bool _seed;
         private bool _disposed;
 
-        private LinuxInstallerFixture(string failureCase, string? gateway = null)
+        private LinuxInstallerFixture(string failureCase, string? gateway = null, bool seed = false)
         {
             _root = Path.Combine(Path.GetTempPath(), $"netratel-linux-transaction-{Guid.NewGuid():N}");
             _failureCase = failureCase;
+            _seed = seed;
             try
             {
                 CreatePrivateDirectory(_root);
                 BinDirectory = Path.Combine(_root, "bin");
-                InstallRoot = Path.Combine(_root, "client");
-                StateDirectory = Path.Combine(_root, "state");
+                InstallRoot = Path.Combine(_root, failureCase == "escaped_path" ? "client spaced-é" : "client");
+                StateDirectory = Path.Combine(_root, failureCase == "escaped_path" ? "state spaced-é\\root" : "state");
                 UnitDirectory = Path.Combine(_root, "units");
                 OldVersionDirectory = Path.Combine(InstallRoot, "versions", Version);
                 OldExecutablePath = Path.Combine(OldVersionDirectory, "NetRatel.Client");
@@ -272,6 +467,7 @@ public sealed class LinuxInstallerTransactionTests
                 UpdateUnitPath = Path.Combine(UnitDirectory, "netratel-update.service");
                 _systemctlCallsPath = Path.Combine(_root, "systemctl.calls");
                 _activeServiceMarkerPath = Path.Combine(_root, "client-service.active");
+                _enabledServiceMarkerPath = Path.Combine(_root, "client-service.enabled");
                 _preStopHashesPath = Path.Combine(_root, "pre-stop-hashes.txt");
                 _preStopLinkPath = Path.Combine(_root, "pre-stop-link.txt");
                 _artifactPath = Path.Combine(_root, "package.zip");
@@ -311,7 +507,7 @@ public sealed class LinuxInstallerTransactionTests
                     "Description=Previous NetRatel Client",
                     "[Service]",
                     $"WorkingDirectory={InstallRoot}/current",
-                    $"ExecStart={LauncherPath}",
+                    $"ExecStart={SystemdQuote(LauncherPath)}",
                     $"Environment=NetRatelCLIENT__Client__ApiBaseUrl={ApiBase}"
                 })), PrivateFileMode);
                 WritePrivateFile(UpdateUnitPath, Encoding.UTF8.GetBytes(string.Join("\n", new[]
@@ -319,7 +515,7 @@ public sealed class LinuxInstallerTransactionTests
                     "[Unit]",
                     "Description=Previous NetRatel Client updater",
                     "[Service]",
-                    $"ExecStart={UpdaterPath}"
+                    $"ExecStart={SystemdQuote(UpdaterPath)}"
                 })), PrivateFileMode);
                 if (failureCase == "installed_update_paths")
                 {
@@ -342,6 +538,17 @@ public sealed class LinuxInstallerTransactionTests
                     File.Delete(ClientUnitPath);
                     File.Delete(UpdateUnitPath);
                     Directory.Delete(CurrentLinkPath);
+                }
+                if (failureCase is "invalid_unit")
+                    File.AppendAllText(ClientUnitPath, "\nRestart=invalid-policy\n");
+                if (failureCase.StartsWith("fresh_", StringComparison.Ordinal))
+                {
+                    File.Delete(ClientUnitPath);
+                    File.Delete(UpdateUnitPath);
+                    File.Delete(LauncherPath);
+                    File.Delete(UpdaterPath);
+                    Directory.Delete(CurrentLinkPath);
+                    Directory.Delete(OldVersionDirectory, recursive: true);
                 }
                 if (failureCase.StartsWith("flat_settings_", StringComparison.Ordinal))
                 {
@@ -394,13 +601,43 @@ public sealed class LinuxInstallerTransactionTests
                     SilentInstall: true,
                     ArtifactVersion: Version,
                     ArtifactSha256: sha,
-                    GatewayEndpoint: gateway));
+                    GatewayEndpoint: gateway,
+                    IsUpdateSeed: seed));
+                if (failureCase == "fresh_invalid_unit")
+                    installer = installer.Replace("'Restart=always'", "'Restart=invalid-policy'", StringComparison.Ordinal);
                 WritePrivateFile(ScriptPath, Encoding.UTF8.GetBytes(installer), ExecutableFileMode);
 
                 WritePrivateFile(Path.Combine(BinDirectory, "curl"), Encoding.UTF8.GetBytes(CreateCurlStub()), ExecutableFileMode);
                 WritePrivateFile(Path.Combine(BinDirectory, "systemctl"), Encoding.UTF8.GetBytes(CreateSystemctlStub()), ExecutableFileMode);
                 WritePrivateFile(Path.Combine(BinDirectory, "journalctl"), Encoding.UTF8.GetBytes("#!/usr/bin/env bash\nexit 0\n"), ExecutableFileMode);
-                WritePrivateFile(_activeServiceMarkerPath, Encoding.UTF8.GetBytes("active"), PrivateFileMode);
+                if (failureCase == "failed_child_stop_failure")
+                {
+                    // Substitute filesystem reads at the OS boundary. The complete
+                    // production classifier still walks the manager-owned cgroup,
+                    // whose only remaining member is in a delegated descendant.
+                    var cgroup = Path.Combine(_root, "cgroup-fixture");
+                    var group = Path.Combine(cgroup, "system.slice", "netratel-client.service");
+                    var descendant = Path.Combine(group, "descendant");
+                    CreatePrivateDirectory(descendant);
+                    WritePrivateFile(Path.Combine(cgroup, "cgroup.controllers"), "cpu memory\n"u8.ToArray(), PrivateFileMode);
+                    WritePrivateFile(Path.Combine(group, "cgroup.procs"), Array.Empty<byte>(), PrivateFileMode);
+                    WritePrivateFile(Path.Combine(descendant, "cgroup.procs"), "456\n"u8.ToArray(), PrivateFileMode);
+                    WritePrivateFile(Path.Combine(BinDirectory, "sitecustomize.py"), """
+                        import builtins, os
+                        original_stat, original_open, original_walk = os.stat, builtins.open, os.walk
+                        def mapped(path):
+                            if isinstance(path, str) and path.startswith('/sys/fs/cgroup'):
+                                return os.environ['FIXTURE_CGROUP_ROOT'] + path[len('/sys/fs/cgroup'):]
+                            return path
+                        os.stat = lambda path, *args, **kwargs: original_stat(mapped(path), *args, **kwargs)
+                        builtins.open = lambda path, *args, **kwargs: original_open(mapped(path), *args, **kwargs)
+                        os.walk = lambda path, *args, **kwargs: original_walk(mapped(path), *args, **kwargs)
+                        """u8.ToArray(), PrivateFileMode);
+                }
+                if (!failureCase.StartsWith("fresh_", StringComparison.Ordinal) && failureCase is not ("existing_stopped_failure" or "inactive_unknown_state" or "failed_child_stop_failure"))
+                    WritePrivateFile(_activeServiceMarkerPath, Encoding.UTF8.GetBytes("active"), PrivateFileMode);
+                if (!failureCase.StartsWith("fresh_", StringComparison.Ordinal) && failureCase != "existing_disabled_failure")
+                    WritePrivateFile(_enabledServiceMarkerPath, "enabled"u8.ToArray(), PrivateFileMode);
             }
             catch
             {
@@ -426,14 +663,15 @@ public sealed class LinuxInstallerTransactionTests
         public string CustomizationPath { get; }
         public bool ClientServiceIsActive => File.Exists(_activeServiceMarkerPath);
         public bool FirstStopSnapshotExists => File.Exists(_preStopHashesPath);
+        public string[] RecoveryDirectories => Directory.GetDirectories(Path.Combine(InstallRoot, "staging"), ".rollback.*");
 
-        public static LinuxInstallerFixture Create(string failureCase, string? gateway = null)
+        public static LinuxInstallerFixture Create(string failureCase, string? gateway = null, bool seed = false)
         {
             if (!OperatingSystem.IsLinux()) throw new PlatformNotSupportedException("The installer transaction fixture requires Linux.");
-            return new LinuxInstallerFixture(failureCase, gateway);
+            return new LinuxInstallerFixture(failureCase, gateway, seed);
         }
 
-        public async Task<ProcessResult> RunInstallerAsync()
+        public async Task<ProcessResult> RunInstallerAsync(string? rootOverride = null)
         {
             var startInfo = new ProcessStartInfo("bash")
             {
@@ -443,7 +681,7 @@ public sealed class LinuxInstallerTransactionTests
             };
             startInfo.ArgumentList.Add(ScriptPath);
             startInfo.Environment["PATH"] = $"{BinDirectory}:/usr/bin:/bin";
-            startInfo.Environment["NetRatel_ROOT"] = InstallRoot;
+            startInfo.Environment["NetRatel_ROOT"] = rootOverride ?? InstallRoot;
             startInfo.Environment["NetRatel_STATE"] = StateDirectory;
             startInfo.Environment["NetRatel_SYSTEMD_UNIT_DIR"] = UnitDirectory;
             startInfo.Environment["NetRatel_TEST_ALLOW_NONROOT"] = "true";
@@ -455,6 +693,12 @@ public sealed class LinuxInstallerTransactionTests
             startInfo.Environment["FIXTURE_CASE"] = _failureCase;
             startInfo.Environment["FIXTURE_DROPIN"] = _failureCase.Contains("dropin", StringComparison.Ordinal) ? CustomizationPath : "";
             startInfo.Environment["FIXTURE_ACTIVE"] = _activeServiceMarkerPath;
+            startInfo.Environment["FIXTURE_ENABLED"] = _enabledServiceMarkerPath;
+            if (_failureCase == "failed_child_stop_failure")
+            {
+                startInfo.Environment["PYTHONPATH"] = BinDirectory;
+                startInfo.Environment["FIXTURE_CGROUP_ROOT"] = Path.Combine(_root, "cgroup-fixture");
+            }
             startInfo.Environment["FIXTURE_OLD_EXECUTABLE"] = OldExecutablePath;
             startInfo.Environment["FIXTURE_OLD_MANIFEST"] = OldManifestPath;
             startInfo.Environment["FIXTURE_OLD_SETTINGS"] = OldSettingsPath;
@@ -466,6 +710,8 @@ public sealed class LinuxInstallerTransactionTests
             startInfo.Environment["FIXTURE_PRESTOP_HASHES"] = _preStopHashesPath;
             startInfo.Environment["FIXTURE_PRESTOP_LINK"] = _preStopLinkPath;
             startInfo.Environment["FIXTURE_START_FAILED"] = Path.Combine(_root, "candidate-start-failed");
+            startInfo.Environment["FIXTURE_RELOAD_FAILED"] = Path.Combine(_root, "candidate-reload-failed");
+            SetSeedInputs(startInfo);
 
             using var process = Process.Start(startInfo)
                 ?? throw new InvalidOperationException("Could not start the generated Linux installer.");
@@ -490,11 +736,112 @@ public sealed class LinuxInstallerTransactionTests
                 await standardErrorTask.ConfigureAwait(false));
         }
 
+        public Task<ProcessResult> ParseInstalledUnitsAsync() => ParseUnitsAsync(ClientUnitPath, UpdateUnitPath, InstallRoot);
+
+        public async Task<ProcessResult> RenderAndParseDefaultUnitsAsync(string defaultRoot = "/opt/netratel/client", bool fixtureExecutableOverride = false)
+        {
+            var temporary = Path.Combine(_root, "default-unit-producer");
+            var stage = Path.Combine(temporary, "stage");
+            Directory.CreateDirectory(stage);
+            File.Copy(_artifactPath, Path.Combine(temporary, "package"), overwrite: true);
+            var bytes = File.ReadAllBytes(_artifactPath);
+            var sha = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+            File.WriteAllText(Path.Combine(temporary, "headers"), $"HTTP/1.1 200 OK\r\nX-NetRatel-Artifact-Rid: {RuntimeId}\r\nX-NetRatel-Artifact-Version: {Version}\r\nX-NetRatel-Artifact-Sha256: {sha}\r\nX-NetRatel-Artifact-Size: {bytes.Length}\r\n\r\n");
+            File.WriteAllBytes(Path.Combine(temporary, "config.json"), JsonSerializer.SerializeToUtf8Bytes(new
+            {
+                root = defaultRoot, state = StateDirectory, request = StateDirectory + "/request.json", ready = StateDirectory + "/ready.json",
+                previous = "", credential = Path.Combine(temporary, "absent-agent.dat"),
+                environment = new Dictionary<string, string>(), lines = Array.Empty<string>(),
+                update_environment = new Dictionary<string, string>(), update_lines = Array.Empty<string>()
+            }));
+            // Execute the real rendered producer block with a synthetic authorized package.
+            // The requested default root is only read; all output stays in this fixture.
+            var installer = File.ReadAllText(ScriptPath);
+            const string producerStart = "python3 - \"$TMP_DIR\" \"$STAGE_DIR\" <<'PY'\n";
+            var begin = installer.IndexOf(producerStart, StringComparison.Ordinal);
+            var end = installer.IndexOf("\nPY\nRESOLVED_VERSION=", begin, StringComparison.Ordinal) + 4;
+            Assert.True(begin > 0 && end > begin, "the rendered production unit producer must be present");
+            var source = installer[..installer.IndexOf("fail()", StringComparison.Ordinal)] +
+                $"TMP_DIR='{temporary}'\nSTAGE_DIR='{stage}'\n" +
+                "export API_BASE GATEWAY_ENDPOINT TENANT_ID ENROLLMENT_CODE RUNTIME VERSION EXPECTED_SHA VALID_TO SERVICE_MODE\n" +
+                installer[begin..end];
+            var path = Path.Combine(temporary, "produce.sh");
+            File.WriteAllText(path, source);
+            var start = new ProcessStartInfo("bash") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+            start.ArgumentList.Add(path);
+            SetSeedInputs(start);
+            using var process = Process.Start(start)!;
+            var output = process.StandardOutput.ReadToEndAsync();
+            var error = process.StandardError.ReadToEndAsync();
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await process.WaitForExitAsync(deadline.Token);
+            Assert.True(process.ExitCode == 0, await output + await error);
+            var clientUnit = Path.Combine(temporary, "client.service");
+            var updateUnit = Path.Combine(temporary, "update.service");
+            if (fixtureExecutableOverride)
+            {
+                foreach (var unit in new[] { clientUnit, updateUnit })
+                {
+                    var lines = File.ReadAllLines(unit);
+                    File.WriteAllLines(unit, lines.Select(line => line.StartsWith("ExecStart=", StringComparison.Ordinal) ? "ExecStart=/bin/true" : line));
+                }
+            }
+            return await ParseUnitsAsync(clientUnit, updateUnit, defaultRoot, fixtureExecutableOverride);
+        }
+
+        private void SetSeedInputs(ProcessStartInfo start)
+        {
+            if (!_seed) return;
+            start.Environment["NETRATEL_SEED_API_BASE"] = ApiBase;
+            start.Environment["NETRATEL_SEED_GATEWAY_ENDPOINT"] = "";
+            start.Environment["NETRATEL_SEED_TENANT_ID"] = "4098";
+            start.Environment["NETRATEL_SEED_ENROLLMENT_CODE"] = "ENR-SYNTHETIC-LINUX-TRANSACTION";
+            start.Environment["NETRATEL_SEED_RUNTIME"] = RuntimeId;
+            start.Environment["NETRATEL_SEED_VERSION"] = Version;
+            start.Environment["NETRATEL_SEED_VALID_TO_UTC"] = DateTimeOffset.UtcNow.AddHours(1).ToString("O");
+        }
+
+        private async Task<ProcessResult> ParseUnitsAsync(string clientUnit, string updateUnit, string installRoot, bool fixtureExecutableOverride = false)
+        {
+            var root = Path.Combine(_root, "native-parser-root");
+            var units = Path.Combine(root, "etc", "systemd", "system");
+            Directory.CreateDirectory(units);
+            File.Copy(clientUnit, Path.Combine(units, "netratel-client.service"), overwrite: true);
+            File.Copy(updateUnit, Path.Combine(units, "netratel-update.service"), overwrite: true);
+            foreach (var target in new[] { "sysinit", "basic", "shutdown", "network-online", "multi-user" })
+                File.WriteAllText(Path.Combine(units, target + ".target"), "[Unit]\nDefaultDependencies=no\n");
+            var executables = fixtureExecutableOverride ? new[] { "/bin/true" } : new[] { installRoot + "/netratel-client-start.sh", installRoot + "/updater/netratel-update.sh" };
+            foreach (var executable in executables)
+            {
+                var path = root + executable;
+                Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                WritePrivateFile(path, "#!/bin/sh\nexit 0\n"u8.ToArray(), ExecutableFileMode);
+            }
+            var start = new ProcessStartInfo("systemd-analyze")
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false
+            };
+            start.ArgumentList.Add("--root=" + root);
+            start.ArgumentList.Add("--man=no");
+            start.ArgumentList.Add("verify");
+            start.ArgumentList.Add("/etc/systemd/system/netratel-client.service");
+            start.ArgumentList.Add("/etc/systemd/system/netratel-update.service");
+            start.Environment["SYSTEMD_LOG_LEVEL"] = "debug";
+            using var process = Process.Start(start)!;
+            var output = process.StandardOutput.ReadToEndAsync();
+            var error = process.StandardError.ReadToEndAsync();
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await process.WaitForExitAsync(deadline.Token);
+            return new ProcessResult(process.ExitCode, await output, await error);
+        }
+
         public InstalledStateSnapshot CaptureInstalledState()
         {
             var files = new[] { OldExecutablePath, OldManifestPath, OldSettingsPath, LauncherPath, UpdaterPath, ClientUnitPath, UpdateUnitPath }
                 .ToDictionary(path => path, CaptureFile, StringComparer.Ordinal);
-            return new InstalledStateSnapshot(files, new DirectoryInfo(CurrentLinkPath).LinkTarget);
+            return new InstalledStateSnapshot(files, new DirectoryInfo(CurrentLinkPath).LinkTarget, File.Exists(_enabledServiceMarkerPath));
         }
 
         public void AssertInstalledStateEquals(InstalledStateSnapshot expected)
@@ -509,6 +856,7 @@ public sealed class LinuxInstallerTransactionTests
             }
 
             Assert.Equal(expected.CurrentLinkTarget, new DirectoryInfo(CurrentLinkPath).LinkTarget);
+            Assert.Equal(expected.ServiceEnabled, File.Exists(_enabledServiceMarkerPath));
         }
 
         public void AssertInstalledFilesUnchangedAtFirstStop(InstalledStateSnapshot expected)
@@ -557,6 +905,8 @@ public sealed class LinuxInstallerTransactionTests
             File.WriteAllBytes(path, contents);
             File.SetUnixFileMode(path, mode);
         }
+
+        private static string SystemdQuote(string value) => "\"" + value.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal) + "\"";
 
         private static byte[] CreateManifest(char commitCharacter) => JsonSerializer.SerializeToUtf8Bytes(new
         {
@@ -613,6 +963,33 @@ public sealed class LinuxInstallerTransactionTests
             printf '%s\n' "$*" >> "$FIXTURE_CALLS"
             case "$1" in
               show)
+                if [ -f "$FIXTURE_START_FAILED" ] && [[ "$FIXTURE_CASE" = *manager_unavailable ]]; then exit 42; fi
+                for argument in "$@"; do
+                  if [ "$argument" = "--property=Id" ]; then
+                    if { [ "$FIXTURE_CASE" = "fresh_unclassified_state" ] && [ -f "$FIXTURE_START_FAILED" ]; } || [ "$FIXTURE_CASE" = "inactive_unknown_state" ]; then
+                      printf 'Id=netratel-client.service\nLoadState=not-found\nFragmentPath=\nControlPID=\nControlGroup=\nActiveState=inactive\nSubState=dead\nMainPID=0\n'
+                      exit 0
+                    fi
+                    load=loaded
+                    if [ "$FIXTURE_CASE" = "fresh_bad_setting" ] && [ -f "$FIXTURE_START_FAILED" ]; then load=bad-setting; fi
+                    fragment=""
+                    if [ -f "$FIXTURE_UNIT" ]; then fragment="$FIXTURE_UNIT"; else load=not-found; fi
+                    control=0
+                    if [ "$FIXTURE_CASE" = "fresh_control_process" ] && [ -f "$FIXTURE_START_FAILED" ]; then control=456; fi
+                    group=""
+                    if [ "$FIXTURE_CASE" = "fresh_unknown_cgroup" ] && [ -f "$FIXTURE_START_FAILED" ]; then group=/unowned/cgroup; fi
+                    if [ "$FIXTURE_CASE" = "failed_child_stop_failure" ]; then group=/system.slice/netratel-client.service; fi
+                    printf 'Id=netratel-client.service\nLoadState=%s\nFragmentPath=%s\nControlPID=%s\nControlGroup=%s\n' "$load" "$fragment" "$control" "$group"
+                    if [ -f "$FIXTURE_ACTIVE" ]; then
+                      printf 'ActiveState=active\nSubState=running\nMainPID=123\n'
+                    elif [ "$FIXTURE_CASE" = "failed_child_stop_failure" ]; then
+                      printf 'ActiveState=failed\nSubState=failed\nMainPID=0\n'
+                    else
+                      printf 'ActiveState=inactive\nSubState=dead\nMainPID=0\n'
+                    fi
+                    exit 0
+                  fi
+                done
                 shift
                 property=""
                 unit=""
@@ -632,7 +1009,9 @@ public sealed class LinuxInstallerTransactionTests
                 esac
                 case "$property" in
                   FragmentPath)
-                    if [ "$unit" = "netratel-client.service" ]; then printf '%s\n' "$FIXTURE_UNIT"; else printf '%s\n' "$FIXTURE_OLD_UPDATE_UNIT"; fi;;
+                    if [ "$unit" = "netratel-client.service" ]; then
+                      if [ -f "$FIXTURE_UNIT" ]; then printf '%s\n' "$FIXTURE_UNIT"; fi
+                    elif [ -f "$FIXTURE_OLD_UPDATE_UNIT" ]; then printf '%s\n' "$FIXTURE_OLD_UPDATE_UNIT"; fi;;
                   LoadState) printf 'loaded\n';;
                   MainPID)
                     [ "$unit" = "netratel-client.service" ] || exit 2
@@ -644,7 +1023,9 @@ public sealed class LinuxInstallerTransactionTests
               is-active)
                 if [ "$FIXTURE_CASE" = "query_failure" ]; then exit 42; fi
                 if [ -f "$FIXTURE_ACTIVE" ]; then exit 0; else exit 3; fi;;
-              is-enabled) exit 0;;
+              is-enabled) if [ -f "$FIXTURE_ENABLED" ]; then printf 'enabled\n'; else printf 'disabled\n'; exit 1; fi;;
+              enable) : > "$FIXTURE_ENABLED";;
+              disable) rm -f -- "$FIXTURE_ENABLED";;
               stop)
                 if [ "$2" = "netratel-client.service" ] && [ ! -f "$FIXTURE_PRESTOP_HASHES" ]; then
                   sha256sum -- \
@@ -653,14 +1034,25 @@ public sealed class LinuxInstallerTransactionTests
                     "$FIXTURE_OLD_CLIENT_UNIT" "$FIXTURE_OLD_UPDATE_UNIT" > "$FIXTURE_PRESTOP_HASHES"
                   readlink -- "$FIXTURE_CURRENT_LINK" > "$FIXTURE_PRESTOP_LINK"
                 fi
-                if [ "$FIXTURE_CASE" = "stop_failure" ]; then exit 1; fi
-                rm -f -- "$FIXTURE_ACTIVE";;
+                if [ "$FIXTURE_CASE" = "stop_failure" ] || [ "$FIXTURE_CASE" = "failed_child_stop_failure" ]; then exit 1; fi
+                rm -f -- "$FIXTURE_ACTIVE"
+                if [ "$FIXTURE_CASE" = "active_start_failure_stop_error" ] && [ -f "$FIXTURE_START_FAILED" ]; then exit 1; fi;;
               start)
-                if [ "$FIXTURE_CASE" = "activation_failure" ] && [ ! -f "$FIXTURE_START_FAILED" ]; then
-                  : > "$FIXTURE_START_FAILED"
-                  exit 1
-                fi
+                case "$FIXTURE_CASE" in
+                  activation_failure|fresh_activation_failure|fresh_bad_setting|active_start_failure|existing_stopped_failure|existing_disabled_failure|fresh_manager_unavailable|manager_unavailable|rollback_reload_failure|fresh_unclassified_state|fresh_control_process|fresh_unknown_cgroup|active_start_failure_stop_error)
+                    if [ ! -f "$FIXTURE_START_FAILED" ]; then
+                      : > "$FIXTURE_START_FAILED"
+                      if [[ "$FIXTURE_CASE" = active_start_failure* ]]; then : > "$FIXTURE_ACTIVE"; fi
+                      if [ "$FIXTURE_CASE" = "activation_failure" ]; then exit 1; else exit 23; fi
+                    fi;;
+                esac
                 : > "$FIXTURE_ACTIVE";;
+              daemon-reload)
+                if [[ "$FIXTURE_CASE" = *reload_failure ]] && [ ! -f "$FIXTURE_RELOAD_FAILED" ] && [ "$FIXTURE_CASE" != "rollback_reload_failure" ]; then
+                  : > "$FIXTURE_RELOAD_FAILED"
+                  exit 24
+                fi
+                if [ "$FIXTURE_CASE" = "rollback_reload_failure" ] && [ -f "$FIXTURE_START_FAILED" ]; then exit 25; fi;;
               cat) exit 4;;
               *) exit 0;;
             esac
@@ -669,7 +1061,8 @@ public sealed class LinuxInstallerTransactionTests
 
     private sealed record InstalledStateSnapshot(
         IReadOnlyDictionary<string, InstalledFileSnapshot> Files,
-        string? CurrentLinkTarget);
+        string? CurrentLinkTarget,
+        bool ServiceEnabled);
 
     [SupportedOSPlatform("linux")]
     private sealed record InstalledFileSnapshot(bool Exists, byte[]? Bytes, UnixFileMode? Mode);
