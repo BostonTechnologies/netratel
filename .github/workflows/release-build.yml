@@ -54,6 +54,10 @@ jobs:
       - run: bash tools/dev/test-oidc-evaluation.sh
       - run: dotnet restore NetRatel.sln
       - run: dotnet build NetRatel.sln --configuration Release --no-restore
+      - name: Exercise sustained native gateway through the reviewed ingress profile
+        env:
+          NETRATEL_GATEWAY_TEST_ASSEMBLY: ${{ github.workspace }}/src/NetRatel/NetRatel.Tests/bin/Release/net10.0/NetRatel.Tests.dll
+        run: bash tools/ci/tests/traefik-gateway-routing.sh
       - run: pwsh src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/playwright.ps1 install --with-deps chromium
       - name: Run generic tests
         env:
@@ -262,9 +266,16 @@ jobs:
             -method NetRatel.Tests.Infrastructure.WindowsInstallerTemplateTests.RenderedRollbackPreservesOriginalStartupFailureAfterNestedFailures \
             -method NetRatel.Tests.Infrastructure.WindowsLegacyAclRepairTests.NativeOfflineLegacyAclRepairPreservesIdentityAndHelperAccess \
             -method NetRatel.Tests.Infrastructure.WindowsLegacyAclRepairTests.NativeFreshCanonicalRootCreationDoesNotInheritUsersWrites \
+            -method NetRatel.Tests.Client.RemoteDesktopUserHelperTaskTests.NativeTaskScheduler_ValidatesCompleteProductionUnicodeHandoff \
+            -method NetRatel.Tests.Client.RemoteDesktopUserHelperTaskTests.NativeTaskScheduler_RejectsPreviousInvalidGroupLogonTypeWithoutRegistration \
+            -method NetRatel.Tests.Client.BoundedProcessRunnerTests.CompletedProcess_PreservesExitCodeAndBothDiagnostics \
+            -method NetRatel.Tests.Client.BoundedProcessRunnerTests.SaturatedOutputPipes_AreDrainedConcurrentlyWithBoundedCapture \
+            -method NetRatel.Tests.Client.BoundedProcessRunnerTests.ChildWithoutOutput_TimeoutTerminatesItWithinTheBound \
+            -method NetRatel.Tests.Client.BoundedProcessRunnerTests.CallerCancellation_TerminatesOwnedChildWithinTheBound \
+            -method NetRatel.Tests.Client.BoundedProcessRunnerTests.Timeout_TerminatesLiveParentAndItsDescendant \
             -result-trx TestResults/native-windows-offline/installer-preflight.trx
           python3 tools/ci/verify-mtp-trx.py TestResults/native-windows-offline/installer-preflight.trx \
-            --expected-executed 12
+            --expected-executed 21
       - name: Retain Windows offline type-resolution receipt
         if: always() && matrix.runtime == 'win-x64'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -401,7 +412,6 @@ jobs:
         run: |
           docker compose -f release/compose.images.yaml -f tests/compose/oidc-smoke.compose.yaml -f tests/compose/oidc-smoke.production.compose.yaml config --quiet
           tools/ci/smoke-oidc-compose.sh
-          tools/ci/tests/traefik-gateway-routing.sh
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
