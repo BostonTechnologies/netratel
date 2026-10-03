@@ -10,7 +10,7 @@
         <dt>gRPC gateway</dt>
         <dd><code>@(Endpoints.EffectiveGatewayBaseUrl ?? "Not recorded in this older link")</code><small>@SourceLabel(Endpoints.GatewaySource)</small></dd>
     </dl>
-    <MudText Typo="Typo.caption">Repairs retain an existing explicit gateway when this link supplies no separate override. Check the installer's resolved gateway after restart.</MudText>
+    <MudText Typo="Typo.caption">New links include both REST and gateway addresses. These recorded values remain fixed for this link; check the installer's resolved endpoints after restart.</MudText>
 </div>
 
 @code {
@@ -26,6 +26,8 @@
         null => "Source not recorded in this older link",
         _ when source.StartsWith("branding-site-url:", StringComparison.Ordinal) =>
             $"Branding Site URL · {source["branding-site-url:".Length..]}",
+        _ when source.StartsWith("branding-gateway-url:", StringComparison.Ordinal) =>
+            $"Branding Gateway URL · {source["branding-gateway-url:".Length..]}",
         _ => "Recorded source unavailable"
     };
 }

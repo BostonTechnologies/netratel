@@ -785,11 +785,7 @@ builder.Services.Configure<ClientArtifactsOptions>(builder.Configuration.GetSect
 builder.Services.Configure<AgentAuthOptions>(builder.Configuration.GetSection("AgentAuth"));
 builder.Services.Configure<SecurityHardeningOptions>(builder.Configuration.GetSection("Security"));
 builder.Services.Configure<StorageOptions>(builder.Configuration.GetSection("StorageOptions"));
-builder.Services.AddOptions<DeploymentBrandingOptions>()
-    .BindConfiguration(DeploymentBrandingOptions.SectionName)
-    .ValidateDataAnnotations()
-    .ValidateOnStart();
-builder.Services.AddSingleton<IValidateOptions<DeploymentBrandingOptions>, DeploymentBrandingOptionsValidator>();
+builder.Services.AddClientInstallationOptions(builder.Configuration);
 builder.Services.AddSingleton<StorageInitializer>();
 builder.Services.AddScoped<IClientArtifactsService, ClientArtifactsService>();
 builder.Services.AddScoped<ClientInstallLinkService>();

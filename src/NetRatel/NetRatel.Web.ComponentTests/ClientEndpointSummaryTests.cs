@@ -32,6 +32,16 @@ public sealed class ClientEndpointSummaryTests : AsyncBunitContext
     }
 
     [Fact]
+    public void BrandingGatewayShowsItsStoredSource()
+    {
+        var cut = Render<ClientEndpointSummary>(parameters => parameters.Add(component => component.Endpoints,
+            new("https://web.example.test", "https://web.example.test", "https://gateway.example.test",
+                "branding-site-url:administrator", "branding-site-url", "branding-gateway-url:administrator")));
+        cut.Markup.Should().Contain("Branding Gateway URL · administrator");
+        cut.FindAll("code")[2].TextContent.Should().Be("https://gateway.example.test");
+    }
+
+    [Fact]
     public void HistoricalUnknownsAreShownWithoutInventingAnEffectiveGateway()
     {
         var cut = Render<ClientEndpointSummary>(parameters => parameters.Add(component => component.Endpoints,

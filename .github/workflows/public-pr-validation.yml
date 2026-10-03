@@ -532,6 +532,7 @@ jobs:
             NETRATEL_AUTHENTICATION_MODE=Local \
             OIDC_AUTHORITY=https://stale.example.test \
             NETRATEL_PUBLIC_ORIGIN=https://netratel.example \
+            NETRATEL_PUBLIC_GATEWAY_ORIGIN=https://netratel.example \
             NETRATEL_PUBLIC_HOST=netratel.example \
             NETRATEL_INSTALL_LINK_PUBLIC_ORIGIN=https://netratel.example \
             NETRATEL_LOCAL_FIRST_NATIVE_INSTALL=true \

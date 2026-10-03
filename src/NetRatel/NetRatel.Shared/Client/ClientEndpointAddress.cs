@@ -8,6 +8,21 @@ namespace NetRatel.Shared.Client;
 /// </summary>
 public static class ClientEndpointAddress
 {
+    /// <summary>Public installation endpoints use a DNS HTTPS origin on port 443.</summary>
+    public static string NormalizePublicOrigin(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value) || value.Length > 2048 || value.Any(char.IsControl) ||
+            !Uri.TryCreate(value.Trim(), UriKind.Absolute, out var uri) ||
+            uri.Scheme != Uri.UriSchemeHttps || uri.Port != 443 || uri.UserInfo.Length != 0 ||
+            uri.HostNameType != UriHostNameType.Dns || !uri.Host.Contains('.') ||
+            uri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase) ||
+            uri.Host.EndsWith(".local", StringComparison.OrdinalIgnoreCase) ||
+            uri.Host.EndsWith(".internal", StringComparison.OrdinalIgnoreCase) ||
+            uri.Query.Length != 0 || uri.Fragment.Length != 0 || uri.AbsolutePath.TrimEnd('/').Length != 0)
+            throw new ArgumentException("Set a public HTTPS origin without credentials, a path, a query, or a fragment.", nameof(value));
+        return uri.GetLeftPart(UriPartial.Authority);
+    }
+
     public static string NormalizeApiBase(string? value)
     {
         if (string.IsNullOrWhiteSpace(value) || !Uri.TryCreate(value.Trim(), UriKind.Absolute, out var uri))

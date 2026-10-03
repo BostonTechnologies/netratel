@@ -4,6 +4,7 @@ using System.Runtime.Versioning;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Extensions.Configuration;
 using NetRatel.Application.Artifacts;
 using NetRatel.Client;
 using NetRatel.Infrastructure.Artifacts;
@@ -172,6 +173,24 @@ public sealed class LinuxInstallerTransactionTests
     }
 
     [Theory]
+    [InlineData("https://requested-gateway.example.invalid")]
+    [InlineData(ApiBase)]
+    [SupportedOSPlatform("linux")]
+    public async Task Explicit_gateway_is_written_to_settings_and_systemd_environment(string gateway)
+    {
+        if (!OperatingSystem.IsLinux()) Assert.Skip("The generated systemd transaction test requires Linux.");
+        using var fixture = LinuxInstallerFixture.Create("successful_replacement", gateway);
+        var result = await fixture.RunInstallerAsync();
+        Assert.Equal(0, result.ExitCode);
+        using var settings = JsonDocument.Parse(await File.ReadAllTextAsync(fixture.OldSettingsPath));
+        Assert.Equal(gateway, settings.RootElement.GetProperty("Gateway").GetProperty("Endpoint").GetString());
+        Assert.Contains($"NetRatelCLIENT__Gateway__Endpoint={gateway}", await File.ReadAllTextAsync(fixture.ClientUnitPath));
+        var configuration = new ConfigurationBuilder().AddJsonFile(fixture.OldSettingsPath).Build();
+        var loaded = ClientConfigurationLoader.LoadGatewayOptions(configuration, ApiBase, null, null, fixture.OldVersionDirectory, []);
+        Assert.Equal(gateway, loaded.Endpoint);
+    }
+
+    [Theory]
     [InlineData("flat_settings_with_api")]
     [InlineData("flat_settings_without_api")]
     [InlineData("flat_settings_empty_client")]
@@ -231,7 +250,7 @@ public sealed class LinuxInstallerTransactionTests
         private readonly byte[] _candidateExecutable;
         private bool _disposed;
 
-        private LinuxInstallerFixture(string failureCase)
+        private LinuxInstallerFixture(string failureCase, string? gateway = null)
         {
             _root = Path.Combine(Path.GetTempPath(), $"netratel-linux-transaction-{Guid.NewGuid():N}");
             _failureCase = failureCase;
@@ -374,7 +393,8 @@ public sealed class LinuxInstallerTransactionTests
                     InstallAsService: failureCase != "user_same_version",
                     SilentInstall: true,
                     ArtifactVersion: Version,
-                    ArtifactSha256: sha));
+                    ArtifactSha256: sha,
+                    GatewayEndpoint: gateway));
                 WritePrivateFile(ScriptPath, Encoding.UTF8.GetBytes(installer), ExecutableFileMode);
 
                 WritePrivateFile(Path.Combine(BinDirectory, "curl"), Encoding.UTF8.GetBytes(CreateCurlStub()), ExecutableFileMode);
@@ -407,10 +427,10 @@ public sealed class LinuxInstallerTransactionTests
         public bool ClientServiceIsActive => File.Exists(_activeServiceMarkerPath);
         public bool FirstStopSnapshotExists => File.Exists(_preStopHashesPath);
 
-        public static LinuxInstallerFixture Create(string failureCase)
+        public static LinuxInstallerFixture Create(string failureCase, string? gateway = null)
         {
             if (!OperatingSystem.IsLinux()) throw new PlatformNotSupportedException("The installer transaction fixture requires Linux.");
-            return new LinuxInstallerFixture(failureCase);
+            return new LinuxInstallerFixture(failureCase, gateway);
         }
 
         public async Task<ProcessResult> RunInstallerAsync()
