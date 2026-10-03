@@ -1,5 +1,17 @@
 http:
   routers:
+    # Only the optional native test probe reaches this real-handler seam.
+    # Its Kestrel endpoint uses real gateway code and a disposable auth scheme.
+    netratel-native-grpc:
+      rule: "Host(`127.0.0.1`) && PathPrefix(`/netratel.gateway.v1.`) && Header(`X-NetRatel-Real-Gateway`, `1`)"
+      entryPoints:
+        - websecure
+      priority: 200
+      service: netratel-native-grpc
+      middlewares:
+        - netratel-grpc-route
+      tls: {}
+
     netratel-grpc:
       rule: "Host(`netratel.example.test`) && PathPrefix(`/netratel.gateway.v1.`)"
       entryPoints:
@@ -31,6 +43,11 @@ http:
           X-NetRatel-Ingress-Route: rest-http-9222
 
   services:
+    netratel-native-grpc:
+      loadBalancer:
+        servers:
+          - url: h2c://host.docker.internal:26223
+
     netratel-grpc:
       loadBalancer:
         servers:
@@ -41,6 +58,13 @@ http:
           - url: http://gateway-fixture:9222
 
 tls:
+  stores:
+    default:
+      # Native clients using the loopback IP omit SNI. Serve the same disposable
+      # CA-signed certificate so strict chain and IP hostname verification remain.
+      defaultCertificate:
+        certFile: /run/traefik/tls.crt
+        keyFile: /run/traefik/tls.key
   certificates:
     - certFile: /run/traefik/tls.crt
       keyFile: /run/traefik/tls.key

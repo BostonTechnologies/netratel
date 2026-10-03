@@ -136,6 +136,10 @@ docker compose --env-file .env -f compose.images.yaml -f compose.public-https.ya
 Open `NETRATEL_PUBLIC_ORIGIN`. For external PostgreSQL, include
 `-f compose.external-postgres.yaml` before `-f compose.public-https.yaml`.
 Managed deployments can use equivalent settings with their own HTTPS proxy.
+For Traefik, apply the [sustained native gateway profile](CLIENT.md#sustained-traefik-gateway-streams)
+on a dedicated gateway entrypoint and publish its actual HTTPS Gateway URL.
+Its request-body timeout is static configuration shared by every router on a
+listener; an additional hostname or router label does not isolate it.
 Use their API **container console** for `cat /var/netratel/bootstrap/setup-proof`;
 do not run Docker commands inside the container. Mount bootstrap state,
 Data Protection keys, application storage, and the signing key durably with

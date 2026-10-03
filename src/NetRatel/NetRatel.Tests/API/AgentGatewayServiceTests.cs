@@ -1,8 +1,15 @@
 using System.Security.Claims;
+using System.Collections.Concurrent;
+using System.Diagnostics;
+using System.Net;
+using System.Security.Cryptography.X509Certificates;
+using Akka.Hosting;
 using FluentAssertions;
+using Grpc.Core;
 using Grpc.Net.Client;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -10,17 +17,239 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.EntityFrameworkCore;
 using NetRatel.AgentGateway.Contracts.V1;
 using NetRatel.Akka.Configuration;
+using NetRatel.Akka.Hosting;
+using NetRatel.Akka.Presence;
 using NetRatel.API.Gateway;
 using NetRatel.API.Services;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Application.Agents;
 using NetRatel.Application.Presence;
+using NetRatel.Client.Service.Gateway;
 using Xunit;
 
 namespace NetRatel.Tests.API;
 
-public sealed class AgentGatewayServiceTests
+public sealed class AgentGatewayServiceTests(ITestOutputHelper output)
 {
+    [Fact]
+    [Trait("category", "hosted")]
+    public async Task Connect_NativeDuplexRemainsAdmittedAcrossProxyReadDeadline()
+    {
+        const int tenantId = 75;
+        var directAgent = Guid.NewGuid();
+        var defaultProxyAgent = Guid.NewGuid();
+        var proxyAgent = Guid.NewGuid();
+        var renewingAgent = Guid.NewGuid();
+        var identities = new Dictionary<string, Guid>
+        {
+            ["direct-test-token"] = directAgent,
+            ["default-proxy-test-token"] = defaultProxyAgent,
+            ["proxy-test-token"] = proxyAgent,
+            ["short-test-token"] = renewingAgent,
+            ["renewed-test-token"] = renewingAgent
+        };
+        var proxyEndpoint = RequiredFixtureSetting("NETRATEL_GATEWAY_PROXY_ENDPOINT");
+        var defaultProxyEndpoint = RequiredFixtureSetting("NETRATEL_GATEWAY_PROXY_DEFAULT_ENDPOINT");
+        var port = int.Parse(RequiredFixtureSetting("NETRATEL_GATEWAY_TEST_BACKEND_PORT"));
+        using var certificate = X509Certificate2.CreateFromPem(File.ReadAllText(
+            RequiredFixtureSetting("NETRATEL_GATEWAY_PROXY_CA_PATH")));
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(230));
+        using var host = await BuildHostAsync(tenantId, directAgent, null, port, identities);
+        var router = host.Services.GetRequiredService<IClientPresenceRouter>();
+        using var renewing = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
+        var tokens = new ShortThenNormalTokenService();
+        var logs = new ConcurrentQueue<string>();
+        var sessions = new ConcurrentQueue<(GatewayPresenceSession Session, CancellationToken Lifetime)>();
+        var secondAdmission = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var agent = new AgentGatewayPresenceClient(
+            new GatewayClientOptions { Endpoint = proxyEndpoint }, tokens, tenantId, renewingAgent,
+            "transport-test", [], logs.Enqueue,
+            runForPresenceSession: (session, _, lifetime) =>
+            {
+                sessions.Enqueue((session, lifetime));
+                if (sessions.Count == 2)
+                    secondAdmission.TrySetResult();
+                return new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously).Task.WaitAsync(lifetime);
+            },
+            createHttpHandler: _ => CreateTrustedProxyHandler(certificate));
+        var renewingRun = agent.RunAsync(renewing.Token);
+        try
+        {
+            // Both streams retain their original server-issued connection identity
+            // through thirteen 15-second intervals, beyond the observed 60/180s failures.
+            await Task.WhenAll(
+                SustainNativeDuplexAsync("direct-h2c", $"http://127.0.0.1:{port}", tenantId,
+                    directAgent, "direct-test-token", new FixtureRouteHandler(new SocketsHttpHandler { UseProxy = false }), router, deadline.Token),
+                SustainNativeDuplexAsync("default-proxy-https", defaultProxyEndpoint, tenantId,
+                    defaultProxyAgent, "default-proxy-test-token", CreateTrustedProxyHandler(certificate), router,
+                    deadline.Token, expectReadDeadline: true),
+                SustainNativeDuplexAsync("proxy-https", proxyEndpoint, tenantId,
+                    proxyAgent, "proxy-test-token", CreateTrustedProxyHandler(certificate), router, deadline.Token),
+                secondAdmission.Task.WaitAsync(TimeSpan.FromSeconds(100), deadline.Token));
+
+            var admitted = sessions.ToArray();
+            admitted.Should().HaveCount(2);
+            admitted[0].Lifetime.IsCancellationRequested.Should().BeTrue();
+            admitted[1].Lifetime.IsCancellationRequested.Should().BeFalse();
+            admitted[1].Session.ConnectionEpoch.Should().Be(admitted[0].Session.ConnectionEpoch + 1);
+            admitted[1].Session.ConnectionId.Should().NotBe(admitted[0].Session.ConnectionId);
+            tokens.RequestCount.Should().Be(2);
+            logs.Should().Contain(message => message.Contains("Refreshing the gateway session", StringComparison.Ordinal));
+            logs.Should().NotContain(message => message.StartsWith("Gateway session failed", StringComparison.Ordinal));
+            var snapshot = await router.GetSnapshotAsync(new ClientKey(tenantId, renewingAgent), deadline.Token);
+            snapshot.Status.Should().Be(ClientPresenceStatus.Online);
+            snapshot.ConnectionEpoch.Should().Be(checked((long)admitted[1].Session.ConnectionEpoch));
+            snapshot.LastAcceptedSequence.Should().BeGreaterThan(5);
+            snapshot.Source.Should().Be("akka");
+            output.WriteLine("Native runtime renewed its two-minute test token once, fenced the old session, and retained its normal-lifetime session with positive heartbeat ACKs.");
+        }
+        finally
+        {
+            renewing.Cancel();
+            await renewingRun.WaitAsync(TimeSpan.FromSeconds(10));
+            await host.StopAsync();
+        }
+    }
+
+    private static string RequiredFixtureSetting(string name) =>
+        Environment.GetEnvironmentVariable(name) is { Length: > 0 } value ? value :
+            throw new InvalidOperationException($"{name} is required; run through tools/ci/tests/traefik-gateway-routing.sh.");
+
+    private async Task SustainNativeDuplexAsync(
+        string route, string endpoint, int tenantId, Guid agentId, string bearerToken,
+        HttpMessageHandler handler, IClientPresenceRouter router, CancellationToken cancellationToken,
+        bool expectReadDeadline = false)
+    {
+        using var channel = GrpcChannel.ForAddress(endpoint,
+            new GrpcChannelOptions { HttpHandler = handler, DisposeHttpClient = true });
+        var client = new global::NetRatel.AgentGateway.Contracts.V1.AgentGateway.AgentGatewayClient(channel);
+        using var call = client.Connect(new Metadata
+        {
+            { "authorization", $"Bearer {bearerToken}" },
+            { "x-netratel-real-gateway", "1" }
+        }, cancellationToken: cancellationToken);
+        var helloOperation = Guid.NewGuid().ToString("D");
+        await call.RequestStream.WriteAsync(new AgentFrame
+        {
+            ProtocolVersion = "1.0", TenantId = tenantId, ClientId = agentId.ToString("D"),
+            ConnectionId = Guid.NewGuid().ToString("D"), OperationId = helloOperation,
+            Hello = new ConnectHello { AgentVersion = "transport-test" }
+        });
+        (await call.ResponseStream.MoveNext(cancellationToken)).Should().BeTrue();
+        var connected = call.ResponseStream.Current;
+        connected.PayloadCase.Should().Be(GatewayFrame.PayloadOneofCase.Connected);
+        connected.OperationId.Should().Be(helloOperation);
+        connected.Connected.PresenceAuthority.Should().Be("akka");
+        connected.Connected.HeartbeatIntervalSeconds.Should().Be(15);
+        connected.ConnectionEpoch.Should().Be(1);
+        var started = Stopwatch.GetTimestamp();
+        double? previousRoundTrip = null;
+        ulong acknowledged = 0;
+        using var heartbeats = new PeriodicTimer(TimeSpan.FromSeconds(15));
+        try
+        {
+            for (ulong sequence = 1; sequence <= (expectReadDeadline ? 7UL : 14UL); sequence++)
+            {
+                if (sequence > 1)
+                    (await heartbeats.WaitForNextTickAsync(cancellationToken)).Should().BeTrue();
+                var operation = Guid.NewGuid().ToString("D");
+                var payload = new PresenceHeartbeat();
+                if (previousRoundTrip is { } milliseconds)
+                {
+                    payload.AcknowledgedHeartbeatSequence = sequence - 1;
+                    payload.AcknowledgedHeartbeatRoundTripMs = milliseconds;
+                }
+                var sent = Stopwatch.GetTimestamp();
+                await call.RequestStream.WriteAsync(new AgentFrame
+                {
+                    ProtocolVersion = "1.0", TenantId = tenantId, ClientId = agentId.ToString("D"),
+                    ConnectionId = connected.ConnectionId, ConnectionEpoch = connected.ConnectionEpoch,
+                    OperationId = operation, Sequence = sequence, Heartbeat = payload
+                });
+                (await call.ResponseStream.MoveNext(cancellationToken)).Should().BeTrue();
+                previousRoundTrip = Stopwatch.GetElapsedTime(sent).TotalMilliseconds;
+                var acknowledgement = call.ResponseStream.Current;
+                acknowledgement.PayloadCase.Should().Be(GatewayFrame.PayloadOneofCase.HeartbeatAccepted);
+                acknowledgement.ConnectionId.Should().Be(connected.ConnectionId);
+                acknowledgement.ConnectionEpoch.Should().Be(connected.ConnectionEpoch);
+                acknowledgement.ClientId.Should().Be(agentId.ToString("D"));
+                acknowledgement.TenantId.Should().Be(tenantId);
+                acknowledgement.OperationId.Should().Be(operation);
+                acknowledgement.Sequence.Should().Be(sequence);
+                acknowledgement.HeartbeatAccepted.Duplicate.Should().BeFalse();
+                acknowledgement.HeartbeatAccepted.PresenceAuthority.Should().Be("akka");
+                acknowledged = sequence;
+            }
+        }
+        catch (Exception exception) when (expectReadDeadline && exception is (RpcException or IOException or HttpRequestException))
+        {
+            var age = Stopwatch.GetElapsedTime(started).TotalSeconds;
+            age.Should().BeInRange(55, 85);
+            acknowledged.Should().BeGreaterThanOrEqualTo(3);
+            if (exception is RpcException rpc)
+                rpc.StatusCode.Should().BeOneOf(StatusCode.Internal, StatusCode.Unavailable, StatusCode.Cancelled, StatusCode.Unknown);
+            var status = exception is RpcException failure ? failure.StatusCode.ToString() : "transport";
+            output.WriteLine($"route={route} connectionId={connected.ConnectionId} epoch={connected.ConnectionEpoch} ageSeconds={age:F1} heartbeatAcks={acknowledged} httpVersion=2 failureType={exception.GetType().Name} grpcStatus={status}");
+            return;
+        }
+        expectReadDeadline.Should().BeFalse("the default proxy must expire the unfinished native duplex request body near 60 seconds");
+        var elapsed = Stopwatch.GetElapsedTime(started);
+        elapsed.Should().BeGreaterThan(TimeSpan.FromSeconds(185));
+        var snapshot = await router.GetSnapshotAsync(new ClientKey(tenantId, agentId), cancellationToken);
+        snapshot.Status.Should().Be(ClientPresenceStatus.Online);
+        snapshot.LastAcceptedSequence.Should().Be(14);
+        snapshot.ConnectionId.Should().Be(Guid.Parse(connected.ConnectionId));
+        snapshot.LatencyMilliseconds.Should().BeGreaterThanOrEqualTo(0);
+        snapshot.Source.Should().Be("akka");
+        await call.RequestStream.CompleteAsync();
+        (await call.ResponseStream.MoveNext(cancellationToken)).Should().BeFalse();
+        (await router.GetSnapshotAsync(new ClientKey(tenantId, agentId), cancellationToken))
+            .Status.Should().Be(ClientPresenceStatus.Offline);
+        output.WriteLine($"route={route} connectionId={connected.ConnectionId} epoch={connected.ConnectionEpoch} ageSeconds={elapsed.TotalSeconds:F1} heartbeatAcks=14 streamEnded=graceful");
+    }
+
+    private static HttpMessageHandler CreateTrustedProxyHandler(X509Certificate2 root)
+    {
+        var policy = new X509ChainPolicy
+        {
+            TrustMode = X509ChainTrustMode.CustomRootTrust,
+            RevocationMode = X509RevocationMode.NoCheck,
+            VerificationFlags = X509VerificationFlags.NoFlag
+        };
+        policy.CustomTrustStore.Add(root);
+        return new FixtureRouteHandler(new SocketsHttpHandler
+        {
+            UseProxy = false,
+            EnableMultipleHttp2Connections = true,
+            SslOptions = { CertificateChainPolicy = policy }
+        });
+    }
+
+    private sealed class FixtureRouteHandler(HttpMessageHandler inner) : DelegatingHandler(inner)
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            if (!request.Headers.Contains("x-netratel-real-gateway"))
+                request.Headers.TryAddWithoutValidation("x-netratel-real-gateway", "1");
+            var response = await base.SendAsync(request, cancellationToken);
+            response.Version.Should().Be(HttpVersion.Version20);
+            return response;
+        }
+    }
+
+    private sealed class ShortThenNormalTokenService : NetRatel.Application.ClientAuth.IAgentTokenService
+    {
+        private int _requests;
+        public int RequestCount => Volatile.Read(ref _requests);
+        public Task<(string AccessToken, DateTimeOffset ExpiresAtUtc)> GetAccessTokenAsync(CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested();
+            var first = Interlocked.Increment(ref _requests) == 1;
+            return Task.FromResult((first ? "short-test-token" : "renewed-test-token",
+                DateTimeOffset.UtcNow.Add(first ? TimeSpan.FromMinutes(2) : TimeSpan.FromHours(1))));
+        }
+    }
+
     [Fact]
     public async Task Connect_AdmitsAuthenticatedAgentAndReportsNormalPresenceAuthority()
     {
@@ -162,12 +391,18 @@ public sealed class AgentGatewayServiceTests
     private static async Task<IHost> BuildHostAsync(
         int tenantId,
         Guid agentId,
-        RecordingPresenceRouter router)
+        IClientPresenceRouter? router,
+        int? networkPort = null,
+        IReadOnlyDictionary<string, Guid>? bearerAgents = null)
     {
         var builder = Host.CreateDefaultBuilder();
         builder.ConfigureWebHost(web =>
         {
-            web.UseTestServer();
+            if (networkPort is { } port)
+                web.UseKestrel(options => options.Listen(IPAddress.Any, port,
+                    listen => listen.Protocols = HttpProtocols.Http2));
+            else
+                web.UseTestServer();
             web.ConfigureServices(services =>
             {
                 services.AddRouting();
@@ -178,10 +413,24 @@ public sealed class AgentGatewayServiceTests
                             AgentGatewayIdentityResolver.TryResolve(context.User, out _, out _)));
                 });
                 services.AddGrpc();
-                services.AddSingleton<IClientPresenceRouter>(router);
+                var akkaOptions = new NetRatelAkkaOptions();
+                if (router is not null)
+                    services.AddSingleton(router);
+                else
+                {
+                    services.AddAkka($"gateway-transport-{Guid.NewGuid():N}", (akka, serviceProvider) =>
+                        akka.WithActors((system, registry, _) =>
+                        {
+                            var readModel = system.ActorOf(PresenceReadModelActor.Props(), "presence-read-model");
+                            registry.Register<ClientPresenceRegion>(system.ActorOf(
+                                ClientPresenceRouterActor.Props(akkaOptions, readModel), "presence"));
+                        }));
+                    services.AddSingleton<IClientPresenceRouter>(provider => new AkkaClientPresenceRouter(
+                        provider.GetRequiredService<IRequiredActor<ClientPresenceRegion>>(), akkaOptions.AskTimeout));
+                }
                 services.AddSingleton<IAgentManagementService>(
-                    new ActiveAgentManagementService(tenantId, agentId));
-                services.AddSingleton(new NetRatelAkkaOptions());
+                    new ActiveAgentManagementService(tenantId, agentId, bearerAgents?.Values.ToHashSet()));
+                services.AddSingleton(akkaOptions);
                 services.AddSingleton(TimeProvider.System);
                 services.AddDbContext<OrchestratorDbContext>(options => options.UseInMemoryDatabase($"gateway-{Guid.NewGuid():N}"));
                 services.AddSingleton<IClientUpdateCatalog, EmptyClientUpdateCatalog>();
@@ -195,7 +444,17 @@ public sealed class AgentGatewayServiceTests
             {
                 app.Use(async (context, next) =>
                 {
-                    var id = agentId.ToString("D");
+                    var authenticatedAgent = agentId;
+                    if (bearerAgents is not null && !bearerAgents.TryGetValue(
+                            context.Request.Headers.Authorization.ToString().Replace("Bearer ", "", StringComparison.Ordinal),
+                            out authenticatedAgent))
+                    {
+                        context.Response.StatusCode = 401;
+                        return;
+                    }
+                    // Network coverage uses fixed fixture bearer identities; production
+                    // JWT issuance, enrollment and operating-system installation are separate gates.
+                    var id = authenticatedAgent.ToString("D");
                     context.User = new ClaimsPrincipal(new ClaimsIdentity(
                     [
                         new Claim("role", "agent"),
@@ -277,18 +536,18 @@ public sealed class AgentGatewayServiceTests
             throw new NotSupportedException();
     }
 
-    private sealed class ActiveAgentManagementService(int tenantId, Guid agentId) : IAgentManagementService
+    private sealed class ActiveAgentManagementService(int tenantId, Guid agentId, IReadOnlySet<Guid>? agents = null) : IAgentManagementService
     {
         public Task<AgentDetailDto?> GetAsync(int requestedTenantId, Guid requestedAgentId, CancellationToken ct)
         {
-            if (requestedTenantId != tenantId || requestedAgentId != agentId)
+            if (requestedTenantId != tenantId || !(agents?.Contains(requestedAgentId) ?? requestedAgentId == agentId))
             {
                 return Task.FromResult<AgentDetailDto?>(null);
             }
 
             return Task.FromResult<AgentDetailDto?>(new AgentDetailDto(
                 tenantId,
-                agentId,
+                requestedAgentId,
                 "Phase 1 test agent",
                 IsEnabled: true,
                 DisabledReason: null,
