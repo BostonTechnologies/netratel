@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Reflection;
 using FluentAssertions;
 using NetRatel.Client.Service;
 using Xunit;
@@ -96,20 +97,19 @@ public sealed class BoundedProcessRunnerTests
         using var cancellation = new CancellationTokenSource();
         try
         {
-            var escapedFile = QuotePath(pidFile);
-            var escapedTemporaryFile = QuotePath(pidFile + ".tmp");
-            var powerShell = QuotePath(WindowsPowerShellPath());
-            var startInfo = Shell(
-                $"sleep 30 & child=$!; printf '%s %s\\n' \"$$\" \"$child\" > '{escapedTemporaryFile}'; mv '{escapedTemporaryFile}' '{escapedFile}'; wait",
-                $"$ErrorActionPreference = 'Stop'; $childInfo = New-Object System.Diagnostics.ProcessStartInfo; $childInfo.FileName = '{powerShell}'; $childInfo.Arguments = '-NoLogo -NoProfile -NonInteractive -Command \"Start-Sleep -Seconds 30\"'; $childInfo.UseShellExecute = $false; $childInfo.CreateNoWindow = $true; $child = [Diagnostics.Process]::Start($childInfo); if ($null -eq $child) {{ throw 'Unable to start transient tree descendant.' }}; [IO.File]::WriteAllText('{escapedTemporaryFile}', \"$PID $($child.Id)\"); [IO.File]::Move('{escapedTemporaryFile}', '{escapedFile}'); $child.WaitForExit()");
+            var startInfo = ProcessTreeProbe(pidFile);
+            var elapsed = Stopwatch.StartNew();
             var running = BoundedProcessRunner.RunAsync(startInfo, TimeSpan.FromSeconds(3), "terminate transient child tree", cancellation.Token);
             var pids = await WaitForPidsAsync(pidFile, running);
             pids.Should().HaveCount(2);
+            pids.Should().OnlyHaveUniqueItems();
+            pids.Should().OnlyContain(pid => IsAlive(pid), "the fixture must publish a live parent and its live descendant before timeout");
             Func<Task> run = () => running;
 
             await run.Should().ThrowAsync<TimeoutException>();
 
             await AssertStoppedAsync(pids);
+            elapsed.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(7));
         }
         finally
         {
@@ -145,6 +145,32 @@ public sealed class BoundedProcessRunnerTests
     private static ProcessStartInfo SleepingChild(string pidFile) => Shell(
         $"printf '%s\\n' \"$$\" > '{QuotePath(pidFile + ".tmp")}'; mv '{QuotePath(pidFile + ".tmp")}' '{QuotePath(pidFile)}'; exec sleep 30",
         $"[IO.File]::WriteAllText('{QuotePath(pidFile + ".tmp")}', [string]$PID); [IO.File]::Move('{QuotePath(pidFile + ".tmp")}', '{QuotePath(pidFile)}'); Start-Sleep -Seconds 30");
+
+    private static ProcessStartInfo ProcessTreeProbe(string pidFile)
+    {
+        var repository = new DirectoryInfo(AppContext.BaseDirectory);
+        while (repository.Parent is not null &&
+               !File.Exists(Path.Combine(repository.FullName, "tools", "NetRatel.ClientArtifactCrashProbe",
+                   "NetRatel.ClientArtifactCrashProbe.csproj")))
+            repository = repository.Parent;
+        var configuration = typeof(BoundedProcessRunnerTests).Assembly
+            .GetCustomAttribute<AssemblyConfigurationAttribute>()?.Configuration
+            ?? throw new InvalidOperationException("The test assembly has no build configuration.");
+        var apphost = Path.Combine(repository.FullName, "tools", "NetRatel.ClientArtifactCrashProbe",
+            "bin", configuration, "net10.0",
+            "NetRatel.ClientArtifactCrashProbe" + (OperatingSystem.IsWindows() ? ".exe" : ""));
+        Assert.True(File.Exists(apphost), $"Process-tree probe is missing: {apphost}");
+        var startInfo = new ProcessStartInfo(apphost)
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true
+        };
+        startInfo.ArgumentList.Add("--bounded-process-tree-parent");
+        startInfo.ArgumentList.Add(pidFile);
+        return startInfo;
+    }
 
     private static ProcessStartInfo Shell(string unixCommand, string windowsCommand)
     {
