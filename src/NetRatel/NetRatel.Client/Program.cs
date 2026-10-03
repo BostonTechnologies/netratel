@@ -251,6 +251,9 @@ async Task RunClientAsync()
     var services = new ServiceCollection();
     services.AddSingleton(clientResolution.ConfiguredOptions);
     services.AddSingleton(sp => sp.GetRequiredService<IOptions<ClientOptions>>().Value);
+    services.AddSingleton(_ => ClientConfigurationLoader.ResolveGatewayOptions(
+        configuration, cfg.ApiBaseUrl, packagedDefaults, deploymentOverrides, appBaseDir, cliArgs));
+    services.AddSingleton(sp => sp.GetRequiredService<ClientConfigurationLoader.GatewayOptionsResolution>().ConfiguredOptions);
     services.AddSingleton<IAgentCredentialStore, AgentCredentialStore>();
     services.AddSingleton<IAgentDeviceKeyStore>(sp => (IAgentDeviceKeyStore)sp.GetRequiredService<IAgentCredentialStore>());
     services.AddHttpClient("AgentAuthApi", http =>
@@ -405,14 +408,8 @@ async Task RunClientAsync()
     // Enrollment and auth-check commands only need the REST API. Resolve the
     // HTTPS gateway endpoint when this process is actually going to run the
     // operational agent session, so local HTTP enrollment remains supported.
-    var gatewayResolution = ClientConfigurationLoader.ResolveGatewayOptions(
-        configuration,
-        cfg.ApiBaseUrl,
-        packagedDefaults,
-        deploymentOverrides,
-        appBaseDir,
-        cliArgs);
-    var gatewayOptions = gatewayResolution.Options;
+    var gatewayResolution = rootProvider.GetRequiredService<ClientConfigurationLoader.GatewayOptionsResolution>();
+    var gatewayOptions = rootProvider.GetRequiredService<IOptions<GatewayClientOptions>>().Value;
 
     string initialToken;
     try
