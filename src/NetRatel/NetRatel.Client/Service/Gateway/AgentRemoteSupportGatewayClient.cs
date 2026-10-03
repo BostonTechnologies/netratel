@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
+using System.Runtime.Versioning;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -29,6 +30,7 @@ public sealed class AgentRemoteSupportGatewayClient(GatewayClientOptions options
     private readonly object _helperPipeHostSync = new();
     private RemoteDesktopUserHelperPipeHost? _helperPipeHost;
     private bool _helperPipeHostInitialized;
+    private Task? _helperBootstrapTask;
 
     public async Task RunForPresenceSessionAsync(GatewayPresenceSession session, string accessToken, CancellationToken stoppingToken)
     {
@@ -41,22 +43,36 @@ public sealed class AgentRemoteSupportGatewayClient(GatewayClientOptions options
             ? new RemoteSupportTransitionEffectQueue()
             : null;
         using var v2Media = new V2GatewayRemoteSupportBridge(EnsureGatewayHelperPipeHost, log, session, transitionEffects);
-        var retryDelay = InitialRetryDelay;
+        // Each independently retrying stream must observe its own transport
+        // failure; an active preparation stream must not mask signalling reset.
+        var signalling = RunSignallingWithRetryAsync(
+            ct => RunStreamAsync(endpoint, session, accessToken, v2Media, ct), log, stoppingToken);
+        var preparation = new AgentRemoteSupportPreparationGatewayClient(
+                    options,
+                    log,
+                    EnsureGatewayHelperPipeHost,
+                    v2Media.RememberPreparedRouteAsync,
+                    v2Media.PrepareConsoleProviderAsync,
+                    transitionEffects)
+                .RunForPresenceSessionAsync(endpoint, session, accessToken, stoppingToken);
+        await Task.WhenAll(signalling, preparation).ConfigureAwait(false);
+    }
+
+    internal static async Task RunSignallingWithRetryAsync(
+        Func<CancellationToken, Task> runStream,
+        Action<string> log,
+        CancellationToken stoppingToken,
+        TimeSpan? initialRetryDelay = null)
+    {
+        var initialDelay = initialRetryDelay ?? InitialRetryDelay;
+        var retryDelay = initialDelay;
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
-                var signalling = RunStreamAsync(endpoint, session, accessToken, v2Media, stoppingToken);
-                var preparation = new AgentRemoteSupportPreparationGatewayClient(
-                            options,
-                            log,
-                            EnsureGatewayHelperPipeHost,
-                            v2Media.RememberPreparedRouteAsync,
-                            v2Media.PrepareConsoleProviderAsync,
-                            transitionEffects)
-                        .RunForPresenceSessionAsync(endpoint, session, accessToken, stoppingToken);
-                await Task.WhenAll(signalling, preparation).ConfigureAwait(false);
-                retryDelay = InitialRetryDelay;
+                await runStream(stoppingToken).ConfigureAwait(false);
+                retryDelay = initialDelay;
+                await Task.Delay(retryDelay, stoppingToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -64,7 +80,7 @@ public sealed class AgentRemoteSupportGatewayClient(GatewayClientOptions options
             }
             catch (Exception exception) when (exception is RpcException or HttpRequestException or IOException)
             {
-                log($"Remote-support gateway session failed: {exception.GetType().Name}: {exception.Message}. Retrying in {retryDelay.TotalSeconds:0}s.");
+                log($"Remote-support signalling gateway session failed: {exception.GetType().Name}: {exception.Message}. Retrying in {retryDelay.TotalSeconds:0}s.");
                 await Task.Delay(retryDelay, stoppingToken).ConfigureAwait(false);
                 retryDelay = TimeSpan.FromSeconds(Math.Min(retryDelay.TotalSeconds * 2, MaximumRetryDelay.TotalSeconds));
             }
@@ -180,12 +196,9 @@ public sealed class AgentRemoteSupportGatewayClient(GatewayClientOptions options
 #pragma warning disable CA1416
                 _helperPipeHost = new RemoteDesktopUserHelperPipeHost();
                 _helperPipeHost.Start();
-                var helperTask = new RemoteDesktopUserHelperTask();
-                helperTask.EnsureLauncherAndRunKey();
-                helperTask.TryRegisterScheduledTask();
-                helperTask.StartForActiveConsoleSession();
+                _helperBootstrapTask = Task.Run(BootstrapHelperAsync);
 #pragma warning restore CA1416
-                log("Remote-support gateway Windows helper host started without Spacetime transport.");
+                log("Remote-support helper pipe listener started; interactive helper readiness is checked separately.");
             }
             catch (Exception exception)
             {
@@ -195,6 +208,29 @@ public sealed class AgentRemoteSupportGatewayClient(GatewayClientOptions options
             }
 
             return _helperPipeHost;
+        }
+    }
+
+    [SupportedOSPlatform("windows")]
+    private async Task BootstrapHelperAsync()
+    {
+        try
+        {
+            var helperTask = new RemoteDesktopUserHelperTask();
+            if (!await helperTask.EnsureRegisteredAsync(CancellationToken.None).ConfigureAwait(false))
+            {
+                log("Remote-support interactive helper is unavailable: task registration is not confirmed.");
+                return;
+            }
+
+            if (!await helperTask.StartForActiveConsoleSessionAsync(CancellationToken.None).ConfigureAwait(false))
+            {
+                log("Remote-support interactive helper is unavailable: no interactive-session launch is confirmed.");
+            }
+        }
+        catch (Exception exception)
+        {
+            log($"Remote-support interactive helper is unavailable: {exception.Message}");
         }
     }
 

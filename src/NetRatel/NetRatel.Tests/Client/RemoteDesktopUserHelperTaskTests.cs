@@ -1,5 +1,6 @@
 using FluentAssertions;
 using NetRatel.Client.Service.RemoteDesktop;
+using System.Runtime.InteropServices;
 using System.Xml;
 using System.Xml.Linq;
 using System.Xml.Schema;
@@ -11,8 +12,8 @@ public sealed class RemoteDesktopUserHelperTaskTests
 {
     private static readonly XNamespace TaskNamespace = "http://schemas.microsoft.com/windows/2004/02/mit/task";
 
-    // These methods only construct XML and process arguments. No scheduler,
-    // interactive session, registry, launcher or capture operation is invoked.
+    // XML/unit tests are offline. Native tests use TASK_VALIDATE_ONLY and
+    // never register/run a task, write a launcher, or capture an interactive session.
 #pragma warning disable CA1416
     [Fact]
     public void GeneratedPrincipal_ValidatesMicrosoftSchemaAndKeepsInteractiveGroupLeastPrivilege()
@@ -53,17 +54,56 @@ public sealed class RemoteDesktopUserHelperTaskTests
     }
 
     [Fact]
-    public void XmlRegistration_KeepsPathOneArgumentAndUsesTheXmlPrincipal()
+    public void RegistrationChild_KeepsExecutablePathSeparateAndHasOneNarrowCommand()
     {
-        const string xmlPath = "C:\\ProgramData\\NetRatel\\remote desktop\\helper task.xml";
-        var startInfo = RemoteDesktopUserHelperTask.BuildRegistrationStartInfo(xmlPath);
+        const string executablePath = "C:\\Program Files\\NetRatel\\NetRatel.Client.exe";
+        var startInfo = RemoteDesktopUserHelperTask.BuildRegistrationStartInfo(executablePath);
 
-        startInfo.FileName.Should().Be("schtasks.exe");
-        startInfo.ArgumentList.Should().Equal("/Create", "/TN", RemoteDesktopUserHelperConstants.TaskName, "/XML", xmlPath, "/F");
+        startInfo.FileName.Should().Be(executablePath);
+        startInfo.ArgumentList.Should().Equal(RemoteDesktopUserHelperConstants.RegistrationCommand);
         startInfo.Arguments.Should().BeEmpty();
         startInfo.UseShellExecute.Should().BeFalse();
         startInfo.RedirectStandardError.Should().BeTrue();
         startInfo.RedirectStandardOutput.Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("//B \"C:\\ProgramData\\NetRatel & équipe 漢字\\helper.vbs\"")]
+    [Trait("category", "hosted")]
+    public void NativeTaskScheduler_ValidatesCompleteProductionUnicodeHandoff(string? arguments)
+    {
+        if (!OperatingSystem.IsWindows()) { Assert.Skip("Task Scheduler Unicode handoff requires the native Windows lane."); return; }
+        NetRatelWindowsServiceHost.ShouldRunAsService([RemoteDesktopUserHelperConstants.RegistrationCommand]).Should().BeFalse();
+        var xml = arguments is null
+            ? RemoteDesktopUserHelperTask.BuildCurrentTaskXml()
+            : RemoteDesktopUserHelperTask.BuildTaskXml("wscript.exe", arguments);
+        var document = XDocument.Parse(xml);
+        document.Declaration!.Encoding.Should().Be("UTF-16");
+        var principal = document.Root!.Element(TaskNamespace + "Principals")!.Element(TaskNamespace + "Principal")!;
+        principal.Element(TaskNamespace + "GroupId")!.Value.Should().Be("S-1-5-32-545");
+        principal.Element(TaskNamespace + "RunLevel")!.Value.Should().Be("LeastPrivilege");
+        principal.Element(TaskNamespace + "UserId").Should().BeNull();
+        document.Root.Element(TaskNamespace + "Settings")!.Element(TaskNamespace + "MultipleInstancesPolicy")!.Value.Should().Be("IgnoreNew");
+        var actualArguments = document.Root.Element(TaskNamespace + "Actions")!.Element(TaskNamespace + "Exec")!
+            .Element(TaskNamespace + "Arguments")!.Value;
+        actualArguments.Should().Be(arguments ?? $"//B \"{RemoteDesktopUserHelperTask.GetLauncherPath()}\"");
+
+        RemoteDesktopUserHelperTask.RegisterTaskXml(xml, validateOnly: true);
+    }
+
+    [Fact]
+    [Trait("category", "hosted")]
+    public void NativeTaskScheduler_RejectsPreviousInvalidGroupLogonTypeWithoutRegistration()
+    {
+        if (!OperatingSystem.IsWindows()) { Assert.Skip("Task Scheduler Unicode handoff requires the native Windows lane."); return; }
+        var xml = RemoteDesktopUserHelperTask.BuildTaskXml("wscript.exe", "//B \"helper.vbs\"");
+        var document = XDocument.Parse(xml);
+        document.Root!.Element(TaskNamespace + "Principals")!.Element(TaskNamespace + "Principal")!
+            .Add(new XElement(TaskNamespace + "LogonType", "Group"));
+        Action validate = () => RemoteDesktopUserHelperTask.RegisterTaskXml(document.Declaration + "\n" + document, validateOnly: true);
+
+        validate.Should().Throw<COMException>();
     }
 #pragma warning restore CA1416
 
