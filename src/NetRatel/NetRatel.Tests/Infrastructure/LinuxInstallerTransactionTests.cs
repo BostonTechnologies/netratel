@@ -204,8 +204,15 @@ public sealed class LinuxInstallerTransactionTests
         using var fixture = LinuxInstallerFixture.Create("successful_replacement", seed: seed);
         const string root = "/opt/netratel/client\\root";
         var original = await fixture.RenderAndParseDefaultUnitsAsync(root);
-        Assert.NotEqual(0, original.ExitCode);
-        Assert.Contains("Executable path contains special characters", original.StandardError);
+        Assert.True(original.ExitCode != 0, $"The native parser unexpectedly accepted the backslash executable root.\n{original.StandardError}");
+        foreach (var executable in new[] { "netratel-client-start.sh", "updater/netratel-update.sh" })
+        {
+            var path = root + "/" + executable;
+            // systemd 255 calls this the executable "name"; 257 calls it the "path".
+            Assert.True(original.StandardError.Contains("Executable name contains special characters: " + path, StringComparison.Ordinal) ||
+                        original.StandardError.Contains("Executable path contains special characters: " + path, StringComparison.Ordinal),
+                $"Expected native rejection of executable {path}; exit={original.ExitCode}. Full diagnostics:\n{original.StandardError}");
+        }
         // Only the fixture executable is replaced. The actual production-rendered
         // WorkingDirectory and Environment bytes remain unchanged for this probe.
         var scalar = await fixture.RenderAndParseDefaultUnitsAsync(root, fixtureExecutableOverride: true);

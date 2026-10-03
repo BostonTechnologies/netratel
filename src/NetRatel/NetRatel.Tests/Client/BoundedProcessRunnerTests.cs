@@ -71,7 +71,7 @@ public sealed class BoundedProcessRunnerTests
         {
             var running = BoundedProcessRunner.RunAsync(SleepingChild(pidFile), TimeSpan.FromSeconds(20),
                 "cancel transient child", cancellation.Token);
-            var pid = (await WaitForPidsAsync(pidFile))[0];
+            var pid = (await WaitForPidsAsync(pidFile, running))[0];
             var elapsed = Stopwatch.StartNew();
             cancellation.Cancel();
             Func<Task> run = () => running;
@@ -101,9 +101,9 @@ public sealed class BoundedProcessRunnerTests
             var powerShell = QuotePath(WindowsPowerShellPath());
             var startInfo = Shell(
                 $"sleep 30 & child=$!; printf '%s %s\\n' \"$$\" \"$child\" > '{escapedTemporaryFile}'; mv '{escapedTemporaryFile}' '{escapedFile}'; wait",
-                $"$child = Start-Process -FilePath '{powerShell}' -ArgumentList '-NoProfile','-NonInteractive','-Command','Start-Sleep -Seconds 30' -WindowStyle Hidden -PassThru; [IO.File]::WriteAllText('{escapedTemporaryFile}', \"$PID $($child.Id)\"); [IO.File]::Move('{escapedTemporaryFile}', '{escapedFile}'); Wait-Process -Id $child.Id");
+                $"$ErrorActionPreference = 'Stop'; $childInfo = New-Object System.Diagnostics.ProcessStartInfo; $childInfo.FileName = '{powerShell}'; $childInfo.Arguments = '-NoLogo -NoProfile -NonInteractive -Command \"Start-Sleep -Seconds 30\"'; $childInfo.UseShellExecute = $false; $childInfo.CreateNoWindow = $true; $child = [Diagnostics.Process]::Start($childInfo); if ($null -eq $child) {{ throw 'Unable to start transient tree descendant.' }}; [IO.File]::WriteAllText('{escapedTemporaryFile}', \"$PID $($child.Id)\"); [IO.File]::Move('{escapedTemporaryFile}', '{escapedFile}'); $child.WaitForExit()");
             var running = BoundedProcessRunner.RunAsync(startInfo, TimeSpan.FromSeconds(3), "terminate transient child tree", cancellation.Token);
-            var pids = await WaitForPidsAsync(pidFile);
+            var pids = await WaitForPidsAsync(pidFile, running);
             pids.Should().HaveCount(2);
             Func<Task> run = () => running;
 
@@ -177,7 +177,7 @@ public sealed class BoundedProcessRunnerTests
         ? path.Replace("'", "''", StringComparison.Ordinal)
         : path.Replace("'", "'\\''", StringComparison.Ordinal);
 
-    private static async Task<int[]> WaitForPidsAsync(string pidFile)
+    private static async Task<int[]> WaitForPidsAsync(string pidFile, Task<BoundedProcessResult> running)
     {
         var published = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var watcher = new FileSystemWatcher(Path.GetDirectoryName(pidFile)!, Path.GetFileName(pidFile))
@@ -189,7 +189,22 @@ public sealed class BoundedProcessRunnerTests
         watcher.Renamed += (_, _) => published.TrySetResult();
         watcher.EnableRaisingEvents = true;
         if (!File.Exists(pidFile))
-            await published.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        {
+            var completed = await Task.WhenAny(published.Task, running).WaitAsync(TimeSpan.FromSeconds(10));
+            if (completed == running && !File.Exists(pidFile))
+            {
+                BoundedProcessResult result;
+                try
+                {
+                    result = await running;
+                }
+                catch (Exception failure)
+                {
+                    throw new InvalidOperationException("Transient child failed before publishing its PID readiness file.", failure);
+                }
+                throw new InvalidOperationException($"Transient child exited before publishing its PID readiness file. ExitCode={result.ExitCode}; stderr={result.Error}; stdout={result.Output}");
+            }
+        }
         var value = await File.ReadAllTextAsync(pidFile);
         return value.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Select(int.Parse).ToArray();
     }
