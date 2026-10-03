@@ -62,6 +62,29 @@ async Task RunClientAsync()
         return;
     }
 
+    // A bounded parent process owns Task Scheduler registration; this narrow
+    // child mode never initializes the client, enrolls, or opens a desktop.
+    if (cliArgs.Length == 1 && string.Equals(cliArgs[0], RemoteDesktopUserHelperConstants.RegistrationCommand, StringComparison.Ordinal))
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Environment.ExitCode = 2;
+            return;
+        }
+
+        try
+        {
+            RemoteDesktopUserHelperTask.RegisterCurrentTaskInChild();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Task Scheduler registration failed (0x{ex.HResult:X8}): {ex.GetType().Name}");
+            Environment.ExitCode = 1;
+        }
+
+        return;
+    }
+
     LogManager.Initialize(appBaseDir, ResolveLogDirectory(appBaseDir, cliArgs), ResolveLogFilePrefix(cliArgs));
     NetRatel.Shared.Service.Logging.LogManager.Initialize(LogManager.LogFilePath);
     LogStartupBlock(appBaseDir, cliArgs);
@@ -104,7 +127,7 @@ async Task RunClientAsync()
     if (OperatingSystem.IsWindows() && cliArgs.Any(a => string.Equals(a, "--remote-support-helper-fix", StringComparison.OrdinalIgnoreCase)))
     {
 #pragma warning disable CA1416
-        var result = RemoteSupportInteractiveHelperRepairService.RunManualRepair();
+        var result = await RemoteSupportInteractiveHelperRepairService.RunManualRepairAsync(CancellationToken.None).ConfigureAwait(false);
 #pragma warning restore CA1416
         Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(result, new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web)
         {
@@ -2042,6 +2065,7 @@ public sealed class NetRatelWindowsServiceHost : ServiceBase
         "-h",
         "/?",
         "--version",
+        RemoteDesktopUserHelperConstants.RegistrationCommand,
         "--remote-desktop-user-helper",
         "--remote-desktop-diagnostics",
         "--remote-support-console-helper",
