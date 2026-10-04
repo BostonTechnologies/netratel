@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Collections.Concurrent;
 using System.IO.Compression;
 using System.Net;
 using System.Net.Http;
@@ -7,7 +8,12 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Threading.Channels;
 using FluentAssertions;
+using Grpc.Core;
+using NetRatel.AgentGateway.Contracts.V1;
+using NetRatel.Application.ClientAuth;
+using NetRatel.Client.Service.Gateway;
 using NetRatel.Client.Service.Updates;
 using Xunit;
 
@@ -56,14 +62,44 @@ public sealed class ClientUpdateVersioningTests
     }
 
     [Fact]
-    public void PresenceClient_SendsImmediateActivationHeartbeatBeforeExtensions()
+    public async Task PresenceClient_SendsImmediateActivationHeartbeatBeforeExtensions()
     {
-        var repositoryRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../../"));
-        var presence = File.ReadAllText(Path.Combine(repositoryRoot, "src/NetRatel/NetRatel.Client/Service/Gateway/AgentGatewayPresenceClient.cs"));
+        var clock = new GatewayPresenceTestClock();
+        var fixture = new ActivationPresenceFixture(clock);
+        using var stopping = new CancellationTokenSource();
+        var extensionStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var agent = new AgentGatewayPresenceClient(new GatewayClientOptions { Endpoint = "https://gateway.test" },
+            fixture, 7, Guid.NewGuid(), "activation-test", [], _ => { },
+            runForPresenceSession: (session, _, token) =>
+            {
+                fixture.Events.Should().ContainInOrder("accepted", "confirmation");
+                session.ConnectionId.Should().Be(fixture.ConnectionId);
+                session.ConnectionEpoch.Should().Be(fixture.ConnectionEpoch);
+                fixture.Events.Enqueue("extension");
+                extensionStarted.TrySetResult();
+                return Task.Delay(Timeout.InfiniteTimeSpan, token);
+            }, updateHandler: fixture, timeProvider: clock, createCall: fixture.Open);
 
-        presence.Should().Contain("await SendHeartbeatAsync(++sequence).ConfigureAwait(false);");
-        presence.IndexOf("await SendHeartbeatAsync(++sequence).ConfigureAwait(false);", StringComparison.Ordinal)
-            .Should().BeLessThan(presence.IndexOf("runForPresenceSession?.Invoke", StringComparison.Ordinal));
+        var run = agent.RunAsync(stopping.Token);
+        try
+        {
+            var heartbeat = await fixture.FirstHeartbeat.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            clock.GetTimestamp().Should().Be(0, "activation must not wait for the periodic heartbeat interval");
+            heartbeat.Sequence.Should().Be(1);
+            fixture.ActivationHello!.AttemptId.Should().Be(fixture.AttemptId);
+            fixture.Events.Should().Equal("connected", "sent", "heartbeat-written");
+            extensionStarted.Task.IsCompleted.Should().BeFalse("admission alone does not prove activation readiness");
+
+            fixture.AcceptFirstHeartbeat(heartbeat);
+            await extensionStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            fixture.Events.Should().Equal("connected", "sent", "heartbeat-written", "accepted", "confirmation", "extension");
+            fixture.AcknowledgementFailures.Should().BeEmpty();
+        }
+        finally
+        {
+            stopping.Cancel();
+            await run.WaitAsync(TimeSpan.FromSeconds(3));
+        }
     }
 
     [Fact]
@@ -583,6 +619,115 @@ public sealed class ClientUpdateVersioningTests
         }
 
         return package.ToArray();
+    }
+
+    private sealed class ActivationPresenceFixture(TimeProvider clock) : IAgentTokenService,
+        IAgentGatewayUpdateHandler, IClientStreamWriter<AgentFrame>, IAsyncStreamReader<GatewayFrame>
+    {
+        private readonly Channel<GatewayFrame> _responses = Channel.CreateUnbounded<GatewayFrame>();
+        private CancellationToken _callToken;
+        internal Guid ConnectionId { get; } = Guid.NewGuid();
+        internal ulong ConnectionEpoch => 42;
+        internal string AttemptId { get; } = Guid.NewGuid().ToString("D");
+        internal string ReleaseId { get; } = Guid.NewGuid().ToString("D");
+        internal UpdateActivationContext? ActivationHello { get; private set; }
+        internal TaskCompletionSource<AgentFrame> FirstHeartbeat { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal ConcurrentQueue<string> Events { get; } = new();
+        internal ConcurrentQueue<Exception> AcknowledgementFailures { get; } = new();
+        public WriteOptions? WriteOptions { get; set; }
+        public GatewayFrame Current { get; private set; } = new();
+
+        public Task<(string AccessToken, DateTimeOffset ExpiresAtUtc)> GetAccessTokenAsync(CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested();
+            return Task.FromResult(("activation-test-token", clock.GetUtcNow().AddHours(1)));
+        }
+
+        internal AsyncDuplexStreamingCall<AgentFrame, GatewayFrame> Open(Metadata _, CancellationToken token)
+        {
+            _callToken = token;
+            return new AsyncDuplexStreamingCall<AgentFrame, GatewayFrame>(this, this, Task.FromResult(new Metadata()),
+                () => Status.DefaultSuccess, () => new Metadata(), Dispose);
+        }
+
+        public Task WriteAsync(AgentFrame frame) => WriteAsync(frame, _callToken);
+        public Task WriteAsync(AgentFrame frame, CancellationToken token)
+        {
+            token.ThrowIfCancellationRequested();
+            if (frame.Hello is not null)
+            {
+                ActivationHello = frame.Hello.UpdateActivation?.Clone();
+                var response = Reply(frame);
+                response.Connected = new ConnectAccepted
+                {
+                    HeartbeatIntervalSeconds = 15, HeartbeatTimeoutSeconds = 50, PresenceAuthority = "akka"
+                };
+                _responses.Writer.TryWrite(response).Should().BeTrue();
+            }
+            else if (frame.Heartbeat is not null)
+            {
+                Events.Enqueue("heartbeat-written");
+                FirstHeartbeat.TrySetResult(frame.Clone()).Should().BeTrue("only the immediate heartbeat is sent before time advances");
+            }
+            else throw new InvalidOperationException("Unexpected activation test frame.");
+            return Task.CompletedTask;
+        }
+
+        internal void AcceptFirstHeartbeat(AgentFrame heartbeat)
+        {
+            var response = Reply(heartbeat);
+            response.HeartbeatAccepted = new HeartbeatAccepted
+            {
+                PresenceAuthority = "akka",
+                UpdateConfirmation = new UpdateActivationConfirmation
+                {
+                    AttemptId = AttemptId, ReleaseId = ReleaseId, ConfirmationId = Guid.NewGuid().ToString("D")
+                }
+            };
+            _responses.Writer.TryWrite(response).Should().BeTrue();
+        }
+
+        private GatewayFrame Reply(AgentFrame frame) => new()
+        {
+            ProtocolVersion = frame.ProtocolVersion, TenantId = frame.TenantId, ClientId = frame.ClientId,
+            ConnectionId = ConnectionId.ToString("D"), ConnectionEpoch = ConnectionEpoch,
+            OperationId = frame.OperationId, Sequence = frame.Sequence
+        };
+
+        public async Task<bool> MoveNext(CancellationToken token)
+        {
+            Current = await _responses.Reader.ReadAsync(token);
+            return true;
+        }
+        public Task CompleteAsync() => Task.CompletedTask;
+        public void Dispose() => _responses.Writer.TryComplete();
+        public void PopulateHello(ConnectHello hello) => hello.UpdateActivation = new UpdateActivationContext
+        {
+            AttemptId = AttemptId, ReleaseId = ReleaseId, AdmissionNonce = "activation-test-nonce"
+        };
+        public void OnPresenceConnected(ulong epoch)
+        {
+            epoch.Should().Be(ConnectionEpoch);
+            Events.Enqueue("connected");
+        }
+        public void OnActivationHeartbeatSent(ulong epoch)
+        {
+            epoch.Should().Be(ConnectionEpoch);
+            Events.Enqueue("sent");
+        }
+        public void OnActivationHeartbeatAccepted(ulong epoch)
+        {
+            epoch.Should().Be(ConnectionEpoch);
+            Events.Enqueue("accepted");
+        }
+        public void OnAcknowledgement(ClientUpdateOffer? offer, ClientUpdatePolicy? policy, UpdateActivationConfirmation? confirmation)
+        {
+            if (confirmation is null) return;
+            confirmation.AttemptId.Should().Be(AttemptId);
+            confirmation.ReleaseId.Should().Be(ReleaseId);
+            Events.Enqueue("confirmation");
+        }
+        public void RecordAcknowledgementFailure(Exception exception) => AcknowledgementFailures.Enqueue(exception);
     }
 
     private sealed class RecordingHttpMessageHandler(
