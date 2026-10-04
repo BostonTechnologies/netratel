@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using NetRatel.API.Gateway;
 using NetRatel.Application.Presence;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Shared.Contracts;
@@ -17,6 +18,40 @@ public sealed class ClientPresenceDirectoryIntegrationTests
     public ClientPresenceDirectoryIntegrationTests(ApiFactory factory)
     {
         _factory = factory;
+    }
+
+    [Fact]
+    public async Task RetainedCapabilityRegistrations_DoNotMakeAnOfflineDirectoryEntryReady()
+    {
+        var agentId = Guid.NewGuid();
+        int tenantId;
+        await using var scope = _factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+        tenantId = await db.Tenants.Select(tenant => tenant.Id).SingleAsync();
+        db.Agents.Add(new Agent
+        {
+            Id = agentId, TenantId = tenantId, Name = $"Capability readiness {agentId:N}",
+            IsEnabled = true, CreatedAtUtc = DateTimeOffset.UtcNow
+        });
+        await db.SaveChangesAsync();
+        var client = new ClientKey(tenantId, agentId);
+        var connection = Guid.NewGuid();
+        // Simulate transport teardown lagging behind offline presence. The
+        // projection must not infer authority merely from a retained object.
+        using var terminal = scope.ServiceProvider.GetRequiredService<IAgentTerminalSessionRegistry>()
+            .Register(client, connection, 1, ["sh"]);
+        using var file = scope.ServiceProvider.GetRequiredService<IAgentFileGatewaySessionRegistry>()
+            .Register(client, connection, 1);
+        using var administrator = await _factory.CreateLocalAdministratorClientAsync();
+        var directory = await administrator.GetFromJsonAsync<ClientPresenceListDto>(
+            $"/api/v2/client-presence/?tenantId={tenantId}&search={agentId:D}&limit=1");
+        var entry = directory!.Items.Should().ContainSingle().Which;
+        entry.Online.Should().BeFalse();
+        entry.Terminal!.TransportReady.Should().BeFalse();
+        entry.Terminal.ReadinessReason.Should().Be("terminal_presence_offline");
+        entry.File!.SessionActive.Should().BeTrue();
+        entry.File.FenceMatchesPresence.Should().BeFalse();
+        entry.File.ReadinessReason.Should().Be("file_gateway_presence_offline");
     }
 
     [Fact]

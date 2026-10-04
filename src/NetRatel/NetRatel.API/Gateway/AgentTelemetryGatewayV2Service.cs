@@ -57,6 +57,7 @@ public sealed class AgentTelemetryGatewayV2Service(
 
         await RequireActivePresenceAsync(client, hello.ConnectionId, hello.ConnectionEpoch, context.CancellationToken).ConfigureAwait(false);
         var connectionId = Guid.Parse(hello.ConnectionId);
+        await using var authority = await AgentGatewayAuthenticationLifetime.AttachAsync(context, client, connectionId, hello.ConnectionEpoch).ConfigureAwait(false);
         var supportsDynamicSampling = hello.Hello.Capabilities.Contains("telemetry-rate-control-v1", StringComparer.Ordinal);
         AgentTelemetryGatewaySessionRegistration registration;
         try
@@ -70,7 +71,7 @@ public sealed class AgentTelemetryGatewayV2Service(
 
         await using (registration)
         {
-            using var admissionCancellation = CancellationTokenSource.CreateLinkedTokenSource(context.CancellationToken, registration.CompletionToken);
+            using var admissionCancellation = CancellationTokenSource.CreateLinkedTokenSource(authority.Token, registration.CompletionToken);
             try
             {
                 await RequireActivePresenceAsync(client, hello.ConnectionId, hello.ConnectionEpoch, admissionCancellation.Token).WaitAsync(admissionCancellation.Token).ConfigureAwait(false);
@@ -107,6 +108,7 @@ public sealed class AgentTelemetryGatewayV2Service(
                 ulong lastSequence = 0;
                 while (await requestStream.MoveNext(cancellationToken).ConfigureAwait(false))
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     var envelope = requestStream.Current;
                     if (envelope.PayloadCase != AgentTelemetryFrame.PayloadOneofCase.Snapshot ||
                         !MatchesSession(envelope, client) || envelope.ConnectionEpoch != hello.ConnectionEpoch ||
@@ -166,8 +168,9 @@ public sealed class AgentTelemetryGatewayV2Service(
                 {
                     if (!registration.IsCurrent) return;
                     await responseStream.WriteAsync(frame, cancellationToken).ConfigureAwait(false);
+                    cancellationToken.ThrowIfCancellationRequested();
                 }
-            }, context.CancellationToken, registration.CompletionToken, logger).ConfigureAwait(false);
+            }, authority.Token, registration.CompletionToken, logger, context.GetHttpContext().Abort).ConfigureAwait(false);
         }
     }
 

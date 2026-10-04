@@ -19,7 +19,9 @@ public sealed class AgentGatewayService(
     NetRatelAkkaOptions options,
     TimeProvider timeProvider,
     IHostEnvironment environment,
-    ILogger<AgentGatewayService> logger)
+    ILogger<AgentGatewayService> logger,
+    AgentGatewayRenewalAuthenticator? renewalAuthenticator = null,
+    AgentGatewayAuthenticationLeaseRegistry? authenticationLeases = null)
     : global::NetRatel.AgentGateway.Contracts.V1.AgentGateway.AgentGatewayBase
 {
     private const string Authority = "akka";
@@ -38,37 +40,50 @@ public sealed class AgentGatewayService(
             throw new RpcException(new Status(StatusCode.PermissionDenied, identityError));
         }
 
-        await EnsureAgentIsActiveAsync(authenticatedIdentity, context.CancellationToken).ConfigureAwait(false);
-
-        if (!await requestStream.MoveNext(context.CancellationToken).ConfigureAwait(false))
-        {
-            throw new RpcException(new Status(StatusCode.InvalidArgument, "A connect hello frame is required."));
-        }
-
-        var helloFrame = requestStream.Current;
-        ThrowIfInvalid(AgentGatewayProtocolValidator.ValidateHello(
-            helloFrame,
-            authenticatedIdentity,
-            NetRatelAkkaOptions.ProtocolVersion));
-
+        var admissionExpiresAtUtc = timeProvider.GetUtcNow().AddSeconds(options.GatewayAdmissionTimeoutSeconds);
+        using var policyCancellation = new CancellationTokenSource(
+            TimeSpan.FromSeconds(options.GatewayAdmissionTimeoutSeconds), timeProvider);
+        AgentGatewayAuthenticationLease? authenticationLease = null;
+        CancellationTokenRegistration authorityRetirement = default;
         // The authenticated stream gets a server-issued connection identifier.
         // The hello value is correlation only and cannot be reused to take over
         // an already admitted stream.
         var connectionId = Guid.NewGuid();
-        var operationId = Guid.Parse(helloFrame.OperationId);
+        var operationId = Guid.Empty;
         var client = new ClientKey(authenticatedIdentity.TenantId, authenticatedIdentity.AgentId);
         var responseAuthority = Authority;
         var operationalAuthority = Authority;
         var environmentName = environment.EnvironmentName;
         GatewayPresenceSessionStarted? session = null;
+        var startRequested = false;
         Guid? activationAttemptId = null;
         Guid? activationReleaseId = null;
         var activationReadmitted = false;
         var disconnectReason = "stream_closed";
 
-        try
+        async Task RunPresenceAsync(CancellationToken cancellationToken)
         {
+            await EnsureAgentIsActiveAsync(authenticatedIdentity, cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!await requestStream.MoveNext(cancellationToken).ConfigureAwait(false))
+                throw new RpcException(new Status(StatusCode.InvalidArgument, "A connect hello frame is required."));
+            cancellationToken.ThrowIfCancellationRequested();
+            var helloFrame = requestStream.Current;
+            ThrowIfInvalid(AgentGatewayProtocolValidator.ValidateHello(
+                helloFrame, authenticatedIdentity, NetRatelAkkaOptions.ProtocolVersion));
+            operationId = Guid.Parse(helloFrame.OperationId);
+            DateTimeOffset? authenticationExpiresAtUtc = null;
+            if (renewalAuthenticator is { CanValidate: true })
+            {
+                var authorization = context.GetHttpContext().Request.Headers.Authorization.ToString();
+                if (!authorization.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+                    throw new RpcException(new Status(StatusCode.Unauthenticated, "The authenticated gateway token is required."));
+                authenticationExpiresAtUtc = await renewalAuthenticator.ValidateAsync(
+                    authorization[7..], authenticatedIdentity, null, cancellationToken).ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
+            }
             var receivedAtUtc = timeProvider.GetUtcNow();
+            startRequested = true;
             session = await StartPresenceSessionAsync(
                 new StartGatewayPresenceSession(
                     client,
@@ -78,10 +93,32 @@ public sealed class AgentGatewayService(
                     helloFrame.Hello.AgentVersion,
                     helloFrame.Hello.Capabilities.ToArray(),
                     NullIfWhiteSpace(helloFrame.Hello.LegacySpacetimeIdentity),
-                    receivedAtUtc),
+                    receivedAtUtc, AuthenticationExpiresAtUtc: authenticationExpiresAtUtc,
+                    AdmissionExpiresAtUtc: admissionExpiresAtUtc, ProvisionalAdmission: true),
                 operationalAuthority,
                 environmentName,
-                context.CancellationToken).ConfigureAwait(false);
+                cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (session.Disposition is not (PresenceMessageDisposition.Accepted or PresenceMessageDisposition.Duplicate))
+                throw new RpcException(new Status(StatusCode.Aborted, "The presence admission is no longer authorized."));
+            // Negotiated first-heartbeat liveness cannot extend the absolute
+            // bootstrap deadline for this still-provisional admission.
+            var admissionRemaining = admissionExpiresAtUtc - timeProvider.GetUtcNow();
+            if (admissionRemaining <= TimeSpan.Zero)
+            {
+                policyCancellation.Cancel();
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+            policyCancellation.CancelAfter(admissionRemaining < options.HeartbeatTimeout
+                ? admissionRemaining : options.HeartbeatTimeout);
+            if (authenticationExpiresAtUtc is { } expiresAtUtc && authenticationLeases is not null)
+            {
+                authenticationLease = authenticationLeases.Register(client, connectionId,
+                    checked((ulong)session.ConnectionEpoch), expiresAtUtc);
+                authorityRetirement = authenticationLease.CompletionToken.Register(policyCancellation.Cancel);
+            }
+            var supportsRenewal = authenticationExpiresAtUtc.HasValue &&
+                helloFrame.Hello.Capabilities.Contains("presence-auth-renewal-v1");
 
             if (helloFrame.Hello.UpdateActivation is { } activation &&
                 Guid.TryParse(activation.AttemptId, out var parsedAttemptId) &&
@@ -97,7 +134,8 @@ public sealed class AgentGatewayService(
                         helloFrame.Hello.AgentVersion,
                         connectionId,
                         session.ConnectionEpoch,
-                        context.CancellationToken).ConfigureAwait(false);
+                        cancellationToken).ConfigureAwait(false);
+                    cancellationToken.ThrowIfCancellationRequested();
                     activationReadmitted = readmission.Accepted;
                     if (activationReadmitted)
                     {
@@ -110,12 +148,14 @@ public sealed class AgentGatewayService(
                             readmission.Reason, parsedAttemptId);
                     }
                 }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                 catch (Exception exception)
                 {
                     logger.LogWarning(exception, "Update activation readmission could not be recorded; presence remains admitted.");
                 }
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
             logger.LogInformation(
                 "Agent gateway presence session admitted. authority={Authority}, tenantId={TenantId}, agentId={AgentId}, connectionId={ConnectionId}, authScheme={AuthScheme}, correlationId={CorrelationId}",
                 responseAuthority,
@@ -129,7 +169,8 @@ public sealed class AgentGatewayService(
             {
                 HeartbeatIntervalSeconds = checked((uint)options.HeartbeatIntervalSeconds),
                 HeartbeatTimeoutSeconds = checked((uint)options.HeartbeatTimeoutSeconds),
-                PresenceAuthority = responseAuthority
+                PresenceAuthority = responseAuthority,
+                SupportsAuthenticatedRenewal = supportsRenewal
             };
             AddUpdateMetadata(connected, helloFrame.Hello, client);
             await responseStream.WriteAsync(new GatewayFrame
@@ -142,13 +183,52 @@ public sealed class AgentGatewayService(
                 OperationId = operationId.ToString("D"),
                 Sequence = 0,
                 Connected = connected
-            }).ConfigureAwait(false);
+            }, cancellationToken).ConfigureAwait(false);
 
+            ulong lastAcceptedSequence = 0;
             ulong lastAcknowledgedSequence = 0;
             DateTimeOffset? lastAcknowledgedAtUtc = null;
-            while (await requestStream.MoveNext(context.CancellationToken).ConfigureAwait(false))
+            while (true)
             {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!await requestStream.MoveNext(cancellationToken).ConfigureAwait(false)) break;
+                cancellationToken.ThrowIfCancellationRequested();
                 var frame = requestStream.Current;
+                if (frame.PayloadCase == AgentFrame.PayloadOneofCase.Renew)
+                {
+                    if (!supportsRenewal || lastAcknowledgedSequence == 0)
+                        throw new RpcException(new Status(StatusCode.FailedPrecondition, "Authenticated renewal was not negotiated after a validated heartbeat."));
+                    ThrowIfInvalid(AgentGatewayProtocolValidator.ValidateRenewal(frame, authenticatedIdentity,
+                        NetRatelAkkaOptions.ProtocolVersion, connectionId, session.ConnectionEpoch, lastAcceptedSequence));
+                    var renewalOperationId = Guid.Parse(frame.OperationId);
+                    var renewedExpiry = await renewalAuthenticator!.ValidateAsync(frame.Renew.AccessToken,
+                        authenticatedIdentity, authenticationExpiresAtUtc, cancellationToken).ConfigureAwait(false);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var renewedPresence = await RecordPresenceHeartbeatAsync(new RecordGatewayHeartbeat(
+                        client, connectionId, session.ConnectionEpoch, renewalOperationId, frame.Sequence,
+                        timeProvider.GetUtcNow(), RenewedAuthenticationExpiresAtUtc: renewedExpiry),
+                        operationalAuthority, environmentName, cancellationToken).ConfigureAwait(false);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (renewedPresence.Disposition != PresenceMessageDisposition.Accepted ||
+                        (authenticationLease is not null && !authenticationLease.TryRenew(renewalOperationId, frame.Sequence, renewedExpiry)))
+                        throw new RpcException(new Status(StatusCode.Aborted, "The authenticated renewal is stale or fenced."));
+                    lastAcceptedSequence = frame.Sequence;
+                    authenticationExpiresAtUtc = renewedExpiry;
+                    policyCancellation.CancelAfter(options.HeartbeatTimeout);
+                    await responseStream.WriteAsync(new GatewayFrame
+                    {
+                        ProtocolVersion = NetRatelAkkaOptions.ProtocolVersion, TenantId = client.TenantId,
+                        ClientId = client.AgentId.ToString("D"), ConnectionId = connectionId.ToString("D"),
+                        ConnectionEpoch = checked((ulong)session.ConnectionEpoch),
+                        OperationId = renewalOperationId.ToString("D"), Sequence = frame.Sequence,
+                        Renewed = new PresenceAuthRenewed
+                        {
+                            ExpiresAtUtc = Timestamp.FromDateTimeOffset(renewedExpiry), PresenceAuthority = responseAuthority
+                        }
+                    }, cancellationToken).ConfigureAwait(false);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    continue;
+                }
                 ThrowIfInvalid(AgentGatewayProtocolValidator.ValidateHeartbeat(
                     frame,
                     authenticatedIdentity,
@@ -183,8 +263,14 @@ public sealed class AgentGatewayService(
                         LatencyMeasuredAtUtc: latencyIsValid ? lastAcknowledgedAtUtc : null),
                     operationalAuthority,
                     environmentName,
-                    context.CancellationToken).ConfigureAwait(false);
+                    cancellationToken).ConfigureAwait(false);
 
+                cancellationToken.ThrowIfCancellationRequested();
+                if (result.Disposition == PresenceMessageDisposition.Accepted)
+                {
+                    lastAcceptedSequence = frame.Sequence;
+                    policyCancellation.CancelAfter(options.HeartbeatTimeout);
+                }
                 if (result.Disposition is not PresenceMessageDisposition.Accepted and
                     not PresenceMessageDisposition.Duplicate)
                 {
@@ -210,7 +296,8 @@ public sealed class AgentGatewayService(
                             activationAttemptId.Value,
                             connectionId,
                             session.ConnectionEpoch,
-                            context.CancellationToken).ConfigureAwait(false);
+                            cancellationToken).ConfigureAwait(false);
+                        cancellationToken.ThrowIfCancellationRequested();
                         if (confirmation.Accepted && confirmation.ConfirmationId.HasValue)
                         {
                             heartbeatAccepted.UpdateConfirmation = new UpdateActivationConfirmation
@@ -227,12 +314,14 @@ public sealed class AgentGatewayService(
                                 confirmation.Reason, activationAttemptId.Value);
                         }
                     }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                     catch (Exception exception)
                     {
                         logger.LogWarning(exception, "Update activation heartbeat confirmation failed; presence remains healthy.");
                     }
                 }
 
+                cancellationToken.ThrowIfCancellationRequested();
                 await responseStream.WriteAsync(new GatewayFrame
                 {
                     ProtocolVersion = NetRatelAkkaOptions.ProtocolVersion,
@@ -243,13 +332,29 @@ public sealed class AgentGatewayService(
                     OperationId = heartbeatOperationId.ToString("D"),
                     Sequence = frame.Sequence,
                     HeartbeatAccepted = heartbeatAccepted
-                }).ConfigureAwait(false);
+                }, cancellationToken).ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
                 if (result.Disposition == PresenceMessageDisposition.Accepted)
                 {
                     lastAcknowledgedSequence = frame.Sequence;
                     lastAcknowledgedAtUtc = timeProvider.GetUtcNow();
                 }
             }
+        }
+
+        try
+        {
+            await GatewayDuplexSession.RunAsync(RunPresenceAsync, context.CancellationToken,
+                policyCancellation.Token, logger, context.GetHttpContext().Abort).ConfigureAwait(false);
+            if (policyCancellation.IsCancellationRequested)
+            {
+                var authorityExpired = authenticationLease?.CompletionToken.IsCancellationRequested == true;
+                disconnectReason = session is null ? "admission_timeout" : authorityExpired ? "authority_expired" : "heartbeat_expired";
+                context.Status = new Status(authorityExpired ? StatusCode.Unauthenticated : StatusCode.DeadlineExceeded,
+                    session is null ? "Gateway admission exceeded its deadline." : "The presence owner lifetime has expired.");
+            }
+            else if (context.CancellationToken.IsCancellationRequested)
+                disconnectReason = "stream_cancelled";
         }
         catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
         {
@@ -263,7 +368,9 @@ public sealed class AgentGatewayService(
         }
         finally
         {
-            if (session is not null)
+            authorityRetirement.Dispose();
+            authenticationLease?.Dispose();
+            if (startRequested)
             {
                 try
                 {
@@ -271,9 +378,9 @@ public sealed class AgentGatewayService(
                         new EndGatewayPresenceSession(
                             client,
                             connectionId,
-                            session.ConnectionEpoch,
+                            session?.ConnectionEpoch ?? 0,
                             disconnectReason,
-                            timeProvider.GetUtcNow()),
+                            timeProvider.GetUtcNow(), CancelPendingAdmission: true),
                         operationalAuthority,
                         environmentName).ConfigureAwait(false);
                 }
@@ -286,7 +393,7 @@ public sealed class AgentGatewayService(
                         "Failed to close gateway presence session without fallback. tenantId={TenantId}, agentId={AgentId}, epoch={Epoch}, authority={Authority}",
                         client.TenantId,
                         client.AgentId,
-                        session.ConnectionEpoch,
+                        session?.ConnectionEpoch ?? 0,
                         responseAuthority);
                     context.Status = new Status(
                         StatusCode.Unavailable,
@@ -365,7 +472,19 @@ public sealed class AgentGatewayService(
             "presence", authority, "disconnect", environmentName);
         try
         {
-            await presenceRouter.EndSessionAsync(message, CancellationToken.None).ConfigureAwait(false);
+            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5), timeProvider);
+            var ending = presenceRouter.EndSessionAsync(message, cancellation.Token);
+            try
+            {
+                await ending.WaitAsync(TimeSpan.FromSeconds(5), timeProvider).ConfigureAwait(false);
+            }
+            catch
+            {
+                _ = ending.ContinueWith(static task => _ = task.Exception, CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
+                throw;
+            }
             NetRatelAkkaTelemetry.RecordAuthorityEvent(
                 "presence", authority, environmentName);
         }

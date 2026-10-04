@@ -9,12 +9,21 @@ internal static class GatewayDuplexSession
     private static readonly TimeSpan ShutdownTimeout = TimeSpan.FromSeconds(5);
 
     public static async Task RunAsync(
+        Func<CancellationToken, Task> run,
+        CancellationToken callCancellation,
+        CancellationToken registrationCompletion,
+        ILogger logger,
+        Action? abortTransport = null) =>
+        await RunAsync([run], callCancellation, registrationCompletion, logger, abortTransport).ConfigureAwait(false);
+
+    public static async Task RunAsync(
         Func<CancellationToken, Task> read,
         Func<CancellationToken, Task> write,
         CancellationToken callCancellation,
         CancellationToken registrationCompletion,
-        ILogger logger) =>
-        await RunAsync([read, write], callCancellation, registrationCompletion, logger).ConfigureAwait(false);
+        ILogger logger,
+        Action? abortTransport = null) =>
+        await RunAsync([read, write], callCancellation, registrationCompletion, logger, abortTransport).ConfigureAwait(false);
 
     public static async Task RunAsync(
         Func<CancellationToken, Task> read,
@@ -22,21 +31,27 @@ internal static class GatewayDuplexSession
         Func<CancellationToken, Task> renew,
         CancellationToken callCancellation,
         CancellationToken registrationCompletion,
-        ILogger logger) =>
-        await RunAsync([read, write, renew], callCancellation, registrationCompletion, logger).ConfigureAwait(false);
+        ILogger logger,
+        Action? abortTransport = null) =>
+        await RunAsync([read, write, renew], callCancellation, registrationCompletion, logger, abortTransport).ConfigureAwait(false);
 
     private static async Task RunAsync(
         IReadOnlyList<Func<CancellationToken, Task>> workers,
         CancellationToken callCancellation,
         CancellationToken registrationCompletion,
-        ILogger logger)
+        ILogger logger,
+        Action? abortTransport)
     {
-        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(callCancellation, registrationCompletion);
+        var cancellation = CancellationTokenSource.CreateLinkedTokenSource(callCancellation, registrationCompletion);
         var tasks = workers.Select(worker => InvokeAsync(worker, cancellation.Token)).ToArray();
+        var cancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var cancellationNotification = cancellation.Token.Register(() => cancelled.TrySetResult());
+        var joined = Task.WhenAll(tasks);
+        var deferCancellationDisposal = false;
         Exception? failure = null;
         try
         {
-            await (await Task.WhenAny(tasks).ConfigureAwait(false)).ConfigureAwait(false);
+            await (await Task.WhenAny(tasks.Append(cancelled.Task)).ConfigureAwait(false)).ConfigureAwait(false);
         }
         catch (Exception exception) when (IsCancellation(exception, cancellation.Token))
         {
@@ -49,18 +64,22 @@ internal static class GatewayDuplexSession
         finally
         {
             await cancellation.CancelAsync().ConfigureAwait(false);
-            var joined = Task.WhenAll(tasks);
             try
             {
                 await joined.WaitAsync(ShutdownTimeout).ConfigureAwait(false);
             }
             catch (TimeoutException exception)
             {
-                // Observe a late fault without starting another worker or waiting
-                // indefinitely for a dependency that ignores RPC cancellation.
-                _ = joined.ContinueWith(static task => _ = task.Exception,
-                    CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
-                    TaskScheduler.Default);
+                // Cancel actual HTTP/2 I/O before returning. Pumps must check their
+                // lifetime after every dependency await before using the stream or
+                // issuing delivery callbacks; abort also releases transport writes.
+                abortTransport?.Invoke();
+                deferCancellationDisposal = true;
+                _ = joined.ContinueWith(task =>
+                {
+                    _ = task.Exception;
+                    cancellation.Dispose();
+                }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
                 logger.LogWarning(exception, "Gateway duplex shutdown exceeded its bounded join deadline.");
                 failure ??= new RpcException(new Status(StatusCode.DeadlineExceeded, "The gateway stream could not finish shutdown within its deadline."));
             }
@@ -76,6 +95,10 @@ internal static class GatewayDuplexSession
                     failure ??= exception;
                 else
                     logger.LogDebug("Gateway duplex sibling joined after cancellation.");
+            }
+            finally
+            {
+                if (!deferCancellationDisposal) cancellation.Dispose();
             }
         }
 

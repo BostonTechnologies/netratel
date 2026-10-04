@@ -1,3 +1,4 @@
+@implements IDisposable
 @using BlazorDownloadFile
 @using Microsoft.AspNetCore.Components.Forms
 @using NetRatel.Shared.Contracts.FileSystem
@@ -17,11 +18,11 @@
         <MudStack Spacing="2">
             <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center">
                 <MudTextField @bind-Value="_path" Label="Path" Class="flex-grow-1" Immediate="true" />
-                <MudButton Color="Color.Primary" Variant="Variant.Filled" Disabled="@_loading" OnClick="LoadAsync">Browse</MudButton>
-                <MudButton Variant="Variant.Outlined" Disabled="@_loading" OnClick="GoUpAsync">Up</MudButton>
+                <MudButton Color="Color.Primary" Variant="Variant.Filled" Disabled="@(_loading || _reconnecting)" OnClick="LoadAsync">Browse</MudButton>
+                <MudButton Variant="Variant.Outlined" Disabled="@(_loading || _reconnecting)" OnClick="GoUpAsync">Up</MudButton>
             </MudStack>
             <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center">
-                <InputFile OnChange="OnUploadSelectedAsync" disabled="@_uploading" />
+                <InputFile OnChange="OnUploadSelectedAsync" disabled="@(_uploading || _loading || _reconnecting)" />
                 @if (_uploading)
                 {
                     <MudProgressCircular Size="Size.Small" Indeterminate="true" />
@@ -33,6 +34,10 @@
             }
             @if (_loading)
             {
+                @if (_reconnecting)
+                {
+                    <MudText>File gateway reconnecting…</MudText>
+                }
                 <MudProgressLinear Indeterminate="true" />
             }
             else
@@ -76,6 +81,8 @@
     private readonly List<GatewayFileSystemEntryDto> _entries = new();
     private string _path = "/";
     private bool _loading;
+    private bool _reconnecting;
+    private readonly CancellationTokenSource _directoryLifecycle = new();
     private bool _uploading;
     private string? _error;
 
@@ -91,10 +98,17 @@
         _error = null;
         try
         {
-            var result = await Files.ListAsync(TenantId, AgentId, _path);
+            var result = await Files.ListWithRecoveryAsync(TenantId, AgentId, _path, async () =>
+            {
+                _reconnecting = true;
+                await InvokeAsync(StateHasChanged);
+            }, _directoryLifecycle.Token);
             _path = result.Path;
             _entries.Clear();
             _entries.AddRange(result.Entries.OrderBy(entry => !entry.IsDirectory).ThenBy(entry => entry.Name, StringComparer.OrdinalIgnoreCase));
+        }
+        catch (OperationCanceledException) when (_directoryLifecycle.IsCancellationRequested)
+        {
         }
         catch (Exception exception)
         {
@@ -103,6 +117,7 @@
         finally
         {
             _loading = false;
+            _reconnecting = false;
         }
     }
 
@@ -164,6 +179,12 @@
     }
 
     private void Close() => MudDialog.Close();
+
+    public void Dispose()
+    {
+        _directoryLifecycle.Cancel();
+        _directoryLifecycle.Dispose();
+    }
 
     private static string FormatBytes(long bytes) => bytes switch
     {

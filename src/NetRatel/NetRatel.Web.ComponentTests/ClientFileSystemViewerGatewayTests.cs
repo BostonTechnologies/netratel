@@ -5,6 +5,7 @@ using Bunit;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using MudBlazor.Services;
+using NetRatel.Shared.Contracts;
 using NetRatel.Shared.Contracts.FileSystem;
 using NetRatel.Web.Components.Dialogs;
 using NetRatel.Web.Services.FileSystem;
@@ -135,8 +136,75 @@ public sealed class ClientFileSystemViewerGatewayTests : AsyncBunitContext
         });
     }
 
+    [Fact]
+    public async Task InterruptedFolderQuery_ShowsReconnecting_AndRetriesAfterAuthoritativeFileReadiness()
+    {
+        var factory = (GatewayFileHttpClientFactory)Services.GetRequiredService<IHttpClientFactory>();
+        var readiness = new TaskCompletionSource<HttpResponseMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var queryCount = 0;
+        factory.Respond = (request, token) =>
+        {
+            if (request.RequestUri!.AbsolutePath == "/api/v2/client-presence/")
+            {
+                return readiness.Task.WaitAsync(token);
+            }
+            if (Interlocked.Increment(ref queryCount) == 1)
+            {
+                return Task.FromResult(JsonResponse(HttpStatusCode.Conflict, new { code = "session_unavailable" }));
+            }
+            return Task.FromResult(JsonResponse(HttpStatusCode.OK,
+                new GatewayFileSystemListResponse(3, AgentId, "/", "akka",
+                    [new GatewayFileSystemEntryDto("hosts", "/hosts", false, 256)])));
+        };
+        var provider = Render<MudBlazor.MudDialogProvider>();
+        var showing = Services.GetRequiredService<MudBlazor.IDialogService>()
+            .ShowAsync<ClientFileSystemViewer>("File Browser", new MudBlazor.DialogParameters<ClientFileSystemViewer>
+            {
+                { component => component.TenantId, 3 },
+                { component => component.AgentId, AgentId }
+            });
+        provider.WaitForAssertion(() =>
+        {
+            provider.Find("[data-testid='file-explorer-loading']").TextContent.Should().Contain("File gateway reconnecting");
+            queryCount.Should().Be(1);
+        });
+        readiness.SetResult(JsonResponse(HttpStatusCode.OK, new ClientPresenceListDto("akka", 2,
+        [new ClientPresenceDto("gateway:3:agent", 3, AgentId, "agent", null, null, null, true, true,
+            DateTimeOffset.UtcNow, "test", ["file-gateway"], "gateway", "akka", true, 2,
+            File: new GatewayFileCapabilityDto(true, true, true, true, "test", [], DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, null))])));
+        await showing;
+        provider.WaitForAssertion(() =>
+        {
+            provider.FindAll("[data-testid='file-explorer-loading']").Should().BeEmpty();
+            provider.Find("[data-testid='file-explorer-list']").TextContent.Should().Contain("hosts");
+            queryCount.Should().Be(2);
+            factory.RequestedUris.Should().Contain($"/api/v2/client-presence/?tenantId=3&search={AgentId:D}&limit=1");
+        });
+    }
+
+    [Fact]
+    public async Task InterruptedUpload_IsReportedWithoutAutomaticMutationReplay()
+    {
+        var factory = (GatewayFileHttpClientFactory)Services.GetRequiredService<IHttpClientFactory>();
+        var attempts = 0;
+        factory.Respond = (request, _) =>
+        {
+            request.Method.Should().Be(HttpMethod.Put);
+            Interlocked.Increment(ref attempts);
+            return Task.FromResult(JsonResponse(HttpStatusCode.Conflict, new { code = "session_unavailable" }));
+        };
+        using var content = new MemoryStream([1, 2, 3]);
+        var upload = () => Services.GetRequiredService<GatewayFileSystemApiService>().UploadAsync(3, AgentId, "/data/target", content);
+        await upload.Should().ThrowAsync<HttpRequestException>();
+        attempts.Should().Be(1);
+    }
+
+    private static HttpResponseMessage JsonResponse(HttpStatusCode status, object payload) =>
+        new(status) { Content = new StringContent(JsonSerializer.Serialize(payload, new JsonSerializerOptions(JsonSerializerDefaults.Web))) };
+
     private sealed class GatewayFileHttpClientFactory : IHttpClientFactory
     {
+        public Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>>? Respond { get; set; }
         public List<string> RequestedPaths { get; } = [];
         public List<string> RequestedUris { get; } = [];
         public List<string> RequestedClientNames { get; } = [];
@@ -144,14 +212,15 @@ public sealed class ClientFileSystemViewerGatewayTests : AsyncBunitContext
         public HttpClient CreateClient(string name)
         {
             RequestedClientNames.Add(name);
-            return new(new Handler(RequestedPaths, RequestedUris))
+            return new(new Handler(RequestedPaths, RequestedUris, () => Respond))
             {
                 BaseAddress = new Uri("https://netratel.test")
             };
         }
     }
 
-    private sealed class Handler(List<string> requestedPaths, List<string> requestedUris) : HttpMessageHandler
+    private sealed class Handler(List<string> requestedPaths, List<string> requestedUris,
+        Func<Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>>?> responder) : HttpMessageHandler
     {
         private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -159,6 +228,10 @@ public sealed class ClientFileSystemViewerGatewayTests : AsyncBunitContext
         {
             requestedPaths.Add(request.RequestUri!.AbsolutePath);
             requestedUris.Add(request.RequestUri.PathAndQuery);
+            if (responder() is { } respond)
+            {
+                return respond(request, cancellationToken);
+            }
             var payload = new GatewayFileSystemListResponse(3, AgentId, "/", "akka-dev-canary",
                 [new GatewayFileSystemEntryDto("etc", "/etc", true, 0), new GatewayFileSystemEntryDto("hosts", "/hosts", false, 256)]);
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)

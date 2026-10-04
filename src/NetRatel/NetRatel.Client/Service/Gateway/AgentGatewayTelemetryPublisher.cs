@@ -70,7 +70,7 @@ public sealed class AgentGatewayTelemetryPublisher(
     {
         using var channel = GrpcChannel.ForAddress(endpoint);
         var client = new global::NetRatel.AgentGateway.Contracts.V1.AgentTelemetryGatewayV2.AgentTelemetryGatewayV2Client(channel);
-        using var call = client.Connect(new Metadata { { "Authorization", $"Bearer {accessToken}" } }, cancellationToken: stoppingToken);
+        using var call = client.Connect(new Metadata { { "Authorization", $"Bearer {session.GetAccessToken(accessToken)}" } }, cancellationToken: stoppingToken);
         var accepted = new TaskCompletionSource<TelemetryConnectAccepted>(TaskCreationOptions.RunContinuationsAsynchronously);
         var policies = System.Threading.Channels.Channel.CreateBounded<TelemetrySamplingPolicy>(new System.Threading.Channels.BoundedChannelOptions(1)
         {

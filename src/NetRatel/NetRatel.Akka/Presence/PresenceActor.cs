@@ -12,9 +12,14 @@ namespace NetRatel.Akka.Presence;
 public sealed class PresenceActor : ReceiveActor, IWithTimers
 {
     private const string ExpiryTimerKey = "gateway-presence-expiry";
+    private const string AuthenticationExpiryTimerKey = "gateway-authentication-expiry";
+    private const string AdmissionPruneTimerKey = "gateway-admission-prune";
+    private const int MaximumPendingAdmissions = 16;
+    private const int MaximumCancelledAdmissions = 64;
     private readonly ClientKey _client;
     private readonly NetRatelAkkaOptions _options;
     private readonly IActorRef _presenceReadModel;
+    private readonly TimeProvider _timeProvider;
     private readonly ILoggingAdapter _log = Context.GetLogger();
 
     private ClientPresenceStatus _status = ClientPresenceStatus.Unknown;
@@ -28,11 +33,16 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
     private string? _agentVersion;
     private IReadOnlyList<string> _capabilities = Array.Empty<string>();
     private string? _legacySpacetimeIdentity;
+    private DateTimeOffset? _authenticationExpiresAtUtc;
+    private readonly Dictionary<Guid, PendingAdmission> _pendingAdmissions = [];
+    private readonly Dictionary<Guid, DateTimeOffset> _cancelledAdmissions = [];
+    private DateTimeOffset? _admissionCancellationBarrierUntilUtc;
 
     public PresenceActor(
         ClientKey client,
         NetRatelAkkaOptions options,
-        IActorRef presenceReadModel)
+        IActorRef presenceReadModel,
+        TimeProvider? timeProvider = null)
     {
         if (!client.IsValid)
         {
@@ -42,12 +52,15 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
         _client = client;
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _presenceReadModel = presenceReadModel ?? throw new ArgumentNullException(nameof(presenceReadModel));
+        _timeProvider = timeProvider ?? TimeProvider.System;
 
         Receive<StartGatewayPresenceSession>(HandleStartSession);
         Receive<RecordGatewayHeartbeat>(HandleHeartbeat);
         Receive<EndGatewayPresenceSession>(HandleEndSession);
         Receive<GetClientPresence>(_ => Sender.Tell(CreateSnapshot()));
         Receive<PresenceDeadlineElapsed>(HandleDeadlineElapsed);
+        Receive<AuthenticationDeadlineElapsed>(HandleAuthenticationDeadlineElapsed);
+        Receive<PruneAdmissions>(_ => PrunePendingAdmissions());
     }
 
     public ITimerScheduler Timers { get; set; } = null!;
@@ -55,12 +68,42 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
     public static Props Props(
         ClientKey client,
         NetRatelAkkaOptions options,
-        IActorRef presenceReadModel) =>
-        global::Akka.Actor.Props.Create(() => new PresenceActor(client, options, presenceReadModel));
+        IActorRef presenceReadModel,
+        TimeProvider? timeProvider = null) =>
+        global::Akka.Actor.Props.Create(() => new PresenceActor(client, options, presenceReadModel, timeProvider));
 
     private void HandleStartSession(StartGatewayPresenceSession message)
     {
         EnsureClient(message.Client);
+        PrunePendingAdmissions();
+
+        if (message.ProvisionalAdmission)
+        {
+            if (message.AdmissionExpiresAtUtc is not { } deadline || deadline <= _timeProvider.GetUtcNow() ||
+                deadline <= message.ReceivedAtUtc || deadline > message.ReceivedAtUtc.AddSeconds(_options.GatewayAdmissionTimeoutSeconds))
+            {
+                ReplyStart(message, 0, PresenceMessageDisposition.AdmissionExpired);
+                return;
+            }
+            if (_cancelledAdmissions.ContainsKey(message.ConnectionId))
+            {
+                ReplyStart(message, 0, PresenceMessageDisposition.AdmissionCancelled);
+                return;
+            }
+            if (_admissionCancellationBarrierUntilUtc.HasValue || _cancelledAdmissions.Count >= MaximumCancelledAdmissions)
+            {
+                ReplyStart(message, 0, PresenceMessageDisposition.AdmissionCapacityExceeded);
+                return;
+            }
+        }
+
+        if (message.AuthenticationExpiresAtUtc is { } requestedExpiry &&
+            (requestedExpiry <= _timeProvider.GetUtcNow() || requestedExpiry <= message.ReceivedAtUtc))
+        {
+            Sender.Tell(new GatewayPresenceSessionStarted(_client, message.ConnectionId, _activeEpoch ?? 0,
+                PresenceMessageDisposition.AuthenticationExpired, message.ReceivedAtUtc));
+            return;
+        }
 
         if (_activeConnectionId == message.ConnectionId && _activeEpoch.HasValue)
         {
@@ -73,11 +116,40 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
             return;
         }
 
+        if (message.ProvisionalAdmission)
+        {
+            if (_pendingAdmissions.TryGetValue(message.ConnectionId, out var existing))
+            {
+                ReplyStart(message, existing.ConnectionEpoch, PresenceMessageDisposition.Duplicate);
+                return;
+            }
+            if (_pendingAdmissions.Count >= MaximumPendingAdmissions)
+            {
+                ReplyStart(message, 0, PresenceMessageDisposition.AdmissionCapacityExceeded);
+                return;
+            }
+            _lastIssuedEpoch = checked(_lastIssuedEpoch + 1);
+            _pendingAdmissions.Add(message.ConnectionId, new(message, _lastIssuedEpoch));
+            ScheduleAdmissionPrune();
+            ReplyStart(message, _lastIssuedEpoch, PresenceMessageDisposition.Accepted);
+            return;
+        }
+
         _lastIssuedEpoch = checked(_lastIssuedEpoch + 1);
-        _activeEpoch = _lastIssuedEpoch;
+        CommitSession(message, _lastIssuedEpoch);
+        ReplyStart(message, _lastIssuedEpoch, PresenceMessageDisposition.Accepted);
+    }
+
+    private void ReplyStart(StartGatewayPresenceSession message, long epoch, PresenceMessageDisposition disposition) =>
+        Sender.Tell(new GatewayPresenceSessionStarted(_client, message.ConnectionId, epoch, disposition, message.ReceivedAtUtc));
+
+    private void CommitSession(StartGatewayPresenceSession message, long connectionEpoch)
+    {
+        _activeEpoch = connectionEpoch;
         _activeConnectionId = message.ConnectionId;
         _lastAcceptedSequence = 0;
         _lastReceivedAtUtc = message.ReceivedAtUtc;
+        _authenticationExpiresAtUtc = message.AuthenticationExpiresAtUtc;
         ClearLatency();
         _agentVersion = string.IsNullOrWhiteSpace(message.AgentVersion) ? null : message.AgentVersion;
         _capabilities = message.Capabilities
@@ -93,7 +165,8 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
         {
             NetRatelAkkaTelemetry.PresenceClientConnected();
         }
-        ScheduleExpiry(_lastIssuedEpoch, message.ConnectionId);
+        ScheduleExpiry(connectionEpoch, message.ConnectionId);
+        ScheduleAuthenticationExpiry(connectionEpoch, message.ConnectionId);
         PublishTransition(message.ReceivedAtUtc, "connected");
         PublishReadModelSnapshot();
 
@@ -101,24 +174,69 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
             "Gateway presence connected. authority={0}, client={1}, epoch={2}, connectionId={3}",
             "akka",
             _client,
-            _lastIssuedEpoch,
+            connectionEpoch,
             message.ConnectionId);
-
-        Sender.Tell(new GatewayPresenceSessionStarted(
-            _client,
-            message.ConnectionId,
-            _lastIssuedEpoch,
-            PresenceMessageDisposition.Accepted,
-            message.ReceivedAtUtc));
     }
 
     private void HandleHeartbeat(RecordGatewayHeartbeat message)
     {
         EnsureClient(message.Client);
+        PrunePendingAdmissions();
+        if (_pendingAdmissions.TryGetValue(message.ConnectionId, out var pending) &&
+            pending.ConnectionEpoch == message.ConnectionEpoch)
+        {
+            if (pending.Message.AdmissionExpiresAtUtc <= message.ReceivedAtUtc ||
+                pending.Message.AuthenticationExpiresAtUtc <= message.ReceivedAtUtc)
+            {
+                _pendingAdmissions.Remove(message.ConnectionId);
+                ScheduleAdmissionPrune();
+                Sender.Tell(CreateResult(PresenceMessageDisposition.AdmissionExpired));
+                return;
+            }
+            if (message.Sequence == 0)
+            {
+                Sender.Tell(CreateResult(PresenceMessageDisposition.StaleSequence));
+                return;
+            }
+            if (message.RenewedAuthenticationExpiresAtUtc is { } renewedPendingExpiry &&
+                (pending.Message.AuthenticationExpiresAtUtc is not { } pendingAuthentication ||
+                 renewedPendingExpiry <= pendingAuthentication || renewedPendingExpiry <= _timeProvider.GetUtcNow() ||
+                 renewedPendingExpiry <= message.ReceivedAtUtc))
+            {
+                Sender.Tell(CreateResult(PresenceMessageDisposition.InvalidAuthenticationRenewal));
+                return;
+            }
+            if (_activeEpoch is { } currentEpoch && pending.ConnectionEpoch <= currentEpoch)
+            {
+                _pendingAdmissions.Remove(message.ConnectionId);
+                RememberCancelledAdmission(message.ConnectionId, pending.Message.AdmissionExpiresAtUtc!.Value);
+                Sender.Tell(CreateResult(PresenceMessageDisposition.StaleConnectionEpoch));
+                return;
+            }
+            _pendingAdmissions.Remove(message.ConnectionId);
+            CommitSession(pending.Message, pending.ConnectionEpoch);
+            ScheduleAdmissionPrune();
+        }
         var disposition = ValidateActiveSession(message.ConnectionId, message.ConnectionEpoch);
         if (disposition != PresenceMessageDisposition.Accepted)
         {
             Sender.Tell(CreateResult(disposition));
+            return;
+        }
+
+        // Once the authoritative timer or explicit close retires this owner,
+        // a delayed frame cannot revive it. A new authenticated admission is required.
+        if (_status == ClientPresenceStatus.Offline)
+        {
+            Sender.Tell(CreateResult(PresenceMessageDisposition.NoActiveSession));
+            return;
+        }
+
+        if (_authenticationExpiresAtUtc is { } currentExpiry &&
+            (currentExpiry <= _timeProvider.GetUtcNow() || currentExpiry <= message.ReceivedAtUtc))
+        {
+            RetireAuthentication(currentExpiry);
+            Sender.Tell(CreateResult(PresenceMessageDisposition.AuthenticationExpired));
             return;
         }
 
@@ -132,6 +250,20 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
         {
             Sender.Tell(CreateResult(PresenceMessageDisposition.StaleSequence));
             return;
+        }
+
+        if (message.RenewedAuthenticationExpiresAtUtc is { } renewedExpiry)
+        {
+            if (_authenticationExpiresAtUtc is not { } previousExpiry || renewedExpiry <= previousExpiry)
+            {
+                Sender.Tell(CreateResult(PresenceMessageDisposition.InvalidAuthenticationRenewal));
+                return;
+            }
+            // Only the synchronous, exact-owner accepted sequence can extend
+            // authentication. The serializable message carries validated
+            // expiry, never a credential or a process-local cancellation token.
+            _authenticationExpiresAtUtc = renewedExpiry;
+            ScheduleAuthenticationExpiry(message.ConnectionEpoch, message.ConnectionId);
         }
 
         var wasOnline = _status == ClientPresenceStatus.Online;
@@ -159,6 +291,26 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
     private void HandleEndSession(EndGatewayPresenceSession message)
     {
         EnsureClient(message.Client);
+        if (message.CancelPendingAdmission)
+        {
+            PrunePendingAdmissions();
+            _pendingAdmissions.TryGetValue(message.ConnectionId, out var pending);
+            if (pending is not null && message.ConnectionEpoch != 0 && pending.ConnectionEpoch != message.ConnectionEpoch)
+            {
+                Sender.Tell(CreateResult(PresenceMessageDisposition.StaleConnectionEpoch));
+                return;
+            }
+            _pendingAdmissions.Remove(message.ConnectionId);
+            var retention = _timeProvider.GetUtcNow().AddSeconds(_options.GatewayAdmissionTimeoutSeconds);
+            if (pending?.Message.AdmissionExpiresAtUtc is { } deadline && deadline > retention) retention = deadline;
+            RememberCancelledAdmission(message.ConnectionId, retention);
+            if (_activeConnectionId != message.ConnectionId)
+            {
+                Sender.Tell(CreateResult(PresenceMessageDisposition.Accepted));
+                return;
+            }
+            if (message.ConnectionEpoch == 0) message = message with { ConnectionEpoch = _activeEpoch!.Value };
+        }
         var disposition = ValidateActiveSession(message.ConnectionId, message.ConnectionEpoch);
         if (disposition != PresenceMessageDisposition.Accepted)
         {
@@ -168,6 +320,7 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
 
         var wasOffline = _status == ClientPresenceStatus.Offline;
         Timers.Cancel(ExpiryTimerKey);
+        Timers.Cancel(AuthenticationExpiryTimerKey);
         _status = ClientPresenceStatus.Offline;
         ClearLatency();
         _lastReceivedAtUtc = message.ReceivedAtUtc;
@@ -202,6 +355,7 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
         }
 
         _status = ClientPresenceStatus.Offline;
+        Timers.Cancel(AuthenticationExpiryTimerKey);
         ClearLatency();
         NetRatelAkkaTelemetry.PresenceClientHeartbeatExpired();
         PublishTransition(
@@ -215,6 +369,43 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
             _client,
             message.ConnectionEpoch,
             message.ConnectionId);
+    }
+
+    private void RememberCancelledAdmission(Guid connectionId, DateTimeOffset untilUtc)
+    {
+        if (_cancelledAdmissions.ContainsKey(connectionId))
+            _cancelledAdmissions[connectionId] = untilUtc;
+        else if (_cancelledAdmissions.Count < MaximumCancelledAdmissions)
+            _cancelledAdmissions.Add(connectionId, untilUtc);
+        else if (_admissionCancellationBarrierUntilUtc is not { } barrier || untilUtc > barrier)
+            _admissionCancellationBarrierUntilUtc = untilUtc;
+        ScheduleAdmissionPrune();
+    }
+
+    private void PrunePendingAdmissions()
+    {
+        var now = _timeProvider.GetUtcNow();
+        foreach (var pending in _pendingAdmissions.Values.Where(candidate =>
+                     candidate.Message.AdmissionExpiresAtUtc <= now || candidate.Message.AuthenticationExpiresAtUtc <= now).ToArray())
+            _pendingAdmissions.Remove(pending.Message.ConnectionId);
+        foreach (var cancelled in _cancelledAdmissions.Where(entry => entry.Value <= now).ToArray())
+            _cancelledAdmissions.Remove(cancelled.Key);
+        if (_admissionCancellationBarrierUntilUtc <= now) _admissionCancellationBarrierUntilUtc = null;
+        ScheduleAdmissionPrune();
+    }
+
+    private void ScheduleAdmissionPrune()
+    {
+        Timers.Cancel(AdmissionPruneTimerKey);
+        var deadlines = _pendingAdmissions.Values.Select(candidate =>
+            candidate.Message.AuthenticationExpiresAtUtc is { } authentication && authentication < candidate.Message.AdmissionExpiresAtUtc
+                ? authentication : candidate.Message.AdmissionExpiresAtUtc!.Value)
+            .Concat(_cancelledAdmissions.Values);
+        if (_admissionCancellationBarrierUntilUtc is { } barrier) deadlines = deadlines.Append(barrier);
+        var nearest = deadlines.Select(deadline => (DateTimeOffset?)deadline).Min();
+        if (nearest is { } deadline)
+            Timers.StartSingleTimer(AdmissionPruneTimerKey, new PruneAdmissions(),
+                deadline > _timeProvider.GetUtcNow() ? deadline - _timeProvider.GetUtcNow() : TimeSpan.FromMilliseconds(1));
     }
 
     private PresenceMessageDisposition ValidateActiveSession(Guid connectionId, long connectionEpoch)
@@ -240,6 +431,39 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
             new PresenceDeadlineElapsed(connectionEpoch, connectionId),
             _options.HeartbeatTimeout);
 
+    private void ScheduleAuthenticationExpiry(long connectionEpoch, Guid connectionId)
+    {
+        Timers.Cancel(AuthenticationExpiryTimerKey);
+        if (_authenticationExpiresAtUtc is { } expiry)
+            Timers.StartSingleTimer(AuthenticationExpiryTimerKey,
+                new AuthenticationDeadlineElapsed(connectionEpoch, connectionId, expiry),
+                expiry - _timeProvider.GetUtcNow());
+    }
+
+    private void HandleAuthenticationDeadlineElapsed(AuthenticationDeadlineElapsed message)
+    {
+        if (_activeEpoch != message.ConnectionEpoch || _activeConnectionId != message.ConnectionId ||
+            _authenticationExpiresAtUtc != message.ExpiresAtUtc || _status != ClientPresenceStatus.Online)
+            return;
+        if (_timeProvider.GetUtcNow() < message.ExpiresAtUtc)
+        {
+            ScheduleAuthenticationExpiry(message.ConnectionEpoch, message.ConnectionId);
+            return;
+        }
+        RetireAuthentication(message.ExpiresAtUtc);
+    }
+
+    private void RetireAuthentication(DateTimeOffset expiry)
+    {
+        Timers.Cancel(ExpiryTimerKey);
+        Timers.Cancel(AuthenticationExpiryTimerKey);
+        _status = ClientPresenceStatus.Offline;
+        ClearLatency();
+        NetRatelAkkaTelemetry.PresenceClientDisconnected();
+        PublishTransition(expiry, "authentication-expired");
+        PublishReadModelSnapshot();
+    }
+
     private PresenceMessageResult CreateResult(PresenceMessageDisposition disposition) =>
         new(_client, _activeEpoch, disposition, _lastAcceptedSequence);
 
@@ -258,7 +482,8 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
             IsAuthoritative: true,
             LatencyMilliseconds: _latencyMilliseconds,
             LatencyMeasuredAtUtc: _latencyMeasuredAtUtc,
-            LatencyExpiresAtUtc: _latencyMeasuredAtUtc + _options.HeartbeatTimeout);
+            LatencyExpiresAtUtc: _latencyMeasuredAtUtc + _options.HeartbeatTimeout,
+            AuthenticationExpiresAtUtc: _authenticationExpiresAtUtc);
 
     private void ClearLatency()
     {
@@ -291,5 +516,8 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
         }
     }
 
-    private sealed record PresenceDeadlineElapsed(long ConnectionEpoch, Guid ConnectionId);
+    private sealed record PendingAdmission(StartGatewayPresenceSession Message, long ConnectionEpoch);
+    private sealed record PruneAdmissions;
+    internal sealed record PresenceDeadlineElapsed(long ConnectionEpoch, Guid ConnectionId);
+    internal sealed record AuthenticationDeadlineElapsed(long ConnectionEpoch, Guid ConnectionId, DateTimeOffset ExpiresAtUtc);
 }

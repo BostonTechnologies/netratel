@@ -20,6 +20,10 @@ public sealed class NetRatelAkkaOptions
     [Range(1, 65535)]
     public int GatewayGrpcPort { get; set; } = 9223;
 
+    /// <summary>Bounds authenticated lookup and the initial gateway hello before a session is admitted.</summary>
+    [Range(1, 300)]
+    public int GatewayAdmissionTimeoutSeconds { get; set; } = 30;
+
     [Range(5, 300)]
     public int HeartbeatIntervalSeconds { get; set; } = 15;
 

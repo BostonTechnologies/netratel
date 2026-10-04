@@ -62,7 +62,7 @@ internal sealed class AgentRemoteSupportPreparationGatewayClient(
     {
         using var channel = GrpcChannel.ForAddress(endpoint);
         var client = new AgentRemoteSupportPreparationGateway.AgentRemoteSupportPreparationGatewayClient(channel);
-        var headers = new Metadata { { "Authorization", $"Bearer {accessToken}" } };
+        var headers = new Metadata { { "Authorization", $"Bearer {session.GetAccessToken(accessToken)}" } };
         using var call = client.Connect(headers, cancellationToken: stoppingToken);
         using var writer = new PreparationGatewayWriter(call.RequestStream, session, options.ProtocolVersion);
         var supervisor = CreateSupervisor();

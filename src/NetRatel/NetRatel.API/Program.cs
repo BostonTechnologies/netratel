@@ -176,6 +176,8 @@ var aiAgentOpsLogBuffer = new AiAgentOpsLogBuffer();
 
 builder.AddServiceDefaults();
 builder.Services.AddNetRatelAkkaRuntime(builder.Configuration);
+builder.Services.AddSingleton<AgentGatewayRenewalAuthenticator>();
+builder.Services.AddSingleton<AgentGatewayAuthenticationLeaseRegistry>();
 builder.Services.AddRemoteSupportIceConfiguration(builder.Configuration);
 builder.Services.AddSingleton(aiAgentOpsLogBuffer);
 builder.Logging.AddProvider(new AiAgentOpsLoggerProvider(aiAgentOpsLogBuffer));

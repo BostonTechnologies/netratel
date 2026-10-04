@@ -1,17 +1,101 @@
 using System.Net;
+using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text;
 using FluentAssertions;
+using NetRatel.API.Gateway;
 using NetRatel.Application.ClientAuth;
 using NetRatel.Client;
 using NetRatel.Infrastructure.Auth;
 using NetRatel.Client.Service.Auth;
+using NetRatel.Tests.API;
 using Xunit;
 
 namespace NetRatel.Tests.Client;
 
 public sealed class ClientAgentTokenServiceTests
 {
+    [Fact]
+    public async Task WholeSecondJwtExpiry_RefreshesAtItsMarginBeforeTheMillisecondResponseHint()
+    {
+        var clock = new RenewalManualTimeProvider();
+        clock.Advance(TimeSpan.FromMilliseconds(750));
+        var identity = new AuthenticatedAgentIdentity(42, Guid.NewGuid());
+        var credentials = new FakeCredentialStore(identity.ClientId, "valid-refresh-token");
+        using var signing = new AgentGatewayRenewalTestCredentials();
+        var issuedAt = clock.GetUtcNow();
+        var firstToken = signing.CreateToken(identity, issuedAt.AddMinutes(2), issuedAt.AddSeconds(-1));
+        var nextToken = signing.CreateToken(identity, issuedAt.AddMinutes(4), issuedAt.AddSeconds(-1));
+        var handler = new TokenResponseHandler((firstToken, 120), (nextToken, 180));
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("https://netratel-dev-api.example") };
+        var service = new ClientAgentTokenService(http, credentials, credentials, clock);
+        var firstExpiry = DateTimeOffset.FromUnixTimeSeconds(issuedAt.AddMinutes(2).ToUnixTimeSeconds());
+
+        var first = await service.GetAccessTokenAsync(CancellationToken.None);
+        first.Should().Be((firstToken, firstExpiry));
+
+        clock.Advance(TimeSpan.FromSeconds(59));
+        (await service.GetAccessTokenAsync(CancellationToken.None)).Should().Be(first);
+        handler.RequestCount.Should().Be(1);
+
+        clock.Advance(TimeSpan.FromMilliseconds(250));
+        clock.GetUtcNow().Should().Be(firstExpiry.AddMinutes(-1));
+        var renewed = await service.GetAccessTokenAsync(CancellationToken.None);
+
+        renewed.AccessToken.Should().Be(nextToken).And.NotBe(firstToken);
+        renewed.ExpiresAtUtc.Should().BeAfter(first.ExpiresAtUtc);
+        handler.RequestCount.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task LongerJwtExpiry_DoesNotExtendTheResponseHintCacheLifetime()
+    {
+        var clock = new RenewalManualTimeProvider();
+        clock.Advance(TimeSpan.FromMilliseconds(750));
+        var identity = new AuthenticatedAgentIdentity(42, Guid.NewGuid());
+        var credentials = new FakeCredentialStore(identity.ClientId, "valid-refresh-token");
+        using var signing = new AgentGatewayRenewalTestCredentials();
+        var issuedAt = clock.GetUtcNow();
+        var firstToken = signing.CreateToken(identity, issuedAt.AddMinutes(3), issuedAt.AddSeconds(-1));
+        var nextToken = signing.CreateToken(identity, issuedAt.AddMinutes(5), issuedAt.AddSeconds(-1));
+        var handler = new TokenResponseHandler((firstToken, 120), (nextToken, 180));
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("https://netratel-dev-api.example") };
+        var service = new ClientAgentTokenService(http, credentials, credentials, clock);
+
+        var first = await service.GetAccessTokenAsync(CancellationToken.None);
+        first.ExpiresAtUtc.Should().Be(issuedAt.AddMinutes(2));
+        clock.Advance(TimeSpan.FromMinutes(1));
+
+        var renewed = await service.GetAccessTokenAsync(CancellationToken.None);
+        renewed.AccessToken.Should().Be(nextToken);
+        handler.RequestCount.Should().Be(2);
+    }
+
+    [Theory]
+    [InlineData("opaque-access-token")]
+    [InlineData("eyJhbGciOiJFUzI1NiJ9.bm90LWpzb24.c2lnbmF0dXJl")]
+    public async Task UnreadableToken_PreservesTheResponseHintAndRefreshMargin(string token)
+    {
+        var clock = new RenewalManualTimeProvider();
+        clock.Advance(TimeSpan.FromMilliseconds(750));
+        var credentials = new FakeCredentialStore(Guid.NewGuid().ToString(), "valid-refresh-token");
+        var handler = new TokenResponseHandler((token, 120), ("next-opaque-token", 120));
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("https://netratel-dev-api.example") };
+        var service = new ClientAgentTokenService(http, credentials, credentials, clock);
+        var issuedAt = clock.GetUtcNow();
+
+        var first = await service.GetAccessTokenAsync(CancellationToken.None);
+        first.Should().Be((token, issuedAt.AddMinutes(2)));
+        clock.Advance(TimeSpan.FromSeconds(59));
+        (await service.GetAccessTokenAsync(CancellationToken.None)).Should().Be(first);
+        handler.RequestCount.Should().Be(1);
+        clock.Advance(TimeSpan.FromSeconds(1));
+
+        var renewed = await service.GetAccessTokenAsync(CancellationToken.None);
+        renewed.AccessToken.Should().Be("next-opaque-token");
+        handler.RequestCount.Should().Be(2);
+    }
+
     [Fact]
     public async Task GetAccessTokenAsync_WhenServerReportsDeletedAgent_PreservesCredentialUntilAuthorizedRecovery()
     {
@@ -133,6 +217,20 @@ public sealed class ClientAgentTokenServiceTests
                 {
                     Content = new StringContent("""{"accessToken":"enabled-token","expiresIn":3600}""", Encoding.UTF8, "application/json")
                 };
+        }
+    }
+
+    private sealed class TokenResponseHandler(params (string AccessToken, int ExpiresIn)[] responses) : HttpMessageHandler
+    {
+        public int RequestCount { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var response = responses[RequestCount++];
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = JsonContent.Create(new { accessToken = response.AccessToken, expiresIn = response.ExpiresIn })
+            });
         }
     }
 
