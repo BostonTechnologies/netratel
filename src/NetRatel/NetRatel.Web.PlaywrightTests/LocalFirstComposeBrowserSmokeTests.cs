@@ -227,7 +227,12 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         }
 
         await page.GotoAsync(new Uri(webUrl, "setup").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        // Wait for the interactive render so ready text from prerendered HTML
+        // cannot satisfy the assertion before hydration replaces that DOM.
+        await page.GetByTestId("setup-client-ready").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
         await page.GetByText("This installation is ready.").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        // Require the conservative form to retire within the existing timeout.
+        await page.GetByTestId("setup-proof").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Detached });
         Assert.Equal(0, await page.GetByTestId("setup-proof").CountAsync());
         Assert.Empty(pageErrors);
     }
