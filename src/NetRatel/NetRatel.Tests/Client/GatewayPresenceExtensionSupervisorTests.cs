@@ -1,5 +1,5 @@
 using System.Collections.Concurrent;
-using FluentAssertions;
+using AwesomeAssertions;
 using Grpc.Core;
 using NetRatel.Client.Service.Gateway;
 using Xunit;

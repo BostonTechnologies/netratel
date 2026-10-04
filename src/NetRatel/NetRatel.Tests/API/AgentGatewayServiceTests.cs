@@ -4,7 +4,7 @@ using System.Diagnostics;
 using System.Net;
 using System.Security.Cryptography.X509Certificates;
 using Akka.Hosting;
-using FluentAssertions;
+using AwesomeAssertions;
 using Grpc.Core;
 using Grpc.Net.Client;
 using Microsoft.AspNetCore.Builder;

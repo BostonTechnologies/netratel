@@ -2,7 +2,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using FluentAssertions;
+using AwesomeAssertions;
 using NetRatel.Client.Service.Logging;
 using NetRatel.Client.Service.Logging.Linux;
 using Xunit;

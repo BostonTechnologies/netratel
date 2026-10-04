@@ -1,4 +1,4 @@
-using FluentAssertions;
+using AwesomeAssertions;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using NetRatel.AgentGateway.Contracts.V1;

@@ -1,4 +1,4 @@
-using FluentAssertions;
+using AwesomeAssertions;
 using Microsoft.Extensions.Configuration;
 using NetRatel.AgentGateway.Contracts.V1;
 using NetRatel.API.Gateway;

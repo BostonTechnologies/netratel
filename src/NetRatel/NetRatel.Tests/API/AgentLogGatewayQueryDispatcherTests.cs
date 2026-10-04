@@ -1,7 +1,7 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
-using FluentAssertions;
+using AwesomeAssertions;
 using Google.Protobuf.WellKnownTypes;
 using NetRatel.AgentGateway.Contracts.V1;
 using NetRatel.API.Gateway;

@@ -1,4 +1,4 @@
-using FluentAssertions;
+using AwesomeAssertions;
 using NetRatel.API.Services.Orchestration;
 using NetRatel.Application.Requests;
 using Xunit;

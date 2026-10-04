@@ -3,7 +3,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using AngleSharp.Html.Dom;
 using Bunit;
-using FluentAssertions;
+using AwesomeAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using MudBlazor;
 using MudBlazor.Services;

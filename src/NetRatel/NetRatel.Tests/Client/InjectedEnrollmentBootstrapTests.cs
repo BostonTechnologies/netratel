@@ -1,4 +1,4 @@
-using FluentAssertions;
+using AwesomeAssertions;
 using System.Text.Json;
 using NetRatel.Application.ClientAuth;
 using NetRatel.Client;

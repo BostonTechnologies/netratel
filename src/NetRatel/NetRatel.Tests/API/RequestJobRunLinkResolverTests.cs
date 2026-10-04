@@ -1,4 +1,4 @@
-using FluentAssertions;
+using AwesomeAssertions;
 using NetRatel.API.Services.Requests;
 using NetRatel.Application.Jobs;
 using NetRatel.Application.Requests;

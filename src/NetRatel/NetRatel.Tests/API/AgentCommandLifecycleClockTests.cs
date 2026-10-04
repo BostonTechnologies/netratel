@@ -1,7 +1,7 @@
 using System.Security.Claims;
 using System.Threading.Channels;
 using Akka.Actor;
-using FluentAssertions;
+using AwesomeAssertions;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Grpc.Net.Client;

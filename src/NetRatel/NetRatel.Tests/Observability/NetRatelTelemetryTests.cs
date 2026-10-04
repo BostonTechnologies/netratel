@@ -1,5 +1,5 @@
 using System.Diagnostics.Metrics;
-using FluentAssertions;
+using AwesomeAssertions;
 using NetRatel.Application.Events;
 using NetRatel.Application.Observability;
 using Xunit;

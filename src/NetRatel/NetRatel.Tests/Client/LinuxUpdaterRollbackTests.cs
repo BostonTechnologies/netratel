@@ -2,7 +2,7 @@ using System.Diagnostics;
 using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text.Json;
-using FluentAssertions;
+using AwesomeAssertions;
 using Xunit;
 
 namespace NetRatel.Tests.Client;

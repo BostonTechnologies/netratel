@@ -4,7 +4,7 @@ using System.Text.RegularExpressions;
 using System.Security.Cryptography;
 using Akka.Actor;
 using Akka.Hosting;
-using FluentAssertions;
+using AwesomeAssertions;
 using Grpc.Net.Client;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;

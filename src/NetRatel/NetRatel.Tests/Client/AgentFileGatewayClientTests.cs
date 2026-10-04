@@ -1,6 +1,6 @@
 using System.Collections.Concurrent;
 using System.Security.Cryptography;
-using FluentAssertions;
+using AwesomeAssertions;
 using Google.Protobuf;
 using Grpc.Core;
 using Grpc.Net.Client;

@@ -1,4 +1,4 @@
-using FluentAssertions;
+using AwesomeAssertions;
 using Microsoft.EntityFrameworkCore;
 using NetRatel.Application.Operations;
 using NetRatel.Infrastructure.Persistence;

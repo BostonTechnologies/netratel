@@ -1,4 +1,4 @@
-using FluentAssertions;
+using AwesomeAssertions;
 using NetRatel.Web.Components.Pages.Clients;
 using NetRatel.Web.Models.Clients;
 using Xunit;

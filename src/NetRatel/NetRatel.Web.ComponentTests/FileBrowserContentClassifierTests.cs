@@ -1,7 +1,7 @@
 using System.Net;
 using System.Text;
 using Bunit;
-using FluentAssertions;
+using AwesomeAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using MudBlazor.Services;
 using NetRatel.Shared.Contracts.FileSystem;

@@ -2,7 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Reflection;
 using Bunit;
-using FluentAssertions;
+using AwesomeAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using MudBlazor.Services;
 using NetRatel.Web.Components.Pages;

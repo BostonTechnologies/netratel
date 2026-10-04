@@ -1,6 +1,6 @@
 using System.Threading.Channels;
 using System.Security.Claims;
-using FluentAssertions;
+using AwesomeAssertions;
 using Grpc.Core;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
