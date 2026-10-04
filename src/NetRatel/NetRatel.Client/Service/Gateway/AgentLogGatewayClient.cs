@@ -100,7 +100,7 @@ public sealed class AgentLogGatewayClient
         };
         using var channel = createChannel?.Invoke(endpoint) ?? GrpcChannel.ForAddress(endpoint, new GrpcChannelOptions { HttpClient = httpClient });
         var client = new AgentLogGateway.AgentLogGatewayClient(channel);
-        var headers = new Metadata { { "Authorization", $"Bearer {accessToken}" } };
+        var headers = new Metadata { { "Authorization", $"Bearer {session.GetAccessToken(accessToken)}" } };
         using var call = client.Connect(headers, cancellationToken: streamToken);
         var records = Channel.CreateBounded<ClientRuntimeLogRecord>(new BoundedChannelOptions(256)
         {

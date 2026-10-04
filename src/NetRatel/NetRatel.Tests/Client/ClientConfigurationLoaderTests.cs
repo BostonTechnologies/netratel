@@ -242,7 +242,8 @@ public sealed class ClientConfigurationLoaderTests
         Directory.CreateDirectory(root);
         try
         {
-            var gatewayEntries = new StringBuilder("\"ProtocolVersion\":\"1.0\",\"TelemetryFastIntervalSeconds\":17");
+            var gatewayEntries = new StringBuilder("\"ProtocolVersion\":\"1.0\",\"TelemetryFastIntervalSeconds\":17," +
+                "\"PresenceBootstrapTimeoutSeconds\":11,\"PresenceTeardownTimeoutSeconds\":4,\"PresenceStabilityThresholdSeconds\":180");
             if (retiredBooleanValue is not null)
             {
                 foreach (var name in RetiredGatewayBooleanSettings)
@@ -270,10 +271,14 @@ public sealed class ClientConfigurationLoaderTests
             gatewayOptions.Endpoint.Should().Be(clientOptions.ApiBaseUrl);
             gatewayOptions.ProtocolVersion.Should().Be("1.0");
             gatewayOptions.TelemetryFastIntervalSeconds.Should().Be(17);
+            gatewayOptions.PresenceBootstrapTimeoutSeconds.Should().Be(11);
+            gatewayOptions.PresenceTeardownTimeoutSeconds.Should().Be(4);
+            gatewayOptions.PresenceStabilityThresholdSeconds.Should().Be(180);
             typeof(GatewayClientOptions).GetProperties().Select(property => property.Name)
                 .Should().BeEquivalentTo("Endpoint", "ProtocolVersion", "TelemetryFastIntervalSeconds",
                     "TelemetrySlowIntervalSeconds", "TelemetryInteractiveIntervalMilliseconds",
-                    "TelemetryMinimumIntervalMilliseconds", "TelemetryPolicyMaximumLifetimeSeconds");
+                    "TelemetryMinimumIntervalMilliseconds", "TelemetryPolicyMaximumLifetimeSeconds",
+                    "PresenceBootstrapTimeoutSeconds", "PresenceTeardownTimeoutSeconds", "PresenceStabilityThresholdSeconds");
         }
         finally
         {

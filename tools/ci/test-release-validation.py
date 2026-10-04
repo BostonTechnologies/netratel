@@ -300,6 +300,76 @@ class GatewayDiagnosticTests(unittest.TestCase):
         self.assertEqual(len(events), 20)
         self.assertEqual(events[-1], "command_admitted")
 
+    def test_metrics_deduplicate_primary_and_correlate_secondary_without_inventing_origin(self):
+        summarizer = module("summarize-gateway-log")
+        owner = "11111111-2222-3333-4444-555555555555"
+        refresh_owner = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        failure = f"Gateway session failed: utc=2026-10-03T18:07:53Z, correlation={owner}, reason=unknown. suppressedRepeatedFailures=3."
+        metrics = summarizer.summarize_metrics([
+            "2026-10-03T18:00:00+00:00 Service started. secret-token\n",
+            f'File gateway session failed: RpcException: StatusCode="Cancelled", correlation={owner}, private-payload\n',
+            failure, failure,
+            f"Refreshing the gateway session before the agent token expires. correlation={refresh_owner},\n",
+            f"Terminal gateway session stopped with its presence owner. correlation={refresh_owner},\n",
+            "Gateway extension 'file' stopped with its presence owner.\n",
+            "Presence authentication renewed. utc=2026-10-03T19:00:00Z,\n",
+            "Presence authentication renewed. utc=2026-10-03T19:30:00Z,\n",
+            "2026-10-03T20:00:00+00:00 Service observation ended.\n",
+        ])
+        self.assertEqual(metrics["primary_presence_failures"], 1)
+        self.assertEqual(metrics["suppressed_primary_failures_reported"], 3)
+        self.assertEqual(metrics["observed_seconds"], 7200)
+        self.assertEqual(metrics["primary_failures_per_observed_hour"], 0.5)
+        self.assertEqual(metrics["refresh_reasons"], {"token-expiry-reconnect": 1, "authenticated-renewal": 2})
+        self.assertEqual(metrics["secondary_events"], {
+            "correlated_presence_failure": 1, "correlated_planned_refresh": 1, "uncorrelated": 1,
+        })
+        self.assertEqual(metrics["secondary_statuses"], {"Cancelled": 1, "unknown": 2})
+        self.assertEqual(metrics["secondary_reasons"], {"RpcException": 1, "presence-owner-stopped": 2})
+        self.assertEqual(metrics["reset_origin"], "unknown")
+        output = json.dumps(metrics)
+        for secret in (owner, refresh_owner, "secret-token", "private-payload"):
+            self.assertNotIn(secret, output)
+
+    def test_metrics_retain_unknown_reasons_missing_times_and_missing_owner(self):
+        summarizer = module("summarize-gateway-log")
+        metrics = summarizer.summarize_metrics([
+            "Gateway session failed: reason=synthetic-secret-token. edge=secret-host\n",
+            "Gateway session failed: reason=invalid heartbeat acknowledgement.\n",
+            "Gateway session failed: reason=renewal_io_blocked.\n",
+            "Gateway session failed: reason=presence_io_timeout.\n",
+        ])
+        self.assertEqual(metrics["primary_presence_failures"], 4)
+        self.assertEqual(metrics["primary_failures_without_identity"], 4)
+        self.assertEqual(metrics["primary_reasons"], {"invalid heartbeat acknowledgement": 1, "unknown": 1,
+                                                 "renewal_io_blocked": 1, "presence_io_timeout": 1})
+        self.assertIsNone(metrics["observed_seconds"])
+        self.assertIsNone(metrics["primary_failures_per_observed_hour"])
+        self.assertNotIn("synthetic-secret-token", json.dumps(metrics))
+
+    def test_metrics_bound_correlation_storage_and_report_incomplete_deduplication(self):
+        summarizer = module("summarize-gateway-log")
+        metrics = summarizer.summarize_metrics([
+            "Gateway session failed: correlation=11111111-2222-3333-4444-555555555555, reason=unknown.\n",
+            "Gateway session failed: correlation=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee, reason=unknown.\n",
+        ], identity_limit=1)
+        self.assertFalse(metrics["correlation_complete"])
+        self.assertEqual(metrics["primary_presence_failures"], 2)
+
+    def test_safe_supervisor_diagnostics_correlate_by_server_owner_and_preserve_typed_reason(self):
+        summarizer = module("summarize-gateway-log")
+        owner = "11111111-2222-3333-4444-555555555555"
+        line = ("Gateway extension 'file' transport failed without ending presence: IOException; "
+                f"retrying in 1s. serverConnection={owner}, connectionEpoch=3.")
+        self.assertEqual(summarizer.summarize([line]), ["file_extension_transport_failed IOException"])
+        metrics = summarizer.summarize_metrics([
+            line, f"Gateway session failed: correlation=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee, serverConnection={owner}, reason=unknown.",
+        ])
+        self.assertEqual(metrics["primary_presence_failures"], 1)
+        self.assertEqual(metrics["secondary_events"]["correlated_presence_failure"], 1)
+        self.assertEqual(metrics["secondary_reasons"], {"IOException": 1})
+        self.assertNotIn(owner, json.dumps(metrics))
+
 
 class PublishedClientPackFetchTests(unittest.TestCase):
     def setUp(self):

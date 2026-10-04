@@ -96,7 +96,7 @@ public sealed class AgentRemoteSupportGatewayClient(GatewayClientOptions options
     {
         using var channel = GrpcChannel.ForAddress(endpoint);
         var client = new AgentRemoteSupportGateway.AgentRemoteSupportGatewayClient(channel);
-        var headers = new Metadata { { "Authorization", $"Bearer {accessToken}" } };
+        var headers = new Metadata { { "Authorization", $"Bearer {session.GetAccessToken(accessToken)}" } };
         using var call = client.Connect(headers, cancellationToken: stoppingToken);
         using var writer = new RemoteSupportGatewayWriter(call.RequestStream, session, options.ProtocolVersion);
         try

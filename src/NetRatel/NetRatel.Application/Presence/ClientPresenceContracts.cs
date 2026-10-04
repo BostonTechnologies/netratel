@@ -27,7 +27,9 @@ public enum PresenceMessageDisposition
     StaleConnectionEpoch = 2,
     StaleSequence = 3,
     ConnectionMismatch = 4,
-    NoActiveSession = 5
+    NoActiveSession = 5,
+    AuthenticationExpired = 6,
+    InvalidAuthenticationRenewal = 7
 }
 
 public interface IClientPresenceMessage
@@ -43,7 +45,8 @@ public sealed record StartGatewayPresenceSession(
     string AgentVersion,
     IReadOnlyList<string> Capabilities,
     string? LegacySpacetimeIdentity,
-    DateTimeOffset ReceivedAtUtc) : IClientPresenceMessage;
+    DateTimeOffset ReceivedAtUtc,
+    DateTimeOffset? AuthenticationExpiresAtUtc = null) : IClientPresenceMessage;
 
 public sealed record GatewayPresenceSessionStarted(
     ClientKey Client,
@@ -60,7 +63,8 @@ public sealed record RecordGatewayHeartbeat(
     ulong Sequence,
     DateTimeOffset ReceivedAtUtc,
     double? HeartbeatRoundTripMilliseconds = null,
-    DateTimeOffset? LatencyMeasuredAtUtc = null) : IClientPresenceMessage;
+    DateTimeOffset? LatencyMeasuredAtUtc = null,
+    DateTimeOffset? RenewedAuthenticationExpiresAtUtc = null) : IClientPresenceMessage;
 
 public sealed record EndGatewayPresenceSession(
     ClientKey Client,
@@ -91,7 +95,8 @@ public sealed record ClientPresenceSnapshot(
     bool IsAuthoritative,
     double? LatencyMilliseconds = null,
     DateTimeOffset? LatencyMeasuredAtUtc = null,
-    DateTimeOffset? LatencyExpiresAtUtc = null);
+    DateTimeOffset? LatencyExpiresAtUtc = null,
+    DateTimeOffset? AuthenticationExpiresAtUtc = null);
 
 public sealed record ProbeClientPresenceRoute;
 

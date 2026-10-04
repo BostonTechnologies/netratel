@@ -12,9 +12,11 @@ namespace NetRatel.Akka.Presence;
 public sealed class PresenceActor : ReceiveActor, IWithTimers
 {
     private const string ExpiryTimerKey = "gateway-presence-expiry";
+    private const string AuthenticationExpiryTimerKey = "gateway-authentication-expiry";
     private readonly ClientKey _client;
     private readonly NetRatelAkkaOptions _options;
     private readonly IActorRef _presenceReadModel;
+    private readonly TimeProvider _timeProvider;
     private readonly ILoggingAdapter _log = Context.GetLogger();
 
     private ClientPresenceStatus _status = ClientPresenceStatus.Unknown;
@@ -28,11 +30,13 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
     private string? _agentVersion;
     private IReadOnlyList<string> _capabilities = Array.Empty<string>();
     private string? _legacySpacetimeIdentity;
+    private DateTimeOffset? _authenticationExpiresAtUtc;
 
     public PresenceActor(
         ClientKey client,
         NetRatelAkkaOptions options,
-        IActorRef presenceReadModel)
+        IActorRef presenceReadModel,
+        TimeProvider? timeProvider = null)
     {
         if (!client.IsValid)
         {
@@ -42,12 +46,14 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
         _client = client;
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _presenceReadModel = presenceReadModel ?? throw new ArgumentNullException(nameof(presenceReadModel));
+        _timeProvider = timeProvider ?? TimeProvider.System;
 
         Receive<StartGatewayPresenceSession>(HandleStartSession);
         Receive<RecordGatewayHeartbeat>(HandleHeartbeat);
         Receive<EndGatewayPresenceSession>(HandleEndSession);
         Receive<GetClientPresence>(_ => Sender.Tell(CreateSnapshot()));
         Receive<PresenceDeadlineElapsed>(HandleDeadlineElapsed);
+        Receive<AuthenticationDeadlineElapsed>(HandleAuthenticationDeadlineElapsed);
     }
 
     public ITimerScheduler Timers { get; set; } = null!;
@@ -55,12 +61,21 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
     public static Props Props(
         ClientKey client,
         NetRatelAkkaOptions options,
-        IActorRef presenceReadModel) =>
-        global::Akka.Actor.Props.Create(() => new PresenceActor(client, options, presenceReadModel));
+        IActorRef presenceReadModel,
+        TimeProvider? timeProvider = null) =>
+        global::Akka.Actor.Props.Create(() => new PresenceActor(client, options, presenceReadModel, timeProvider));
 
     private void HandleStartSession(StartGatewayPresenceSession message)
     {
         EnsureClient(message.Client);
+
+        if (message.AuthenticationExpiresAtUtc is { } requestedExpiry &&
+            (requestedExpiry <= _timeProvider.GetUtcNow() || requestedExpiry <= message.ReceivedAtUtc))
+        {
+            Sender.Tell(new GatewayPresenceSessionStarted(_client, message.ConnectionId, _activeEpoch ?? 0,
+                PresenceMessageDisposition.AuthenticationExpired, message.ReceivedAtUtc));
+            return;
+        }
 
         if (_activeConnectionId == message.ConnectionId && _activeEpoch.HasValue)
         {
@@ -78,6 +93,7 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
         _activeConnectionId = message.ConnectionId;
         _lastAcceptedSequence = 0;
         _lastReceivedAtUtc = message.ReceivedAtUtc;
+        _authenticationExpiresAtUtc = message.AuthenticationExpiresAtUtc;
         ClearLatency();
         _agentVersion = string.IsNullOrWhiteSpace(message.AgentVersion) ? null : message.AgentVersion;
         _capabilities = message.Capabilities
@@ -94,6 +110,7 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
             NetRatelAkkaTelemetry.PresenceClientConnected();
         }
         ScheduleExpiry(_lastIssuedEpoch, message.ConnectionId);
+        ScheduleAuthenticationExpiry(_lastIssuedEpoch, message.ConnectionId);
         PublishTransition(message.ReceivedAtUtc, "connected");
         PublishReadModelSnapshot();
 
@@ -122,6 +139,22 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
             return;
         }
 
+        // Once the authoritative timer or explicit close retires this owner,
+        // a delayed frame cannot revive it. A new authenticated admission is required.
+        if (_status == ClientPresenceStatus.Offline)
+        {
+            Sender.Tell(CreateResult(PresenceMessageDisposition.NoActiveSession));
+            return;
+        }
+
+        if (_authenticationExpiresAtUtc is { } currentExpiry &&
+            (currentExpiry <= _timeProvider.GetUtcNow() || currentExpiry <= message.ReceivedAtUtc))
+        {
+            RetireAuthentication(currentExpiry);
+            Sender.Tell(CreateResult(PresenceMessageDisposition.AuthenticationExpired));
+            return;
+        }
+
         if (message.Sequence == _lastAcceptedSequence)
         {
             Sender.Tell(CreateResult(PresenceMessageDisposition.Duplicate));
@@ -132,6 +165,20 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
         {
             Sender.Tell(CreateResult(PresenceMessageDisposition.StaleSequence));
             return;
+        }
+
+        if (message.RenewedAuthenticationExpiresAtUtc is { } renewedExpiry)
+        {
+            if (_authenticationExpiresAtUtc is not { } previousExpiry || renewedExpiry <= previousExpiry)
+            {
+                Sender.Tell(CreateResult(PresenceMessageDisposition.InvalidAuthenticationRenewal));
+                return;
+            }
+            // Only the synchronous, exact-owner accepted sequence can extend
+            // authentication. The serializable message carries validated
+            // expiry, never a credential or a process-local cancellation token.
+            _authenticationExpiresAtUtc = renewedExpiry;
+            ScheduleAuthenticationExpiry(message.ConnectionEpoch, message.ConnectionId);
         }
 
         var wasOnline = _status == ClientPresenceStatus.Online;
@@ -168,6 +215,7 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
 
         var wasOffline = _status == ClientPresenceStatus.Offline;
         Timers.Cancel(ExpiryTimerKey);
+        Timers.Cancel(AuthenticationExpiryTimerKey);
         _status = ClientPresenceStatus.Offline;
         ClearLatency();
         _lastReceivedAtUtc = message.ReceivedAtUtc;
@@ -202,6 +250,7 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
         }
 
         _status = ClientPresenceStatus.Offline;
+        Timers.Cancel(AuthenticationExpiryTimerKey);
         ClearLatency();
         NetRatelAkkaTelemetry.PresenceClientHeartbeatExpired();
         PublishTransition(
@@ -240,6 +289,39 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
             new PresenceDeadlineElapsed(connectionEpoch, connectionId),
             _options.HeartbeatTimeout);
 
+    private void ScheduleAuthenticationExpiry(long connectionEpoch, Guid connectionId)
+    {
+        Timers.Cancel(AuthenticationExpiryTimerKey);
+        if (_authenticationExpiresAtUtc is { } expiry)
+            Timers.StartSingleTimer(AuthenticationExpiryTimerKey,
+                new AuthenticationDeadlineElapsed(connectionEpoch, connectionId, expiry),
+                expiry - _timeProvider.GetUtcNow());
+    }
+
+    private void HandleAuthenticationDeadlineElapsed(AuthenticationDeadlineElapsed message)
+    {
+        if (_activeEpoch != message.ConnectionEpoch || _activeConnectionId != message.ConnectionId ||
+            _authenticationExpiresAtUtc != message.ExpiresAtUtc || _status != ClientPresenceStatus.Online)
+            return;
+        if (_timeProvider.GetUtcNow() < message.ExpiresAtUtc)
+        {
+            ScheduleAuthenticationExpiry(message.ConnectionEpoch, message.ConnectionId);
+            return;
+        }
+        RetireAuthentication(message.ExpiresAtUtc);
+    }
+
+    private void RetireAuthentication(DateTimeOffset expiry)
+    {
+        Timers.Cancel(ExpiryTimerKey);
+        Timers.Cancel(AuthenticationExpiryTimerKey);
+        _status = ClientPresenceStatus.Offline;
+        ClearLatency();
+        NetRatelAkkaTelemetry.PresenceClientDisconnected();
+        PublishTransition(expiry, "authentication-expired");
+        PublishReadModelSnapshot();
+    }
+
     private PresenceMessageResult CreateResult(PresenceMessageDisposition disposition) =>
         new(_client, _activeEpoch, disposition, _lastAcceptedSequence);
 
@@ -258,7 +340,8 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
             IsAuthoritative: true,
             LatencyMilliseconds: _latencyMilliseconds,
             LatencyMeasuredAtUtc: _latencyMeasuredAtUtc,
-            LatencyExpiresAtUtc: _latencyMeasuredAtUtc + _options.HeartbeatTimeout);
+            LatencyExpiresAtUtc: _latencyMeasuredAtUtc + _options.HeartbeatTimeout,
+            AuthenticationExpiresAtUtc: _authenticationExpiresAtUtc);
 
     private void ClearLatency()
     {
@@ -291,5 +374,6 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
         }
     }
 
-    private sealed record PresenceDeadlineElapsed(long ConnectionEpoch, Guid ConnectionId);
+    internal sealed record PresenceDeadlineElapsed(long ConnectionEpoch, Guid ConnectionId);
+    internal sealed record AuthenticationDeadlineElapsed(long ConnectionEpoch, Guid ConnectionId, DateTimeOffset ExpiresAtUtc);
 }

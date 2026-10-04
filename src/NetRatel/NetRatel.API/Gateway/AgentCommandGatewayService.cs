@@ -48,6 +48,7 @@ public sealed class AgentCommandGatewayService(
         }
 
         var session = await ValidateHelloAsync(requestStream.Current, identity, context.CancellationToken).ConfigureAwait(false);
+        await using var authority = await AgentGatewayAuthenticationLifetime.AttachAsync(context, session.Client, session.ConnectionId, session.ConnectionEpoch).ConfigureAwait(false);
         AgentCommandGatewayRegistration registration;
         try
         {
@@ -63,7 +64,7 @@ public sealed class AgentCommandGatewayService(
         }
 
         using var admissionCancellation = CancellationTokenSource.CreateLinkedTokenSource(
-            context.CancellationToken, registration.CompletionToken);
+            authority.Token, registration.CompletionToken);
         try
         {
             await RequirePresenceAsync(session.Client, session.ConnectionId, session.ConnectionEpoch, admissionCancellation.Token).ConfigureAwait(false);
@@ -87,11 +88,12 @@ public sealed class AgentCommandGatewayService(
                 ulong lastSequence = 0;
                 while (await requestStream.MoveNext(cancellationToken).ConfigureAwait(false))
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     RequireCurrent(registration);
                     lastSequence = await ProcessInboundAsync(requestStream.Current, session, lastSequence, registration, cancellationToken).ConfigureAwait(false);
                 }
             }, cancellationToken => WriteOutboundAsync(registration, responseStream, cancellationToken),
-                context.CancellationToken, registration.CompletionToken, logger).ConfigureAwait(false);
+                authority.Token, registration.CompletionToken, logger, context.GetHttpContext().Abort).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (registration.CompletionToken.IsCancellationRequested && !context.CancellationToken.IsCancellationRequested)
         {
@@ -306,6 +308,7 @@ public sealed class AgentCommandGatewayService(
         {
             RequireCurrent(registration);
             await responseStream.WriteAsync(frame, cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
         }
     }
 

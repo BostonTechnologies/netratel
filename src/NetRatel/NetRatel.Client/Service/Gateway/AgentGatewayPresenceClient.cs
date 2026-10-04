@@ -7,7 +7,6 @@ using NetRatel.Client.Service.Updates;
 using NetRatel.Client.Service.Auth;
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
 using System.Threading;
@@ -32,16 +31,20 @@ public sealed class AgentGatewayPresenceClient(
     IAgentGatewayUpdateHandler? updateHandler = null,
     Func<Uri, GrpcChannel>? createChannel = null,
     TimeSpan? extensionShutdownTimeout = null,
-    Func<Uri, HttpMessageHandler>? createHttpHandler = null)
+    Func<Uri, HttpMessageHandler>? createHttpHandler = null,
+    TimeProvider? timeProvider = null,
+    Func<double>? nextRandom = null,
+    Func<Metadata, CancellationToken, AsyncDuplexStreamingCall<AgentFrame, GatewayFrame>>? createCall = null)
 {
-    private static readonly TimeSpan InitialRetryDelay = TimeSpan.FromSeconds(1);
-    private static readonly TimeSpan MaximumRetryDelay = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan DefaultExtensionShutdownTimeout = TimeSpan.FromSeconds(5);
     private readonly TimeSpan _extensionShutdownTimeout = ResolveExtensionShutdownTimeout(extensionShutdownTimeout);
+    private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
 
     public async Task RunAsync(CancellationToken stoppingToken)
     {
-        var retryDelay = InitialRetryDelay;
+        ValidateOptions();
+        var retry = new GatewayReconnectPolicy(_timeProvider, nextRandom ?? Random.Shared.NextDouble,
+            TimeSpan.FromSeconds(options.PresenceStabilityThresholdSeconds));
         string? lastFailureKey = null;
         long lastFailureLog = 0;
         var suppressedFailures = 0;
@@ -52,8 +55,8 @@ public sealed class AgentGatewayPresenceClient(
             {
                 var token = await DisabledAgentTokenRetry.GetAccessTokenAsync(tokenService, log, stoppingToken).ConfigureAwait(false);
                 diagnostics = new GatewaySessionDiagnostics(options.Endpoint);
-                await RunSessionAsync(token.AccessToken, token.ExpiresAtUtc, diagnostics, stoppingToken).ConfigureAwait(false);
-                retryDelay = InitialRetryDelay;
+                retry.BeginAttempt();
+                await RunSessionAsync(token.AccessToken, token.ExpiresAtUtc, diagnostics, retry.Acknowledged, stoppingToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -70,12 +73,13 @@ public sealed class AgentGatewayPresenceClient(
             }
             catch (Exception exception) when (exception is RpcException or HttpRequestException or IOException or OperationCanceledException)
             {
+                var retryDelay = retry.FailureDelay();
                 var failure = (diagnostics ?? new GatewaySessionDiagnostics(options.Endpoint)).Failure(exception, retryDelay);
-                if (failure.Key != lastFailureKey || Stopwatch.GetElapsedTime(lastFailureLog) >= TimeSpan.FromSeconds(30))
+                if (failure.Key != lastFailureKey || _timeProvider.GetElapsedTime(lastFailureLog) >= TimeSpan.FromSeconds(30))
                 {
                     log($"{failure.Message} suppressedRepeatedFailures={suppressedFailures}.");
                     lastFailureKey = failure.Key;
-                    lastFailureLog = Stopwatch.GetTimestamp();
+                    lastFailureLog = _timeProvider.GetTimestamp();
                     suppressedFailures = 0;
                 }
                 else
@@ -84,24 +88,21 @@ public sealed class AgentGatewayPresenceClient(
                 }
                 try
                 {
-                    await Task.Delay(retryDelay, stoppingToken).ConfigureAwait(false);
+                    await Task.Delay(retryDelay, _timeProvider, stoppingToken).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
                 {
                     break;
                 }
-
-                retryDelay = TimeSpan.FromSeconds(Math.Min(retryDelay.TotalSeconds * 2, MaximumRetryDelay.TotalSeconds));
             }
         }
     }
 
-    private async Task RunSessionAsync(string accessToken, DateTimeOffset expiresAtUtc, GatewaySessionDiagnostics diagnostics, CancellationToken stoppingToken)
+    private async Task RunSessionAsync(string accessToken, DateTimeOffset expiresAtUtc,
+        GatewaySessionDiagnostics diagnostics, Action acknowledged, CancellationToken stoppingToken)
     {
         if (!Uri.TryCreate(options.Endpoint, UriKind.Absolute, out var endpoint) || endpoint.Scheme != Uri.UriSchemeHttps)
-        {
             throw new InvalidOperationException("Gateway:Endpoint must be an absolute HTTPS URL.");
-        }
 
         using var channel = createChannel?.Invoke(endpoint) ?? GrpcChannel.ForAddress(endpoint,
             new GrpcChannelOptions
@@ -110,20 +111,61 @@ public sealed class AgentGatewayPresenceClient(
                     createHttpHandler?.Invoke(endpoint) ?? new SocketsHttpHandler { EnableMultipleHttp2Connections = true }),
                 DisposeHttpClient = true
             });
+        using var owned = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
         var client = new global::NetRatel.AgentGateway.Contracts.V1.AgentGateway.AgentGatewayClient(channel);
         var headers = new Metadata { { "Authorization", $"Bearer {accessToken}" } };
-        using var call = client.Connect(headers, cancellationToken: stoppingToken);
-        var connectionId = Guid.NewGuid();
-        var operationId = Guid.NewGuid();
+        using var call = createCall?.Invoke(headers, owned.Token) ?? client.Connect(headers, cancellationToken: owned.Token);
+        var pending = new List<Task>();
+        Task? sessionTask = null;
+        Task? renewalDue = null;
+        var ioBudget = TimeSpan.FromSeconds(options.PresenceBootstrapTimeoutSeconds);
+
+        async Task<T> AwaitIoAsync<T>(Task<T> operation, TimeSpan budget, bool watchRenewal = false)
+        {
+            pending.Add(operation);
+            try
+            {
+                if (watchRenewal && renewalDue is not null && !operation.IsCompleted)
+                {
+                    var winner = await Task.WhenAny(operation, renewalDue).WaitAsync(budget, _timeProvider, owned.Token).ConfigureAwait(false);
+                    owned.Token.ThrowIfCancellationRequested();
+                    if (winner == renewalDue && !operation.IsCompleted)
+                    {
+                        // Cancelling MoveNext invalidates the RPC. Never reuse its reader
+                        // or misclassify a coincident black hole as successful renewal.
+                        log($"Token renewal became due while presence I/O was pending; retiring the owned stream. {diagnostics.AdmissionSummary}");
+                        diagnostics.FailureReason("renewal_io_blocked");
+                        throw new RpcException(new Status(StatusCode.DeadlineExceeded, "Presence I/O blocked token renewal."));
+                    }
+                }
+                return await operation.WaitAsync(budget, _timeProvider, owned.Token).ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
+                owned.Token.ThrowIfCancellationRequested();
+                diagnostics.FailureReason("presence_io_timeout");
+                throw new RpcException(new Status(StatusCode.DeadlineExceeded, "Presence I/O exceeded its liveness budget."));
+            }
+            finally
+            {
+                if (operation.IsCompleted) pending.Remove(operation);
+            }
+        }
+
+        async Task AwaitWriteAsync(AgentFrame frame, TimeSpan budget, bool watchRenewal = false)
+        {
+            // Cancellation reaches the physical write, rather than only its waiter.
+            var operation = call.RequestStream.WriteAsync(frame, owned.Token);
+            await AwaitIoAsync(CompleteWriteAsync(operation), budget, watchRenewal).ConfigureAwait(false);
+        }
 
         try
         {
-            var hello = new ConnectHello
-            {
-                AgentVersion = agentVersion
-            };
+            var operationId = Guid.NewGuid();
+            var hello = new ConnectHello { AgentVersion = agentVersion };
             hello.Capabilities.Add("presence");
             hello.Capabilities.Add("heartbeat-latency");
+            hello.Capabilities.Add("presence-auth-renewal-v1");
             // Retain this legacy wire token verbatim; telemetry itself now uses the V2 stream.
             hello.Capabilities.Add("telemetry-shadow");
             hello.Capabilities.Add("file-gateway");
@@ -131,145 +173,163 @@ public sealed class AgentGatewayPresenceClient(
             hello.Capabilities.Add("remote-support-gateway");
             hello.Capabilities.Add("remote-support-v2-inventory");
             hello.Capabilities.Add("terminal-gateway");
-            hello.TerminalCapability = new TerminalCapability
-            {
-                Supported = true,
-                AvailableShells = { terminalShells }
-            };
+            hello.TerminalCapability = new TerminalCapability { Supported = true, AvailableShells = { terminalShells } };
             updateHandler?.PopulateHello(hello);
 
-            await call.RequestStream.WriteAsync(new AgentFrame
+            var bootstrapStarted = _timeProvider.GetTimestamp();
+            await AwaitWriteAsync(new AgentFrame
             {
-                ProtocolVersion = options.ProtocolVersion,
-                TenantId = tenantId,
-                ClientId = agentId.ToString("D"),
-                ConnectionId = connectionId.ToString("D"),
-                OperationId = operationId.ToString("D"),
-                Sequence = 0,
-                Hello = hello
-            }).ConfigureAwait(false);
-
-            if (!await call.ResponseStream.MoveNext(stoppingToken).ConfigureAwait(false) ||
+                ProtocolVersion = options.ProtocolVersion, TenantId = tenantId, ClientId = agentId.ToString("D"),
+                ConnectionId = Guid.NewGuid().ToString("D"), OperationId = operationId.ToString("D"), Sequence = 0, Hello = hello
+            }, ioBudget).ConfigureAwait(false);
+            var remainingBootstrap = ioBudget - _timeProvider.GetElapsedTime(bootstrapStarted);
+            if (remainingBootstrap <= TimeSpan.Zero ||
+                !await AwaitIoAsync(call.ResponseStream.MoveNext(owned.Token), remainingBootstrap).ConfigureAwait(false) ||
                 call.ResponseStream.Current.PayloadCase != GatewayFrame.PayloadOneofCase.Connected)
-            {
                 throw new RpcException(new Status(StatusCode.Unavailable, "Gateway closed before accepting the presence session."));
-            }
 
             var accepted = call.ResponseStream.Current;
             ValidateConnectedFrame(accepted, operationId, diagnostics);
             if (!GatewayWireProtocol.HasAkkaAuthority(accepted.Connected.PresenceAuthority))
             {
                 diagnostics.ProtocolFailure("unsupported presence authority token");
-                throw new RpcException(new Status(
-                    StatusCode.FailedPrecondition,
-                    "Gateway returned an unsupported presence authority token."));
+                throw new RpcException(new Status(StatusCode.FailedPrecondition, "Gateway returned an unsupported presence authority token."));
             }
-
-            var heartbeatInterval = TimeSpan.FromSeconds(Math.Clamp((int)accepted.Connected.HeartbeatIntervalSeconds, 1, 60));
-            NotifyUpdateHandler(
-                accepted.Connected.UpdateOffer,
-                accepted.Connected.UpdatePolicy,
-                confirmation: null);
+            var (heartbeatInterval, heartbeatTimeout) = ValidateHeartbeatPolicy(accepted.Connected, diagnostics);
+            ioBudget = heartbeatTimeout;
+            NotifyUpdateHandler(accepted.Connected.UpdateOffer, accepted.Connected.UpdatePolicy, confirmation: null);
             updateHandler?.OnPresenceConnected(accepted.ConnectionEpoch);
             var acceptedConnectionId = Guid.Parse(accepted.ConnectionId);
             diagnostics.Admitted(acceptedConnectionId);
             log($"Presence admitted. {diagnostics.AdmissionSummary}, connectionEpoch={accepted.ConnectionEpoch}, heartbeatInterval={heartbeatInterval.TotalSeconds:0}s.");
 
-            using var sessionStopping = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
-            var session = new GatewayPresenceSession(
-                tenantId,
-                agentId,
-                accepted.ConnectionEpoch,
-                acceptedConnectionId);
+            var session = new GatewayPresenceSession(tenantId, agentId, accepted.ConnectionEpoch, acceptedConnectionId);
+            session.SetAccessToken(accessToken);
             ulong sequence = 0;
             double? lastAcknowledgedRoundTripMs = null;
             ulong lastAcknowledgedSequence = 0;
-            var maximumReportedRoundTripMs = TimeSpan.FromSeconds(Math.Clamp((int)accepted.Connected.HeartbeatTimeoutSeconds, 1, 300)).TotalMilliseconds;
-            Task? sessionTask = null;
-            try
+
+            Task ScheduleRenewal()
             {
-                async Task SendHeartbeatAsync(ulong heartbeatSequence)
+                var now = _timeProvider.GetUtcNow();
+                var delay = expiresAtUtc.AddMinutes(-1) - now;
+                if (delay <= TimeSpan.Zero && expiresAtUtc > now)
+                    delay = TimeSpan.FromTicks(Math.Min(heartbeatInterval.Ticks, (expiresAtUtc - now).Ticks / 2));
+                // Short test/negotiated leases leave half their remaining lifetime
+                // for fresh authentication. Already-expired legacy fake tokens still
+                // prove a first heartbeat before the reconnect path is exercised.
+                return Task.Delay(delay > TimeSpan.Zero ? delay : heartbeatInterval, _timeProvider, owned.Token);
+            }
+            renewalDue = ScheduleRenewal();
+
+            AgentFrame Envelope(Guid operation, ulong frameSequence) => new()
+            {
+                ProtocolVersion = options.ProtocolVersion, TenantId = tenantId, ClientId = agentId.ToString("D"),
+                ConnectionEpoch = accepted.ConnectionEpoch, ConnectionId = accepted.ConnectionId,
+                OperationId = operation.ToString("D"), Sequence = frameSequence
+            };
+
+            async Task SendHeartbeatAsync()
+            {
+                var heartbeatOperation = Guid.NewGuid();
+                var heartbeatSequence = ++sequence;
+                updateHandler?.OnActivationHeartbeatSent(accepted.ConnectionEpoch);
+                var heartbeat = new PresenceHeartbeat { ObservedAtUtc = Timestamp.FromDateTimeOffset(_timeProvider.GetUtcNow()) };
+                if (lastAcknowledgedRoundTripMs is { } roundTripMs)
                 {
-                    var heartbeatOperationId = Guid.NewGuid();
-                    updateHandler?.OnActivationHeartbeatSent(accepted.ConnectionEpoch);
-                    var presenceHeartbeat = new PresenceHeartbeat
-                    {
-                        ObservedAtUtc = Timestamp.FromDateTimeOffset(DateTimeOffset.UtcNow)
-                    };
-                    if (lastAcknowledgedRoundTripMs is { } roundTripMs)
-                    {
-                        presenceHeartbeat.AcknowledgedHeartbeatRoundTripMs = roundTripMs;
-                        presenceHeartbeat.AcknowledgedHeartbeatSequence = lastAcknowledgedSequence;
-                    }
-                    var heartbeatStarted = Stopwatch.GetTimestamp();
-                    await call.RequestStream.WriteAsync(new AgentFrame
-                    {
-                        ProtocolVersion = options.ProtocolVersion,
-                        TenantId = tenantId,
-                        ClientId = agentId.ToString("D"),
-                        ConnectionEpoch = accepted.ConnectionEpoch,
-                        ConnectionId = accepted.ConnectionId,
-                        OperationId = heartbeatOperationId.ToString("D"),
-                        Sequence = heartbeatSequence,
-                        Heartbeat = presenceHeartbeat
-                    }).ConfigureAwait(false);
-
-                    if (!await call.ResponseStream.MoveNext(stoppingToken).ConfigureAwait(false) ||
-                        call.ResponseStream.Current.PayloadCase != GatewayFrame.PayloadOneofCase.HeartbeatAccepted)
-                    {
-                        throw new RpcException(new Status(StatusCode.Unavailable, "Gateway closed before acknowledging the heartbeat."));
-                    }
-
-                    var heartbeat = call.ResponseStream.Current;
-                    ValidateHeartbeatFrame(heartbeat, accepted, heartbeatOperationId, heartbeatSequence, diagnostics);
-                    if (!GatewayWireProtocol.HasAkkaAuthority(heartbeat.HeartbeatAccepted.PresenceAuthority))
-                    {
-                        diagnostics.ProtocolFailure("unsupported heartbeat authority token");
-                        throw new RpcException(new Status(
-                            StatusCode.FailedPrecondition,
-                            "Gateway returned an unsupported heartbeat authority token."));
-                    }
-
-                    diagnostics.AcknowledgeHeartbeat();
-                    var measuredRoundTripMs = Stopwatch.GetElapsedTime(heartbeatStarted).TotalMilliseconds;
-                    lastAcknowledgedRoundTripMs = double.IsFinite(measuredRoundTripMs) && measuredRoundTripMs >= 0 && measuredRoundTripMs <= maximumReportedRoundTripMs
-                        ? measuredRoundTripMs : null;
-                    lastAcknowledgedSequence = heartbeatSequence;
-                    updateHandler?.OnActivationHeartbeatAccepted(accepted.ConnectionEpoch);
-                    NotifyUpdateHandler(
-                        heartbeat.HeartbeatAccepted.UpdateOffer,
-                        heartbeat.HeartbeatAccepted.UpdatePolicy,
-                        heartbeat.HeartbeatAccepted.UpdateConfirmation);
+                    heartbeat.AcknowledgedHeartbeatRoundTripMs = roundTripMs;
+                    heartbeat.AcknowledgedHeartbeatSequence = lastAcknowledgedSequence;
                 }
+                var started = _timeProvider.GetTimestamp();
+                var frame = Envelope(heartbeatOperation, heartbeatSequence);
+                frame.Heartbeat = heartbeat;
+                await AwaitWriteAsync(frame, ioBudget, watchRenewal: true).ConfigureAwait(false);
+                if (!await AwaitIoAsync(call.ResponseStream.MoveNext(owned.Token), ioBudget, watchRenewal: true).ConfigureAwait(false) ||
+                    call.ResponseStream.Current.PayloadCase != GatewayFrame.PayloadOneofCase.HeartbeatAccepted)
+                    throw new RpcException(new Status(StatusCode.Unavailable, "Gateway closed before acknowledging the heartbeat."));
 
-                // A pending activation must prove readiness before optional gateway extensions
-                // can consume startup time or fail. This is also a safe first presence heartbeat
-                // for non-activation sessions.
-                await SendHeartbeatAsync(++sequence).ConfigureAwait(false);
-                sessionTask = runForPresenceSession?.Invoke(session, accessToken, sessionStopping.Token);
-                using var timer = new PeriodicTimer(heartbeatInterval);
-                while (await timer.WaitForNextTickAsync(stoppingToken).ConfigureAwait(false))
+                var response = call.ResponseStream.Current;
+                ValidateHeartbeatFrame(response, accepted, heartbeatOperation, heartbeatSequence, diagnostics);
+                if (!GatewayWireProtocol.HasAkkaAuthority(response.HeartbeatAccepted.PresenceAuthority))
                 {
-                    // Reconnect shortly before the token expires so the next session carries a fresh JWT.
-                    if (DateTimeOffset.UtcNow >= expiresAtUtc.AddMinutes(-1))
+                    diagnostics.ProtocolFailure("unsupported heartbeat authority token");
+                    throw new RpcException(new Status(StatusCode.FailedPrecondition, "Gateway returned an unsupported heartbeat authority token."));
+                }
+                diagnostics.AcknowledgeHeartbeat();
+                acknowledged();
+                var measured = _timeProvider.GetElapsedTime(started).TotalMilliseconds;
+                lastAcknowledgedRoundTripMs = double.IsFinite(measured) && measured >= 0 && measured <= heartbeatTimeout.TotalMilliseconds ? measured : null;
+                lastAcknowledgedSequence = heartbeatSequence;
+                updateHandler?.OnActivationHeartbeatAccepted(accepted.ConnectionEpoch);
+                NotifyUpdateHandler(response.HeartbeatAccepted.UpdateOffer, response.HeartbeatAccepted.UpdatePolicy,
+                    response.HeartbeatAccepted.UpdateConfirmation);
+            }
+
+            // Validate readiness before starting optional children or activation.
+            await SendHeartbeatAsync().ConfigureAwait(false);
+            sessionTask = runForPresenceSession?.Invoke(session, accessToken, owned.Token);
+            while (!owned.IsCancellationRequested)
+            {
+                using var intervalStopping = CancellationTokenSource.CreateLinkedTokenSource(owned.Token);
+                var interval = Task.Delay(heartbeatInterval, _timeProvider, intervalStopping.Token);
+                var winner = await Task.WhenAny(interval, renewalDue).ConfigureAwait(false);
+                owned.Token.ThrowIfCancellationRequested();
+                if (winner == renewalDue)
+                {
+                    intervalStopping.Cancel();
+                    try { await interval.ConfigureAwait(false); }
+                    catch (OperationCanceledException) when (intervalStopping.IsCancellationRequested) { }
+                    if (!accepted.Connected.SupportsAuthenticatedRenewal)
                     {
-                        log("Refreshing the gateway session before the agent token expires.");
+                        log($"Refreshing the gateway session before the agent token expires. {diagnostics.AdmissionSummary}");
                         return;
                     }
 
-                    await SendHeartbeatAsync(++sequence).ConfigureAwait(false);
+                    // The single presence owner acquires fresh authority, then performs
+                    // one bounded request/ACK exchange; children retain their fence.
+                    async Task<(string AccessToken, DateTimeOffset ExpiresAtUtc)> AcquireRenewalTokenAsync()
+                    {
+                        try { return await tokenService.GetAccessTokenAsync(owned.Token).ConfigureAwait(false); }
+                        catch (AgentClientAuthException exception) when (exception.StatusCode == 403 && !exception.ShouldClearCredentials &&
+                            string.Equals(exception.Code, "agent_disabled", StringComparison.Ordinal))
+                        {
+                            // Retire authority immediately; the outer offline auth
+                            // loop can wait for reversible administrative enablement.
+                            throw new RpcException(new Status(StatusCode.PermissionDenied, "Agent disabled during authentication renewal."));
+                        }
+                    }
+                    var fresh = await AwaitIoAsync(AcquireRenewalTokenAsync(), ioBudget).ConfigureAwait(false);
+                    if (fresh.ExpiresAtUtc <= expiresAtUtc || fresh.ExpiresAtUtc <= _timeProvider.GetUtcNow())
+                        throw new RpcException(new Status(StatusCode.Unauthenticated, "Agent token renewal did not extend authority."));
+                    var renewalOperation = Guid.NewGuid();
+                    var renewalSequence = ++sequence;
+                    var frame = Envelope(renewalOperation, renewalSequence);
+                    frame.Renew = new PresenceAuthRenewal { AccessToken = fresh.AccessToken };
+                    await AwaitWriteAsync(frame, ioBudget).ConfigureAwait(false);
+                    if (!await AwaitIoAsync(call.ResponseStream.MoveNext(owned.Token), ioBudget).ConfigureAwait(false) ||
+                        call.ResponseStream.Current.PayloadCase != GatewayFrame.PayloadOneofCase.Renewed)
+                        throw new RpcException(new Status(StatusCode.Unavailable, "Gateway closed before acknowledging authentication renewal."));
+                    var renewed = call.ResponseStream.Current;
+                    ValidateHeartbeatFrame(renewed, accepted, renewalOperation, renewalSequence, diagnostics);
+                    var serverExpiry = renewed.Renewed.ExpiresAtUtc?.ToDateTimeOffset();
+                    if (!GatewayWireProtocol.HasAkkaAuthority(renewed.Renewed.PresenceAuthority) ||
+                        serverExpiry is null || serverExpiry <= expiresAtUtc || serverExpiry <= _timeProvider.GetUtcNow())
+                        throw new RpcException(new Status(StatusCode.DataLoss, "Gateway returned an invalid authentication renewal acknowledgement."));
+                    expiresAtUtc = serverExpiry.Value;
+                    session.SetAccessToken(fresh.AccessToken);
+                    diagnostics.AcknowledgeHeartbeat();
+                    acknowledged();
+                    // Renewal ACK is not a heartbeat RTT sample.
+                    lastAcknowledgedRoundTripMs = null;
+                    lastAcknowledgedSequence = 0;
+                    log($"Presence authentication renewed. {diagnostics.AdmissionSummary}, connectionEpoch={accepted.ConnectionEpoch}, expiresAtUtc={expiresAtUtc:O}.");
+                    renewalDue = ScheduleRenewal();
                 }
-            }
-            catch
-            {
-                // Record transport timing before optional extension shutdown consumes time.
-                diagnostics.SessionFailed();
-                throw;
-            }
-            finally
-            {
-                sessionStopping.Cancel();
-                await StopSessionExtensionsAsync(sessionTask, sessionStopping.Token, stoppingToken).ConfigureAwait(false);
+                else
+                {
+                    await interval.ConfigureAwait(false);
+                    await SendHeartbeatAsync().ConfigureAwait(false);
+                }
             }
         }
         catch
@@ -279,26 +339,60 @@ public sealed class AgentGatewayPresenceClient(
         }
         finally
         {
-            try
-            {
-                await call.RequestStream.CompleteAsync().ConfigureAwait(false);
-            }
-            catch (Exception exception) when (exception is RpcException or HttpRequestException or IOException)
-            {
-                // The server already closed the stream; there is nothing left to acknowledge.
-                log("Gateway stream was already closed before a graceful completion could be sent.");
-            }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-            {
-                // Service shutdown cancels the stream before a graceful completion can be acknowledged.
-                log("Gateway stream completion was canceled by service shutdown.");
-            }
-            catch (OperationCanceledException)
-            {
-                // A token-refresh hand-off may cancel the transport while the old stream is completing.
-                log("Gateway stream was canceled during session hand-off; reconnecting.");
-            }
+            // Abort this exact physical call before any replacement is admitted.
+            // A losing read is never cancelled and reused on the same RPC.
+            owned.Cancel();
+            call.Dispose();
+            await ObserveRetiredIoAsync(pending).ConfigureAwait(false);
+            await StopSessionExtensionsAsync(sessionTask, owned.Token, stoppingToken).ConfigureAwait(false);
         }
+    }
+
+    private static async Task<bool> CompleteWriteAsync(Task operation)
+    {
+        await operation.ConfigureAwait(false);
+        return true;
+    }
+
+    private async Task ObserveRetiredIoAsync(List<Task> pending)
+    {
+        if (pending.Count == 0) return;
+        var all = Task.WhenAll(pending);
+        try
+        {
+            await all.WaitAsync(TimeSpan.FromSeconds(options.PresenceTeardownTimeoutSeconds), _timeProvider, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            log("Retired presence I/O exceeded its abort join budget; late completion remains observed.");
+            ObserveLateTask(all);
+        }
+        catch (Exception)
+        {
+            // Aborted reads and writes are observed here; the initiating failure is preserved.
+        }
+    }
+
+    private static void ObserveLateTask(Task task)
+        => _ = task.ContinueWith(static completed => _ = completed.Exception,
+            CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+
+    private void ValidateOptions()
+    {
+        if (options.PresenceBootstrapTimeoutSeconds is < 1 or > 300 || options.PresenceTeardownTimeoutSeconds is < 1 or > 30 ||
+            options.PresenceStabilityThresholdSeconds is <= 60 or > 3600)
+            throw new InvalidOperationException("Gateway presence budgets must be valid; the stability threshold must exceed 60 seconds.");
+    }
+
+    private static (TimeSpan Interval, TimeSpan Timeout) ValidateHeartbeatPolicy(ConnectAccepted connected, GatewaySessionDiagnostics diagnostics)
+    {
+        if (connected.HeartbeatIntervalSeconds is < 1 or > 300 || connected.HeartbeatTimeoutSeconds < connected.HeartbeatIntervalSeconds ||
+            connected.HeartbeatTimeoutSeconds > 3060)
+        {
+            diagnostics.ProtocolFailure("invalid heartbeat policy");
+            throw new RpcException(new Status(StatusCode.DataLoss, "Gateway returned an invalid heartbeat policy."));
+        }
+        return (TimeSpan.FromSeconds(connected.HeartbeatIntervalSeconds), TimeSpan.FromSeconds(connected.HeartbeatTimeoutSeconds));
     }
 
     private async Task StopSessionExtensionsAsync(
@@ -310,12 +404,13 @@ public sealed class AgentGatewayPresenceClient(
 
         try
         {
-            await sessionTask.WaitAsync(_extensionShutdownTimeout, applicationStoppingToken).ConfigureAwait(false);
+            await sessionTask.WaitAsync(_extensionShutdownTimeout, _timeProvider, applicationStoppingToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (applicationStoppingToken.IsCancellationRequested)
         {
             // Do not delay host shutdown while a non-presence extension is unwinding.
             log("Non-presence gateway extension shutdown was interrupted by service shutdown.");
+            ObserveLateTask(sessionTask);
         }
         catch (OperationCanceledException) when (sessionStoppingToken.IsCancellationRequested)
         {
@@ -325,6 +420,7 @@ public sealed class AgentGatewayPresenceClient(
         {
             // The extension was cancelled above. It must not prevent presence from obtaining a fresh token and re-admitting.
             log($"Non-presence gateway session extension did not stop within {_extensionShutdownTimeout.TotalSeconds:0.###}s; reconnecting presence.");
+            ObserveLateTask(sessionTask);
         }
         catch (Exception exception)
         {
@@ -392,4 +488,24 @@ public sealed record GatewayPresenceSession(
     int TenantId,
     Guid AgentId,
     ulong ConnectionEpoch,
-    Guid ConnectionId);
+    Guid ConnectionId)
+{
+    // Record copies share credentials; credentials are not part of fence equality.
+    private readonly SessionCredential _credential = new();
+
+    /// <summary>Returns the latest server-confirmed credential for an isolated child reconnect.</summary>
+    public string GetAccessToken(string fallback) => Volatile.Read(ref _credential.AccessToken) ?? fallback;
+
+    internal void SetAccessToken(string accessToken) => Volatile.Write(ref _credential.AccessToken, accessToken);
+
+    public bool Equals(GatewayPresenceSession? other) => other is not null &&
+        TenantId == other.TenantId && AgentId == other.AgentId &&
+        ConnectionEpoch == other.ConnectionEpoch && ConnectionId == other.ConnectionId;
+
+    public override int GetHashCode() => HashCode.Combine(TenantId, AgentId, ConnectionEpoch, ConnectionId);
+
+    private sealed class SessionCredential
+    {
+        internal string? AccessToken;
+    }
+}

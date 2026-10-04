@@ -455,7 +455,8 @@ internal sealed class AgentFileGatewaySession(
             AllowSynchronousContinuations = false
         });
     private readonly ConcurrentDictionary<Guid, PendingFileRequest> _requests = new();
-    private long _outboundSequence;
+    private SequencedFileFrameReader? _reader;
+    internal static readonly TimeSpan CancellationEnqueueTimeout = TimeSpan.FromSeconds(1);
     private readonly CancellationTokenSource _completion = new();
     private int _active;
     private int _completed;
@@ -468,7 +469,8 @@ internal sealed class AgentFileGatewaySession(
     }
     private readonly DateTimeOffset _registeredAtUtc = DateTimeOffset.UtcNow;
 
-    public ChannelReader<GatewayFileFrame> Reader => _outbound.Reader;
+    public ChannelReader<GatewayFileFrame> Reader =>
+        LazyInitializer.EnsureInitialized(ref _reader, () => new SequencedFileFrameReader(_outbound.Reader));
     public Guid ConnectionId => connectionId;
     public ulong ConnectionEpoch => connectionEpoch;
     public GatewayFileGatewayAvailability Availability => new(connectionId, connectionEpoch, negotiatedCapabilities, _registeredAtUtc);
@@ -515,6 +517,11 @@ internal sealed class AgentFileGatewaySession(
         try
         {
             await pending.Accepted.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            await CancelAsync(pending, "operator_read_cancelled", CancellationToken.None).ConfigureAwait(false);
+            throw;
         }
         catch
         {
@@ -673,7 +680,6 @@ internal sealed class AgentFileGatewaySession(
                     ClientId = client.AgentId.ToString("D"),
                     ConnectionEpoch = connectionEpoch,
                     ConnectionId = connectionId.ToString("D"),
-                    Sequence = NextOutboundSequence(),
                     TransferChunk = new FileTransferChunk
                     {
                         RequestId = pending.RequestId.ToString("D"),
@@ -693,7 +699,6 @@ internal sealed class AgentFileGatewaySession(
                 ClientId = client.AgentId.ToString("D"),
                 ConnectionEpoch = connectionEpoch,
                 ConnectionId = connectionId.ToString("D"),
-                Sequence = NextOutboundSequence(),
                 TransferChunk = new FileTransferChunk
                 {
                     RequestId = pending.RequestId.ToString("D"),
@@ -735,7 +740,7 @@ internal sealed class AgentFileGatewaySession(
             return true;
         }
 
-        FailPending(pending, new InvalidOperationException("The gateway could not grant the initial file read credit."));
+        FailAndRemove(pending, new InvalidOperationException("The gateway could not grant the initial file read credit."));
         return false;
     }
 
@@ -958,7 +963,6 @@ internal sealed class AgentFileGatewaySession(
                 ClientId = client.AgentId.ToString("D"),
                 ConnectionEpoch = connectionEpoch,
                 ConnectionId = connectionId.ToString("D"),
-                Sequence = NextOutboundSequence(),
                 Dispatch = new FileRequestDispatch
                 {
                     RequestId = pending.RequestId.ToString("D"),
@@ -983,7 +987,21 @@ internal sealed class AgentFileGatewaySession(
 
     private async Task CancelAsync(PendingFileRequest pending, string reason, CancellationToken cancellationToken)
     {
-        if (_requests.TryRemove(pending.RequestId, out _))
+        if (!_requests.TryRemove(pending.RequestId, out _))
+        {
+            return;
+        }
+
+        // The request relinquishes local ownership before transport cleanup.
+        // A stalled outbound consumer must not suppress the caller's original
+        // cancellation, or leave a read completion waiting for a retired request.
+        pending.ReadChunks?.Writer.TryComplete(new OperationCanceledException(reason));
+        pending.Metadata?.TrySetCanceled();
+        pending.Accepted.TrySetCanceled();
+        pending.Completion.TrySetCanceled();
+        using var cleanup = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, CompletionToken);
+        cleanup.CancelAfter(CancellationEnqueueTimeout);
+        try
         {
             await WriteOutboundAsync(new GatewayFileFrame
             {
@@ -992,14 +1010,20 @@ internal sealed class AgentFileGatewaySession(
                 ClientId = client.AgentId.ToString("D"),
                 ConnectionEpoch = connectionEpoch,
                 ConnectionId = connectionId.ToString("D"),
-                Sequence = NextOutboundSequence(),
                 Cancel = new FileRequestCancel
                 {
                     RequestId = pending.RequestId.ToString("D"),
                     AttemptId = pending.AttemptId.ToString("D"),
                     Reason = string.IsNullOrWhiteSpace(reason) ? "cancelled" : reason[..Math.Min(reason.Length, 128)]
                 }
-            }, cancellationToken).ConfigureAwait(false);
+            }, cleanup.Token).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is OperationCanceledException or ChannelClosedException)
+        {
+            // If cancellation cannot reach this stream, retire its owner so
+            // the remote worker is cancelled by stream loss and readiness is
+            // withdrawn. Do not replace the initiating operation's outcome.
+            Complete("file_gateway_cancel_delivery_failed");
         }
     }
 
@@ -1013,8 +1037,11 @@ internal sealed class AgentFileGatewaySession(
         }
     }
 
-    private async ValueTask WriteOutboundAsync(GatewayFileFrame frame, CancellationToken cancellationToken) =>
-        await _outbound.Writer.WriteAsync(frame, cancellationToken).ConfigureAwait(false);
+    private async ValueTask WriteOutboundAsync(GatewayFileFrame frame, CancellationToken cancellationToken)
+    {
+        using var ownedWrite = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, CompletionToken);
+        await _outbound.Writer.WriteAsync(frame, ownedWrite.Token).ConfigureAwait(false);
+    }
 
     private bool TryGrantReadCredit(PendingFileRequest pending, uint availableBytes) =>
         _outbound.Writer.TryWrite(new GatewayFileFrame
@@ -1024,7 +1051,6 @@ internal sealed class AgentFileGatewaySession(
             ClientId = client.AgentId.ToString("D"),
             ConnectionEpoch = connectionEpoch,
             ConnectionId = connectionId.ToString("D"),
-            Sequence = NextOutboundSequence(),
             Credit = new FileTransferCredit
             {
                 RequestId = pending.RequestId.ToString("D"),
@@ -1032,8 +1058,6 @@ internal sealed class AgentFileGatewaySession(
                 AvailableBytes = availableBytes
             }
         });
-
-    private ulong NextOutboundSequence() => checked((ulong)Interlocked.Increment(ref _outboundSequence));
 
     private bool TryGet(string requestId, string attemptId, out PendingFileRequest pending)
     {
@@ -1105,4 +1129,31 @@ internal sealed class AgentFileGatewaySession(
         public uint NextPageIndex { get; set; }
         public bool ListCompleted { get; set; }
     }
+}
+
+/// <summary>
+/// Assigns wire sequence at the one outbound consumer, after bounded FIFO
+/// enqueue. Producers may race or wait for capacity without reserving sequence
+/// numbers that a later producer could put on the wire first.
+/// </summary>
+internal sealed class SequencedFileFrameReader(ChannelReader<GatewayFileFrame> inner) : ChannelReader<GatewayFileFrame>
+{
+    private ulong _sequence;
+    public override Task Completion => inner.Completion;
+    public override bool CanCount => inner.CanCount;
+    public override int Count => inner.Count;
+
+    public override bool TryRead(out GatewayFileFrame item)
+    {
+        if (!inner.TryRead(out item!))
+        {
+            return false;
+        }
+
+        item.Sequence = checked(++_sequence);
+        return true;
+    }
+
+    public override ValueTask<bool> WaitToReadAsync(CancellationToken cancellationToken = default) =>
+        inner.WaitToReadAsync(cancellationToken);
 }

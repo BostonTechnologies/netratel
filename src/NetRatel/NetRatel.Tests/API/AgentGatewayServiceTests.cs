@@ -39,14 +39,23 @@ public sealed class AgentGatewayServiceTests(ITestOutputHelper output)
         var directAgent = Guid.NewGuid();
         var defaultProxyAgent = Guid.NewGuid();
         var proxyAgent = Guid.NewGuid();
-        var renewingAgent = Guid.NewGuid();
+        var functionalAgent = Guid.NewGuid();
+        var lateTerminalAgent = Guid.NewGuid();
+        var interruptedAgent = Guid.NewGuid();
+        var presenceAborters = new ConcurrentDictionary<Guid, Action>();
+        using var credentials = new AgentGatewayRenewalTestCredentials();
+        var expiry = DateTimeOffset.UtcNow.AddHours(2);
+        var directToken = credentials.CreateToken(new(tenantId, directAgent), expiry, DateTimeOffset.UtcNow.AddMinutes(-1));
+        var defaultToken = credentials.CreateToken(new(tenantId, defaultProxyAgent), expiry, DateTimeOffset.UtcNow.AddMinutes(-1));
+        var proxyToken = credentials.CreateToken(new(tenantId, proxyAgent), expiry, DateTimeOffset.UtcNow.AddMinutes(-1));
         var identities = new Dictionary<string, Guid>
         {
-            ["direct-test-token"] = directAgent,
-            ["default-proxy-test-token"] = defaultProxyAgent,
-            ["proxy-test-token"] = proxyAgent,
-            ["short-test-token"] = renewingAgent,
-            ["renewed-test-token"] = renewingAgent
+            [directToken] = directAgent,
+            [defaultToken] = defaultProxyAgent,
+            [proxyToken] = proxyAgent,
+            ["functional-agent-catalog-entry"] = functionalAgent,
+            ["late-terminal-catalog-entry"] = lateTerminalAgent,
+            ["interrupted-agent-catalog-entry"] = interruptedAgent
         };
         var proxyEndpoint = RequiredFixtureSetting("NETRATEL_GATEWAY_PROXY_ENDPOINT");
         var defaultProxyEndpoint = RequiredFixtureSetting("NETRATEL_GATEWAY_PROXY_DEFAULT_ENDPOINT");
@@ -54,59 +63,33 @@ public sealed class AgentGatewayServiceTests(ITestOutputHelper output)
         using var certificate = X509Certificate2.CreateFromPem(File.ReadAllText(
             RequiredFixtureSetting("NETRATEL_GATEWAY_PROXY_CA_PATH")));
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(230));
-        using var host = await BuildHostAsync(tenantId, directAgent, null, port, identities);
+        using var host = await BuildHostAsync(tenantId, directAgent, null, port, identities, credentials, presenceAborters);
         var router = host.Services.GetRequiredService<IClientPresenceRouter>();
-        using var renewing = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token);
-        var tokens = new ShortThenNormalTokenService();
-        var logs = new ConcurrentQueue<string>();
-        var sessions = new ConcurrentQueue<(GatewayPresenceSession Session, CancellationToken Lifetime)>();
-        var secondAdmission = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var agent = new AgentGatewayPresenceClient(
-            new GatewayClientOptions { Endpoint = proxyEndpoint }, tokens, tenantId, renewingAgent,
-            "transport-test", [], logs.Enqueue,
-            runForPresenceSession: (session, _, lifetime) =>
-            {
-                sessions.Enqueue((session, lifetime));
-                if (sessions.Count == 2)
-                    secondAdmission.TrySetResult();
-                return new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously).Task.WaitAsync(lifetime);
-            },
-            createHttpHandler: _ => CreateTrustedProxyHandler(certificate));
-        var renewingRun = agent.RunAsync(renewing.Token);
         try
         {
-            // Both streams retain their original server-issued connection identity
-            // through thirteen 15-second intervals, beyond the observed 60/180s failures.
+            // Existing A/B profiles retain one stream across thirteen heartbeat
+            // intervals. The additional probe uses the real terminal/file clients,
+            // signed Agent JWT renewal and the same disposable HTTPS route.
             await Task.WhenAll(
                 SustainNativeDuplexAsync("direct-h2c", $"http://127.0.0.1:{port}", tenantId,
-                    directAgent, "direct-test-token", new FixtureRouteHandler(new SocketsHttpHandler { UseProxy = false }), router, deadline.Token),
+                    directAgent, directToken, new FixtureRouteHandler(new SocketsHttpHandler { UseProxy = false }), router, deadline.Token),
                 SustainNativeDuplexAsync("default-proxy-https", defaultProxyEndpoint, tenantId,
-                    defaultProxyAgent, "default-proxy-test-token", CreateTrustedProxyHandler(certificate), router,
+                    defaultProxyAgent, defaultToken, CreateTrustedProxyHandler(certificate), router,
                     deadline.Token, expectReadDeadline: true),
                 SustainNativeDuplexAsync("proxy-https", proxyEndpoint, tenantId,
-                    proxyAgent, "proxy-test-token", CreateTrustedProxyHandler(certificate), router, deadline.Token),
-                secondAdmission.Task.WaitAsync(TimeSpan.FromSeconds(100), deadline.Token));
-
-            var admitted = sessions.ToArray();
-            admitted.Should().HaveCount(2);
-            admitted[0].Lifetime.IsCancellationRequested.Should().BeTrue();
-            admitted[1].Lifetime.IsCancellationRequested.Should().BeFalse();
-            admitted[1].Session.ConnectionEpoch.Should().Be(admitted[0].Session.ConnectionEpoch + 1);
-            admitted[1].Session.ConnectionId.Should().NotBe(admitted[0].Session.ConnectionId);
-            tokens.RequestCount.Should().Be(2);
-            logs.Should().Contain(message => message.Contains("Refreshing the gateway session", StringComparison.Ordinal));
-            logs.Should().NotContain(message => message.StartsWith("Gateway session failed", StringComparison.Ordinal));
-            var snapshot = await router.GetSnapshotAsync(new ClientKey(tenantId, renewingAgent), deadline.Token);
-            snapshot.Status.Should().Be(ClientPresenceStatus.Online);
-            snapshot.ConnectionEpoch.Should().Be(checked((long)admitted[1].Session.ConnectionEpoch));
-            snapshot.LastAcceptedSequence.Should().BeGreaterThan(5);
-            snapshot.Source.Should().Be("akka");
-            output.WriteLine("Native runtime renewed its two-minute test token once, fenced the old session, and retained its normal-lifetime session with positive heartbeat ACKs.");
+                    proxyAgent, proxyToken, CreateTrustedProxyHandler(certificate), router, deadline.Token),
+                AgentGatewayRenewalTerminalTests.RunContinuityAsync(host, proxyEndpoint,
+                    () => CreateTrustedProxyHandler(certificate), credentials, tenantId, functionalAgent,
+                    TimeSpan.FromSeconds(195), deadline.Token, output.WriteLine),
+                GatewayFunctionalInterruptionProbe.RunLateTerminalDefaultDeadlineAsync(host, defaultProxyEndpoint,
+                    () => CreateTrustedProxyHandler(certificate), credentials, tenantId, lateTerminalAgent, deadline.Token, output.WriteLine),
+                GatewayFunctionalInterruptionProbe.RunControlledInterruptionAsync(host, proxyEndpoint,
+                    () => CreateTrustedProxyHandler(certificate), credentials, tenantId, interruptedAgent,
+                    () => presenceAborters[interruptedAgent](), deadline.Token, output.WriteLine));
+            output.WriteLine("Real terminal retained process, state, registration and generation through two signed JWT renewals; terminal I/O/resize and integrity-checked file probes remained usable across 195 seconds of corrected HTTPS ingress.");
         }
         finally
         {
-            renewing.Cancel();
-            await renewingRun.WaitAsync(TimeSpan.FromSeconds(10));
             await host.StopAsync();
         }
     }
@@ -234,19 +217,6 @@ public sealed class AgentGatewayServiceTests(ITestOutputHelper output)
             var response = await base.SendAsync(request, cancellationToken);
             response.Version.Should().Be(HttpVersion.Version20);
             return response;
-        }
-    }
-
-    private sealed class ShortThenNormalTokenService : NetRatel.Application.ClientAuth.IAgentTokenService
-    {
-        private int _requests;
-        public int RequestCount => Volatile.Read(ref _requests);
-        public Task<(string AccessToken, DateTimeOffset ExpiresAtUtc)> GetAccessTokenAsync(CancellationToken ct)
-        {
-            ct.ThrowIfCancellationRequested();
-            var first = Interlocked.Increment(ref _requests) == 1;
-            return Task.FromResult((first ? "short-test-token" : "renewed-test-token",
-                DateTimeOffset.UtcNow.Add(first ? TimeSpan.FromMinutes(2) : TimeSpan.FromHours(1))));
         }
     }
 
@@ -393,7 +363,9 @@ public sealed class AgentGatewayServiceTests(ITestOutputHelper output)
         Guid agentId,
         IClientPresenceRouter? router,
         int? networkPort = null,
-        IReadOnlyDictionary<string, Guid>? bearerAgents = null)
+        IReadOnlyDictionary<string, Guid>? bearerAgents = null,
+        AgentGatewayRenewalTestCredentials? renewalCredentials = null,
+        ConcurrentDictionary<Guid, Action>? presenceAborters = null)
     {
         var builder = Host.CreateDefaultBuilder();
         builder.ConfigureWebHost(web =>
@@ -438,10 +410,13 @@ public sealed class AgentGatewayServiceTests(ITestOutputHelper output)
                 services.AddScoped<IClientUpdateActivationAuthority>(serviceProvider =>
                     serviceProvider.GetRequiredService<ClientUpdateAuthorityService>());
                 services.AddSingleton(NullLogger<AgentGatewayService>.Instance);
+                if (renewalCredentials is not null)
+                    AgentGatewayRenewalTerminalTests.AddTerminalAndRenewalServices(services, renewalCredentials);
             });
 
             web.Configure(app =>
             {
+                if (renewalCredentials is not null) app.UseAuthentication();
                 app.Use(async (context, next) =>
                 {
                     var authenticatedAgent = agentId;
@@ -449,6 +424,17 @@ public sealed class AgentGatewayServiceTests(ITestOutputHelper output)
                             context.Request.Headers.Authorization.ToString().Replace("Bearer ", "", StringComparison.Ordinal),
                             out authenticatedAgent))
                     {
+                        if (renewalCredentials is not null &&
+                            AgentGatewayIdentityResolver.TryResolve(context.User, out var signedIdentity, out _) &&
+                            signedIdentity is not null && signedIdentity.TenantId == tenantId &&
+                            bearerAgents.Values.Contains(signedIdentity.AgentId))
+                        {
+                            if (context.Request.Path == "/netratel.gateway.v1.AgentGateway/Connect")
+                                presenceAborters?.AddOrUpdate(signedIdentity.AgentId,
+                                    _ => context.Abort, (_, _) => context.Abort);
+                            await next(context);
+                            return;
+                        }
                         context.Response.StatusCode = 401;
                         return;
                     }
@@ -467,7 +453,15 @@ public sealed class AgentGatewayServiceTests(ITestOutputHelper output)
                 });
                 app.UseRouting();
                 app.UseAuthorization();
-                app.UseEndpoints(endpoints => endpoints.MapGrpcService<AgentGatewayService>());
+                app.UseEndpoints(endpoints =>
+                {
+                    endpoints.MapGrpcService<AgentGatewayService>();
+                    if (renewalCredentials is not null)
+                    {
+                        endpoints.MapGrpcService<AgentTerminalGatewayService>();
+                        endpoints.MapGrpcService<AgentFileGatewayService>();
+                    }
+                });
             });
         });
 
