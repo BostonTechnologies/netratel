@@ -1,5 +1,5 @@
 using System.Threading.Channels;
-using FluentAssertions;
+using AwesomeAssertions;
 using NetRatel.Application.Requests;
 using NetRatel.Infrastructure.Requests;
 using Xunit;

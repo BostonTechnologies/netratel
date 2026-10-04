@@ -4,7 +4,7 @@ using System.Runtime.Versioning;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using FluentAssertions;
+using AwesomeAssertions;
 using NetRatel.API.Services;
 using Xunit;
 

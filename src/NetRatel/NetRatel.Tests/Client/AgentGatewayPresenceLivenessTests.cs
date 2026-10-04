@@ -1,6 +1,6 @@
 using System.Threading.Channels;
 using Google.Protobuf.WellKnownTypes;
-using FluentAssertions;
+using AwesomeAssertions;
 using Grpc.Core;
 using NetRatel.AgentGateway.Contracts.V1;
 using NetRatel.Application.ClientAuth;

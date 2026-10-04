@@ -16,6 +16,16 @@ using NetRatel.Infrastructure.Artifacts;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.Services;
 
+if (args is ["--bounded-process-silent-child", var silentPidFile])
+{
+    // Publish readiness without shell initialization or artifact-only JIT work.
+    // Holding here leaves both redirected pipes open without producing output.
+    File.WriteAllText(silentPidFile + ".tmp", Environment.ProcessId.ToString());
+    File.Move(silentPidFile + ".tmp", silentPidFile);
+    Thread.Sleep(TimeSpan.FromSeconds(30));
+    return;
+}
+
 if (args is ["--bounded-process-tree-parent", var pidFile])
 {
     RunBoundedProcessTree(pidFile);

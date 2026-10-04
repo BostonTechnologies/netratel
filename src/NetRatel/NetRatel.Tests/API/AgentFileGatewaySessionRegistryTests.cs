@@ -1,5 +1,5 @@
 using System.Threading.Channels;
-using FluentAssertions;
+using AwesomeAssertions;
 using Google.Protobuf;
 using NetRatel.API.Gateway;
 using NetRatel.AgentGateway.Contracts.V1;

@@ -1,4 +1,4 @@
-using FluentAssertions;
+using AwesomeAssertions;
 using NetRatel.Web.Services.RemoteSupport;
 using Xunit;
 

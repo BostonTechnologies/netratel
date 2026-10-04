@@ -1,5 +1,5 @@
 using Akka.Actor;
-using FluentAssertions;
+using AwesomeAssertions;
 using NetRatel.Akka.Configuration;
 using NetRatel.Akka.Presence;
 using NetRatel.Application.Presence;

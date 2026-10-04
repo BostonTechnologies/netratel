@@ -1,6 +1,6 @@
 using System.Diagnostics;
 using System.Reflection;
-using FluentAssertions;
+using AwesomeAssertions;
 using NetRatel.Client.Service;
 using Xunit;
 
@@ -45,20 +45,26 @@ public sealed class BoundedProcessRunnerTests
     public async Task ChildWithoutOutput_TimeoutTerminatesItWithinTheBound()
     {
         var pidFile = NewPidFile();
+        using var cancellation = new CancellationTokenSource();
         try
         {
             var startInfo = SleepingChild(pidFile);
             var elapsed = Stopwatch.StartNew();
-            Func<Task> run = () => BoundedProcessRunner.RunAsync(startInfo, TimeSpan.FromSeconds(3), "wait for silent transient child");
+            var running = BoundedProcessRunner.RunAsync(startInfo, TimeSpan.FromSeconds(3),
+                "wait for silent transient child", cancellation.Token);
+            var pids = await WaitForPidsAsync(pidFile, running);
+            pids.Should().ContainSingle();
+            pids.Should().OnlyContain(pid => IsAlive(pid), "the native silent child must publish readiness while alive before timeout");
+            Func<Task> run = () => running;
 
             await run.Should().ThrowAsync<TimeoutException>().WithMessage("*wait for silent transient child*");
 
+            await AssertStoppedAsync(pids);
             elapsed.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(7));
-            var pid = int.Parse(await File.ReadAllTextAsync(pidFile));
-            await AssertStoppedAsync([pid]);
         }
         finally
         {
+            cancellation.Cancel();
             CleanupRecordedProcesses(pidFile);
         }
     }
@@ -142,11 +148,13 @@ public sealed class BoundedProcessRunnerTests
         }
     }
 
-    private static ProcessStartInfo SleepingChild(string pidFile) => Shell(
-        $"printf '%s\\n' \"$$\" > '{QuotePath(pidFile + ".tmp")}'; mv '{QuotePath(pidFile + ".tmp")}' '{QuotePath(pidFile)}'; exec sleep 30",
-        $"[IO.File]::WriteAllText('{QuotePath(pidFile + ".tmp")}', [string]$PID); [IO.File]::Move('{QuotePath(pidFile + ".tmp")}', '{QuotePath(pidFile)}'); Start-Sleep -Seconds 30");
+    private static ProcessStartInfo SleepingChild(string pidFile) =>
+        NativeProcessProbe("--bounded-process-silent-child", pidFile);
 
-    private static ProcessStartInfo ProcessTreeProbe(string pidFile)
+    private static ProcessStartInfo ProcessTreeProbe(string pidFile) =>
+        NativeProcessProbe("--bounded-process-tree-parent", pidFile);
+
+    private static ProcessStartInfo NativeProcessProbe(string mode, string pidFile)
     {
         var repository = new DirectoryInfo(AppContext.BaseDirectory);
         while (repository.Parent is not null &&
@@ -159,7 +167,7 @@ public sealed class BoundedProcessRunnerTests
         var apphost = Path.Combine(repository.FullName, "tools", "NetRatel.ClientArtifactCrashProbe",
             "bin", configuration, "net10.0",
             "NetRatel.ClientArtifactCrashProbe" + (OperatingSystem.IsWindows() ? ".exe" : ""));
-        Assert.True(File.Exists(apphost), $"Process-tree probe is missing: {apphost}");
+        Assert.True(File.Exists(apphost), $"Native transient-process probe is missing: {apphost}");
         var startInfo = new ProcessStartInfo(apphost)
         {
             UseShellExecute = false,
@@ -167,7 +175,7 @@ public sealed class BoundedProcessRunnerTests
             RedirectStandardError = true,
             CreateNoWindow = true
         };
-        startInfo.ArgumentList.Add("--bounded-process-tree-parent");
+        startInfo.ArgumentList.Add(mode);
         startInfo.ArgumentList.Add(pidFile);
         return startInfo;
     }

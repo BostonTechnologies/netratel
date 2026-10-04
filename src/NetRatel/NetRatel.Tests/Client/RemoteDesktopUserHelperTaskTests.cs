@@ -1,4 +1,4 @@
-using FluentAssertions;
+using AwesomeAssertions;
 using NetRatel.Client.Service.RemoteDesktop;
 using System.Runtime.InteropServices;
 using System.Xml;

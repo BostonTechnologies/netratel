@@ -1,4 +1,4 @@
-using FluentAssertions;
+using AwesomeAssertions;
 using NetRatel.Application.Operations;
 using NetRatel.Shared.Operations;
 using Xunit;

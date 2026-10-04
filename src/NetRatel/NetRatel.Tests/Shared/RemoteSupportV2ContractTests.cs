@@ -1,6 +1,6 @@
 using System.Text.Json;
 using System.Text;
-using FluentAssertions;
+using AwesomeAssertions;
 using NetRatel.AgentGateway.Contracts.V1;
 using NetRatel.Shared.Contracts.RemoteSupport;
 using Xunit;
