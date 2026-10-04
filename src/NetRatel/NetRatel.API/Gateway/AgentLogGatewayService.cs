@@ -79,11 +79,18 @@ public sealed class AgentLogGatewayService(
 
             using var activity = StartStreamActivity(hello);
             NetRatelAkkaTelemetry.LogSessionOpened();
+            var acceptedWritten = false;
             try
             {
                 await GatewayDuplexSession.RunAsync(ReadInboundAsync, WriteResponsesAsync,
                     lifetime.Token, registration.CompletionToken,
                     logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<AgentLogGatewayService>.Instance, context.GetHttpContext().Abort).ConfigureAwait(false);
+
+                // Replacement before actual admission delivery must retain its
+                // explicit fenced outcome after the pumps have joined.
+                if (!acceptedWritten && !context.CancellationToken.IsCancellationRequested &&
+                    (!registration.IsCurrent || queryRegistration?.IsCurrent == false))
+                    throw new AgentGatewayRegistrationFencedException();
 
                 async Task WriteResponsesAsync(CancellationToken cancellationToken)
                 {
@@ -91,6 +98,7 @@ public sealed class AgentLogGatewayService(
                     if (!registration.IsCurrent || queryRegistration?.IsCurrent == false) throw new AgentGatewayRegistrationFencedException();
                     await responseStream.WriteAsync(CreateAccepted(session, hello), cancellationToken).ConfigureAwait(false);
                     cancellationToken.ThrowIfCancellationRequested();
+                    acceptedWritten = true;
                     if (queryRegistration is not null)
                     {
                         await WriteOutboundAsync(queryRegistration, responseStream, cancellationToken).ConfigureAwait(false);

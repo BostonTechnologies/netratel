@@ -238,6 +238,7 @@ public sealed class AgentRemoteSupportGatewayService(
     private async Task RequirePresenceAsync(ClientKey client, Guid connectionId, ulong epoch, CancellationToken cancellationToken)
     {
         var presence = await presenceRouter.GetSnapshotAsync(client, cancellationToken).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
         if (presence.Status != ClientPresenceStatus.Online || presence.ConnectionId != connectionId || presence.ConnectionEpoch != checked((long)epoch))
         {
             throw new RpcException(new Status(StatusCode.Aborted, "The remote-support gateway session is fenced by the active presence connection."));
@@ -253,6 +254,7 @@ public sealed class AgentRemoteSupportGatewayService(
         ulong sequence = 0;
         await foreach (var envelope in reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
         {
+            cancellationToken.ThrowIfCancellationRequested();
             await responseStream.WriteAsync(new GatewayRemoteSupportFrame
             {
                 ProtocolVersion = NetRatelAkkaOptions.ProtocolVersion,
@@ -306,7 +308,8 @@ public sealed class AgentRemoteSupportGatewayService(
                         }
                         : null
                 }
-            }).ConfigureAwait(false);
+            }, cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
         }
     }
 

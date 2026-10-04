@@ -29,7 +29,10 @@ public enum PresenceMessageDisposition
     ConnectionMismatch = 4,
     NoActiveSession = 5,
     AuthenticationExpired = 6,
-    InvalidAuthenticationRenewal = 7
+    InvalidAuthenticationRenewal = 7,
+    AdmissionExpired = 8,
+    AdmissionCancelled = 9,
+    AdmissionCapacityExceeded = 10
 }
 
 public interface IClientPresenceMessage
@@ -46,7 +49,9 @@ public sealed record StartGatewayPresenceSession(
     IReadOnlyList<string> Capabilities,
     string? LegacySpacetimeIdentity,
     DateTimeOffset ReceivedAtUtc,
-    DateTimeOffset? AuthenticationExpiresAtUtc = null) : IClientPresenceMessage;
+    DateTimeOffset? AuthenticationExpiresAtUtc = null,
+    DateTimeOffset? AdmissionExpiresAtUtc = null,
+    bool ProvisionalAdmission = false) : IClientPresenceMessage;
 
 public sealed record GatewayPresenceSessionStarted(
     ClientKey Client,
@@ -71,7 +76,8 @@ public sealed record EndGatewayPresenceSession(
     Guid ConnectionId,
     long ConnectionEpoch,
     string Reason,
-    DateTimeOffset ReceivedAtUtc) : IClientPresenceMessage;
+    DateTimeOffset ReceivedAtUtc,
+    bool CancelPendingAdmission = false) : IClientPresenceMessage;
 
 public sealed record PresenceMessageResult(
     ClientKey Client,

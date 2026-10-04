@@ -49,6 +49,7 @@ internal static class GatewayFunctionalInterruptionProbe
         void Log(string message)
         {
             if (logs.Count < 64) logs.Enqueue(message);
+            report?.Invoke(message);
             if (message.StartsWith("Gateway session failed:", StringComparison.Ordinal))
             {
                 Interlocked.Increment(ref failures);
@@ -121,13 +122,24 @@ internal static class GatewayFunctionalInterruptionProbe
                 return;
             }
 
+            var heartbeatInterval = TimeSpan.FromSeconds(host.Services.GetRequiredService<NetRatel.Akka.Configuration.NetRatelAkkaOptions>().HeartbeatIntervalSeconds);
+            using var recoveryBudget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            // An idle native owner detects a reset at its next heartbeat. Give
+            // this phase its own negotiated detection + configured cleanup,
+            // retry/admission budget, rather than consuming the initial probe's
+            // budget before the deliberate interruption has even happened.
+            recoveryBudget.CancelAfter(heartbeatInterval + TimeSpan.FromSeconds(
+                options.PresenceTeardownTimeoutSeconds + options.PresenceBootstrapTimeoutSeconds + 2));
+            var interruptedAt = Stopwatch.GetTimestamp();
             interruptPresence!();
-            await firstFailure.Task.WaitAsync(operationBudget.Token);
-            var successor = await owners.Reader.ReadAsync(operationBudget.Token);
+            await firstFailure.Task.WaitAsync(recoveryBudget.Token);
+            var detectionAge = Stopwatch.GetElapsedTime(interruptedAt);
+            detectionAge.Should().BeLessThan(heartbeatInterval + TimeSpan.FromSeconds(options.PresenceTeardownTimeoutSeconds + 2));
+            var successor = await owners.Reader.ReadAsync(recoveryBudget.Token);
             successor.ConnectionId.Should().NotBe(originalOwner.ConnectionId);
             successor.ConnectionEpoch.Should().BeGreaterThan(originalOwner.ConnectionEpoch);
-            await WaitForReadinessAsync(terminals, files, key, successor, operationBudget.Token);
-            var snapshot = await router.GetSnapshotAsync(key, operationBudget.Token);
+            await WaitForReadinessAsync(terminals, files, key, successor, recoveryBudget.Token);
+            var snapshot = await router.GetSnapshotAsync(key, recoveryBudget.Token);
             snapshot.Status.Should().Be(ClientPresenceStatus.Online);
             snapshot.ConnectionId.Should().Be(successor.ConnectionId);
             snapshot.ConnectionEpoch.Should().Be(checked((long)successor.ConnectionEpoch));
@@ -139,14 +151,14 @@ internal static class GatewayFunctionalInterruptionProbe
             // issues fresh read/list requests and explicitly opens a new shell;
             // it never resends old terminal input or claims PTY continuity.
             var replacement = await OpenAndProbeAsync(terminals, files, key, shell,
-                directory.FullName, path, bytes, operationBudget.Token);
+                directory.FullName, path, bytes, recoveryBudget.Token);
             replacement.SessionId.Should().NotBe(originalTerminal.SessionId);
             liveSessionId = replacement.SessionId;
             liveGeneration = replacement.Generation;
             ownerCount.Should().Be(2);
             failures.Should().Be(1);
             logs.Should().NotContain(message => message.StartsWith("Agent token acquisition failed", StringComparison.Ordinal));
-            report?.Invoke($"functional.controlled-interruption initiatingFailures={failures} presenceOwners={ownerCount} oldTerminalOutcome={interruptedTerminal.State} oldTerminalReason={interruptedTerminal.FailureCode} replacementTerminal=explicitly-opened fileListingAndIntegrity=passed");
+            report?.Invoke($"functional.controlled-interruption resetDetectedSeconds={detectionAge.TotalSeconds:F1} initiatingFailures={failures} presenceOwners={ownerCount} oldTerminalOutcome={interruptedTerminal.State} oldTerminalReason={interruptedTerminal.FailureCode} replacementTerminal=explicitly-opened fileListingAndIntegrity=passed");
         }
         finally
         {

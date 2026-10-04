@@ -10,6 +10,8 @@ internal sealed class GatewayPresenceTestClock : TimeProvider
     public override long TimestampFrequency => TimeSpan.TicksPerSecond;
     public override DateTimeOffset GetUtcNow() { lock (_gate) return _utcNow; }
     public override long GetTimestamp() { lock (_gate) return _timestamp; }
+    internal int ActiveTimerCount { get { lock (_gate) return _timers.Count; } }
+    internal void AdjustUtc(TimeSpan adjustment) { lock (_gate) _utcNow += adjustment; }
     internal bool HasTimer(TimeSpan delay)
     {
         lock (_gate) return _timers.Any(timer => timer.DueAt == _timestamp + delay.Ticks);

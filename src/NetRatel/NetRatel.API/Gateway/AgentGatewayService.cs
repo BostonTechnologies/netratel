@@ -40,6 +40,7 @@ public sealed class AgentGatewayService(
             throw new RpcException(new Status(StatusCode.PermissionDenied, identityError));
         }
 
+        var admissionExpiresAtUtc = timeProvider.GetUtcNow().AddSeconds(options.GatewayAdmissionTimeoutSeconds);
         using var policyCancellation = new CancellationTokenSource(
             TimeSpan.FromSeconds(options.GatewayAdmissionTimeoutSeconds), timeProvider);
         AgentGatewayAuthenticationLease? authenticationLease = null;
@@ -54,6 +55,7 @@ public sealed class AgentGatewayService(
         var operationalAuthority = Authority;
         var environmentName = environment.EnvironmentName;
         GatewayPresenceSessionStarted? session = null;
+        var startRequested = false;
         Guid? activationAttemptId = null;
         Guid? activationReleaseId = null;
         var activationReadmitted = false;
@@ -81,7 +83,8 @@ public sealed class AgentGatewayService(
                 cancellationToken.ThrowIfCancellationRequested();
             }
             var receivedAtUtc = timeProvider.GetUtcNow();
-            var startedSession = await StartPresenceSessionAsync(
+            startRequested = true;
+            session = await StartPresenceSessionAsync(
                 new StartGatewayPresenceSession(
                     client,
                     connectionId,
@@ -90,15 +93,24 @@ public sealed class AgentGatewayService(
                     helloFrame.Hello.AgentVersion,
                     helloFrame.Hello.Capabilities.ToArray(),
                     NullIfWhiteSpace(helloFrame.Hello.LegacySpacetimeIdentity),
-                    receivedAtUtc, AuthenticationExpiresAtUtc: authenticationExpiresAtUtc),
+                    receivedAtUtc, AuthenticationExpiresAtUtc: authenticationExpiresAtUtc,
+                    AdmissionExpiresAtUtc: admissionExpiresAtUtc, ProvisionalAdmission: true),
                 operationalAuthority,
                 environmentName,
                 cancellationToken).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
-            session = startedSession;
             if (session.Disposition is not (PresenceMessageDisposition.Accepted or PresenceMessageDisposition.Duplicate))
                 throw new RpcException(new Status(StatusCode.Aborted, "The presence admission is no longer authorized."));
-            policyCancellation.CancelAfter(options.HeartbeatTimeout);
+            // Negotiated first-heartbeat liveness cannot extend the absolute
+            // bootstrap deadline for this still-provisional admission.
+            var admissionRemaining = admissionExpiresAtUtc - timeProvider.GetUtcNow();
+            if (admissionRemaining <= TimeSpan.Zero)
+            {
+                policyCancellation.Cancel();
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+            policyCancellation.CancelAfter(admissionRemaining < options.HeartbeatTimeout
+                ? admissionRemaining : options.HeartbeatTimeout);
             if (authenticationExpiresAtUtc is { } expiresAtUtc && authenticationLeases is not null)
             {
                 authenticationLease = authenticationLeases.Register(client, connectionId,
@@ -358,7 +370,7 @@ public sealed class AgentGatewayService(
         {
             authorityRetirement.Dispose();
             authenticationLease?.Dispose();
-            if (session is not null)
+            if (startRequested)
             {
                 try
                 {
@@ -366,9 +378,9 @@ public sealed class AgentGatewayService(
                         new EndGatewayPresenceSession(
                             client,
                             connectionId,
-                            session.ConnectionEpoch,
+                            session?.ConnectionEpoch ?? 0,
                             disconnectReason,
-                            timeProvider.GetUtcNow()),
+                            timeProvider.GetUtcNow(), CancelPendingAdmission: true),
                         operationalAuthority,
                         environmentName).ConfigureAwait(false);
                 }
@@ -381,7 +393,7 @@ public sealed class AgentGatewayService(
                         "Failed to close gateway presence session without fallback. tenantId={TenantId}, agentId={AgentId}, epoch={Epoch}, authority={Authority}",
                         client.TenantId,
                         client.AgentId,
-                        session.ConnectionEpoch,
+                        session?.ConnectionEpoch ?? 0,
                         responseAuthority);
                     context.Status = new Status(
                         StatusCode.Unavailable,

@@ -110,6 +110,57 @@ public sealed class AgentGatewayLifetimeTests
         finally { fixture.ReleaseWrite.TrySetResult(); }
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task CancelledAdmission_AlwaysRetiresTheRequestedExactOwner(bool replyArrivesAfterCancellation)
+    {
+        var fixture = new Fixture();
+        var admissionEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        CancellationToken admissionCancellation = default;
+        var allowReply = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.Router.StartOverride = async (request, cancellationToken) =>
+        {
+            admissionCancellation = cancellationToken;
+            admissionEntered.TrySetResult();
+            if (replyArrivesAfterCancellation)
+                await allowReply.Task; // Model a successful actor reply racing its cancelled waiter.
+            else
+                await allowReply.Task.WaitAsync(cancellationToken); // Model a cancelled Akka Ask with a queued Start.
+            return new GatewayPresenceSessionStarted(request.Client, request.ConnectionId, 1,
+                PresenceMessageDisposition.Accepted, request.ReceivedAtUtc);
+        };
+        using var host = await BuildHostAsync(fixture);
+        using var channel = CreateChannel(host);
+        using var call = new PresenceGrpcGateway.AgentGatewayClient(channel).Connect();
+        try
+        {
+            await call.RequestStream.WriteAsync(new AgentFrame
+            {
+                ProtocolVersion = "1.0", TenantId = fixture.Client.TenantId,
+                ClientId = fixture.Client.AgentId.ToString("D"), ConnectionId = Guid.NewGuid().ToString("D"),
+                OperationId = Guid.NewGuid().ToString("D"), Hello = new ConnectHello { AgentVersion = "test" }
+            });
+            await admissionEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            call.Dispose();
+            using (var cancellationBudget = new CancellationTokenSource(TimeSpan.FromSeconds(2)))
+            {
+                while (!admissionCancellation.IsCancellationRequested)
+                    await Task.Delay(TimeSpan.FromMilliseconds(20), cancellationBudget.Token);
+            }
+            if (replyArrivesAfterCancellation) allowReply.TrySetResult();
+            await fixture.HandlerFinished.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            fixture.Router.Started!.ProvisionalAdmission.Should().BeTrue();
+            fixture.Router.Started.AdmissionExpiresAtUtc.Should().Be(fixture.Clock.GetUtcNow().AddSeconds(30));
+            fixture.Router.Ended.Should().NotBeNull("cancelling an Ask cannot retract its queued actor admission");
+            fixture.Router.Ended!.ConnectionId.Should().Be(fixture.Router.Started.ConnectionId);
+            fixture.Router.Ended.CancelPendingAdmission.Should().BeTrue();
+            fixture.Router.Ended.ConnectionEpoch.Should().Be(replyArrivesAfterCancellation ? 1 : 0);
+            fixture.WritesCompleted.Should().Be(0,"a cancelled admission cannot publish a late Connected frame");
+        }
+        finally { allowReply.TrySetResult(); }
+    }
+
     private static GrpcChannel CreateChannel(IHost host) => GrpcChannel.ForAddress("http://localhost",
         new GrpcChannelOptions { HttpHandler = host.GetTestServer().CreateHandler() });
 
@@ -224,9 +275,11 @@ public sealed class AgentGatewayLifetimeTests
         private ulong _lastSequence;
         public StartGatewayPresenceSession? Started { get; private set; }
         public EndGatewayPresenceSession? Ended { get; private set; }
+        public Func<StartGatewayPresenceSession, CancellationToken, Task<GatewayPresenceSessionStarted>>? StartOverride { get; set; }
         public Task<GatewayPresenceSessionStarted> StartSessionAsync(StartGatewayPresenceSession message, CancellationToken cancellationToken)
         {
             Started = message;
+            if (StartOverride is not null) return StartOverride(message, cancellationToken);
             return Task.FromResult(new GatewayPresenceSessionStarted(message.Client, message.ConnectionId, 1,
                 PresenceMessageDisposition.Accepted, message.ReceivedAtUtc));
         }

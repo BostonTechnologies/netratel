@@ -12,17 +12,28 @@ teardown to 5 seconds. After admission, the advertised heartbeat policy bounds
 blocked writes and ACK waits. Accepted heartbeats renew server inactivity;
 duplicate frames and late frames from an offline owner cannot renew it.
 The existing supported heartbeat configuration range remains compatible.
-There is no fixed overall presence-stream deadline.
+There is no fixed overall presence-stream deadline. Actor admission is provisional
+until the first validated heartbeat commits ownership. An absolute admission
+deadline, exact-attempt cancellation and bounded pending state prevent a late
+cancelled admission from displacing its successor.
 
 Token renewal has an independent timer. Negotiated `presence-auth-renewal-v1`
 reauthenticates the same logical owner using a fresh signed Agent JWT, the same
 tenant/agent/fence, a new ordered operation, strict credential expiry, and current
 enabled/unrevoked enrollment. Akka commits only the validated expiry and sequence;
 JWT bytes never enter actor state. The ACK confirms credential rotation before
-later capability reconnects use it. The active terminal keeps its shell process,
+later capability reconnects use it. The native cache uses the earlier of the
+response lifetime hint and readable JWT expiry, so fractional timestamps cannot
+return the predecessor credential at the next acknowledged renewal boundary.
+The renewal timer rounds up to milliseconds and rechecks its absolute due time
+before authentication, including after a backward wall-clock adjustment.
+The active terminal keeps its shell process,
 generation and registration through successful routine renewal. Mixed-version
 peers keep the existing replacement/fencing outcome. A blocked ACK deliberately
 retires its owned call rather than treating a coincident reset as successful renewal.
+A timer becoming due during healthy I/O allows the single pending exchange to
+finish within the original watchdog, one heartbeat interval, and half the
+remaining authenticated lifetime; renewal then has priority over another heartbeat.
 
 Authentication expiry is serializable actor state with an exact-owner keyed timer.
 Capability streams on another API replica verify the authoritative snapshot,

@@ -118,27 +118,68 @@ public sealed class AgentGatewayPresenceClient(
         var pending = new List<Task>();
         Task? sessionTask = null;
         Task? renewalDue = null;
+        DateTimeOffset renewalAtUtc = default;
         var ioBudget = TimeSpan.FromSeconds(options.PresenceBootstrapTimeoutSeconds);
+        var renewalIoGrace = TimeSpan.Zero;
+        long? renewalGraceStarted = null;
+
+        Task WaitForRenewalAsync()
+        {
+            var delay = renewalAtUtc - _timeProvider.GetUtcNow();
+            // System timers have millisecond granularity. Rounding up and checking
+            // UTC again when due avoids requesting a still-cached credential.
+            if (delay > TimeSpan.Zero)
+                delay = TimeSpan.FromMilliseconds(Math.Ceiling(delay.TotalMilliseconds));
+            return Task.Delay(delay > TimeSpan.Zero ? delay : TimeSpan.Zero, _timeProvider, owned.Token);
+        }
 
         async Task<T> AwaitIoAsync<T>(Task<T> operation, TimeSpan budget, bool watchRenewal = false)
         {
             pending.Add(operation);
+            var started = _timeProvider.GetTimestamp();
+            TimeSpan RemainingBudget() => budget - _timeProvider.GetElapsedTime(started);
             try
             {
-                if (watchRenewal && renewalDue is not null && !operation.IsCompleted)
+                while (watchRenewal && renewalDue is not null && !operation.IsCompleted)
                 {
-                    var winner = await Task.WhenAny(operation, renewalDue).WaitAsync(budget, _timeProvider, owned.Token).ConfigureAwait(false);
+                    var remainingWait = RemainingBudget();
+                    if (remainingWait <= TimeSpan.Zero) throw new TimeoutException();
+                    var winner = await Task.WhenAny(operation, renewalDue).WaitAsync(remainingWait, _timeProvider, owned.Token).ConfigureAwait(false);
                     owned.Token.ThrowIfCancellationRequested();
                     if (winner == renewalDue && !operation.IsCompleted)
                     {
-                        // Cancelling MoveNext invalidates the RPC. Never reuse its reader
-                        // or misclassify a coincident black hole as successful renewal.
-                        log($"Token renewal became due while presence I/O was pending; retiring the owned stream. {diagnostics.AdmissionSummary}");
+                        if (_timeProvider.GetUtcNow() < renewalAtUtc)
+                        {
+                            renewalDue = WaitForRenewalAsync();
+                            continue;
+                        }
+                        // A due timer is a scheduling boundary, not evidence that
+                        // healthy I/O is stalled. Let the one pending exchange
+                        // finish within its original watchdog, one heartbeat
+                        // interval and half the remaining authenticated lifetime.
+                        var remaining = RemainingBudget();
+                        renewalGraceStarted ??= _timeProvider.GetTimestamp();
+                        var graceRemaining = renewalIoGrace - _timeProvider.GetElapsedTime(renewalGraceStarted.Value);
+                        var authorityMargin = (expiresAtUtc - _timeProvider.GetUtcNow()).Ticks / 2;
+                        var grace = TimeSpan.FromTicks(Math.Max(0, Math.Min(graceRemaining.Ticks,
+                            Math.Min(remaining.Ticks, authorityMargin))));
+                        log($"Token renewal became due while presence I/O was pending. {diagnostics.AdmissionSummary}");
+                        if (grace > TimeSpan.Zero)
+                        {
+                            try { return await operation.WaitAsync(grace, _timeProvider, owned.Token).ConfigureAwait(false); }
+                            catch (TimeoutException) { owned.Token.ThrowIfCancellationRequested(); }
+                        }
+                        // A cancelled MoveNext invalidates this RPC. Retire it;
+                        // never start a competing reader or reuse the old call.
                         diagnostics.FailureReason("renewal_io_blocked");
                         throw new RpcException(new Status(StatusCode.DeadlineExceeded, "Presence I/O blocked token renewal."));
                     }
+                    break;
                 }
-                return await operation.WaitAsync(budget, _timeProvider, owned.Token).ConfigureAwait(false);
+                if (operation.IsCompleted) return await operation.ConfigureAwait(false);
+                var remainingBudget = RemainingBudget();
+                if (remainingBudget <= TimeSpan.Zero) throw new TimeoutException();
+                return await operation.WaitAsync(remainingBudget, _timeProvider, owned.Token).ConfigureAwait(false);
             }
             catch (TimeoutException)
             {
@@ -197,6 +238,7 @@ public sealed class AgentGatewayPresenceClient(
             }
             var (heartbeatInterval, heartbeatTimeout) = ValidateHeartbeatPolicy(accepted.Connected, diagnostics);
             ioBudget = heartbeatTimeout;
+            renewalIoGrace = heartbeatInterval;
             NotifyUpdateHandler(accepted.Connected.UpdateOffer, accepted.Connected.UpdatePolicy, confirmation: null);
             updateHandler?.OnPresenceConnected(accepted.ConnectionEpoch);
             var acceptedConnectionId = Guid.Parse(accepted.ConnectionId);
@@ -211,6 +253,7 @@ public sealed class AgentGatewayPresenceClient(
 
             Task ScheduleRenewal()
             {
+                renewalGraceStarted = null;
                 var now = _timeProvider.GetUtcNow();
                 var delay = expiresAtUtc.AddMinutes(-1) - now;
                 if (delay <= TimeSpan.Zero && expiresAtUtc > now)
@@ -218,7 +261,8 @@ public sealed class AgentGatewayPresenceClient(
                 // Short test/negotiated leases leave half their remaining lifetime
                 // for fresh authentication. Already-expired legacy fake tokens still
                 // prove a first heartbeat before the reconnect path is exercised.
-                return Task.Delay(delay > TimeSpan.Zero ? delay : heartbeatInterval, _timeProvider, owned.Token);
+                renewalAtUtc = now + (delay > TimeSpan.Zero ? delay : heartbeatInterval);
+                return WaitForRenewalAsync();
             }
             renewalDue = ScheduleRenewal();
 
@@ -272,13 +316,18 @@ public sealed class AgentGatewayPresenceClient(
             {
                 using var intervalStopping = CancellationTokenSource.CreateLinkedTokenSource(owned.Token);
                 var interval = Task.Delay(heartbeatInterval, _timeProvider, intervalStopping.Token);
-                var winner = await Task.WhenAny(interval, renewalDue).ConfigureAwait(false);
+                await Task.WhenAny(interval, renewalDue).ConfigureAwait(false);
                 owned.Token.ThrowIfCancellationRequested();
-                if (winner == renewalDue)
+                if (renewalDue.IsCompleted)
                 {
                     intervalStopping.Cancel();
                     try { await interval.ConfigureAwait(false); }
                     catch (OperationCanceledException) when (intervalStopping.IsCancellationRequested) { }
+                    if (_timeProvider.GetUtcNow() < renewalAtUtc)
+                    {
+                        renewalDue = WaitForRenewalAsync();
+                        continue;
+                    }
                     if (!accepted.Connected.SupportsAuthenticatedRenewal)
                     {
                         log($"Refreshing the gateway session before the agent token expires. {diagnostics.AdmissionSummary}");

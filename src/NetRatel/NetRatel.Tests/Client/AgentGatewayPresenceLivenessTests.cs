@@ -134,6 +134,8 @@ public sealed class AgentGatewayPresenceLivenessTests
             await WaitUntilAsync(() => clock.HasTimer(TimeSpan.FromSeconds(2)));
             clock.Advance(TimeSpan.FromSeconds(2));
             await renewalBlocked.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await WaitUntilAsync(() => clock.HasTimer(TimeSpan.FromSeconds(5)));
+            clock.Advance(TimeSpan.FromSeconds(5));
             await WaitUntilAsync(() => transport.First!.Disposed);
             transport.First!.MaximumActiveReads.Should().Be(1);
             transport.First.HeartbeatWrites.Should().Be(1);
@@ -184,6 +186,97 @@ public sealed class AgentGatewayPresenceLivenessTests
         await run.WaitAsync(TimeSpan.FromSeconds(2));
         clock.Advance(TimeSpan.FromMinutes(1));
         transport.Attempts.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task HealthyAckArrivingAfterRenewalTimer_PreservesOwnerAndRenewsWithoutCompetingReader()
+    {
+        var clock = new GatewayPresenceTestClock();
+        var transport = new ScriptedTransport("later-ack", supportsRenewal: true, clock);
+        using var stopping = new CancellationTokenSource();
+        var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var due = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var renewed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var logs = new List<string>();
+        var agent = new AgentGatewayPresenceClient(new GatewayClientOptions { Endpoint = "https://gateway.test" },
+            new ClockTokenService(clock, TimeSpan.FromSeconds(67)), 7, Guid.NewGuid(), "test", [], message =>
+            {
+                logs.Add(message);
+                if (message.StartsWith("Token renewal became due", StringComparison.Ordinal)) due.TrySetResult();
+                if (message.StartsWith("Presence authentication renewed", StringComparison.Ordinal)) renewed.TrySetResult();
+            }, runForPresenceSession: (_, _, token) =>
+            {
+                ready.TrySetResult();
+                return Task.Delay(Timeout.InfiniteTimeSpan, token);
+            }, timeProvider: clock, nextRandom: () => 0.5, createCall: transport.Open);
+        var run = agent.RunAsync(stopping.Token);
+        try
+        {
+            await ready.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await WaitUntilAsync(() => clock.HasTimer(TimeSpan.FromSeconds(5)));
+            clock.Advance(TimeSpan.FromSeconds(5));
+            await transport.Blocked.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            clock.Advance(TimeSpan.FromSeconds(2));
+            await due.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await WaitUntilAsync(() => clock.HasTimer(TimeSpan.FromSeconds(5)));
+            transport.First!.ReleaseHeartbeatAck();
+            await renewed.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            transport.First.Disposed.Should().BeFalse();
+            transport.First.MaximumActiveReads.Should().Be(1);
+            transport.Attempts.Should().Be(1);
+            logs.Should().NotContain(message => message.StartsWith("Gateway session failed", StringComparison.Ordinal));
+        }
+        finally
+        {
+            stopping.Cancel();
+            await run.WaitAsync(TimeSpan.FromSeconds(2));
+        }
+    }
+
+    [Theory]
+    [InlineData(1L)]
+    [InlineData(TimeSpan.TicksPerSecond)]
+    public async Task EarlyRenewalTimer_RechecksAbsoluteDueTimeWithoutRequestingCachedAuthority(long setbackTicks)
+    {
+        var clock = new GatewayPresenceTestClock();
+        var transport = new ScriptedTransport("healthy", supportsRenewal: true, clock);
+        var tokens = new ClockTokenService(clock, TimeSpan.FromSeconds(65));
+        using var stopping = new CancellationTokenSource();
+        GatewayPresenceSession? session = null;
+        var renewed = 0;
+        var agent = new AgentGatewayPresenceClient(new GatewayClientOptions { Endpoint = "https://gateway.test" },
+            tokens, 7, Guid.NewGuid(), "test", [], message =>
+            {
+                if (message.StartsWith("Presence authentication renewed", StringComparison.Ordinal))
+                    Interlocked.Increment(ref renewed);
+            }, runForPresenceSession: (owner, _, token) =>
+            {
+                session = owner;
+                return Task.Delay(Timeout.InfiniteTimeSpan, token);
+            }, timeProvider: clock, nextRandom: () => 0.5, createCall: transport.Open);
+        var run = agent.RunAsync(stopping.Token);
+        try
+        {
+            await WaitUntilAsync(() => session is not null && clock.HasTimer(TimeSpan.FromSeconds(5)));
+            clock.AdjustUtc(TimeSpan.FromTicks(-setbackTicks));
+            clock.Advance(TimeSpan.FromSeconds(5));
+            var remaining = TimeSpan.FromMilliseconds(Math.Ceiling(TimeSpan.FromTicks(setbackTicks).TotalMilliseconds));
+            await WaitUntilAsync(() => clock.HasTimer(remaining));
+            tokens.Requests.Should().Be(1, "a due timer cannot override the credential's absolute refresh boundary");
+            Volatile.Read(ref renewed).Should().Be(0);
+            session!.GetAccessToken("fallback").Should().Be("token-1");
+            transport.First!.Disposed.Should().BeFalse();
+            clock.Advance(remaining);
+            await WaitUntilAsync(() => Volatile.Read(ref renewed) == 1);
+            tokens.Requests.Should().Be(2);
+            transport.Attempts.Should().Be(1);
+            session.GetAccessToken("fallback").Should().Be("token-2");
+        }
+        finally
+        {
+            stopping.Cancel();
+            await run.WaitAsync(TimeSpan.FromSeconds(2));
+        }
     }
 
     [Fact]
@@ -281,6 +374,7 @@ public sealed class AgentGatewayPresenceLivenessTests
     private sealed class ClockTokenService(TimeProvider clock, TimeSpan lifetime) : IAgentTokenService
     {
         private int _requests;
+        internal int Requests => Volatile.Read(ref _requests);
         public Task<(string AccessToken, DateTimeOffset ExpiresAtUtc)> GetAccessTokenAsync(CancellationToken ct)
         {
             ct.ThrowIfCancellationRequested();
@@ -326,6 +420,8 @@ public sealed class AgentGatewayPresenceLivenessTests
         private int _activeReads;
         private int _activeWrites;
         private int _heartbeatWrites;
+        private GatewayFrame? _pendingHeartbeatAck;
+        internal void ReleaseHeartbeatAck() => _responses.Writer.TryWrite(_pendingHeartbeatAck!);
         internal int ActiveReads => Volatile.Read(ref _activeReads);
         internal int ActiveWrites => Volatile.Read(ref _activeWrites);
         internal int HeartbeatWrites => Volatile.Read(ref _heartbeatWrites);
@@ -386,6 +482,8 @@ public sealed class AgentGatewayPresenceLivenessTests
                     var count = Interlocked.Increment(ref _heartbeatWrites);
                     if (_blockedState == "first-ack" || (_blockedState == "later-ack" && count > 1))
                     {
+                        response.HeartbeatAccepted = new HeartbeatAccepted { PresenceAuthority = "akka" };
+                        _pendingHeartbeatAck = response;
                         _blocked.TrySetResult();
                         return;
                     }
