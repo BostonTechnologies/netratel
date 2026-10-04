@@ -1176,6 +1176,117 @@ class RuntimeSelectorRetirementTests(unittest.TestCase):
         self.assertEqual([], existing, "Known retired runtime implementation paths must remain deleted.")
 
 
+class OidcUpgradeChannelTests(unittest.TestCase):
+    script_path = ROOT / "tools/ci/smoke-postgresql-oidc-upgrade.sh"
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="netratel-upgrade-channel-")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        (self.root / "tools/ci").mkdir(parents=True)
+        shutil.copy2(ROOT / "tools/ci/product-version.py", self.root / "tools/ci/product-version.py")
+        shutil.copy2(ROOT / "Directory.Build.props", self.root / "Directory.Build.props")
+        self.assertIsNotNone(shutil.which("jq"), "The upgrade fixture requires jq.")
+
+        source = self.script_path.read_text()
+        function = source.split("exercise_server_offered_client_update() {\n", 1)[1]
+        self.selection = function.split("  access_token=", 1)[0]
+        self.catalog_and_tenant = function[function.index('  release_response="$(curl'):]
+        self.catalog_and_tenant = self.catalog_and_tenant.split('  attempt_id=""', 1)[0]
+        client_channel = re.search(
+            r"(?m)^Environment=NetRatelCLIENT__Client__AutoUpdate__Channel=.*$", function)
+        self.assertIsNotNone(client_channel, "The native Client unit must declare its update channel.")
+        self.client_channel_line = client_channel.group(0)
+
+        self.bin = self.root / "bin"
+        self.bin.mkdir()
+        curl = self.bin / "curl"
+        curl.write_text("""#!/usr/bin/env python3
+import json, os, pathlib, sys
+args = sys.argv[1:]
+url = args[-1]
+method = args[args.index('--request') + 1] if '--request' in args else 'GET'
+with open(os.environ['REQUEST_LOG'], 'a') as log:
+    log.write(json.dumps({'method': method, 'url': url}) + '\\n')
+if '/client-updates/releases?' in url and method == 'GET':
+    print(pathlib.Path(os.environ['RELEASE_CATALOG']).read_text())
+elif url.endswith('/api/v1/tenants/42') and method == 'GET':
+    print(json.dumps({'name': 'Synthetic upgrade tenant', 'autoUpdate': False}))
+elif url.endswith('/api/v1/tenants/42') and method == 'PUT':
+    pathlib.Path(os.environ['TENANT_REQUEST']).write_text(args[args.index('--data') + 1])
+else:
+    raise SystemExit('Unexpected upgrade probe request: ' + method + ' ' + url)
+""")
+        curl.chmod(0o755)
+
+    def run_update_probe(self, suffix, releases):
+        props_path = self.root / "Directory.Build.props"
+        props = ET.parse(props_path)
+        props.find(".//VersionPrefix").text = "0.1.0"
+        props.find(".//VersionSuffix").text = suffix
+        props.write(props_path)
+        catalog = self.root / "releases.json"
+        catalog.write_text(json.dumps(releases))
+        tenant_request = self.root / "tenant-request.json"
+        unit = self.root / "client-unit.txt"
+        request_log = self.root / "requests.jsonl"
+        for output in (tenant_request, unit, request_log):
+            output.unlink(missing_ok=True)
+        probe = (
+            'set -euo pipefail\n'
+            'api_url=http://synthetic.invalid\nupgrade_tenant_id=42\n'
+            'exercise_update_probe() {\n' + self.selection +
+            'access_token=synthetic\n' +
+            'cat > "$CLIENT_UNIT" <<UNIT\n' + self.client_channel_line + '\nUNIT\n' +
+            self.catalog_and_tenant + '\n}\nexercise_update_probe\n'
+        )
+        result = subprocess.run(
+            ["bash", "-c", probe], cwd=self.root, capture_output=True, text=True,
+            env={**os.environ, "PATH": str(self.bin) + os.pathsep + os.environ["PATH"],
+                 "NETRATEL_RELEASE_SOURCE_ROOT": str(self.root),
+                 "RELEASE_CATALOG": str(catalog), "TENANT_REQUEST": str(tenant_request),
+                 "CLIENT_UNIT": str(unit), "REQUEST_LOG": str(request_log)},
+            timeout=10)
+        self.assertTrue(request_log.exists(), result.stderr)
+        requests = [json.loads(line) for line in request_log.read_text().splitlines()]
+        return result, unit.read_text().strip().split("=", 2)[2], tenant_request, requests
+
+    def assert_candidate_channel(self, suffix, version, channel):
+        result, client_channel, tenant_request, requests = self.run_update_probe(
+            suffix, [{"version": version, "channel": channel, "enabled": True}])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(client_channel.lower(), channel)
+        tenant = json.loads(tenant_request.read_text())
+        self.assertIs(tenant["autoUpdate"], True)
+        self.assertEqual(tenant["autoUpdateChannel"], channel)
+        self.assertEqual(tenant["autoUpdateTargetVersion"], version)
+        self.assertEqual(tenant["name"], "Synthetic upgrade tenant")
+        self.assertEqual([request["method"] for request in requests], ["GET", "GET", "PUT"])
+
+    def test_stable_candidate_uses_stable_catalog_tenant_and_client_channel(self):
+        self.assert_candidate_channel("", "0.1.0", "stable")
+
+    def test_prerelease_candidate_uses_prerelease_catalog_tenant_and_client_channel(self):
+        self.assert_candidate_channel("rc.20", "0.1.0-rc.20", "prerelease")
+
+    def test_opposite_channel_disabled_or_other_version_cannot_enable_tenant_updates(self):
+        for suffix, version, channel in (("", "0.1.0", "stable"),
+                                         ("rc.20", "0.1.0-rc.20", "prerelease")):
+            for mismatch in ("opposite_channel", "disabled", "other_version"):
+                release = {"version": version, "channel": channel, "enabled": True}
+                if mismatch == "opposite_channel":
+                    release["channel"] = "prerelease" if channel == "stable" else "stable"
+                elif mismatch == "disabled":
+                    release["enabled"] = False
+                else:
+                    release["version"] = "9.9.9"
+                with self.subTest(version=version, mismatch=mismatch):
+                    result, _, tenant_request, requests = self.run_update_probe(suffix, [release])
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertFalse(tenant_request.exists(), "Rejected releases must not update tenant policy.")
+                    self.assertEqual([request["method"] for request in requests], ["GET"])
+
+
 class ProductVersionTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="netratel-version-tests-")
