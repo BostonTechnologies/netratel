@@ -68,9 +68,7 @@ public sealed class ServiceLinkProfileService(OrchestratorDbContext db, IService
     public async Task<string> GetAccessTokenAsync(ServiceLinkResolvedProfile profile, string scope, CancellationToken ct)
     {
         var current = await ResolveAsync(profile.LocalTenantId, profile.LinkId, scope, ct);
-        Require(current.LinkRevision == profile.LinkRevision && current.GrantHash == profile.GrantHash && current.PeerInstanceId == profile.PeerInstanceId && current.PeerTenantId == profile.PeerTenantId &&
-            current.ProfileRevision == profile.ProfileRevision && current.CredentialRevision == profile.CredentialRevision,
-            "profile-revision-conflict", "Resolve the current credential for the same captured semantic target.", 409);
+        RequireCurrentSnapshot(profile, current);
         var key = "netratel-service/" + Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join("\n", new object?[] { current.LinkId, current.LinkRevision, current.GrantHash,
             current.LocalTenantId, current.PeerInstanceId, current.PeerTenantId, current.Peer.ApiBaseUrl, current.Credential.Issuer, current.Credential.Audience,
             current.Credential.ClientId, scope, current.ProfileRevision, current.CredentialRevision, current.SourceInstanceId, current.SourceNamespaceId }))));
@@ -83,11 +81,37 @@ public sealed class ServiceLinkProfileService(OrchestratorDbContext db, IService
         // cannot extend our conservative reuse deadline past the actual lifetime.
         var requestStartedAt = clock.GetUtcNow();
         var issued = await transport.AcquireTokenAsync(current.Credential, scope, ct);
+        // A completed disable, unlink or grant change during token HTTP must deny
+        // this token before it enters the cache or escapes to a business sender.
+        RequireCurrentSnapshot(current, await ResolveAsync(current.LocalTenantId, current.LinkId, scope, ct));
         var reuseUntil = requestStartedAt.AddSeconds(Math.Min(45, issued.ExpiresIn - 5));
         var remaining = reuseUntil - clock.GetUtcNow();
         if (remaining > TimeSpan.Zero)
             cache.Set(key, new CachedAccessToken(issued.AccessToken, reuseUntil), remaining);
         return issued.AccessToken;
+    }
+
+    internal static void RequireCurrentSnapshot(ServiceLinkResolvedProfile captured, ServiceLinkResolvedProfile current)
+    {
+        Require(current.LinkId == captured.LinkId && current.LocalTenantId == captured.LocalTenantId &&
+            current.LinkRevision == captured.LinkRevision && current.GrantHash == captured.GrantHash &&
+            current.PeerInstanceId == captured.PeerInstanceId && current.PeerTenantId == captured.PeerTenantId &&
+            current.SourceInstanceId == captured.SourceInstanceId && current.SourceNamespaceId == captured.SourceNamespaceId &&
+            ServiceLinkCanonicalJson.HashObject(current.Peer) == ServiceLinkCanonicalJson.HashObject(captured.Peer) &&
+            ServiceLinkCanonicalJson.HashObject(current.Grant) == ServiceLinkCanonicalJson.HashObject(captured.Grant) &&
+            ServiceLinkCanonicalJson.HashObject(current.Credential with { ClientSecret = "", CredentialRevision = 1, Scopes = Set(current.Credential.Scopes) }) ==
+                ServiceLinkCanonicalJson.HashObject(captured.Credential with { ClientSecret = "", CredentialRevision = 1, Scopes = Set(captured.Credential.Scopes) }),
+            "profile-semantic-conflict", "The current approved profile differs from the captured semantic target.", 403);
+        if (current.ProfileRevision != captured.ProfileRevision || current.CredentialRevision != captured.CredentialRevision)
+        {
+            // Only a completed credential successor for this unchanged approval can
+            // use the caller's existing single refresh. Sender state changes cannot.
+            Require(current.ProfileRevision > captured.ProfileRevision && current.CredentialRevision > captured.CredentialRevision,
+                "profile-state-conflict", "The current profile change is not a credential successor.", 403);
+            throw new ServiceLinkProtocolException(409, "profile-revision-conflict", "Resolve the current credential for the same captured semantic target.");
+        }
+        Require(current.Credential.ClientSecret == captured.Credential.ClientSecret,
+            "profile-state-conflict", "The current credential no longer matches its captured revision.", 403);
     }
 
     public async Task<ServiceLinkCallbackAuthorization> GetCallbackAuthorizationAsync(string linkId, int tenantId, string peerInstanceId,

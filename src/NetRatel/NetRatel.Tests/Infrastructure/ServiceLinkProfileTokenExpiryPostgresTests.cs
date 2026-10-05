@@ -155,7 +155,7 @@ public sealed partial class ServiceLinkProfileTokenExpiryPostgresTests(PostgreSq
             string keyDirectory, ProfileClock clock, ServicePublicSettingsEffective settings, ServiceDirectionalCredential outbound)
         {
             this.app = app; this.client = client; profileScope = scope; this.keyDirectory = keyDirectory;
-            this.outbound = outbound; Clock = clock;
+            this.outbound = outbound; Clock = clock; publicSettings = settings;
             profiles = new(scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>(), new FixturePublicSettings(settings),
                 app.Services.GetRequiredService<IDataProtectionProvider>(), new ServiceLinkTransport(client, Options.Create(settings.Linking)),
                 app.Services.GetRequiredService<IMemoryCache>(), clock);
@@ -167,7 +167,7 @@ public sealed partial class ServiceLinkProfileTokenExpiryPostgresTests(PostgreSq
         public int PeerHttpRequests => Volatile.Read(ref peerHttpRequests);
         public int TokenRequests => Volatile.Read(ref tokenRequests);
         public int InvalidTokenRequests => Volatile.Read(ref invalidTokenRequests);
-        public Task<string> GetTokenAsync() => profiles.GetAccessTokenAsync(Profile, OutboundScope, CancellationToken.None);
+        public Task<string> GetTokenAsync(CancellationToken ct = default) => profiles.GetAccessTokenAsync(Profile, OutboundScope, ct);
         public void AdvanceDuringNextResponse(TimeSpan elapsed) => Interlocked.Exchange(ref nextResponseAdvanceTicks, elapsed.Ticks);
 
         public static async Task<TokenProfileFixture> CreateAsync(PostgreSqlPersistenceFixture postgres, int expiresIn)
@@ -327,7 +327,9 @@ public sealed partial class ServiceLinkProfileTokenExpiryPostgresTests(PostgreSq
             }
             Clock.Advance(TimeSpan.FromTicks(Interlocked.Exchange(ref nextResponseAdvanceTicks, 0)));
             var lifetime = ExpiresInJson is null ? "" : ",\"expires_in\":" + ExpiresInJson;
-            return Results.Text("{\"access_token\":\"synthetic-token-" + sequence + "\",\"token_type\":\"Bearer\"" + lifetime + "}", "application/json");
+            var body = "{\"access_token\":\"synthetic-token-" + sequence + "\",\"token_type\":\"Bearer\"" + lifetime + "}";
+            var held = Interlocked.Exchange(ref nextHeldResponse, null);
+            return held is null ? Results.Text(body, "application/json") : held.Prepare(body);
         }
 
         private static ServiceLinkMetadata Metadata(string product, string instance, string web, string api, string issuer,
@@ -346,6 +348,7 @@ public sealed partial class ServiceLinkProfileTokenExpiryPostgresTests(PostgreSq
 
         public async ValueTask DisposeAsync()
         {
+            Interlocked.Exchange(ref nextHeldResponse, null)?.Release();
             await profileScope.DisposeAsync();
             client.Dispose();
             await app.DisposeAsync();

@@ -26,7 +26,9 @@ public sealed class ServiceLinkIdentityStore(OrchestratorDbContext db, IOptionsM
 {
     public async Task<ServiceLinkIdentityDto> GetAsync(CancellationToken ct)
     {
-        var row = await db.Set<ServiceLinkRuntimeIdentity>().SingleOrDefaultAsync(x => x.Id == 1, ct);
+        // This is a durable observation, not an identity-map lookup. A receiver scope may
+        // already track the singleton while a different human scope adopts its producer.
+        var row = await db.Set<ServiceLinkRuntimeIdentity>().AsNoTracking().SingleOrDefaultAsync(x => x.Id == 1, ct);
         var configured = identity.CurrentValue.InstanceId;
         Guid configuredId = default;
         Require(string.IsNullOrEmpty(configured) || Guid.TryParseExact(configured, "D", out configuredId) && configuredId != Guid.Empty && configuredId.ToString("D") == configured,
@@ -42,17 +44,24 @@ public sealed class ServiceLinkIdentityStore(OrchestratorDbContext db, IOptionsM
                 // A competing first request may have established the singleton.
                 // Reuse its committed identity; never generate a second installation.
                 db.Entry(row).State = EntityState.Detached;
-                row = await db.Set<ServiceLinkRuntimeIdentity>().SingleOrDefaultAsync(x => x.Id == 1, ct);
+                row = await db.Set<ServiceLinkRuntimeIdentity>().AsNoTracking().SingleOrDefaultAsync(x => x.Id == 1, ct);
                 if (row is null) throw;
             }
+            // Initialization may have raced another committed update. Do not return the
+            // originally added tracked entity as the current durable snapshot.
+            row = await db.Set<ServiceLinkRuntimeIdentity>().AsNoTracking().SingleAsync(x => x.Id == 1, ct);
         }
         Require(configuredId == Guid.Empty || row.InstanceId == configuredId, "identity-configuration-drift",
             "The configured installation identity differs from the persisted installation. Restore its approved identity.", 503);
-        if (!string.IsNullOrEmpty(linking.CurrentValue.SourceInstanceId))
+        var configuredSource = linking.CurrentValue.SourceInstanceId;
+        if (!string.IsNullOrEmpty(configuredSource))
         {
-            Require(Guid.TryParseExact(linking.CurrentValue.SourceInstanceId, "D", out var source) && source.ToString("D") == linking.CurrentValue.SourceInstanceId,
+            Require(Guid.TryParseExact(configuredSource, "D", out var source) && source.ToString("D") == configuredSource,
                 "identity-configuration-invalid", "The configured producer identity must be a canonical GUID.", 503);
-            await Adopt(row, source, "deployment", row.Revision, ct);
+            var mutable = await db.Set<ServiceLinkRuntimeIdentity>().SingleAsync(x => x.Id == 1, ct);
+            await db.Entry(mutable).ReloadAsync(ct);
+            await Adopt(mutable, source, "deployment", row.Revision, ct);
+            row = await db.Set<ServiceLinkRuntimeIdentity>().AsNoTracking().SingleAsync(x => x.Id == 1, ct);
         }
         return Dto(row);
     }
@@ -66,6 +75,9 @@ public sealed class ServiceLinkIdentityStore(OrchestratorDbContext db, IOptionsM
         _ = await GetAsync(ct);
         await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct);
         var row = await db.Set<ServiceLinkRuntimeIdentity>().SingleAsync(x => x.Id == 1, ct);
+        // A previous Get/init in this scope may still track an older source/revision.
+        // Refresh inside the existing transaction before validating the mutation's CAS.
+        await db.Entry(row).ReloadAsync(ct);
         var actorId = actor.FindFirstValue("netratel_principal_id") ?? actor.FindFirstValue(ClaimTypes.NameIdentifier) ?? actor.FindFirstValue("sub");
         Require(!string.IsNullOrEmpty(actorId), "administrator-required", "The approving principal is unidentified.", 403);
         await Adopt(row, sourceInstanceId, actorId!, expectedRevision, ct);
