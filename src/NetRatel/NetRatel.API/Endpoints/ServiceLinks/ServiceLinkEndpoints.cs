@@ -134,7 +134,7 @@ public static class ServiceLinkEndpoints
         { return Results.Problem(statusCode: error.StatusCode, title: error.Message, extensions: new Dictionary<string, object?> { ["code"] = error.Code }); }
         catch (Exception error) when (error is JsonException or DecoderFallbackException or ArgumentException or FormatException)
         { return Results.Problem(statusCode: 400, title: "The service-link request is invalid.", extensions: new Dictionary<string, object?> { ["code"] = "invalid-request" }); }
-        catch (Exception error) when (error is DbUpdateException or ServiceClientConflictException)
+        catch (Exception error) when (error is DbUpdateException or ServiceClientConflictException || ServiceLinkDatabaseConflict.IsAbortedTransaction(error))
         { return Results.Problem(statusCode: 409, title: "The durable registration or profile changed. Refresh the current state.", extensions: new Dictionary<string, object?> { ["code"] = "service-link-conflict" }); }
         catch (CryptographicException)
         { return Results.Problem(statusCode: 503, title: "The protected link state is unavailable. Restore the shared key ring.", extensions: new Dictionary<string, object?> { ["code"] = "protected-state-unavailable" }); }

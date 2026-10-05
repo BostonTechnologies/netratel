@@ -204,7 +204,10 @@ public sealed partial class ServiceLinkCoordinator
         return await AdminStatus(a, ct);
     }
 
-    public async Task<ServiceLinkExchangeResponse> ExchangeAsync(string attemptId, ServiceLinkExchangeRequest request, CancellationToken ct)
+    public Task<ServiceLinkExchangeResponse> ExchangeAsync(string attemptId, ServiceLinkExchangeRequest request, CancellationToken ct) =>
+        RetryAbortedDatabaseTransaction(coordinator => coordinator.ExchangeOnceAsync(attemptId, request, ct), ct);
+
+    private async Task<ServiceLinkExchangeResponse> ExchangeOnceAsync(string attemptId, ServiceLinkExchangeRequest request, CancellationToken ct)
     {
         var a = await Attempt(attemptId, ct); ReviewProof(a, request);
         Require(request.GrantHash == a.GrantHash && request.InitiatorConsentId.Length is >= 16 and <= 128, "grant-binding-mismatch", "The initiator's durable consent binding is missing.", 403);

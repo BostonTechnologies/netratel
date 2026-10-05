@@ -41,7 +41,10 @@ public sealed partial class ServiceLinkCoordinator
     public async Task<object> StatusAsync(string linkId, ClaimsPrincipal caller, CancellationToken ct)
     { var (a, _) = await Bound(linkId, caller, ServiceLinkContract.ControlScope, ct); await Expire(a, ct); return await Status(a, ct); }
 
-    public async Task<object> LifecycleAsync(string pathLinkId, string kind, ServiceLinkLifecycleRequest request, ClaimsPrincipal caller, CancellationToken ct)
+    public Task<object> LifecycleAsync(string pathLinkId, string kind, ServiceLinkLifecycleRequest request, ClaimsPrincipal caller, CancellationToken ct) =>
+        RetryAbortedDatabaseTransaction(coordinator => coordinator.LifecycleOnceAsync(pathLinkId, kind, request, caller, ct), ct);
+
+    private async Task<object> LifecycleOnceAsync(string pathLinkId, string kind, ServiceLinkLifecycleRequest request, ClaimsPrincipal caller, CancellationToken ct)
     {
         var (a, principal) = await Bound(pathLinkId, caller, kind == "verify" ? ServiceLinkContract.VerifyScope : ServiceLinkContract.ControlScope, ct);
         Id(request.OperationId);

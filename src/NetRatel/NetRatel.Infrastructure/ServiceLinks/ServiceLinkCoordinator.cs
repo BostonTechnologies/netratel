@@ -9,6 +9,7 @@ using NetRatel.Shared.ServiceLinks;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.DependencyInjection;
 using static NetRatel.Infrastructure.ServiceLinks.ServiceLinkValidation;
 
 namespace NetRatel.Infrastructure.ServiceLinks;
@@ -16,7 +17,8 @@ namespace NetRatel.Infrastructure.ServiceLinks;
 public sealed partial class ServiceLinkCoordinator(
     OrchestratorDbContext db, IServicePrincipalRegistry registry, IEffectiveAccessService accessService,
     ServiceLinkProfileService providers, ServiceLinkTransport transport, IDataProtectionProvider protection,
-    IOptions<ServiceLinkOptions> options, IServicePublicSettingsResolver publicSettings, TimeProvider clock)
+    IOptions<ServiceLinkOptions> options, IServicePublicSettingsResolver publicSettings, TimeProvider clock,
+    IServiceScopeFactory? scopes = null)
 {
     private ServiceLinkOptions settings = options.Value;
     private async Task<ServicePublicSettingsEffective> CurrentSettings(CancellationToken ct)
