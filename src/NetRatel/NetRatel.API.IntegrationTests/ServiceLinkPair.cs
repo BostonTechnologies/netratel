@@ -87,16 +87,29 @@ internal sealed class ServiceLinkPair : IAsyncDisposable
 
     public async Task FinishAsync(CancellationToken ct = default)
     {
+        var admissionRetryUsed = false;
+        bool TakeAdmissionRetry()
+        {
+            if (admissionRetryUsed) return false;
+            admissionRetryUsed = true;
+            return true;
+        }
         for (var step = 0; step < 20; step++)
         {
             ct.ThrowIfCancellationRequested();
-            var local = await StatusAsync(NetRatel.Administrator, ct); var remote = await StatusAsync(RatelDesk.Administrator, ct);
-            if (local.LifecycleState == "active" && local.LocalBusinessSenderEnabled && remote.LifecycleState == "active" && remote.LocalBusinessSenderEnabled)
+            // Resume returns the authenticated status after its durable transition.
+            // Use that real response rather than spending two more sensitive-route
+            // permits polling before every transition through the same proxy IP.
+            var initiator = await ResumeStatusAsync(Initiator, ct, TakeAdmissionRetry);
+            var responder = await ResumeStatusAsync(Responder, ct, TakeAdmissionRetry);
+            var local = NetRatelInitiates ? initiator : responder;
+            var remote = NetRatelInitiates ? responder : initiator;
+            if (local is { LifecycleState: "active", LocalBusinessSenderEnabled: true } &&
+                remote is { LifecycleState: "active", LocalBusinessSenderEnabled: true })
             {
                 WriteEvidence("reciprocal-link-active", local, remote);
                 return;
             }
-            await ResumeAsync(Initiator, ct); await ResumeAsync(Responder, ct);
         }
         var nr = await StatusAsync(NetRatel.Administrator, ct); var rd = await StatusAsync(RatelDesk.Administrator, ct);
         Assert.Fail($"The real pair did not converge: NetRatel={nr.LifecycleState}/{nr.LastErrorCode}, RatelDesk={rd.LifecycleState}/{rd.LastErrorCode}.");
@@ -105,11 +118,35 @@ internal sealed class ServiceLinkPair : IAsyncDisposable
     public Task<ServiceLinkAdminStatus> StatusAsync(HttpClient administrator, CancellationToken ct = default) =>
         ReadAsync<ServiceLinkAdminStatus>(administrator, $"/api/v1/admin/service-links/attempts/{Start.AttemptId}", ct);
 
-    public async Task ResumeAsync(HttpClient administrator, CancellationToken ct = default)
+    public async Task ResumeAsync(HttpClient administrator, CancellationToken ct = default) =>
+        _ = await ResumeStatusAsync(administrator, ct);
+
+    private async Task<ServiceLinkAdminStatus?> ResumeStatusAsync(HttpClient administrator, CancellationToken ct, Func<bool>? takeAdmissionRetry = null)
     {
-        using var response = await administrator.PostAsJsonAsync($"/api/v1/admin/service-links/links/{Review.GrantSummary.LinkId}/resume", new ServiceLinkAdminAction(), ct);
-        Assert.True(response.IsSuccessStatusCode || response.StatusCode is HttpStatusCode.Conflict or HttpStatusCode.BadGateway,
-            $"A real lifecycle step returned HTTP {(int)response.StatusCode}.");
+        // Both real products retain their 20-per-minute sensitive-route policy.
+        // The loopback proxy combines human and peer calls into one IP partition.
+        // Finish may retry one rejected admission in total after that real window;
+        // direct Resume callers retain immediate failure on 429. The one wait never
+        // changes either product clock, the attempt deadline or the caller token.
+        for (var admission = 0; admission < 2; admission++)
+        {
+            using var response = await administrator.PostAsJsonAsync($"/api/v1/admin/service-links/links/{Review.GrantSummary.LinkId}/resume", new ServiceLinkAdminAction(), ct);
+            if (response.StatusCode == HttpStatusCode.TooManyRequests && admission == 0 && takeAdmissionRetry?.Invoke() == true)
+            {
+                var retry = response.Headers.RetryAfter;
+                var wait = retry?.Delta ?? (retry?.Date is { } at ? at - DateTimeOffset.UtcNow : TimeSpan.FromMinutes(1));
+                Assert.True(wait > TimeSpan.Zero && wait <= TimeSpan.FromMinutes(1),
+                    "A throttled lifecycle admission returned an unsupported retry window.");
+                await Task.Delay(wait, ct);
+                continue;
+            }
+            Assert.True(response.IsSuccessStatusCode || response.StatusCode is HttpStatusCode.Conflict or HttpStatusCode.BadGateway,
+                $"A real lifecycle step returned HTTP {(int)response.StatusCode}.");
+            return response.IsSuccessStatusCode
+                ? await response.Content.ReadFromJsonAsync<ServiceLinkAdminStatus>(cancellationToken: ct)
+                : null;
+        }
+        throw new InvalidOperationException("The bounded lifecycle admission retry did not return a response.");
     }
 
     public async Task<string> TokenAsync(bool netRatelIssuer, string scope, CancellationToken ct = default)
