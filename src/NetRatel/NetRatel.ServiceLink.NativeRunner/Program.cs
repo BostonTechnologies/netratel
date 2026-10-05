@@ -35,7 +35,9 @@ internal static class Program
         // Both production clients use ordinary TLS validation. No custom validation callback is installed.
         if (args.Length == 2) return await ProbeTrustAsync(input);
         using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(input.MaximumLifetimeSeconds));
-        var stopReader = StopOnInputAsync(budget);
+        // Console.In uses SyncTextReader, whose async line read blocks before returning.
+        // Keep the stop reader tracked for finally while allowing real enrollment to start.
+        var stopReader = Task.Run(() => StopOnInputAsync(budget));
         try
         {
             using var auth = new HttpClient(new HttpClientHandler
