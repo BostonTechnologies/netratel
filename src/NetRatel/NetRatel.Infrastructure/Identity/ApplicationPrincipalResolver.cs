@@ -17,6 +17,7 @@ public sealed class ApplicationPrincipalResolver(NetRatelIdentityDbContext db) :
 {
     public async Task<string?> ResolveExternalAsync(ClaimsPrincipal principal, CancellationToken cancellationToken = default)
     {
+        if (principal.HasClaim("token_use", "netratel_service") || principal.HasClaim("auth_mode", "service")) return null;
         var issuer = principal.FindFirst("iss")?.Value?.Trim();
         var subject = principal.FindFirst("sub")?.Value?.Trim();
         if (string.IsNullOrWhiteSpace(issuer) || string.IsNullOrWhiteSpace(subject))

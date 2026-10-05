@@ -1,5 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using NetRatel.Application.Operations;
+using NetRatel.Infrastructure.ServiceIdentity;
+using NetRatel.Infrastructure.ServiceLinks;
 
 namespace NetRatel.Infrastructure.Persistence;
 
@@ -99,6 +101,10 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        modelBuilder.ConfigureServiceIdentityModel();
+        modelBuilder.ConfigureServiceLinkModel();
+        modelBuilder.ConfigureManagedOrchestrationModel();
+        modelBuilder.ConfigureJobRunControlModel();
         if (Database.IsNpgsql())
         {
             modelBuilder.HasPostgresExtension("pg_trgm");

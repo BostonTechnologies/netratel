@@ -1467,6 +1467,11 @@ html[data-netratel-theme="light"] .netratel-login-panel {
     overflow-wrap: anywhere;
 }
 
+/* Percentages follow the fixed overlay's actual layout height under browser or CSS zoom. */
+.mud-dialog.helpdesk-integration-dialog {
+    max-height: calc(100% - 24px);
+}
+
 .integration-dialog > *,
 .integration-access-group,
 .integration-access-group .mud-stack,

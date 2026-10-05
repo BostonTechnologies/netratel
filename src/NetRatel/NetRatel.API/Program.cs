@@ -62,6 +62,7 @@ using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Infrastructure.Identity.Branding;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.API.OpenApi;
+using NetRatel.API.Endpoints.ServiceLinks;
 
 if (args is ["--gssapi-application-smoke"])
 {
@@ -312,6 +313,10 @@ builder.Services
                     var jwt = handler.ReadJwtToken(token);
                     var issuer = jwt.Issuer ?? string.Empty;
                     var tokenUse = jwt.Claims.FirstOrDefault(c => c.Type == "token_use")?.Value;
+                    if (ServiceIdentityAuthenticationHandler.SelectServiceIssuer(jwt, string.Empty))
+                    {
+                        return ServiceIdentityAuthenticationHandler.SchemeName;
+                    }
                     var authMode = jwt.Claims.FirstOrDefault(c => c.Type == "auth_mode")?.Value;
                     var isSystemToken =
                         string.Equals(tokenUse, "system", StringComparison.OrdinalIgnoreCase) ||
@@ -858,6 +863,9 @@ builder.Services.AddHostedService<OutboxProcessor>();
 builder.Services.AddHostedService<GlobalSearchQueryWarmupService>();
 builder.Services.AddNetRatelApplication();
 builder.Services.AddNetRatelInfrastructure(builder.Configuration);
+builder.Services.AddNetRatelServiceIdentityApi(builder.Configuration);
+builder.Services.AddServiceLinkProtocol(builder.Configuration);
+builder.Services.AddOrchestrationManagedServices();
 builder.Services.AddIdentityCore<LocalUser>(options =>
     {
         options.User.RequireUniqueEmail = true;
@@ -1018,6 +1026,7 @@ app.Run();
 
 static bool HasAdminClaim(ClaimsPrincipal user, string? adminGroupId)
 {
+    if (user.HasClaim("token_use", "netratel_service") || user.HasClaim("auth_mode", "service")) return false;
     var hasRole = user.Claims.Any(c =>
         (c.Type == "roles" || c.Type == ClaimTypes.Role) &&
         string.Equals(c.Value, "Operator", StringComparison.OrdinalIgnoreCase));
@@ -1041,6 +1050,7 @@ static async Task<bool> HasInstanceAdministratorOrLegacyOperatorAsync(Authorizat
 
 static bool HasAllowedM2MClient(ClaimsPrincipal user, IEnumerable<string> allowedClientIds, string? requiredScope)
 {
+    if (user.HasClaim("token_use", "netratel_service") || user.HasClaim("auth_mode", "service")) return false;
     var candidates = new[]
     {
         user.FindFirst("client_id")?.Value,

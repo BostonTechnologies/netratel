@@ -17,4 +17,13 @@ public sealed class DownstreamApiOptions
     public string? TokenEndpoint { get; init; }
     public string? ClientId { get; init; }
     public string? ClientSecret { get; init; }
+    public string? ProfileIdentity { get; init; }
+    public long ProfileRevision { get; init; }
+    public long CredentialRevision { get; init; }
+    public string? PeerInstanceId { get; init; }
+    public string? PeerTenantId { get; init; }
+    public string? LocalTenantId { get; init; }
+    public bool ClientSecretPost { get; init; }
+    /// <summary>Managed targets check current link/credential authority even when a cached token is usable.</summary>
+    public Func<CancellationToken, Task<bool>>? CurrentAuthority { get; init; }
 }

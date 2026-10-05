@@ -53,6 +53,7 @@ public sealed class JobCoordinatorActor : ReceiveActor
 
             actor.Forward(message);
         });
+        Receive<ExecuteOwnedJobRun>(message => GetOrCreateRunActor(message.JobRunId).Forward(message));
         Receive<RoutedJobObservationResult>(HandleResult);
         Receive<ProbeJobRuntime>(_ => Sender.Tell(CreateStatus()));
     }

@@ -1,0 +1,13 @@
+{
+  "ratelDesk": {
+    "version": "0.1.1-beta.11",
+    "source": "372d7b59c1c648e147fd1cb6b2724db6c803d6ae",
+    "api": "ghcr.io/bostontechnologies/rateldesk-api@sha256:b909312843c7e0ee3adc00aa8d5099bab237d7ee414ee7f8bae15c1a8ff90fd7",
+    "web": "ghcr.io/bostontechnologies/rateldesk-web@sha256:da99cd8877b34dfc9a3d02c93e55ea2ca0d47831a510f1a5a9f2eff9609fe0c2",
+    "postgres": "postgres@sha256:a3b7f434b2dc57ce85a67e171163eb8ab1a1ebcb39d27484661f26b1dfbe30d6"
+  },
+  "fixture": {
+    "netRatelPostgres": "postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24",
+    "volumeInit": "alpine@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8"
+  }
+}

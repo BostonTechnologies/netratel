@@ -302,6 +302,41 @@ internal sealed class AkkaJobRuntimeRouter : IJobRuntimeRouter
             .ConfigureAwait(false);
     }
 
+    public async Task<T> ExecuteOwnedAsync<T>(ulong jobRunId, Func<IJobRunOwner, CancellationToken, Task<T>> operation,
+        CancellationToken cancellationToken)
+    {
+        var region = await _region.GetAsync(cancellationToken).ConfigureAwait(false);
+        using var ownedDeadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        ownedDeadline.CancelAfter(_askTimeout);
+        var finished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var ownership = 0; // queued=0, started=1, cancelled before start=2
+        try
+        {
+            var result = await region.Ask<object>(new ExecuteOwnedJobRun(jobRunId,
+                async (owner, ct) =>
+                {
+                    if (Interlocked.CompareExchange(ref ownership, 1, 0) != 0)
+                        throw new OperationCanceledException(ct);
+                    try
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        return await operation(owner, ct).ConfigureAwait(false);
+                    }
+                    finally { finished.TrySetResult(); }
+                }, ownedDeadline.Token),
+                _askTimeout, ownedDeadline.Token).ConfigureAwait(false);
+            return (T)result;
+        }
+        finally
+        {
+            ownedDeadline.Cancel();
+            // Expiry fences queued work. Started work must finish rollback and
+            // release its connection before the caller can dispose its DI scope.
+            if (Interlocked.CompareExchange(ref ownership, 2, 0) == 1)
+                await finished.Task.ConfigureAwait(false);
+        }
+    }
+
     public async Task<JobRunView> GetStateAsync(
         ulong jobRunId,
         CancellationToken cancellationToken)

@@ -56,6 +56,7 @@ jobs:
           NETRATEL_REVIEW_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           NETRATEL_REVIEW_TEST_MERGE_SHA: ${{ github.sha }}
           NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT: ${{ github.workspace }}/src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/TestResults/playwright
+          NETRATEL_SERVICE_LINK_EVIDENCE_DIRECTORY: ${{ github.workspace }}/TestResults/service-link-proof
         run: |
           export NETRATEL_DOTNET_SDK_VERSION="$(dotnet --version)"
           dotnet test --solution NetRatel.sln --configuration Release --no-build --max-parallel-test-modules 1 --filter-not-trait category=compose category=hosted --results-directory TestResults --report-trx --report-trx-filename "netratel-tests-{asm}_{tfm}_{arch}.trx"
@@ -105,6 +106,11 @@ jobs:
           if totals["executed"] == 0 or totals["passed"] == 0:
               sys.exit("The generic test selection executed zero test cases.")
           PY
+      - name: Require actual native reciprocal orchestration receipts
+        env:
+          NETRATEL_REVIEW_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          NETRATEL_REVIEW_TEST_MERGE_SHA: ${{ github.sha }}
+        run: python3 tools/ci/verify-service-link-native-evidence.py --reports TestResults --evidence TestResults/service-link-proof
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -450,11 +456,34 @@ jobs:
             NETRATEL_LOCAL_HTTP_MCP_SMOKE_IMAGE=netratel-mcp-http:local-first-smoke \
             NETRATEL_LOCAL_FIRST_DROP_SETUP_RESPONSE=true \
             tools/ci/smoke-local-first-compose.sh
+      - name: Prepare actual owner browser source images
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain --untracked-files=normal -- . ':(exclude)review-artifacts')"
+          version="$(python3 tools/ci/product-version.py)"
+          for role in api web migrations; do
+            tools/ci/build-public-image.sh --dockerfile "docker/$role/Dockerfile" --image "netratel-$role:owner-browser-source" --version "$version" --revision "$GITHUB_SHA"
+            tools/ci/scan-public-image.sh --image "netratel-$role:owner-browser-source" --version "$version" --revision "$GITHUB_SHA"
+          done
+      - name: Run actual reciprocal owner browser acceptance
+        env:
+          NETRATEL_OWNER_PUBLICATION_PINS_FILE: ${{ github.workspace }}/tests/compose/owner-pair-publication.json
+          NETRATEL_OWNER_PAIR_PINS_FILE: ${{ runner.temp }}/owner-pair-image-handoff.json
+          NETRATEL_OWNER_PAIR_EVIDENCE_DIRECTORY: ${{ github.workspace }}/TestResults/helpdesk-owner-compose
+        run: |
+          python3 tools/ci/prepare-owner-pair-pins.py --version "$(python3 tools/ci/product-version.py)" --source "$GITHUB_SHA" \
+            --api netratel-api:owner-browser-source --web netratel-web:owner-browser-source --migrations netratel-migrations:owner-browser-source \
+            --publication-pins "$NETRATEL_OWNER_PUBLICATION_PINS_FILE" --output "$NETRATEL_OWNER_PAIR_PINS_FILE"
+          bash tools/ci/smoke-helpdesk-m2m-browser-pair.sh
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: local-first-${{ github.job }}
-          path: TestResults/local-first
+          path: |
+            TestResults/local-first
+            TestResults/helpdesk-owner-compose/*.trx
+            TestResults/helpdesk-owner-compose/*.json
+            TestResults/helpdesk-owner-compose/screenshots/*.png
           if-no-files-found: warn
           retention-days: 14
 
