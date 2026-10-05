@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
+using NetRatel.Shared.Contracts.Enrollment;
 
 namespace NetRatel.API.IntegrationTests.ServiceLinks;
 
@@ -43,9 +44,10 @@ internal sealed class ServiceLinkNativeProcess : IAsyncDisposable
             using var response = await peer.Administrator.PostAsJsonAsync($"/api/v1/tenants/{peer.TenantId}/enrollment-codes",
                 new { ValidForMinutes = 5, MaxUses = 1, Note = "isolated actual service-link command proof" }, ct);
             if (!response.IsSuccessStatusCode) throw new InvalidOperationException($"Actual enrollment-code issue returned HTTP {(int)response.StatusCode}.");
-            var issued = await response.Content.ReadFromJsonAsync<JsonElement>(cancellationToken: ct);
-            var code = issued.GetProperty("code").GetString();
-            if (string.IsNullOrEmpty(code)) throw new InvalidOperationException("The actual enrollment issuer returned no code.");
+            var issued = await response.Content.ReadFromJsonAsync<IssuedEnrollmentCodeDto>(cancellationToken: ct);
+            var code = issued?.EnrollmentCode;
+            if (string.IsNullOrWhiteSpace(code) || code.Length > 4096)
+                throw new InvalidOperationException("The actual enrollment issuer returned no usable bounded code.");
             await File.WriteAllTextAsync(owned.inputFile, JsonSerializer.Serialize(new
             {
                 ApiBaseUrl = peer.BaseUrl, GatewayEndpoint = listener.Endpoint,
