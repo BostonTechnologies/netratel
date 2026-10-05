@@ -26,6 +26,7 @@ internal sealed class ServiceLinkNetRatelPeer : IAsyncDisposable
     private readonly IInterceptor? interceptor;
     private readonly ServiceLinkNativeListener? nativeListener;
     private readonly ServiceLinkRotationTestPolicy? rotationPolicy;
+    private readonly bool useSystemTime;
     private readonly int backendPort = ServiceLinkHttpProxy.AllocatePort();
     private readonly int gatewayPort = ServiceLinkHttpProxy.AllocatePort();
     private global::ApiFactory? sibling;
@@ -44,11 +45,12 @@ internal sealed class ServiceLinkNetRatelPeer : IAsyncDisposable
     public long RequestDefinitionId { get; private set; }
 
     private ServiceLinkNetRatelPeer(string reachableHost, IInterceptor? interceptor, ServiceLinkNativeListener? nativeListener,
-        ServiceLinkRotationTestPolicy? rotationPolicy)
+        ServiceLinkRotationTestPolicy? rotationPolicy, bool useSystemTime)
     {
         this.interceptor = interceptor;
         this.nativeListener = nativeListener;
         this.rotationPolicy = rotationPolicy;
+        this.useSystemTime = useSystemTime;
         if (nativeListener is not null && (nativeListener.Port == backendPort || nativeListener.Port == gatewayPort || backendPort == gatewayPort))
             throw new InvalidOperationException("The physical listener ports must be independent.");
         Proxy = new($"http://127.0.0.1:{backendPort}", reachableHost);
@@ -86,9 +88,9 @@ internal sealed class ServiceLinkNetRatelPeer : IAsyncDisposable
     }
 
     public static async Task<ServiceLinkNetRatelPeer> CreateAsync(string reachableHost, IInterceptor? interceptor = null, ServiceLinkNativeListener? nativeListener = null,
-        ServiceLinkRotationTestPolicy? rotationPolicy = null)
+        ServiceLinkRotationTestPolicy? rotationPolicy = null, bool useSystemTime = false)
     {
-        var peer = new ServiceLinkNetRatelPeer(reachableHost, interceptor, nativeListener, rotationPolicy);
+        var peer = new ServiceLinkNetRatelPeer(reachableHost, interceptor, nativeListener, rotationPolicy, useSystemTime);
         try
         {
             await peer.databaseOwner.InitializeAsync();
@@ -124,10 +126,14 @@ internal sealed class ServiceLinkNetRatelPeer : IAsyncDisposable
         sibling = databaseOwner.CreateRuntimeSibling(configuration);
         app = sibling.WithWebHostBuilder(builder => builder.ConfigureServices(services =>
         {
+            // This fixture keeps REST/h2c separate from the native TLS/HTTP2 socket.
+            // ASP.NET's -1 sentinel prevents that socket becoming a REST redirect target.
+            if (nativeListener is not null)
+                services.Configure<Microsoft.AspNetCore.HttpsPolicy.HttpsRedirectionOptions>(options => options.HttpsPort = -1);
             services.RemoveAll<TimeProvider>();
-            // Physical and live rotation acceptance use real time. Existing
-            // deterministic reciprocal-recovery fixtures retain their clock.
-            services.AddSingleton<TimeProvider>(nativeListener is null && rotationPolicy is null ? Clock : TimeProvider.System);
+            // Physical, live rotation and explicitly selected payload acceptance
+            // use real time. Deterministic recovery fixtures retain their clock.
+            services.AddSingleton<TimeProvider>(useSystemTime || nativeListener is not null || rotationPolicy is not null ? TimeProvider.System : Clock);
             // Existing recovery fixtures drive steps explicitly. Live rotation
             // retains the actual production scheduler and every other service.
             if (rotationPolicy is null)

@@ -25,13 +25,13 @@ internal sealed class ServiceLinkPair : IAsyncDisposable
     public ServiceLinkHttpProxy ResponderProxy => NetRatelInitiates ? RatelDesk.Proxy : NetRatel.Proxy;
 
     public static async Task<ServiceLinkPair> CreateAsync(bool netRatelInitiates, IInterceptor? interceptor = null, ServiceLinkNativeListener? nativeListener = null,
-        ServiceLinkRotationTestPolicy? rotationPolicy = null)
+        ServiceLinkRotationTestPolicy? rotationPolicy = null, bool useSystemTime = false)
     {
         var pair = new ServiceLinkPair { NetRatelInitiates = netRatelInitiates };
         try
         {
             pair.RatelDesk = await ServiceLinkPublishedRatelDeskPeer.CreateAsync(rotationPolicy);
-            pair.NetRatel = await ServiceLinkNetRatelPeer.CreateAsync(pair.RatelDesk.ReachableHost, interceptor, nativeListener, rotationPolicy);
+            pair.NetRatel = await ServiceLinkNetRatelPeer.CreateAsync(pair.RatelDesk.ReachableHost, interceptor, nativeListener, rotationPolicy, useSystemTime);
             pair.WriteEvidence("isolated-products-started");
             return pair;
         }

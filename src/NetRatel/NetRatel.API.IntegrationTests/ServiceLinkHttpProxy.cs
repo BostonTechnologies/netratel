@@ -120,6 +120,29 @@ internal sealed class ServiceLinkHttpProxy : IAsyncDisposable
         }
     }
 
+    private static string? ReadSafeProblemCode(byte[] payload)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(payload);
+            if (document.RootElement.ValueKind != JsonValueKind.Object ||
+                !document.RootElement.TryGetProperty("code", out var field) || field.ValueKind != JsonValueKind.String)
+                return null;
+            var code = field.GetString();
+            // Emit only fixed public protocol constants. A shape filter alone
+            // could still mistake an arbitrary secret for a diagnostic code.
+            return code switch
+            {
+                "invalid-request" or "invalid-operation-fields" or "invalid-rotation-offer" or
+                "credential-binding-mismatch" or "invalid-set" or "rotation-binding-conflict" or
+                "operation-payload-conflict" or "rotation-payload-conflict" or "credential-revision-conflict" or
+                "rotation-conflict" or "service-link-conflict" => code,
+                _ => null
+            };
+        }
+        catch (JsonException) { return null; }
+    }
+
     private async Task ForwardAsync(HttpContext context)
     {
         var pause = Volatile.Read(ref terminalDelivery);
@@ -254,8 +277,19 @@ internal sealed class ServiceLinkHttpProxy : IAsyncDisposable
                 }
                 else
                 {
+                    await using var responseBody = await response.Content.ReadAsStreamAsync(context.RequestAborted);
+                    observedResponse = await ReadBoundedAsync(responseBody, observation.MaximumPayloadBytes, context.RequestAborted);
+                    var problemCode = ReadSafeProblemCode(observedResponse);
+                    // Forward the actual error bytes unchanged; diagnostics expose
+                    // only the bounded protocol code, never a body or credential.
+                    forwardedResponse = observedResponse.ToArray();
+                    var originalContent = response.Content;
+                    var headers = originalContent.Headers.ToArray();
+                    response.Content = new ByteArrayContent(forwardedResponse);
+                    foreach (var header in headers) response.Content.Headers.TryAddWithoutValidation(header.Key, header.Value);
+                    originalContent.Dispose();
                     lock (observationSync) pendingObservation = null;
-                    observation.Completion.TrySetException(new InvalidOperationException($"The observed actual peer operation returned HTTP {(int)response.StatusCode}."));
+                    observation.Completion.TrySetException(new InvalidOperationException($"The observed actual peer operation returned HTTP {(int)response.StatusCode} (code={problemCode ?? "unclassified"})."));
                 }
             }
             if (observeBusiness)

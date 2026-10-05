@@ -124,7 +124,9 @@ public sealed class ServiceLinkPayloadHttpPostgresTests
     [Fact]
     public async Task Accepted_rotation_offer_retries_ignore_scope_order_after_restart_and_reject_numeric_strings_before_new_journals_or_receipts()
     {
-        await using var pair = await ServiceLinkPair.CreateAsync(true);
+        // This issuer is the actual published peer, whose offer expiry uses real
+        // time. Its receiving fixture must share that advancing clock.
+        await using var pair = await ServiceLinkPair.CreateAsync(true, useSystemTime: true);
         await pair.ActivateAsync();
         var link = pair.Review.GrantSummary.LinkId;
         var path = ServiceLinkContract.EndpointPath + $"/links/{link}/rotate";
