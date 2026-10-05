@@ -276,14 +276,18 @@ internal sealed class ServiceLinkPublishedRatelDeskPeer : IAsyncDisposable
     {
         if (!new[] { "Incidents", "IncidentCreateReceipts", "IncidentReceiverSources", "ServicePrincipalRegistrations", "ServiceLinkAttempts", "ServiceLinkOperations" }.Contains(table))
             throw new ArgumentException("The proof query table is not permitted.", nameof(table));
-        var sql = $"SELECT count(*) FROM \"{table}\"" + (predicate is null ? "" : " WHERE " + predicate);
-        var count = await ComposeAsync(["exec", "-T", "postgres", "psql", "-U", "rateldesk", "-d", "rateldesk", "-At", "-c", sql]);
+        // The published peer uses TPH: Incident rows belong to Tickets, alongside other ticket kinds.
+        var physicalTable = table == "Incidents" ? "Tickets" : table;
+        var condition = table == "Incidents" ? "\"Discriminator\" = 'Incident'" : null;
+        if (predicate is not null) condition = condition is null ? predicate : $"{condition} AND ({predicate})";
+        var sql = $"SELECT count(*) FROM \"{physicalTable}\"" + (condition is null ? "" : " WHERE " + condition);
+        var count = await ComposeAsync(["exec", "-T", "postgres", "psql", "-v", "ON_ERROR_STOP=1", "-U", "rateldesk", "-d", "rateldesk", "-At", "-c", sql]);
         return long.Parse(count.Trim(), System.Globalization.CultureInfo.InvariantCulture);
     }
 
     public async Task<ServiceLinkHistoricalAgePrecondition> ApplyHistoricalPredecessorAgeAsync(string linkId, string directionId, long revision)
     {
-        if (!System.Text.RegularExpressions.Regex.IsMatch(linkId, "^[0-9a-f]{32}$") ||
+        if (!System.Text.RegularExpressions.Regex.IsMatch(linkId, "^[0-9a-f]{48}$") ||
             directionId is not ("initiator_to_responder" or "responder_to_initiator") || revision != 1 ||
             rotationPolicy is not { Automatic: true, NetRatelIssuer: false })
             throw new ArgumentException("Historical aging is restricted to this fixture's initial, genuinely active RatelDesk-issued predecessor.");

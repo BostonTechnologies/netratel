@@ -154,7 +154,8 @@ public sealed class ServiceLinkRotationHttpPostgresTests
             Assert.Equal(retirement, ServiceLinkCanonicalJson.ParseWholeSecondUtcTimestamp(current.PredecessorRetireAt!));
             await AssertStableIdentityAsync(pair, baseline, ct);
             await AssertCurrentSenderTrafficAsync(pair, incidentKey, ct);
-            await Task.Delay(TimeSpan.FromSeconds(6), ct);
+            // Leave admission headroom for the real workers' token requests under the unchanged 20/minute limit.
+            await Task.Delay(TimeSpan.FromSeconds(10), ct);
         }
         await RestartBothAndObserveRecoveryAsync(pair, switchFault, ct);
         Assert.Equal(retirement, ServiceLinkCanonicalJson.ParseWholeSecondUtcTimestamp(
@@ -281,12 +282,15 @@ public sealed class ServiceLinkRotationHttpPostgresTests
 
     private static async Task WaitForCompletedAsync(ServiceLinkPair pair, string rotationId, CancellationToken ct)
     {
-        for (var attempt = 0; attempt < 30; attempt++)
+        for (var attempt = 0; attempt < 10; attempt++)
         {
             var nr = await RotationAsync(pair, true, rotationId, ct); var rd = await RotationAsync(pair, false, rotationId, ct);
             if (nr.RotationState == "completed" && rd.RotationState == "completed") return;
-            await Task.Delay(TimeSpan.FromSeconds(1), ct);
+            await Task.Delay(TimeSpan.FromSeconds(3), ct);
         }
+        var finalNetRatel = await RotationAsync(pair, true, rotationId, ct);
+        var finalRatelDesk = await RotationAsync(pair, false, rotationId, ct);
+        if (finalNetRatel.RotationState == "completed" && finalRatelDesk.RotationState == "completed") return;
         Assert.Fail("The actual background workers did not complete the same rotation after its fixed real retirement deadline.");
     }
 

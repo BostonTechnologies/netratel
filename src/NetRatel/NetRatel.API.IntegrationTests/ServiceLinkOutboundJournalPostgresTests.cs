@@ -76,7 +76,7 @@ public sealed class ServiceLinkOutboundJournalPostgresTests
                 "Retry replaced the encrypted durable request instead of reusing the winning operation.");
             Assert.False(afterRetry.Completed);
             Assert.False((await ReadAttemptAsync(pair)).LocalPreparedAcknowledged);
-            Assert.True(Guid.TryParseExact(pending.OperationId, "N", out _));
+            Assert.Matches("^[0-9a-f]{48}$", pending.OperationId);
             Assert.Equal(1, await pair.RatelDesk.CountAsync("ServiceLinkOperations", "NOT \"Outbound\" AND \"Kind\" = 'ack'"));
             Assert.Equal(1, await pair.RatelDesk.CountAsync("ServiceLinkOperations", $"\"OperationId\" = '{pending.OperationId}'"));
 
