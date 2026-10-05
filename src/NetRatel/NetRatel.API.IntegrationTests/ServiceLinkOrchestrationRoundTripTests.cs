@@ -116,11 +116,11 @@ public sealed class ServiceLinkOrchestrationRoundTripTests
             observation.Path == "/internal/ingest" && observation.StatusCode is >= 200 and < 300);
         using (var transmitted = JsonDocument.Parse(ingest.RequestJson))
         {
-            Assert.Equal(parentId, transmitted.RootElement.GetProperty("requestId").GetString());
-            Assert.Equal(taskId, transmitted.RootElement.GetProperty("requestTaskId").GetString());
-            Assert.Equal(correlation, transmitted.RootElement.GetProperty("correlationId").GetString());
-            Assert.Equal(definitionId, transmitted.RootElement.GetProperty("netRatelJobDefinitionId").GetString());
-            Assert.Equal(definitionId, transmitted.RootElement.GetProperty("netRatelRequestDefinitionId").GetString());
+            Assert.Equal(parentId, transmitted.RootElement.GetProperty("RequestId").GetString());
+            Assert.Equal(taskId, transmitted.RootElement.GetProperty("RequestTaskId").GetString());
+            Assert.Equal(correlation, transmitted.RootElement.GetProperty("CorrelationId").GetString());
+            Assert.Equal(definitionId, transmitted.RootElement.GetProperty("NetRatelJobDefinitionId").GetString());
+            Assert.Equal(definitionId, transmitted.RootElement.GetProperty("NetRatelRequestDefinitionId").GetString());
         }
         using (var ack = JsonDocument.Parse(ingest.ResponseJson!))
         {
