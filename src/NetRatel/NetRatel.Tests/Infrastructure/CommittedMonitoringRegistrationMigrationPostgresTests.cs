@@ -143,7 +143,7 @@ public sealed partial class CommittedConnectionOwnershipMigrationPostgresTests
             var now = DateTimeOffset.UtcNow;
             var reservation = await store.ReserveAsync(new(new(history.TenantId, history.AgentId), Guid.NewGuid(),
                 Guid.NewGuid(), 500, now, now.AddSeconds(30), now.AddMinutes(10),
-                new("migration-owner", ["presence"], "legacy-preserved")), ct);
+                new("migration-owner", ["presence"], new string('a', 64))), ct);
             reservation.Disposition.Should().Be(OwnershipDisposition.Accepted);
             var accepted = await store.CommitAsync(reservation.Reservation!,
                 new(reservation.Reservation!.Owner, 1, DateTimeOffset.UtcNow), ct);
