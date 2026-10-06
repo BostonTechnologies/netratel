@@ -1,0 +1,44 @@
+@using NetRatel.Shared.ServiceLinks
+@using NetRatel.Web.Services.ServiceLinks
+@inject HelpdeskM2MApiClient Api
+
+<MudExpansionPanels Elevation="0"><MudExpansionPanel Text="Incident producer identity (advanced)">
+    <MudStack Spacing="2">
+        @if (identity is not null)
+        {
+            <MudText Typo="Typo.caption">Installation: @identity.InstanceId · persisted producer: @(identity.SourceInstanceId ?? "Not configured")</MudText>
+            <MudText Typo="Typo.body2">Use the exact persisted incident producer ID. It remains distinct from the installation ID and service client ID and survives rotation and reconnect.</MudText>
+            @if (identity.SourceInstanceId is null)
+            {
+                <MudTextField Label="Persisted incident producer GUID" @bind-Value="SourceId" Immediate="true" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="busy" />
+                <MudCheckBox T="bool" @bind-Value="confirmed" Label="I approve this exact persisted producer mapping" Disabled="busy" Dense="true" />
+                <MudButton OnClick="AdoptAsync" Variant="Variant.Outlined" Disabled="@(busy || !confirmed || !Guid.TryParse(sourceId, out _))">Approve producer mapping</MudButton>
+                <MudText Typo="Typo.caption">This action requires current server-wide integration management permission. It cannot replace a producer that is already bound.</MudText>
+            }
+        }
+        @if (error is not null) { <MudAlert Dense="true" Severity="Severity.Info">@error</MudAlert> }
+    </MudStack>
+</MudExpansionPanel></MudExpansionPanels>
+
+@code {
+    private ServiceLinkIdentityDto? identity;
+    private string sourceId = "";
+    private string SourceId { get => sourceId; set { if (sourceId != value) confirmed = false; sourceId = value; } }
+    private string? error;
+    private bool confirmed, busy;
+    protected override async Task OnInitializedAsync()
+    {
+        try { identity = await Api.GetIdentityAsync(); }
+        catch (Exception exception) when (exception is OperationCanceledException or HttpRequestException or ServiceAdministrationException or System.Text.Json.JsonException or InvalidDataException)
+        { error = "Producer mapping requires an authorized administrator. Review the persisted producer identity before starting reciprocal setup."; }
+    }
+    private async Task AdoptAsync()
+    {
+        if (busy || !confirmed || identity is null || !Guid.TryParse(sourceId, out var producer) || identity.SourceInstanceId is not null) return;
+        busy = true; error = null;
+        try { identity = await Api.AdoptSourceAsync(new ServiceLinkAdoptSourceRequest(producer.ToString("D"), identity.Revision)); confirmed = false; sourceId = ""; }
+        catch (Exception exception) when (exception is OperationCanceledException or HttpRequestException or ServiceAdministrationException or System.Text.Json.JsonException or InvalidDataException)
+        { error = "The producer mapping could not be confirmed. Reload its persisted revision before retrying; no new identity should be generated."; }
+        finally { busy = false; }
+    }
+}

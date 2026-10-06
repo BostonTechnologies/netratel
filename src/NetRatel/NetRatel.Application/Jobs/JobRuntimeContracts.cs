@@ -99,6 +99,20 @@ public sealed record GetJobRunProjection(ulong JobRunId);
 
 public sealed record ProbeJobRuntime;
 
+/// <summary>
+/// Executes one mutation in the run actor's mailbox. The supplied persistence
+/// belongs to the caller's relational transaction; recording through the owner
+/// avoids asking the same actor recursively while it owns that transaction.
+/// </summary>
+public interface IJobRunOwner
+{
+    Task ReloadAsync(IJobObservationStore persistence, CancellationToken cancellationToken);
+    Task<JobMessageResult> RecordAsync(IJobObservation observation, IJobObservationStore persistence, CancellationToken cancellationToken);
+}
+
+public sealed record ExecuteOwnedJobRun(ulong JobRunId,
+    Func<IJobRunOwner, CancellationToken, Task<object?>> Operation, CancellationToken CancellationToken);
+
 public sealed record JobMessageResult(
     ulong JobRunId,
     JobMessageDisposition Disposition,
@@ -208,6 +222,9 @@ public interface IJobObservationStore
 
 public interface IJobRuntimeRouter
 {
+    Task<T> ExecuteOwnedAsync<T>(ulong jobRunId, Func<IJobRunOwner, CancellationToken, Task<T>> operation,
+        CancellationToken cancellationToken) => throw new NotSupportedException("The job router does not support owned mutations.");
+
     Task<JobMessageResult> RecordAsync(
         RecordJobObservation message,
         CancellationToken cancellationToken);

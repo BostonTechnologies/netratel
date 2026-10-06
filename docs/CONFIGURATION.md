@@ -75,6 +75,14 @@ Back up PostgreSQL and persistent key/artifact volumes
 together. Replacing a Data Protection key ring invalidates cookies and
 protected state.
 
+## Helpdesk service credentials
+
+Use [RatelDesk service credentials and reciprocal linking](integrations/rateldesk-service-link.md)
+for tenant-owned `helpdesk-m2m` clients, the two administrator approval paths,
+deployment locks, rotation and callback configuration. These managed identities
+are separate from personal API/MCP credentials, native-agent keys and the
+existing deployment `M2M` configuration.
+
 ## Public client install links
 
 The effective administrator `Site URL` under `/admin/branding` supplies the

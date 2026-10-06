@@ -1,0 +1,13 @@
+{
+  "ratelDesk": {
+    "version": "__PINNED_PUBLISHED_RATELDESK_VERSION__",
+    "source": "__PINNED_PUBLISHED_RATELDESK_SOURCE_SHA__",
+    "api": "ghcr.io/bostontechnologies/rateldesk-api@sha256:__PINNED_PUBLISHED_RATELDESK_API_DIGEST__",
+    "web": "ghcr.io/bostontechnologies/rateldesk-web@sha256:__PINNED_PUBLISHED_RATELDESK_WEB_DIGEST__",
+    "postgres": "postgres@sha256:__PINNED_POSTGRES_16_DIGEST__"
+  },
+  "fixture": {
+    "netRatelPostgres": "postgres@sha256:__PINNED_POSTGRES_17_ALPINE_DIGEST__",
+    "volumeInit": "alpine@sha256:__PINNED_ALPINE_VOLUME_INITIALIZER_DIGEST__"
+  }
+}

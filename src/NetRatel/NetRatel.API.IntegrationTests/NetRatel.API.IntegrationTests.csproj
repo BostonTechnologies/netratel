@@ -23,5 +23,20 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../NetRatel.API/NetRatel.API.csproj" />
+    <!-- Build the actual runner without importing its executable Program type. -->
+    <ProjectReference Include="../NetRatel.ServiceLink.NativeRunner/NetRatel.ServiceLink.NativeRunner.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
+  <Target Name="ResolveNativeProofIntegrationSource" BeforeTargets="GetAssemblyAttributes">
+    <!-- Test-only provenance; preserve product PublicSourceRevision and version authority. -->
+    <Exec Command="git -C &quot;$(MSBuildProjectDirectory)/../../..&quot; rev-parse HEAD" ConsoleToMSBuild="true" StandardOutputImportance="Low">
+      <Output TaskParameter="ConsoleOutput" ItemName="NativeProofIntegrationGitHead" />
+    </Exec>
+    <PropertyGroup>
+      <NativeProofIntegrationSourceSha>@(NativeProofIntegrationGitHead)</NativeProofIntegrationSourceSha>
+    </PropertyGroup>
+    <Error Condition="!$([System.Text.RegularExpressions.Regex]::IsMatch('$(NativeProofIntegrationSourceSha)', '^[0-9a-f]{40}$'))" Text="Native physical proof requires the actual integration build checkout." />
+    <ItemGroup>
+      <AssemblyMetadata Include="ServiceLinkProofSourceSha" Value="$(NativeProofIntegrationSourceSha)" />
+    </ItemGroup>
+  </Target>
 </Project>

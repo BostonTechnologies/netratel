@@ -46,19 +46,70 @@ jobs:
       - run: python3 tools/ci/test-release-validation.py
       - run: bash tools/ci/tests/nginx-gateway-idle.sh
       - run: dotnet build NetRatel.sln --configuration Release --no-restore
-      - name: Exercise sustained native gateway through the reviewed ingress profile
-        env:
-          NETRATEL_GATEWAY_TEST_ASSEMBLY: ${{ github.workspace }}/src/NetRatel/NetRatel.Tests/bin/Release/net10.0/NetRatel.Tests.dll
-        run: bash tools/ci/tests/traefik-gateway-routing.sh
       - run: pwsh src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/playwright.ps1 install --with-deps chromium
       - name: Run generic tests and final-head visual acceptance
         env:
+          NETRATEL_GATEWAY_TEST_ASSEMBLY: ${{ github.workspace }}/src/NetRatel/NetRatel.Tests/bin/Release/net10.0/NetRatel.Tests.dll
           NETRATEL_REVIEW_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           NETRATEL_REVIEW_TEST_MERGE_SHA: ${{ github.sha }}
           NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT: ${{ github.workspace }}/src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/TestResults/playwright
+          NETRATEL_SERVICE_LINK_EVIDENCE_DIRECTORY: ${{ github.workspace }}/TestResults/service-link-proof
         run: |
+          set -euo pipefail
           export NETRATEL_DOTNET_SDK_VERSION="$(dotnet --version)"
-          dotnet test --solution NetRatel.sln --configuration Release --no-build --max-parallel-test-modules 1 --filter-not-trait category=compose category=hosted --results-directory TestResults --report-trx --report-trx-filename "netratel-tests-{asm}_{tfm}_{arch}.trx"
+          mkdir -p TestResults/gateway-transport
+          rm -f TestResults/gateway-transport/profile.exit
+          gateway_pid=''
+          generic_pid=''
+          cleanup() {
+            for owned_pid in "$gateway_pid" "$generic_pid"; do
+              [[ -n "$owned_pid" ]] || continue
+              # Only active jobs still owned by this shell may be stopped.
+              for running_pid in $(jobs -pr); do
+                if [[ "$running_pid" == "$owned_pid" ]]; then
+                  kill -TERM -- "-$owned_pid" 2>/dev/null || true
+                fi
+              done
+              wait "$owned_pid" 2>/dev/null || true
+            done
+            gateway_pid=''
+            generic_pid=''
+            if [[ -f TestResults/gateway-transport/profile.log ]]; then
+              cat TestResults/gateway-transport/profile.log
+            fi
+          }
+          trap cleanup EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+          # Each child has its own process group; both use the prebuilt source.
+          setsid bash tools/ci/tests/traefik-gateway-routing.sh > TestResults/gateway-transport/profile.log 2>&1 &
+          gateway_pid=$!
+          setsid dotnet test --solution NetRatel.sln --configuration Release --no-build --max-parallel-test-modules 1 --filter-not-trait category=compose category=hosted --results-directory TestResults --report-trx --report-trx-filename "netratel-tests-{asm}_{tfm}_{arch}.trx" &
+          generic_pid=$!
+          for completion in 1 2; do
+            pending_pids=()
+            if [[ -n "$gateway_pid" ]]; then pending_pids+=("$gateway_pid"); fi
+            if [[ -n "$generic_pid" ]]; then pending_pids+=("$generic_pid"); fi
+            if wait -n -p completed_pid "${pending_pids[@]}"; then
+              completed_status=0
+            else
+              completed_status=$?
+            fi
+            # Clear ownership immediately after reaping, before any failure cleanup.
+            if [[ "$completed_pid" == "$gateway_pid" ]]; then
+              gateway_pid=''
+            elif [[ "$completed_pid" == "$generic_pid" ]]; then
+              generic_pid=''
+            else
+              echo 'An expected CI probe completion was not observed.' >&2
+              exit 1
+            fi
+            if [[ "$completed_status" -ne 0 ]]; then exit "$completed_status"; fi
+          done
+          # This is written only after both actual commands have completed successfully.
+          printf '%s\n' 0 > TestResults/gateway-transport/profile.exit
+      - name: Exercise sustained native gateway through the reviewed ingress profile
+        run: test "$(cat TestResults/gateway-transport/profile.exit)" = 0
       - name: Require generic test execution receipts
         run: |
           python3 - <<'PY'
@@ -105,6 +156,11 @@ jobs:
           if totals["executed"] == 0 or totals["passed"] == 0:
               sys.exit("The generic test selection executed zero test cases.")
           PY
+      - name: Require actual native reciprocal orchestration receipts
+        env:
+          NETRATEL_REVIEW_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          NETRATEL_REVIEW_TEST_MERGE_SHA: ${{ github.sha }}
+        run: python3 tools/ci/verify-service-link-native-evidence.py --reports TestResults --evidence TestResults/service-link-proof
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -454,7 +510,8 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: local-first-${{ github.job }}
-          path: TestResults/local-first
+          path: |
+            TestResults/local-first
           if-no-files-found: warn
           retention-days: 14
 

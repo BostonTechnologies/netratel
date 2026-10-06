@@ -18,6 +18,7 @@ using Microsoft.Extensions.Options;
 using NetRatel.API.Endpoints;
 using NetRatel.API.Endpoints.Systems;
 using NetRatel.API.Models.TenantModels;
+using NetRatel.API.Services.Orchestration;
 using NetRatel.Application.Agents;
 using NetRatel.Application.Events;
 using NetRatel.Application.Scripts;
@@ -183,6 +184,10 @@ public sealed class CoreBusinessApiEndpointsTests
                 {
                     options.AddPolicy("Operator", policy => policy.RequireAuthenticatedUser());
                     options.AddPolicy("M2MOnly", policy => policy.RequireAuthenticatedUser());
+                    // This route-shape fixture exercises the legacy read branch.
+                    // Actual managed grants are covered by the PostgreSQL HTTP fixture.
+                    options.AddPolicy(OrchestrationManagedAuthorization.ReadPolicy, policy =>
+                        policy.AddAuthenticationSchemes("M2M").RequireAuthenticatedUser());
                     options.AddPolicy("InstanceAdministrator", policy => policy.RequireAuthenticatedUser());
                     options.AddPolicy("TenantAdministrator", policy => policy.RequireAuthenticatedUser());
                     options.AddPolicy("ScriptEditor", policy => policy.RequireAuthenticatedUser());
