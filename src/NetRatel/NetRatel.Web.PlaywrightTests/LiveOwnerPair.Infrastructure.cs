@@ -44,6 +44,8 @@ internal sealed partial class LiveOwnerPair : IAsyncDisposable
     private int pageErrorCount;
     private int approvalHopCount, callbackHopCount, protectedHopFailures;
     private int? lastHttpStatus;
+    private int setupInitializePostCount;
+    private int? setupInitializeLastHttpStatus;
     private string? readinessProduct, readinessRoute;
     private string? setupStep;
     private int? readinessHttpStatus;

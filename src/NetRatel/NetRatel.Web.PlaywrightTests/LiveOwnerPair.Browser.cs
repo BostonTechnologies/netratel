@@ -19,6 +19,9 @@ internal sealed partial class LiveOwnerPair
             if (address.GetLeftPart(UriPartial.Authority) != NetRatelWeb && address.GetLeftPart(UriPartial.Authority) != RatelDeskWeb) return;
             // Inspect path and required header directives only; never read/export
             // the query or redirect Location on proof-bearing browser hops.
+            if (address.GetLeftPart(UriPartial.Authority) == NetRatelWeb
+                && address.AbsolutePath == "/api/v2/setup/initialize" && response.Request.Method == "POST")
+                setupInitializeLastHttpStatus = response.Status;
             if (address.AbsolutePath is not ("/account/integration-credentials/link/approve" or "/account/integration-credentials/link/callback")) return;
             if (address.AbsolutePath.EndsWith("/approve", StringComparison.Ordinal)) Interlocked.Increment(ref approvalHopCount);
             else Interlocked.Increment(ref callbackHopCount);
@@ -29,6 +32,8 @@ internal sealed partial class LiveOwnerPair
         {
             if (request.Method != "POST" || !Uri.TryCreate(request.Url, UriKind.Absolute, out var address)) return;
             if (address.GetLeftPart(UriPartial.Authority) != NetRatelWeb && address.GetLeftPart(UriPartial.Authority) != RatelDeskWeb) return;
+            if (address.GetLeftPart(UriPartial.Authority) == NetRatelWeb && address.AbsolutePath == "/api/v2/setup/initialize")
+                Interlocked.Increment(ref setupInitializePostCount);
             var action = address.AbsolutePath.StartsWith("/account/integration-credentials/link/", StringComparison.Ordinal) ? address.AbsolutePath.Split('/')[^1] : "";
             lock (commandCounts) { if (commandCounts.ContainsKey(action)) commandCounts[action]++; }
         };
@@ -51,12 +56,20 @@ internal sealed partial class LiveOwnerPair
         await page.GetByTestId("setup-claim").ClickAsync();
         setupStep = "netratel-wait-owner-form";
         await page.GetByTestId("setup-tenant").WaitForAsync();
+        setupStep = "netratel-owner-form-client-ready";
+        await page.GetByTestId("setup-client-ready").WaitForAsync(new() { State = WaitForSelectorState.Attached });
         setupStep = "netratel-fill-owner-form";
         await page.GetByTestId("setup-tenant").FillAsync("Disposable bootstrap tenant");
         await page.GetByTestId("setup-display-name").FillAsync("Disposable owner");
         await page.GetByTestId("setup-email").FillAsync(humanEmail);
         await page.GetByTestId("setup-password").FillAsync(humanPassword);
         await page.GetByTestId("setup-confirm-password").FillAsync(humanPassword);
+        setupStep = "netratel-verify-owner-form";
+        Check(await page.GetByTestId("setup-tenant").InputValueAsync() == "Disposable bootstrap tenant", "The actual setup tenant input differs from the entered fixture value.");
+        Check(await page.GetByTestId("setup-display-name").InputValueAsync() == "Disposable owner", "The actual setup display-name input differs from the entered fixture value.");
+        Check(await page.GetByTestId("setup-email").InputValueAsync() == humanEmail, "The actual setup email input differs from the entered fixture value.");
+        Check(await page.GetByTestId("setup-password").InputValueAsync() == humanPassword, "The actual setup password input differs from the entered fixture value.");
+        Check(await page.GetByTestId("setup-confirm-password").InputValueAsync() == humanPassword, "The actual setup confirmation input differs from the entered fixture value.");
         setupStep = "netratel-initialize";
         await page.GetByTestId("setup-initialize").ClickAsync();
         setupStep = "netratel-wait-operational-login";
