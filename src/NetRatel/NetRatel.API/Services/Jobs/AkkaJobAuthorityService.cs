@@ -581,10 +581,21 @@ public sealed class AkkaJobAuthorityService(
         NetRatelAkkaTelemetry.SetJobsAuthorityRunning(0);
     }
 
+    private static string ObservationClientIdentity(JobRunInfo run)
+    {
+        // The frozen observation contract keeps a required display identity;
+        // current execution authority remains the run's tenant and Agent target.
+        if (!string.IsNullOrWhiteSpace(run.ClientIdentity)) return run.ClientIdentity;
+        if (run.TenantId is not { } tenantId || tenantId <= 0 ||
+            run.AgentId is not { } agentId || agentId == Guid.Empty)
+            throw new InvalidOperationException("A current tenant and Agent target are required for a job observation.");
+        return FormattableString.Invariant($"agent:{tenantId}:{agentId:D}");
+    }
+
     private async Task RecordRunAsync(JobRunInfo run, JobRunState status, int currentOrdinal, DateTimeOffset createdAtUtc, DateTimeOffset? startedAtUtc, DateTimeOffset? completedAtUtc, long sourceEventId, CancellationToken cancellationToken)
     {
         var observation = new JobRunObservation(
-            sourceEventId, run.Id, run.JobId, run.TenantId, run.ClientIdentity, run.StartedBy, status, currentOrdinal,
+            sourceEventId, run.Id, run.JobId, run.TenantId, ObservationClientIdentity(run), run.StartedBy, status, currentOrdinal,
             createdAtUtc, startedAtUtc, completedAtUtc, _clock.GetUtcNow(), $"akka-job-authority:{run.Id}", true);
         var result = _owner is null ? await jobRouter.RecordAsync(new RecordJobObservation(observation), cancellationToken).ConfigureAwait(false)
             : await _owner.RecordAsync(observation, _boundary!.Observations, cancellationToken);
@@ -595,7 +606,7 @@ public sealed class AkkaJobAuthorityService(
     private async Task RecordStepAsync(JobRunInfo run, JobStepRunInfo step, long sourceEventId, CancellationToken cancellationToken)
     {
         var observation = new JobStepObservation(
-            sourceEventId, run.Id, run.JobId, run.TenantId, run.ClientIdentity, step.Id, step.JobStepId,
+            sourceEventId, run.Id, run.JobId, run.TenantId, ObservationClientIdentity(run), step.Id, step.JobStepId,
             step.Status, step.Ordinal, step.TaskRequestId, step.StartedAtUtc, step.CompletedAtUtc, _clock.GetUtcNow(),
             $"akka-job-authority:{run.Id}", true);
         var result = _owner is null ? await jobRouter.RecordAsync(new RecordJobObservation(observation), cancellationToken).ConfigureAwait(false)

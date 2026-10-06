@@ -39,7 +39,7 @@ public sealed class ServiceLinkRotationHttpPostgresTests
         await using var pair = await ServiceLinkPair.CreateAsync(netRatelInitiates: netRatelIssuer,
             rotationPolicy: new(netRatelIssuer, automatic));
         await pair.ActivateAsync(ct);
-        var baseline = await pair.StatusAsync(pair.NetRatel.Administrator, ct);
+        var baseline = await ReadPostActivationBaselineAsync(pair, ct);
         var issuer = netRatelIssuer ? pair.NetRatel.Administrator : pair.RatelDesk.Administrator;
         var issuerProxy = netRatelIssuer ? pair.NetRatel.Proxy : pair.RatelDesk.Proxy;
         var callerProxy = netRatelIssuer ? pair.RatelDesk.Proxy : pair.NetRatel.Proxy;
@@ -187,6 +187,34 @@ public sealed class ServiceLinkRotationHttpPostgresTests
                 offer = offerFault.PostRestartRecoveriesProven, verification = verifyFault.PostRestartRecoveriesProven,
                 activation = activationFault.PostRestartRecoveriesProven, switchedAndRetirement = switchFault.PostRestartRecoveriesProven
             });
+    }
+
+    private static async Task<ServiceLinkAdminStatus> ReadPostActivationBaselineAsync(ServiceLinkPair pair, CancellationToken ct)
+    {
+        // Human and peer traffic share this fixture proxy's real 20-per-minute IP
+        // partition. Pace only this first post-activation status read; all later
+        // requests and rotation phase deadlines retain their existing behavior.
+        for (var admission = 0; admission < 2; admission++)
+        {
+            using var response = await pair.NetRatel.Administrator.GetAsync(
+                $"/api/v1/admin/service-links/attempts/{pair.Start.AttemptId}", ct);
+            if (response.StatusCode == HttpStatusCode.TooManyRequests && admission == 0)
+            {
+                var retry = response.Headers.RetryAfter;
+                Assert.True(retry is not null || !response.Headers.Contains("Retry-After"),
+                    "The post-activation status returned a malformed retry window.");
+                var wait = retry?.Delta ?? (retry?.Date is { } at ? at - DateTimeOffset.UtcNow : TimeSpan.FromMinutes(1));
+                Assert.True(wait > TimeSpan.Zero && wait <= TimeSpan.FromMinutes(1),
+                    "The post-activation status returned an unsupported retry window.");
+                response.Dispose();
+                await Task.Delay(wait, ct);
+                continue;
+            }
+            Assert.True(response.IsSuccessStatusCode,
+                $"The actual post-activation administrator status returned HTTP {(int)response.StatusCode}.");
+            return (await response.Content.ReadFromJsonAsync<ServiceLinkAdminStatus>(cancellationToken: ct))!;
+        }
+        throw new InvalidOperationException("The bounded post-activation status retry did not return a response.");
     }
 
     private static async Task AssertPendingCandidateRestrictionsAsync(ServiceLinkPair pair, bool netRatelIssuer,

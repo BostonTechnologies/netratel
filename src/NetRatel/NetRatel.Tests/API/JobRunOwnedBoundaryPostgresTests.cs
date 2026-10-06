@@ -34,6 +34,161 @@ namespace NetRatel.Tests.API;
 public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixture postgres)
 {
     [Theory]
+    [InlineData("", false)]
+    [InlineData("", true)]
+    [InlineData("LegacyClient/Original:MixedCASE", false)]
+    public async Task Owned_Agent_observations_persist_and_replay_while_preserving_the_legacy_run_identity(
+        string legacyClientIdentity, bool recoverAtDeadline)
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var ct = deadline.Token;
+        await using var h = await Harness.CreateAsync(await postgres.CreateDatabaseAsync(ct), ct, legacyClientIdentity);
+        var run = await h.StartAsync(ct);
+        Assert.Equal(legacyClientIdentity, run.ClientIdentity);
+        Assert.Equal(h.AgentId, run.AgentId);
+        await h.LifecycleAsync(run.Id, JobGatewayLifecycleStatus.Started, 3, null, false, ct);
+
+        // This independent region reconstructs the already persisted run and step.
+        var started = await h.Replica.GetStateAsync(run.Id, ct);
+        Assert.Equal(JobRunState.Running, started.Status);
+        Assert.Equal(JobStepRunState.Running, Assert.Single(started.Steps).Status);
+        Assert.False(string.IsNullOrWhiteSpace(started.ClientIdentity));
+        if (legacyClientIdentity.Length > 0) Assert.Equal(legacyClientIdentity, started.ClientIdentity);
+        var originalDeadline = (await h.ControlAsync(run.Id, ct)).NativeDeadlineUtc;
+        if (recoverAtDeadline)
+        {
+            h.Clock.UtcNow = originalDeadline!.Value.AddMilliseconds(1);
+            await h.RecoverAsync(run.Id, true, ct);
+        }
+        else
+        {
+            await h.LifecycleAsync(run.Id, JobGatewayLifecycleStatus.Completed, 4,
+                "{\"stdout\":[\"owned native completion\"],\"exitCode\":0}", true, ct);
+        }
+
+        var terminal = await h.DetailsAsync(run.Id, ct);
+        var expectedRun = recoverAtDeadline ? JobRunState.TimedOut : JobRunState.Succeeded;
+        var expectedStep = recoverAtDeadline ? JobStepRunState.Failed : JobStepRunState.Succeeded;
+        Assert.Equal(expectedRun, terminal.Run.Status);
+        Assert.Equal(expectedStep, Assert.Single(terminal.Steps).Status);
+        Assert.Equal(legacyClientIdentity, terminal.Run.ClientIdentity);
+        Assert.Equal(legacyClientIdentity, Assert.Single(terminal.Activities).ClientIdentity);
+        Assert.Equal(originalDeadline, (await h.ControlAsync(run.Id, ct)).NativeDeadlineUtc);
+        Assert.True(await h.TerminalReadyAsync(terminal, ct));
+        await using (var scope = h.Services.CreateAsyncScope())
+        {
+            var job = await scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>()
+                .Jobs.AsNoTracking().SingleAsync(x => x.Id == 41, ct);
+            Assert.Equal(legacyClientIdentity, job.ClientIdentity);
+        }
+        var observations = await h.ObservationsAsync(run.Id, ct);
+        Assert.All(observations, observation => Assert.Equal(started.ClientIdentity, observation.ClientIdentity));
+        Assert.Contains(observations, observation => observation.Kind == JobObservationKind.Run && observation.RunStatus == JobRunState.Pending);
+        Assert.Contains(observations, observation => observation.Kind == JobObservationKind.Run && observation.RunStatus == expectedRun);
+        Assert.Contains(observations, observation => observation.Kind == JobObservationKind.Step && observation.StepStatus == JobStepRunState.Running);
+        Assert.Contains(observations, observation => observation.Kind == JobObservationKind.Step && observation.StepStatus == expectedStep);
+
+        // A new region has no cached projection; replay cannot enqueue physical work.
+        var replayed = await h.CreateActorRegion().GetStateAsync(run.Id, ct);
+        Assert.Equal(expectedRun, replayed.Status);
+        Assert.Equal(expectedStep, Assert.Single(replayed.Steps).Status);
+        Assert.Equal(started.ClientIdentity, replayed.ClientIdentity);
+        Assert.Equal(observations[^1].SourceEventId, replayed.LastAcceptedSourceEventId);
+        Assert.Equal(1, h.Gateway.Dispatches);
+        Assert.Equal(0, h.Gateway.Cancellations);
+    }
+
+    [Theory]
+    [InlineData("missing-agent", false)]
+    [InlineData("empty-agent", false)]
+    [InlineData("missing-tenant", false)]
+    [InlineData("zero-tenant", false)]
+    [InlineData("negative-tenant", false)]
+    [InlineData("missing-agent", true)]
+    public async Task Blank_identity_recovery_rejects_invalid_targets_and_releases_ownership_for_a_repaired_retry(
+        string invalidTarget, bool recordedHistory)
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var ct = deadline.Token;
+        await using var h = await Harness.CreateAsync(await postgres.CreateDatabaseAsync(ct), ct, string.Empty);
+        ulong runId;
+        if (recordedHistory)
+        {
+            var run = await h.StartAsync(ct);
+            runId = run.Id;
+            await h.LifecycleAsync(runId, JobGatewayLifecycleStatus.Started, 3, null, false, ct);
+            h.Clock.UtcNow = (await h.ControlAsync(runId, ct)).NativeDeadlineUtc!.Value.AddMilliseconds(1);
+        }
+        else
+        {
+            runId = (await h.SeedPendingIngressAsync(ct)).RunId;
+            h.Clock.UtcNow = h.Clock.GetUtcNow().AddSeconds(4);
+        }
+        await using (var scope = h.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            var row = await db.JobRuns.SingleAsync(x => x.Id == checked((long)runId), ct);
+            // A direct persisted historical row retains whitespace; run upserts trim it.
+            row.ClientIdentity = "   ";
+            switch (invalidTarget)
+            {
+                case "missing-agent": row.AgentId = null; break;
+                case "empty-agent": row.AgentId = Guid.Empty; break;
+                case "missing-tenant": row.TenantId = null; break;
+                case "zero-tenant": row.TenantId = 0; break;
+                case "negative-tenant": row.TenantId = -1; break;
+                default: throw new ArgumentOutOfRangeException(nameof(invalidTarget));
+            }
+            await db.SaveChangesAsync(ct);
+        }
+        var before = await h.DetailsAsync(runId, ct);
+        var controlBefore = await h.ControlAsync(runId, ct);
+        var observationsBefore = await h.ObservationsAsync(runId, ct);
+        var dispatches = h.Gateway.Dispatches;
+        // With no history recovery records a run first; recorded history reaches a step first.
+        // ThrowsAsync requires the direct guard type, excluding derived transition rejections.
+        await Assert.ThrowsAsync<InvalidOperationException>(() => h.RecoverAsync(runId, true, ct));
+        var rejected = await h.DetailsAsync(runId, ct);
+        Assert.Equal(before.Run, rejected.Run);
+        Assert.Equal(before.Steps.ToArray(), rejected.Steps.ToArray());
+        Assert.Equal(before.Activities.ToArray(), rejected.Activities.ToArray());
+        var rejectedControl = await h.ControlAsync(runId, ct);
+        Assert.Equal(controlBefore.Revision, rejectedControl.Revision);
+        Assert.Equal(controlBefore.NativeDeadlineUtc, rejectedControl.NativeDeadlineUtc);
+        Assert.Equal(controlBefore.DispatchPreparedAtUtc, rejectedControl.DispatchPreparedAtUtc);
+        Assert.Equal(controlBefore.DispatchEnqueuedAtUtc, rejectedControl.DispatchEnqueuedAtUtc);
+        Assert.Null(rejectedControl.TerminalReadyAtUtc);
+        Assert.Null(rejectedControl.TerminalResultHash);
+        var rejectedObservations = await h.ObservationsAsync(runId, ct);
+        Assert.Equal(observationsBefore.Select(x => x.Id), rejectedObservations.Select(x => x.Id));
+        Assert.Equal(observationsBefore.Select(x => x.ClientIdentity), rejectedObservations.Select(x => x.ClientIdentity));
+        Assert.Equal(dispatches, h.Gateway.Dispatches);
+        Assert.Equal(0, h.Gateway.Cancellations);
+
+        await using (var scope = h.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            var row = await db.JobRuns.SingleAsync(x => x.Id == checked((long)runId), ct);
+            row.TenantId = 7;
+            row.AgentId = h.AgentId;
+            // Keep the blank identity: a successful retry must derive a valid observation.
+            await db.SaveChangesAsync(ct);
+        }
+        await h.RecoverAsync(runId, true, ct); // The same replica must reload after rollback and reacquire ownership.
+        var terminal = await h.DetailsAsync(runId, ct);
+        Assert.Equal(recordedHistory ? JobRunState.TimedOut : JobRunState.Failed, terminal.Run.Status);
+        Assert.Equal(string.Empty, terminal.Run.ClientIdentity);
+        Assert.True(await h.TerminalReadyAsync(terminal, ct));
+        Assert.Equal(controlBefore.NativeDeadlineUtc, (await h.ControlAsync(runId, ct)).NativeDeadlineUtc);
+        var replayed = await h.CreateActorRegion().GetStateAsync(runId, ct);
+        Assert.Equal(terminal.Run.Status, replayed.Status);
+        Assert.False(string.IsNullOrWhiteSpace(replayed.ClientIdentity));
+        Assert.All(await h.ObservationsAsync(runId, ct), observation => Assert.Equal(replayed.ClientIdentity, observation.ClientIdentity));
+        Assert.Equal(dispatches, h.Gateway.Dispatches);
+        Assert.Equal(0, h.Gateway.Cancellations);
+    }
+
+    [Theory]
     [InlineData(true)]
     [InlineData(false)]
     public async Task Independent_actor_regions_obey_the_first_durable_cancel_or_completion(bool cancelFirst)
@@ -434,7 +589,15 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
             ((RequiredActorProxy)(object)required).Actor = Primary.Region;
             return new AkkaJobRuntimeRouter(required, timeout);
         }
-        public static async Task<Harness> CreateAsync(string connection, CancellationToken ct)
+        public IJobRuntimeRouter CreateActorRegion() => new ActorRouter(
+            _actors.ActorOf(JobCoordinatorActor.Props(Services.GetRequiredService<IJobObservationStore>())));
+        public async Task<JobShadowObservationRecord[]> ObservationsAsync(ulong runId, CancellationToken ct)
+        {
+            await using var scope = Services.CreateAsyncScope();
+            return await scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>().JobShadowObservations
+                .AsNoTracking().Where(x => x.JobRunId == runId).OrderBy(x => x.SourceEventId).ToArrayAsync(ct);
+        }
+        public static async Task<Harness> CreateAsync(string connection, CancellationToken ct, string? legacyClientIdentity = null)
         {
             var h = new Harness();
             var services = new ServiceCollection();
@@ -457,7 +620,7 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
             db.Tenants.Add(new() { Id = 7, Name = "Bounded ownership tenant", CreatedAtUtc = now, UpdatedAtUtc = now });
             db.Agents.Add(new() { Id = h.AgentId, TenantId = 7, CreatedAtUtc = now });
             db.Jobs.Add(new() { Id = 41, Name = "Bounded owned command", TenantId = 7, AgentId = h.AgentId,
-                ClientIdentity = h.AgentId.ToString("D"), CreatedAtUtc = now, UpdatedAtUtc = now,
+                ClientIdentity = legacyClientIdentity ?? h.AgentId.ToString("D"), CreatedAtUtc = now, UpdatedAtUtc = now,
                 OptionsJson = "{\"executionPolicy\":{\"expectedRuntimeSeconds\":60,\"hardTimeoutSeconds\":60}}" });
             db.JobSteps.Add(new() { Id = 42, JobId = 41, Ordinal = 1, Type = 0, Runner = "bash", Command = "true", Enabled = true });
             await db.SaveChangesAsync(ct);
