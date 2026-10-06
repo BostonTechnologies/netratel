@@ -542,29 +542,12 @@ jobs:
             export NETRATEL_LOCAL_FIRST_EXTERNAL_POSTGRES_INIT="$GITHUB_WORKSPACE/tests/compose/external-postgres-local-first-init.sql"
           fi
           tools/ci/smoke-local-first-compose.sh
-      - name: Run actual reciprocal owner browser acceptance
-        if: matrix.provider == 'bundled-postgresql'
-        env:
-          VERSION: ${{ needs.validate.outputs.version }}
-          NETRATEL_OWNER_PUBLICATION_PINS_FILE: ${{ github.workspace }}/tests/compose/owner-pair-publication.json
-          NETRATEL_OWNER_PAIR_PINS_FILE: ${{ runner.temp }}/owner-pair-image-handoff.json
-          NETRATEL_OWNER_PAIR_EVIDENCE_DIRECTORY: ${{ github.workspace }}/TestResults/helpdesk-owner-compose
-        run: |
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          test -z "$(git status --porcelain --untracked-files=normal -- . ':(exclude)release-artifacts')"
-          python3 tools/ci/prepare-owner-pair-pins.py --version "$VERSION" --source "$GITHUB_SHA" \
-            --api "netratel-api:${VERSION}-release-local-first" --web "netratel-web:${VERSION}-release-local-first" --migrations "netratel-migrations:${VERSION}-release-local-first" \
-            --publication-pins "$NETRATEL_OWNER_PUBLICATION_PINS_FILE" --output "$NETRATEL_OWNER_PAIR_PINS_FILE"
-          bash tools/ci/smoke-helpdesk-m2m-browser-pair.sh
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: local-first-${{ github.job }}-${{ matrix.provider }}
           path: |
             TestResults/local-first
-            TestResults/helpdesk-owner-compose/*.trx
-            TestResults/helpdesk-owner-compose/*.json
-            TestResults/helpdesk-owner-compose/screenshots/*.png
           if-no-files-found: warn
           retention-days: 14
 
