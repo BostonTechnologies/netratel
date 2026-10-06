@@ -76,32 +76,18 @@ window.netratelFileTransfers = {
   upload: (input, url, id, callbacks) => new Promise((resolve, reject) => {
     const file = input.files && input.files[0];
     if (!file) { reject(new Error("Choose a file to upload.")); return; }
-    const maximumAttempts = 5;
-    const transfer = { request: null, retryTimer: 0, attempt: 1, cancelled: false, settled: false, finish: null };
+    const transfer = { request: null, cancelled: false, settled: false, finish: null };
+    const interrupted = "Upload was interrupted. Its outcome is unknown. Verify the destination before retrying.";
     const notify = (method, ...args) => {
       if (callbacks) { void callbacks.invokeMethodAsync(method, ...args).catch(() => {}); }
     };
     const finish = (error) => {
       if (transfer.settled) { return; }
       transfer.settled = true;
-      window.clearTimeout(transfer.retryTimer);
       window.netratelFileTransfers.uploads.delete(id);
       if (error) { reject(error); } else { resolve(); }
     };
     transfer.finish = finish;
-    const retry = (reason) => {
-      if (transfer.cancelled || transfer.attempt >= maximumAttempts) {
-        finish(new Error(reason));
-        return;
-      }
-
-      transfer.request = null;
-      transfer.attempt += 1;
-      const delay = 1000 * Math.pow(2, transfer.attempt - 2);
-      notify("OnUploadRetrying", transfer.attempt, maximumAttempts);
-      notify("OnUploadProgress", 0, file.size);
-      transfer.retryTimer = window.setTimeout(send, delay);
-    };
     const send = () => {
       if (transfer.cancelled || transfer.settled) { return; }
       const request = new XMLHttpRequest();
@@ -115,18 +101,18 @@ window.netratelFileTransfers = {
       request.onload = () => {
         if (request.status >= 200 && request.status < 300) {
           finish();
-        } else if (request.getResponseHeader("X-NetRatel-File-Transfer-Retryable") === "true") {
-          retry(`Remote upload could not reconnect after ${maximumAttempts} attempts.`);
         } else {
-          finish(new Error(`Upload failed with status ${request.status}.`));
+          finish(new Error(`Upload failed with status ${request.status}. ${interrupted}`));
         }
       };
-      request.onerror = () => retry(`Upload failed before reaching the server after ${maximumAttempts} attempts.`);
+      // A network error or abort cannot establish whether the remote write
+      // already completed. Reissuing the PUT would create a second mutation.
+      request.onerror = () => finish(new Error(interrupted));
       request.onabort = () => {
         if (transfer.cancelled) {
           finish(new Error("Upload was cancelled."));
         } else {
-          retry(`Remote upload was interrupted after ${maximumAttempts} attempts.`);
+          finish(new Error(interrupted));
         }
       };
       request.send(file);
@@ -139,7 +125,6 @@ window.netratelFileTransfers = {
     const transfer = window.netratelFileTransfers.uploads.get(id);
     if (!transfer) { return; }
     transfer.cancelled = true;
-    window.clearTimeout(transfer.retryTimer);
     if (transfer.request) {
       transfer.request.abort();
     } else {

@@ -1,17 +1,18 @@
 using System.Security.Cryptography;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
+using NetRatel.Shared.Client;
 
 namespace NetRatel.Infrastructure.Identity.Branding;
 
 public sealed class DeploymentBrandingService(
     NetRatelIdentityDbContext db,
-    IOptions<DeploymentBrandingOptions> options) : IDeploymentBrandingService
+    IOptionsMonitor<DeploymentBrandingOptions> options) : IDeploymentBrandingService
 {
     private const int MaxAssetBytes = 256 * 1024;
     private static readonly IReadOnlySet<string> EditableFields = new HashSet<string>(StringComparer.Ordinal)
     {
-        "applicationName", "organizationName", "tagline", "supportUrl", "siteUrl"
+        "applicationName", "organizationName", "tagline", "supportUrl", "siteUrl", "gatewayUrl"
     };
 
     public async Task<EffectiveDeploymentBranding> GetEffectiveAsync(CancellationToken cancellationToken = default)
@@ -97,16 +98,17 @@ public sealed class DeploymentBrandingService(
         db.DeploymentBrandingAssets.AsNoTracking().SingleOrDefaultAsync(asset => asset.Id == assetId, cancellationToken);
 
     private EffectiveDeploymentBranding Resolve(DeploymentBrandingOverride? stored) => new(
-        ResolveText(options.Value.ApplicationName, stored?.ApplicationName, "NetRatel"),
-        ResolveText(options.Value.OrganizationName, stored?.OrganizationName, "NetRatel"),
-        ResolveText(options.Value.Tagline, stored?.Tagline, "Automation Platform"),
-        ResolveAsset(options.Value.LogoLightUrl, stored?.LogoLightAssetId, "brand/netratel-wordmark-600.webp", stored?.Version ?? 0),
-        ResolveAsset(options.Value.LogoDarkUrl, stored?.LogoDarkAssetId, "brand/netratel-wordmark-600.webp", stored?.Version ?? 0),
-        ResolveAsset(options.Value.CompactLogoUrl, stored?.CompactLogoAssetId, "brand/netratel-mark-64.png", stored?.Version ?? 0),
-        ResolveAsset(options.Value.FaviconUrl, stored?.FaviconAssetId, "favicon.ico", stored?.Version ?? 0),
-        ResolveText(options.Value.SupportUrl, stored?.SupportUrl, string.Empty),
-        ResolveText(options.Value.SiteUrl, stored?.SiteUrl, string.Empty),
-        stored?.Version ?? 0);
+        ResolveText(options.CurrentValue.ApplicationName, stored?.ApplicationName, "NetRatel"),
+        ResolveText(options.CurrentValue.OrganizationName, stored?.OrganizationName, "NetRatel"),
+        ResolveText(options.CurrentValue.Tagline, stored?.Tagline, "Automation Platform"),
+        ResolveAsset(options.CurrentValue.LogoLightUrl, stored?.LogoLightAssetId, "brand/netratel-wordmark-600.webp", stored?.Version ?? 0),
+        ResolveAsset(options.CurrentValue.LogoDarkUrl, stored?.LogoDarkAssetId, "brand/netratel-wordmark-600.webp", stored?.Version ?? 0),
+        ResolveAsset(options.CurrentValue.CompactLogoUrl, stored?.CompactLogoAssetId, "brand/netratel-mark-64.png", stored?.Version ?? 0),
+        ResolveAsset(options.CurrentValue.FaviconUrl, stored?.FaviconAssetId, "favicon.ico", stored?.Version ?? 0),
+        ResolveText(options.CurrentValue.SupportUrl, stored?.SupportUrl, string.Empty),
+        ResolveText(options.CurrentValue.SiteUrl, stored?.SiteUrl, string.Empty),
+        stored?.Version ?? 0,
+        ResolveText(options.CurrentValue.GatewayUrl, stored?.GatewayUrl, string.Empty));
 
     private static BrandingField ResolveText(string? deployment, string? stored, string fallback) =>
         !string.IsNullOrWhiteSpace(deployment) ? new(deployment.Trim(), BrandingValueSource.Deployment, true) :
@@ -120,15 +122,16 @@ public sealed class DeploymentBrandingService(
 
     private bool IsDeploymentManaged(string field) => field switch
     {
-        "applicationName" => !string.IsNullOrWhiteSpace(options.Value.ApplicationName),
-        "organizationName" => !string.IsNullOrWhiteSpace(options.Value.OrganizationName),
-        "tagline" => !string.IsNullOrWhiteSpace(options.Value.Tagline),
-        "logoLightAssetId" => !string.IsNullOrWhiteSpace(options.Value.LogoLightUrl),
-        "logoDarkAssetId" => !string.IsNullOrWhiteSpace(options.Value.LogoDarkUrl),
-        "compactLogoAssetId" => !string.IsNullOrWhiteSpace(options.Value.CompactLogoUrl),
-        "faviconAssetId" => !string.IsNullOrWhiteSpace(options.Value.FaviconUrl),
-        "supportUrl" => !string.IsNullOrWhiteSpace(options.Value.SupportUrl),
-        "siteUrl" => !string.IsNullOrWhiteSpace(options.Value.SiteUrl),
+        "applicationName" => !string.IsNullOrWhiteSpace(options.CurrentValue.ApplicationName),
+        "organizationName" => !string.IsNullOrWhiteSpace(options.CurrentValue.OrganizationName),
+        "tagline" => !string.IsNullOrWhiteSpace(options.CurrentValue.Tagline),
+        "logoLightAssetId" => !string.IsNullOrWhiteSpace(options.CurrentValue.LogoLightUrl),
+        "logoDarkAssetId" => !string.IsNullOrWhiteSpace(options.CurrentValue.LogoDarkUrl),
+        "compactLogoAssetId" => !string.IsNullOrWhiteSpace(options.CurrentValue.CompactLogoUrl),
+        "faviconAssetId" => !string.IsNullOrWhiteSpace(options.CurrentValue.FaviconUrl),
+        "supportUrl" => !string.IsNullOrWhiteSpace(options.CurrentValue.SupportUrl),
+        "siteUrl" => !string.IsNullOrWhiteSpace(options.CurrentValue.SiteUrl),
+        "gatewayUrl" => !string.IsNullOrWhiteSpace(options.CurrentValue.GatewayUrl),
         _ => throw new BrandingValidationException($"Unknown branding field '{field}'.")
     };
 
@@ -138,7 +141,12 @@ public sealed class DeploymentBrandingService(
         var max = field is "tagline" ? 160 : field is "applicationName" or "organizationName" ? 96 : 2048;
         if (string.IsNullOrWhiteSpace(value) || value.Length > max || value.Any(char.IsControl))
             throw new BrandingValidationException($"'{field}' must be non-empty, no longer than {max} characters, and contain no control characters.");
-        if (field is "supportUrl" or "siteUrl" && !BrandingUrl.IsSafeConfiguredUrl(value))
+        if (field is "siteUrl" or "gatewayUrl")
+        {
+            try { return ClientEndpointAddress.NormalizePublicOrigin(value); }
+            catch (ArgumentException) { throw new BrandingValidationException($"'{field}' must be a public HTTPS origin."); }
+        }
+        if (field is "supportUrl" && !BrandingUrl.IsSafeConfiguredUrl(value))
             throw new BrandingValidationException($"'{field}' must be an absolute HTTPS URL or a root-relative path.");
         return value;
     }
@@ -152,6 +160,7 @@ public sealed class DeploymentBrandingService(
             case "tagline": stored.Tagline = value; break;
             case "supportUrl": stored.SupportUrl = value; break;
             case "siteUrl": stored.SiteUrl = value; break;
+            case "gatewayUrl": stored.GatewayUrl = value; break;
             case "logoLightAssetId": stored.LogoLightAssetId = value; break;
             case "logoDarkAssetId": stored.LogoDarkAssetId = value; break;
             case "compactLogoAssetId": stored.CompactLogoAssetId = value; break;

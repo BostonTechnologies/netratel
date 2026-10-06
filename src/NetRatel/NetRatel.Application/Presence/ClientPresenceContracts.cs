@@ -27,7 +27,12 @@ public enum PresenceMessageDisposition
     StaleConnectionEpoch = 2,
     StaleSequence = 3,
     ConnectionMismatch = 4,
-    NoActiveSession = 5
+    NoActiveSession = 5,
+    AuthenticationExpired = 6,
+    InvalidAuthenticationRenewal = 7,
+    AdmissionExpired = 8,
+    AdmissionCancelled = 9,
+    AdmissionCapacityExceeded = 10
 }
 
 public interface IClientPresenceMessage
@@ -43,7 +48,10 @@ public sealed record StartGatewayPresenceSession(
     string AgentVersion,
     IReadOnlyList<string> Capabilities,
     string? LegacySpacetimeIdentity,
-    DateTimeOffset ReceivedAtUtc) : IClientPresenceMessage;
+    DateTimeOffset ReceivedAtUtc,
+    DateTimeOffset? AuthenticationExpiresAtUtc = null,
+    DateTimeOffset? AdmissionExpiresAtUtc = null,
+    bool ProvisionalAdmission = false) : IClientPresenceMessage;
 
 public sealed record GatewayPresenceSessionStarted(
     ClientKey Client,
@@ -60,14 +68,16 @@ public sealed record RecordGatewayHeartbeat(
     ulong Sequence,
     DateTimeOffset ReceivedAtUtc,
     double? HeartbeatRoundTripMilliseconds = null,
-    DateTimeOffset? LatencyMeasuredAtUtc = null) : IClientPresenceMessage;
+    DateTimeOffset? LatencyMeasuredAtUtc = null,
+    DateTimeOffset? RenewedAuthenticationExpiresAtUtc = null) : IClientPresenceMessage;
 
 public sealed record EndGatewayPresenceSession(
     ClientKey Client,
     Guid ConnectionId,
     long ConnectionEpoch,
     string Reason,
-    DateTimeOffset ReceivedAtUtc) : IClientPresenceMessage;
+    DateTimeOffset ReceivedAtUtc,
+    bool CancelPendingAdmission = false) : IClientPresenceMessage;
 
 public sealed record PresenceMessageResult(
     ClientKey Client,
@@ -91,7 +101,9 @@ public sealed record ClientPresenceSnapshot(
     bool IsAuthoritative,
     double? LatencyMilliseconds = null,
     DateTimeOffset? LatencyMeasuredAtUtc = null,
-    DateTimeOffset? LatencyExpiresAtUtc = null);
+    DateTimeOffset? LatencyExpiresAtUtc = null,
+    DateTimeOffset? AuthenticationExpiresAtUtc = null,
+    long? OwnershipRevision = null);
 
 public sealed record ProbeClientPresenceRoute;
 
@@ -107,6 +119,8 @@ public sealed record ClientPresenceRouteStatus(
 public sealed record TrackClientPresenceSnapshot(ClientPresenceSnapshot Snapshot);
 
 public sealed record GetClientPresenceReadModel;
+public sealed record GetClientPresenceReadModelByKey(ClientKey Client);
+public sealed record ClientPresenceReadModelPointSnapshot(ClientKey Client, ClientPresenceSnapshot? Snapshot);
 
 public sealed record ClientPresenceReadModelSnapshot(
     long Revision,
@@ -154,4 +168,6 @@ public interface IClientPresenceRouter
 public interface IClientPresenceReadModel
 {
     Task<ClientPresenceReadModelSnapshot> GetSnapshotAsync(CancellationToken cancellationToken);
+    /// <summary>Point read from the separate projection; never queues behind per-client epoch allocation.</summary>
+    Task<ClientPresenceSnapshot?> GetClientSnapshotAsync(ClientKey client, CancellationToken cancellationToken);
 }

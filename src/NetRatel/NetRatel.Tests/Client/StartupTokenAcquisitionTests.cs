@@ -2,7 +2,7 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using FluentAssertions;
+using AwesomeAssertions;
 using NetRatel.Application.ClientAuth;
 using NetRatel.Client;
 using NetRatel.Client.Service.Auth;

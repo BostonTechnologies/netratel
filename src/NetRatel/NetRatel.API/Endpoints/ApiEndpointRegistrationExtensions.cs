@@ -5,6 +5,7 @@ using NetRatel.API.Endpoints.Systems;
 using NetRatel.API.Gateway;
 using NetRatel.API.Realtime;
 using NetRatel.API.Realtime.Operations;
+using NetRatel.API.Endpoints.ServiceLinks;
 
 namespace NetRatel.API.Endpoints;
 
@@ -84,6 +85,9 @@ public static class ApiEndpointRegistrationExtensions
         app.MapDeploymentBrandingEndpoints();
         app.MapAccessAdministrationEndpoints();
         app.MapM2MTokenEndpoints();
+        app.MapServiceClientEndpoints();
+        app.MapServiceIdentityMetadataEndpoints();
+        app.MapServiceLinkEndpoints();
         app.MapInternalEndpoints();
 
         app.MapAdminConnectivityEndpoints();

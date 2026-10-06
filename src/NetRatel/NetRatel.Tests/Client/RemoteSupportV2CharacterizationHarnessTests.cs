@@ -1,4 +1,4 @@
-using FluentAssertions;
+using AwesomeAssertions;
 using NetRatel.Client.Service.RemoteDesktop;
 using NetRatel.Client.Service.RemoteSupport;
 using NetRatel.Shared.Contracts.RemoteSupport;

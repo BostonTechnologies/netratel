@@ -12,6 +12,7 @@ using Microsoft.Extensions.Options;
 using NetRatel.Application.Common;
 using NetRatel.Application.Agents;
 using NetRatel.Infrastructure.Services;
+using NetRatel.API.Services.Orchestration;
 
 namespace NetRatel.API.Endpoints.Systems;
 
@@ -56,6 +57,9 @@ public static class SystemEndpoints
                 ?? user.FindFirst("azp")?.Value
                 ?? user.FindFirst("sub")?.Value;
 
+            if (OrchestrationManagedAuthorization.IsManaged(user))
+                return Results.Ok(new { issuer, audience, client_id = clientId, tenant_id = user.FindFirst("tenant_id")?.Value });
+
             var claims = user.Claims
                 .GroupBy(c => c.Type, StringComparer.Ordinal)
                 .ToDictionary(g => g.Key, g => g.Select(c => c.Value).ToArray(), StringComparer.Ordinal);
@@ -68,11 +72,7 @@ public static class SystemEndpoints
                 claims
             });
         })
-        .RequireAuthorization(new AuthorizeAttribute
-        {
-            AuthenticationSchemes = "M2M",
-            Policy = "M2MOnly"
-        });
+        .RequireAuthorization(OrchestrationManagedAuthorization.ReadPolicy);
 
         group.MapPost("/token", (
             HttpContext http,

@@ -15,7 +15,7 @@
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
-    <PackageReference Include="FluentAssertions" Version="8.11.0" />
+    <PackageReference Include="AwesomeAssertions" Version="9.6.0" PrivateAssets="all" />
     <PackageReference Include="Microsoft.AspNetCore.TestHost" Version="10.0.12" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="10.0.12" />
     <PackageReference Include="Microsoft.Testing.Extensions.TrxReport" Version="2.4.1" />
@@ -49,5 +49,11 @@
     <ProjectReference Include="..\NetRatel.Mcp.Http\NetRatel.Mcp.Http.csproj" />
     <ProjectReference Include="..\..\..\tools\NetRatel.ClientArtifactCrashProbe\NetRatel.ClientArtifactCrashProbe.csproj"
                       ReferenceOutputAssembly="false" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Infrastructure/MigrationBaselines/CommittedConnectionOwnershipFoundation.sql"
+                      LogicalName="NetRatel.Tests.MigrationBaselines.CommittedConnectionOwnership.Foundation.sql" />
+    <EmbeddedResource Include="Infrastructure/MigrationBaselines/CommittedConnectionOwnershipHistoricalServices.sql"
+                      LogicalName="NetRatel.Tests.MigrationBaselines.CommittedConnectionOwnership.HistoricalServices.sql" />
   </ItemGroup>
 </Project>

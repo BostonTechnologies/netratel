@@ -26,6 +26,11 @@ public sealed class NetRatelExternalServiceCallbackRequest
 public interface INetRatelExternalServiceCallbackClient
 {
     Task SendStatusAsync(NetRatelExternalServiceCallbackRequest request, string correlationId, CancellationToken ct = default);
+    async Task<bool> TrySendStatusAsync(NetRatelExternalServiceCallbackRequest request, string correlationId, CancellationToken ct = default)
+    {
+        await SendStatusAsync(request, correlationId, ct);
+        return true;
+    }
 }
 
 public interface INetRatelSystemTokenService

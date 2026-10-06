@@ -26,7 +26,13 @@ public sealed class PostgreSqlPersistenceFixture : IAsyncLifetime
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
         await using var command = new NpgsqlCommand($"CREATE DATABASE \"{database}\"", connection);
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-        var builder = new NpgsqlConnectionStringBuilder(_container.GetConnectionString()) { Database = database };
+        // Each case owns a separate database. Keeping an idle pool for every case
+        // exhausts the shared server during the full provider suite.
+        var builder = new NpgsqlConnectionStringBuilder(_container.GetConnectionString())
+        {
+            Database = database,
+            Pooling = false
+        };
         return builder.ConnectionString;
     }
 }

@@ -11,6 +11,8 @@ using NetRatel.Akka.Configuration;
 using NetRatel.Akka.Hosting;
 using NetRatel.Akka.Observability;
 using NetRatel.Application.Commands;
+using NetRatel.Application.Presence;
+using NetRatel.Infrastructure.Persistence;
 using NetRatel.Application.Services;
 
 namespace NetRatel.API.Gateway;
@@ -35,6 +37,13 @@ public static class NetRatelAkkaRuntimeRegistration
             serviceProvider.GetRequiredService<IOptions<NetRatelAkkaOptions>>().Value);
 
         services.TryAddSingleton(TimeProvider.System);
+        services.TryAddSingleton(serviceProvider =>
+        {
+            var options = serviceProvider.GetRequiredService<NetRatelAkkaOptions>();
+            return new OwnershipPolicy(TimeSpan.FromSeconds(options.GatewayAdmissionTimeoutSeconds),
+                options.HeartbeatTimeout, options.AskTimeout).Validate();
+        });
+        services.AddNetRatelClientServicesPersistence();
         services.AddNetRatelAkkaActors(
             configuration[$"{NetRatelAkkaOptions.SectionName}:ActorSystemName"] ?? "NetRatel");
         services.AddGrpc();

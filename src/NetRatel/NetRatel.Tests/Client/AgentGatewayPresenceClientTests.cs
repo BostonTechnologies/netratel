@@ -4,7 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using FluentAssertions;
+using AwesomeAssertions;
 using Grpc.Core;
 using Grpc.Net.Client;
 using Microsoft.AspNetCore.Builder;
@@ -24,6 +24,31 @@ namespace NetRatel.Tests.Client;
 
 public sealed class AgentGatewayPresenceClientTests
 {
+    [Fact]
+    public async Task RunAsync_TokenRenewalCannotBeSuppressedByAStalledFirstAcknowledgement()
+    {
+        var gateway = new RefreshGatewayService(holdFirstHeartbeatAcknowledgement: true);
+        using var host = await BuildHostAsync(gateway);
+        using var stopping = new CancellationTokenSource();
+        var agent = new AgentGatewayPresenceClient(
+            new GatewayClientOptions { Endpoint = "https://gateway.test" },
+            new ExpiringTokenService(), 7, Guid.NewGuid(), "test", [], _ => { },
+            createHttpHandler: _ => host.GetTestServer().CreateHandler());
+
+        var run = agent.RunAsync(stopping.Token);
+        try
+        {
+            await gateway.FirstHeartbeatReceived.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await gateway.SecondAdmission.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            gateway.Hellos.Should().HaveCount(2, "renewal must retire a black-holed owner rather than wait indefinitely for its ACK");
+        }
+        finally
+        {
+            stopping.Cancel();
+            await run.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+    }
+
     [Fact]
     public async Task RunAsync_ReportsOnlyPreviousValidatedHeartbeatRoundTrip_InSamePresenceSession()
     {

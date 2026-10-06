@@ -8,6 +8,12 @@ dotnet build NetRatel.sln --configuration Release --no-restore
 dotnet test NetRatel.sln --configuration Release --no-build
 ```
 
+Test assertions use [AwesomeAssertions 9.6.0](https://www.nuget.org/packages/AwesomeAssertions/9.6.0),
+whose package metadata and [source license](https://github.com/AwesomeAssertions/AwesomeAssertions/blob/e3679af2c80726b2d046faba91cbebee0b6175aa/LICENSE)
+declare Apache-2.0. Keep assertion dependencies permissively licensed for both
+commercial and non-commercial use; verify package and source licensing when
+updating them. Test projects mark this dependency private with `PrivateAssets="all"`.
+
 `tools/ci/verify-product-version.sh` checks that all first-party projects
 evaluate to the version in `Directory.Build.props`. Run the public
 disclosure checks before preparing an export:

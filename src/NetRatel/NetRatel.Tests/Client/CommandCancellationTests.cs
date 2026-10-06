@@ -4,7 +4,7 @@ using System.Runtime.Versioning;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text.Json;
-using FluentAssertions;
+using AwesomeAssertions;
 using NetRatel.Client.Service.Shells;
 using NetRatel.Client.Service.Tasks;
 using NetRatel.Shared.Contracts.Execution;

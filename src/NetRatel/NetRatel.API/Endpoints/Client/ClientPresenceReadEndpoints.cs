@@ -167,15 +167,8 @@ public static class ClientPresenceReadEndpoints
     {
         var key = new ClientKey(agent.TenantId, agent.AgentId);
         snapshots.TryGetValue(key, out var snapshot);
-        var supported = snapshot?.Capabilities.Contains("terminal-gateway", StringComparer.OrdinalIgnoreCase) == true;
-        var availability = terminals?.GetAvailability(key);
-        var terminal = new GatewayTerminalCapabilityDto(
-            supported,
-            availability?.AvailableShells ?? Array.Empty<string>(),
-            availability is not null,
-            supported ? availability is null ? "terminal_transport_not_admitted" : null : "terminal_not_supported",
-            availability?.RegisteredAtUtc);
-        var file = MapFile(snapshot, files?.GetAvailability(key));
+        var terminal = MapTerminal(snapshot, terminals.GetAvailability(key));
+        var file = MapFile(snapshot, files.GetAvailability(key));
 
         return new ClientPresenceDto(
             PresenceId: $"gateway:{agent.TenantId}:{agent.AgentId:N}",
@@ -202,7 +195,36 @@ public static class ClientPresenceReadEndpoints
             LatencyExpiresAtUtc: snapshot?.LatencyExpiresAtUtc);
     }
 
-    private static GatewayFileCapabilityDto MapFile(
+    internal static GatewayTerminalCapabilityDto MapTerminal(
+        ClientPresenceSnapshot? presence,
+        GatewayTerminalAvailability? availability)
+    {
+        var supported = presence?.Capabilities.Contains("terminal-gateway", StringComparer.OrdinalIgnoreCase) == true;
+        var ready = supported && availability is not null &&
+            MatchesAuthoritativePresence(presence, availability.ConnectionId, availability.ConnectionEpoch);
+        var reason = presence?.Status != ClientPresenceStatus.Online
+            ? "terminal_presence_offline"
+            : presence?.IsAuthoritative != true
+                ? "terminal_presence_not_authoritative"
+                : !supported
+                    ? "terminal_not_supported"
+                    : availability is null
+                        ? "terminal_transport_not_admitted"
+                        : !ready ? "terminal_transport_fenced" : null;
+        return new GatewayTerminalCapabilityDto(
+            supported,
+            availability?.AvailableShells ?? Array.Empty<string>(),
+            ready,
+            reason,
+            availability?.RegisteredAtUtc);
+    }
+
+    private static bool MatchesAuthoritativePresence(ClientPresenceSnapshot? presence, Guid connectionId, ulong epoch) =>
+        connectionId != Guid.Empty && epoch != 0 &&
+        presence is { Status: ClientPresenceStatus.Online, IsAuthoritative: true, ConnectionEpoch: > 0 } &&
+        presence.ConnectionId == connectionId && (ulong)presence.ConnectionEpoch.Value == epoch;
+
+    internal static GatewayFileCapabilityDto MapFile(
         ClientPresenceSnapshot? presence,
         GatewayFileGatewayAvailability? availability)
     {
@@ -211,17 +233,18 @@ public static class ClientPresenceReadEndpoints
         var advertised = presence?.Capabilities.Contains("file-gateway", StringComparer.OrdinalIgnoreCase) == true;
         var sessionActive = availability is not null;
         var fenceMatchesPresence = availability is not null &&
-            presence is { Status: ClientPresenceStatus.Online, ConnectionId: var connectionId, ConnectionEpoch: var epoch } &&
-            connectionId == availability.ConnectionId && epoch == checked((long)availability.ConnectionEpoch);
+            MatchesAuthoritativePresence(presence, availability.ConnectionId, availability.ConnectionEpoch);
         var readinessReason = presence?.Status != ClientPresenceStatus.Online
             ? "file_gateway_presence_offline"
-            : !advertised
-                ? "file_gateway_not_advertised"
-                : !sessionActive
-                    ? "file_gateway_not_admitted"
-                    : !fenceMatchesPresence
-                        ? "file_gateway_fenced"
-                        : null;
+            : presence?.IsAuthoritative != true
+                ? "file_gateway_presence_not_authoritative"
+                : !advertised
+                    ? "file_gateway_not_advertised"
+                    : !sessionActive
+                        ? "file_gateway_not_admitted"
+                        : !fenceMatchesPresence
+                            ? "file_gateway_fenced"
+                            : null;
 
         return new GatewayFileCapabilityDto(
             Configured: advertised,

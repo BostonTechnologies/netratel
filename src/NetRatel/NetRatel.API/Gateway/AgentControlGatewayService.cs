@@ -42,6 +42,7 @@ public sealed class AgentControlGatewayService(
 
         var hello = requestStream.Current;
         var session = await ValidateHelloAsync(hello, authenticatedIdentity, context.CancellationToken).ConfigureAwait(false);
+        await using var authority = await AgentGatewayAuthenticationLifetime.AttachAsync(context, session.Client, session.ConnectionId, session.ConnectionEpoch).ConfigureAwait(false);
         AgentControlSessionRegistration registration;
         try
         {
@@ -57,7 +58,7 @@ public sealed class AgentControlGatewayService(
         }
 
         using var admissionCancellation = CancellationTokenSource.CreateLinkedTokenSource(
-            context.CancellationToken, registration.CompletionToken);
+            authority.Token, registration.CompletionToken);
         try
         {
             await RequirePresenceAsync(session.Client, session.ConnectionId, session.ConnectionEpoch, admissionCancellation.Token).ConfigureAwait(false);
@@ -83,11 +84,12 @@ public sealed class AgentControlGatewayService(
                 ulong lastSequence = 0;
                 while (await requestStream.MoveNext(cancellationToken).ConfigureAwait(false))
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     RequireCurrent(registration);
                     ProcessInboundFrame(requestStream.Current, session, ref lastSequence, registration);
                 }
             }, cancellationToken => WriteOutboundFramesAsync(registration, responseStream, cancellationToken),
-                context.CancellationToken, registration.CompletionToken, logger).ConfigureAwait(false);
+                authority.Token, registration.CompletionToken, logger, context.GetHttpContext().Abort).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (registration.CompletionToken.IsCancellationRequested && !context.CancellationToken.IsCancellationRequested)
         {
@@ -175,6 +177,7 @@ public sealed class AgentControlGatewayService(
         {
             RequireCurrent(registration);
             await responseStream.WriteAsync(frame, cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
         }
     }
 

@@ -1,0 +1,86 @@
+@using NetRatel.Shared.ServiceIdentity
+@using NetRatel.Web.Services.ServiceLinks
+@inject HelpdeskM2MApiClient Api
+
+<MudExpansionPanels Elevation="0"><MudExpansionPanel Text="Service issuer and public addresses (advanced)" data-testid="helpdesk-public-settings">
+    <MudStack Spacing="2">
+        @if (settings is not null)
+        {
+            <MudText Typo="Typo.body2">These instance-wide service settings are shared by manual clients and reciprocal links. Web, REST API, issuer and native Gateway addresses have separate purposes.</MudText>
+            <MudText Typo="Typo.caption">Installation: @settings.InstanceId · settings revision @settings.Revision. Native Gateway: @(settings.GatewayBaseUrl ?? "Not configured") · read-only here.</MudText>
+            <MudCheckBox T="bool" @bind-Value="enabled" Label="Enable service identity" Disabled="@(Disabled || busy || Locked("enabled"))" Dense="true" />
+            @if (settings.Enabled && !settings.ReciprocalLinkEnabled)
+            {
+                <MudAlert Dense="true" Severity="Severity.Info" data-testid="helpdesk-reciprocal-unavailable">Reciprocal setup is disabled by current deployment settings. Manual service clients remain available under the enabled issuer.</MudAlert>
+            }
+            else
+            {
+                <MudText Typo="Typo.caption">Reciprocal setup: @(settings.ReciprocalLinkEnabled ? "Enabled" : "Disabled"). It follows service identity unless deployment settings disable it.</MudText>
+            }
+            <MudTextField Label="Canonical NetRatel Web base URL" @bind-Value="webUrl" Immediate="true" Variant="Variant.Outlined" Margin="Margin.Dense" ReadOnly="@Locked("webBaseUrl")" Disabled="@(Disabled || busy)" />
+            <MudTextField Label="Canonical NetRatel REST API base URL" @bind-Value="apiUrl" Immediate="true" Variant="Variant.Outlined" Margin="Margin.Dense" ReadOnly="@Locked("apiBaseUrl")" Disabled="@(Disabled || busy)" />
+            <MudTextField Label="Canonical service issuer" @bind-Value="issuer" Immediate="true" Variant="Variant.Outlined" Margin="Margin.Dense" ReadOnly="@Locked("issuer")" Disabled="@(Disabled || busy)" />
+            <MudTextField Label="Service API audience" @bind-Value="audience" Immediate="true" Variant="Variant.Outlined" Margin="Margin.Dense" ReadOnly="@Locked("audience")" Disabled="@(Disabled || busy)" />
+            @if (settings.LockedFields.Length > 0)
+            {
+                <MudAlert Dense="true" Severity="Severity.Info">Deployment configuration locks @string.Join(", ", settings.LockedFields). Edit those values in deployment; Web setup preserves their effective values.</MudAlert>
+            }
+            <MudText Typo="Typo.caption">Editable values are saved centrally and take effect without a restart. Changing a peer's already-approved address or issuer still requires a new approved connection revision.</MudText>
+            <MudButton OnClick="SaveAsync" Variant="Variant.Outlined" Disabled="@(!CanSave)" data-testid="helpdesk-save-public-settings">Save service settings</MudButton>
+        }
+        else if (error is null)
+        {
+            <MudText Typo="Typo.caption">These settings require current server-wide integration management permission.</MudText>
+        }
+        @if (saved) { <MudAlert Dense="true" Severity="Severity.Success">The service settings are saved. Continue setup with their current canonical identity.</MudAlert> }
+        @if (error is not null) { <MudAlert Dense="true" Severity="Severity.Warning">@error</MudAlert> }
+    </MudStack>
+</MudExpansionPanel></MudExpansionPanels>
+
+@code {
+    [Parameter] public EventCallback<bool> ReadyChanged { get; set; }
+    [Parameter] public EventCallback<bool> ReciprocalReadyChanged { get; set; }
+    [Parameter] public EventCallback<bool> BusyChanged { get; set; }
+    [Parameter] public bool Disabled { get; set; }
+    private ServicePublicSettingsResponse? settings;
+    private bool enabled, busy, saved;
+    private string webUrl = "", apiUrl = "", issuer = "", audience = "";
+    private string? error;
+    private bool Locked(string field) => settings?.LockedFields.Contains(field, StringComparer.OrdinalIgnoreCase) == true;
+    private bool CanSave => settings is not null && !Disabled && !busy && (!enabled || ValidUrl(webUrl) && ValidUrl(apiUrl) && ValidUrl(issuer) && !string.IsNullOrWhiteSpace(audience));
+    protected override async Task OnInitializedAsync()
+    {
+        try { Set(await Api.GetPublicSettingsAsync()); await NotifyReadyAsync(); }
+        catch (ServiceAdministrationException exception) when (exception.StatusCode is System.Net.HttpStatusCode.Forbidden or System.Net.HttpStatusCode.Unauthorized) { }
+        catch (Exception exception) when (exception is OperationCanceledException or HttpRequestException or ServiceAdministrationException or System.Text.Json.JsonException or InvalidDataException)
+        { error = "Effective service settings could not be loaded. Refresh before changing the instance identity."; }
+    }
+    private void Set(ServicePublicSettingsResponse value) { settings = value; enabled = value.Enabled; webUrl = value.WebBaseUrl; apiUrl = value.ApiBaseUrl; issuer = value.Issuer; audience = value.Audience; }
+    private async Task SaveAsync()
+    {
+        if (!CanSave || settings is null) return;
+        busy = true; saved = false; error = null;
+        await BusyChanged.InvokeAsync(true);
+        try
+        {
+            var update = new ServicePublicSettingsUpdate(
+                Locked("enabled") ? settings.Enabled : enabled,
+                Locked("webBaseUrl") ? settings.WebBaseUrl : webUrl.Trim(),
+                Locked("apiBaseUrl") ? settings.ApiBaseUrl : apiUrl.Trim(),
+                Locked("issuer") ? settings.Issuer : issuer.Trim(),
+                Locked("audience") ? settings.Audience : audience.Trim(),
+                settings.Revision);
+            Set(await Api.UpdatePublicSettingsAsync(update)); saved = true; await NotifyReadyAsync();
+        }
+        catch (Exception exception) when (exception is OperationCanceledException or HttpRequestException or ServiceAdministrationException or System.Text.Json.JsonException or InvalidDataException)
+        { error = "The settings change could not be confirmed. Reload the effective revision and deployment locks before retrying."; }
+        finally { busy = false; await BusyChanged.InvokeAsync(false); }
+    }
+    private async Task NotifyReadyAsync()
+    {
+        var issuerReady = settings is { Enabled: true } && ValidUrl(settings.WebBaseUrl) && ValidUrl(settings.ApiBaseUrl) && ValidUrl(settings.Issuer) && !string.IsNullOrWhiteSpace(settings.Audience);
+        await ReadyChanged.InvokeAsync(issuerReady);
+        await ReciprocalReadyChanged.InvokeAsync(issuerReady && settings!.ReciprocalLinkEnabled);
+    }
+    private static bool ValidUrl(string value) => Uri.TryCreate(value, UriKind.Absolute, out var uri) && uri.Scheme is "https" or "http" && string.IsNullOrEmpty(uri.UserInfo) && string.IsNullOrEmpty(uri.Query) && string.IsNullOrEmpty(uri.Fragment);
+}

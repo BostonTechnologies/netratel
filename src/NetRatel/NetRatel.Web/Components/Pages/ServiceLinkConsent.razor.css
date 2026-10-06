@@ -1,0 +1,2 @@
+.helpdesk-consent-checkbox { display: flex; align-items: flex-start; gap: .65rem; margin-block: 1rem; overflow-wrap: anywhere; }
+.helpdesk-consent-checkbox input { flex-shrink: 0; width: 1.15rem; height: 1.15rem; margin-top: .15rem; }

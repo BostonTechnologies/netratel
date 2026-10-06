@@ -1,6 +1,6 @@
 using System.Net;
 using System.Text.Json;
-using FluentAssertions;
+using AwesomeAssertions;
 using NetRatel.Web.Services.Clients;
 using Xunit;
 

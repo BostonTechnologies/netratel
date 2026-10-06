@@ -117,7 +117,7 @@ public sealed class JobObservationStore(
     public void RecordRecoverySucceeded() =>
         IncrementSaturating(ref _recoverySuccessCount);
 
-    private static async Task<CommandCorrelation> ResolveCommandCorrelationAsync(
+    internal static async Task<CommandCorrelation> ResolveCommandCorrelationAsync(
         OrchestratorDbContext db,
         IJobObservation observation,
         CancellationToken cancellationToken)
@@ -146,7 +146,7 @@ public sealed class JobObservationStore(
             : new(JobCommandCorrelationStatus.Missing, null);
     }
 
-    private static JobShadowObservationRecord ToRecord(
+    internal static JobShadowObservationRecord ToRecord(
         IJobObservation observation,
         CommandCorrelation correlation,
         DateTimeOffset recordedAtUtc)
@@ -194,7 +194,7 @@ public sealed class JobObservationStore(
         return record;
     }
 
-    private static PersistedJobObservation ToObservation(JobShadowObservationRecord record)
+    internal static PersistedJobObservation ToObservation(JobShadowObservationRecord record)
     {
         IJobObservation observation = record.Kind switch
         {
@@ -244,7 +244,7 @@ public sealed class JobObservationStore(
             existing.CommandCorrelationStatus,
             existing.CorrelatedCommandStatus);
 
-    private static void Validate(IJobObservation observation)
+    internal static void Validate(IJobObservation observation)
     {
         ArgumentNullException.ThrowIfNull(observation);
         if (observation.SourceEventId <= 0 || observation.JobRunId == 0 || observation.JobId == 0 ||
@@ -287,7 +287,7 @@ public sealed class JobObservationStore(
         }
     }
 
-    private sealed record CommandCorrelation(
+    internal sealed record CommandCorrelation(
         JobCommandCorrelationStatus Status,
         CommandLifecycleStatus? CommandStatus);
 }

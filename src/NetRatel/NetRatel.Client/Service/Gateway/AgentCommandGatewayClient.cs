@@ -58,7 +58,7 @@ public sealed class AgentCommandGatewayClient(
     {
         using var channel = GrpcChannel.ForAddress(endpoint);
         var client = new AgentCommandGateway.AgentCommandGatewayClient(channel);
-        var headers = new Metadata { { "Authorization", $"Bearer {accessToken}" } };
+        var headers = new Metadata { { "Authorization", $"Bearer {session.GetAccessToken(accessToken)}" } };
         using var call = client.Connect(headers, cancellationToken: stoppingToken);
         using var writer = new CommandGatewayWriter(call.RequestStream, session, options.ProtocolVersion);
         using var taskManager = new ClientTaskManager(useInProcPowerShell, writer.PublishStatusAsync, message => log($"Command execution error: {message}"));

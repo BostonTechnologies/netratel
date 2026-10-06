@@ -4,6 +4,7 @@ using Akka.Cluster.Sharding;
 using Akka.Hosting;
 using Akka.Remote.Hosting;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using NetRatel.Akka.Commands;
 using NetRatel.Akka.Configuration;
 using NetRatel.Akka.Jobs;
@@ -42,15 +43,19 @@ public sealed class JobRuntimeRegion;
 /// <summary>Marker used for type-safe access to the V2 remote-support authority router.</summary>
 public sealed class RemoteSupportSessionAuthorityRegion;
 
+public enum PresenceAuthorityMode { Durable, ActorOnlyFixture }
+
 public static class NetRatelAkkaActorRegistration
 {
     public static IServiceCollection AddNetRatelAkkaActors(
         this IServiceCollection services,
-        string actorSystemName)
+        string actorSystemName,
+        PresenceAuthorityMode presenceMode = PresenceAuthorityMode.Durable)
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentException.ThrowIfNullOrWhiteSpace(actorSystemName);
 
+        services.TryAddSingleton(TimeProvider.System);
         services.AddAkka(actorSystemName, (akka, serviceProvider) =>
         {
             var options = serviceProvider.GetRequiredService<NetRatelAkkaOptions>();
@@ -58,7 +63,7 @@ public static class NetRatelAkkaActorRegistration
             var jobObservations = serviceProvider.GetRequiredService<IJobObservationStore>();
             var remoteSupportLifecycle = serviceProvider.GetRequiredService<IRemoteSupportLifecycleStore>();
             var servicesStore = serviceProvider.GetRequiredService<IClientServicesStore>();
-            var connectionEpochs = serviceProvider.GetRequiredService<IClientConnectionEpochStore>();
+            var connectionEpochs = presenceMode == PresenceAuthorityMode.Durable ? serviceProvider.GetRequiredService<IClientConnectionEpochStore>() : null;
             var timeProvider = serviceProvider.GetRequiredService<TimeProvider>();
             akka
                 .WithActorSystemLivenessCheck();
@@ -82,7 +87,7 @@ public static class NetRatelAkkaActorRegistration
                         "client-presence-read-model");
                     registry.Register<ClientPresenceReadModelRegion>(presenceReadModel);
                     var presenceRegion = system.ActorOf(
-                        ClientPresenceRouterActor.Props(options, presenceReadModel, connectionEpochs),
+                        ClientPresenceRouterActor.Props(options, presenceReadModel, timeProvider: timeProvider, ownership: connectionEpochs),
                         "client-presence");
                     registry.Register<ClientPresenceRegion>(presenceRegion);
 
@@ -124,10 +129,12 @@ public static class NetRatelAkkaActorRegistration
         services.AddSingleton<IClientPresenceRouter>(serviceProvider =>
             new AkkaClientPresenceRouter(
                 serviceProvider.GetRequiredService<IRequiredActor<ClientPresenceRegion>>(),
-                serviceProvider.GetRequiredService<NetRatelAkkaOptions>().AskTimeout));
+                serviceProvider.GetRequiredService<NetRatelAkkaOptions>().AskTimeout,
+                timeProvider: serviceProvider.GetRequiredService<TimeProvider>(),
+                ownership: presenceMode == PresenceAuthorityMode.Durable ? serviceProvider.GetRequiredService<IClientConnectionEpochStore>() : null));
         services.AddSingleton<IClientPresenceReadModel>(serviceProvider =>
             new AkkaClientPresenceReadModel(
-                serviceProvider.GetRequiredService<IRequiredActor<ClientPresenceReadModelRegion>>(),
+                () => serviceProvider.GetRequiredService<IRequiredActor<ClientPresenceReadModelRegion>>(),
                 serviceProvider.GetRequiredService<NetRatelAkkaOptions>().AskTimeout));
         services.AddSingleton<IClientTelemetryRouter>(serviceProvider =>
             new AkkaClientTelemetryRouter(
@@ -339,6 +346,41 @@ internal sealed class AkkaJobRuntimeRouter : IJobRuntimeRouter
             .ConfigureAwait(false);
     }
 
+    public async Task<T> ExecuteOwnedAsync<T>(ulong jobRunId, Func<IJobRunOwner, CancellationToken, Task<T>> operation,
+        CancellationToken cancellationToken)
+    {
+        var region = await _region.GetAsync(cancellationToken).ConfigureAwait(false);
+        using var ownedDeadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        ownedDeadline.CancelAfter(_askTimeout);
+        var finished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var ownership = 0; // queued=0, started=1, cancelled before start=2
+        try
+        {
+            var result = await region.Ask<object>(new ExecuteOwnedJobRun(jobRunId,
+                async (owner, ct) =>
+                {
+                    if (Interlocked.CompareExchange(ref ownership, 1, 0) != 0)
+                        throw new OperationCanceledException(ct);
+                    try
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        return await operation(owner, ct).ConfigureAwait(false);
+                    }
+                    finally { finished.TrySetResult(); }
+                }, ownedDeadline.Token),
+                _askTimeout, ownedDeadline.Token).ConfigureAwait(false);
+            return (T)result;
+        }
+        finally
+        {
+            ownedDeadline.Cancel();
+            // Expiry fences queued work. Started work must finish rollback and
+            // release its connection before the caller can dispose its DI scope.
+            if (Interlocked.CompareExchange(ref ownership, 2, 0) == 1)
+                await finished.Task.ConfigureAwait(false);
+        }
+    }
+
     public async Task<JobRunView> GetStateAsync(
         ulong jobRunId,
         CancellationToken cancellationToken)
@@ -448,79 +490,135 @@ internal sealed class AkkaClientPresenceRouter : IClientPresenceRouter
 {
     private readonly IRequiredActor<ClientPresenceRegion> _region;
     private readonly TimeSpan _askTimeout;
+    private readonly TimeProvider _clock;
+    private readonly IClientConnectionEpochStore? _ownership;
 
-    public AkkaClientPresenceRouter(
-        IRequiredActor<ClientPresenceRegion> region,
-        TimeSpan askTimeout)
+    public AkkaClientPresenceRouter(IRequiredActor<ClientPresenceRegion> region, TimeSpan askTimeout,
+        TimeProvider? timeProvider = null, IClientConnectionEpochStore? ownership = null)
+    { _region = region; _askTimeout = askTimeout; _clock = timeProvider ?? TimeProvider.System; _ownership = ownership; }
+
+    public async Task<GatewayPresenceSessionStarted> StartSessionAsync(StartGatewayPresenceSession message, CancellationToken cancellationToken)
     {
-        _region = region;
-        _askTimeout = askTimeout;
+        try
+        {
+            var region = await _region.GetAsync(cancellationToken).ConfigureAwait(false);
+            return await region.Ask<GatewayPresenceSessionStarted>(message, _askTimeout, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            ObserveExactCancellation(message.Client, message.ConnectionId, null);
+            throw;
+        }
     }
 
-    public async Task<GatewayPresenceSessionStarted> StartSessionAsync(
-        StartGatewayPresenceSession message,
-        CancellationToken cancellationToken)
+    public async Task<PresenceMessageResult> RecordHeartbeatAsync(RecordGatewayHeartbeat message, CancellationToken cancellationToken)
     {
-        var region = await _region.GetAsync(cancellationToken).ConfigureAwait(false);
-        return await region.Ask<GatewayPresenceSessionStarted>(message, _askTimeout, cancellationToken)
-            .ConfigureAwait(false);
+        try
+        {
+            var region = await _region.GetAsync(cancellationToken).ConfigureAwait(false);
+            return await region.Ask<PresenceMessageResult>(message, _askTimeout, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            ObserveExactCancellation(message.Client, message.ConnectionId, message.ConnectionEpoch);
+            throw;
+        }
     }
 
-    public async Task<PresenceMessageResult> RecordHeartbeatAsync(
-        RecordGatewayHeartbeat message,
-        CancellationToken cancellationToken)
+    public async Task<PresenceMessageResult> EndSessionAsync(EndGatewayPresenceSession message, CancellationToken cancellationToken)
     {
-        var region = await _region.GetAsync(cancellationToken).ConfigureAwait(false);
-        return await region.Ask<PresenceMessageResult>(message, _askTimeout, cancellationToken)
-            .ConfigureAwait(false);
+        try
+        {
+            var region = await _region.GetAsync(cancellationToken).ConfigureAwait(false);
+            return await region.Ask<PresenceMessageResult>(message, _askTimeout, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            ObserveExactCancellation(message.Client, message.ConnectionId, message.ConnectionEpoch > 0 ? message.ConnectionEpoch : null);
+            throw;
+        }
     }
 
-    public async Task<PresenceMessageResult> EndSessionAsync(
-        EndGatewayPresenceSession message,
-        CancellationToken cancellationToken)
+    public async Task<ClientPresenceSnapshot> GetSnapshotAsync(ClientKey client, CancellationToken cancellationToken)
     {
-        var region = await _region.GetAsync(cancellationToken).ConfigureAwait(false);
-        return await region.Ask<PresenceMessageResult>(message, _askTimeout, cancellationToken)
-            .ConfigureAwait(false);
-    }
-
-    public async Task<ClientPresenceSnapshot> GetSnapshotAsync(
-        ClientKey client,
-        CancellationToken cancellationToken)
-    {
-        var region = await _region.GetAsync(cancellationToken).ConfigureAwait(false);
-        return await region.Ask<ClientPresenceSnapshot>(new GetClientPresence(client), _askTimeout, cancellationToken)
-            .ConfigureAwait(false);
+        if (_ownership is null)
+        {
+            // Available only through the explicit actor-only fixture mode.
+            var region = await _region.GetAsync(cancellationToken).ConfigureAwait(false);
+            return await region.Ask<ClientPresenceSnapshot>(new GetClientPresence(client), _askTimeout, cancellationToken).ConfigureAwait(false);
+        }
+        using var timeout = new CancellationTokenSource(_askTimeout, _clock);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
+        var current = await _ownership.GetCurrentAsync(client, linked.Token).ConfigureAwait(false);
+        // No local actor/read-model fallback on a DB failure, and no entity
+        // creation merely to query shared cross-replica authority.
+        return current is null ? new(client, ClientPresenceStatus.Unknown, null, null, 0, null, null,
+            Array.Empty<string>(), null, "postgres-committed-presence", IsAuthoritative: true) :
+            new(client, current.IsEffective(_clock.GetUtcNow()) ? ClientPresenceStatus.Online : ClientPresenceStatus.Offline,
+                current.Owner.Epoch, current.Owner.ConnectionId, current.Sequence, current.LastReceivedAtUtc,
+                current.Metadata.AgentVersion, current.Metadata.Capabilities, current.Metadata.LegacySpacetimeIdentity,
+                "postgres-committed-presence", IsAuthoritative: true,
+                AuthenticationExpiresAtUtc: current.AuthenticationExpiresAtUtc, OwnershipRevision: current.Revision);
     }
 
     public async Task<ClientPresenceRouteStatus> ProbeAsync(CancellationToken cancellationToken)
     {
         var region = await _region.GetAsync(cancellationToken).ConfigureAwait(false);
-        return await region.Ask<ClientPresenceRouteStatus>(new ProbeClientPresenceRoute(), _askTimeout, cancellationToken)
-            .ConfigureAwait(false);
+        return await region.Ask<ClientPresenceRouteStatus>(new ProbeClientPresenceRoute(), _askTimeout, cancellationToken).ConfigureAwait(false);
+    }
+
+    private void ObserveExactCancellation(ClientKey client, Guid connection, long? epoch)
+    {
+        if (_ownership is null) return;
+        // The caller's cancelled physical deadline is not extended by cleanup.
+        // Finite store operations run independently and can retire only this
+        // captured physical connection. Unknown commit outcome is not rollback.
+        var cleanup = CancelAndRetireAsync(_ownership, client, connection, epoch, _clock.GetUtcNow());
+        _ = cleanup.ContinueWith(task => _ = task.Exception, CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+    }
+
+    private static async Task CancelAndRetireAsync(IClientConnectionEpochStore store, ClientKey client,
+        Guid connection, long? epoch, DateTimeOffset receivedAt)
+    {
+        var cancel = store.CancelAdmissionAsync(client, connection, epoch, receivedAt, CancellationToken.None);
+        var retire = epoch is > 0 ? store.RetireAsync(new(client, connection, epoch.Value), RetirementReason.ExplicitClose,
+            null, CancellationToken.None) : Task.FromResult(new WriteResult(OwnershipDisposition.Accepted));
+        await Task.WhenAll(cancel, retire).ConfigureAwait(false);
     }
 }
 
 internal sealed class AkkaClientPresenceReadModel : IClientPresenceReadModel
 {
-    private readonly IRequiredActor<ClientPresenceReadModelRegion> _region;
+    private readonly Lazy<IRequiredActor<ClientPresenceReadModelRegion>> _region;
     private readonly TimeSpan _askTimeout;
 
     public AkkaClientPresenceReadModel(
-        IRequiredActor<ClientPresenceReadModelRegion> region,
+        Func<IRequiredActor<ClientPresenceReadModelRegion>> regionFactory,
         TimeSpan askTimeout)
     {
-        _region = region;
+        // Monitoring directory construction occurs during ActorSystem configuration.
+        // Resolve the required actor only on a read, after the system can register it.
+        _region = new(regionFactory);
         _askTimeout = askTimeout;
     }
 
     public async Task<ClientPresenceReadModelSnapshot> GetSnapshotAsync(CancellationToken cancellationToken)
     {
-        var region = await _region.GetAsync(cancellationToken).ConfigureAwait(false);
+        var region = await _region.Value.GetAsync(cancellationToken).ConfigureAwait(false);
         return await region.Ask<ClientPresenceReadModelSnapshot>(
                 new GetClientPresenceReadModel(),
                 _askTimeout,
                 cancellationToken)
             .ConfigureAwait(false);
+    }
+
+    public async Task<ClientPresenceSnapshot?> GetClientSnapshotAsync(ClientKey client, CancellationToken cancellationToken)
+    {
+        if (!client.IsValid) throw new ArgumentException("invalid_client");
+        var region = await _region.Value.GetAsync(cancellationToken).ConfigureAwait(false);
+        var result = await region.Ask<ClientPresenceReadModelPointSnapshot>(new GetClientPresenceReadModelByKey(client),
+            _askTimeout, cancellationToken).ConfigureAwait(false);
+        return result.Client == client ? result.Snapshot : throw new InvalidOperationException("wrong_presence_point_client");
     }
 }

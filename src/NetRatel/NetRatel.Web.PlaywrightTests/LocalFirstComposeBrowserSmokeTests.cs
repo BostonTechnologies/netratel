@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using Microsoft.Playwright;
 
 namespace NetRatel.Web.PlaywrightTests;
@@ -210,6 +211,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await page.SetViewportSizeAsync(1440, 1100);
         await CaptureReviewScreenshotAsync(page, "drawer-desktop");
         await page.SetViewportSizeAsync(390, 844);
+        await VerifyManualHelpdeskServiceJourneyAsync(playwright, page, webUrl);
         await VerifyLocalAccountSecurityJourneyAsync(browser, page, webUrl);
 
         var credentialOutputPath = Environment.GetEnvironmentVariable("NETRATEL_LOCAL_FIRST_INTEGRATION_CREDENTIALS_FILE");
@@ -227,10 +229,152 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         }
 
         await page.GotoAsync(new Uri(webUrl, "setup").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        // Wait for the interactive render so ready text from prerendered HTML
+        // cannot satisfy the assertion before hydration replaces that DOM.
+        await page.GetByTestId("setup-client-ready").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Attached });
         await page.GetByText("This installation is ready.").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        // Require the conservative form to retire within the existing timeout.
+        await page.GetByTestId("setup-proof").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Detached });
         Assert.Equal(0, await page.GetByTestId("setup-proof").CountAsync());
         Assert.Empty(pageErrors);
     }
+
+    private static Task VerifyManualHelpdeskServiceJourneyAsync(IPlaywright playwright, IPage page, Uri webUrl) =>
+        ManualHelpdeskServiceDiagnostics.RunAsync(setPhase => VerifyManualHelpdeskServiceJourneyCoreAsync(playwright, page, webUrl, setPhase));
+
+    private static async Task VerifyManualHelpdeskServiceJourneyCoreAsync(IPlaywright playwright, IPage page, Uri webUrl, Action<ManualHelpdeskServicePhase> setPhase)
+    {
+        const string tenantName = "Browser M2M resource tenant";
+        const string serviceName = "Browser reciprocal service client";
+        var humanHeaders = new Dictionary<string, string> { ["X-NetRatel-Account-Request"] = "1" };
+        var tenantResponse = await page.Context.APIRequest.PostAsync(new Uri(webUrl, "api/v1/tenants").ToString(), new()
+        {
+            DataObject = new { name = tenantName }, Headers = humanHeaders
+        });
+        Assert.Equal(201, tenantResponse.Status);
+        using var tenant = JsonDocument.Parse(await tenantResponse.TextAsync());
+        var tenantId = tenant.RootElement.GetProperty("tenantId").GetInt32();
+        var enrollmentResponse = await page.Context.APIRequest.PostAsync(new Uri(webUrl, $"api/v1/tenants/{tenantId}/enrollment-codes").ToString(), new()
+        {
+            DataObject = new { validForMinutes = 10, maxUses = 1, note = "Disposable browser service-authority resource" }, Headers = humanHeaders
+        });
+        Assert.Equal(200, enrollmentResponse.Status);
+        using var enrollment = JsonDocument.Parse(await enrollmentResponse.TextAsync());
+        using var deviceKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var enrolled = await page.Context.APIRequest.PostAsync(new Uri(webUrl, "api/v1/agents/enroll").ToString(), new()
+        {
+            DataObject = new
+            {
+                enrollmentCode = enrollment.RootElement.GetProperty("enrollmentCode").GetString(),
+                publicKey = Convert.ToBase64String(deviceKey.ExportSubjectPublicKeyInfo()), keyAlgorithm = "ecdsa-p256"
+            }
+        });
+        Assert.Equal(200, enrolled.Status);
+        using var agent = JsonDocument.Parse(await enrolled.TextAsync());
+        var agentId = agent.RootElement.GetProperty("agentId").GetGuid().ToString("D");
+        var canonical = webUrl.ToString().TrimEnd('/');
+
+        setPhase(ManualHelpdeskServicePhase.PublicSettings);
+        await page.GotoAsync(new Uri(webUrl, "account/integration-credentials?purpose=helpdesk-m2m").ToString());
+        await page.GetByTestId("helpdesk-m2m-setup").WaitForAsync();
+        await page.GetByText("Service issuer and public addresses (advanced)", new() { Exact = true }).ClickAsync();
+        var enabled = page.GetByRole(AriaRole.Checkbox, new() { Name = "Enable service identity", Exact = true });
+        await enabled.CheckAsync();
+        foreach (var (label, value) in new[]
+        {
+            ("Canonical NetRatel Web base URL", canonical), ("Canonical NetRatel REST API base URL", canonical),
+            ("Canonical service issuer", canonical + "/services"), ("Service API audience", "netratel.browser.services")
+        })
+        {
+            var field = page.GetByLabel(label, new() { Exact = true });
+            if (await field.GetAttributeAsync("readonly") is null) await field.FillAsync(value);
+            else Assert.False(string.IsNullOrWhiteSpace(await field.InputValueAsync()));
+        }
+        await page.GetByTestId("helpdesk-save-public-settings").ClickAsync();
+        await page.GetByText("The service settings are saved. Continue setup with their current canonical identity.", new() { Exact = true }).WaitForAsync();
+        await page.GetByText("Service issuer and public addresses (advanced)", new() { Exact = true }).ClickAsync();
+        setPhase(ManualHelpdeskServicePhase.CreateClient);
+        await page.GetByTestId("helpdesk-local-tenant").ClickAsync();
+        await page.GetByRole(AriaRole.Option, new() { Name = $"{tenantName} (tenant {tenantId})", Exact = true }).ClickAsync();
+        await page.GetByTestId("helpdesk-resources").ClickAsync();
+        await page.GetByRole(AriaRole.Option).Filter(new() { HasText = agentId }).ClickAsync();
+        await page.Keyboard.PressAsync("Escape");
+        await page.GetByText("Manual service credentials (advanced)", new() { Exact = true }).ClickAsync();
+        await page.GetByTestId("helpdesk-service-name").FillAsync(serviceName);
+        await page.GetByTestId("helpdesk-peer-instance").FillAsync("9589655a-a21e-401d-9d15-44ebdb866cad");
+        await page.GetByTestId("helpdesk-peer-tenant").FillAsync("98c36043-156f-4399-b3d0-b36b8b5f4dbe");
+        await page.GetByRole(AriaRole.Checkbox, new() { Name = "I approve this exact peer, tenant and resource grant", Exact = true }).CheckAsync();
+        await page.GetByTestId("helpdesk-create-service").ClickAsync();
+        await page.GetByTestId("helpdesk-service-secret-reveal").WaitForAsync();
+        // This actual-secret journey never records a screenshot, trace, request body or storage state.
+        var clientId = await page.GetByLabel("Service client ID", new() { Exact = true }).InputValueAsync();
+        var clientSecret = await page.GetByLabel("New service client secret", new() { Exact = true }).InputValueAsync();
+        var tokenEndpoint = await page.GetByLabel("Service token endpoint", new() { Exact = true }).InputValueAsync();
+        Assert.False(string.IsNullOrWhiteSpace(clientSecret));
+        Assert.Equal(canonical + "/connect/token", tokenEndpoint);
+        await page.GetByRole(AriaRole.Button, new() { Name = "I stored the service secret", Exact = true }).ClickAsync();
+        await page.GetByRole(AriaRole.Button, new() { Name = "Close", Exact = true }).ClickAsync();
+        Assert.Equal(0, await page.GetByLabel("New service client secret", new() { Exact = true }).CountAsync());
+
+        var machine = await playwright.APIRequest.NewContextAsync(new() { IgnoreHTTPSErrors = IgnoreSyntheticHttpsErrors });
+        try
+        {
+            setPhase(ManualHelpdeskServicePhase.IssueToken);
+            var token = await AcquireManualServiceTokenAsync(machine, tokenEndpoint, clientId, clientSecret);
+            setPhase(ManualHelpdeskServicePhase.VerifyCatalog);
+            var tokenHeaders = new Dictionary<string, string> { ["Authorization"] = "Bearer " + token };
+            Assert.Equal(200, (await machine.GetAsync(new Uri(webUrl, "api/v1/system/m2m/ping").ToString(), new() { Headers = tokenHeaders })).Status);
+            var catalog = await machine.GetAsync(new Uri(webUrl, "internal/catalog/tenants").ToString(), new() { Headers = tokenHeaders });
+            Assert.Equal(200, catalog.Status);
+            using var catalogJson = JsonDocument.Parse(await catalog.TextAsync());
+            Assert.Equal(1, catalogJson.RootElement.GetArrayLength());
+            Assert.Equal(tenantId, catalogJson.RootElement[0].GetProperty("tenantId").GetInt32());
+            Assert.Equal(403, (await machine.GetAsync(new Uri(webUrl, "api/v1/tenants").ToString(), new() { Headers = tokenHeaders })).Status);
+
+            setPhase(ManualHelpdeskServicePhase.RotateClient);
+            await page.GetByText("Service clients and rotation", new() { Exact = true }).ClickAsync();
+            await page.GetByRole(AriaRole.Button, new() { Name = "Refresh service clients", Exact = true }).ClickAsync();
+            var row = page.GetByTestId("helpdesk-service-client-row").Filter(new() { HasText = serviceName });
+            await row.GetByRole(AriaRole.Button, new() { Name = "Rotate manual client", Exact = true }).ClickAsync();
+            await page.GetByRole(AriaRole.Button, new() { Name = "Confirm rotation", Exact = true }).ClickAsync();
+            await page.GetByTestId("helpdesk-service-secret-reveal").WaitForAsync();
+            var successor = await page.GetByLabel("New service client secret", new() { Exact = true }).InputValueAsync();
+            Assert.True(!string.IsNullOrWhiteSpace(successor) && successor != clientSecret, "Rotation must return a distinct successor secret once.");
+            await page.GetByRole(AriaRole.Button, new() { Name = "I stored the service secret", Exact = true }).ClickAsync();
+            var successorToken = await AcquireManualServiceTokenAsync(machine, tokenEndpoint, clientId, successor);
+            Assert.Equal(200, (await machine.GetAsync(new Uri(webUrl, "api/v1/system/m2m/ping").ToString(), new() { Headers = new Dictionary<string, string> { ["Authorization"] = "Bearer " + successorToken } })).Status);
+            setPhase(ManualHelpdeskServicePhase.RevokeClient);
+            await row.GetByRole(AriaRole.Button, new() { Name = "Revoke manual client", Exact = true }).ClickAsync();
+            await page.GetByRole(AriaRole.Button, new() { Name = "Confirm revocation", Exact = true }).ClickAsync();
+            await page.GetByText(serviceName + " · revoked", new() { Exact = true }).WaitForAsync();
+            foreach (var cached in new[] { token, successorToken })
+            {
+                var denied = await machine.GetAsync(new Uri(webUrl, "api/v1/system/m2m/ping").ToString(), new() { Headers = new Dictionary<string, string> { ["Authorization"] = "Bearer " + cached } });
+                Assert.Contains(denied.Status, new[] { 401, 403 });
+            }
+            var revoked = await machine.PostAsync(tokenEndpoint, new() { Data = ManualTokenBody(clientId, successor), Headers = new Dictionary<string, string> { ["Content-Type"] = "application/x-www-form-urlencoded" } });
+            Assert.Equal(401, revoked.Status);
+            setPhase(ManualHelpdeskServicePhase.VerifyBrowserCleanup);
+            await page.ReloadAsync();
+            await page.GetByTestId("helpdesk-service-link-list").WaitForAsync();
+            Assert.Equal(0, await page.GetByLabel("New service client secret", new() { Exact = true }).CountAsync());
+            Assert.Equal(0, await page.EvaluateAsync<int>("() => Object.keys(localStorage).concat(Object.keys(sessionStorage)).filter(key => /pairing|verifier|browser.?state|client.?secret/i.test(key)).length"));
+        }
+        finally { await machine.DisposeAsync(); }
+    }
+
+    private static async Task<string> AcquireManualServiceTokenAsync(IAPIRequestContext machine, string endpoint, string clientId, string secret)
+    {
+        var response = await machine.PostAsync(endpoint, new() { Data = ManualTokenBody(clientId, secret), Headers = new Dictionary<string, string> { ["Content-Type"] = "application/x-www-form-urlencoded" } });
+        Assert.Equal(200, response.Status);
+        Assert.Equal("no-store", response.Headers["cache-control"]);
+        using var payload = JsonDocument.Parse(await response.TextAsync());
+        var token = payload.RootElement.GetProperty("access_token").GetString();
+        Assert.False(string.IsNullOrWhiteSpace(token));
+        return token!;
+    }
+    private static string ManualTokenBody(string clientId, string secret) =>
+        "grant_type=client_credentials&client_id=" + Uri.EscapeDataString(clientId) + "&client_secret=" + Uri.EscapeDataString(secret) + "&scope=netratel.orchestration.read";
 
     private static Uri RequireUri(string name) => Uri.TryCreate(RequireValue(name).TrimEnd('/') + "/", UriKind.Absolute, out var uri)
         ? uri
@@ -446,6 +590,8 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         var fetchedScript = await firstFetch.TextAsync();
         Assert.Equal(fetchedScript, previewScript);
         Assert.StartsWith("#!/usr/bin/env bash", fetchedScript);
+        Assert.Contains($"API_BASE='{publicOrigin}'", fetchedScript);
+        Assert.Contains($"GATEWAY_ENDPOINT='{publicOrigin}'", fetchedScript);
         Assert.Contains("no-store", firstFetch.Headers["cache-control"]);
         var head = await anonymous.APIRequest.HeadAsync(routedUrl);
         Assert.True(head.Ok);
@@ -482,6 +628,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
     private static async Task VerifyPublishedClientInstallAsync(IBrowser browser, IPage page, Uri webUrl)
     {
         var version = RequireValue("NETRATEL_LOCAL_FIRST_PUBLISHED_RELEASE_VERSION");
+        var escapedVersion = System.Text.RegularExpressions.Regex.Escape(version);
         var certificate = RequireValue("NETRATEL_LOCAL_FIRST_CA_CERT");
         Assert.True(File.Exists(certificate));
         await page.GotoAsync(new Uri(webUrl, "clients/mgmt").ToString(),
@@ -491,18 +638,33 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             State = WaitForSelectorState.Attached
         });
         var release = page.GetByTestId("github-release-table").GetByRole(AriaRole.Row)
-            .Filter(new() { HasText = version });
+            .Filter(new()
+            {
+                Has = page.Locator("td[data-label='Release'] .mud-typography-caption").Filter(new()
+                {
+                    HasTextRegex = new System.Text.RegularExpressions.Regex("^" + escapedVersion + @"\s+·\s+")
+                })
+            });
         await release.WaitForAsync(new LocatorWaitForOptions { Timeout = 60_000 });
         Assert.Contains("linux-x64", await release.InnerTextAsync());
         await release.GetByRole(AriaRole.Button, new() { Name = "Import pack", Exact = true }).ClickAsync();
-        await page.WaitForFunctionAsync("""
-            version => Array.from(document.querySelectorAll('[data-testid="github-release-table"] tr'))
-                .some(item => item.textContent?.includes(version) && /Local:\s+(Imported|Published)/.test(item.textContent ?? ''))
-            """, version, new PageWaitForFunctionOptions { Timeout = 300_000 });
+        await release.Filter(new()
+        {
+            Has = page.Locator("td[data-label='State']").Filter(new()
+            {
+                HasTextRegex = new System.Text.RegularExpressions.Regex(@"Local:\s+(Imported|Published)")
+            })
+        }).WaitForAsync(new LocatorWaitForOptions { Timeout = 300_000 });
 
         await page.GetByRole(AriaRole.Tab, new() { Name = "Packages" }).ClickAsync();
         var artifact = page.GetByTestId("artifact-table").GetByRole(AriaRole.Row)
-            .Filter(new() { HasText = version }).Filter(new() { HasText = "linux-x64" });
+            .Filter(new()
+            {
+                Has = page.Locator("td[data-label='Version']").Filter(new()
+                {
+                    HasTextRegex = new System.Text.RegularExpressions.Regex(@"^\s*" + escapedVersion + @"\s*$")
+                })
+            }).Filter(new() { HasText = "linux-x64" });
         await artifact.WaitForAsync(new LocatorWaitForOptions { Timeout = 30_000 });
         await artifact.GetByRole(AriaRole.Button).Last.ClickAsync();
         await page.GetByRole(AriaRole.Menuitem, new() { Name = "Generate script" }).ClickAsync();
@@ -816,7 +978,14 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         var applicationName = page.GetByLabel("Application name");
         await applicationName.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         await applicationName.FillAsync("Browser branding example");
-        await page.GetByLabel("Site URL").FillAsync(InstallLinkPublicOrigin());
+        foreach (var label in new[] { "Site URL", "Gateway URL" })
+        {
+            var field = page.GetByLabel(label);
+            if (await field.IsDisabledAsync())
+                Assert.Equal(InstallLinkPublicOrigin(), await field.InputValueAsync());
+            else
+                await field.FillAsync(InstallLinkPublicOrigin());
+        }
         await applicationName.PressAsync("Tab");
         await page.GetByTestId("branding-save").ClickAsync();
         await page.GetByText("Branding saved.", new PageGetByTextOptions { Exact = false })
@@ -837,6 +1006,8 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             var preview = page.GetByTestId("branding-preview");
             await preview.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
             Assert.Contains("Browser branding example", await preview.InnerTextAsync());
+            Assert.Equal(InstallLinkPublicOrigin(), await page.GetByLabel("Site URL").InputValueAsync());
+            Assert.Equal(InstallLinkPublicOrigin(), await page.GetByLabel("Gateway URL").InputValueAsync());
             await page.ScreenshotAsync(new PageScreenshotOptions
             {
                 Path = Path.Combine(directory, $"custom-{theme}-{name}.png"),
@@ -879,6 +1050,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             await page.GetByTestId("credential-resource").FillAsync(resource ?? throw new InvalidOperationException("An HTTP MCP resource is required."));
         }
         await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Next" }).ClickAsync();
+        var bootstrapTenantId = await SelectBootstrapTenantGrantAsync(page);
         if (name == "CI telemetry read") await AssertDialogLayoutAsync(page, "integration-access", captureSafeContent: true);
         if (name == "CI telemetry read")
         {
@@ -886,7 +1058,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             Assert.Equal(name, await page.GetByTestId("credential-name").InputValueAsync());
             await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Next" }).ClickAsync();
         }
-        await page.Locator($"[data-testid^='credential-permission-'][data-testid$='-{permission}']").First.ClickAsync();
+        await page.GetByTestId($"credential-permission-{bootstrapTenantId}-{permission}").ClickAsync();
         if (name == "CI telemetry read") await CaptureReviewScreenshotAsync(page, "integration-access-mobile");
         if (!string.IsNullOrWhiteSpace(instancePermission))
         {
@@ -915,6 +1087,30 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         return secret;
     }
 
+    private static async Task<int> SelectBootstrapTenantGrantAsync(IPage page)
+    {
+        // The real authority list is ordered by tenant name, so another journey
+        // can change the automatic first selection. Choose the exact bootstrap
+        // tenant through the rendered wizard and resolve its actual permission ID.
+        await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Remove", Exact = true }).ClickAsync();
+        await page.GetByRole(AriaRole.Combobox, new PageGetByRoleOptions { Name = "Add tenant", Exact = true }).ClickAsync();
+        await page.GetByRole(AriaRole.Option, new PageGetByRoleOptions { Name = "Browser smoke tenant", Exact = true }).ClickAsync();
+        await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Add tenant", Exact = true }).ClickAsync();
+        const string prefix = "credential-permission-";
+        const string suffix = "-telemetry.read";
+        var permission = page.Locator($"[data-testid^='{prefix}'][data-testid$='{suffix}']");
+        await permission.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        Assert.Equal(1, await permission.CountAsync());
+        var testId = await permission.GetAttributeAsync("data-testid")
+            ?? throw new InvalidOperationException("The selected bootstrap permission has no test ID.");
+        Assert.StartsWith(prefix, testId);
+        Assert.EndsWith(suffix, testId);
+        Assert.True(int.TryParse(testId.Substring(prefix.Length, testId.Length - prefix.Length - suffix.Length),
+            System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture,
+            out var bootstrapTenantId) && bootstrapTenantId > 0, "The selected bootstrap tenant ID must be a positive integer.");
+        return bootstrapTenantId;
+    }
+
     private static async Task VerifyMultiGrantWizardAsync(IPage page, Uri webUrl)
     {
         await page.GotoAsync(new Uri(webUrl, "account/integration-credentials").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
@@ -923,18 +1119,19 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await page.GetByTestId("credential-name").FillAsync("CI multi-grant");
         await page.GetByTestId("credential-name").PressAsync("Tab");
         await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Next" }).ClickAsync();
+        var bootstrapTenantId = await SelectBootstrapTenantGrantAsync(page);
         await AssertDialogLayoutAsync(page, "integration-multi-grant-access", captureSafeContent: true);
         foreach (var permission in new[] { "telemetry.read", "file.read", "file.write" })
-            await page.GetByTestId($"credential-permission-1-{permission}").ClickAsync();
+            await page.GetByTestId($"credential-permission-{bootstrapTenantId}-{permission}").ClickAsync();
         var search = page.GetByRole(AriaRole.Textbox, new PageGetByRoleOptions { Name = "Search permissions" });
         await search.FillAsync("scripts");
-        await page.GetByTestId("credential-permission-1-telemetry.read").WaitForAsync(
+        await page.GetByTestId($"credential-permission-{bootstrapTenantId}-telemetry.read").WaitForAsync(
             new LocatorWaitForOptions { State = WaitForSelectorState.Detached });
         await search.FillAsync(string.Empty);
-        await page.GetByTestId("credential-permission-1-telemetry.read").WaitForAsync(
+        await page.GetByTestId($"credential-permission-{bootstrapTenantId}-telemetry.read").WaitForAsync(
             new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         foreach (var permission in new[] { "telemetry.read", "file.read", "file.write" })
-            Assert.True(await page.GetByTestId($"credential-permission-1-{permission}").IsCheckedAsync());
+            Assert.True(await page.GetByTestId($"credential-permission-{bootstrapTenantId}-{permission}").IsCheckedAsync());
         await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Next" }).ClickAsync();
         await page.GetByTestId("create-credential").ClickAsync();
         await page.GetByTestId("credential-one-time-secret").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
@@ -974,18 +1171,13 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Next" }).ClickAsync();
         await page.Locator("[data-testid^='credential-permission-']").First.WaitForAsync(
             new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
-        var secondTenantIsDefault = await page.GetByTestId($"credential-permission-{secondTenantId}-file.write").CountAsync() == 1;
-        if (secondTenantIsDefault)
-            await page.GetByTestId($"credential-permission-{secondTenantId}-file.write").ClickAsync();
-        else
-            await page.GetByTestId("credential-permission-1-telemetry.read").ClickAsync();
-        await page.GetByRole(AriaRole.Combobox, new PageGetByRoleOptions { Name = "Add tenant" }).ClickAsync();
-        await page.GetByRole(AriaRole.Option, new PageGetByRoleOptions { Name = secondTenantIsDefault ? "Browser smoke tenant" : "Browser second tenant" }).ClickAsync();
-        await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Add tenant" }).ClickAsync();
-        if (secondTenantIsDefault)
-            await page.GetByTestId("credential-permission-1-telemetry.read").ClickAsync();
-        else
-            await page.GetByTestId($"credential-permission-{secondTenantId}-file.write").ClickAsync();
+        Assert.NotEqual(bootstrapTenantId, secondTenantId);
+        Assert.Equal(bootstrapTenantId, await SelectBootstrapTenantGrantAsync(page));
+        await page.GetByTestId($"credential-permission-{bootstrapTenantId}-telemetry.read").ClickAsync();
+        await page.GetByRole(AriaRole.Combobox, new PageGetByRoleOptions { Name = "Add tenant", Exact = true }).ClickAsync();
+        await page.GetByRole(AriaRole.Option, new PageGetByRoleOptions { Name = "Browser second tenant", Exact = true }).ClickAsync();
+        await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Add tenant", Exact = true }).ClickAsync();
+        await page.GetByTestId($"credential-permission-{secondTenantId}-file.write").ClickAsync();
         await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Next" }).ClickAsync();
         await page.GetByText("Browser smoke tenant · Read telemetry").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         await page.GetByText("Browser second tenant · Write files").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });

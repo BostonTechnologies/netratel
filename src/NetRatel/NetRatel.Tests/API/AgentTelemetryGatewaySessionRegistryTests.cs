@@ -1,4 +1,4 @@
-using FluentAssertions;
+using AwesomeAssertions;
 using Microsoft.Extensions.Configuration;
 using NetRatel.AgentGateway.Contracts.V1;
 using NetRatel.API.Gateway;
@@ -11,6 +11,47 @@ namespace NetRatel.Tests.API;
 
 public sealed class AgentTelemetryGatewaySessionRegistryTests
 {
+    [Fact]
+    public async Task ServicesKeysetPagesVisitEveryActiveRegistrationAndExcludeProvisionalOrUnsupportedClients()
+    {
+        var registry = new AgentTelemetryGatewaySessionRegistry(CreateDemand(), new GatewayTelemetryLiveRegistry());
+        var clients = Enumerable.Range(0, 257).Select(_ => new ClientKey(12, Guid.NewGuid()))
+            .OrderBy(client => client.AgentId).ToArray();
+        var registrations = new List<AgentTelemetryGatewaySessionRegistration>();
+        try
+        {
+            foreach (var client in clients)
+                registrations.Add(registry.Register(client, Guid.NewGuid(), 1, false, "services", false, true));
+            registrations.Add(registry.Register(new ClientKey(12, Guid.NewGuid()), Guid.NewGuid(), 1, false, "legacy"));
+            registrations.Add(registry.Register(new ClientKey(12, Guid.NewGuid()), Guid.NewGuid(), 1, false, "pending", true, true));
+
+            var first = registry.GetServicesSessions(128);
+            first.Items.Select(item => item.Client).Should().Equal(clients.Take(128));
+            first.NextCursor.Should().Be(clients[127]);
+
+            // Replacing and later disposing a visited stream cannot delete its
+            // active replacement from the indexed registration set.
+            var old = registrations[0];
+            var replacement = registry.Register(clients[0], Guid.NewGuid(), 2, false, "replacement", false, true);
+            registrations.Add(replacement);
+            await old.DisposeAsync();
+            registry.GetServicesSessions(1).Items.Single().RegistrationId.Should().Be(replacement.RegistrationId);
+
+            var second = registry.GetServicesSessions(128, first.NextCursor);
+            var final = registry.GetServicesSessions(128, second.NextCursor);
+            second.Items.Select(item => item.Client).Should().Equal(clients.Skip(128).Take(128));
+            final.Items.Select(item => item.Client).Should().Equal(clients.Skip(256));
+            final.NextCursor.Should().BeNull();
+            first.Items.Concat(second.Items).Concat(final.Items).Select(item => item.Client)
+                .Should().OnlyHaveUniqueItems().And.HaveCount(257);
+            registry.GetServicesSessions(128, clients[^1]).Items.Should().BeEmpty();
+        }
+        finally
+        {
+            foreach (var registration in registrations) await registration.DisposeAsync();
+        }
+    }
+
     [Fact]
     public async Task ServicesPoliciesCoalesceWithoutLosingRefreshOrReliableAcknowledgements()
     {
@@ -139,29 +180,32 @@ public sealed class AgentTelemetryGatewaySessionRegistryTests
     }
 
     [Fact]
-    public async Task ExactReconnect_RejectsOldPublication_AndProvisionalModeIsInvisible()
+    public async Task ExactReconnect_PendingReservationPreservesCommittedPublication_UntilActivation()
     {
         var registry = new AgentTelemetryGatewaySessionRegistry(CreateDemand(), new GatewayTelemetryLiveRegistry());
         var client = new ClientKey(12, Guid.NewGuid());
         var connection = Guid.NewGuid();
         await using var old = registry.Register(client, connection, 5, false, "old");
         await using var current = registry.Register(client, connection, 5, false, "current", provisional: true);
-        old.IsCurrent.Should().BeFalse();
-        old.CompletionToken.IsCancellationRequested.Should().BeTrue();
-        registry.GetStatus(client).Connected.Should().BeFalse();
+        old.IsCurrent.Should().BeTrue();
+        old.CompletionToken.IsCancellationRequested.Should().BeFalse();
+        registry.GetStatus(client).RegistrationId.Should().Be(old.RegistrationId);
         var published = false;
-        old.TryPublish(() => published = true).Should().BeFalse();
+        old.TryPublish(() => published = true).Should().BeTrue();
+        published.Should().BeTrue(); published = false;
         current.TryPublish(() => published = true).Should().BeFalse();
         published.Should().BeFalse();
-        await old.DisposeAsync();
         current.IsCurrent.Should().BeTrue();
         current.TryActivate().Should().BeTrue();
+        old.IsCurrent.Should().BeFalse(); old.CompletionToken.IsCancellationRequested.Should().BeTrue();
+        old.TryPublish(() => published = true).Should().BeFalse();
+        await old.DisposeAsync();
         current.TryPublish(() => published = true).Should().BeTrue();
         published.Should().BeTrue();
     }
 
     [Fact]
-    public async Task FailedProvisionalReplacement_ClearsPreviousLiveMode()
+    public async Task FailedProvisionalReplacement_PreservesCommittedLiveMode()
     {
         var live = new GatewayTelemetryLiveRegistry();
         var registry = new AgentTelemetryGatewaySessionRegistry(CreateDemand(), live);
@@ -172,9 +216,10 @@ public sealed class AgentTelemetryGatewaySessionRegistryTests
         live.GetMode(client)!.ConnectionState.Should().Be("Live");
         await using var candidate = registry.Register(client, connection, 5, true, "candidate", provisional: true);
         await candidate.DisposeAsync();
-        registry.GetStatus(client).Connected.Should().BeFalse();
-        live.GetMode(client)!.ConnectionState.Should().Be("Offline");
-        old.IsCurrent.Should().BeFalse();
+        registry.GetStatus(client).Connected.Should().BeTrue();
+        registry.GetStatus(client).RegistrationId.Should().Be(old.RegistrationId);
+        live.GetMode(client)!.ConnectionState.Should().Be("Live");
+        old.IsCurrent.Should().BeTrue();
     }
 
     private static TelemetrySamplingPolicyState Policy(long revision) => new(

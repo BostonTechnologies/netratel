@@ -47,7 +47,8 @@ native_services_installed=false
 tar -xzf "$bundle" -C "$bundle_extract_directory"
 [[ -f "$bundle_extract_directory/compose.images.yaml" ]] || { echo "The extracted release bundle is missing compose.images.yaml." >&2; exit 1; }
 
-legacy_compose=(docker compose --project-name "$project" -f release/compose.images.yaml -f tests/compose/oidc-smoke.compose.yaml)
+legacy_compose=(docker compose --project-name "$project" -f release/compose.images.yaml \
+  -f tests/compose/prior-release-endpoints.compose.yaml -f tests/compose/oidc-smoke.compose.yaml)
 current_compose=(docker compose --project-name "$project" -f "$bundle_extract_directory/compose.images.yaml" -f tests/compose/oidc-smoke.compose.yaml)
 
 cleanup() {
@@ -356,9 +357,11 @@ PY
 }
 
 exercise_server_offered_client_update() {
-  local version access_token agents prior_agent_id tenant_response update_request release_response
+  local version update_channel access_token agents prior_agent_id tenant_response update_request release_response
   local client_root updater_path candidate_zip attempt_response attempt_id attempt_state attempt_detail
   version="$(python3 tools/ci/product-version.py)"
+  update_channel=stable
+  if [[ "$version" == *-* ]]; then update_channel=prerelease; fi
   access_token="$(request_operator_access_token)"
   agents="$(curl --silent --show-error --fail \
     --header "Authorization: Bearer ${access_token}" \
@@ -470,7 +473,7 @@ Environment=NetRatel_CREDENTIAL_MACHINE_ID=$upgrade_machine_identity
 Environment=NetRatel_CLIENT_LOG_DIR=$native_directory/logs
 Environment=NetRatelCLIENT__Client__ApiBaseUrl=$api_url
 Environment=NetRatelCLIENT__Client__AutoUpdate__Mode=Service
-Environment=NetRatelCLIENT__Client__AutoUpdate__Channel=Prerelease
+Environment=NetRatelCLIENT__Client__AutoUpdate__Channel=$update_channel
 Environment=NetRatelCLIENT__Gateway__Endpoint=https://127.0.0.1:$NETRATEL_GATEWAY_TEST_PORT
 Environment=SSL_CERT_FILE=$smoke_ca_certificate_path
 
@@ -567,18 +570,18 @@ PY
   release_response="$(curl --silent --show-error --fail \
     --header "Authorization: Bearer ${access_token}" \
     "${api_url}/api/v1/client-updates/releases?runtimeId=linux-x64")"
-  jq -e --arg version "$version" \
-    'any(.[]; .version == $version and .channel == "prerelease" and .enabled == true)' \
+  jq -e --arg version "$version" --arg channel "$update_channel" \
+    'any(.[]; .version == $version and .channel == $channel and .enabled == true)' \
     <<<"$release_response" >/dev/null || {
-      echo "The explicitly uploaded candidate is not a published prerelease update." >&2
+      echo "The explicitly uploaded candidate is not an enabled published ${update_channel} update." >&2
       return 1
     }
   tenant_response="$(curl --silent --show-error --fail \
     --header "Authorization: Bearer ${access_token}" \
     "${api_url}/api/v1/tenants/${upgrade_tenant_id}")"
-  update_request="$(jq --arg version "$version" \
+  update_request="$(jq --arg version "$version" --arg channel "$update_channel" \
     '{name,description,location,domains,contactPerson,contactEmail,
-      autoUpdate:true,autoUpdateChannel:"prerelease",autoUpdateTargetVersion:$version}' \
+      autoUpdate:true,autoUpdateChannel:$channel,autoUpdateTargetVersion:$version}' \
     <<<"$tenant_response")"
   curl --silent --show-error --fail-with-body --request PUT \
     --header "Authorization: Bearer ${access_token}" --header 'Content-Type: application/json' \

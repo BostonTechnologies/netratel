@@ -1,5 +1,5 @@
 using System.Text.Json;
-using FluentAssertions;
+using AwesomeAssertions;
 using NetRatel.Client.Service.Tasks;
 using NetRatel.API.Services.Jobs;
 using NetRatel.Shared.Contracts.Execution;
