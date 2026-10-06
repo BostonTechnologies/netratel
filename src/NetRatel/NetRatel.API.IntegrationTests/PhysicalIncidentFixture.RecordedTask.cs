@@ -32,6 +32,7 @@ internal sealed partial class PhysicalIncidentFixture
             Assert.True(step.IsSuccessStatusCode, $"The actual bounded job step returned HTTP {(int)step.StatusCode}.");
 
         await pair.ActivateAsync(ct); // Both human consents, exchanged actual credentials, verification, durable commit.
+        await pair.RatelDesk.WaitForPostActivationSensitiveWindowAsync(ct);
         var link = pair.Review.GrantSummary.LinkId;
         Assert.Equal(agent, pair.NetRatel.ResourceId);
         using (var settings = await pair.RatelDesk.Administrator.GetAsync("/api/v1/admin/orchestration/", ct))
