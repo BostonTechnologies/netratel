@@ -223,6 +223,11 @@ internal sealed partial class LiveOwnerPair
     public async Task WriteReceiptAsync(string outcome, string phase, IPage? page)
     {
         string? product = null, route = null;
+        if (page is null && phase == "wait-product-readiness")
+        {
+            product = readinessProduct;
+            route = readinessRoute;
+        }
         if (page is not null && Uri.TryCreate(page.Url, UriKind.Absolute, out var current))
         {
             product = current.GetLeftPart(UriPartial.Authority) == NetRatelWeb ? "netratel" : current.GetLeftPart(UriPartial.Authority) == RatelDeskWeb ? "rateldesk" : "unknown";
@@ -235,7 +240,8 @@ internal sealed partial class LiveOwnerPair
             actualRuntime = "production NetRatel source-image Web/API/migrations/Pg + independently pinned published RatelDesk Web/API/Pg",
             proofScope = "actual foundation owner browser provisioning, exact two consents, original-session Continue, truthful partial/recovery and read-only connection test; no Flow delivery or recorded callback execution claim",
             transport = "disposable private HTTP with explicit fixture-only opt-in; separate canonical Web/API addresses",
-            product, route, lastHttpStatus, images, databaseVersions, identities = new { netRatelInstanceId, ratelDeskInstanceId, sourceInstanceId, NetRatelWeb, NetRatelApi, RatelDeskWeb, RatelDeskApi, tenantId, organizationId, customerId, agentId, definitionId },
+            product, route, lastHttpStatus = page is null && phase == "wait-product-readiness" ? readinessHttpStatus : lastHttpStatus,
+            images, databaseVersions, identities = new { netRatelInstanceId, ratelDeskInstanceId, sourceInstanceId, NetRatelWeb, NetRatelApi, RatelDeskWeb, RatelDeskApi, tenantId, organizationId, customerId, agentId, definitionId },
             original, ownerCommandCounts = new { start = OwnerCommandCount("start"), responderConsent = OwnerCommandCount("respond"), finalConsent = OwnerCommandCount("confirm"), continuation = OwnerCommandCount("continue") },
             netRatel = SafeStatus(finalNrStatus), ratelDesk = SafeStatus(finalRdStatus), readOnlyProbePassed,
             incidentDeliveryReady = false, browserPageErrorCount = pageErrorCount,

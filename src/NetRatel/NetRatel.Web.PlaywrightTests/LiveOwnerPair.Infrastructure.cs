@@ -44,6 +44,8 @@ internal sealed partial class LiveOwnerPair : IAsyncDisposable
     private int pageErrorCount;
     private int approvalHopCount, callbackHopCount, protectedHopFailures;
     private int? lastHttpStatus;
+    private string? readinessProduct, readinessRoute;
+    private int? readinessHttpStatus;
     private ServiceLinkAdminStatus? finalNrStatus, finalRdStatus;
     private ServiceLinkMetadata? nrMetadata, rdMetadata;
     private OriginalObservation? original;
@@ -199,6 +201,7 @@ internal sealed partial class LiveOwnerPair : IAsyncDisposable
         var nrWeb = new Dictionary<string, string>
         {
             ["ASPNETCORE_ENVIRONMENT"] = "Production", ["ASPNETCORE_URLS"] = "http://+:9111", ["ApiBaseUrl"] = "http://nr-api:9222",
+            ["ReverseProxy__Clusters__apiCluster__Destinations__api1__Address"] = "http://nr-api:9222/",
             ["ConnectionStrings__NetRatelDb"] = nrConnection, ["NetRatel_KEYS_DIR"] = "/var/netratel/keys",
             ["Authentication__Mode"] = "Local", ["Authentication__MachineToken__Enabled"] = "false", ["Authentication__Local__AllowInsecureLocalhost"] = "true",
             ["NO_PROXY"] = bypass, ["no_proxy"] = bypass
@@ -262,16 +265,24 @@ internal sealed partial class LiveOwnerPair : IAsyncDisposable
 
     private async Task WaitReadyAsync()
     {
-        await WaitHttpAsync(NetRatelApi + "/health/live", [200]);
-        await WaitHttpAsync(NetRatelWeb + "/api/v2/setup/status", [200]);
-        await WaitHttpAsync(RatelDeskApi + "/health/live", [200]);
-        await WaitHttpAsync(RatelDeskWeb + "/login", [200]);
+        await WaitHttpAsync("netratel", NetRatelApi + "/health/live", [200]);
+        await WaitHttpAsync("netratel", NetRatelWeb + "/api/v2/setup/status", [200]);
+        await WaitHttpAsync("rateldesk", RatelDeskApi + "/health/live", [200]);
+        await WaitHttpAsync("rateldesk", RatelDeskWeb + "/login", [200]);
     }
-    private async Task WaitHttpAsync(string address, int[] statuses)
+    private async Task WaitHttpAsync(string product, string address, int[] statuses)
     {
+        readinessProduct = product;
+        readinessRoute = new Uri(address).AbsolutePath;
+        readinessHttpStatus = null;
         for (var step = 0; step < 90; step++)
         {
-            try { using var response = await anonymous.GetAsync(address); if (statuses.Contains((int)response.StatusCode)) return; }
+            try
+            {
+                using var response = await anonymous.GetAsync(address);
+                readinessHttpStatus = (int)response.StatusCode;
+                if (statuses.Contains((int)response.StatusCode)) return;
+            }
             catch (HttpRequestException) { }
             catch (TaskCanceledException) { }
             await Task.Delay(1000);
