@@ -151,8 +151,8 @@ internal sealed partial class ServiceLinkNetRatelPeer
         private readonly Process process;
         private readonly Task stdout;
         private readonly Task stderr;
-        private readonly StartupOutputMarkers stdoutMarkers = new();
-        private readonly StartupOutputMarkers stderrMarkers = new();
+        private readonly StartupOutputMarkers stdoutMarkers;
+        private readonly StartupOutputMarkers stderrMarkers;
         private readonly string directory;
         public PhysicalApiProcess Proof { get; private set; }
         public int ProcessId => process.Id;
@@ -167,6 +167,8 @@ internal sealed partial class ServiceLinkNetRatelPeer
             this.process = process; this.directory = directory;
             BaseUrl = $"http://127.0.0.1:{restPort}";
             Proof = new(process.Id, DateTimeOffset.UtcNow, null, null, role, generation);
+            stdoutMarkers = new(restPort);
+            stderrMarkers = new(restPort);
             stdout = DrainAsync(process.StandardOutput, stdoutMarkers);
             stderr = DrainAsync(process.StandardError, stderrMarkers);
         }
@@ -192,6 +194,10 @@ internal sealed partial class ServiceLinkNetRatelPeer
                 start.Environment.Remove(key);
             start.Environment["DOTNET_ENVIRONMENT"] = "Production";
             start.Environment["ASPNETCORE_CONTENTROOT"] = directory;
+            // Both supported host prefixes identify this owned private configuration.
+            // The REST port is a nonsensitive fixture binding, identical to its probe.
+            start.Environment["DOTNET_CONTENTROOT"] = directory;
+            start.Environment["NetRatel_HTTP_PORT"] = restPort.ToString(System.Globalization.CultureInfo.InvariantCulture);
             var owned = new OwnedPhysicalApiProcess(Process.Start(start) ?? throw new InvalidOperationException("The owned production API process could not start."), directory, role, generation, restPort);
             var readinessStarted = Stopwatch.GetTimestamp();
             var probeAttempts = 0;
@@ -317,7 +323,7 @@ internal sealed partial class ServiceLinkNetRatelPeer
         private static async Task DrainAsync(StreamReader stream, StartupOutputMarkers markers)
         {
             var buffer = new char[2048];
-            var matches = new int[StartupOutputMarkers.PatternCount];
+            var matches = new int[markers.PatternCount];
             try
             {
                 int read;
@@ -332,7 +338,7 @@ internal sealed partial class ServiceLinkNetRatelPeer
         // no raw line, arbitrary exception text or private value survives a read.
         private sealed class StartupOutputMarkers
         {
-            private static readonly (string Text, string Code)[] Patterns =
+            private static readonly (string Text, string Code)[] CommonPatterns =
             [
                 ("Now listening on:", "listener-reported"),
                 ("Application started.", "host-started"),
@@ -348,18 +354,32 @@ internal sealed partial class ServiceLinkNetRatelPeer
                 ("Npgsql.NpgsqlException", "npgsql-exception-marker"),
                 ("System.TimeoutException", "timeout-exception-marker")
             ];
-            public static int PatternCount => Patterns.Length;
+            private readonly (string Text, string Code)[] patterns;
+            public int PatternCount => patterns.Length;
             private readonly object sync = new();
-            private readonly bool[] observed = new bool[Patterns.Length];
+            private readonly bool[] observed;
+
+            public StartupOutputMarkers(int expectedRestPort)
+            {
+                var port = expectedRestPort.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                patterns =
+                [
+                    .. CommonPatterns,
+                    ($"Now listening on: http://[::]:{port}\n", "expected-rest-listener-reported"),
+                    ($"Now listening on: http://0.0.0.0:{port}\n", "expected-rest-listener-reported"),
+                    ($"Now listening on: http://127.0.0.1:{port}\n", "expected-rest-listener-reported")
+                ];
+                observed = new bool[patterns.Length];
+            }
 
             public void Observe(ReadOnlySpan<char> chunk, int[] matches)
             {
                 lock (sync)
                 {
                     foreach (var character in chunk)
-                        for (var index = 0; index < Patterns.Length; index++)
+                        for (var index = 0; index < patterns.Length; index++)
                         {
-                            var text = Patterns[index].Text;
+                            var text = patterns[index].Text;
                             var matched = matches[index];
                             matched = character == text[matched] ? matched + 1 : character == text[0] ? 1 : 0;
                             if (matched == text.Length) { observed[index] = true; matched = 0; }
@@ -372,7 +392,7 @@ internal sealed partial class ServiceLinkNetRatelPeer
             {
                 lock (sync)
                 {
-                    var codes = Patterns.Where((_, index) => observed[index]).Select(x => x.Code).ToArray();
+                    var codes = patterns.Where((_, index) => observed[index]).Select(x => x.Code).Distinct(StringComparer.Ordinal).ToArray();
                     return codes.Length == 0 ? "none" : string.Join(',', codes);
                 }
             }
