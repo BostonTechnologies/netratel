@@ -144,11 +144,11 @@ public sealed class RatelDeskConnectorStateTests : AsyncBunitContext
         var api = new FakeApi { VerifiedReceiver = true }; Services.AddSingleton<IRatelDeskConnectorApiService>(api);
         var page = Render<RatelDeskConnectors>();
         page.WaitForAssertion(() => page.FindAll("[data-testid='connector-revisions']").Should().HaveCount(1));
-        await page.InvokeAsync(() => CallAsync(page.Instance, "TestAsync"));
+        await page.Find("[data-testid='connector-test']").ClickAsync(new());
         Field<RatelDeskConnectorDto>(page.Instance, "_saved").AutomaticDeliveryAvailable.Should().BeTrue();
         page.Markup.Should().Contain("saved receiver and target passed the authenticated read-only check");
         api.VerifiedReceiver = false;
-        await page.InvokeAsync(() => CallAsync(page.Instance, "TestAsync"));
+        await page.Find("[data-testid='connector-test']").ClickAsync(new());
         Field<RatelDeskConnectorDto>(page.Instance, "_saved").AutomaticDeliveryAvailable.Should().BeFalse();
         page.Markup.Should().Contain("did not establish receiver delivery readiness");
     }
@@ -178,9 +178,9 @@ public sealed class RatelDeskConnectorStateTests : AsyncBunitContext
         var api = new FakeApi(); Services.AddSingleton<IRatelDeskConnectorApiService>(api);
         var page = Render<RatelDeskConnectors>();
         page.WaitForAssertion(() => page.FindAll("[data-testid='connector-revisions']").Should().HaveCount(1));
-        await page.InvokeAsync(() => CallAsync(page.Instance, "LoadSetupAsync"));
+        await page.Find("[data-testid='connector-load-connections']").ClickAsync(new());
         page.Find("[data-testid='connector-producer']").TextContent.Should().Contain("11111111-1111-1111-1111-111111111111").And.Contain("22222222-2222-2222-2222-222222222222");
-        await page.InvokeAsync(() => CallAsync(page.Instance, "AdoptFlowSourceAsync"));
+        await page.Find("[data-testid='connector-adopt-source']").ClickAsync(new());
         api.LastAdoptRevision.Should().Be(1);
         var setup = Field<RatelDeskConnectorSetupDto>(page.Instance, "_setup");
         setup.AdoptedSourceInstanceId.Should().Be(setup.FlowSourceInstanceId.ToString("D"));

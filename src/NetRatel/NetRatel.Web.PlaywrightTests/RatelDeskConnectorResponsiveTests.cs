@@ -28,7 +28,7 @@ public sealed class RatelDeskConnectorResponsiveTests(ClientsManagementBrowserFi
         var closed = await drawer.EvaluateAsync<bool>("e => e.classList.contains('mud-drawer--closed')");
         if (width >= 1280 && closed || width < 1280 && !closed) await page.GetByTestId("navigation-toggle").ClickAsync();
         await page.WaitForFunctionAsync("() => document.documentElement.scrollWidth <= innerWidth");
-        foreach (var label in new[] { "Name", "Approved HTTPS origin", "Organization ID", "Customer ID", "Assignment ID (optional)", "Category IDs (optional, comma separated GUIDs)", "Information priority", "Warning priority", "Error priority", "Critical priority" })
+        foreach (var label in new[] { "Name", "Approved API base", "Organization ID", "Customer ID", "Assignment ID (optional)", "Category IDs (optional, comma separated GUIDs)", "Information priority", "Warning priority", "Error priority", "Critical priority" })
             await ReachableAsync(page.GetByLabel(label, new() { Exact = true }), width, height);
         foreach (var id in new[] { "connector-tenant", "connector-save", "connector-credential", "connector-test", "connector-dry-run" })
             await ReachableAsync(page.GetByTestId(id), width, height);
