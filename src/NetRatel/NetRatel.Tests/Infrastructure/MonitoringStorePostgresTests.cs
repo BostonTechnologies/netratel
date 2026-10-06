@@ -22,6 +22,69 @@ namespace NetRatel.Tests.Infrastructure;
 [Collection(PostgreSqlPersistenceCollection.Name)]
 public sealed class MonitoringStorePostgresTests(PostgreSqlPersistenceFixture fixture)
 {
+    /// <summary>Real provider persistence with deterministic unit clocks; this is not the physical DriveInfo stimulus proof.</summary>
+    [Fact]
+    public async Task Genuine_disk_collection_marker_survives_provider_restart_and_cached_frames_cannot_complete_or_rearm_hold()
+    {
+        await using var rig = await CreateRigAsync();
+        var rule = rig.Rule with
+        {
+            RuleId = Guid.NewGuid(), Name = "genuine disk collections", BreachHold = TimeSpan.FromSeconds(30),
+            RecoveryHold = TimeSpan.FromSeconds(30), FreshnessBudget = TimeSpan.FromMinutes(1),
+            Condition = new(MonitoringMetricKind.DiskFreeSpace, MonitoringNumericUnit.Bytes, 200, 500, null, null, [])
+        };
+        (await rig.Provider.GetRequiredService<IMonitoringConfigurationStore>().SaveRuleAsync(
+            new(rule, 1, Guid.NewGuid(), "disk sample regression"), default)).Disposition.Should().Be(MonitoringConfigurationWriteDisposition.Stored);
+        var key = new MonitoringSeriesKey(rig.Client.TenantId, rule.RuleId, rig.Client.AgentId, "disk:/");
+        var state = rig.Evaluator.CreateInitial(key, rule);
+        MonitoringObservationDto Sample(ulong sequence, MonitoringDiskCollectionStamp stamp) =>
+            new(key, new(rig.Fence.ConnectionEpoch, sequence), rig.Fence.EvidenceStreamId,
+                stamp.CollectedAtUtc, rig.Time.GetUtcNow(), true, true, 100, DiskCollection: stamp);
+        rig.Time.Advance(TimeSpan.FromSeconds(1));
+        var firstStamp = new MonitoringDiskCollectionStamp(Guid.NewGuid(), rig.Time.GetUtcNow(), new string('A', 64));
+        var first = rig.Evaluator.Evaluate(state, rule, Sample(1, firstStamp), rig.Fence.ConnectionEpoch, rig.Fence.EvidenceStreamId, []);
+        first.State.Phase.Should().Be(MonitoringPhase.Pending);
+        (await rig.Store.CommitAsync(new(first, 2, rig.Fence), default)).Disposition.Should().Be(MonitoringStoreWriteDisposition.Stored);
+        rig.Time.Advance(TimeSpan.FromSeconds(5));
+        var copied = rig.Evaluator.Evaluate(first.State, rule, Sample(2, firstStamp), rig.Fence.ConnectionEpoch, rig.Fence.EvidenceStreamId, []);
+        copied.State.LatestEvidence.Should().Be(first.State.LatestEvidence);
+        copied.State.WindowStartedAtUtc.Should().Be(first.State.WindowStartedAtUtc);
+        copied.State.WindowStartedObservedAtUtc.Should().Be(first.State.WindowStartedObservedAtUtc);
+        copied.Events.Should().BeEmpty(); copied.Outbox.Should().BeEmpty();
+        (await rig.Store.CommitAsync(new(copied, 2, rig.Fence), default)).Disposition.Should().Be(MonitoringStoreWriteDisposition.Stored);
+
+        await using var restarted = CreateProvider(rig.Connection, rig.Directory, rig.Time);
+        var store = restarted.GetRequiredService<IMonitoringStore>();
+        var durable = (await store.LoadSeriesAsync(key, default))!;
+        durable.LastDiskCollection.Should().Be(firstStamp);
+        durable.LatestEvidence.Should().Be(first.State.LatestEvidence);
+        durable.WindowStartedObservedAtUtc.Should().Be(first.State.WindowStartedObservedAtUtc);
+        durable.Cursor!.Sequence.Should().Be(2);
+        rig.Time.Advance(TimeSpan.FromSeconds(30));
+        var secondStamp = new MonitoringDiskCollectionStamp(Guid.NewGuid(), rig.Time.GetUtcNow(), new string('B', 64));
+        var raised = rig.Evaluator.Evaluate(durable, rule, Sample(3, secondStamp), rig.Fence.ConnectionEpoch, rig.Fence.EvidenceStreamId, []);
+        raised.State.Phase.Should().Be(MonitoringPhase.Firing); raised.Events.Should().ContainSingle();
+        (await store.CommitAsync(new(raised, 2, rig.Fence), default)).Disposition.Should().Be(MonitoringStoreWriteDisposition.Stored);
+        var occurrence = raised.State.Occurrence!.OccurrenceId;
+        rig.Time.Advance(TimeSpan.FromSeconds(1));
+        var cleared = rig.Evaluator.Clear(raised.State, rule, Guid.NewGuid(), "cached samples must not rearm");
+        (await store.CommitAsync(new(cleared, 2), default)).Disposition.Should().Be(MonitoringStoreWriteDisposition.Stored);
+        durable = (await store.LoadSeriesAsync(key, default))!;
+        durable.LastDiskCollection.Should().Be(secondStamp);
+        rig.Time.Advance(TimeSpan.FromSeconds(5));
+        var afterClear = rig.Evaluator.Evaluate(durable, rule, Sample(4, secondStamp), rig.Fence.ConnectionEpoch, rig.Fence.EvidenceStreamId, []);
+        afterClear.State.Phase.Should().Be(MonitoringPhase.Cleared);
+        afterClear.State.EvidenceQuality.Should().Be(MonitoringEvidenceQuality.Unknown);
+        afterClear.State.Occurrence!.OccurrenceId.Should().Be(occurrence);
+        afterClear.State.WindowStartedAtUtc.Should().BeNull();
+        afterClear.Events.Should().BeEmpty(); afterClear.Outbox.Should().BeEmpty();
+        (await store.CommitAsync(new(afterClear, 2, rig.Fence), default)).Disposition.Should().Be(MonitoringStoreWriteDisposition.Stored);
+        await using var scope = restarted.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+        (await db.MonitoringOccurrences.CountAsync(row => row.RuleId == rule.RuleId)).Should().Be(1);
+        (await db.MonitoringEvents.CountAsync(row => row.OccurrenceId == occurrence)).Should().Be(2);
+    }
+
     [Fact]
     public async Task Migration_and_concurrent_episode_commit_have_one_atomic_winner_and_scoped_history()
     {
@@ -30,10 +93,10 @@ public sealed class MonitoringStorePostgresTests(PostgreSqlPersistenceFixture fi
             scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>().Database.HasPendingModelChanges().Should().BeFalse();
         var initial = rig.Evaluator.CreateInitial(rig.Key, rig.Rule);
         rig.Time.Advance(TimeSpan.FromSeconds(1));
-        var first = rig.Evaluator.Evaluate(initial, rig.Rule, rig.Observation(1), 1, rig.Fence.EvidenceStreamId, []);
+        var first = rig.Evaluator.Evaluate(initial, rig.Rule, rig.Observation(1), rig.Fence.ConnectionEpoch, rig.Fence.EvidenceStreamId, []);
         (await rig.Store.CommitAsync(new(first, 1, rig.Fence), default)).Disposition.Should().Be(MonitoringStoreWriteDisposition.Stored);
         rig.Time.Advance(TimeSpan.FromSeconds(1));
-        var raised = rig.Evaluator.Evaluate(first.State, rig.Rule, rig.Observation(2), 1, rig.Fence.EvidenceStreamId, []);
+        var raised = rig.Evaluator.Evaluate(first.State, rig.Rule, rig.Observation(2), rig.Fence.ConnectionEpoch, rig.Fence.EvidenceStreamId, []);
         var outcomes = await Task.WhenAll(rig.Store.CommitAsync(new(raised, 1, rig.Fence), default), rig.Store.CommitAsync(new(raised, 1, rig.Fence), default));
         outcomes.Count(result => result.Disposition == MonitoringStoreWriteDisposition.Stored).Should().Be(1);
         outcomes.Count(result => result.Disposition == MonitoringStoreWriteDisposition.Conflict).Should().Be(1);
@@ -79,23 +142,71 @@ public sealed class MonitoringStorePostgresTests(PostgreSqlPersistenceFixture fi
     public async Task Old_delayed_begin_cannot_overwrite_new_same_epoch_registration_and_old_end_is_rejected()
     {
         await using var rig = await CreateRigAsync();
-        var old = rig.Fence with { EvidenceStreamId = Guid.NewGuid() };
+        var old = (await rig.Store.ReserveEvidenceRegistrationAsync(rig.Client, rig.Fence.ConnectionId,
+            rig.Fence.ConnectionEpoch, Guid.NewGuid(), default))!;
+        // The old process has reserved its ordinal but its physical Begin is delayed. A genuinely independent directory models replica B.
+        var otherDirectory = new TestMonitoringDirectory { Client = rig.Client };
+        await using var otherProvider = CreateProvider(rig.Connection, otherDirectory, rig.Time);
+        var other = otherProvider.GetRequiredService<IMonitoringStore>();
+        var current = (await other.ReserveEvidenceRegistrationAsync(rig.Client, rig.Fence.ConnectionId,
+            rig.Fence.ConnectionEpoch, Guid.NewGuid(), default))!;
+        current.RegistrationOrdinal.Should().BeGreaterThan(old.RegistrationOrdinal);
+        otherDirectory.Current = current;
+        (await other.BeginEvidenceStreamAsync(current, default)).Should().BeTrue();
         rig.Directory.Current = old;
-        var pause = new PauseEpochRead();
-        await using var oldProvider = CreateProvider(rig.Connection, rig.Directory, rig.Time, pause);
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-        var delayed = oldProvider.GetRequiredService<IMonitoringStore>().BeginEvidenceStreamAsync(old, timeout.Token);
-        await pause.Entered.Task.WaitAsync(timeout.Token);
-        var current = old with { EvidenceStreamId = Guid.NewGuid() };
-        rig.Directory.Current = current;
-        try { (await rig.Store.BeginEvidenceStreamAsync(current, timeout.Token)).Should().BeTrue(); }
-        finally { pause.Resume.TrySetResult(); }
-        (await delayed).Should().BeFalse();
+        (await rig.Store.BeginEvidenceStreamAsync(old, default)).Should().BeFalse();
         (await rig.Store.EndEvidenceStreamAsync(old, default)).Should().BeFalse();
-        (await rig.Store.BeginEvidenceStreamAsync(current, default)).Should().BeTrue();
+        (await other.BeginEvidenceStreamAsync(current, default)).Should().BeTrue();
         var state = rig.Evaluator.CreateInitial(rig.Key, rig.Rule);
-        var invalid = rig.Evaluator.Evaluate(state, rig.Rule, rig.Observation(1) with { EvidenceStreamId = old.EvidenceStreamId }, 1, old.EvidenceStreamId, []);
+        var invalid = rig.Evaluator.Evaluate(state, rig.Rule, rig.Observation(1) with { EvidenceStreamId = old.EvidenceStreamId },
+            rig.Fence.ConnectionEpoch, old.EvidenceStreamId, []);
         (await rig.Store.CommitAsync(new(invalid, 1, old), default)).Disposition.Should().Be(MonitoringStoreWriteDisposition.StaleEvidence);
+    }
+
+    [Fact]
+    public async Task Pending_registration_cancelled_before_Begin_commit_preserves_old_durable_stream_and_ingress()
+    {
+        await using var rig = await CreateRigAsync();
+        var pending = (await rig.Store.ReserveEvidenceRegistrationAsync(rig.Client, rig.Fence.ConnectionId,
+            rig.Fence.ConnectionEpoch, Guid.NewGuid(), default))!;
+        rig.Directory.Current = pending;
+        await using var blocker = new Npgsql.NpgsqlConnection(rig.Connection); await blocker.OpenAsync();
+        await using var held = await blocker.BeginTransactionAsync();
+        await using (var command = new Npgsql.NpgsqlCommand("SELECT * FROM \"MonitoringEvidenceStreams\" WHERE \"TenantId\"=@tenant AND \"AgentId\"=@agent FOR UPDATE", blocker, held))
+        {
+            command.Parameters.AddWithValue("tenant", rig.Client.TenantId); command.Parameters.AddWithValue("agent", rig.Client.AgentId);
+            await using var read = await command.ExecuteReaderAsync(); (await read.ReadAsync()).Should().BeTrue();
+        }
+        using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        using var cancel = new CancellationTokenSource();
+        var begin = rig.Store.BeginEvidenceStreamAsync(pending, cancel.Token);
+        try
+        {
+            await using var observer = new Npgsql.NpgsqlConnection(rig.Connection); await observer.OpenAsync(budget.Token);
+            using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(20));
+            while (true)
+            {
+                await using var command = new Npgsql.NpgsqlCommand("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=@database AND cardinality(pg_blocking_pids(pid))>0 AND query LIKE '%MonitoringEvidenceStreams%')", observer);
+                command.Parameters.AddWithValue("database", observer.Database);
+                if ((bool)(await command.ExecuteScalarAsync(budget.Token))!) break;
+                begin.IsCompleted.Should().BeFalse(); await timer.WaitForNextTickAsync(budget.Token);
+            }
+            await using var inspect = rig.Provider.CreateAsyncScope();
+            var row = await inspect.ServiceProvider.GetRequiredService<OrchestratorDbContext>().MonitoringEvidenceStreams.AsNoTracking().SingleAsync(budget.Token);
+            row.Active.Should().BeTrue(); row.EvidenceStreamId.Should().Be(rig.Fence.EvidenceStreamId);
+            row.CommittedRegistrationOrdinal.Should().Be(rig.Fence.RegistrationOrdinal);
+            cancel.Cancel(); await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await begin);
+        }
+        finally
+        {
+            cancel.Cancel(); await held.RollbackAsync();
+            try { await begin; } catch (OperationCanceledException) { }
+        }
+        (await rig.Store.EndEvidenceStreamAsync(pending, default)).Should().BeFalse();
+        var initial = rig.Evaluator.CreateInitial(rig.Key, rig.Rule);
+        rig.Time.Advance(TimeSpan.FromSeconds(1));
+        var admitted = rig.Evaluator.Evaluate(initial, rig.Rule, rig.Observation(1), rig.Fence.ConnectionEpoch, rig.Fence.EvidenceStreamId, []);
+        (await rig.Store.CommitAsync(new(admitted, 1, rig.Fence), default)).Disposition.Should().Be(MonitoringStoreWriteDisposition.Stored);
     }
 
     [Fact]
@@ -103,12 +214,23 @@ public sealed class MonitoringStorePostgresTests(PostgreSqlPersistenceFixture fi
     {
         await using var rig = await CreateRigAsync(flow: true);
         var firing = await FireAsync(rig);
-        await rig.Provider.GetRequiredService<IClientConnectionEpochStore>().AllocateAsync(rig.Client, 0, default);
+        var ownership = rig.Provider.GetRequiredService<IClientConnectionEpochStore>();
+        var candidate = (await ownership.ReserveAsync(new(rig.Client, Guid.NewGuid(), Guid.NewGuid(), 0,
+            rig.Time.GetUtcNow(), rig.Time.GetUtcNow().AddSeconds(30), rig.Time.GetUtcNow().AddMinutes(10),
+            new("replacement", [], null)), default)).Reservation!;
+        candidate.Owner.Epoch.Should().BeGreaterThan(rig.Fence.ConnectionEpoch);
         rig.Time.Advance(TimeSpan.FromSeconds(1));
-        var old = rig.Evaluator.Evaluate(firing, rig.Rule, rig.Observation(3), 1, rig.Fence.EvidenceStreamId, []);
-        (await rig.Store.CommitAsync(new(old, 1, rig.Fence), default)).Disposition.Should().Be(MonitoringStoreWriteDisposition.StaleEvidence);
+        var old = rig.Evaluator.Evaluate(firing, rig.Rule, rig.Observation(3), rig.Fence.ConnectionEpoch, rig.Fence.EvidenceStreamId, []);
+        (await rig.Store.CommitAsync(new(old, 1, rig.Fence), default)).Disposition.Should().Be(MonitoringStoreWriteDisposition.Stored,
+            "reservation alone must not fence a valid committed owner");
+        var eligible = (await rig.Store.ClaimOutboxAsync(new(rig.Client.TenantId, Guid.NewGuid(), 10, TimeSpan.FromSeconds(1)), default)).Single();
+        eligible.Intent.OccurrenceId.Should().Be(firing.Occurrence!.OccurrenceId);
+        (await ownership.CommitAsync(candidate, new(candidate.Owner, 1, rig.Time.GetUtcNow()), default)).Disposition.Should().Be(OwnershipDisposition.Accepted);
+        rig.Time.Advance(TimeSpan.FromSeconds(2));
+        var after = rig.Evaluator.Evaluate(old.State, rig.Rule, rig.Observation(4), rig.Fence.ConnectionEpoch, rig.Fence.EvidenceStreamId, []);
+        (await rig.Store.CommitAsync(new(after, 1, rig.Fence), default)).Disposition.Should().Be(MonitoringStoreWriteDisposition.StaleEvidence);
         (await rig.Store.ClaimOutboxAsync(new(rig.Client.TenantId, Guid.NewGuid(), 10, TimeSpan.FromMinutes(1)), default)).Should().BeEmpty();
-        (await rig.Store.LoadSeriesAsync(rig.Key, default))!.Cursor!.Sequence.Should().Be(2);
+        (await rig.Store.LoadSeriesAsync(rig.Key, default))!.Cursor!.Sequence.Should().Be(3);
     }
 
     [Fact]
@@ -141,11 +263,12 @@ public sealed class MonitoringStorePostgresTests(PostgreSqlPersistenceFixture fi
         var clear = rig.Evaluator.Clear(firing, rig.Rule, Guid.NewGuid(), "manual validation");
         (await rig.Store.CommitAsync(new(clear, 1), default)).Disposition.Should().Be(MonitoringStoreWriteDisposition.Stored);
         rig.Time.Advance(MonitoringLimits.HistoryRetention + TimeSpan.FromDays(1));
+        await rig.ReconnectCommittedOwnerAsync();
         // Configuration audit invokes cleanup after the horizon, even while no new occurrence is raised.
         var renamed = rig.Rule with { Revision = 2, Name = "renamed after retention" };
         (await rig.Provider.GetRequiredService<IMonitoringConfigurationStore>().SaveRuleAsync(new(renamed, 1, Guid.NewGuid(), "rename"), default)).Disposition.Should().Be(MonitoringConfigurationWriteDisposition.Stored);
         var current = (await rig.Store.LoadSeriesAsync(rig.Key, default))!;
-        var next = rig.Evaluator.Evaluate(current, renamed, rig.Observation(3) with { Complete = false }, 1, rig.Fence.EvidenceStreamId, []);
+        var next = rig.Evaluator.Evaluate(current, renamed, rig.Observation(3) with { Complete = false }, rig.Fence.ConnectionEpoch, rig.Fence.EvidenceStreamId, []);
         (await rig.Store.CommitAsync(new(next, 2, rig.Fence), default)).Disposition.Should().Be(MonitoringStoreWriteDisposition.Stored);
         await using var scope = rig.Provider.CreateAsyncScope();
         var history = await scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>().MonitoringOccurrences.SingleAsync();
@@ -293,11 +416,11 @@ public sealed class MonitoringStorePostgresTests(PostgreSqlPersistenceFixture fi
             var lease = (await retries.Store.ClaimOutboxAsync(new(retries.Client.TenantId, Guid.NewGuid(), 1, TimeSpan.FromMinutes(1)), default)).Single();
             lease.Attempt.Should().Be(attempt);
             (await retries.Store.CompleteOutboxAsync(new(lease, MonitoringOutboxStatus.Pending, Code: "capacity"), default)).Should().BeTrue();
-            retries.Time.Advance(TimeSpan.FromSeconds(Math.Min(300, Math.Pow(2, attempt))));
+            await AdvanceSafeRetryBackoffWithHeartbeatsAsync(retries, TimeSpan.FromSeconds(Math.Min(300, Math.Pow(2, attempt))));
             if (attempt < MonitoringLimits.MaximumOutboxAttempts)
             {
                 var current = (await retries.Store.LoadSeriesAsync(retries.Key, default))!;
-                var result = retries.Evaluator.Evaluate(current, retries.Rule, retries.Observation((ulong)attempt + 2), 1, retries.Fence.EvidenceStreamId, []);
+                var result = retries.Evaluator.Evaluate(current, retries.Rule, retries.Observation((ulong)attempt + 2), retries.Fence.ConnectionEpoch, retries.Fence.EvidenceStreamId, []);
                 await retries.Store.CommitAsync(new(result, 1, retries.Fence), default);
             }
         }
@@ -380,10 +503,10 @@ public sealed class MonitoringStorePostgresTests(PostgreSqlPersistenceFixture fi
         rig.Directory.Current = rig.Fence;
         rig.Time.Advance(TimeSpan.FromSeconds(1));
         var current = (await store.LoadSeriesAsync(rig.Key, default))!;
-        var pending = rig.Evaluator.Evaluate(current, rig.Rule, rig.Observation(3), 1, rig.Fence.EvidenceStreamId, []);
+        var pending = rig.Evaluator.Evaluate(current, rig.Rule, rig.Observation(3), rig.Fence.ConnectionEpoch, rig.Fence.EvidenceStreamId, []);
         await store.CommitAsync(new(pending, 1, rig.Fence), default);
         rig.Time.Advance(TimeSpan.FromSeconds(1));
-        var next = rig.Evaluator.Evaluate(pending.State, rig.Rule, rig.Observation(4), 1, rig.Fence.EvidenceStreamId, []);
+        var next = rig.Evaluator.Evaluate(pending.State, rig.Rule, rig.Observation(4), rig.Fence.ConnectionEpoch, rig.Fence.EvidenceStreamId, []);
         await store.CommitAsync(new(next, 1, rig.Fence), default);
         rig.Directory.Current = null;
         var outcome = new MonitoringFlowOutcomeDto(runId, MonitoringFlowOutcomeKind.Succeeded, rig.Time.GetUtcNow());
@@ -487,10 +610,10 @@ public sealed class MonitoringStorePostgresTests(PostgreSqlPersistenceFixture fi
         var cleared = rig.Evaluator.Clear(first, rig.Rule, Guid.NewGuid(), "clear while last handoff completes");
         await rig.Store.CommitAsync(new(cleared, 1), default);
         rig.Time.Advance(TimeSpan.FromSeconds(1));
-        var pending = rig.Evaluator.Evaluate(cleared.State, rig.Rule, rig.Observation(3), 1, rig.Fence.EvidenceStreamId, []);
+        var pending = rig.Evaluator.Evaluate(cleared.State, rig.Rule, rig.Observation(3), rig.Fence.ConnectionEpoch, rig.Fence.EvidenceStreamId, []);
         await rig.Store.CommitAsync(new(pending, 1, rig.Fence), default);
         rig.Time.Advance(TimeSpan.FromSeconds(1));
-        var next = rig.Evaluator.Evaluate(pending.State, rig.Rule, rig.Observation(4), 1, rig.Fence.EvidenceStreamId, []);
+        var next = rig.Evaluator.Evaluate(pending.State, rig.Rule, rig.Observation(4), rig.Fence.ConnectionEpoch, rig.Fence.EvidenceStreamId, []);
         await rig.Store.CommitAsync(new(next, 1, rig.Fence), default);
         (await rig.Store.CompleteOutboxAsync(new(lease, MonitoringOutboxStatus.Pending, Code: "capacity"), default)).Should().BeTrue();
         var latest = (await rig.Store.LoadSeriesAsync(rig.Key, default))!;
@@ -541,9 +664,16 @@ public sealed class MonitoringStorePostgresTests(PostgreSqlPersistenceFixture fi
             db.Agents.Add(new() { Id = client.AgentId, TenantId = client.TenantId, CreatedAtUtc = time.GetUtcNow() });
             await db.SaveChangesAsync();
         }
+        time.ResetToSystem();
         directory.Client = client;
-        var epoch = await provider.GetRequiredService<IClientConnectionEpochStore>().AllocateAsync(client, 0, default);
-        var fence = new MonitoringEvidenceFence(client, Guid.NewGuid(), epoch, Guid.NewGuid()); directory.Current = fence;
+        var ownership = provider.GetRequiredService<IClientConnectionEpochStore>();
+        var request = new AdmissionRequest(client, Guid.NewGuid(), Guid.NewGuid(), 0, time.GetUtcNow(),
+            time.GetUtcNow().AddSeconds(30), time.GetUtcNow().AddMinutes(10), new("monitoring-provider", ["presence"], null));
+        var reservation = (await ownership.ReserveAsync(request, default)).Reservation!;
+        (await ownership.CommitAsync(reservation, new(reservation.Owner, 1, time.GetUtcNow()), default)).Disposition.Should().Be(OwnershipDisposition.Accepted);
+        var fence = (await provider.GetRequiredService<IMonitoringStore>().ReserveEvidenceRegistrationAsync(client,
+            reservation.Owner.ConnectionId, reservation.Owner.Epoch, Guid.NewGuid(), default))!;
+        directory.Current = fence;
         var rule = new MonitoringRuleDto(client.TenantId, Guid.NewGuid(), 1, 1, "high CPU", true, MonitoringSeverity.Warning,
             new(MonitoringTargetMode.Selected, [client.AgentId], []), new(MonitoringMetricKind.CpuUsagePercent, MonitoringNumericUnit.Percent, 80, 70, null, null, []),
             TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromMinutes(5), flow ? Guid.NewGuid() : null, flow ? "operator:monitoring" : null);
@@ -555,25 +685,67 @@ public sealed class MonitoringStorePostgresTests(PostgreSqlPersistenceFixture fi
     private static ServiceProvider CreateProvider(string connection, TestMonitoringDirectory directory, MonitoringTestTime time, DbCommandInterceptor? interceptor = null) =>
         new ServiceCollection().AddDbContext<OrchestratorDbContext>(options =>
         { options.UseNpgsql(connection); if (interceptor is not null) options.AddInterceptors(interceptor); })
-        .AddSingleton<TimeProvider>(time).AddSingleton<IMonitoringClientDirectory>(directory).AddSingleton<IMonitoringPublishedFlowProvider, TestPublishedFlows>()
+        .AddSingleton<TimeProvider>(time)
+        .AddSingleton(new OwnershipPolicy(TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(60), TimeSpan.FromSeconds(10)))
+        .AddSingleton<IMonitoringClientDirectory>(directory).AddSingleton<IMonitoringPublishedFlowProvider, TestPublishedFlows>()
         .AddNetRatelClientServicesPersistence().AddNetRatelMonitoringPersistence().BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
     private static async Task<MonitoringSeriesState> FireAsync(Rig rig)
     {
         var initial = rig.Evaluator.CreateInitial(rig.Key, rig.Rule);
         rig.Time.Advance(TimeSpan.FromSeconds(1));
-        var pending = rig.Evaluator.Evaluate(initial, rig.Rule, rig.Observation(1), 1, rig.Fence.EvidenceStreamId, []);
+        var pending = rig.Evaluator.Evaluate(initial, rig.Rule, rig.Observation(1), rig.Fence.ConnectionEpoch, rig.Fence.EvidenceStreamId, []);
         pending.State.Phase.Should().Be(MonitoringPhase.Pending);
         (await rig.Store.CommitAsync(new(pending, 1, rig.Fence), default)).Disposition.Should().Be(MonitoringStoreWriteDisposition.Stored);
         rig.Time.Advance(TimeSpan.FromSeconds(1));
-        var firing = rig.Evaluator.Evaluate(pending.State, rig.Rule, rig.Observation(2), 1, rig.Fence.EvidenceStreamId, []);
+        var firing = rig.Evaluator.Evaluate(pending.State, rig.Rule, rig.Observation(2), rig.Fence.ConnectionEpoch, rig.Fence.EvidenceStreamId, []);
         firing.State.Phase.Should().Be(MonitoringPhase.Firing);
         (await rig.Store.CommitAsync(new(firing, 1, rig.Fence), default)).Disposition.Should().Be(MonitoringStoreWriteDisposition.Stored);
         return firing.State;
     }
-    private sealed record Rig(string Connection, ServiceProvider Provider, TestMonitoringDirectory Directory, MonitoringTestTime Time,
-        ClientKey Client, MonitoringEvidenceFence Fence, MonitoringRuleDto Rule, IMonitoringStore Store) : IAsyncDisposable
+    private static async Task AdvanceSafeRetryBackoffWithHeartbeatsAsync(Rig rig, TimeSpan backoff)
     {
+        // Only the safe-retry exhaustion fixture stays online during its original
+        // backoff. Negative expiry cases continue to advance directly without it.
+        var ownership = rig.Provider.GetRequiredService<IClientConnectionEpochStore>();
+        var original = await ownership.GetCurrentAsync(rig.Client, default)
+            ?? throw new InvalidOperationException("The retry fixture has no committed owner.");
+        original.Owner.ConnectionId.Should().Be(rig.Fence.ConnectionId);
+        original.Owner.Epoch.Should().Be(rig.Fence.ConnectionEpoch);
+        original.AcceptanceGuardAtUtc.Should().NotBeNull();
+        var current = original;
+        while (backoff > TimeSpan.Zero)
+        {
+            var elapsed = backoff > TimeSpan.FromSeconds(30) ? TimeSpan.FromSeconds(30) : backoff;
+            rig.Time.Advance(elapsed);
+            var sequence = checked(current.Sequence + 1);
+            var renewed = await ownership.RecordHeartbeatAsync(new(original.Owner, sequence, rig.Time.GetUtcNow()), default);
+            renewed.Disposition.Should().Be(OwnershipDisposition.Accepted);
+            current = await ownership.GetCurrentAsync(rig.Client, default)
+                ?? throw new InvalidOperationException("The retry fixture lost its committed owner.");
+            current.Owner.Should().Be(original.Owner);
+            current.Sequence.Should().Be(sequence);
+            current.AcceptanceGuardAtUtc.Should().Be(original.AcceptanceGuardAtUtc);
+            current.AuthenticationExpiresAtUtc.Should().Be(original.AuthenticationExpiresAtUtc);
+            current.IsEffective(rig.Time.GetUtcNow()).Should().BeTrue();
+            backoff -= elapsed;
+        }
+    }
+    private sealed record Rig(string Connection, ServiceProvider Provider, TestMonitoringDirectory Directory, MonitoringTestTime Time,
+        ClientKey Client, MonitoringEvidenceFence InitialFence, MonitoringRuleDto Rule, IMonitoringStore Store) : IAsyncDisposable
+    {
+        public MonitoringEvidenceFence Fence { get; private set; } = InitialFence;
         public MonitoringSeriesEvaluator Evaluator { get; } = new(Time);
+        public async Task ReconnectCommittedOwnerAsync()
+        {
+            var store = Provider.GetRequiredService<IClientConnectionEpochStore>(); var now = Time.GetUtcNow();
+            var reservation = (await store.ReserveAsync(new(Client, Guid.NewGuid(), Guid.NewGuid(), 0, now,
+                now.AddSeconds(30), now.AddMinutes(10), new("retention-reconnect", [], null)), default)).Reservation!;
+            (await store.CommitAsync(reservation, new(reservation.Owner, 1, now), default)).Disposition.Should().Be(OwnershipDisposition.Accepted);
+            Fence = (await Store.ReserveEvidenceRegistrationAsync(Client, reservation.Owner.ConnectionId, reservation.Owner.Epoch,
+                Guid.NewGuid(), default))!;
+            Directory.Current = Fence;
+            (await Store.BeginEvidenceStreamAsync(Fence, default)).Should().BeTrue();
+        }
         public MonitoringSeriesKey Key => new(Client.TenantId, Rule.RuleId, Client.AgentId, "cpu");
         public MonitoringObservationDto Observation(ulong sequence) => new(Key, new(Fence.ConnectionEpoch, sequence), Fence.EvidenceStreamId, Time.GetUtcNow(), Time.GetUtcNow(), true, true, 95);
         public MonitoringTelemetryInput Telemetry(ulong sequence) => new(Fence, new(Client, Fence.ConnectionEpoch, sequence, Time.GetUtcNow(), Time.GetUtcNow(), new(95, null, null), null, [], [], null, IsAuthoritative: true));
@@ -581,7 +753,8 @@ public sealed class MonitoringStorePostgresTests(PostgreSqlPersistenceFixture fi
     }
     private sealed class MonitoringTestTime : TimeProvider
     {
-        private DateTimeOffset _now = new(2026, 10, 2, 18, 0, 0, TimeSpan.Zero);
+        private DateTimeOffset _now = DateTimeOffset.UtcNow;
+        public void ResetToSystem() => _now = DateTimeOffset.UtcNow;
         public override DateTimeOffset GetUtcNow() => _now;
         public void Advance(TimeSpan duration) => _now += duration;
     }
@@ -589,6 +762,7 @@ public sealed class MonitoringStorePostgresTests(PostgreSqlPersistenceFixture fi
     {
         public ClientKey Client { get; set; }
         public MonitoringEvidenceFence? Current { get; set; }
+        public Task<bool> IsPresentedEvidenceAsync(MonitoringEvidenceFence fence, CancellationToken ct) => Task.FromResult(fence == Current);
         public Task<MonitoringEvidenceFence?> GetCurrentEvidenceAsync(ClientKey client, CancellationToken ct) => Task.FromResult(client == Client ? Current : null);
         public Task<ImmutableArray<Guid>> GetEligibleAgentsAsync(int tenant, CancellationToken ct) => Task.FromResult(tenant == Client.TenantId ? ImmutableArray.Create(Client.AgentId) : []);
     }
@@ -616,18 +790,6 @@ public sealed class MonitoringStorePostgresTests(PostgreSqlPersistenceFixture fi
                 if (FailNext) { FailNext = false; throw new IOException("durability unavailable"); }
                 if (Pause) { Entered.TrySetResult(); await Resume.Task.WaitAsync(cancellationToken); }
             }
-            return result;
-        }
-    }
-    private sealed class PauseEpochRead : DbCommandInterceptor
-    {
-        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public TaskCompletionSource Resume { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public override async ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(DbCommand command, CommandEventData eventData,
-            InterceptionResult<DbDataReader> result, CancellationToken cancellationToken = default)
-        {
-            if (command.CommandText.Contains("FROM \"ClientConnectionEpochs\"", StringComparison.Ordinal))
-            { Entered.TrySetResult(); await Resume.Task.WaitAsync(cancellationToken); }
             return result;
         }
     }
