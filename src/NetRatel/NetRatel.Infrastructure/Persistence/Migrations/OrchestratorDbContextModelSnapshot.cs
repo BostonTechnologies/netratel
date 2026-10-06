@@ -4833,6 +4833,41 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.ToTable("PrimaryClientAgentBindings", (string)null);
                 });
 
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.RatelDeskConnectorRecord", b =>
+                {
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("ConfigurationJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<long>("CredentialRevision")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("OwnerPrincipalId")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("ProtectedCredential")
+                        .HasColumnType("text");
+
+                    b.Property<long>("Revision")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("RowVersion")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint");
+
+                    b.HasKey("TenantId", "Id");
+
+                    b.ToTable("RatelDeskConnectors", (string)null);
+                });
+
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.RemoteSupportAuditEventRecord", b =>
                 {
                     b.Property<Guid>("Id")
