@@ -83,8 +83,8 @@ public sealed class RatelDeskManualProfileProbeTests
         f.Handler.Responses.Enqueue(reply);
         await ((Func<Task>)(() => f.Probe.CaptureAsync(Connector, Source, Bearer, default))).Should().ThrowAsync<InvalidDataException>();
         (f.Handler.Requests).Should().ContainSingle();
-        var duplicate = JsonSerializer.Serialize(Capability()).Replace("{", "{\"receiverInstanceId\":\"" + Receiver.ToString("D") + "\",", StringComparison.Ordinal);
-        // Capabilities has no nested object, so this inserts exactly one duplicate identity field.
+        var duplicate = JsonSerializer.Serialize(Capability()).Insert(1, "\"receiverInstanceId\":\"" + Receiver.ToString("D") + "\",");
+        // Insert only at the root, preserving braces inside JSON string values.
         ((Action)(() => ReceiverWireValidation.CaptureManual(Encoding.UTF8.GetBytes(duplicate), Connector, Api, Source, DateTimeOffset.UnixEpoch))).Should().Throw<InvalidDataException>();
     }
 

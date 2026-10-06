@@ -151,6 +151,8 @@ internal sealed partial class ServiceLinkNetRatelPeer
         private readonly Process process;
         private readonly Task stdout;
         private readonly Task stderr;
+        private readonly StartupOutputMarkers stdoutMarkers = new();
+        private readonly StartupOutputMarkers stderrMarkers = new();
         private readonly string directory;
         public PhysicalApiProcess Proof { get; private set; }
         public int ProcessId => process.Id;
@@ -165,7 +167,8 @@ internal sealed partial class ServiceLinkNetRatelPeer
             this.process = process; this.directory = directory;
             BaseUrl = $"http://127.0.0.1:{restPort}";
             Proof = new(process.Id, DateTimeOffset.UtcNow, null, null, role, generation);
-            stdout = DrainAsync(process.StandardOutput); stderr = DrainAsync(process.StandardError);
+            stdout = DrainAsync(process.StandardOutput, stdoutMarkers);
+            stderr = DrainAsync(process.StandardError, stderrMarkers);
         }
 
         public static async Task<OwnedPhysicalApiProcess> StartAsync(string root, string role, int generation,
@@ -190,6 +193,12 @@ internal sealed partial class ServiceLinkNetRatelPeer
             start.Environment["DOTNET_ENVIRONMENT"] = "Production";
             start.Environment["ASPNETCORE_CONTENTROOT"] = directory;
             var owned = new OwnedPhysicalApiProcess(Process.Start(start) ?? throw new InvalidOperationException("The owned production API process could not start."), directory, role, generation, restPort);
+            var readinessStarted = Stopwatch.GetTimestamp();
+            var probeAttempts = 0;
+            int? lastObservedHttpStatus = null;
+            var lastProbeException = "none";
+            var lastHttpRequestError = "none";
+            var lastSocketError = "none";
             try
             {
                 using var deadline = CancellationTokenSource.CreateLinkedTokenSource(outer);
@@ -202,18 +211,67 @@ internal sealed partial class ServiceLinkNetRatelPeer
                     if (!owned.Alive) throw new InvalidOperationException("The actual production API process exited during startup.");
                     try
                     {
+                        probeAttempts++;
                         using var response = await client.GetAsync("/api/integrations/service-link/metadata", deadline.Token);
+                        lastObservedHttpStatus = (int)response.StatusCode;
+                        lastProbeException = "none";
+                        lastHttpRequestError = "none";
+                        lastSocketError = "none";
                         if (response.StatusCode == HttpStatusCode.OK) break;
                         if ((int)response.StatusCode is >= 300 and < 400)
                             throw new InvalidOperationException("The physical REST endpoint redirected into a different protocol endpoint.");
                     }
-                    catch (HttpRequestException) { }
-                    catch (TaskCanceledException) when (!deadline.IsCancellationRequested) { }
+                    catch (HttpRequestException error)
+                    {
+                        lastProbeException = nameof(HttpRequestException);
+                        lastHttpRequestError = error.HttpRequestError.ToString();
+                        lastSocketError = error.InnerException is System.Net.Sockets.SocketException socket
+                            ? socket.SocketErrorCode.ToString() : "none";
+                    }
+                    catch (TaskCanceledException) when (!deadline.IsCancellationRequested)
+                    {
+                        lastProbeException = nameof(TaskCanceledException);
+                        lastHttpRequestError = "none";
+                        lastSocketError = "none";
+                    }
                     await Task.Delay(200, deadline.Token);
                 }
                 return owned;
             }
-            catch { await owned.DisposeAsync(); throw; }
+            catch (Exception error)
+            {
+                // Project only fixed codes and numeric readiness facts before owned
+                // cleanup. Never retain or emit raw process output, response bodies,
+                // headers, paths, settings, exception messages or credentials.
+                try
+                {
+                    var ownerRole = role is "primary" or "replica" ? role : "unknown";
+                    var alive = owned.Alive;
+                    var failureType = error switch
+                    {
+                        TaskCanceledException => nameof(TaskCanceledException),
+                        OperationCanceledException => nameof(OperationCanceledException),
+                        HttpRequestException => nameof(HttpRequestException),
+                        InvalidOperationException => nameof(InvalidOperationException),
+                        _ => "other-startup-exception"
+                    };
+                    var observedStatus = lastObservedHttpStatus?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "none";
+                    var exitCode = alive ? "none" : owned.process.ExitCode.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                    Console.Error.WriteLine($"Owned physical API readiness failed: role={ownerRole}; failureType={failureType}; " +
+                        $"elapsedMs={(long)Stopwatch.GetElapsedTime(readinessStarted).TotalMilliseconds}; probes={probeAttempts}; " +
+                        $"lastObservedHttpStatus={observedStatus}; lastProbeException={lastProbeException}; " +
+                        $"lastHttpRequestError={lastHttpRequestError}; lastSocketError={lastSocketError}; " +
+                        $"alive={alive}; exitCode={exitCode}; outerCancelled={outer.IsCancellationRequested}; " +
+                        $"stdoutMarkers={owned.stdoutMarkers.Snapshot()}; stderrMarkers={owned.stderrMarkers.Snapshot()}");
+                }
+                catch
+                {
+                    // Diagnostics cannot replace the original startup failure or
+                    // prevent the unchanged exact owned-process cleanup below.
+                }
+                await owned.DisposeAsync();
+                throw;
+            }
         }
 
         public async Task CrashOwnedAsync()
@@ -256,8 +314,69 @@ internal sealed partial class ServiceLinkNetRatelPeer
             if (failures.Count > 0 || !closed)
                 throw new AggregateException("Owned API process cleanup was incomplete.", failures);
         }
-        private static async Task DrainAsync(StreamReader stream)
-        { var buffer = new char[2048]; while (await stream.ReadAsync(buffer) != 0) { } }
+        private static async Task DrainAsync(StreamReader stream, StartupOutputMarkers markers)
+        {
+            var buffer = new char[2048];
+            var matches = new int[StartupOutputMarkers.PatternCount];
+            try
+            {
+                int read;
+                while ((read = await stream.ReadAsync(buffer)) != 0)
+                    markers.Observe(buffer.AsSpan(0, read), matches);
+            }
+            finally { Array.Clear(buffer); }
+        }
+
+        // Streaming fixed-marker projection keeps the original drain bounded.
+        // Each channel retains only match positions and a fixed-size boolean set;
+        // no raw line, arbitrary exception text or private value survives a read.
+        private sealed class StartupOutputMarkers
+        {
+            private static readonly (string Text, string Code)[] Patterns =
+            [
+                ("Now listening on:", "listener-reported"),
+                ("Application started.", "host-started"),
+                ("Application is shutting down", "host-stopping"),
+                ("Agent-auth signing key loaded.", "agent-signing-key-loaded"),
+                ("Agent-auth signing key probe failed;", "agent-signing-key-probe-failed"),
+                ("NetRatel infrastructure migration failed during startup.", "startup-migration-failed"),
+                ("Unhandled exception.", "unhandled-exception-marker"),
+                ("System.InvalidOperationException", "invalid-operation-exception-marker"),
+                ("System.IO.IOException", "io-exception-marker"),
+                ("System.Net.Sockets.SocketException", "socket-exception-marker"),
+                ("Microsoft.AspNetCore.Connections.AddressInUseException", "address-in-use-exception-marker"),
+                ("Npgsql.NpgsqlException", "npgsql-exception-marker"),
+                ("System.TimeoutException", "timeout-exception-marker")
+            ];
+            public static int PatternCount => Patterns.Length;
+            private readonly object sync = new();
+            private readonly bool[] observed = new bool[Patterns.Length];
+
+            public void Observe(ReadOnlySpan<char> chunk, int[] matches)
+            {
+                lock (sync)
+                {
+                    foreach (var character in chunk)
+                        for (var index = 0; index < Patterns.Length; index++)
+                        {
+                            var text = Patterns[index].Text;
+                            var matched = matches[index];
+                            matched = character == text[matched] ? matched + 1 : character == text[0] ? 1 : 0;
+                            if (matched == text.Length) { observed[index] = true; matched = 0; }
+                            matches[index] = matched;
+                        }
+                }
+            }
+
+            public string Snapshot()
+            {
+                lock (sync)
+                {
+                    var codes = Patterns.Where((_, index) => observed[index]).Select(x => x.Code).ToArray();
+                    return codes.Length == 0 ? "none" : string.Join(',', codes);
+                }
+            }
+        }
     }
 
     private static string PhysicalApiAssembly()
