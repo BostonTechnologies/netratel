@@ -77,51 +77,64 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         var webContainer = RequireValue("NETRATEL_LOCAL_FIRST_RESTART_WEB_CONTAINER");
         var ingressContainer = Environment.GetEnvironmentVariable("NETRATEL_LOCAL_FIRST_RESTART_INGRESS_CONTAINER");
         var dropCommittedResponse = Environment.GetEnvironmentVariable("NETRATEL_LOCAL_FIRST_DROP_SETUP_RESPONSE") == "true";
-        Task restartTask = Task.CompletedTask;
+        var restartTaskStarted = new TaskCompletionSource<Task>(TaskCreationOptions.RunContinuationsAsynchronously);
         const string initializeRoute = "**/api/v2/setup/initialize";
         await page.RouteAsync(initializeRoute, async route =>
         {
-            var committed = await route.FetchAsync();
-            Assert.InRange(committed.Status, 200, 299);
-            if (!string.IsNullOrWhiteSpace(ingressContainer))
-                await RunDockerAsync("stop", ingressContainer);
-            await RunDockerAsync("stop", apiContainer, webContainer);
-            restartTask = Task.Run(async () =>
+            var routeTask = ObserveRestartAsync();
+            restartTaskStarted.TrySetResult(routeTask);
+            await routeTask;
+
+            async Task ObserveRestartAsync()
             {
-                try
-                {
-                    await page.GetByText("Waiting for NetRatel to reconnect.", new() { Exact = true })
-                        .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible, Timeout = 20_000 });
-                }
-                finally
+                var committed = await route.FetchAsync();
+                Assert.InRange(committed.Status, 200, 299);
+                if (!string.IsNullOrWhiteSpace(ingressContainer))
+                    await RunDockerAsync("stop", ingressContainer);
+                await RunDockerAsync("stop", apiContainer, webContainer);
+                var restartTask = Task.Run(async () =>
                 {
                     try
                     {
-                        await RunDockerAsync("start", apiContainer);
-                        await WaitForApiReadyAsync(apiContainer);
+                        await page.GetByText("Waiting for NetRatel to reconnect.", new() { Exact = true })
+                            .WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible, Timeout = 20_000 });
                     }
                     finally
                     {
-                        // Keep the disposable environment recoverable even when the API
-                        // readiness probe fails; the test still fails on that probe.
                         try
                         {
-                            await RunDockerAsync("start", webContainer);
+                            await RunDockerAsync("start", apiContainer);
+                            await WaitForApiReadyAsync(apiContainer);
                         }
                         finally
                         {
-                            if (!string.IsNullOrWhiteSpace(ingressContainer))
-                                await RunDockerAsync("start", ingressContainer);
+                            // Keep the disposable environment recoverable even when the API
+                            // readiness probe fails; the test still fails on that probe.
+                            try
+                            {
+                                await RunDockerAsync("start", webContainer);
+                            }
+                            finally
+                            {
+                                if (!string.IsNullOrWhiteSpace(ingressContainer))
+                                    await RunDockerAsync("start", ingressContainer);
+                            }
                         }
                     }
+                });
+                await Task.WhenAll(restartTask, DeliverResponseAsync());
+
+                async Task DeliverResponseAsync()
+                {
+                    if (dropCommittedResponse) await route.AbortAsync("failed");
+                    else await route.FulfillAsync(new RouteFulfillOptions { Response = committed });
                 }
-            });
-            if (dropCommittedResponse) await route.AbortAsync("failed");
-            else await route.FulfillAsync(new RouteFulfillOptions { Response = committed });
+            }
         });
         await page.GetByTestId("setup-initialize").EvaluateAsync("button => { button.click(); button.click(); }");
         await page.GetByTestId("setup-initializing").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
-        await restartTask;
+        var observedRestartTask = await restartTaskStarted.Task.WaitAsync(TimeSpan.FromMilliseconds(20_000));
+        await observedRestartTask;
         await page.GetByTestId("local-login-email").WaitForAsync(new LocatorWaitForOptions
         {
             State = WaitForSelectorState.Visible,
