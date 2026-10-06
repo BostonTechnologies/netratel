@@ -61,26 +61,31 @@ public sealed class ClientServicesStore(IServiceScopeFactory scopeFactory, TimeP
         record.UpdatedAtUtc = timeProvider.GetUtcNow();
         var advancesIngress = candidate.ConnectionEpoch != current.ConnectionEpoch ||
             candidate.LastAcceptedSequence != current.LastAcceptedSequence;
+        // Equal cursor alone is not proof of an offline policy write: timeout,
+        // inventory and watch payload mutations also require committed authority.
+        var requiresOwner = advancesIngress ||
+            !(IsPolicyOnlyUpdate(current, candidate) || IsTimeoutOnlyUpdate(current, candidate, timeProvider.GetUtcNow()));
         var concurrentConflict = false;
-        // Lock ordering is always allocator, then services row. New admission allocation cannot
-        // advance its fence while an older accepted ingress write is still committing.
-        await using (var transaction = advancesIngress ? await db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false) : null)
+        // Accepted ingress locks the committed owner before its snapshot CAS.
+        // Reservation is counter-only and never participates in business authority.
+        // Only policy-only or exact negative timeout projection may bypass it.
+        await using (var transaction = requiresOwner ? await db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false) : null)
         {
-            if (advancesIngress)
+            if (requiresOwner)
             {
-                var allocated = await db.ClientConnectionEpochs.FromSqlInterpolated($"""
-                    SELECT * FROM "ClientConnectionEpochs"
-                    WHERE "TenantId" = {candidate.Client.TenantId} AND "AgentId" = {candidate.Client.AgentId}
-                    FOR SHARE
-                    """).AsNoTracking().SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
-                // Production admissions always have this row. Allow its absence for isolated
-                // persistence fixtures and migration seeding, where no active admission exists.
-                if (allocated is not null && candidate.ConnectionEpoch < allocated.LastIssuedEpoch)
+                if (candidate.ConnectionId is not { } connectionId || connectionId == Guid.Empty ||
+                    candidate.ConnectionEpoch <= 0 ||
+                    !await ClientConnectionEpochStore.LockEffectiveOwnerAsync(db,
+                        new OwnerKey(candidate.Client, connectionId, candidate.ConnectionEpoch),
+                        timeProvider, cancellationToken).ConfigureAwait(false))
                     return new(ClientServicesStoreWriteDisposition.Conflict, current);
             }
             try
             {
                 await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+                if (requiresOwner && !await ClientConnectionEpochStore.LockEffectiveOwnerAsync(db,
+                    new OwnerKey(candidate.Client, candidate.ConnectionId!.Value, candidate.ConnectionEpoch), timeProvider, cancellationToken).ConfigureAwait(false))
+                    return new(ClientServicesStoreWriteDisposition.Conflict, current);
                 if (transaction is not null) await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             }
             catch (DbUpdateConcurrencyException)
@@ -103,6 +108,52 @@ public sealed class ClientServicesStore(IServiceScopeFactory scopeFactory, TimeP
     private async Task<ClientServicesStoreWriteResult> ReloadConflictAsync(ClientKey client, CancellationToken cancellationToken) =>
         new(ClientServicesStoreWriteDisposition.Conflict,
             await LoadAsync(client, cancellationToken).ConfigureAwait(false) ?? ClientServicesState.Empty(client));
+
+    private static bool IsPolicyOnlyUpdate(ClientServicesState current, ClientServicesState candidate) =>
+        candidate.WatchPolicyRevision > current.WatchPolicyRevision &&
+        candidate.ConnectionId == current.ConnectionId && candidate.ConnectionEpoch == current.ConnectionEpoch &&
+        candidate.LastAcceptedSequence == current.LastAcceptedSequence &&
+        SamePhysicalValue(current.LastCompleteInventory, candidate.LastCompleteInventory) &&
+        SamePhysicalValue(current.LatestAttempt, candidate.LatestAttempt) &&
+        // The existing authorized policy path may prune old selected names;
+        // it cannot add or change any accepted physical observation offline.
+        candidate.WatchedServices.All(item => current.WatchedServices.Any(old => SamePhysicalValue(old, item)));
+
+    private static bool IsTimeoutOnlyUpdate(ClientServicesState current, ClientServicesState candidate, DateTimeOffset now)
+    {
+        if (candidate.ConnectionId != current.ConnectionId || candidate.ConnectionEpoch != current.ConnectionEpoch ||
+            candidate.LastAcceptedSequence != current.LastAcceptedSequence ||
+            candidate.WatchPolicyRevision != current.WatchPolicyRevision ||
+            !candidate.MonitoredServiceNames.SequenceEqual(current.MonitoredServiceNames, StringComparer.Ordinal) ||
+            !SamePhysicalValue(current.LastCompleteInventory, candidate.LastCompleteInventory) ||
+            current.LatestAttempt is not { } attempt ||
+            !SamePhysicalValue(candidate.LatestAttempt, attempt with { Status = ServiceCollectionStatus.Error, ErrorCode = "assembly_timeout" }))
+            return false;
+        if (attempt.Kind != ServiceSnapshotKind.Watch)
+            return SamePhysicalValue(current.WatchedServices, candidate.WatchedServices);
+        if (candidate.WatchedServices.Count != current.MonitoredServiceNames.Count) return false;
+        for (var i = 0; i < candidate.WatchedServices.Count; i++)
+        {
+            var item = candidate.WatchedServices[i];
+            var name = current.MonitoredServiceNames[i];
+            if (item.ObservedAtUtc > now) return false;
+            var previous = current.WatchedServices.FirstOrDefault(old => MatchesName(old, name)) ??
+                current.LastCompleteInventory?.Services.FirstOrDefault(old => MatchesName(old, name));
+            var expected = previous is null
+                ? new ClientServiceObservation(name, name, ClientServicePlatform.Unknown, ClientServiceState.Unknown,
+                    "unknown", null, null, null, null, null, item.ObservedAtUtc)
+                : previous with { State = ClientServiceState.Unknown, ObservedAtUtc = item.ObservedAtUtc, AuthoritativeMissing = false };
+            if (!SamePhysicalValue(item, expected)) return false;
+        }
+        return true;
+    }
+
+    private static bool MatchesName(ClientServiceObservation observation, string name) =>
+        string.Equals(observation.Name, name, observation.Platform == ClientServicePlatform.Windows
+            ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+
+    private static bool SamePhysicalValue<T>(T left, T right) =>
+        string.Equals(JsonSerializer.Serialize(left), JsonSerializer.Serialize(right), StringComparison.Ordinal);
 
     private static bool CanAdvance(ClientServicesState current, ClientServicesState candidate, long expectedRevision) =>
         current.Revision == expectedRevision &&

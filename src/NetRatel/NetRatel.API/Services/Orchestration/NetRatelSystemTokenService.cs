@@ -12,8 +12,10 @@ public sealed class NetRatelSystemTokenService(
     OidcSigningService signingService,
     IOptions<AgentAuthOptions> authOptions,
     IOptions<NetRatelExternalServiceCallbackOptions> callbackOptions,
-    IOptions<M2MOptions> m2mOptions) : INetRatelSystemTokenService
+    IOptions<M2MOptions> m2mOptions,
+    TimeProvider? timeProvider = null) : INetRatelSystemTokenService
 {
+    private readonly TimeProvider _clock = timeProvider ?? TimeProvider.System;
     private readonly OidcSigningService _signingService = signingService;
     private readonly AgentAuthOptions _authOptions = authOptions.Value;
     private readonly NetRatelExternalServiceCallbackOptions _callbackOptions = callbackOptions.Value;
@@ -25,7 +27,7 @@ public sealed class NetRatelSystemTokenService(
 
     public async Task<string> GetTokenAsync(string audience, CancellationToken ct = default)
     {
-        var now = DateTimeOffset.UtcNow;
+        var now = _clock.GetUtcNow();
         if (!string.IsNullOrWhiteSpace(_cachedToken)
             && string.Equals(_cachedAudience, audience, StringComparison.Ordinal)
             && _cachedExpiresAt - now > TimeSpan.FromMinutes(1))

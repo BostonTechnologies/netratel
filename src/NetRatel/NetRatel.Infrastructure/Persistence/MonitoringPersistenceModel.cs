@@ -32,8 +32,41 @@ internal static class MonitoringPersistenceModel
         });
         model.Entity<MonitoringEvidenceStreamRecord>(entity =>
         {
-            entity.ToTable("MonitoringEvidenceStreams"); entity.HasKey(row => new { row.TenantId, row.AgentId });
+            entity.ToTable("MonitoringEvidenceStreams", table =>
+            {
+                table.HasCheckConstraint("CK_MonitoringEvidenceStreams_Ordinal",
+                    """
+                    "CommittedRegistrationOrdinal">=0
+                    """);
+            });
+            entity.HasKey(row => new { row.TenantId, row.AgentId });
+            entity.Property(row => row.CommittedRegistrationOrdinal).HasDefaultValue(0L);
             entity.Property(row => row.Revision).IsConcurrencyToken();
+        });
+        model.Entity<MonitoringEvidenceRegistrationCounterRecord>(entity =>
+        {
+            entity.ToTable("MonitoringEvidenceRegistrationCounters", table =>
+            {
+                table.HasCheckConstraint("CK_MonitoringEvidenceRegistrationCounters_Identity",
+                    """
+                    "TenantId">0 AND "AgentId"<>'00000000-0000-0000-0000-000000000000'::uuid AND "LastIssuedOrdinal">=0
+                    """);
+            });
+            entity.HasKey(row => new { row.TenantId, row.AgentId });
+            entity.Property(row => row.LastIssuedOrdinal).HasDefaultValue(0L);
+        });
+        model.Entity<MonitoringEvidenceRegistrationAttemptRecord>(entity =>
+        {
+            entity.ToTable("MonitoringEvidenceRegistrationAttempts", table =>
+            {
+                table.HasCheckConstraint("CK_MonitoringEvidenceRegistrationAttempts_Shape",
+                    """
+                    "TenantId">0 AND "AgentId"<>'00000000-0000-0000-0000-000000000000'::uuid AND "RegistrationId"<>'00000000-0000-0000-0000-000000000000'::uuid AND "ConnectionId"<>'00000000-0000-0000-0000-000000000000'::uuid AND "ConnectionEpoch">0 AND "RegistrationOrdinal">0 AND "Status" IN (1,2,3) AND "ExpiresAtUtc">"CreatedAtUtc" AND "RetainUntilUtc">="ExpiresAtUtc"
+                    """);
+            });
+            entity.HasKey(row => new { row.TenantId, row.AgentId, row.RegistrationId });
+            entity.HasIndex(row => new { row.TenantId, row.AgentId, row.RegistrationOrdinal }).IsUnique();
+            entity.HasIndex(row => row.RetainUntilUtc);
         });
         model.Entity<MonitoringSeriesRecord>(entity =>
         {

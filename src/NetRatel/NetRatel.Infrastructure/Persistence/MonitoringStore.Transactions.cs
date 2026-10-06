@@ -45,8 +45,12 @@ public sealed partial class MonitoringStore
         }
         try
         {
+            if (request.ExpectedEvidenceFence is { } mutationFence && !await CheckEpochAsync(db, mutationFence, cancellationToken).ConfigureAwait(false))
+                return new(MonitoringStoreWriteDisposition.StaleEvidence, null);
             await ApplyEvaluationAsync(db, result, request.ExpectedConfigurationRevision, cancellationToken).ConfigureAwait(false);
             await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            if (request.ExpectedEvidenceFence is { } commitFence && !await CheckEpochAsync(db, commitFence, cancellationToken).ConfigureAwait(false))
+                return new(MonitoringStoreWriteDisposition.StaleEvidence, null);
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             return new(MonitoringStoreWriteDisposition.Stored, result.State);
         }
@@ -62,25 +66,38 @@ public sealed partial class MonitoringStore
     public async Task<bool> BeginEvidenceStreamAsync(MonitoringEvidenceFence fence, CancellationToken cancellationToken)
     {
         RequireFence(fence);
+        if (fence.RegistrationOrdinal <= 0) return false;
         await using var scope = scopeFactory.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         if (!await CheckEpochAsync(db, fence, cancellationToken).ConfigureAwait(false)) return false;
         await db.Database.ExecuteSqlInterpolatedAsync($"""
-            INSERT INTO "MonitoringEvidenceStreams" ("TenantId", "AgentId", "ConnectionId", "ConnectionEpoch", "EvidenceStreamId", "Active", "RegisteredAtUtc", "Revision")
-            VALUES ({fence.Client.TenantId}, {fence.Client.AgentId}, {fence.ConnectionId}, {fence.ConnectionEpoch}, {fence.EvidenceStreamId}, FALSE, {timeProvider.GetUtcNow()}, 0)
-            ON CONFLICT ("TenantId", "AgentId") DO NOTHING
+            INSERT INTO "MonitoringEvidenceStreams" ("TenantId","AgentId","ConnectionId","ConnectionEpoch","EvidenceStreamId","Active","RegisteredAtUtc","Revision","CommittedRegistrationOrdinal")
+            VALUES ({fence.Client.TenantId},{fence.Client.AgentId},{fence.ConnectionId},{fence.ConnectionEpoch},{fence.EvidenceStreamId},FALSE,{timeProvider.GetUtcNow()},0,0)
+            ON CONFLICT ("TenantId","AgentId") DO NOTHING
             """, cancellationToken).ConfigureAwait(false);
         var row = await LockEvidenceAsync(db, fence.Client, cancellationToken).ConfigureAwait(false);
-        // GUIDs do not order registrations within an epoch. Recheck the actual server registry under this durable lock.
-        if (await directory.GetCurrentEvidenceAsync(fence.Client, cancellationToken).ConfigureAwait(false) != fence ||
-            row is null || row.ConnectionEpoch > fence.ConnectionEpoch ||
-            (row.ConnectionEpoch == fence.ConnectionEpoch && row.ConnectionId != fence.ConnectionId)) return false;
+        // Local physical presentation is required only at ingress. A pending retry leaves the current committed stream untouched.
+        if (row is null || !await directory.IsPresentedEvidenceAsync(fence, cancellationToken).ConfigureAwait(false)) return false;
         if (row.Active && MatchesFence(row, fence)) return true;
+        if (row.CommittedRegistrationOrdinal >= fence.RegistrationOrdinal) return false;
+        var attempt = (await db.Set<MonitoringEvidenceRegistrationAttemptRecord>().FromSqlInterpolated($"""
+            SELECT * FROM "MonitoringEvidenceRegistrationAttempts" WHERE "TenantId"={fence.Client.TenantId} AND "AgentId"={fence.Client.AgentId}
+            AND "RegistrationId"={fence.EvidenceStreamId} FOR UPDATE
+            """).ToListAsync(cancellationToken).ConfigureAwait(false)).SingleOrDefault();
+        var now = await EvidenceNowAsync(db, timeProvider, cancellationToken).ConfigureAwait(false);
+        if (attempt is not { Status: 1 } || attempt.ConnectionId != fence.ConnectionId || attempt.ConnectionEpoch != fence.ConnectionEpoch ||
+            attempt.RegistrationOrdinal != fence.RegistrationOrdinal || attempt.ExpiresAtUtc <= now) return false;
+        // The owner lock is already held. Refresh its real deadlines after all awaited evidence/attempt locks.
+        if (!await CheckEpochAsync(db, fence, cancellationToken).ConfigureAwait(false) ||
+            !await directory.IsPresentedEvidenceAsync(fence, cancellationToken).ConfigureAwait(false)) return false;
         row.ConnectionId = fence.ConnectionId; row.ConnectionEpoch = fence.ConnectionEpoch;
-        row.EvidenceStreamId = fence.EvidenceStreamId; row.Active = true;
-        row.RegisteredAtUtc = timeProvider.GetUtcNow(); row.Revision = checked(row.Revision + 1);
+        row.EvidenceStreamId = fence.EvidenceStreamId; row.CommittedRegistrationOrdinal = fence.RegistrationOrdinal;
+        row.Active = true; row.RegisteredAtUtc = now; row.Revision = checked(row.Revision + 1);
+        attempt.Status = 2;
         await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        if (!await CheckEpochAsync(db, fence, cancellationToken).ConfigureAwait(false) ||
+            attempt.ExpiresAtUtc <= await EvidenceNowAsync(db, timeProvider, cancellationToken).ConfigureAwait(false)) return false;
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return true;
     }
@@ -91,13 +108,18 @@ public sealed partial class MonitoringStore
         await using var scope = scopeFactory.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        // End selects only the exact registration. It cannot retire a successor or the Presence owner.
         var row = await LockEvidenceAsync(db, fence.Client, cancellationToken).ConfigureAwait(false);
-        if (row is null || !MatchesFence(row, fence)) return false;
-        if (!row.Active) return true;
-        row.Active = false; row.Revision = checked(row.Revision + 1);
+        var matched = row is not null && MatchesFence(row, fence);
+        if (matched && row!.Active) { row.Active = false; row.Revision = checked(row.Revision + 1); }
+        await db.Database.ExecuteSqlInterpolatedAsync($"""
+            UPDATE "MonitoringEvidenceRegistrationAttempts" SET "Status"=3
+            WHERE "TenantId"={fence.Client.TenantId} AND "AgentId"={fence.Client.AgentId} AND "RegistrationId"={fence.EvidenceStreamId}
+            AND "ConnectionId"={fence.ConnectionId} AND "ConnectionEpoch"={fence.ConnectionEpoch} AND "RegistrationOrdinal"={fence.RegistrationOrdinal}
+            """, cancellationToken).ConfigureAwait(false);
         await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-        return true;
+        return matched;
     }
 
     private static async Task<MonitoringTenantConfigurationRecord> LockConfigurationAsync(OrchestratorDbContext db, int tenant, CancellationToken ct, bool shared = false)
@@ -118,23 +140,37 @@ public sealed partial class MonitoringStore
             "SELECT * FROM \"MonitoringEvidenceStreams\" WHERE \"TenantId\" = {0} AND \"AgentId\" = {1} FOR UPDATE";
         return (await db.MonitoringEvidenceStreams.FromSqlRaw(sql, key.TenantId, key.AgentId).ToListAsync(ct).ConfigureAwait(false)).SingleOrDefault();
     }
-    private static async Task<bool> CheckEpochAsync(OrchestratorDbContext db, MonitoringEvidenceFence fence, CancellationToken ct)
-    {
-        var issued = (await db.ClientConnectionEpochs.FromSqlInterpolated($"""SELECT * FROM "ClientConnectionEpochs" WHERE "TenantId" = {fence.Client.TenantId} AND "AgentId" = {fence.Client.AgentId} FOR SHARE""")
-            .AsNoTracking().ToListAsync(ct).ConfigureAwait(false)).SingleOrDefault();
-        // Production authenticated sessions always allocate a durable epoch before admission.
-        return issued is not null && issued.LastIssuedEpoch == fence.ConnectionEpoch;
-    }
+    // LastIssuedEpoch remains reservation-only. The accepted writer holds the
+    // exact committed owner FOR SHARE until its existing transaction completes.
+    private Task<bool> CheckEpochAsync(OrchestratorDbContext db, MonitoringEvidenceFence fence, CancellationToken ct) =>
+        ClientConnectionEpochStore.LockEffectiveOwnerAsync(db,
+            new OwnerKey(fence.Client, fence.ConnectionId, fence.ConnectionEpoch), timeProvider, ct);
+
     private async Task<bool> LockAndCheckEvidenceAsync(OrchestratorDbContext db, MonitoringEvidenceFence fence, CancellationToken ct)
     {
         RequireFence(fence);
         if (!await CheckEpochAsync(db, fence, ct).ConfigureAwait(false)) return false;
         var row = await LockEvidenceAsync(db, fence.Client, ct, shared: true).ConfigureAwait(false);
-        return row is { Active: true } && MatchesFence(row, fence) &&
-            await directory.GetCurrentEvidenceAsync(fence.Client, ct).ConfigureAwait(false) == fence;
+        // The physical gateway presents its own fence and retains its local
+        // registration check. Shared workers validate this durable exact fence;
+        // their empty or stale process-local registry cannot select authority.
+        return row is { Active: true } && MatchesFence(row, fence);
     }
+    // Read a candidate without locks, then validate owner -> evidence under the
+    // caller transaction. A replacement between reads yields no candidate; the
+    // worker may try later, without manufacturing a physical ingress identity.
+    private async Task<MonitoringEvidenceFence?> LockCurrentEvidenceAsync(OrchestratorDbContext db, ClientKey client, CancellationToken ct)
+    {
+        var candidate = await db.MonitoringEvidenceStreams.AsNoTracking()
+            .SingleOrDefaultAsync(row => row.TenantId == client.TenantId && row.AgentId == client.AgentId, ct).ConfigureAwait(false);
+        if (candidate is not { Active: true }) return null;
+        var fence = new MonitoringEvidenceFence(client, candidate.ConnectionId, candidate.ConnectionEpoch, candidate.EvidenceStreamId, candidate.CommittedRegistrationOrdinal);
+        return await LockAndCheckEvidenceAsync(db, fence, ct).ConfigureAwait(false) ? fence : null;
+    }
+
     private static bool MatchesFence(MonitoringEvidenceStreamRecord row, MonitoringEvidenceFence fence) => row.ConnectionId == fence.ConnectionId &&
-        row.ConnectionEpoch == fence.ConnectionEpoch && row.EvidenceStreamId == fence.EvidenceStreamId;
+        row.ConnectionEpoch == fence.ConnectionEpoch && row.EvidenceStreamId == fence.EvidenceStreamId &&
+        row.CommittedRegistrationOrdinal > 0 && row.CommittedRegistrationOrdinal == fence.RegistrationOrdinal;
     private static void RequireFence(MonitoringEvidenceFence fence)
     {
         if (!fence.Client.IsValid || fence.ConnectionId == Guid.Empty || fence.EvidenceStreamId == Guid.Empty || fence.ConnectionEpoch <= 0)

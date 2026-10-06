@@ -146,6 +146,7 @@ public sealed class NetRatelIdentityDbContext(DbContextOptions<NetRatelIdentityD
             entity.Property(value => value.FaviconAssetId).HasMaxLength(32);
             entity.Property(value => value.SupportUrl).HasMaxLength(2048);
             entity.Property(value => value.SiteUrl).HasMaxLength(2048);
+            entity.Property(value => value.GatewayUrl).HasMaxLength(2048);
             entity.Property(value => value.UpdatedByPrincipalId).HasMaxLength(32);
         });
 

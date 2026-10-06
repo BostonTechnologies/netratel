@@ -48,7 +48,8 @@ public sealed class AgentRemoteSupportGatewayService(
         }
 
         var session = await ValidateHelloAsync(requestStream.Current, identity, context.CancellationToken).ConfigureAwait(false);
-        await ConnectReplicaSafeAsync(requestStream, responseStream, context, session).ConfigureAwait(false);
+        await using var authority = await AgentGatewayAuthenticationLifetime.AttachAsync(context, session.Client, session.ConnectionId, session.ConnectionEpoch).ConfigureAwait(false);
+        await ConnectReplicaSafeAsync(requestStream, responseStream, context, session, authority.Token).ConfigureAwait(false);
     }
 
     private async Task<ValidatedSupportSession> ValidateHelloAsync(AgentRemoteSupportFrame frame, AuthenticatedAgentIdentity identity, CancellationToken cancellationToken)
@@ -70,7 +71,8 @@ public sealed class AgentRemoteSupportGatewayService(
         IAsyncStreamReader<AgentRemoteSupportFrame> requestStream,
         IServerStreamWriter<GatewayRemoteSupportFrame> responseStream,
         ServerCallContext context,
-        ValidatedSupportSession session)
+        ValidatedSupportSession session,
+        CancellationToken authorityToken)
     {
         var edges = serviceProvider.GetRequiredService<IRemoteSupportV2AgentEdgeRegistry>();
         using var registration = edges.Register(session.Client, session.ConnectionId, session.ConnectionEpoch);
@@ -83,7 +85,7 @@ public sealed class AgentRemoteSupportGatewayService(
             ConnectionId = session.ConnectionId.ToString("D"),
             Sequence = 0,
             Accepted = new RemoteSupportConnectAccepted { SupportAuthority = "akka" }
-        }).ConfigureAwait(false);
+        }, authorityToken).ConfigureAwait(false);
 
         try
         {
@@ -92,6 +94,7 @@ public sealed class AgentRemoteSupportGatewayService(
                 ulong lastSequence = 0;
                 while (await requestStream.MoveNext(cancellationToken).ConfigureAwait(false))
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     var frame = requestStream.Current;
                     if (!Matches(frame, session) || frame.Sequence == 0 || frame.Sequence <= lastSequence)
                     {
@@ -120,7 +123,7 @@ public sealed class AgentRemoteSupportGatewayService(
                 }
             }, cancellationToken => WriteReplicaSafeOutboundAsync(registration.Reader, responseStream, session, cancellationToken),
                 cancellationToken => RenewReplicaSafeEdgeAsync(registration, cancellationToken),
-                context.CancellationToken, CancellationToken.None, logger).ConfigureAwait(false);
+                authorityToken, CancellationToken.None, logger, context.GetHttpContext().Abort).ConfigureAwait(false);
         }
         catch (Exception exception) when (RemoteSupportEdgeBufferOverflowException.Is(exception))
         {
@@ -235,6 +238,7 @@ public sealed class AgentRemoteSupportGatewayService(
     private async Task RequirePresenceAsync(ClientKey client, Guid connectionId, ulong epoch, CancellationToken cancellationToken)
     {
         var presence = await presenceRouter.GetSnapshotAsync(client, cancellationToken).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
         if (presence.Status != ClientPresenceStatus.Online || presence.ConnectionId != connectionId || presence.ConnectionEpoch != checked((long)epoch))
         {
             throw new RpcException(new Status(StatusCode.Aborted, "The remote-support gateway session is fenced by the active presence connection."));
@@ -250,6 +254,7 @@ public sealed class AgentRemoteSupportGatewayService(
         ulong sequence = 0;
         await foreach (var envelope in reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
         {
+            cancellationToken.ThrowIfCancellationRequested();
             await responseStream.WriteAsync(new GatewayRemoteSupportFrame
             {
                 ProtocolVersion = NetRatelAkkaOptions.ProtocolVersion,
@@ -303,7 +308,8 @@ public sealed class AgentRemoteSupportGatewayService(
                         }
                         : null
                 }
-            }).ConfigureAwait(false);
+            }, cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
         }
     }
 

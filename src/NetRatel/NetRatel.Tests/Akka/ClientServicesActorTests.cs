@@ -1,6 +1,6 @@
 using System.Text.Json;
 using Akka.Actor;
-using FluentAssertions;
+using AwesomeAssertions;
 using NetRatel.Akka.Services;
 using NetRatel.Akka.Presence;
 using NetRatel.Akka.Configuration;
@@ -187,8 +187,11 @@ public sealed class ClientServicesActorTests : IAsyncLifetime
         var client = new ClientKey(16, Guid.NewGuid());
         var readModel = _system.ActorOf(PresenceReadModelActor.Props());
         var actor = _system.ActorOf(PresenceActor.Props(client, new NetRatelAkkaOptions(), readModel, new FailingEpochStore()));
+        var receivedAt = DateTimeOffset.UtcNow;
         var start = () => actor.Ask<GatewayPresenceSessionStarted>(new StartGatewayPresenceSession(client, Guid.NewGuid(),
-            Guid.NewGuid(), "v1", "test", [], null, DateTimeOffset.UtcNow));
+            Guid.NewGuid(), "v1", "test", [], null, receivedAt,
+            AuthenticationExpiresAtUtc: receivedAt.AddMinutes(10),
+            AdmissionExpiresAtUtc: receivedAt.AddSeconds(10), ProvisionalAdmission: true));
         await start.Should().ThrowAsync<InvalidOperationException>();
         var state = await actor.Ask<ClientPresenceSnapshot>(new GetClientPresence(client));
         state.Status.Should().Be(ClientPresenceStatus.Unknown);
@@ -213,9 +216,9 @@ public sealed class ClientServicesActorTests : IAsyncLifetime
         }
     }
 
-    private sealed class FailingEpochStore : IClientConnectionEpochStore
+    private sealed class FailingEpochStore : ConnectionOwnershipTestStore
     {
-        public Task<long> AllocateAsync(ClientKey client, long minimumEpoch, CancellationToken cancellationToken) =>
+        public override Task<ReserveResult> ReserveAsync(AdmissionRequest request, CancellationToken cancellationToken) =>
             throw new IOException("database unavailable");
     }
 }
@@ -261,10 +264,10 @@ internal sealed class ServicesTestClock : TimeProvider
     public void Advance(TimeSpan elapsed) => _ticks += elapsed.Ticks;
 }
 
-internal sealed class MemoryConnectionEpochStore : IClientConnectionEpochStore
+internal sealed class MemoryConnectionEpochStore : ConnectionOwnershipTestStore
 {
     private readonly Dictionary<ClientKey, long> _epochs = [];
-    public Task<long> AllocateAsync(ClientKey client, long minimumEpoch, CancellationToken cancellationToken)
+    public override Task<long> AllocateAsync(ClientKey client, long minimumEpoch, CancellationToken cancellationToken)
     {
         lock (_epochs)
         {

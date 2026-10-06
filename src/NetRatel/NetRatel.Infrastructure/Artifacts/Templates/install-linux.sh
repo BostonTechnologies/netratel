@@ -38,6 +38,7 @@ TARGET_BACKED_UP=false
 SERVICE_STOPPED=false
 SERVICE_WAS_ACTIVE=false
 SERVICE_WAS_ENABLED=false
+ENABLEMENT_CHANGED=false
 SUCCESS=false
 
 journal_tail() {
@@ -49,10 +50,51 @@ for line in sys.stdin:
     print("[redacted credential line]" if secret.search(line) else re.sub(r"(https?://[^/\s?#]+)[^\s]*", r"\1/[redacted path]", line.rstrip()))
 ' >&2 || true
 }
-inactive() {
-  local status=0
-  systemctl is-active --quiet netratel-client.service || status=$?
-  [ "$status" -eq 3 ]
+owned_service_has_no_process() {
+  python3 - "$CLIENT_UNIT" <<'PY'
+import os, subprocess, sys
+properties = ('Id', 'LoadState', 'ActiveState', 'SubState', 'MainPID', 'ControlPID', 'ControlGroup', 'FragmentPath')
+try:
+    result = subprocess.run(['systemctl', 'show', 'netratel-client.service'] + ['--property=' + p for p in properties],
+                            capture_output=True, text=True, timeout=10)
+except (OSError, subprocess.TimeoutExpired):
+    print('Cannot contact the service manager; process state is unknown.', file=sys.stderr)
+    raise SystemExit(2)
+values = dict(line.split('=', 1) for line in result.stdout.splitlines() if '=' in line)
+if result.returncode or set(values) != set(properties) or values['Id'] != 'netratel-client.service' or values['FragmentPath'] not in ('', sys.argv[1]):
+    print('Cannot verify the owned unit and service manager; process state is unknown.', file=sys.stderr)
+    raise SystemExit(2)
+if (values['LoadState'] not in ('loaded', 'bad-setting', 'error', 'not-found') or
+    values['ActiveState'] not in ('inactive', 'failed', 'active', 'activating', 'deactivating', 'reloading') or
+    not values['MainPID'].isdigit() or not values['ControlPID'].isdigit()):
+    raise SystemExit(2)
+no_process = (values['ActiveState'] in ('inactive', 'failed') and values['SubState'] in ('dead', 'failed') and
+              values['MainPID'] == '0' and values['ControlPID'] == '0')
+if no_process and values['ControlGroup']:
+    group = values['ControlGroup']
+    # MainPID can be zero while children remain with KillMode=process. Inspect
+    # only the manager-reported owned cgroup, including delegated descendants.
+    if (not group.startswith('/') or '..' in group.split('/') or
+        not group.endswith('/netratel-client.service') or not os.path.isfile('/sys/fs/cgroup/cgroup.controllers')):
+        raise SystemExit(2)
+    try:
+        directory = '/sys/fs/cgroup' + group
+        try:
+            os.stat(directory)
+        except FileNotFoundError:
+            pass  # A removed owned cgroup has no remaining members.
+        else:
+            def unreadable(error):
+                raise error
+            for root, _, _ in os.walk(directory, onerror=unreadable):
+                with open(root + '/cgroup.procs', encoding='ascii') as stream:
+                    if stream.read().strip():
+                        no_process = False
+                        break
+    except OSError:
+        raise SystemExit(2)
+raise SystemExit(0 if no_process else 1)
+PY
 }
 restore_file() {
   local destination="$1" name="$2"
@@ -63,19 +105,31 @@ restore_file() {
   fi
 }
 finish() {
-  local status=$? rollback_failed=false
+  local status=$? rollback_failed=false restored=false process_state=0
   trap - EXIT
   if [ "$SUCCESS" != true ] && [ "$MUTATED" = true ]; then
     journal_tail
-    printf '%s\n' 'Local activation failed; restoring the previous installation.' >&2
+    printf 'Local activation failed (exit status %s); unwinding the owned installation transaction.\n' "$status" >&2
     if [ "$SERVICE_MODE" = true ]; then
-      if ! timeout --foreground 60s systemctl stop netratel-client.service || ! inactive; then
-        printf '%s\n' "Rollback cannot replace a package while the service is active or its status is unknown. Recovery files: $TXN_DIR" >&2
-        exit 70
+      owned_service_has_no_process || process_state=$?
+      if [ "$process_state" -eq 2 ]; then
+        printf 'Rollback is incomplete: the service manager or owned process state is unknown. Recovery files: %s\n' "$TXN_DIR" >&2
+        exit "$status"
       fi
+      if [ "$process_state" -ne 0 ]; then
+        if ! timeout --foreground 60s systemctl stop netratel-client.service; then
+          printf '%s\n' 'Rollback stop returned a failure; checking the owned process state separately.' >&2
+        fi
+        if ! owned_service_has_no_process; then
+          printf 'Rollback is incomplete: the owned service has a process or its state is unknown. Recovery files: %s\n' "$TXN_DIR" >&2
+          exit "$status"
+        fi
+      fi
+      # Remove enablement created by this attempt while its unit still exists.
+      if [ "$ENABLEMENT_CHANGED" = true ]; then systemctl disable netratel-client.service || rollback_failed=true; fi
     fi
-    if [ "$TARGET_INSTALLED" = true ]; then rm -rf -- "$TARGET_DIR" || rollback_failed=true; fi
-    if [ "$TARGET_BACKED_UP" = true ]; then mv -- "$TXN_DIR/package" "$TARGET_DIR" || rollback_failed=true; fi
+    if [ "$TARGET_INSTALLED" = true ]; then mv -T -- "$TARGET_DIR" "$TXN_DIR/candidate-package" || rollback_failed=true; fi
+    if [ "$TARGET_BACKED_UP" = true ]; then mv -T -- "$TXN_DIR/package" "$TARGET_DIR" || rollback_failed=true; fi
     if [ "$SERVICE_MODE" = true ]; then
       if [ -n "$PREVIOUS_LINK" ]; then
         ln -s -- "$PREVIOUS_LINK" "$TXN_DIR/current" && mv -Tf -- "$TXN_DIR/current" "$ROOT_DIR/current" || rollback_failed=true
@@ -87,24 +141,33 @@ finish() {
       restore_file "$LAUNCHER" launcher.sh || rollback_failed=true
       restore_file "$UPDATER" updater.sh || rollback_failed=true
       systemctl daemon-reload || rollback_failed=true
-      if [ "$SERVICE_WAS_ENABLED" != true ]; then systemctl disable netratel-client.service || rollback_failed=true; fi
     fi
-    if [ "$rollback_failed" = false ]; then printf '%s\n' 'The previous installation was restored.' >&2; fi
+    restored=true
   fi
-  if [ "$SUCCESS" != true ] && [ "$SERVICE_STOPPED" = true ] && [ "$SERVICE_WAS_ACTIVE" = true ]; then
+  if [ "$SUCCESS" != true ] && [ "$rollback_failed" = false ] && [ "$SERVICE_STOPPED" = true ] && [ "$SERVICE_WAS_ACTIVE" = true ]; then
     if ! timeout --foreground 60s systemctl start netratel-client.service || ! systemctl is-active --quiet netratel-client.service; then
       rollback_failed=true
       printf '%s\n' 'The previous client service could not be restarted.' >&2
       journal_tail
     fi
   fi
-  if [ -n "$STAGE_DIR" ]; then rm -rf -- "$STAGE_DIR"; fi
-  rm -rf -- "$TMP_DIR"
+  if [ -n "$STAGE_DIR" ]; then rm -rf -- "$STAGE_DIR" || rollback_failed=true; fi
+  rm -rf -- "$TMP_DIR" || rollback_failed=true
   if [ "$rollback_failed" = true ]; then
     printf 'Rollback is incomplete. Recovery files: %s\n' "$TXN_DIR" >&2
-    exit 70
+    exit "$status"
   fi
-  if [ -n "$TXN_DIR" ]; then rm -rf -- "$TXN_DIR"; fi
+  if [ "$restored" = true ]; then
+    if [ -n "$PREVIOUS_LINK" ]; then
+      printf '%s\n' 'The previous installation was restored.' >&2
+    else
+      printf '%s\n' 'The new installation was removed; existing identity and update state were retained.' >&2
+    fi
+  fi
+  if [ -n "$TXN_DIR" ] && ! rm -rf -- "$TXN_DIR"; then
+    printf 'Transaction cleanup failed. Recovery files: %s\n' "$TXN_DIR" >&2
+    if [ "$status" -eq 0 ]; then status=1; fi
+  fi
   exit "$status"
 }
 trap finish EXIT
@@ -129,6 +192,14 @@ def path(value, label):
     if not value or not os.path.isabs(value) or any(c in value for c in '\r\n\x00%'):
         reject(label + ' must be an absolute path without control characters or systemd specifiers.')
     return os.path.normpath(value)
+
+def working_directory(value):
+    # Old installers wrapped this scalar in command-style quotes. Accept that
+    # legacy spelling for repair, while current units store the literal path.
+    if value.startswith('"') and value.endswith('"'):
+        words = shlex.split(value)
+        return words[0] if len(words) == 1 else ''
+    return value
 
 def trusted(value, directory=False):
     # Check existing components before creating anything; never follow replacement links.
@@ -176,7 +247,12 @@ def read_unit(filename, environment=None, settings=None):
                 section = line[1:-1]
             elif section == 'Service':
                 key, separator, value = line.partition('=')
-                if not separator or key not in allowed or '\\' in value or '%' in value:
+                # WorkingDirectory is a scalar path, unlike the quoted command/environment lists.
+                # For those lists accept only the escaping emitted by this installer.
+                escaped_list = key in ('ExecStart', 'Environment', 'EnvironmentFile')
+                unsupported_escape = '\\' in value and key != 'WorkingDirectory' and (
+                    not escaped_list or '\\' in re.sub(r'\\[\\"]', '', value))
+                if not separator or key not in allowed or unsupported_escape or '%' in value:
                     reject('Unsupported systemd Service directive or escaping in ' + filename + ': ' + key)
                 if key == 'Environment':
                     if not value:
@@ -276,6 +352,11 @@ for name in ('API_BASE', 'GATEWAY_ENDPOINT'):
         reject(name + ' must be a public origin without credentials, query, or capability path.')
 home = os.path.expanduser('~')
 root = path(os.environ.get('NetRatel_ROOT') or ('/opt/netratel/client' if service else home + '/.local/share/netratel/client'), 'NetRatel_ROOT')
+# The native parser retains literal backslashes in WorkingDirectory but rejects
+# them in an executable pathname ("Executable path contains special characters").
+# State/log/environment paths keep their supported escaped-value semantics.
+if service and '\\' in root:
+    reject('Systemd executable roots cannot contain a backslash; select a supported service root.')
 state = path(os.environ.get('NetRatel_STATE') or ('/var/lib/netratel/update' if service else home + '/.local/state/netratel/update'), 'NetRatel_STATE')
 unit_dir = path(os.environ.get('NetRatel_SYSTEMD_UNIT_DIR') or '/etc/systemd/system', 'Systemd unit directory')
 environment, settings, lines = {}, {}, []
@@ -292,13 +373,15 @@ if service:
         if requested and key in overrides and endpoint_origin(overrides[key], '__Gateway__' in key) != endpoint_origin(requested, '__Gateway__' in key):
             reject('The requested endpoint conflicts with ' + key + ' in an EnvironmentFile or drop-in; reconcile that override before repair.')
     if settings:
-        working = shlex.split(settings.get('WorkingDirectory', ''))
-        if len(working) != 1 or not working[0].endswith('/current'):
+        working = working_directory(settings.get('WorkingDirectory', ''))
+        if not working.endswith('/current'):
             reject('The existing service does not use the supported NetRatel current layout.')
-        registered_root = path(working[0][:-len('/current')], 'Existing service root')
+        registered_root = path(working[:-len('/current')], 'Existing service root')
         if os.environ.get('NetRatel_ROOT') and root != registered_root:
             reject('NetRatel_ROOT conflicts with the existing service root.')
         root = registered_root
+        if '\\' in root:
+            reject('Systemd executable roots cannot contain a backslash; reconcile the installed service root.')
         command = shlex.split(settings.get('ExecStart', ''))
         if command not in ([root + '/netratel-client-start.sh'], [root + '/current/NetRatel.Client', '--service']):
             reject('The existing ExecStart is outside the supported NetRatel package layout.')
@@ -311,7 +394,7 @@ else:
     if os.path.isfile(unit):
         with open(unit, encoding='utf-8') as stream:
             for line in stream:
-                if line.strip().startswith('WorkingDirectory=') and shlex.split(line.strip().split('=', 1)[1]) == [root + '/current']:
+                if line.strip().startswith('WorkingDirectory=') and working_directory(line.strip().split('=', 1)[1]) == root + '/current':
                     reject('This package is owned by a systemd service; request its service repair installer.')
 for value in (root, root + '/versions', root + '/staging', root + '/updater') + ((unit_dir,) if service else ()):
     trusted(value, directory=True)
@@ -605,7 +688,7 @@ if os.environ['SERVICE_MODE'] == 'true':
             in_service = line.strip() == '[Service]'
             output.append(line)
             if in_service:
-                output.extend(['WorkingDirectory=' + quote(root + '/current'), 'ExecStart=' + quote(root + '/netratel-client-start.sh')])
+                output.extend(['WorkingDirectory=' + root + '/current', 'ExecStart=' + quote(root + '/netratel-client-start.sh')])
                 output.extend('Environment=' + quote(k + '=' + v) for k, v in environment.items())
         elif not (in_service and line.strip().split('=', 1)[0] in ('ExecStart', 'WorkingDirectory', 'Environment')):
             output.append(line)
@@ -637,6 +720,43 @@ print('Client logs (configured): ' + config['environment'].get('NetRatel_CLIENT_
 PY
 RESOLVED_VERSION=$(cat "$TMP_DIR/version")
 TARGET_DIR="$ROOT_DIR/versions/$RESOLVED_VERSION"
+if [ "$SERVICE_MODE" = true ] && command -v systemd-analyze >/dev/null; then
+  phase 'validating staged systemd units before stopping the service'
+  python3 - "$TMP_DIR" <<'PY'
+import json, os, shutil, subprocess, sys
+temporary = sys.argv[1]
+with open(temporary + '/config.json', encoding='utf-8') as stream:
+    config = json.load(stream)
+# An isolated root supplies only dependencies and executable placeholders. The
+# production unit bytes are unchanged; no client code runs and no live paths change.
+root = temporary + '/systemd-validation'
+unit_dir = root + '/etc/systemd/system'
+os.makedirs(unit_dir)
+for source, name in (('client.service', 'netratel-client.service'), ('update.service', 'netratel-update.service')):
+    shutil.copyfile(temporary + '/' + source, unit_dir + '/' + name)
+for name in ('sysinit', 'basic', 'shutdown', 'network-online', 'multi-user'):
+    with open(unit_dir + '/' + name + '.target', 'w', encoding='utf-8') as stream:
+        stream.write('[Unit]\nDescription=Offline validation dependency\nDefaultDependencies=no\n')
+for path in (config['root'] + '/netratel-client-start.sh', config['root'] + '/updater/netratel-update.sh'):
+    destination = root + path
+    os.makedirs(os.path.dirname(destination), exist_ok=True)
+    with open(destination, 'w', encoding='utf-8') as stream:
+        stream.write('#!/bin/sh\nexit 0\n')
+    os.chmod(destination, 0o755)
+result = subprocess.run(['systemd-analyze', '--root=' + root, '--man=no', 'verify',
+                         '/etc/systemd/system/netratel-client.service', '/etc/systemd/system/netratel-update.service'],
+                        capture_output=True, text=True, timeout=30)
+if result.returncode or result.stderr.strip():
+    print('Staged systemd unit validation failed; the existing service was not stopped.', file=sys.stderr)
+    # Native warnings can contain operator-supplied settings; keep them in the
+    # private temporary directory instead of copying them to shared diagnostics.
+    with open(temporary + '/systemd-validation.txt', 'w', encoding='utf-8') as stream:
+        stream.write(result.stderr)
+    raise SystemExit(1)
+PY
+elif [ "$SERVICE_MODE" = true ]; then
+  printf '%s\n' 'systemd-analyze is unavailable; staged native unit validation was not performed.' >&2
+fi
 if [ "$SERVICE_MODE" != true ]; then
   phase 'checking or enrolling the user client'
   enrollment_args=(--enroll "$ENROLLMENT_CODE" --api "$API_BASE")
@@ -650,10 +770,15 @@ if [ "$SERVICE_MODE" = true ]; then
     if [ -f "$destination" ]; then cp -p -- "$destination" "$TXN_DIR/${entry##*:}"; fi
   done
   phase 'stopping the owned service before package replacement'
-  if [ "$SERVICE_WAS_ACTIVE" = true ]; then
+  owned_process_state=0
+  owned_service_has_no_process || owned_process_state=$?
+  if [ "$owned_process_state" -eq 2 ]; then
+    fail 'The owned service process state is unknown; no installed files were changed.'
+  fi
+  if [ "$owned_process_state" -ne 0 ]; then
     SERVICE_STOPPED=true
     timeout --foreground 60s systemctl stop netratel-client.service || { journal_tail; fail 'The client service did not stop; no installed files were changed.'; }
-    inactive || { journal_tail; fail 'The client service could not be verified stopped; no installed files were changed.'; }
+    owned_service_has_no_process || { journal_tail; fail 'The client service could not be verified stopped; no installed files were changed.'; }
   fi
 fi
 MUTATED=true
@@ -672,7 +797,10 @@ if [ "$SERVICE_MODE" = true ]; then
   cp -- "$TMP_DIR/update.service" "$UPDATE_UNIT"
   chmod 0644 "$CLIENT_UNIT" "$UPDATE_UNIT"
   systemctl daemon-reload
-  systemctl enable netratel-client.service
+  if [ "$SERVICE_WAS_ENABLED" != true ]; then
+    ENABLEMENT_CHANGED=true
+    systemctl enable netratel-client.service
+  fi
   timeout --foreground 60s systemctl start netratel-client.service
   systemctl is-active --quiet netratel-client.service || fail 'The installed client service is not active.'
   printf 'Service: root, active. Executable: %s/current/NetRatel.Client\n' "$ROOT_DIR"

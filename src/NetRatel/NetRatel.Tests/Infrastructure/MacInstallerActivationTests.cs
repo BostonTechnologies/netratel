@@ -1,6 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.Versioning;
-using FluentAssertions;
+using AwesomeAssertions;
 using NetRatel.Application.Artifacts;
 using NetRatel.Infrastructure.Artifacts;
 using Xunit;

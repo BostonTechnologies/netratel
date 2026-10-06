@@ -92,6 +92,27 @@ public static class AgentGatewayProtocolValidator
         return AgentFrameValidationResult.Success;
     }
 
+    public static AgentFrameValidationResult ValidateRenewal(
+        AgentFrame frame,
+        AuthenticatedAgentIdentity identity,
+        string supportedProtocolVersion,
+        Guid connectionId,
+        long connectionEpoch,
+        ulong lastAcceptedSequence)
+    {
+        var common = ValidateCommon(frame, identity, supportedProtocolVersion);
+        if (!common.IsValid) return common;
+        if (frame.PayloadCase != AgentFrame.PayloadOneofCase.Renew ||
+            frame.Renew.AccessToken.Length is 0 or > 16384)
+            return Invalid("A bounded authenticated renewal credential is required.");
+        if (!Guid.TryParse(frame.ConnectionId, out var parsedConnectionId) || parsedConnectionId != connectionId ||
+            frame.ConnectionEpoch != checked((ulong)connectionEpoch))
+            return new(false, StatusCode.Aborted, "The renewal does not belong to the active presence owner.");
+        if (frame.Sequence == 0 || frame.Sequence <= lastAcceptedSequence)
+            return new(false, StatusCode.Aborted, "The authenticated renewal sequence was already consumed or is stale.");
+        return AgentFrameValidationResult.Success;
+    }
+
     private static AgentFrameValidationResult ValidateCommon(
         AgentFrame frame,
         AuthenticatedAgentIdentity identity,

@@ -30,13 +30,13 @@ separately; changing a package or repairing its updater does not silently
 reset them.
 
 For the Client, an absent or empty `Gateway:Endpoint` uses the effective
-`Client:ApiBaseUrl` after the precedence above. Same-origin installations need
-only the API URL. A split-host deployment can set an explicit HTTPS gateway
+`Client:ApiBaseUrl` after the precedence above for existing/manual configurations.
+New public installer links require both addresses explicitly. A split-host deployment can set an explicit HTTPS gateway
 override through `NetRatelCLIENT__Gateway__Endpoint` (or
 `Gateway__Endpoint`) or the command line (`--Gateway:Endpoint=https://...`).
-The generated Windows, systemd, and launchd service templates persist the API
-URL once and preserve an explicitly configured gateway endpoint when rewriting
-an existing service. If an operator intentionally changes the instance URL,
+Generated public Windows, systemd, and launchd installers persist both the API
+URL and the explicit gateway endpoint in installed settings and service environment.
+Seed/legacy installers with an omitted gateway preserve an existing explicit gateway. If an operator intentionally changes the instance URL,
 verify the tenant and issuer/origin contract before restarting the service and
 retain the existing identity unless a deliberate identity reset is required.
 Existing systemd `EnvironmentFile=` entries remain explicit deployment
@@ -75,6 +75,14 @@ Back up PostgreSQL and persistent key/artifact volumes
 together. Replacing a Data Protection key ring invalidates cookies and
 protected state.
 
+## Helpdesk service credentials
+
+Use [RatelDesk service credentials and reciprocal linking](integrations/rateldesk-service-link.md)
+for tenant-owned `helpdesk-m2m` clients, the two administrator approval paths,
+deployment locks, rotation and callback configuration. These managed identities
+are separate from personal API/MCP credentials, native-agent keys and the
+existing deployment `M2M` configuration.
+
 ## Public client install links
 
 The effective administrator `Site URL` under `/admin/branding` supplies the
@@ -85,29 +93,48 @@ their known paths. The API rejects a missing, HTTP, localhost, private DNS
 suffix, credential-bearing, path-bearing, query-bearing, or fragment-bearing
 Site URL before it creates an install grant.
 
-When the native Client uses a separate public API host, set the API-side
-`ClientArtifacts:PublicBaseUrl` to that HTTPS API origin. An optional `/api`
-suffix is accepted and normalized away; arbitrary paths are rejected. A
-separate public gateway origin can be set with
-`ClientArtifacts:PublicGatewayBaseUrl`. These values describe the addresses
-embedded in new Client installs. They are independent of the Web-to-API
-internal address and the OIDC issuer URL.
+Set **Site URL** and **Gateway URL** on `/admin/branding`, or supply deployment
+options on the **API backend**:
 
-Set these on the **API backend**, using environment keys
-`ClientArtifacts__PublicBaseUrl` and `ClientArtifacts__PublicGatewayBaseUrl`.
-For a shared public REST/gRPC hostname, for example:
+| Environment variable | Purpose |
+| --- | --- |
+| `Branding__SiteUrl` | Public Web/install-link origin; default REST, enrollment and artifact origin |
+| `Branding__GatewayUrl` | Public HTTPS native HTTP/2 gateway origin |
+| `ClientArtifacts__PublicBaseUrl` | Optional separate public REST origin; a single `/api` suffix is normalized away |
+| `ClientArtifacts__PublicGatewayBaseUrl` | Compatibility alias for the deployment-owned gateway |
 
-```text
-ClientArtifacts__PublicBaseUrl=https://api.example.invalid
+Deployment values take precedence and lock the corresponding Branding field.
+The compatibility gateway alias also locks Gateway URL; conflicting nonblank
+canonical and compatibility values fail API startup. Blank address variables
+are treated as unset, so administrators can configure them in Branding.
+Addresses must be public HTTPS origins on port 443, without credentials,
+paths, queries or fragments. They are independent of the internal Web-to-API
+address and the OIDC issuer URL.
+
+Source and image Compose deployments map `NETRATEL_PUBLIC_ORIGIN` and
+`NETRATEL_PUBLIC_GATEWAY_ORIGIN` to these API options. For a shared public
+REST/gRPC hostname, explicitly set both:
+
+```dotenv
+NETRATEL_PUBLIC_ORIGIN=https://netratel.example.com
+NETRATEL_PUBLIC_GATEWAY_ORIGIN=https://netratel.example.com
 ```
 
-An absent or blank gateway override means that the effective gRPC origin is
-the API origin. For a separate gateway hostname:
+For split hosts, set the gateway variable to `https://grpc.example.com`.
+Neither a new script nor a new link is generated until the effective web and
+gateway addresses are configured. Existing links remain immutable; generate a
+fresh link after setting Gateway URL.
+
+Native Client Docker deployments bind typed startup options through:
 
 ```text
-ClientArtifacts__PublicBaseUrl=https://api.example.invalid
-ClientArtifacts__PublicGatewayBaseUrl=https://gateway.example.invalid
+NetRatelCLIENT__Client__ApiBaseUrl=https://netratel.example.com
+NetRatelCLIENT__Gateway__Endpoint=https://grpc.example.com
 ```
+
+The client preserves packaged defaults < installed settings < deployment
+variables < supported command-line overrides. REST-only enrollment and
+`--auth-check` resolve the API options without requiring gateway initialization.
 
 The generation dialog previews the public Web/install-link, REST/enrollment/
 artifact, and effective gRPC origins with their sources. Preview requires the

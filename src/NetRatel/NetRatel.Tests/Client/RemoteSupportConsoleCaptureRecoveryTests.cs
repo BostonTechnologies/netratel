@@ -1,4 +1,4 @@
-using FluentAssertions;
+using AwesomeAssertions;
 using NetRatel.Client.Service.RemoteSupport;
 using System.Runtime.Versioning;
 using Xunit;

@@ -49,24 +49,32 @@ public sealed class AgentRemoteSupportPreparationGatewayService(
             throw new RpcException(new GrpcStatus(StatusCode.InvalidArgument, "A Remote Support V2 preparation hello frame is required."));
         }
 
-        var session = await ValidateHelloAsync(requestStream.Current, identity, context.CancellationToken).ConfigureAwait(false);
+        var hello = requestStream.Current;
+        var session = await ValidateHelloAsync(hello, identity, context.CancellationToken).ConfigureAwait(false);
+        await using var authority = await AgentGatewayAuthenticationLifetime.AttachAsync(context, session.Client, session.ConnectionId, session.ConnectionEpoch).ConfigureAwait(false);
+        authority.Token.ThrowIfCancellationRequested();
         using var registration = preparations.Register(
             session.Client,
             session.ConnectionId,
             session.ConnectionEpoch,
             NetRatelAkkaOptions.ProtocolVersion,
-            requestStream.Current.Hello.Capabilities);
-        await responseStream.WriteAsync(CreateAccepted(session)).ConfigureAwait(false);
+            hello.Hello.Capabilities);
 
         await GatewayDuplexSession.RunAsync(async cancellationToken =>
         {
             ulong lastSequence = 0;
             while (await requestStream.MoveNext(cancellationToken).ConfigureAwait(false))
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 lastSequence = await ProcessInboundAsync(requestStream.Current, session, lastSequence, cancellationToken).ConfigureAwait(false);
             }
-        }, cancellationToken => WriteOutboundAsync(registration.Reader, responseStream, cancellationToken),
-            context.CancellationToken, CancellationToken.None, logger).ConfigureAwait(false);
+        }, async cancellationToken =>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await responseStream.WriteAsync(CreateAccepted(session), cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            await WriteOutboundAsync(registration.Reader, responseStream, cancellationToken).ConfigureAwait(false);
+        }, authority.Token, CancellationToken.None, logger, context.GetHttpContext().Abort).ConfigureAwait(false);
     }
 
     private async Task<ValidatedPreparationSession> ValidateHelloAsync(
@@ -99,6 +107,7 @@ public sealed class AgentRemoteSupportPreparationGatewayService(
         }
 
         await RequirePresenceAsync(session.Client, session.ConnectionId, session.ConnectionEpoch, cancellationToken).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
         lastSequence = frame.Sequence;
         var accepted = frame.PayloadCase switch
         {
@@ -122,6 +131,7 @@ public sealed class AgentRemoteSupportPreparationGatewayService(
         RemoteSupportV2InventorySnapshot snapshot,
         CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         if (!RemoteSupportV2PreparationRegistry.TryMapInventory(session.Client, snapshot, out var inventory) ||
             !preparations.TryReceiveInventory(session.Client, snapshot))
         {
@@ -136,6 +146,7 @@ public sealed class AgentRemoteSupportPreparationGatewayService(
             }
 
             var authority = await authorityRegion.GetAsync(cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
             await authority.Ask<RemoteSupportTransitionDecision>(
                     new ObserveRemoteSupportTransitionInventory(
                         mapped.Session,
@@ -147,6 +158,7 @@ public sealed class AgentRemoteSupportPreparationGatewayService(
                     options.AskTimeout,
                     cancellationToken)
                 .ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
         }
 
         return true;
@@ -157,6 +169,7 @@ public sealed class AgentRemoteSupportPreparationGatewayService(
         RemoteSupportV2PreparedTarget preparedTarget,
         CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var completedPendingPreparation = preparations.TryCompletePreparation(session.Client, preparedTarget);
         if (!preparedTarget.HasTransitionCorrelation)
         {
@@ -171,6 +184,7 @@ public sealed class AgentRemoteSupportPreparationGatewayService(
         }
 
         var authority = await authorityRegion.GetAsync(cancellationToken).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
         await authority.Ask<RemoteSupportTransitionDecision>(
                 new CompleteRemoteSupportReplacementPreparation(
                     correlation.Session,
@@ -182,6 +196,7 @@ public sealed class AgentRemoteSupportPreparationGatewayService(
                 options.AskTimeout,
                 cancellationToken)
             .ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
         return true;
     }
 
@@ -228,6 +243,7 @@ public sealed class AgentRemoteSupportPreparationGatewayService(
     private async Task RequirePresenceAsync(ClientKey client, Guid connectionId, ulong epoch, CancellationToken cancellationToken)
     {
         var presence = await presenceRouter.GetSnapshotAsync(client, cancellationToken).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
         if (presence.Status != ClientPresenceStatus.Online || presence.ConnectionId != connectionId || presence.ConnectionEpoch != checked((long)epoch))
         {
             throw new RpcException(new GrpcStatus(StatusCode.Aborted, "The Remote Support V2 preparation stream is fenced by the active presence connection."));
@@ -241,7 +257,9 @@ public sealed class AgentRemoteSupportPreparationGatewayService(
     {
         await foreach (var frame in reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
         {
-            await responseStream.WriteAsync(frame).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            await responseStream.WriteAsync(frame, cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
         }
     }
 

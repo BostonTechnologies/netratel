@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Options;
 using NetRatel.Client.Service.Gateway;
 using NetRatel.Shared;
 using NetRatel.Shared.Client;
@@ -11,8 +12,14 @@ namespace NetRatel.Client;
 
 internal static class ClientConfigurationLoader
 {
-    internal sealed record GatewayOptionsResolution(GatewayClientOptions Options, string Source);
-    internal sealed record ClientOptionsResolution(ClientOptions Options, string ApiBaseUrlSource);
+    internal sealed record GatewayOptionsResolution(IOptions<GatewayClientOptions> ConfiguredOptions, string Source)
+    {
+        public GatewayClientOptions Options => ConfiguredOptions.Value;
+    }
+    internal sealed record ClientOptionsResolution(IOptions<ClientOptions> ConfiguredOptions, string ApiBaseUrlSource)
+    {
+        public ClientOptions Options => ConfiguredOptions.Value;
+    }
 
     internal static IConfiguration BuildPackagedDefaults(string appBaseDir, string? environmentName)
     {
@@ -79,8 +86,6 @@ internal static class ClientConfigurationLoader
         string appBaseDir,
         IReadOnlyList<string> args)
     {
-        var options = new GatewayClientOptions();
-        configuration.GetSection("Gateway").Bind(options);
         var endpoint = packagedDefaults?["Gateway:Endpoint"];
         var source = string.IsNullOrWhiteSpace(endpoint) ? "api-base-url" : "packaged-defaults";
         if (!string.IsNullOrWhiteSpace(endpoint) &&
@@ -133,8 +138,14 @@ internal static class ClientConfigurationLoader
             source = "api-base-url";
         }
 
-        options.Endpoint = ClientEndpointAddress.NormalizeGatewayBase(endpoint);
-        return new GatewayOptionsResolution(options, source);
+        var configuredOptions = Configure<GatewayClientOptions>(options =>
+        {
+            configuration.GetSection("Gateway").Bind(options);
+            options.Endpoint = ClientEndpointAddress.NormalizeGatewayBase(endpoint);
+        });
+        // Resolve only after REST-only enrollment/authentication commands have returned.
+        _ = configuredOptions.Value;
+        return new GatewayOptionsResolution(configuredOptions, source);
     }
 
     private static bool HasRedundantPairedGatewayDefault(
@@ -208,71 +219,79 @@ internal static class ClientConfigurationLoader
         string appBaseDir,
         IReadOnlyList<string> args)
     {
-        var options = new ClientOptions();
         var apiSource = packagedDefaults?["Client:ApiBaseUrl"] is null ? "default" : "packaged-defaults";
-
-        // These are intentionally separate configuration layers. The packaged appsettings
-        // file is a safe fallback for a fresh install, not an explicit deployment choice.
-        // Binding the already-merged root here would let those placeholders overwrite a
-        // valid installation's legacy settings.
-        packagedDefaults?.GetSection("Client").Bind(options);
-
-        var legacyPath = Path.Combine(appBaseDir, "clientsettings.json");
-        if (File.Exists(legacyPath))
+        var configuredOptions = Configure<ClientOptions>(options =>
         {
-            // A configuration provider preserves the distinction between an omitted legacy
-            // property and a property whose value is false/zero/null. This matters for old
-            // installs whose file only contains the URL or identity settings.
-            var legacy = new ConfigurationBuilder()
-                .SetBasePath(appBaseDir)
-                .AddJsonFile("clientsettings.json", optional: false, reloadOnChange: false)
-                .Build();
-            IConfiguration legacyConfiguration = legacy.GetSection("Client").Exists()
-                ? legacy.GetSection("Client")
-                : legacy;
-            legacyConfiguration.Bind(options);
-            if (legacyConfiguration["ApiBaseUrl"] is not null) apiSource = "installed-settings";
-        }
 
-        // Environment/service configuration is the explicit deployment contract. Apply it
-        // after the installed file so service-installed values win without treating packaged
-        // placeholders as an override.
-        deploymentOverrides?.GetSection("Client").Bind(options);
-        if (deploymentOverrides?["Client:ApiBaseUrl"] is not null) apiSource = "deployment-configuration";
+            // These are intentionally separate configuration layers. The packaged appsettings
+            // file is a safe fallback for a fresh install, not an explicit deployment choice.
+            // Binding the already-merged root here would let those placeholders overwrite a
+            // valid installation's legacy settings.
+            packagedDefaults?.GetSection("Client").Bind(options);
 
-        for (var i = 0; i < args.Count; i++)
-        {
-            switch (args[i])
+            var legacyPath = Path.Combine(appBaseDir, "clientsettings.json");
+            if (File.Exists(legacyPath))
             {
-                case "--tenant" when i + 1 < args.Count && Guid.TryParse(args[i + 1], out var tenant):
-                    options.TenantId = tenant;
-                    i++;
-                    break;
-                case "--api" when i + 1 < args.Count:
-                    options.ApiBaseUrl = args[i + 1];
-                    apiSource = "command-line";
-                    i++;
-                    break;
-                case "--env" when i + 1 < args.Count && Enum.TryParse<ClientEnvironment>(args[i + 1], true, out var environment):
-                    options.Environment = environment;
-                    i++;
-                    break;
-                case "--enrollment-code" when i + 1 < args.Count:
-                    options.EnrollmentCode = args[i + 1];
-                    i++;
-                    break;
-                case "--enroll" when i + 1 < args.Count:
-                    options.EnrollmentCode = args[i + 1];
-                    i++;
-                    break;
-                case "--agent-id" when i + 1 < args.Count:
-                    options.AgentId = args[i + 1];
-                    i++;
-                    break;
+                // A configuration provider preserves the distinction between an omitted legacy
+                // property and a property whose value is false/zero/null. This matters for old
+                // installs whose file only contains the URL or identity settings.
+                var legacy = new ConfigurationBuilder()
+                    .SetBasePath(appBaseDir)
+                    .AddJsonFile("clientsettings.json", optional: false, reloadOnChange: false)
+                    .Build();
+                IConfiguration legacyConfiguration = legacy.GetSection("Client").Exists()
+                    ? legacy.GetSection("Client")
+                    : legacy;
+                legacyConfiguration.Bind(options);
+                if (legacyConfiguration["ApiBaseUrl"] is not null) apiSource = "installed-settings";
             }
-        }
 
-        options.ApiBaseUrl = ClientEndpointAddress.NormalizeApiBase(options.ApiBaseUrl);
-        return new ClientOptionsResolution(options, apiSource);
+            // Environment/service configuration is the explicit deployment contract. Apply it
+            // after the installed file so service-installed values win without treating packaged
+            // placeholders as an override.
+            deploymentOverrides?.GetSection("Client").Bind(options);
+            if (deploymentOverrides?["Client:ApiBaseUrl"] is not null) apiSource = "deployment-configuration";
+
+            for (var i = 0; i < args.Count; i++)
+            {
+                switch (args[i])
+                {
+                    case "--tenant" when i + 1 < args.Count && Guid.TryParse(args[i + 1], out var tenant):
+                        options.TenantId = tenant;
+                        i++;
+                        break;
+                    case "--api" when i + 1 < args.Count:
+                        options.ApiBaseUrl = args[i + 1];
+                        apiSource = "command-line";
+                        i++;
+                        break;
+                    case "--env" when i + 1 < args.Count && Enum.TryParse<ClientEnvironment>(args[i + 1], true, out var environment):
+                        options.Environment = environment;
+                        i++;
+                        break;
+                    case "--enrollment-code" when i + 1 < args.Count:
+                        options.EnrollmentCode = args[i + 1];
+                        i++;
+                        break;
+                    case "--enroll" when i + 1 < args.Count:
+                        options.EnrollmentCode = args[i + 1];
+                        i++;
+                        break;
+                    case "--agent-id" when i + 1 < args.Count:
+                        options.AgentId = args[i + 1];
+                        i++;
+                        break;
+                }
+            }
+
+            options.ApiBaseUrl = ClientEndpointAddress.NormalizeApiBase(options.ApiBaseUrl);
+        });
+        _ = configuredOptions.Value;
+        return new ClientOptionsResolution(configuredOptions, apiSource);
     }
+
+    // Native clients read configuration once at startup. The options factory retains
+    // the installed-file compatibility rules while exposing typed IOptions to services.
+    private static IOptions<T> Configure<T>(Action<T> configure) where T : class, new() =>
+        new OptionsManager<T>(new OptionsFactory<T>([new ConfigureOptions<T>(configure)], [], []));
 }

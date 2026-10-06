@@ -1,6 +1,6 @@
 using Akka.Actor;
-using FluentAssertions;
-using FluentAssertions.Execution;
+using AwesomeAssertions;
+using AwesomeAssertions.Execution;
 using System.Threading.Channels;
 using System.Text;
 using System.Text.Json;

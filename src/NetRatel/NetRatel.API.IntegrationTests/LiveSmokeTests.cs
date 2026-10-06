@@ -1,7 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Reflection;
-using FluentAssertions;
+using AwesomeAssertions;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;

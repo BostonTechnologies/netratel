@@ -1,5 +1,5 @@
 using System.Security.Claims;
-using FluentAssertions;
+using AwesomeAssertions;
 using NetRatel.API.Realtime.Operations;
 using NetRatel.Application.Presence;
 using Xunit;

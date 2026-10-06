@@ -563,7 +563,13 @@ sealed class Scenario
         State = Evaluator.CreateInitial(new(1, Rule.RuleId, Guid.NewGuid(), resource), Rule);
         Clock.Set(0);
     }
-    public MonitoringObservationDto Observation(int at, double? value) => new(State.Series, new(Epoch, ++Sequence), StreamId, Clock.At(at), Clock.At(at), true, true, value);
+    public MonitoringObservationDto Observation(int at, double? value)
+    {
+        var observation = new MonitoringObservationDto(State.Series, new(Epoch, ++Sequence), StreamId, Clock.At(at), Clock.At(at), true, true, value);
+        return Rule.Condition.Kind is MonitoringMetricKind.DiskFreePercent or MonitoringMetricKind.DiskFreeSpace
+            ? observation with { DiskCollection = new(Guid.NewGuid(), Clock.At(at), new string('A', 64)) }
+            : observation;
+    }
     public MonitoringEvaluationResult Step(int at, double value, bool complete = true, bool supported = true)
     {
         Clock.Set(at); var observation = Observation(at, value) with { Complete = complete, Supported = supported };

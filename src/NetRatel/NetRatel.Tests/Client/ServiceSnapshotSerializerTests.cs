@@ -1,4 +1,4 @@
-using FluentAssertions;
+using AwesomeAssertions;
 using Google.Protobuf;
 using NetRatel.Client.Service.Gateway;
 using NetRatel.Client.Service.Services;

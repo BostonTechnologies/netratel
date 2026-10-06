@@ -19,14 +19,14 @@ public sealed partial class MonitoringStore
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         var configRow = await LockConfigurationAsync(db, request.TenantId, cancellationToken, shared: true).ConfigureAwait(false);
         MonitoringConfigurationSnapshot? configuration = null;
-        var now = NormalizeDatabaseTime(timeProvider.GetUtcNow());
+        var now = await EvidenceNowAsync(db, timeProvider, cancellationToken).ConfigureAwait(false);
         var pending = (short)MonitoringOutboxStatus.Pending; var leased = (short)MonitoringOutboxStatus.Leased;
-        // Lock ordering is configuration -> evidence/series -> outbox. Read candidates without locks; each row is rechecked below.
+        // Lock ordering is configuration -> effective owner -> evidence -> series -> outbox. Read candidates without locks; each row is rechecked below.
         var candidates = await db.MonitoringFlowOutbox.AsNoTracking().Where(row => row.TenantId == request.TenantId &&
             (row.Status == MonitoringOutboxStatus.Pending && (row.NextAttemptAtUtc == null || row.NextAttemptAtUtc <= now) ||
              row.Status == MonitoringOutboxStatus.Leased && row.LeaseExpiresAtUtc <= now)).OrderBy(row => row.CreatedAtUtc).ThenBy(row => row.OutboxId)
             .Take(request.MaximumCount * 2).ToListAsync(cancellationToken).ConfigureAwait(false);
-        var claims = ImmutableArray.CreateBuilder<MonitoringOutboxLease>();
+        var claims = new List<(MonitoringFlowOutboxRecord Row, MonitoringOutboxIntent Intent, MonitoringEvidenceFence? Fence)>();
         foreach (var candidate in candidates)
         {
             if (claims.Count >= request.MaximumCount) break;
@@ -41,10 +41,11 @@ public sealed partial class MonitoringStore
                 if (await db.Agents.AsNoTracking().AnyAsync(agent => agent.TenantId == client.TenantId && agent.Id == client.AgentId &&
                     agent.IsEnabled && agent.Status == AgentStatus.Active && agent.RevokedAtUtc == null && agent.DeletedAtUtc == null && agent.SupersededAtUtc == null,
                     cancellationToken).ConfigureAwait(false)) eligible = [client.AgentId];
-                fence = await directory.GetCurrentEvidenceAsync(client, cancellationToken).ConfigureAwait(false);
-                evidenceValid = fence is not null && await LockAndCheckEvidenceAsync(db, fence, cancellationToken).ConfigureAwait(false);
+                fence = await LockCurrentEvidenceAsync(db, client, cancellationToken).ConfigureAwait(false);
+                evidenceValid = fence is not null;
             }
             var series = await LockSeriesAsync(db, intent.Series, cancellationToken).ConfigureAwait(false);
+            now = await EvidenceNowAsync(db, timeProvider, cancellationToken).ConfigureAwait(false);
             var rows = await db.MonitoringFlowOutbox.FromSqlInterpolated($"""
                 SELECT * FROM "MonitoringFlowOutbox" WHERE "OutboxId" = {candidate.OutboxId} AND "TenantId" = {request.TenantId}
                 AND (("Status" = {pending} AND ("NextAttemptAtUtc" IS NULL OR "NextAttemptAtUtc" <= {now}))
@@ -62,7 +63,7 @@ public sealed partial class MonitoringStore
                 }
                 row.Status = MonitoringOutboxStatus.Leased; row.WorkerId = request.WorkerId; row.LeaseId = Guid.NewGuid();
                 row.LeaseFence = checked(row.LeaseFence + 1); row.LeaseExpiresAtUtc = NormalizeDatabaseTime(now + request.LeaseDuration);
-                claims.Add(new(row.OutboxId, intent, request.WorkerId, row.LeaseId.Value, row.LeaseFence, row.LeaseExpiresAtUtc.Value, row.Attempts, row.FlowRunId));
+                claims.Add((row, intent, null));
                 continue;
             }
             var currentRule = configuration!.Rules.SingleOrDefault(rule => rule.RuleId == intent.Series.RuleId);
@@ -89,13 +90,52 @@ public sealed partial class MonitoringStore
             if (!evidenceValid || fence is null || state.Cursor?.ConnectionEpoch != fence.ConnectionEpoch ||
                 !_evaluator.CanDispatch(state, currentRule, intent, fence.EvidenceStreamId, configuration.Bypasses, configuration.Groups))
                 continue;
+            if (!await CheckEpochAsync(db, fence, cancellationToken).ConfigureAwait(false)) continue;
             row.Status = MonitoringOutboxStatus.Leased; row.WorkerId = request.WorkerId; row.LeaseId = Guid.NewGuid();
             row.LeaseFence = checked(row.LeaseFence + 1); row.LeaseExpiresAtUtc = NormalizeDatabaseTime(now + request.LeaseDuration); row.Attempts = checked(row.Attempts + 1);
-            claims.Add(new(row.OutboxId, intent, request.WorkerId, row.LeaseId.Value, row.LeaseFence, row.LeaseExpiresAtUtc.Value, row.Attempts));
+            claims.Add((row, intent, fence));
         }
+        // Earlier claims can expire while a later candidate waits. Keep every exact
+        // unstarted fence, and observe current owner deadlines under our held locks.
+        var claimTime = await CurrentClaimTimeAsync(db, claims.Select(claim => claim.Fence), cancellationToken).ConfigureAwait(false);
+        if (claimTime is null || claims.Any(claim => claim.Fence is not null && claimTime.Value - claim.Row.CreatedAtUtc > TimeSpan.FromMinutes(15)))
+        {
+            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            return [];
+        }
+        foreach (var claim in claims)
+            claim.Row.LeaseExpiresAtUtc = NormalizeDatabaseTime(claimTime.Value + request.LeaseDuration);
         await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        // SaveChanges is another asynchronous boundary. FOR SHARE prevents replacement
+        // and renewal while held, but cannot keep an authentication/presence deadline alive.
+        var commitTime = await CurrentClaimTimeAsync(db, claims.Select(claim => claim.Fence), cancellationToken).ConfigureAwait(false);
+        if (commitTime is null || claims.Any(claim => claim.Row.LeaseExpiresAtUtc <= commitTime.Value ||
+            claim.Fence is not null && commitTime.Value - claim.Row.CreatedAtUtc > TimeSpan.FromMinutes(15)))
+        {
+            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+            return [];
+        }
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-        return claims.ToImmutable();
+        return claims.Select(claim => new MonitoringOutboxLease(claim.Row.OutboxId, claim.Intent, request.WorkerId,
+            claim.Row.LeaseId!.Value, claim.Row.LeaseFence, claim.Row.LeaseExpiresAtUtc!.Value, claim.Row.Attempts, claim.Row.FlowRunId)).ToImmutableArray();
+    }
+
+    private async Task<DateTimeOffset?> CurrentClaimTimeAsync(OrchestratorDbContext db,
+        IEnumerable<MonitoringEvidenceFence?> fences, CancellationToken ct)
+    {
+        var owners = new List<OwnerSnapshot>();
+        foreach (var fence in fences)
+        {
+            if (fence is null) continue; // Existing run receipt reconciliation does not start a new effect.
+            var current = await ClientConnectionEpochStore.LockEffectiveOwnerSnapshotAsync(db,
+                new OwnerKey(fence.Client, fence.ConnectionId, fence.ConnectionEpoch), timeProvider, ct).ConfigureAwait(false);
+            if (current is null) return null;
+            owners.Add(current);
+        }
+        // A final shared clock sample also covers elapsed time during the other owner
+        // reads. Revision renewal is eligible: identity is OwnerKey, never a captured revision.
+        var now = await EvidenceNowAsync(db, timeProvider, ct).ConfigureAwait(false);
+        return owners.All(owner => owner.IsEffective(now)) ? now : null;
     }
 
     private async Task FailUnstartedAsync(OrchestratorDbContext db, MonitoringFlowOutboxRecord row, MonitoringSeriesState? state,

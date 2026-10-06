@@ -1,7 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using Bunit;
-using FluentAssertions;
+using AwesomeAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using MudBlazor;
 using MudBlazor.Services;

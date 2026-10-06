@@ -2,6 +2,8 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
+using System.Runtime.ExceptionServices;
 using System.Net.Http;
 using System.Security.Cryptography;
 using System.Threading;
@@ -21,11 +23,36 @@ namespace NetRatel.Client.Service.Gateway;
 /// presence session. It does not initialise or touch the Spacetime file
 /// manager, and all transfer buffers are bounded to a single 16 KiB frame.
 /// </summary>
-public sealed class AgentFileGatewayClient(
-    GatewayClientOptions options,
-    FileSystemService fileSystem,
-    Action<string> log)
+public sealed class AgentFileGatewayClient
 {
+    private readonly GatewayClientOptions options;
+    private readonly FileSystemService fileSystem;
+    private readonly Action<string> log;
+    private readonly Func<Uri, GrpcChannel>? createChannel;
+    private readonly Func<Func<Task>, Task> startWorker;
+    private readonly Func<string, IEnumerable<FileSystemService.BrowseEntry>> enumerateEntries;
+    private readonly TimeSpan cleanupTimeout;
+    private readonly SemaphoreSlim presenceGate = new(1, 1);
+    private Task? retiredCleanup;
+    internal Task RetiredWorkerCleanup => Volatile.Read(ref retiredCleanup) ?? Task.CompletedTask;
+
+    public AgentFileGatewayClient(GatewayClientOptions options, FileSystemService fileSystem, Action<string> log)
+        : this(options, fileSystem, log, null)
+    {
+    }
+
+    internal AgentFileGatewayClient(GatewayClientOptions options, FileSystemService fileSystem, Action<string> log,
+        Func<Uri, GrpcChannel>? createChannel, Func<Func<Task>, Task>? startWorker = null, TimeSpan? cleanupTimeout = null,
+        Func<string, IEnumerable<FileSystemService.BrowseEntry>>? enumerateEntries = null)
+    {
+        this.options = options;
+        this.fileSystem = fileSystem;
+        this.log = log;
+        this.createChannel = createChannel;
+        this.startWorker = startWorker ?? (work => Task.Run(work, CancellationToken.None));
+        this.enumerateEntries = enumerateEntries ?? fileSystem.EnumerateEntries;
+        this.cleanupTimeout = cleanupTimeout ?? TimeSpan.FromSeconds(5);
+    }
     private const int ChunkBytes = FileTransferFrameBudget.PayloadBytes;
     private static readonly TimeSpan InitialRetryDelay = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan MaximumRetryDelay = TimeSpan.FromSeconds(30);
@@ -35,6 +62,36 @@ public sealed class AgentFileGatewayClient(
         if (!Uri.TryCreate(options.Endpoint, UriKind.Absolute, out var endpoint) || endpoint.Scheme != Uri.UriSchemeHttps)
         {
             throw new InvalidOperationException("Gateway:Endpoint must be an absolute HTTPS URL.");
+        }
+
+        if (!await presenceGate.WaitAsync(cleanupTimeout, stoppingToken).ConfigureAwait(false))
+        {
+            throw new TimeoutException("The previous file presence owner has not retired; the file capability cannot be activated yet.");
+        }
+        try
+        {
+            await RunOwnedPresenceSessionAsync(endpoint, session, accessToken, stoppingToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            presenceGate.Release();
+        }
+    }
+
+    private async Task RunOwnedPresenceSessionAsync(Uri endpoint, GatewayPresenceSession session, string accessToken,
+        CancellationToken stoppingToken)
+    {
+        if (Volatile.Read(ref retiredCleanup) is { } pendingCleanup)
+        {
+            try
+            {
+                await pendingCleanup.WaitAsync(cleanupTimeout, stoppingToken).ConfigureAwait(false);
+            }
+            catch (TimeoutException exception)
+            {
+                throw new TimeoutException("The retired file worker still owns filesystem operations; the file capability cannot be activated yet.", exception);
+            }
+            _ = Interlocked.CompareExchange(ref retiredCleanup, null, pendingCleanup);
         }
 
         var retryDelay = InitialRetryDelay;
@@ -49,10 +106,21 @@ public sealed class AgentFileGatewayClient(
             {
                 break;
             }
-            catch (Exception exception) when (exception is RpcException or HttpRequestException or IOException)
+            catch (Exception exception) when (stoppingToken.IsCancellationRequested && IsTransientFailure(exception))
+            {
+                break;
+            }
+            catch (Exception exception) when (IsTransientFailure(exception))
             {
                 log($"File gateway session failed: {exception.GetType().Name}: {exception.Message}. Retrying in {retryDelay.TotalSeconds:0}s.");
-                await Task.Delay(retryDelay, stoppingToken).ConfigureAwait(false);
+                try
+                {
+                    await Task.Delay(retryDelay, stoppingToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    break;
+                }
                 retryDelay = TimeSpan.FromSeconds(Math.Min(retryDelay.TotalSeconds * 2, MaximumRetryDelay.TotalSeconds));
             }
         }
@@ -60,21 +128,25 @@ public sealed class AgentFileGatewayClient(
 
     private async Task RunStreamAsync(Uri endpoint, GatewayPresenceSession session, string accessToken, CancellationToken stoppingToken)
     {
-        using var channel = GrpcChannel.ForAddress(endpoint);
+        var streamCancellation = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+        var streamToken = streamCancellation.Token;
+        using var channel = createChannel?.Invoke(endpoint) ?? GrpcChannel.ForAddress(endpoint);
         var client = new AgentFileGateway.AgentFileGatewayClient(channel);
-        var headers = new Metadata { { "Authorization", $"Bearer {accessToken}" } };
-        using var call = client.Connect(headers, cancellationToken: stoppingToken);
-        using var writer = new FileGatewayWriter(call.RequestStream, session, options.ProtocolVersion);
+        var headers = new Metadata { { "Authorization", $"Bearer {session.GetAccessToken(accessToken)}" } };
+        using var call = client.Connect(headers, cancellationToken: streamToken);
+        var writer = new FileGatewayWriter(call.RequestStream, session, options.ProtocolVersion);
         var operations = new ConcurrentDictionary<Guid, ClientFileOperation>();
+        var workers = new FileOperationWorkers(startWorker, streamCancellation);
+        Exception? failure = null;
         try
         {
             await writer.WriteAsync(new AgentFileFrame
             {
                 Sequence = 0,
                 Hello = new AgentFileHello { Capabilities = { "file-list", "file-read", "file-write", "file-stat-v1", "file-create-directory-v1", "file-delete-v1", "file-copy-v1", "file-move-v1", "chunk-sha256", "file-policy-roots-v1" } }
-            }, stoppingToken).ConfigureAwait(false);
+            }, streamToken).ConfigureAwait(false);
 
-            if (!await call.ResponseStream.MoveNext(stoppingToken).ConfigureAwait(false) ||
+            if (!await call.ResponseStream.MoveNext(streamToken).ConfigureAwait(false) ||
                 call.ResponseStream.Current.PayloadCase != GatewayFileFrame.PayloadOneofCase.Accepted)
             {
                 throw new RpcException(new Status(StatusCode.Unavailable, "File gateway closed before accepting the session."));
@@ -84,7 +156,7 @@ public sealed class AgentFileGatewayClient(
             log($"File gateway admitted. authority={call.ResponseStream.Current.Accepted.FileAuthority}.");
 
             ulong lastServerSequence = 0;
-            while (await call.ResponseStream.MoveNext(stoppingToken).ConfigureAwait(false))
+            while (await call.ResponseStream.MoveNext(streamToken).ConfigureAwait(false))
             {
                 var frame = call.ResponseStream.Current;
                 ValidateFrame(frame, session);
@@ -97,10 +169,10 @@ public sealed class AgentFileGatewayClient(
                 switch (frame.PayloadCase)
                 {
                     case GatewayFileFrame.PayloadOneofCase.Dispatch:
-                        await HandleDispatchAsync(frame.Dispatch, operations, writer, stoppingToken).ConfigureAwait(false);
+                        await HandleDispatchAsync(frame.Dispatch, operations, workers, writer, streamToken).ConfigureAwait(false);
                         break;
                     case GatewayFileFrame.PayloadOneofCase.TransferChunk:
-                        await HandleWriteChunkAsync(frame.TransferChunk, operations, writer, stoppingToken).ConfigureAwait(false);
+                        await HandleWriteChunkAsync(frame.TransferChunk, operations, writer, streamToken).ConfigureAwait(false);
                         break;
                     case GatewayFileFrame.PayloadOneofCase.Credit:
                         GrantReadCredit(frame.Credit, operations);
@@ -112,28 +184,101 @@ public sealed class AgentFileGatewayClient(
                         throw new RpcException(new Status(StatusCode.DataLoss, "File gateway returned an unsupported frame."));
                 }
             }
+
+            throw new RpcException(new Status(StatusCode.Unavailable, "File gateway closed the session."));
+        }
+        catch (Exception exception)
+        {
+            failure = workers.Failure ?? exception;
+            ExceptionDispatchInfo.Capture(failure).Throw();
+            throw;
         }
         finally
         {
-            foreach (var operation in operations.Values)
-            {
-                operation.Dispose();
-            }
-
+            // Retire before cancelling or joining: late filesystem callbacks
+            // cannot enter a closed physical stream or its successor.
+            writer.Retire();
+            streamCancellation.Cancel();
+            call.Dispose();
+            var joined = workers.JoinAsync();
+            var deferredCleanup = false;
             try
             {
-                await call.RequestStream.CompleteAsync().ConfigureAwait(false);
+                await joined.WaitAsync(cleanupTimeout).ConfigureAwait(false);
             }
-            catch (RpcException)
+            catch (TimeoutException)
             {
-                log("File gateway stream had already closed before request completion.");
+                // A synchronous filesystem call cannot always be interrupted.
+                // Keep its resources owned until it exits, expose the fault,
+                // and do not start another attempt beside that worker.
+                deferredCleanup = true;
+                Volatile.Write(ref retiredCleanup, DisposeAfterWorkersAsync(joined, operations, writer, streamCancellation));
+                throw new TimeoutException($"File gateway workers did not stop within the {cleanupTimeout.TotalSeconds:0.###}-second cleanup budget; the capability was retired.", failure);
+            }
+            finally
+            {
+                if (!deferredCleanup)
+                {
+                    DisposeStreamResources(operations, writer, streamCancellation);
+                }
+            }
+
+            if (failure is null && workers.Failure is { } workerFailure)
+            {
+                ExceptionDispatchInfo.Capture(workerFailure).Throw();
             }
         }
     }
 
+    private async Task DisposeAfterWorkersAsync(Task joined, ConcurrentDictionary<Guid, ClientFileOperation> operations,
+        FileGatewayWriter writer, CancellationTokenSource streamCancellation)
+    {
+        try
+        {
+            await joined.ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            log($"Retired file gateway worker failed during cleanup: {exception.GetType().Name}.");
+        }
+        finally
+        {
+            try
+            {
+                DisposeStreamResources(operations, writer, streamCancellation);
+            }
+            catch (Exception exception)
+            {
+                // This path has no caller after bounded retirement. Observe
+                // cleanup faults explicitly rather than faulting a detached task.
+                log($"Retired file gateway resource cleanup failed: {exception.GetType().Name}.");
+            }
+        }
+    }
+
+    private static void DisposeStreamResources(ConcurrentDictionary<Guid, ClientFileOperation> operations,
+        FileGatewayWriter writer, CancellationTokenSource streamCancellation)
+    {
+        foreach (var operation in operations.Values)
+        {
+            operation.Dispose();
+        }
+        operations.Clear();
+        writer.Dispose();
+        streamCancellation.Dispose();
+    }
+
+    private static bool IsTransientFailure(Exception exception) => exception is HttpRequestException or IOException ||
+        exception is RpcException { StatusCode: StatusCode.Cancelled or StatusCode.Unavailable or StatusCode.Internal or
+            StatusCode.DeadlineExceeded or StatusCode.ResourceExhausted or StatusCode.Aborted };
+
+    private static bool IsOperationFailure(Exception exception) => exception is IOException or UnauthorizedAccessException or
+        ArgumentException or NotSupportedException or OperationCanceledException;
+
     private async Task HandleDispatchAsync(
         FileRequestDispatch dispatch,
         ConcurrentDictionary<Guid, ClientFileOperation> operations,
+        FileOperationWorkers workers,
         FileGatewayWriter writer,
         CancellationToken stoppingToken)
     {
@@ -171,9 +316,10 @@ public sealed class AgentFileGatewayClient(
             return;
         }
 
-        var operation = new ClientFileOperation(requestId, attemptId, operationName, resolvedPath, resolvedDestinationPath);
+        var operation = new ClientFileOperation(requestId, attemptId, operationName, resolvedPath, resolvedDestinationPath, stoppingToken);
         if (!operations.TryAdd(requestId, operation))
         {
+            operation.Dispose();
             await WriteFailureAsync(dispatch.RequestId, dispatch.AttemptId, "duplicate_request", writer, stoppingToken).ConfigureAwait(false);
             return;
         }
@@ -186,32 +332,32 @@ public sealed class AgentFileGatewayClient(
         switch (operation.Operation)
         {
             case "list":
-                _ = Task.Run(() => HandleListAsync(operation, Math.Clamp((int)dispatch.PageSize, 1, 256), operations, writer, stoppingToken), CancellationToken.None);
+                workers.Start(() => HandleListAsync(operation, Math.Clamp((int)dispatch.PageSize, 1, 256), operations, writer, stoppingToken));
                 break;
             case "read":
-                _ = Task.Run(() => HandleReadAsync(operation, operations, writer, stoppingToken), CancellationToken.None);
+                workers.Start(() => HandleReadAsync(operation, operations, writer, stoppingToken));
                 break;
             case "stat":
-                _ = Task.Run(() => HandleStatAsync(operation, operations, writer, stoppingToken), CancellationToken.None);
+                workers.Start(() => HandleStatAsync(operation, operations, writer, stoppingToken));
                 break;
             case "create_directory":
-                _ = Task.Run(() => HandleCreateDirectoryAsync(operation, operations, writer, stoppingToken), CancellationToken.None);
+                workers.Start(() => HandleCreateDirectoryAsync(operation, operations, writer, stoppingToken));
                 break;
             case "delete":
-                _ = Task.Run(() => HandleDeleteAsync(operation, operations, writer, stoppingToken), CancellationToken.None);
+                workers.Start(() => HandleDeleteAsync(operation, operations, writer, stoppingToken));
                 break;
             case "copy":
-                _ = Task.Run(() => HandleCopyAsync(operation, operations, writer, stoppingToken), CancellationToken.None);
+                workers.Start(() => HandleCopyAsync(operation, operations, writer, stoppingToken));
                 break;
             case "move":
-                _ = Task.Run(() => HandleMoveAsync(operation, operations, writer, stoppingToken), CancellationToken.None);
+                workers.Start(() => HandleMoveAsync(operation, operations, writer, stoppingToken));
                 break;
             case "write":
                 try
                 {
                     operation.BeginWrite();
                 }
-                catch (Exception exception)
+                catch (Exception exception) when (IsOperationFailure(exception))
                 {
                     operations.TryRemove(requestId, out _);
                     operation.Dispose();
@@ -230,11 +376,12 @@ public sealed class AgentFileGatewayClient(
     {
         try
         {
+            operation.Token.ThrowIfCancellationRequested();
             var page = new List<FileEntry>(pageSize);
             uint pageIndex = 0;
-            foreach (var entry in fileSystem.EnumerateEntries(operation.Path))
+            foreach (var entry in enumerateEntries(operation.Path))
             {
-                operation.Cancellation.Token.ThrowIfCancellationRequested();
+                operation.Token.ThrowIfCancellationRequested();
                 page.Add(new FileEntry { Name = entry.Name, FullPath = entry.FullPath, IsDirectory = entry.IsDirectory, SizeBytes = entry.SizeBytes });
                 if (page.Count == pageSize)
                 {
@@ -250,7 +397,7 @@ public sealed class AgentFileGatewayClient(
         {
             await WriteFailureAsync(operation.RequestId.ToString("D"), operation.AttemptId.ToString("D"), "cancelled", writer, stoppingToken).ConfigureAwait(false);
         }
-        catch (Exception exception)
+        catch (Exception exception) when (IsOperationFailure(exception))
         {
             log($"File list failed request={operation.RequestId:D}: {exception.GetType().Name}.");
             await WriteFailureAsync(operation.RequestId.ToString("D"), operation.AttemptId.ToString("D"), FailureCodeFor("list", exception), writer, stoppingToken).ConfigureAwait(false);
@@ -266,13 +413,14 @@ public sealed class AgentFileGatewayClient(
     {
         try
         {
+            operation.Token.ThrowIfCancellationRequested();
             await using var stream = new FileStream(operation.Path, FileMode.Open, FileAccess.Read, FileShare.Read, ChunkBytes, FileOptions.Asynchronous | FileOptions.SequentialScan);
             var buffer = GC.AllocateUninitializedArray<byte>(ChunkBytes);
             ulong chunkIndex = 0;
             int read;
-            while ((read = await stream.ReadAsync(buffer.AsMemory(), operation.Cancellation.Token).ConfigureAwait(false)) > 0)
+            while ((read = await stream.ReadAsync(buffer.AsMemory(), operation.Token).ConfigureAwait(false)) > 0)
             {
-                await operation.AcquireReadCreditAsync(read, operation.Cancellation.Token).ConfigureAwait(false);
+                await operation.AcquireReadCreditAsync(read, operation.Token).ConfigureAwait(false);
                 var content = ByteString.CopyFrom(buffer, 0, read);
                 await writer.WriteAsync(new AgentFileFrame
                 {
@@ -294,7 +442,7 @@ public sealed class AgentFileGatewayClient(
         {
             await WriteFailureAsync(operation.RequestId.ToString("D"), operation.AttemptId.ToString("D"), "cancelled", writer, stoppingToken).ConfigureAwait(false);
         }
-        catch (Exception exception)
+        catch (Exception exception) when (IsOperationFailure(exception))
         {
             log($"File read failed request={operation.RequestId:D}: {exception.GetType().Name}.");
             await WriteFailureAsync(operation.RequestId.ToString("D"), operation.AttemptId.ToString("D"), FailureCodeFor("read", exception), writer, stoppingToken).ConfigureAwait(false);
@@ -310,6 +458,7 @@ public sealed class AgentFileGatewayClient(
     {
         try
         {
+            operation.Token.ThrowIfCancellationRequested();
             FileSystemInfo entry = Directory.Exists(operation.Path)
                 ? new DirectoryInfo(operation.Path)
                 : File.Exists(operation.Path)
@@ -338,7 +487,7 @@ public sealed class AgentFileGatewayClient(
         {
             await WriteFailureAsync(operation.RequestId.ToString("D"), operation.AttemptId.ToString("D"), "cancelled", writer, stoppingToken).ConfigureAwait(false);
         }
-        catch (Exception exception)
+        catch (Exception exception) when (IsOperationFailure(exception))
         {
             log($"File stat failed request={operation.RequestId:D}: {exception.GetType().Name}.");
             await WriteFailureAsync(operation.RequestId.ToString("D"), operation.AttemptId.ToString("D"), FailureCodeFor("stat", exception), writer, stoppingToken).ConfigureAwait(false);
@@ -354,7 +503,7 @@ public sealed class AgentFileGatewayClient(
     {
         try
         {
-            operation.Cancellation.Token.ThrowIfCancellationRequested();
+            operation.Token.ThrowIfCancellationRequested();
             if (Directory.Exists(operation.Path) || File.Exists(operation.Path))
             {
                 await WriteFailureAsync(operation.RequestId.ToString("D"), operation.AttemptId.ToString("D"), "path_already_exists", writer, stoppingToken).ConfigureAwait(false);
@@ -368,7 +517,7 @@ public sealed class AgentFileGatewayClient(
         {
             await WriteFailureAsync(operation.RequestId.ToString("D"), operation.AttemptId.ToString("D"), "cancelled", writer, stoppingToken).ConfigureAwait(false);
         }
-        catch (Exception exception)
+        catch (Exception exception) when (IsOperationFailure(exception))
         {
             log($"File create-directory failed request={operation.RequestId:D}: {exception.GetType().Name}.");
             await WriteFailureAsync(operation.RequestId.ToString("D"), operation.AttemptId.ToString("D"), FailureCodeFor("create_directory", exception), writer, stoppingToken).ConfigureAwait(false);
@@ -384,7 +533,7 @@ public sealed class AgentFileGatewayClient(
     {
         try
         {
-            operation.Cancellation.Token.ThrowIfCancellationRequested();
+            operation.Token.ThrowIfCancellationRequested();
             if (File.Exists(operation.Path))
             {
                 File.Delete(operation.Path);
@@ -412,7 +561,7 @@ public sealed class AgentFileGatewayClient(
         {
             await WriteFailureAsync(operation.RequestId.ToString("D"), operation.AttemptId.ToString("D"), "cancelled", writer, stoppingToken).ConfigureAwait(false);
         }
-        catch (Exception exception)
+        catch (Exception exception) when (IsOperationFailure(exception))
         {
             log($"File delete failed request={operation.RequestId:D}: {exception.GetType().Name}.");
             await WriteFailureAsync(operation.RequestId.ToString("D"), operation.AttemptId.ToString("D"), FailureCodeFor("delete", exception), writer, stoppingToken).ConfigureAwait(false);
@@ -434,7 +583,7 @@ public sealed class AgentFileGatewayClient(
                 return;
             }
 
-            operation.Cancellation.Token.ThrowIfCancellationRequested();
+            operation.Token.ThrowIfCancellationRequested();
             File.Copy(operation.Path, operation.DestinationPath!, overwrite: false);
             await WriteCompletedAsync(operation, writer, stoppingToken).ConfigureAwait(false);
         }
@@ -446,7 +595,7 @@ public sealed class AgentFileGatewayClient(
         {
             await WriteFailureAsync(operation.RequestId.ToString("D"), operation.AttemptId.ToString("D"), "destination_already_exists", writer, stoppingToken).ConfigureAwait(false);
         }
-        catch (Exception exception)
+        catch (Exception exception) when (IsOperationFailure(exception))
         {
             log($"File copy failed request={operation.RequestId:D}: {exception.GetType().Name}.");
             await WriteFailureAsync(operation.RequestId.ToString("D"), operation.AttemptId.ToString("D"), FailureCodeFor("copy", exception), writer, stoppingToken).ConfigureAwait(false);
@@ -468,7 +617,7 @@ public sealed class AgentFileGatewayClient(
                 return;
             }
 
-            operation.Cancellation.Token.ThrowIfCancellationRequested();
+            operation.Token.ThrowIfCancellationRequested();
             File.Move(operation.Path, operation.DestinationPath!, overwrite: false);
             await WriteCompletedAsync(operation, writer, stoppingToken).ConfigureAwait(false);
         }
@@ -480,7 +629,7 @@ public sealed class AgentFileGatewayClient(
         {
             await WriteFailureAsync(operation.RequestId.ToString("D"), operation.AttemptId.ToString("D"), "destination_already_exists", writer, stoppingToken).ConfigureAwait(false);
         }
-        catch (Exception exception)
+        catch (Exception exception) when (IsOperationFailure(exception))
         {
             log($"File move failed request={operation.RequestId:D}: {exception.GetType().Name}.");
             await WriteFailureAsync(operation.RequestId.ToString("D"), operation.AttemptId.ToString("D"), FailureCodeFor("move", exception), writer, stoppingToken).ConfigureAwait(false);
@@ -538,9 +687,9 @@ public sealed class AgentFileGatewayClient(
         operation.NextChunkIndex++;
         try
         {
-            await operation.WriteAsync(chunk.Content.Memory, stoppingToken).ConfigureAwait(false);
+            await operation.WriteAsync(chunk.Content.Memory, operation.Token).ConfigureAwait(false);
         }
-        catch (Exception exception)
+        catch (Exception exception) when (IsOperationFailure(exception))
         {
             log($"File write failed request={operation.RequestId:D}: {exception.GetType().Name}.");
             operations.TryRemove(requestId, out _);
@@ -556,10 +705,10 @@ public sealed class AgentFileGatewayClient(
 
         try
         {
-            await operation.CommitWriteAsync(stoppingToken).ConfigureAwait(false);
+            await operation.CommitWriteAsync(operation.Token).ConfigureAwait(false);
             await WriteCompletedAsync(operation, writer, stoppingToken).ConfigureAwait(false);
         }
-        catch (Exception exception)
+        catch (Exception exception) when (IsOperationFailure(exception))
         {
             log($"File write failed request={operation.RequestId:D}: {exception.GetType().Name}.");
             await WriteFailureAsync(chunk.RequestId, chunk.AttemptId, FailureCodeFor("write", exception), writer, stoppingToken).ConfigureAwait(false);
@@ -618,7 +767,11 @@ public sealed class AgentFileGatewayClient(
         if (Guid.TryParse(cancel.RequestId, out var requestId) && Guid.TryParse(cancel.AttemptId, out var attemptId) &&
             operations.TryGetValue(requestId, out var operation) && operation.AttemptId == attemptId)
         {
-            operation.Cancellation.Cancel();
+            operation.Cancel();
+            if (operation.Operation == "write" && operations.TryRemove(new KeyValuePair<Guid, ClientFileOperation>(requestId, operation)))
+            {
+                operation.Dispose();
+            }
         }
     }
 
@@ -653,23 +806,31 @@ public sealed class AgentFileGatewayClient(
         }
     }
 
-    private sealed class FileGatewayWriter(IClientStreamWriter<AgentFileFrame> stream, GatewayPresenceSession session, string protocolVersion) : IDisposable
+    internal sealed class FileGatewayWriter(IClientStreamWriter<AgentFileFrame> stream, GatewayPresenceSession session, string protocolVersion) : IDisposable
     {
         private readonly SemaphoreSlim _gate = new(1, 1);
         private ulong _sequence;
+        private int _retired;
+        private int _disposed;
+
+        public void Retire() => Interlocked.Exchange(ref _retired, 1);
 
         public async Task WriteAsync(AgentFileFrame frame, CancellationToken cancellationToken)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (Volatile.Read(ref _retired) != 0) throw new OperationCanceledException("The file stream was retired.");
             await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (Volatile.Read(ref _retired) != 0) throw new OperationCanceledException("The file stream was retired.");
                 frame.ProtocolVersion = protocolVersion;
                 frame.TenantId = session.TenantId;
                 frame.ClientId = session.AgentId.ToString("D");
                 frame.ConnectionEpoch = session.ConnectionEpoch;
                 frame.ConnectionId = session.ConnectionId.ToString("D");
                 frame.Sequence = frame.PayloadCase == AgentFileFrame.PayloadOneofCase.Hello ? 0 : checked(++_sequence);
-                await stream.WriteAsync(frame).ConfigureAwait(false);
+                await stream.WriteAsync(frame, cancellationToken).ConfigureAwait(false);
             }
             finally
             {
@@ -677,11 +838,19 @@ public sealed class AgentFileGatewayClient(
             }
         }
 
-        public void Dispose() => _gate.Dispose();
+        public void Dispose()
+        {
+            Retire();
+            if (Interlocked.Exchange(ref _disposed, 1) == 0) _gate.Dispose();
+        }
     }
 
-    private sealed class ClientFileOperation(Guid requestId, Guid attemptId, string operation, string path, string? destinationPath = null) : IDisposable
+    internal sealed class ClientFileOperation(Guid requestId, Guid attemptId, string operation, string path,
+        string? destinationPath = null, CancellationToken sessionToken = default) : IDisposable
     {
+        private readonly object _lifetimeSync = new();
+        private readonly CancellationTokenSource _cancellation = CancellationTokenSource.CreateLinkedTokenSource(sessionToken);
+        private int _disposed;
         private FileStream? _writeStream;
         private string? _temporaryPath;
         private readonly object _creditSync = new();
@@ -693,8 +862,16 @@ public sealed class AgentFileGatewayClient(
         public string Operation { get; } = operation;
         public string Path { get; } = path;
         public string? DestinationPath { get; } = destinationPath;
-        public CancellationTokenSource Cancellation { get; } = new();
+        public CancellationToken Token => _cancellation.Token;
         public ulong NextChunkIndex { get; set; }
+
+        public void Cancel()
+        {
+            lock (_lifetimeSync)
+            {
+                if (_disposed == 0) _cancellation.Cancel();
+            }
+        }
 
         public void GrantReadCredit(uint availableBytes)
         {
@@ -731,6 +908,7 @@ public sealed class AgentFileGatewayClient(
 
         public void BeginWrite()
         {
+            Token.ThrowIfCancellationRequested();
             var directory = System.IO.Path.GetDirectoryName(Path);
             if (!string.IsNullOrWhiteSpace(directory)) Directory.CreateDirectory(directory);
             _temporaryPath = $"{Path}.netratel-{RequestId:N}.tmp";
@@ -746,30 +924,89 @@ public sealed class AgentFileGatewayClient(
             await _writeStream.FlushAsync(cancellationToken).ConfigureAwait(false);
             await _writeStream.DisposeAsync().ConfigureAwait(false);
             _writeStream = null;
+            cancellationToken.ThrowIfCancellationRequested();
             File.Move(_temporaryPath, Path, true);
             _temporaryPath = null;
         }
 
         public void Dispose()
         {
-            Cancellation.Cancel();
+            lock (_lifetimeSync)
+            {
+                if (_disposed != 0) return;
+                _disposed = 1;
+                _cancellation.Cancel();
+            }
+
             lock (_creditSync)
             {
                 _readCreditChanged.TrySetCanceled();
             }
-            _writeStream?.Dispose();
-            if (!string.IsNullOrWhiteSpace(_temporaryPath))
+            try
             {
-                try
-                {
-                    File.Delete(_temporaryPath);
-                }
-                catch (Exception exception)
-                {
-                    System.Diagnostics.Trace.TraceWarning($"NetRatel file gateway could not clean up a partial upload: {exception.GetType().Name}.");
-                }
+                _writeStream?.Dispose();
+                _writeStream = null;
             }
-            Cancellation.Dispose();
+            finally
+            {
+                if (!string.IsNullOrWhiteSpace(_temporaryPath))
+                {
+                    try
+                    {
+                        File.Delete(_temporaryPath);
+                        _temporaryPath = null;
+                    }
+                    catch (Exception exception)
+                    {
+                        System.Diagnostics.Trace.TraceWarning($"NetRatel file gateway could not clean up a partial upload: {exception.GetType().Name}.");
+                    }
+                }
+                _cancellation.Dispose();
+            }
+        }
+    }
+
+    private sealed class FileOperationWorkers(Func<Func<Task>, Task> startWorker, CancellationTokenSource streamCancellation)
+    {
+        private readonly object _sync = new();
+        private readonly HashSet<Task> _active = [];
+        private Exception? _failure;
+        public Exception? Failure { get { lock (_sync) return _failure; } }
+
+        public void Start(Func<Task> work)
+        {
+            var task = ObserveAsync(startWorker(work));
+            lock (_sync) _active.Add(task);
+            _ = task.ContinueWith(completed =>
+            {
+                lock (_sync) _active.Remove(completed);
+            }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+        }
+
+        private async Task ObserveAsync(Task worker)
+        {
+            try
+            {
+                await worker.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (streamCancellation.IsCancellationRequested)
+            {
+                // Owned shutdown; the operation's finally has run.
+            }
+            catch (RpcException exception) when (streamCancellation.IsCancellationRequested && exception.StatusCode == StatusCode.Cancelled)
+            {
+                // The physical call was aborted during owned shutdown.
+            }
+            catch (Exception exception)
+            {
+                lock (_sync) _failure ??= exception;
+                streamCancellation.Cancel();
+            }
+        }
+
+        public Task JoinAsync()
+        {
+            lock (_sync) return Task.WhenAll(_active.ToArray());
         }
     }
 }

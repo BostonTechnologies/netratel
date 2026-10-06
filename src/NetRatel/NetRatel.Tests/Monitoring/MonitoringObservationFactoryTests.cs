@@ -21,15 +21,15 @@ public sealed class MonitoringObservationFactoryTests
         var series = new MonitoringSeriesKey(Client.TenantId, rule.RuleId, Client.AgentId, "disk:/");
         var legacy = MonitoringObservationFactory.FromTelemetry(rule, series, Input(new("/", 10, 5, 5, 50)));
         var exact = MonitoringObservationFactory.FromTelemetry(rule, series, Input(new("/", 10, 5, 5, 50, 10UL << 30, 5UL << 30)));
-        Assert.True(legacy.Complete);
-        Assert.Equal(0.1 * Math.Pow(1024, 3), legacy.NumericResolution);
+        Assert.False(legacy.Complete);
+        Assert.Null(legacy.NumericValue);
         Assert.Equal(5d * Math.Pow(1024, 3), exact.NumericValue);
         Assert.Equal(0, exact.NumericResolution);
         Assert.Equal(Fence.EvidenceStreamId, exact.EvidenceStreamId);
 
         var evaluator = new MonitoringSeriesEvaluator(new FrozenClock(Now));
         var state = evaluator.CreateInitial(series, rule) with { NotBeforeObservedAtUtc = Now.AddSeconds(-1), NotBeforeReceivedAtUtc = Now.AddSeconds(-1) };
-        Assert.Equal("numeric_uncertainty", evaluator.Evaluate(state, rule, legacy, 9, Fence.EvidenceStreamId, []).State.LatestEvidence!.UnknownReason);
+        Assert.Equal("partial", evaluator.Evaluate(state, rule, legacy, 9, Fence.EvidenceStreamId, []).State.LatestEvidence!.UnknownReason);
         Assert.Equal(MonitoringEvidenceQuality.Fresh, evaluator.Evaluate(state, rule, exact, 9, Fence.EvidenceStreamId, []).State.EvidenceQuality);
     }
 
@@ -40,7 +40,8 @@ public sealed class MonitoringObservationFactoryTests
         var series = new MonitoringSeriesKey(Client.TenantId, rule.RuleId, Client.AgentId, "disk:/");
         var legacy = MonitoringObservationFactory.FromTelemetry(rule, series, Input(new("/", 1, 0.9, 0.1, 90)));
         var exact = MonitoringObservationFactory.FromTelemetry(rule, series, Input(new("/", 1, 0.9, 0.1, 90, 1000, 101)));
-        Assert.True(legacy.NumericResolution > 0);
+        Assert.False(legacy.Complete);
+        Assert.Null(legacy.NumericValue);
         Assert.Equal(10.1d, exact.NumericValue!.Value, 10);
         Assert.InRange(exact.NumericResolution, double.Epsilon, 1e-10);
     }
@@ -123,7 +124,9 @@ public sealed class MonitoringObservationFactoryTests
     }
 
     private static MonitoringTelemetryInput Input(TelemetryDisk disk) => new(Fence,
-        new(Client, Fence.ConnectionEpoch, 15, Now, Now, null, null, [disk], [], null, "akka", true));
+        new(Client, Fence.ConnectionEpoch, 15, Now, Now, null, null,
+            [disk with { CollectionId = Guid.NewGuid(), CollectedAtUtc = Now, CollectionQuality = TelemetryDiskCollectionQuality.Complete }],
+            [], null, "akka", true));
 
     private static MonitoringServicesInput ServicesInput(ClientServiceObservation service) => new(Fence,
         new(Client, Fence.ConnectionEpoch, 15, 1, null,

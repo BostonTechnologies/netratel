@@ -25,6 +25,8 @@ public sealed class AgentTerminalGatewayService(
         if (!await requestStream.MoveNext(context.CancellationToken).ConfigureAwait(false))
             throw new RpcException(new Status(StatusCode.InvalidArgument, "A terminal hello frame is required."));
         var session = await ValidateHello(requestStream.Current, identity, context.CancellationToken).ConfigureAwait(false);
+        await using var authorityLifetime = await AgentGatewayAuthenticationLifetime.AttachAsync(
+            context, session.Client, session.ConnectionId, session.ConnectionEpoch).ConfigureAwait(false);
         AgentTerminalGatewayRegistration candidate;
         try
         {
@@ -35,7 +37,8 @@ public sealed class AgentTerminalGatewayService(
             throw new RpcException(new Status(StatusCode.Aborted, exception.Message));
         }
         using var registration = candidate;
-        using var streamCancellation = CancellationTokenSource.CreateLinkedTokenSource(context.CancellationToken, registration.CompletionToken);
+        using var streamCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            authorityLifetime.Token, registration.CompletionToken);
         try
         {
             await RequirePresenceAsync(session, streamCancellation.Token).ConfigureAwait(false);
@@ -52,44 +55,32 @@ public sealed class AgentTerminalGatewayService(
             session.Client.AgentId,
             session.ConnectionId,
             session.ConnectionEpoch);
-        await responseStream.WriteAsync(NewFrame(session, 0, new GatewayTerminalFrame { Accepted = new TerminalConnectAccepted { TerminalAuthority = "akka", MaximumFrameBytes = 16 * 1024, MaximumInFlightFrames = 64 } }), streamCancellation.Token).ConfigureAwait(false);
-        var writer = WriteAsync(registration, responseStream, streamCancellation, session);
-        var reader = ReadInboundAsync(requestStream, session, registration, streamCancellation.Token);
         try
         {
-            var completed = await Task.WhenAny(reader, writer).ConfigureAwait(false);
-            if (completed.IsFaulted)
-            {
-                await completed.ConfigureAwait(false);
-            }
+            await GatewayDuplexSession.RunAsync(
+                cancellationToken => ReadInboundAsync(requestStream, session, registration, cancellationToken),
+                async cancellationToken =>
+                {
+                    await responseStream.WriteAsync(NewFrame(session, 0, new GatewayTerminalFrame
+                    {
+                        Accepted = new TerminalConnectAccepted
+                        {
+                            TerminalAuthority = "akka", MaximumFrameBytes = 16 * 1024, MaximumInFlightFrames = 64
+                        }
+                    }), cancellationToken).ConfigureAwait(false);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    await WriteAsync(registration, responseStream, cancellationToken, session).ConfigureAwait(false);
+                },
+                streamCancellation.Token, registration.CompletionToken, logger,
+                context.GetHttpContext().Abort).ConfigureAwait(false);
         }
         finally
         {
-            streamCancellation.Cancel();
             registration.Dispose();
-            try
-            {
-                await Task.WhenAll(reader, writer).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (streamCancellation.IsCancellationRequested)
-            {
-                logger.LogDebug(
-                    "api.terminal.transport.duplex.join.cancelled tenantId={TenantId} agentId={AgentId} connectionId={ConnectionId} connectionEpoch={ConnectionEpoch}",
-                    session.Client.TenantId,
-                    session.Client.AgentId,
-                    session.ConnectionId,
-                    session.ConnectionEpoch);
-            }
-            finally
-            {
-                logger.LogInformation(
-                    "api.terminal.transport.registration.removed tenantId={TenantId} agentId={AgentId} connectionId={ConnectionId} connectionEpoch={ConnectionEpoch} registrationId={RegistrationId}",
-                    session.Client.TenantId,
-                    session.Client.AgentId,
-                    session.ConnectionId,
-                    session.ConnectionEpoch,
-                    registration.RegistrationId);
-            }
+            logger.LogInformation(
+                "api.terminal.transport.registration.removed tenantId={TenantId} agentId={AgentId} connectionId={ConnectionId} connectionEpoch={ConnectionEpoch} registrationId={RegistrationId}",
+                session.Client.TenantId, session.Client.AgentId, session.ConnectionId,
+                session.ConnectionEpoch, registration.RegistrationId);
         }
     }
 
@@ -102,8 +93,11 @@ public sealed class AgentTerminalGatewayService(
         ulong last = 0;
         try
         {
-            while (await requestStream.MoveNext(cancellationToken).ConfigureAwait(false))
+            while (true)
             {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!await requestStream.MoveNext(cancellationToken).ConfigureAwait(false)) break;
+                cancellationToken.ThrowIfCancellationRequested();
                 if (!registration.IsCurrent)
                 {
                     throw new RpcException(new Status(StatusCode.Aborted, "The terminal gateway registration has been replaced."));
@@ -112,6 +106,7 @@ public sealed class AgentTerminalGatewayService(
                 var frame = requestStream.Current;
                 if (!ValidFrame(frame, session, ref last)) throw new RpcException(new Status(StatusCode.InvalidArgument, "The terminal frame is invalid or stale."));
                 await RequirePresenceAsync(session, cancellationToken).ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
                 var accepted = await ReceiveFrameAsync(session, registration.RegistrationId, frame, cancellationToken).ConfigureAwait(false);
                 if (accepted) continue;
 
@@ -291,14 +286,16 @@ public sealed class AgentTerminalGatewayService(
     private async Task WriteAsync(
         AgentTerminalGatewayRegistration registration,
         IServerStreamWriter<GatewayTerminalFrame> writer,
-        CancellationTokenSource streamCancellation,
+        CancellationToken cancellationToken,
         Session session)
     {
         try
         {
-            await foreach (var frame in registration.Reader.ReadAllAsync(streamCancellation.Token).ConfigureAwait(false))
+            await foreach (var frame in registration.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
             {
-                await writer.WriteAsync(frame).ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
+                await writer.WriteAsync(frame, cancellationToken).ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
                 // Start deadlines are tied to actual gRPC delivery, not to a
                 // successful in-memory channel enqueue.
                 registration.MarkWritten(frame);
@@ -312,7 +309,7 @@ public sealed class AgentTerminalGatewayService(
                 session.ConnectionEpoch,
                 registration.RegistrationId);
         }
-        catch (OperationCanceledException) when (streamCancellation.IsCancellationRequested)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             logger.LogDebug(
                 "api.terminal.transport.outbound.cancelled tenantId={TenantId} agentId={AgentId} connectionId={ConnectionId} connectionEpoch={ConnectionEpoch} registrationId={RegistrationId}",
@@ -333,7 +330,6 @@ public sealed class AgentTerminalGatewayService(
                 session.ConnectionId,
                 session.ConnectionEpoch,
                 registration.RegistrationId);
-            streamCancellation.Cancel();
             throw;
         }
         finally

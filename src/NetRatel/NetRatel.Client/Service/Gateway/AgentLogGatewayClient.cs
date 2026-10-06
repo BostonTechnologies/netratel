@@ -22,8 +22,27 @@ namespace NetRatel.Client.Service.Gateway;
 /// admitted presence session. The log writer uses TryWrite only and therefore
 /// cannot be stalled by this gateway or a browser consumer.
 /// </summary>
-public sealed class AgentLogGatewayClient(GatewayClientOptions options)
+public sealed class AgentLogGatewayClient
 {
+    private readonly GatewayClientOptions options;
+    private readonly Func<Uri, GrpcChannel>? createChannel;
+    private readonly Func<IClientLogSourceAdapter> createLogSource;
+    private readonly Func<Func<Task>, Task> startFollow;
+
+    public AgentLogGatewayClient(GatewayClientOptions options)
+        : this(options, null, ClientLogSourceAdapterFactory.Create)
+    {
+    }
+
+    internal AgentLogGatewayClient(GatewayClientOptions options, Func<Uri, GrpcChannel>? createChannel,
+        Func<IClientLogSourceAdapter> createLogSource, Func<Func<Task>, Task>? startFollow = null)
+    {
+        this.options = options;
+        this.createChannel = createChannel;
+        this.createLogSource = createLogSource;
+        this.startFollow = startFollow ?? (work => Task.Run(work, CancellationToken.None));
+    }
+
     private static readonly TimeSpan InitialRetryDelay = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan MaximumRetryDelay = TimeSpan.FromSeconds(30);
     private const int MaximumGatewayFrameBytes = 64 * 1024;
@@ -47,10 +66,21 @@ public sealed class AgentLogGatewayClient(GatewayClientOptions options)
             {
                 break;
             }
+            catch (RpcException exception) when (stoppingToken.IsCancellationRequested && exception.StatusCode == StatusCode.Cancelled)
+            {
+                break;
+            }
             catch (Exception exception) when (exception is RpcException or HttpRequestException or IOException)
             {
                 LogManager.WriteLog($"[Gateway] Log stream retrying after {DescribeRetry(exception)}.");
-                await Task.Delay(retryDelay, stoppingToken).ConfigureAwait(false);
+                try
+                {
+                    await Task.Delay(retryDelay, stoppingToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    break;
+                }
                 retryDelay = TimeSpan.FromSeconds(Math.Min(retryDelay.TotalSeconds * 2, MaximumRetryDelay.TotalSeconds));
             }
         }
@@ -58,6 +88,8 @@ public sealed class AgentLogGatewayClient(GatewayClientOptions options)
 
     private async Task RunStreamAsync(Uri endpoint, GatewayPresenceSession session, string accessToken, CancellationToken cancellationToken)
     {
+        using var streamCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var streamToken = streamCancellation.Token;
         using var httpClient = new HttpClient(new SocketsHttpHandler
         {
             EnableMultipleHttp2Connections = true
@@ -66,24 +98,27 @@ public sealed class AgentLogGatewayClient(GatewayClientOptions options)
             DefaultRequestVersion = HttpVersion.Version20,
             DefaultVersionPolicy = HttpVersionPolicy.RequestVersionExact
         };
-        using var channel = GrpcChannel.ForAddress(endpoint, new GrpcChannelOptions { HttpClient = httpClient });
+        using var channel = createChannel?.Invoke(endpoint) ?? GrpcChannel.ForAddress(endpoint, new GrpcChannelOptions { HttpClient = httpClient });
         var client = new AgentLogGateway.AgentLogGatewayClient(channel);
-        var headers = new Metadata { { "Authorization", $"Bearer {accessToken}" } };
-        using var call = client.Connect(headers, cancellationToken: cancellationToken);
+        var headers = new Metadata { { "Authorization", $"Bearer {session.GetAccessToken(accessToken)}" } };
+        using var call = client.Connect(headers, cancellationToken: streamToken);
         var records = Channel.CreateBounded<ClientRuntimeLogRecord>(new BoundedChannelOptions(256)
         {
             FullMode = BoundedChannelFullMode.Wait,
             SingleReader = true,
             SingleWriter = false
         });
-        var provider = ClientLogSourceAdapterFactory.Create();
-        var discoveredSources = await provider.DiscoverAsync(cancellationToken).ConfigureAwait(false);
+        var provider = createLogSource();
+        var discoveredSources = await provider.DiscoverAsync(streamToken).ConfigureAwait(false);
         using var writeGate = new SemaphoreSlim(1, 1);
-        using var followCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        using var followCancellation = CancellationTokenSource.CreateLinkedTokenSource(streamToken);
         var activeFollows = new ConcurrentDictionary<string, CancellationTokenSource>(StringComparer.Ordinal);
         var followTasks = new ConcurrentBag<Task>();
         long dropped = 0;
         long streamSequence = 0;
+        Task? responseDrain = null;
+        Task? recordWriter = null;
+        Exception? failure = null;
         void Capture(ClientRuntimeLogRecord record)
         {
             if (!records.Writer.TryWrite(record)) Interlocked.Increment(ref dropped);
@@ -93,8 +128,8 @@ public sealed class AgentLogGatewayClient(GatewayClientOptions options)
         try
         {
             var operationId = Guid.NewGuid();
-            await WriteFrameAsync(call.RequestStream, CreateHello(session, operationId, discoveredSources), writeGate, cancellationToken).ConfigureAwait(false);
-            if (!await call.ResponseStream.MoveNext(cancellationToken).ConfigureAwait(false) ||
+            await WriteFrameAsync(call.RequestStream, CreateHello(session, operationId, discoveredSources), writeGate, streamToken).ConfigureAwait(false);
+            if (!await call.ResponseStream.MoveNext(streamToken).ConfigureAwait(false) ||
                 call.ResponseStream.Current.PayloadCase != GatewayLogFrame.PayloadOneofCase.Accepted)
             {
                 throw new RpcException(new Status(StatusCode.Unavailable, "Log gateway closed before accepting the session."));
@@ -102,40 +137,72 @@ public sealed class AgentLogGatewayClient(GatewayClientOptions options)
 
             ValidateAccepted(call.ResponseStream.Current, session, operationId);
             var maximumEncodedFrameBytes = checked((int)call.ResponseStream.Current.Accepted.MaximumEncodedBatchBytes);
-            var responseDrain = DrainResponsesAsync(call.ResponseStream, session, async query =>
+            responseDrain = DrainResponsesAsync(call.ResponseStream, session, async query =>
             {
                 await HandleQueryAsync(query, provider, activeFollows, followTasks, followCancellation.Token, maximumEncodedFrameBytes,
-                    record => WriteRecordAsync(call.RequestStream, session, checked((ulong)Interlocked.Increment(ref streamSequence)), record, 0, writeGate, maximumEncodedFrameBytes, cancellationToken),
-                    result => WriteQueryResultAsync(call.RequestStream, session, checked((ulong)Interlocked.Increment(ref streamSequence)), result, writeGate, maximumEncodedFrameBytes, cancellationToken),
-                    () => WriteResyncAsync(call.RequestStream, session, checked((ulong)Interlocked.Increment(ref streamSequence)), writeGate, cancellationToken)).ConfigureAwait(false);
-            }, cancellationToken);
-            var snapshot = ClientRuntimeLogBuffer.Snapshot();
-            var lastSnapshotRecordSequence = snapshot.Records.LastOrDefault()?.Sequence ?? 0;
-            foreach (var record in snapshot.Records)
-            {
-                await WriteRecordAsync(call.RequestStream, session, checked((ulong)Interlocked.Increment(ref streamSequence)), record, Interlocked.Read(ref dropped), writeGate, maximumEncodedFrameBytes, cancellationToken).ConfigureAwait(false);
-            }
+                    record => WriteRecordAsync(call.RequestStream, session, checked((ulong)Interlocked.Increment(ref streamSequence)), record, 0, writeGate, maximumEncodedFrameBytes, streamToken),
+                    result => WriteQueryResultAsync(call.RequestStream, session, checked((ulong)Interlocked.Increment(ref streamSequence)), result, writeGate, maximumEncodedFrameBytes, streamToken),
+                    () => WriteResyncAsync(call.RequestStream, session, checked((ulong)Interlocked.Increment(ref streamSequence)), writeGate, streamToken)).ConfigureAwait(false);
+            }, streamToken);
+            recordWriter = WriteRecordsAsync();
+            // A quiet runtime buffer must not hide a closed or faulted response
+            // stream. Whichever worker ends first owns this attempt's shutdown.
+            await (await Task.WhenAny(responseDrain, recordWriter).ConfigureAwait(false)).ConfigureAwait(false);
+            throw new RpcException(new Status(StatusCode.Unavailable, "Log gateway closed the session."));
 
-            await foreach (var record in records.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+            async Task WriteRecordsAsync()
             {
-                // The observer is attached before Snapshot so it cannot miss a
-                // record. Ignore the overlap rather than treating the same
-                // cursor as a duplicate log event.
-                if (record.Sequence <= lastSnapshotRecordSequence) continue;
-                await WriteRecordAsync(call.RequestStream, session, checked((ulong)Interlocked.Increment(ref streamSequence)), record, Interlocked.Exchange(ref dropped, 0), writeGate, maximumEncodedFrameBytes, cancellationToken).ConfigureAwait(false);
-            }
+                var snapshot = ClientRuntimeLogBuffer.Snapshot();
+                var lastSnapshotRecordSequence = snapshot.Records.LastOrDefault()?.Sequence ?? 0;
+                foreach (var record in snapshot.Records)
+                {
+                    await WriteRecordAsync(call.RequestStream, session, checked((ulong)Interlocked.Increment(ref streamSequence)), record, Interlocked.Read(ref dropped), writeGate, maximumEncodedFrameBytes, streamToken).ConfigureAwait(false);
+                }
 
-            followCancellation.Cancel();
-            await Task.WhenAll(followTasks.ToArray()).ConfigureAwait(false);
-            await call.RequestStream.CompleteAsync().ConfigureAwait(false);
-            await responseDrain.ConfigureAwait(false);
+                await foreach (var record in records.Reader.ReadAllAsync(streamToken).ConfigureAwait(false))
+                {
+                    // The observer is attached before Snapshot so it cannot miss a
+                    // record. Ignore the overlap rather than treating the same
+                    // cursor as a duplicate log event.
+                    if (record.Sequence <= lastSnapshotRecordSequence) continue;
+                    await WriteRecordAsync(call.RequestStream, session, checked((ulong)Interlocked.Increment(ref streamSequence)), record, Interlocked.Exchange(ref dropped, 0), writeGate, maximumEncodedFrameBytes, streamToken).ConfigureAwait(false);
+                }
+            }
+        }
+        catch (Exception exception)
+        {
+            failure = exception;
+            throw;
         }
         finally
         {
             ClientRuntimeLogBuffer.RecordCaptured -= Capture;
             records.Writer.TryComplete();
+            streamCancellation.Cancel();
             followCancellation.Cancel();
-            foreach (var source in activeFollows.Values) source.Cancel();
+            // Join providers and both stream workers before their writer gate
+            // or channel is disposed, including cancellation during token refresh.
+            try
+            {
+                await Task.WhenAll(new[] { responseDrain, recordWriter }.OfType<Task>()).ConfigureAwait(false);
+            }
+            catch (Exception shutdownFailure) when (failure is not null)
+            {
+                // WhenAll observes every worker's fault; preserve the failure
+                // that ended the attempt rather than replacing it with shutdown.
+                Trace.WriteLine($"Log gateway stream workers joined after shutdown: {shutdownFailure.GetType().Name}.");
+            }
+            try
+            {
+                // The response worker may have added a final follow task while
+                // cancellation was being delivered. Snapshot only after joining it.
+                await Task.WhenAll(followTasks.ToArray()).ConfigureAwait(false);
+            }
+            catch (Exception shutdownFailure) when (failure is not null)
+            {
+                // Preserve the initiating transport/cancellation failure.
+                Trace.WriteLine($"Log gateway source workers joined after shutdown: {shutdownFailure.GetType().Name}.");
+            }
         }
     }
 
@@ -304,7 +371,7 @@ public sealed class AgentLogGatewayClient(GatewayClientOptions options)
                 break;
             case LogQueryOperation.StartLive:
                 {
-                    if (activeFollows.TryRemove(request.SourceId, out var old)) { old.Cancel(); old.Dispose(); }
+                    if (activeFollows.TryRemove(request.SourceId, out var old)) CancelFollow(old);
                     var page = await provider.ReadHistoryAsync(query, stoppingToken).ConfigureAwait(false);
                     await SendPageAsync(request.RequestId, page, writeResult, QueryResultBudget(maximumEncodedFrameBytes)).ConfigureAwait(false);
                     // Live delivery is shared per agent/source. Keep that stream
@@ -312,12 +379,13 @@ public sealed class AgentLogGatewayClient(GatewayClientOptions options)
                     // from another; each explorer applies its own filter locally.
                     var followQuery = query with { Cursor = null, Severities = [], Prefixes = [], Text = null, Providers = [], EventIds = [], Categories = [] };
                     var sourceCancellation = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+                    var sourceToken = sourceCancellation.Token;
                     activeFollows[request.SourceId] = sourceCancellation;
-                    var task = Task.Run(async () =>
+                    var task = startFollow(async () =>
                     {
                         try
                         {
-                            await foreach (var item in provider.FollowAsync(followQuery, sourceCancellation.Token).ConfigureAwait(false))
+                            await foreach (var item in provider.FollowAsync(followQuery, sourceToken).ConfigureAwait(false))
                             {
                                 if (item.Record is { } record)
                                 {
@@ -329,27 +397,40 @@ public sealed class AgentLogGatewayClient(GatewayClientOptions options)
                                 }
                             }
                         }
-                        catch (OperationCanceledException) when (sourceCancellation.IsCancellationRequested)
+                        catch (OperationCanceledException) when (sourceToken.IsCancellationRequested)
                         {
                             System.Diagnostics.Trace.WriteLine("The selected log source was stopped.");
                         }
                         finally
                         {
-                            if (activeFollows.TryGetValue(request.SourceId, out var current) && ReferenceEquals(current, sourceCancellation))
-                                activeFollows.TryRemove(request.SourceId, out _);
+                            activeFollows.TryRemove(new KeyValuePair<string, CancellationTokenSource>(request.SourceId, sourceCancellation));
                             sourceCancellation.Dispose();
                         }
-                    }, CancellationToken.None);
+                    });
                     followTasks.Add(task);
                     break;
                 }
             case LogQueryOperation.StopLive:
-                if (activeFollows.TryRemove(request.SourceId, out var stoppedSource)) { stoppedSource.Cancel(); stoppedSource.Dispose(); }
+                if (activeFollows.TryRemove(request.SourceId, out var stoppedSource)) CancelFollow(stoppedSource);
                 await writeResult(new LogQueryResult { RequestId = request.RequestId }).ConfigureAwait(false);
                 break;
             default:
                 await writeResult(new LogQueryResult { RequestId = request.RequestId, ErrorCode = "invalid_operation" }).ConfigureAwait(false);
                 break;
+        }
+    }
+
+    private static void CancelFollow(CancellationTokenSource source)
+    {
+        try
+        {
+            source.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // The worker can finish and dispose its source after removal from
+            // activeFollows but before this stop request reaches cancellation.
+            Trace.WriteLine("The selected log source completed before its stop request.");
         }
     }
 

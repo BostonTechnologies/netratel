@@ -1,5 +1,6 @@
 using NetRatel.Client.Service.Logging;
 using System;
+using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
@@ -9,6 +10,8 @@ using System.Security;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.Win32;
 
 namespace NetRatel.Client.Service.RemoteDesktop;
@@ -19,6 +22,7 @@ internal static class RemoteDesktopUserHelperConstants
     public const string FullPipePath = @"\\.\pipe\netratel-remote-desktop-user-helper";
     public const string TaskName = "NetRatel.RemoteDesktop.UserHelper";
     public const string RunValueName = "NetRatel.RemoteDesktop.UserHelper";
+    public const string RegistrationCommand = "--register-remote-desktop-helper-task";
 }
 
 [SupportedOSPlatform("windows")]
@@ -26,6 +30,7 @@ internal sealed class RemoteDesktopUserHelperTask
 {
     private const int TaskRunUseSessionId = 0x4;
     private const uint ErrorFileNotFound = 0x80070002;
+    private static readonly ConcurrentDictionary<string, HelperTaskRegistrationState> Registrations = new(StringComparer.OrdinalIgnoreCase);
     private readonly string _launcherDirectory;
     private readonly string _commandLauncherPath;
     private readonly string _hiddenLauncherPath;
@@ -45,25 +50,50 @@ internal sealed class RemoteDesktopUserHelperTask
         _hiddenLauncherPath = Path.Combine(_launcherDirectory, "netratel-remote-desktop-user-helper.vbs");
     }
 
-    public void EnsureRegistered()
+    public async Task<bool> EnsureRegisteredAsync(CancellationToken ct, bool force = false)
     {
+        var exePath = ResolveExecutablePath();
+        var xml = BuildCurrentTaskXml();
+        var registration = Registrations.GetOrAdd(_launcherDirectory, _ => new HelperTaskRegistrationState());
         try
         {
-            EnsureLauncherAndRunKey();
+            await registration.EnsureAsync(exePath + "\n" + xml, async () =>
+            {
+                EnsureLauncherAndRunKey(exePath);
+                var result = await BoundedProcessRunner.RunAsync(
+                    BuildRegistrationStartInfo(exePath),
+                    TimeSpan.FromSeconds(15),
+                    "register remote desktop helper task",
+                    ct).ConfigureAwait(false);
+                if (result.ExitCode != 0)
+                {
+                    throw new Win32Exception(result.ExitCode, $"Helper task registration failed: {TrimForLog(result.Error)} {TrimForLog(result.Output)}");
+                }
+
+                LogManager.WriteLog($"[RemoteDesktop] User helper scheduled task registered through Task Scheduler Unicode API task={RemoteDesktopUserHelperConstants.TaskName}");
+            }, ct, force).ConfigureAwait(false);
+            return true;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
-            LogManager.WriteLog($"[RemoteDesktop] Helper launcher/HKLM bootstrap warning during EnsureRegistered: {ex}");
+            LogManager.WriteLog($"[RemoteDesktop] Helper feature unavailable: task/launcher registration is not confirmed: {ex.Message}");
+            RemoteDesktopDiagnosticState.Update(state =>
+            {
+                state.LatestStage = "helper_task_registration_failed";
+                state.LatestError = ex.Message;
+            });
+            return false;
         }
-
-        TryRegisterScheduledTask();
     }
 
-    public void EnsureLauncherAndRunKey()
+    private void EnsureLauncherAndRunKey(string exePath)
     {
         Directory.CreateDirectory(_launcherDirectory);
-        // The protected product root only grants traversal to interactive
-        // users. Launchers need read/execute access, never write access.
+        // Interactive users need read/execute access to launchers, never write.
         var launcherDirectory = new DirectoryInfo(_launcherDirectory);
         var launcherSecurity = launcherDirectory.GetAccessControl();
         launcherSecurity.AddAccessRule(new FileSystemAccessRule(
@@ -74,23 +104,8 @@ internal sealed class RemoteDesktopUserHelperTask
             AccessControlType.Allow));
         launcherDirectory.SetAccessControl(launcherSecurity);
         EnsureHelperLogDirectory();
-        WriteLauncher();
+        WriteLauncher(exePath);
         RegisterRunKey();
-    }
-
-    public void TryRegisterScheduledTask()
-    {
-        try
-        {
-            RegisterTaskFromXml();
-        }
-        catch (Exception ex)
-        {
-            // schtasks /Create without an explicit principal uses the caller's
-            // account, which can be SYSTEM here. Keep the group task and the
-            // independent interactive-logon Run bootstrap instead.
-            LogManager.WriteLog($"[RemoteDesktop] Helper task XML registration failed; interactive helper task is not confirmed: {ex.Message}");
-        }
     }
 
     private static void EnsureHelperLogDirectory()
@@ -162,21 +177,22 @@ internal sealed class RemoteDesktopUserHelperTask
 
     public uint GetActiveConsoleSessionId() => WTSGetActiveConsoleSessionId();
 
-    public void StartForActiveConsoleSession()
+    public async Task<bool> StartForActiveConsoleSessionAsync(CancellationToken ct)
     {
         var sessionId = WTSGetActiveConsoleSessionId();
         LogManager.WriteLog($"[RemoteDesktop] Active console session id={sessionId}");
         if (sessionId == uint.MaxValue || sessionId == 0)
         {
             LogManager.WriteLog("[RemoteDesktop] Skipping helper task launch because no interactive console session is active.");
-            return;
+            return false;
         }
 
-        StartForSession(sessionId);
+        return await StartForSessionAsync(sessionId, ct).ConfigureAwait(false);
     }
 
-    public void StartForSession(uint sessionId)
+    public async Task<bool> StartForSessionAsync(uint sessionId, CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
         try
         {
             if (sessionId == uint.MaxValue || sessionId == 0)
@@ -198,30 +214,36 @@ internal sealed class RemoteDesktopUserHelperTask
             catch (COMException ex) when (unchecked((uint)ex.HResult) == ErrorFileNotFound)
             {
                 LogManager.WriteLog($"[RemoteDesktop] Helper task missing; re-registering task={RemoteDesktopUserHelperConstants.TaskName}");
-                TryRegisterScheduledTask();
+                await EnsureRegisteredAsync(ct, force: true).ConfigureAwait(false);
                 task = rootFolder.GetTask(RemoteDesktopUserHelperConstants.TaskName);
             }
 
             try
             {
+                ct.ThrowIfCancellationRequested();
                 _ = task.RunEx(null, TaskRunUseSessionId, unchecked((int)sessionId), null);
                 LogManager.WriteLog($"[RemoteDesktop] Requested targeted user helper task RunEx task={RemoteDesktopUserHelperConstants.TaskName} session={sessionId}");
-                return;
+                return true;
             }
             catch (COMException ex)
             {
                 LogManager.WriteLog($"[RemoteDesktop] Helper task RunEx COM failure session={sessionId} hresult=0x{ex.HResult:X8}: {ex.Message}");
             }
 
-            TryLaunchHelperDirectly(sessionId);
+            return TryLaunchHelperDirectly(sessionId);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
             LogManager.WriteLog($"[RemoteDesktop] Helper task RunEx warning; continuing without scheduled-task launch: {ex.Message}");
+            return false;
         }
     }
 
-    private void TryLaunchHelperDirectly(uint targetSessionId)
+    private bool TryLaunchHelperDirectly(uint targetSessionId)
     {
         try
         {
@@ -229,7 +251,7 @@ internal sealed class RemoteDesktopUserHelperTask
             if (currentSessionId != unchecked((int)targetSessionId))
             {
                 LogManager.WriteLog($"[RemoteDesktop] Direct helper launch skipped currentSession={currentSessionId} targetSession={targetSessionId}");
-                return;
+                return false;
             }
 
             var exePath = Environment.ProcessPath
@@ -244,25 +266,24 @@ internal sealed class RemoteDesktopUserHelperTask
             };
             using var process = Process.Start(startInfo);
             LogManager.WriteLog($"[RemoteDesktop] Directly launched user helper pid={process?.Id} session={currentSessionId}");
+            return process is not null;
         }
         catch (Exception ex)
         {
             LogManager.WriteLog($"[RemoteDesktop] Direct helper launch failed: {ex.Message}");
+            return false;
         }
     }
 
-    private void WriteLauncher()
+    private void WriteLauncher(string exePath)
     {
-        var exePath = Environment.ProcessPath
-            ?? Process.GetCurrentProcess().MainModule?.FileName
-            ?? throw new InvalidOperationException("Unable to resolve NetRatel.Client executable path.");
         var commandContent = new StringBuilder()
             .AppendLine("@echo off")
             .AppendLine("setlocal")
             .Append(Quote(exePath))
             .AppendLine(" --remote-desktop-user-helper")
             .ToString();
-        File.WriteAllText(_commandLauncherPath, commandContent, Encoding.ASCII);
+        WriteLauncherIfChanged(_commandLauncherPath, commandContent, Encoding.ASCII);
 
         var escapedExePath = exePath.Replace("\"", "\"\"", StringComparison.Ordinal);
         var hiddenContent = new StringBuilder()
@@ -271,59 +292,86 @@ internal sealed class RemoteDesktopUserHelperTask
             .Append(escapedExePath)
             .AppendLine("\"\" --remote-desktop-user-helper\", 0, False")
             .ToString();
-        File.WriteAllText(_hiddenLauncherPath, hiddenContent, Encoding.ASCII);
+        WriteLauncherIfChanged(_hiddenLauncherPath, hiddenContent, Encoding.Unicode);
         LogManager.WriteLog($"[RemoteDesktop] User helper launchers updated hiddenPath={_hiddenLauncherPath} commandPath={_commandLauncherPath} exe={exePath}");
     }
 
-    private void RegisterTaskFromXml()
-    {
-        var xmlPath = Path.Combine(_launcherDirectory, "netratel-remote-desktop-user-helper.xml");
-        var xml = BuildTaskXml("wscript.exe", $"//B {Quote(_hiddenLauncherPath)}");
-        File.WriteAllText(xmlPath, xml, Encoding.UTF8);
+    private static string ResolveExecutablePath() => Environment.ProcessPath
+        ?? Process.GetCurrentProcess().MainModule?.FileName
+        ?? throw new InvalidOperationException("Unable to resolve NetRatel.Client executable path.");
 
-        var startInfo = BuildRegistrationStartInfo(xmlPath);
-        var result = RunProcess(startInfo, "register remote desktop helper task from XML");
-        LogManager.WriteLog($"[RemoteDesktop] User helper scheduled task registered from XML task={RemoteDesktopUserHelperConstants.TaskName} output={TrimForLog(result.Output)}");
-    }
-
-    internal static ProcessStartInfo BuildRegistrationStartInfo(string xmlPath)
+    private static void WriteLauncherIfChanged(string path, string content, Encoding encoding)
     {
-        return new ProcessStartInfo
+        if (File.Exists(path) && string.Equals(File.ReadAllText(path, encoding), content, StringComparison.Ordinal))
         {
-            FileName = "schtasks.exe",
-            ArgumentList = { "/Create", "/TN", RemoteDesktopUserHelperConstants.TaskName, "/XML", xmlPath, "/F" },
-            UseShellExecute = false,
-            RedirectStandardError = true,
-            RedirectStandardOutput = true,
-            CreateNoWindow = true
-        };
-    }
-
-    private static ProcessResult RunProcess(ProcessStartInfo startInfo, string operation)
-    {
-        using var process = Process.Start(startInfo)
-            ?? throw new InvalidOperationException($"Unable to start {startInfo.FileName} to {operation}.");
-        var output = process.StandardOutput.ReadToEnd();
-        var error = process.StandardError.ReadToEnd();
-        if (!process.WaitForExit(15000))
-        {
-            try
-            {
-                process.Kill(entireProcessTree: true);
-            }
-            catch
-            {
-            }
-
-            throw new TimeoutException($"Timed out while trying to {operation}.");
+            return;
         }
 
-        if (process.ExitCode != 0)
+        // Readers see a complete old or new launcher even across process instances.
+        var staged = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
         {
-            throw new Win32Exception(process.ExitCode, $"{operation} failed: {TrimForLog(error)} {TrimForLog(output)}");
+            File.WriteAllText(staged, content, encoding);
+            File.Move(staged, path, overwrite: true);
         }
+        finally
+        {
+            File.Delete(staged);
+        }
+    }
 
-        return new ProcessResult(output, error);
+    internal static ProcessStartInfo BuildRegistrationStartInfo(string executablePath) => new()
+    {
+        FileName = executablePath,
+        ArgumentList = { RemoteDesktopUserHelperConstants.RegistrationCommand },
+        UseShellExecute = false,
+        RedirectStandardError = true,
+        RedirectStandardOutput = true,
+        CreateNoWindow = true
+    };
+
+    // Only the bounded child invokes this mutating mode. Native tests use the
+    // same complete Unicode handoff with TASK_VALIDATE_ONLY, which creates nothing.
+    internal static string BuildCurrentTaskXml() => BuildTaskXml("wscript.exe", $"//B {Quote(GetLauncherPath())}");
+
+    internal static void RegisterCurrentTaskInChild() => RegisterTaskXml(BuildCurrentTaskXml(), validateOnly: false);
+
+    internal static void RegisterTaskXml(string xml, bool validateOnly)
+    {
+        const int TaskValidateOnly = 1;
+        const int TaskCreateOrUpdate = 6;
+        const int TaskLogonGroup = 4;
+        object? serviceObject = null;
+        object? folderObject = null;
+        object? taskObject = null;
+        try
+        {
+            var serviceType = Type.GetTypeFromProgID("Schedule.Service")
+                ?? throw new InvalidOperationException("Task Scheduler COM service is unavailable.");
+            serviceObject = Activator.CreateInstance(serviceType)
+                ?? throw new InvalidOperationException("Unable to create Task Scheduler COM service.");
+            dynamic service = serviceObject;
+            service.Connect();
+            folderObject = service.GetFolder("\\");
+            dynamic folder = folderObject;
+            taskObject = folder.RegisterTask(RemoteDesktopUserHelperConstants.TaskName, xml,
+                validateOnly ? TaskValidateOnly : TaskCreateOrUpdate,
+                "S-1-5-32-545", null, TaskLogonGroup, null);
+        }
+        finally
+        {
+            ReleaseComObject(taskObject);
+            ReleaseComObject(folderObject);
+            ReleaseComObject(serviceObject);
+        }
+    }
+
+    private static void ReleaseComObject(object? value)
+    {
+        if (value is not null && Marshal.IsComObject(value))
+        {
+            Marshal.ReleaseComObject(value);
+        }
     }
 
     internal static string BuildTaskXml(string command, string arguments)
@@ -331,7 +379,7 @@ internal sealed class RemoteDesktopUserHelperTask
         var escapedCommand = SecurityElement.Escape(command) ?? command;
         var escapedArguments = SecurityElement.Escape(arguments) ?? arguments;
         return $$"""
-<?xml version="1.0" encoding="UTF-8"?>
+<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
     <Description>Starts the NetRatel remote desktop user-session helper for interactive capture and input.</Description>
@@ -388,5 +436,33 @@ internal sealed class RemoteDesktopUserHelperTask
     [DllImport("kernel32.dll")]
     private static extern uint WTSGetActiveConsoleSessionId();
 
-    private sealed record ProcessResult(string Output, string Error);
+}
+
+// Native task and launcher state is shared by reconnect/repair callers in this
+// process. Failed or canceled work remains eligible for the next bounded attempt.
+internal sealed class HelperTaskRegistrationState
+{
+    private readonly SemaphoreSlim _gate = new(1, 1);
+    private string? _registeredFingerprint;
+
+    internal async Task EnsureAsync(string fingerprint, Func<Task> register, CancellationToken ct, bool force = false)
+    {
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            ct.ThrowIfCancellationRequested();
+            if (!force && string.Equals(_registeredFingerprint, fingerprint, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            _registeredFingerprint = null;
+            await register().ConfigureAwait(false);
+            _registeredFingerprint = fingerprint;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
 }

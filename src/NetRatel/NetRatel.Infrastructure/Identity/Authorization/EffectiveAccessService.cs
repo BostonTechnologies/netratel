@@ -54,6 +54,8 @@ public sealed class EffectiveAccessService(NetRatelIdentityDbContext db, IConfig
 
     public async Task<EffectiveAccessSnapshot> GetSnapshotAsync(ClaimsPrincipal principal, int? tenantId, CancellationToken cancellationToken = default)
     {
+        if (principal.HasClaim("token_use", "netratel_service") || principal.HasClaim("auth_mode", "service"))
+            return new(null, false, false, new HashSet<string>(StringComparer.Ordinal));
         if (IsLegacyOperator(principal))
         {
             return new(null, true, true, NetRatelPermissions.All);

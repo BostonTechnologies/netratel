@@ -1,6 +1,6 @@
 using System.Net;
 using Bunit;
-using FluentAssertions;
+using AwesomeAssertions;
 using Microsoft.AspNetCore.Components;
 using Microsoft.Extensions.DependencyInjection;
 using NetRatel.Shared.Contracts.Flows;

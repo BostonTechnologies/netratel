@@ -292,7 +292,7 @@ public sealed class AgentTerminalSessionRegistry(
     {
         lock (_transportSync)
         {
-            return _agents.TryGetValue(client, out var transport) && transport.IsAdmitted
+            return _agents.TryGetValue(client, out var transport) && transport.IsAdmitted && !transport.CompletionToken.IsCancellationRequested
                 ? new GatewayTerminalAvailability(transport.ConnectionId, transport.ConnectionEpoch, transport.AvailableShells, transport.RegisteredAtUtc, transport.SupportsIdempotentClose, transport.RegistrationId)
                 : null;
         }

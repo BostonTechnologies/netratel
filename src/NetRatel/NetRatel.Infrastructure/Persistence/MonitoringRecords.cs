@@ -41,6 +41,7 @@ public sealed class MonitoringEvidenceStreamRecord
     public Guid ConnectionId { get; set; }
     public long ConnectionEpoch { get; set; }
     public Guid EvidenceStreamId { get; set; }
+    public long CommittedRegistrationOrdinal { get; set; }
     public bool Active { get; set; }
     public DateTimeOffset RegisteredAtUtc { get; set; }
     public ulong Revision { get; set; }
@@ -120,4 +121,25 @@ public sealed class MonitoringAuditRecord
     public DateTimeOffset AtUtc { get; set; }
     public ulong ConfigurationRevision { get; set; }
     public string DetailsJson { get; set; } = "{}";
+}
+
+/// <summary>Reservations order retries across replicas without replacing active evidence.</summary>
+public sealed class MonitoringEvidenceRegistrationCounterRecord
+{
+    public int TenantId { get; set; }
+    public Guid AgentId { get; set; }
+    public long LastIssuedOrdinal { get; set; }
+}
+public sealed class MonitoringEvidenceRegistrationAttemptRecord
+{
+    public int TenantId { get; set; }
+    public Guid AgentId { get; set; }
+    public Guid RegistrationId { get; set; }
+    public Guid ConnectionId { get; set; }
+    public long ConnectionEpoch { get; set; }
+    public long RegistrationOrdinal { get; set; }
+    public short Status { get; set; }
+    public DateTimeOffset CreatedAtUtc { get; set; }
+    public DateTimeOffset ExpiresAtUtc { get; set; }
+    public DateTimeOffset RetainUntilUtc { get; set; }
 }

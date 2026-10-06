@@ -47,7 +47,7 @@ public sealed class AgentGatewayTelemetryPublisher(
             return;
         }
 
-        var collector = new GatewayTelemetrySnapshotCollector(agentVersion, log);
+        var collector = new GatewayTelemetrySnapshotCollector(agentVersion, log, _timeProvider);
         using var services = new ServiceCollectionCoordinator(serviceInventoryCollector ?? ServiceInventoryCollectorFactory.Create(_timeProvider), _timeProvider);
         var sequenceCursor = new PresenceTelemetrySequenceCursor();
         var retryDelay = InitialRetryDelay;
@@ -79,7 +79,7 @@ public sealed class AgentGatewayTelemetryPublisher(
         services.BeginStream();
         using var channel = channelFactory?.Invoke(endpoint) ?? GrpcChannel.ForAddress(endpoint);
         var client = new global::NetRatel.AgentGateway.Contracts.V1.AgentTelemetryGatewayV2.AgentTelemetryGatewayV2Client(channel);
-        using var call = client.Connect(new Metadata { { "Authorization", $"Bearer {accessToken}" } }, cancellationToken: streamToken);
+        using var call = client.Connect(new Metadata { { "Authorization", $"Bearer {session.GetAccessToken(accessToken)}" } }, cancellationToken: streamToken);
         var accepted = new TaskCompletionSource<TelemetryConnectAccepted>(TaskCreationOptions.RunContinuationsAsynchronously);
         var policies = System.Threading.Channels.Channel.CreateBounded<TelemetrySamplingPolicy>(new System.Threading.Channels.BoundedChannelOptions(1)
         {
@@ -295,8 +295,9 @@ public sealed class AgentGatewayTelemetryPublisher(
     }
 }
 
-internal sealed class GatewayTelemetrySnapshotCollector(string agentVersion, Action<string> log)
+internal sealed class GatewayTelemetrySnapshotCollector(string agentVersion, Action<string> log, TimeProvider? timeProvider = null)
 {
+    private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
     private const int MaximumScopesPerFrame = 64;
     private GatewayCpuSample? _previousCpu;
     private readonly Dictionary<string, GatewayNetworkSample> _previousNetworks = new(StringComparer.OrdinalIgnoreCase);
@@ -312,6 +313,8 @@ internal sealed class GatewayTelemetrySnapshotCollector(string agentVersion, Act
         if (includeSlowMetrics)
         {
             _disks = SampleDisks();
+            // Capture the envelope after genuine slow collection. Every copied disk keeps its own older collection clock.
+            observedAtUtc = _timeProvider.GetUtcNow();
             _health = SampleHealth(observedAtUtc);
         }
 
@@ -337,10 +340,11 @@ internal sealed class GatewayTelemetrySnapshotCollector(string agentVersion, Act
             frame.Memory = memory;
         }
 
-        frame.Disks.AddRange(_disks);
+        frame.Disks.AddRange(_disks.Select(disk => disk.Clone()));
         frame.Networks.AddRange(SampleNetworks(observedAtUtc));
         return frame;
     }
+
 
     private bool TrySampleCpu(out TelemetryCpu cpu)
     {
@@ -479,7 +483,15 @@ internal sealed class GatewayTelemetrySnapshotCollector(string agentVersion, Act
     {
         var disks = new List<TelemetryDisk>();
         var scopes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var drive in DriveInfo.GetDrives())
+        DriveInfo[] drives;
+        try { drives = DriveInfo.GetDrives(); }
+        catch (Exception exception)
+        {
+            // Replacing the cache with an empty collection makes missing resources Unknown; never retain old successful bytes.
+            log($"Telemetry shadow disk enumeration failed: {exception.Message}");
+            return disks;
+        }
+        foreach (var drive in drives)
         {
             try
             {
@@ -505,6 +517,10 @@ internal sealed class GatewayTelemetrySnapshotCollector(string agentVersion, Act
                     Scope = scope,
                     TotalBytes = checked((ulong)totalBytes),
                     FreeBytes = checked((ulong)freeBytes),
+                    // Identity is minted only after this actual DriveInfo read completes, never on a fast frame or retry.
+                    CollectionId = Guid.NewGuid().ToString("D"),
+                    CollectedAtUtc = Timestamp.FromDateTimeOffset(_timeProvider.GetUtcNow()),
+                    CollectionQuality = TelemetryDiskCollectionQuality.Complete,
                     TotalGb = Math.Round(totalGb, 1),
                     UsedGb = Math.Round(usedGb, 1),
                     FreeGb = Math.Round(freeGb, 1),
@@ -524,6 +540,7 @@ internal sealed class GatewayTelemetrySnapshotCollector(string agentVersion, Act
     {
         return RemoteFilePath.TryNormalize(scope, out var path) ? path : string.Empty;
     }
+
 
     private IReadOnlyList<TelemetryNetwork> SampleNetworks(DateTimeOffset now)
     {

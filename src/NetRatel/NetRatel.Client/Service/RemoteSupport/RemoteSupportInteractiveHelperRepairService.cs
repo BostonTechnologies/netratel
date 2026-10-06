@@ -101,8 +101,10 @@ internal sealed class RemoteSupportInteractiveHelperRepairService
         try
         {
             var task = new RemoteDesktopUserHelperTask();
-            task.EnsureLauncherAndRunKey();
-            task.TryRegisterScheduledTask();
+            if (!await task.EnsureRegisteredAsync(ct).ConfigureAwait(false))
+            {
+                return Complete(RegistrationUnavailable(_serviceVersion));
+            }
             var launcherTarget = RemoteDesktopUserHelperTask.GetLauncherPath();
             RemoteSupportDiagnosticState.UpdateConsoleProvider(state =>
             {
@@ -112,7 +114,14 @@ internal sealed class RemoteSupportInteractiveHelperRepairService
                 state.InteractiveHelperRelaunchResult = RemoteSupportStatusCodes.InteractiveHelperLaunchRequested;
             });
 
-            task.StartForSession(checked((uint)targetWindowsSessionId));
+            if (!await task.StartForSessionAsync(checked((uint)targetWindowsSessionId), ct).ConfigureAwait(false))
+            {
+                return Complete(new RemoteSupportHelperRepairResult(
+                    RemoteSupportStatusCodes.HelperRelaunchFailed,
+                    "Interactive helper launch was not confirmed for the selected Windows session.",
+                    true, false, true, false, true,
+                    ServiceVersion: _serviceVersion, LauncherTarget: launcherTarget));
+            }
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeoutCts.CancelAfter(TimeSpan.FromSeconds(PrepareTimeoutSeconds));
             var helper = _helperPipeHost is null
@@ -148,6 +157,10 @@ internal sealed class RemoteSupportInteractiveHelperRepairService
                 ConnectedVersion: helper?.Version,
                 ServiceVersion: _serviceVersion,
                 LauncherTarget: launcherTarget));
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -241,8 +254,10 @@ internal sealed class RemoteSupportInteractiveHelperRepairService
             }
 
             var task = new RemoteDesktopUserHelperTask();
-            task.EnsureLauncherAndRunKey();
-            task.TryRegisterScheduledTask();
+            if (!await task.EnsureRegisteredAsync(ct).ConfigureAwait(false))
+            {
+                return Complete(RegistrationUnavailable(_serviceVersion, staleHelper));
+            }
 
             var launcherTarget = RemoteDesktopUserHelperTask.GetLauncherPath();
             if (!IsSafeStaleHelperProcess(staleHelper, out var safetyError))
@@ -272,7 +287,17 @@ internal sealed class RemoteSupportInteractiveHelperRepairService
                 state.InteractiveHelperRepairLastError = terminateError;
             });
 
-            task.StartForSession(checked((uint)targetWindowsSessionId));
+            if (!await task.StartForSessionAsync(checked((uint)targetWindowsSessionId), ct).ConfigureAwait(false))
+            {
+                return Complete(new RemoteSupportHelperRepairResult(
+                    RemoteSupportStatusCodes.HelperRelaunchFailed,
+                    "Updated interactive helper launch was not confirmed for the selected Windows session.",
+                    true, terminateAttempted, true, false, true,
+                    Error: terminateError,
+                    StalePid: staleHelper.ProcessId, StaleSessionId: staleHelper.SessionId,
+                    ConnectedVersion: staleHelper.Version, ServiceVersion: _serviceVersion,
+                    LauncherTarget: launcherTarget));
+            }
             RemoteSupportDiagnosticState.UpdateConsoleProvider(state =>
             {
                 state.InteractiveHelperRelaunchAttempted = true;
@@ -316,6 +341,10 @@ internal sealed class RemoteSupportInteractiveHelperRepairService
                 ServiceVersion: _serviceVersion,
                 LauncherTarget: launcherTarget));
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
         catch (OperationCanceledException)
         {
             return Complete(new RemoteSupportHelperRepairResult(
@@ -351,15 +380,17 @@ internal sealed class RemoteSupportInteractiveHelperRepairService
         }
     }
 
-    public static RemoteSupportHelperRepairResult RunManualRepair()
+    public static async Task<RemoteSupportHelperRepairResult> RunManualRepairAsync(CancellationToken ct)
     {
         var state = RemoteSupportDiagnosticState.Read();
         var serviceVersion = GetCurrentVersion();
         try
         {
             var task = new RemoteDesktopUserHelperTask();
-            task.EnsureLauncherAndRunKey();
-            task.TryRegisterScheduledTask();
+            if (!await task.EnsureRegisteredAsync(ct).ConfigureAwait(false))
+            {
+                return Complete(RegistrationUnavailable(serviceVersion));
+            }
             var activeSessionId = task.GetActiveConsoleSessionId();
             var desktopState = RemoteDesktopDiagnosticState.Read();
             var stalePid = state.HelperVersionMatchesService ? null : state.InteractiveHelperStalePid ?? desktopState.HelperPid;
@@ -376,13 +407,15 @@ internal sealed class RemoteSupportInteractiveHelperRepairService
                 terminateAttempted = TryTerminateProcess(pid, out error);
             }
 
-            task.StartForActiveConsoleSession();
+            var launchConfirmed = await task.StartForActiveConsoleSessionAsync(ct).ConfigureAwait(false);
             var result = new RemoteSupportHelperRepairResult(
-                "manual_helper_repair_requested",
-                "Helper launcher was refreshed and relaunch requested.",
+                launchConfirmed ? "manual_helper_repair_requested" : RemoteSupportStatusCodes.HelperRelaunchFailed,
+                launchConfirmed
+                    ? "Helper launcher was refreshed and relaunch requested; connection is not yet confirmed."
+                    : "Helper task is registered, but no interactive-session launch was confirmed.",
                 true,
                 terminateAttempted,
-                true,
+                launchConfirmed,
                 false,
                 true,
                 Error: error,
@@ -392,6 +425,10 @@ internal sealed class RemoteSupportInteractiveHelperRepairService
                 ServiceVersion: serviceVersion,
                 LauncherTarget: RemoteDesktopUserHelperTask.GetLauncherPath());
             return Complete(result);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -407,6 +444,14 @@ internal sealed class RemoteSupportInteractiveHelperRepairService
                 ServiceVersion: serviceVersion));
         }
     }
+
+    private static RemoteSupportHelperRepairResult RegistrationUnavailable(string serviceVersion, ConnectedUserHelper? retainedHelper = null) => new(
+        RemoteSupportStatusCodes.HelperRelaunchFailed,
+        "Interactive helper task registration was not confirmed; any existing helper was retained.",
+        true, false, false, false, true,
+        Error: "helper_task_registration_unconfirmed",
+        StalePid: retainedHelper?.ProcessId, StaleSessionId: retainedHelper?.SessionId,
+        ConnectedVersion: retainedHelper?.Version, ServiceVersion: serviceVersion);
 
     private bool IsProtectedProcess(int pid)
     {

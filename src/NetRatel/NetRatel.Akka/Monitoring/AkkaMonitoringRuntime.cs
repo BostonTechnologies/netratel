@@ -12,6 +12,8 @@ internal sealed class AkkaMonitoringRuntime(IRequiredActor<ClientMonitoringRegio
 {
     private async Task<T> Ask<T>(IMonitoringClientMessage message, CancellationToken ct)
     { var actor = await region.GetAsync(ct).ConfigureAwait(false); return await actor.Ask<T>(message, timeout, ct).ConfigureAwait(false); }
+    public Task<MonitoringEvidenceFence?> ReserveEvidenceRegistrationAsync(ClientKey client, Guid connectionId, long connectionEpoch,
+        Guid registrationId, CancellationToken ct) => store.ReserveEvidenceRegistrationAsync(client, connectionId, connectionEpoch, registrationId, ct);
     public Task<MonitoringInputResult> BeginEvidenceStreamAsync(MonitoringEvidenceFence fence, CancellationToken ct) => Ask<MonitoringInputResult>(new BeginMonitoringStream(fence), ct);
     public Task<MonitoringInputResult> EndEvidenceStreamAsync(MonitoringEvidenceFence fence, CancellationToken ct) => Ask<MonitoringInputResult>(new EndMonitoringStream(fence), ct);
     public Task<MonitoringInputResult> RecordTelemetryAsync(MonitoringTelemetryInput input, CancellationToken ct) => Ask<MonitoringInputResult>(new RecordMonitoringTelemetry(input), ct);

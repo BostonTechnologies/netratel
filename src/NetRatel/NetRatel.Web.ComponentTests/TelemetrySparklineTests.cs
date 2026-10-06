@@ -1,5 +1,5 @@
 using Bunit;
-using FluentAssertions;
+using AwesomeAssertions;
 using NetRatel.Web.Components.Dialogs;
 using Xunit;
 

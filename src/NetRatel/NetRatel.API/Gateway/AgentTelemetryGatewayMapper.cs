@@ -43,7 +43,10 @@ internal static class AgentTelemetryGatewayMapper
                 disk.FreeGb,
                 disk.UsagePercent,
                 disk.HasTotalBytes ? disk.TotalBytes : null,
-                disk.HasFreeBytes ? disk.FreeBytes : null)).ToArray(),
+                disk.HasFreeBytes ? disk.FreeBytes : null,
+                Guid.TryParseExact(disk.CollectionId, "D", out var collectionId) && collectionId != Guid.Empty ? collectionId : null,
+                disk.CollectedAtUtc?.ToDateTimeOffset(),
+                (global::NetRatel.Application.Telemetry.TelemetryDiskCollectionQuality)(int)disk.CollectionQuality)).ToArray(),
             frame.Networks.Select(network => new ApplicationTelemetryNetwork(
                 network.Scope.Trim(),
                 network.RxBytesPerSec,

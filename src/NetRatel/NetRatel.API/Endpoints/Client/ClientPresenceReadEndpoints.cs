@@ -32,6 +32,8 @@ public static class ClientPresenceReadEndpoints
             [FromQuery] bool? online,
             [FromQuery] int? limit,
             [FromServices] IClientPresenceReadModel readModel,
+            [FromServices] IClientPresenceRouter presence,
+            [FromServices] TimeProvider timeProvider,
             [FromServices] IAgentTerminalSessionRegistry terminals,
             [FromServices] IAgentFileGatewaySessionRegistry files,
             [FromServices] OrchestratorDbContext db,
@@ -107,7 +109,12 @@ public static class ClientPresenceReadEndpoints
                             row.IsEnabled,
                             row.DeviceInfoJson,
                             row.TenantName);
-                        var item = Map(agent, snapshots, terminals, files, projection.Revision);
+                        // The physical projection supplies optional latency only. Shared committed
+                        // ownership supplies the current status and exact transport fence.
+                        var current = await presence.GetSnapshotAsync(
+                            new ClientKey(agent.TenantId, agent.AgentId), ct).ConfigureAwait(false);
+                        var item = Map(agent, current, snapshots, terminals, files, projection.Revision,
+                            timeProvider.GetUtcNow());
                         if ((!online.HasValue || item.Online == online.Value) && Matches(item, search))
                         {
                             matches.Add(item);
@@ -160,22 +167,26 @@ public static class ClientPresenceReadEndpoints
 
     private static ClientPresenceDto Map(
         AgentDirectoryPresentation agent,
+        ClientPresenceSnapshot current,
         IReadOnlyDictionary<ClientKey, ClientPresenceSnapshot> snapshots,
         IAgentTerminalSessionRegistry terminals,
         IAgentFileGatewaySessionRegistry files,
-        long revision)
+        long revision,
+        DateTimeOffset now)
     {
         var key = new ClientKey(agent.TenantId, agent.AgentId);
-        snapshots.TryGetValue(key, out var snapshot);
-        var supported = snapshot?.Capabilities.Contains("terminal-gateway", StringComparer.OrdinalIgnoreCase) == true;
-        var availability = terminals?.GetAvailability(key);
-        var terminal = new GatewayTerminalCapabilityDto(
-            supported,
-            availability?.AvailableShells ?? Array.Empty<string>(),
-            availability is not null,
-            supported ? availability is null ? "terminal_transport_not_admitted" : null : "terminal_not_supported",
-            availability?.RegisteredAtUtc);
-        var file = MapFile(snapshot, files?.GetAvailability(key));
+        // Internal PostgreSQL provenance stays unchanged. Only that verified shared
+        // read maps to the existing public Akka authority contract.
+        var snapshot = current.Client == key && current.IsAuthoritative &&
+            current.Source == "postgres-committed-presence" ? current : null;
+        snapshots.TryGetValue(key, out var physical);
+        var latencyMatches = snapshot is { Status: ClientPresenceStatus.Online, ConnectionId: not null, ConnectionEpoch: > 0 } &&
+            physical is { Status: ClientPresenceStatus.Online } && physical.Client == key &&
+            physical.ConnectionId == snapshot.ConnectionId && physical.ConnectionEpoch == snapshot.ConnectionEpoch &&
+            physical.LatencyMeasuredAtUtc is { } measuredAt && measuredAt <= snapshot.LastReceivedAtUtc &&
+            physical.LatencyExpiresAtUtc > now;
+        var terminal = MapTerminal(snapshot, terminals.GetAvailability(key));
+        var file = MapFile(snapshot, files.GetAvailability(key));
 
         return new ClientPresenceDto(
             PresenceId: $"gateway:{agent.TenantId}:{agent.AgentId:N}",
@@ -191,18 +202,47 @@ public static class ClientPresenceReadEndpoints
             AgentVersion: snapshot?.AgentVersion,
             Capabilities: snapshot?.Capabilities ?? Array.Empty<string>(),
             Source: "gateway",
-            Authority: snapshot?.Source ?? "unobserved",
+            Authority: snapshot is not null ? "akka" : "unobserved",
             IsAuthoritative: snapshot?.IsAuthoritative ?? false,
             Revision: revision,
             Terminal: terminal,
             TenantName: agent.TenantName,
             File: file,
-            LatencyMilliseconds: snapshot?.LatencyMilliseconds,
-            LatencyMeasuredAtUtc: snapshot?.LatencyMeasuredAtUtc,
-            LatencyExpiresAtUtc: snapshot?.LatencyExpiresAtUtc);
+            LatencyMilliseconds: latencyMatches ? physical!.LatencyMilliseconds : null,
+            LatencyMeasuredAtUtc: latencyMatches ? physical!.LatencyMeasuredAtUtc : null,
+            LatencyExpiresAtUtc: latencyMatches ? physical!.LatencyExpiresAtUtc : null);
     }
 
-    private static GatewayFileCapabilityDto MapFile(
+    internal static GatewayTerminalCapabilityDto MapTerminal(
+        ClientPresenceSnapshot? presence,
+        GatewayTerminalAvailability? availability)
+    {
+        var supported = presence?.Capabilities.Contains("terminal-gateway", StringComparer.OrdinalIgnoreCase) == true;
+        var ready = supported && availability is not null &&
+            MatchesAuthoritativePresence(presence, availability.ConnectionId, availability.ConnectionEpoch);
+        var reason = presence?.Status != ClientPresenceStatus.Online
+            ? "terminal_presence_offline"
+            : presence?.IsAuthoritative != true
+                ? "terminal_presence_not_authoritative"
+                : !supported
+                    ? "terminal_not_supported"
+                    : availability is null
+                        ? "terminal_transport_not_admitted"
+                        : !ready ? "terminal_transport_fenced" : null;
+        return new GatewayTerminalCapabilityDto(
+            supported,
+            availability?.AvailableShells ?? Array.Empty<string>(),
+            ready,
+            reason,
+            availability?.RegisteredAtUtc);
+    }
+
+    private static bool MatchesAuthoritativePresence(ClientPresenceSnapshot? presence, Guid connectionId, ulong epoch) =>
+        connectionId != Guid.Empty && epoch != 0 &&
+        presence is { Status: ClientPresenceStatus.Online, IsAuthoritative: true, ConnectionEpoch: > 0 } &&
+        presence.ConnectionId == connectionId && (ulong)presence.ConnectionEpoch.Value == epoch;
+
+    internal static GatewayFileCapabilityDto MapFile(
         ClientPresenceSnapshot? presence,
         GatewayFileGatewayAvailability? availability)
     {
@@ -211,17 +251,18 @@ public static class ClientPresenceReadEndpoints
         var advertised = presence?.Capabilities.Contains("file-gateway", StringComparer.OrdinalIgnoreCase) == true;
         var sessionActive = availability is not null;
         var fenceMatchesPresence = availability is not null &&
-            presence is { Status: ClientPresenceStatus.Online, ConnectionId: var connectionId, ConnectionEpoch: var epoch } &&
-            connectionId == availability.ConnectionId && epoch == checked((long)availability.ConnectionEpoch);
+            MatchesAuthoritativePresence(presence, availability.ConnectionId, availability.ConnectionEpoch);
         var readinessReason = presence?.Status != ClientPresenceStatus.Online
             ? "file_gateway_presence_offline"
-            : !advertised
-                ? "file_gateway_not_advertised"
-                : !sessionActive
-                    ? "file_gateway_not_admitted"
-                    : !fenceMatchesPresence
-                        ? "file_gateway_fenced"
-                        : null;
+            : presence?.IsAuthoritative != true
+                ? "file_gateway_presence_not_authoritative"
+                : !advertised
+                    ? "file_gateway_not_advertised"
+                    : !sessionActive
+                        ? "file_gateway_not_admitted"
+                        : !fenceMatchesPresence
+                            ? "file_gateway_fenced"
+                            : null;
 
         return new GatewayFileCapabilityDto(
             Configured: advertised,
