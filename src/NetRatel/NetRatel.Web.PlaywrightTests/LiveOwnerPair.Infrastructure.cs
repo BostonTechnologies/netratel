@@ -45,6 +45,7 @@ internal sealed partial class LiveOwnerPair : IAsyncDisposable
     private int approvalHopCount, callbackHopCount, protectedHopFailures;
     private int? lastHttpStatus;
     private string? readinessProduct, readinessRoute;
+    private string? setupStep;
     private int? readinessHttpStatus;
     private ServiceLinkAdminStatus? finalNrStatus, finalRdStatus;
     private ServiceLinkMetadata? nrMetadata, rdMetadata;
@@ -238,9 +239,10 @@ internal sealed partial class LiveOwnerPair : IAsyncDisposable
             volumes = new[] { volume + ":/var/lib/postgresql/data" },
             healthcheck = new { test = new[] { "CMD-SHELL", $"pg_isready -U {database} -d {database}" }, interval = "2s", timeout = "2s", retries = 45 }
         };
-        object App(string image, Dictionary<string, string> environment, string url, int port, string[] volumes) => new
+        object App(string image, Dictionary<string, string> environment, string url, int port, string[] volumes, bool restartAfterSetup = false) => new
         {
-            image, pull_policy = "never", environment, ports = new[] { $"{host}:{new Uri(url).Port}:{port}" }, volumes
+            image, pull_policy = "never", environment, restart = restartAfterSetup ? "unless-stopped" : "no",
+            ports = new[] { $"{host}:{new Uri(url).Port}:{port}" }, volumes
         };
         var compose = new
         {
@@ -252,7 +254,7 @@ internal sealed partial class LiveOwnerPair : IAsyncDisposable
                     command = new[] { "sh", "-ceu", "chown -R 1654:1654 /var/netratel; chmod 700 /var/netratel/keys; chown 1654:1654 /agent-signing.pem; chmod 600 /agent-signing.pem" },
                     volumes = new[] { "nr-data:/var/netratel", "nr-keys:/var/netratel/keys", agentKey + ":/agent-signing.pem" } },
                 ["nr-migrations"] = new { image = pins.NetRatel.MigrationsId, pull_policy = "never", environment = new Dictionary<string, string> { ["ConnectionStrings__NetRatelDb"] = nrConnection, ["NO_PROXY"] = bypass, ["no_proxy"] = bypass } },
-                ["nr-api"] = App(pins.NetRatel.ApiId, nrApi, NetRatelApi, 9222, ["nr-data:/var/netratel", "nr-keys:/var/netratel/keys", agentKey + ":/run/netratel-secrets/agent-signing.pem:ro"]),
+                ["nr-api"] = App(pins.NetRatel.ApiId, nrApi, NetRatelApi, 9222, ["nr-data:/var/netratel", "nr-keys:/var/netratel/keys", agentKey + ":/run/netratel-secrets/agent-signing.pem:ro"], restartAfterSetup: true),
                 ["nr-web"] = App(pins.NetRatel.WebId, nrWeb, NetRatelWeb, 9111, ["nr-keys:/var/netratel/keys"]),
                 ["rd-api"] = App(pins.RatelDesk.Api, rdApi, RatelDeskApi, 8222, ["rd-keys:/var/lib/rateldesk/keys", "rd-bootstrap:/var/lib/rateldesk/bootstrap", "rd-data:/var/lib/rateldesk/data", "rd-storage:/app/storage"]),
                 ["rd-web"] = App(pins.RatelDesk.Web, rdWeb, RatelDeskWeb, 8111, ["rd-keys:/var/lib/rateldesk/keys"])

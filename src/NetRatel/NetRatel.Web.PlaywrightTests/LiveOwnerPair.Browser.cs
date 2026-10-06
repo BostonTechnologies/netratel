@@ -37,22 +37,33 @@ internal sealed partial class LiveOwnerPair
     public async Task CompleteSetupAndSignInAsync(IPage page)
     {
         browserApi = page.Context.APIRequest;
+        setupStep = "netratel-open-setup";
         await page.GotoAsync(NetRatelWeb + "/", new() { WaitUntil = WaitUntilState.DOMContentLoaded });
+        setupStep = "netratel-setup-client-ready";
         await page.GetByTestId("setup-client-ready").WaitForAsync(new() { State = WaitForSelectorState.Attached });
+        setupStep = "netratel-read-setup-proof";
         var setupProof = (await ComposeAsync(["exec", "-T", "nr-api", "cat", "/var/netratel/bootstrap/setup-proof"])).Trim();
         Check(!string.IsNullOrWhiteSpace(setupProof), "The actual disposable setup proof is absent.");
+        setupStep = "netratel-enter-setup-proof";
         await page.GetByTestId("setup-proof").FillAsync(setupProof);
         await page.GetByTestId("setup-proof").PressAsync("Tab");
+        setupStep = "netratel-submit-setup-claim";
         await page.GetByTestId("setup-claim").ClickAsync();
+        setupStep = "netratel-wait-owner-form";
         await page.GetByTestId("setup-tenant").WaitForAsync();
+        setupStep = "netratel-fill-owner-form";
         await page.GetByTestId("setup-tenant").FillAsync("Disposable bootstrap tenant");
         await page.GetByTestId("setup-display-name").FillAsync("Disposable owner");
         await page.GetByTestId("setup-email").FillAsync(humanEmail);
         await page.GetByTestId("setup-password").FillAsync(humanPassword);
         await page.GetByTestId("setup-confirm-password").FillAsync(humanPassword);
+        setupStep = "netratel-initialize";
         await page.GetByTestId("setup-initialize").ClickAsync();
+        setupStep = "netratel-wait-operational-login";
         await page.GetByTestId("local-login-email").WaitForAsync(new() { Timeout = 120_000 });
+        setupStep = "netratel-human-sign-in";
         await SignInAsync(page, netRatel: true);
+        setupStep = "rateldesk-human-sign-in";
         await SignInAsync(page, netRatel: false);
     }
 
@@ -60,27 +71,33 @@ internal sealed partial class LiveOwnerPair
     {
         var web = netRatel ? NetRatelWeb : RatelDeskWeb;
         // Ordinary clean Local form; no copied approval proof or invented ReturnUrl.
+        setupStep = netRatel ? "netratel-open-login" : "rateldesk-open-login";
         await page.GotoAsync(web + "/login");
         if (netRatel)
         {
+            setupStep = "netratel-login-client-ready";
             await page.GetByTestId("local-login-client-ready").WaitForAsync(new() { State = WaitForSelectorState.Attached });
             await page.GetByTestId("local-login-email").FillAsync(humanEmail);
             await page.GetByTestId("local-login-password").FillAsync(humanPassword);
             await page.GetByTestId("local-login-password").PressAsync("Tab");
             var navigation = page.WaitForURLAsync(new Regex("^" + Regex.Escape(web) + @"/$"), new() { Timeout = 60_000 });
+            setupStep = "netratel-submit-login";
             await page.GetByTestId("local-login-submit").ClickAsync();
             await navigation;
         }
         else
         {
             var form = page.GetByTestId("local-login-form");
+            setupStep = "rateldesk-login-interactive";
             await Expect(form).ToHaveAttributeAsync("data-interactive", "true");
             await form.GetByLabel("Email", new() { Exact = true }).FillAsync(humanEmail);
             await form.GetByLabel("Password", new() { Exact = true }).FillAsync(humanPassword);
             var navigation = page.WaitForURLAsync(new Regex("^" + Regex.Escape(web) + @"/home$"), new() { Timeout = 60_000 });
+            setupStep = "rateldesk-submit-login";
             await form.Locator("button[type=submit]").ClickAsync();
             await navigation;
         }
+        setupStep = netRatel ? "netratel-verify-browser-storage" : "rateldesk-verify-browser-storage";
         await RequireNoBrowserProofStorageAsync(page);
     }
 

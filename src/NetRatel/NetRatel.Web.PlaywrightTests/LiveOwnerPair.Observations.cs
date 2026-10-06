@@ -236,7 +236,8 @@ internal sealed partial class LiveOwnerPair
         }
         var receipt = new
         {
-            outcome, phase, scenario, netRatelInitiates = nrInitiates, contract = ServiceLinkContract.Version,
+            outcome, phase, setupStep = phase == "actual-setup-and-human-sign-in" ? setupStep : null,
+            scenario, netRatelInitiates = nrInitiates, contract = ServiceLinkContract.Version,
             actualRuntime = "production NetRatel source-image Web/API/migrations/Pg + independently pinned published RatelDesk Web/API/Pg",
             proofScope = "actual foundation owner browser provisioning, exact two consents, original-session Continue, truthful partial/recovery and read-only connection test; no Flow delivery or recorded callback execution claim",
             transport = "disposable private HTTP with explicit fixture-only opt-in; separate canonical Web/API addresses",

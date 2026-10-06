@@ -39,7 +39,8 @@ public sealed class ServiceLinkRotationHttpPostgresTests
         await using var pair = await ServiceLinkPair.CreateAsync(netRatelInitiates: netRatelIssuer,
             rotationPolicy: new(netRatelIssuer, automatic));
         await pair.ActivateAsync(ct);
-        await pair.NetRatel.WaitForInitialSensitiveWindowAsync(ct);
+        await Task.WhenAll(pair.NetRatel.WaitForInitialSensitiveWindowAsync(ct),
+            pair.RatelDesk.WaitForPostActivationSensitiveWindowAsync(ct));
         var baseline = await ReadPostActivationBaselineAsync(pair, ct);
         var issuer = netRatelIssuer ? pair.NetRatel.Administrator : pair.RatelDesk.Administrator;
         var issuerProxy = netRatelIssuer ? pair.NetRatel.Proxy : pair.RatelDesk.Proxy;

@@ -262,6 +262,40 @@ internal sealed class ServiceLinkPublishedRatelDeskPeer : IAsyncDisposable
             throw new InvalidOperationException($"The published peer administrator login failed with HTTP {(int)login.StatusCode}.");
     }
 
+    public async Task WaitForPostActivationSensitiveWindowAsync(CancellationToken ct = default)
+    {
+        // This is called only after both real peers reported active. Their setup
+        // traffic shares each issuer's unchanged 20-per-minute IP partition.
+        // A full real window from that observation covers RatelDesk's later
+        // setup window without depending on NetRatel's earlier identity read,
+        // the remote limiter's first-request timestamp or idle-bucket eviction.
+        // Keep this wait concurrent with the existing NetRatel setup wait and
+        // within the original case cancellation budget; no token is retried.
+        await Task.Delay(TimeSpan.FromMinutes(1), ct);
+        await Task.Delay(TimeSpan.FromMilliseconds(100), ct);
+
+        // The existing protected list is read-only: it neither progresses nor
+        // expires an attempt. Observe actual admission after normal refill.
+        using var readiness = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        readiness.CancelAfter(TimeSpan.FromSeconds(1));
+        try
+        {
+            for (var admission = 0; admission < 10; admission++)
+            {
+                using var response = await Administrator.GetAsync("/api/v1/admin/service-links/", readiness.Token);
+                if (response.StatusCode == HttpStatusCode.OK) return;
+                if (response.StatusCode != HttpStatusCode.TooManyRequests)
+                    throw new InvalidOperationException($"The post-activation RatelDesk sensitive list admission returned HTTP {(int)response.StatusCode}.");
+                if (admission < 9) await Task.Delay(TimeSpan.FromMilliseconds(100), readiness.Token);
+            }
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested && readiness.IsCancellationRequested)
+        {
+            throw new InvalidOperationException("The post-activation RatelDesk sensitive list admission did not return HTTP 200 within one second after the real window.");
+        }
+        throw new InvalidOperationException("The post-activation RatelDesk sensitive list admission remained HTTP 429 after the real window.");
+    }
+
     public async Task RestartAsync()
     {
         await ComposeAsync(["restart", "api", "web"]);
