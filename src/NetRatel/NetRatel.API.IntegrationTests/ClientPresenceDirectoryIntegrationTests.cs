@@ -31,7 +31,9 @@ public sealed class ClientPresenceDirectoryIntegrationTests
         int tenantId;
         await using var scope = _factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
-        tenantId = await db.Tenants.Select(tenant => tenant.Id).SingleAsync();
+        tenantId = await db.Tenants
+            .Where(tenant => tenant.Name == "OpenAPI tenant")
+            .Select(tenant => tenant.Id).SingleAsync();
         db.Agents.Add(new Agent
         {
             Id = agentId, TenantId = tenantId, Name = $"Capability readiness {agentId:N}",
@@ -99,7 +101,9 @@ public sealed class ClientPresenceDirectoryIntegrationTests
         await using (var scope = _factory.Services.CreateAsyncScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
-            tenantId = await db.Tenants.Select(tenant => tenant.Id).SingleAsync();
+            tenantId = await db.Tenants
+                .Where(tenant => tenant.Name == "OpenAPI tenant")
+                .Select(tenant => tenant.Id).SingleAsync();
             foreach (var agent in onlineAgents)
             {
                 agent.TenantId = tenantId;
@@ -225,7 +229,9 @@ public sealed class ClientPresenceDirectoryIntegrationTests
         await using (var scope = _factory.Services.CreateAsyncScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
-            tenantId = await db.Tenants.Select(tenant => tenant.Id).SingleAsync(ct);
+            tenantId = await db.Tenants
+                .Where(tenant => tenant.Name == "OpenAPI tenant")
+                .Select(tenant => tenant.Id).SingleAsync(ct);
             db.Agents.Add(new Agent
             {
                 Id = agentId, TenantId = tenantId, Name = $"Committed directory {agentId:N}",
