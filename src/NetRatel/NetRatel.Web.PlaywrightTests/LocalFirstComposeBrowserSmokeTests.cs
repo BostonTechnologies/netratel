@@ -628,6 +628,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
     private static async Task VerifyPublishedClientInstallAsync(IBrowser browser, IPage page, Uri webUrl)
     {
         var version = RequireValue("NETRATEL_LOCAL_FIRST_PUBLISHED_RELEASE_VERSION");
+        var escapedVersion = System.Text.RegularExpressions.Regex.Escape(version);
         var certificate = RequireValue("NETRATEL_LOCAL_FIRST_CA_CERT");
         Assert.True(File.Exists(certificate));
         await page.GotoAsync(new Uri(webUrl, "clients/mgmt").ToString(),
@@ -637,18 +638,33 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             State = WaitForSelectorState.Attached
         });
         var release = page.GetByTestId("github-release-table").GetByRole(AriaRole.Row)
-            .Filter(new() { HasText = version });
+            .Filter(new()
+            {
+                Has = page.Locator("td[data-label='Release'] .mud-typography-caption").Filter(new()
+                {
+                    HasTextRegex = new System.Text.RegularExpressions.Regex("^" + escapedVersion + @"\s+·\s+")
+                })
+            });
         await release.WaitForAsync(new LocatorWaitForOptions { Timeout = 60_000 });
         Assert.Contains("linux-x64", await release.InnerTextAsync());
         await release.GetByRole(AriaRole.Button, new() { Name = "Import pack", Exact = true }).ClickAsync();
-        await page.WaitForFunctionAsync("""
-            version => Array.from(document.querySelectorAll('[data-testid="github-release-table"] tr'))
-                .some(item => item.textContent?.includes(version) && /Local:\s+(Imported|Published)/.test(item.textContent ?? ''))
-            """, version, new PageWaitForFunctionOptions { Timeout = 300_000 });
+        await release.Filter(new()
+        {
+            Has = page.Locator("td[data-label='State']").Filter(new()
+            {
+                HasTextRegex = new System.Text.RegularExpressions.Regex(@"Local:\s+(Imported|Published)")
+            })
+        }).WaitForAsync(new LocatorWaitForOptions { Timeout = 300_000 });
 
         await page.GetByRole(AriaRole.Tab, new() { Name = "Packages" }).ClickAsync();
         var artifact = page.GetByTestId("artifact-table").GetByRole(AriaRole.Row)
-            .Filter(new() { HasText = version }).Filter(new() { HasText = "linux-x64" });
+            .Filter(new()
+            {
+                Has = page.Locator("td[data-label='Version']").Filter(new()
+                {
+                    HasTextRegex = new System.Text.RegularExpressions.Regex(@"^\s*" + escapedVersion + @"\s*$")
+                })
+            }).Filter(new() { HasText = "linux-x64" });
         await artifact.WaitForAsync(new LocatorWaitForOptions { Timeout = 30_000 });
         await artifact.GetByRole(AriaRole.Button).Last.ClickAsync();
         await page.GetByRole(AriaRole.Menuitem, new() { Name = "Generate script" }).ClickAsync();

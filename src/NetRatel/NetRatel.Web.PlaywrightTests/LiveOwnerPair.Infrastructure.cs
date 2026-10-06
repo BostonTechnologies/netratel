@@ -219,7 +219,10 @@ internal sealed partial class LiveOwnerPair : IAsyncDisposable
         };
         object Database(string image, string database, string password, string volume) => new
         {
-            image, pull_policy = "never", environment = new { POSTGRES_DB = database, POSTGRES_USER = database, POSTGRES_PASSWORD = password },
+            image, pull_policy = "never", environment = new Dictionary<string, string>
+            {
+                ["POSTGRES_DB"] = database, ["POSTGRES_USER"] = database, ["POSTGRES_PASSWORD"] = password
+            },
             volumes = new[] { volume + ":/var/lib/postgresql/data" },
             healthcheck = new { test = new[] { "CMD-SHELL", $"pg_isready -U {database} -d {database}" }, interval = "2s", timeout = "2s", retries = 45 }
         };
