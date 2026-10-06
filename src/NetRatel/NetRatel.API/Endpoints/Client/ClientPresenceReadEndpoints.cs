@@ -32,6 +32,8 @@ public static class ClientPresenceReadEndpoints
             [FromQuery] bool? online,
             [FromQuery] int? limit,
             [FromServices] IClientPresenceReadModel readModel,
+            [FromServices] IClientPresenceRouter presence,
+            [FromServices] TimeProvider timeProvider,
             [FromServices] IAgentTerminalSessionRegistry terminals,
             [FromServices] IAgentFileGatewaySessionRegistry files,
             [FromServices] OrchestratorDbContext db,
@@ -107,7 +109,12 @@ public static class ClientPresenceReadEndpoints
                             row.IsEnabled,
                             row.DeviceInfoJson,
                             row.TenantName);
-                        var item = Map(agent, snapshots, terminals, files, projection.Revision);
+                        // The physical projection supplies optional latency only. Shared committed
+                        // ownership supplies the current status and exact transport fence.
+                        var current = await presence.GetSnapshotAsync(
+                            new ClientKey(agent.TenantId, agent.AgentId), ct).ConfigureAwait(false);
+                        var item = Map(agent, current, snapshots, terminals, files, projection.Revision,
+                            timeProvider.GetUtcNow());
                         if ((!online.HasValue || item.Online == online.Value) && Matches(item, search))
                         {
                             matches.Add(item);
@@ -160,13 +167,24 @@ public static class ClientPresenceReadEndpoints
 
     private static ClientPresenceDto Map(
         AgentDirectoryPresentation agent,
+        ClientPresenceSnapshot current,
         IReadOnlyDictionary<ClientKey, ClientPresenceSnapshot> snapshots,
         IAgentTerminalSessionRegistry terminals,
         IAgentFileGatewaySessionRegistry files,
-        long revision)
+        long revision,
+        DateTimeOffset now)
     {
         var key = new ClientKey(agent.TenantId, agent.AgentId);
-        snapshots.TryGetValue(key, out var snapshot);
+        // Internal PostgreSQL provenance stays unchanged. Only that verified shared
+        // read maps to the existing public Akka authority contract.
+        var snapshot = current.Client == key && current.IsAuthoritative &&
+            current.Source == "postgres-committed-presence" ? current : null;
+        snapshots.TryGetValue(key, out var physical);
+        var latencyMatches = snapshot is { Status: ClientPresenceStatus.Online, ConnectionId: not null, ConnectionEpoch: > 0 } &&
+            physical is { Status: ClientPresenceStatus.Online } && physical.Client == key &&
+            physical.ConnectionId == snapshot.ConnectionId && physical.ConnectionEpoch == snapshot.ConnectionEpoch &&
+            physical.LatencyMeasuredAtUtc is { } measuredAt && measuredAt <= snapshot.LastReceivedAtUtc &&
+            physical.LatencyExpiresAtUtc > now;
         var terminal = MapTerminal(snapshot, terminals.GetAvailability(key));
         var file = MapFile(snapshot, files.GetAvailability(key));
 
@@ -184,15 +202,15 @@ public static class ClientPresenceReadEndpoints
             AgentVersion: snapshot?.AgentVersion,
             Capabilities: snapshot?.Capabilities ?? Array.Empty<string>(),
             Source: "gateway",
-            Authority: snapshot?.Source ?? "unobserved",
+            Authority: snapshot is not null ? "akka" : "unobserved",
             IsAuthoritative: snapshot?.IsAuthoritative ?? false,
             Revision: revision,
             Terminal: terminal,
             TenantName: agent.TenantName,
             File: file,
-            LatencyMilliseconds: snapshot?.LatencyMilliseconds,
-            LatencyMeasuredAtUtc: snapshot?.LatencyMeasuredAtUtc,
-            LatencyExpiresAtUtc: snapshot?.LatencyExpiresAtUtc);
+            LatencyMilliseconds: latencyMatches ? physical!.LatencyMilliseconds : null,
+            LatencyMeasuredAtUtc: latencyMatches ? physical!.LatencyMeasuredAtUtc : null,
+            LatencyExpiresAtUtc: latencyMatches ? physical!.LatencyExpiresAtUtc : null);
     }
 
     internal static GatewayTerminalCapabilityDto MapTerminal(
