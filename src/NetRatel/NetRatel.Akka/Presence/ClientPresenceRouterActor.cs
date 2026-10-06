@@ -15,18 +15,21 @@ public sealed class ClientPresenceRouterActor : ReceiveActor
 {
     private readonly NetRatelAkkaOptions _options;
     private readonly IActorRef _presenceReadModel;
-    private readonly IClientConnectionEpochStore? _epochStore;
+    private readonly TimeProvider _timeProvider;
+    private readonly IClientConnectionEpochStore? _ownership;
     private readonly ClientPresenceMessageExtractor _extractor = new();
     private readonly DateTimeOffset _startedAtUtc = DateTimeOffset.UtcNow;
 
     public ClientPresenceRouterActor(
         NetRatelAkkaOptions options,
         IActorRef presenceReadModel,
-        IClientConnectionEpochStore? epochStore = null)
+        TimeProvider? timeProvider = null,
+        IClientConnectionEpochStore? ownership = null)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _presenceReadModel = presenceReadModel ?? throw new ArgumentNullException(nameof(presenceReadModel));
-        _epochStore = epochStore;
+        _timeProvider = timeProvider ?? TimeProvider.System;
+        _ownership = ownership;
 
         Receive<IClientPresenceMessage>(message => GetClientActor(message).Forward(message));
         Receive<ProbeClientPresenceRoute>(_ =>
@@ -43,8 +46,9 @@ public sealed class ClientPresenceRouterActor : ReceiveActor
     public static Props Props(
         NetRatelAkkaOptions options,
         IActorRef presenceReadModel,
-        IClientConnectionEpochStore? epochStore = null) =>
-        global::Akka.Actor.Props.Create(() => new ClientPresenceRouterActor(options, presenceReadModel, epochStore));
+        TimeProvider? timeProvider = null,
+        IClientConnectionEpochStore? ownership = null) =>
+        global::Akka.Actor.Props.Create(() => new ClientPresenceRouterActor(options, presenceReadModel, timeProvider: timeProvider, ownership: ownership));
 
     private IActorRef GetClientActor(IClientPresenceMessage message)
     {
@@ -57,7 +61,7 @@ public sealed class ClientPresenceRouterActor : ReceiveActor
         }
 
         using var activity = NetRatelAkkaTelemetry.StartActivity("akka.actor.create", "presence");
-        var actor = Context.ActorOf(ClientActor.Props(message.Client, _options, _presenceReadModel, _epochStore), actorName);
+        var actor = Context.ActorOf(ClientActor.Props(message.Client, _options, _presenceReadModel, timeProvider: _timeProvider, ownership: _ownership), actorName);
         NetRatelAkkaTelemetry.SetPresenceActiveClients(Context.GetChildren().Count());
         return actor;
     }

@@ -476,7 +476,7 @@ def reject(message):
     raise HandoffRejected(message)
 
 def safe_path(path):
-    if not path or not os.path.isabs(path) or any(c in path for c in "\r\n\t"):
+    if not path or not os.path.isabs(path) or any(c in path for c in "\r\n\t\x00%"):
         reject("A managed handoff path must be absolute and contain no control characters.")
     return os.path.normpath(path)
 
@@ -615,10 +615,17 @@ def dispatch(installer, helper):
     paths = snapshot()
     unit_paths = list(paths)
     properties, environment = configuration(paths)
-    working = shlex.split(properties.get("WorkingDirectory", ""))
-    if len(working) != 1 or not working[0].endswith("/current"):
+    working = properties.get("WorkingDirectory", "")
+    # WorkingDirectory is a literal scalar path. Read historical quoted units
+    # only to repair them; ExecStart and Environment retain their list grammar.
+    if working.startswith('"') and working.endswith('"'):
+        legacy = shlex.split(working)
+        working = legacy[0] if len(legacy) == 1 else ""
+    if not working.endswith("/current"):
         reject("The installed service WorkingDirectory must target the owned current version.")
-    root = safe_path(working[0][:-len("/current")])
+    root = safe_path(working[:-len("/current")])
+    if "\\" in root:
+        reject("Systemd executable roots cannot contain a backslash; reconcile the installed service root.")
     command = shlex.split(properties.get("ExecStart", ""))
     if command not in ([root + "/netratel-client-start.sh"], [root + "/current/NetRatel.Client", "--service"]):
         reject("The installed service ExecStart is unsupported for seeded repair.")

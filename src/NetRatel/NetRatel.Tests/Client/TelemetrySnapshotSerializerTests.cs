@@ -21,7 +21,9 @@ public sealed class TelemetrySnapshotSerializerTests
         for (var index = 0; index < 64; index++)
         {
             snapshot.Disks.Add(new TelemetryDisk { Scope = "/" + new string('é', 120) + index, TotalGb = 100, UsedGb = 99, FreeGb = 1,
-                UsagePercent = 99, TotalBytes = ulong.MaxValue, FreeBytes = 1 });
+                UsagePercent = 99, TotalBytes = ulong.MaxValue, FreeBytes = 1,
+                CollectionId = Guid.NewGuid().ToString("D"), CollectedAtUtc = snapshot.ObservedAtUtc.Clone(),
+                CollectionQuality = TelemetryDiskCollectionQuality.Complete });
             snapshot.Networks.Add(new TelemetryNetwork { Scope = new string('é', 120) + index, RxBytesPerSec = 1024, TxBytesPerSec = 2048 });
         }
         var envelope = TelemetrySnapshotSerializer.CreateEnvelope(snapshot, session, "2.0");
@@ -30,7 +32,14 @@ public sealed class TelemetrySnapshotSerializerTests
         Assert.Equal(snapshot.Cpu, envelope.Snapshot.Cpu);
         Assert.Equal(snapshot.Memory, envelope.Snapshot.Memory);
         Assert.NotEmpty(envelope.Snapshot.Disks);
-        Assert.All(envelope.Snapshot.Disks, disk => { Assert.True(disk.HasTotalBytes); Assert.True(disk.HasFreeBytes); });
+        Assert.All(envelope.Snapshot.Disks, disk =>
+        {
+            Assert.True(disk.HasTotalBytes); Assert.True(disk.HasFreeBytes);
+            var cached = snapshot.Disks.Single(original => original.Scope == disk.Scope);
+            Assert.Equal(cached.CollectionId, disk.CollectionId);
+            Assert.Equal(cached.CollectedAtUtc, disk.CollectedAtUtc);
+            Assert.Equal(cached.CollectionQuality, disk.CollectionQuality);
+        });
         Assert.Equal(64, snapshot.Disks.Count);
         Assert.Equal(64, snapshot.Networks.Count);
     }

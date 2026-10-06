@@ -36,8 +36,7 @@ public static class JobRunEndpoints
             if (!await CanManageAsync(http, access, run.TenantId, ct)) return Results.Forbid();
             if (Terminal(run.Status)) return Results.Conflict(new { message = $"Run {id} is already terminal ({run.Status})." });
             if (!await authority.CancelAsync(id, "operator-cancelled", ct)) return Results.Conflict(new { code = "job_authority_unavailable" });
-            await ReconcileCancellationAsync(run, runs, ct);
-            return Results.Accepted($"/api/v1/jobruns/{id}", new { runId = id, status = "Cancelled" });
+            return Results.Accepted($"/api/v1/jobruns/{id}", new { runId = id, status = "CancellationRequested" });
         });
         group.MapDelete("/{id:long}", async (ulong id, HttpContext http, [FromServices] IEffectiveAccessService access, IJobRunService runs, CancellationToken ct) =>
         {
@@ -96,8 +95,4 @@ public static class JobRunEndpoints
     private static JobRunDto Map(JobRunInfo run, string jobName, string? tenantName, string? agentName) => new(run.Id, run.JobId, jobName, run.TenantId, run.ClientIdentity, run.StartedBy, (JobRunStatusDto)run.Status, run.CurrentStepOrdinal, Micros(run.CreatedAtUtc)!.Value, Micros(run.StartedAtUtc), Micros(run.CompletedAtUtc), run.Error, run.InputsJson, JobTemplateHelper.BuildOptions(run.OptionsJson, run.InputsJson), tenantName, agentName ?? (run.AgentId is null ? "Legacy target unavailable" : null), NetRatel.Shared.ClientEnvironment.None, run.AgentId);
     private static bool Terminal(JobRunState s) => s is JobRunState.Succeeded or JobRunState.Failed or JobRunState.Cancelled or JobRunState.TimedOut;
     private static long? Micros(DateTimeOffset? value) => value?.ToUnixTimeMilliseconds() * 1000;
-    private static async Task ReconcileCancellationAsync(JobRunInfo run, IJobRunService runs, CancellationToken ct)
-    {
-        await runs.UpsertRunAsync(new UpsertJobRunCommand(run.Id, run.JobId, run.TenantId, run.ClientIdentity, run.StartedBy, JobRunState.Cancelled, run.CurrentStepOrdinal, run.CreatedAtUtc, run.StartedAtUtc, DateTimeOffset.UtcNow, "Cancelled", run.InputsJson, run.OptionsJson, run.AgentId), ct);
-    }
 }

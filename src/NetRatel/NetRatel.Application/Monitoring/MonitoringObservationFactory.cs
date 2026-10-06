@@ -1,4 +1,6 @@
 using NetRatel.Application.Telemetry;
+using System.Security.Cryptography;
+using System.Text.Json;
 using NetRatel.Shared.Contracts.Monitoring;
 using NetRatel.Shared.Contracts.Services;
 
@@ -18,6 +20,8 @@ public static class MonitoringObservationFactory
             series.AgentId == input.Fence.Client.AgentId && series.RuleId == rule.RuleId && rule.TenantId == series.TenantId;
         double? value = null;
         double resolution = 0;
+        var observedAtUtc = snapshot.ObservedAtUtc;
+        MonitoringDiskCollectionStamp? collection = null;
         if (valid && rule.Condition.Kind == MonitoringMetricKind.CpuUsagePercent && series.ResourceKey == "cpu")
         {
             value = snapshot.Cpu?.UsagePercent;
@@ -27,11 +31,20 @@ public static class MonitoringObservationFactory
         else if (valid && rule.Condition.Kind is MonitoringMetricKind.DiskFreeSpace or MonitoringMetricKind.DiskFreePercent)
         {
             var disks = snapshot.Disks.Where(disk => TryDiskKey(disk.Scope) == series.ResourceKey).ToArray();
-            valid = disks.Length == 1 && TryDiskValue(disks[0], rule.Condition.Kind, out value, out resolution);
+            valid = disks.Length == 1;
+            if (valid)
+            {
+                var disk = disks[0];
+                collection = GetDiskCollectionStamp(disk, snapshot);
+                if (collection is not null) observedAtUtc = collection.CollectedAtUtc;
+                valid = collection is not null && disk.CollectionQuality == TelemetryDiskCollectionQuality.Complete &&
+                    disk.TotalBytes is not null && disk.FreeBytes is not null &&
+                    TryDiskValue(disk, rule.Condition.Kind, out value, out resolution);
+            }
         }
         else valid = false;
         return new(series, new(snapshot.ConnectionEpoch, snapshot.Sequence), input.Fence.EvidenceStreamId,
-            snapshot.ObservedAtUtc, snapshot.ReceivedAtUtc, valid, valid, value, resolution);
+            observedAtUtc, snapshot.ReceivedAtUtc, valid, valid, value, resolution, DiskCollection: collection);
     }
 
     public static MonitoringObservationDto FromServices(MonitoringRuleDto rule, MonitoringSeriesKey series, MonitoringServicesInput input)
@@ -62,6 +75,27 @@ public static class MonitoringObservationFactory
             observation?.ObservedAtUtc ?? attempt?.ObservedAtUtc ?? default, attempt?.ReceivedAtUtc ?? default,
             valid, valid, ServiceState: observation?.State, AuthoritativeMissing: valid && observation!.AuthoritativeMissing,
             ServiceWatchPolicyRevision: attempt?.WatchPolicyRevision, CurrentServiceWatchPolicyRevision: services.WatchPolicyRevision);
+    }
+
+    private static MonitoringDiskCollectionStamp? GetDiskCollectionStamp(TelemetryDisk disk, TelemetrySnapshot snapshot)
+    {
+        if (disk.CollectionId is not Guid id || id == Guid.Empty ||
+            disk.CollectedAtUtc is not DateTimeOffset collected || collected == default ||
+            collected > snapshot.ObservedAtUtc || collected > snapshot.ReceivedAtUtc ||
+            (int)disk.CollectionQuality is < 1 or > 4) return null;
+        // Integer IEEE-754 representations preserve every raw counter bit, including invalid values, without culture or NaN serialization.
+        // The fixed shape is bounded by the admitted scope length and never contains credentials.
+        var body = JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            disk.Scope, disk.TotalBytes, disk.FreeBytes,
+            TotalGbBits = BitConverter.DoubleToInt64Bits(disk.TotalGb),
+            UsedGbBits = BitConverter.DoubleToInt64Bits(disk.UsedGb),
+            FreeGbBits = BitConverter.DoubleToInt64Bits(disk.FreeGb),
+            UsagePercentBits = BitConverter.DoubleToInt64Bits(disk.UsagePercent),
+            CollectionId = id.ToString("D"), CollectedAtUtc = collected.ToUniversalTime().ToString("O"),
+            CollectionQuality = (int)disk.CollectionQuality
+        });
+        return new(id, collected, Convert.ToHexString(SHA256.HashData(body)));
     }
 
     private static bool TryDiskValue(TelemetryDisk disk, MonitoringMetricKind kind, out double? value, out double resolution)

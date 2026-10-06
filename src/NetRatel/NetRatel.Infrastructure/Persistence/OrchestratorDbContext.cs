@@ -1,5 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using NetRatel.Application.Operations;
+using NetRatel.Infrastructure.ServiceIdentity;
+using NetRatel.Infrastructure.ServiceLinks;
 
 namespace NetRatel.Infrastructure.Persistence;
 
@@ -62,7 +64,6 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
     public DbSet<JobShadowObservationRecord> JobShadowObservations => Set<JobShadowObservationRecord>();
     public DbSet<ClientWindowsSessionSnapshot> ClientWindowsSessionSnapshots => Set<ClientWindowsSessionSnapshot>();
     public DbSet<ClientServicesSnapshotRecord> ClientServicesSnapshots => Set<ClientServicesSnapshotRecord>();
-    public DbSet<ClientConnectionEpochRecord> ClientConnectionEpochs => Set<ClientConnectionEpochRecord>();
     public DbSet<MonitoringTenantConfigurationRecord> MonitoringTenantConfigurations => Set<MonitoringTenantConfigurationRecord>();
     public DbSet<MonitoringRuleRecord> MonitoringRules => Set<MonitoringRuleRecord>();
     public DbSet<MonitoringGroupRecord> MonitoringGroups => Set<MonitoringGroupRecord>();
@@ -73,6 +74,9 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
     public DbSet<MonitoringEventRecord> MonitoringEvents => Set<MonitoringEventRecord>();
     public DbSet<MonitoringFlowOutboxRecord> MonitoringFlowOutbox => Set<MonitoringFlowOutboxRecord>();
     public DbSet<MonitoringAuditRecord> MonitoringAudits => Set<MonitoringAuditRecord>();
+    public DbSet<ClientConnectionEpochRecord> ClientConnectionEpochs => Set<ClientConnectionEpochRecord>();
+    public DbSet<ClientConnectionOwnerRecord> ClientConnectionOwners => Set<ClientConnectionOwnerRecord>();
+    public DbSet<ClientConnectionAdmissionRecord> ClientConnectionAdmissions => Set<ClientConnectionAdmissionRecord>();
     public DbSet<ClientWindowsSessionInventoryRefresh> ClientWindowsSessionInventoryRefreshes => Set<ClientWindowsSessionInventoryRefresh>();
     public DbSet<RemoteSupportTargetSelectionEvent> RemoteSupportTargetSelectionEvents => Set<RemoteSupportTargetSelectionEvent>();
     public DbSet<RemoteSupportSessionRecord> RemoteSupportSessions => Set<RemoteSupportSessionRecord>();
@@ -112,6 +116,11 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         MonitoringPersistenceModel.Configure(modelBuilder);
+        modelBuilder.ConfigureServiceIdentityModel();
+        modelBuilder.ConfigureServiceLinkModel();
+        modelBuilder.ConfigureManagedOrchestrationModel();
+        modelBuilder.ConfigureJobRunControlModel();
+        modelBuilder.ConfigureClientConnectionOwnershipModel();
         modelBuilder.Entity<ClientConnectionEpochRecord>(entity =>
         {
             entity.ToTable("ClientConnectionEpochs");

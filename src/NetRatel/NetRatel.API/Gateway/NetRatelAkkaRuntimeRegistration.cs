@@ -1,3 +1,5 @@
+using NetRatel.API.Services.Monitoring;
+using NetRatel.Application.Monitoring;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
@@ -7,13 +9,13 @@ using NetRatel.API.Realtime.Operations;
 using NetRatel.API.Services;
 using NetRatel.API.Services.Jobs;
 using NetRatel.API.Services.Terminal;
-using NetRatel.API.Services.Monitoring;
 using NetRatel.Akka.Configuration;
 using NetRatel.Akka.Hosting;
 using NetRatel.Akka.Observability;
 using NetRatel.Application.Commands;
+using NetRatel.Application.Presence;
+using NetRatel.Infrastructure.Persistence;
 using NetRatel.Application.Services;
-using NetRatel.Application.Monitoring;
 
 namespace NetRatel.API.Gateway;
 
@@ -37,6 +39,13 @@ public static class NetRatelAkkaRuntimeRegistration
             serviceProvider.GetRequiredService<IOptions<NetRatelAkkaOptions>>().Value);
 
         services.TryAddSingleton(TimeProvider.System);
+        services.TryAddSingleton(serviceProvider =>
+        {
+            var options = serviceProvider.GetRequiredService<NetRatelAkkaOptions>();
+            return new OwnershipPolicy(TimeSpan.FromSeconds(options.GatewayAdmissionTimeoutSeconds),
+                options.HeartbeatTimeout, options.AskTimeout).Validate();
+        });
+        services.AddNetRatelClientServicesPersistence();
         services.AddNetRatelAkkaActors(
             configuration[$"{NetRatelAkkaOptions.SectionName}:ActorSystemName"] ?? "NetRatel");
         services.AddGrpc();
@@ -60,15 +69,17 @@ public static class NetRatelAkkaRuntimeRegistration
         services.TryAddSingleton<AgentTelemetryGatewaySessionRegistry>();
         services.TryAddSingleton<IAgentTelemetryGatewaySessionRegistry>(serviceProvider =>
             serviceProvider.GetRequiredService<AgentTelemetryGatewaySessionRegistry>());
+        services.TryAddSingleton<IClientServiceWatchPolicySource, EmptyClientServiceWatchPolicySource>();
+        services.TryAddSingleton<ClientServicesCoordinator>();
         services.TryAddSingleton<IMonitoringClientDirectory, MonitoringClientDirectory>();
         services.TryAddSingleton<IMonitoringPublishedFlowProvider, UnavailableMonitoringPublishedFlowProvider>();
         services.TryAddScoped<IMonitoringResourceAuthorizer, MonitoringResourceAuthorizer>();
         services.TryAddScoped<IMonitoringTenantCatalog, MonitoringTenantCatalog>();
         services.TryAddScoped<MonitoringApiService>();
-        services.TryAddSingleton<IClientServiceWatchPolicySource, MonitoringServiceWatchPolicySource>();
+        services.Replace(ServiceDescriptor.Singleton<IClientServiceWatchPolicySource, MonitoringServiceWatchPolicySource>());
         services.TryAddSingleton<MonitoringWatchPolicyReconciler>();
         services.AddSingleton<IHostedService>(provider => provider.GetRequiredService<MonitoringWatchPolicyReconciler>());
-        services.TryAddSingleton<ClientServicesCoordinator>();
+
 
         services.TryAddSingleton<AgentControlSessionRegistry>();
         services.TryAddSingleton<IAgentControlSessionRegistry>(serviceProvider =>

@@ -111,6 +111,7 @@ your deployment (use a free, non-conflicting Docker subnet):
 ```dotenv
 NETRATEL_PUBLIC_HOST=netratel.example.com
 NETRATEL_PUBLIC_ORIGIN=https://netratel.example.com
+NETRATEL_PUBLIC_GATEWAY_ORIGIN=https://netratel.example.com
 NETRATEL_HTTPS_CERTIFICATE=./tls/fullchain.pem
 NETRATEL_HTTPS_PRIVATE_KEY=./tls/privkey.pem
 NETRATEL_INGRESS_SUBNET=172.29.20.0/24
@@ -118,7 +119,9 @@ NETRATEL_INGRESS_PROXY_IP=172.29.20.10
 NETRATEL_ALLOW_INSECURE_LOCALHOST=false
 ```
 
-Replace the example host and subnet. The overlay sends Web the real public
+Set both public origins, including when they share the same host. The gateway
+origin is public HTTPS; ingress forwards its native HTTP/2 requests to private
+h2c `api:9223`. Replace the example host and subnet. The overlay sends Web the real public
 origin, allowed host, and exact trusted proxy address; API receives the exact
 bootstrap origin. It sets secure local cookies and a shared persistent Data
 Protection application identity. The base files already share the key volume,
@@ -133,6 +136,10 @@ docker compose --env-file .env -f compose.images.yaml -f compose.public-https.ya
 Open `NETRATEL_PUBLIC_ORIGIN`. For external PostgreSQL, include
 `-f compose.external-postgres.yaml` before `-f compose.public-https.yaml`.
 Managed deployments can use equivalent settings with their own HTTPS proxy.
+For Traefik, apply the [sustained native gateway profile](CLIENT.md#sustained-traefik-gateway-streams)
+on a dedicated gateway entrypoint and publish its actual HTTPS Gateway URL.
+Its request-body timeout is static configuration shared by every router on a
+listener; an additional hostname or router label does not isolate it.
 Use their API **container console** for `cat /var/netratel/bootstrap/setup-proof`;
 do not run Docker commands inside the container. Mount bootstrap state,
 Data Protection keys, application storage, and the signing key durably with

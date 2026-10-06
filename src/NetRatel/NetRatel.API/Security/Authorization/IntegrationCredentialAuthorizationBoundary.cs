@@ -10,5 +10,7 @@ namespace NetRatel.API.Security.Authorization;
 internal static class IntegrationCredentialAuthorizationBoundary
 {
     public static bool AllowsDefaultAuthenticatedRoute(ClaimsPrincipal principal) =>
-        !principal.HasClaim("auth_mode", "integration_credential");
+        !principal.HasClaim("auth_mode", "integration_credential") &&
+        !principal.HasClaim("auth_mode", "service") &&
+        !principal.HasClaim("token_use", "netratel_service");
 }

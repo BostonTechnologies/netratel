@@ -32,8 +32,9 @@ cli_dir=""
 [[ -s "$bundle" ]] || { echo "Review Compose bundle is missing." >&2; exit 1; }
 tar -xzf "$bundle" -C "$bundle_dir"
 [[ -f "$bundle_dir/compose.images.yaml" ]] || { echo "Review bundle has no image Compose recipe." >&2; exit 1; }
-compose=(docker compose --project-name "$project" -f "$bundle_dir/compose.images.yaml" \
+current_compose=(docker compose --project-name "$project" -f "$bundle_dir/compose.images.yaml" \
   -f "$root/tests/compose/postgresql-local-upgrade-api.compose.yaml")
+compose=("${current_compose[@]}" -f "$root/tests/compose/prior-release-endpoints.compose.yaml")
 
 cleanup() {
   local status=$?
@@ -165,6 +166,7 @@ check_cli_credential
 
 stage="upgrading the retained PostgreSQL/local state with extracted review images"
 "${compose[@]}" down --remove-orphans
+compose=("${current_compose[@]}")
 configure_images "$current_api" "$current_migrations" "$current_web"
 "${compose[@]}" up --detach
 wait_for_migrations

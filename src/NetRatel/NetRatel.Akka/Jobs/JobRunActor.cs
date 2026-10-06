@@ -5,7 +5,8 @@ namespace NetRatel.Akka.Jobs;
 
 /// <summary>
 /// Reconstructs and validates one job run from its append-only observation history.
-/// It never schedules work, dispatches commands, or mutates production job state.
+/// Owned mutations retain this mailbox while their scoped persistence and
+/// transport operations complete; observation replay never dispatches work.
 /// </summary>
 public sealed class JobRunActor : ReceiveActor
 {
@@ -39,6 +40,30 @@ public sealed class JobRunActor : ReceiveActor
 
         _jobRunId = jobRunId;
         _persistenceStore = persistenceStore ?? throw new ArgumentNullException(nameof(persistenceStore));
+
+        ReceiveAsync<ExecuteOwnedJobRun>(async message =>
+        {
+            var replyTo = Sender;
+            var parent = Context.Parent;
+            using var operationCancellation = CancellationTokenSource.CreateLinkedTokenSource(_stopping.Token, message.CancellationToken);
+            try
+            {
+                if (message.JobRunId != _jobRunId) throw new InvalidOperationException("The mutation targets another job run.");
+                operationCancellation.Token.ThrowIfCancellationRequested();
+                var owner = new OwnedRun(this, parent);
+                var result = await message.Operation(owner, operationCancellation.Token).ConfigureAwait(false);
+                owner.PublishDiagnostics();
+                replyTo.Tell(result ?? new OwnedJobRunCompleted());
+            }
+            catch (Exception error)
+            {
+                // A relational rollback must also discard observations applied
+                // in this receive. The next owner reloads committed history.
+                ResetState();
+                _recovered = false;
+                replyTo.Tell(new Status.Failure(error));
+            }
+        });
 
         ReceiveAsync<RoutedJobObservation>(async message =>
         {
@@ -124,8 +149,10 @@ public sealed class JobRunActor : ReceiveActor
             source,
             IsAuthoritative: false);
 
-    private async Task<JobMessageResult> RecordAsync(IJobObservation observation)
+    private async Task<JobMessageResult> RecordAsync(IJobObservation observation, IJobObservationStore? persistence = null, CancellationToken cancellationToken = default)
     {
+        persistence ??= _persistenceStore;
+        if (cancellationToken == default) cancellationToken = _stopping.Token;
         try
         {
             var disposition = GetDisposition(observation);
@@ -134,16 +161,16 @@ public sealed class JobRunActor : ReceiveActor
 
             if (disposition is JobMessageDisposition.Accepted or JobMessageDisposition.Duplicate)
             {
-                var persistence = await _persistenceStore.RecordAsync(observation, _stopping.Token)
+                var written = await persistence.RecordAsync(observation, cancellationToken)
                     .ConfigureAwait(false);
-                correlationStatus = persistence.CommandCorrelationStatus;
-                commandStatus = persistence.CorrelatedCommandStatus;
-                if (persistence.Disposition == JobObservationWriteDisposition.Duplicate &&
+                correlationStatus = written.CommandCorrelationStatus;
+                commandStatus = written.CorrelatedCommandStatus;
+                if (written.Disposition == JobObservationWriteDisposition.Duplicate &&
                     disposition == JobMessageDisposition.Accepted)
                 {
                     ResetState();
                     _recovered = false;
-                    await EnsureRecoveredAsync().ConfigureAwait(false);
+                    await EnsureRecoveredAsync(persistence, cancellationToken).ConfigureAwait(false);
                     disposition = JobMessageDisposition.Duplicate;
                 }
             }
@@ -267,6 +294,7 @@ public sealed class JobRunActor : ReceiveActor
             (JobStepRunState.Pending, JobStepRunState.Pending) => true,
             (JobStepRunState.Pending, JobStepRunState.Running) => true,
             (JobStepRunState.Pending, JobStepRunState.Skipped) => true,
+            (JobStepRunState.Pending, JobStepRunState.Failed) => true,
             (JobStepRunState.Running, JobStepRunState.Running) => true,
             (JobStepRunState.Running, JobStepRunState.Succeeded) => true,
             (JobStepRunState.Running, JobStepRunState.Failed) => true,
@@ -274,14 +302,16 @@ public sealed class JobRunActor : ReceiveActor
         };
     }
 
-    private async Task<bool> EnsureRecoveredAsync()
+    private async Task<bool> EnsureRecoveredAsync(IJobObservationStore? persistence = null, CancellationToken cancellationToken = default)
     {
         if (_recovered)
         {
             return false;
         }
 
-        var replay = await _persistenceStore.ReplayAsync(_jobRunId, _stopping.Token)
+        persistence ??= _persistenceStore;
+        if (cancellationToken == default) cancellationToken = _stopping.Token;
+        var replay = await persistence.ReplayAsync(_jobRunId, cancellationToken)
             .ConfigureAwait(false);
         ResetState();
         try
@@ -307,7 +337,7 @@ public sealed class JobRunActor : ReceiveActor
         }
 
         _recovered = true;
-        _persistenceStore.RecordRecoverySucceeded();
+        persistence.RecordRecoverySucceeded();
         return replay.Count > 0;
     }
 
@@ -470,7 +500,36 @@ public sealed class JobRunActor : ReceiveActor
                 CompletedAtUtc,
                 LastAcceptedSourceEventId);
     }
+
+    private sealed class OwnedRun(JobRunActor actor, IActorRef parent) : IJobRunOwner
+    {
+        private readonly List<RoutedJobObservationResult> _diagnostics = [];
+        public void PublishDiagnostics()
+        {
+            foreach (var result in _diagnostics) parent.Tell(result);
+        }
+        public async Task ReloadAsync(IJobObservationStore persistence, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            actor.ResetState();
+            actor._recovered = false;
+            await actor.EnsureRecoveredAsync(persistence, cancellationToken).ConfigureAwait(false);
+        }
+
+        public async Task<JobMessageResult> RecordAsync(IJobObservation observation, IJobObservationStore persistence, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var previousStatus = actor._status;
+            var previousSteps = actor.CountActiveSteps();
+            var result = await actor.RecordAsync(observation, persistence, cancellationToken).ConfigureAwait(false);
+            _diagnostics.Add(new RoutedJobObservationResult(result, ActorRefs.Nobody, previousStatus, actor._status,
+                previousSteps, actor.CountActiveSteps(), RecoveredFromHistory: false));
+            return result;
+        }
+    }
 }
+
+internal sealed record OwnedJobRunCompleted;
 
 internal sealed record RoutedJobObservation(
     RecordJobObservation Message,

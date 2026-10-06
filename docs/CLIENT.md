@@ -21,10 +21,13 @@ service.
 
 Set `Client:ApiBaseUrl` to the public HTTPS origin used for enrollment and HTTP
 API calls. The Client uses that same URL for its gRPC gateway when
-`Gateway:Endpoint` is absent or empty. Generated Windows, Linux and macOS
-service installers persist the API URL once; an explicit `Gateway:Endpoint`
-sets the gateway's public HTTPS address for deployments that publish it on a
-separate host. Gateway operations use the configured endpoint. Remote Support
+`Gateway:Endpoint` is absent or empty in an existing/manual configuration.
+New public installers require explicit Site URL and Gateway URL values on
+Branding, or the API deployment options `Branding__SiteUrl` and
+`Branding__GatewayUrl`. Windows, Linux and macOS installers persist both
+addresses, including an explicit same-host gateway. For native Client Docker
+deployments, set `NetRatelCLIENT__Client__ApiBaseUrl` and
+`NetRatelCLIENT__Gateway__Endpoint`. Gateway operations use the configured endpoint. Remote Support
 V2 follows the enrolled Client's advertised capabilities and platform; provider
 handover remains governed by the `RemoteSupport:Handover` policy. Terminal
 support depends on the Client host's available shell/PTY capabilities.
@@ -63,6 +66,84 @@ protocol checks. If the gateway is instead on a dedicated public host, a
 Host-only router can send that host to the same h2c listener; set
 `Gateway:Endpoint` to its public HTTPS URL, for example
 `https://grpc.example.com`.
+
+### Sustained Traefik gateway streams
+
+`Connect` keeps one authenticated HTTP/2 request body open while exchanging
+heartbeats and acknowledgments. In Traefik v3.7.13,
+`entryPoints.<name>.transport.respondingTimeouts.readTimeout` defaults to 60s
+and bounds reading the **entire request body**. A heartbeat every 15 seconds
+does not extend that absolute deadline. Admission and a successful short RPC
+therefore do not establish that a gateway stream can remain connected.
+
+For an unbounded gateway stream, use a dedicated gateway entrypoint with
+`readTimeout: 0s`, as shown in
+[`docs/deployment/traefik-gateway-static.yaml`](deployment/traefik-gateway-static.yaml).
+This changes only the conflicting body-read deadline. Merge that fragment into
+the operator-owned **static** configuration and restart Traefik; retain the
+deployment's other entrypoints, timeouts, trusted forwarded headers, TLS,
+network boundaries and authentication controls. The fragment reserves port
+8443 for the gateway. Bind and expose it according to the deployment's policy,
+and set the native `Gateway:Endpoint`/installer Gateway URL to its actual public
+HTTPS origin, for example `https://grpc.example.com:8443`.
+
+Attach the gateway router to that listener, keeping the exact namespace and
+private h2c service mapping:
+
+```yaml
+http:
+  routers:
+    netratel-grpc:
+      rule: "Host(`grpc.example.com`) && PathPrefix(`/netratel.gateway.v1.`)"
+      entryPoints: [netratel-gateway]
+      priority: 100
+      service: netratel-grpc
+      tls: {}
+  services:
+    netratel-grpc:
+      loadBalancer:
+        servers:
+          - url: "h2c://api:9223"
+```
+
+A separate hostname on the same `websecure` listener does **not** isolate this
+setting: an entrypoint timeout applies to every router on that listener,
+including Web and REST. Dynamic router configuration and Docker labels cannot
+override the static body-read timeout per gRPC route. A dedicated listener or
+gateway-only proxy provides that isolation. Do not apply this reference fragment
+as a replacement for the whole static configuration or relax all proxy timeouts.
+
+Review `writeTimeout` independently: a finite value must accommodate the
+intended response stream lifetime. `idleTimeout` describes idle keep-alive
+connections; upstream `serversTransport.forwardingTimeouts`, HTTP/2 ping
+settings and keep-alive GOAWAY policies concern other boundaries. Preserve
+those settings unless evidence identifies a separate conflict. The gateway
+still enforces agent authentication, tenant/agent/current-session identity,
+frame sequence and heartbeat acknowledgment validation. Streaming-compatible
+transport does not extend an expiring credential or bypass refresh/readmission.
+
+The generic `tools/ci/tests/traefik-gateway-routing.sh` regression pins
+**fixture** Traefik v3.7.13 and keeps the original exact gRPC route, dotted
+namespace near-miss, REST fallback and TLS-to-h2c assertions. It sends framed
+synthetic heartbeat requests with ACKs every 15s on one request per profile:
+the default entrypoint ends near 60s, while changing only `readTimeout` to zero
+and a direct h2c control remain open for 195s with no reconnect. The native
+authenticated-handler probe is an additional hosted test using that same
+fixture; synthetic responders alone do not establish product admission,
+credential renewal or presence behavior.
+
+For a supported deployment, record actual proxy/client/API versions and
+digests, effective static and dynamic configuration, the intended session
+lifetime, token expiry time, and sanitized ACK/session/disconnection evidence
+across several former timeout windows. Record reset/GOAWAY direction only when
+observed. The fixture version and its reproduction do not identify the
+reported deployment's version or prove the cause of its disconnects. Keep
+credentials, request/response bodies and capability install URLs out of logs.
+See the version-specific
+[entrypoint reference](https://github.com/traefik/traefik/blob/v3.7.13/docs/content/reference/install-configuration/entrypoints.md)
+and
+[upstream transport reference](https://github.com/traefik/traefik/blob/v3.7.13/docs/content/reference/routing-configuration/http/load-balancing/serverstransport.md)
+before applying the profile to another version.
 
 Generated install links are immutable snapshots. After deploying an updated
 candidate, create a fresh link for validation; an existing link does not pick

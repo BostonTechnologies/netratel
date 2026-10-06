@@ -1,4 +1,4 @@
-using FluentAssertions;
+using AwesomeAssertions;
 using Xunit;
 
 namespace NetRatel.Web.ComponentTests;
@@ -29,14 +29,14 @@ public sealed class FileBrowserBrowserAssetTests
     }
 
     [Fact]
-    public void NativeUploadBridge_RetriesOnlyTheMarkedTransientGatewayFailure()
+    public void NativeUploadBridge_ReportsUnknownOutcomesWithoutReplayingMutations()
     {
         var path = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../NetRatel.Web/wwwroot/download.js"));
         var script = File.ReadAllText(path);
 
-        script.Should().Contain("const maximumAttempts = 5;");
-        script.Should().Contain("X-NetRatel-File-Transfer-Retryable");
-        script.Should().Contain("OnUploadRetrying");
+        script.Should().Contain("Its outcome is unknown. Verify the destination before retrying.");
+        script.Should().NotContain("X-NetRatel-File-Transfer-Retryable");
+        script.Should().NotContain("OnUploadRetrying");
         script.Should().Contain("transfer.cancelled = true;");
     }
 

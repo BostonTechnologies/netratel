@@ -40,7 +40,7 @@ public sealed class OperatorApiHttpClientFactory(
     }
 
     private static bool RequiresOperatorCredential(string name) =>
-        name is "OrchestratorApi" or "OrchestratorApiStreaming" ||
+        name is "OrchestratorApi" or "OrchestratorApiStreaming" or "ServiceLinkApi" ||
         string.Equals(name, DownloadClientName, StringComparison.Ordinal);
 
     private sealed class PooledMessageHandlerLease(HttpMessageHandler innerHandler) : DelegatingHandler(innerHandler)

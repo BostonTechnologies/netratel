@@ -1,4 +1,5 @@
-using FluentAssertions;
+using System.Threading.Channels;
+using AwesomeAssertions;
 using Google.Protobuf;
 using NetRatel.API.Gateway;
 using NetRatel.AgentGateway.Contracts.V1;
@@ -567,6 +568,113 @@ public sealed class AgentFileGatewaySessionRegistryTests
         candidate.TryActivate().Should().BeFalse();
         replacement.TryActivate().Should().BeTrue();
         registry.GetAvailability(client).Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task OutboundReader_AssignsSequenceAfterFifoEnqueue_InsteadOfProducerReservationOrder()
+    {
+        var queue = Channel.CreateBounded<GatewayFileFrame>(1);
+        var reader = new SequencedFileFrameReader(queue.Reader);
+        // Gate the exact old reservation/enqueue race: producer one reserves
+        // first, then producer two fills the available FIFO slot before it.
+        long reservedSequence = 0;
+        var firstReserved = new TaskCompletionSource<GatewayFileFrame>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var enqueueFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var firstProducer = Task.Run(async () =>
+        {
+            var frame = new GatewayFileFrame
+            {
+                Sequence = (ulong)Interlocked.Increment(ref reservedSequence), Dispatch = new FileRequestDispatch()
+            };
+            firstReserved.SetResult(frame);
+            await enqueueFirst.Task;
+            await queue.Writer.WriteAsync(frame);
+        });
+        var earlierReservation = await firstReserved.Task;
+        var laterReservation = new GatewayFileFrame
+        {
+            Sequence = (ulong)Interlocked.Increment(ref reservedSequence), Credit = new FileTransferCredit()
+        };
+        await queue.Writer.WriteAsync(laterReservation);
+        enqueueFirst.SetResult();
+        firstProducer.IsCompleted.Should().BeFalse();
+
+        var first = await reader.ReadAsync();
+        await firstProducer;
+        var second = await reader.ReadAsync();
+
+        first.Should().BeSameAs(laterReservation);
+        second.Should().BeSameAs(earlierReservation);
+        new[] { first.Sequence, second.Sequence }.Should().Equal(1UL, 2UL);
+    }
+
+    [Fact]
+    public async Task ConcurrentDispatchCreditAndCancellation_HaveIncreasingWireSequence_WithBoundedBackpressure()
+    {
+        var client = new ClientKey(3, Guid.NewGuid());
+        var connection = Guid.NewGuid();
+        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connection, 5));
+        using var registration = registry.Register(client, connection, 5);
+        var reading = registry.ReadAsync(client, "/data/source", CancellationToken.None);
+        var readDispatch = await registration.Reader.ReadAsync();
+        registration.TryAccept(new FileRequestAccepted
+        {
+            RequestId = readDispatch.Dispatch.RequestId, AttemptId = readDispatch.Dispatch.AttemptId
+        }).Should().BeTrue();
+        var operation = await reading;
+        var listings = Enumerable.Range(0, 32)
+            .Select(index => registry.ListAsync(client, $"/data/{index}", 32, CancellationToken.None)).ToArray();
+        var cancelling = operation.CancelAsync("operator_cancelled", CancellationToken.None);
+        cancelling.IsCompleted.Should().BeFalse();
+        operation.Completion.IsCanceled.Should().BeTrue();
+        var frames = new List<GatewayFileFrame> { readDispatch };
+        while (frames.Count < 35)
+        {
+            var frame = await registration.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(3));
+            frames.Add(frame);
+            if (frame.Dispatch is { } dispatch)
+            {
+                registration.TryAccept(new FileRequestAccepted { RequestId = dispatch.RequestId, AttemptId = dispatch.AttemptId }).Should().BeTrue();
+                registration.TryAddPage(new FileListPage { RequestId = dispatch.RequestId, AttemptId = dispatch.AttemptId, IsLastPage = true }).Should().BeTrue();
+                registration.TryComplete(new FileRequestCompleted { RequestId = dispatch.RequestId, AttemptId = dispatch.AttemptId }).Should().BeTrue();
+            }
+        }
+        await cancelling;
+        await Task.WhenAll(listings);
+        frames.Select(frame => frame.Sequence).Should().Equal(Enumerable.Range(1, 35).Select(sequence => (ulong)sequence));
+        frames.Count(frame => frame.Credit is not null).Should().Be(1);
+        frames.Count(frame => frame.Cancel is not null).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task SaturatedQueue_CancellationPreservesOriginalOutcome_RetiresOwner_AndAuthorizedBrowseRecovers()
+    {
+        var client = new ClientKey(3, Guid.NewGuid());
+        var connection = Guid.NewGuid();
+        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connection, 5));
+        using var registration = registry.Register(client, connection, 5);
+        using var operatorCancellation = new CancellationTokenSource();
+        var listings = Enumerable.Range(0, 32)
+            .Select(index => registry.ListAsync(client, $"/data/{index}", 32, operatorCancellation.Token)).ToArray();
+        var started = System.Diagnostics.Stopwatch.StartNew();
+        operatorCancellation.Cancel();
+        foreach (var listing in listings)
+        {
+            var outcome = () => listing.WaitAsync(TimeSpan.FromSeconds(3));
+            await outcome.Should().ThrowAsync<OperationCanceledException>();
+        }
+        started.Elapsed.Should().BeLessThan(AgentFileGatewaySession.CancellationEnqueueTimeout + TimeSpan.FromSeconds(2));
+        registration.CompletionToken.IsCancellationRequested.Should().BeTrue();
+        registry.GetAvailability(client).Should().BeNull();
+        using var replacement = registry.Register(client, connection, 5);
+        registration.Dispose();
+        replacement.IsCurrent.Should().BeTrue();
+        var subsequent = registry.ListAsync(client, "/data", 32, CancellationToken.None);
+        var dispatch = (await replacement.Reader.ReadAsync()).Dispatch;
+        replacement.TryAccept(new FileRequestAccepted { RequestId = dispatch.RequestId, AttemptId = dispatch.AttemptId }).Should().BeTrue();
+        replacement.TryAddPage(new FileListPage { RequestId = dispatch.RequestId, AttemptId = dispatch.AttemptId, IsLastPage = true }).Should().BeTrue();
+        replacement.TryComplete(new FileRequestCompleted { RequestId = dispatch.RequestId, AttemptId = dispatch.AttemptId }).Should().BeTrue();
+        (await subsequent).Should().BeEmpty();
     }
 
     private sealed class CurrentPresenceRouter(ClientKey expectedClient, Guid connectionId, long epoch) : IClientPresenceRouter

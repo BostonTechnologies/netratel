@@ -28,6 +28,8 @@ network_created=1
 created_container_ids+=("$(docker run --detach --name "$fixture" --network "$network" \
   --network-alias api --network-alias web \
   --volume "$root/tools/ci/tests/nginx-gateway-idle.js:/fixture/probe.js:ro" \
+  --volume "$root/tools/ci/tests/file-browser-transfer-lifecycle.js:/fixture/file-browser-transfer-lifecycle.js:ro" \
+  --volume "$root/src/NetRatel/NetRatel.Web/wwwroot/download.js:/fixture/download.js:ro" \
   --volume "$temporary_directory/tls.crt:/fixture/tls.crt:ro" \
   node:22-alpine node /fixture/probe.js server)")
 created_container_ids+=("$(docker run --detach --name "$proxy" --network "$network" \
@@ -46,4 +48,7 @@ for _ in $(seq 1 30); do
   sleep 1
 done
 (( healthy )) || { echo 'Nginx fixture did not become ready.' >&2; exit 1; }
+# Exercise the actual native browser transfer asset with the existing Node
+# fixture before testing the public ingress profile.
+docker exec "$fixture" node /fixture/file-browser-transfer-lifecycle.js /fixture/download.js
 docker exec "$fixture" node /fixture/probe.js probe

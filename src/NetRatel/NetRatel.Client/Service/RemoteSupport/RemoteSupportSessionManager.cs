@@ -114,8 +114,11 @@ internal sealed class RemoteSupportSessionManager : IDisposable
         {
 #pragma warning disable CA1416
             var task = new RemoteDesktopUserHelperTask();
-            task.EnsureLauncherAndRunKey();
-            task.TryRegisterScheduledTask();
+            if (!await task.EnsureRegisteredAsync(CancellationToken.None).ConfigureAwait(false))
+            {
+                LogManager.WriteLog("[RemoteSupportHelperRepair] Startup helper task registration unavailable; continuing agent startup.");
+                return;
+            }
 
             var helper = _helperPipeHost?.GetConnectedHelper();
             if (helper is not null &&

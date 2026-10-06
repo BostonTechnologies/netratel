@@ -16,9 +16,10 @@ public sealed class ClientActor : ReceiveActor
         ClientKey client,
         NetRatelAkkaOptions options,
         IActorRef presenceReadModel,
-        IClientConnectionEpochStore? epochStore = null)
+        TimeProvider? timeProvider = null,
+        IClientConnectionEpochStore? ownership = null)
     {
-        _presence = Context.ActorOf(PresenceActor.Props(client, options, presenceReadModel, epochStore), "presence");
+        _presence = Context.ActorOf(PresenceActor.Props(client, options, presenceReadModel, timeProvider: timeProvider, ownership: ownership), "presence");
         Receive<IClientPresenceMessage>(message => _presence.Forward(message));
     }
 
@@ -26,8 +27,9 @@ public sealed class ClientActor : ReceiveActor
         ClientKey client,
         NetRatelAkkaOptions options,
         IActorRef presenceReadModel,
-        IClientConnectionEpochStore? epochStore = null) =>
-        global::Akka.Actor.Props.Create(() => new ClientActor(client, options, presenceReadModel, epochStore));
+        TimeProvider? timeProvider = null,
+        IClientConnectionEpochStore? ownership = null) =>
+        global::Akka.Actor.Props.Create(() => new ClientActor(client, options, presenceReadModel, timeProvider: timeProvider, ownership: ownership));
 
     public static Props Props(ClientKey client, NetRatelAkkaOptions options) =>
         Props(client, options, ActorRefs.Nobody);

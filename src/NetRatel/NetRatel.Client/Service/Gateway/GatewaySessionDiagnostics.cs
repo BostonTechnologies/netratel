@@ -32,6 +32,7 @@ internal sealed class GatewaySessionDiagnostics(string endpoint)
     private HttpResponseMessage? _response;
     private Guid? _serverConnectionId;
     private string? _protocolFailure;
+    private string? _failureReason;
 
     // Generated locally, contains no device identity or credential, and follows one attempt only.
     internal Guid CorrelationId { get; } = Guid.NewGuid();
@@ -40,6 +41,7 @@ internal sealed class GatewaySessionDiagnostics(string endpoint)
     internal void AcknowledgeHeartbeat() => _lastAcknowledgedHeartbeat = Stopwatch.GetTimestamp();
     internal void SessionFailed() => _failed ??= Stopwatch.GetTimestamp();
     internal void ProtocolFailure(string reason) => _protocolFailure = reason;
+    internal void FailureReason(string reason) => _failureReason = reason;
     internal string AdmissionSummary => $"utc={DateTimeOffset.UtcNow:O}, correlation={CorrelationId:D}, serverConnection={_serverConnectionId?.ToString("D") ?? "unknown"}, origin={_origin}, rpc=presence/connect";
 
     internal (string Key, string Message) Failure(Exception exception, TimeSpan retryDelay)
@@ -67,11 +69,12 @@ internal sealed class GatewaySessionDiagnostics(string endpoint)
         var lastAckAge = _lastAcknowledgedHeartbeat is { } acknowledged
             ? Stopwatch.GetElapsedTime(acknowledged, observedAt).TotalSeconds.ToString("0.###", CultureInfo.InvariantCulture) + "s"
             : "unknown";
-        var key = $"{category}/{httpStatus}/{mediaType}/{grpcStatus}/{transport}/{edge}/{_protocolFailure}";
+        var reason = _protocolFailure ?? _failureReason;
+        var key = $"{category}/{httpStatus}/{mediaType}/{grpcStatus}/{transport}/{edge}/{reason}";
         return (key, $"Gateway session failed: category={category}, {AdmissionSummary}, httpStatus={httpStatus}, " +
             $"contentType={mediaType}, protocol={protocol}, grpcStatus={grpcStatus}, transport={transport}, edge={edge}, " +
             $"sessionLifetime={Stopwatch.GetElapsedTime(_started, observedAt).TotalSeconds.ToString("0.###", CultureInfo.InvariantCulture)}s, " +
-            $"lastHeartbeatAckAge={lastAckAge}, resetDirection=unknown, reason={_protocolFailure ?? "unknown"}. Retrying in {retryDelay.TotalSeconds:0}s.");
+            $"lastHeartbeatAckAge={lastAckAge}, resetDirection=unknown, reason={reason ?? "unknown"}. Retrying in {retryDelay.TotalSeconds:0}s.");
     }
 
     private static int? ReadGrpcStatus(HttpResponseMessage? response)

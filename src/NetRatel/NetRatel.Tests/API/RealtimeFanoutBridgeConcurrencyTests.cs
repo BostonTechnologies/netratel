@@ -1,5 +1,5 @@
 using System.Collections.Concurrent;
-using FluentAssertions;
+using AwesomeAssertions;
 using Microsoft.AspNetCore.SignalR;
 using NetRatel.API.Realtime;
 using NetRatel.Application.Fanout;

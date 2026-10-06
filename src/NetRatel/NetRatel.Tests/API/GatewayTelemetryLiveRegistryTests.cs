@@ -1,4 +1,4 @@
-using FluentAssertions;
+using AwesomeAssertions;
 using NetRatel.API.Realtime;
 using NetRatel.Application.Presence;
 using NetRatel.Application.Telemetry;

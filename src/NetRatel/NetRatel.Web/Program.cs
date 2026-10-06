@@ -43,6 +43,8 @@ using NetRatel.Web.OpenApi;
 using Scalar.AspNetCore;
 using NetRatel.Web.Bootstrap;
 using NetRatel.Shared.Authentication;
+using NetRatel.Web.Services.ServiceLinks;
+using OpenTelemetry.Instrumentation.AspNetCore;
 
 var builder = WebApplication.CreateBuilder(args);
 // Public install URLs are bearer capabilities; suppress raw-path request/forwarder logs.
@@ -55,6 +57,12 @@ const string localAuthenticationScheme = "NetRatelLocal";
 const string browserSessionScheme = "NetRatelWebSession";
 
 builder.AddServiceDefaults();
+builder.Services.PostConfigure<AspNetCoreTraceInstrumentationOptions>(options =>
+{
+    var existingFilter = options.Filter;
+    options.Filter = context => !context.Request.Path.StartsWithSegments("/account/integration-credentials/link")
+        && (existingFilter?.Invoke(context) ?? true);
+});
 // Add services to the container. Version Bump
 var maxEditorPayloadBytes = builder.Configuration.GetValue(
     "ScriptLibrary:MaxEditorPayloadBytes",
@@ -318,6 +326,24 @@ builder.Services.AddHttpClient("OrchestratorApi", c =>
 .AddHttpMessageHandler<RedirectReissueHandler>()
 .AddHttpMessageHandler<TokenAuthorizationHandler>();
 
+// Human-authenticated service administration does not replay mutations after redirects or transport failures.
+builder.Services.AddScoped<HelpdeskM2MApiClient>();
+builder.Services.AddHttpClient("ServiceLinkApi", c =>
+{
+    c.BaseAddress = new Uri(builder.Configuration["ApiBaseUrl"] ?? "https://localhost:5001/");
+    c.Timeout = TimeSpan.FromSeconds(45);
+})
+.ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false })
+.AddHttpMessageHandler<TokenAuthorizationHandler>()
+.RemoveAllResilienceHandlers();
+builder.Services.AddHttpClient("ServiceLinkDiscoveryApi", c =>
+{
+    c.BaseAddress = new Uri(builder.Configuration["ApiBaseUrl"] ?? "https://localhost:5001/");
+    c.Timeout = TimeSpan.FromSeconds(15);
+})
+.ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false })
+.RemoveAllResilienceHandlers();
+
 builder.Services.AddHttpClient("OrchestratorApiStreaming", c =>
 {
     c.BaseAddress = new Uri(builder.Configuration["ApiBaseUrl"] ?? "https://localhost:5001/");
@@ -428,6 +454,19 @@ app.UseStaticFiles(new StaticFileOptions
     }
 });
 
+app.Use(async (context, next) =>
+{
+    if (string.Equals(context.Request.Path.Value, "/logout", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(context.Request.Path.Value, "/auth/logout", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(context.Request.Path.Value, "/api/v2/local-auth/logout", StringComparison.OrdinalIgnoreCase))
+        ServiceLinkBrowserEndpoints.ClearBrowserSession(context);
+    if (context.Request.Path.StartsWithSegments("/account/integration-credentials/link") ||
+        context.Request.Path.StartsWithSegments("/api/integrations/service-link") ||
+        context.Request.Path == "/connect/token" || context.Request.Path == "/account/integration-credentials")
+        ServiceLinkBrowserEndpoints.ProtectResponse(context);
+    await next();
+});
+
 app.UseAntiforgery();
 
 app.UseAuthentication();
@@ -516,6 +555,7 @@ app.Use(async (ctx, next) =>
         !ctx.Request.Path.StartsWithSegments("/api/docs", StringComparison.OrdinalIgnoreCase) &&
         !ctx.Request.Path.StartsWithSegments("/api/openapi", StringComparison.OrdinalIgnoreCase) &&
         !ctx.Request.Path.StartsWithSegments("/api/v1", StringComparison.OrdinalIgnoreCase) &&
+        !ctx.Request.Path.StartsWithSegments("/api/integrations/service-link", StringComparison.OrdinalIgnoreCase) &&
         // The CLI's tenant-scoped telemetry command is intentionally served
         // by the same local Web gateway as the existing API surface. The API
         // remains the authorization boundary: its TelemetryReader policy and
@@ -542,6 +582,7 @@ app.MapScalarApiReference(
         options.Servers = new[] { new ScalarServer(ScalarApiReferenceOptions.BuildPublicServerUrl(request)) };
     }).AllowAnonymous();
 app.MapReverseProxy().AllowAnonymous();
+app.MapServiceLinkBrowserEndpoints();
 app.MapRazorPages();
 
 app.MapControllers();

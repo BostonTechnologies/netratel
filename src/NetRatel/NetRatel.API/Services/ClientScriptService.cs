@@ -1,4 +1,5 @@
 using System.Text;
+using Microsoft.Extensions.Options;
 using NetRatel.API.Models;
 using NetRatel.Application.Agents;
 using NetRatel.Application.Artifacts;
@@ -25,7 +26,7 @@ public sealed class ClientScriptService : IClientScriptService
     private readonly IEnrollmentCodeIssueService _enrollmentCodeIssueService;
     private readonly IScriptTemplateService _templateService;
     private readonly IClientArtifactsService _artifactsService;
-    private readonly IConfiguration _configuration;
+    private readonly IOptionsMonitor<ClientInstallationEndpointOptions> _endpoints;
     private readonly IDeploymentBrandingService _branding;
     private readonly ILogger<ClientScriptService> _logger;
 
@@ -34,7 +35,7 @@ public sealed class ClientScriptService : IClientScriptService
         IEnrollmentCodeIssueService enrollmentCodeIssueService,
         IScriptTemplateService templateService,
         IClientArtifactsService artifactsService,
-        IConfiguration configuration,
+        IOptionsMonitor<ClientInstallationEndpointOptions> endpoints,
         IDeploymentBrandingService branding,
         ILogger<ClientScriptService> logger)
     {
@@ -42,7 +43,7 @@ public sealed class ClientScriptService : IClientScriptService
         _enrollmentCodeIssueService = enrollmentCodeIssueService;
         _templateService = templateService;
         _artifactsService = artifactsService;
-        _configuration = configuration;
+        _endpoints = endpoints;
         _branding = branding;
         _logger = logger;
     }
@@ -54,7 +55,7 @@ public sealed class ClientScriptService : IClientScriptService
             throw new RequestValidationException("tenantId", $"Tenant '{request.TenantId}' does not exist.");
         }
 
-        var endpoints = ClientInstallEndpointResolver.Resolve(_configuration,
+        var endpoints = ClientInstallEndpointResolver.Resolve(_endpoints.CurrentValue,
             await _branding.GetEffectiveAsync(ct).ConfigureAwait(false));
         var artifact = string.IsNullOrWhiteSpace(request.ArtifactVersion)
             ? await _artifactsService.GetLatestAsync(request.RuntimeId, ct)

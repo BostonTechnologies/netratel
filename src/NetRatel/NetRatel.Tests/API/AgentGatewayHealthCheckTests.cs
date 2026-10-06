@@ -1,4 +1,4 @@
-using FluentAssertions;
+using AwesomeAssertions;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using NetRatel.Akka.Configuration;
 using NetRatel.API.Gateway;

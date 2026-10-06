@@ -1,6 +1,9 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.OpenApi;
 using Microsoft.OpenApi;
+using NetRatel.API.Security.Authorization;
+using NetRatel.API.Security.M2M;
+using NetRatel.API.Services.Orchestration;
 
 namespace NetRatel.API.OpenApi;
 
@@ -10,6 +13,8 @@ public static class NetRatelOpenApiCatalog
     private static readonly HashSet<string> DefaultAuthenticatedSchemes = ["Bearer", "LocalSession", "IntegrationCredential"];
     private static readonly HashSet<string> InteractiveAccountSchemes = ["Bearer", "LocalSession"];
     private static readonly HashSet<string> M2MSchemes = ["M2M"];
+    private static readonly HashSet<string> ManagedServiceSchemes = [ServiceIdentityAuthenticationHandler.SchemeName];
+    private static readonly HashSet<string> OrchestrationSchemes = ["M2M", ServiceIdentityAuthenticationHandler.SchemeName];
     private static readonly HashSet<string> AgentSchemes = ["Agent"];
     private static readonly HashSet<string> MachineTokenSchemes = ["MachineToken"];
     private static readonly HashSet<string> LocalSessionSchemes = ["LocalSession"];
@@ -19,6 +24,10 @@ public static class NetRatelOpenApiCatalog
         new Dictionary<string, HashSet<string>>(StringComparer.Ordinal)
         {
             ["M2MOnly"] = M2MSchemes,
+            [ServiceIdentityServiceCollectionExtensions.VerifyPolicy] = ManagedServiceSchemes,
+            [ServiceIdentityServiceCollectionExtensions.ControlPolicy] = ManagedServiceSchemes,
+            [OrchestrationManagedAuthorization.ReadPolicy] = OrchestrationSchemes,
+            [OrchestrationManagedAuthorization.InvokePolicy] = OrchestrationSchemes,
             ["AgentAccess"] = AgentSchemes,
             ["AgentGatewayAccess"] = AgentSchemes,
             ["MachineTokenApi"] = MachineTokenSchemes,
@@ -47,6 +56,14 @@ public static class NetRatelOpenApiCatalog
             ["FileWriter"] = DefaultAuthenticatedSchemes,
             ["ArtifactPublisher"] = DefaultAuthenticatedSchemes,
             ["McpOperatorPolicyAdmin"] = DefaultAuthenticatedSchemes,
+            [MonitoringAuthorization.ReadPolicy] = DefaultAuthenticatedSchemes,
+            [MonitoringAuthorization.ManagePolicy] = DefaultAuthenticatedSchemes,
+            [MonitoringAuthorization.AcknowledgePolicy] = DefaultAuthenticatedSchemes,
+            [MonitoringAuthorization.ClearPolicy] = DefaultAuthenticatedSchemes,
+            [MonitoringAuthorization.BypassPolicy] = DefaultAuthenticatedSchemes,
+            [MonitoringAuthorization.ReadOrManagePolicy] = DefaultAuthenticatedSchemes,
+            [MonitoringAuthorization.PermissionsSummaryPolicy] = DefaultAuthenticatedSchemes,
+            [MonitoringAuthorization.DiscoveryPolicy] = DefaultAuthenticatedSchemes,
 
             // Administrative assertions deliberately do not accept a delegated
             // integration credential, even though they use the default selector.
@@ -103,7 +120,9 @@ public static class NetRatelOpenApiCatalog
         foreach (var requirement in authorization)
         {
             var allowed = string.IsNullOrWhiteSpace(requirement.Policy)
-                ? DefaultAuthenticatedSchemes
+                // The runtime default policy rejects delegated integration and
+                // managed-service credentials without an explicit access policy.
+                ? InteractiveAccountSchemes
                 : PolicySchemes.TryGetValue(requirement.Policy, out var schemes)
                     ? schemes
                     : throw new InvalidOperationException($"OpenAPI security metadata has no contract for authorization policy '{requirement.Policy}'.");

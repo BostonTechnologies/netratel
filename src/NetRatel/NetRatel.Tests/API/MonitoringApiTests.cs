@@ -4,8 +4,10 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Security.Claims;
 using System.Text.Encodings.Web;
-using FluentAssertions;
+using AwesomeAssertions;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authorization;
+using NetRatel.API.Security.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.TestHost;
@@ -155,10 +157,63 @@ public sealed class MonitoringApiTests
         fixture.Config.SavedRule!.OperatorId.Should().Be(OperatorId);
         fixture.Config.SavedRule.Rule.ExecutionPrincipalId.Should().BeNull();
         fixture.Config.SavedRule.Rule.ExecutionCredentialId.Should().BeNull();
+        fixture.Access.Granted.Add(("flow.read", 7));
+        fixture.Access.Granted.Add(("flow.execute", 7));
         var flowRule = body with { RuleId = Guid.NewGuid(), PublishedFlowVersionId = Guid.NewGuid() };
         Func<Task> selectFlow = async () => await fixture.Api.SaveRuleAsync(7, flowRule.RuleId, new(flowRule, 1, "select flow"), User, default);
         (await selectFlow.Should().ThrowAsync<MonitoringApiException>()).Which.Code.Should().Be("published_flow_unavailable");
         fixture.Config.Writes.Should().Be(1);
+    }
+
+    [Theory]
+    [InlineData(0, 0)]
+    [InlineData(7, 0)]
+    [InlineData(0, 7)]
+    [InlineData(7, 8)]
+    [InlineData(8, 7)]
+    public async Task FlowChoicesAndSelectionRequireReadAndExecutePairedWithTheExactMonitoringTenant(int readTenant, int executeTenant)
+    {
+        var fixture = new Fixture();
+        fixture.Flows.Published = true;
+        if (readTenant != 0) fixture.Access.Granted.Add(("flow.read", readTenant));
+        if (executeTenant != 0) fixture.Access.Granted.Add(("flow.execute", executeTenant));
+        (await fixture.Api.GetPublishedFlowsAsync(7, User, default)).Should().BeEmpty();
+        fixture.Flows.ListCalls.Should().Be(0);
+        (await fixture.Api.GetConfigurationAsync(7, User, default)).TenantId.Should().Be(7);
+        var rule = fixture.Rule with { PublishedFlowVersionId = fixture.Flows.VersionId, ExecutionPrincipalId = "forged" };
+        Func<Task> save = async () => await fixture.Api.SaveRuleAsync(7, rule.RuleId, new(rule, 0, "select published flow"), User, default);
+        (await save.Should().ThrowAsync<MonitoringApiException>()).Which.Code.Should().Be("flow_selection_permission_required");
+        fixture.Flows.PublishedCalls.Should().Be(0);
+        fixture.Config.Writes.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task SelectingARealVersionServerStampsAuthorityAndUnchangedSelectionKeepsItAfterGrantRevocation()
+    {
+        var fixture = new Fixture();
+        fixture.Flows.Published = true;
+        fixture.Access.Granted.Add(("flow.read", 7));
+        fixture.Access.Granted.Add(("flow.execute", 7));
+        (await fixture.Api.GetPublishedFlowsAsync(7, User, default)).Should().ContainSingle().Which.PublishedFlowVersionId.Should().Be(fixture.Flows.VersionId);
+        var selectingUser = new ClaimsPrincipal(new ClaimsIdentity([new Claim("netratel_principal_id", OperatorId.ToString("N")),
+            new Claim("netratel_integration_credential_id", "current-configuring-credential")], "Test"));
+        var rule = fixture.Rule with { PublishedFlowVersionId = fixture.Flows.VersionId, ExecutionPrincipalId = "attacker", ExecutionCredentialId = "foreign" };
+        await fixture.Api.SaveRuleAsync(7, rule.RuleId, new(rule, 0, "select published flow"), selectingUser, default);
+        var saved = fixture.Config.SavedRule!.Rule;
+        saved.ExecutionPrincipalId.Should().Be(OperatorId.ToString("N"));
+        saved.ExecutionCredentialId.Should().Be("current-configuring-credential");
+        fixture.Access.Granted.Remove(("flow.read", 7));
+        fixture.Access.Granted.Remove(("flow.execute", 7));
+        var renamingUser = new ClaimsPrincipal(new ClaimsIdentity([new Claim("netratel_principal_id", Guid.NewGuid().ToString("N"))], "Test"));
+        var renamed = saved with { Revision = 2, Name = "Renamed threshold", ExecutionPrincipalId = "replacement-attacker", ExecutionCredentialId = "replacement-foreign" };
+        await fixture.Api.SaveRuleAsync(7, saved.RuleId, new(renamed, 1, "rename unchanged action"), renamingUser, default);
+        fixture.Config.SavedRule!.Rule.ExecutionPrincipalId.Should().Be(saved.ExecutionPrincipalId);
+        fixture.Config.SavedRule.Rule.ExecutionCredentialId.Should().Be(saved.ExecutionCredentialId);
+        fixture.Flows.PublishedCalls.Should().Be(1, "retaining a trusted immutable action does not select a new version");
+        var changed = renamed with { Revision = 3, PublishedFlowVersionId = Guid.NewGuid() };
+        Func<Task> replace = async () => await fixture.Api.SaveRuleAsync(7, changed.RuleId, new(changed, 2, "replace action"), renamingUser, default);
+        (await replace.Should().ThrowAsync<MonitoringApiException>()).Which.StatusCode.Should().Be(403);
+        fixture.Config.Writes.Should().Be(2);
     }
 
     [Fact]
@@ -304,15 +359,19 @@ public sealed class MonitoringApiTests
         .ConfigureServices(services =>
         {
             services.AddRouting();
-            services.AddAuthentication("Test").AddScheme<AuthenticationSchemeOptions, TestAuth>("Test", _ => { });
-            services.AddAuthorization();
+            services.AddAuthentication("Test").AddScheme<AuthenticationSchemeOptions, TestAuth>("Test", _ => { })
+                .AddPolicyScheme("Bearer", null, options => options.ForwardDefault = "Test");
+            services.AddAuthorization(MonitoringAuthorization.AddPolicies);
+            services.AddSingleton<IEffectiveAccessService>(fixture.Access);
+            services.AddScoped<IAuthorizationHandler, EffectiveAccessHandler>();
+            MonitoringFlowPermissionAuthorization.AddHandlers(services);
             services.AddSingleton(fixture.Api);
         }).Configure(app => { app.UseRouting(); app.UseAuthentication(); app.UseAuthorization(); app.UseMiddleware<MonitoringHttpBoundsMiddleware>(); app.UseEndpoints(endpoints => endpoints.MapMonitoringEndpoints()); })).StartAsync();
 
     private sealed class TestAuth(IOptionsMonitor<AuthenticationSchemeOptions> options, ILoggerFactory logger, UrlEncoder encoder) : AuthenticationHandler<AuthenticationSchemeOptions>(options, logger, encoder)
     {
         protected override Task<AuthenticateResult> HandleAuthenticateAsync() => Task.FromResult(Request.Headers.ContainsKey("Authorization")
-            ? AuthenticateResult.Success(new AuthenticationTicket(User, Scheme.Name)) : AuthenticateResult.NoResult());
+            ? AuthenticateResult.Success(new AuthenticationTicket(new ClaimsPrincipal(new ClaimsIdentity(User.Claims, "Oidc")), Scheme.Name)) : AuthenticateResult.NoResult());
     }
     private sealed class ChunkedJsonContent(byte[] payload) : HttpContent
     {
@@ -326,6 +385,8 @@ public sealed class MonitoringApiTests
         public ImmutableArray<Guid> AgentIds { get; }
         public Clock Clock { get; } = new();
         public Authority Authority { get; } = new();
+        public Access Access { get; }
+        public PublishedFlows Flows { get; } = new();
         public ConfigStore Config { get; } = new();
         public Runtime Runtime { get; } = new();
         public ServicesRouter Services { get; } = new();
@@ -343,13 +404,14 @@ public sealed class MonitoringApiTests
         };
         public Fixture(int clientCount = 1)
         {
+            Access = new(Authority);
             AgentIds = Enumerable.Range(1, clientCount - 1).Select(_ => Guid.NewGuid()).Prepend(AgentId).ToImmutableArray();
             Sessions.AgentIds = AgentIds;
             var directory = new ClientDirectory(AgentIds, Sessions);
             Source = new(Config, directory, Services, Clock);
             Reconciler = new MonitoringWatchPolicyReconciler(Source, Services, directory, Sessions, Clock, NullLogger<MonitoringWatchPolicyReconciler>.Instance);
-            Api = new(Authority, new Access(), new TenantCatalog(), Config, Runtime, directory, new AgentDirectory(AgentIds),
-                new UnavailableMonitoringPublishedFlowProvider(), Services, new TelemetryRouter(), Sessions, Reconciler, Clock, NullLogger<MonitoringApiService>.Instance);
+            Api = new(Authority, Access, new TenantCatalog(), Config, Runtime, directory, new AgentDirectory(AgentIds),
+                Flows, Services, new TelemetryRouter(), Sessions, Reconciler, Clock, NullLogger<MonitoringApiService>.Instance);
         }
     }
 
@@ -366,12 +428,39 @@ public sealed class MonitoringApiTests
         public Task<bool> AuthorizeAsync(ClaimsPrincipal user, string permission, MonitoringResource resource, CancellationToken ct)
         { Requests.Add((permission, resource)); return Task.FromResult(Granted.Contains((permission, resource.TenantId)) && (resource.AgentId is null || !DeniedAgents.Contains(resource.AgentId.Value))); }
     }
-    private sealed class Access : IEffectiveAccessService
+    // This service-level HTTP fixture uses the actual named policies and handlers.
+    // Its synthetic OIDC identity is only a unit-host seam; the separate ApiFactory
+    // tests exercise production token verification and durable current authority.
+    private sealed class Access(Authority authority) : IEffectiveAccessService
     {
-        public Task<bool> AuthorizeAsync(ClaimsPrincipal user, string permission, int? tenant, CancellationToken ct = default) => Task.FromResult(permission == NetRatelPermissions.MonitoringRead && tenant == 7);
-        public Task<EffectiveAccessSnapshot> GetSnapshotAsync(ClaimsPrincipal user, int? tenant, CancellationToken ct = default) => throw new NotSupportedException();
-        public Task<int[]?> GetAuthorizedTenantIdsAsync(ClaimsPrincipal user, string permission, CancellationToken ct = default) => Task.FromResult<int[]?>([7]);
+        public HashSet<(string Permission, int Tenant)> Granted { get; } = [(NetRatelPermissions.MonitoringRead, 7)];
+        public Task<bool> AuthorizeAsync(ClaimsPrincipal user, string permission, int? tenant, CancellationToken ct = default) => tenant is int id
+            ? permission.StartsWith("monitoring.", StringComparison.Ordinal)
+                ? authority.AuthorizeAsync(user, permission, new(id, MonitoringResourceKind.Tenant), ct)
+                : Task.FromResult(Granted.Contains((permission, id)))
+            : Task.FromResult(false);
+        public async Task<EffectiveAccessSnapshot> GetSnapshotAsync(ClaimsPrincipal user, int? tenant, CancellationToken ct = default)
+        {
+            var permissions = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var permission in NetRatelPermissions.All)
+                if (await AuthorizeAsync(user, permission, tenant, ct)) permissions.Add(permission);
+            return new(user.FindFirst("netratel_principal_id")?.Value, false, false, permissions);
+        }
+        public Task<int[]?> GetAuthorizedTenantIdsAsync(ClaimsPrincipal user, string permission, CancellationToken ct = default) =>
+            Task.FromResult<int[]?>((permission.StartsWith("monitoring.", StringComparison.Ordinal) ? authority.Granted : Granted)
+                .Where(grant => grant.Permission == permission).Select(grant => grant.Tenant).Distinct().Order().ToArray());
         public Task ReconcileBuiltInRolesAsync(CancellationToken ct = default) => Task.CompletedTask;
+    }
+    private sealed class PublishedFlows : IMonitoringPublishedFlowProvider
+    {
+        public Guid VersionId { get; } = Guid.NewGuid();
+        public bool Published { get; set; }
+        public int PublishedCalls { get; private set; }
+        public int ListCalls { get; private set; }
+        public Task<bool> IsPublishedAsync(int tenantId, Guid versionId, CancellationToken cancellationToken)
+        { PublishedCalls++; return Task.FromResult(Published && tenantId == 7 && versionId == VersionId); }
+        public Task<ImmutableArray<MonitoringPublishedFlowDto>> ListPublishedAsync(int tenantId, int maximumCount, CancellationToken cancellationToken)
+        { ListCalls++; return Task.FromResult<ImmutableArray<MonitoringPublishedFlowDto>>(Published && tenantId == 7 ? [new(VersionId, "Published immutable fixture", 1)] : []); }
     }
     private sealed class TenantCatalog : IMonitoringTenantCatalog
     { public Task<ImmutableArray<MonitoringTenantDto>> GetAsync(int[]? ids, int max, CancellationToken ct) => Task.FromResult<ImmutableArray<MonitoringTenantDto>>([new(7, "Tenant seven")]); }
@@ -450,7 +539,7 @@ public sealed class MonitoringApiTests
         public MonitoringBypassSaveRequest? SavedBypass { get; private set; }
         public Task<MonitoringConfigurationSnapshot> GetAsync(int tenant, CancellationToken ct) { Reads++; return Task.FromResult(Current); }
         public Task<MonitoringConfigurationWriteResult> SaveRuleAsync(MonitoringRuleSaveRequest request, CancellationToken ct)
-        { Writes++; SavedRule = request; Current = Current with { Revision = Current.Revision + 1, Rules = Current.Rules.Append(request.Rule).ToImmutableArray() }; return Task.FromResult(new MonitoringConfigurationWriteResult(MonitoringConfigurationWriteDisposition.Stored, Current)); }
+        { Writes++; SavedRule = request; Current = Current with { Revision = Current.Revision + 1, Rules = Current.Rules.Where(rule => rule.RuleId != request.Rule.RuleId).Append(request.Rule).ToImmutableArray() }; return Task.FromResult(new MonitoringConfigurationWriteResult(MonitoringConfigurationWriteDisposition.Stored, Current)); }
         public Task<MonitoringConfigurationWriteResult> SaveGroupAsync(MonitoringGroupSaveRequest request, CancellationToken ct)
         { Writes++; Current = Current with { Revision = Current.Revision + 1, Groups = Current.Groups.Append(request.Group).ToImmutableArray() }; return Task.FromResult(new MonitoringConfigurationWriteResult(MonitoringConfigurationWriteDisposition.Stored, Current)); }
         public Task<MonitoringConfigurationWriteResult> SaveBypassAsync(MonitoringBypassSaveRequest request, CancellationToken ct)

@@ -32,11 +32,12 @@
                             <MudTextField Label="Organization name" @bind-Value="_organizationName" Immediate="true" Disabled="@_branding.OrganizationName.IsLocked" HelperText="@SourceText(_branding.OrganizationName)" data-testid="branding-organization-name" />
                             <MudTextField Label="Tagline" @bind-Value="_tagline" Immediate="true" Disabled="@_branding.Tagline.IsLocked" HelperText="@SourceText(_branding.Tagline)" data-testid="branding-tagline" />
                             <MudTextField Label="Support URL" @bind-Value="_supportUrl" Immediate="true" Disabled="@_branding.SupportUrl.IsLocked" HelperText="@SourceText(_branding.SupportUrl)" />
-                            <MudTextField Label="Site URL" @bind-Value="_siteUrl" Immediate="true" Disabled="@_branding.SiteUrl.IsLocked" HelperText="@SourceText(_branding.SiteUrl)" />
+                            <MudTextField Label="Site URL" @bind-Value="_siteUrl" Immediate="true" Disabled="@_branding.SiteUrl.IsLocked" HelperText="@SourceText(_branding.SiteUrl)" data-testid="branding-site-url" />
+                            <MudTextField Label="Gateway URL" @bind-Value="_gatewayUrl" Immediate="true" Disabled="@GatewayField.IsLocked" HelperText="@("Public HTTPS address for native HTTP/2 clients. " + SourceText(GatewayField))" data-testid="branding-gateway-url" />
                             <MudStack Row="true" Spacing="2">
                                 <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="@(!IsDirty || _saving)" OnClick="SaveAsync" data-testid="branding-save">Save</MudButton>
-                                <MudButton Variant="Variant.Outlined" Disabled="@(!IsDirty || _saving)" OnClick="Discard">Discard</MudButton>
-                                <MudButton Variant="Variant.Text" Color="Color.Warning" Disabled="@_saving" OnClick="ResetEditableAsync">Reset editable overrides</MudButton>
+                                <MudButton Variant="Variant.Outlined" Disabled="@(!IsDirty || _saving)" OnClick="Discard" data-testid="branding-discard">Discard</MudButton>
+                                <MudButton Variant="Variant.Text" Color="Color.Warning" Disabled="@_saving" OnClick="ResetEditableAsync" data-testid="branding-reset">Reset editable overrides</MudButton>
                             </MudStack>
                         </MudStack>
                     </MudPaper>
@@ -106,6 +107,8 @@
     private string? _tagline;
     private string? _supportUrl;
     private string? _siteUrl;
+    private string? _gatewayUrl;
+    private BrandingField GatewayField => _branding?.GatewayUrl ?? new(string.Empty, BrandingValueSource.Default, false);
     private bool _loading = true;
     private bool _saving;
     private IDisposable? _locationRegistration;
@@ -129,7 +132,7 @@
 
     private bool IsDirty => _branding is not null &&
         (_applicationName != _branding.ApplicationName.Value || _organizationName != _branding.OrganizationName.Value ||
-         _tagline != _branding.Tagline.Value || _supportUrl != _branding.SupportUrl.Value || _siteUrl != _branding.SiteUrl.Value);
+         _tagline != _branding.Tagline.Value || _supportUrl != _branding.SupportUrl.Value || _siteUrl != _branding.SiteUrl.Value || _gatewayUrl != GatewayField.Value);
 
     private async Task SaveAsync()
     {
@@ -143,7 +146,8 @@
                 Update("organizationName", _organizationName, _branding.OrganizationName),
                 Update("tagline", _tagline, _branding.Tagline),
                 Update("supportUrl", _supportUrl, _branding.SupportUrl),
-                Update("siteUrl", _siteUrl, _branding.SiteUrl)
+                Update("siteUrl", _siteUrl, _branding.SiteUrl),
+                Update("gatewayUrl", _gatewayUrl, GatewayField)
             }.Where(value => value is not null).Cast<BrandingFieldUpdate>().ToArray();
             if (fields.Length > 0)
             {
@@ -168,7 +172,7 @@
         _saving = true;
         try
         {
-            var fields = new[] { "applicationName", "organizationName", "tagline", "supportUrl", "siteUrl" }
+            var fields = new[] { "applicationName", "organizationName", "tagline", "supportUrl", "siteUrl", "gatewayUrl" }
                 .Where(field => !IsLocked(field))
                 .Select(field => new BrandingFieldUpdate(field, null, true)).ToArray();
             if (fields.Length > 0)
@@ -228,6 +232,7 @@
         "tagline" => _branding!.Tagline.IsLocked,
         "supportUrl" => _branding!.SupportUrl.IsLocked,
         "siteUrl" => _branding!.SiteUrl.IsLocked,
+        "gatewayUrl" => GatewayField.IsLocked,
         _ => true
     };
 
@@ -238,6 +243,7 @@
         _tagline = value.Tagline.Value;
         _supportUrl = value.SupportUrl.Value;
         _siteUrl = value.SiteUrl.Value;
+        _gatewayUrl = value.GatewayUrl?.Value ?? string.Empty;
     }
 
     private ValueTask OnLocationChanging(LocationChangingContext context)

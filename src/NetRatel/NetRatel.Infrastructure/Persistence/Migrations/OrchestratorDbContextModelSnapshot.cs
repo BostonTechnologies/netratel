@@ -335,6 +335,66 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.ToTable("BootstrapInitializations", (string)null);
                 });
 
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ClientConnectionAdmissionRecord", b =>
+                {
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("AgentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("ConnectionId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset?>("AdmissionExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("AuthenticationExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long?>("ConnectionEpoch")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("MetadataJson")
+                        .HasColumnType("jsonb");
+
+                    b.Property<Guid?>("OperationId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("PayloadHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<DateTimeOffset?>("ReceivedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset>("RetainUntilUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<short>("Status")
+                        .HasColumnType("smallint");
+
+                    b.HasKey("TenantId", "AgentId", "ConnectionId");
+
+                    b.HasIndex("RetainUntilUtc", "TenantId", "AgentId");
+
+                    b.HasIndex("TenantId", "AgentId", "ConnectionEpoch")
+                        .IsUnique()
+                        .HasDatabaseName("UX_ClientConnectionAdmissions_Epoch")
+                        .HasFilter("\"ConnectionEpoch\" IS NOT NULL");
+
+                    b.ToTable("ClientConnectionAdmissions", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_ClientConnectionAdmissions_Epoch", "\"ConnectionEpoch\" IS NULL OR \"ConnectionEpoch\">0");
+
+                            t.HasCheckConstraint("CK_ClientConnectionAdmissions_Identity", "\"TenantId\" > 0 AND \"AgentId\" <> '00000000-0000-0000-0000-000000000000'::uuid AND \"ConnectionId\" <> '00000000-0000-0000-0000-000000000000'::uuid");
+
+                            t.HasCheckConstraint("CK_ClientConnectionAdmissions_Pending", "\"Status\" = 2 OR ( \"ConnectionEpoch\" IS NOT NULL AND \"ConnectionEpoch\">0 AND \"OperationId\" IS NOT NULL AND \"OperationId\"<>'00000000-0000-0000-0000-000000000000'::uuid AND \"PayloadHash\" IS NOT NULL AND \"ReceivedAtUtc\" IS NOT NULL AND \"AdmissionExpiresAtUtc\" IS NOT NULL AND \"AuthenticationExpiresAtUtc\" IS NOT NULL AND \"AdmissionExpiresAtUtc\">\"ReceivedAtUtc\" AND \"AuthenticationExpiresAtUtc\">\"ReceivedAtUtc\" AND \"MetadataJson\" IS NOT NULL)");
+
+                            t.HasCheckConstraint("CK_ClientConnectionAdmissions_Status", "\"Status\" IN (1,2,3)");
+                        });
+                });
+
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ClientConnectionEpochRecord", b =>
                 {
                     b.Property<int>("TenantId")
@@ -343,12 +403,91 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("AgentId")
                         .HasColumnType("uuid");
 
+                    b.Property<DateTimeOffset?>("CancellationBarrierUntilUtc")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<long>("LastIssuedEpoch")
                         .HasColumnType("bigint");
 
                     b.HasKey("TenantId", "AgentId");
 
                     b.ToTable("ClientConnectionEpochs", (string)null);
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ClientConnectionOwnerRecord", b =>
+                {
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("AgentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset?>("AcceptanceClockFloorUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("AcceptanceGuardAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<bool>("Active")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false);
+
+                    b.Property<string>("AdmissionPayloadHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<DateTimeOffset?>("AuthenticationExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("ConnectionEpoch")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasDefaultValue(0L);
+
+                    b.Property<Guid?>("ConnectionId")
+                        .HasColumnType("uuid");
+
+                    b.Property<decimal>("LastHeartbeatSequence")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("numeric(20,0)")
+                        .HasDefaultValue(0m);
+
+                    b.Property<DateTimeOffset?>("LastReceivedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("MetadataJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValueSql("'{}'::jsonb");
+
+                    b.Property<long>("OwnerRevision")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasDefaultValue(0L);
+
+                    b.Property<DateTimeOffset?>("PresenceExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("StartOperationId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("TenantId", "AgentId");
+
+                    b.ToTable("ClientConnectionOwners", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_ClientConnectionOwners_Active", "\"AcceptanceGuardAtUtc\" IS NULL OR NOT \"Active\" OR ( \"ConnectionEpoch\" > 0 AND \"ConnectionId\" IS NOT NULL AND \"ConnectionId\" <> '00000000-0000-0000-0000-000000000000'::uuid AND \"StartOperationId\" IS NOT NULL AND \"AdmissionPayloadHash\" IS NOT NULL AND \"LastReceivedAtUtc\" IS NOT NULL AND \"PresenceExpiresAtUtc\" IS NOT NULL AND \"AuthenticationExpiresAtUtc\" IS NOT NULL AND \"LastHeartbeatSequence\" > 0)");
+
+                            t.HasCheckConstraint("CK_ClientConnectionOwners_CommittedShape", "(\"ConnectionEpoch\"=0 AND \"ConnectionId\" IS NULL) OR (\"ConnectionEpoch\">0 AND \"ConnectionId\" IS NOT NULL AND \"StartOperationId\" IS NOT NULL AND \"AdmissionPayloadHash\" IS NOT NULL AND \"LastReceivedAtUtc\" IS NOT NULL AND \"PresenceExpiresAtUtc\" IS NOT NULL AND \"AuthenticationExpiresAtUtc\" IS NOT NULL)");
+
+                            t.HasCheckConstraint("CK_ClientConnectionOwners_Epoch", "\"ConnectionEpoch\" >= 0 AND \"OwnerRevision\" >= 0");
+
+                            t.HasCheckConstraint("CK_ClientConnectionOwners_Identity", "\"TenantId\" > 0 AND \"AgentId\" <> '00000000-0000-0000-0000-000000000000'::uuid");
+
+                            t.HasCheckConstraint("CK_ClientConnectionOwners_Sequence", "\"LastHeartbeatSequence\" BETWEEN 0 AND 18446744073709551615");
+                        });
                 });
 
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ClientInstallGrant", b =>
@@ -1660,6 +1799,57 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.ToTable("JobParameters", (string)null);
                 });
 
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.JobRunControlRecord", b =>
+                {
+                    b.Property<long>("RunId")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset?>("CancellationEnqueuedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("CancellationReason")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<DateTimeOffset?>("CancellationRequestedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("DispatchEnqueuedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("DispatchOwnerConnectionId")
+                        .HasColumnType("uuid");
+
+                    b.Property<long?>("DispatchOwnerEpoch")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset?>("DispatchPreparedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("NativeDeadlineUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset?>("TerminalReadyAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("TerminalResultHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.HasKey("RunId");
+
+                    b.HasIndex("TerminalReadyAtUtc", "NativeDeadlineUtc");
+
+                    b.ToTable("JobRunControls", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_JobRunControls_DispatchOwner", "(\"DispatchOwnerConnectionId\" IS NULL AND \"DispatchOwnerEpoch\" IS NULL) OR (\"DispatchOwnerConnectionId\" IS NOT NULL AND \"DispatchOwnerConnectionId\" <> '00000000-0000-0000-0000-000000000000'::uuid AND \"DispatchOwnerEpoch\" IS NOT NULL AND \"DispatchOwnerEpoch\" > 0)");
+                        });
+                });
+
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.JobRunRecord", b =>
                 {
                     b.Property<long>("Id")
@@ -2036,6 +2226,89 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.HasKey("Id");
 
                     b.ToTable("M2MConnectivitySettings", (string)null);
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ManagedOrchestrationRequestBinding", b =>
+                {
+                    b.Property<int>("RequestId")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("AgentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("CallbackUrl")
+                        .HasMaxLength(2048)
+                        .HasColumnType("character varying(2048)");
+
+                    b.Property<string>("CorrelationId")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ExecutionId")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<string>("GrantHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("IngestFingerprint")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("JobDefinitionId")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<string>("LinkId")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<long>("LinkRevision")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("ParentRequestId")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<string>("PeerInstanceId")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<string>("PeerTenantId")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<string>("RequestTaskId")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<Guid>("ServicePrincipalId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.HasKey("RequestId");
+
+                    b.HasIndex("ExecutionId")
+                        .IsUnique()
+                        .HasFilter("\"ExecutionId\" IS NOT NULL");
+
+                    b.HasIndex("ServicePrincipalId", "ParentRequestId", "RequestTaskId")
+                        .IsUnique();
+
+                    b.ToTable("ManagedOrchestrationRequestBindings", (string)null);
                 });
 
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.McpOperatorAcceptedAuditRecord", b =>
@@ -3621,362 +3894,6 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.ToTable("McpOperatorTerminalSessions", (string)null);
                 });
 
-            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.MonitoringAuditRecord", b =>
-                {
-                    b.Property<Guid>("AuditId")
-                        .HasColumnType("uuid");
-
-                    b.Property<DateTimeOffset>("AtUtc")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<decimal>("ConfigurationRevision")
-                        .HasColumnType("numeric(20,0)");
-
-                    b.Property<string>("DetailsJson")
-                        .IsRequired()
-                        .HasColumnType("jsonb");
-
-                    b.Property<Guid>("EntityId")
-                        .HasColumnType("uuid");
-
-                    b.Property<string>("EntityKind")
-                        .IsRequired()
-                        .HasMaxLength(32)
-                        .HasColumnType("character varying(32)");
-
-                    b.Property<string>("Operation")
-                        .IsRequired()
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)");
-
-                    b.Property<Guid>("OperatorId")
-                        .HasColumnType("uuid");
-
-                    b.Property<string>("Reason")
-                        .IsRequired()
-                        .HasMaxLength(512)
-                        .HasColumnType("character varying(512)");
-
-                    b.Property<int>("TenantId")
-                        .HasColumnType("integer");
-
-                    b.HasKey("AuditId");
-
-                    b.HasIndex("TenantId", "AtUtc");
-
-                    b.ToTable("MonitoringAudits", (string)null);
-                });
-
-            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.MonitoringBypassRecord", b =>
-                {
-                    b.Property<int>("TenantId")
-                        .HasColumnType("integer");
-
-                    b.Property<Guid>("BypassId")
-                        .HasColumnType("uuid");
-
-                    b.Property<string>("DefinitionJson")
-                        .IsRequired()
-                        .HasColumnType("jsonb");
-
-                    b.Property<DateTimeOffset?>("ExpiresAtUtc")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.HasKey("TenantId", "BypassId");
-
-                    b.HasIndex("TenantId", "ExpiresAtUtc");
-
-                    b.ToTable("MonitoringBypasses", (string)null);
-                });
-
-            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.MonitoringEventRecord", b =>
-                {
-                    b.Property<Guid>("EventId")
-                        .HasColumnType("uuid");
-
-                    b.Property<DateTimeOffset>("AtUtc")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("EventJson")
-                        .IsRequired()
-                        .HasColumnType("jsonb");
-
-                    b.Property<Guid>("OccurrenceId")
-                        .HasColumnType("uuid");
-
-                    b.Property<int>("TenantId")
-                        .HasColumnType("integer");
-
-                    b.HasKey("EventId");
-
-                    b.HasIndex("OccurrenceId");
-
-                    b.HasIndex("TenantId", "AtUtc", "EventId");
-
-                    b.ToTable("MonitoringEvents", (string)null);
-                });
-
-            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.MonitoringEvidenceStreamRecord", b =>
-                {
-                    b.Property<int>("TenantId")
-                        .HasColumnType("integer");
-
-                    b.Property<Guid>("AgentId")
-                        .HasColumnType("uuid");
-
-                    b.Property<bool>("Active")
-                        .HasColumnType("boolean");
-
-                    b.Property<long>("ConnectionEpoch")
-                        .HasColumnType("bigint");
-
-                    b.Property<Guid>("ConnectionId")
-                        .HasColumnType("uuid");
-
-                    b.Property<Guid>("EvidenceStreamId")
-                        .HasColumnType("uuid");
-
-                    b.Property<DateTimeOffset>("RegisteredAtUtc")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<decimal>("Revision")
-                        .IsConcurrencyToken()
-                        .HasColumnType("numeric(20,0)");
-
-                    b.HasKey("TenantId", "AgentId");
-
-                    b.ToTable("MonitoringEvidenceStreams", (string)null);
-                });
-
-            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.MonitoringFlowOutboxRecord", b =>
-                {
-                    b.Property<Guid>("OutboxId")
-                        .HasColumnType("uuid");
-
-                    b.Property<int>("Attempts")
-                        .HasColumnType("integer");
-
-                    b.Property<string>("Code")
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)");
-
-                    b.Property<DateTimeOffset>("CreatedAtUtc")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<Guid>("EventId")
-                        .HasColumnType("uuid");
-
-                    b.Property<Guid?>("FlowRunId")
-                        .HasColumnType("uuid");
-
-                    b.Property<DateTimeOffset?>("HandedOffAtUtc")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("IntentJson")
-                        .IsRequired()
-                        .HasColumnType("jsonb");
-
-                    b.Property<DateTimeOffset?>("LeaseExpiresAtUtc")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<long>("LeaseFence")
-                        .IsConcurrencyToken()
-                        .HasColumnType("bigint");
-
-                    b.Property<Guid?>("LeaseId")
-                        .HasColumnType("uuid");
-
-                    b.Property<DateTimeOffset?>("NextAttemptAtUtc")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<Guid>("OccurrenceId")
-                        .HasColumnType("uuid");
-
-                    b.Property<string>("OutcomeJson")
-                        .HasColumnType("jsonb");
-
-                    b.Property<string>("StableFlowDispatchKey")
-                        .IsRequired()
-                        .HasMaxLength(256)
-                        .HasColumnType("character varying(256)");
-
-                    b.Property<short>("Status")
-                        .HasColumnType("smallint");
-
-                    b.Property<int>("TenantId")
-                        .HasColumnType("integer");
-
-                    b.Property<Guid?>("WorkerId")
-                        .HasColumnType("uuid");
-
-                    b.HasKey("OutboxId");
-
-                    b.HasIndex("EventId");
-
-                    b.HasIndex("FlowRunId")
-                        .IsUnique()
-                        .HasFilter("\"FlowRunId\" IS NOT NULL");
-
-                    b.HasIndex("StableFlowDispatchKey")
-                        .IsUnique();
-
-                    b.HasIndex("TenantId", "Status", "NextAttemptAtUtc", "LeaseExpiresAtUtc");
-
-                    b.ToTable("MonitoringFlowOutbox", (string)null);
-                });
-
-            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.MonitoringGroupRecord", b =>
-                {
-                    b.Property<int>("TenantId")
-                        .HasColumnType("integer");
-
-                    b.Property<Guid>("GroupId")
-                        .HasColumnType("uuid");
-
-                    b.Property<string>("DefinitionJson")
-                        .IsRequired()
-                        .HasColumnType("jsonb");
-
-                    b.Property<decimal>("Revision")
-                        .HasColumnType("numeric(20,0)");
-
-                    b.HasKey("TenantId", "GroupId");
-
-                    b.ToTable("MonitoringGroups", (string)null);
-                });
-
-            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.MonitoringOccurrenceRecord", b =>
-                {
-                    b.Property<Guid>("OccurrenceId")
-                        .HasColumnType("uuid");
-
-                    b.Property<Guid>("AgentId")
-                        .HasColumnType("uuid");
-
-                    b.Property<DateTimeOffset?>("EndedAtUtc")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("OccurrenceJson")
-                        .IsRequired()
-                        .HasColumnType("jsonb");
-
-                    b.Property<DateTimeOffset>("RaisedAtUtc")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<Guid>("RaisedEventId")
-                        .HasColumnType("uuid");
-
-                    b.Property<string>("ResourceKey")
-                        .IsRequired()
-                        .HasMaxLength(512)
-                        .HasColumnType("character varying(512)");
-
-                    b.Property<Guid>("RuleId")
-                        .HasColumnType("uuid");
-
-                    b.Property<int>("TenantId")
-                        .HasColumnType("integer");
-
-                    b.HasKey("OccurrenceId");
-
-                    b.HasIndex("RaisedEventId")
-                        .IsUnique();
-
-                    b.HasIndex("TenantId", "EndedAtUtc");
-
-                    b.HasIndex("TenantId", "RuleId", "AgentId", "ResourceKey")
-                        .IsUnique()
-                        .HasDatabaseName("UX_MonitoringOccurrence_OpenSeries")
-                        .HasFilter("\"EndedAtUtc\" IS NULL");
-
-                    b.ToTable("MonitoringOccurrences", (string)null);
-                });
-
-            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.MonitoringRuleRecord", b =>
-                {
-                    b.Property<int>("TenantId")
-                        .HasColumnType("integer");
-
-                    b.Property<Guid>("RuleId")
-                        .HasColumnType("uuid");
-
-                    b.Property<string>("DefinitionJson")
-                        .IsRequired()
-                        .HasColumnType("jsonb");
-
-                    b.Property<decimal>("Revision")
-                        .HasColumnType("numeric(20,0)");
-
-                    b.HasKey("TenantId", "RuleId");
-
-                    b.ToTable("MonitoringRules", (string)null);
-                });
-
-            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.MonitoringSeriesRecord", b =>
-                {
-                    b.Property<int>("TenantId")
-                        .HasColumnType("integer");
-
-                    b.Property<Guid>("RuleId")
-                        .HasColumnType("uuid");
-
-                    b.Property<Guid>("AgentId")
-                        .HasColumnType("uuid");
-
-                    b.Property<string>("ResourceKey")
-                        .HasMaxLength(512)
-                        .HasColumnType("character varying(512)");
-
-                    b.Property<bool>("Acknowledged")
-                        .HasColumnType("boolean");
-
-                    b.Property<Guid?>("ActiveOccurrenceId")
-                        .HasColumnType("uuid");
-
-                    b.Property<short>("EvidenceQuality")
-                        .HasColumnType("smallint");
-
-                    b.Property<Guid?>("LatestOccurrenceId")
-                        .HasColumnType("uuid");
-
-                    b.Property<short>("Phase")
-                        .HasColumnType("smallint");
-
-                    b.Property<string>("StateJson")
-                        .IsRequired()
-                        .HasColumnType("jsonb");
-
-                    b.Property<decimal>("StateRevision")
-                        .IsConcurrencyToken()
-                        .HasColumnType("numeric(20,0)");
-
-                    b.Property<bool>("Suppressed")
-                        .HasColumnType("boolean");
-
-                    b.Property<DateTimeOffset>("UpdatedAtUtc")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.HasKey("TenantId", "RuleId", "AgentId", "ResourceKey");
-
-                    b.HasIndex("TenantId", "AgentId");
-
-                    b.ToTable("MonitoringSeries", (string)null);
-                });
-
-            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.MonitoringTenantConfigurationRecord", b =>
-                {
-                    b.Property<int>("TenantId")
-                        .HasColumnType("integer");
-
-                    b.Property<decimal>("Revision")
-                        .IsConcurrencyToken()
-                        .HasColumnType("numeric(20,0)");
-
-                    b.HasKey("TenantId");
-
-                    b.ToTable("MonitoringTenantConfigurations", (string)null);
-                });
-
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.OidcSigningKey", b =>
                 {
                     b.Property<Guid>("Id")
@@ -4005,6 +3922,41 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                         .IsUnique();
 
                     b.ToTable("OidcSigningKeys", (string)null);
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.OrchestrationCallbackDelivery", b =>
+                {
+                    b.Property<int>("RequestId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Phase")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<int>("Attempts")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset?>("DeliveredAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("LeaseExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("LeaseId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("NextAttemptAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint");
+
+                    b.HasKey("RequestId", "Phase");
+
+                    b.HasIndex("DeliveredAtUtc", "NextAttemptAtUtc");
+
+                    b.ToTable("OrchestrationCallbackDeliveries", (string)null);
                 });
 
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.OutboxMessage", b =>
@@ -4656,6 +4608,623 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.ToTable("Tenants", (string)null);
                 });
 
+            modelBuilder.Entity("NetRatel.Infrastructure.ServiceIdentity.ServiceIdentityConfiguration", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("ApiBaseUrl")
+                        .IsRequired()
+                        .HasMaxLength(2048)
+                        .HasColumnType("character varying(2048)");
+
+                    b.Property<string>("Audience")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<bool>("Enabled")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("Issuer")
+                        .IsRequired()
+                        .HasMaxLength(2048)
+                        .HasColumnType("character varying(2048)");
+
+                    b.Property<long>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("UpdatedBy")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<string>("WebBaseUrl")
+                        .IsRequired()
+                        .HasMaxLength(2048)
+                        .HasColumnType("character varying(2048)");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("ServiceIdentityConfiguration", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_ServiceIdentityConfiguration_Singleton", "\"Id\" = 1");
+                        });
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.ServiceIdentity.ServicePrincipalRegistration", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("AliasKey")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<string>("AllowedScopesJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("ApprovedBy")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<string>("AttemptId")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<string>("ClientId")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("CreatedBy")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<long>("CurrentCredentialRevision")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("DeploymentFingerprint")
+                        .HasColumnType("text");
+
+                    b.Property<string>("DescriptorHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("DirectionId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("GrantHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("LinkId")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<long>("LinkRevision")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<string>("NormalizedClientId")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<string>("PeerInstanceId")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<string>("PeerTenantId")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<string>("ResourceConstraintsJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<long>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset?>("RevokedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset?>("TerminalControlUntilUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AliasKey")
+                        .IsUnique();
+
+                    b.HasIndex("NormalizedClientId")
+                        .IsUnique();
+
+                    b.HasIndex("TenantId");
+
+                    b.HasIndex("LinkId", "DirectionId")
+                        .IsUnique()
+                        .HasFilter("\"LinkId\" IS NOT NULL");
+
+                    b.ToTable("ServicePrincipalRegistrations", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_ServicePrincipal_Status", "\"Status\" IN ('pending','prepared','verified','in_doubt','active','revoked','expired','failed')");
+                        });
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.ServiceIdentity.ServicePrincipalSecret", b =>
+                {
+                    b.Property<Guid>("ServicePrincipalId")
+                        .HasColumnType("uuid");
+
+                    b.Property<long>("CredentialRevision")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset>("ExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("RetireAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Salt")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("SecretHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.HasKey("ServicePrincipalId", "CredentialRevision");
+
+                    b.HasIndex("ServicePrincipalId")
+                        .IsUnique()
+                        .HasFilter("\"Status\" = 'pending'");
+
+                    b.ToTable("ServicePrincipalSecrets", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_ServiceSecret_Status", "\"Status\" IN ('pending','active','retiring','revoked')");
+                        });
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.ServiceIdentity.ServiceSigningKey", b =>
+                {
+                    b.Property<string>("Kid")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<int?>("ActiveSlot")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Issuer")
+                        .IsRequired()
+                        .HasMaxLength(2048)
+                        .HasColumnType("character varying(2048)");
+
+                    b.Property<string>("ProtectedPrivateKey")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("PublicExponent")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("PublicModulus")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTimeOffset?>("ValidateUntilUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Kid");
+
+                    b.HasIndex("ActiveSlot")
+                        .IsUnique()
+                        .HasFilter("\"ActiveSlot\" IS NOT NULL");
+
+                    b.ToTable("ServiceSigningKeys", (string)null);
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.ServiceLinks.ServiceLinkAttempt", b =>
+                {
+                    b.Property<string>("AttemptId")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<string>("AbortId")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ActiveRelationshipKey")
+                        .HasColumnType("text");
+
+                    b.Property<string>("CommitId")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ConsentId")
+                        .HasColumnType("text");
+
+                    b.Property<long>("CreatedAtUnixSeconds")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("Decision")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("DescriptorHash")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("DescriptorJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<bool>("ExchangeDispatched")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("ExchangeFingerprint")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ExchangeResponseHash")
+                        .HasColumnType("text");
+
+                    b.Property<long>("ExpiresAtUnixSeconds")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("GrantHash")
+                        .HasColumnType("text");
+
+                    b.Property<string>("GrantSummaryJson")
+                        .HasColumnType("text");
+
+                    b.Property<Guid?>("InboundPrincipalId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("InitiatorVerificationReceiptId")
+                        .HasColumnType("text");
+
+                    b.Property<string>("LastErrorCode")
+                        .HasColumnType("text");
+
+                    b.Property<string>("LifecycleState")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("LinkId")
+                        .HasColumnType("text");
+
+                    b.Property<long>("LinkRevision")
+                        .HasColumnType("bigint");
+
+                    b.Property<bool>("LocalActiveAcknowledged")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("LocalActorId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<bool>("LocalBusinessSenderEnabled")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("LocalInboundActive")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("LocalPreparedAcknowledged")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("LocalTenantId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<long>("NextWorkAtUnixSeconds")
+                        .HasColumnType("bigint");
+
+                    b.Property<int?>("OutboundProfileRevision")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("PairingCodeHash")
+                        .HasColumnType("text");
+
+                    b.Property<bool>("PeerActiveAcknowledged")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("PeerInstanceId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<bool>("PeerPreparedAcknowledged")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("PeerRevocationAcknowledged")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("PeerTenantId")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ProtectedBrowserState")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ProtectedExchangeResponse")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ProtectedInboundEscrow")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ProtectedOutboundCredential")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ProtectedPairingCode")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ProtectedVerifier")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ResponderVerificationReceiptId")
+                        .HasColumnType("text");
+
+                    b.Property<long>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("RevocationId")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Role")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("SessionBindingHash")
+                        .HasColumnType("text");
+
+                    b.Property<long?>("TerminalControlExpiresAtUnixSeconds")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("UpdatedAtUnixSeconds")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("AttemptId");
+
+                    b.HasIndex("ActiveRelationshipKey")
+                        .IsUnique();
+
+                    b.HasIndex("LinkId")
+                        .IsUnique();
+
+                    b.HasIndex("LifecycleState", "NextWorkAtUnixSeconds");
+
+                    b.HasIndex("PeerInstanceId", "LocalTenantId", "PeerTenantId", "LinkRevision", "Role");
+
+                    b.ToTable("ServiceLinkAttempts", (string)null);
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.ServiceLinks.ServiceLinkOperation", b =>
+                {
+                    b.Property<string>("LinkId")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<string>("OperationId")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<bool>("Completed")
+                        .HasColumnType("boolean");
+
+                    b.Property<long>("CreatedAtUnixSeconds")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<bool>("Outbound")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("ProtectedRequestJson")
+                        .HasColumnType("text");
+
+                    b.Property<string>("RequestFingerprint")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("ResponseJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.HasKey("LinkId", "OperationId");
+
+                    b.HasIndex("Outbound", "Completed");
+
+                    b.ToTable("ServiceLinkOperations", (string)null);
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.ServiceLinks.ServiceLinkRotation", b =>
+                {
+                    b.Property<string>("RotationId")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ActivateDecisionId")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ActiveRotationKey")
+                        .HasColumnType("text");
+
+                    b.Property<long?>("CallerSwitchRevision")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("CreatedAtUnixSeconds")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("DirectionId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<long>("ExpectedCurrentCredentialRevision")
+                        .HasColumnType("bigint");
+
+                    b.Property<bool>("IsIssuer")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("LastErrorCode")
+                        .HasColumnType("text");
+
+                    b.Property<string>("LinkId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<long?>("OfferExpiresAtUnixSeconds")
+                        .HasColumnType("bigint");
+
+                    b.Property<long?>("PredecessorRetireAtUnixSeconds")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("ProtectedCandidate")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ProtectedOffer")
+                        .HasColumnType("text");
+
+                    b.Property<long>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("RotationState")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<long?>("SuccessorCredentialRevision")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("SuccessorVerificationReceiptId")
+                        .HasColumnType("text");
+
+                    b.HasKey("RotationId");
+
+                    b.HasIndex("ActiveRotationKey")
+                        .IsUnique();
+
+                    b.HasIndex("LinkId", "DirectionId", "ExpectedCurrentCredentialRevision");
+
+                    b.ToTable("ServiceLinkRotations", (string)null);
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.ServiceLinks.ServiceLinkRuntimeIdentity", b =>
+                {
+                    b.Property<int>("Id")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("InstanceId")
+                        .HasColumnType("uuid");
+
+                    b.Property<long>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint");
+
+                    b.Property<long?>("SourceAdoptedAtUnixSeconds")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("SourceAdoptedBy")
+                        .HasColumnType("text");
+
+                    b.Property<Guid?>("SourceInstanceId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("ServiceLinkRuntimeIdentity", (string)null);
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.ServiceLinks.ServiceLinkVerificationReceipt", b =>
+                {
+                    b.Property<string>("VerificationReceiptId")
+                        .HasColumnType("text");
+
+                    b.Property<string>("AttemptId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<long>("CredentialRevision")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("DirectionId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("GrantHash")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("LinkId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("RotationId")
+                        .HasColumnType("text");
+
+                    b.Property<Guid>("ServicePrincipalId")
+                        .HasColumnType("uuid");
+
+                    b.Property<long>("VerifiedAtUnixSeconds")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("VerificationReceiptId");
+
+                    b.HasIndex("LinkId", "ServicePrincipalId", "CredentialRevision", "RotationId");
+
+                    b.ToTable("ServiceLinkVerificationReceipts", (string)null);
+                });
+
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.Agent", b =>
                 {
                     b.HasOne("NetRatel.Infrastructure.Persistence.Agent", null)
@@ -4790,6 +5359,15 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.Navigation("Job");
                 });
 
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.JobRunControlRecord", b =>
+                {
+                    b.HasOne("NetRatel.Infrastructure.Persistence.JobRunRecord", null)
+                        .WithOne()
+                        .HasForeignKey("NetRatel.Infrastructure.Persistence.JobRunControlRecord", "RunId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.JobRunRecord", b =>
                 {
                     b.HasOne("NetRatel.Infrastructure.Persistence.JobDefinition", "Job")
@@ -4855,6 +5433,15 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                         .OnDelete(DeleteBehavior.Cascade);
 
                     b.Navigation("Activity");
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ManagedOrchestrationRequestBinding", b =>
+                {
+                    b.HasOne("NetRatel.Infrastructure.Persistence.RequestRecord", null)
+                        .WithOne()
+                        .HasForeignKey("NetRatel.Infrastructure.Persistence.ManagedOrchestrationRequestBinding", "RequestId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.McpOperatorAcceptedAuditRecord", b =>
@@ -5168,20 +5755,11 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                         .IsRequired();
                 });
 
-            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.MonitoringEventRecord", b =>
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.OrchestrationCallbackDelivery", b =>
                 {
-                    b.HasOne("NetRatel.Infrastructure.Persistence.MonitoringOccurrenceRecord", null)
+                    b.HasOne("NetRatel.Infrastructure.Persistence.RequestRecord", null)
                         .WithMany()
-                        .HasForeignKey("OccurrenceId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-                });
-
-            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.MonitoringFlowOutboxRecord", b =>
-                {
-                    b.HasOne("NetRatel.Infrastructure.Persistence.MonitoringEventRecord", null)
-                        .WithMany()
-                        .HasForeignKey("EventId")
+                        .HasForeignKey("RequestId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
                 });
@@ -5221,6 +5799,24 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                         .IsRequired();
 
                     b.Navigation("Script");
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.ServiceIdentity.ServicePrincipalRegistration", b =>
+                {
+                    b.HasOne("NetRatel.Infrastructure.Persistence.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.ServiceIdentity.ServicePrincipalSecret", b =>
+                {
+                    b.HasOne("NetRatel.Infrastructure.ServiceIdentity.ServicePrincipalRegistration", null)
+                        .WithMany()
+                        .HasForeignKey("ServicePrincipalId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.Agent", b =>

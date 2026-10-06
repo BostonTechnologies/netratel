@@ -1,5 +1,5 @@
 using Bunit;
-using FluentAssertions;
+using AwesomeAssertions;
 using System.Net;
 using System.Reflection;
 using Microsoft.AspNetCore.Components.Forms;

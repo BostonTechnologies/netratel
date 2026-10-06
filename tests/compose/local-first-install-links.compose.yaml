@@ -2,3 +2,5 @@ services:
   api:
     environment:
       GitHubReleases__ReadOnlyToken: ${NETRATEL_LOCAL_FIRST_GITHUB_TOKEN:-}
+      # Only this disposable acceptance profile permits its explicit loopback HTTP identity.
+      ServiceIdentity__AllowPrivateHttp: "true"

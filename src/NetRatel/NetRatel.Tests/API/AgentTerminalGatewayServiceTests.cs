@@ -1,7 +1,7 @@
 using System.Collections.Concurrent;
 using System.Security.Claims;
 using System.Text;
-using FluentAssertions;
+using AwesomeAssertions;
 using Grpc.Core;
 using Grpc.Net.Client;
 using Microsoft.AspNetCore.Builder;
@@ -852,7 +852,7 @@ public sealed class AgentTerminalGatewayServiceTests
         }
     }
 
-    private sealed class RecordingTerminalSessionStore : IMcpOperatorTerminalSessionStore
+    internal sealed class RecordingTerminalSessionStore : IMcpOperatorTerminalSessionStore
     {
         private readonly ConcurrentDictionary<string, TaskCompletionSource<TerminalTransition>> _openedTransitions = new(StringComparer.Ordinal);
 
@@ -923,5 +923,5 @@ public sealed class AgentTerminalGatewayServiceTests
             throw new NotSupportedException();
     }
 
-    private sealed record TerminalTransition(string SessionId, McpOperatorTerminalSessionState State, string? Reason);
+    internal sealed record TerminalTransition(string SessionId, McpOperatorTerminalSessionState State, string? Reason);
 }

@@ -1,4 +1,4 @@
-using FluentAssertions;
+using AwesomeAssertions;
 using NetRatel.Shared;
 using NetRatel.Shared.Contracts;
 using NetRatel.Web.Services.RemoteSupport;

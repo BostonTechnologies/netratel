@@ -1,5 +1,5 @@
 using Bunit;
-using FluentAssertions;
+using AwesomeAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using MudBlazor.Services;
 using NetRatel.Shared.Client;
@@ -29,6 +29,16 @@ public sealed class ClientEndpointSummaryTests : AsyncBunitContext
         cut.Markup.Should().Contain("Branding Site URL");
         cut.Markup.Should().Contain("ClientArtifacts:PublicBaseUrl override");
         cut.Markup.Should().Contain("Derived from the API origin");
+    }
+
+    [Fact]
+    public void BrandingGatewayShowsItsStoredSource()
+    {
+        var cut = Render<ClientEndpointSummary>(parameters => parameters.Add(component => component.Endpoints,
+            new("https://web.example.test", "https://web.example.test", "https://gateway.example.test",
+                "branding-site-url:administrator", "branding-site-url", "branding-gateway-url:administrator")));
+        cut.Markup.Should().Contain("Branding Gateway URL · administrator");
+        cut.FindAll("code")[2].TextContent.Should().Be("https://gateway.example.test");
     }
 
     [Fact]

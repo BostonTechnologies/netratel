@@ -39,6 +39,8 @@ services:
     restart: unless-stopped
     environment:
       ASPNETCORE_URLS: http://+:9222
+      Branding__SiteUrl: ${NETRATEL_PUBLIC_ORIGIN:-}
+      Branding__GatewayUrl: ${NETRATEL_PUBLIC_GATEWAY_ORIGIN:-}
       ConnectionStrings__NetRatelDb: Host=postgres;Port=5432;Database=${POSTGRES_DB:-netratel};Username=${POSTGRES_USER:-netratel};Password=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
       DataProtection__KeysDirectory: /var/netratel/keys
       Authentication__MachineToken__Enabled: "false"

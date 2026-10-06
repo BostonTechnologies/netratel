@@ -1,4 +1,4 @@
-using FluentAssertions;
+using AwesomeAssertions;
 using NetRatel.Application.ClientAuth;
 using NetRatel.Client.Service.Auth;
 using Xunit;
