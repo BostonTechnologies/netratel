@@ -22,7 +22,7 @@ namespace NetRatel.Tests.Infrastructure;
 [Collection(PostgreSqlPersistenceCollection.Name)]
 public sealed class FlowReceiverEvidencePostgresTests(PostgreSqlPersistenceFixture postgres)
 {
-    private const string MigrationId = "20261005231013_AddCommittedOwnerEvidenceAndReceiver";
+    private const string MigrationId = "20261006195456_AddFlowReceiverEvidence";
 
     [Theory]
     [InlineData(false)]
@@ -221,9 +221,10 @@ public sealed class FlowReceiverEvidencePostgresTests(PostgreSqlPersistenceFixtu
 
     private sealed class FixtureClock : TimeProvider
     {
-        private DateTimeOffset now = new(2026, 10, 5, 12, 0, 0, TimeSpan.Zero);
+        private DateTimeOffset now = DateTimeOffset.UtcNow;
         public override DateTimeOffset GetUtcNow() => now;
         public void Advance(TimeSpan duration) => now += duration;
+        public void CaptureSystemTime() => now = DateTimeOffset.UtcNow;
     }
 
     private sealed class PublicationPolicySeam : IFlowExecutionAuthorityVerifier
@@ -297,6 +298,7 @@ public sealed class FlowReceiverEvidencePostgresTests(PostgreSqlPersistenceFixtu
                 db.Tenants.AddRange(new Tenant { Id = TenantId, Name = "Receiver provider fixture" }, new Tenant { Id = 18, Name = "Foreign tenant" });
                 await db.SaveChangesAsync();
             }
+            h.Clock.CaptureSystemTime();
             var created = (await h.Definitions.CreateAsync(TenantId, new("Receiver provider fixture"), "fixture-editor")).Definition!;
             var saved = (await h.Definitions.SaveDraftAsync(TenantId, created.Id, new(created.Revision, created.Name, FlowTestData.Graph()), "fixture-editor")).Definition!;
             var publication = await h.Definitions.PublishAsync(TenantId, saved.Id, new(saved.Revision), FlowTestData.Authority);
