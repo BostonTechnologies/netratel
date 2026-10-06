@@ -269,7 +269,13 @@ internal sealed class ServiceLinkHttpProxy : IAsyncDisposable
                 if (!request.Headers.TryAddWithoutValidation(header.Key, header.Value.ToArray()))
                     request.Content?.Headers.TryAddWithoutValidation(header.Key, header.Value.ToArray());
             }
-            using var response = await forward.SendAsync(request, incidentFault is null
+            // This actual telemetry read is a long-lived SSE body. Forward its
+            // headers immediately; buffering to EOF prevents the owner receiving any envelope.
+            var telemetryStream = HttpMethods.IsGet(context.Request.Method) &&
+                context.Request.Path.Value is { } telemetryPath &&
+                telemetryPath.StartsWith("/api/v2/agents/", StringComparison.Ordinal) &&
+                telemetryPath.EndsWith("/telemetry/stream", StringComparison.Ordinal);
+            using var response = await forward.SendAsync(request, incidentFault is null && !telemetryStream
                 ? HttpCompletionOption.ResponseContentRead : HttpCompletionOption.ResponseHeadersRead, context.RequestAborted);
             backendResponseObserved = true;
             if (firstIncidentCreate)
@@ -403,6 +409,11 @@ internal sealed class ServiceLinkHttpProxy : IAsyncDisposable
             foreach (var header in response.Headers.Concat(response.Content.Headers))
                 if (!header.Key.Equals("Transfer-Encoding", StringComparison.OrdinalIgnoreCase))
                     context.Response.Headers[header.Key] = header.Value.ToArray();
+            if (telemetryStream)
+            {
+                context.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpResponseBodyFeature>()?.DisableBuffering();
+                await context.Response.StartAsync(context.RequestAborted);
+            }
             if (!HttpMethods.IsHead(context.Request.Method) && (int)response.StatusCode >= 200 &&
                 response.StatusCode is not HttpStatusCode.NoContent and not HttpStatusCode.NotModified)
                 await response.Content.CopyToAsync(context.Response.Body, context.RequestAborted);
