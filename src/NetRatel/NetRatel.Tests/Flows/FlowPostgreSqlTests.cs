@@ -1,5 +1,5 @@
 using System.Text.Json;
-using FluentAssertions;
+using AwesomeAssertions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using NetRatel.Application.Flows;
@@ -302,10 +302,20 @@ public sealed class FlowPostgreSqlTests(PostgreSqlPersistenceFixture postgres)
         public bool Allowed { get; set; } = true;
         public Task<bool> AuthorizeAsync(int tenantId, FlowExecutionAuthorityDto authority, CancellationToken cancellationToken = default) => Task.FromResult(Allowed);
     }
-    private sealed class Guard : IFlowDispatchGuard
+    private sealed class Guard : IFlowDispatchGuard, IFlowTransactionAdmission
     {
         public bool Allowed { get; set; } = true;
         public Task<FlowDispatchDecision> CanDispatchAsync(FlowEventEnvelope input, CancellationToken cancellationToken = default) => Task.FromResult(new FlowDispatchDecision(Allowed, Allowed ? "allowed" : "occurrence-suppressed"));
+        // This pure Flow harness has no Monitoring rows; its existing explicit
+        // synthetic Guard supplies the transaction seam, never the production default.
+        Task<FlowDispatchDecision> IFlowTransactionAdmission.CanStartActionAsync(OrchestratorDbContext db, FlowRunLease lease,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return db.Database.IsNpgsql() && db.Database.CurrentTransaction is not null
+                ? CanDispatchAsync(lease.Event, cancellationToken)
+                : Task.FromResult(new FlowDispatchDecision(false, "fixture-transaction-unavailable"));
+        }
     }
     private sealed class Catalog : IFlowConnectorCatalog
     {
@@ -347,6 +357,7 @@ public sealed class FlowPostgreSqlTests(PostgreSqlPersistenceFixture postgres)
             var services = new ServiceCollection(); services.AddLogging(); services.AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(Connection));
             services.AddSingleton<TimeProvider>(Clock); services.AddNetRatelFlows();
             services.AddSingleton<IFlowExecutionAuthorityVerifier>(Authority); services.AddSingleton<IFlowDispatchGuard>(Guard);
+            services.AddSingleton<IFlowTransactionAdmission>(Guard);
             services.AddSingleton<IFlowConnectorCatalog>(Catalog); services.AddSingleton<IFlowIncidentActionDispatcher>(Dispatcher);
             return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
         }

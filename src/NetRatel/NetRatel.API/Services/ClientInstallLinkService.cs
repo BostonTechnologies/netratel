@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using NetRatel.API.Models;
 using NetRatel.Application.Artifacts;
 using NetRatel.Infrastructure.Identity.Branding;
@@ -34,6 +35,7 @@ public sealed class ClientInstallLinkService(
     IDataProtectionProvider protection,
     IDeploymentBrandingService branding,
     IConfiguration configuration,
+    IOptionsMonitor<ClientInstallationEndpointOptions> endpointOptions,
     TimeProvider clock,
     ILogger<ClientInstallLinkService> logger)
 {
@@ -154,7 +156,7 @@ public sealed class ClientInstallLinkService(
     }
 
     private async Task<ClientInstallEndpointSummary> ResolveEndpointsAsync(CancellationToken ct) =>
-        ClientInstallEndpointResolver.Resolve(configuration, await branding.GetEffectiveAsync(ct).ConfigureAwait(false));
+        ClientInstallEndpointResolver.Resolve(endpointOptions.CurrentValue, await branding.GetEffectiveAsync(ct).ConfigureAwait(false));
 
     public async Task<(string Script, string Extension)?> GetPublicScriptAsync(string token, string extension, CancellationToken ct)
     {

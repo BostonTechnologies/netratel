@@ -5,7 +5,7 @@ using Akka.Actor;
 using Akka.Cluster;
 using Akka.Cluster.Sharding;
 using Akka.Configuration;
-using FluentAssertions;
+using AwesomeAssertions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using NetRatel.Akka.RemoteSupport;

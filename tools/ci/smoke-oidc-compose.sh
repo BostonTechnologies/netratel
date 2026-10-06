@@ -340,7 +340,9 @@ start_gateway_client() {
     --volume "${trust_bundle_path}:/run/netratel-smoke/ca-bundle.pem:ro" \
     --env SSL_CERT_FILE=/run/netratel-smoke/ca-bundle.pem \
     --env NetRatel_CLIENT_LOG_DIR=/var/lib/netratel/logs \
-    "$client_image" --api http://api:9222 --Gateway:Endpoint=https://gateway:443 \
+    --env NetRatelCLIENT__Client__ApiBaseUrl=http://api:9222 \
+    --env NetRatelCLIENT__Gateway__Endpoint=https://gateway:443 \
+    "$client_image" \
     --Gateway:TelemetryFastIntervalSeconds=1 >/dev/null
 }
 

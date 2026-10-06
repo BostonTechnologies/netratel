@@ -1,4 +1,5 @@
-﻿using Microsoft.AspNetCore.Authentication;
+﻿using NetRatel.API.Services.Monitoring;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Identity;
@@ -27,7 +28,6 @@ using NetRatel.Infrastructure;
 using NetRatel.API.Realtime;
 using NetRatel.API.Services;
 using NetRatel.API.Services.Jobs;
-using NetRatel.API.Services.Monitoring;
 using NetRatel.API.Services.Operations;
 using NetRatel.API.Models;
 using NetRatel.API.Security;
@@ -63,6 +63,7 @@ using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Infrastructure.Identity.Branding;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.API.OpenApi;
+using NetRatel.API.Endpoints.ServiceLinks;
 
 if (args is ["--gssapi-application-smoke"])
 {
@@ -177,6 +178,8 @@ var aiAgentOpsLogBuffer = new AiAgentOpsLogBuffer();
 
 builder.AddServiceDefaults();
 builder.Services.AddNetRatelAkkaRuntime(builder.Configuration);
+builder.Services.AddSingleton<AgentGatewayRenewalAuthenticator>();
+builder.Services.AddSingleton<AgentGatewayAuthenticationLeaseRegistry>();
 builder.Services.AddRemoteSupportIceConfiguration(builder.Configuration);
 builder.Services.AddSingleton(aiAgentOpsLogBuffer);
 builder.Logging.AddProvider(new AiAgentOpsLoggerProvider(aiAgentOpsLogBuffer));
@@ -311,6 +314,10 @@ builder.Services
                     var jwt = handler.ReadJwtToken(token);
                     var issuer = jwt.Issuer ?? string.Empty;
                     var tokenUse = jwt.Claims.FirstOrDefault(c => c.Type == "token_use")?.Value;
+                    if (ServiceIdentityAuthenticationHandler.SelectServiceIssuer(jwt, string.Empty))
+                    {
+                        return ServiceIdentityAuthenticationHandler.SchemeName;
+                    }
                     var authMode = jwt.Claims.FirstOrDefault(c => c.Type == "auth_mode")?.Value;
                     var isSystemToken =
                         string.Equals(tokenUse, "system", StringComparison.OrdinalIgnoreCase) ||
@@ -478,6 +485,7 @@ builder.Services
 
 builder.Services.AddAuthorization(options =>
 {
+    MonitoringAuthorization.AddPolicies(options);
     string? ResolveAdminId() => builder.Configuration["Authorization:Oidc:AdminGroupId"]
                                  ?? builder.Configuration["Authorization:Azure:AdminGroupId"]
                                  ?? builder.Configuration["AzureAd:AdminGroupId"]
@@ -739,6 +747,7 @@ builder.Services.AddSingleton<NetRatel.Application.RatelDesk.IRatelDeskCredentia
 
 builder.Services.AddSingleton<IAuthorizationHandler, AllowedClientHandler>();
 builder.Services.AddScoped<IAuthorizationHandler, EffectiveAccessHandler>();
+MonitoringFlowPermissionAuthorization.AddHandlers(builder.Services);
 builder.Services.AddScoped<IAuthorizationHandler, TerminalSessionAccessHandler>();
 builder.Services.AddScoped<InstanceAdministratorInvariant>();
 
@@ -760,6 +769,13 @@ builder.Services.AddOpenApi(options =>
         };
 
         document.Components.SecuritySchemes["M2M"] = new OpenApiSecurityScheme { Type = SecuritySchemeType.Http, Scheme = "Bearer", BearerFormat = "JWT", Description = "Machine-to-machine access token." };
+        document.Components.SecuritySchemes[ServiceIdentityAuthenticationHandler.SchemeName] = new OpenApiSecurityScheme
+        {
+            Type = SecuritySchemeType.Http,
+            Scheme = "Bearer",
+            BearerFormat = "JWT",
+            Description = "Managed service access token constrained by the current peer, tenant, credential revision and approved scope. Reciprocal link verification and control require their distinct service scopes."
+        };
         document.Components.SecuritySchemes["Agent"] = new OpenApiSecurityScheme { Type = SecuritySchemeType.Http, Scheme = "Bearer", BearerFormat = "JWT", Description = "Native NetRatel Client token." };
         document.Components.SecuritySchemes["MachineToken"] = new OpenApiSecurityScheme { Type = SecuritySchemeType.Http, Scheme = "Bearer", BearerFormat = "JWT", Description = "Machine-token API credential." };
         document.Components.SecuritySchemes["IntegrationCredential"] = new OpenApiSecurityScheme { Type = SecuritySchemeType.Http, Scheme = "Bearer", Description = "Opaque API credential constrained by its durable grants. Purpose-bound local HTTP-MCP ingress credentials require pairing and are excluded from interactive API documentation." };
@@ -788,11 +804,7 @@ builder.Services.Configure<ClientArtifactsOptions>(builder.Configuration.GetSect
 builder.Services.Configure<AgentAuthOptions>(builder.Configuration.GetSection("AgentAuth"));
 builder.Services.Configure<SecurityHardeningOptions>(builder.Configuration.GetSection("Security"));
 builder.Services.Configure<StorageOptions>(builder.Configuration.GetSection("StorageOptions"));
-builder.Services.AddOptions<DeploymentBrandingOptions>()
-    .BindConfiguration(DeploymentBrandingOptions.SectionName)
-    .ValidateDataAnnotations()
-    .ValidateOnStart();
-builder.Services.AddSingleton<IValidateOptions<DeploymentBrandingOptions>, DeploymentBrandingOptionsValidator>();
+builder.Services.AddClientInstallationOptions(builder.Configuration);
 builder.Services.AddSingleton<StorageInitializer>();
 builder.Services.AddScoped<IClientArtifactsService, ClientArtifactsService>();
 builder.Services.AddScoped<ClientInstallLinkService>();
@@ -865,6 +877,9 @@ builder.Services.AddHostedService<GlobalSearchQueryWarmupService>();
 builder.Services.AddNetRatelApplication();
 builder.Services.AddNetRatelInfrastructure(builder.Configuration);
 builder.Services.AddMonitoringFlowBridge();
+builder.Services.AddNetRatelServiceIdentityApi(builder.Configuration);
+builder.Services.AddServiceLinkProtocol(builder.Configuration);
+builder.Services.AddOrchestrationManagedServices();
 builder.Services.AddIdentityCore<LocalUser>(options =>
     {
         options.User.RequireUniqueEmail = true;
@@ -1027,6 +1042,7 @@ app.Run();
 
 static bool HasAdminClaim(ClaimsPrincipal user, string? adminGroupId)
 {
+    if (user.HasClaim("token_use", "netratel_service") || user.HasClaim("auth_mode", "service")) return false;
     var hasRole = user.Claims.Any(c =>
         (c.Type == "roles" || c.Type == ClaimTypes.Role) &&
         string.Equals(c.Value, "Operator", StringComparison.OrdinalIgnoreCase));
@@ -1050,6 +1066,7 @@ static async Task<bool> HasInstanceAdministratorOrLegacyOperatorAsync(Authorizat
 
 static bool HasAllowedM2MClient(ClaimsPrincipal user, IEnumerable<string> allowedClientIds, string? requiredScope)
 {
+    if (user.HasClaim("token_use", "netratel_service") || user.HasClaim("auth_mode", "service")) return false;
     var candidates = new[]
     {
         user.FindFirst("client_id")?.Value,

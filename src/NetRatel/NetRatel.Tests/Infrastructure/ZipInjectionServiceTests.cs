@@ -1,6 +1,6 @@
 using System.IO.Compression;
 using System.Text;
-using FluentAssertions;
+using AwesomeAssertions;
 using NetRatel.Infrastructure.Artifacts;
 using Xunit;
 

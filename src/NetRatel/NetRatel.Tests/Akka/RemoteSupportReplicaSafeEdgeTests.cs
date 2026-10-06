@@ -1,4 +1,4 @@
-using FluentAssertions;
+using AwesomeAssertions;
 using NetRatel.Akka.Configuration;
 using NetRatel.Akka.RemoteSupport;
 using NetRatel.Shared.Contracts.RemoteSupport;

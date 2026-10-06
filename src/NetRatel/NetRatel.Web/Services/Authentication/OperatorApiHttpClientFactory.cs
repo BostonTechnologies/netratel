@@ -40,7 +40,7 @@ public sealed class OperatorApiHttpClientFactory(
     }
 
     private static bool RequiresOperatorCredential(string name) =>
-        name is "OrchestratorApi" or "OrchestratorApiStreaming" or
+        name is "OrchestratorApi" or "OrchestratorApiStreaming" or "ServiceLinkApi" or
             NetRatel.Web.Services.Flows.FlowApiService.ClientName or
             NetRatel.Web.Services.Monitoring.MonitoringApiService.ClientName or
             NetRatel.Web.Services.RatelDesk.RatelDeskConnectorApiService.ClientName ||

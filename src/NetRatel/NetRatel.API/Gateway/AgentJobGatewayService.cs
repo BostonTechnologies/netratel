@@ -44,6 +44,7 @@ public sealed class AgentJobGatewayService(
         }
 
         var session = await ValidateHelloAsync(requestStream.Current, identity, context.CancellationToken).ConfigureAwait(false);
+        await using var authority = await AgentGatewayAuthenticationLifetime.AttachAsync(context, session.Client, session.ConnectionId, session.ConnectionEpoch).ConfigureAwait(false);
         AgentJobGatewayRegistration registration;
         try
         {
@@ -59,7 +60,7 @@ public sealed class AgentJobGatewayService(
         }
 
         using var admissionCancellation = CancellationTokenSource.CreateLinkedTokenSource(
-            context.CancellationToken, registration.CompletionToken);
+            authority.Token, registration.CompletionToken);
         try
         {
             await RequirePresenceAsync(session.Client, session.ConnectionId, session.ConnectionEpoch, admissionCancellation.Token).ConfigureAwait(false);
@@ -83,11 +84,12 @@ public sealed class AgentJobGatewayService(
                 ulong lastSequence = 0;
                 while (await requestStream.MoveNext(cancellationToken).ConfigureAwait(false))
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     RequireCurrent(registration);
                     lastSequence = await ProcessInboundAsync(requestStream.Current, session, lastSequence, registration, cancellationToken).ConfigureAwait(false);
                 }
             }, cancellationToken => WriteOutboundAsync(registration, responseStream, cancellationToken),
-                context.CancellationToken, registration.CompletionToken, logger).ConfigureAwait(false);
+                authority.Token, registration.CompletionToken, logger, context.GetHttpContext().Abort).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (registration.CompletionToken.IsCancellationRequested && !context.CancellationToken.IsCancellationRequested)
         {
@@ -167,7 +169,9 @@ public sealed class AgentJobGatewayService(
                 statusAt,
                 update.ProgressPercent,
                 string.IsNullOrWhiteSpace(update.ResultJson) ? null : update.ResultJson,
-                update.ExitCode), cancellationToken).ConfigureAwait(false);
+                update.ExitCode,
+                AuthenticatedOwner: new OwnerKey(session.Client, session.ConnectionId,
+                    checked((long)session.ConnectionEpoch))), cancellationToken).ConfigureAwait(false);
             RequireCurrent(registration);
         }
         catch (Exception exception) when (exception is InvalidOperationException or KeyNotFoundException)
@@ -234,12 +238,21 @@ public sealed class AgentJobGatewayService(
             JobLifecycleStatus.Completed or JobLifecycleStatus.Failed or JobLifecycleStatus.Cancelled;
     }
 
-    private static async Task WriteOutboundAsync(AgentJobGatewayRegistration registration, IServerStreamWriter<GatewayJobFrame> responseStream, CancellationToken cancellationToken)
+    private async Task WriteOutboundAsync(AgentJobGatewayRegistration registration, IServerStreamWriter<GatewayJobFrame> responseStream, CancellationToken cancellationToken)
     {
         await foreach (var frame in registration.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
         {
             RequireCurrent(registration);
+            // No DB transaction survives into this transport check/write.
+            // The physical frame's original owner cannot adopt a successor.
+            if (!Guid.TryParse(frame.ConnectionId, out var connectionId) || frame.ConnectionEpoch == 0 ||
+                !Guid.TryParse(frame.ClientId, out var agentId))
+                throw new RpcException(new Status(StatusCode.Aborted, "The outbound job owner is invalid."));
+            await RequirePresenceAsync(new ClientKey(frame.TenantId, agentId), connectionId,
+                frame.ConnectionEpoch, cancellationToken).ConfigureAwait(false);
+            RequireCurrent(registration);
             await responseStream.WriteAsync(frame, cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
         }
     }
 

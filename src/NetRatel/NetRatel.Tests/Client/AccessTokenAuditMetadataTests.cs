@@ -1,5 +1,5 @@
 using System.IdentityModel.Tokens.Jwt;
-using FluentAssertions;
+using AwesomeAssertions;
 using NetRatel.Client.Service.Auth;
 using Xunit;
 

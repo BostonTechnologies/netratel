@@ -1,5 +1,5 @@
 using System.Security.Claims;
-using FluentAssertions;
+using AwesomeAssertions;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Grpc.Net.Client;
@@ -747,6 +747,8 @@ public sealed class AgentTelemetryGatewayServiceTests
         public TaskCompletionSource<MonitoringInputResult> Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public MonitoringTelemetryInput? Telemetry { get; private set; }
         public MonitoringServicesInput? Services { get; private set; }
+        public Task<MonitoringEvidenceFence?> ReserveEvidenceRegistrationAsync(ClientKey client, Guid connectionId, long epoch, Guid registrationId, CancellationToken ct)
+            => Task.FromResult<MonitoringEvidenceFence?>(new(client, connectionId, epoch, registrationId, 1));
         public Task<MonitoringInputResult> BeginEvidenceStreamAsync(MonitoringEvidenceFence fence, CancellationToken ct)
         { Begun.Add(fence); return Task.FromResult(new MonitoringInputResult(MonitoringInputDisposition.Accepted, 0, 0)); }
         public Task<MonitoringInputResult> EndEvidenceStreamAsync(MonitoringEvidenceFence fence, CancellationToken ct) => Task.FromResult(new MonitoringInputResult(MonitoringInputDisposition.Accepted, 0, 0));

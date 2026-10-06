@@ -1,4 +1,4 @@
-using FluentAssertions;
+using AwesomeAssertions;
 using NetRatel.Shared.Contracts.Terminals;
 using Xunit;
 

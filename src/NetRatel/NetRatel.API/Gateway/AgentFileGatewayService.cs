@@ -43,6 +43,7 @@ public sealed class AgentFileGatewayService(
 
         var hello = requestStream.Current;
         var session = await ValidateHelloAsync(hello, identity, context.CancellationToken).ConfigureAwait(false);
+        await using var authority = await AgentGatewayAuthenticationLifetime.AttachAsync(context, session.Client, session.ConnectionId, session.ConnectionEpoch).ConfigureAwait(false);
         AgentFileGatewayRegistration registration;
         try
         {
@@ -59,7 +60,7 @@ public sealed class AgentFileGatewayService(
 
         using (registration)
         {
-            using var admissionCancellation = CancellationTokenSource.CreateLinkedTokenSource(context.CancellationToken, registration.CompletionToken);
+            using var admissionCancellation = CancellationTokenSource.CreateLinkedTokenSource(authority.Token, registration.CompletionToken);
             try
             {
                 await RequirePresenceAsync(session.Client, session.ConnectionId, session.ConnectionEpoch, admissionCancellation.Token).WaitAsync(admissionCancellation.Token).ConfigureAwait(false);
@@ -79,6 +80,7 @@ public sealed class AgentFileGatewayService(
                     ulong lastSequence = 0;
                     while (await requestStream.MoveNext(cancellationToken).ConfigureAwait(false))
                     {
+                        cancellationToken.ThrowIfCancellationRequested();
                         if (!registration.IsCurrent) return;
                         lastSequence = await ProcessInboundAsync(requestStream.Current, session, registration, lastSequence, cancellationToken).ConfigureAwait(false);
                     }
@@ -89,7 +91,7 @@ public sealed class AgentFileGatewayService(
                     await responseStream.WriteAsync(CreateAccepted(session), cancellationToken).ConfigureAwait(false);
                     await WriteOutboundAsync(registration, responseStream, cancellationToken).ConfigureAwait(false);
                 },
-                context.CancellationToken, registration.CompletionToken, logger).ConfigureAwait(false);
+                authority.Token, registration.CompletionToken, logger, context.GetHttpContext().Abort).ConfigureAwait(false);
         }
     }
 
@@ -189,6 +191,7 @@ public sealed class AgentFileGatewayService(
         {
             if (!registration.IsCurrent) return;
             await responseStream.WriteAsync(frame, cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
         }
     }
 

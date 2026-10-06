@@ -1,5 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using NetRatel.Application.Operations;
+using NetRatel.Infrastructure.ServiceIdentity;
+using NetRatel.Infrastructure.ServiceLinks;
 
 namespace NetRatel.Infrastructure.Persistence;
 
@@ -63,7 +65,6 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
     public DbSet<ClientWindowsSessionSnapshot> ClientWindowsSessionSnapshots => Set<ClientWindowsSessionSnapshot>();
     public DbSet<ClientServicesSnapshotRecord> ClientServicesSnapshots => Set<ClientServicesSnapshotRecord>();
     public DbSet<RatelDeskConnectorRecord> RatelDeskConnectors => Set<RatelDeskConnectorRecord>();
-    public DbSet<ClientConnectionEpochRecord> ClientConnectionEpochs => Set<ClientConnectionEpochRecord>();
     public DbSet<MonitoringTenantConfigurationRecord> MonitoringTenantConfigurations => Set<MonitoringTenantConfigurationRecord>();
     public DbSet<MonitoringRuleRecord> MonitoringRules => Set<MonitoringRuleRecord>();
     public DbSet<MonitoringGroupRecord> MonitoringGroups => Set<MonitoringGroupRecord>();
@@ -80,6 +81,9 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
     public DbSet<FlowActionRecord> FlowActions => Set<FlowActionRecord>();
     public DbSet<FlowAuditRecord> FlowAudits => Set<FlowAuditRecord>();
     public DbSet<FlowRuntimeIdentityRecord> FlowRuntimeIdentity => Set<FlowRuntimeIdentityRecord>();
+    public DbSet<ClientConnectionEpochRecord> ClientConnectionEpochs => Set<ClientConnectionEpochRecord>();
+    public DbSet<ClientConnectionOwnerRecord> ClientConnectionOwners => Set<ClientConnectionOwnerRecord>();
+    public DbSet<ClientConnectionAdmissionRecord> ClientConnectionAdmissions => Set<ClientConnectionAdmissionRecord>();
     public DbSet<ClientWindowsSessionInventoryRefresh> ClientWindowsSessionInventoryRefreshes => Set<ClientWindowsSessionInventoryRefresh>();
     public DbSet<RemoteSupportTargetSelectionEvent> RemoteSupportTargetSelectionEvents => Set<RemoteSupportTargetSelectionEvent>();
     public DbSet<RemoteSupportSessionRecord> RemoteSupportSessions => Set<RemoteSupportSessionRecord>();
@@ -128,6 +132,11 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
             entity.Property(record => record.OwnerPrincipalId).HasMaxLength(32).IsRequired();
             entity.Property(record => record.ConfigurationJson).HasColumnType("jsonb").IsRequired();
         });
+        modelBuilder.ConfigureServiceIdentityModel();
+        modelBuilder.ConfigureServiceLinkModel();
+        modelBuilder.ConfigureManagedOrchestrationModel();
+        modelBuilder.ConfigureJobRunControlModel();
+        modelBuilder.ConfigureClientConnectionOwnershipModel();
         modelBuilder.Entity<ClientConnectionEpochRecord>(entity =>
         {
             entity.ToTable("ClientConnectionEpochs");

@@ -1,6 +1,7 @@
 using Grpc.Core;
 using Microsoft.AspNetCore.Authorization;
 using System.Diagnostics;
+using System.Threading.Channels;
 using NetRatel.AgentGateway.Contracts.V1;
 using NetRatel.Akka.Configuration;
 using NetRatel.Akka.Observability;
@@ -44,12 +45,24 @@ public sealed class AgentLogGatewayService(
             throw new RpcException(new Status(StatusCode.InvalidArgument, "A log gateway hello frame is required."));
         }
 
-        var session = await ValidateHelloAsync(requestStream.Current, identity, context.CancellationToken).ConfigureAwait(false);
+        var hello = requestStream.Current;
+        var session = await ValidateHelloAsync(hello, identity, context.CancellationToken).ConfigureAwait(false);
+        await using var authority = await AgentGatewayAuthenticationLifetime.AttachAsync(context, session.Client, session.ConnectionId, session.ConnectionEpoch).ConfigureAwait(false);
+        authority.Token.ThrowIfCancellationRequested();
         try
         {
-            using var registration = logSessions.Register(session.Client, session.ConnectionId, session.ConnectionEpoch, requestStream.Current.Hello, provisional: true);
+            using var registration = logSessions.Register(session.Client, session.ConnectionId, session.ConnectionEpoch, hello.Hello, provisional: true);
             using var queryRegistration = logQueries?.Register(registration, provisional: true);
-            using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(context.CancellationToken, registration.CompletionToken,
+            // The legacy no-query path still sends flow-control replies. Keep
+            // those behind the same writer as admission, with bounded capacity.
+            var flowControl = queryRegistration is null
+                ? Channel.CreateBounded<(GatewayLogFrame Frame, TaskCompletionSource Written)>(new BoundedChannelOptions(32)
+                {
+                    SingleReader = true, SingleWriter = true, FullMode = BoundedChannelFullMode.Wait,
+                    AllowSynchronousContinuations = false
+                })
+                : null;
+            using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(authority.Token, registration.CompletionToken,
                 queryRegistration?.CompletionToken ?? CancellationToken.None);
             try
             {
@@ -59,28 +72,56 @@ public sealed class AgentLogGatewayService(
             {
                 throw new AgentGatewayRegistrationFencedException();
             }
+            lifetime.Token.ThrowIfCancellationRequested();
             // Publish state last: query dispatch also requires this exact state to be active.
             if (!registration.IsCurrent || queryRegistration?.TryActivate() == false || !registration.TryActivate())
                 throw new AgentGatewayRegistrationFencedException();
 
-            using var activity = StartStreamActivity(requestStream.Current);
+            using var activity = StartStreamActivity(hello);
             NetRatelAkkaTelemetry.LogSessionOpened();
+            var acceptedWritten = false;
             try
             {
-                if (!registration.IsCurrent || queryRegistration?.IsCurrent == false) throw new AgentGatewayRegistrationFencedException();
-                await responseStream.WriteAsync(CreateAccepted(session, requestStream.Current), lifetime.Token).ConfigureAwait(false);
-                await GatewayDuplexSession.RunAsync(ReadInboundAsync,
-                    queryRegistration is null
-                        ? token => Task.Delay(Timeout.InfiniteTimeSpan, token)
-                        : token => WriteOutboundAsync(queryRegistration, responseStream, token),
+                await GatewayDuplexSession.RunAsync(ReadInboundAsync, WriteResponsesAsync,
                     lifetime.Token, registration.CompletionToken,
-                    logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<AgentLogGatewayService>.Instance).ConfigureAwait(false);
+                    logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<AgentLogGatewayService>.Instance, context.GetHttpContext().Abort).ConfigureAwait(false);
+
+                // Replacement before actual admission delivery must retain its
+                // explicit fenced outcome after the pumps have joined.
+                if (!acceptedWritten && !context.CancellationToken.IsCancellationRequested &&
+                    (!registration.IsCurrent || queryRegistration?.IsCurrent == false))
+                    throw new AgentGatewayRegistrationFencedException();
+
+                async Task WriteResponsesAsync(CancellationToken cancellationToken)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (!registration.IsCurrent || queryRegistration?.IsCurrent == false) throw new AgentGatewayRegistrationFencedException();
+                    await responseStream.WriteAsync(CreateAccepted(session, hello), cancellationToken).ConfigureAwait(false);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    acceptedWritten = true;
+                    if (queryRegistration is not null)
+                    {
+                        await WriteOutboundAsync(queryRegistration, responseStream, cancellationToken).ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        await foreach (var frame in flowControl!.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+                        {
+                            cancellationToken.ThrowIfCancellationRequested();
+                            if (!registration.IsCurrent) return;
+                            await responseStream.WriteAsync(frame.Frame, cancellationToken).ConfigureAwait(false);
+                            cancellationToken.ThrowIfCancellationRequested();
+                            frame.Written.TrySetResult();
+                        }
+                    }
+                }
 
                 async Task ReadInboundAsync(CancellationToken cancellationToken)
                 {
                     var lastSequence = 0UL;
                     while (await requestStream.MoveNext(cancellationToken).ConfigureAwait(false))
                     {
+                        cancellationToken.ThrowIfCancellationRequested();
                         if (!registration.IsCurrent || queryRegistration?.IsCurrent == false) return;
                         var frame = requestStream.Current;
                         if (!MatchesSession(frame, session) || frame.Sequence == 0 || frame.Sequence <= lastSequence ||
@@ -97,6 +138,8 @@ public sealed class AgentLogGatewayService(
                         }
 
                         await RequirePresenceAsync(session.Client, session.ConnectionId, session.ConnectionEpoch, cancellationToken).ConfigureAwait(false);
+                        cancellationToken.ThrowIfCancellationRequested();
+                        if (!registration.IsCurrent || queryRegistration?.IsCurrent == false) return;
                         var accepted = frame.PayloadCase switch
                         {
                             AgentLogFrame.PayloadOneofCase.Batch => registration.TryAppend(frame.Batch),
@@ -110,7 +153,12 @@ public sealed class AgentLogGatewayService(
                             NetRatelAkkaTelemetry.LogBatchAccepted(frame.Batch.Records.Count, encodedSize, frame.Batch.DroppedRecordCount, frame.Batch.ResyncRequired);
                             if (queryRegistration is null && registration.IsCurrent)
                             {
-                                await responseStream.WriteAsync(CreateFlowControl(session, frame), cancellationToken).ConfigureAwait(false);
+                                var written = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                                await flowControl!.Writer.WriteAsync((CreateFlowControl(session, frame), written), cancellationToken).ConfigureAwait(false);
+                                // Preserve the old transport backpressure: the
+                                // reader advances only after this reply is written.
+                                await written.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+                                cancellationToken.ThrowIfCancellationRequested();
                             }
                         }
                         lastSequence = frame.Sequence;
@@ -202,8 +250,10 @@ public sealed class AgentLogGatewayService(
     {
         await foreach (var frame in registration.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (!registration.IsCurrent) return;
             await responseStream.WriteAsync(frame, cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
         }
     }
 
@@ -217,6 +267,7 @@ public sealed class AgentLogGatewayService(
     private async Task RequirePresenceAsync(ClientKey client, Guid connectionId, ulong connectionEpoch, CancellationToken cancellationToken)
     {
         var presence = await presenceRouter.GetSnapshotAsync(client, cancellationToken).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
         if (presence.Status != ClientPresenceStatus.Online || presence.ConnectionId != connectionId ||
             presence.ConnectionEpoch != checked((long)connectionEpoch))
         {

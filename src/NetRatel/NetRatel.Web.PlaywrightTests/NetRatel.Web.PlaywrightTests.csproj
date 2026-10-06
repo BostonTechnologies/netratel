@@ -30,11 +30,21 @@
 
   <ItemGroup>
     <Content Include="../NetRatel.Web/obj/$(Configuration)/$(TargetFramework)/scopedcss/bundle/NetRatel.Web.styles.css" Link="NetRatel.Web.styles.css" CopyToOutputDirectory="PreserveNewest" />
-    <Content Include="$(NuGetPackageRoot)/mudblazor/9.10.0/staticwebassets/MudBlazor.min.css" Link="MudBlazor.min.css" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\NetRatel.Web\NetRatel.Web.csproj" />
   </ItemGroup>
+
+  <!-- Resolve the asset from the package NuGet selected, including fallback package folders. -->
+  <Target Name="ResolvePlaywrightMudBlazorCss" BeforeTargets="AssignTargetPaths" DependsOnTargets="ResolvePackageAssets">
+    <ItemGroup>
+      <_PlaywrightMudBlazorAssembly Include="@(ResolvedCompileFileDefinitions)"
+        Condition="'%(ResolvedCompileFileDefinitions.NuGetPackageId)' == 'MudBlazor' and '%(ResolvedCompileFileDefinitions.Filename)' == 'MudBlazor'" />
+      <Content Include="@(_PlaywrightMudBlazorAssembly->'%(RootDir)%(Directory)../../staticwebassets/MudBlazor.min.css')"
+        Link="MudBlazor.min.css" CopyToOutputDirectory="PreserveNewest" />
+    </ItemGroup>
+    <Error Condition="'@(_PlaywrightMudBlazorAssembly)' == ''" Text="The restored MudBlazor compile asset is required to resolve the Playwright CSS." />
+  </Target>
 
 </Project>

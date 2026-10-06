@@ -1,6 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
-using FluentAssertions;
+using AwesomeAssertions;
 using Microsoft.EntityFrameworkCore;
 using NetRatel.Application.Jobs;
 using NetRatel.Application.Operations;

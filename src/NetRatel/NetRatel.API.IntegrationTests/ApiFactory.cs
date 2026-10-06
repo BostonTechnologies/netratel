@@ -10,6 +10,7 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using Npgsql;
 using NetRatel.API.Bootstrap;
@@ -68,6 +69,7 @@ public sealed class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
     private readonly string _root;
     private readonly PostgreSqlContainer _postgres;
     private readonly bool _ownsPostgres;
+    private readonly bool _isolateServiceLinkHostSettings;
     private IReadOnlyDictionary<string, string?> _settings = new Dictionary<string, string?>();
     private IReadOnlyDictionary<string, string?> _previousEnvironment = new Dictionary<string, string?>();
 
@@ -76,15 +78,24 @@ public sealed class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
     {
     }
 
-    private ApiFactory(PostgreSqlContainer postgres, bool ownsPostgres)
+    // Only real service-link peers opt in; the collection fixture keeps its original constructor.
+    internal ApiFactory(bool isolateServiceLinkHostSettings)
+        : this(new PostgreSqlBuilder("postgres:16-alpine").Build(), ownsPostgres: true,
+            isolateServiceLinkHostSettings: isolateServiceLinkHostSettings)
+    {
+    }
+
+    private ApiFactory(PostgreSqlContainer postgres, bool ownsPostgres, bool isolateServiceLinkHostSettings = false)
     {
         _postgres = postgres;
         _ownsPostgres = ownsPostgres;
+        _isolateServiceLinkHostSettings = isolateServiceLinkHostSettings;
         _root = Path.Combine(Path.GetTempPath(), "netratel-api-openapi", Guid.NewGuid().ToString("N"));
     }
 
-    private ApiFactory(PostgreSqlContainer postgres, IReadOnlyDictionary<string, string?> settings)
-        : this(postgres, ownsPostgres: false)
+    private ApiFactory(PostgreSqlContainer postgres, IReadOnlyDictionary<string, string?> settings,
+        bool isolateServiceLinkHostSettings = false)
+        : this(postgres, ownsPostgres: false, isolateServiceLinkHostSettings: isolateServiceLinkHostSettings)
     {
         _settings = settings;
     }
@@ -124,7 +135,8 @@ public sealed class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
             settings[setting.Key] = setting.Value;
         }
 
-        var sibling = new ApiFactory(_postgres, settings);
+        var sibling = new ApiFactory(_postgres, settings,
+            isolateServiceLinkHostSettings: _isolateServiceLinkHostSettings);
         sibling.ApplyEnvironmentSettings(settings.Keys.Concat(RetiredSelectorConfigurationKeys));
         return sibling;
     }
@@ -304,6 +316,31 @@ public sealed class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
         return new JwtSecurityTokenHandler().WriteToken(token);
     }
 
+    protected override IHost CreateHost(IHostBuilder builder)
+    {
+        if (_isolateServiceLinkHostSettings)
+        {
+            var settings = _settings.ToDictionary(setting => setting.Key, setting => setting.Value, StringComparer.OrdinalIgnoreCase);
+            // The actual peer always has a current database and non-null settings.
+            // Do not generalize the early argument seam to nullable/default or deployment profiles.
+            if (!settings.TryGetValue("ConnectionStrings:NetRatelDb", out var connectionString) ||
+                string.IsNullOrWhiteSpace(connectionString) || settings.Values.Any(static value => value is null) ||
+                settings.ContainsKey("ConnectionStrings:Default") ||
+                settings.Keys.Any(static key => key.StartsWith("M2MClients", StringComparison.OrdinalIgnoreCase)))
+                throw new InvalidOperationException("Isolated service-link host settings require a nonempty database, non-null values and no default or deployment-client overrides.");
+
+            // Default cannot supply authority while this peer's NetRatelDb is present.
+            // Retired selectors have no production consumers; keep ambient values suppressed.
+            settings["ConnectionStrings:Default"] = string.Empty;
+            foreach (var key in RetiredSelectorConfigurationKeys) settings.TryAdd(key, string.Empty);
+            // MVC.Testing10 converts this host configuration to entry-point arguments
+            // before Program reads bootstrap/database/key paths; app configuration alone is later.
+            builder.ConfigureHostConfiguration(configuration => configuration.AddInMemoryCollection(settings));
+        }
+
+        return base.CreateHost(builder);
+    }
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Production");
@@ -404,6 +441,7 @@ public sealed class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
 
     private void ApplyEnvironmentSettings(IEnumerable<string> configurationKeys)
     {
+        if (_isolateServiceLinkHostSettings) return;
         var keys = configurationKeys.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         var environmentKeys = keys.Select(EnvironmentKey).Distinct(StringComparer.Ordinal).ToArray();
         _previousEnvironment = environmentKeys.ToDictionary(
@@ -421,6 +459,7 @@ public sealed class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
 
     private void RestoreEnvironmentSettings()
     {
+        if (_isolateServiceLinkHostSettings) return;
         foreach (var setting in _previousEnvironment)
         {
             Environment.SetEnvironmentVariable(setting.Key, setting.Value);
@@ -547,7 +586,7 @@ public sealed class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
     }
 }
 
-[CollectionDefinition(Name)]
+[CollectionDefinition(Name, DisableParallelization = true)]
 public sealed class ApiIntegrationCollection : ICollectionFixture<ApiFactory>
 {
     public const string Name = "API integration host";

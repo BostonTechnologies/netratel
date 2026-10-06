@@ -2,7 +2,7 @@ using System.Buffers.Binary;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
-using FluentAssertions;
+using AwesomeAssertions;
 using Xunit;
 
 namespace NetRatel.Tests.Web;

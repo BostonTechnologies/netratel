@@ -1,0 +1,10 @@
+# Candidate Compose introduces blank optional endpoint variables. Older APIs
+# validate a configured empty SiteUrl as an error. Keep new configuration out
+# of the prior-image seed phase; the candidate phase uses its full recipe.
+# Apply this immediately after the base recipe, before other environment
+# overlays, so Compose removes the keys before merging additional settings.
+services:
+  api:
+    environment:
+      Branding__SiteUrl: !reset null
+      Branding__GatewayUrl: !reset null

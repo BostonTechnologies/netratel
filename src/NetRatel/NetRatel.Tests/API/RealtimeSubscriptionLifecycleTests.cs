@@ -1,6 +1,6 @@
 using System.Reflection;
 using System.Security.Claims;
-using FluentAssertions;
+using AwesomeAssertions;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.SignalR;
 using NetRatel.API.Realtime;

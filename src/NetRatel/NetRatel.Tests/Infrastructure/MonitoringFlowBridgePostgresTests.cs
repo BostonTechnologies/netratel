@@ -1,7 +1,7 @@
 using System.Collections.Immutable;
 using System.Text.Json;
 using Akka.Actor;
-using FluentAssertions;
+using AwesomeAssertions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -236,6 +236,402 @@ public sealed class MonitoringFlowBridgePostgresTests(PostgreSqlPersistenceFixtu
         (await rig.Definitions.GetRunsAsync(rig.Client.TenantId, rig.Version.FlowId)).Should().ContainSingle();
     }
 
+    [Fact]
+    public async Task ExactPersistedGuardDeniesForeignTenantAlteredEnvelopeAndClearDuringAuthorityAwait()
+    {
+        await using var rig = await Rig.CreateAsync(postgres);
+        var firing = await rig.FireAsync(); var lease = await rig.ClaimAsync();
+        (await rig.Bridge.ProcessLeaseAsync(lease, default)).Should().BeTrue();
+        var input = MonitoringFlowEventFactory.Create(lease.Intent)!;
+        await using var scope = rig.Provider.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+        var actual = scope.ServiceProvider.GetRequiredService<IFlowExecutionAuthorityVerifier>();
+        var guard = new MonitoringFlowDispatchGuard(db, actual, rig.Clock);
+        (await guard.CanDispatchAsync(input)).Allowed.Should().BeTrue();
+        (await guard.CanDispatchAsync(input with { TenantId = input.TenantId + 1 })).Allowed.Should().BeFalse();
+        (await guard.CanDispatchAsync(input with { Data = input.Data with { Resource = "foreign" } })).Allowed.Should().BeFalse();
+        var pause = new PauseAuthority(actual);
+        var delayed = new MonitoringFlowDispatchGuard(db, pause, rig.Clock);
+        using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var decision = delayed.CanDispatchAsync(input, budget.Token);
+        await pause.Entered.Task.WaitAsync(budget.Token);
+        try
+        {
+            var current = (await rig.Store.LoadSeriesAsync(rig.Key, budget.Token))!;
+            var evaluator = new MonitoringSeriesEvaluator(rig.Clock);
+            (await rig.Store.CommitAsync(new(evaluator.Clear(current, rig.Rule, Guid.NewGuid(), "clear during authority read"), 1), budget.Token))
+                .Disposition.Should().Be(MonitoringStoreWriteDisposition.Stored);
+        }
+        finally { pause.Resume.TrySetResult(); }
+        (await decision).Allowed.Should().BeFalse();
+        rig.Dispatcher.Sends.Should().Be(0);
+        (await rig.Store.LoadSeriesAsync(rig.Key, budget.Token))!.Occurrence!.OccurrenceId.Should().Be(firing.Occurrence!.OccurrenceId);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SameScopedGuardDeniesEndedEvidenceWithoutRetiringPresenceOrSendingIncident(bool throughActor)
+    {
+        await using var rig = await Rig.CreateAsync(postgres);
+        await rig.FireAsync();
+        var lease = await rig.ClaimAsync();
+        (await rig.Bridge.ProcessLeaseAsync(lease, default)).Should().BeTrue();
+        var input = MonitoringFlowEventFactory.Create(lease.Intent)!;
+        var fence = rig.Evidence.Current!;
+        await using var scope = rig.Provider.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+        var guard = new MonitoringFlowDispatchGuard(db,
+            scope.ServiceProvider.GetRequiredService<IFlowExecutionAuthorityVerifier>(), rig.Clock);
+        var originalRun = await db.FlowRuns.AsNoTracking().SingleAsync();
+        var originalIntent = (await db.MonitoringFlowOutbox.AsNoTracking().SingleAsync()).IntentJson;
+        (await guard.CanDispatchAsync(input)).Allowed.Should().BeTrue();
+
+        if (throughActor)
+            (await rig.Actor.Ask<MonitoringInputResult>(new EndMonitoringStream(fence))).Disposition
+                .Should().Be(MonitoringInputDisposition.Accepted);
+        else
+            (await rig.Store.EndEvidenceStreamAsync(fence, default)).Should().BeTrue();
+
+        var denied = await guard.CanDispatchAsync(input);
+        denied.Allowed.Should().BeFalse();
+        denied.Code.Should().Be("monitoring-evidence-unavailable");
+        (await db.MonitoringEvidenceStreams.AsNoTracking().SingleAsync()).Active.Should().BeFalse();
+        var owner = (await rig.Provider.GetRequiredService<IClientConnectionEpochStore>()
+            .GetCurrentAsync(rig.Client, default))!;
+        owner.Owner.Should().Be(new OwnerKey(rig.Client, fence.ConnectionId, fence.ConnectionEpoch));
+        owner.IsEffective(rig.Clock.GetUtcNow()).Should().BeTrue();
+
+        (await rig.Provider.GetRequiredService<FlowRunProcessor>().ProcessOneAsync()).Should().BeTrue();
+        rig.Dispatcher.Preparations.Should().Be(0);
+        rig.Dispatcher.Sends.Should().Be(0);
+        rig.Ingress.Enqueues.Should().Be(1);
+        var failedRun = await db.FlowRuns.AsNoTracking().SingleAsync();
+        failedRun.Id.Should().Be(originalRun.Id);
+        failedRun.Status.Should().Be(FlowRunStatus.Failed);
+        failedRun.EventJson.Should().Be(originalRun.EventJson);
+        failedRun.EventFingerprint.Should().Be(originalRun.EventFingerprint);
+        (await db.MonitoringFlowOutbox.AsNoTracking().SingleAsync()).IntentJson.Should().Be(originalIntent);
+        var action = await db.FlowActions.AsNoTracking().SingleAsync();
+        action.Status.Should().Be(FlowActionStatus.Failed);
+        action.PreparedJson.Should().BeNull();
+        action.ReceiptJson.Should().BeNull();
+        (await rig.Provider.GetRequiredService<FlowRunProcessor>().ProcessOneAsync()).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task SameScopedGuardDeniesTerminalOutboxAfterRealReceiptReconciliationAndPreservesV1History()
+    {
+        await using var rig = await Rig.CreateAsync(postgres);
+        await rig.FireAsync();
+        var lease = await rig.ClaimAsync();
+        (await rig.Bridge.ProcessLeaseAsync(lease, default)).Should().BeTrue();
+        var input = MonitoringFlowEventFactory.Create(lease.Intent)!;
+        await using var scope = rig.Provider.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+        var guard = new MonitoringFlowDispatchGuard(db,
+            scope.ServiceProvider.GetRequiredService<IFlowExecutionAuthorityVerifier>(), rig.Clock);
+        (await guard.CanDispatchAsync(input)).Allowed.Should().BeTrue();
+        (await rig.Provider.GetRequiredService<FlowRunProcessor>().ProcessOneAsync()).Should().BeTrue();
+        rig.Dispatcher.Sends.Should().Be(1);
+        var originalHistory = await CaptureV1HistoryAsync();
+        originalHistory.PreparedJson.Should().NotBeNull();
+        originalHistory.ReceiptJson.Should().NotBeNull();
+        (await db.FlowRuns.AsNoTracking().SingleAsync()).Status.Should().Be(FlowRunStatus.Succeeded);
+        (await db.MonitoringFlowOutbox.AsNoTracking().SingleAsync()).Status.Should().Be(MonitoringOutboxStatus.Pending);
+
+        rig.Clock.Advance(TimeSpan.FromSeconds(5));
+        var receipt = (await rig.Store.ListUnsettledFlowRunsAsync(rig.Client.TenantId, 4, default)).Single();
+        receipt.FlowRunId.Should().Be(originalHistory.RunId);
+        (await rig.Bridge.ReconcileReceiptAsync(receipt, default)).Should().BeTrue();
+        var outbox = await db.MonitoringFlowOutbox.AsNoTracking().SingleAsync();
+        outbox.Status.Should().Be(MonitoringOutboxStatus.Completed);
+        outbox.FlowRunId.Should().Be(originalHistory.RunId);
+        var outcome = (await rig.Store.LoadSeriesAsync(rig.Key, default))!.Occurrence!.FlowOutcome!;
+        outcome.Outcome.Should().Be(MonitoringFlowOutcomeKind.Succeeded);
+        outcome.FlowRunId.Should().Be(originalHistory.RunId);
+        var persistedReceipt = JsonSerializer.Deserialize<FlowActionReceiptDto>(originalHistory.ReceiptJson!,
+            new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+        outcome.Receipt.Should().Be(new MonitoringIncidentReceiptDto(persistedReceipt.IncidentId,
+            persistedReceipt.TrackingId, persistedReceipt.SafeLink));
+
+        var denied = await guard.CanDispatchAsync(input);
+        denied.Allowed.Should().BeFalse();
+        denied.Code.Should().Be("monitoring-outbox-changed");
+        (await CaptureV1HistoryAsync()).Should().Be(originalHistory);
+        // Re-observing the genuine completed receipt cannot reopen the outbox or create another effect.
+        (await rig.Bridge.ReconcileReceiptAsync(receipt, default)).Should().BeTrue();
+        var deniedAgain = await guard.CanDispatchAsync(input);
+        deniedAgain.Allowed.Should().BeFalse();
+        deniedAgain.Code.Should().Be("monitoring-outbox-changed");
+        (await CaptureV1HistoryAsync()).Should().Be(originalHistory);
+        (await rig.Store.ListUnsettledFlowRunsAsync(rig.Client.TenantId, 4, default)).Should().BeEmpty();
+        (await rig.Provider.GetRequiredService<FlowRunProcessor>().ProcessOneAsync()).Should().BeFalse();
+        rig.Ingress.Enqueues.Should().Be(1);
+        await rig.AssertOneEffectAsync();
+
+        async Task<BridgeV1HistorySnapshot> CaptureV1HistoryAsync()
+        {
+            var run = await db.FlowRuns.AsNoTracking().SingleAsync();
+            var action = await db.FlowActions.AsNoTracking().SingleAsync();
+            var currentOutbox = await db.MonitoringFlowOutbox.AsNoTracking().SingleAsync();
+            return new(run.Id, run.EventJson, run.EventFingerprint, currentOutbox.IntentJson,
+                action.NodeId, action.IdempotencyKey, action.DraftJson, action.PreparedJson,
+                action.ConnectorRevision, action.SemanticFingerprint, action.ReceiptJson);
+        }
+    }
+
+    private sealed record BridgeV1HistorySnapshot(Guid RunId, string EventJson, string EventFingerprint, string IntentJson,
+        Guid ActionNodeId, string IdempotencyKey, string DraftJson, string? PreparedJson,
+        long? ConnectorRevision, string? SemanticFingerprint, string? ReceiptJson);
+
+    [Theory]
+    [InlineData("clear")]
+    [InlineData("end")]
+    [InlineData("owner-expiry")]
+    public async Task DirectStartActionRechecksMonitoringAfterSuccessfulExternalReadinessWithoutMutatingV1Action(string change)
+    {
+        using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+        await using var rig = await Rig.CreateAsync(postgres);
+        var firing = await rig.FireAsync();
+        var outboxLease = await rig.ClaimAsync();
+        (await rig.Bridge.ProcessLeaseAsync(outboxLease, budget.Token)).Should().BeTrue();
+        var store = rig.Provider.GetRequiredService<IFlowExecutionStore>();
+        var lease = (await store.ClaimAsync(Guid.NewGuid(), budget.Token))!;
+        lease.Should().NotBeNull();
+        FlowIncidentActionDraft? draft = null;
+        var captured = await rig.Provider.GetRequiredService<IFlowRuntimeAdapter>().ExecuteAsync(lease, (value, token) =>
+        {
+            token.ThrowIfCancellationRequested();
+            draft = value;
+            return Task.FromResult(new FlowIncidentActionResult(FlowIncidentActionResultKind.Failed, "capture-only"));
+        }, budget.Token);
+        captured.Status.Should().Be(FlowRunStatus.Failed);
+        draft.Should().NotBeNull();
+        (await store.GetOrCreateActionAsync(lease, draft!, budget.Token))!.Status.Should().Be(FlowActionStatus.Pending);
+        var preparation = await rig.Dispatcher.PrepareAsync(draft!, budget.Token);
+        preparation.Status.Should().Be(FlowIncidentPreparationStatus.Ready);
+        preparation.Action.Should().NotBeNull();
+        (await store.SavePreparedActionAsync(lease, draft!.ActionNodeId, preparation.Action!, budget.Token)).Should().BeTrue();
+        await using (var readiness = rig.Provider.CreateAsyncScope())
+            (await readiness.ServiceProvider.GetRequiredService<IFlowDispatchGuard>()
+                .CanDispatchAsync(lease.Event, budget.Token)).Allowed.Should().BeTrue();
+        var original = await CaptureAsync();
+        original.ActionStatus.Should().Be(FlowActionStatus.Pending);
+        original.ActionAttempts.Should().Be(0);
+        original.PreparedJson.Should().NotBeNull();
+        original.ReceiptJson.Should().BeNull();
+        var ownership = rig.Provider.GetRequiredService<IClientConnectionEpochStore>();
+        var owner = (await ownership.GetCurrentAsync(rig.Client, budget.Token))!;
+        owner.IsEffective(rig.Clock.GetUtcNow()).Should().BeTrue();
+        if (change == "clear")
+        {
+            var command = new MonitoringOperatorCommand(rig.Key, firing.Occurrence!.OccurrenceId,
+                Guid.Parse(rig.Authority.PrincipalId), "clear after successful external readiness");
+            (await rig.Actor.Ask<MonitoringStoreWriteResult>(new ClearMonitoringOccurrence(command), TimeSpan.FromSeconds(30), budget.Token))
+                .Disposition.Should().Be(MonitoringStoreWriteDisposition.Stored);
+            var cleared = (await rig.Store.LoadSeriesAsync(rig.Key, budget.Token))!;
+            cleared.Phase.Should().Be(MonitoringPhase.Cleared);
+            cleared.Occurrence!.OccurrenceId.Should().Be(firing.Occurrence!.OccurrenceId);
+        }
+        else if (change == "end")
+        {
+            (await rig.Actor.Ask<MonitoringInputResult>(new EndMonitoringStream(rig.Evidence.Current!), TimeSpan.FromSeconds(30), budget.Token))
+                .Disposition.Should().Be(MonitoringInputDisposition.Accepted);
+        }
+        else
+        {
+            change.Should().Be("owner-expiry");
+            // Construct an expired persisted owner deadline in a fresh provider
+            // scope without ending evidence, retiring the owner or expiring the Flow lease.
+            await using var expiry = rig.Provider.CreateAsyncScope();
+            var db = expiry.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            var row = await db.ClientConnectionOwners.SingleAsync(item => item.TenantId == rig.Client.TenantId &&
+                item.AgentId == rig.Client.AgentId && item.ConnectionId == owner.Owner.ConnectionId &&
+                item.ConnectionEpoch == (long)owner.Owner.Epoch, budget.Token);
+            var databaseNow = await db.Database.SqlQuery<DateTimeOffset>($"SELECT clock_timestamp() AS \"Value\"")
+                .SingleAsync(budget.Token);
+            row.PresenceExpiresAtUtc = databaseNow - TimeSpan.FromSeconds(1);
+            await db.SaveChangesAsync(budget.Token);
+        }
+        var currentOwner = (await ownership.GetCurrentAsync(rig.Client, budget.Token))!;
+        currentOwner.Owner.Should().Be(owner.Owner);
+        currentOwner.IsEffective(rig.Clock.GetUtcNow()).Should().Be(change != "owner-expiry");
+        await using (var current = rig.Provider.CreateAsyncScope())
+        {
+            var db = current.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            var evidence = await db.MonitoringEvidenceStreams.AsNoTracking().SingleAsync(budget.Token);
+            evidence.Active.Should().Be(change != "end");
+            (await db.ClientConnectionOwners.AsNoTracking().SingleAsync(budget.Token)).Active.Should().BeTrue();
+        }
+        var beforeStart = await CaptureAsync();
+        beforeStart.Should().Be(original);
+        beforeStart.RunStatus.Should().Be(FlowRunStatus.Running);
+        beforeStart.LeaseToken.Should().Be(lease.Token);
+        beforeStart.LeaseOwner.Should().Be(lease.WorkerId);
+        beforeStart.RunFence.Should().Be(lease.Fence);
+        beforeStart.LeaseExpiresAtUtc.Should().Be(lease.ExpiresAtUtc);
+        lease.ExpiresAtUtc.Should().BeAfter(rig.Clock.GetUtcNow());
+        // Invoke the persistence boundary directly: repeating the worker's
+        // external readiness check could hide a missing StartAction gate.
+        var started = await store.StartActionAsync(lease, draft.ActionNodeId, budget.Token);
+        if (started is { Status: FlowActionStatus.Dispatching, Request: { } request })
+            await rig.Dispatcher.DispatchAsync(request, budget.Token);
+        started.Should().BeNull();
+        rig.Dispatcher.Sends.Should().Be(0);
+        rig.Dispatcher.Preparations.Should().Be(1);
+        rig.Ingress.Enqueues.Should().Be(1);
+        (await CaptureAsync()).Should().Be(beforeStart);
+
+        async Task<DirectStartActionV1Snapshot> CaptureAsync()
+        {
+            await using var scope = rig.Provider.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            var run = await db.FlowRuns.AsNoTracking().SingleAsync(budget.Token);
+            var version = await db.FlowVersions.AsNoTracking().SingleAsync(budget.Token);
+            var action = await db.FlowActions.AsNoTracking().SingleAsync(budget.Token);
+            var outbox = await db.MonitoringFlowOutbox.AsNoTracking().SingleAsync(budget.Token);
+            var source = await db.FlowRuntimeIdentity.AsNoTracking().SingleAsync(budget.Token);
+            return new(run.Id, run.EventJson, run.EventFingerprint, version.GraphJson, version.ConfigurationHash,
+                source.SourceInstanceId, run.Status, run.Fence, run.LeaseToken, run.LeaseOwner, run.LeaseExpiresAtUtc,
+                run.Attempts, outbox.IntentJson, action.NodeId, action.IdempotencyKey, action.DraftJson,
+                action.PreparedJson, action.ConnectorRevision, action.SemanticFingerprint, action.ReceiptJson,
+                action.Status, action.Attempts, action.LeaseFence, action.Code, action.NextAttemptAtUtc);
+        }
+    }
+
+    private sealed record DirectStartActionV1Snapshot(Guid RunId, string EventJson, string EventFingerprint,
+        string GraphJson, string ConfigurationHash, Guid SourceInstanceId, FlowRunStatus RunStatus, long RunFence,
+        Guid? LeaseToken, Guid? LeaseOwner, DateTimeOffset? LeaseExpiresAtUtc, int RunAttempts, string IntentJson,
+        Guid ActionNodeId, string IdempotencyKey, string DraftJson, string? PreparedJson, long? ConnectorRevision,
+        string? SemanticFingerprint, string? ReceiptJson, FlowActionStatus ActionStatus, int ActionAttempts,
+        long ActionLeaseFence, string? ActionCode, DateTimeOffset? ActionNextAttemptAtUtc);
+
+    [Fact]
+    public async Task DirectStartActionRejectsPostgresExpiredLeaseWithSlowInjectedClockAndLiveMonitoring()
+    {
+        using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+        await using var rig = await Rig.CreateAsync(postgres);
+        await rig.FireAsync();
+        var outboxLease = await rig.ClaimAsync();
+        (await rig.Bridge.ProcessLeaseAsync(outboxLease, budget.Token)).Should().BeTrue();
+        var store = rig.Provider.GetRequiredService<IFlowExecutionStore>();
+        var lease = (await store.ClaimAsync(Guid.NewGuid(), budget.Token))!;
+        lease.Should().NotBeNull();
+        FlowIncidentActionDraft? draft = null;
+        var captured = await rig.Provider.GetRequiredService<IFlowRuntimeAdapter>().ExecuteAsync(lease, (value, token) =>
+        {
+            token.ThrowIfCancellationRequested();
+            draft = value;
+            return Task.FromResult(new FlowIncidentActionResult(FlowIncidentActionResultKind.Failed, "capture-only"));
+        }, budget.Token);
+        captured.Status.Should().Be(FlowRunStatus.Failed);
+        draft.Should().NotBeNull();
+        (await store.GetOrCreateActionAsync(lease, draft!, budget.Token))!.Status.Should().Be(FlowActionStatus.Pending);
+        var preparation = await rig.Dispatcher.PrepareAsync(draft!, budget.Token);
+        preparation.Status.Should().Be(FlowIncidentPreparationStatus.Ready);
+        preparation.Action.Should().NotBeNull();
+        (await store.SavePreparedActionAsync(lease, draft!.ActionNodeId, preparation.Action!, budget.Token)).Should().BeTrue();
+        await using (var readiness = rig.Provider.CreateAsyncScope())
+            (await readiness.ServiceProvider.GetRequiredService<IFlowDispatchGuard>()
+                .CanDispatchAsync(lease.Event, budget.Token)).Allowed.Should().BeTrue();
+
+        var fixedInjectedNow = rig.Clock.GetUtcNow();
+        DateTimeOffset expiredDeadline;
+        await using (var expiry = rig.Provider.CreateAsyncScope())
+        {
+            var db = expiry.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            using var pollBudget = CancellationTokenSource.CreateLinkedTokenSource(budget.Token);
+            pollBudget.CancelAfter(TimeSpan.FromSeconds(10));
+            DateTimeOffset databaseNow;
+            // Let the real database clock pass the fixed fixture clock without
+            // making current evidence future-dated or changing owner deadlines.
+            do
+            {
+                databaseNow = await db.Database.SqlQuery<DateTimeOffset>($"SELECT clock_timestamp() AS \"Value\"")
+                    .SingleAsync(pollBudget.Token);
+                if (databaseNow > fixedInjectedNow + TimeSpan.FromMilliseconds(500)) break;
+                await Task.Delay(TimeSpan.FromMilliseconds(25), pollBudget.Token);
+            } while (true);
+            expiredDeadline = databaseNow - TimeSpan.FromMilliseconds(250);
+            expiredDeadline.Should().BeAfter(fixedInjectedNow);
+            expiredDeadline.Should().BeBefore(databaseNow);
+            var run = await db.FlowRuns.SingleAsync(row => row.TenantId == lease.Event.TenantId && row.Id == lease.RunId, budget.Token);
+            run.LeaseToken.Should().Be(lease.Token);
+            run.LeaseOwner.Should().Be(lease.WorkerId);
+            run.Fence.Should().Be(lease.Fence);
+            run.LeaseExpiresAtUtc = expiredDeadline;
+            await db.SaveChangesAsync(budget.Token);
+        }
+        lease = lease with { ExpiresAtUtc = expiredDeadline };
+        rig.Clock.GetUtcNow().Should().Be(fixedInjectedNow);
+        lease.ExpiresAtUtc.Should().BeAfter(rig.Clock.GetUtcNow());
+
+        // Prove the owner/evidence/occurrence/outbox remain genuinely admissible
+        // in a caller transaction; refusal must come from the Flow lease deadline.
+        await using (var current = rig.Provider.CreateAsyncScope())
+        {
+            var db = current.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            await using var transaction = await db.Database.BeginTransactionAsync(budget.Token);
+            (await current.ServiceProvider.GetRequiredService<IFlowExecutionAuthorityVerifier>()
+                .AuthorizeAsync(lease.Event.TenantId, lease.Event.Authority, budget.Token)).Should().BeTrue();
+            (await MonitoringStore.LockAndAdmitFlowAsync(db, lease.Event, lease.RunId, rig.Clock, budget.Token))
+                .Allowed.Should().BeTrue();
+            var databaseNow = await db.Database.SqlQuery<DateTimeOffset>($"SELECT clock_timestamp() AS \"Value\"")
+                .SingleAsync(budget.Token);
+            lease.ExpiresAtUtc.Should().BeBefore(databaseNow);
+            (await db.MonitoringEvidenceStreams.AsNoTracking().SingleAsync(budget.Token)).Active.Should().BeTrue();
+            (await db.ClientConnectionOwners.AsNoTracking().SingleAsync(budget.Token)).Active.Should().BeTrue();
+            await transaction.RollbackAsync(budget.Token);
+        }
+        var beforeStart = await CaptureAsync();
+        beforeStart.RunStatus.Should().Be(FlowRunStatus.Running);
+        beforeStart.LeaseToken.Should().Be(lease.Token);
+        beforeStart.LeaseOwner.Should().Be(lease.WorkerId);
+        beforeStart.RunFence.Should().Be(lease.Fence);
+        beforeStart.LeaseExpiresAtUtc.Should().Be(lease.ExpiresAtUtc);
+        beforeStart.ActionStatus.Should().Be(FlowActionStatus.Pending);
+        beforeStart.ActionAttempts.Should().Be(0);
+        beforeStart.PreparedJson.Should().NotBeNull();
+        beforeStart.ReceiptJson.Should().BeNull();
+        var started = await store.StartActionAsync(lease, draft!.ActionNodeId, budget.Token);
+        if (started is { Status: FlowActionStatus.Dispatching, Request: { } request })
+            await rig.Dispatcher.DispatchAsync(request, budget.Token);
+        started.Should().BeNull();
+        rig.Dispatcher.Sends.Should().Be(0);
+        rig.Dispatcher.Preparations.Should().Be(1);
+        rig.Ingress.Enqueues.Should().Be(1);
+        rig.Clock.GetUtcNow().Should().Be(fixedInjectedNow);
+        (await CaptureAsync()).Should().Be(beforeStart);
+
+        async Task<DirectStartActionV1Snapshot> CaptureAsync()
+        {
+            await using var scope = rig.Provider.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            var run = await db.FlowRuns.AsNoTracking().SingleAsync(budget.Token);
+            var version = await db.FlowVersions.AsNoTracking().SingleAsync(budget.Token);
+            var action = await db.FlowActions.AsNoTracking().SingleAsync(budget.Token);
+            var outbox = await db.MonitoringFlowOutbox.AsNoTracking().SingleAsync(budget.Token);
+            var source = await db.FlowRuntimeIdentity.AsNoTracking().SingleAsync(budget.Token);
+            return new(run.Id, run.EventJson, run.EventFingerprint, version.GraphJson, version.ConfigurationHash,
+                source.SourceInstanceId, run.Status, run.Fence, run.LeaseToken, run.LeaseOwner, run.LeaseExpiresAtUtc,
+                run.Attempts, outbox.IntentJson, action.NodeId, action.IdempotencyKey, action.DraftJson,
+                action.PreparedJson, action.ConnectorRevision, action.SemanticFingerprint, action.ReceiptJson,
+                action.Status, action.Attempts, action.LeaseFence, action.Code, action.NextAttemptAtUtc);
+        }
+    }
+
+    private sealed class PauseAuthority(IFlowExecutionAuthorityVerifier actual) : IFlowExecutionAuthorityVerifier
+    {
+        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Resume { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public async Task<bool> AuthorizeAsync(int tenant, FlowExecutionAuthorityDto authority, CancellationToken ct = default)
+        {
+            var authorized = await actual.AuthorizeAsync(tenant, authority, ct);
+            Entered.TrySetResult(); await Resume.Task.WaitAsync(ct); return authorized;
+        }
+    }
+
     private sealed record DurableReceiptSnapshot(ulong StateRevision, string StateJson, DateTimeOffset UpdatedAtUtc,
         string OccurrenceJson, long LeaseFence, string? OutcomeJson, MonitoringOutboxStatus Status);
 
@@ -293,8 +689,14 @@ public sealed class MonitoringFlowBridgePostgresTests(PostgreSqlPersistenceFixtu
                 new(flow.Revision, flow.Name, FlowTestData.Graph()), rig.Authority.PrincipalId)).Definition!;
             var published = await rig.Definitions.PublishAsync(rig.Client.TenantId, flow.Id, new(draft.Revision), rig.Authority);
             published.Disposition.Should().Be(FlowWriteDisposition.Stored); rig.Version = published.Version!;
-            var epoch = await rig.Provider.GetRequiredService<IClientConnectionEpochStore>().AllocateAsync(rig.Client, 0, default);
-            rig.Evidence.Current = new(rig.Client, Guid.NewGuid(), epoch, Guid.NewGuid());
+            rig.Clock.ResetToSystem();
+            var ownership = rig.Provider.GetRequiredService<IClientConnectionEpochStore>();
+            var now = rig.Clock.GetUtcNow();
+            var reservation = (await ownership.ReserveAsync(new(rig.Client, Guid.NewGuid(), Guid.NewGuid(), 0, now,
+                now.AddSeconds(30), now.AddMinutes(10), new("bridge-provider", ["presence"], null)), default)).Reservation!;
+            (await ownership.CommitAsync(reservation, new(reservation.Owner, 1, rig.Clock.GetUtcNow()), default)).Disposition.Should().Be(OwnershipDisposition.Accepted);
+            rig.Evidence.Current = (await rig.Store.ReserveEvidenceRegistrationAsync(rig.Client, reservation.Owner.ConnectionId,
+                reservation.Owner.Epoch, Guid.NewGuid(), default))!;
             rig.Rule = new(rig.Client.TenantId, Guid.NewGuid(), 1, 1, "Bridge CPU threshold", true, MonitoringSeverity.Critical,
                 new(MonitoringTargetMode.Selected, [rig.Client.AgentId], []),
                 new(MonitoringMetricKind.CpuUsagePercent, MonitoringNumericUnit.Percent, 90, 75, null, null, []),
@@ -312,6 +714,7 @@ public sealed class MonitoringFlowBridgePostgresTests(PostgreSqlPersistenceFixtu
         {
             var services = new ServiceCollection().AddLogging();
             services.AddSingleton<TimeProvider>(Clock);
+            services.AddSingleton(new OwnershipPolicy(TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(60), TimeSpan.FromSeconds(10)));
             services.AddSingleton<IConfiguration>(new ConfigurationBuilder().Build());
             services.AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(Connection));
             services.AddDbContext<NetRatelIdentityDbContext>(options => options.UseNpgsql(Connection));
@@ -365,7 +768,13 @@ public sealed class MonitoringFlowBridgePostgresTests(PostgreSqlPersistenceFixtu
 
     private sealed class Clock : TimeProvider
     {
-        private DateTimeOffset _now = new(2026, 10, 2, 20, 0, 0, TimeSpan.Zero);
+        private DateTimeOffset _now = ReadSystemAtPostgresPrecision();
+        public void ResetToSystem() => _now = ReadSystemAtPostgresPrecision();
+        private static DateTimeOffset ReadSystemAtPostgresPrecision()
+        {
+            var now = DateTimeOffset.UtcNow;
+            return new(now.UtcTicks - now.UtcTicks % TimeSpan.TicksPerMicrosecond, TimeSpan.Zero);
+        }
         public override DateTimeOffset GetUtcNow() => _now;
         public void Advance(TimeSpan duration) => _now += duration;
     }
@@ -374,6 +783,7 @@ public sealed class MonitoringFlowBridgePostgresTests(PostgreSqlPersistenceFixtu
     {
         public Task<ImmutableArray<Guid>> GetEligibleAgentsAsync(int tenantId, CancellationToken cancellationToken) => eligibility.GetEligibleAgentsAsync(tenantId, cancellationToken);
         public Task<bool> IsEligibleAsync(ClientKey client, CancellationToken cancellationToken) => eligibility.IsEligibleAsync(client, cancellationToken);
+        public Task<bool> IsPresentedEvidenceAsync(MonitoringEvidenceFence fence, CancellationToken cancellationToken) => Task.FromResult(fence == source.Current);
         public Task<MonitoringEvidenceFence?> GetCurrentEvidenceAsync(ClientKey client, CancellationToken cancellationToken) =>
             Task.FromResult(source.Current?.Client == client ? source.Current : null);
     }

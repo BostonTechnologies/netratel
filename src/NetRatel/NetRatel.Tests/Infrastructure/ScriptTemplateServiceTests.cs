@@ -1,4 +1,4 @@
-using FluentAssertions;
+using AwesomeAssertions;
 using System.Diagnostics;
 using System.IO.Compression;
 using System.Runtime.Versioning;

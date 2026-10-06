@@ -1,4 +1,4 @@
-using FluentAssertions;
+using AwesomeAssertions;
 using NetRatel.API.Endpoints;
 using NetRatel.Application.Jobs;
 using Xunit;

@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Data.Common;
 using System.Diagnostics;
 using System.Net;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -475,8 +476,11 @@ public sealed class ClientReleaseImportWorkerTests : IAsyncLifetime
         while (repoDirectory.Parent is not null &&
                !Directory.Exists(Path.Combine(repoDirectory.FullName, "tools")))
             repoDirectory = repoDirectory.Parent;
+        var configuration = typeof(ClientReleaseImportWorkerTests).Assembly
+            .GetCustomAttribute<AssemblyConfigurationAttribute>()?.Configuration
+            ?? throw new InvalidOperationException("The test assembly has no build configuration.");
         var probe = Path.Combine(repoDirectory.FullName, "tools", "NetRatel.ClientArtifactCrashProbe",
-            "bin", "Debug", "net10.0", "NetRatel.ClientArtifactCrashProbe.dll");
+            "bin", configuration, "net10.0", "NetRatel.ClientArtifactCrashProbe.dll");
         Assert.True(File.Exists(probe), $"Crash probe is missing: {probe}");
         var startInfo = new ProcessStartInfo("dotnet")
         {

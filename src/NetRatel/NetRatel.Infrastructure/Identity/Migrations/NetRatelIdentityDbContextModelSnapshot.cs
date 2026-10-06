@@ -328,6 +328,10 @@ namespace NetRatel.Infrastructure.Identity.Migrations
                         .HasMaxLength(32)
                         .HasColumnType("character varying(32)");
 
+                    b.Property<string>("GatewayUrl")
+                        .HasMaxLength(2048)
+                        .HasColumnType("character varying(2048)");
+
                     b.Property<string>("LogoDarkAssetId")
                         .HasMaxLength(32)
                         .HasColumnType("character varying(32)");

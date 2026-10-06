@@ -12,6 +12,8 @@ public static class ClientServicesPersistenceRegistration
         ArgumentNullException.ThrowIfNull(services);
         services.TryAddSingleton(TimeProvider.System);
         services.TryAddSingleton<IClientServicesStore, ClientServicesStore>();
+        // OwnershipPolicy is supplied from the API's validated Akka options.
+        // The singleton store owns no DbContext: each operation creates a scope.
         services.TryAddSingleton<IClientConnectionEpochStore, ClientConnectionEpochStore>();
         return services;
     }

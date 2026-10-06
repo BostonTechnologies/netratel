@@ -31,13 +31,26 @@ public sealed class MonitoringSeriesEvaluator(TimeProvider timeProvider, Func<Gu
             return Suspend(state, rule, rule.Enabled ? MonitoringClosureDisposition.TargetRemoved : MonitoringClosureDisposition.RuleDisabled, null, null);
 
         var now = timeProvider.GetUtcNow();
-        var evidence = Classify(state, rule, observation, now);
+        var isDisk = IsDisk(rule);
+        var collectionReason = isDisk ? DiskCollectionReason(state, observation, now) : null;
+        if (isDisk && observation.Complete && observation.Supported && collectionReason is null &&
+            state.LastDiskCollection == observation.DiskCollection)
+            return EvaluateCachedDiskCollection(state, rule, observation, bypasses, now, groups);
+        var evidence = Classify(state, rule, observation, now, collectionReason);
         var changedEpoch = state.Cursor is { } previousCursor && previousCursor.ConnectionEpoch != observation.Cursor.ConnectionEpoch;
         var changedStream = state.EvidenceStreamId is { } previousStream && previousStream != observation.EvidenceStreamId;
         var gap = state.LatestEvidence is { } previous &&
             (observation.ReceivedAtUtc - previous.ReceivedAtUtc > rule.FreshnessBudget || observation.ObservedAtUtc - previous.ObservedAtUtc > rule.FreshnessBudget);
         var working = state with { StateRevision = checked(state.StateRevision + 1), Cursor = observation.Cursor, EvidenceStreamId = observation.EvidenceStreamId,
             LatestEvidence = evidence, EvidenceQuality = evidence.Quality };
+        // A newly committed epoch starts its own receipt clock. Invalid first input must not carry the prior epoch's receipt high water forward.
+        if (isDisk && changedEpoch) working = working with { LastDiskTransportReceivedAtUtc = null };
+        // Remember immutable physical collections even when their complete/precision/fence
+        // classification is Unknown. Never regress this marker on malformed/reordered input.
+        if (isDisk && collectionReason is null) working = working with { LastDiskCollection = observation.DiskCollection };
+        if (isDisk && observation.ReceivedAtUtc != default && observation.ReceivedAtUtc <= now &&
+            (PreviousDiskTransportReceipt(state, observation, now) is not { } previousReceipt || observation.ReceivedAtUtc > previousReceipt))
+            working = working with { LastDiskTransportReceivedAtUtc = observation.ReceivedAtUtc };
         if (changedEpoch || changedStream || gap) working = InterruptContinuity(working);
         working = WithSuppression(working, bypasses, now, groups);
         var events = ImmutableArray.CreateBuilder<MonitoringEventIntent>();
@@ -52,30 +65,40 @@ public sealed class MonitoringSeriesEvaluator(TimeProvider timeProvider, Func<Gu
         {
             if (evidence.Classification == MonitoringClassification.Breach)
             {
-                var start = working.Phase == MonitoringPhase.Pending && working.WindowStartedAtUtc is { } pendingStart ? pendingStart : observation.ReceivedAtUtc;
-                working = working with { Phase = MonitoringPhase.Pending, WindowStartedAtUtc = start, PreviousQualifyingReceivedAtUtc = observation.ReceivedAtUtc };
-                if (observation.ReceivedAtUtc - start >= rule.BreachHold)
+                var continuing = working.Phase == MonitoringPhase.Pending && working.WindowStartedAtUtc is not null &&
+                    (!isDisk || working.WindowStartedObservedAtUtc is not null);
+                var start = continuing ? working.WindowStartedAtUtc!.Value : observation.ReceivedAtUtc;
+                var observedStart = isDisk ? continuing ? working.WindowStartedObservedAtUtc!.Value : observation.ObservedAtUtc : (DateTimeOffset?)null;
+                working = working with { Phase = MonitoringPhase.Pending, WindowStartedAtUtc = start,
+                    WindowStartedObservedAtUtc = observedStart, PreviousQualifyingReceivedAtUtc = observation.ReceivedAtUtc };
+                if (observation.ReceivedAtUtc - start >= rule.BreachHold &&
+                    (!isDisk || observation.ObservedAtUtc - observedStart!.Value >= rule.BreachHold))
                 {
                     var occurrence = new MonitoringOccurrenceDto(_nextId(), _nextId(), now, start, rule, evidence,
                         rule.PublishedFlowVersionId is null ? MonitoringFlowDispatchDisposition.NoFlowSelected : MonitoringFlowDispatchDisposition.Suppressed);
-                    working = working with { Phase = MonitoringPhase.Firing, Occurrence = occurrence, WindowStartedAtUtc = null, PreviousQualifyingReceivedAtUtc = null };
+                    working = working with { Phase = MonitoringPhase.Firing, Occurrence = occurrence, WindowStartedAtUtc = null, WindowStartedObservedAtUtc = null, PreviousQualifyingReceivedAtUtc = null };
                     events.Add(new(occurrence.RaisedEventId, MonitoringEventKind.AlertRaised, state.Series, occurrence.OccurrenceId, now, occurrence.PinnedRule, evidence));
                 }
             }
-            else working = working with { Phase = MonitoringPhase.Healthy, WindowStartedAtUtc = null, PreviousQualifyingReceivedAtUtc = null };
+            else working = working with { Phase = MonitoringPhase.Healthy, WindowStartedAtUtc = null, WindowStartedObservedAtUtc = null, PreviousQualifyingReceivedAtUtc = null };
         }
         else if (evidence.Classification == MonitoringClassification.Recovery)
         {
-            var start = working.Phase == MonitoringPhase.Recovering && working.WindowStartedAtUtc is { } recoveryStart ? recoveryStart : observation.ReceivedAtUtc;
-            working = working with { Phase = MonitoringPhase.Recovering, WindowStartedAtUtc = start, PreviousQualifyingReceivedAtUtc = observation.ReceivedAtUtc };
-            if (observation.ReceivedAtUtc - start >= rule.RecoveryHold)
+            var continuing = working.Phase == MonitoringPhase.Recovering && working.WindowStartedAtUtc is not null &&
+                (!isDisk || working.WindowStartedObservedAtUtc is not null);
+            var start = continuing ? working.WindowStartedAtUtc!.Value : observation.ReceivedAtUtc;
+            var observedStart = isDisk ? continuing ? working.WindowStartedObservedAtUtc!.Value : observation.ObservedAtUtc : (DateTimeOffset?)null;
+            working = working with { Phase = MonitoringPhase.Recovering, WindowStartedAtUtc = start,
+                WindowStartedObservedAtUtc = observedStart, PreviousQualifyingReceivedAtUtc = observation.ReceivedAtUtc };
+            if (observation.ReceivedAtUtc - start >= rule.RecoveryHold &&
+                (!isDisk || observation.ObservedAtUtc - observedStart!.Value >= rule.RecoveryHold))
             {
                 var occurrence = working.Occurrence! with { EndedAtUtc = now, ClosureDisposition = MonitoringClosureDisposition.Recovered };
-                working = working with { Phase = MonitoringPhase.Resolved, Occurrence = occurrence, WindowStartedAtUtc = null, PreviousQualifyingReceivedAtUtc = null };
+                working = working with { Phase = MonitoringPhase.Resolved, Occurrence = occurrence, WindowStartedAtUtc = null, WindowStartedObservedAtUtc = null, PreviousQualifyingReceivedAtUtc = null };
                 events.Add(new(_nextId(), MonitoringEventKind.AlertResolved, state.Series, occurrence.OccurrenceId, now, occurrence.PinnedRule, evidence, MonitoringClosureDisposition.Recovered));
             }
         }
-        else working = working with { Phase = MonitoringPhase.Firing, WindowStartedAtUtc = null, PreviousQualifyingReceivedAtUtc = null };
+        else working = working with { Phase = MonitoringPhase.Firing, WindowStartedAtUtc = null, WindowStartedObservedAtUtc = null, PreviousQualifyingReceivedAtUtc = null };
 
         working = AddDispatchIfEligible(working, now, rule, outbox);
         return Result(state, working, events.ToImmutable(), outbox.ToImmutable());
@@ -149,7 +172,7 @@ public sealed class MonitoringSeriesEvaluator(TimeProvider timeProvider, Func<Gu
         var now = timeProvider.GetUtcNow();
         var occurrence = state.Occurrence! with { EndedAtUtc = now, ClosureDisposition = MonitoringClosureDisposition.ManuallyCleared };
         var working = state with { StateRevision = checked(state.StateRevision + 1), Phase = MonitoringPhase.Cleared, Occurrence = occurrence,
-            WindowStartedAtUtc = null, PreviousQualifyingReceivedAtUtc = null, EvidenceQuality = MonitoringEvidenceQuality.Unknown,
+            WindowStartedAtUtc = null, WindowStartedObservedAtUtc = null, PreviousQualifyingReceivedAtUtc = null, EvidenceQuality = MonitoringEvidenceQuality.Unknown,
             NotBeforeObservedAtUtc = now, NotBeforeReceivedAtUtc = now };
         return Result(state, working,
             [new(_nextId(), MonitoringEventKind.AlertCleared, state.Series, occurrence.OccurrenceId, now, occurrence.PinnedRule, state.LatestEvidence!, MonitoringClosureDisposition.ManuallyCleared, reason)], [],
@@ -163,7 +186,7 @@ public sealed class MonitoringSeriesEvaluator(TimeProvider timeProvider, Func<Gu
         if (!rule.Enabled || !applicable) return Suspend(state, rule, !rule.Enabled ? MonitoringClosureDisposition.RuleDisabled : MonitoringClosureDisposition.TargetRemoved, operatorId, reason);
         var now = timeProvider.GetUtcNow();
         var working = state with { StateRevision = checked(state.StateRevision + 1), Phase = MonitoringPhase.Healthy, EvidenceQuality = MonitoringEvidenceQuality.Unknown,
-            WindowStartedAtUtc = null, PreviousQualifyingReceivedAtUtc = null, NotBeforeObservedAtUtc = now, NotBeforeReceivedAtUtc = now };
+            WindowStartedAtUtc = null, WindowStartedObservedAtUtc = null, PreviousQualifyingReceivedAtUtc = null, NotBeforeObservedAtUtc = now, NotBeforeReceivedAtUtc = now };
         return Result(state, working, [], [], [Audit(state, rule, operatorId, "resume", reason, now)]);
     }
 
@@ -176,7 +199,7 @@ public sealed class MonitoringSeriesEvaluator(TimeProvider timeProvider, Func<Gu
         if (state.Phase is not (MonitoringPhase.Suspended or MonitoringPhase.NotApplicable)) return Unchanged(state);
         var now = timeProvider.GetUtcNow();
         var working = state with { StateRevision = checked(state.StateRevision + 1), Phase = MonitoringPhase.Healthy,
-            EvidenceQuality = MonitoringEvidenceQuality.Unknown, WindowStartedAtUtc = null, PreviousQualifyingReceivedAtUtc = null,
+            EvidenceQuality = MonitoringEvidenceQuality.Unknown, WindowStartedAtUtc = null, WindowStartedObservedAtUtc = null, PreviousQualifyingReceivedAtUtc = null,
             NotBeforeObservedAtUtc = now, NotBeforeReceivedAtUtc = now };
         return Result(state, working, [], []);
     }
@@ -219,6 +242,83 @@ public sealed class MonitoringSeriesEvaluator(TimeProvider timeProvider, Func<Gu
             intent.StableFlowDispatchKey != FlowDispatchKey(state.Series, state.Occurrence, intent.PublishedFlowVersionId) ||
             state.LatestEvidence?.Classification != MonitoringClassification.Breach || !IsCurrentFresh(state.LatestEvidence, currentRule, now)) return false;
         return !ActiveBypasses(state.Series, bypasses, now, groups).Any();
+    }
+
+    private static bool IsDisk(MonitoringRuleDto rule) =>
+        rule.Condition.Kind is MonitoringMetricKind.DiskFreePercent or MonitoringMetricKind.DiskFreeSpace;
+
+    private static bool IsWellFormedDiskCollection(MonitoringDiskCollectionStamp? collection) =>
+        collection is { CollectionId: var id, CollectedAtUtc: var at, PayloadFingerprint: var fingerprint } &&
+        id != Guid.Empty && at != default && fingerprint is { Length: 64 } &&
+        fingerprint.All(character => character is >= '0' and <= '9' or >= 'a' and <= 'f' or >= 'A' and <= 'F');
+
+    private static string? DiskCollectionReason(MonitoringSeriesState state, MonitoringObservationDto observation, DateTimeOffset now)
+    {
+        if (observation.ReceivedAtUtc == default) return "invalid_clock";
+        if (observation.ReceivedAtUtc > now) return "future_clock";
+        if (PreviousDiskTransportReceipt(state, observation, now) is { } previousReceipt && observation.ReceivedAtUtc <= previousReceipt)
+            return "reordered_clock";
+        if (!IsWellFormedDiskCollection(observation.DiskCollection)) return "disk_collection_metadata_required";
+        var collection = observation.DiskCollection!;
+        if (observation.ObservedAtUtc != collection.CollectedAtUtc) return "disk_collection_clock_mismatch";
+        if (collection.CollectedAtUtc > now || observation.ReceivedAtUtc > now || collection.CollectedAtUtc > observation.ReceivedAtUtc)
+            return "future_clock";
+        if (state.LastDiskCollection is not { } previous) return null;
+        if (previous.CollectionId == collection.CollectionId)
+            return previous == collection ? null : "disk_collection_changed";
+        // IDs are opaque, and the high-water marker survives missing/Unknown evidence.
+        return collection.CollectedAtUtc <= previous.CollectedAtUtc ? "reordered_disk_collection" : null;
+    }
+
+    private static DateTimeOffset? PreviousDiskTransportReceipt(MonitoringSeriesState state, MonitoringObservationDto observation, DateTimeOffset now)
+    {
+        // Preserve the historical same-epoch receipt-clock check. A committed new
+        // connection epoch establishes its own server receipt clock; a mere stream
+        // retry, actor restart or operator boundary does not reset this high water.
+        if (state.Cursor?.ConnectionEpoch != observation.Cursor.ConnectionEpoch) return null;
+        if (state.LastDiskTransportReceivedAtUtc is { } admittedReceipt) return admittedReceipt;
+        var previous = state.LatestEvidence?.ReceivedAtUtc;
+        return previous is { } receipt && receipt != default && receipt <= now ? receipt : null;
+    }
+
+    private MonitoringEvaluationResult EvaluateCachedDiskCollection(MonitoringSeriesState state, MonitoringRuleDto rule,
+        MonitoringObservationDto observation, IReadOnlyList<MonitoringBypassDto> bypasses, DateTimeOffset now,
+        IReadOnlyList<MonitoringGroupDto>? groups)
+    {
+        var changedEpoch = state.Cursor is { } previousCursor && previousCursor.ConnectionEpoch != observation.Cursor.ConnectionEpoch;
+        var changedStream = state.EvidenceStreamId != observation.EvidenceStreamId ||
+            state.LatestEvidence?.EvidenceStreamId != observation.EvidenceStreamId;
+        var working = state with { Cursor = observation.Cursor, EvidenceStreamId = observation.EvidenceStreamId,
+            LastDiskTransportReceivedAtUtc = observation.ReceivedAtUtc };
+        // A copied physical collection can consume a transport cursor, but cannot
+        // establish continuity/freshness after a restart, missing sample or stream change.
+        if (changedEpoch || changedStream || working.EvidenceQuality != MonitoringEvidenceQuality.Fresh ||
+            working.LatestEvidence?.DiskCollection != working.LastDiskCollection)
+            working = InterruptContinuity(working) with
+            {
+                EvidenceQuality = MonitoringEvidenceQuality.Unknown,
+                LatestEvidence = working.LatestEvidence is { } previous ? previous with
+                {
+                    Quality = MonitoringEvidenceQuality.Unknown, Classification = MonitoringClassification.Unknown,
+                    UnknownReason = changedEpoch || changedStream ? "stream_changed" :
+                        previous.Quality == MonitoringEvidenceQuality.Unknown ? previous.UnknownReason ?? "disk_collection_unavailable" : "disk_collection_unavailable"
+                } : null
+            };
+        working = WithSuppression(working, bypasses, now, groups);
+        if (!IsCurrentFresh(working.LatestEvidence, rule, now))
+            working = InterruptContinuity(working) with
+            {
+                EvidenceQuality = MonitoringEvidenceQuality.Unknown,
+                LatestEvidence = working.LatestEvidence is { Quality: MonitoringEvidenceQuality.Fresh } previous ? previous with
+                {
+                    Quality = MonitoringEvidenceQuality.Unknown, Classification = MonitoringClassification.Unknown, UnknownReason = "stale"
+                } : working.LatestEvidence
+            };
+        var outbox = ImmutableArray.CreateBuilder<MonitoringOutboxIntent>();
+        // This is the same permitted release of an already raised suppressed event
+        // as Refresh; it never raises/resolves an occurrence or completes a hold.
+        working = AddDispatchIfEligible(working, now, rule, outbox);
+        return Result(state, working with { StateRevision = checked(state.StateRevision + 1) }, [], outbox.ToImmutable());
     }
 
     private static bool HaveSamePinnedRule(MonitoringRuleDto left, MonitoringRuleDto right) =>
@@ -264,16 +364,16 @@ public sealed class MonitoringSeriesEvaluator(TimeProvider timeProvider, Func<Gu
         return Result(state, working, [], []);
     }
 
-    private MonitoringEvidenceDto Classify(MonitoringSeriesState state, MonitoringRuleDto rule, MonitoringObservationDto observation, DateTimeOffset now)
+    private MonitoringEvidenceDto Classify(MonitoringSeriesState state, MonitoringRuleDto rule, MonitoringObservationDto observation, DateTimeOffset now, string? collectionReason = null)
     {
-        var reason = !observation.Complete ? "partial" : !observation.Supported ? "unsupported" :
+        var reason = collectionReason ?? (!observation.Complete ? "partial" : !observation.Supported ? "unsupported" :
             observation.ObservedAtUtc == default || observation.ReceivedAtUtc == default ? "invalid_clock" :
             observation.ObservedAtUtc > now || observation.ReceivedAtUtc > now || observation.ObservedAtUtc > observation.ReceivedAtUtc ? "future_clock" :
             now - observation.ObservedAtUtc > rule.FreshnessBudget || now - observation.ReceivedAtUtc > rule.FreshnessBudget ? "stale" :
             state.NotBeforeObservedAtUtc is { } observedFence && observation.ObservedAtUtc <= observedFence ? "before_evaluation_fence" :
             state.NotBeforeReceivedAtUtc is { } receivedFence && observation.ReceivedAtUtc <= receivedFence ? "before_receipt_fence" :
             state.LatestEvidence is { } previous && observation.Cursor.ConnectionEpoch == previous.Cursor.ConnectionEpoch &&
-                (observation.ObservedAtUtc <= previous.ObservedAtUtc || observation.ReceivedAtUtc <= previous.ReceivedAtUtc) ? "reordered_clock" : null;
+                !IsDisk(rule) && (observation.ObservedAtUtc <= previous.ObservedAtUtc || observation.ReceivedAtUtc <= previous.ReceivedAtUtc) ? "reordered_clock" : null);
         var classification = MonitoringClassification.Unknown;
         if (reason is null)
         {
@@ -307,7 +407,8 @@ public sealed class MonitoringSeriesEvaluator(TimeProvider timeProvider, Func<Gu
         }
         return new(observation.Cursor, observation.EvidenceStreamId, observation.ObservedAtUtc, observation.ReceivedAtUtc,
             reason is null ? MonitoringEvidenceQuality.Fresh : MonitoringEvidenceQuality.Unknown, classification,
-            observation.NumericValue, observation.NumericResolution, observation.ServiceState, reason);
+            observation.NumericValue, observation.NumericResolution, observation.ServiceState, reason,
+            IsWellFormedDiskCollection(observation.DiskCollection) ? observation.DiskCollection : null);
     }
 
     private MonitoringEvaluationResult Suspend(MonitoringSeriesState state, MonitoringRuleDto rule, MonitoringClosureDisposition disposition, Guid? operatorId, string? reason)
@@ -324,7 +425,7 @@ public sealed class MonitoringSeriesEvaluator(TimeProvider timeProvider, Func<Gu
             events = [new(_nextId(), MonitoringEventKind.AlertSuspended, state.Series, occurrence.OccurrenceId, now, occurrence.PinnedRule, state.LatestEvidence!, disposition, reason)];
         }
         var working = state with { StateRevision = checked(state.StateRevision + 1), Phase = phase, EvidenceQuality = MonitoringEvidenceQuality.Unknown,
-            Occurrence = occurrence, WindowStartedAtUtc = null, PreviousQualifyingReceivedAtUtc = null, NotBeforeObservedAtUtc = now, NotBeforeReceivedAtUtc = now };
+            Occurrence = occurrence, WindowStartedAtUtc = null, WindowStartedObservedAtUtc = null, PreviousQualifyingReceivedAtUtc = null, NotBeforeObservedAtUtc = now, NotBeforeReceivedAtUtc = now };
         return Result(state, working, events, [], operatorId is { } actor ? [Audit(state, rule, actor, "suspend", reason!, now)] : []);
     }
 
@@ -346,7 +447,7 @@ public sealed class MonitoringSeriesEvaluator(TimeProvider timeProvider, Func<Gu
     private static MonitoringSeriesState InterruptContinuity(MonitoringSeriesState state) => state with
     {
         Phase = HasOpenOccurrence(state) ? MonitoringPhase.Firing : state.Phase == MonitoringPhase.Pending ? MonitoringPhase.Healthy : state.Phase,
-        WindowStartedAtUtc = null, PreviousQualifyingReceivedAtUtc = null
+        WindowStartedAtUtc = null, WindowStartedObservedAtUtc = null, PreviousQualifyingReceivedAtUtc = null
     };
 
     private static bool IsNewCursor(MonitoringAcceptedCursor incoming, MonitoringAcceptedCursor? current) =>

@@ -1,6 +1,6 @@
 using System.Threading.Channels;
 using Akka.Actor;
-using FluentAssertions;
+using AwesomeAssertions;
 using NetRatel.Akka.RemoteSupport;
 using NetRatel.Application.RemoteSupport;
 using NetRatel.Shared.Contracts.RemoteSupport;

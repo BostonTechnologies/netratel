@@ -15,8 +15,13 @@ public interface IAgentJobGatewaySessionRegistry
 {
     AgentJobGatewayRegistration Register(ClientKey client, Guid connectionId, ulong connectionEpoch, bool provisional = false);
     bool IsAvailable(ClientKey client);
+    // A physical registration is routing information, never durable authority.
+    // Existing nonpersisting fixture adapters return no production fence.
+    OwnerKey? GetRegisteredOwner(ClientKey client) => null;
     Task DispatchAsync(ClientKey client, JobGatewayStepDispatch dispatch, CancellationToken cancellationToken);
     Task CancelAsync(ClientKey client, ulong jobRunId, string reason, CancellationToken cancellationToken);
+    Task CancelAsync(OwnerKey expectedOwner, ulong jobRunId, string reason, CancellationToken cancellationToken)
+        => throw new InvalidOperationException("The transport adapter cannot target an exact dispatch owner.");
 }
 
 public sealed record JobGatewayStepDispatch(
@@ -31,7 +36,8 @@ public sealed record JobGatewayStepDispatch(
     int Environment,
     ulong NextVersion,
     ulong NextSequence,
-    DateTimeOffset RequestedAtUtc);
+    DateTimeOffset RequestedAtUtc,
+    OwnerKey? ExpectedOwner = null);
 
 public sealed class AgentJobGatewaySessionUnavailableException(ClientKey client)
     : InvalidOperationException($"No active job gateway session exists for tenant {client.TenantId}, agent {client.AgentId:D}.");
@@ -95,11 +101,32 @@ public sealed class AgentJobGatewaySessionRegistry : IAgentJobGatewaySessionRegi
 
     public bool IsAvailable(ClientKey client) => _sessions.TryGetValue(client, out var session) && session.IsActive;
 
-    public Task DispatchAsync(ClientKey client, JobGatewayStepDispatch dispatch, CancellationToken cancellationToken) =>
-        GetSession(client).DispatchAsync(dispatch, cancellationToken);
+    public OwnerKey? GetRegisteredOwner(ClientKey client) =>
+        _sessions.TryGetValue(client, out var session) && session.IsActive
+            ? new OwnerKey(client, session.ConnectionId, checked((long)session.ConnectionEpoch)) : null;
+
+    public Task DispatchAsync(ClientKey client, JobGatewayStepDispatch dispatch, CancellationToken cancellationToken)
+    {
+        var session = GetSession(client);
+        if (dispatch.ExpectedOwner is { } expected &&
+            (expected.Client != client || expected.ConnectionId != session.ConnectionId ||
+             expected.Epoch != checked((long)session.ConnectionEpoch)))
+            throw new AgentJobGatewaySessionUnavailableException(client);
+        // Keep this captured session; never look up a successor after the check.
+        return session.DispatchAsync(dispatch, cancellationToken);
+    }
 
     public Task CancelAsync(ClientKey client, ulong jobRunId, string reason, CancellationToken cancellationToken) =>
         GetSession(client).CancelAsync(jobRunId, reason, cancellationToken);
+
+    public Task CancelAsync(OwnerKey expectedOwner, ulong jobRunId, string reason, CancellationToken cancellationToken)
+    {
+        var session = GetSession(expectedOwner.Client);
+        if (expectedOwner.ConnectionId != session.ConnectionId ||
+            expectedOwner.Epoch != checked((long)session.ConnectionEpoch))
+            throw new AgentJobGatewaySessionUnavailableException(expectedOwner.Client);
+        return session.CancelAsync(jobRunId, reason, cancellationToken);
+    }
 
     private AgentJobGatewaySession GetSession(ClientKey client) =>
         _sessions.TryGetValue(client, out var session) && session.IsActive

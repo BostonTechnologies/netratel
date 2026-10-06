@@ -1,0 +1,12 @@
+# Static Traefik v3.7.13 reference fragment. Merge into the operator-owned static
+# configuration, keeping other entrypoints, trusted proxies and security controls.
+# This listener must be reserved for the authenticated native gateway.
+entryPoints:
+  netratel-gateway:
+    address: ":8443"
+    transport:
+      respondingTimeouts:
+        # Connect is an open duplex request. This is a total body-read deadline,
+        # not an idle interval between heartbeats; leave it unset only if the
+        # deployed Traefik version already has a streaming-compatible setting.
+        readTimeout: 0s
