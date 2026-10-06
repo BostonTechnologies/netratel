@@ -57,5 +57,11 @@
                       LogicalName="NetRatel.Tests.MigrationBaselines.CommittedConnectionOwnership.HistoricalServices.sql" />
     <EmbeddedResource Include="Infrastructure/MigrationBaselines/CommittedMonitoringRegistrationPreceding.sql"
                       LogicalName="NetRatel.Tests.MigrationBaselines.CommittedConnectionOwnership.Current148.sql" />
+    <EmbeddedResource Include="Infrastructure/MigrationBaselines/CommittedMonitoringRegistrationCurrent149.sql"
+                      LogicalName="NetRatel.Tests.MigrationBaselines.CommittedConnectionOwnership.Current14970.sql" />
+    <EmbeddedResource Include="Infrastructure/MigrationBaselines/CommittedHistoricalFlowOnlyDown.sql"
+                      LogicalName="NetRatel.Tests.MigrationBaselines.CommittedConnectionOwnership.HistoricalFlowOnlyDown.sql" />
+    <EmbeddedResource Include="Infrastructure/MigrationBaselines/CommittedHistoricalFlowOnlyUp.sql"
+                      LogicalName="NetRatel.Tests.MigrationBaselines.CommittedConnectionOwnership.HistoricalFlowOnlyUp.sql" />
   </ItemGroup>
 </Project>

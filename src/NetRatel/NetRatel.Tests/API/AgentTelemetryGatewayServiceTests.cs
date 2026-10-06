@@ -103,6 +103,7 @@ public sealed class AgentTelemetryGatewayServiceTests
         (await second.ResponseStream.MoveNext(default).WaitAsync(TimeSpan.FromSeconds(5))).Should().BeTrue();
         monitoring.Begun.Should().HaveCount(2);
         monitoring.Begun[1].EvidenceStreamId.Should().NotBe(monitoring.Begun[0].EvidenceStreamId);
+        monitoring.Begun[1].RegistrationOrdinal.Should().BeGreaterThan(monitoring.Begun[0].RegistrationOrdinal);
         monitoring.Begun[1].ConnectionId.Should().Be(monitoring.Begun[0].ConnectionId);
         monitoring.Begun[1].ConnectionEpoch.Should().Be(monitoring.Begun[0].ConnectionEpoch);
     }
@@ -742,13 +743,14 @@ public sealed class AgentTelemetryGatewayServiceTests
 
     private sealed class RecordingMonitoringRuntime : IMonitoringRuntime
     {
+        private long registrationOrdinal;
         public List<MonitoringEvidenceFence> Begun { get; } = [];
         public TaskCompletionSource Observed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource<MonitoringInputResult> Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public MonitoringTelemetryInput? Telemetry { get; private set; }
         public MonitoringServicesInput? Services { get; private set; }
         public Task<MonitoringEvidenceFence?> ReserveEvidenceRegistrationAsync(ClientKey client, Guid connectionId, long epoch, Guid registrationId, CancellationToken ct)
-            => Task.FromResult<MonitoringEvidenceFence?>(new(client, connectionId, epoch, registrationId, 1));
+            => Task.FromResult<MonitoringEvidenceFence?>(new(client, connectionId, epoch, registrationId, Interlocked.Increment(ref registrationOrdinal)));
         public Task<MonitoringInputResult> BeginEvidenceStreamAsync(MonitoringEvidenceFence fence, CancellationToken ct)
         { Begun.Add(fence); return Task.FromResult(new MonitoringInputResult(MonitoringInputDisposition.Accepted, 0, 0)); }
         public Task<MonitoringInputResult> EndEvidenceStreamAsync(MonitoringEvidenceFence fence, CancellationToken ct) => Task.FromResult(new MonitoringInputResult(MonitoringInputDisposition.Accepted, 0, 0));
