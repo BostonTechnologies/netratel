@@ -9,7 +9,7 @@ namespace NetRatel.Akka.Presence;
 /// <summary>
 /// Owns gateway presence state for one authenticated client.
 /// </summary>
-public sealed class PresenceActor : ReceiveActor, IWithTimers
+public sealed partial class PresenceActor : ReceiveActor, IWithTimers
 {
     private const string ExpiryTimerKey = "gateway-presence-expiry";
     private const string AuthenticationExpiryTimerKey = "gateway-authentication-expiry";
@@ -42,7 +42,8 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
         ClientKey client,
         NetRatelAkkaOptions options,
         IActorRef presenceReadModel,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        IClientConnectionEpochStore? ownership = null)
     {
         if (!client.IsValid)
         {
@@ -53,6 +54,8 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _presenceReadModel = presenceReadModel ?? throw new ArgumentNullException(nameof(presenceReadModel));
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _ownership = ownership;
+        RegisterOwnershipHandlers();
 
         Receive<StartGatewayPresenceSession>(HandleStartSession);
         Receive<RecordGatewayHeartbeat>(HandleHeartbeat);
@@ -69,11 +72,17 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
         ClientKey client,
         NetRatelAkkaOptions options,
         IActorRef presenceReadModel,
-        TimeProvider? timeProvider = null) =>
-        global::Akka.Actor.Props.Create(() => new PresenceActor(client, options, presenceReadModel, timeProvider));
+        TimeProvider? timeProvider = null,
+        IClientConnectionEpochStore? ownership = null) =>
+        global::Akka.Actor.Props.Create(() => new PresenceActor(client, options, presenceReadModel, timeProvider: timeProvider, ownership: ownership));
+
+    public static Props Props(ClientKey client, NetRatelAkkaOptions options, IActorRef presenceReadModel,
+        IClientConnectionEpochStore ownership) => Props(client, options, presenceReadModel, timeProvider: null, ownership: ownership);
 
     private void HandleStartSession(StartGatewayPresenceSession message)
     {
+        if (_ownership is not null) { HandleOwnedStart(message); return; }
+
         EnsureClient(message.Client);
         PrunePendingAdmissions();
 
@@ -180,6 +189,8 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
 
     private void HandleHeartbeat(RecordGatewayHeartbeat message)
     {
+        if (_ownership is not null) { HandleOwnedHeartbeat(message); return; }
+
         EnsureClient(message.Client);
         PrunePendingAdmissions();
         if (_pendingAdmissions.TryGetValue(message.ConnectionId, out var pending) &&
@@ -290,6 +301,8 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
 
     private void HandleEndSession(EndGatewayPresenceSession message)
     {
+        if (_ownership is not null) { HandleOwnedEnd(message); return; }
+
         EnsureClient(message.Client);
         if (message.CancelPendingAdmission)
         {
@@ -344,6 +357,8 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
 
     private void HandleDeadlineElapsed(PresenceDeadlineElapsed message)
     {
+        if (_ownership is not null) { HandleOwnedPresenceDeadline(message); return; }
+
         if (_activeEpoch != message.ConnectionEpoch || _activeConnectionId != message.ConnectionId)
         {
             return;
@@ -384,6 +399,8 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
 
     private void PrunePendingAdmissions()
     {
+        if (_ownership is not null) { PruneOwnedAdmissions(); return; }
+
         var now = _timeProvider.GetUtcNow();
         foreach (var pending in _pendingAdmissions.Values.Where(candidate =>
                      candidate.Message.AdmissionExpiresAtUtc <= now || candidate.Message.AuthenticationExpiresAtUtc <= now).ToArray())
@@ -396,6 +413,8 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
 
     private void ScheduleAdmissionPrune()
     {
+        if (_ownership is not null) { ScheduleOwnedAdmissionPrune(); return; }
+
         Timers.Cancel(AdmissionPruneTimerKey);
         var deadlines = _pendingAdmissions.Values.Select(candidate =>
             candidate.Message.AuthenticationExpiresAtUtc is { } authentication && authentication < candidate.Message.AdmissionExpiresAtUtc
@@ -442,6 +461,8 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
 
     private void HandleAuthenticationDeadlineElapsed(AuthenticationDeadlineElapsed message)
     {
+        if (_ownership is not null) { HandleOwnedAuthenticationDeadline(message); return; }
+
         if (_activeEpoch != message.ConnectionEpoch || _activeConnectionId != message.ConnectionId ||
             _authenticationExpiresAtUtc != message.ExpiresAtUtc || _status != ClientPresenceStatus.Online)
             return;
@@ -479,11 +500,12 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
             _capabilities,
             _legacySpacetimeIdentity,
             "akka",
-            IsAuthoritative: true,
+            IsAuthoritative: _ownership is null,
             LatencyMilliseconds: _latencyMilliseconds,
             LatencyMeasuredAtUtc: _latencyMeasuredAtUtc,
             LatencyExpiresAtUtc: _latencyMeasuredAtUtc + _options.HeartbeatTimeout,
-            AuthenticationExpiresAtUtc: _authenticationExpiresAtUtc);
+            AuthenticationExpiresAtUtc: _authenticationExpiresAtUtc,
+            OwnershipRevision: _ownership is null ? null : _lastAppliedOwnerRevision);
 
     private void ClearLatency()
     {
@@ -504,7 +526,7 @@ public sealed class PresenceActor : ReceiveActor, IWithTimers
                 _activeEpoch.Value,
                 changedAtUtc,
                 reason,
-                IsAuthoritative: true));
+                IsAuthoritative: _ownership is null));
         }
     }
 

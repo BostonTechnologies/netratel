@@ -63,6 +63,10 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
     public DbSet<CommandOutboxRecord> CommandOutbox => Set<CommandOutboxRecord>();
     public DbSet<JobShadowObservationRecord> JobShadowObservations => Set<JobShadowObservationRecord>();
     public DbSet<ClientWindowsSessionSnapshot> ClientWindowsSessionSnapshots => Set<ClientWindowsSessionSnapshot>();
+    public DbSet<ClientServicesSnapshotRecord> ClientServicesSnapshots => Set<ClientServicesSnapshotRecord>();
+    public DbSet<ClientConnectionEpochRecord> ClientConnectionEpochs => Set<ClientConnectionEpochRecord>();
+    public DbSet<ClientConnectionOwnerRecord> ClientConnectionOwners => Set<ClientConnectionOwnerRecord>();
+    public DbSet<ClientConnectionAdmissionRecord> ClientConnectionAdmissions => Set<ClientConnectionAdmissionRecord>();
     public DbSet<ClientWindowsSessionInventoryRefresh> ClientWindowsSessionInventoryRefreshes => Set<ClientWindowsSessionInventoryRefresh>();
     public DbSet<RemoteSupportTargetSelectionEvent> RemoteSupportTargetSelectionEvents => Set<RemoteSupportTargetSelectionEvent>();
     public DbSet<RemoteSupportSessionRecord> RemoteSupportSessions => Set<RemoteSupportSessionRecord>();
@@ -105,6 +109,20 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
         modelBuilder.ConfigureServiceLinkModel();
         modelBuilder.ConfigureManagedOrchestrationModel();
         modelBuilder.ConfigureJobRunControlModel();
+        modelBuilder.ConfigureClientConnectionOwnershipModel();
+        modelBuilder.Entity<ClientConnectionEpochRecord>(entity =>
+        {
+            entity.ToTable("ClientConnectionEpochs");
+            entity.HasKey(record => new { record.TenantId, record.AgentId });
+        });
+        modelBuilder.Entity<ClientServicesSnapshotRecord>(entity =>
+        {
+            entity.ToTable("ClientServicesSnapshots");
+            entity.HasKey(record => new { record.TenantId, record.AgentId });
+            entity.Property(record => record.Revision).IsConcurrencyToken();
+            entity.Property(record => record.StateJson).HasColumnType("jsonb").IsRequired();
+        });
+
         if (Database.IsNpgsql())
         {
             modelBuilder.HasPostgresExtension("pg_trgm");

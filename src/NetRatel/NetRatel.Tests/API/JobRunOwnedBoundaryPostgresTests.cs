@@ -1,5 +1,6 @@
 using Akka.Actor;
 using Akka.Hosting;
+using AwesomeAssertions;
 using System.Reflection;
 using System.Security.Claims;
 using System.Text.Json;
@@ -57,7 +58,7 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
         var originalDeadline = (await h.ControlAsync(run.Id, ct)).NativeDeadlineUtc;
         if (recoverAtDeadline)
         {
-            h.Clock.UtcNow = originalDeadline!.Value.AddMilliseconds(1);
+            await h.AdvanceWithPresenceHeartbeatsAsync(originalDeadline!.Value.AddMilliseconds(1), ct);
             await h.RecoverAsync(run.Id, true, ct);
         }
         else
@@ -117,12 +118,12 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
             var run = await h.StartAsync(ct);
             runId = run.Id;
             await h.LifecycleAsync(runId, JobGatewayLifecycleStatus.Started, 3, null, false, ct);
-            h.Clock.UtcNow = (await h.ControlAsync(runId, ct)).NativeDeadlineUtc!.Value.AddMilliseconds(1);
+            await h.AdvanceWithPresenceHeartbeatsAsync((await h.ControlAsync(runId, ct)).NativeDeadlineUtc!.Value.AddMilliseconds(1), ct);
         }
         else
         {
             runId = (await h.SeedPendingIngressAsync(ct)).RunId;
-            h.Clock.UtcNow = h.Clock.GetUtcNow().AddSeconds(4);
+            await h.AdvanceWithPresenceHeartbeatsAsync(h.Clock.GetUtcNow().AddSeconds(4), ct);
         }
         await using (var scope = h.Services.CreateAsyncScope())
         {
@@ -255,7 +256,7 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
         var ct = deadline.Token;
         await using var h = await Harness.CreateAsync(await postgres.CreateDatabaseAsync(ct), ct);
         var pending = await h.SeedPendingIngressAsync(ct);
-        h.Clock.UtcNow = h.Clock.GetUtcNow().AddSeconds(4); // Existing configured three-second Ask admission budget.
+        await h.AdvanceWithPresenceHeartbeatsAsync(h.Clock.GetUtcNow().AddSeconds(4), ct); // Existing configured three-second Ask admission budget.
         await h.RecoverAsync(pending.RunId, true, ct); // Fresh actor region, only durable database state survives.
         var details = await h.DetailsAsync(pending.RunId, ct);
         Assert.Equal(JobRunState.Failed, details.Run.Status);
@@ -369,10 +370,10 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
         await Assert.ThrowsAsync<TimeoutException>(() => h.StartAsync(ct));
         var runId = h.Gateway.LastDispatchRunId;
         var original = (await h.ControlAsync(runId, ct)).NativeDeadlineUtc!.Value;
-        h.Clock.UtcNow = original.AddMilliseconds(-1);
+        await h.AdvanceWithPresenceHeartbeatsAsync(original.AddMilliseconds(-1), ct);
         await h.RecoverAsync(runId, true, ct);
         Assert.Equal(JobRunState.Running, (await h.DetailsAsync(runId, ct)).Run.Status);
-        h.Clock.UtcNow = original.AddMilliseconds(1);
+        await h.AdvanceWithPresenceHeartbeatsAsync(original.AddMilliseconds(1), ct);
         await h.RecoverAsync(runId, true, ct);
         var terminal = await h.DetailsAsync(runId, ct);
         Assert.Equal(JobRunState.TimedOut, terminal.Run.Status);
@@ -395,7 +396,15 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
         await using (var scope = h.Services.CreateAsyncScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
-            await db.Set<JobRunControlRecord>().Where(x => x.RunId == checked((long)run.Id)).ExecuteDeleteAsync(ct);
+            // Keep the genuinely accepted dispatch tuple while modelling an ordinary
+            // historical run whose native horizon is unknown. Missing owner is tested
+            // separately and never receives current dispatch authority.
+            var acceptedOwner = h.CommittedOwner.Owner;
+            Assert.Equal(1, await db.Set<JobRunControlRecord>().Where(x => x.RunId == checked((long)run.Id))
+                .ExecuteUpdateAsync(update => update.SetProperty(x => x.NativeDeadlineUtc, (DateTimeOffset?)null), ct));
+            var control = await h.ControlAsync(run.Id, ct);
+            Assert.Equal(acceptedOwner.ConnectionId, control.DispatchOwnerConnectionId);
+            Assert.Equal(acceptedOwner.Epoch, control.DispatchOwnerEpoch);
         }
         if (cancelFirst)
         {
@@ -409,6 +418,63 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
         Assert.Contains("historical native receipt", Assert.Single(completed.Activities).ResultJson!);
         Assert.True(await h.TerminalReadyAsync(completed, ct));
         Assert.Equal(1, h.Gateway.Dispatches);
+    }
+
+    [Fact]
+    public async Task Historical_null_dispatch_owner_denies_authenticated_lifecycle_and_preserves_original_result_and_callback_state()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var ct = deadline.Token;
+        await using var h = await Harness.CreateAsync(await postgres.CreateDatabaseAsync(ct), ct);
+        var run = await h.StartAsync(ct);
+        await h.LifecycleAsync(run.Id, JobGatewayLifecycleStatus.Started, 3, null, false, ct);
+        const string originalResult = "{\"stdout\":[\"accepted original native result\"],\"exitCode\":0}";
+        await h.LifecycleAsync(run.Id, JobGatewayLifecycleStatus.Completed, 4, originalResult, false, ct);
+        await using (var scope = h.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            // Model the legal pre-upgrade control shape: unknown original dispatch owner
+            // and native horizon. Erasing these fields grants no current authority. The
+            // existing native result/publication marker was created by production APIs.
+            (await db.Set<JobRunControlRecord>().Where(x => x.RunId == checked((long)run.Id))
+                .ExecuteUpdateAsync(update => update
+                    .SetProperty(x => x.DispatchOwnerConnectionId, (Guid?)null)
+                    .SetProperty(x => x.DispatchOwnerEpoch, (long?)null)
+                    .SetProperty(x => x.NativeDeadlineUtc, (DateTimeOffset?)null), ct))
+                .Should().Be(1);
+        }
+        var liveOwner = (await h.Services.GetRequiredService<IClientConnectionEpochStore>().GetCurrentAsync(h.Client, ct))!;
+        liveOwner.Owner.Should().Be(h.CommittedOwner.Owner);
+        liveOwner.IsEffective(h.Clock.GetUtcNow()).Should().BeTrue();
+        h.Gateway.GetRegisteredOwner(h.Client).Should().Be(liveOwner.Owner);
+        h.Registration.IsCurrent.Should().BeTrue();
+        var before = await h.DetailsAsync(run.Id, ct);
+        var beforeControl = await h.ControlAsync(run.Id, ct);
+        var beforeSnapshot = await h.DurableSnapshotAsync(run.Id, ct);
+        before.Run.Status.Should().Be(JobRunState.Succeeded);
+        before.Activities.Should().ContainSingle().Which.ResultJson.Should().Be(originalResult);
+        beforeControl.DispatchOwnerConnectionId.Should().BeNull();
+        beforeControl.DispatchOwnerEpoch.Should().BeNull();
+        beforeControl.NativeDeadlineUtc.Should().BeNull();
+        (await h.TerminalReadyAsync(before, ct)).Should().BeTrue();
+        var originalHash = OrchestrationCallbackProjection.ResultHash(before);
+        beforeControl.TerminalResultHash.Should().Be(originalHash);
+        Func<Task> incoming = () => h.LifecycleAsync(run.Id, JobGatewayLifecycleStatus.Completed, 9,
+            "{\"stdout\":[\"unfenced replacement receipt\"]}", true, ct);
+
+        var denial = (await incoming.Should().ThrowAsync<InvalidOperationException>()).Which;
+
+        denial.Message.Should().Be("The job lifecycle differs from its accepted dispatch owner.");
+        (await h.DurableSnapshotAsync(run.Id, ct)).Should().Be(beforeSnapshot);
+        var after = await h.DetailsAsync(run.Id, ct);
+        after.Should().BeEquivalentTo(before);
+        (await h.ControlAsync(run.Id, ct)).Should().BeEquivalentTo(beforeControl);
+        OrchestrationCallbackProjection.ResultHash(after).Should().Be(originalHash);
+        (await h.TerminalReadyAsync(after, ct)).Should().BeTrue();
+        h.Gateway.Dispatches.Should().Be(1);
+        h.Gateway.Cancellations.Should().Be(0);
+        var current = (await h.Services.GetRequiredService<IClientConnectionEpochStore>().GetCurrentAsync(h.Client, ct))!;
+        current.Should().BeEquivalentTo(liveOwner);
     }
 
     [Fact]
@@ -582,6 +648,10 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
         public ActorRouter Primary { get; private set; } = null!;
         public ActorRouter Replica { get; private set; } = null!;
         public Guid AgentId { get; } = Guid.NewGuid();
+        public ClientKey Client => new(7, AgentId);
+        public OwnerSnapshot CommittedOwner { get; private set; } = null!;
+        public AgentJobGatewayRegistration Registration { get; private set; } = null!;
+        private IClientConnectionEpochStore Ownership => Services.GetRequiredService<IClientConnectionEpochStore>();
         private ActorSystem _actors = null!;
         public IJobRuntimeRouter ProductionRouter(TimeSpan timeout)
         {
@@ -603,6 +673,8 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
             var services = new ServiceCollection();
             services.AddDbContext<OrchestratorDbContext>(o => o.UseNpgsql(connection).AddInterceptors(h.Gate));
             services.AddSingleton<TimeProvider>(h.Clock);
+            services.AddSingleton(new OwnershipPolicy(TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(60), TimeSpan.FromSeconds(10)));
+            services.AddSingleton<IClientConnectionEpochStore, ClientConnectionEpochStore>();
             services.AddNetRatelJobObservationPersistence();
             services.AddScoped<IJobDefinitionService, JobDefinitionService>();
             services.AddScoped<IJobRunService, JobRunService>();
@@ -624,7 +696,52 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
                 OptionsJson = "{\"executionPolicy\":{\"expectedRuntimeSeconds\":60,\"hardTimeoutSeconds\":60}}" });
             db.JobSteps.Add(new() { Id = 42, JobId = 41, Ordinal = 1, Type = 0, Runner = "bash", Command = "true", Enabled = true });
             await db.SaveChangesAsync(ct);
+            // Trusted server-ingress inputs are explicit provider fixture data. The real
+            // reservation, first-heartbeat commit and deferred SQL acceptance guard grant
+            // authority; no owner row/marker/fence is seeded by the fixture. Enrollment,
+            // signed gRPC authentication and a physical native process are separate gates.
+            h.Clock.ResetToUtcNow();
+            var admittedAt = h.Clock.GetUtcNow();
+            var request = new AdmissionRequest(h.Client, Guid.NewGuid(), Guid.NewGuid(), 0,
+                admittedAt, admittedAt.AddSeconds(30), admittedAt.AddSeconds(600),
+                new("owned-job-provider-fixture", ["presence"], null));
+            var reserved = await h.Ownership.ReserveAsync(request, ct);
+            reserved.Disposition.Should().Be(OwnershipDisposition.Accepted);
+            reserved.Reservation.Should().NotBeNull();
+            var committed = await h.Ownership.CommitAsync(reserved.Reservation!,
+                new(reserved.Reservation!.Owner, 1, admittedAt), ct);
+            committed.Disposition.Should().Be(OwnershipDisposition.Accepted);
+            h.CommittedOwner = committed.Current!;
+            h.CommittedOwner.Owner.Should().Be(reserved.Reservation.Owner);
+            h.CommittedOwner.AcceptanceGuardAtUtc.Should().NotBeNull();
+            h.CommittedOwner.Active.Should().BeTrue();
+            h.CommittedOwner.AuthenticationExpiresAtUtc.Should().Be(request.AuthenticationExpiresAtUtc);
+            h.Registration = h.Gateway.Register(h.CommittedOwner.Owner.Client, h.CommittedOwner.Owner.ConnectionId,
+                checked((ulong)h.CommittedOwner.Owner.Epoch));
+            h.Registration.IsCurrent.Should().BeTrue();
+            h.Gateway.GetRegisteredOwner(h.Client).Should().Be(h.CommittedOwner.Owner);
             return h;
+        }
+        public async Task AdvanceWithPresenceHeartbeatsAsync(DateTimeOffset target, CancellationToken ct)
+        {
+            if (target < Clock.GetUtcNow()) throw new ArgumentOutOfRangeException(nameof(target));
+            var originalOwner = CommittedOwner.Owner;
+            var originalAuthenticationExpiry = CommittedOwner.AuthenticationExpiresAtUtc;
+            while (Clock.GetUtcNow() < target)
+            {
+                var next = Clock.GetUtcNow().AddSeconds(30);
+                Clock.UtcNow = next < target ? next : target;
+                // Presence-only heartbeat: no optional validated authentication renewal.
+                // Each <=30s step remains inside the original60s presence horizon. This
+                // preserves the original600s auth lifetime and every native/Ask deadline.
+                var heartbeat = await Ownership.RecordHeartbeatAsync(new(originalOwner,
+                    checked(CommittedOwner.Sequence + 1), Clock.GetUtcNow()), ct);
+                heartbeat.Disposition.Should().Be(OwnershipDisposition.Accepted);
+                CommittedOwner = heartbeat.Current!;
+                CommittedOwner.Owner.Should().Be(originalOwner);
+                CommittedOwner.AuthenticationExpiresAtUtc.Should().Be(originalAuthenticationExpiry);
+                Gateway.GetRegisteredOwner(Client).Should().Be(originalOwner);
+            }
         }
         private AkkaJobAuthorityService Authority(IServiceProvider services, bool replica, ManagedOrchestrationInvocationGuard? managedGuard = null) => new(
             services.GetRequiredService<IJobDefinitionService>(), services.GetRequiredService<IJobRunService>(),
@@ -654,12 +771,24 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
             var step = Assert.Single(details.Steps);
             await Authority(scope.ServiceProvider, replica).RecordLifecycleAsync(new(7, AgentId), new(runId, step.JobStepId!.Value,
                 step.Id, step.Ordinal, step.TaskRequestId!, "actual-boundary", status, sequence, sequence,
-                details.Run.StartedAtUtc!.Value, Clock.GetUtcNow(), 100, result, status == JobGatewayLifecycleStatus.Failed ? 1 : 0), ct);
+                details.Run.StartedAtUtc!.Value, Clock.GetUtcNow(), 100, result, status == JobGatewayLifecycleStatus.Failed ? 1 : 0,
+                AuthenticatedOwner: CommittedOwner.Owner), ct);
         }
         public async Task<JobRunDetails> DetailsAsync(ulong runId, CancellationToken ct)
         { await using var scope = Services.CreateAsyncScope(); return (await scope.ServiceProvider.GetRequiredService<IJobRunService>().GetDetailsAsync(runId, ct))!; }
         public async Task<JobRunControlRecord> ControlAsync(ulong runId, CancellationToken ct)
         { await using var scope = Services.CreateAsyncScope(); return await scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>().Set<JobRunControlRecord>().AsNoTracking().SingleAsync(x => x.RunId == checked((long)runId), ct); }
+        public async Task<string> DurableSnapshotAsync(ulong runId, CancellationToken ct)
+        {
+            await using var scope = Services.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            var observations = await db.JobShadowObservations.AsNoTracking().Where(row => row.JobRunId == runId)
+                .OrderBy(row => row.SourceEventId).ToArrayAsync(ct);
+            return JsonSerializer.Serialize(new
+            {
+                Details = await DetailsAsync(runId, ct), Control = await ControlAsync(runId, ct), Observations = observations
+            });
+        }
         public async Task<bool> TerminalReadyAsync(JobRunDetails details, CancellationToken ct)
         { await using var scope = Services.CreateAsyncScope(); return await OrchestrationCallbackProjection.TerminalReadyAsync(scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>(), details, ct); }
         public async Task<(ulong RunId, int RequestId)> SeedPendingIngressAsync(CancellationToken ct, bool authorized = false)
@@ -715,7 +844,7 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
             new Claim(ServiceIdentityClaims.LinkRevision, row.LinkRevision.ToString(System.Globalization.CultureInfo.InvariantCulture)),
             new Claim("scope", ServiceIdentityScopes.OrchestrationInvoke)
         }, "owned-managed-test"));
-        public async ValueTask DisposeAsync() { Gate.Release(); await _actors.Terminate(); await Services.DisposeAsync(); }
+        public async ValueTask DisposeAsync() { Gate.Release(); Registration.Dispose(); await _actors.Terminate(); await Services.DisposeAsync(); }
     }
 
     private sealed class OwnedPublicSettings : IServicePublicSettingsResolver
@@ -728,19 +857,31 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
 
     private sealed class RecordingGateway(Harness harness) : IAgentJobGatewaySessionRegistry
     {
+        private readonly AgentJobGatewaySessionRegistry _backend = new();
         public int Dispatches;
         public int Cancellations;
         public bool AmbiguousNextDispatch;
         public ulong LastDispatchRunId;
-        public AgentJobGatewayRegistration Register(ClientKey client, Guid id, ulong epoch, bool provisional = false) => throw new NotSupportedException();
-        public bool IsAvailable(ClientKey client) => client == new ClientKey(7, harness.AgentId);
+        public AgentJobGatewayRegistration Register(ClientKey client, Guid id, ulong epoch, bool provisional = false) =>
+            _backend.Register(client, id, epoch, provisional);
+        public bool IsAvailable(ClientKey client) => _backend.IsAvailable(client);
+        public OwnerKey? GetRegisteredOwner(ClientKey client) => _backend.GetRegisteredOwner(client);
         public async Task DispatchAsync(ClientKey client, JobGatewayStepDispatch dispatch, CancellationToken ct)
         {
+            dispatch.ExpectedOwner.Should().Be(harness.CommittedOwner.Owner);
             var stored = await harness.DetailsAsync(dispatch.JobRunId, ct);
             var control = await harness.ControlAsync(dispatch.JobRunId, ct);
             Assert.Equal(JobRunState.Running, stored.Run.Status);
             Assert.NotNull(control.DispatchPreparedAtUtc); // Independent connection sees committed intent before IO.
             Assert.Equal(dispatch.RequestedAtUtc.AddSeconds(60), control.NativeDeadlineUtc);
+            control.DispatchOwnerConnectionId.Should().Be(harness.CommittedOwner.Owner.ConnectionId);
+            control.DispatchOwnerEpoch.Should().Be(harness.CommittedOwner.Owner.Epoch);
+            await _backend.DispatchAsync(client, dispatch, ct);
+            var frame = await harness.Registration.Reader.ReadAsync(ct);
+            frame.ConnectionId.Should().Be(harness.CommittedOwner.Owner.ConnectionId.ToString("D"));
+            frame.ConnectionEpoch.Should().Be(checked((ulong)harness.CommittedOwner.Owner.Epoch));
+            frame.Dispatch.Should().NotBeNull();
+            frame.Dispatch.JobRunId.Should().Be(dispatch.JobRunId);
             LastDispatchRunId = dispatch.JobRunId;
             Interlocked.Increment(ref Dispatches);
             if (AmbiguousNextDispatch)
@@ -749,9 +890,18 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
                 throw new TimeoutException("Physical enqueue acknowledgement was lost.");
             }
         }
-        public async Task CancelAsync(ClientKey client, ulong runId, string reason, CancellationToken ct)
+        public Task CancelAsync(ClientKey client, ulong runId, string reason, CancellationToken ct) =>
+            CancelAsync(GetRegisteredOwner(client) ?? throw new AgentJobGatewaySessionUnavailableException(client), runId, reason, ct);
+        public async Task CancelAsync(OwnerKey expectedOwner, ulong runId, string reason, CancellationToken ct)
         {
+            expectedOwner.Should().Be(harness.CommittedOwner.Owner);
             Assert.NotNull((await harness.ControlAsync(runId, ct)).CancellationRequestedAtUtc);
+            await _backend.CancelAsync(expectedOwner, runId, reason, ct);
+            var frame = await harness.Registration.Reader.ReadAsync(ct);
+            frame.ConnectionId.Should().Be(expectedOwner.ConnectionId.ToString("D"));
+            frame.ConnectionEpoch.Should().Be(checked((ulong)expectedOwner.Epoch));
+            frame.Cancel.Should().NotBeNull();
+            frame.Cancel.JobRunId.Should().Be(runId);
             Interlocked.Increment(ref Cancellations);
         }
     }
@@ -761,6 +911,7 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
         // the exact committed-deadline assertion also checks the dispatch value unchanged.
         public DateTimeOffset UtcNow = MicrosecondUtcNow();
         public override DateTimeOffset GetUtcNow() => UtcNow;
+        public void ResetToUtcNow() => UtcNow = MicrosecondUtcNow();
         private static DateTimeOffset MicrosecondUtcNow()
         {
             var now = DateTimeOffset.UtcNow;

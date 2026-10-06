@@ -275,6 +275,7 @@ message AgentTelemetryFrame {
   oneof payload {
     AgentTelemetryHello hello = 10;
     TelemetryFrame snapshot = 11;
+    ServiceSnapshotChunk services_chunk = 12;
   }
 }
 
@@ -295,12 +296,15 @@ message GatewayTelemetryFrame {
     TelemetryConnectAccepted accepted = 10;
     TelemetrySnapshotAccepted snapshot_accepted = 11;
     TelemetrySamplingPolicy telemetry_sampling_policy = 12;
+    ServiceWatchPolicy service_watch_policy = 13;
   }
 }
 
 message TelemetryConnectAccepted {
   string telemetry_authority = 1;
   uint32 maximum_in_flight_frames = 2;
+  // Services are sent only when both endpoints negotiate client-services-v1.
+  repeated string accepted_capabilities = 3;
 }
 
 message TelemetrySnapshotAccepted {
@@ -317,6 +321,79 @@ message TelemetrySamplingPolicy {
   bool interactive = 4;
   google.protobuf.Timestamp expires_at_utc = 5;
   string reason = 6;
+}
+
+// Every chunk shares the authenticated AgentTelemetryFrame sequence and its
+// existing acknowledgement credit. The complete envelope stays below 12 KiB.
+// The receiver replaces cached inventory only after a complete final chunk.
+message ServiceSnapshotChunk {
+  string collection_id = 1;
+  uint32 chunk_index = 2;
+  bool is_final = 3;
+  ServiceSnapshotType kind = 4;
+  ServiceCollectionCompleteness status = 5;
+  google.protobuf.Timestamp observed_at_utc = 6;
+  uint64 watch_policy_revision = 7;
+  repeated ServiceObservation services = 8;
+  string error_code = 9;
+}
+
+message ServiceObservation {
+  string name = 1;
+  string display_name = 2;
+  ServicePlatform platform = 3;
+  ServiceState state = 4;
+  string raw_state = 5;
+  string start_mode = 6;
+  string load_state = 7;
+  string active_state = 8;
+  string sub_state = 9;
+  string unit_file_state = 10;
+  google.protobuf.Timestamp observed_at_utc = 11;
+  bool authoritative_missing = 12;
+}
+
+enum ServicePlatform {
+  SERVICE_PLATFORM_UNKNOWN = 0;
+  SERVICE_PLATFORM_WINDOWS = 1;
+  SERVICE_PLATFORM_LINUX_SYSTEMD = 2;
+}
+
+enum ServiceState {
+  SERVICE_STATE_UNKNOWN = 0;
+  SERVICE_STATE_RUNNING = 1;
+  SERVICE_STATE_STOPPED = 2;
+  SERVICE_STATE_FAILED = 3;
+  SERVICE_STATE_STARTING = 4;
+  SERVICE_STATE_STOPPING = 5;
+  SERVICE_STATE_PAUSED = 6;
+  SERVICE_STATE_MISSING = 7;
+  SERVICE_STATE_UNSUPPORTED = 8;
+}
+
+enum ServiceCollectionCompleteness {
+  SERVICE_COLLECTION_COMPLETENESS_UNKNOWN = 0;
+  SERVICE_COLLECTION_COMPLETENESS_COMPLETE = 1;
+  SERVICE_COLLECTION_COMPLETENESS_PARTIAL = 2;
+  SERVICE_COLLECTION_COMPLETENESS_ERROR = 3;
+  SERVICE_COLLECTION_COMPLETENESS_UNSUPPORTED = 4;
+}
+
+enum ServiceSnapshotType {
+  SERVICE_SNAPSHOT_TYPE_UNKNOWN = 0;
+  SERVICE_SNAPSHOT_TYPE_INVENTORY = 1;
+  SERVICE_SNAPSHOT_TYPE_WATCH = 2;
+}
+
+// Exact bounded server-derived names, never shell text or service commands.
+// A refresh request is coalesced/rate-limited by the server and collects inventory.
+message ServiceWatchPolicy {
+  uint64 revision = 1;
+  repeated string service_names = 2;
+  uint32 watch_interval_seconds = 3;
+  uint32 inventory_interval_seconds = 4;
+  google.protobuf.Timestamp expires_at_utc = 5;
+  string refresh_request_id = 6;
 }
 
 message CommandShadowFrame {

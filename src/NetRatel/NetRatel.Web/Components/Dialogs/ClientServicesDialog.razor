@@ -1,0 +1,326 @@
+@using NetRatel.Shared.Contracts.Services
+@using NetRatel.Web.Services.Services
+@implements IAsyncDisposable
+@inject IClientServicesApiService ServicesApi
+@inject IClientServicesLiveStreamService LiveServices
+
+@{
+    RenderFragment content = @<div class="client-services-shell">
+        <header class="client-services-header">
+            <div class="client-services-identity">
+                <h1>Services</h1>
+                <p title="@HostLabel">@HostLabel</p>
+                <p title="@($"{TenantLabel} · Tenant {TenantId} · {ConnectionLabel}")">@TenantLabel · Tenant @TenantId · @ConnectionLabel</p>
+            </div>
+            <MudIconButton Icon="@Icons.Material.Filled.Close" OnClick="Close" aria-label="Close services" data-testid="close-services" />
+        </header>
+        <div class="client-services-body">
+        <section class="client-services-summary" aria-live="polite" data-testid="services-summary">
+            @if (_model?.LastCompleteInventory is { } inventory)
+            {
+                <span><strong>@(_model.Connected ? "Last complete inventory" : "Cached offline inventory")</strong> · @Age(inventory.ObservedAtUtc) · <time datetime="@inventory.ObservedAtUtc.ToString("O")">@inventory.ObservedAtUtc.ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss 'UTC'")</time></span>
+                @if (IsStale(inventory.ObservedAtUtc)) { <span class="services-stale">Stale inventory</span> }
+            }
+            else { <span>No complete inventory received.</span> }
+            <span data-testid="services-live-state">@_streamState</span>
+        </section>
+        <section class="client-services-controls" aria-label="Services controls">
+            <label class="client-services-search">Search services
+                <input type="search" @bind="_search" @bind:event="oninput" placeholder="Name or display name" aria-label="Search services" data-testid="services-search" />
+            </label>
+            <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.Refresh" OnClick="RefreshAsync"
+                       Disabled="@(!CanRefresh)" data-testid="services-refresh">@(_refreshing ? "Requesting…" : "Refresh")</MudButton>
+            <div class="client-services-filters" aria-label="Service state filters">
+                @foreach (var filter in Filters)
+                {
+                    var selectedFilter = filter;
+                    <button type="button" @onclick="@(() => _filter = selectedFilter)" aria-pressed="@(_filter == filter ? "true" : "false")" data-testid="@($"services-filter-{filter.ToLowerInvariant()}")">@filter</button>
+                }
+            </div>
+        </section>
+        <section class="client-services-scroll" aria-label="Services inventory" data-testid="services-inventory">
+            @if (_loading) { <MudProgressLinear Indeterminate="true" aria-label="Loading services" /> }
+            @if (_error is not null) { <MudAlert Severity="Severity.Warning" Dense="true" data-testid="services-error">@_error</MudAlert> }
+            @if (_refreshMessage is not null) { <MudAlert Severity="Severity.Info" Dense="true" data-testid="services-refresh-result">@_refreshMessage</MudAlert> }
+            @if (_model is { Connected: true, SupportsServices: false })
+            {
+                <MudAlert Severity="Severity.Info" Dense="true" data-testid="services-unsupported">Services collection is unsupported by this client. A client upgrade may be required. Cached inventory remains available.</MudAlert>
+            }
+            @if (_model?.LatestAttempt is { Status: ServiceCollectionStatus.Error or ServiceCollectionStatus.Partial or ServiceCollectionStatus.Unsupported } attempt)
+            {
+                <MudAlert Severity="Severity.Warning" Dense="true" data-testid="services-attempt">Latest @attempt.Kind.ToString().ToLowerInvariant() collection: @attempt.Status · @Age(attempt.ObservedAtUtc). Last complete inventory is retained; this attempt does not prove a service is missing.</MudAlert>
+            }
+            @if (_model is { Connected: false })
+            {
+                <MudText Typo="Typo.body2" Class="services-notice" data-testid="services-offline">Client is offline. Refresh is unavailable; cached states describe their observation time.</MudText>
+            }
+            @if (!_loading && _model is not null && Rows.Count == 0)
+            {
+                <p data-testid="services-empty">@(_model.LastCompleteInventory is not null ? "The complete inventory contains no services." : "No service inventory is available yet.")</p>
+            }
+            else if (!_loading && FilteredRows.Count == 0 && Rows.Count != 0)
+            {
+                <p data-testid="services-filter-empty">No services match these filters.</p>
+            }
+            @if (FilteredRows.Count > 0)
+            {
+                <p class="client-services-count">@FilteredRows.Count of @Rows.Count services · Monitoring watches only explicitly selected names.</p>
+                <table class="client-services-table">
+                    <caption class="services-visually-hidden">Read-only service inventory and selected watch evidence</caption>
+                    <thead><tr><th scope="col">Service</th><th scope="col">State</th><th scope="col">Monitoring / observation</th><th scope="col">Platform details</th></tr></thead>
+                    <tbody>
+                        @foreach (var row in FilteredRows)
+                        {
+                            <tr data-testid="service-row" data-service-name="@row.Observation.Name">
+                                <td data-label="Service"><strong>@row.Observation.DisplayName</strong><code>@row.Observation.Name</code></td>
+                                <td data-label="State"><span class="service-state" data-state="@row.Observation.State">@row.Observation.State</span></td>
+                                <td data-label="Monitoring / observation"><span>@(row.Monitored ? "Monitored" : "Not monitored") · @row.Evidence</span>
+                                    @if (row.HasObservation)
+                                    { <time datetime="@row.Observation.ObservedAtUtc.ToString("O")">@Age(row.Observation.ObservedAtUtc)@(IsStale(row.Observation.ObservedAtUtc, row.FromWatch) ? " · Stale" : "")</time> }
+                                    else { <small>No watch evidence yet</small> }
+                                </td>
+                                <td data-label="Platform details"><span>@row.Observation.Platform · @row.Observation.RawState</span>
+                                    @if (row.Observation.Platform == ClientServicePlatform.LinuxSystemd)
+                                    { <small>Load: @Value(row.Observation.LoadState) · Active: @Value(row.Observation.ActiveState) · Sub: @Value(row.Observation.SubState) · Enablement: @Value(row.Observation.UnitFileState)</small> }
+                                    else if (row.Observation.Platform == ClientServicePlatform.Windows)
+                                    { <small>Start mode: @Value(row.Observation.StartMode)</small> }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+        </section>
+        </div>
+    </div>;
+}
+
+@if (Embedded)
+{
+    <section class="client-services-embedded" data-testid="client-services-dialog">@content</section>
+}
+else
+{
+    <MudDialog Class="client-services-dialog" data-testid="client-services-dialog"><DialogContent>@content</DialogContent></MudDialog>
+}
+
+@code {
+    [CascadingParameter] private IMudDialogInstance? MudDialog { get; set; }
+    [Parameter, EditorRequired] public int TenantId { get; set; }
+    [Parameter, EditorRequired] public Guid AgentId { get; set; }
+    [Parameter] public string HostLabel { get; set; } = "Client";
+    [Parameter] public string TenantLabel { get; set; } = "";
+    [Parameter] public bool Embedded { get; set; }
+
+    private static readonly string[] Filters = ["All", "Running", "Stopped", "Failed", "Monitored"];
+    private ClientServicesReadModelDto? _model;
+    private CancellationTokenSource? _runCancellation;
+    private Task? _liveTask;
+    private Task? _ageTask;
+    private int _activeTenant;
+    private Guid _activeAgent;
+    private long _generation;
+    private bool _disposed;
+    private bool _loading = true;
+    private bool _refreshing;
+    private string _search = "";
+    private string _filter = "All";
+    private string _streamState = "Connecting";
+    private string? _error;
+    private string? _refreshMessage;
+    private Guid? _refreshInventoryId;
+    private bool _waitingForInventory;
+    private DateTimeOffset _now = DateTimeOffset.UtcNow;
+
+    private string ConnectionLabel => _model is null ? "Loading" : _model.Connected ? "Online" : "Offline";
+    private bool CanRefresh => !_loading && !_refreshing && _model is { Connected: true, SupportsServices: true };
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_disposed || (_runCancellation is not null && TenantId == _activeTenant && AgentId == _activeAgent)) return;
+        _runCancellation?.Cancel();
+        _runCancellation?.Dispose();
+        _runCancellation = new CancellationTokenSource();
+        var token = _runCancellation.Token;
+        var generation = ++_generation;
+        _activeTenant = TenantId;
+        _activeAgent = AgentId;
+        _loading = true;
+        _model = null;
+        _error = null;
+        _refreshMessage = null;
+        _refreshing = false;
+        _waitingForInventory = false;
+        _search = "";
+        _filter = "All";
+        _streamState = "Connecting";
+        try
+        {
+            var model = await ServicesApi.GetAsync(_activeTenant, _activeAgent, token);
+            if (!IsCurrent(generation)) return;
+            Apply(model);
+            if (model is null) _error = "Services are unavailable for this client.";
+            else _liveTask = ReadLiveAsync(_activeTenant, _activeAgent, generation, token);
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception exception) when (exception is HttpRequestException or System.Text.Json.JsonException)
+        {
+            if (IsCurrent(generation)) _error = "Could not load services. Access may have changed, or the API is unavailable.";
+        }
+        finally
+        {
+            if (IsCurrent(generation))
+            {
+                _loading = false;
+                _ageTask = UpdateAgeAsync(generation, token);
+            }
+        }
+    }
+
+    private async Task ReadLiveAsync(int tenantId, Guid agentId, long generation, CancellationToken token)
+    {
+        try
+        {
+            await foreach (var item in LiveServices.SubscribeAsync(tenantId, agentId, token))
+            {
+                if (!IsCurrent(generation)) return;
+                await InvokeAsync(() =>
+                {
+                    if (!IsCurrent(generation)) return;
+                    _streamState = item.State;
+                    if (item.Snapshot is { } model && model.TenantId == tenantId && model.AgentId == agentId) Apply(model);
+                    StateHasChanged();
+                });
+            }
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception exception) when (exception is HttpRequestException or IOException or System.Text.Json.JsonException)
+        {
+            if (IsCurrent(generation)) await InvokeAsync(() => { _streamState = "Unavailable"; StateHasChanged(); });
+        }
+    }
+
+    private void Apply(ClientServicesReadModelDto? model)
+    {
+        if (model is not null && (model.TenantId != _activeTenant || model.AgentId != _activeAgent)) return;
+        if (_model is not null && model is not null && (model.Revision < _model.Revision ||
+            (model.Revision == _model.Revision && model.GeneratedAtUtc < _model.GeneratedAtUtc))) return;
+        _model = model;
+        _now = DateTimeOffset.UtcNow;
+        if (_waitingForInventory && model?.LastCompleteInventory is { } inventory && inventory.CollectionId != _refreshInventoryId)
+        {
+            _waitingForInventory = false;
+            _refreshMessage = "Complete inventory received.";
+        }
+    }
+
+    private async Task UpdateAgeAsync(long generation, CancellationToken token)
+    {
+        try
+        {
+            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(15));
+            while (await timer.WaitForNextTickAsync(token))
+                await InvokeAsync(() => { if (IsCurrent(generation)) { _now = DateTimeOffset.UtcNow; StateHasChanged(); } });
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+    }
+
+    private async Task RefreshAsync()
+    {
+        if (!CanRefresh || _runCancellation is null) return;
+        var generation = _generation;
+        var token = _runCancellation.Token;
+        _refreshing = true;
+        _refreshMessage = null;
+        _refreshInventoryId = _model?.LastCompleteInventory?.CollectionId;
+        _waitingForInventory = false;
+        try
+        {
+            var response = await ServicesApi.RefreshAsync(_activeTenant, _activeAgent, token);
+            if (!IsCurrent(generation)) return;
+            _refreshMessage = response.Status switch
+            {
+                ClientServicesRefreshStatus.Requested => "Refresh requested. Waiting for a complete inventory; the cached observation remains visible.",
+                ClientServicesRefreshStatus.Offline => "The client is offline. No refresh was requested.",
+                ClientServicesRefreshStatus.Unsupported => "This client does not support services collection. No refresh was requested.",
+                ClientServicesRefreshStatus.Throttled => response.RetryAfterUtc is { } retry
+                    ? $"A refresh was requested recently. Try again after {retry.ToUniversalTime():HH:mm:ss} UTC."
+                    : "A refresh was requested recently. Try again shortly.",
+                _ => "The refresh result is unavailable."
+            };
+            if (response.Status == ClientServicesRefreshStatus.Requested)
+            {
+                _waitingForInventory = _model?.LastCompleteInventory?.CollectionId == _refreshInventoryId;
+                if (!_waitingForInventory) _refreshMessage = "Complete inventory received.";
+            }
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception exception) when (exception is HttpRequestException or System.Text.Json.JsonException)
+        { if (IsCurrent(generation)) _refreshMessage = "Refresh admission could not be confirmed. The cached observation remains visible."; }
+        finally { if (IsCurrent(generation)) _refreshing = false; }
+    }
+
+    private IReadOnlyList<ServiceRow> Rows
+    {
+        get
+        {
+            if (_model is null) return [];
+            bool IsMonitored(ClientServiceObservation service) => _model.MonitoredServiceNames.Contains(service.Name,
+                service.Platform == ClientServicePlatform.Windows ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+            var rows = (_model.LastCompleteInventory?.Services ?? []).ToDictionary(ServiceIdentity,
+                service => new ServiceRow(service, IsMonitored(service), false, "Inventory"), StringComparer.Ordinal);
+            foreach (var observation in _model.WatchedServices)
+                rows[ServiceIdentity(observation)] = new ServiceRow(observation, IsMonitored(observation), true, "Selected watch");
+            var platform = rows.Values.FirstOrDefault()?.Observation.Platform ?? ClientServicePlatform.Unknown;
+            foreach (var name in _model.MonitoredServiceNames)
+            {
+                var comparer = platform == ClientServicePlatform.Windows ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+                if (rows.Values.Any(row => comparer.Equals(row.Observation.Name, name))) continue;
+                var unknown = new ClientServiceObservation(name, name, platform, ClientServiceState.Unknown, "Unknown",
+                    null, null, null, null, null, default);
+                rows[ServiceIdentity(unknown)] = new ServiceRow(unknown, true, false, "Awaiting selected watch", false);
+            }
+            return rows.Values.OrderBy(row => row.Observation.Name, StringComparer.OrdinalIgnoreCase).ToArray();
+        }
+    }
+
+    private IReadOnlyList<ServiceRow> FilteredRows => Rows.Where(row =>
+        (_filter == "All" || (_filter == "Monitored" ? row.Monitored : row.Observation.State.ToString() == _filter)) &&
+        (string.IsNullOrWhiteSpace(_search) || row.Observation.Name.Contains(_search, StringComparison.OrdinalIgnoreCase) ||
+         row.Observation.DisplayName.Contains(_search, StringComparison.OrdinalIgnoreCase))).ToArray();
+
+    private bool IsCurrent(long generation) => !_disposed && generation == _generation;
+    private bool IsStale(DateTimeOffset observed, bool watch = false) => _now - observed > TimeSpan.FromSeconds(watch ? 90 : ClientServicesLimits.DefaultInventoryIntervalSeconds + 30);
+    private string Age(DateTimeOffset observed)
+    {
+        var age = _now - observed;
+        if (age < TimeSpan.FromSeconds(-5)) return "Client clock is ahead";
+        if (age <= TimeSpan.FromSeconds(5)) return "Just observed";
+        if (age.TotalMinutes < 1) return $"{Math.Max(0, (int)age.TotalSeconds)} seconds ago";
+        if (age.TotalHours < 1) return $"{(int)age.TotalMinutes} minutes ago";
+        return $"{(int)age.TotalHours} hours ago";
+    }
+    private static string Value(string? value) => string.IsNullOrWhiteSpace(value) ? "Unknown" : value;
+    private static string ServiceIdentity(ClientServiceObservation service) =>
+        $"{(int)service.Platform}:{(service.Platform == ClientServicePlatform.Windows ? service.Name.ToUpperInvariant() : service.Name)}";
+    private sealed record ServiceRow(ClientServiceObservation Observation, bool Monitored, bool FromWatch, string Evidence, bool HasObservation = true);
+
+    private void Close()
+    {
+        ++_generation;
+        _runCancellation?.Cancel();
+        MudDialog?.Close();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        ++_generation;
+        _runCancellation?.Cancel();
+        // Both owned loops honor cancellation; requests which finish late are also fenced above.
+        if (_liveTask is not null) await _liveTask;
+        if (_ageTask is not null) await _ageTask;
+        _runCancellation?.Dispose();
+    }
+}

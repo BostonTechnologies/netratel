@@ -62,6 +62,7 @@ public static class ApiEndpointRegistrationExtensions
         app.MapClientPresenceReadEndpoints();
         app.MapAgentControlEndpoints();
         app.MapAgentTelemetryReadEndpoints();
+        app.MapClientServicesEndpoints();
         app.MapTelemetryEndpoints();
         app.MapAgentFileGatewayEndpoints();
         app.MapAgentLogGatewayEndpoints();

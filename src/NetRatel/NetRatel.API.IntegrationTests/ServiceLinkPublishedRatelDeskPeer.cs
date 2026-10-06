@@ -10,10 +10,10 @@ namespace NetRatel.API.IntegrationTests.ServiceLinks;
 /// <summary>Runs the published companion API/Web, without building or impersonating RatelDesk.</summary>
 internal sealed class ServiceLinkPublishedRatelDeskPeer : IAsyncDisposable
 {
-    public const string PublishedSource = "a3017363d22205a6897087c0e7fed7b541a5d5d9";
-    public const string PublishedVersion = "0.1.1-beta.14";
-    internal const string ApiImage = "ghcr.io/bostontechnologies/rateldesk-api@sha256:0b1d2eac5f825b694d32e9580b6cb291d7c3b6bf6930d912a24b0e1ea97d1e84";
-    internal const string WebImage = "ghcr.io/bostontechnologies/rateldesk-web@sha256:3ac134ae746451892d63317a898f5250b1cad79ac8dd1fcec8509f5ba2bd54f4";
+    public const string PublishedSource = "e543fb13eb0e23db09fdfd6b4232067cecf61675";
+    public const string PublishedVersion = "0.1.1-beta.15";
+    internal const string ApiImage = "ghcr.io/bostontechnologies/rateldesk-api@sha256:4f266560a2cd925210d492d47ae5ba0ffcbc9c3af44631aff39ee403f4be30b8";
+    internal const string WebImage = "ghcr.io/bostontechnologies/rateldesk-web@sha256:2c623963456ee61ff9040e4462fbd85bb2d8d0f077b0fdad74840f9447f3bec6";
     private readonly string root = Path.Combine(Path.GetTempPath(), "netratel-rateldesk-pair", Guid.NewGuid().ToString("N"));
     private readonly string project = "netratel-service-link-" + Guid.NewGuid().ToString("N");
     private readonly string password = "aA1!" + Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
@@ -110,6 +110,67 @@ internal sealed class ServiceLinkPublishedRatelDeskPeer : IAsyncDisposable
             }
             catch { /* The original failure and bounded Docker stderr remain authoritative. */ }
         }
+        // The published peer owns this PostgreSQL through its isolated Compose
+        // project, not the NetRatel Testcontainers database. Read real server
+        // ERROR lines before normal disposal; never retain DETAIL/STATEMENT,
+        // arbitrary error text, SQL, parameters or connection credentials.
+        var postgresErrors = new List<object>();
+        string? postgresCaptureFailureType = null;
+        try
+        {
+            var logs = await DockerAsync(["compose", "-p", project, "-f", composeFile,
+                "logs", "--no-color", "--timestamps", "--tail", "200", "postgres"],
+                TimeSpan.FromSeconds(5), includeStandardError: true);
+            foreach (var line in logs.Split('\n'))
+            {
+                var error = System.Text.RegularExpressions.Regex.Match(line,
+                    @"^(?:[A-Za-z0-9_.-]+\s*\|\s*)?(?<stamp>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?Z)\s+[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)? [A-Z]{1,8} \[[0-9]{1,10}\]\s+(?<severity>ERROR|FATAL|PANIC):\s+(?:(?<sqlState>[0-9A-Z]{5}):\s+)?(?<message>.*)$");
+                if (!error.Success) continue;
+                var message = error.Groups["message"].Value;
+                var kind = message switch
+                {
+                    _ when message.StartsWith("could not serialize access", StringComparison.Ordinal) => "serialization-failure",
+                    _ when message.StartsWith("deadlock detected", StringComparison.Ordinal) => "deadlock-detected",
+                    _ when message.StartsWith("duplicate key value violates unique constraint", StringComparison.Ordinal) => "unique-violation",
+                    _ when message.Contains("violates check constraint", StringComparison.Ordinal) => "check-violation",
+                    _ when message.Contains("violates foreign key constraint", StringComparison.Ordinal) => "foreign-key-violation",
+                    _ when message.Contains("violates not-null constraint", StringComparison.Ordinal) => "not-null-violation",
+                    _ when message.StartsWith("canceling statement due to statement timeout", StringComparison.Ordinal) => "statement-timeout",
+                    _ when message.StartsWith("canceling statement due to lock timeout", StringComparison.Ordinal) => "lock-timeout",
+                    _ => "unclassified-server-error"
+                };
+                DateTimeOffset? timestamp = DateTimeOffset.TryParse(error.Groups["stamp"].Value,
+                    System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.RoundtripKind,
+                    out var parsed) ? parsed : null;
+                var constraint = System.Text.RegularExpressions.Regex.Match(message,
+                    @"\bconstraint ""(?<name>(?:PK|FK|IX|CK|UQ|UX)_[A-Za-z][A-Za-z0-9_]{0,119})""");
+                postgresErrors.Add(new
+                {
+                    timestampUtc = timestamp, severity = error.Groups["severity"].Value,
+                    // Default PostgreSQL logging may omit SQLSTATE. Do not derive
+                    // or invent a code from the classified English server message.
+                    sqlState = error.Groups["sqlState"].Success ? error.Groups["sqlState"].Value : null,
+                    kind, constraintName = constraint.Success ? constraint.Groups["name"].Value : null
+                });
+            }
+        }
+        catch (Exception error) { postgresCaptureFailureType = error.GetType().FullName; }
+        try
+        {
+            var postgresFile = Path.Combine(directory, project + ".postgres-errors.json");
+            File.WriteAllText(postgresFile, JsonSerializer.Serialize(new
+            {
+                capturedAtUtc = DateTimeOffset.UtcNow, product = "rateldesk", composeProject = project,
+                databaseService = "postgres", databaseRole = "published-companion-server",
+                PublishedSource, PublishedVersion, ApiImage,
+                rotationPolicy, captureSucceeded = postgresCaptureFailureType is null,
+                captureFailureType = postgresCaptureFailureType, retainedServerErrors = postgresErrors,
+                logTailLines = 200, logReadBudgetSeconds = 5,
+                errorOnly = true, rawMessagesStatementsDetailsAndParametersRetained = false
+            }, new JsonSerializerOptions { WriteIndented = true }));
+            if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(postgresFile, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        }
+        catch { /* Optional diagnostic receipt failures preserve the original failure and owned cleanup. */ }
         try
         {
             var id = (await ComposeAsync(["ps", "--all", "--quiet", "api"])).Trim();
@@ -371,9 +432,9 @@ internal sealed class ServiceLinkPublishedRatelDeskPeer : IAsyncDisposable
 
     private Task<string> ComposeAsync(string[] arguments) => DockerAsync(["compose", "-p", project, "-f", composeFile, .. arguments]);
 
-    private static async Task<string> DockerAsync(string[] arguments)
+    private static async Task<string> DockerAsync(string[] arguments, TimeSpan? operationBudget = null, bool includeStandardError = false)
     {
-        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+        using var timeout = new CancellationTokenSource(operationBudget ?? TimeSpan.FromMinutes(3));
         var start = new ProcessStartInfo("docker") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
         foreach (var name in new[] { "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_TLS", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH" }) start.Environment.Remove(name);
         start.ArgumentList.Add("--host=unix:///var/run/docker.sock");
@@ -387,18 +448,24 @@ internal sealed class ServiceLinkPublishedRatelDeskPeer : IAsyncDisposable
         var diagnostic = await stderr;
         if (process.ExitCode != 0)
         {
-            // Private diagnostics are deliberately outside ordinary test artifacts and never included in exceptions.
-            var directory = Environment.GetEnvironmentVariable("NETRATEL_SERVICE_LINK_PRIVATE_DIAGNOSTIC_DIRECTORY")
-                ?? Path.Combine(Path.GetTempPath(), "netratel-service-link-private-diagnostics");
-            Directory.CreateDirectory(directory);
-            if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(directory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-            var file = Path.Combine(directory, Guid.NewGuid().ToString("N") + ".stderr");
-            File.WriteAllText(file, diagnostic.Length > 16384 ? diagnostic[^16384..] : diagnostic);
-            if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(file, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            // The server-log read is sanitized by its caller on success; never
+            // persist partial raw PostgreSQL stderr if that observation fails.
+            if (!includeStandardError)
+            {
+                // Private diagnostics are deliberately outside ordinary test artifacts and never included in exceptions.
+                var directory = Environment.GetEnvironmentVariable("NETRATEL_SERVICE_LINK_PRIVATE_DIAGNOSTIC_DIRECTORY")
+                    ?? Path.Combine(Path.GetTempPath(), "netratel-service-link-private-diagnostics");
+                Directory.CreateDirectory(directory);
+                if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(directory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+                var file = Path.Combine(directory, Guid.NewGuid().ToString("N") + ".stderr");
+                File.WriteAllText(file, diagnostic.Length > 16384 ? diagnostic[^16384..] : diagnostic);
+                if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(file, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            }
             var operation = arguments.FirstOrDefault(value => value is "up" or "run" or "restart" or "down" or "exec" or "inspect") ?? "command";
-            throw new InvalidOperationException($"The isolated published-peer Docker {operation} operation failed with exit code {process.ExitCode}; bounded private diagnostics were retained separately.");
+            var diagnosticDisposition = includeStandardError ? "raw server-log output was discarded" : "bounded private diagnostics were retained separately";
+            throw new InvalidOperationException($"The isolated published-peer Docker {operation} operation failed with exit code {process.ExitCode}; {diagnosticDisposition}.");
         }
-        return output;
+        return includeStandardError ? output + "\n" + diagnostic : output;
     }
 
     public async ValueTask DisposeAsync()

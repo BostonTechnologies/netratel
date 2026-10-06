@@ -5,6 +5,9 @@ using Google.Protobuf.WellKnownTypes;
 using NetRatel.API.Realtime;
 using NetRatel.AgentGateway.Contracts.V1;
 using NetRatel.Application.Presence;
+using NetRatel.Shared.Contracts.Services;
+using NetRatel.API.Services;
+using Google.Protobuf;
 
 namespace NetRatel.API.Gateway;
 
@@ -13,27 +16,48 @@ public interface IAgentTelemetryGatewaySessionRegistry
     AgentTelemetryGatewaySessionRegistration Register(ClientKey client, Guid connectionId, ulong connectionEpoch, bool supportsDynamicSampling, string agentVersion);
     AgentTelemetryGatewaySessionRegistration Register(ClientKey client, Guid connectionId, ulong connectionEpoch, bool supportsDynamicSampling, string agentVersion, bool provisional) =>
         Register(client, connectionId, connectionEpoch, supportsDynamicSampling, agentVersion);
+    AgentTelemetryGatewaySessionRegistration Register(ClientKey client, Guid connectionId, ulong connectionEpoch, bool supportsDynamicSampling, string agentVersion, bool provisional, bool supportsServices) =>
+        Register(client, connectionId, connectionEpoch, supportsDynamicSampling, agentVersion, provisional);
     AgentTelemetryGatewaySessionStatus GetStatus(ClientKey client);
+    AgentTelemetryGatewayServicesSessionPage GetServicesSessions(int maximumCount, ClientKey? after = null) => new([], null);
     void PublishPolicy(ClientKey client, TelemetrySamplingPolicyState policy);
+    bool TryPublishServicesPolicy(ClientKey client, ClientServiceWatchPolicyDto policy) => false;
+    bool TryPublishServicesPolicy(ClientKey client, ClientServiceWatchPolicyDto policy, Guid expectedRegistrationId) =>
+        GetStatus(client).RegistrationId == expectedRegistrationId && TryPublishServicesPolicy(client, policy);
 }
+
+public sealed record AgentTelemetryGatewayServicesSession(ClientKey Client, Guid RegistrationId);
+public sealed record AgentTelemetryGatewayServicesSessionPage(IReadOnlyList<AgentTelemetryGatewayServicesSession> Items, ClientKey? NextCursor);
 
 public sealed record AgentTelemetryGatewaySessionStatus(
     bool Connected,
     bool SupportsDynamicSampling,
     string? AgentVersion,
-    long? ConnectionEpoch);
+    long? ConnectionEpoch)
+{
+    public bool SupportsServices { get; init; }
+    public Guid? ConnectionId { get; init; }
+    public Guid? RegistrationId { get; init; }
+}
 
 public sealed class AgentTelemetryGatewaySessionRegistry : IAgentTelemetryGatewaySessionRegistry
 {
     private readonly ConcurrentDictionary<ClientKey, Session> _sessions = [];
+    private readonly Dictionary<ClientKey, Dictionary<Guid, Session>> _pending = [];
+    private const int MaximumPendingRegistrations = 16;
+    private static readonly IComparer<ClientKey> ClientOrder = Comparer<ClientKey>.Create((left, right) =>
+        left.TenantId != right.TenantId ? left.TenantId.CompareTo(right.TenantId) : left.AgentId.CompareTo(right.AgentId));
+    private readonly SortedSet<ClientKey> _servicesClients = new(ClientOrder);
     private readonly object _registrationGate = new();
     private readonly ITelemetryInteractiveDemandRegistry _demand;
     private readonly IGatewayTelemetryLiveRegistry _live;
+    private readonly TimeProvider _timeProvider;
 
-    public AgentTelemetryGatewaySessionRegistry(ITelemetryInteractiveDemandRegistry demand, IGatewayTelemetryLiveRegistry live)
+    public AgentTelemetryGatewaySessionRegistry(ITelemetryInteractiveDemandRegistry demand, IGatewayTelemetryLiveRegistry live, TimeProvider? timeProvider = null)
     {
         _demand = demand;
         _live = live;
+        _timeProvider = timeProvider ?? TimeProvider.System;
         _demand.PolicyChanged += PublishPolicy;
     }
 
@@ -41,48 +65,67 @@ public sealed class AgentTelemetryGatewaySessionRegistry : IAgentTelemetryGatewa
         Register(client, connectionId, connectionEpoch, supportsDynamicSampling, agentVersion, provisional: false);
 
     public AgentTelemetryGatewaySessionRegistration Register(ClientKey client, Guid connectionId, ulong connectionEpoch, bool supportsDynamicSampling, string agentVersion, bool provisional)
+        => Register(client, connectionId, connectionEpoch, supportsDynamicSampling, agentVersion, provisional, supportsServices: false);
+
+    public AgentTelemetryGatewaySessionRegistration Register(ClientKey client, Guid connectionId, ulong connectionEpoch, bool supportsDynamicSampling, string agentVersion, bool provisional, bool supportsServices)
     {
-        var replacement = new Session(client, connectionId, connectionEpoch, supportsDynamicSampling, agentVersion);
+        return RegisterCore(client, connectionId, connectionEpoch, supportsDynamicSampling, agentVersion, supportsServices,
+            provisional, Guid.NewGuid());
+    }
+
+
+    private AgentTelemetryGatewaySessionRegistration RegisterCore(ClientKey client, Guid connectionId, ulong connectionEpoch,
+        bool supportsDynamicSampling, string agentVersion, bool supportsServices, bool provisional, Guid registrationId)
+    {
+        var replacement = new Session(client, connectionId, connectionEpoch, supportsDynamicSampling, agentVersion, supportsServices, registrationId);
         lock (_registrationGate)
         {
-            while (true)
-            {
-                if (_sessions.TryGetValue(client, out var current))
-                {
-                    if (!GatewaySessionRegistrationFence.CanReplace(connectionId, connectionEpoch, current.ConnectionId, current.ConnectionEpoch))
-                    {
-                        replacement.Complete();
-                        throw new AgentGatewayRegistrationFencedException();
-                    }
-                    if (_sessions.TryUpdate(client, replacement, current))
-                    {
-                        current.Complete();
-                        break;
-                    }
-                    continue;
-                }
-                if (_sessions.TryAdd(client, replacement)) break;
-            }
-
-            if (!provisional) Activate(client, replacement);
+            if (_sessions.TryGetValue(client, out var current) &&
+                (!GatewaySessionRegistrationFence.CanReplace(connectionId, connectionEpoch, current.ConnectionId, current.ConnectionEpoch)))
+            { replacement.Complete(); throw new AgentGatewayRegistrationFencedException(); }
+            if (!_pending.TryGetValue(client, out var attempts)) _pending[client] = attempts = [];
+            if (attempts.Count >= MaximumPendingRegistrations || !attempts.TryAdd(registrationId, replacement))
+            { replacement.Complete(); throw new AgentGatewayRegistrationFencedException(); }
+            // Reservation/provisional physical registration must not retire old committed I/O.
+            if (!provisional && !Activate(client, replacement))
+            { attempts.Remove(registrationId); replacement.Complete(); throw new AgentGatewayRegistrationFencedException(); }
         }
         return new AgentTelemetryGatewaySessionRegistration(replacement, () => Unregister(client, replacement),
             () => IsCurrent(client, replacement), () => Activate(client, replacement),
             action => TryPublish(client, replacement, action));
     }
 
-    private bool IsCurrent(ClientKey client, Session session) =>
-        _sessions.TryGetValue(client, out var current) && ReferenceEquals(current, session) && !session.CompletionToken.IsCancellationRequested;
+
+    private bool IsCurrent(ClientKey client, Session session)
+    {
+        lock (_registrationGate)
+        {
+            if (session.CompletionToken.IsCancellationRequested) return false;
+            if (_sessions.TryGetValue(client, out var active) && ReferenceEquals(active, session)) return true;
+            return _pending.TryGetValue(client, out var attempts) && attempts.TryGetValue(session.RegistrationId, out var pending) && ReferenceEquals(pending, session);
+        }
+    }
 
     private bool Activate(ClientKey client, Session session)
     {
         lock (_registrationGate)
         {
             if (!IsCurrent(client, session)) return false;
+            if (session.Active) return _sessions.TryGetValue(client, out var currentActive) && ReferenceEquals(currentActive, session);
+            if (_sessions.TryGetValue(client, out var current) &&
+                (!GatewaySessionRegistrationFence.CanReplace(session.ConnectionId, session.ConnectionEpoch, current.ConnectionId, current.ConnectionEpoch))) return false;
+            _sessions[client] = session; _servicesClients.Remove(client);
+            current?.Complete();
+            if (_pending.TryGetValue(client, out var attempts))
+            {
+                attempts.Remove(session.RegistrationId);
+                foreach (var obsolete in attempts.Values.Where(value => value.ConnectionEpoch < session.ConnectionEpoch).ToArray())
+                { attempts.Remove(obsolete.RegistrationId); obsolete.Complete(); }
+                if (attempts.Count == 0) _pending.Remove(client);
+            }
             session.Active = true;
-            var policy = _demand.GetPolicy(client);
-            session.PublishPolicy(policy);
-            PublishMode(client, session, policy);
+            if (session.SupportsServices) _servicesClients.Add(client);
+            var policy = _demand.GetPolicy(client); session.PublishPolicy(policy); PublishMode(client, session, policy);
             return true;
         }
     }
@@ -93,7 +136,7 @@ public sealed class AgentTelemetryGatewaySessionRegistry : IAgentTelemetryGatewa
     {
         lock (_registrationGate)
         {
-            if (!IsCurrent(client, session) || !session.Active) return false;
+            if (!IsCurrent(client, session) || !session.Active || !_sessions.TryGetValue(client, out var current) || !ReferenceEquals(current, session)) return false;
             publish();
             return true;
         }
@@ -105,7 +148,31 @@ public sealed class AgentTelemetryGatewaySessionRegistry : IAgentTelemetryGatewa
         {
             return _sessions.TryGetValue(client, out var session) && session.Active
                 ? new(true, session.SupportsDynamicSampling, session.AgentVersion, checked((long)session.ConnectionEpoch))
+                {
+                    SupportsServices = session.SupportsServices, ConnectionId = session.ConnectionId, RegistrationId = session.RegistrationId
+                }
                 : new(false, false, null, null);
+        }
+    }
+
+    public AgentTelemetryGatewayServicesSessionPage GetServicesSessions(int maximumCount, ClientKey? after = null)
+    {
+        if (maximumCount is < 1 or > 128 || (after is { } cursor && !cursor.IsValid)) throw new ArgumentOutOfRangeException(nameof(maximumCount));
+        lock (_registrationGate)
+        {
+            if (_servicesClients.Count == 0 || (after is { } last && ClientOrder.Compare(last, _servicesClients.Max) >= 0)) return new([], null);
+            var view = after is { } lower ? _servicesClients.GetViewBetween(lower, _servicesClients.Max) : _servicesClients;
+            var page = new List<AgentTelemetryGatewayServicesSession>(maximumCount + 1);
+            foreach (var client in view)
+            {
+                if (after is { } previous && ClientOrder.Compare(client, previous) <= 0) continue;
+                if (_sessions.TryGetValue(client, out var session) && session.Active && session.SupportsServices && !session.CompletionToken.IsCancellationRequested)
+                    page.Add(new(client, session.RegistrationId));
+                if (page.Count > maximumCount) break;
+            }
+            var more = page.Count > maximumCount;
+            if (more) page.RemoveAt(maximumCount);
+            return new(page, more ? page[^1].Client : null);
         }
     }
 
@@ -121,12 +188,32 @@ public sealed class AgentTelemetryGatewaySessionRegistry : IAgentTelemetryGatewa
         }
     }
 
+    public bool TryPublishServicesPolicy(ClientKey client, ClientServiceWatchPolicyDto policy)
+        => TryPublishServicesPolicy(client, policy, expectedRegistrationId: null);
+
+    public bool TryPublishServicesPolicy(ClientKey client, ClientServiceWatchPolicyDto policy, Guid expectedRegistrationId)
+        => TryPublishServicesPolicy(client, policy, (Guid?)expectedRegistrationId);
+
+    private bool TryPublishServicesPolicy(ClientKey client, ClientServiceWatchPolicyDto policy, Guid? expectedRegistrationId)
+    {
+        if (!ClientServicesCoordinator.IsValidPolicy(policy, _timeProvider.GetUtcNow())) return false;
+        lock (_registrationGate)
+        {
+            return _sessions.TryGetValue(client, out var session) && session.Active &&
+                (expectedRegistrationId is null || session.RegistrationId == expectedRegistrationId) &&
+                session.PublishServicesPolicy(policy);
+        }
+    }
+
     private void Unregister(ClientKey client, Session session)
     {
         lock (_registrationGate)
         {
+            if (_pending.TryGetValue(client, out var attempts) && attempts.Remove(session.RegistrationId))
+            { session.Complete(); if (attempts.Count == 0) _pending.Remove(client); }
             if (((ICollection<KeyValuePair<ClientKey, Session>>)_sessions).Remove(new(client, session)))
             {
+                _servicesClients.Remove(client);
                 session.Complete();
                 var policy = _demand.GetPolicy(client);
                 _live.PublishMode(client, new GatewayTelemetryLiveMode(
@@ -151,7 +238,7 @@ public sealed class AgentTelemetryGatewaySessionRegistry : IAgentTelemetryGatewa
             effective ? policy.Reason : session.SupportsDynamicSampling ? "baseline" : "client-upgrade-required"));
     }
 
-    internal sealed class Session(ClientKey client, Guid connectionId, ulong connectionEpoch, bool supportsDynamicSampling, string agentVersion)
+    internal sealed class Session(ClientKey client, Guid connectionId, ulong connectionEpoch, bool supportsDynamicSampling, string agentVersion, bool supportsServices, Guid registrationId)
     {
         private readonly Channel<GatewayTelemetryFrame> _reliable = Channel.CreateBounded<GatewayTelemetryFrame>(new BoundedChannelOptions(4)
         {
@@ -170,15 +257,18 @@ public sealed class AgentTelemetryGatewaySessionRegistry : IAgentTelemetryGatewa
         private readonly object _policyGate = new();
         private readonly CancellationTokenSource _completion = new();
         private TelemetrySamplingPolicyState? _latestPolicy;
+        private ClientServiceWatchPolicyDto? _latestServicesPolicy;
+        private ulong _lastServicesRevision;
         private long _lastPolicyRevision = -1;
         private int _completed;
 
-        public Guid RegistrationId { get; } = Guid.NewGuid();
+        public Guid RegistrationId { get; } = registrationId;
         public bool Active { get; set; }
         public ClientKey Client { get; } = client;
         public Guid ConnectionId { get; } = connectionId;
         public ulong ConnectionEpoch { get; } = connectionEpoch;
         public bool SupportsDynamicSampling { get; } = supportsDynamicSampling;
+        public bool SupportsServices { get; } = supportsServices;
         public string AgentVersion { get; } = agentVersion;
         public CancellationToken CompletionToken => _completion.Token;
 
@@ -200,6 +290,25 @@ public sealed class AgentTelemetryGatewaySessionRegistry : IAgentTelemetryGatewa
             Pulse();
         }
 
+        public bool PublishServicesPolicy(ClientServiceWatchPolicyDto policy)
+        {
+            if (!SupportsServices || Volatile.Read(ref _completed) != 0) return false;
+            if (ToFrame(policy).CalculateSize() > ClientServicesLimits.MaximumChunkPayloadBytes) return false;
+            lock (_policyGate)
+            {
+                if (policy.Revision < _lastServicesRevision || Volatile.Read(ref _completed) != 0) return false;
+                // A cadence renewal cannot discard a queued explicit refresh.
+                _latestServicesPolicy = policy with
+                {
+                    ServiceNames = policy.ServiceNames.ToArray(),
+                    RefreshRequestId = policy.RefreshRequestId ?? _latestServicesPolicy?.RefreshRequestId
+                };
+                _lastServicesRevision = policy.Revision;
+            }
+            Pulse();
+            return true;
+        }
+
         public void Complete()
         {
             if (Interlocked.Exchange(ref _completed, 1) != 0) return;
@@ -214,16 +323,20 @@ public sealed class AgentTelemetryGatewaySessionRegistry : IAgentTelemetryGatewa
             {
                 while (_reliable.Reader.TryRead(out var reliable)) yield return reliable;
                 TelemetrySamplingPolicyState? policy;
+                ClientServiceWatchPolicyDto? servicesPolicy;
                 lock (_policyGate)
                 {
                     policy = _latestPolicy;
                     _latestPolicy = null;
+                    servicesPolicy = _latestServicesPolicy;
+                    _latestServicesPolicy = null;
                 }
                 if (policy is not null)
                 {
                     yield return ToFrame(policy);
-                    continue;
                 }
+                if (servicesPolicy is not null) yield return ToFrame(servicesPolicy);
+                if (policy is not null || servicesPolicy is not null) continue;
 
                 var completed = false;
                 try
@@ -242,13 +355,35 @@ public sealed class AgentTelemetryGatewaySessionRegistry : IAgentTelemetryGatewa
                 {
                     policy = _latestPolicy;
                     _latestPolicy = null;
+                    servicesPolicy = _latestServicesPolicy;
+                    _latestServicesPolicy = null;
                 }
                 if (policy is not null) yield return ToFrame(policy);
+                if (servicesPolicy is not null) yield return ToFrame(servicesPolicy);
                 yield break;
             }
         }
 
         private void Pulse() => _wakeups.Writer.TryWrite(0);
+
+        private GatewayTelemetryFrame ToFrame(ClientServiceWatchPolicyDto policy)
+        {
+            var wire = new ServiceWatchPolicy
+            {
+                Revision = policy.Revision,
+                WatchIntervalSeconds = policy.WatchIntervalSeconds,
+                InventoryIntervalSeconds = policy.InventoryIntervalSeconds,
+                ExpiresAtUtc = Timestamp.FromDateTimeOffset(policy.ExpiresAtUtc),
+                RefreshRequestId = policy.RefreshRequestId?.ToString("D") ?? ""
+            };
+            wire.ServiceNames.Add(policy.ServiceNames);
+            return new()
+            {
+                ProtocolVersion = "1.0", TenantId = Client.TenantId, ClientId = Client.AgentId.ToString("D"),
+                ConnectionEpoch = ConnectionEpoch, ConnectionId = ConnectionId.ToString("D"), Sequence = 0,
+                ServiceWatchPolicy = wire
+            };
+        }
 
         private GatewayTelemetryFrame ToFrame(TelemetrySamplingPolicyState policy) => new()
         {
@@ -294,6 +429,7 @@ public sealed class AgentTelemetryGatewaySessionRegistration : IAsyncDisposable
     public bool TryActivate() => IsCurrent && _tryActivate();
     public bool TryPublish(Action publish) => IsCurrent && _tryPublish(publish);
     public bool SupportsDynamicSampling => _session.SupportsDynamicSampling;
+    public bool SupportsServices => _session.SupportsServices;
     public CancellationToken CompletionToken => _session.CompletionToken;
     public ValueTask EnqueueReliableAsync(GatewayTelemetryFrame frame, CancellationToken cancellationToken) => _session.EnqueueReliableAsync(frame, cancellationToken);
     public IAsyncEnumerable<GatewayTelemetryFrame> ReadOutboundAsync(CancellationToken cancellationToken) => _session.ReadOutboundAsync(cancellationToken);

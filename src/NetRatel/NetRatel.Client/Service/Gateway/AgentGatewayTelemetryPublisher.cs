@@ -3,6 +3,8 @@ using Grpc.Core;
 using Grpc.Net.Client;
 using NetRatel.AgentGateway.Contracts.V1;
 using NetRatel.Shared.Contracts.FileSystem;
+using NetRatel.Shared.Contracts.Services;
+using NetRatel.Client.Service.Services;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -26,7 +28,9 @@ public sealed class AgentGatewayTelemetryPublisher(
     GatewayClientOptions options,
     string agentVersion,
     Action<string> log,
-    TimeProvider? timeProvider = null)
+    TimeProvider? timeProvider = null,
+    IServiceInventoryCollector? serviceInventoryCollector = null,
+    Func<Uri, GrpcChannel>? channelFactory = null)
 {
     private static readonly TimeSpan InitialRetryDelay = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan MaximumRetryDelay = TimeSpan.FromSeconds(30);
@@ -44,13 +48,15 @@ public sealed class AgentGatewayTelemetryPublisher(
         }
 
         var collector = new GatewayTelemetrySnapshotCollector(agentVersion, log);
+        using var services = new ServiceCollectionCoordinator(serviceInventoryCollector ?? ServiceInventoryCollectorFactory.Create(_timeProvider), _timeProvider);
+        var sequenceCursor = new PresenceTelemetrySequenceCursor();
         var retryDelay = InitialRetryDelay;
 
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
-                await RunV2StreamAsync(endpoint, session, accessToken, collector, stoppingToken).ConfigureAwait(false);
+                await RunV2StreamAsync(endpoint, session, accessToken, collector, services, sequenceCursor, stoppingToken).ConfigureAwait(false);
                 retryDelay = InitialRetryDelay;
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -66,11 +72,14 @@ public sealed class AgentGatewayTelemetryPublisher(
         }
     }
 
-    private async Task RunV2StreamAsync(Uri endpoint, GatewayPresenceSession session, string accessToken, GatewayTelemetrySnapshotCollector collector, CancellationToken stoppingToken)
+    private async Task RunV2StreamAsync(Uri endpoint, GatewayPresenceSession session, string accessToken, GatewayTelemetrySnapshotCollector collector, ServiceCollectionCoordinator services, PresenceTelemetrySequenceCursor sequenceCursor, CancellationToken stoppingToken)
     {
-        using var channel = GrpcChannel.ForAddress(endpoint);
+        using var streamCancellation = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+        var streamToken = streamCancellation.Token;
+        services.BeginStream();
+        using var channel = channelFactory?.Invoke(endpoint) ?? GrpcChannel.ForAddress(endpoint);
         var client = new global::NetRatel.AgentGateway.Contracts.V1.AgentTelemetryGatewayV2.AgentTelemetryGatewayV2Client(channel);
-        using var call = client.Connect(new Metadata { { "Authorization", $"Bearer {session.GetAccessToken(accessToken)}" } }, cancellationToken: stoppingToken);
+        using var call = client.Connect(new Metadata { { "Authorization", $"Bearer {session.GetAccessToken(accessToken)}" } }, cancellationToken: streamToken);
         var accepted = new TaskCompletionSource<TelemetryConnectAccepted>(TaskCreationOptions.RunContinuationsAsynchronously);
         var policies = System.Threading.Channels.Channel.CreateBounded<TelemetrySamplingPolicy>(new System.Threading.Channels.BoundedChannelOptions(1)
         {
@@ -80,12 +89,19 @@ public sealed class AgentGatewayTelemetryPublisher(
             AllowSynchronousContinuations = false
         });
         var ackGate = new object();
+        var servicePolicies = System.Threading.Channels.Channel.CreateBounded<ServiceWatchPolicy>(new System.Threading.Channels.BoundedChannelOptions(1)
+        {
+            FullMode = System.Threading.Channels.BoundedChannelFullMode.DropOldest,
+            SingleReader = true,
+            SingleWriter = true,
+            AllowSynchronousContinuations = false
+        });
         TaskCompletionSource<ulong>? pendingAcknowledgement = null;
         var reader = Task.Run(async () =>
         {
             try
             {
-                while (await call.ResponseStream.MoveNext(stoppingToken).ConfigureAwait(false))
+                while (await call.ResponseStream.MoveNext(streamToken).ConfigureAwait(false))
                 {
                     var frame = call.ResponseStream.Current;
                     switch (frame.PayloadCase)
@@ -102,15 +118,18 @@ public sealed class AgentGatewayTelemetryPublisher(
                         case GatewayTelemetryFrame.PayloadOneofCase.TelemetrySamplingPolicy:
                             policies.Writer.TryWrite(frame.TelemetrySamplingPolicy);
                             break;
+                        case GatewayTelemetryFrame.PayloadOneofCase.ServiceWatchPolicy:
+                            servicePolicies.Writer.TryWrite(frame.ServiceWatchPolicy);
+                            break;
                     }
                 }
                 accepted.TrySetException(new RpcException(new Status(StatusCode.Unavailable, "Telemetry gateway closed before admission.")));
                 lock (ackGate) pendingAcknowledgement?.TrySetException(new RpcException(new Status(StatusCode.Unavailable, "Telemetry gateway closed before acknowledgement.")));
             }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            catch (OperationCanceledException) when (streamToken.IsCancellationRequested)
             {
-                accepted.TrySetCanceled(stoppingToken);
-                lock (ackGate) pendingAcknowledgement?.TrySetCanceled(stoppingToken);
+                accepted.TrySetCanceled(streamToken);
+                lock (ackGate) pendingAcknowledgement?.TrySetCanceled(streamToken);
             }
             catch (Exception exception)
             {
@@ -120,6 +139,7 @@ public sealed class AgentGatewayTelemetryPublisher(
             finally
             {
                 policies.Writer.TryComplete();
+                servicePolicies.Writer.TryComplete();
             }
         }, CancellationToken.None);
         try
@@ -132,21 +152,31 @@ public sealed class AgentGatewayTelemetryPublisher(
                 ConnectionEpoch = session.ConnectionEpoch,
                 ConnectionId = session.ConnectionId.ToString("D"),
                 Sequence = 0,
-                Hello = new AgentTelemetryHello { AgentVersion = agentVersion, Capabilities = { "telemetry-rate-control-v1" } }
+                Hello = new AgentTelemetryHello { AgentVersion = agentVersion, Capabilities = { "telemetry-rate-control-v1", ClientServicesLimits.Capability } }
             }).ConfigureAwait(false);
-            var admission = await accepted.Task.WaitAsync(stoppingToken).ConfigureAwait(false);
+            var admission = await accepted.Task.WaitAsync(streamToken).ConfigureAwait(false);
             if (!GatewayWireProtocol.HasAkkaAuthority(admission.TelemetryAuthority))
             {
                 throw new RpcException(new Status(StatusCode.FailedPrecondition, "Telemetry gateway returned an unsupported authority token."));
             }
 
             var slowInterval = TimeSpan.FromSeconds(Math.Clamp(options.TelemetrySlowIntervalSeconds, 5, 300));
+            var servicesEnabled = admission.AcceptedCapabilities.Contains(ClientServicesLimits.Capability);
             var nextSlowSampleAtUtc = DateTimeOffset.MinValue;
-            ulong sequence = 0;
             ulong policyRevision = 0;
             var activeFastInterval = BaselineFastInterval();
             var policyExpiresAtUtc = DateTimeOffset.MinValue;
-            while (!stoppingToken.IsCancellationRequested)
+            // This is the only stream writer for metrics and services; both consume the same ACK credit.
+            async Task SendAcknowledgedAsync(AgentTelemetryFrame frame)
+            {
+                var acknowledgement = new TaskCompletionSource<ulong>(TaskCreationOptions.RunContinuationsAsynchronously);
+                lock (ackGate) pendingAcknowledgement = acknowledgement;
+                await call.RequestStream.WriteAsync(frame).ConfigureAwait(false);
+                if (await acknowledgement.Task.WaitAsync(streamToken).ConfigureAwait(false) != frame.Sequence)
+                    throw new RpcException(new Status(StatusCode.DataLoss, "Telemetry gateway returned an invalid acknowledgement."));
+                lock (ackGate) pendingAcknowledgement = null;
+            }
+            while (!streamToken.IsCancellationRequested)
             {
                 while (policies.Reader.TryRead(out var policy))
                 {
@@ -160,14 +190,18 @@ public sealed class AgentGatewayTelemetryPublisher(
                         policyExpiresAtUtc = policy.ExpiresAtUtc.ToDateTimeOffset();
                     }
                 }
+                while (servicePolicies.Reader.TryRead(out var servicePolicy))
+                {
+                    if (servicesEnabled && TryConvertServicePolicy(servicePolicy, out var converted)) services.ApplyPolicy(converted!);
+                }
                 var now = _timeProvider.GetUtcNow();
+                if (servicesEnabled) services.StartDueCollection(streamCancellation.Token);
                 if (policyExpiresAtUtc <= now) activeFastInterval = BaselineFastInterval();
                 var includeSlow = now >= nextSlowSampleAtUtc;
                 if (includeSlow) nextSlowSampleAtUtc = now.Add(slowInterval);
-                var snapshot = collector.CreateFrame(session, checked(++sequence), now, includeSlow);
-                var acknowledgement = new TaskCompletionSource<ulong>(TaskCreationOptions.RunContinuationsAsynchronously);
-                lock (ackGate) pendingAcknowledgement = acknowledgement;
-                await call.RequestStream.WriteAsync(new AgentTelemetryFrame
+                var sequence = sequenceCursor.Next();
+                var snapshot = collector.CreateFrame(session, sequence, now, includeSlow);
+                await SendAcknowledgedAsync(new AgentTelemetryFrame
                 {
                     ProtocolVersion = options.ProtocolVersion,
                     TenantId = session.TenantId,
@@ -177,15 +211,23 @@ public sealed class AgentGatewayTelemetryPublisher(
                     Sequence = sequence,
                     Snapshot = snapshot
                 }).ConfigureAwait(false);
-                if (await acknowledgement.Task.WaitAsync(stoppingToken).ConfigureAwait(false) != sequence)
+                if (servicesEnabled && services.TryTakeCompleted(out var collection) && collection is not null)
                 {
-                    throw new RpcException(new Status(StatusCode.DataLoss, "Telemetry gateway returned an invalid acknowledgement."));
+                    foreach (var chunk in ServiceSnapshotSerializer.CreateChunks(collection, session, options.ProtocolVersion))
+                        await SendAcknowledgedAsync(ServiceSnapshotSerializer.CreateEnvelope(chunk, session, options.ProtocolVersion, sequenceCursor.Next())).ConfigureAwait(false);
                 }
-                lock (ackGate) pendingAcknowledgement = null;
-                using var selectionCancellation = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
-                var wait = Task.Delay(activeFastInterval, _timeProvider, selectionCancellation.Token);
+                if (servicesEnabled) services.StartDueCollection(streamToken);
+                using var selectionCancellation = CancellationTokenSource.CreateLinkedTokenSource(streamToken);
+                var waitInterval = activeFastInterval;
+                if (servicesEnabled && services.DelayUntilNextCollection() is { } serviceDelay && serviceDelay < waitInterval) waitInterval = serviceDelay;
+                var wait = Task.Delay(waitInterval, _timeProvider, selectionCancellation.Token);
                 var policySignal = policies.Reader.WaitToReadAsync(selectionCancellation.Token).AsTask();
-                var completed = await Task.WhenAny(wait, policySignal).ConfigureAwait(false);
+                var servicePolicySignal = servicePolicies.Reader.WaitToReadAsync(selectionCancellation.Token).AsTask();
+                var collectionSignal = servicesEnabled ? services.PendingCollection : null;
+                var signals = collectionSignal is null
+                    ? new Task[] { wait, policySignal, servicePolicySignal }
+                    : new Task[] { wait, policySignal, servicePolicySignal, collectionSignal };
+                var completed = await Task.WhenAny(signals).ConfigureAwait(false);
                 if (completed == policySignal)
                 {
                     if (!await policySignal.ConfigureAwait(false))
@@ -194,33 +236,58 @@ public sealed class AgentGatewayTelemetryPublisher(
                     }
                     selectionCancellation.Cancel();
                     await ObserveSelectionCancellationAsync(wait).ConfigureAwait(false);
+                    await ObserveSelectionCancellationAsync(servicePolicySignal).ConfigureAwait(false);
+                    continue;
+                }
+                if (completed == servicePolicySignal || completed == collectionSignal)
+                {
+                    if (completed == servicePolicySignal && !await servicePolicySignal.ConfigureAwait(false))
+                        throw new RpcException(new Status(StatusCode.Unavailable, "Telemetry gateway closed its service policy stream."));
+                    selectionCancellation.Cancel();
+                    await ObserveSelectionCancellationAsync(wait).ConfigureAwait(false);
+                    await ObserveSelectionCancellationAsync(policySignal).ConfigureAwait(false);
+                    await ObserveSelectionCancellationAsync(servicePolicySignal).ConfigureAwait(false);
                     continue;
                 }
 
                 await wait.ConfigureAwait(false);
                 selectionCancellation.Cancel();
                 await ObserveSelectionCancellationAsync(policySignal).ConfigureAwait(false);
+                await ObserveSelectionCancellationAsync(servicePolicySignal).ConfigureAwait(false);
             }
         }
         finally
         {
-            try
-            {
-                await call.RequestStream.CompleteAsync().ConfigureAwait(false);
-            }
-            catch (RpcException)
-            {
-                log("Telemetry gateway stream had already closed before request completion.");
-            }
+            streamCancellation.Cancel();
+            call.Dispose();
             try { await reader.ConfigureAwait(false); }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            catch (OperationCanceledException) when (streamToken.IsCancellationRequested)
             {
-                log("Telemetry V2 reader stopped after client cancellation.");
+                log("Telemetry V2 reader stopped after stream cancellation.");
             }
         }
     }
 
     private TimeSpan BaselineFastInterval() => TimeSpan.FromSeconds(Math.Clamp(options.TelemetryFastIntervalSeconds, 1, 60));
+    private sealed class PresenceTelemetrySequenceCursor
+    {
+        private ulong _sequence;
+        // Reserve before writing. An ambiguous write/ACK can consume a number but never reuse it on retry.
+        public ulong Next() => checked(++_sequence);
+    }
+    internal static bool TryConvertServicePolicy(ServiceWatchPolicy policy, out ClientServiceWatchPolicyDto? converted)
+    {
+        converted = null;
+        if (policy.ExpiresAtUtc is null || (!string.IsNullOrEmpty(policy.RefreshRequestId) && !Guid.TryParse(policy.RefreshRequestId, out _))) return false;
+        try
+        {
+            converted = new ClientServiceWatchPolicyDto(policy.Revision, policy.ServiceNames.ToArray(), policy.WatchIntervalSeconds, policy.InventoryIntervalSeconds,
+                policy.ExpiresAtUtc.ToDateTimeOffset(), Guid.TryParse(policy.RefreshRequestId, out var refresh) ? refresh : null);
+            return true;
+        }
+        catch (InvalidOperationException) { return false; }
+        catch (ArgumentOutOfRangeException) { return false; }
+    }
     private int ClampInteractiveInterval(uint value) => Math.Clamp((int)Math.Min(value, int.MaxValue), Math.Max(1000, options.TelemetryMinimumIntervalMilliseconds), 60_000);
     private bool IsValidNewerPolicy(TelemetrySamplingPolicy policy, ulong currentRevision) =>
         policy.Revision > currentRevision && policy.FastIntervalMilliseconds > 0 && policy.SlowIntervalSeconds > 0 &&

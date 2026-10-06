@@ -335,6 +335,161 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.ToTable("BootstrapInitializations", (string)null);
                 });
 
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ClientConnectionAdmissionRecord", b =>
+                {
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("AgentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("ConnectionId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset?>("AdmissionExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("AuthenticationExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long?>("ConnectionEpoch")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("MetadataJson")
+                        .HasColumnType("jsonb");
+
+                    b.Property<Guid?>("OperationId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("PayloadHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<DateTimeOffset?>("ReceivedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset>("RetainUntilUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<short>("Status")
+                        .HasColumnType("smallint");
+
+                    b.HasKey("TenantId", "AgentId", "ConnectionId");
+
+                    b.HasIndex("RetainUntilUtc", "TenantId", "AgentId");
+
+                    b.HasIndex("TenantId", "AgentId", "ConnectionEpoch")
+                        .IsUnique()
+                        .HasDatabaseName("UX_ClientConnectionAdmissions_Epoch")
+                        .HasFilter("\"ConnectionEpoch\" IS NOT NULL");
+
+                    b.ToTable("ClientConnectionAdmissions", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_ClientConnectionAdmissions_Epoch", "\"ConnectionEpoch\" IS NULL OR \"ConnectionEpoch\">0");
+
+                            t.HasCheckConstraint("CK_ClientConnectionAdmissions_Identity", "\"TenantId\" > 0 AND \"AgentId\" <> '00000000-0000-0000-0000-000000000000'::uuid AND \"ConnectionId\" <> '00000000-0000-0000-0000-000000000000'::uuid");
+
+                            t.HasCheckConstraint("CK_ClientConnectionAdmissions_Pending", "\"Status\" = 2 OR ( \"ConnectionEpoch\" IS NOT NULL AND \"ConnectionEpoch\">0 AND \"OperationId\" IS NOT NULL AND \"OperationId\"<>'00000000-0000-0000-0000-000000000000'::uuid AND \"PayloadHash\" IS NOT NULL AND \"ReceivedAtUtc\" IS NOT NULL AND \"AdmissionExpiresAtUtc\" IS NOT NULL AND \"AuthenticationExpiresAtUtc\" IS NOT NULL AND \"AdmissionExpiresAtUtc\">\"ReceivedAtUtc\" AND \"AuthenticationExpiresAtUtc\">\"ReceivedAtUtc\" AND \"MetadataJson\" IS NOT NULL)");
+
+                            t.HasCheckConstraint("CK_ClientConnectionAdmissions_Status", "\"Status\" IN (1,2,3)");
+                        });
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ClientConnectionEpochRecord", b =>
+                {
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("AgentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset?>("CancellationBarrierUntilUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("LastIssuedEpoch")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("TenantId", "AgentId");
+
+                    b.ToTable("ClientConnectionEpochs", (string)null);
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ClientConnectionOwnerRecord", b =>
+                {
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("AgentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset?>("AcceptanceClockFloorUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("AcceptanceGuardAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<bool>("Active")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false);
+
+                    b.Property<string>("AdmissionPayloadHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<DateTimeOffset?>("AuthenticationExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("ConnectionEpoch")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasDefaultValue(0L);
+
+                    b.Property<Guid?>("ConnectionId")
+                        .HasColumnType("uuid");
+
+                    b.Property<decimal>("LastHeartbeatSequence")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("numeric(20,0)")
+                        .HasDefaultValue(0m);
+
+                    b.Property<DateTimeOffset?>("LastReceivedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("MetadataJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValueSql("'{}'::jsonb");
+
+                    b.Property<long>("OwnerRevision")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasDefaultValue(0L);
+
+                    b.Property<DateTimeOffset?>("PresenceExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("StartOperationId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("TenantId", "AgentId");
+
+                    b.ToTable("ClientConnectionOwners", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_ClientConnectionOwners_Active", "\"AcceptanceGuardAtUtc\" IS NULL OR NOT \"Active\" OR ( \"ConnectionEpoch\" > 0 AND \"ConnectionId\" IS NOT NULL AND \"ConnectionId\" <> '00000000-0000-0000-0000-000000000000'::uuid AND \"StartOperationId\" IS NOT NULL AND \"AdmissionPayloadHash\" IS NOT NULL AND \"LastReceivedAtUtc\" IS NOT NULL AND \"PresenceExpiresAtUtc\" IS NOT NULL AND \"AuthenticationExpiresAtUtc\" IS NOT NULL AND \"LastHeartbeatSequence\" > 0)");
+
+                            t.HasCheckConstraint("CK_ClientConnectionOwners_CommittedShape", "(\"ConnectionEpoch\"=0 AND \"ConnectionId\" IS NULL) OR (\"ConnectionEpoch\">0 AND \"ConnectionId\" IS NOT NULL AND \"StartOperationId\" IS NOT NULL AND \"AdmissionPayloadHash\" IS NOT NULL AND \"LastReceivedAtUtc\" IS NOT NULL AND \"PresenceExpiresAtUtc\" IS NOT NULL AND \"AuthenticationExpiresAtUtc\" IS NOT NULL)");
+
+                            t.HasCheckConstraint("CK_ClientConnectionOwners_Epoch", "\"ConnectionEpoch\" >= 0 AND \"OwnerRevision\" >= 0");
+
+                            t.HasCheckConstraint("CK_ClientConnectionOwners_Identity", "\"TenantId\" > 0 AND \"AgentId\" <> '00000000-0000-0000-0000-000000000000'::uuid");
+
+                            t.HasCheckConstraint("CK_ClientConnectionOwners_Sequence", "\"LastHeartbeatSequence\" BETWEEN 0 AND 18446744073709551615");
+                        });
+                });
+
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ClientInstallGrant", b =>
                 {
                     b.Property<Guid>("Id")
@@ -664,6 +819,36 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.HasIndex("State", "LeaseUntilUtc", "CreatedAtUtc");
 
                     b.ToTable("ClientReleaseImportOperations", (string)null);
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ClientServicesSnapshotRecord", b =>
+                {
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("AgentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<long>("ConnectionEpoch")
+                        .HasColumnType("bigint");
+
+                    b.Property<decimal>("LastAcceptedSequence")
+                        .HasColumnType("numeric(20,0)");
+
+                    b.Property<long>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("StateJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<DateTimeOffset>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("TenantId", "AgentId");
+
+                    b.ToTable("ClientServicesSnapshots", (string)null);
                 });
 
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ClientUpdateAttemptRecord", b =>
@@ -1632,6 +1817,12 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.Property<DateTimeOffset?>("DispatchEnqueuedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<Guid?>("DispatchOwnerConnectionId")
+                        .HasColumnType("uuid");
+
+                    b.Property<long?>("DispatchOwnerEpoch")
+                        .HasColumnType("bigint");
+
                     b.Property<DateTimeOffset?>("DispatchPreparedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
@@ -1653,7 +1844,10 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("TerminalReadyAtUtc", "NativeDeadlineUtc");
 
-                    b.ToTable("JobRunControls", (string)null);
+                    b.ToTable("JobRunControls", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_JobRunControls_DispatchOwner", "(\"DispatchOwnerConnectionId\" IS NULL AND \"DispatchOwnerEpoch\" IS NULL) OR (\"DispatchOwnerConnectionId\" IS NOT NULL AND \"DispatchOwnerConnectionId\" <> '00000000-0000-0000-0000-000000000000'::uuid AND \"DispatchOwnerEpoch\" IS NOT NULL AND \"DispatchOwnerEpoch\" > 0)");
+                        });
                 });
 
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.JobRunRecord", b =>

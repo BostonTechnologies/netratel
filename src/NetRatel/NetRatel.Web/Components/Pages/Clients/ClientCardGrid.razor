@@ -127,13 +127,8 @@
                                                        OnClick="@(() => OpenRemoteSupportAsync(client))"
                                                        aria-label="Open remote support" />
                                     </MudTooltip>
-                                    <MudTooltip Text="Ping client">
-                                        <MudIconButton Icon="@Icons.Material.Filled.NetworkPing" Color="Color.Default"
-                                                       Size="Size.Small"
-                                                       Disabled="@(!client.Online)"
-                                                       OnClick="@(() => PingAsync(client))"
-                                                       aria-label="Ping client" />
-                                    </MudTooltip>
+                                    <ClientServicesLauncher @key="(client.TenantId, client.AgentId)" TenantId="@client.TenantId" AgentId="@client.AgentId"
+                                                            HostLabel="@(client.HostName ?? client.DisplayName)" TenantLabel="@client.TenantName" />
                                 </div>
                             </div>
                         </CardHeaderContent>
@@ -240,19 +235,6 @@
         };
         await DialogService.ShowAsync<GatewayTelemetryDialog>("Telemetry", parameters,
             new DialogOptions { FullScreen = true, FullWidth = true, CloseOnEscapeKey = true, CloseButton = false });
-    }
-
-    private async Task PingAsync(ClientPresentationModel client)
-    {
-        try
-        {
-            var result = await GatewayActions.PingAsync(client.TenantId, client.AgentId);
-            Snackbar.Add($"Gateway ping: {result.RoundTripMilliseconds:0} ms ({result.Authority}).", Severity.Success);
-        }
-        catch (Exception exception)
-        {
-            Snackbar.Add($"Gateway ping failed: {exception.Message}", Severity.Error);
-        }
     }
 
     private async Task OpenFileBrowserAsync(ClientPresentationModel client, string initialPath)

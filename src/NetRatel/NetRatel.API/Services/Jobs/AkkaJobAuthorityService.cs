@@ -48,6 +48,7 @@ public sealed class AkkaJobAuthorityService(
     private readonly TimeProvider _clock = clock ?? TimeProvider.System;
     private readonly TimeSpan _undispatchedRecoveryGrace = (options ?? new NetRatelAkkaOptions()).AskTimeout;
     private IJobRunOwner? _owner;
+    private OwnerKey? _acceptedPhysicalOwner;
     private JobRunMutationBoundary? _boundary;
     private readonly List<(IJobObservation Observation, JobMessageResult Result)> _committedFanout = [];
 
@@ -63,26 +64,37 @@ public sealed class AkkaJobAuthorityService(
             _boundary = boundary;
             try
             {
+                _acceptedPhysicalOwner = null;
                 await boundary.BeginAsync(ownedCt);
                 await owner.ReloadAsync(boundary.Observations, ownedCt);
                 var result = await operation(ownedCt);
+                await RequirePhysicalMutationDeadlineAsync(ownedCt);
                 await boundary.CommitAsync(ownedCt);
                 FlushCommittedFanout();
                 return result;
             }
-            finally { _committedFanout.Clear(); _owner = null; _boundary = null; }
+            finally { _committedFanout.Clear(); _owner = null; _boundary = null; _acceptedPhysicalOwner = null; }
         }, ct);
     }
 
     private async Task CommitBeforeTransportAsync(CancellationToken ct)
     {
+        await RequirePhysicalMutationDeadlineAsync(ct);
         if (_boundary is not null) await _boundary.CommitAsync(ct);
+        _acceptedPhysicalOwner = null;
         FlushCommittedFanout();
     }
 
     private async Task BeginAfterTransportAsync(CancellationToken ct)
     {
         if (_boundary is not null) await _boundary.BeginAsync(ct);
+    }
+
+    private async Task RequirePhysicalMutationDeadlineAsync(CancellationToken ct)
+    {
+        if (db is not null && _acceptedPhysicalOwner is { } owner &&
+            !await ClientConnectionEpochStore.LockEffectiveOwnerAsync(db, owner, _clock, ct))
+            throw new AgentJobGatewaySessionUnavailableException(owner.Client);
     }
 
     private sealed class JobTransitionRejectedException(JobMessageResult result)
@@ -156,6 +168,9 @@ public sealed class AkkaJobAuthorityService(
             NetRatelAkkaTelemetry.RecordAuthorityFailure(Feature, Authority, environment.EnvironmentName);
             throw new AgentJobGatewaySessionUnavailableException(client);
         }
+        // Owner reservation cannot accept a run. Validate the exact registered
+        // physical owner inside the existing intent transaction before writes.
+        _ = await RequireDispatchOwnerAsync(client, cancellationToken);
         var createdAt = prepared?.CreatedAtUtc ?? _clock.GetUtcNow();
         var runtimePolicy = JobExecutionRuntimePolicy.FromJobAndRequest(definition.Job, request);
         var run = await jobRuns.UpsertRunAsync(new UpsertJobRunCommand(
@@ -224,6 +239,17 @@ public sealed class AkkaJobAuthorityService(
         var run = await jobRuns.GetAsync(lifecycle.JobRunId, cancellationToken).ConfigureAwait(false)
             ?? throw new KeyNotFoundException($"Job run {lifecycle.JobRunId} was not found.");
         RequireRunTarget(run, client);
+        if (db is not null)
+        {
+            if (lifecycle.AuthenticatedOwner is not { } owner || owner.Client != client ||
+                !await ClientConnectionEpochStore.LockEffectiveOwnerAsync(db, owner, _clock, cancellationToken))
+                throw new AgentJobGatewaySessionUnavailableException(client);
+            _acceptedPhysicalOwner = owner;
+            var dispatch = await db.Set<JobRunControlRecord>().AsNoTracking()
+                .SingleAsync(x => x.RunId == checked((long)run.Id), cancellationToken);
+            if (dispatch.DispatchOwnerConnectionId != owner.ConnectionId || dispatch.DispatchOwnerEpoch != owner.Epoch)
+                throw new InvalidOperationException("The job lifecycle differs from its accepted dispatch owner.");
+        }
         if (IsTerminal(run.Status)) return; // Accepted terminal versions are immutable.
         if (lifecycle.LifecycleSequence == 0 || lifecycle.Version == 0 || lifecycle.StatusAtUtc < lifecycle.RequestedAtUtc)
         {
@@ -289,10 +315,13 @@ public sealed class AkkaJobAuthorityService(
         }
         var client = new ClientKey(tenantId, agentId);
         var provenUndispatched = false;
+        OwnerKey? cancellationOwner = null;
         if (db is not null)
         {
             var control = (await EnsureControlAsync(run.Id, cancellationToken))!;
             provenUndispatched = IsProvenUndispatched(run, control);
+            if (control.DispatchOwnerConnectionId is { } connection && control.DispatchOwnerEpoch is > 0)
+                cancellationOwner = new OwnerKey(client, connection, control.DispatchOwnerEpoch.Value);
             if (control.CancellationRequestedAtUtc is null)
             {
                 control.CancellationRequestedAtUtc = _clock.GetUtcNow();
@@ -307,11 +336,16 @@ public sealed class AkkaJobAuthorityService(
         // A recorded Pending ingress has no native command to cancel. Persist
         // intent without enqueueing IO that could race its original start call.
         if (provenUndispatched) return true;
-        if (sessions.IsAvailable(client))
+        // Intent is durable regardless of physical availability. Historical
+        // unknown owner stays unknown; never route cancel to a new owner.
+        if (sessions.IsAvailable(client) && (db is null || cancellationOwner is not null))
         {
             try
             {
-                await sessions.CancelAsync(client, jobRunId, reason, cancellationToken).ConfigureAwait(false);
+                if (db is null)
+                    await sessions.CancelAsync(client, jobRunId, reason, cancellationToken).ConfigureAwait(false);
+                else
+                    await sessions.CancelAsync(cancellationOwner!.Value, jobRunId, reason, cancellationToken).ConfigureAwait(false);
                 await BeginAfterTransportAsync(cancellationToken);
                 if (db is not null)
                 {
@@ -375,6 +409,9 @@ public sealed class AkkaJobAuthorityService(
             throw new InvalidOperationException(invocation.Error ?? "The job step could not be translated for gateway execution.");
         }
 
+        // Preparation reads above do not authorize dispatch. The exact durable
+        // owner FOR SHARE is held through this transaction's accepted intent.
+        var dispatchOwner = await RequireDispatchOwnerAsync(client, cancellationToken);
         var now = _clock.GetUtcNow();
         var running = await jobRuns.UpsertRunAsync(new UpsertJobRunCommand(
             run.Id, run.JobId, run.TenantId, run.ClientIdentity, run.StartedBy, JobRunState.Running, next.Ordinal,
@@ -397,6 +434,8 @@ public sealed class AkkaJobAuthorityService(
             var control = await db.Set<JobRunControlRecord>().SingleAsync(x => x.RunId == checked((long)run.Id), cancellationToken);
             control.DispatchPreparedAtUtc = now;
             control.DispatchEnqueuedAtUtc = null;
+            control.DispatchOwnerConnectionId = dispatchOwner!.Value.ConnectionId;
+            control.DispatchOwnerEpoch = dispatchOwner.Value.Epoch;
             // Conservative, immutable dispatch-time reconciliation boundary.
             // Native payload timeout still starts at physical process execution.
             control.NativeDeadlineUtc = now.Add(JobExecutionRuntimePolicy.FromJob(definition.Job).HardTimeout);
@@ -410,7 +449,7 @@ public sealed class AkkaJobAuthorityService(
                 await managedGuard!.AuthorizeDispatchAsync(run, definition.Job, cancellationToken);
             await sessions.DispatchAsync(client, new JobGatewayStepDispatch(
                 run.Id, step.Id, next.Id, next.Ordinal, activity.RequestId, $"akka-job-{run.Id}", invocation.TaskType, invocation.PayloadJson,
-                Environment: 0, nextVersion, nextSequence, now), cancellationToken).ConfigureAwait(false);
+                Environment: 0, nextVersion, nextSequence, now, ExpectedOwner: dispatchOwner), cancellationToken).ConfigureAwait(false);
             await BeginAfterTransportAsync(cancellationToken);
             if (db is not null)
             {
@@ -437,6 +476,19 @@ public sealed class AkkaJobAuthorityService(
 
         NetRatelAkkaTelemetry.SetJobsAuthorityRunning(1);
         return running;
+    }
+
+    private async Task<OwnerKey?> RequireDispatchOwnerAsync(ClientKey client, CancellationToken ct)
+    {
+        // The existing db-null path is a nonpersisting unit fixture. Production
+        // DI supplies the same context used by JobRunMutationBoundary.
+        if (db is null) return null;
+        var owner = sessions.GetRegisteredOwner(client);
+        if (owner is null || owner.Value.Client != client ||
+            !await ClientConnectionEpochStore.LockEffectiveOwnerAsync(db, owner.Value, _clock, ct))
+            throw new AgentJobGatewaySessionUnavailableException(client);
+        _acceptedPhysicalOwner = owner;
+        return owner;
     }
 
     private static bool IsProvenUndispatched(JobRunInfo run, JobRunControlRecord control) =>
@@ -761,7 +813,8 @@ public sealed record JobLifecycleUpdateEnvelope(
     DateTimeOffset StatusAtUtc,
     double ProgressPercent,
     string? ResultJson,
-    int ExitCode);
+    int ExitCode,
+    OwnerKey? AuthenticatedOwner = null);
 
 public enum JobGatewayLifecycleStatus { Accepted, Started, Progress, Completed, Failed, Cancelled }
 

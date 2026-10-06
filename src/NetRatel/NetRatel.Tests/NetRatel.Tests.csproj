@@ -50,4 +50,10 @@
     <ProjectReference Include="..\..\..\tools\NetRatel.ClientArtifactCrashProbe\NetRatel.ClientArtifactCrashProbe.csproj"
                       ReferenceOutputAssembly="false" />
   </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Infrastructure/MigrationBaselines/CommittedConnectionOwnershipFoundation.sql"
+                      LogicalName="NetRatel.Tests.MigrationBaselines.CommittedConnectionOwnership.Foundation.sql" />
+    <EmbeddedResource Include="Infrastructure/MigrationBaselines/CommittedConnectionOwnershipHistoricalServices.sql"
+                      LogicalName="NetRatel.Tests.MigrationBaselines.CommittedConnectionOwnership.HistoricalServices.sql" />
+  </ItemGroup>
 </Project>

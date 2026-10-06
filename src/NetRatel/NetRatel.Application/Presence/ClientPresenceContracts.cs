@@ -102,7 +102,8 @@ public sealed record ClientPresenceSnapshot(
     double? LatencyMilliseconds = null,
     DateTimeOffset? LatencyMeasuredAtUtc = null,
     DateTimeOffset? LatencyExpiresAtUtc = null,
-    DateTimeOffset? AuthenticationExpiresAtUtc = null);
+    DateTimeOffset? AuthenticationExpiresAtUtc = null,
+    long? OwnershipRevision = null);
 
 public sealed record ProbeClientPresenceRoute;
 
@@ -118,6 +119,8 @@ public sealed record ClientPresenceRouteStatus(
 public sealed record TrackClientPresenceSnapshot(ClientPresenceSnapshot Snapshot);
 
 public sealed record GetClientPresenceReadModel;
+public sealed record GetClientPresenceReadModelByKey(ClientKey Client);
+public sealed record ClientPresenceReadModelPointSnapshot(ClientKey Client, ClientPresenceSnapshot? Snapshot);
 
 public sealed record ClientPresenceReadModelSnapshot(
     long Revision,
@@ -165,4 +168,6 @@ public interface IClientPresenceRouter
 public interface IClientPresenceReadModel
 {
     Task<ClientPresenceReadModelSnapshot> GetSnapshotAsync(CancellationToken cancellationToken);
+    /// <summary>Point read from the separate projection; never queues behind per-client epoch allocation.</summary>
+    Task<ClientPresenceSnapshot?> GetClientSnapshotAsync(ClientKey client, CancellationToken cancellationToken);
 }

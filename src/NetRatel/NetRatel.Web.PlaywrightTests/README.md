@@ -6,6 +6,8 @@ The checks cover:
 
 - gateway telemetry at desktop, tablet, and phone viewports;
 - the gateway log explorer at desktop and phone viewports;
+- read-only Services launched from the real client cards/table, offline cache, drawer-open 1280px geometry, light/dark/system themes, keyboard focus and cancellation;
+- Services reflow at 200% zoom equivalent (CSS 640×400 with device scale 2 for physical 1280×800; CSS 195×422 with device scale 2 for physical 390×844), plus a separate 200% text-size case, with every control and last-row field reachable;
 - dialog/viewport geometry, usable mobile charts and controls, document horizontal overflow, and visible Blazor error UI;
 - the Helpdesk M2M purpose alongside unchanged personal API and HTTP MCP purposes, explicit tenant/resource grants, once-only manual secret reveal, deployment locks, stale-authority status, read-only connection tests and protected callback URL cleanup;
 - screenshots written to `TestResults/playwright` for visual review.
