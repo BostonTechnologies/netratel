@@ -52,8 +52,10 @@ public sealed class GatewayPresenceReconnectResourceTests
                 clock.ActiveTimerCount.Should().BeLessThanOrEqualTo(4);
                 current.ResetPendingRead();
                 var retryDelay = TimeSpan.FromSeconds(Math.Min(Math.Pow(2, Math.Min(iteration, 5)), 30));
+                // Completed I/O and cancellation can precede disposal of their wait timers.
                 await WaitUntilAsync(() => current.Disposed && current.AllIoCompleted &&
-                    current.ChildCancellationObserved && clock.HasTimer(TimeSpan.FromSeconds(5)));
+                    current.ChildCancellationObserved && clock.HasTimer(TimeSpan.FromSeconds(5)) &&
+                    clock.ActiveTimerCount == 1);
                 current.ActiveReads.Should().Be(0);
                 current.ActiveWrites.Should().Be(0);
                 current.ChildToken.IsCancellationRequested.Should().BeTrue();
@@ -67,7 +69,8 @@ public sealed class GatewayPresenceReconnectResourceTests
                 clock.HasTimer(retryDelay).Should().BeFalse(
                     "recovery cannot begin before the retired child has joined");
                 current.FinishChildCleanup();
-                await WaitUntilAsync(() => current.IsRetired && clock.HasTimer(retryDelay));
+                await WaitUntilAsync(() => current.IsRetired && clock.HasTimer(retryDelay) &&
+                    clock.ActiveTimerCount == 1);
                 clock.ActiveTimerCount.Should().Be(1,
                     "only the recovery delay may remain after its old owner has joined");
                 transport.LiveCalls.Should().Be(0);
