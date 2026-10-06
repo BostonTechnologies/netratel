@@ -173,6 +173,8 @@ internal sealed class ServiceLinkHttpProxy : IAsyncDisposable
         byte[]? forwardedRequest = null;
         byte[]? forwardedResponse = null;
         ServiceLinkRotationResponseFault? rotationFault = null;
+        var rotationClaimOwned = false;
+        var backendResponseObserved = false;
         byte[]? businessRequest = null;
         try
         {
@@ -184,14 +186,18 @@ internal sealed class ServiceLinkHttpProxy : IAsyncDisposable
                 var lifecycle = ServiceLinkCanonicalJson.Deserialize<ServiceLinkLifecycleRequest>(Encoding.UTF8.GetString(observedRequest));
                 lock (observationSync)
                     rotationFault = possibleRotationFaults.SingleOrDefault(x => x.Matches(lifecycle));
-                if (rotationFault is not null && !rotationFault.TryClaim(lifecycle))
+                if (rotationFault is not null)
                 {
-                    // After losing the committed response, hold identical recovery delivery
-                    // unavailable until the test has restarted the real products.
-                    // RequestAborted retains each product's existing transport deadline
-                    // (20 seconds for NetRatel). Avoid immediate 502 token-rate loops.
-                    await rotationFault.WaitForReleaseAsync(context.RequestAborted);
-                    rotationFault = null;
+                    rotationClaimOwned = rotationFault.TryClaim(lifecycle);
+                    if (!rotationClaimOwned)
+                    {
+                        // After losing the committed response, hold identical recovery delivery
+                        // unavailable until the test has restarted the real products.
+                        // RequestAborted retains each product's existing transport deadline
+                        // (20 seconds for NetRatel). Avoid immediate 502 token-rate loops.
+                        await rotationFault.WaitForReleaseAsync(context.RequestAborted);
+                        rotationFault = null;
+                    }
                 }
                 forwardedRequest = observedRequest.ToArray();
                 request.Content = new ByteArrayContent(forwardedRequest);
@@ -232,6 +238,7 @@ internal sealed class ServiceLinkHttpProxy : IAsyncDisposable
                     request.Content?.Headers.TryAddWithoutValidation(header.Key, header.Value.ToArray());
             }
             using var response = await forward.SendAsync(request, HttpCompletionOption.ResponseContentRead, context.RequestAborted);
+            backendResponseObserved = true;
             if (rotationFault is not null)
             {
                 if (!response.IsSuccessStatusCode)
@@ -361,6 +368,11 @@ internal sealed class ServiceLinkHttpProxy : IAsyncDisposable
         }
         finally
         {
+            // A restart may cancel the first forward before any backend reply is
+            // observed. Keep that same semantic operation armed; only this
+            // forwarding request owns its uncommitted claim. Explicit error
+            // replies and committed-success captures remain final outcomes.
+            if (rotationClaimOwned && !backendResponseObserved) rotationFault!.ReleaseUncommittedClaim();
             // Erase every raw array still owned by this forwarding operation on
             // success, cancellation, release timeout, parse/send/read or copy failure.
             if (observedRequest is not null) Array.Clear(observedRequest);
@@ -512,9 +524,9 @@ internal sealed class ServiceLinkRotationResponseFault(ServiceLinkHttpProxy owne
         lock (recoverySync)
         {
             ObjectDisposedException.ThrowIf(disposed, this);
-            if (claimed == 0) { claimed = 1; requestFingerprint = fingerprint; return true; }
-            if (requestFingerprint != fingerprint)
+            if (requestFingerprint is not null && requestFingerprint != fingerprint)
                 throw new InvalidOperationException("The real background recovery changed a durable rotation operation's semantic payload.");
+            if (claimed == 0) { claimed = 1; requestFingerprint ??= fingerprint; return true; }
             recoveryGeneration = checked(recoveryGeneration + 1);
             if (postRestartRecovery is not null && recoveryGeneration >= awaitedRecoveryGeneration)
             {
@@ -523,6 +535,13 @@ internal sealed class ServiceLinkRotationResponseFault(ServiceLinkHttpProxy owne
                 postRestartRecovery = null;
             }
             return false;
+        }
+    }
+    internal void ReleaseUncommittedClaim()
+    {
+        lock (recoverySync)
+        {
+            if (!disposed && !completion.Task.IsCompleted) claimed = 0;
         }
     }
     internal Task WaitForReleaseAsync(CancellationToken ct) => released.Task.WaitAsync(TimeSpan.FromSeconds(25), ct);
