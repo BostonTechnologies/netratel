@@ -68,6 +68,7 @@ internal sealed partial class LiveOwnerPair : IAsyncDisposable
             ?? throw new InvalidOperationException("The actual-image handoff is missing.");
         pins.Validate();
         var pair = new LiveOwnerPair(scenario, nrInitiates, pins);
+        var startupPhase = "start-isolated-products";
         try
         {
             Directory.CreateDirectory(pair.privateRoot);
@@ -85,22 +86,30 @@ internal sealed partial class LiveOwnerPair : IAsyncDisposable
                 throw new InvalidOperationException("The allocated product Web/API addresses must remain distinct.");
             await pair.VerifySelectedImagesAsync();
             pair.WritePrivateCompose();
+            startupPhase = "start-databases";
             await pair.ComposeAsync(["up", "-d", "--no-build", "--wait", "--wait-timeout", "90", "nr-postgres", "rd-postgres"]);
+            startupPhase = "verify-database-versions";
             await pair.VerifyDatabaseVersionsAsync();
+            startupPhase = "initialize-netratel-volumes";
             await pair.ComposeAsync(["run", "--rm", "--no-deps", "nr-volume-init"]);
+            startupPhase = "apply-netratel-migrations";
             await pair.ComposeAsync(["run", "--rm", "--no-deps", "nr-migrations"]);
+            startupPhase = "initialize-rateldesk";
             var initialized = await pair.ComposeAsync(["run", "--rm", "--no-deps", "rd-api", "--initialize-unattended"]);
             if (!initialized.Contains("RatelDesk initialization completed.", StringComparison.Ordinal))
                 throw new InvalidOperationException("The published companion did not complete real unattended initialization.");
             // No build/pull/fallback occurs here; every image was selected and verified first.
+            startupPhase = "start-product-services";
             await pair.ComposeAsync(["up", "-d", "--no-build", "--pull", "never", "nr-api", "nr-web", "rd-api", "rd-web"]);
+            startupPhase = "wait-product-readiness";
             await pair.WaitReadyAsync();
+            startupPhase = "verify-running-images";
             await pair.VerifyRunningImagesAsync();
             return pair;
         }
         catch
         {
-            try { await pair.WriteReceiptAsync("failed", "start-isolated-products", null); }
+            try { await pair.WriteReceiptAsync("failed", startupPhase, null); }
             finally { await pair.DisposeAsync(); }
             throw;
         }
@@ -202,7 +211,7 @@ internal sealed partial class LiveOwnerPair : IAsyncDisposable
             ["Bootstrap__Unattended__Provider"] = "PostgreSql", ["Bootstrap__Unattended__PostgreSqlConnectionString"] = rdConnection,
             ["Bootstrap__Unattended__Email"] = humanEmail, ["Bootstrap__Unattended__DisplayName"] = "Disposable owner",
             ["Bootstrap__Unattended__Password"] = humanPassword, ["Bootstrap__Unattended__OrganizationName"] = "Disposable owner organization",
-            ["Bootstrap__Unattended__ApplicationUrl"] = RatelDeskWeb,
+            ["Bootstrap__Unattended__ApplicationUrl"] = $"http://127.0.0.1:{new Uri(RatelDeskWeb).Port}",
             ["ServiceIdentity__Enabled"] = "true", ["ServiceIdentity__Issuer"] = RatelDeskIssuer, ["ServiceIdentity__Audience"] = "rateldesk.owner-browser.services",
             ["ServiceIdentity__ApiBaseUrl"] = RatelDeskApi, ["ServiceIdentity__WebBaseUrl"] = RatelDeskWeb,
             ["ServiceIdentity__InstanceId"] = ratelDeskInstanceId.ToString("D"), ["ServiceIdentity__AllowPrivateHttp"] = "true",

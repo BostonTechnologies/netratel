@@ -136,7 +136,9 @@ internal sealed class ServiceLinkHttpProxy : IAsyncDisposable
                 "invalid-request" or "invalid-operation-fields" or "invalid-rotation-offer" or
                 "credential-binding-mismatch" or "invalid-set" or "rotation-binding-conflict" or
                 "operation-payload-conflict" or "rotation-payload-conflict" or "credential-revision-conflict" or
-                "rotation-conflict" or "service-link-conflict" => code,
+                "rotation-conflict" or "service-link-conflict" or "successor-not-verified" or
+                "rotation-offer-expired" or "rotation-not-authorized" or "candidate-control-restricted" or
+                "rotation-switch-conflict" or "successor-not-active" => code,
                 _ => null
             };
         }
@@ -234,7 +236,18 @@ internal sealed class ServiceLinkHttpProxy : IAsyncDisposable
             {
                 if (!response.IsSuccessStatusCode)
                 {
-                    rotationFault.Fail((int)response.StatusCode);
+                    await using var responseBody = await response.Content.ReadAsStreamAsync(context.RequestAborted);
+                    observedResponse = await ReadBoundedAsync(responseBody, 131_072, context.RequestAborted);
+                    var problemCode = ReadSafeProblemCode(observedResponse);
+                    // Retain only a fixed public protocol code in the failure. Forward
+                    // the original error bytes and erase both private buffers below.
+                    forwardedResponse = observedResponse.ToArray();
+                    var originalContent = response.Content;
+                    var headers = originalContent.Headers.ToArray();
+                    response.Content = new ByteArrayContent(forwardedResponse);
+                    foreach (var header in headers) response.Content.Headers.TryAddWithoutValidation(header.Key, header.Value);
+                    originalContent.Dispose();
+                    rotationFault.Fail((int)response.StatusCode, problemCode);
                 }
                 else
                 {
@@ -277,12 +290,20 @@ internal sealed class ServiceLinkHttpProxy : IAsyncDisposable
                 }
                 else
                 {
-                    await using var responseBody = await response.Content.ReadAsStreamAsync(context.RequestAborted);
-                    observedResponse = await ReadBoundedAsync(responseBody, observation.MaximumPayloadBytes, context.RequestAborted);
+                    // A co-armed rotation fault already owns the bounded capture.
+                    // Reuse it without losing clearing ownership, and retain this
+                    // observer's original independent payload bound.
+                    if (observedResponse is null)
+                    {
+                        await using var responseBody = await response.Content.ReadAsStreamAsync(context.RequestAborted);
+                        observedResponse = await ReadBoundedAsync(responseBody, observation.MaximumPayloadBytes, context.RequestAborted);
+                    }
+                    else if (observedResponse.Length > observation.MaximumPayloadBytes)
+                        throw new InvalidOperationException("The private peer observation exceeded the configured payload bound.");
                     var problemCode = ReadSafeProblemCode(observedResponse);
                     // Forward the actual error bytes unchanged; diagnostics expose
                     // only the bounded protocol code, never a body or credential.
-                    forwardedResponse = observedResponse.ToArray();
+                    forwardedResponse ??= observedResponse.ToArray();
                     var originalContent = response.Content;
                     var headers = originalContent.Headers.ToArray();
                     response.Content = new ByteArrayContent(forwardedResponse);
@@ -517,7 +538,7 @@ internal sealed class ServiceLinkRotationResponseFault(ServiceLinkHttpProxy owne
             accepted = value;
         }
     }
-    internal void Fail(int status) => completion.TrySetException(new InvalidOperationException($"The actual rotation phase returned HTTP {status} before the response-loss point."));
+    internal void Fail(int status, string? problemCode) => completion.TrySetException(new InvalidOperationException($"The actual rotation phase returned HTTP {status} (code={problemCode ?? "unclassified"}) before the response-loss point."));
     public void Release() { owner.Release(this); released.TrySetResult(true); }
     public void Dispose()
     {
