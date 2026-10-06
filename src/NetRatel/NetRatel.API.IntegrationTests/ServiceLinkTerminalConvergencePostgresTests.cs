@@ -1,3 +1,4 @@
+using System.IdentityModel.Tokens.Jwt;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -83,7 +84,9 @@ public sealed class ServiceLinkTerminalConvergencePostgresTests
     {
         await using var pair = await ServiceLinkPair.CreateAsync(netRatelInitiates);
         await pair.ActivateAsync();
+        await pair.NetRatel.WaitForInitialSensitiveWindowAsync();
         var business = await pair.TokenAsync(true, "netratel.orchestration.read");
+        var businessExpiresAtUtc = new JwtSecurityTokenHandler().ReadJwtToken(business).ValidTo;
         Assert.Equal(HttpStatusCode.OK, await ServiceLinkPair.GetWithTokenAsync(pair.NetRatel.Anonymous, "/internal/health", business));
         using var pauseNr = pair.NetRatel.Proxy.PauseTerminalDelivery();
         using var pauseRd = pair.RatelDesk.Proxy.PauseTerminalDelivery();
@@ -95,7 +98,9 @@ public sealed class ServiceLinkTerminalConvergencePostgresTests
             "\"RevocationId\" IS NOT NULL AND \"RevocationId\" <> '" + original.RevocationId + "'"));
         AssertDisabled(await pair.StatusAsync(pair.NetRatel.Administrator));
         AssertDisabled(await pair.StatusAsync(pair.RatelDesk.Administrator));
+        Assert.True(businessExpiresAtUtc > DateTime.UtcNow, "The cached business token expired before the immediate unlink denial.");
         Assert.Equal(HttpStatusCode.Unauthorized, await ServiceLinkPair.GetWithTokenAsync(pair.NetRatel.Anonymous, "/internal/health", business));
+        Assert.True(businessExpiresAtUtc > DateTime.UtcNow, "The cached business token expired during the immediate unlink denial.");
 
         // Arrival at the remote proxy proves the original encrypted request was
         // committed before either peer receives an unlink. The barrier holds HTTP,
@@ -132,7 +137,9 @@ public sealed class ServiceLinkTerminalConvergencePostgresTests
         Assert.Equal(dispatched.RequestFingerprint, journal.RequestFingerprint);
         if (!journal.Completed)
             Assert.True(string.Equals(dispatched.ProtectedRequestJson, journal.ProtectedRequestJson, StringComparison.Ordinal), "The original pending encrypted unlink was rewritten.");
+        Assert.True(businessExpiresAtUtc > DateTime.UtcNow, "The cached business token expired before the restarted unlink denial.");
         Assert.Equal(HttpStatusCode.Unauthorized, await ServiceLinkPair.GetWithTokenAsync(pair.NetRatel.Anonymous, "/internal/health", business));
+        Assert.True(businessExpiresAtUtc > DateTime.UtcNow, "The cached business token expired during the restarted unlink denial.");
     }
 
     private static async Task PrepareBothAsync(ServiceLinkPair pair)

@@ -1034,6 +1034,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             await page.GetByTestId("credential-resource").FillAsync(resource ?? throw new InvalidOperationException("An HTTP MCP resource is required."));
         }
         await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Next" }).ClickAsync();
+        var bootstrapTenantId = await SelectBootstrapTenantGrantAsync(page);
         if (name == "CI telemetry read") await AssertDialogLayoutAsync(page, "integration-access", captureSafeContent: true);
         if (name == "CI telemetry read")
         {
@@ -1041,7 +1042,7 @@ public sealed class LocalFirstComposeBrowserSmokeTests
             Assert.Equal(name, await page.GetByTestId("credential-name").InputValueAsync());
             await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Next" }).ClickAsync();
         }
-        await page.Locator($"[data-testid^='credential-permission-'][data-testid$='-{permission}']").First.ClickAsync();
+        await page.GetByTestId($"credential-permission-{bootstrapTenantId}-{permission}").ClickAsync();
         if (name == "CI telemetry read") await CaptureReviewScreenshotAsync(page, "integration-access-mobile");
         if (!string.IsNullOrWhiteSpace(instancePermission))
         {
@@ -1070,6 +1071,30 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         return secret;
     }
 
+    private static async Task<int> SelectBootstrapTenantGrantAsync(IPage page)
+    {
+        // The real authority list is ordered by tenant name, so another journey
+        // can change the automatic first selection. Choose the exact bootstrap
+        // tenant through the rendered wizard and resolve its actual permission ID.
+        await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Remove", Exact = true }).ClickAsync();
+        await page.GetByRole(AriaRole.Combobox, new PageGetByRoleOptions { Name = "Add tenant", Exact = true }).ClickAsync();
+        await page.GetByRole(AriaRole.Option, new PageGetByRoleOptions { Name = "Browser smoke tenant", Exact = true }).ClickAsync();
+        await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Add tenant", Exact = true }).ClickAsync();
+        const string prefix = "credential-permission-";
+        const string suffix = "-telemetry.read";
+        var permission = page.Locator($"[data-testid^='{prefix}'][data-testid$='{suffix}']");
+        await permission.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
+        Assert.Equal(1, await permission.CountAsync());
+        var testId = await permission.GetAttributeAsync("data-testid")
+            ?? throw new InvalidOperationException("The selected bootstrap permission has no test ID.");
+        Assert.StartsWith(prefix, testId);
+        Assert.EndsWith(suffix, testId);
+        Assert.True(int.TryParse(testId.Substring(prefix.Length, testId.Length - prefix.Length - suffix.Length),
+            System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture,
+            out var bootstrapTenantId) && bootstrapTenantId > 0, "The selected bootstrap tenant ID must be a positive integer.");
+        return bootstrapTenantId;
+    }
+
     private static async Task VerifyMultiGrantWizardAsync(IPage page, Uri webUrl)
     {
         await page.GotoAsync(new Uri(webUrl, "account/integration-credentials").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
@@ -1078,18 +1103,19 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await page.GetByTestId("credential-name").FillAsync("CI multi-grant");
         await page.GetByTestId("credential-name").PressAsync("Tab");
         await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Next" }).ClickAsync();
+        var bootstrapTenantId = await SelectBootstrapTenantGrantAsync(page);
         await AssertDialogLayoutAsync(page, "integration-multi-grant-access", captureSafeContent: true);
         foreach (var permission in new[] { "telemetry.read", "file.read", "file.write" })
-            await page.GetByTestId($"credential-permission-1-{permission}").ClickAsync();
+            await page.GetByTestId($"credential-permission-{bootstrapTenantId}-{permission}").ClickAsync();
         var search = page.GetByRole(AriaRole.Textbox, new PageGetByRoleOptions { Name = "Search permissions" });
         await search.FillAsync("scripts");
-        await page.GetByTestId("credential-permission-1-telemetry.read").WaitForAsync(
+        await page.GetByTestId($"credential-permission-{bootstrapTenantId}-telemetry.read").WaitForAsync(
             new LocatorWaitForOptions { State = WaitForSelectorState.Detached });
         await search.FillAsync(string.Empty);
-        await page.GetByTestId("credential-permission-1-telemetry.read").WaitForAsync(
+        await page.GetByTestId($"credential-permission-{bootstrapTenantId}-telemetry.read").WaitForAsync(
             new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         foreach (var permission in new[] { "telemetry.read", "file.read", "file.write" })
-            Assert.True(await page.GetByTestId($"credential-permission-1-{permission}").IsCheckedAsync());
+            Assert.True(await page.GetByTestId($"credential-permission-{bootstrapTenantId}-{permission}").IsCheckedAsync());
         await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Next" }).ClickAsync();
         await page.GetByTestId("create-credential").ClickAsync();
         await page.GetByTestId("credential-one-time-secret").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
@@ -1129,18 +1155,13 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Next" }).ClickAsync();
         await page.Locator("[data-testid^='credential-permission-']").First.WaitForAsync(
             new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
-        var secondTenantIsDefault = await page.GetByTestId($"credential-permission-{secondTenantId}-file.write").CountAsync() == 1;
-        if (secondTenantIsDefault)
-            await page.GetByTestId($"credential-permission-{secondTenantId}-file.write").ClickAsync();
-        else
-            await page.GetByTestId("credential-permission-1-telemetry.read").ClickAsync();
-        await page.GetByRole(AriaRole.Combobox, new PageGetByRoleOptions { Name = "Add tenant" }).ClickAsync();
-        await page.GetByRole(AriaRole.Option, new PageGetByRoleOptions { Name = secondTenantIsDefault ? "Browser smoke tenant" : "Browser second tenant" }).ClickAsync();
-        await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Add tenant" }).ClickAsync();
-        if (secondTenantIsDefault)
-            await page.GetByTestId("credential-permission-1-telemetry.read").ClickAsync();
-        else
-            await page.GetByTestId($"credential-permission-{secondTenantId}-file.write").ClickAsync();
+        Assert.NotEqual(bootstrapTenantId, secondTenantId);
+        Assert.Equal(bootstrapTenantId, await SelectBootstrapTenantGrantAsync(page));
+        await page.GetByTestId($"credential-permission-{bootstrapTenantId}-telemetry.read").ClickAsync();
+        await page.GetByRole(AriaRole.Combobox, new PageGetByRoleOptions { Name = "Add tenant", Exact = true }).ClickAsync();
+        await page.GetByRole(AriaRole.Option, new PageGetByRoleOptions { Name = "Browser second tenant", Exact = true }).ClickAsync();
+        await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Add tenant", Exact = true }).ClickAsync();
+        await page.GetByTestId($"credential-permission-{secondTenantId}-file.write").ClickAsync();
         await page.GetByRole(AriaRole.Button, new PageGetByRoleOptions { Name = "Next" }).ClickAsync();
         await page.GetByText("Browser smoke tenant · Read telemetry").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         await page.GetByText("Browser second tenant · Write files").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });

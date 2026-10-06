@@ -50,6 +50,7 @@ public sealed class ServiceLinkOrchestrationRoundTripTests
             Assert.True(step.IsSuccessStatusCode, $"The actual bounded job step returned HTTP {(int)step.StatusCode}.");
 
         await pair.ActivateAsync(ct); // Both human consents, exchanged actual credentials, verification, durable commit.
+        await pair.NetRatel.WaitForInitialSensitiveWindowAsync(ct);
         var link = pair.Review.GrantSummary.LinkId;
         Assert.Equal(native.AgentId, pair.NetRatel.ResourceId);
         using (var settings = await pair.RatelDesk.Administrator.GetAsync("/api/v1/admin/orchestration/", ct))

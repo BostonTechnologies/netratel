@@ -116,6 +116,7 @@ public sealed class ServiceLinkDatabaseConflictPostgresTests
         }
         Assert.Equal(2, contention.ProvisioningSaves);
         await pair.FinishAsync();
+        await pair.NetRatel.WaitForInitialSensitiveWindowAsync();
         var token = await pair.TokenAsync(true, ServiceLinkContract.VerifyScope);
         ServicePrincipalRegistration principal;
         int receiptsBefore, journalsBefore;

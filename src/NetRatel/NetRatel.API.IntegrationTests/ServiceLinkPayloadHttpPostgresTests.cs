@@ -128,6 +128,7 @@ public sealed class ServiceLinkPayloadHttpPostgresTests
         // time. Its receiving fixture must share that advancing clock.
         await using var pair = await ServiceLinkPair.CreateAsync(true, useSystemTime: true);
         await pair.ActivateAsync();
+        await pair.NetRatel.WaitForInitialSensitiveWindowAsync(TestContext.Current.CancellationToken);
         var link = pair.Review.GrantSummary.LinkId;
         var path = ServiceLinkContract.EndpointPath + $"/links/{link}/rotate";
         var observation = Observe(pair, path);

@@ -190,22 +190,29 @@ public sealed class ServiceLinkLifecycleTests
     public async Task Linked_inbound_revocation_rejects_cached_business_tokens_and_preserves_bound_control_recovery_after_restart()
     {
         await using var pair = await ServiceLinkPair.CreateAsync(true); await pair.ActivateAsync();
+        await pair.NetRatel.WaitForInitialSensitiveWindowAsync();
         var status = await pair.StatusAsync(pair.NetRatel.Administrator);
         var business = await pair.TokenAsync(true, "netratel.orchestration.read");
         var control = await pair.TokenAsync(true, ServiceLinkContract.ControlScope);
+        var cachedTokensExpireAtUtc = new[] { new JwtSecurityTokenHandler().ReadJwtToken(business).ValidTo,
+            new JwtSecurityTokenHandler().ReadJwtToken(control).ValidTo }.Min();
         var principalId = (await LocalIdsAsync<ServicePrincipalRegistration>(pair, p => p.Id)).Single();
         await AssertLinkedPrincipalRequiresUnlinkAsync(pair);
         // Inject independent durable-authority revocation through the registry.
         // Linked human management remains bound to the reciprocal unlink workflow.
         await using (var scope = pair.NetRatel.Services.CreateAsyncScope())
             await scope.ServiceProvider.GetRequiredService<IServicePrincipalRegistry>().RevokeAsync(principalId);
+        Assert.True(cachedTokensExpireAtUtc > DateTime.UtcNow, "An original business/control token expired before the immediate revocation proof.");
         Assert.Equal(HttpStatusCode.Unauthorized, await ServiceLinkPair.GetWithTokenAsync(pair.NetRatel.Anonymous, "/internal/health", business));
         Assert.Equal(HttpStatusCode.OK, await ServiceLinkPair.GetWithTokenAsync(pair.NetRatel.Anonymous, $"{ServiceLinkContract.EndpointPath}/links/{status.LinkId}/status", control));
+        Assert.True(cachedTokensExpireAtUtc > DateTime.UtcNow, "An original business/control token expired during the immediate revocation proof.");
         var unavailable = await pair.StatusAsync(pair.NetRatel.Administrator);
         Assert.False(unavailable.LocalInboundActive); Assert.False(unavailable.LocalBusinessSenderEnabled); Assert.Equal("grant-unavailable", unavailable.LastErrorCode);
         await pair.NetRatel.RestartAsync();
+        Assert.True(cachedTokensExpireAtUtc > DateTime.UtcNow, "An original business/control token expired before the restarted revocation proof.");
         Assert.Equal(HttpStatusCode.Unauthorized, await ServiceLinkPair.GetWithTokenAsync(pair.NetRatel.Anonymous, "/internal/health", business));
         Assert.Equal(HttpStatusCode.OK, await ServiceLinkPair.GetWithTokenAsync(pair.NetRatel.Anonymous, $"{ServiceLinkContract.EndpointPath}/links/{status.LinkId}/status", control));
+        Assert.True(cachedTokensExpireAtUtc > DateTime.UtcNow, "An original business/control token expired during the restarted revocation proof.");
         Assert.False((await pair.StatusAsync(pair.NetRatel.Administrator)).LocalBusinessSenderEnabled);
         Assert.Equal(principalId, (await LocalIdsAsync<ServicePrincipalRegistration>(pair, p => p.Id)).Single());
         Assert.Equal(1, await pair.RatelDesk.CountAsync("IncidentReceiverSources"));
@@ -215,6 +222,7 @@ public sealed class ServiceLinkLifecycleTests
     public async Task Invalid_terminal_reason_and_unrelated_lifecycle_fields_do_not_mutate_the_real_operation_journal()
     {
         await using var pair = await ServiceLinkPair.CreateAsync(true); await pair.ActivateAsync();
+        await pair.NetRatel.WaitForInitialSensitiveWindowAsync();
         var status = await pair.StatusAsync(pair.NetRatel.Administrator);
         var token = await pair.TokenAsync(true, ServiceLinkContract.ControlScope);
         var before = await LocalCountAsync<ServiceLinkOperation>(pair);

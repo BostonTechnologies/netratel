@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Globalization;
 using System.Text.Json;
@@ -27,6 +28,7 @@ internal sealed class ServiceLinkNetRatelPeer : IAsyncDisposable
     private readonly ServiceLinkNativeListener? nativeListener;
     private readonly ServiceLinkRotationTestPolicy? rotationPolicy;
     private readonly bool useSystemTime;
+    private long? firstSensitiveResponseTimestamp;
     private readonly int backendPort = ServiceLinkHttpProxy.AllocatePort();
     private readonly int gatewayPort = ServiceLinkHttpProxy.AllocatePort();
     private global::ApiFactory? sibling;
@@ -100,6 +102,7 @@ internal sealed class ServiceLinkNetRatelPeer : IAsyncDisposable
             peer.TenantId = tenants!.RootElement.EnumerateArray().Single(t => t.GetProperty("name").GetString() == "OpenAPI tenant")
                 .GetProperty("tenantId").GetInt32().ToString(System.Globalization.CultureInfo.InvariantCulture);
             var identity = await peer.Administrator.GetFromJsonAsync<ServiceLinkIdentityDto>("/api/v1/admin/service-links/identity");
+            peer.firstSensitiveResponseTimestamp = Stopwatch.GetTimestamp();
             using var adoption = await peer.AdminAsync("/api/v1/admin/service-links/identity/source",
                 new ServiceLinkAdoptSourceRequest(peer.SourceInstanceId.ToString("D"), identity!.Revision));
             adoption.EnsureSuccessStatusCode();
@@ -171,6 +174,18 @@ internal sealed class ServiceLinkNetRatelPeer : IAsyncDisposable
 
     private HttpClient NewClient(bool cookies = false) => new(new HttpClientHandler
     { AllowAutoRedirect = false, UseProxy = false, UseCookies = cookies }) { BaseAddress = new Uri(BaseUrl), Timeout = TimeSpan.FromSeconds(30) };
+
+    public async Task WaitForInitialSensitiveWindowAsync(CancellationToken ct = default)
+    {
+        // Human, peer and token calls share this proxy's real 20-per-minute IP
+        // partition. The response timestamp is after that initial window began;
+        // wait only its remaining real lifetime before the next assertion phase.
+        // Keep the authority clock, token lifetimes and every case budget unchanged.
+        var observedAt = firstSensitiveResponseTimestamp
+            ?? throw new InvalidOperationException("The first sensitive identity response has not completed.");
+        var remaining = TimeSpan.FromMinutes(1) - Stopwatch.GetElapsedTime(observedAt);
+        if (remaining > TimeSpan.Zero) await Task.Delay(remaining, ct);
+    }
 
     public async Task RestartAsync()
     {
