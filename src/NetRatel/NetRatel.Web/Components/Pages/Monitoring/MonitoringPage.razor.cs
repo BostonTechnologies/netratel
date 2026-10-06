@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Rendering;
 using Microsoft.AspNetCore.Components.Web;
 using MudBlazor;
+using Microsoft.JSInterop;
 using NetRatel.Shared.Contracts.Monitoring;
 using NetRatel.Shared.Contracts.Services;
 using NetRatel.Web.Services.Monitoring;
@@ -11,6 +12,13 @@ namespace NetRatel.Web.Components.Pages.Monitoring;
 
 public partial class MonitoringPage
 {
+    [Inject] private NavigationManager Navigation { get; set; } = default!;
+    private ElementReference _newRuleLauncher;
+    private readonly Dictionary<Guid, ElementReference> _ruleLaunchers = [];
+    private ElementReference? _editorLauncher, _restoreEditorFocus;
+    private int _editorLauncherTenant;
+    private long _focusCloseGeneration;
+    private string? _editorLauncherUri;
     private MonitoringPageState? _state;
     private MonitoringPageState State => _state ??= new(Api);
     private IReadOnlyList<MonitoringTenantDto> _tenants = [];
@@ -46,6 +54,17 @@ public partial class MonitoringPage
         catch (Exception error) when (error is HttpRequestException or System.Text.Json.JsonException) { _startupError = "Could not load authorized monitoring tenants. Refresh to try again."; }
     }
     protected override void OnAfterRender(bool firstRender) { if (firstRender) { _interactive = true; StateHasChanged(); } }
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_restoreEditorFocus is not { } launcher) return;
+        _restoreEditorFocus = null;
+        if (_lifetime.IsCancellationRequested || _editor is not null || _tab != "Manage" ||
+            _focusCloseGeneration != _editorGeneration || State.TenantId != _editorLauncherTenant ||
+            Navigation.Uri != _editorLauncherUri || State.Snapshot?.Permissions.CanManage != true) return;
+        // The close render has removed the editor and its trap; return to its actual launcher.
+        try { await launcher.FocusAsync(); }
+        catch (JSDisconnectedException) { }
+    }
     private async Task ChangeTenant(ChangeEventArgs args)
     {
         if (_editor is not null || !int.TryParse(args.Value?.ToString(), out var tenant) || !_tenants.Any(t => t.TenantId == tenant)) return;
@@ -100,9 +119,18 @@ public partial class MonitoringPage
     private void BeginEditor(string kind)
     {
         if (_busy) return;
-        CloseEditor(); _editor = kind; _editorGeneration++; _reason = ""; _formDirty = false; _editorError = null;
+        CloseEditor(); _restoreEditorFocus = null; _editor = kind; _editorGeneration++; _reason = ""; _formDirty = false; _editorError = null;
     }
     private void OpenRule(MonitoringRuleDto? rule) { if (_busy || rule is not null && rule.TenantId != State.TenantId) return; BeginEditor("rule"); _draft = MonitoringRuleDraft.Create(rule); }
+    private void OpenRuleFromLauncher(MonitoringRuleDto? rule, ElementReference launcher)
+    {
+        var generation = _editorGeneration;
+        OpenRule(rule);
+        if (_editorGeneration == generation || _editor != "rule") return;
+        _editorLauncher = launcher;
+        _editorLauncherTenant = State.TenantId;
+        _editorLauncherUri = Navigation.Uri;
+    }
     private void OpenGroup(MonitoringGroupDto? group) { if (_busy || group is not null && group.TenantId != State.TenantId) return; BeginEditor("group"); _originalGroup = group; _groupName = group?.Name ?? ""; _groupMembers = group?.AgentIds.ToHashSet() ?? []; }
     private void OpenOperator(MonitoringSeriesState series, string operation)
     {
@@ -115,7 +143,10 @@ public partial class MonitoringPage
     private void CloseEditor()
     {
         if (_busy) return;
+        _restoreEditorFocus = _editor == "rule" ? _editorLauncher : null;
+        _editorLauncher = null;
         _previewRead?.Cancel(); _inventoryRead?.Cancel(); _editorGeneration++; _previewGeneration++; _inventoryGeneration++;
+        _focusCloseGeneration = _editorGeneration;
         _editor = null; _draft = null; _operatorSeries = null; _preview = null; _previewBusy = false;
         _serviceSuggestions = []; _inventoryAgent = null; _inventoryNote = "Suggestions read cached inventory only. No collection is requested.";
     }
