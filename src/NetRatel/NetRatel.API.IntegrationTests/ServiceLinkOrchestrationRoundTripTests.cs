@@ -15,7 +15,7 @@ using Xunit;
 namespace NetRatel.API.IntegrationTests.ServiceLinks;
 
 /// <summary>Actual product request -> OAuth ingest -> native command -> durable provider callback -> recorded task/worklog.</summary>
-[Collection(ServiceLinkRealPeerCollection.Name)]
+[Collection(ServiceLinkRotationPeerCollection.Name)]
 public sealed class ServiceLinkOrchestrationRoundTripTests
 {
     private const string JobName = "Synthetic actual native command";
