@@ -52,7 +52,7 @@ public sealed class MonitoringOpenApiProductionAuthorizationTests(ApiFactory fac
                 string.Equals(endpoint.RoutePattern.RawText?.TrimStart('/'), routePattern.TrimStart('/'), StringComparison.Ordinal) &&
                 endpoint.Metadata.GetMetadata<HttpMethodMetadata>()!.HttpMethods.Contains(expected.Method));
             endpoint.Metadata.GetOrderedMetadata<IAuthorizeData>().Select(data => data.Policy)
-                .Should().Equal(expected.Policy, "the exposed operation must use its exact current permission gate with no inherited bare policy");
+                .Should().Equal(new[] { expected.Policy }, because: "the exposed operation must use its exact current permission gate with no inherited bare policy");
             AssertSecurity(document, expected.Path, expected.Method, ["Bearer", "LocalSession", "IntegrationCredential"]);
         }
         AssertSecurity(document, "/api/v2/access/self", "GET", ["Bearer", "LocalSession"]);
