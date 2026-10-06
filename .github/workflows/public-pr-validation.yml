@@ -89,7 +89,47 @@ jobs:
           # the physical wrapper builds and verifies its full Client from this checkout.
           setsid bash tools/ci/tests/traefik-gateway-routing.sh > TestResults/gateway-transport/profile.log 2>&1 &
           gateway_pid=$!
-          setsid dotnet test --solution NetRatel.sln --configuration Release --no-build --max-parallel-test-modules 1 --filter-not-trait category=compose category=hosted --results-directory TestResults --report-trx --report-trx-filename "netratel-tests-{asm}_{tfm}_{arch}.trx" &
+          # Keep browser modules isolated after both backend modules finish.
+          # The owned generic process group still contains every MTP child.
+          setsid bash -c '
+            set -euo pipefail
+            generic_status=0
+            generic_test_arguments=(
+              --configuration Release --no-build --max-parallel-test-modules 1
+              --filter-not-trait category=compose category=hosted
+              --results-directory TestResults --report-trx
+              --report-trx-filename "netratel-tests-{asm}_{tfm}_{arch}.trx"
+            )
+            dotnet test --project src/NetRatel/NetRatel.API.IntegrationTests/NetRatel.API.IntegrationTests.csproj "${generic_test_arguments[@]}" &
+            api_pid=$!
+            dotnet test --project src/NetRatel/NetRatel.Tests/NetRatel.Tests.csproj "${generic_test_arguments[@]}" &
+            core_pid=$!
+            # Reap both actual outcomes before starting either UI module.
+            for module_pid in "$api_pid" "$core_pid"; do
+              if wait "$module_pid"; then
+                module_status=0
+              else
+                module_status=$?
+              fi
+              if [[ "$generic_status" -eq 0 && "$module_status" -ne 0 ]]; then
+                generic_status=$module_status
+              fi
+            done
+            # An ordinary backend failure still leaves all four receipts inspectable.
+            for module_project in \
+              src/NetRatel/NetRatel.Web.ComponentTests/NetRatel.Web.ComponentTests.csproj \
+              src/NetRatel/NetRatel.Web.PlaywrightTests/NetRatel.Web.PlaywrightTests.csproj; do
+              if dotnet test --project "$module_project" "${generic_test_arguments[@]}"; then
+                module_status=0
+              else
+                module_status=$?
+              fi
+              if [[ "$generic_status" -eq 0 && "$module_status" -ne 0 ]]; then
+                generic_status=$module_status
+              fi
+            done
+            exit "$generic_status"
+          ' &
           generic_pid=$!
           setsid bash tools/ci/run-physical-disk-incident-proof.sh > TestResults/physical-disk-incident/profile.log 2>&1 &
           physical_pid=$!
