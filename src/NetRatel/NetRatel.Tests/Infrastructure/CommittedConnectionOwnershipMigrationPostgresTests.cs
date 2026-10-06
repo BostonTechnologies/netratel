@@ -18,12 +18,13 @@ namespace NetRatel.Tests.Infrastructure;
 
 /// <summary>
 /// Upgrades the authentic preceding foundation and historical Services schemas, then
-/// exercises only the incremental committed-ownership migration's guarded Down/Up.
+/// exercises the committed-ownership migration's guarded Down/Up within the current registered history.
 /// Legacy allocator, cache and prepared Job rows grant no current connection authority.
 /// </summary>
 [Collection(PostgreSqlPersistenceCollection.Name)]
-public sealed class CommittedConnectionOwnershipMigrationPostgresTests(PostgreSqlPersistenceFixture fixture)
+public sealed partial class CommittedConnectionOwnershipMigrationPostgresTests(PostgreSqlPersistenceFixture fixture)
 {
+    private readonly PostgreSqlPersistenceFixture _fixture = fixture;
     private const string ResourcePrefix = "NetRatel.Tests.MigrationBaselines.CommittedConnectionOwnership.";
     private const string FoundationSha256 = "432115f47c10fb74e6b68a5403fa0c9ef4fa74f63855074a212584a9aad42a8e";
     private const string ServicesSha256 = "90af775cdc7f48184d086feaedd45977fbebdeedeb997b4deedec2ce3296f6dc";
@@ -37,7 +38,7 @@ public sealed class CommittedConnectionOwnershipMigrationPostgresTests(PostgreSq
         var foundation = await ReadBaselineAsync("Foundation.sql", FoundationSha256, 66, ct);
         var services = await ReadBaselineAsync("HistoricalServices.sql", ServicesSha256, 67, ct);
         AssertBaselineRelationship(foundation, services);
-        var database = await fixture.CreateDatabaseAsync(ct);
+        var database = await _fixture.CreateDatabaseAsync(ct);
         await ApplyBaselineAsync(database, foundation, ct);
         await using var connection = new NpgsqlConnection(database);
         await connection.OpenAsync(ct);
@@ -47,7 +48,7 @@ public sealed class CommittedConnectionOwnershipMigrationPostgresTests(PostgreSq
         var history = await SeedHistoricalRowsAsync(connection, foundation.MigrationIds, hasServices: false, ct);
         var plan = CurrentPlan(database, services);
 
-        await MigrateAsync(database, plan.OwnerMigration, ct);
+        await MigrateAsync(database, plan.CurrentMigration, ct);
 
         await AssertUpgradeAsync(database, connection, history, plan, ct);
         foreach (var table in ServicesTables)
@@ -57,8 +58,8 @@ public sealed class CommittedConnectionOwnershipMigrationPostgresTests(PostgreSq
                 "the true foundation had neither a Services cache nor an issued Services epoch");
         }
 
-        var freshDatabase = await fixture.CreateDatabaseAsync(ct);
-        await MigrateAsync(freshDatabase, plan.OwnerMigration, ct);
+        var freshDatabase = await _fixture.CreateDatabaseAsync(ct);
+        await MigrateAsync(freshDatabase, plan.CurrentMigration, ct);
         await using var freshConnection = new NpgsqlConnection(freshDatabase);
         await freshConnection.OpenAsync(ct);
         await AssertCurrentModelAsync(freshDatabase, plan, ct);
@@ -79,7 +80,7 @@ public sealed class CommittedConnectionOwnershipMigrationPostgresTests(PostgreSq
         using var budget = new CancellationTokenSource(TimeSpan.FromMinutes(3));
         var ct = budget.Token;
         var services = await ReadBaselineAsync("HistoricalServices.sql", ServicesSha256, 67, ct);
-        var database = await fixture.CreateDatabaseAsync(ct);
+        var database = await _fixture.CreateDatabaseAsync(ct);
         await ApplyBaselineAsync(database, services, ct);
         await using var connection = new NpgsqlConnection(database);
         await connection.OpenAsync(ct);
@@ -89,7 +90,7 @@ public sealed class CommittedConnectionOwnershipMigrationPostgresTests(PostgreSq
         var history = await SeedHistoricalRowsAsync(connection, services.MigrationIds, hasServices: true, ct);
         var plan = CurrentPlan(database, services);
 
-        await MigrateAsync(database, plan.OwnerMigration, ct);
+        await MigrateAsync(database, plan.CurrentMigration, ct);
 
         await AssertUpgradeAsync(database, connection, history, plan, ct);
     }
@@ -100,27 +101,29 @@ public sealed class CommittedConnectionOwnershipMigrationPostgresTests(PostgreSq
         using var budget = new CancellationTokenSource(TimeSpan.FromMinutes(3));
         var ct = budget.Token;
         var services = await ReadBaselineAsync("HistoricalServices.sql", ServicesSha256, 67, ct);
-        var database = await fixture.CreateDatabaseAsync(ct);
+        var database = await _fixture.CreateDatabaseAsync(ct);
         await ApplyBaselineAsync(database, services, ct);
         await using var connection = new NpgsqlConnection(database);
         await connection.OpenAsync(ct);
         (await AppliedAsync(database, ct)).Should().Equal(services.MigrationIds);
         var history = await SeedHistoricalRowsAsync(connection, services.MigrationIds, hasServices: true, ct);
         var plan = CurrentPlan(database, services);
-        await MigrateAsync(database, plan.OwnerMigration, ct);
+        await MigrateAsync(database, plan.CurrentMigration, ct);
         await AssertUpgradeAsync(database, connection, history, plan, ct);
         var firstGuardDefinitions = await GuardDefinitionsAsync(connection, ct);
         var firstSchema = await OwnershipSchemaAsync(connection, ct);
 
-        // The Services migration precedes the latest foundation migration. Removing only
-        // ownership must retain all 67 baseline IDs and the populated historical cache.
+        // Down crosses registration and ownership only. The registered lower-ID
+        // Monitoring migration stays in the chronological prefix alongside all 67 baseline IDs.
         await MigrateAsync(database, plan.PreviousMigration, ct);
 
-        (await AppliedAsync(database, ct)).Should().Equal(services.MigrationIds);
+        (await AppliedAsync(database, ct)).Should().Equal(plan.PreOwnerMigrationIds);
         await AssertServicesPresenceAsync(connection, present: true, ct);
+        await AssertMonitoringPresenceAsync(connection, present: true, ct);
+        await AssertRegistrationPresenceAsync(connection, present: false, ct);
         await AssertAdditionsAbsentAsync(connection, ct);
         await AssertHistoricalRowsAsync(connection, history, ct);
-        await MigrateAsync(database, plan.OwnerMigration, ct);
+        await MigrateAsync(database, plan.CurrentMigration, ct);
         await AssertUpgradeAsync(database, connection, history, plan, ct);
         (await OwnershipSchemaAsync(connection, ct)).Should().Equal(firstSchema);
         var reinstalledGuardDefinitions = await GuardDefinitionsAsync(connection, ct);
@@ -130,7 +133,8 @@ public sealed class CommittedConnectionOwnershipMigrationPostgresTests(PostgreSq
     }
 
     private sealed record Baseline(string Sql, string[] MigrationIds);
-    private sealed record MigrationPlan(string OwnerMigration, string PreviousMigration, string[] CurrentMigrationIds);
+    private sealed record MigrationPlan(string OwnerMigration, string PreviousMigration, string CurrentMigration,
+        string[] PreOwnerMigrationIds, string[] CurrentMigrationIds);
 
     private static async Task<Baseline> ReadBaselineAsync(string resource, string expectedSha256, int expectedCount, CancellationToken ct)
     {
@@ -170,9 +174,14 @@ public sealed class CommittedConnectionOwnershipMigrationPostgresTests(PostgreSq
         var migrations = db.Database.GetMigrations().ToArray();
         var owner = migrations.Where(id => id.EndsWith("_AddCommittedConnectionOwnership", StringComparison.Ordinal))
             .Should().ContainSingle().Which;
-        migrations.Should().Equal(services.MigrationIds.Append(owner),
-            "the final assembly must contain the captured Services baseline plus only its actual owner migration");
-        return new(owner, services.MigrationIds.Last(), migrations);
+        owner.Should().Be(PrecedingOwnerMigration);
+        var expected = services.MigrationIds.Append(HistoricalMonitoringMigration).Append(owner)
+            .Append(CommittedRegistrationMigration).Order(StringComparer.Ordinal).ToArray();
+        migrations.Should().Equal(expected,
+            "current history retains the exact Services baseline, genuine owner, lower-ID Monitoring and genuine registration delta");
+        var previous = services.MigrationIds.Last();
+        return new(owner, previous, CommittedRegistrationMigration,
+            migrations.Where(id => StringComparer.Ordinal.Compare(id, previous) <= 0).ToArray(), migrations);
     }
 
     private static async Task ApplyBaselineAsync(string database, Baseline baseline, CancellationToken ct)
