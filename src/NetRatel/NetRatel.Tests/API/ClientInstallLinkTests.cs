@@ -80,6 +80,19 @@ public sealed class ClientInstallLinkTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task MissingGatewayRejectsNewLinksBeforeCreatingCredentials()
+    {
+        await using var services = BuildServices(Keys, brandingGateway: "");
+        await using var scope = services.CreateAsyncScope();
+        var links = scope.ServiceProvider.GetRequiredService<ClientInstallLinkService>();
+        await Assert.ThrowsAsync<InvalidOperationException>(() => links.PreviewEndpointsAsync(21, TestContext.Current.CancellationToken));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => links.CreateAsync(Request(), "fixture-admin", TestContext.Current.CancellationToken));
+        var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+        Assert.Equal(0, await db.ClientInstallGrants.CountAsync());
+        Assert.Equal(0, await db.EnrollmentCodes.CountAsync());
+    }
+
+    [Fact]
     public async Task PreviewDoesNotMintGrantsAndCreationReresolvesWhileReplayKeepsTheOriginalEndpoints()
     {
         await using var services = BuildServices(Keys);
@@ -91,12 +104,13 @@ public sealed class ClientInstallLinkTests : IAsyncLifetime
         var preview = await links.PreviewEndpointsAsync(21, TestContext.Current.CancellationToken);
         Assert.Equal("https://netratel.example", preview.EffectiveGatewayBaseUrl);
         Assert.Equal("branding-site-url", preview.PublicApiSource);
-        Assert.Equal("shared-api-origin", preview.GatewaySource);
+        Assert.Equal("branding-gateway-url:administrator", preview.GatewaySource);
         Assert.Equal(0, await db.ClientInstallGrants.CountAsync());
         Assert.Equal(0, await db.EnrollmentCodes.CountAsync());
 
         configuration["ClientArtifacts:PublicBaseUrl"] = "https://api.example.invalid/api/";
         configuration["ClientArtifacts:PublicGatewayBaseUrl"] = "https://gateway.example.invalid/";
+        ((IConfigurationRoot)configuration).Reload();
         var request = Request();
         var created = await links.CreateAsync(request, "fixture-admin", TestContext.Current.CancellationToken);
         Assert.NotEqual(preview, created.Endpoints);
@@ -111,6 +125,7 @@ public sealed class ClientInstallLinkTests : IAsyncLifetime
         // A replay must not resolve even invalid current settings or rewrite its script.
         configuration["ClientArtifacts:PublicBaseUrl"] = "http://localhost:1234";
         configuration["ClientArtifacts:PublicGatewayBaseUrl"] = null;
+        ((IConfigurationRoot)configuration).Reload();
         var replay = await links.CreateAsync(request, "fixture-admin", TestContext.Current.CancellationToken);
         Assert.Equal(created.Endpoints, replay.Endpoints);
         Assert.Equal(created.Script, replay.Script);
@@ -158,8 +173,8 @@ public sealed class ClientInstallLinkTests : IAsyncLifetime
         Assert.True(replay.Replay);
         Assert.StartsWith("https://netratel.example/clients/install/", created.PublicUrl);
         Assert.Contains("API_BASE='https://netratel.example'", created.Script);
-        Assert.Contains("GATEWAY_ENDPOINT=''", created.Script);
-        Assert.DoesNotContain("NetRatelCLIENT__Gateway__Endpoint=https://netratel.example", created.Script);
+        Assert.Contains("GATEWAY_ENDPOINT='https://netratel.example'", created.Script);
+        Assert.Contains("gateway_key = 'NetRatelCLIENT__Gateway__Endpoint'", created.Script);
         Assert.Equal(created.PublicUrl, replay.PublicUrl);
         Assert.Equal(created.Script, replay.Script);
         Assert.Equal(created.Endpoints, replay.Endpoints);
@@ -212,7 +227,7 @@ public sealed class ClientInstallLinkTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task SameOriginGatewayConfigurationIsNotPersistedInTheIssuedScript()
+    public async Task SameOriginGatewayConfigurationIsPersistedInTheIssuedScript()
     {
         await using var services = BuildServices(
             Keys,
@@ -225,10 +240,10 @@ public sealed class ClientInstallLinkTests : IAsyncLifetime
         var created = await links.CreateAsync(Request(), "fixture-admin", TestContext.Current.CancellationToken);
 
         Assert.Contains("API_BASE='https://shared.example.test'", created.Script);
-        Assert.Contains("GATEWAY_ENDPOINT=''", created.Script);
+        Assert.Contains("GATEWAY_ENDPOINT='https://shared.example.test'", created.Script);
         Assert.Equal("https://shared.example.test", created.Endpoints.EffectiveGatewayBaseUrl);
         Assert.Equal("client-artifacts-public-gateway-base-url", created.Endpoints.GatewaySource);
-        Assert.DoesNotContain("NetRatelCLIENT__Gateway__Endpoint=https://shared.example.test", created.Script);
+        Assert.Contains("gateway_key = 'NetRatelCLIENT__Gateway__Endpoint'", created.Script);
     }
 
     [Fact]
@@ -321,6 +336,7 @@ public sealed class ClientInstallLinkTests : IAsyncLifetime
         builder.Services.AddSingleton<IClientArtifactsService>(new FixtureArtifacts(MakeArchive()));
         builder.Services.AddSingleton<IScriptTemplateService, ScriptTemplateService>();
         builder.Services.AddSingleton<IDeploymentBrandingService>(new FixtureBranding("https://netratel.example"));
+        builder.Services.AddOptions<ClientInstallationEndpointOptions>().Bind(builder.Configuration.GetSection("ClientArtifacts"));
         builder.Services.AddScoped<ClientInstallLinkService>();
         builder.Services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo(Keys))
             .SetApplicationName("NetRatel-Link-Test");
@@ -426,7 +442,8 @@ public sealed class ClientInstallLinkTests : IAsyncLifetime
         string keys,
         string? siteUrl = "https://netratel.example",
         string? publicApiBase = null,
-        string? publicGatewayBase = null)
+        string? publicGatewayBase = null,
+        string? brandingGateway = null)
     {
         var archive = MakeArchive();
         var artifacts = new FixtureArtifacts(archive);
@@ -445,10 +462,11 @@ public sealed class ClientInstallLinkTests : IAsyncLifetime
             .AddSingleton<ITenantLookupService>(new FixtureTenantLookup())
             .AddSingleton<IClientArtifactsService>(artifacts)
             .AddSingleton<IScriptTemplateService, ScriptTemplateService>()
-            .AddSingleton<IDeploymentBrandingService>(new FixtureBranding(siteUrl))
+            .AddSingleton<IDeploymentBrandingService>(new FixtureBranding(siteUrl, brandingGateway))
             .AddScoped<IPrimaryClientAgentBindingService, PrimaryClientAgentBindingService>()
             .AddScoped<EnrollmentService>()
             .AddScoped<ClientInstallLinkService>();
+        services.AddOptions<ClientInstallationEndpointOptions>().Bind(configuration.GetSection("ClientArtifacts"));
         services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo(keys))
             .SetApplicationName("NetRatel-Link-Test");
         return services.BuildServiceProvider();
@@ -457,7 +475,7 @@ public sealed class ClientInstallLinkTests : IAsyncLifetime
     private static ClientInstallLinkCreateRequest Request() =>
         new(21, "linux-x64", "1.2.3", 60, 2, false, true, Guid.NewGuid().ToString("D"));
 
-    private sealed class FixtureBranding(string? siteUrl) : IDeploymentBrandingService
+    private sealed class FixtureBranding(string? siteUrl, string? gatewayUrl = null) : IDeploymentBrandingService
     {
         public Task<EffectiveDeploymentBranding> GetEffectiveAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult(new EffectiveDeploymentBranding(
@@ -470,7 +488,7 @@ public sealed class ClientInstallLinkTests : IAsyncLifetime
                 new("favicon.ico", BrandingValueSource.Default, false),
                 new(string.Empty, BrandingValueSource.Default, false),
                 new(siteUrl ?? string.Empty, BrandingValueSource.Administrator, false),
-                1));
+                1, new(gatewayUrl ?? siteUrl ?? string.Empty, BrandingValueSource.Administrator, false)));
 
         public Task<EffectiveDeploymentBranding> UpdateAsync(UpdateDeploymentBrandingRequest request,
             string? actorPrincipalId, CancellationToken cancellationToken = default) =>

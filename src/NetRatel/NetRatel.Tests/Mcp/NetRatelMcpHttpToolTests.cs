@@ -1,4 +1,4 @@
-using FluentAssertions;
+using AwesomeAssertions;
 using NetRatel.Mcp.Core;
 using System.Net;
 using System.Text.Json.Nodes;

@@ -1,7 +1,7 @@
 using System.Net;
 using System.Security.Claims;
 using System.Text;
-using FluentAssertions;
+using AwesomeAssertions;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -105,7 +105,7 @@ public sealed class FileBrowserTransfersControllerTests
     }
 
     [Fact]
-    public async Task Upload_MarksASessionUnavailableConflict_ForNativeRetry()
+    public async Task Upload_SessionUnavailableAfterForwarding_DoesNotAuthorizeMutationReplay()
     {
         using var client = new HttpClient(new DelegateHandler((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.Conflict)
         {
@@ -119,11 +119,11 @@ public sealed class FileBrowserTransfersControllerTests
         var result = await controller.Upload(3, AgentId, "/tmp/retry.iso", CancellationToken.None);
 
         result.Should().BeOfType<StatusCodeResult>().Which.StatusCode.Should().Be(StatusCodes.Status409Conflict);
-        controller.Response.Headers["X-NetRatel-File-Transfer-Retryable"].ToString().Should().Be("true");
+        controller.Response.Headers.Should().NotContainKey("X-NetRatel-File-Transfer-Retryable");
     }
 
     [Fact]
-    public async Task Upload_MarksAnUnexpectedGatewayCancellation_ForNativeRetry()
+    public async Task Upload_UnexpectedGatewayCancellation_ReportsUnknownWithoutMutationReplay()
     {
         using var client = new HttpClient(new DelegateHandler((_, _) => Task.FromException<HttpResponseMessage>(new OperationCanceledException())))
         {
@@ -134,7 +134,7 @@ public sealed class FileBrowserTransfersControllerTests
         var result = await controller.Upload(3, AgentId, "/tmp/retry.iso", CancellationToken.None);
 
         result.Should().BeOfType<StatusCodeResult>().Which.StatusCode.Should().Be(StatusCodes.Status503ServiceUnavailable);
-        controller.Response.Headers["X-NetRatel-File-Transfer-Retryable"].ToString().Should().Be("true");
+        controller.Response.Headers.Should().NotContainKey("X-NetRatel-File-Transfer-Retryable");
     }
 
     [Fact]

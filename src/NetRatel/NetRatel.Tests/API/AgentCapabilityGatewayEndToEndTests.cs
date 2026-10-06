@@ -1,7 +1,7 @@
 using System.Security.Claims;
 using System.Reflection;
 using System.Threading.Channels;
-using FluentAssertions;
+using AwesomeAssertions;
 using Google.Protobuf;
 using Grpc.Core;
 using Grpc.Net.Client;

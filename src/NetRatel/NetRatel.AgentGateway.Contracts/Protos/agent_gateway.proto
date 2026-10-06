@@ -100,6 +100,9 @@ message AgentFrame {
   oneof payload {
     ConnectHello hello = 10;
     PresenceHeartbeat heartbeat = 11;
+    // Only sent after both peers negotiate presence-auth-renewal-v1. The
+    // original authenticated owner and every capability fence remain fixed.
+    PresenceAuthRenewal renew = 12;
   }
 }
 
@@ -175,6 +178,7 @@ message GatewayFrame {
   oneof payload {
     ConnectAccepted connected = 10;
     HeartbeatAccepted heartbeat_accepted = 11;
+    PresenceAuthRenewed renewed = 12;
   }
 }
 
@@ -184,6 +188,15 @@ message ConnectAccepted {
   string presence_authority = 3;
   ClientUpdateOffer update_offer = 4;
   ClientUpdatePolicy update_policy = 5;
+  bool supports_authenticated_renewal = 6;
+}
+
+// Credentials are validated with the production Agent JWT configuration and
+// current enrollment state. This never authorizes adoption of another owner.
+message PresenceAuthRenewal { string access_token = 1; }
+message PresenceAuthRenewed {
+  google.protobuf.Timestamp expires_at_utc = 1;
+  string presence_authority = 2;
 }
 
 message HeartbeatAccepted {
@@ -231,6 +244,18 @@ message TelemetryDisk {
   double usage_percent = 5;
   optional uint64 total_bytes = 6;
   optional uint64 free_bytes = 7;
+  // Additive genuine per-resource collection proof. Empty/absent fields remain compatible legacy Unknown.
+  string collection_id = 8;
+  google.protobuf.Timestamp collected_at_utc = 9;
+  TelemetryDiskCollectionQuality collection_quality = 10;
+}
+
+enum TelemetryDiskCollectionQuality {
+  TELEMETRY_DISK_COLLECTION_QUALITY_UNSPECIFIED = 0;
+  TELEMETRY_DISK_COLLECTION_QUALITY_COMPLETE = 1;
+  TELEMETRY_DISK_COLLECTION_QUALITY_PARTIAL = 2;
+  TELEMETRY_DISK_COLLECTION_QUALITY_UNSUPPORTED = 3;
+  TELEMETRY_DISK_COLLECTION_QUALITY_FAILED = 4;
 }
 
 message TelemetryNetwork {

@@ -3,7 +3,7 @@ using System.Reflection;
 using System.Runtime.Versioning;
 using System.Security.AccessControl;
 using System.Security.Principal;
-using FluentAssertions;
+using AwesomeAssertions;
 using NetRatel.Infrastructure.Auth;
 using Xunit;
 

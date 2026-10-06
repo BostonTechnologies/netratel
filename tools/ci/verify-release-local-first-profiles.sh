@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 usage() {
   echo "Usage: $0 --bundle <netratel-compose.tar.gz>" >&2
@@ -83,5 +84,33 @@ jq -e '
   echo "Release HTTPS profile does not retain the public origin, trusted proxy, and secure-cookie contract." >&2
   exit 1
 }
+
+blank_endpoints="$(NETRATEL_PUBLIC_ORIGIN= NETRATEL_PUBLIC_GATEWAY_ORIGIN= \
+  compose -f "$temporary_dir/compose.images.yaml" config --format json)"
+jq -e '
+  .services.api.environment.Branding__SiteUrl == ""
+  and .services.api.environment.Branding__GatewayUrl == ""
+  and .services.web.environment.ApiBaseUrl == "http://api:9222"
+' <<<"$blank_endpoints" >/dev/null || {
+  echo "Optional public endpoints must bind on API and preserve the internal Web API address." >&2
+  exit 1
+}
+
+prior_endpoints="$(NETRATEL_PUBLIC_ORIGIN= NETRATEL_PUBLIC_GATEWAY_ORIGIN= \
+  compose -f "$temporary_dir/compose.images.yaml" -f "$root/tests/compose/prior-release-endpoints.compose.yaml" config --format json)"
+prior_oidc_endpoints="$(NETRATEL_PUBLIC_ORIGIN= NETRATEL_PUBLIC_GATEWAY_ORIGIN= \
+  NETRATEL_GATEWAY_PROXY_CONFIG_PATH="$root/tests/compose/gateway-proxy.nginx.conf" \
+  NETRATEL_PUBLIC_NGINX_CONFIG_PATH="$temporary_dir/nginx.public-https.conf" \
+  compose -f "$temporary_dir/compose.images.yaml" -f "$root/tests/compose/prior-release-endpoints.compose.yaml" \
+    -f "$root/tests/compose/oidc-smoke.compose.yaml" config --format json)"
+for prior_configuration in "$prior_endpoints" "$prior_oidc_endpoints"; do
+  jq -e '
+    (.services.api.environment | has("Branding__SiteUrl") | not)
+    and (.services.api.environment | has("Branding__GatewayUrl") | not)
+  ' <<<"$prior_configuration" >/dev/null || {
+    echo "Prior-image upgrade seed must not inherit candidate endpoint configuration." >&2
+    exit 1
+  }
+done
 
 echo "Validated local-first Compose profiles from extracted release bundle."

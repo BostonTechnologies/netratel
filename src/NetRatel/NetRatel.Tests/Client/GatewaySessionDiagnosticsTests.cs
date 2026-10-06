@@ -2,7 +2,7 @@ using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Security.Authentication;
-using FluentAssertions;
+using AwesomeAssertions;
 using Grpc.Core;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -205,7 +205,8 @@ public sealed class GatewaySessionDiagnosticsTests
         var agent = new AgentGatewayPresenceClient(
             new GatewayClientOptions { Endpoint = "https://gateway.example.invalid" },
             tokenService, 7, agentId, "test", [], logs.Enqueue,
-            createHttpHandler: _ => host.GetTestServer().CreateHandler());
+            createHttpHandler: _ => host.GetTestServer().CreateHandler(),
+            nextRandom: () => 0.5);
 
         var run = agent.RunAsync(stopping.Token);
         try

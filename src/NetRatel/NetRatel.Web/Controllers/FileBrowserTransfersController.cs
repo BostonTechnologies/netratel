@@ -5,7 +5,6 @@ using NetRatel.Web.Services;
 using NetRatel.Web.Services.FileSystem;
 using System.Buffers;
 using System.Diagnostics;
-using System.Text.Json;
 
 namespace NetRatel.Web.Controllers;
 
@@ -127,14 +126,9 @@ public sealed class FileBrowserTransfersController(
                 Content = new StreamContent(Request.Body)
             };
             using var response = await uploads.Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
-            var retryable = await IsRetryableUploadFailureAsync(response, ct).ConfigureAwait(false);
             var outcome = response.IsSuccessStatusCode ? "completed" : "failed";
             FileBrowserTransferTelemetry.Record("upload", outcome, bytes, stopwatch.Elapsed);
             logger.LogInformation("Completed browser-native remote file upload for tenant {TenantId}, agent {AgentId}; outcome {Outcome}; bytes {Bytes}; durationMs {DurationMs}; statusCode {StatusCode}", tenantId, agentId, outcome, bytes, stopwatch.Elapsed.TotalMilliseconds, (int)response.StatusCode);
-            if (retryable)
-            {
-                Response.Headers["X-NetRatel-File-Transfer-Retryable"] = "true";
-            }
             return response.IsSuccessStatusCode ? Ok() : StatusCode((int)response.StatusCode);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -147,7 +141,8 @@ public sealed class FileBrowserTransfersController(
         {
             FileBrowserTransferTelemetry.Record("upload", "failed", bytes, stopwatch.Elapsed);
             logger.LogWarning("Remote file gateway session ended during browser-native upload for tenant {TenantId}, agent {AgentId}; bytes {Bytes}; durationMs {DurationMs}", tenantId, agentId, bytes, stopwatch.Elapsed.TotalMilliseconds);
-            Response.Headers["X-NetRatel-File-Transfer-Retryable"] = "true";
+            // The gateway may already have executed the write. A browser
+            // must report this interrupted outcome without replaying the PUT.
             return StatusCode(StatusCodes.Status503ServiceUnavailable);
         }
         catch
@@ -159,30 +154,6 @@ public sealed class FileBrowserTransfersController(
 
     private static string ApiPath(int tenantId, Guid agentId, string path) =>
         $"/api/v2/agents/{tenantId}/{agentId:D}/filesystem/file?path={Uri.EscapeDataString(path)}";
-
-    private static async Task<bool> IsRetryableUploadFailureAsync(HttpResponseMessage response, CancellationToken cancellationToken)
-    {
-        if (response.StatusCode != System.Net.HttpStatusCode.Conflict)
-        {
-            return false;
-        }
-
-        try
-        {
-            await using var body = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-            using var document = await JsonDocument.ParseAsync(body, cancellationToken: cancellationToken).ConfigureAwait(false);
-            var root = document.RootElement;
-            var code = root.TryGetProperty("code", out var directCode) ? directCode.GetString() :
-                root.TryGetProperty("extensions", out var extensions) && extensions.TryGetProperty("code", out var extensionCode)
-                    ? extensionCode.GetString()
-                    : null;
-            return string.Equals(code, "session_unavailable", StringComparison.OrdinalIgnoreCase);
-        }
-        catch (JsonException)
-        {
-            return false;
-        }
-    }
 
     private static bool IsValidRequest(int tenantId, Guid agentId, string? path) =>
         tenantId > 0 && agentId != Guid.Empty && !string.IsNullOrWhiteSpace(path) && path.Length <= 4_096 && !path.Contains('\0');

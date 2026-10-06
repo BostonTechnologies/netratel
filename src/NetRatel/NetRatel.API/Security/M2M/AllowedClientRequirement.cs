@@ -13,6 +13,7 @@ public sealed class AllowedClientHandler : AuthorizationHandler<AllowedClientReq
 {
     protected override Task HandleRequirementAsync(AuthorizationHandlerContext context, AllowedClientRequirement requirement)
     {
+        if (context.User.HasClaim("auth_mode", "service") || context.User.HasClaim("token_use", "netratel_service")) return Task.CompletedTask;
         var candidates = new[]
         {
             context.User.FindFirst("client_id")?.Value,

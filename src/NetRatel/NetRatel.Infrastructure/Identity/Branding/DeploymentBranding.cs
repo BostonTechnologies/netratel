@@ -1,5 +1,6 @@
 using System.ComponentModel.DataAnnotations;
 using Microsoft.Extensions.Options;
+using NetRatel.Shared.Client;
 
 namespace NetRatel.Infrastructure.Identity.Branding;
 
@@ -16,7 +17,8 @@ public sealed class DeploymentBrandingOptions
     [StringLength(2048)] public string? CompactLogoUrl { get; init; }
     [StringLength(2048)] public string? FaviconUrl { get; init; }
     [StringLength(2048)] public string? SupportUrl { get; init; }
-    [StringLength(2048)] public string? SiteUrl { get; init; }
+    [StringLength(2048)] public string? SiteUrl { get; set; }
+    [StringLength(2048)] public string? GatewayUrl { get; set; }
 }
 
 public sealed class DeploymentBrandingOptionsValidator : IValidateOptions<DeploymentBrandingOptions>
@@ -34,10 +36,11 @@ public sealed class DeploymentBrandingOptionsValidator : IValidateOptions<Deploy
                      (nameof(options.CompactLogoUrl), options.CompactLogoUrl, 2048),
                      (nameof(options.FaviconUrl), options.FaviconUrl, 2048),
                      (nameof(options.SupportUrl), options.SupportUrl, 2048),
-                     (nameof(options.SiteUrl), options.SiteUrl, 2048)
+                     (nameof(options.SiteUrl), options.SiteUrl, 2048),
+                     (nameof(options.GatewayUrl), options.GatewayUrl, 2048)
                  })
         {
-            if (value is null)
+            if (value is null || ((field is nameof(options.SiteUrl) or nameof(options.GatewayUrl)) && string.IsNullOrWhiteSpace(value)))
                 continue;
             if (string.IsNullOrWhiteSpace(value) || value.Length > maxLength || value.Any(char.IsControl))
                 failures.Add($"Branding:{field} must be non-empty, no longer than {maxLength} characters, and contain no control characters.");
@@ -49,12 +52,18 @@ public sealed class DeploymentBrandingOptionsValidator : IValidateOptions<Deploy
                      (nameof(options.LogoDarkUrl), options.LogoDarkUrl),
                      (nameof(options.CompactLogoUrl), options.CompactLogoUrl),
                      (nameof(options.FaviconUrl), options.FaviconUrl),
-                     (nameof(options.SupportUrl), options.SupportUrl),
-                     (nameof(options.SiteUrl), options.SiteUrl)
+                     (nameof(options.SupportUrl), options.SupportUrl)
                  })
         {
             if (value is not null && !BrandingUrl.IsSafeConfiguredUrl(value))
                 failures.Add($"Branding:{field} must be an absolute HTTPS URL or a root-relative path.");
+        }
+
+        foreach (var (field, value) in new[] { (nameof(options.SiteUrl), options.SiteUrl), (nameof(options.GatewayUrl), options.GatewayUrl) })
+        {
+            if (string.IsNullOrWhiteSpace(value)) continue;
+            try { ClientEndpointAddress.NormalizePublicOrigin(value); }
+            catch (ArgumentException) { failures.Add($"Branding:{field} must be a public HTTPS origin."); }
         }
 
         return failures.Count is 0 ? ValidateOptionsResult.Success : ValidateOptionsResult.Fail(failures);
@@ -85,6 +94,7 @@ public sealed class DeploymentBrandingOverride
     public string? FaviconAssetId { get; set; }
     public string? SupportUrl { get; set; }
     public string? SiteUrl { get; set; }
+    public string? GatewayUrl { get; set; }
     public long Version { get; set; }
     public DateTimeOffset UpdatedAtUtc { get; set; }
     public string? UpdatedByPrincipalId { get; set; }
@@ -114,7 +124,8 @@ public sealed record EffectiveDeploymentBranding(
     BrandingField FaviconUrl,
     BrandingField SupportUrl,
     BrandingField SiteUrl,
-    long Version);
+    long Version,
+    BrandingField? GatewayUrl = null);
 
 public sealed record BrandingFieldUpdate(string Field, string? Value, bool Reset);
 public sealed record UpdateDeploymentBrandingRequest(IReadOnlyList<BrandingFieldUpdate>? Fields);

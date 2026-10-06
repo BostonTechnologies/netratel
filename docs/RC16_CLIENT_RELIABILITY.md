@@ -93,8 +93,12 @@ Source evidence retained for this candidate:
   covers this NGINX configuration; it does not reproduce the reported Traefik path.
 - `tools/ci/tests/traefik-gateway-routing.sh` uses **fixture** version v3.7.13.
   It checks the dotted namespace, complete method path, TLS-to-h2c route and
-  REST fallback with synthetic responders. Its short probes establish route
-  precedence, not a sustained production gateway session or the deployed version.
+  REST fallback with synthetic responders. The original RC.16 short probes
+  established route precedence. The generic regression has since been extended
+  with a 195-second framed duplex A/B/direct control; see the
+  [supported streaming profile](CLIENT.md#sustained-traefik-gateway-streams).
+  Neither fixture establishes the reported production deployment's version or
+  the cause of its disconnections.
 - `NetRatel.API/Program.cs` separates REST HTTP/1 on port 9222 from gateway h2c
   on port 9223 by default. `AgentGatewayService.Connect` follows RPC cancellation,
   frame validation and presence fencing. `GatewayDuplexSession.RunAsync` joins

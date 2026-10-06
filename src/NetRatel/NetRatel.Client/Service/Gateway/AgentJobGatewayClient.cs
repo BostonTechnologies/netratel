@@ -59,7 +59,7 @@ public sealed class AgentJobGatewayClient(
     {
         using var channel = GrpcChannel.ForAddress(endpoint);
         var client = new AgentJobGateway.AgentJobGatewayClient(channel);
-        var headers = new Metadata { { "Authorization", $"Bearer {accessToken}" } };
+        var headers = new Metadata { { "Authorization", $"Bearer {session.GetAccessToken(accessToken)}" } };
         using var call = client.Connect(headers, cancellationToken: stoppingToken);
         using var writer = new JobGatewayWriter(call.RequestStream, session, options.ProtocolVersion);
         using var taskManager = new ClientTaskManager(useInProcPowerShell, writer.PublishTaskStatusAsync, message => log($"Job execution error: {message}"));

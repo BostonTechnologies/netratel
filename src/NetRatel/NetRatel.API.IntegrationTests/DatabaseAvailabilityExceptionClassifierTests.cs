@@ -1,4 +1,4 @@
-using FluentAssertions;
+using AwesomeAssertions;
 using NetRatel.Infrastructure.Persistence;
 using Npgsql;
 using System.IO;

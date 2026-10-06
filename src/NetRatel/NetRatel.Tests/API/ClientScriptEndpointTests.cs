@@ -2,7 +2,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Security.Claims;
 using System.Text.Encodings.Web;
-using FluentAssertions;
+using AwesomeAssertions;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -62,8 +62,8 @@ public sealed class ClientScriptEndpointTests
             script.Should().NotContain("/api/v1/client/download");
             script.Should().NotContain("eyJ"); // heuristic JWT prefix
             script.Should().Contain("$ApiBase = 'https://netratel.example.invalid'");
-            script.Should().Contain("$GatewayEndpoint = ''");
-            script.Should().NotContain("NetRatelCLIENT__Gateway__Endpoint=https://netratel.example.invalid");
+            script.Should().Contain("$GatewayEndpoint = 'https://netratel.example.invalid'");
+            script.Should().Contain("NetRatelCLIENT__Gateway__Endpoint=$GatewayEndpoint");
 
             await using var scope = app.Services.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
@@ -100,7 +100,7 @@ public sealed class ClientScriptEndpointTests
     }
 
     [Fact]
-    public async Task PostClientScript_OmitsRedundantSameOriginGatewayOverride()
+    public async Task PostClientScript_PersistsExplicitSameOriginGateway()
     {
         using var app = await BuildAppAsync(
             publicApiBase: "https://same-origin.example.test/api/",
@@ -121,8 +121,8 @@ public sealed class ClientScriptEndpointTests
         response.IsSuccessStatusCode.Should().BeTrue();
         var script = await response.Content.ReadAsStringAsync();
         script.Should().Contain("$ApiBase = 'https://same-origin.example.test'");
-        script.Should().Contain("$GatewayEndpoint = ''");
-        script.Should().NotContain("NetRatelCLIENT__Gateway__Endpoint=https://same-origin.example.test");
+        script.Should().Contain("$GatewayEndpoint = 'https://same-origin.example.test'");
+        script.Should().Contain("NetRatelCLIENT__Gateway__Endpoint=$GatewayEndpoint");
     }
 
     [Fact]
@@ -194,9 +194,21 @@ public sealed class ClientScriptEndpointTests
         (await db.EnrollmentCodes.CountAsync()).Should().Be(0);
     }
 
+    [Fact]
+    public async Task MissingGateway_DoesNotIssueAnEnrollmentCode()
+    {
+        using var app = await BuildAppAsync(brandingGateway: "");
+        await using var scope = app.Services.CreateAsyncScope();
+        await FluentActions.Invoking(() => scope.ServiceProvider.GetRequiredService<IClientScriptService>()
+            .GenerateAsync(new ClientScriptRequest { TenantId = 4098, RuntimeId = "linux-x64" }, CancellationToken.None))
+            .Should().ThrowAsync<InvalidOperationException>().WithMessage("*gateway*Branding*");
+        (await scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>().EnrollmentCodes.CountAsync()).Should().Be(0);
+    }
+
     private static async Task<IHost> BuildAppAsync(
         string? publicApiBase = null,
-        string? publicGatewayBase = null)
+        string? publicGatewayBase = null,
+        string brandingGateway = "https://netratel.example.invalid")
     {
         var dbName = Guid.NewGuid().ToString("N");
         var builder = Host.CreateDefaultBuilder();
@@ -220,7 +232,7 @@ public sealed class ClientScriptEndpointTests
                 services.AddScoped<IClientScriptService, ClientScriptService>();
                 services.AddScoped<ITenantLookupService, AlwaysTenantLookupService>();
                 services.AddScoped<IClientArtifactsService, NoopArtifactsService>();
-                services.AddSingleton<IDeploymentBrandingService>(new FixtureBranding());
+                services.AddSingleton<IDeploymentBrandingService>(new FixtureBranding(brandingGateway));
                 services.Configure<AgentAuthOptions>(o => o.Issuer = "https://netratel.example.invalid");
                 var settings = new Dictionary<string, string?>
                 {
@@ -228,7 +240,9 @@ public sealed class ClientScriptEndpointTests
                 };
                 if (publicApiBase is not null) settings["ClientArtifacts:PublicBaseUrl"] = publicApiBase;
                 if (publicGatewayBase is not null) settings["ClientArtifacts:PublicGatewayBaseUrl"] = publicGatewayBase;
-                services.AddSingleton<IConfiguration>(new ConfigurationBuilder().AddInMemoryCollection(settings).Build());
+                var configuration = new ConfigurationBuilder().AddInMemoryCollection(settings).Build();
+                services.AddSingleton<IConfiguration>(configuration);
+                services.AddOptions<ClientInstallationEndpointOptions>().Bind(configuration.GetSection("ClientArtifacts"));
             });
 
             web.Configure(app =>
@@ -243,7 +257,7 @@ public sealed class ClientScriptEndpointTests
         return await builder.StartAsync();
     }
 
-    private sealed class FixtureBranding : IDeploymentBrandingService
+    private sealed class FixtureBranding(string gateway) : IDeploymentBrandingService
     {
         public Task<EffectiveDeploymentBranding> GetEffectiveAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult(new EffectiveDeploymentBranding(
@@ -256,7 +270,7 @@ public sealed class ClientScriptEndpointTests
                 new("favicon.ico", BrandingValueSource.Default, false),
                 new(string.Empty, BrandingValueSource.Default, false),
                 new("https://netratel.example.invalid", BrandingValueSource.Administrator, false),
-                1));
+                1, new(gateway, BrandingValueSource.Administrator, false)));
 
         public Task<EffectiveDeploymentBranding> UpdateAsync(UpdateDeploymentBrandingRequest request,
             string? actorPrincipalId, CancellationToken cancellationToken = default) => throw new NotSupportedException();

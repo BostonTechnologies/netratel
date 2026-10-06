@@ -4,6 +4,8 @@ using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Microsoft.IdentityModel.JsonWebTokens;
+using Microsoft.IdentityModel.Tokens;
 using NetRatel.Application.ClientAuth;
 using NetRatel.Infrastructure.Services;
 
@@ -14,16 +16,24 @@ public sealed class ClientAgentTokenService : IAgentTokenService
     private readonly HttpClient _http;
     private readonly IAgentCredentialStore _credentialStore;
     private readonly IAgentDeviceKeyStore _deviceKeyStore;
+    private readonly TimeProvider _timeProvider;
     private readonly SemaphoreSlim _gate = new(1, 1);
 
     private string? _cachedToken;
     private DateTimeOffset _expiresAtUtc;
 
     public ClientAgentTokenService(HttpClient http, IAgentCredentialStore credentialStore, IAgentDeviceKeyStore deviceKeyStore)
+        : this(http, credentialStore, deviceKeyStore, TimeProvider.System)
+    {
+    }
+
+    internal ClientAgentTokenService(HttpClient http, IAgentCredentialStore credentialStore,
+        IAgentDeviceKeyStore deviceKeyStore, TimeProvider timeProvider)
     {
         _http = http;
         _credentialStore = credentialStore;
         _deviceKeyStore = deviceKeyStore;
+        _timeProvider = timeProvider;
     }
 
     public async Task<(string AccessToken, DateTimeOffset ExpiresAtUtc)> GetAccessTokenAsync(CancellationToken ct)
@@ -31,7 +41,7 @@ public sealed class ClientAgentTokenService : IAgentTokenService
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            var now = DateTimeOffset.UtcNow;
+            var now = _timeProvider.GetUtcNow();
             if (!string.IsNullOrWhiteSpace(_cachedToken) && _expiresAtUtc > now.AddMinutes(1))
             {
                 return (_cachedToken, _expiresAtUtc);
@@ -101,7 +111,7 @@ public sealed class ClientAgentTokenService : IAgentTokenService
             }
 
             _cachedToken = dto.AccessToken;
-            _expiresAtUtc = now.AddSeconds(dto.ExpiresIn);
+            _expiresAtUtc = GetCacheExpiry(dto.AccessToken, now.AddSeconds(dto.ExpiresIn));
             return (_cachedToken, _expiresAtUtc);
         }
         finally
@@ -114,6 +124,34 @@ public sealed class ClientAgentTokenService : IAgentTokenService
     {
         _cachedToken = null;
         _expiresAtUtc = DateTimeOffset.MinValue;
+    }
+
+    private static DateTimeOffset GetCacheExpiry(string accessToken, DateTimeOffset responseExpiry)
+    {
+        // JWT NumericDate uses whole seconds, while the response hint can retain
+        // subsecond precision. Reading exp only shortens cache reuse; the gateway
+        // still validates the signature and all authorization claims.
+        var handler = new JsonWebTokenHandler();
+        if (!handler.CanReadToken(accessToken))
+        {
+            return responseExpiry;
+        }
+
+        try
+        {
+            var token = handler.ReadJsonWebToken(accessToken);
+            if (token.TryGetPayloadValue<long>(JwtRegisteredClaimNames.Exp, out var seconds))
+            {
+                var jwtExpiry = DateTimeOffset.FromUnixTimeSeconds(seconds);
+                return jwtExpiry < responseExpiry ? jwtExpiry : responseExpiry;
+            }
+        }
+        catch (Exception ex) when (ex is ArgumentException or SecurityTokenException or JsonException)
+        {
+            // Opaque or unreadable tokens retain the endpoint's lifetime hint.
+        }
+
+        return responseExpiry;
     }
 
     private async Task<HttpResponseMessage> PostTokenWithRetryAsync(TokenRequest request, CancellationToken ct)

@@ -1,5 +1,6 @@
 using System.Text;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using NetRatel.Application.Flows;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Shared.Contracts.Flows;
@@ -120,9 +121,12 @@ public sealed partial class FlowPersistenceService
         await db.SaveChangesAsync(ct).ConfigureAwait(false); if (transaction is not null) await transaction.CommitAsync(ct).ConfigureAwait(false); return true;
     });
 
-    public Task<FlowActionExecutionState?> StartActionAsync(FlowRunLease lease, Guid nodeId, CancellationToken ct = default) => WithDb<FlowActionExecutionState?>(async (db, _) =>
+    public Task<FlowActionExecutionState?> StartActionAsync(FlowRunLease lease, Guid nodeId, CancellationToken ct = default) => WithDb<FlowActionExecutionState?>(async (db, services) =>
     {
         await using var transaction = await BeginAsync(db, ct).ConfigureAwait(false);
+        var admission = services.GetRequiredService<IFlowTransactionAdmission>();
+        ct.ThrowIfCancellationRequested();
+        if (!(await admission.CanStartActionAsync(db, lease, ct).ConfigureAwait(false)).Allowed || lease.ExpiresAtUtc <= Now) return null;
         if (await CurrentLeaseAsync(db, lease, ct).ConfigureAwait(false) is null) return null;
         var row = await db.FlowActions.SingleOrDefaultAsync(row => row.TenantId == lease.Event.TenantId && row.RunId == lease.RunId && row.NodeId == nodeId, ct).ConfigureAwait(false);
         if (row is null || row.PreparedJson is null) return null;
@@ -146,7 +150,13 @@ public sealed partial class FlowPersistenceService
             }
             else { row.Status = FlowActionStatus.Dispatching; row.LeaseFence = lease.Fence; row.Attempts++; row.NextAttemptAtUtc = null; }
         }
-        await db.SaveChangesAsync(ct).ConfigureAwait(false); if (transaction is not null) await transaction.CommitAsync(ct).ConfigureAwait(false);
+        ct.ThrowIfCancellationRequested();
+        if (!(await admission.CanStartActionAsync(db, lease, ct).ConfigureAwait(false)).Allowed || lease.ExpiresAtUtc <= Now) return null;
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        ct.ThrowIfCancellationRequested();
+        if (!(await admission.CanStartActionAsync(db, lease, ct).ConfigureAwait(false)).Allowed || lease.ExpiresAtUtc <= Now) return null;
+        ct.ThrowIfCancellationRequested();
+        if (transaction is not null) await transaction.CommitAsync(ct).ConfigureAwait(false);
         return ActionState(row);
     });
 

@@ -1,5 +1,5 @@
 using System.Collections.Concurrent;
-using FluentAssertions;
+using AwesomeAssertions;
 using Grpc.Core;
 using NetRatel.AgentGateway.Contracts.V1;
 using NetRatel.Client.Service.Gateway;
@@ -449,6 +449,39 @@ public sealed class AgentTerminalGatewayClientTests
     }
 
     [Fact]
+    public async Task Cancelled_physical_write_receives_owner_token_and_late_fault_cannot_displace_replacement()
+    {
+        var presence = NewPresence();
+        var retiredStream = new CancellationAwareFaultingWriter();
+        using var cancellation = new CancellationTokenSource();
+        using var retired = new AgentTerminalGatewayClient.GatewayWriter(retiredStream, presence, "1.0");
+        var oldCallbackCount = 0;
+        retired.Start(cancellation.Token);
+        retired.TryQueueControl(new AgentTerminalFrame
+        {
+            Opened = new TerminalSessionOpened { SessionId = "terminal-1", Generation = 7 }
+        }, () => Interlocked.Increment(ref oldCallbackCount)).Should().BeTrue();
+        await retiredStream.Started.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        retiredStream.WriteCancellation.Should().Be(cancellation.Token,
+            "canceling the owner must cancel actual gRPC I/O as well as the caller's wait");
+        cancellation.Cancel();
+        await FluentActions.Awaiting(() => retired.Completion).Should().ThrowAsync<OperationCanceledException>();
+        retiredStream.WriteCancellation.IsCancellationRequested.Should().BeTrue();
+        retired.TryQueueOutput("terminal-1", 7, 1, "retired").Should().BeFalse();
+
+        using var currentStream = new RecordingWriter();
+        using var current = new AgentTerminalGatewayClient.GatewayWriter(currentStream, presence, "1.0");
+        current.Start(CancellationToken.None);
+        current.TryQueueOutput("terminal-1", 7, 2, "still-current").Should().BeTrue();
+        retiredStream.FaultLate();
+        await currentStream.Output.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await current.StopAsync();
+        currentStream.Frames.Should().ContainSingle().Which.Output.Content.ToStringUtf8().Should().Be("still-current");
+        oldCallbackCount.Should().Be(0, "a late physical completion cannot acknowledge retired lifecycle delivery");
+        await FluentActions.Awaiting(() => retired.Completion).Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    [Fact]
     public async Task Blocked_physical_write_fails_within_the_configured_bound()
     {
         var presence = NewPresence();
@@ -497,6 +530,7 @@ public sealed class AgentTerminalGatewayClientTests
         public ConcurrentQueue<AgentTerminalFrame> Frames { get; } = new();
         public WriteOptions? WriteOptions { get; set; }
         public Task CompleteAsync() => Task.CompletedTask;
+        public Task WriteAsync(AgentTerminalFrame message, CancellationToken cancellationToken) => WriteAsync(message);
         public async Task WriteAsync(AgentTerminalFrame message)
         {
             if (message.PayloadCase == AgentTerminalFrame.PayloadOneofCase.Opened)
@@ -522,6 +556,8 @@ public sealed class AgentTerminalGatewayClientTests
 
         public Task CompleteAsync() => Task.CompletedTask;
 
+        public Task WriteAsync(AgentTerminalFrame message, CancellationToken cancellationToken) => WriteAsync(message);
+
         public Task WriteAsync(AgentTerminalFrame message)
         {
             if (message.PayloadCase == AgentTerminalFrame.PayloadOneofCase.Output)
@@ -534,6 +570,23 @@ public sealed class AgentTerminalGatewayClientTests
         }
     }
 
+    private sealed class CancellationAwareFaultingWriter : IClientStreamWriter<AgentTerminalFrame>
+    {
+        private readonly TaskCompletionSource _write = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public CancellationToken WriteCancellation { get; private set; }
+        public WriteOptions? WriteOptions { get; set; }
+        public Task CompleteAsync() => Task.CompletedTask;
+        public Task WriteAsync(AgentTerminalFrame message) => WriteAsync(message, CancellationToken.None);
+        public Task WriteAsync(AgentTerminalFrame message, CancellationToken cancellationToken)
+        {
+            WriteCancellation = cancellationToken;
+            Started.TrySetResult();
+            return _write.Task;
+        }
+        public void FaultLate() => _write.TrySetException(new IOException("Retired physical transport failed after cancellation."));
+    }
+
     private sealed class RecordingWriter : IClientStreamWriter<AgentTerminalFrame>, IDisposable
     {
         public ConcurrentQueue<AgentTerminalFrame> Frames { get; } = new();
@@ -542,6 +595,8 @@ public sealed class AgentTerminalGatewayClientTests
         public WriteOptions? WriteOptions { get; set; }
 
         public Task CompleteAsync() => Task.CompletedTask;
+
+        public Task WriteAsync(AgentTerminalFrame message, CancellationToken cancellationToken) => WriteAsync(message);
 
         public Task WriteAsync(AgentTerminalFrame message)
         {

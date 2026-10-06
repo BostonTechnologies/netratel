@@ -1,6 +1,6 @@
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
-using FluentAssertions;
+using AwesomeAssertions;
 using NetRatel.Akka.Observability;
 using Xunit;
 

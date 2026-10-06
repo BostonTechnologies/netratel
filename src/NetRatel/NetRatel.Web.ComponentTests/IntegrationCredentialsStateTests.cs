@@ -2,16 +2,19 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Reflection;
 using Bunit;
-using FluentAssertions;
+using AwesomeAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using MudBlazor.Services;
 using NetRatel.Web.Components.Pages;
+using NetRatel.Web.Services.ServiceLinks;
 using Xunit;
 
 namespace NetRatel.Web.ComponentTests;
 
 public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
 {
+    public IntegrationCredentialsStateTests() => Services.AddScoped<HelpdeskM2MApiClient>();
+
     [Fact]
     public async Task Pending_create_cannot_close_back_or_reopen_and_its_secret_stays_in_its_acknowledgment()
     {

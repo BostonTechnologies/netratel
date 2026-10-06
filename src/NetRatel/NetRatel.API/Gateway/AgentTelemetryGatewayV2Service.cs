@@ -64,13 +64,22 @@ public sealed class AgentTelemetryGatewayV2Service(
 
         await RequireActivePresenceAsync(client, hello.ConnectionId, hello.ConnectionEpoch, context.CancellationToken).ConfigureAwait(false);
         var connectionId = Guid.Parse(hello.ConnectionId);
+        await using var authority = await AgentGatewayAuthenticationLifetime.AttachAsync(context, client, connectionId, hello.ConnectionEpoch).ConfigureAwait(false);
         var supportsDynamicSampling = hello.Hello.Capabilities.Contains("telemetry-rate-control-v1", StringComparer.Ordinal);
         var supportsServices = servicesRouter is not null && watchPolicySource is not null &&
             hello.Hello.Capabilities.Contains(ClientServicesLimits.Capability, StringComparer.Ordinal);
+        var registrationId = Guid.NewGuid();
+        // Durable ordering is reserved before a delayed local Register can be overtaken on another replica.
+        var evidenceFence = monitoring is null ? null : await monitoring.ReserveEvidenceRegistrationAsync(client, connectionId,
+            checked((long)hello.ConnectionEpoch), registrationId, authority.Token).ConfigureAwait(false);
+        if (monitoring is not null && evidenceFence is null)
+            throw new RpcException(new Status(StatusCode.Aborted, "Telemetry registration could not be reserved."));
         AgentTelemetryGatewaySessionRegistration registration;
         try
         {
-            registration = sessions.Register(client, connectionId, hello.ConnectionEpoch, supportsDynamicSampling, hello.Hello.AgentVersion, provisional: true, supportsServices);
+            registration = evidenceFence is not null
+                ? sessions.RegisterReserved(evidenceFence, supportsDynamicSampling, hello.Hello.AgentVersion, supportsServices)
+                : sessions.Register(client, connectionId, hello.ConnectionEpoch, supportsDynamicSampling, hello.Hello.AgentVersion, provisional: true, supportsServices);
         }
         catch (AgentGatewayRegistrationFencedException exception)
         {
@@ -79,7 +88,7 @@ public sealed class AgentTelemetryGatewayV2Service(
 
         await using (registration)
         {
-            using var admissionCancellation = CancellationTokenSource.CreateLinkedTokenSource(context.CancellationToken, registration.CompletionToken);
+            using var admissionCancellation = CancellationTokenSource.CreateLinkedTokenSource(context.CancellationToken, authority.Token, registration.CompletionToken);
             try
             {
                 await RequireActivePresenceAsync(client, hello.ConnectionId, hello.ConnectionEpoch, admissionCancellation.Token).WaitAsync(admissionCancellation.Token).ConfigureAwait(false);
@@ -88,20 +97,20 @@ public sealed class AgentTelemetryGatewayV2Service(
             {
                 throw new RpcException(new Status(StatusCode.Aborted, "The gateway registration has been replaced."));
             }
-            if (!registration.TryActivate())
-            {
-                throw new RpcException(new Status(StatusCode.Aborted, "Telemetry registration has been replaced."));
-            }
-            var evidenceFence = new MonitoringEvidenceFence(client, connectionId, checked((long)hello.ConnectionEpoch), registration.RegistrationId);
-            var monitoringStarted = false;
+            evidenceFence ??= new MonitoringEvidenceFence(client, connectionId, checked((long)hello.ConnectionEpoch), registration.RegistrationId);
             try
             {
                 if (monitoring is not null)
                 {
+                    // Begin COMMIT is the evidence replacement decision; local predecessor I/O still lives until this succeeds.
                     RequireMonitoringAccepted(await monitoring.BeginEvidenceStreamAsync(evidenceFence, admissionCancellation.Token).ConfigureAwait(false));
-                    monitoringStarted = true;
                     if (!registration.IsCurrent) throw new RpcException(new Status(StatusCode.Aborted, "Telemetry registration has been replaced."));
                 }
+                if (!registration.TryActivate())
+                {
+                    throw new RpcException(new Status(StatusCode.Aborted, "Telemetry registration has been replaced."));
+                }
+
                 try
                 {
                     var accepted = new TelemetryConnectAccepted { TelemetryAuthority = "akka", MaximumInFlightFrames = 1 };
@@ -138,6 +147,7 @@ public sealed class AgentTelemetryGatewayV2Service(
                     ulong lastSequence = 0;
                     while (await requestStream.MoveNext(cancellationToken).ConfigureAwait(false))
                     {
+                        cancellationToken.ThrowIfCancellationRequested();
                         var envelope = requestStream.Current;
                         var isServices = envelope.PayloadCase == AgentTelemetryFrame.PayloadOneofCase.ServicesChunk;
                         if ((!isServices && envelope.PayloadCase != AgentTelemetryFrame.PayloadOneofCase.Snapshot) ||
@@ -154,7 +164,7 @@ public sealed class AgentTelemetryGatewayV2Service(
                         }
 
                         if (!isServices) AgentTelemetryGatewayMapper.ThrowIfInvalid(AgentTelemetryProtocolValidator.Validate(
-                            envelope.Snapshot, identity, NetRatelAkkaOptions.ProtocolVersion, options.MaxTelemetryScopesPerFrame));
+                            envelope.Snapshot, identity, NetRatelAkkaOptions.ProtocolVersion, options.MaxTelemetryScopesPerFrame, timeProvider.GetUtcNow()));
                         await RequireActivePresenceAsync(client, envelope.ConnectionId, envelope.ConnectionEpoch, cancellationToken).ConfigureAwait(false);
                         if (!registration.IsCurrent)
                         {
@@ -232,12 +242,13 @@ public sealed class AgentTelemetryGatewayV2Service(
                     {
                         if (!registration.IsCurrent) return;
                         await responseStream.WriteAsync(frame, cancellationToken).ConfigureAwait(false);
+                        cancellationToken.ThrowIfCancellationRequested();
                     }
-                }, context.CancellationToken, registration.CompletionToken, logger).ConfigureAwait(false);
+                }, authority.Token, registration.CompletionToken, logger, context.GetHttpContext().Abort).ConfigureAwait(false);
             }
             finally
             {
-                if (monitoringStarted)
+                if (monitoring is not null)
                 {
                     using var closeCancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
                     try { await monitoring!.EndEvidenceStreamAsync(evidenceFence, closeCancellation.Token).ConfigureAwait(false); }

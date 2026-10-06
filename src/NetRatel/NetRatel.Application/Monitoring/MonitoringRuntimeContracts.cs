@@ -7,7 +7,7 @@ using NetRatel.Shared.Contracts.Monitoring;
 namespace NetRatel.Application.Monitoring;
 
 /// <summary>Server-owned current telemetry registration, independently fenced from agent wire fields.</summary>
-public sealed record MonitoringEvidenceFence(ClientKey Client, Guid ConnectionId, long ConnectionEpoch, Guid EvidenceStreamId);
+public sealed record MonitoringEvidenceFence(ClientKey Client, Guid ConnectionId, long ConnectionEpoch, Guid EvidenceStreamId, long RegistrationOrdinal = 0);
 
 public sealed record MonitoringTelemetryInput(MonitoringEvidenceFence Fence, TelemetrySnapshot Snapshot);
 public sealed record MonitoringServicesInput(MonitoringEvidenceFence Fence, ClientServicesState Services);
@@ -66,6 +66,8 @@ public interface IMonitoringStore
     Task<MonitoringEventPageDto> ReadTenantEventsAsync(int tenantId, int maximumCount, string? cursor, CancellationToken cancellationToken);
     Task<MonitoringSummaryDto> ReadTenantSummaryAsync(int tenantId, CancellationToken cancellationToken);
     Task<MonitoringStoreWriteResult> CommitAsync(MonitoringCommitRequest request, CancellationToken cancellationToken);
+    Task<MonitoringEvidenceFence?> ReserveEvidenceRegistrationAsync(ClientKey client, Guid connectionId, long connectionEpoch,
+        Guid registrationId, CancellationToken cancellationToken) => Task.FromResult<MonitoringEvidenceFence?>(null);
     Task<bool> BeginEvidenceStreamAsync(MonitoringEvidenceFence fence, CancellationToken cancellationToken);
     Task<bool> EndEvidenceStreamAsync(MonitoringEvidenceFence fence, CancellationToken cancellationToken);
     Task<ImmutableArray<MonitoringOutboxLease>> ClaimOutboxAsync(MonitoringOutboxClaimRequest request, CancellationToken cancellationToken);
@@ -81,6 +83,8 @@ public sealed record MonitoringOperatorCommand(MonitoringSeriesKey Series, Guid 
 /// <summary>Sequential per-client runtime; accepted inputs are awaited before the gateway acknowledges them.</summary>
 public interface IMonitoringRuntime
 {
+    Task<MonitoringEvidenceFence?> ReserveEvidenceRegistrationAsync(ClientKey client, Guid connectionId, long connectionEpoch,
+        Guid registrationId, CancellationToken cancellationToken) => Task.FromResult<MonitoringEvidenceFence?>(null);
     Task<MonitoringInputResult> BeginEvidenceStreamAsync(MonitoringEvidenceFence fence, CancellationToken cancellationToken);
     Task<MonitoringInputResult> EndEvidenceStreamAsync(MonitoringEvidenceFence fence, CancellationToken cancellationToken);
     Task<MonitoringInputResult> RecordTelemetryAsync(MonitoringTelemetryInput input, CancellationToken cancellationToken);
@@ -109,6 +113,8 @@ public interface IMonitoringAgentEligibility
 public interface IMonitoringClientDirectory : IMonitoringAgentEligibility
 {
     Task<MonitoringEvidenceFence?> GetCurrentEvidenceAsync(ClientKey client, CancellationToken cancellationToken);
+    Task<bool> IsPresentedEvidenceAsync(MonitoringEvidenceFence fence, CancellationToken cancellationToken) =>
+        Task.FromResult(false);
 }
 
 /// <summary>Only real immutable published flows may be selected. The phase-one fallback always returns false.</summary>

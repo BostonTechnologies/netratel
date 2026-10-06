@@ -1,4 +1,4 @@
-using FluentAssertions;
+using AwesomeAssertions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using NetRatel.Infrastructure.Identity;
@@ -10,6 +10,46 @@ namespace NetRatel.Tests.Infrastructure;
 [Collection(PostgreSqlPersistenceCollection.Name)]
 public sealed class DeploymentBrandingServiceTests(PostgreSqlPersistenceFixture postgres)
 {
+    [Fact]
+    public async Task Gateway_is_durable_normalized_independent_of_site_and_resettable()
+    {
+        var connectionString = await postgres.CreateDatabaseAsync();
+        var contextOptions = new DbContextOptionsBuilder<NetRatelIdentityDbContext>().UseNpgsql(connectionString).Options;
+        await using (var db = new NetRatelIdentityDbContext(contextOptions))
+        {
+            await db.Database.MigrateAsync();
+            var service = CreateService(db);
+            var effective = await service.UpdateAsync(new([
+                new("siteUrl", "https://web.example.test/", false),
+                new("gatewayUrl", "https://gateway.example.test/", false)
+            ]), "principal-admin");
+            effective.GatewayUrl.Should().Be(new BrandingField("https://gateway.example.test", BrandingValueSource.Administrator, false));
+        }
+        await using var restarted = new NetRatelIdentityDbContext(contextOptions);
+        var restartedService = CreateService(restarted);
+        (await restartedService.GetEffectiveAsync()).GatewayUrl!.Value.Should().Be("https://gateway.example.test");
+        var deployed = CreateService(restarted, new DeploymentBrandingOptions { GatewayUrl = "https://deployment.example.test" });
+        (await deployed.GetEffectiveAsync()).GatewayUrl.Should().Be(new BrandingField("https://deployment.example.test", BrandingValueSource.Deployment, true));
+        await deployed.Invoking(value => value.UpdateAsync(new([new("gatewayUrl", null, true)]), "principal-admin"))
+            .Should().ThrowAsync<BrandingLockedException>();
+        var reset = await restartedService.UpdateAsync(new([new("gatewayUrl", null, true)]), "principal-admin");
+        reset.GatewayUrl.Should().Be(new BrandingField(string.Empty, BrandingValueSource.Default, false));
+        reset.SiteUrl.Value.Should().Be("https://web.example.test");
+    }
+
+    [Theory]
+    [InlineData("http://api:9223")]
+    [InlineData("https://gateway.example.test/grpc")]
+    [InlineData("https://user:secret@gateway.example.test")]
+    [InlineData("https://gateway.example.test?token=fixture")]
+    public async Task Invalid_gateway_updates_do_not_persist(string gateway)
+    {
+        await using var db = await CreateDbAsync();
+        await CreateService(db).Invoking(value => value.UpdateAsync(new([new("gatewayUrl", gateway, false)]), "principal-admin"))
+            .Should().ThrowAsync<BrandingValidationException>();
+        (await db.DeploymentBrandingOverrides.AnyAsync()).Should().BeFalse();
+    }
+
     [Fact]
     public async Task Defaults_are_inherited_and_a_single_stored_field_can_be_reset_without_writing_defaults()
     {
@@ -80,7 +120,13 @@ public sealed class DeploymentBrandingServiceTests(PostgreSqlPersistenceFixture 
     }
 
     private static DeploymentBrandingService CreateService(NetRatelIdentityDbContext db, DeploymentBrandingOptions? options = null) =>
-        new(db, Options.Create(options ?? new DeploymentBrandingOptions()));
+        new(db, new OptionsMonitor<DeploymentBrandingOptions>(
+            new OptionsFactory<DeploymentBrandingOptions>([new ConfigureOptions<DeploymentBrandingOptions>(value =>
+            {
+                var source = options ?? new DeploymentBrandingOptions();
+                foreach (var property in typeof(DeploymentBrandingOptions).GetProperties())
+                    property.SetValue(value, property.GetValue(source));
+            })], [], []), [], new OptionsCache<DeploymentBrandingOptions>()));
 
     private async Task<NetRatelIdentityDbContext> CreateDbAsync()
     {

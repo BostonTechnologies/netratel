@@ -1,5 +1,6 @@
 using Akka.Actor;
-using FluentAssertions;
+using System.Text.Json;
+using AwesomeAssertions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
@@ -42,6 +43,8 @@ public sealed class ClientServicesStorePostgresTests(PostgreSqlPersistenceFixtur
             var start = StartSession(client, complete.ConnectionId);
             var admission = await presence.Ask<GatewayPresenceSessionStarted>(start);
             admission.ConnectionEpoch.Should().Be(1);
+            (await presence.Ask<PresenceMessageResult>(new RecordGatewayHeartbeat(client, complete.ConnectionId,
+                admission.ConnectionEpoch, Guid.NewGuid(), 1, DateTimeOffset.UtcNow))).Disposition.Should().Be(PresenceMessageDisposition.Accepted);
             (await presence.Ask<GatewayPresenceSessionStarted>(start)).Disposition.Should().Be(PresenceMessageDisposition.Duplicate);
             (await actor.Ask<ClientServicesMessageResult>(new RecordClientServicesChunk(complete)))
                 .Disposition.Should().Be(ClientServicesMessageDisposition.Accepted);
@@ -75,6 +78,8 @@ public sealed class ClientServicesStorePostgresTests(PostgreSqlPersistenceFixtur
             var newConnection = Guid.NewGuid();
             var newAdmission = await presence.Ask<GatewayPresenceSessionStarted>(StartSession(client, newConnection));
             newAdmission.ConnectionEpoch.Should().BeGreaterThan(admission.ConnectionEpoch);
+            (await presence.Ask<PresenceMessageResult>(new RecordGatewayHeartbeat(client, newConnection,
+                newAdmission.ConnectionEpoch, Guid.NewGuid(), 1, DateTimeOffset.UtcNow))).Disposition.Should().Be(PresenceMessageDisposition.Accepted);
             actor = system.ActorOf(ClientServicesActor.Props(client, restartedStore));
             (await actor.Ask<ClientServicesMessageResult>(new RecordClientServicesChunk(ServicesTestData.Chunk(client, 1,
                 ServicesTestData.Service("reconnected")) with { ConnectionEpoch = newAdmission.ConnectionEpoch, ConnectionId = newConnection })))
@@ -94,8 +99,15 @@ public sealed class ClientServicesStorePostgresTests(PostgreSqlPersistenceFixtur
         await using (var scope = firstProvider.CreateAsyncScope())
             await scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>().Database.MigrateAsync();
         var client = new ClientKey(23, Guid.NewGuid());
-        await firstProvider.GetRequiredService<IClientServicesStore>().SaveAsync(ClientServicesState.Empty(client) with
-            { Revision = 1, ConnectionEpoch = 100, LastAcceptedSequence = 10, ConnectionId = Guid.NewGuid() }, 0, CancellationToken.None);
+        // This is an upgrade fixture for historical cache state, never active authority.
+        await using (var legacyScope = firstProvider.CreateAsyncScope())
+        {
+            var db = legacyScope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            var state = ClientServicesState.Empty(client) with { Revision = 1, ConnectionEpoch = 100, LastAcceptedSequence = 10, ConnectionId = Guid.NewGuid() };
+            db.ClientServicesSnapshots.Add(new() { TenantId = client.TenantId, AgentId = client.AgentId, Revision = 1,
+                ConnectionEpoch = 100, LastAcceptedSequence = 10, StateJson = JsonSerializer.Serialize(state), UpdatedAtUtc = DateTimeOffset.UtcNow });
+            await db.SaveChangesAsync();
+        }
         var first = firstProvider.GetRequiredService<IClientConnectionEpochStore>();
         var second = secondProvider.GetRequiredService<IClientConnectionEpochStore>();
         var allocations = await Task.WhenAll(Enumerable.Range(0, 16)
@@ -112,55 +124,51 @@ public sealed class ClientServicesStorePostgresTests(PostgreSqlPersistenceFixtur
     {
         var connection = await fixture.CreateDatabaseAsync();
         await using var provider = CreateProvider(connection);
-        await using (var scope = provider.CreateAsyncScope())
-            await scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>().Database.MigrateAsync();
-        var client = new ClientKey(25, Guid.NewGuid());
-        var epochs = provider.GetRequiredService<IClientConnectionEpochStore>();
+        await using (var scope = provider.CreateAsyncScope()) await scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>().Database.MigrateAsync();
+        var client = new ClientKey(25, Guid.NewGuid()); var epochs = provider.GetRequiredService<IClientConnectionEpochStore>();
         var store = provider.GetRequiredService<IClientServicesStore>();
-        (await epochs.AllocateAsync(client, 0, CancellationToken.None)).Should().Be(1);
-        var current = ClientServicesState.Empty(client) with
-            { Revision = 1, ConnectionEpoch = 1, ConnectionId = Guid.NewGuid(), LastAcceptedSequence = 1 };
-        (await store.SaveAsync(current, 0, CancellationToken.None)).Disposition.Should().Be(ClientServicesStoreWriteDisposition.Stored);
-        (await epochs.AllocateAsync(client, 0, CancellationToken.None)).Should().Be(2);
-
-        // Another API's locally active epoch 1 is no longer sufficient, even though no epoch 2
-        // services snapshot has arrived to advance the cached projection yet.
-        (await store.SaveAsync(current with { Revision = 2, LastAcceptedSequence = 2 }, 1, CancellationToken.None))
-            .Disposition.Should().Be(ClientServicesStoreWriteDisposition.Conflict);
-        var policy = current with { Revision = 2, WatchPolicyRevision = 1, MonitoredServiceNames = ["selected"] };
-        (await store.SaveAsync(policy, 1, CancellationToken.None)).Disposition.Should().Be(ClientServicesStoreWriteDisposition.Stored);
-        (await store.SaveAsync(policy with { Revision = 3, ConnectionEpoch = 2, ConnectionId = Guid.NewGuid(), LastAcceptedSequence = 1 },
-            2, CancellationToken.None)).Disposition.Should().Be(ClientServicesStoreWriteDisposition.Stored);
+        var owner = await ActivateAsync(epochs, client);
+        var current = ClientServicesState.Empty(client) with { Revision = 1, ConnectionEpoch = owner.Owner.Epoch,
+            ConnectionId = owner.Owner.ConnectionId, LastAcceptedSequence = 1 };
+        (await store.SaveAsync(current, 0, default)).Disposition.Should().Be(ClientServicesStoreWriteDisposition.Stored);
+        var candidate = (await epochs.ReserveAsync(Admission(client, Guid.NewGuid()), default)).Reservation!;
+        var admittedOld = current with { Revision = 2, LastAcceptedSequence = 2 };
+        (await store.SaveAsync(admittedOld, 1, default)).Disposition.Should().Be(ClientServicesStoreWriteDisposition.Stored,
+            "a higher reserved epoch grants no authority and cannot fence old ingress");
+        var policy = admittedOld with { Revision = 3, WatchPolicyRevision = 1, MonitoredServiceNames = ["selected"] };
+        (await store.SaveAsync(policy, 2, default)).Disposition.Should().Be(ClientServicesStoreWriteDisposition.Stored);
+        (await epochs.CommitAsync(candidate, new(candidate.Owner, 1, DateTimeOffset.UtcNow), default)).Disposition.Should().Be(OwnershipDisposition.Accepted);
+        (await store.SaveAsync(policy with { Revision = 4, LastAcceptedSequence = 3 }, 3, default)).Disposition.Should().Be(ClientServicesStoreWriteDisposition.Conflict);
+        (await store.SaveAsync(policy with { Revision = 4, ConnectionEpoch = candidate.Owner.Epoch,
+            ConnectionId = candidate.Owner.ConnectionId, LastAcceptedSequence = 1 }, 3, default)).Disposition.Should().Be(ClientServicesStoreWriteDisposition.Stored);
     }
 
     [Fact]
     public async Task Admission_allocation_waits_for_inflight_ingress_transaction_share_lock()
     {
-        var connection = await fixture.CreateDatabaseAsync();
-        await using var provider = CreateProvider(connection);
-        await using (var scope = provider.CreateAsyncScope())
-            await scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>().Database.MigrateAsync();
-        var client = new ClientKey(26, Guid.NewGuid());
-        var epochs = provider.GetRequiredService<IClientConnectionEpochStore>();
-        (await epochs.AllocateAsync(client, 0, CancellationToken.None)).Should().Be(1);
-        var pause = new PauseServicesSave();
-        await using var writer = CreateProvider(connection, pause);
+        var connection = await fixture.CreateDatabaseAsync(); await using var provider = CreateProvider(connection);
+        await using (var scope = provider.CreateAsyncScope()) await scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>().Database.MigrateAsync();
+        var client = new ClientKey(26, Guid.NewGuid()); var epochs = provider.GetRequiredService<IClientConnectionEpochStore>();
+        var owner = await ActivateAsync(epochs, client);
+        var pause = new PauseServicesSave(); await using var writer = CreateProvider(connection, pause);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-        var candidate = ClientServicesState.Empty(client) with
-            { Revision = 1, ConnectionEpoch = 1, ConnectionId = Guid.NewGuid(), LastAcceptedSequence = 1 };
+        var candidate = ClientServicesState.Empty(client) with { Revision = 1, ConnectionEpoch = owner.Owner.Epoch,
+            ConnectionId = owner.Owner.ConnectionId, LastAcceptedSequence = 1 };
         var save = writer.GetRequiredService<IClientServicesStore>().SaveAsync(candidate, 0, timeout.Token);
-        Task<long>? allocation = null;
+        Task<WriteResult>? replacement = null;
         try
         {
             await pause.Entered.Task.WaitAsync(timeout.Token);
-            allocation = epochs.AllocateAsync(client, 0, timeout.Token);
-            await WaitForAllocatorLockAsync(connection, allocation, timeout.Token);
+            var reservation = (await epochs.ReserveAsync(Admission(client, Guid.NewGuid()), timeout.Token)).Reservation!;
+            reservation.Owner.Epoch.Should().BeGreaterThan(owner.Owner.Epoch, "reservation remains independent of accepted business owner locks");
+            replacement = epochs.CommitAsync(reservation, new(reservation.Owner, 1, DateTimeOffset.UtcNow), timeout.Token);
+            await WaitForOwnerLockAsync(connection, replacement, timeout.Token);
         }
         finally { pause.Resume.TrySetResult(); }
         (await save).Disposition.Should().Be(ClientServicesStoreWriteDisposition.Stored);
-        (await allocation!).Should().Be(2);
-        (await provider.GetRequiredService<IClientServicesStore>().LoadAsync(client, timeout.Token))!
-            .ConnectionEpoch.Should().Be(1, "the accepted ingress committed before the next admission epoch was issued");
+        (await replacement!).Disposition.Should().Be(OwnershipDisposition.Accepted);
+        (await provider.GetRequiredService<IClientServicesStore>().LoadAsync(client, timeout.Token))!.ConnectionEpoch.Should().Be(owner.Owner.Epoch,
+            "accepted old ingress commits before first-heartbeat replacement acquires the owner row");
     }
 
     [Fact]
@@ -172,8 +180,10 @@ public sealed class ClientServicesStorePostgresTests(PostgreSqlPersistenceFixtur
             await scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>().Database.MigrateAsync();
         var store = provider.GetRequiredService<IClientServicesStore>();
         var client = new ClientKey(21, Guid.NewGuid());
+        var ownership = provider.GetRequiredService<IClientConnectionEpochStore>();
+        var firstOwner = await ActivateAsync(ownership, client);
         var initial = ClientServicesState.Empty(client) with
-            { Revision = 1, ConnectionEpoch = 1, ConnectionId = Guid.NewGuid(), LastAcceptedSequence = ulong.MaxValue };
+            { Revision = 1, ConnectionEpoch = firstOwner.Owner.Epoch, ConnectionId = firstOwner.Owner.ConnectionId, LastAcceptedSequence = ulong.MaxValue };
         var inserts = await Task.WhenAll(store.SaveAsync(initial, 0, CancellationToken.None),
             store.SaveAsync(initial with { ConnectionEpoch = 2, LastAcceptedSequence = 1 }, 0, CancellationToken.None));
         inserts.Count(result => result.Disposition == ClientServicesStoreWriteDisposition.Stored).Should().Be(1);
@@ -181,7 +191,9 @@ public sealed class ClientServicesStorePostgresTests(PostgreSqlPersistenceFixtur
         var current = (await store.LoadAsync(client, CancellationToken.None))!;
 
         // Both writers start from the same durable revision, as two API processes could.
-        var winner = current with { Revision = 2, ConnectionEpoch = 3, LastAcceptedSequence = 20, ConnectionId = Guid.NewGuid() };
+        await ownership.AllocateAsync(client, firstOwner.Owner.Epoch, default);
+        var replacement = await ActivateAsync(ownership, client);
+        var winner = current with { Revision = 2, ConnectionEpoch = replacement.Owner.Epoch, LastAcceptedSequence = 20, ConnectionId = replacement.Owner.ConnectionId };
         var writes = await Task.WhenAll(store.SaveAsync(winner, 1, CancellationToken.None),
             store.SaveAsync(winner with { LastAcceptedSequence = 21 }, 1, CancellationToken.None));
         writes.Count(result => result.Disposition == ClientServicesStoreWriteDisposition.Stored).Should().Be(1);
@@ -209,12 +221,28 @@ public sealed class ClientServicesStorePostgresTests(PostgreSqlPersistenceFixtur
             options.UseNpgsql(connection);
             if (interceptor is not null) options.AddInterceptors(interceptor);
         })
+        .AddSingleton(new OwnershipPolicy(TimeSpan.FromSeconds(30), new NetRatelAkkaOptions().HeartbeatTimeout, TimeSpan.FromSeconds(10)))
         .AddNetRatelClientServicesPersistence().BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
 
-    private static StartGatewayPresenceSession StartSession(ClientKey client, Guid connection) =>
-        new(client, connection, Guid.NewGuid(), "v1", "tests", [ClientServicesLimits.Capability], null, DateTimeOffset.UtcNow);
+    private static StartGatewayPresenceSession StartSession(ClientKey client, Guid connection)
+    {
+        var now = DateTimeOffset.UtcNow;
+        return new(client, connection, Guid.NewGuid(), "v1", "tests", [ClientServicesLimits.Capability], null,
+            now, now.AddMinutes(10), now.AddSeconds(30), true);
+    }
+    private static AdmissionRequest Admission(ClientKey client, Guid connection)
+    {
+        var now = DateTimeOffset.UtcNow;
+        return new(client, connection, Guid.NewGuid(), 0, now, now.AddSeconds(30), now.AddMinutes(10), new("services-provider", [], null));
+    }
+    private static async Task<OwnerSnapshot> ActivateAsync(IClientConnectionEpochStore store, ClientKey client)
+    {
+        var input = Admission(client, Guid.NewGuid()); var reservation = (await store.ReserveAsync(input, default)).Reservation!;
+        var result = await store.CommitAsync(reservation, new(reservation.Owner, 1, DateTimeOffset.UtcNow), default);
+        result.Disposition.Should().Be(OwnershipDisposition.Accepted); return result.Current!;
+    }
 
-    private static async Task WaitForAllocatorLockAsync(string connectionString, Task pendingAllocation, CancellationToken cancellationToken)
+    private static async Task WaitForOwnerLockAsync(string connectionString, Task pendingAllocation, CancellationToken cancellationToken)
     {
         await using var connection = new NpgsqlConnection(connectionString);
         await connection.OpenAsync(cancellationToken);
@@ -225,15 +253,15 @@ public sealed class ClientServicesStorePostgresTests(PostgreSqlPersistenceFixtur
                 SELECT EXISTS (
                     SELECT 1 FROM pg_stat_activity
                     WHERE datname = @database AND cardinality(pg_blocking_pids(pid)) > 0
-                        AND query LIKE '%INSERT INTO "ClientConnectionEpochs"%')
+                        AND query LIKE '%ClientConnectionOwners%')
                 """, connection);
             command.Parameters.AddWithValue("database", connection.Database);
             if ((bool)(await command.ExecuteScalarAsync(cancellationToken))!)
             {
-                pendingAllocation.IsCompleted.Should().BeFalse("the allocator must wait for the accepted ingress transaction's FOR SHARE lock");
+                pendingAllocation.IsCompleted.Should().BeFalse("first-heartbeat COMMIT waits for the accepted ingress owner's FOR SHARE lock");
                 return;
             }
-            pendingAllocation.IsCompleted.Should().BeFalse("an allocator without the transaction fence would already have completed");
+            pendingAllocation.IsCompleted.Should().BeFalse("replacement without the owner transaction fence would already have completed");
         } while (await timer.WaitForNextTickAsync(cancellationToken));
         throw new InvalidOperationException("No allocator lock wait was observed.");
     }

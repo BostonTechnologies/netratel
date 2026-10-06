@@ -1,6 +1,6 @@
 using System.Reflection;
 using System.Security.Claims;
-using FluentAssertions;
+using AwesomeAssertions;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Grpc.Net.Client;

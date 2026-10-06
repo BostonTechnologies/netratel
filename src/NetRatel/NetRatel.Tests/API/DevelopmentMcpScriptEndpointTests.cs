@@ -3,7 +3,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Security.Claims;
 using System.Text.Encodings.Web;
-using FluentAssertions;
+using AwesomeAssertions;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -224,11 +224,18 @@ public sealed class DevelopmentMcpScriptEndpointTests
         var cancel = await client.PostAsync($"{markerJobRoot}/{markerJob.JobId}/runs/{started.RunId}/cancel", null);
 
         cancel.StatusCode.Should().Be(HttpStatusCode.Accepted);
+        (await cancel.Content.ReadFromJsonAsync<DevelopmentMcpMarkerJobRunDto>())!.Status.Should().Be("CancellationRequested");
         app.Services.GetRequiredService<RecordingJobAuthority>().CancelledRunIds.Should().ContainSingle().Which.Should().Be(started.RunId);
         using (var scope = app.Services.CreateScope())
         {
             var runs = scope.ServiceProvider.GetRequiredService<IJobRunService>();
-            (await runs.GetAsync(started.RunId))!.Status.Should().Be(JobRunState.Cancelled);
+            var awaitingNative = (await runs.GetAsync(started.RunId))!;
+            awaitingNative.Status.Should().Be(JobRunState.Running);
+            (await client.DeleteAsync($"{markerJobRoot}/{markerJob.JobId}")).StatusCode.Should().Be(HttpStatusCode.Conflict);
+            // The fixture models the later native terminal receipt independently.
+            await runs.UpsertRunAsync(new(awaitingNative.Id, awaitingNative.JobId, awaitingNative.TenantId, awaitingNative.ClientIdentity,
+                awaitingNative.StartedBy, JobRunState.Cancelled, awaitingNative.CurrentStepOrdinal, awaitingNative.CreatedAtUtc,
+                awaitingNative.StartedAtUtc, DateTimeOffset.UtcNow, "Cancelled", awaitingNative.InputsJson, awaitingNative.OptionsJson, awaitingNative.AgentId));
         }
 
         var delete = await client.DeleteAsync($"{markerJobRoot}/{markerJob.JobId}");

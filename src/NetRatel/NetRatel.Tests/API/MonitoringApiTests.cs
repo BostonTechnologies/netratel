@@ -4,8 +4,10 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Security.Claims;
 using System.Text.Encodings.Web;
-using FluentAssertions;
+using AwesomeAssertions;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authorization;
+using NetRatel.API.Security.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.TestHost;
@@ -357,15 +359,19 @@ public sealed class MonitoringApiTests
         .ConfigureServices(services =>
         {
             services.AddRouting();
-            services.AddAuthentication("Test").AddScheme<AuthenticationSchemeOptions, TestAuth>("Test", _ => { });
-            services.AddAuthorization();
+            services.AddAuthentication("Test").AddScheme<AuthenticationSchemeOptions, TestAuth>("Test", _ => { })
+                .AddPolicyScheme("Bearer", null, options => options.ForwardDefault = "Test");
+            services.AddAuthorization(MonitoringAuthorization.AddPolicies);
+            services.AddSingleton<IEffectiveAccessService>(fixture.Access);
+            services.AddScoped<IAuthorizationHandler, EffectiveAccessHandler>();
+            MonitoringFlowPermissionAuthorization.AddHandlers(services);
             services.AddSingleton(fixture.Api);
         }).Configure(app => { app.UseRouting(); app.UseAuthentication(); app.UseAuthorization(); app.UseMiddleware<MonitoringHttpBoundsMiddleware>(); app.UseEndpoints(endpoints => endpoints.MapMonitoringEndpoints()); })).StartAsync();
 
     private sealed class TestAuth(IOptionsMonitor<AuthenticationSchemeOptions> options, ILoggerFactory logger, UrlEncoder encoder) : AuthenticationHandler<AuthenticationSchemeOptions>(options, logger, encoder)
     {
         protected override Task<AuthenticateResult> HandleAuthenticateAsync() => Task.FromResult(Request.Headers.ContainsKey("Authorization")
-            ? AuthenticateResult.Success(new AuthenticationTicket(User, Scheme.Name)) : AuthenticateResult.NoResult());
+            ? AuthenticateResult.Success(new AuthenticationTicket(new ClaimsPrincipal(new ClaimsIdentity(User.Claims, "Oidc")), Scheme.Name)) : AuthenticateResult.NoResult());
     }
     private sealed class ChunkedJsonContent(byte[] payload) : HttpContent
     {
@@ -379,7 +385,7 @@ public sealed class MonitoringApiTests
         public ImmutableArray<Guid> AgentIds { get; }
         public Clock Clock { get; } = new();
         public Authority Authority { get; } = new();
-        public Access Access { get; } = new();
+        public Access Access { get; }
         public PublishedFlows Flows { get; } = new();
         public ConfigStore Config { get; } = new();
         public Runtime Runtime { get; } = new();
@@ -398,6 +404,7 @@ public sealed class MonitoringApiTests
         };
         public Fixture(int clientCount = 1)
         {
+            Access = new(Authority);
             AgentIds = Enumerable.Range(1, clientCount - 1).Select(_ => Guid.NewGuid()).Prepend(AgentId).ToImmutableArray();
             Sessions.AgentIds = AgentIds;
             var directory = new ClientDirectory(AgentIds, Sessions);
@@ -421,12 +428,27 @@ public sealed class MonitoringApiTests
         public Task<bool> AuthorizeAsync(ClaimsPrincipal user, string permission, MonitoringResource resource, CancellationToken ct)
         { Requests.Add((permission, resource)); return Task.FromResult(Granted.Contains((permission, resource.TenantId)) && (resource.AgentId is null || !DeniedAgents.Contains(resource.AgentId.Value))); }
     }
-    private sealed class Access : IEffectiveAccessService
+    // This service-level HTTP fixture uses the actual named policies and handlers.
+    // Its synthetic OIDC identity is only a unit-host seam; the separate ApiFactory
+    // tests exercise production token verification and durable current authority.
+    private sealed class Access(Authority authority) : IEffectiveAccessService
     {
         public HashSet<(string Permission, int Tenant)> Granted { get; } = [(NetRatelPermissions.MonitoringRead, 7)];
-        public Task<bool> AuthorizeAsync(ClaimsPrincipal user, string permission, int? tenant, CancellationToken ct = default) => Task.FromResult(tenant is int id && Granted.Contains((permission, id)));
-        public Task<EffectiveAccessSnapshot> GetSnapshotAsync(ClaimsPrincipal user, int? tenant, CancellationToken ct = default) => throw new NotSupportedException();
-        public Task<int[]?> GetAuthorizedTenantIdsAsync(ClaimsPrincipal user, string permission, CancellationToken ct = default) => Task.FromResult<int[]?>([7]);
+        public Task<bool> AuthorizeAsync(ClaimsPrincipal user, string permission, int? tenant, CancellationToken ct = default) => tenant is int id
+            ? permission.StartsWith("monitoring.", StringComparison.Ordinal)
+                ? authority.AuthorizeAsync(user, permission, new(id, MonitoringResourceKind.Tenant), ct)
+                : Task.FromResult(Granted.Contains((permission, id)))
+            : Task.FromResult(false);
+        public async Task<EffectiveAccessSnapshot> GetSnapshotAsync(ClaimsPrincipal user, int? tenant, CancellationToken ct = default)
+        {
+            var permissions = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var permission in NetRatelPermissions.All)
+                if (await AuthorizeAsync(user, permission, tenant, ct)) permissions.Add(permission);
+            return new(user.FindFirst("netratel_principal_id")?.Value, false, false, permissions);
+        }
+        public Task<int[]?> GetAuthorizedTenantIdsAsync(ClaimsPrincipal user, string permission, CancellationToken ct = default) =>
+            Task.FromResult<int[]?>((permission.StartsWith("monitoring.", StringComparison.Ordinal) ? authority.Granted : Granted)
+                .Where(grant => grant.Permission == permission).Select(grant => grant.Tenant).Distinct().Order().ToArray());
         public Task ReconcileBuiltInRolesAsync(CancellationToken ct = default) => Task.CompletedTask;
     }
     private sealed class PublishedFlows : IMonitoringPublishedFlowProvider

@@ -1,5 +1,5 @@
 using System.Threading.Channels;
-using FluentAssertions;
+using AwesomeAssertions;
 using NetRatel.AgentGateway.Contracts.V1;
 using NetRatel.API.Gateway;
 using NetRatel.Application.Presence;

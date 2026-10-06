@@ -1,7 +1,7 @@
 using System.Collections.Immutable;
 using System.Reflection;
 using System.Text.Json;
-using FluentAssertions;
+using AwesomeAssertions;
 using Microsoft.EntityFrameworkCore;
 using NetRatel.API.Services.Monitoring;
 using NetRatel.Application.Flows;
@@ -138,55 +138,20 @@ public sealed class MonitoringFlowBridgeTests
     }
 
     [Fact]
-    public async Task ExactPersistedGuardDeniesForeignTenantAlteredEnvelopeAndClearDuringAuthorityAwait()
+    public async Task UnsupportedProviderCannotGrantPhysicalAuthorityAndCanonicalIntentDeniesForeignEnvelope()
     {
         var rig = new Rig();
         await using var db = new OrchestratorDbContext(new DbContextOptionsBuilder<OrchestratorDbContext>()
             .UseInMemoryDatabase(Guid.NewGuid().ToString("N")).Options);
-        db.MonitoringFlowOutbox.Add(new()
-        {
-            OutboxId = rig.Lease.OutboxId, TenantId = rig.Client.TenantId, EventId = rig.Intent.EventId,
-            OccurrenceId = rig.Intent.OccurrenceId, StableFlowDispatchKey = rig.Intent.StableFlowDispatchKey,
-            IntentJson = JsonSerializer.Serialize(rig.Intent)
-        });
-        db.MonitoringEvidenceStreams.Add(new()
-        {
-            TenantId = rig.Client.TenantId, AgentId = rig.Client.AgentId, ConnectionId = rig.Fence.ConnectionId,
-            ConnectionEpoch = rig.Fence.ConnectionEpoch, EvidenceStreamId = rig.Fence.EvidenceStreamId, Active = true
-        });
-        db.ClientConnectionEpochs.Add(new() { TenantId = rig.Client.TenantId, AgentId = rig.Client.AgentId, LastIssuedEpoch = rig.Fence.ConnectionEpoch });
-        await db.SaveChangesAsync();
-        var configurations = Proxy<IMonitoringConfigurationStore>((method, _) => method.Name == nameof(IMonitoringConfigurationStore.GetAsync)
-            ? Task.FromResult(new MonitoringConfigurationSnapshot(rig.Client.TenantId, 1, [rig.Rule], [], [], rig.Clock.Now)) : throw new NotSupportedException());
-        var directory = Proxy<IMonitoringClientDirectory>((method, _) => method.Name switch
-        {
-            nameof(IMonitoringClientDirectory.GetCurrentEvidenceAsync) => Task.FromResult<MonitoringEvidenceFence?>(rig.Fence),
-            nameof(IMonitoringAgentEligibility.IsEligibleAsync) => Task.FromResult(true),
-            _ => throw new NotSupportedException()
-        });
-        var clearWhileAwaiting = false;
-        var verifier = Proxy<IFlowExecutionAuthorityVerifier>((_, _) =>
-        {
-            if (clearWhileAwaiting) rig.State = rig.State with
-            {
-                StateRevision = rig.State.StateRevision + 1,
-                Occurrence = rig.State.Occurrence! with { EndedAtUtc = rig.Clock.Now, ClosureDisposition = MonitoringClosureDisposition.ManuallyCleared }
-            };
-            return Task.FromResult(true);
-        });
-        var guard = new MonitoringFlowDispatchGuard(db, rig.Store, configurations, directory, verifier, rig.Clock);
+        var verifier = Proxy<IFlowExecutionAuthorityVerifier>((_, _) => Task.FromResult(true));
+        var guard = new MonitoringFlowDispatchGuard(db, verifier, rig.Clock);
         var input = MonitoringFlowEventFactory.Create(rig.Intent)!;
-        (await guard.CanDispatchAsync(input)).Allowed.Should().BeTrue();
+        // An in-memory provider has no committed owner/acceptance guard and must not grant physical authority.
+        (await guard.CanDispatchAsync(input)).Allowed.Should().BeFalse();
+        MonitoringFlowEventFactory.Matches(input with { TenantId = input.TenantId + 1 }, rig.Intent).Should().BeFalse();
+        MonitoringFlowEventFactory.Matches(input with { Authority = input.Authority with { PrincipalId = "forged" } }, rig.Intent).Should().BeFalse();
         (await guard.CanDispatchAsync(input with { TenantId = input.TenantId + 1 })).Allowed.Should().BeFalse();
         (await guard.CanDispatchAsync(input with { Authority = input.Authority with { PrincipalId = "forged" } })).Allowed.Should().BeFalse();
-        var allocator = await db.ClientConnectionEpochs.SingleAsync();
-        allocator.LastIssuedEpoch++;
-        await db.SaveChangesAsync();
-        (await guard.CanDispatchAsync(input)).Allowed.Should().BeFalse("the issued epoch fences an old presence read model");
-        allocator.LastIssuedEpoch--;
-        await db.SaveChangesAsync();
-        clearWhileAwaiting = true;
-        (await guard.CanDispatchAsync(input)).Allowed.Should().BeFalse();
     }
 
     private sealed class Rig

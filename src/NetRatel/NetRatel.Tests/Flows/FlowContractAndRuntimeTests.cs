@@ -1,5 +1,5 @@
 using System.Text.Json;
-using FluentAssertions;
+using AwesomeAssertions;
 using NetRatel.Application.Flows;
 using NetRatel.Infrastructure.Flows;
 using NetRatel.Shared.Contracts.Flows;

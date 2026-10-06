@@ -105,7 +105,7 @@ public sealed class AgentTerminalGatewayClient : IDisposable
             try
             {
                 ThrowIfPresenceFenceSuperseded(presenceFence);
-                await RunStreamAsync(endpoint, session, presenceFence, accessToken, linked.Token).ConfigureAwait(false);
+                await RunStreamAsync(endpoint, session, presenceFence, session.GetAccessToken(accessToken), linked.Token).ConfigureAwait(false);
                 throw new RpcException(new Status(StatusCode.Unavailable, "Terminal gateway response stream ended."));
             }
             catch (PresenceFenceSupersededException)
@@ -1212,6 +1212,7 @@ public sealed class AgentTerminalGatewayClient : IDisposable
 
         private async Task WriteFrameAsync(AgentTerminalFrame frame, CancellationToken cancellationToken, bool isHello)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             frame.ProtocolVersion = _protocolVersion;
             frame.TenantId = _presence.TenantId;
             frame.ClientId = _presence.AgentId.ToString("D");
@@ -1219,15 +1220,24 @@ public sealed class AgentTerminalGatewayClient : IDisposable
             frame.ConnectionId = _presence.ConnectionId.ToString("D");
             frame.Sequence = isHello ? 0 : checked(++_sequence);
 
-            var write = _stream.WriteAsync(frame);
+            var write = _stream.WriteAsync(frame, cancellationToken);
             try
             {
                 await write.WaitAsync(_writeTimeout, cancellationToken).ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
             }
             catch (TimeoutException)
             {
                 ObserveFaultedWrite(write);
                 throw new IOException("Terminal gateway frame write timed out.");
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                // The physical RPC owns this cancellation. A transport that
+                // finishes aborting later must still have its fault observed,
+                // without delivering callbacks into the retired writer.
+                ObserveFaultedWrite(write);
+                throw;
             }
         }
 

@@ -2,7 +2,7 @@ using System.Diagnostics;
 using System.IO.Compression;
 using System.Reflection;
 using System.Text.Json;
-using FluentAssertions;
+using AwesomeAssertions;
 using NetRatel.Application.Artifacts;
 using NetRatel.API.Services;
 using NetRatel.Client;
@@ -261,6 +261,7 @@ public sealed class WindowsInstallerTemplateTests
     [InlineData(false, true, "")]
     [InlineData(true, false, "")]
     [InlineData(false, false, "https://requested-gateway.example")]
+    [InlineData(false, false, "https://new-api.example")]
     public async Task RenderedSettingsUpdatePreservesLegacyShapeAndRuntimeTunables(bool nested, bool emptyClient, string gateway)
     {
         await WithFixture(async root =>

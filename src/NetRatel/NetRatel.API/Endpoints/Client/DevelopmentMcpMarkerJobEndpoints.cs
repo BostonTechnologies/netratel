@@ -199,10 +199,6 @@ public static class DevelopmentMcpMarkerJobEndpoints
             return Results.Conflict(new { code = "marker_job_authority_unavailable" });
         }
 
-        var cancelledAt = DateTimeOffset.UtcNow;
-        await runs.UpsertRunAsync(new UpsertJobRunCommand(
-            run.Id, run.JobId, run.TenantId, run.ClientIdentity, run.StartedBy, JobRunState.Cancelled,
-            run.CurrentStepOrdinal, run.CreatedAtUtc, run.StartedAtUtc, cancelledAt, "Cancelled", run.InputsJson, run.OptionsJson, run.AgentId), cancellationToken).ConfigureAwait(false);
         await events.RecordAsync(new DomainEvent
         {
             EventType = NetRatelEventTypes.Job.StateChanged,
@@ -211,10 +207,10 @@ public static class DevelopmentMcpMarkerJobEndpoints
             TenantId = tenantId.ToString(),
             EntityId = run.Id.ToString(),
             Severity = "Info",
-            Message = $"Development marker job run {run.Id} cancelled.",
+            Message = $"Development marker job run {run.Id} cancellation requested.",
             Payload = new { jobId, runId, tenantId, agentId, ownershipId = jobRecord.Id }
         }, cancellationToken).ConfigureAwait(false);
-        return Results.Accepted($"{MarkerJobPath(tenantId, agentId, checked((ulong)jobId))}/runs/{run.Id}", new DevelopmentMcpMarkerJobRunDto(checked((ulong)jobId), run.Id, tenantId, agentId, JobRunState.Cancelled.ToString()));
+        return Results.Accepted($"{MarkerJobPath(tenantId, agentId, checked((ulong)jobId))}/runs/{run.Id}", new DevelopmentMcpMarkerJobRunDto(checked((ulong)jobId), run.Id, tenantId, agentId, "CancellationRequested"));
     }
 
     private static async Task<IResult> DeleteAsync(

@@ -2,7 +2,7 @@ using System.Net;
 using System.Globalization;
 using System.Text.Json;
 using Bunit;
-using FluentAssertions;
+using AwesomeAssertions;
 using Microsoft.AspNetCore.Components;
 using Microsoft.Extensions.DependencyInjection;
 using MudBlazor;

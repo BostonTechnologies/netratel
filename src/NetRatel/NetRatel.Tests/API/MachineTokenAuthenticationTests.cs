@@ -1,4 +1,4 @@
-using FluentAssertions;
+using AwesomeAssertions;
 using Microsoft.IdentityModel.Tokens;
 using NetRatel.API.Security;
 using System.IdentityModel.Tokens.Jwt;

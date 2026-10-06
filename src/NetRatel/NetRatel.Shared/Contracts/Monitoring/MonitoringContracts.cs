@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Text.Json.Serialization;
 using NetRatel.Shared.Contracts.Services;
 
 namespace NetRatel.Shared.Contracts.Monitoring;
@@ -45,19 +46,24 @@ public sealed record MonitoringSeriesKey(int TenantId, Guid RuleId, Guid AgentId
 /// <summary>Supplied only after the existing authenticated telemetry admission/sequence checks succeed.</summary>
 public sealed record MonitoringAcceptedCursor(long ConnectionEpoch, ulong Sequence);
 
+/// <summary>One immutable physical per-disk collection; its identity does not order collections.</summary>
+public sealed record MonitoringDiskCollectionStamp(Guid CollectionId, DateTimeOffset CollectedAtUtc, string PayloadFingerprint);
+
 /// <summary>CPU/percent values are percentages; absolute disk values and resolution are canonical bytes.</summary>
 public sealed record MonitoringObservationDto(
     MonitoringSeriesKey Series, MonitoringAcceptedCursor Cursor, Guid EvidenceStreamId,
     DateTimeOffset ObservedAtUtc, DateTimeOffset ReceivedAtUtc,
     bool Complete, bool Supported, double? NumericValue = null, double NumericResolution = 0,
     ClientServiceState? ServiceState = null, bool AuthoritativeMissing = false,
-    ulong? ServiceWatchPolicyRevision = null, ulong? CurrentServiceWatchPolicyRevision = null);
+    ulong? ServiceWatchPolicyRevision = null, ulong? CurrentServiceWatchPolicyRevision = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] MonitoringDiskCollectionStamp? DiskCollection = null);
 
 public sealed record MonitoringEvidenceDto(
     MonitoringAcceptedCursor Cursor, Guid EvidenceStreamId, DateTimeOffset ObservedAtUtc, DateTimeOffset ReceivedAtUtc,
     MonitoringEvidenceQuality Quality, MonitoringClassification Classification,
     double? NumericValue, double NumericResolution, ClientServiceState? ServiceState,
-    string? UnknownReason = null);
+    string? UnknownReason = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] MonitoringDiskCollectionStamp? DiskCollection = null);
 
 /// <summary>An immutable occurrence keeps its original condition/action version even after a rename or action edit.</summary>
 public sealed record MonitoringOccurrenceDto(
@@ -81,7 +87,10 @@ public sealed record MonitoringSeriesState(
     MonitoringOccurrenceDto? Occurrence = null,
     DateTimeOffset? NotBeforeObservedAtUtc = null, DateTimeOffset? NotBeforeReceivedAtUtc = null,
     bool Suppressed = false, ImmutableArray<Guid> ApplicableBypassIds = default,
-    string EvaluationFingerprint = "", Guid? EvidenceStreamId = null);
+    string EvaluationFingerprint = "", Guid? EvidenceStreamId = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] MonitoringDiskCollectionStamp? LastDiskCollection = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] DateTimeOffset? WindowStartedObservedAtUtc = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] DateTimeOffset? LastDiskTransportReceivedAtUtc = null);
 
 public sealed record MonitoringBypassDto(
     Guid BypassId, int TenantId, Guid? RuleId, Guid? AgentId, string? ResourceKey,

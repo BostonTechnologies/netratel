@@ -19,7 +19,10 @@ Native Client archives are self-contained and platform-specific.
 3. Copy `.env.images.example` to `.env`. A promoted bundle supplies image digests;
    retain these. Replace the database password; leave the OIDC settings empty
    for local-account mode, or set them for a deliberately configured OIDC or
-   hybrid deployment.
+   hybrid deployment. Set `NETRATEL_PUBLIC_ORIGIN` and
+   `NETRATEL_PUBLIC_GATEWAY_ORIGIN` to the actual public HTTPS origins, or leave
+   both blank for a base deployment whose addresses will be set on Branding.
+   For a shared ingress, explicitly set both variables to the same origin.
 4. Generate the API signing key in this directory:
 
    ```sh
@@ -67,6 +70,18 @@ subnet, and set `NETRATEL_ALLOW_INSECURE_LOCALHOST=false`. Include
 The overlay configures the trusted proxy, allowed host, secure cookies, API's
 exact bootstrap origin, and shared key-ring application identity. Never trust
 arbitrary forwarded hosts.
+
+Before generating client installers, configure both **Site URL** and **Gateway
+URL** on `/admin/branding`, or through the API options `Branding__SiteUrl` and
+`Branding__GatewayUrl`. Compose maps the two public-origin variables to these
+options; deployment-owned fields are locked in the editor. Gateway URL is the
+public HTTPS native HTTP/2 origin. Ingress forwards it to private h2c
+`api:9223`; clients must receive the public address. New installers include
+both addresses even when they share a host. Generate a fresh protected link
+after changing addresses; previously issued links keep their original script.
+For standalone Client Docker deployments, set
+`NetRatelCLIENT__Client__ApiBaseUrl` and `NetRatelCLIENT__Gateway__Endpoint`.
+See [configuration](docs/CONFIGURATION.md) for precedence and split REST hosts.
 
 Optional HTTP MCP is not enabled by default. Its external-OIDC mode requires
 separate OIDC audience, scope, group and target API configuration in `.env`.

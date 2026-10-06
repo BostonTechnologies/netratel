@@ -1,4 +1,4 @@
-using FluentAssertions;
+using AwesomeAssertions;
 using Grpc.Core;
 using Microsoft.Extensions.Logging.Abstractions;
 using NetRatel.API.Gateway;
