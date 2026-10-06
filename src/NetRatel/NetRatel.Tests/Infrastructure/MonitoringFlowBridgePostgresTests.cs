@@ -3,6 +3,7 @@ using System.Text.Json;
 using Akka.Actor;
 using AwesomeAssertions;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -621,6 +622,167 @@ public sealed class MonitoringFlowBridgePostgresTests(PostgreSqlPersistenceFixtu
         }
     }
 
+    [Fact]
+    public async Task DirectStartActionRollsBackSavedDispatchingWhenOriginalOwnerDeadlineExpiresBeforeCommit()
+    {
+        using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+        await using var rig = await Rig.CreateAsync(postgres);
+        await rig.FireAsync();
+        var outboxLease = await rig.ClaimAsync();
+        (await rig.Bridge.ProcessLeaseAsync(outboxLease, budget.Token)).Should().BeTrue();
+        var store = rig.Provider.GetRequiredService<IFlowExecutionStore>();
+        var lease = (await store.ClaimAsync(Guid.NewGuid(), budget.Token))!;
+        lease.Should().NotBeNull();
+        FlowIncidentActionDraft? draft = null;
+        var captured = await rig.Provider.GetRequiredService<IFlowRuntimeAdapter>().ExecuteAsync(lease, (value, token) =>
+        {
+            token.ThrowIfCancellationRequested();
+            draft = value;
+            return Task.FromResult(new FlowIncidentActionResult(FlowIncidentActionResultKind.Failed, "capture-only"));
+        }, budget.Token);
+        captured.Status.Should().Be(FlowRunStatus.Failed);
+        draft.Should().NotBeNull();
+        (await store.GetOrCreateActionAsync(lease, draft!, budget.Token))!.Status.Should().Be(FlowActionStatus.Pending);
+        var preparation = await rig.Dispatcher.PrepareAsync(draft!, budget.Token);
+        preparation.Status.Should().Be(FlowIncidentPreparationStatus.Ready);
+        preparation.Action.Should().NotBeNull();
+        (await store.SavePreparedActionAsync(lease, draft!.ActionNodeId, preparation.Action!, budget.Token)).Should().BeTrue();
+        var ownership = rig.Provider.GetRequiredService<IClientConnectionEpochStore>();
+        var originalOwner = (await ownership.GetCurrentAsync(rig.Client, budget.Token))!;
+        originalOwner.IsEffective(rig.Clock.GetUtcNow()).Should().BeTrue();
+        originalOwner.PresenceExpiresAtUtc.Should().Be(originalOwner.LastReceivedAtUtc.AddSeconds(60));
+        originalOwner.AuthenticationExpiresAtUtc.Should().Be(originalOwner.LastReceivedAtUtc.AddMinutes(10));
+        var afterOriginalDeadline = originalOwner.PresenceExpiresAtUtc.AddTicks(TimeSpan.TicksPerMicrosecond);
+        // FireAsync advanced the existing clock before the Flow lease was claimed:
+        // the unmodified 60-second lease still outlives this original owner deadline.
+        afterOriginalDeadline.Should().BeBefore(lease.ExpiresAtUtc);
+        afterOriginalDeadline.Should().BeBefore(originalOwner.AuthenticationExpiresAtUtc);
+        afterOriginalDeadline.Should().BeBefore(outboxLease.LeaseExpiresAtUtc);
+        await using (var readiness = rig.Provider.CreateAsyncScope())
+        {
+            var db = readiness.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            await using var transaction = await db.Database.BeginTransactionAsync(budget.Token);
+            (await readiness.ServiceProvider.GetRequiredService<IFlowTransactionAdmission>()
+                .CanStartActionAsync(db, lease, budget.Token)).Allowed.Should().BeTrue();
+            await transaction.RollbackAsync(budget.Token);
+        }
+        var original = await CaptureAsync();
+        var pause = new PauseSavedDispatching(rig.Client.TenantId, lease.RunId, draft.ActionNodeId);
+        await using var writer = rig.NewProvider(pause);
+        var starting = writer.GetRequiredService<IFlowExecutionStore>()
+            .StartActionAsync(lease, draft.ActionNodeId, budget.Token);
+        try
+        {
+            await pause.Entered.Task.WaitAsync(budget.Token);
+            pause.TransactionId.Should().NotBe(Guid.Empty);
+            pause.SavedAttempts.Should().Be(1);
+            starting.IsCompleted.Should().BeFalse();
+            // A separate context sees only the committed Pending action while
+            // the real SavedChangesAsync continuation still owns its transaction.
+            (await CaptureAsync()).Should().Be(original);
+            rig.Clock.Advance(afterOriginalDeadline - rig.Clock.GetUtcNow());
+            rig.Clock.GetUtcNow().Should().Be(afterOriginalDeadline);
+            lease.ExpiresAtUtc.Should().BeAfter(rig.Clock.GetUtcNow());
+            outboxLease.LeaseExpiresAtUtc.Should().BeAfter(rig.Clock.GetUtcNow());
+            originalOwner.AuthenticationExpiresAtUtc.Should().BeAfter(rig.Clock.GetUtcNow());
+        }
+        finally
+        {
+            pause.Resume.TrySetResult();
+            // Observe the actual continuation before disposing its scoped provider,
+            // including when an assertion above fails or the finite budget cancels.
+            await starting;
+        }
+        var started = await starting;
+        if (started is { Status: FlowActionStatus.Dispatching, Request: { } request })
+            await rig.Dispatcher.DispatchAsync(request, budget.Token);
+        started.Should().BeNull();
+        pause.Calls.Should().Be(1);
+        rig.Dispatcher.Preparations.Should().Be(1);
+        rig.Dispatcher.Sends.Should().Be(0);
+        rig.Ingress.Enqueues.Should().Be(1);
+        (await CaptureAsync()).Should().Be(original);
+        var currentOwner = (await ownership.GetCurrentAsync(rig.Client, budget.Token))!;
+        currentOwner.Should().BeEquivalentTo(originalOwner with { Active = false });
+        currentOwner.Active.Should().BeFalse();
+        currentOwner.IsEffective(rig.Clock.GetUtcNow()).Should().BeFalse();
+        await using (var current = rig.Provider.CreateAsyncScope())
+        {
+            var db = current.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            var action = await db.FlowActions.AsNoTracking().SingleAsync(budget.Token);
+            action.Status.Should().Be(FlowActionStatus.Pending);
+            action.Attempts.Should().Be(0);
+            action.ReceiptJson.Should().BeNull();
+            (await db.MonitoringEvidenceStreams.AsNoTracking().SingleAsync(budget.Token)).Active.Should().BeTrue();
+            (await db.ClientConnectionOwners.AsNoTracking().SingleAsync(budget.Token)).Active.Should().BeTrue();
+            (await current.ServiceProvider.GetRequiredService<IFlowExecutionAuthorityVerifier>()
+                .AuthorizeAsync(lease.Event.TenantId, lease.Event.Authority, budget.Token)).Should().BeTrue();
+            await using var transaction = await db.Database.BeginTransactionAsync(budget.Token);
+            var denial = await current.ServiceProvider.GetRequiredService<IFlowTransactionAdmission>()
+                .CanStartActionAsync(db, lease, budget.Token);
+            denial.Allowed.Should().BeFalse();
+            denial.Code.Should().Be("monitoring-owner-unavailable");
+            await transaction.RollbackAsync(budget.Token);
+        }
+
+        async Task<string> CaptureAsync()
+        {
+            await using var scope = rig.Provider.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            // Fresh independent reads compare all persisted scalar columns,
+            // including original deadlines, run/action attempts and receipt/history.
+            return JsonSerializer.Serialize(new
+            {
+                Definition = await db.FlowDefinitions.AsNoTracking().SingleAsync(budget.Token),
+                Version = await db.FlowVersions.AsNoTracking().SingleAsync(budget.Token),
+                Run = await db.FlowRuns.AsNoTracking().SingleAsync(budget.Token),
+                Action = await db.FlowActions.AsNoTracking().SingleAsync(budget.Token),
+                Source = await db.FlowRuntimeIdentity.AsNoTracking().SingleAsync(budget.Token),
+                Outbox = await db.MonitoringFlowOutbox.AsNoTracking().SingleAsync(budget.Token),
+                Series = await db.MonitoringSeries.AsNoTracking().SingleAsync(budget.Token),
+                Event = await db.MonitoringEvents.AsNoTracking().SingleAsync(budget.Token),
+                Occurrence = await db.MonitoringOccurrences.AsNoTracking().SingleAsync(budget.Token),
+                Audits = await db.FlowAudits.AsNoTracking().OrderBy(row => row.Id).ToListAsync(budget.Token),
+                Evidence = await db.MonitoringEvidenceStreams.AsNoTracking().SingleAsync(budget.Token),
+                Owner = await db.ClientConnectionOwners.AsNoTracking().SingleAsync(budget.Token)
+            });
+        }
+    }
+
+    private sealed class PauseSavedDispatching(int tenantId, Guid runId, Guid nodeId) : SaveChangesInterceptor
+    {
+        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Resume { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public Guid TransactionId { get; private set; }
+        public int SavedAttempts { get; private set; }
+        public int Calls { get; private set; }
+
+        public override async ValueTask<int> SavedChangesAsync(SaveChangesCompletedEventData eventData, int result,
+            CancellationToken cancellationToken = default)
+        {
+            if (eventData.Context is not OrchestratorDbContext db ||
+                !db.ChangeTracker.Entries<FlowActionRecord>().Any(entry => entry.Entity.TenantId == tenantId &&
+                    entry.Entity.RunId == runId && entry.Entity.NodeId == nodeId &&
+                    entry.Entity.Status == FlowActionStatus.Dispatching)) return result;
+            var transaction = db.Database.CurrentTransaction;
+            transaction.Should().NotBeNull();
+            TransactionId = transaction!.TransactionId;
+            result.Should().Be(1);
+            // Read the actual row after PostgreSQL accepted UPDATE, within the
+            // very same still-open transaction: an in-memory mutation is insufficient.
+            var saved = await db.FlowActions.AsNoTracking().SingleAsync(row => row.TenantId == tenantId &&
+                row.RunId == runId && row.NodeId == nodeId, cancellationToken);
+            saved.Status.Should().Be(FlowActionStatus.Dispatching);
+            saved.Attempts.Should().Be(1);
+            saved.ReceiptJson.Should().BeNull();
+            SavedAttempts = saved.Attempts;
+            Calls++;
+            Entered.TrySetResult();
+            await Resume.Task.WaitAsync(cancellationToken);
+            return result;
+        }
+    }
+
     private sealed class PauseAuthority(IFlowExecutionAuthorityVerifier actual) : IFlowExecutionAuthorityVerifier
     {
         public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -710,13 +872,17 @@ public sealed class MonitoringFlowBridgePostgresTests(PostgreSqlPersistenceFixtu
             return rig;
         }
 
-        public ServiceProvider NewProvider()
+        public ServiceProvider NewProvider(IInterceptor? interceptor = null)
         {
             var services = new ServiceCollection().AddLogging();
             services.AddSingleton<TimeProvider>(Clock);
             services.AddSingleton(new OwnershipPolicy(TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(60), TimeSpan.FromSeconds(10)));
             services.AddSingleton<IConfiguration>(new ConfigurationBuilder().Build());
-            services.AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(Connection));
+            services.AddDbContext<OrchestratorDbContext>(options =>
+            {
+                options.UseNpgsql(Connection);
+                if (interceptor is not null) options.AddInterceptors(interceptor);
+            });
             services.AddDbContext<NetRatelIdentityDbContext>(options => options.UseNpgsql(Connection));
             services.AddScoped<IEffectiveAccessService, EffectiveAccessService>();
             services.AddSingleton(Evidence);
