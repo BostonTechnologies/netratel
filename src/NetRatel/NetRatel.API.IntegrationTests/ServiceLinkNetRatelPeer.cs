@@ -22,7 +22,7 @@ namespace NetRatel.API.IntegrationTests.ServiceLinks;
 /// <summary>The complete NetRatel Production application, real PostgreSQL, and real administrator cookies.</summary>
 internal sealed class ServiceLinkNetRatelPeer : IAsyncDisposable
 {
-    private readonly global::ApiFactory databaseOwner = new();
+    private readonly global::ApiFactory databaseOwner = new(isolateServiceLinkHostSettings: true);
     private readonly Dictionary<string, string?> configuration;
     private readonly IInterceptor? interceptor;
     private readonly ServiceLinkNativeListener? nativeListener;

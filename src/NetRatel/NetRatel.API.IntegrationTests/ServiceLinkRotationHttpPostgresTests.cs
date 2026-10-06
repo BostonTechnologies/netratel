@@ -22,7 +22,7 @@ internal sealed record ServiceLinkHistoricalAgePrecondition(int RowsChanged, Gui
     DateTimeOffset OriginalCreatedAtUtc, DateTimeOffset HistoricalCreatedAtUtc, DateTimeOffset OriginalHardExpiryUtc,
     bool AllOtherSecretColumnsUnchanged, bool PrincipalUnchanged);
 
-[Collection(ServiceLinkRealPeerCollection.Name)]
+[Collection(ServiceLinkRotationPeerCollection.Name)]
 public sealed class ServiceLinkRotationHttpPostgresTests
 {
     [Theory]

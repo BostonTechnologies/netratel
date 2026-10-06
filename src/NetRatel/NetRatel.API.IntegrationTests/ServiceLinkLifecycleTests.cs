@@ -21,10 +21,16 @@ using Xunit;
 
 namespace NetRatel.API.IntegrationTests.ServiceLinks;
 
-[CollectionDefinition(Name, DisableParallelization = true)]
+[CollectionDefinition(Name)]
 public sealed class ServiceLinkRealPeerCollection
 {
     public const string Name = "Published RatelDesk reciprocal service links";
+}
+
+[CollectionDefinition(Name)]
+public sealed class ServiceLinkRotationPeerCollection
+{
+    public const string Name = "Published RatelDesk reciprocal service-link rotation";
 }
 
 [Collection(ServiceLinkRealPeerCollection.Name)]
