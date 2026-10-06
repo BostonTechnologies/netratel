@@ -125,6 +125,11 @@ public sealed class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
         }
     }
 
+    // Physical tests copy only ready disposable configuration into private startup
+    // files. Returning this dictionary neither starts an API host nor seeds runtime authority.
+    internal IReadOnlyDictionary<string, string?> PhysicalRuntimeSettings() =>
+        _settings.ToDictionary(x => x.Key, x => x.Value, StringComparer.OrdinalIgnoreCase);
+
     public ApiFactory CreateRuntimeSibling(IReadOnlyDictionary<string, string?> overrides)
     {
         ArgumentNullException.ThrowIfNull(overrides);

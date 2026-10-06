@@ -25,13 +25,13 @@ internal sealed class ServiceLinkPair : IAsyncDisposable
     public ServiceLinkHttpProxy ResponderProxy => NetRatelInitiates ? RatelDesk.Proxy : NetRatel.Proxy;
 
     public static async Task<ServiceLinkPair> CreateAsync(bool netRatelInitiates, IInterceptor? interceptor = null, ServiceLinkNativeListener? nativeListener = null,
-        ServiceLinkRotationTestPolicy? rotationPolicy = null, bool useSystemTime = false)
+        ServiceLinkRotationTestPolicy? rotationPolicy = null, bool useSystemTime = false, bool physicalIncidentMode = false)
     {
         var pair = new ServiceLinkPair { NetRatelInitiates = netRatelInitiates };
         try
         {
             pair.RatelDesk = await ServiceLinkPublishedRatelDeskPeer.CreateAsync(rotationPolicy);
-            pair.NetRatel = await ServiceLinkNetRatelPeer.CreateAsync(pair.RatelDesk.ReachableHost, interceptor, nativeListener, rotationPolicy, useSystemTime);
+            pair.NetRatel = await ServiceLinkNetRatelPeer.CreateAsync(pair.RatelDesk.ReachableHost, interceptor, nativeListener, rotationPolicy, useSystemTime, physicalIncidentMode);
             pair.WriteEvidence("isolated-products-started");
             return pair;
         }
@@ -244,7 +244,11 @@ internal sealed class ServiceLinkPair : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        if (NetRatel is not null) await NetRatel.DisposeAsync();
-        if (RatelDesk is not null) await RatelDesk.DisposeAsync();
+        var failures = new List<Exception>();
+        if (NetRatel is not null) try { await NetRatel.DisposeAsync(); } catch (Exception e) { failures.Add(e); }
+        if (RatelDesk is not null) try { await RatelDesk.DisposeAsync(); } catch (Exception e) { failures.Add(e); }
+        if (failures.Count > 0) throw new AggregateException("Owned reciprocal product cleanup was incomplete.", failures);
     }
+    public bool OwnedCleanupComplete => (NetRatel is null || NetRatel.OwnedCleanupComplete) &&
+        (RatelDesk is null || RatelDesk.OwnedCleanupComplete);
 }

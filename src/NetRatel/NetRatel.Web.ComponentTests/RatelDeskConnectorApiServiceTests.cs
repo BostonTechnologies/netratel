@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using AwesomeAssertions;
 using NetRatel.Shared.Contracts.RatelDesk;
 using NetRatel.Web.Services.RatelDesk;
 using Xunit;
@@ -9,6 +10,27 @@ namespace NetRatel.Web.ComponentTests;
 
 public sealed class RatelDeskConnectorApiServiceTests
 {
+    [Theory]
+    [InlineData("[]", "connector-conflict")]
+    [InlineData("null", "connector-conflict")]
+    [InlineData("42", "connector-conflict")]
+    [InlineData("\"rdk_never_display\"", "connector-conflict")]
+    [InlineData("{\"code\":\"source-identity-conflict\",\"details\":\"rdk_never_display\"}", "source-identity-conflict")]
+    [InlineData("{\"code\":\"identity-revision-conflict\"}", "identity-revision-conflict")]
+    [InlineData("{\"code\":\"rdk_untrusted_code\"}", "connector-conflict")]
+    public async Task Source_adoption_conflicts_only_expose_allowlisted_codes_from_JSON_objects(string response, string expectedCode)
+    {
+        using var transport = new Transport(HttpStatusCode.Conflict, new { })
+        { OverrideContent = new StringContent(response, System.Text.Encoding.UTF8, "application/json") };
+        Func<Task> action = () => new RatelDeskConnectorApiService(transport)
+            .AdoptFlowSourceAsync(4, new(1), CancellationToken.None);
+
+        var error = (await action.Should().ThrowAsync<RatelDeskConnectorApiException>()).Which;
+        error.Code.Should().Be(expectedCode);
+        error.ToString().Should().NotContain("rdk_");
+        transport.Calls.Should().Be(1);
+    }
+
     [Fact]
     public async Task Rotation_uses_exact_tenant_connector_revision_and_dedicated_client_once()
     {

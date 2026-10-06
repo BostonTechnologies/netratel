@@ -10,9 +10,11 @@ public sealed record RatelDeskConnectorConfiguration(
 
 public sealed record RatelDeskConnectorDto(Guid Id, int TenantId, long Revision,
     RatelDeskConnectorConfiguration Configuration, bool HasCredential, long CredentialRevision,
-    bool AutomaticDeliveryAvailable, string AvailabilityCode);
+    bool AutomaticDeliveryAvailable, string AvailabilityCode,
+    RatelDeskConnectorAuthenticationDto? Authentication = null, DateTimeOffset? ReadinessObservedAtUtc = null);
 
-public sealed record SaveRatelDeskConnectorRequest(long ExpectedRevision, RatelDeskConnectorConfiguration Configuration);
+public sealed record SaveRatelDeskConnectorRequest(long ExpectedRevision, RatelDeskConnectorConfiguration Configuration,
+    RatelDeskConnectorAuthenticationDto? Authentication = null);
 public sealed record RotateRatelDeskConnectorCredentialRequest(long ExpectedCredentialRevision, string Credential);
 public enum RatelDeskConnectionTestStatus { MappingValidated, AuthenticationRejected, MappingRejected, Unavailable }
 public sealed record RatelDeskConnectionTestResult(RatelDeskConnectionTestStatus Status, string Code,
@@ -42,3 +44,10 @@ public static class RatelDeskConnectorLimits
     public const int MaximumCategories = 16;
     public const string ReceiverUnavailableCode = "receiver-idempotency-unverified";
 }
+
+public sealed record RatelDeskConnectorAuthenticationDto(string Mode, string? ManagedLinkId = null);
+public sealed record RatelDeskManagedLinkOptionDto(string LinkId, string ReceiverInstanceId, string ApiBaseUrl,
+    string OrganizationId, string CustomerId, long LinkRevision);
+public sealed record RatelDeskConnectorSetupDto(Guid FlowSourceInstanceId, string InstallationInstanceId,
+    string? AdoptedSourceInstanceId, long IdentityRevision, IReadOnlyList<RatelDeskManagedLinkOptionDto> ManagedLinks);
+public sealed record AdoptRatelDeskFlowSourceRequest(long ExpectedIdentityRevision);

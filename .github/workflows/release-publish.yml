@@ -166,6 +166,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      actions: read
     strategy:
       fail-fast: false
       matrix:
@@ -183,6 +184,7 @@ jobs:
     env:
       VERSION: ${{ needs.verify.outputs.version }}
       REVISION: ${{ needs.verify.outputs.revision }}
+      RELEASE_BUILD_RUN_ID: ${{ needs.verify.outputs.run_id }}
       NETRATEL_RELEASE_SOURCE_ROOT: ${{ github.workspace }}/source
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -193,7 +195,7 @@ jobs:
         with:
           ref: ${{ needs.verify.outputs.tag }}
           path: source
-      - name: Build, scan, and push approved image
+      - name: Build, scan, and journal approved image before push
         shell: bash
         run: |
           set -euo pipefail
@@ -210,11 +212,65 @@ jobs:
             --version "$VERSION" --revision "$REVISION"
           bash tools/ci/scan-public-image.sh \
             --image "$tag" --version "$VERSION" --revision "$REVISION"
+          mkdir -p "$RUNNER_TEMP/image-journal" "$RUNNER_TEMP/review-inputs"
+          gh run download "$RELEASE_BUILD_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name "netratel-${VERSION}-linux-x64" \
+            --name "netratel-client-${VERSION}-linux-x64" \
+            --name "netratel-client-${VERSION}-win-x64" \
+            --name "netratel-client-${VERSION}-osx-arm64" \
+            --dir "$RUNNER_TEMP/review-inputs"
+          python3 "$GITHUB_WORKSPACE/tooling/tools/ci/promote-release.py" receipt \
+            --inputs "$RUNNER_TEMP/review-inputs" \
+            --output "$RUNNER_TEMP/image-journal/original-input-receipt.json" \
+            --run-id "$RELEASE_BUILD_RUN_ID"
+          local_config="$(docker image inspect "$tag" --format '{{.Id}}')"
+          python3 "$GITHUB_WORKSPACE/tooling/tools/ci/promote-release.py" image-journal \
+            --inputs "$RUNNER_TEMP/review-inputs" \
+            --receipt "$RUNNER_TEMP/image-journal/original-input-receipt.json" \
+            --output "$RUNNER_TEMP/image-journal/prepared.json" \
+            --component "$component" --phase prepared --local-image-config "$local_config"
+      - name: Preserve authenticated prepared image journal before registry write
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: publication-image-${{ matrix.component }}-prepared-attempt-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/image-journal/prepared.json
+            ${{ runner.temp }}/image-journal/original-input-receipt.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Push approved image and journal exact published digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$NETRATEL_RELEASE_SOURCE_ROOT"
+          test "$(git rev-parse HEAD)" = "$REVISION"
+          component='${{ matrix.component }}'
+          tag="ghcr.io/bostontechnologies/netratel-${component}:${VERSION}"
+          # Recheck immediately before the write; a prepared journal does not
+          # authorize replacing or repairing an existing remote image tag.
+          python3 "$GITHUB_WORKSPACE/tooling/tools/ci/promote-release.py" registry-check \
+            --version "$VERSION" --component "$component"
           docker push "$tag"
           digest="$(docker buildx imagetools inspect "$tag" --format '{{json .Manifest.Digest}}' | tr -d '"')"
           [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
           printf '%s\n' "ghcr.io/bostontechnologies/netratel-${component}@${digest}" \
             > "$RUNNER_TEMP/${component}.digest"
+          cp "$RUNNER_TEMP/${component}.digest" "$RUNNER_TEMP/image-journal/${component}.digest"
+          local_config="$(docker image inspect "$tag" --format '{{.Id}}')"
+          python3 "$GITHUB_WORKSPACE/tooling/tools/ci/promote-release.py" image-journal \
+            --inputs "$RUNNER_TEMP/review-inputs" \
+            --receipt "$RUNNER_TEMP/image-journal/original-input-receipt.json" \
+            --output "$RUNNER_TEMP/image-journal/digest-recorded.json" \
+            --component "$component" --phase digest-recorded \
+            --local-image-config "$local_config" --image-digest "$(cat "$RUNNER_TEMP/${component}.digest")"
+      - name: Preserve image phase evidence after success or failure
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: publication-image-${{ matrix.component }}-result-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/image-journal
+          if-no-files-found: error
+          retention-days: 14
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: promoted-${{ matrix.component }}-digest
@@ -304,6 +360,16 @@ jobs:
             --output "$RUNNER_TEMP/promoted-release" \
             --state "$RUNNER_TEMP/promotion-state.json"
           (cd "$RUNNER_TEMP/promoted-release" && sha256sum -c SHA256SUMS)
+      - name: Preserve exact completed bytes before public asset publication
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: publication-finish-prepared-attempt-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/release-receipt.json
+            ${{ runner.temp }}/promotion-state.json
+            ${{ runner.temp }}/promoted-release
+          if-no-files-found: error
+          retention-days: 14
       - name: Attach and verify public release assets
         shell: bash
         run: |
@@ -316,3 +382,14 @@ jobs:
           gh release download "v${VERSION}" --repo "$GITHUB_REPOSITORY" \
             --dir "$RUNNER_TEMP/public-downloads"
           (cd "$RUNNER_TEMP/public-downloads" && sha256sum -c SHA256SUMS)
+      - name: Preserve exact Finish receipt state and staged bytes after success or failure
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: publication-finish-attempt-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/release-receipt.json
+            ${{ runner.temp }}/promotion-state.json
+            ${{ runner.temp }}/promoted-release
+          if-no-files-found: error
+          retention-days: 14

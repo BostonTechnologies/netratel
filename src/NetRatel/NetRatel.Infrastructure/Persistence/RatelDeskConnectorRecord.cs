@@ -10,4 +10,6 @@ public sealed class RatelDeskConnectorRecord
     public string ConfigurationJson { get; set; } = string.Empty;
     public string? ProtectedCredential { get; set; }
     public long CredentialRevision { get; set; }
+    public string? AuthenticationJson { get; set; }
+    public string? ReadinessJson { get; set; }
 }

@@ -7,7 +7,7 @@ using Npgsql;
 
 namespace NetRatel.Infrastructure.Persistence;
 
-public sealed class RatelDeskConnectorStore(OrchestratorDbContext db) : IRatelDeskConnectorStore
+public sealed class RatelDeskConnectorStore(OrchestratorDbContext db) : IRatelDeskConnectorStore, IRatelDeskConnectorBindingStore, IRatelDeskConnectorReadinessStore
 {
     public async Task<RatelDeskConnectorState?> GetAsync(int tenantId, Guid id, CancellationToken cancellationToken)
     {
@@ -35,12 +35,17 @@ public sealed class RatelDeskConnectorStore(OrchestratorDbContext db) : IRatelDe
             await db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock({733460001}, {state.TenantId})", cancellationToken).ConfigureAwait(false);
         var record = await db.RatelDeskConnectors.SingleOrDefaultAsync(r => r.TenantId == state.TenantId && r.Id == state.Id, cancellationToken).ConfigureAwait(false);
         var configurationJson = JsonSerializer.Serialize(state.Configuration);
+        var authentication = state.Authentication ?? new(RatelDeskAuthenticationMode.ManualApiBearer, null);
+        var authenticationJson = state.Authentication is null ? null : JsonSerializer.Serialize(authentication);
         if (record is null && expectedRowVersion != 0 || record is not null &&
             (record.RowVersion != expectedRowVersion || record.OwnerPrincipalId != state.OwnerPrincipalId || state.Revision < record.Revision || state.CredentialRevision < record.CredentialRevision))
             return false;
         if (record is not null && (state.Revision > record.Revision + 1 ||
             state.Revision == record.Revision && configurationJson != JsonSerializer.Serialize(
                 JsonSerializer.Deserialize<RatelDeskConnectorConfiguration>(record.ConfigurationJson) ?? throw new InvalidOperationException("invalid-connector-record")) ||
+            state.Revision == record.Revision && JsonSerializer.Serialize(authentication) != JsonSerializer.Serialize(
+                record.AuthenticationJson is null ? new RatelDeskConnectorAuthentication(RatelDeskAuthenticationMode.ManualApiBearer, null) :
+                JsonSerializer.Deserialize<RatelDeskConnectorAuthentication>(record.AuthenticationJson) ?? throw new InvalidOperationException("invalid-connector-authentication")) ||
             state.CredentialRevision == record.CredentialRevision && state.ProtectedCredential != record.ProtectedCredential)) return false;
         if (record is null)
         {
@@ -52,6 +57,8 @@ public sealed class RatelDeskConnectorStore(OrchestratorDbContext db) : IRatelDe
         record.ConfigurationJson = configurationJson;
         record.Revision = state.Revision; record.RowVersion = state.RowVersion;
         record.ProtectedCredential = state.ProtectedCredential; record.CredentialRevision = state.CredentialRevision;
+        record.AuthenticationJson = authenticationJson;
+        record.ReadinessJson = state.Readiness is null ? null : JsonSerializer.Serialize(state.Readiness);
         try
         {
             await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
@@ -63,7 +70,26 @@ public sealed class RatelDeskConnectorStore(OrchestratorDbContext db) : IRatelDe
         { db.Entry(record).State = EntityState.Detached; return false; }
     }
 
+    public async Task<RatelDeskConnectorAuthentication> GetAuthenticationAsync(int tenantId, Guid connectorId, CancellationToken ct)
+    {
+        var current = await GetAsync(tenantId, connectorId, ct).ConfigureAwait(false) ?? throw new UnauthorizedAccessException("connector-not-found");
+        return current.Authentication ?? new(RatelDeskAuthenticationMode.ManualApiBearer, null);
+    }
+
+    public Task<bool> SaveReadinessAsync(RatelDeskConnectorState current, RatelDeskReadinessObservation observation, CancellationToken ct)
+    {
+        if (observation.ConnectorRevision != current.Revision || observation.Peer.ConnectorId != current.Id ||
+            observation.Peer.LocalTenantId != current.TenantId) throw new ArgumentException("invalid-connector-readiness");
+        return SaveAsync(current with { RowVersion = checked(current.RowVersion + 1), Readiness = observation }, current.RowVersion, ct);
+    }
+
+    public Task<bool> ClearReadinessAsync(RatelDeskConnectorState current, CancellationToken ct) =>
+        SaveAsync(current with { RowVersion = checked(current.RowVersion + 1), Readiness = null }, current.RowVersion, ct);
+
     private static RatelDeskConnectorState Map(RatelDeskConnectorRecord r) => new(r.Id, r.TenantId, r.Revision, r.RowVersion,
         r.OwnerPrincipalId, JsonSerializer.Deserialize<RatelDeskConnectorConfiguration>(r.ConfigurationJson) ?? throw new InvalidOperationException("invalid-connector-record"),
-        r.ProtectedCredential, r.CredentialRevision);
+        r.ProtectedCredential, r.CredentialRevision,
+        r.AuthenticationJson is null ? null :
+            JsonSerializer.Deserialize<RatelDeskConnectorAuthentication>(r.AuthenticationJson) ?? throw new InvalidOperationException("invalid-connector-authentication"),
+        r.ReadinessJson is null ? null : JsonSerializer.Deserialize<RatelDeskReadinessObservation>(r.ReadinessJson) ?? throw new InvalidOperationException("invalid-connector-readiness"));
 }

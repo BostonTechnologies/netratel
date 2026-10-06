@@ -880,6 +880,7 @@ builder.Services.AddMonitoringFlowBridge();
 builder.Services.AddNetRatelServiceIdentityApi(builder.Configuration);
 builder.Services.AddServiceLinkProtocol(builder.Configuration);
 builder.Services.AddOrchestrationManagedServices();
+builder.Services.AddRatelDeskReceiverAdapter(builder.Configuration);
 builder.Services.AddIdentityCore<LocalUser>(options =>
     {
         options.User.RequireUniqueEmail = true;

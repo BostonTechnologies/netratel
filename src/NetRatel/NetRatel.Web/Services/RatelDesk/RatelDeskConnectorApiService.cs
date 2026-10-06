@@ -12,6 +12,10 @@ public sealed class RatelDeskConnectorApiService(IHttpClientFactory clients) : I
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     public Task<IReadOnlyList<RatelDeskConnectorTenantDto>> GetTenantsAsync(CancellationToken ct) =>
         ReadListAsync<RatelDeskConnectorTenantDto>("/api/v2/connectors/rateldesk/tenants", ct);
+    public Task<RatelDeskConnectorSetupDto> GetSetupAsync(int tenantId, CancellationToken ct) =>
+        SendAsync<RatelDeskConnectorSetupDto>(HttpMethod.Get, Path(tenantId) + "/setup", null, ct);
+    public Task<RatelDeskConnectorSetupDto> AdoptFlowSourceAsync(int tenantId, AdoptRatelDeskFlowSourceRequest request, CancellationToken ct) =>
+        SendAsync<RatelDeskConnectorSetupDto>(HttpMethod.Post, Path(tenantId) + "/setup/source", request, ct);
     public Task<IReadOnlyList<RatelDeskConnectorDto>> ListAsync(int tenantId, CancellationToken ct) =>
         ReadListAsync<RatelDeskConnectorDto>(Path(tenantId), ct);
     public Task<RatelDeskConnectorDto> SaveAsync(int tenantId, Guid id, SaveRatelDeskConnectorRequest request, CancellationToken ct) =>
@@ -49,6 +53,19 @@ public sealed class RatelDeskConnectorApiService(IHttpClientFactory clients) : I
             throw new RatelDeskConnectorApiException(code);
         }
         if (!response.IsSuccessStatusCode)
+        {
+            if (response.StatusCode == HttpStatusCode.Conflict)
+            {
+                try
+                {
+                    using var error = JsonDocument.Parse(await ReadBoundedAsync(response, token).ConfigureAwait(false));
+                    if (error.RootElement.ValueKind == JsonValueKind.Object &&
+                        error.RootElement.TryGetProperty("code", out var value) && value.ValueKind == JsonValueKind.String &&
+                        value.GetString() is "source-identity-conflict" or "identity-revision-conflict")
+                        throw new RatelDeskConnectorApiException(value.GetString()!);
+                }
+                catch (JsonException) { }
+            }
             throw new RatelDeskConnectorApiException(response.StatusCode switch
             {
                 HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden => "access-denied",
@@ -58,6 +75,7 @@ public sealed class RatelDeskConnectorApiService(IHttpClientFactory clients) : I
                 HttpStatusCode.TooManyRequests => "connector-busy",
                 _ => "connector-unavailable"
             });
+        }
         try { return JsonSerializer.Deserialize<T>(await ReadBoundedAsync(response, token).ConfigureAwait(false), JsonOptions) ?? throw new RatelDeskConnectorApiException("invalid-response"); }
         catch (JsonException) { throw new RatelDeskConnectorApiException("invalid-response"); }
     }

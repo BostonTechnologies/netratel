@@ -6,7 +6,8 @@ namespace NetRatel.Application.RatelDesk;
 /// <summary>Credential ciphertext is an internal persistence value and never part of a response DTO or graph.</summary>
 public sealed record RatelDeskConnectorState(Guid Id, int TenantId, long Revision, long RowVersion,
     string OwnerPrincipalId, RatelDeskConnectorConfiguration Configuration, string? ProtectedCredential,
-    long CredentialRevision);
+    long CredentialRevision, RatelDeskConnectorAuthentication? Authentication = null,
+    RatelDeskReadinessObservation? Readiness = null);
 
 public interface IRatelDeskConnectorStore
 {
@@ -57,4 +58,28 @@ public interface IRatelDeskConnectorService
     Task<RatelDeskConnectionTestResult> TestAsync(int tenantId, Guid id, ClaimsPrincipal principal, CancellationToken cancellationToken);
     Task<RatelDeskDryRunResult> DryRunAsync(int tenantId, Guid id, RatelDeskDryRunRequest request,
         ClaimsPrincipal principal, CancellationToken cancellationToken);
+}
+
+/// <summary>Authentication reference only; managed credentials remain in the approved service-link profile.</summary>
+public interface IRatelDeskConnectorBindingStore
+{
+    Task<RatelDeskConnectorAuthentication> GetAuthenticationAsync(int tenantId, Guid connectorId, CancellationToken ct);
+}
+
+public sealed record RatelDeskReadinessObservation(long ConnectorRevision,
+    RatelDeskSemanticPeer Peer, RatelDeskVerifiedCapability Capability, DateTimeOffset TargetValidatedAtUtc);
+public interface IRatelDeskConnectorReadinessStore
+{
+    Task<bool> SaveReadinessAsync(RatelDeskConnectorState current, RatelDeskReadinessObservation observation, CancellationToken ct);
+    Task<bool> ClearReadinessAsync(RatelDeskConnectorState current, CancellationToken ct);
+}
+public interface IRatelDeskConnectorReadiness
+{
+    Task<(bool Available, string Code)> CurrentAsync(RatelDeskConnectorState connector, CancellationToken ct);
+}
+
+public interface IRatelDeskConnectorSetupService
+{
+    Task<RatelDeskConnectorSetupDto> GetAsync(int tenantId, ClaimsPrincipal actor, CancellationToken ct);
+    Task<RatelDeskConnectorSetupDto> AdoptAsync(int tenantId, long expectedIdentityRevision, ClaimsPrincipal actor, CancellationToken ct);
 }

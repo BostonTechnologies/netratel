@@ -1,4 +1,5 @@
 using System.Reflection;
+using AwesomeAssertions;
 using Bunit;
 using Microsoft.AspNetCore.Components;
 using Microsoft.Extensions.DependencyInjection;
@@ -20,8 +21,8 @@ public sealed class RatelDeskConnectorStateTests : AsyncBunitContext
         page.Find("[data-testid='connector-credential']").Input("rdk_synthetic_password_that_must_never_be_rendered");
         Assert.DoesNotContain("rdk_synthetic_password", page.Markup);
         page.Find("[data-testid='connector-test']").Click();
-        page.WaitForAssertion(() => Assert.Contains("read-only lookups", page.Markup));
-        Assert.Contains("Automatic delivery remains unavailable", page.Markup);
+        page.WaitForAssertion(() => Assert.Contains("did not establish receiver delivery readiness", page.Markup));
+        Assert.Contains("Delivery needs a current approved connection", page.Markup);
         page.Find("[data-testid='connector-dry-run']").Click();
         page.WaitForAssertion(() => Assert.Single(page.FindAll("[data-testid='connector-preview']")));
         Assert.Contains("no incident sent", page.Markup, StringComparison.OrdinalIgnoreCase);
@@ -137,6 +138,55 @@ public sealed class RatelDeskConnectorStateTests : AsyncBunitContext
         Assert.NotEqual(Guid.Empty, stableId); Assert.Equal(stableId, api.LastSaveId);
     }
 
+    [Fact]
+    public async Task Only_a_verified_receiver_result_can_enable_the_visible_delivery_state()
+    {
+        var api = new FakeApi { VerifiedReceiver = true }; Services.AddSingleton<IRatelDeskConnectorApiService>(api);
+        var page = Render<RatelDeskConnectors>();
+        page.WaitForAssertion(() => page.FindAll("[data-testid='connector-revisions']").Should().HaveCount(1));
+        await page.InvokeAsync(() => CallAsync(page.Instance, "TestAsync"));
+        Field<RatelDeskConnectorDto>(page.Instance, "_saved").AutomaticDeliveryAvailable.Should().BeTrue();
+        page.Markup.Should().Contain("saved receiver and target passed the authenticated read-only check");
+        api.VerifiedReceiver = false;
+        await page.InvokeAsync(() => CallAsync(page.Instance, "TestAsync"));
+        Field<RatelDeskConnectorDto>(page.Instance, "_saved").AutomaticDeliveryAvailable.Should().BeFalse();
+        page.Markup.Should().Contain("did not establish receiver delivery readiness");
+    }
+
+    [Fact]
+    public async Task Managed_selection_uses_approved_mapping_without_requesting_or_rendering_a_manual_secret()
+    {
+        var api = new FakeApi(); Services.AddSingleton<IRatelDeskConnectorApiService>(api);
+        var page = Render<RatelDeskConnectors>();
+        page.WaitForAssertion(() => page.FindAll("[data-testid='connector-revisions']").Should().HaveCount(1));
+        await page.InvokeAsync(() => CallAsync(page.Instance, "LoadSetupAsync"));
+        page.Find("[data-testid='connector-authentication']").Change("service_link");
+        page.Find("[data-testid='connector-managed-link']").Change("33333333-3333-3333-3333-333333333333");
+        await page.InvokeAsync(() => CallAsync(page.Instance, "SaveAsync"));
+        api.LastAuthentication.Should().Be(new RatelDeskConnectorAuthenticationDto("service_link", "33333333-3333-3333-3333-333333333333"));
+        Field<string>(page.Instance, "_origin").Should().Be("https://desk.example.test/helpdesk");
+        Field<string>(page.Instance, "_organization").Should().Be("approved-org");
+        page.FindAll("[data-testid='connector-credential']").Should().BeEmpty();
+        page.FindAll("[data-testid='connector-rotate']").Should().BeEmpty();
+        await page.InvokeAsync(() => CallAsync(page.Instance, "TestAsync"));
+        api.TestCalls.Should().Be(1); api.RotateCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Producer_setup_displays_distinct_installation_and_Flow_IDs_and_adopts_only_by_revision()
+    {
+        var api = new FakeApi(); Services.AddSingleton<IRatelDeskConnectorApiService>(api);
+        var page = Render<RatelDeskConnectors>();
+        page.WaitForAssertion(() => page.FindAll("[data-testid='connector-revisions']").Should().HaveCount(1));
+        await page.InvokeAsync(() => CallAsync(page.Instance, "LoadSetupAsync"));
+        page.Find("[data-testid='connector-producer']").TextContent.Should().Contain("11111111-1111-1111-1111-111111111111").And.Contain("22222222-2222-2222-2222-222222222222");
+        await page.InvokeAsync(() => CallAsync(page.Instance, "AdoptFlowSourceAsync"));
+        api.LastAdoptRevision.Should().Be(1);
+        var setup = Field<RatelDeskConnectorSetupDto>(page.Instance, "_setup");
+        setup.AdoptedSourceInstanceId.Should().Be(setup.FlowSourceInstanceId.ToString("D"));
+        api.RotateCalls.Should().Be(0); api.TestCalls.Should().Be(0);
+    }
+
     private static T Field<T>(object instance, string name) => (T)instance.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(instance)!;
     private static Task CallAsync(object instance, string name, params object[] arguments) =>
         (Task)instance.GetType().GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(instance, arguments)!;
@@ -147,17 +197,24 @@ public sealed class RatelDeskConnectorStateTests : AsyncBunitContext
         public TaskCompletionSource<RatelDeskConnectorDto>? SaveGate, RotateGate;
         public List<int> ListTenants { get; } = [];
         public int SaveCalls, LastSaveTenant, TestCalls, DryRunCalls, RotateCalls; public Guid LastSaveId;
+        public bool VerifiedReceiver; public RatelDeskConnectorAuthenticationDto? LastAuthentication; public long? LastAdoptRevision;
         public static RatelDeskConnectorDto Connector(int tenant) => new(Guid.Parse($"00000000-0000-0000-0000-{tenant:D12}"), tenant, 7,
             new($"Tenant {tenant} connector", "https://desk.example.test", $"org-{tenant}", $"customer-{tenant}", null, [], new(), true), true, 3, false, RatelDeskConnectorLimits.ReceiverUnavailableCode);
+        public Task<RatelDeskConnectorSetupDto> GetSetupAsync(int tenantId, CancellationToken ct) => Task.FromResult(new RatelDeskConnectorSetupDto(
+            Guid.Parse("11111111-1111-1111-1111-111111111111"), "22222222-2222-2222-2222-222222222222", null, 1,
+            [new("33333333-3333-3333-3333-333333333333", "44444444-4444-4444-4444-444444444444", "https://desk.example.test/helpdesk", "approved-org", "approved-customer", 1)]));
+        public Task<RatelDeskConnectorSetupDto> AdoptFlowSourceAsync(int tenantId, AdoptRatelDeskFlowSourceRequest request, CancellationToken ct)
+        { LastAdoptRevision = request.ExpectedIdentityRevision; return Task.FromResult(new RatelDeskConnectorSetupDto(Guid.Parse("11111111-1111-1111-1111-111111111111"),
+                "22222222-2222-2222-2222-222222222222", "11111111-1111-1111-1111-111111111111", request.ExpectedIdentityRevision + 1, [])); }
         public Task<IReadOnlyList<RatelDeskConnectorTenantDto>> GetTenantsAsync(CancellationToken ct) => Task.FromResult<IReadOnlyList<RatelDeskConnectorTenantDto>>([new(1, "Tenant 1"), new(2, "Tenant 2")]);
         public Task<IReadOnlyList<RatelDeskConnectorDto>> ListAsync(int tenant, CancellationToken ct)
         { ListTenants.Add(tenant); return tenant == 1 && FirstListGate is not null ? FirstListGate.Task : Task.FromResult<IReadOnlyList<RatelDeskConnectorDto>>([Connector(tenant)]); }
         public Task<RatelDeskConnectorDto> SaveAsync(int tenant, Guid id, SaveRatelDeskConnectorRequest request, CancellationToken ct)
-        { SaveCalls++; LastSaveTenant = tenant; LastSaveId = id; return SaveGate?.Task ?? Task.FromResult(Connector(tenant) with { Id = id, Configuration = request.Configuration, Revision = request.ExpectedRevision + 1 }); }
+        { SaveCalls++; LastSaveTenant = tenant; LastSaveId = id; LastAuthentication = request.Authentication; return SaveGate?.Task ?? Task.FromResult(Connector(tenant) with { Id = id, Configuration = request.Configuration, Revision = request.ExpectedRevision + 1, Authentication = request.Authentication, HasCredential = request.Authentication?.Mode != "service_link" }); }
         public Task<RatelDeskConnectorDto> RotateAsync(int tenant, Guid id, RotateRatelDeskConnectorCredentialRequest request, CancellationToken ct)
         { RotateCalls++; return RotateGate?.Task ?? Task.FromResult(Connector(tenant) with { CredentialRevision = request.ExpectedCredentialRevision + 1 }); }
         public Task<RatelDeskConnectionTestResult> TestAsync(int tenant, Guid id, CancellationToken ct)
-        { TestCalls++; return Task.FromResult(new RatelDeskConnectionTestResult(RatelDeskConnectionTestStatus.MappingValidated, "mapping-validated")); }
+        { TestCalls++; return Task.FromResult(new RatelDeskConnectionTestResult(RatelDeskConnectionTestStatus.MappingValidated, VerifiedReceiver ? "receiver-ready" : "mapping-validated", VerifiedReceiver)); }
         public Task<RatelDeskDryRunResult> DryRunAsync(int tenant, Guid id, RatelDeskDryRunRequest request, CancellationToken ct)
         { DryRunCalls++; return Task.FromResult(new RatelDeskDryRunResult(new("<script>Plain text</script>", "Sanitized preview", 1, "customer", "org", null, []), "fingerprint")); }
     }

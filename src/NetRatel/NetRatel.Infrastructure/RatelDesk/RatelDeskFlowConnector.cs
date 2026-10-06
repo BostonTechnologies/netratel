@@ -7,7 +7,7 @@ namespace NetRatel.Infrastructure.RatelDesk;
 
 /// <summary>Preparation is read-only. The #145 flow store persists its exact result before dispatch acquires any side effect.</summary>
 public sealed class RatelDeskFlowConnector(IRatelDeskConnectorStore store, IRatelDeskConnectorAuthorization authorization,
-    IRatelDeskOriginPolicy origins) : IFlowConnectorCatalog, IFlowIncidentActionDispatcher
+    IRatelDeskOriginPolicy origins, IRatelDeskConnectorReadiness? readiness = null) : IFlowConnectorCatalog, IFlowIncidentActionDispatcher
 {
     public async Task<FlowConnectorReferenceDto?> GetAsync(int tenantId, Guid connectorId, FlowExecutionAuthorityDto authority, CancellationToken cancellationToken = default)
     {
@@ -74,8 +74,9 @@ public sealed class RatelDeskFlowConnector(IRatelDeskConnectorStore store, IRate
     private async Task<FlowConnectorReferenceDto> ReferenceAsync(RatelDeskConnectorState state, CancellationToken cancellationToken)
     {
         var usable = await IsUsableAsync(state, cancellationToken).ConfigureAwait(false);
-        return new(state.Id, state.TenantId, state.Configuration.Name, state.Configuration.Enabled, false,
-            usable ? RatelDeskConnectorLimits.ReceiverUnavailableCode : "connector-disabled-or-owner-denied", state.Revision);
+        var current = readiness is null ? (Available: false, Code: usable ? RatelDeskConnectorLimits.ReceiverUnavailableCode : "connector-disabled-or-owner-denied") :
+            await readiness.CurrentAsync(state, cancellationToken).ConfigureAwait(false);
+        return new(state.Id, state.TenantId, state.Configuration.Name, state.Configuration.Enabled, current.Available, current.Code, state.Revision);
     }
     private Task<bool> AllowedAsync(FlowExecutionAuthorityDto authority, int tenantId, CancellationToken cancellationToken) =>
         authorization.CanExecuteAsync(authority.PrincipalId, authority.IntegrationCredentialId, tenantId, cancellationToken);

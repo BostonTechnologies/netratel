@@ -8,7 +8,7 @@ using NetRatel.Shared.ServiceLinks;
 namespace NetRatel.API.IntegrationTests.ServiceLinks;
 
 /// <summary>Runs the published companion API/Web, without building or impersonating RatelDesk.</summary>
-internal sealed class ServiceLinkPublishedRatelDeskPeer : IAsyncDisposable
+internal sealed partial class ServiceLinkPublishedRatelDeskPeer : IAsyncDisposable
 {
     public const string PublishedSource = "a3017363d22205a6897087c0e7fed7b541a5d5d9";
     public const string PublishedVersion = "0.1.1-beta.14";
@@ -430,11 +430,12 @@ internal sealed class ServiceLinkPublishedRatelDeskPeer : IAsyncDisposable
         return evidence;
     }
 
-    private Task<string> ComposeAsync(string[] arguments) => DockerAsync(["compose", "-p", project, "-f", composeFile, .. arguments]);
+    private Task<string> ComposeAsync(string[] arguments, CancellationToken ct = default) => DockerAsync(["compose", "-p", project, "-f", composeFile, .. arguments], ct: ct);
 
-    private static async Task<string> DockerAsync(string[] arguments, TimeSpan? operationBudget = null, bool includeStandardError = false)
+    private static async Task<string> DockerAsync(string[] arguments, TimeSpan? operationBudget = null, bool includeStandardError = false, CancellationToken ct = default)
     {
-        using var timeout = new CancellationTokenSource(operationBudget ?? TimeSpan.FromMinutes(3));
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(operationBudget ?? TimeSpan.FromMinutes(3));
         var start = new ProcessStartInfo("docker") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
         foreach (var name in new[] { "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_TLS", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH" }) start.Environment.Remove(name);
         start.ArgumentList.Add("--host=unix:///var/run/docker.sock");
@@ -470,7 +471,10 @@ internal sealed class ServiceLinkPublishedRatelDeskPeer : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        Administrator?.Dispose(); Anonymous?.Dispose();
+        if (OwnedCleanupComplete) return;
+        var failures = new List<Exception>();
+        try { Administrator?.Dispose(); } catch (Exception e) { failures.Add(e); }
+        try { Anonymous?.Dispose(); } catch (Exception e) { failures.Add(e); }
         if (File.Exists(composeFile))
         {
             // An explicit private diagnostic run also retains failures after startup.
@@ -479,10 +483,22 @@ internal sealed class ServiceLinkPublishedRatelDeskPeer : IAsyncDisposable
                 try { await CapturePrivateFailureDiagnosticsAsync(); }
                 catch { /* Optional diagnostic capture must not prevent owned cleanup. */ }
             }
-            try { await ComposeAsync(["down", "--volumes", "--remove-orphans"]); }
-            finally { File.Delete(composeFile); }
+            try
+            {
+                await ComposeAsync(["down", "--volumes", "--remove-orphans"]);
+                // Keep exact compose ownership/private input after failed down.
+                // A later bounded dispose must still address the same stack.
+                File.Delete(composeFile);
+            }
+            catch (Exception e) { failures.Add(e); }
         }
-        await Proxy.DisposeAsync();
-        if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        if (!cleanupProxyDisposed)
+            try { await Proxy.DisposeAsync(); cleanupProxyDisposed = true; } catch (Exception e) { failures.Add(e); }
+        if (!File.Exists(composeFile))
+            try { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); } catch (Exception e) { failures.Add(e); }
+        OwnedCleanupComplete = failures.Count == 0 && cleanupProxyDisposed && !File.Exists(composeFile) && !Directory.Exists(root);
+        if (!OwnedCleanupComplete) throw new AggregateException("Owned RatelDesk cleanup was incomplete.", failures);
     }
+    private bool cleanupProxyDisposed;
+    public bool OwnedCleanupComplete { get; private set; }
 }

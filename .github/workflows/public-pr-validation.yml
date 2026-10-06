@@ -57,12 +57,15 @@ jobs:
         run: |
           set -euo pipefail
           export NETRATEL_DOTNET_SDK_VERSION="$(dotnet --version)"
-          mkdir -p TestResults/gateway-transport
-          rm -f TestResults/gateway-transport/profile.exit
+          mkdir -p TestResults/gateway-transport TestResults/physical-disk-incident TestResults/ci-probe-exits
+          # Clear only shell-owned completion markers; the physical wrapper retains its
+          # existing refusal to accept or delete stale physical TRX/JSON evidence.
+          rm -f TestResults/gateway-transport/profile.exit TestResults/physical-disk-incident/profile.exit TestResults/ci-probe-exits/{gateway,generic,physical}.exit
           gateway_pid=''
           generic_pid=''
+          physical_pid=''
           cleanup() {
-            for owned_pid in "$gateway_pid" "$generic_pid"; do
+            for owned_pid in "$gateway_pid" "$generic_pid" "$physical_pid"; do
               [[ -n "$owned_pid" ]] || continue
               # Only active jobs still owned by this shell may be stopped.
               for running_pid in $(jobs -pr); do
@@ -74,40 +77,49 @@ jobs:
             done
             gateway_pid=''
             generic_pid=''
-            if [[ -f TestResults/gateway-transport/profile.log ]]; then
-              cat TestResults/gateway-transport/profile.log
-            fi
+            physical_pid=''
+            for owned_log in TestResults/gateway-transport/profile.log TestResults/physical-disk-incident/profile.log; do
+              if [[ -f "$owned_log" ]]; then cat "$owned_log"; fi
+            done
           }
           trap cleanup EXIT
           trap 'exit 130' INT
           trap 'exit 143' TERM
-          # Each child has its own process group; both use the prebuilt source.
+          # Each child has its own process group. Tests use the same prebuilt source;
+          # the physical wrapper builds and verifies its full Client from this checkout.
           setsid bash tools/ci/tests/traefik-gateway-routing.sh > TestResults/gateway-transport/profile.log 2>&1 &
           gateway_pid=$!
           setsid dotnet test --solution NetRatel.sln --configuration Release --no-build --max-parallel-test-modules 1 --filter-not-trait category=compose category=hosted --results-directory TestResults --report-trx --report-trx-filename "netratel-tests-{asm}_{tfm}_{arch}.trx" &
           generic_pid=$!
-          for completion in 1 2; do
-            pending_pids=()
-            if [[ -n "$gateway_pid" ]]; then pending_pids+=("$gateway_pid"); fi
-            if [[ -n "$generic_pid" ]]; then pending_pids+=("$generic_pid"); fi
-            if wait -n -p completed_pid "${pending_pids[@]}"; then
+          setsid bash tools/ci/run-physical-disk-incident-proof.sh > TestResults/physical-disk-incident/profile.log 2>&1 &
+          physical_pid=$!
+          overall_status=0
+          # Waiting in this fixed order does not serialize children already running.
+          # Reap every actual outcome before returning an ordinary child failure so owned
+          # physical cleanup can finish and all three outcomes remain inspectable.
+          for probe in gateway generic physical; do
+            pid_variable="${probe}_pid"
+            owned_pid="${!pid_variable}"
+            if wait "$owned_pid"; then
               completed_status=0
             else
               completed_status=$?
             fi
-            # Clear ownership immediately after reaping, before any failure cleanup.
-            if [[ "$completed_pid" == "$gateway_pid" ]]; then
-              gateway_pid=''
-            elif [[ "$completed_pid" == "$generic_pid" ]]; then
-              generic_pid=''
-            else
-              echo 'An expected CI probe completion was not observed.' >&2
-              exit 1
+            # Clear ownership immediately after reaping, before any later cleanup.
+            printf -v "$pid_variable" '%s' ''
+            if ! printf '%s\n' "$completed_status" > "TestResults/ci-probe-exits/${probe}.exit"; then
+              # A summary write failure is also fatal, but does not stop sibling teardown.
+              if [[ "$overall_status" -eq 0 ]]; then overall_status=1; fi
             fi
-            if [[ "$completed_status" -ne 0 ]]; then exit "$completed_status"; fi
+            printf 'CI child %s completed with exit %s.\n' "$probe" "$completed_status"
+            if [[ "$completed_status" -ne 0 && "$overall_status" -eq 0 ]]; then
+              overall_status=$completed_status
+            fi
           done
-          # This is written only after both actual commands have completed successfully.
+          if [[ "$overall_status" -ne 0 ]]; then exit "$overall_status"; fi
+          # These are written only after all three actual commands have succeeded.
           printf '%s\n' 0 > TestResults/gateway-transport/profile.exit
+          printf '%s\n' 0 > TestResults/physical-disk-incident/profile.exit
       - name: Exercise sustained native gateway through the reviewed ingress profile
         run: test "$(cat TestResults/gateway-transport/profile.exit)" = 0
       - name: Require generic test execution receipts
@@ -161,6 +173,18 @@ jobs:
           NETRATEL_REVIEW_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           NETRATEL_REVIEW_TEST_MERGE_SHA: ${{ github.sha }}
         run: python3 tools/ci/verify-service-link-native-evidence.py --reports TestResults --evidence TestResults/service-link-proof
+      - name: Require actual full Client physical disk incident proof
+        env:
+          NETRATEL_REVIEW_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          NETRATEL_REVIEW_TEST_MERGE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(cat TestResults/physical-disk-incident/profile.exit)" = 0
+          test -s TestResults/physical-disk-incident/physical-disk-incident.trx
+          shopt -s nullglob
+          physical_proof_files=(TestResults/physical-disk-incident/disk-incident-*.json)
+          test "${#physical_proof_files[@]}" -eq 1
+          test -s "${physical_proof_files[0]}"
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

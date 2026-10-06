@@ -33,7 +33,7 @@ public sealed class RatelDeskConnectorResponsiveTests(ClientsManagementBrowserFi
         foreach (var id in new[] { "connector-tenant", "connector-save", "connector-credential", "connector-test", "connector-dry-run" })
             await ReachableAsync(page.GetByTestId(id), width, height);
         await page.GetByTestId("connector-test").ClickAsync();
-        await Assertions.Expect(page.GetByTestId("connector-notice")).ToContainTextAsync("read-only lookups");
+        await Assertions.Expect(page.GetByTestId("connector-notice")).ToContainTextAsync("did not establish receiver delivery readiness");
         await page.GetByTestId("connector-dry-run").ClickAsync();
         await Assertions.Expect(page.GetByTestId("connector-preview")).ToContainTextAsync("no incident sent");
         Assert.Equal(1, _fixture!.ConnectorsData.TestCalls); Assert.Equal(1, _fixture.ConnectorsData.PreviewCalls);
@@ -159,6 +159,11 @@ internal sealed class FixtureRatelDeskConnectorApiService : IRatelDeskConnectorA
     public string GetResponseJson => JsonSerializer.Serialize(_connectors.Values);
     public void PreparePendingSave() { SaveStarted = new(TaskCreationOptions.RunContinuationsAsynchronously); _pendingSave = new(TaskCreationOptions.RunContinuationsAsynchronously); }
     public void CompletePendingSave() => _pendingSave?.TrySetResult(true);
+    public Task<RatelDeskConnectorSetupDto> GetSetupAsync(int tenantId, CancellationToken ct) => Task.FromResult(new RatelDeskConnectorSetupDto(
+        Guid.Parse("11111111-1111-1111-1111-111111111111"), "22222222-2222-2222-2222-222222222222", null, 1, []));
+    public Task<RatelDeskConnectorSetupDto> AdoptFlowSourceAsync(int tenantId, AdoptRatelDeskFlowSourceRequest request, CancellationToken ct) =>
+        Task.FromResult(new RatelDeskConnectorSetupDto(Guid.Parse("11111111-1111-1111-1111-111111111111"),
+            "22222222-2222-2222-2222-222222222222", "11111111-1111-1111-1111-111111111111", request.ExpectedIdentityRevision + 1, []));
     public Task<IReadOnlyList<RatelDeskConnectorTenantDto>> GetTenantsAsync(CancellationToken ct) => Task.FromResult<IReadOnlyList<RatelDeskConnectorTenantDto>>([new(17, "Explicit NetRatel tenant 17"), new(23, "Explicit NetRatel tenant 23")]);
     public Task<IReadOnlyList<RatelDeskConnectorDto>> ListAsync(int tenantId, CancellationToken ct) => Task.FromResult<IReadOnlyList<RatelDeskConnectorDto>>([_connectors[tenantId]]);
     public async Task<RatelDeskConnectorDto> SaveAsync(int tenantId, Guid id, SaveRatelDeskConnectorRequest request, CancellationToken ct)

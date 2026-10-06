@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Explicit owner-operated promotion. Never invoked by PR or rehearsal workflows."""
 import argparse
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -339,6 +340,85 @@ def create_input_receipt(inputs, output, run_id, version, revision):
     atomic_json(output, receipt)
 
 
+def write_publication_image_journal(args):
+    """Preserve authenticated image phase evidence; never authorize a resume."""
+    version = product_version()
+    revision = run("git", "rev-parse", "HEAD")
+    tag = f"v{version}"
+    if os.environ.get("GITHUB_ACTIONS") != "true" or \
+            os.environ.get("GITHUB_REPOSITORY") != REPOSITORY:
+        raise ValueError("Publication image journals require this repository's workflow context")
+    if os.environ.get("RELEASE_TAG") != tag or \
+            run("git", "rev-list", "-n", "1", tag) != revision or \
+            run("git", "status", "--porcelain"):
+        raise ValueError("Publication image journal source/tag must identify the clean release checkout")
+    run_id = os.environ.get("GITHUB_RUN_ID", "")
+    attempt = os.environ.get("GITHUB_RUN_ATTEMPT", "")
+    workflow_sha = os.environ.get("GITHUB_SHA", "")
+    if not re.fullmatch(r"[1-9][0-9]*", run_id) or \
+            not re.fullmatch(r"[1-9][0-9]*", attempt) or \
+            not re.fullmatch(r"[a-f0-9]{40}", workflow_sha):
+        raise ValueError("Publication image journal requires an exact workflow run/attempt/source")
+    workflow_ref = os.environ.get("GITHUB_WORKFLOW_REF", "")
+    if not workflow_ref.startswith(REPOSITORY + "/.github/workflows/release-publish.yml@refs/"):
+        raise ValueError("Publication image journal requires the generic publication workflow")
+    current_run = json.loads(run(
+        "gh", "api", f"repos/{REPOSITORY}/actions/runs/{run_id}/attempts/{attempt}"))
+    if (current_run.get("id"), current_run.get("run_attempt"), current_run.get("path"),
+            current_run.get("head_sha"), current_run.get("status"), current_run.get("event")) != (
+            int(run_id), int(attempt), ".github/workflows/release-publish.yml", workflow_sha,
+            "in_progress", os.environ.get("GITHUB_EVENT_NAME")) or \
+            current_run.get("event") not in {"release", "workflow_dispatch"}:
+        raise ValueError("Publication image journal context does not match the authenticated workflow attempt")
+    if not re.fullmatch(r"sha256:[a-f0-9]{64}", args.local_image_config):
+        raise ValueError("Publication image journal requires the scanned local image config ID")
+    repository = IMAGE_REPOSITORIES[args.component]
+    if args.phase == "prepared":
+        if args.image_digest is not None:
+            raise ValueError("A prepared image journal cannot claim a published digest")
+    elif not re.fullmatch(re.escape(repository) + r"@sha256:[a-f0-9]{64}", args.image_digest or ""):
+        raise ValueError("Published image journal digest differs from the fixed repository contract")
+    input_receipt = verified_input_receipt(args.inputs, args.receipt, version, revision)
+    tooling_revision = subprocess.check_output(
+        ("git", "-C", str(Path(__file__).resolve().parents[2]), "rev-parse", "HEAD"),
+        text=True).strip()
+    if not re.fullmatch(r"[a-f0-9]{40}", tooling_revision):
+        raise ValueError("Publication image journal requires the exact public tooling checkout")
+    journal = {
+        "schema": "netratel.publication-image-journal.v1",
+        "phase": args.phase,
+        "recordedAtUtc": datetime.now(timezone.utc).isoformat(),
+        "repository": REPOSITORY,
+        "tag": tag, "version": version, "revision": revision,
+        "component": args.component, "imageRepository": repository,
+        "imageVersionTag": release_image_tag(args.component, version),
+        "scannedLocalImageConfig": args.local_image_config,
+        "imageDigest": args.image_digest,
+        "publication": {"runId": int(run_id), "attempt": int(attempt),
+                        "workflow": ".github/workflows/release-publish.yml",
+                        "workflowRef": workflow_ref, "workflowSourceSha": workflow_sha,
+                        "toolingSourceSha": tooling_revision, "event": current_run["event"]},
+        "inputReceipt": input_receipt,
+        "resumeAuthority": False,
+    }
+    if args.phase == "digest-recorded":
+        prepared_path = args.output.parent / "prepared.json"
+        if prepared_path.is_symlink() or not prepared_path.is_file():
+            raise ValueError("Published digest journal requires its original regular prepared journal")
+        prepared = json.loads(prepared_path.read_text())
+        if not isinstance(prepared, dict):
+            raise ValueError("Prepared publication image journal is not an identity document")
+        expected_prepared = {**journal, "phase": "prepared", "imageDigest": None}
+        expected_prepared["recordedAtUtc"] = prepared.get("recordedAtUtc")
+        if not isinstance(expected_prepared["recordedAtUtc"], str) or prepared != expected_prepared:
+            raise ValueError("Published digest journal differs from the authenticated prepared image identity")
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    # Keep each phase/attempt file immutable; no environment or registry token
+    # is copied into this allowlisted public identity and receipt document.
+    with args.output.open("x") as output:
+        output.write(json.dumps(journal, indent=2) + "\n")
+
+
 def resume_state(path, version, revision, input_receipt):
     state = json.loads(path.read_text()) if path.exists() else {
         "version": version, "revision": revision, "packageNames": dict(PACKAGE_NAMES),
@@ -668,6 +748,14 @@ if __name__ == "__main__":
     registry_check = commands.add_parser("registry-check", help="Verify public GHCR packages and unused release tags")
     registry_check.add_argument("--version", required=True)
     registry_check.add_argument("--component", choices=COMPONENTS)
+    image_journal = commands.add_parser("image-journal", help="Preserve authenticated image phase evidence without authorizing resume")
+    image_journal.add_argument("--inputs", required=True, type=Path)
+    image_journal.add_argument("--receipt", required=True, type=Path)
+    image_journal.add_argument("--output", required=True, type=Path)
+    image_journal.add_argument("--component", required=True, choices=COMPONENTS)
+    image_journal.add_argument("--phase", required=True, choices=("prepared", "digest-recorded"))
+    image_journal.add_argument("--local-image-config", required=True)
+    image_journal.add_argument("--image-digest")
     publication = commands.add_parser("publish", help="Upload missing verified assets to a published release")
     publication.add_argument("--directory", required=True, type=Path)
     publication.add_argument("--tag", required=True)
@@ -690,6 +778,8 @@ if __name__ == "__main__":
                 raise ValueError("Registry check version differs from Directory.Build.props")
             for component in ((args.component,) if args.component else COMPONENTS):
                 require_unused_release_tag(component, args.version)
+        elif args.command == "image-journal":
+            write_publication_image_journal(args)
         else:
             promote(args)
     except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:

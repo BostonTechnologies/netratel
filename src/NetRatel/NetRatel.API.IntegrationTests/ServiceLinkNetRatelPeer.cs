@@ -20,7 +20,7 @@ using NetRatel.Shared.ServiceLinks;
 namespace NetRatel.API.IntegrationTests.ServiceLinks;
 
 /// <summary>The complete NetRatel Production application, real PostgreSQL, and real administrator cookies.</summary>
-internal sealed class ServiceLinkNetRatelPeer : IAsyncDisposable
+internal sealed partial class ServiceLinkNetRatelPeer : IAsyncDisposable
 {
     private readonly global::ApiFactory databaseOwner = new(isolateServiceLinkHostSettings: true);
     private readonly Dictionary<string, string?> configuration;
@@ -29,30 +29,39 @@ internal sealed class ServiceLinkNetRatelPeer : IAsyncDisposable
     private readonly ServiceLinkRotationTestPolicy? rotationPolicy;
     private readonly bool useSystemTime;
     private long? firstSensitiveResponseTimestamp;
+    private readonly bool physicalIncidentMode;
     private readonly int backendPort = ServiceLinkHttpProxy.AllocatePort();
     private readonly int gatewayPort = ServiceLinkHttpProxy.AllocatePort();
     private global::ApiFactory? sibling;
     private WebApplicationFactory<global::Program>? app;
+    private bool ownedCleanupComplete;
+    private bool proxyDisposed;
+    private bool databaseOwnerDisposed;
+    public bool OwnedCleanupComplete => ownedCleanupComplete;
     public HttpClient Administrator { get; private set; } = null!;
     public HttpClient Anonymous { get; private set; } = null!;
-    public IServiceProvider Services => app!.Services;
+    public IServiceProvider Services => physicalIncidentMode ? physicalReadServices! : app!.Services;
     public ServiceLinkHttpProxy Proxy { get; }
     public ServiceLinkTestClock Clock { get; } = new();
     public string BaseUrl => Proxy.BaseUrl;
     public string WebBaseUrl => BaseUrl;
     public Guid InstanceId { get; } = Guid.NewGuid();
     public string TenantId { get; private set; } = "";
-    public Guid SourceInstanceId { get; } = Guid.NewGuid();
+    public Guid SourceInstanceId { get; private set; } = Guid.NewGuid();
     public Guid ResourceId { get; private set; } = Guid.NewGuid();
     public long RequestDefinitionId { get; private set; }
 
     private ServiceLinkNetRatelPeer(string reachableHost, IInterceptor? interceptor, ServiceLinkNativeListener? nativeListener,
-        ServiceLinkRotationTestPolicy? rotationPolicy, bool useSystemTime)
+        ServiceLinkRotationTestPolicy? rotationPolicy, bool useSystemTime, bool physicalIncidentMode)
     {
         this.interceptor = interceptor;
         this.nativeListener = nativeListener;
         this.rotationPolicy = rotationPolicy;
-        this.useSystemTime = useSystemTime;
+        this.useSystemTime = useSystemTime || physicalIncidentMode;
+        this.physicalIncidentMode = physicalIncidentMode;
+        if (physicalIncidentMode && nativeListener is null)
+            throw new InvalidOperationException("A real TLS/HTTP2 listener is required for physical disk acceptance.");
+        if (physicalIncidentMode) SourceInstanceId = Guid.Empty;
         if (nativeListener is not null && (nativeListener.Port == backendPort || nativeListener.Port == gatewayPort || backendPort == gatewayPort))
             throw new InvalidOperationException("The physical listener ports must be independent.");
         Proxy = new($"http://127.0.0.1:{backendPort}", reachableHost);
@@ -77,6 +86,7 @@ internal sealed class ServiceLinkNetRatelPeer : IAsyncDisposable
             ["M2M:AllowedCallerClientIds:0"] = "synthetic-legacy-allowed"
         };
         if (nativeListener is not null) configuration["ServiceLinks:GatewayBaseUrl"] = nativeListener.Endpoint;
+        if (physicalIncidentMode) configuration["TelemetryInteractive:BaselineSlowIntervalSeconds"] = "5";
         if (rotationPolicy is not null)
         {
             configuration["ServiceLinks:AutomaticRotationEnabled"] = (rotationPolicy.Automatic && rotationPolicy.NetRatelIssuer).ToString();
@@ -90,9 +100,9 @@ internal sealed class ServiceLinkNetRatelPeer : IAsyncDisposable
     }
 
     public static async Task<ServiceLinkNetRatelPeer> CreateAsync(string reachableHost, IInterceptor? interceptor = null, ServiceLinkNativeListener? nativeListener = null,
-        ServiceLinkRotationTestPolicy? rotationPolicy = null, bool useSystemTime = false)
+        ServiceLinkRotationTestPolicy? rotationPolicy = null, bool useSystemTime = false, bool physicalIncidentMode = false)
     {
-        var peer = new ServiceLinkNetRatelPeer(reachableHost, interceptor, nativeListener, rotationPolicy, useSystemTime);
+        var peer = new ServiceLinkNetRatelPeer(reachableHost, interceptor, nativeListener, rotationPolicy, useSystemTime, physicalIncidentMode);
         try
         {
             await peer.databaseOwner.InitializeAsync();
@@ -101,12 +111,15 @@ internal sealed class ServiceLinkNetRatelPeer : IAsyncDisposable
             using var tenants = await peer.Administrator.GetFromJsonAsync<System.Text.Json.JsonDocument>("/api/v2/access/tenants");
             peer.TenantId = tenants!.RootElement.EnumerateArray().Single(t => t.GetProperty("name").GetString() == "OpenAPI tenant")
                 .GetProperty("tenantId").GetInt32().ToString(System.Globalization.CultureInfo.InvariantCulture);
-            var identity = await peer.Administrator.GetFromJsonAsync<ServiceLinkIdentityDto>("/api/v1/admin/service-links/identity");
-            peer.firstSensitiveResponseTimestamp = Stopwatch.GetTimestamp();
-            using var adoption = await peer.AdminAsync("/api/v1/admin/service-links/identity/source",
-                new ServiceLinkAdoptSourceRequest(peer.SourceInstanceId.ToString("D"), identity!.Revision));
-            adoption.EnsureSuccessStatusCode();
-            await using (var scope = peer.Services.CreateAsyncScope())
+            if (!physicalIncidentMode)
+            {
+                var identity = await peer.Administrator.GetFromJsonAsync<ServiceLinkIdentityDto>("/api/v1/admin/service-links/identity");
+                peer.firstSensitiveResponseTimestamp = Stopwatch.GetTimestamp();
+                using var adoption = await peer.AdminAsync("/api/v1/admin/service-links/identity/source",
+                    new ServiceLinkAdoptSourceRequest(peer.SourceInstanceId.ToString("D"), identity!.Revision));
+                adoption.EnsureSuccessStatusCode();
+            }
+            if (!physicalIncidentMode) await using (var scope = peer.Services.CreateAsyncScope())
             {
                 var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
                 var tenant = int.Parse(peer.TenantId, System.Globalization.CultureInfo.InvariantCulture);
@@ -126,6 +139,7 @@ internal sealed class ServiceLinkNetRatelPeer : IAsyncDisposable
 
     private async Task StartAsync()
     {
+        if (physicalIncidentMode) { await StartPhysicalProcessAsync(); return; }
         sibling = databaseOwner.CreateRuntimeSibling(configuration);
         app = sibling.WithWebHostBuilder(builder => builder.ConfigureServices(services =>
         {
@@ -209,12 +223,45 @@ internal sealed class ServiceLinkNetRatelPeer : IAsyncDisposable
         throw new InvalidOperationException("The initial sensitive identity route remained throttled after the bounded replenishment check.");
     }
 
-    public async Task RestartAsync()
+    public async Task RestartAsync(CancellationToken ct = default)
     {
+        if (physicalIncidentMode) { await RestartPhysicalProcessesAsync(ct); return; }
         Administrator.Dispose(); Anonymous.Dispose();
         await app!.DisposeAsync();
         sibling!.Dispose();
         await StartAsync();
+    }
+
+    public async Task AdoptActualPhysicalFlowProducerAsync(CancellationToken ct)
+    {
+        if (!physicalIncidentMode || nativeListener is null)
+            throw new InvalidOperationException("Only the unseeded physical fixture may resolve its production Flow source.");
+        var setupPath = $"/api/v2/tenants/{TenantId}/connectors/rateldesk/setup";
+        var before = await Administrator.GetFromJsonAsync<NetRatel.Shared.Contracts.RatelDesk.RatelDeskConnectorSetupDto>(setupPath, ct)
+            ?? throw new InvalidOperationException("The real owner Flow-source setup returned no current identity.");
+        using var request = new HttpRequestMessage(HttpMethod.Post, setupPath + "/source")
+        {
+            Content = JsonContent.Create(new NetRatel.Shared.Contracts.RatelDesk.AdoptRatelDeskFlowSourceRequest(before.IdentityRevision))
+        };
+        request.Headers.Add("X-NetRatel-Account-Request", "1");
+        using var response = await Administrator.SendAsync(request, ct);
+        if (response.StatusCode != HttpStatusCode.OK)
+            throw new InvalidOperationException($"The actual owner Flow-source adoption returned HTTP {(int)response.StatusCode}.");
+        var after = await response.Content.ReadFromJsonAsync<NetRatel.Shared.Contracts.RatelDesk.RatelDeskConnectorSetupDto>(cancellationToken: ct)
+            ?? throw new InvalidOperationException("The actual owner source adoption returned no identity.");
+        if (after.FlowSourceInstanceId == Guid.Empty || after.FlowSourceInstanceId != before.FlowSourceInstanceId ||
+            after.InstallationInstanceId != InstanceId.ToString("D") ||
+            after.AdoptedSourceInstanceId != after.FlowSourceInstanceId.ToString("D"))
+            throw new InvalidOperationException("The ordinary owner adoption did not preserve the real installation/Flow producer tuple.");
+        await using var scope = Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+        if (await db.Set<ServiceLinkAttempt>().AnyAsync(ct) || await db.Agents.AnyAsync(ct) || await db.Jobs.AnyAsync(ct) ||
+            await db.FlowRuns.AnyAsync(ct) || await db.FlowActions.AnyAsync(ct))
+            throw new InvalidOperationException("Physical source setup must precede pairing and contain no seeded execution authority.");
+        var persisted = await db.FlowRuntimeIdentity.AsNoTracking().Where(x => x.Id == 1).Select(x => x.SourceInstanceId).SingleAsync(ct);
+        if (persisted != after.FlowSourceInstanceId)
+            throw new InvalidOperationException("Owner source adoption differs from the actual persisted Flow singleton.");
+        SourceInstanceId = persisted;
     }
 
     public async Task CreateNativeJobAndSelectTargetAsync(Guid enrolledAgentId, string name, CancellationToken ct)
@@ -266,11 +313,21 @@ internal sealed class ServiceLinkNetRatelPeer : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        Administrator?.Dispose(); Anonymous?.Dispose();
-        if (app is not null) await app.DisposeAsync();
-        sibling?.Dispose();
-        await Proxy.DisposeAsync();
-        await ((IAsyncDisposable)databaseOwner).DisposeAsync();
+        if (ownedCleanupComplete) return;
+        var failures = new List<Exception>();
+        try { Administrator?.Dispose(); } catch (Exception e) { failures.Add(e); }
+        try { Anonymous?.Dispose(); } catch (Exception e) { failures.Add(e); }
+        try { await StopPhysicalProcessesAsync(); } catch (Exception e) { failures.Add(e); }
+        if (app is not null)
+            try { await app.DisposeAsync(); app = null; } catch (Exception e) { failures.Add(e); }
+        if (sibling is not null)
+            try { sibling.Dispose(); sibling = null; } catch (Exception e) { failures.Add(e); }
+        if (!proxyDisposed)
+            try { await Proxy.DisposeAsync(); proxyDisposed = true; } catch (Exception e) { failures.Add(e); }
+        if (!databaseOwnerDisposed)
+            try { await ((IAsyncDisposable)databaseOwner).DisposeAsync(); databaseOwnerDisposed = true; } catch (Exception e) { failures.Add(e); }
+        ownedCleanupComplete = failures.Count == 0 && PhysicalOwnedCleanupComplete && app is null && sibling is null && proxyDisposed && databaseOwnerDisposed;
+        if (!ownedCleanupComplete) throw new AggregateException("Owned NetRatel cleanup was incomplete.", failures);
     }
 }
 

@@ -26,6 +26,7 @@ internal sealed class ServiceLinkHttpProxy : IAsyncDisposable
     private readonly List<ServiceLinkRotationResponseFault> rotationResponseFaults = [];
     private readonly ConcurrentQueue<ServiceLinkBusinessObservation> businessObservations = new();
     private TerminalDeliveryGate? terminalDelivery;
+    private CommittedIncidentResponseLoss? incidentResponseLoss;
     public IReadOnlyList<ServiceLinkBusinessObservation> BusinessObservations => businessObservations.ToArray();
     public string BaseUrl { get; }
     public int LostResponses { get; private set; }
@@ -62,6 +63,24 @@ internal sealed class ServiceLinkHttpProxy : IAsyncDisposable
             }
         });
         await app.StartAsync();
+    }
+
+    public CommittedIncidentResponseLoss LoseOneCommittedIncidentResponse(Guid source, Guid sourceNamespace,
+        Func<PhysicalIncidentForwarding, JsonElement, CancellationToken, Task<PhysicalReceiptIdentity>> independentRead)
+    {
+        lock (observationSync)
+        {
+            if (incidentResponseLoss is not null)
+                throw new InvalidOperationException("The actual incident response-loss fixture is already armed.");
+            CommittedIncidentResponseLoss? fault = null;
+            fault = new(new Uri(BaseUrl), source, sourceNamespace, independentRead, () =>
+            {
+                lock (observationSync)
+                    if (ReferenceEquals(incidentResponseLoss, fault)) incidentResponseLoss = null;
+            });
+            incidentResponseLoss = fault;
+            return fault;
+        }
     }
 
     public void LoseNextCompletedResponse(string pathSuffix)
@@ -176,11 +195,24 @@ internal sealed class ServiceLinkHttpProxy : IAsyncDisposable
         var rotationClaimOwned = false;
         var backendResponseObserved = false;
         byte[]? businessRequest = null;
+        var incidentFault = Volatile.Read(ref incidentResponseLoss);
+        if (incidentFault?.Matches(context) != true) incidentFault = null;
+        var firstIncidentCreate = false;
         try
         {
             var observeBusiness = HttpMethods.IsPost(context.Request.Method) && !context.Request.QueryString.HasValue &&
                 context.Request.Path.Value is "/internal/ingest" or "/api/v1/orchestration/provider/callback";
-            if (possibleRotationFaults.Length != 0)
+            if (incidentFault is not null)
+            {
+                observedRequest = await ReadBoundedAsync(context.Request.Body, 131_072, context.RequestAborted);
+                firstIncidentCreate = await incidentFault.BeforeForwardAsync(context, observedRequest);
+                if (observedRequest.Length != 0)
+                {
+                    forwardedRequest = observedRequest.ToArray();
+                    request.Content = new ByteArrayContent(forwardedRequest);
+                }
+            }
+            else if (possibleRotationFaults.Length != 0)
             {
                 observedRequest = await ReadBoundedAsync(context.Request.Body, 131_072, context.RequestAborted);
                 var lifecycle = ServiceLinkCanonicalJson.Deserialize<ServiceLinkLifecycleRequest>(Encoding.UTF8.GetString(observedRequest));
@@ -237,8 +269,17 @@ internal sealed class ServiceLinkHttpProxy : IAsyncDisposable
                 if (!request.Headers.TryAddWithoutValidation(header.Key, header.Value.ToArray()))
                     request.Content?.Headers.TryAddWithoutValidation(header.Key, header.Value.ToArray());
             }
-            using var response = await forward.SendAsync(request, HttpCompletionOption.ResponseContentRead, context.RequestAborted);
+            using var response = await forward.SendAsync(request, incidentFault is null
+                ? HttpCompletionOption.ResponseContentRead : HttpCompletionOption.ResponseHeadersRead, context.RequestAborted);
             backendResponseObserved = true;
+            if (firstIncidentCreate)
+            {
+                await using var responseBody = await response.Content.ReadAsStreamAsync(context.RequestAborted);
+                observedResponse = await ReadBoundedAsync(responseBody, 131_072, context.RequestAborted);
+                await incidentFault!.AfterActualResponseAsync(context, response, observedResponse, true);
+                LostResponses++;
+                return; // The proven committed response was aborted before downstream headers/body.
+            }
             if (rotationFault is not null)
             {
                 if (!response.IsSuccessStatusCode)
@@ -386,6 +427,8 @@ internal sealed class ServiceLinkHttpProxy : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         Interlocked.Exchange(ref terminalDelivery, null)?.Released.TrySetResult(true);
+        if (Interlocked.Exchange(ref incidentResponseLoss, null) is { } incidentFault)
+            await incidentFault.DisposeAsync();
         if (app is not null) await app.DisposeAsync();
         lock (observationSync)
         {
