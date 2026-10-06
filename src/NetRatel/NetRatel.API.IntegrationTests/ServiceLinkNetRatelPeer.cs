@@ -178,13 +178,35 @@ internal sealed class ServiceLinkNetRatelPeer : IAsyncDisposable
     public async Task WaitForInitialSensitiveWindowAsync(CancellationToken ct = default)
     {
         // Human, peer and token calls share this proxy's real 20-per-minute IP
-        // partition. The response timestamp is after that initial window began;
-        // wait only its remaining real lifetime before the next assertion phase.
+        // partition. Keep the original real window wait, then observe admission:
+        // the shared limiter replenishes on a separate 100 ms heartbeat.
         // Keep the authority clock, token lifetimes and every case budget unchanged.
         var observedAt = firstSensitiveResponseTimestamp
             ?? throw new InvalidOperationException("The first sensitive identity response has not completed.");
         var remaining = TimeSpan.FromMinutes(1) - Stopwatch.GetElapsedTime(observedAt);
         if (remaining > TimeSpan.Zero) await Task.Delay(remaining, ct);
+        await Task.Delay(TimeSpan.FromMilliseconds(100), ct); // Allow one normal shared-limiter heartbeat.
+
+        // The identity already exists and its source was adopted by CreateAsync.
+        // Retry only this read-only admission probe, never a token or command.
+        using var readiness = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        readiness.CancelAfter(TimeSpan.FromSeconds(1));
+        try
+        {
+            for (var admission = 0; admission < 10; admission++)
+            {
+                using var response = await Administrator.GetAsync("/api/v1/admin/service-links/identity", readiness.Token);
+                if (response.StatusCode == HttpStatusCode.OK) return;
+                if (response.StatusCode != HttpStatusCode.TooManyRequests)
+                    throw new InvalidOperationException($"The initial sensitive identity admission returned HTTP {(int)response.StatusCode}.");
+                if (admission < 9) await Task.Delay(TimeSpan.FromMilliseconds(100), readiness.Token);
+            }
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            throw new InvalidOperationException("The initial sensitive identity route was not admitted within the bounded replenishment check.");
+        }
+        throw new InvalidOperationException("The initial sensitive identity route remained throttled after the bounded replenishment check.");
     }
 
     public async Task RestartAsync()
