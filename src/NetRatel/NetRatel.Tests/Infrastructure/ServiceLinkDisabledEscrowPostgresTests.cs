@@ -122,9 +122,11 @@ public sealed partial class ServiceLinkProfileTokenExpiryPostgresTests
             var db = profileScope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
             var registry = new ServicePrincipalRegistry(db, new ServiceIdentityRuntimeOptions(resolver),
                 app.Services.GetRequiredService<IOptionsMonitor<ServiceIdentityOptions>>(), resolver, new EmptyServiceClientDeploymentCatalog(), Clock);
+            var transport = new ServiceLinkTransport(client, Options.Create(settings.Linking));
             return new(db, registry, new UnexpectedHumanAccess(), profiles,
-                new ServiceLinkTransport(client, Options.Create(settings.Linking)),
-                app.Services.GetRequiredService<IDataProtectionProvider>(), Options.Create(settings.Linking), resolver, Clock);
+                transport, app.Services.GetRequiredService<IDataProtectionProvider>(), Options.Create(settings.Linking), resolver, Clock,
+                new ServiceLinkProtocolTokenCache(transport,
+                    app.Services.GetRequiredService<Microsoft.Extensions.Caching.Memory.IMemoryCache>(), Clock));
         }
 
         public async Task<ServiceLinkAttempt[]> SeedTemporaryEscrowsAsync(int expiredCount)

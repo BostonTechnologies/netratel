@@ -18,7 +18,7 @@ public sealed partial class ServiceLinkCoordinator
         using var observation = await transport.GetAsync<JsonDocument>(Endpoint(profile.Peer.ApiBaseUrl,
             scope == "rateldesk.orchestration.callback" ? "/api/v1/orchestration/provider/m2m/ping" : "/api/v1/integrations/netratel/capabilities"),
             ct, token, scope == "rateldesk.incident-receipts.read" ? profile.SourceInstanceId : null);
-        var control = await transport.TokenAsync(profile.Credential, ServiceLinkContract.ControlScope, ct);
+        var control = await ProtocolToken(a, ServiceLinkContract.ControlScope, "status", null, profile.Credential, ct);
         using var peerStatus = await transport.GetAsync<JsonDocument>(Endpoint(profile.Peer.ServiceLinkEndpoint, "/links/" + linkId + "/status"), ct, control);
         ValidatePeerResult(a, peerStatus.RootElement);
         // This is the peer's acknowledgement backed by the stored reciprocal verification receipts,

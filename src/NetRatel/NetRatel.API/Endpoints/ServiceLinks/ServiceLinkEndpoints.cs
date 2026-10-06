@@ -21,6 +21,7 @@ public static class ServiceLinkEndpoints
         services.AddScoped<ServiceLinkCoordinator>();
         services.AddScoped<ServiceLinkIdentityStore>();
         services.AddScoped<ServiceLinkProfileService>();
+        services.AddScoped<ServiceLinkProtocolTokenCache>();
         services.AddMemoryCache();
 #pragma warning disable EXTEXP0001 // Durable operation IDs own retries; a transport retry cannot replay provisioning.
         services.AddHttpClient<ServiceLinkTransport>(client => client.Timeout = TimeSpan.FromSeconds(25))

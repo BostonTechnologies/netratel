@@ -222,6 +222,19 @@ public static class ServiceLinkBrowserEndpoints
 
     public static void ProtectResponse(HttpContext context)
     {
+        SetProtectedResponseHeaders(context);
+        // YARP copies the API's headers after this middleware runs. Reassert the
+        // same protection just before sending headers so its copied no-store
+        // value cannot duplicate or replace the browser response's contract.
+        context.Response.OnStarting(static state =>
+        {
+            SetProtectedResponseHeaders((HttpContext)state);
+            return Task.CompletedTask;
+        }, context);
+    }
+
+    private static void SetProtectedResponseHeaders(HttpContext context)
+    {
         context.Response.Headers.CacheControl = "no-store";
         context.Response.Headers.Pragma = "no-cache";
         context.Response.Headers["Referrer-Policy"] = "no-referrer";

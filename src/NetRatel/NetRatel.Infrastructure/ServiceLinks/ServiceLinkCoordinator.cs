@@ -18,6 +18,7 @@ public sealed partial class ServiceLinkCoordinator(
     OrchestratorDbContext db, IServicePrincipalRegistry registry, IEffectiveAccessService accessService,
     ServiceLinkProfileService providers, ServiceLinkTransport transport, IDataProtectionProvider protection,
     IOptions<ServiceLinkOptions> options, IServicePublicSettingsResolver publicSettings, TimeProvider clock,
+    ServiceLinkProtocolTokenCache protocolTokens,
     IServiceScopeFactory? scopes = null)
 {
     private ServiceLinkOptions settings = options.Value;

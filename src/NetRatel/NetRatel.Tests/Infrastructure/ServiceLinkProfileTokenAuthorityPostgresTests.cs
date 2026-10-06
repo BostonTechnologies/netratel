@@ -157,7 +157,8 @@ public sealed partial class ServiceLinkProfileTokenExpiryPostgresTests
                     // unlink commits local revocation and a completed operation.
                     var coordinator = new ServiceLinkCoordinator(db, registry, new UnexpectedHumanAccess(), scopedProfiles,
                         transport, app.Services.GetRequiredService<IDataProtectionProvider>(),
-                        Options.Create(publicSettings.Linking), resolver, Clock);
+                        Options.Create(publicSettings.Linking), resolver, Clock,
+                        new ServiceLinkProtocolTokenCache(transport, app.Services.GetRequiredService<Microsoft.Extensions.Caching.Memory.IMemoryCache>(), Clock));
                     await coordinator.LifecycleAsync(Profile.LinkId, "revoke", new ServiceLinkLifecycleRequest
                     {
                         OperationId = ServiceLinkValidation.NewId(), AttemptId = attempt.AttemptId,

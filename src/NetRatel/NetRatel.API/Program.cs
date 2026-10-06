@@ -764,6 +764,13 @@ builder.Services.AddOpenApi(options =>
         };
 
         document.Components.SecuritySchemes["M2M"] = new OpenApiSecurityScheme { Type = SecuritySchemeType.Http, Scheme = "Bearer", BearerFormat = "JWT", Description = "Machine-to-machine access token." };
+        document.Components.SecuritySchemes[ServiceIdentityAuthenticationHandler.SchemeName] = new OpenApiSecurityScheme
+        {
+            Type = SecuritySchemeType.Http,
+            Scheme = "Bearer",
+            BearerFormat = "JWT",
+            Description = "Managed service access token constrained by the current peer, tenant, credential revision and approved scope. Reciprocal link verification and control require their distinct service scopes."
+        };
         document.Components.SecuritySchemes["Agent"] = new OpenApiSecurityScheme { Type = SecuritySchemeType.Http, Scheme = "Bearer", BearerFormat = "JWT", Description = "Native NetRatel Client token." };
         document.Components.SecuritySchemes["MachineToken"] = new OpenApiSecurityScheme { Type = SecuritySchemeType.Http, Scheme = "Bearer", BearerFormat = "JWT", Description = "Machine-token API credential." };
         document.Components.SecuritySchemes["IntegrationCredential"] = new OpenApiSecurityScheme { Type = SecuritySchemeType.Http, Scheme = "Bearer", Description = "Opaque API credential constrained by its durable grants. Purpose-bound local HTTP-MCP ingress credentials require pairing and are excluded from interactive API documentation." };

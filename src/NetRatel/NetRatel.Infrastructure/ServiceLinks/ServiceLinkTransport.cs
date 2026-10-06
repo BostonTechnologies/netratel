@@ -70,6 +70,11 @@ public sealed class ServiceLinkTransport(HttpClient client, IOptions<ServiceLink
     public async Task<string> TokenAsync(ServiceDirectionalCredential credential, string scopes, CancellationToken ct) =>
         (await AcquireTokenAsync(credential, scopes, ct)).AccessToken;
 
+    public void ValidateTokenEndpoint(ServiceDirectionalCredential credential)
+    {
+        using var request = Message(HttpMethod.Post, credential.TokenEndpoint);
+    }
+
     public async Task<ServiceLinkAccessToken> AcquireTokenAsync(ServiceDirectionalCredential credential, string scopes, CancellationToken ct)
     {
         if (credential.TokenEndpointAuthMethod != "client_secret_post") throw new ServiceLinkProtocolException(422, "unsupported-client-authentication", "The approved peer authentication method is unsupported.");
