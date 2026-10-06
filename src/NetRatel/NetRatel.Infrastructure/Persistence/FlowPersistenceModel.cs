@@ -38,7 +38,6 @@ public static class FlowPersistenceModel
         builder.Entity<FlowActionRecord>(entity =>
         {
             entity.ToTable("FlowActions"); entity.HasKey(row => new { row.RunId, row.NodeId });
-            entity.HasAlternateKey(row => new { row.TenantId, row.RunId, row.NodeId });
             entity.Property(row => row.IdempotencyKey).HasMaxLength(200).IsRequired(); entity.HasIndex(row => new { row.TenantId, row.IdempotencyKey }).IsUnique();
             entity.Property(row => row.DraftJson).HasColumnType("jsonb").IsRequired(); entity.Property(row => row.PreparedJson).HasColumnType("jsonb");
             entity.Property(row => row.SemanticFingerprint).HasMaxLength(64); entity.Property(row => row.ReceiptJson).HasColumnType("jsonb");

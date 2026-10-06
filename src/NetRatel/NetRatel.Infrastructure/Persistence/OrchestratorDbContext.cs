@@ -125,7 +125,7 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
     {
         MonitoringPersistenceModel.Configure(modelBuilder);
         FlowPersistenceModel.Configure(modelBuilder);
-        FlowReceiverEvidenceModel.Configure(modelBuilder);
+        modelBuilder.Ignore<FlowReceiverEvidenceRecord>();
         modelBuilder.Entity<RatelDeskConnectorRecord>(entity =>
         {
             entity.ToTable("RatelDeskConnectors");
@@ -133,8 +133,8 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
             entity.Property(record => record.RowVersion).IsConcurrencyToken();
             entity.Property(record => record.OwnerPrincipalId).HasMaxLength(32).IsRequired();
             entity.Property(record => record.ConfigurationJson).HasColumnType("jsonb").IsRequired();
-            entity.Property(record => record.AuthenticationJson).HasColumnType("jsonb");
-            entity.Property(record => record.ReadinessJson).HasColumnType("jsonb");
+            entity.Ignore(record => record.AuthenticationJson);
+            entity.Ignore(record => record.ReadinessJson);
         });
         modelBuilder.ConfigureServiceIdentityModel();
         modelBuilder.ConfigureServiceLinkModel();
