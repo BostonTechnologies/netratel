@@ -1,6 +1,6 @@
 # Monitoring flows
 
-Flows are part of the `0.1.1-beta.1` development work. RC.17 remains the client bootstrap release candidate. The Flows editor is useful for bounded drafts and previews; automatic incident delivery requires an authorized connector whose receiver provides verified atomic idempotency. A normal RatelDesk create endpoint alone does not establish that contract. Executable connector readiness depends on the separately verified receiver integration; until then the connector stays unavailable for executable publication.
+Flows are part of the `0.1.1-beta.1` development work. The Flows editor is useful for bounded drafts and previews; automatic incident delivery requires an authorized connector whose receiver provides verified atomic idempotency. A normal RatelDesk create endpoint alone does not establish that contract. Executable connector readiness depends on the separately verified receiver integration; until then the connector stays unavailable for executable publication.
 
 ## Editing and publishing
 
