@@ -84,7 +84,8 @@ public sealed class ServiceLinkTerminalConvergencePostgresTests
     {
         await using var pair = await ServiceLinkPair.CreateAsync(netRatelInitiates);
         await pair.ActivateAsync();
-        await pair.NetRatel.WaitForInitialSensitiveWindowAsync();
+        await Task.WhenAll(pair.NetRatel.WaitForInitialSensitiveWindowAsync(),
+            pair.RatelDesk.WaitForPostActivationSensitiveWindowAsync());
         var business = await pair.TokenAsync(true, "netratel.orchestration.read");
         var businessExpiresAtUtc = new JwtSecurityTokenHandler().ReadJwtToken(business).ValidTo;
         Assert.Equal(HttpStatusCode.OK, await ServiceLinkPair.GetWithTokenAsync(pair.NetRatel.Anonymous, "/internal/health", business));
