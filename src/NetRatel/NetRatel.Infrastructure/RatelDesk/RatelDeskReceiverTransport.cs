@@ -45,7 +45,7 @@ public sealed class RatelDeskReceiverTransport(RatelDeskReceiverHttpPipeline htt
             if (reply.Status == 410) return new(RatelDeskReceiverObservationKind.Gone, "receiver-receipt-expired");
             return Classify(reply, false);
         }
-        catch (Exception error) when (error is HttpRequestException or IOException or JsonException or OperationCanceledException or RatelDeskReceiverReadException)
+        catch (Exception error) when (error is HttpRequestException or IOException or InvalidDataException or JsonException or OperationCanceledException or RatelDeskReceiverReadException)
         { return new(RatelDeskReceiverObservationKind.TransientReadFailure, "receiver-receipt-unverified"); }
     }
     public async Task<RatelDeskReceiverObservation> CreateAsync(RatelDeskReceiverPreparationV2 prepared, string bearer, CancellationToken ct)
@@ -69,7 +69,7 @@ public sealed class RatelDeskReceiverTransport(RatelDeskReceiverHttpPipeline htt
             if (reply.Status is 200 or 201) return Committed(reply, prepared);
             return Classify(reply, true);
         }
-        catch (Exception error) when (error is HttpRequestException or IOException or JsonException or OperationCanceledException or RatelDeskReceiverReadException)
+        catch (Exception error) when (error is HttpRequestException or IOException or InvalidDataException or JsonException or OperationCanceledException or RatelDeskReceiverReadException)
         {
             return new(mayHaveEnteredHttp ? RatelDeskReceiverObservationKind.PossibleCommit : RatelDeskReceiverObservationKind.Unavailable,
                 mayHaveEnteredHttp ? "receiver-commit-unconfirmed" : "receiver-create-not-started");
