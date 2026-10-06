@@ -10,10 +10,10 @@ namespace NetRatel.API.IntegrationTests.ServiceLinks;
 /// <summary>Runs the published companion API/Web, without building or impersonating RatelDesk.</summary>
 internal sealed partial class ServiceLinkPublishedRatelDeskPeer : IAsyncDisposable
 {
-    public const string PublishedSource = "a3017363d22205a6897087c0e7fed7b541a5d5d9";
-    public const string PublishedVersion = "0.1.1-beta.14";
-    internal const string ApiImage = "ghcr.io/bostontechnologies/rateldesk-api@sha256:0b1d2eac5f825b694d32e9580b6cb291d7c3b6bf6930d912a24b0e1ea97d1e84";
-    internal const string WebImage = "ghcr.io/bostontechnologies/rateldesk-web@sha256:3ac134ae746451892d63317a898f5250b1cad79ac8dd1fcec8509f5ba2bd54f4";
+    public const string PublishedSource = "e543fb13eb0e23db09fdfd6b4232067cecf61675";
+    public const string PublishedVersion = "0.1.1-beta.15";
+    internal const string ApiImage = "ghcr.io/bostontechnologies/rateldesk-api@sha256:4f266560a2cd925210d492d47ae5ba0ffcbc9c3af44631aff39ee403f4be30b8";
+    internal const string WebImage = "ghcr.io/bostontechnologies/rateldesk-web@sha256:2c623963456ee61ff9040e4462fbd85bb2d8d0f077b0fdad74840f9447f3bec6";
     private readonly string root = Path.Combine(Path.GetTempPath(), "netratel-rateldesk-pair", Guid.NewGuid().ToString("N"));
     private readonly string project = "netratel-service-link-" + Guid.NewGuid().ToString("N");
     private readonly string password = "aA1!" + Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
