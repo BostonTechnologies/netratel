@@ -113,8 +113,8 @@ public sealed partial class CommittedConnectionOwnershipMigrationPostgresTests(P
         var firstGuardDefinitions = await GuardDefinitionsAsync(connection, ct);
         var firstSchema = await OwnershipSchemaAsync(connection, ct);
 
-        // Down crosses registration and ownership only. The registered lower-ID
-        // Monitoring and Flow migrations stay in the chronological prefix alongside all 67 baseline IDs.
+        // Down crosses receiver, registration and ownership. The registered lower-ID
+        // Monitoring, Flow and Connector migrations stay alongside all 67 baseline IDs.
         await MigrateAsync(database, plan.PreviousMigration, ct);
 
         (await AppliedAsync(database, ct)).Should().Equal(plan.PreOwnerMigrationIds);
@@ -175,12 +175,13 @@ public sealed partial class CommittedConnectionOwnershipMigrationPostgresTests(P
         var owner = migrations.Where(id => id.EndsWith("_AddCommittedConnectionOwnership", StringComparison.Ordinal))
             .Should().ContainSingle().Which;
         owner.Should().Be(PrecedingOwnerMigration);
-        var expected = services.MigrationIds.Append(HistoricalMonitoringMigration).Append(FlowPreceding149PendingMigration).Append(owner)
-            .Append(CommittedRegistrationMigration).Order(StringComparer.Ordinal).ToArray();
+        var expected = services.MigrationIds.Append(HistoricalMonitoringMigration).Append(FlowPreceding149PendingMigration)
+            .Append(HistoricalConnectorMigration).Append(owner).Append(CommittedRegistrationMigration)
+            .Append(ReceiverEvidenceMigration).Order(StringComparer.Ordinal).ToArray();
         migrations.Should().Equal(expected,
-            "current history retains the exact Services baseline, lower-ID Monitoring and Flow, genuine owner and genuine registration delta");
+            "current history retains the exact Services baseline, lower-ID Monitoring, Flow and Connector, genuine owner and registration, and genuine receiver delta");
         var previous = services.MigrationIds.Last();
-        return new(owner, previous, CommittedRegistrationMigration,
+        return new(owner, previous, ReceiverEvidenceMigration,
             migrations.Where(id => StringComparer.Ordinal.Compare(id, previous) <= 0).ToArray(), migrations);
     }
 

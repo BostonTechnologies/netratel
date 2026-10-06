@@ -18,6 +18,9 @@ public sealed partial class CommittedConnectionOwnershipMigrationPostgresTests
     private const string PrecedingOwnerMigration = "20261006174907_AddCommittedConnectionOwnership";
     private const string HistoricalMonitoringMigration = "20261002195600_AddMonitoringRuntime";
     private const string CommittedRegistrationMigration = "20261006182927_AddCommittedMonitoringRegistration";
+    private const string HistoricalConnectorMigration = "20261002200000_AddRatelDeskConnectors";
+    private const string ReceiverEvidenceMigration = "20261006195456_AddFlowReceiverEvidence";
+    private const string Preceding151Sha256 = "d254a6270c98f16886e0d9b25d102f0fec71ad1f507fd2db527ec34ec1379726";
     private const string Preceding148Sha256 = "9877f2b6ba9bcc678da0d248aa903f262dbe9ef4f1459e3e7958742e227938c4";
     private static readonly string[] MonitoringTables =
     [
@@ -79,14 +82,15 @@ public sealed partial class CommittedConnectionOwnershipMigrationPostgresTests
         await SeedPassiveMonitoringAsync(connection, prior.History, ct);
         await AssertRegistrationDeltaAsync(connection, prior.History, ct);
         var firstSchema = await CompleteSchemaAsync(connection, ct);
-        var retainedIds = prior.Plan.CurrentMigrationIds.Where(id => id != CommittedRegistrationMigration).ToArray();
+        var retainedIds = prior.Plan.CurrentMigrationIds.Where(id => id != CommittedRegistrationMigration &&
+            id != ReceiverEvidenceMigration).ToArray();
         var retainedHistory = await MigrationHistorySnapshotAsync(connection, retainedIds, ct);
         var monitoring = MonitoringTables.Select(table => new HistoricalTable(table,
             table == "MonitoringEvidenceStreams" ? ["CommittedRegistrationOrdinal"] : [])).ToArray();
         var monitoringRows = await HistoricalSnapshotsAsync(connection, monitoring, ct);
 
-        // Only the higher-ID registration migration is removed. Older Monitoring and Flow
-        // were pending on true148 and now remain installed below the owner.
+        // The newer receiver and registration migrations are removed. Lower-ID Monitoring, Flow
+        // and Connector remain installed below the owner; the original registration intent remains unchanged.
         await MigrateAsync(prior.Database, PrecedingOwnerMigration, ct);
 
         (await AppliedAsync(prior.Database, ct)).Should().Equal(retainedIds);
@@ -127,8 +131,9 @@ public sealed partial class CommittedConnectionOwnershipMigrationPostgresTests
         (await AppliedAsync(database, ct)).Should().Equal(preceding.MigrationIds);
         await using (var db = Context(database))
             (await db.Database.GetPendingMigrationsAsync(ct)).Should().Equal(
-                [HistoricalMonitoringMigration, FlowPreceding149PendingMigration, CommittedRegistrationMigration],
-                "the lower-ID historical Monitoring and Flow migrations and registration delta are genuinely unapplied on the authentic preceding schema");
+                [HistoricalMonitoringMigration, FlowPreceding149PendingMigration, HistoricalConnectorMigration,
+                 CommittedRegistrationMigration, ReceiverEvidenceMigration],
+                "the lower-ID Monitoring, Flow and Connector migrations plus registration and receiver are genuinely unapplied on the authentic preceding schema");
         await using var connection = new NpgsqlConnection(database);
         await connection.OpenAsync(ct);
         await AssertMonitoringPresenceAsync(connection, present: false, ct);
@@ -363,11 +368,12 @@ public sealed partial class CommittedConnectionOwnershipMigrationPostgresTests
         await ApplyBaselineAsync(database, preceding, ct);
         var plan = CurrentPlan(database, services);
         plan.CurrentMigrationIds.Should().Equal(preceding.MigrationIds.Append(FlowPreceding149PendingMigration)
-            .Order(StringComparer.Ordinal));
+            .Append(HistoricalConnectorMigration).Append(ReceiverEvidenceMigration).Order(StringComparer.Ordinal));
         (await AppliedAsync(database, ct)).Should().Equal(preceding.MigrationIds);
         await using (var db = Context(database))
-            (await db.Database.GetPendingMigrationsAsync(ct)).Should().Equal([FlowPreceding149PendingMigration],
-                "only the retained lower-ID Flow migration is unapplied on the authentic current149 schema");
+            (await db.Database.GetPendingMigrationsAsync(ct)).Should().Equal(
+                [FlowPreceding149PendingMigration, HistoricalConnectorMigration, ReceiverEvidenceMigration],
+                "retained lower-ID Flow and Connector plus genuine receiver are unapplied on authentic current149");
         await using var connection = new NpgsqlConnection(database);
         await connection.OpenAsync(ct);
         await AssertMonitoringPresenceAsync(connection, present: true, ct);
@@ -440,56 +446,61 @@ public sealed partial class CommittedConnectionOwnershipMigrationPostgresTests
     {
         using var budget = new CancellationTokenSource(TimeSpan.FromMinutes(3));
         var ct = budget.Token;
-        // These exact range bytes come from the installed EF tool and actual compiled
-        // current source. They are not a chronological downgrade of the current database.
         var down = await ReadScopedFlowRangeAsync(ScopedFlowDownResource, ScopedFlowDownSha256, down: true, ct);
         var up = await ReadScopedFlowRangeAsync(ScopedFlowUpResource, ScopedFlowUpSha256, down: false, ct);
-        var prior = await PrepareFlowPreceding149Async(ct);
+        // Use the genuine preceding151 assembly's 71-ID full SQL. Current Migrate(owner/
+        // registration) would also install the lower Connector ID, and receiver's FK
+        // cannot remain installed while the historical Flow Down drops FlowActions.
+        var prior = await PreparePreceding151Async(populateFlow: false, ct);
         await using var connection = new NpgsqlConnection(prior.Database);
         await connection.OpenAsync(ct);
-        var precedingSchema = await CompleteSchemaAsync(connection, ct);
-
-        await MigrateAsync(prior.Database, prior.Plan.CurrentMigration, ct);
-        await AssertCurrentModelAsync(prior.Database, prior.Plan, ct);
-        await AssertFlowPreceding149PreservedAsync(connection, prior, ct);
+        var currentSchema = await CompleteSchemaAsync(connection, ct);
+        var precedingBaseline = await ReadBaselineAsync("Current14970.sql", FlowPreceding149Sha256, 70, ct);
+        var precedingDatabase = await _fixture.CreateDatabaseAsync(ct);
+        await ApplyBaselineAsync(precedingDatabase, precedingBaseline, ct);
+        await using var precedingConnection = new NpgsqlConnection(precedingDatabase);
+        await precedingConnection.OpenAsync(ct);
+        var precedingSchema = await CompleteSchemaAsync(precedingConnection, ct);
+        await AssertPreceding151MigrationStateAsync(prior.Database, prior, flowPresent: true, ct);
+        await AssertPreceding151PreservedAsync(connection, prior, ct);
         await SeedScopedPassiveFlowRowsAsync(prior.Database, prior.History.TenantId, ct);
         await AssertScopedFlowPresenceAsync(connection, present: true, ct);
         await AssertScopedFlowCountsAsync(connection, expected: 1, ct);
-        var currentSchema = await CompleteSchemaAsync(connection, ct);
         var flowPrograms = await ScopedFlowProgramObjectsAsync(connection, flowOnly: true, ct);
         var retainedPrograms = await ScopedFlowProgramObjectsAsync(connection, flowOnly: false, ct);
-        var retainedIds = prior.Plan.CurrentMigrationIds.Where(id => id != FlowPreceding149PendingMigration).ToArray();
-        retainedIds.Should().Equal(prior.History.MigrationIds);
+        var retainedIds = prior.History.MigrationIds.Where(id => id != FlowPreceding149PendingMigration).ToArray();
+        retainedIds.Should().Equal(precedingBaseline.MigrationIds);
         var retainedHistory = await MigrationHistorySnapshotAsync(connection, retainedIds, ct);
-        var retainedRows = await HistoricalSnapshotsAsync(connection, prior.Tables, ct);
+        var retainedTables = prior.Tables.Where(table => !ScopedFlowTables.Contains(table.Name, StringComparer.Ordinal)).ToArray();
+        var retainedRows = await HistoricalSnapshotsAsync(connection, retainedTables, ct);
 
         await ApplyScopedFlowRangeAsync(connection, down, ct);
 
-        (await AppliedAsync(prior.Database, ct)).Should().Equal(retainedIds);
+        await AssertPreceding151MigrationStateAsync(prior.Database, prior, flowPresent: false, ct);
         (await MigrationHistorySnapshotAsync(connection, retainedIds, ct)).Should().Equal(retainedHistory);
-        await using (var db = Context(prior.Database))
-            (await db.Database.GetPendingMigrationsAsync(ct)).Should().Equal([FlowPreceding149PendingMigration]);
         await AssertScopedFlowPresenceAsync(connection, present: false, ct);
         (await CompleteSchemaAsync(connection, ct)).Should().Equal(precedingSchema,
-            "the scoped historical Flow Down leaves the genuine preceding149 schema intact despite four newer installed IDs");
-        await AssertScopedRetainedRowsAsync(connection, prior.Tables, retainedRows, ct);
-        await AssertFlowPreceding149PreservedAsync(connection, prior, ct);
+            "the scoped historical Flow Down leaves the genuine preceding149 schema intact despite newer installed owner and registration IDs");
+        await AssertScopedRetainedRowsAsync(connection, retainedTables, retainedRows, ct);
+        await AssertScopedRetainedRowsAsync(connection, retainedTables, prior.Rows, ct);
         (await ScopedFlowProgramObjectsAsync(connection, flowOnly: false, ct)).Should().Equal(retainedPrograms);
         await AssertMonitoringPresenceAsync(connection, present: true, ct);
         await AssertRegistrationPresenceAsync(connection, present: true, ct);
         await AssertGuardsAsync(connection, present: true, ct);
+        var downGuards = await GuardDefinitionsAsync(connection, ct);
+        foreach (var function in GuardFunctions) downGuards[function].Should().Equal(prior.GuardDefinitions[function]);
 
         await ApplyScopedFlowRangeAsync(connection, up, ct);
 
-        await AssertCurrentModelAsync(prior.Database, prior.Plan, ct);
+        await AssertPreceding151MigrationStateAsync(prior.Database, prior, flowPresent: true, ct);
+        await AssertPreceding151PreservedAsync(connection, prior, ct);
         await AssertScopedFlowPresenceAsync(connection, present: true, ct);
         (await CompleteSchemaAsync(connection, ct)).Should().Equal(currentSchema);
         (await ScopedFlowProgramObjectsAsync(connection, flowOnly: true, ct)).Should().Equal(flowPrograms,
             "the exact historical Up reinstalls the same Flow immutability functions and triggers");
         (await ScopedFlowProgramObjectsAsync(connection, flowOnly: false, ct)).Should().Equal(retainedPrograms);
         (await MigrationHistorySnapshotAsync(connection, retainedIds, ct)).Should().Equal(retainedHistory);
-        await AssertScopedRetainedRowsAsync(connection, prior.Tables, retainedRows, ct);
-        await AssertFlowPreceding149PreservedAsync(connection, prior, ct);
+        await AssertScopedRetainedRowsAsync(connection, retainedTables, retainedRows, ct);
         await AssertMonitoringPresenceAsync(connection, present: true, ct);
         await AssertRegistrationPresenceAsync(connection, present: true, ct);
         await AssertGuardsAsync(connection, present: true, ct);
@@ -497,8 +508,9 @@ public sealed partial class CommittedConnectionOwnershipMigrationPostgresTests
         await AssertScopedFlowCountsAsync(connection, expected: 0, ct);
 
         var fresh = await _fixture.CreateDatabaseAsync(ct);
-        await MigrateAsync(fresh, prior.Plan.CurrentMigration, ct);
-        await AssertCurrentModelAsync(fresh, prior.Plan, ct);
+        var freshBaseline = await ReadBaselineAsync("Current15171.sql", Preceding151Sha256, 71, ct);
+        await ApplyBaselineAsync(fresh, freshBaseline, ct);
+        await AssertPreceding151MigrationStateAsync(fresh, prior, flowPresent: true, ct);
         await using var freshConnection = new NpgsqlConnection(fresh);
         await freshConnection.OpenAsync(ct);
         (await CompleteSchemaAsync(freshConnection, ct)).Should().Equal(currentSchema);
@@ -625,6 +637,336 @@ public sealed partial class CommittedConnectionOwnershipMigrationPostgresTests
             )::text,'UTF8')
             """, connection);
         Add(query, ("functions", ScopedFlowFunctions), ("tables", ScopedFlowTables), ("flow_only", flowOnly));
+        return (byte[])(await query.ExecuteScalarAsync(ct))!;
+    }
+
+    private sealed record Preceding151(string Database, MigrationPlan Plan, HistoricalRows History,
+        HistoricalTable[] Tables, IReadOnlyDictionary<string, byte[]> Rows, byte[] MigrationHistory,
+        IReadOnlyDictionary<string, byte[]> GuardDefinitions, byte[] RetainedPrograms);
+
+    private async Task<Preceding151> PreparePreceding151Async(bool populateFlow, CancellationToken ct)
+    {
+        var preceding = await ReadBaselineAsync("Current15171.sql", Preceding151Sha256, 71, ct);
+        var services = await ReadBaselineAsync("HistoricalServices.sql", ServicesSha256, 67, ct);
+        preceding.MigrationIds.Should().Equal(services.MigrationIds.Append(HistoricalMonitoringMigration)
+            .Append(FlowPreceding149PendingMigration).Append(PrecedingOwnerMigration)
+            .Append(CommittedRegistrationMigration).Order(StringComparer.Ordinal));
+        var database = await _fixture.CreateDatabaseAsync(ct);
+        await ApplyBaselineAsync(database, preceding, ct);
+        var plan = CurrentPlan(database, services);
+        plan.CurrentMigrationIds.Should().Equal(preceding.MigrationIds.Append(HistoricalConnectorMigration)
+            .Append(ReceiverEvidenceMigration).Order(StringComparer.Ordinal));
+        (await AppliedAsync(database, ct)).Should().Equal(preceding.MigrationIds);
+        await using (var db = Context(database))
+            (await db.Database.GetPendingMigrationsAsync(ct)).Should().Equal(
+                [HistoricalConnectorMigration, ReceiverEvidenceMigration]);
+        await using var connection = new NpgsqlConnection(database);
+        await connection.OpenAsync(ct);
+        await AssertMonitoringPresenceAsync(connection, present: true, ct);
+        await AssertRegistrationPresenceAsync(connection, present: true, ct);
+        await AssertGuardsAsync(connection, present: true, ct);
+        var history = await SeedHistoricalRowsAsync(connection, preceding.MigrationIds, hasServices: true, ct);
+        await SeedPassiveMonitoringAsync(connection, history, ct);
+        await AssertRegistrationDeltaAsync(connection, history, ct);
+        // These legacy/Monitoring/registration rows are passive migration fixtures.
+        // Authority comes only from production reservation and first-heartbeat commit.
+        await using (var provider = new ServiceCollection()
+            .AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(database))
+            .AddSingleton(TimeProvider.System)
+            .AddSingleton(new OwnershipPolicy(TimeSpan.FromSeconds(30), TimeSpan.FromMinutes(10), TimeSpan.FromSeconds(10)))
+            .AddNetRatelClientServicesPersistence().BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true }))
+        {
+            var store = provider.GetRequiredService<IClientConnectionEpochStore>();
+            var now = DateTimeOffset.UtcNow;
+            var reservation = await store.ReserveAsync(new(new(history.TenantId, history.AgentId), Guid.NewGuid(),
+                Guid.NewGuid(), 500, now, now.AddSeconds(30), now.AddMinutes(10),
+                new("migration-owner", ["presence"], new string('a', 64))), ct);
+            reservation.Disposition.Should().Be(OwnershipDisposition.Accepted);
+            var accepted = await store.CommitAsync(reservation.Reservation!,
+                new(reservation.Reservation!.Owner, 1, DateTimeOffset.UtcNow), ct);
+            accepted.Disposition.Should().Be(OwnershipDisposition.Accepted);
+            accepted.Current!.AcceptanceGuardAtUtc.Should().NotBeNull();
+            accepted.Current.Owner.Should().Be(reservation.Reservation.Owner);
+            accepted.Current.IsEffective(DateTimeOffset.UtcNow).Should().BeTrue();
+        }
+        if (populateFlow) await SeedScopedPassiveFlowRowsAsync(database, history.TenantId, ct);
+        var tables = new List<HistoricalTable>();
+        await using (var query = new NpgsqlCommand("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname='public' AND tablename<>'__EFMigrationsHistory' ORDER BY tablename COLLATE \"C\"", connection))
+        await using (var reader = await query.ExecuteReaderAsync(ct))
+            while (await reader.ReadAsync(ct)) tables.Add(new(reader.GetString(0), []));
+        return new(database, plan, history, tables.ToArray(), await HistoricalSnapshotsAsync(connection, tables, ct),
+            await MigrationHistorySnapshotAsync(connection, preceding.MigrationIds, ct),
+            await GuardDefinitionsAsync(connection, ct), await ScopedReceiverProgramObjectsAsync(connection, receiverOnly: false, ct));
+    }
+
+    private static async Task AssertPreceding151MigrationStateAsync(string database, Preceding151 prior,
+        bool flowPresent, CancellationToken ct)
+    {
+        await using var db = Context(database);
+        var expected = flowPresent ? prior.History.MigrationIds : prior.History.MigrationIds
+            .Where(id => id != FlowPreceding149PendingMigration).ToArray();
+        (await db.Database.GetAppliedMigrationsAsync(ct)).Should().Equal(expected);
+        var pending = flowPresent ? new[] { HistoricalConnectorMigration, ReceiverEvidenceMigration }
+            : new[] { FlowPreceding149PendingMigration, HistoricalConnectorMigration, ReceiverEvidenceMigration };
+        (await db.Database.GetPendingMigrationsAsync(ct)).Should().Equal(pending);
+        // This checks source/snapshot agreement; this staged schema deliberately has pending IDs.
+        db.Database.HasPendingModelChanges().Should().BeFalse();
+    }
+
+    private static async Task AssertPreceding151PreservedAsync(NpgsqlConnection connection, Preceding151 prior,
+        CancellationToken ct)
+    {
+        await AssertScopedRetainedRowsAsync(connection, prior.Tables, prior.Rows, ct);
+        (await MigrationHistorySnapshotAsync(connection, prior.History.MigrationIds, ct)).Should().Equal(prior.MigrationHistory);
+        var guards = await GuardDefinitionsAsync(connection, ct);
+        foreach (var function in GuardFunctions) guards[function].Should().Equal(prior.GuardDefinitions[function]);
+        (await ScopedReceiverProgramObjectsAsync(connection, receiverOnly: false, ct)).Should().Equal(prior.RetainedPrograms);
+    }
+
+    private const string ReceiverDownResource = "ReceiverEvidenceOnlyDown.sql";
+    private const string ReceiverUpResource = "ReceiverEvidenceOnlyUp.sql";
+    private const string ReceiverDownSha256 = "a702c2517bf3bfdefedfd4c36a31160e5d70ebce0ab799cf5ae077cbe1285793";
+    private const string ReceiverUpSha256 = "9340a0328834ef436d57529d73192246966571720590ff3cb55db905202c4690";
+
+    [Fact]
+    public async Task True_preceding_flow_upgrade_and_receiver_only_down_reup_preserve_prior_rows_history_and_guards()
+    {
+        using var budget = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+        var ct = budget.Token;
+        var down = await ReadScopedReceiverRangeAsync(ReceiverDownResource, ReceiverDownSha256, down: true, ct);
+        var up = await ReadScopedReceiverRangeAsync(ReceiverUpResource, ReceiverUpSha256, down: false, ct);
+        var prior = await PreparePreceding151Async(populateFlow: true, ct);
+        prior.Plan.CurrentMigration.Should().Be(ReceiverEvidenceMigration);
+        prior.Plan.CurrentMigrationIds.Should().Equal(prior.History.MigrationIds
+            .Append(HistoricalConnectorMigration).Append(ReceiverEvidenceMigration).Order(StringComparer.Ordinal));
+        await using var connection = new NpgsqlConnection(prior.Database);
+        await connection.OpenAsync(ct);
+
+        await MigrateAsync(prior.Database, prior.Plan.CurrentMigration, ct);
+
+        await AssertCurrentModelAsync(prior.Database, prior.Plan, ct);
+        await AssertPreceding151PreservedAsync(connection, prior, ct);
+        await AssertScopedReceiverSchemaAsync(connection, present: true, ct);
+        foreach (var table in new[] { "RatelDeskConnectors", "FlowReceiverEvidence" })
+        {
+            await using var count = new NpgsqlCommand($"SELECT count(*) FROM \"{table}\"", connection);
+            ((long)(await count.ExecuteScalarAsync(ct))!).Should().Be(0,
+                "schema upgrade must not manufacture connector configuration or receiver evidence from prior owner and Flow rows");
+        }
+        var fullSchema = await CompleteSchemaAsync(connection, ct);
+        var receiverPrograms = await ScopedReceiverProgramObjectsAsync(connection, receiverOnly: true, ct);
+        var retainedPrograms = await ScopedReceiverProgramObjectsAsync(connection, receiverOnly: false, ct);
+        retainedPrograms.Should().Equal(prior.RetainedPrograms);
+
+        await SeedScopedReceiverFixturesAndAssertGuardsAsync(connection, ct);
+        HistoricalTable[] connectorBase =
+        [ new("RatelDeskConnectors", ["AuthenticationJson", "ReadinessJson"]) ];
+        var connectorRows = await HistoricalSnapshotsAsync(connection, connectorBase, ct);
+        var retainedIds = prior.Plan.CurrentMigrationIds.Where(id => id != ReceiverEvidenceMigration).ToArray();
+        retainedIds.Should().Equal(prior.History.MigrationIds.Append(HistoricalConnectorMigration).Order(StringComparer.Ordinal));
+        var retainedHistory = await MigrationHistorySnapshotAsync(connection, retainedIds, ct);
+
+        // Execute only the genuine receiver range. The lower Connector and Flow
+        // migrations, their data, and all original owner/Monitoring guards remain.
+        await ApplyScopedFlowRangeAsync(connection, down, ct);
+
+        (await AppliedAsync(prior.Database, ct)).Should().Equal(retainedIds);
+        (await MigrationHistorySnapshotAsync(connection, retainedIds, ct)).Should().Equal(retainedHistory);
+        await using (var db = Context(prior.Database))
+            (await db.Database.GetPendingMigrationsAsync(ct)).Should().Equal([ReceiverEvidenceMigration]);
+        await AssertScopedReceiverSchemaAsync(connection, present: false, ct);
+        await AssertPreceding151PreservedAsync(connection, prior, ct);
+        await AssertScopedRetainedRowsAsync(connection, connectorBase, connectorRows, ct);
+        (await ScopedReceiverProgramObjectsAsync(connection, receiverOnly: false, ct)).Should().Equal(retainedPrograms);
+
+        await ApplyScopedFlowRangeAsync(connection, up, ct);
+
+        await AssertCurrentModelAsync(prior.Database, prior.Plan, ct);
+        await AssertScopedReceiverSchemaAsync(connection, present: true, ct);
+        await AssertPreceding151PreservedAsync(connection, prior, ct);
+        await AssertScopedRetainedRowsAsync(connection, connectorBase, connectorRows, ct);
+        (await MigrationHistorySnapshotAsync(connection, retainedIds, ct)).Should().Equal(retainedHistory);
+        (await CompleteSchemaAsync(connection, ct)).Should().Equal(fullSchema);
+        (await ScopedReceiverProgramObjectsAsync(connection, receiverOnly: true, ct)).Should().Equal(receiverPrograms);
+        (await ScopedReceiverProgramObjectsAsync(connection, receiverOnly: false, ct)).Should().Equal(retainedPrograms);
+        await using (var count = new NpgsqlCommand("SELECT count(*) FROM \"FlowReceiverEvidence\"", connection))
+            ((long)(await count.ExecuteScalarAsync(ct))!).Should().Be(0,
+                "receiver Down destroys sidecar data; re-Up restores schema and history, not lost evidence");
+        await using (var nullable = new NpgsqlCommand("SELECT count(*) FROM \"RatelDeskConnectors\" WHERE \"AuthenticationJson\" IS NULL AND \"ReadinessJson\" IS NULL", connection))
+            ((long)(await nullable.ExecuteScalarAsync(ct))!).Should().Be(1,
+                "the retained historical connector gains nullable fields without invented authentication or readiness");
+
+        var fresh = await _fixture.CreateDatabaseAsync(ct);
+        await MigrateAsync(fresh, prior.Plan.CurrentMigration, ct);
+        await AssertCurrentModelAsync(fresh, prior.Plan, ct);
+        await using var freshConnection = new NpgsqlConnection(fresh);
+        await freshConnection.OpenAsync(ct);
+        await AssertScopedReceiverSchemaAsync(freshConnection, present: true, ct);
+        (await CompleteSchemaAsync(freshConnection, ct)).Should().Equal(fullSchema);
+        (await ScopedReceiverProgramObjectsAsync(freshConnection, receiverOnly: true, ct)).Should().Equal(receiverPrograms);
+        (await ScopedReceiverProgramObjectsAsync(freshConnection, receiverOnly: false, ct)).Should().Equal(retainedPrograms);
+    }
+
+    private static async Task<string> ReadScopedReceiverRangeAsync(string resource, string expectedSha256,
+        bool down, CancellationToken ct)
+    {
+        await using var stream = typeof(CommittedConnectionOwnershipMigrationPostgresTests).Assembly
+            .GetManifestResourceStream(ResourcePrefix + resource)
+            ?? throw new InvalidOperationException($"Missing genuine embedded receiver range: {resource}");
+        using var buffer = new MemoryStream();
+        await stream.CopyToAsync(buffer, ct);
+        var bytes = buffer.ToArray();
+        Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant().Should().Be(expectedSha256);
+        var sql = Encoding.UTF8.GetString(bytes);
+        if (sql.Length > 0 && sql[0] == '\uFEFF') sql = sql[1..];
+        var inserts = Regex.Matches(sql,
+            """INSERT INTO "__EFMigrationsHistory" \("MigrationId", "ProductVersion"\)\s*VALUES \('([^']+)', '([^']+)'\);""");
+        var deletes = Regex.Matches(sql,
+            """DELETE FROM "__EFMigrationsHistory"\s+WHERE "MigrationId"\s*=\s*'([^']+)'\s*;""");
+        if (down)
+        {
+            inserts.Should().BeEmpty();
+            deletes.Select(match => match.Groups[1].Value).Should().Equal([ReceiverEvidenceMigration]);
+            Regex.Matches(sql, """DROP TABLE "([^"]+)";""")
+                .Select(match => match.Groups[1].Value).Should().Equal(["FlowReceiverEvidence"]);
+        }
+        else
+        {
+            deletes.Should().BeEmpty();
+            inserts.Select(match => match.Groups[1].Value).Should().Equal([ReceiverEvidenceMigration]);
+            inserts.Select(match => match.Groups[2].Value).Should().OnlyContain(version => version == "10.0.12");
+        }
+        return sql;
+    }
+
+    private static async Task AssertScopedReceiverSchemaAsync(NpgsqlConnection connection, bool present,
+        CancellationToken ct)
+    {
+        await using var query = new NpgsqlCommand("""
+            SELECT to_regclass('public."FlowReceiverEvidence"') IS NOT NULL,
+              to_regprocedure('public.nr_receiver_evidence_immutable_inputs()') IS NOT NULL,
+              (SELECT count(*) FROM pg_catalog.pg_trigger tr JOIN pg_catalog.pg_class rel ON rel.oid=tr.tgrelid
+                JOIN pg_catalog.pg_namespace ns ON ns.oid=rel.relnamespace
+                WHERE ns.nspname='public' AND rel.relname='FlowReceiverEvidence'
+                  AND tr.tgname='TR_FlowReceiverEvidence_ImmutableInputs' AND NOT tr.tgisinternal
+                  AND tr.tgenabled='O' AND tr.tgtype=19),
+              (SELECT count(*) FROM information_schema.columns WHERE table_schema='public'
+                AND table_name='RatelDeskConnectors' AND column_name IN ('AuthenticationJson','ReadinessJson')
+                AND data_type='jsonb' AND is_nullable='YES' AND column_default IS NULL),
+              (SELECT count(*) FROM pg_catalog.pg_constraint con JOIN pg_catalog.pg_class rel ON rel.oid=con.conrelid
+                JOIN pg_catalog.pg_namespace ns ON ns.oid=rel.relnamespace WHERE ns.nspname='public'
+                  AND rel.relname='FlowActions' AND con.conname='AK_FlowActions_TenantId_RunId_NodeId' AND con.contype='u'),
+              (SELECT count(*) FROM pg_catalog.pg_indexes WHERE schemaname='public' AND tablename='FlowActions'
+                AND indexname='IX_FlowActions_TenantId_RunId'),
+              (SELECT count(*) FROM pg_catalog.pg_constraint con JOIN pg_catalog.pg_class rel ON rel.oid=con.conrelid
+                JOIN pg_catalog.pg_namespace ns ON ns.oid=rel.relnamespace WHERE ns.nspname='public'
+                  AND rel.relname='FlowReceiverEvidence' AND con.convalidated
+                  AND con.conname IN ('CK_FlowReceiverEvidence_V2','FK_FlowReceiverEvidence_FlowActions_TenantId_RunId_NodeId'))
+            """, connection);
+        await using var reader = await query.ExecuteReaderAsync(ct);
+        (await reader.ReadAsync(ct)).Should().BeTrue();
+        reader.GetBoolean(0).Should().Be(present);
+        reader.GetBoolean(1).Should().Be(present);
+        reader.GetInt64(2).Should().Be(present ? 1 : 0);
+        reader.GetInt64(3).Should().Be(present ? 2 : 0);
+        reader.GetInt64(4).Should().Be(present ? 1 : 0);
+        reader.GetInt64(5).Should().Be(present ? 0 : 1);
+        reader.GetInt64(6).Should().Be(present ? 2 : 0);
+    }
+
+    private sealed record ScopedReceiverAction(int TenantId, Guid RunId, Guid NodeId);
+
+    private static async Task SeedScopedReceiverFixturesAndAssertGuardsAsync(NpgsqlConnection connection,
+        CancellationToken ct)
+    {
+        ScopedReceiverAction action;
+        await using (var query = new NpgsqlCommand("SELECT \"TenantId\",\"RunId\",\"NodeId\" FROM \"FlowActions\"", connection))
+        await using (var reader = await query.ExecuteReaderAsync(ct))
+        {
+            (await reader.ReadAsync(ct)).Should().BeTrue();
+            action = new(reader.GetInt32(0), reader.GetGuid(1), reader.GetGuid(2));
+            (await reader.ReadAsync(ct)).Should().BeFalse("the preceding helper seeds one passive relational Flow action");
+        }
+        // Explicitly inert bytes populate only the eight historical Connector fields.
+        // They are not usable credentials, executable configuration or receiver proof.
+        await using (var connector = new NpgsqlCommand("""
+            INSERT INTO "RatelDeskConnectors" ("TenantId","Id","Revision","RowVersion","OwnerPrincipalId",
+              "ConfigurationJson","ProtectedCredential","CredentialRevision")
+            VALUES (@tenant,@connector,1,1,@principal,'{"passiveMigrationFixture":{"unknown":[null,true,1]}}'::jsonb,
+              'passive-migration-not-a-protected-credential',1)
+            """, connection))
+        {
+            Add(connector, ("tenant", action.TenantId), ("connector", Guid.NewGuid()), ("principal", Guid.NewGuid().ToString("N")));
+            (await connector.ExecuteNonQueryAsync(ct)).Should().Be(1);
+        }
+        await using (var foreign = ScopedReceiverInsertCommand(connection, action, checked(action.TenantId + 1)))
+            await AssertScopedReceiverRejectedAsync(foreign, PostgresErrorCodes.ForeignKeyViolation,
+                "FK_FlowReceiverEvidence_FlowActions_TenantId_RunId_NodeId", guardMessage: false, ct);
+        await using (var wrongVersion = ScopedReceiverInsertCommand(connection, action, action.TenantId, schemaVersion: 1))
+            await AssertScopedReceiverRejectedAsync(wrongVersion, PostgresErrorCodes.CheckViolation,
+                "CK_FlowReceiverEvidence_V2", guardMessage: false, ct);
+        await using (var replay = ScopedReceiverInsertCommand(connection, action, action.TenantId, replayHours: 25))
+            await AssertScopedReceiverRejectedAsync(replay, PostgresErrorCodes.CheckViolation,
+                "CK_FlowReceiverEvidence_V2", guardMessage: false, ct);
+        await using (var insert = ScopedReceiverInsertCommand(connection, action, action.TenantId))
+            (await insert.ExecuteNonQueryAsync(ct)).Should().Be(1);
+        await AssertScopedReceiverRejectedUpdateAsync(connection, action,
+            "\"PreparationJson\"='{\"tampered\":true}'::jsonb,\"RowVersion\"=2", ct);
+    }
+
+    private static NpgsqlCommand ScopedReceiverInsertCommand(NpgsqlConnection connection, ScopedReceiverAction action,
+        int tenant, int schemaVersion = 2, int replayHours = 1)
+    {
+        var command = new NpgsqlCommand("""
+            INSERT INTO "FlowReceiverEvidence" ("RunId","NodeId","TenantId","SchemaVersion","PreparationJson",
+              "EvidenceFingerprint","ReceiverIdempotencyKey","ReceiverFingerprint","OriginalCreatedAtUtc",
+              "AutomaticReplayUntilUtc","MayHaveCommitted","FinalReconciliationAttempted","RowVersion")
+            VALUES (@run,@node,@tenant,@schema,'{"passiveReceiverMigrationFixture":true}'::jsonb,
+              @evidence,@key,@receiver,@created,@replay,FALSE,FALSE,1)
+            """, connection);
+        var created = new DateTimeOffset(2026, 10, 5, 12, 0, 0, TimeSpan.Zero);
+        Add(command, ("run", action.RunId), ("node", action.NodeId), ("tenant", tenant), ("schema", schemaVersion),
+            ("evidence", new string('a', 64)), ("key", "passive-receiver-migration-" + action.RunId.ToString("N")),
+            ("receiver", new string('b', 64)), ("created", created), ("replay", created.AddHours(replayHours)));
+        return command;
+    }
+
+    private static async Task AssertScopedReceiverRejectedUpdateAsync(NpgsqlConnection connection,
+        ScopedReceiverAction action, string assignments, CancellationToken ct)
+    {
+        // Assignments are fixed literals above; identities remain parameters.
+        await using var update = new NpgsqlCommand($"UPDATE \"FlowReceiverEvidence\" SET {assignments} WHERE \"RunId\"=@run AND \"NodeId\"=@node", connection);
+        Add(update, ("run", action.RunId), ("node", action.NodeId));
+        await AssertScopedReceiverRejectedAsync(update, PostgresErrorCodes.CheckViolation,
+            "receiver-evidence-immutable-input-conflict", guardMessage: true, ct);
+    }
+
+    private static async Task AssertScopedReceiverRejectedAsync(NpgsqlCommand command, string sqlState,
+        string expectedIdentity, bool guardMessage, CancellationToken ct)
+    {
+        var exception = await Assert.ThrowsAsync<PostgresException>(async () => { await command.ExecuteNonQueryAsync(ct); });
+        exception.SqlState.Should().Be(sqlState);
+        if (guardMessage) exception.MessageText.Should().Be(expectedIdentity);
+        else exception.ConstraintName.Should().Be(expectedIdentity);
+    }
+
+    private static async Task<byte[]> ScopedReceiverProgramObjectsAsync(NpgsqlConnection connection,
+        bool receiverOnly, CancellationToken ct)
+    {
+        await using var query = new NpgsqlCommand("""
+            SELECT convert_to(jsonb_build_object(
+              'functions',(SELECT jsonb_agg(jsonb_build_array(p.proname,pg_get_function_identity_arguments(p.oid),pg_get_functiondef(p.oid))
+                ORDER BY p.proname COLLATE "C",pg_get_function_identity_arguments(p.oid) COLLATE "C")
+                FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+                WHERE n.nspname='public' AND p.prokind IN ('f','p') AND
+                  (p.proname='nr_receiver_evidence_immutable_inputs' AND pg_get_function_identity_arguments(p.oid)='')=@receiver_only),
+              'triggers',(SELECT jsonb_agg(jsonb_build_array(rel.relname,tr.tgname,pg_get_triggerdef(tr.oid),tr.tgenabled)
+                ORDER BY rel.relname COLLATE "C",tr.tgname COLLATE "C") FROM pg_catalog.pg_trigger tr
+                JOIN pg_catalog.pg_class rel ON rel.oid=tr.tgrelid JOIN pg_catalog.pg_namespace n ON n.oid=rel.relnamespace
+                WHERE n.nspname='public' AND NOT tr.tgisinternal AND (rel.relname='FlowReceiverEvidence')=@receiver_only)
+            )::text,'UTF8')
+            """, connection);
+        query.Parameters.AddWithValue("receiver_only", receiverOnly);
         return (byte[])(await query.ExecuteScalarAsync(ct))!;
     }
 }
