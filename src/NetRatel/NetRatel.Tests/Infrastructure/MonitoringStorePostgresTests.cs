@@ -3,7 +3,7 @@ using System.Collections.Immutable;
 using System.Data.Common;
 using System.Text.Json;
 using Akka.Actor;
-using FluentAssertions;
+using AwesomeAssertions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
