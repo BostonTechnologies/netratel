@@ -28,8 +28,8 @@ public sealed class OperationsRecentJobsService(IEffectiveAccessService access, 
                               StartedAtUtc = run.StartedAtUtc ?? run.CreatedAtUtc,
                               JobName = job != null && (job.TenantId == tenantId || job.TenantId == null) ? job.Name : "Job unavailable" })
             .Take(6).ToListAsync(cancellationToken).ConfigureAwait(false);
-        var identities = await MonitoringIdentityProjection.ReadAsync(db, tenantId,
-            rows.Where(row => row.AgentId.HasValue).Select(row => row.AgentId!.Value), cancellationToken).ConfigureAwait(false);
+        var identities = (await MonitoringIdentityProjection.ReadAsync(db, tenantId,
+            rows.Where(row => row.AgentId.HasValue).Select(row => row.AgentId!.Value), cancellationToken).ConfigureAwait(false)).ToDictionary(identity => identity.AgentId);
         return rows.Select(row => new OperationsRecentJobDto(row.Id, row.JobId, row.JobName,
             row.AgentId is { } agentId ? identities[agentId] : null,
             (JobRunStatusDto)row.Status, row.StartedAtUtc)).ToImmutableArray();

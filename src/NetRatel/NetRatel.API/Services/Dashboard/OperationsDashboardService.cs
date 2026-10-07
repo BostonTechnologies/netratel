@@ -57,8 +57,8 @@ public sealed class OperationsDashboardService(IMonitoringResourceAuthorizer aut
             GROUP BY "AgentId" ORDER BY "HighestSeverity" DESC,"ActiveOccurrences" DESC,"AgentId"
             LIMIT {pageSize} OFFSET {checked(page * pageSize)}
             """).ToListAsync(cancellationToken).ConfigureAwait(false);
-        var identities = await MonitoringIdentityProjection.ReadAsync(db, tenantId,
-            rows.Select(row => row.AgentId), cancellationToken).ConfigureAwait(false);
+        var identities = (await MonitoringIdentityProjection.ReadAsync(db, tenantId,
+            rows.Select(row => row.AgentId), cancellationToken).ConfigureAwait(false)).ToDictionary(identity => identity.AgentId);
         var clients = rows.Select(row => new OperationsAlertClientDto(row.AgentId, identities[row.AgentId],
             Enum.IsDefined((MonitoringSeverity)row.HighestSeverity) ? (MonitoringSeverity)row.HighestSeverity : throw new InvalidOperationException("invalid_monitoring_severity"),
             row.ActiveOccurrences, row.AcknowledgedOccurrences, row.FiringOccurrences,
