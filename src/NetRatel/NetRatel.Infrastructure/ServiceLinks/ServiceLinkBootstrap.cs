@@ -14,10 +14,10 @@ public sealed partial class ServiceLinkCoordinator
         var actorId = await Authorize(actor, request.LocalTenantId, ct);
         if (connectorSetup is not null)
         {
-            var installed = await identity.GetAsync(ct);
-            if (installed.SourceInstanceId is null)
-                _ = await connectorSetup.AdoptAsync(int.Parse(request.LocalTenantId,
-                    System.Globalization.CultureInfo.InvariantCulture), installed.Revision, actor, ct);
+            var tenant = int.Parse(request.LocalTenantId, System.Globalization.CultureInfo.InvariantCulture);
+            var installed = await connectorSetup.GetAsync(tenant, actor, ct);
+            if (installed.AdoptedSourceInstanceId is null)
+                _ = await connectorSetup.AdoptAsync(tenant, installed.IdentityRevision, actor, ct);
             else await connectorSetup.PrepareProducerAsync(actor, ct);
         }
         var local = await MetadataAsync(ct);

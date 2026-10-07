@@ -72,8 +72,7 @@ public static class ServiceClientEndpoints
             }
             catch (Exception exception) when (exception is ArgumentException or Microsoft.Extensions.Options.OptionsValidationException or ServiceLinkProtocolException)
             {
-                // A broken optional service profile must not turn tenant grant
-                // authority into a claim of guided availability or a global edit right.
+                reciprocalEnabled = false;
             }
             return Results.Ok(new ServiceClientManagementAuthority(result.Count > 0, result.ToArray(), reciprocalEnabled));
         });

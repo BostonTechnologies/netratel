@@ -55,7 +55,7 @@ public sealed class RatelDeskConnectorSetupService(IRatelDeskConnectorAuthorizat
                 links.Add(new(id, profile.PeerInstanceId, profile.Peer.ApiBaseUrl,
                     profile.Grant.ResourceConstraints.OrganizationId!, profile.Grant.ResourceConstraints.CustomerIds[0], profile.LinkRevision));
             }
-            catch (ServiceLinkProtocolException) { /* Denied/incomplete profiles are not selectable. No discovery or token HTTP. */ }
+            catch (ServiceLinkProtocolException) { continue; }
         }
         return new(source, installed.InstanceId, installed.SourceInstanceId, installed.Revision, links);
     }
