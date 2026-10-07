@@ -25,6 +25,10 @@
     {
         @if (_pendingWatchAtSaveTenant == State.TenantId && _pendingWatchAtSaveRevision is { } savedRevision) { <MudAlert Severity="Severity.Warning" data-testid="monitoring-watch-pending-at-save">Configuration revision @savedRevision was saved. The server reported selected service watch updates pending at save time. This notice does not confirm their current activation; fresh service evidence is still required.</MudAlert> }
         @if (snapshot.Configuration.WatchPolicyUpdatePending) { <MudAlert Severity="Severity.Warning" data-testid="monitoring-watch-pending">Configuration is saved. Selected service watch activation is pending; current service evidence remains unknown until the policy is accepted.</MudAlert> }
+        @if (State.ClientFilter is { } filteredClient)
+        {
+            <div class="monitoring-client-filter"><MudChip T="Guid" Variant="Variant.Outlined" OnClose="ClearClientFilter">Client: @ClientName(filteredClient)</MudChip><MudText Typo="Typo.caption">Alert rows show this client. Counts show the whole tenant.</MudText></div>
+        }
         <div class="monitoring-counts" aria-label="Counts across this tenant">
             <MudButton Variant="Variant.Outlined" Color="Color.Error" Size="Size.Small" OnClick='() => FilterState("firing")' aria-pressed="@(_stateFilter == "firing")">Firing <strong>@snapshot.Summary.FiringOccurrences</strong></MudButton>
             <MudButton Variant="Variant.Outlined" Size="Size.Small" OnClick='() => FilterState("pending")' aria-pressed="@(_stateFilter == "pending")">Pending <strong>@snapshot.Summary.PendingSeries</strong></MudButton>

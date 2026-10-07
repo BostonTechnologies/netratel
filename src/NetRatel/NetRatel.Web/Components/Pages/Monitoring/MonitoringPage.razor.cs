@@ -16,6 +16,9 @@ public partial class MonitoringPage
     [SupplyParameterFromQuery(Name = "clientId")] public Guid? RequestedClientId { get; set; }
     [SupplyParameterFromQuery(Name = "state")] public string? RequestedState { get; set; }
     private TimeZoneInfo _timeZone = TimeZoneInfo.Utc;
+    private int? _appliedQueryTenant;
+    private Guid? _appliedQueryClient;
+    private string? _appliedQueryState;
     private string _stateFilter = "";
     private bool _conflict, _reviewedConflict;
     private string? _reviewDescription;
@@ -60,9 +63,36 @@ public partial class MonitoringPage
 
     protected override async Task OnInitializedAsync()
     {
-        try { _tenants = await Api.GetTenantsAsync(_lifetime.Token); if (_tenants.Count > 0) { State.ClientFilter = RequestedClientId; _stateFilter = RequestedState ?? ""; await State.SelectTenantAsync(_tenants.Any(tenant => tenant.TenantId == RequestedTenantId) ? RequestedTenantId!.Value : _tenants[0].TenantId); } }
+        try { _tenants = await Api.GetTenantsAsync(_lifetime.Token); if (_tenants.Count > 0) { State.ClientFilter = RequestedClientId; _stateFilter = RequestedState ?? ""; await State.SelectTenantAsync(_tenants.Any(tenant => tenant.TenantId == RequestedTenantId) ? RequestedTenantId!.Value : _tenants[0].TenantId); RememberQuery(); } }
         catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { return; }
         catch (Exception error) when (error is HttpRequestException or System.Text.Json.JsonException) { _startupError = "Could not load authorized monitoring tenants. Refresh to try again."; }
+    }
+    protected override async Task OnParametersSetAsync() { await ApplyRequestedScope(); }
+    private void RememberQuery()
+    {
+        _appliedQueryTenant = RequestedTenantId;
+        _appliedQueryClient = RequestedClientId;
+        _appliedQueryState = RequestedState;
+    }
+    private async Task<bool> ApplyRequestedScope()
+    {
+        if (_busy || _tenants.Count == 0 ||
+            (_appliedQueryTenant == RequestedTenantId && _appliedQueryClient == RequestedClientId && _appliedQueryState == RequestedState)) return false;
+        var tenant = _tenants.Any(item => item.TenantId == RequestedTenantId) ? RequestedTenantId!.Value : State.TenantId;
+        var stateChanged = _appliedQueryState != RequestedState;
+        RememberQuery();
+        CloseEditor(); _search = "";
+        if (stateChanged) _stateFilter = RequestedState ?? "";
+        State.ClientFilter = RequestedClientId;
+        if (State.TenantId != tenant) _pendingWatchAtSaveRevision = null;
+        await State.SelectTenantAsync(tenant);
+        return true;
+    }
+    private void ClearClientFilter()
+    {
+        var query = $"/monitoring?tenantId={State.TenantId}";
+        if (!string.IsNullOrWhiteSpace(_stateFilter)) query += "&state=" + Uri.EscapeDataString(_stateFilter);
+        Navigation.NavigateTo(query, replace: true);
     }
     protected override void OnAfterRender(bool firstRender) { if (firstRender) { _interactive = true; StateHasChanged(); } }
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -78,6 +108,7 @@ public partial class MonitoringPage
             }
             catch (Exception error) when (error is JSException or JSDisconnectedException or TimeZoneNotFoundException or InvalidTimeZoneException) { _timeZone = TimeZoneInfo.Utc; }
         }
+        if (await ApplyRequestedScope()) { StateHasChanged(); return; }
         if (_restoreEditorFocus is not { } launcher) return;
         _restoreEditorFocus = null;
         if (_lifetime.IsCancellationRequested || _editor is not null || _tab != "Manage" ||
@@ -90,7 +121,9 @@ public partial class MonitoringPage
     private async Task ChangeTenant(ChangeEventArgs args)
     {
         if (_editor is not null || !int.TryParse(args.Value?.ToString(), out var tenant) || !_tenants.Any(t => t.TenantId == tenant)) return;
-        CloseEditor(); _search = ""; _stateFilter = ""; RequestedClientId = null; State.ClientFilter = null; _pendingWatchAtSaveRevision = null; await State.SelectTenantAsync(tenant);
+        CloseEditor(); _search = ""; _stateFilter = ""; RequestedTenantId = tenant; RequestedClientId = null; RequestedState = null;
+        RememberQuery(); State.ClientFilter = null; _pendingWatchAtSaveRevision = null; await State.SelectTenantAsync(tenant);
+        Navigation.NavigateTo($"/monitoring?tenantId={tenant}", replace: true);
     }
     private Task Refresh() => State.RefreshAsync();
     private Task PageSeries(string? cursor) => State.NextSeriesPageAsync(cursor);
