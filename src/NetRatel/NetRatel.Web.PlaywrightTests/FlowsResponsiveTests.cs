@@ -61,6 +61,14 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
             await page.Locator($"[data-node-id='{actionId}'] [data-testid=flow-node-settings]").ClickAsync();
         }
         await Assertions.Expect(page.GetByTestId("flow-connector-status")).ToContainTextAsync("No owned connector");
+        Assert.True(await page.EvaluateAsync<bool>("""
+            () => {
+                const drawer=document.querySelector('[data-testid=flow-properties]'),map=document.querySelector('.veloxdev-wf-minimap');
+                if(!drawer||!map)return true;
+                const d=drawer.getBoundingClientRect(),m=map.getBoundingClientRect(),x=m.x+m.width/2,y=m.y+m.height/2;
+                return x<d.left||x>=d.right||y<d.top||y>=d.bottom||!!document.elementFromPoint(x,y)?.closest('[data-testid=flow-properties]');
+            }
+            """), "Canvas overview must remain behind overlay properties.");
         await page.GetByTestId("flow-validate").ClickAsync();
         await Assertions.Expect(page.GetByTestId("flow-validation-issues")).ToContainTextAsync("connector reference");
         await page.GetByTestId("flow-dry-run-toggle").ClickAsync();

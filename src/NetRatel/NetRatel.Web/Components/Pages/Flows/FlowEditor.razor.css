@@ -18,7 +18,7 @@
 .flow-editor ::deep .flow-palette-item{display:flex;align-items:center;gap:.15rem;padding:.35rem 0;min-width:0;border-bottom:1px solid var(--mud-palette-divider)}
 .flow-editor ::deep .flow-palette-handle{cursor:grab;display:flex;align-items:center;min-width:24px;min-height:32px;touch-action:none;color:var(--mud-palette-text-secondary)}
 .flow-editor ::deep .flow-palette-label{flex:1;border:0;background:none;text-align:left;padding:0;font-size:.75rem;line-height:1.25;overflow-wrap:anywhere}
-.flow-editor ::deep .flow-canvas-column{min-width:0;min-height:0;display:flex;flex-direction:column;border-radius:6px}
+.flow-editor ::deep .flow-canvas-column{min-width:0;min-height:0;display:flex;flex-direction:column;border-radius:6px;isolation:isolate}
 .flow-editor ::deep .flow-drop-allowed{outline:2px dashed var(--mud-palette-success);outline-offset:-2px}
 .flow-editor ::deep .flow-drop-forbidden{outline:2px dashed var(--mud-palette-error);outline-offset:-2px}
 .flow-properties{display:flex;flex-direction:column;width:400px;max-width:100%;z-index:45;box-shadow:var(--mud-elevation-8)}
