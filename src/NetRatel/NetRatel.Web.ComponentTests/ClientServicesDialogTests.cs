@@ -2,6 +2,7 @@ using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using Bunit;
 using AwesomeAssertions;
+using Microsoft.AspNetCore.Components.Web;
 using Microsoft.Extensions.DependencyInjection;
 using MudBlazor.Services;
 using MudBlazor;
@@ -21,6 +22,7 @@ public sealed class ClientServicesDialogTests : AsyncBunitContext
     public ClientServicesDialogTests()
     {
         JSInterop.Mode = JSRuntimeMode.Loose;
+        JSInterop.SetupModule("./js/client-services-focus.js").Mode = JSRuntimeMode.Loose;
         Services.AddMudServices(options => options.PopoverOptions.CheckForPopoverProvider = false);
         Services.AddSingleton<IClientServicesApiService>(_api);
         Services.AddSingleton<IClientServicesLiveStreamService>(_live);
@@ -242,6 +244,49 @@ public sealed class ClientServicesDialogTests : AsyncBunitContext
         launcher.Render(parameters => parameters.Add(component => component.TenantId, 7).Add(component => component.AgentId, Guid.NewGuid()));
         await _live.Cancelled.Task.WaitAsync(TimeSpan.FromSeconds(2));
         provider.WaitForAssertion(() => provider.FindAll("[data-testid='client-services-dialog']").Should().BeEmpty());
+    }
+
+    [Theory]
+    [InlineData("unchanged", true)]
+    [InlineData("tenant", false)]
+    [InlineData("agent", false)]
+    [InlineData("tenant-away-and-back", false)]
+    [InlineData("disposed", false)]
+    public async Task Launcher_Waits_For_Exact_Dismissal_And_Rejects_Obsolete_Focus(string scopeChange, bool shouldRestore)
+    {
+        var module = JSInterop.SetupModule("./js/client-services-focus.js");
+        module.Mode = JSRuntimeMode.Loose;
+        var dismissal = module.SetupVoid("waitForDismissal", _ => true);
+        var provider = Render<MudDialogProvider>();
+        var launcher = Render<ClientServicesLauncher>(parameters => parameters
+            .Add(component => component.TenantId, 3).Add(component => component.AgentId, AgentId));
+        var opening = launcher.Find("[data-testid='client-services-launcher']").ClickAsync(new MouseEventArgs());
+        provider.WaitForAssertion(() => provider.Find("[data-testid='close-services']").Should().NotBeNull());
+        var dialogId = provider.Find(".mud-dialog").Id!.TrimStart('_');
+        var focusBeforeClose = JSInterop.Invocations["Blazor._internal.domWrapper.focus"].Count;
+        provider.Find("[data-testid='close-services']").Click();
+        provider.WaitForAssertion(() =>
+        {
+            dismissal.Invocations.Should().ContainSingle();
+            dismissal.Invocations.Single().Arguments.Should().ContainSingle().Which.Should().Be(dialogId);
+        });
+        // The native provider has completed Result, but the controlled DOM-dismissal seam is pending.
+        JSInterop.Invocations["Blazor._internal.domWrapper.focus"].Should().HaveCount(focusBeforeClose);
+        opening.IsCompleted.Should().BeFalse();
+
+        if (scopeChange is "tenant" or "tenant-away-and-back")
+            launcher.Render(parameters => parameters.Add(component => component.TenantId, 7));
+        if (scopeChange == "tenant-away-and-back")
+            launcher.Render(parameters => parameters.Add(component => component.TenantId, 3));
+        if (scopeChange == "agent")
+            launcher.Render(parameters => parameters.Add(component => component.AgentId, Guid.NewGuid()));
+        if (scopeChange == "disposed") await DisposeComponentsAsync();
+
+        dismissal.SetVoidResult();
+        await opening;
+        JSInterop.Invocations["Blazor._internal.domWrapper.focus"].Should()
+            .HaveCount(focusBeforeClose + (shouldRestore ? 1 : 0));
+        await _live.Cancelled.Task.WaitAsync(TimeSpan.FromSeconds(2));
     }
 
     private IRenderedComponent<ClientServicesDialog> RenderDialog() => Render<ClientServicesDialog>(parameters => parameters
