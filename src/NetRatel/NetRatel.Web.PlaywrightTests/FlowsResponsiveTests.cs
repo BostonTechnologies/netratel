@@ -197,7 +197,13 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
         Assert.InRange(actionAfter.X, actionBefore.X - 1, actionBefore.X + 1); Assert.InRange(actionAfter.Y, actionBefore.Y - 1, actionBefore.Y + 1);
         await page.Locator("[data-node-kind=MapIncident] [data-testid=flow-node-delete]").ClickAsync();
         await page.GetByTestId("flow-delete-confirm").ClickAsync();
-        await Assertions.Expect(page.Locator("[data-node-kind=MapIncident]")).ToHaveCountAsync(0);
+        try { await Assertions.Expect(page.Locator("[data-node-kind=MapIncident]")).ToHaveCountAsync(0); }
+        catch
+        {
+            await File.WriteAllTextAsync(Path.Combine(evidence, "flows-delete-failure.txt"), await page.GetByTestId("flow-editor").InnerTextAsync());
+            await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, "flows-delete-failure.png"), FullPage = true, Animations = ScreenshotAnimations.Disabled });
+            throw;
+        }
         await Assertions.Expect(page.Locator("[data-node-kind=CreateIncident].selected")).ToHaveCountAsync(1);
         await Assertions.Expect(page.GetByTestId("flow-link")).ToHaveCountAsync(0);
 
@@ -233,7 +239,13 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
     private static async Task CloseEditorAsync(IPage page)
     {
         await page.GetByTestId("flow-close").ClickAsync();
-        await page.WaitForFunctionAsync("() => !document.querySelector('[data-testid=flow-editor]') || document.querySelector('[data-testid=flow-unsaved]') !== null");
+        await page.WaitForFunctionAsync("""
+            () => {
+                if(!document.querySelector('[data-testid=flow-editor]'))return true;
+                const dialog=document.querySelector('[data-testid=flow-unsaved]');
+                return dialog && dialog.getBoundingClientRect().height>0 && getComputedStyle(dialog).visibility!=='hidden';
+            }
+            """);
         if (await page.GetByTestId("flow-unsaved").IsVisibleAsync()) await page.GetByTestId("flow-discard").ClickAsync();
         await page.GetByTestId("flow-editor").WaitForAsync(new() { State = WaitForSelectorState.Hidden });
     }
