@@ -94,7 +94,7 @@ public sealed class OperationsDashboardPostgresTests(PostgreSqlPersistenceFixtur
         var occurrence = new MonitoringOccurrenceDto(occurrenceId, Guid.NewGuid(), now, now, rule, evidence,
             MonitoringFlowDispatchDisposition.NoFlowSelected, acknowledged ? Guid.NewGuid() : null, acknowledged ? now : null);
         var state = new MonitoringSeriesState(key, 1, 1, phase, evidence.Quality, LatestEvidence: evidence,
-            Occurrence: active ? occurrence : null, Suppressed: suppressed);
+            Occurrence: active ? occurrence : null, Suppressed: suppressed, ApplicableBypassIds: []);
         return new() { TenantId = tenantId, RuleId = ruleId, AgentId = agentId, ResourceKey = "cpu", StateRevision = 1,
             Phase = phase, EvidenceQuality = evidence.Quality, ActiveOccurrenceId = active ? occurrenceId : null,
             Acknowledged = acknowledged, Suppressed = suppressed, StateJson = JsonSerializer.Serialize(state), UpdatedAtUtc = now };
