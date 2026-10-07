@@ -135,14 +135,18 @@
     private async Task RefreshAsync()
     {
         if (disposed || busy) return;
-        busy = true; error = null; links = []; testResult = null; ClearPending();
+        busy = true; error = null; links = []; completions.Clear(); testResult = null; ClearPending();
         try
         {
             var current = await Api.ListLinksAsync();
             if (!disposed)
             {
                 links = current.ToList();
-                foreach (var link in links.Where(LifecycleConnected)) await CompleteAsync(link);
+                foreach (var link in links.Where(LifecycleConnected))
+                {
+                    if (disposed) break;
+                    await CompleteAsync(link);
+                }
             }
         }
         catch (ServiceAdministrationException exception) when (exception.StatusCode is System.Net.HttpStatusCode.Forbidden or System.Net.HttpStatusCode.Unauthorized)
@@ -156,7 +160,8 @@
         : "Incident target awaiting verification";
     private void ClearPending() { pendingLinkId = null; pendingRotationDirection = null; }
     private void CancelPending() { if (!disposed && !busy) ClearPending(); }
-    private bool IsCurrentRow(ServiceLinkAdminStatus link) => !disposed && !busy && links.Any(current => ReferenceEquals(current, link));
+    private bool IsRetainedRow(ServiceLinkAdminStatus link) => !disposed && links.Any(current => ReferenceEquals(current, link));
+    private bool IsCurrentRow(ServiceLinkAdminStatus link) => !busy && IsRetainedRow(link);
     private void PrepareDisconnect(ServiceLinkAdminStatus link)
     {
         if (!IsCurrentRow(link) || link.DeploymentManaged || link.LifecycleState is "revoked" or "expired" or "failed") return;
@@ -194,14 +199,14 @@
     }
     private async Task CompleteAsync(ServiceLinkAdminStatus link)
     {
-        if (link.LinkId is null || !int.TryParse(link.LocalTenantId, out var tenantId)) return;
+        if (!IsRetainedRow(link) || !LifecycleConnected(link) || link.LinkId is null || !int.TryParse(link.LocalTenantId, out var tenantId)) return;
         try
         {
             var result = await Api.CompleteConnectionAsync(tenantId, link.LinkId);
-            if (!disposed) completions[link.LinkId] = result;
+            if (IsRetainedRow(link)) completions[link.LinkId] = result;
         }
         catch (Exception exception) when (exception is HttpRequestException or JsonException or InvalidDataException or ServiceAdministrationException or OperationCanceledException)
-        { if (!disposed) completions.Remove(link.LinkId); }
+        { if (IsRetainedRow(link)) completions.Remove(link.LinkId); }
     }
     private async Task TestAsync(ServiceLinkAdminStatus link)
     {
@@ -210,6 +215,7 @@
         try
         {
             await CompleteAsync(link);
+            if (!IsRetainedRow(link)) return;
             var current = await Api.TestLinkAsync(link.LinkId);
             if (!disposed) testResult = current;
         }
@@ -217,7 +223,7 @@
         { if (!disposed) error = "The read-only authenticated probes could not be confirmed. Review the stored directions before retrying."; }
         finally { busy = false; }
     }
-    public void Dispose() { disposed = true; links = []; testResult = null; ClearPending(); }
+    public void Dispose() { disposed = true; links = []; completions.Clear(); testResult = null; ClearPending(); }
     private static string InboundStatus(ServiceLinkAdminStatus link) => link.LifecycleState is "revoked" or "revocation_pending" or "expired" ? "Local authorization disabled" : link.LocalInboundActive ? "Authenticated and active" : link.LifecycleState == "active" ? "Current grant unavailable" : link.LocalInboundReady ? "Control-only; business activation pending" : "Awaiting approval / verification";
     private static string OutboundStatus(ServiceLinkAdminStatus link) => link.LifecycleState is "revoked" or "revocation_pending" or "expired" ? "Local sender disabled" : link.LocalBusinessSenderEnabled && link.PeerActiveAcknowledged ? "Authenticated and active" : link.LifecycleState == "active" ? "Sender disabled; grant or peer acknowledgement unavailable" : link.LocalOutboundPersisted ? "Credentials saved; verification / acknowledgement pending" : "Awaiting approved credentials";
     private static bool LifecycleConnected(ServiceLinkAdminStatus link) => link.LifecycleState == "active" && link.LocalInboundActive && link.LocalBusinessSenderEnabled && link.PeerActiveAcknowledged;

@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Components.Web;
 using Microsoft.Extensions.DependencyInjection;
 using MudBlazor;
 using MudBlazor.Services;
+using NetRatel.Shared.Contracts.RatelDesk;
 using NetRatel.Shared.ServiceLinks;
 using NetRatel.Web.Components.Shared.ServiceLinks;
 using NetRatel.Web.Services.ServiceLinks;
@@ -49,6 +50,7 @@ public sealed class HelpdeskConnectionsRefreshRegressionTests : AsyncBunitContex
             await InvokeAllRowCallbacksAsync(panel, callbacks);
             Assert.Equal(2, transport.GetRequests);
             Assert.Single(transport.PostPaths); // Only the successful probe before refresh.
+            Assert.Equal(2, transport.CompletionRequests);
             AssertNoRetainedState(panel);
         }
         finally
@@ -61,17 +63,18 @@ public sealed class HelpdeskConnectionsRefreshRegressionTests : AsyncBunitContex
 
         await InvokeAllRowCallbacksAsync(panel, callbacks);
         Assert.Single(transport.PostPaths);
+        Assert.Equal(2, transport.CompletionRequests);
         Assert.Equal(2, transport.GetRequests);
         panel.WaitForAssertion(() =>
         {
             AssertNoRetainedState(panel);
             Assert.False(Button(panel, "Refresh status").Instance.Disabled);
             if (status == HttpStatusCode.OK)
-                Assert.Contains("No reciprocal connection is configured.", panel.Markup);
+                Assert.Contains("No RatelDesk connection is configured.", panel.Markup);
             else
             {
                 Assert.Contains("Current integration management permission is required.", panel.Markup);
-                Assert.DoesNotContain("No reciprocal connection is configured.", panel.Markup);
+                Assert.DoesNotContain("No RatelDesk connection is configured.", panel.Markup);
             }
         });
     }
@@ -89,6 +92,7 @@ public sealed class HelpdeskConnectionsRefreshRegressionTests : AsyncBunitContex
         panel.WaitForAssertion(() => Assert.Contains("Fresh organization", panel.Markup));
         await InvokeAllRowCallbacksAsync(panel, previous);
         Assert.Empty(transport.PostPaths);
+        Assert.Equal(2, transport.CompletionRequests);
         AssertNoConfirmation(panel);
 
         await InvokeAsync(panel, Button(panel, "Disconnect").Instance.OnClick);
@@ -97,12 +101,14 @@ public sealed class HelpdeskConnectionsRefreshRegressionTests : AsyncBunitContex
         // confirmation is visible for the same LinkId.
         await InvokeAllRowCallbacksAsync(panel, previous);
         Assert.Empty(transport.PostPaths);
+        Assert.Equal(2, transport.CompletionRequests);
         Assert.Single(panel.FindComponents<MudButton>(), button => HasLabel(button, "Confirm disconnect"));
 
         await InvokeAsync(panel, freshConfirm);
 
         Assert.Equal(new[] { ConnectionsTransport.LinkRoot + "/links/shared-link/revoke" }, transport.PostPaths);
         Assert.Equal(3, transport.GetRequests); // Initial load, explicit refresh, successful mutation refresh.
+        Assert.Equal(3, transport.CompletionRequests);
     }
 
     [Fact]
@@ -122,11 +128,12 @@ public sealed class HelpdeskConnectionsRefreshRegressionTests : AsyncBunitContex
         {
             AssertNoRetainedState(panel);
             Assert.Contains("Reciprocal connection status is unavailable. Refresh to retry.", panel.Markup);
-            Assert.DoesNotContain("No reciprocal connection is configured.", panel.Markup);
+            Assert.DoesNotContain("No RatelDesk connection is configured.", panel.Markup);
             Assert.False(Button(panel, "Refresh status").Instance.Disabled);
         });
         await InvokeAllRowCallbacksAsync(panel, previous);
         Assert.Single(transport.PostPaths);
+        Assert.Equal(2, transport.CompletionRequests);
         Assert.Equal(2, transport.GetRequests);
     }
 
@@ -139,7 +146,7 @@ public sealed class HelpdeskConnectionsRefreshRegressionTests : AsyncBunitContex
         transport.RequestTimeout = TimeSpan.FromMilliseconds(100);
         transport.DelayNextProbe();
 
-        await InvokeAsync(panel, Button(panel, "Test connection (read-only)").Instance.OnClick).WaitAsync(CompletionBound);
+        await InvokeAsync(panel, Button(panel, "Test connection").Instance.OnClick).WaitAsync(CompletionBound);
 
         Assert.Contains(ConnectionsTransport.LinkRoot + "/links/shared-link/test", transport.CanceledPaths);
         panel.WaitForAssertion(() =>
@@ -163,6 +170,7 @@ public sealed class HelpdeskConnectionsRefreshRegressionTests : AsyncBunitContex
         });
         Assert.Equal(1, transport.GetRequests); // An uncertain mutation must not be treated as a successful refresh.
         Assert.Equal(3, transport.PostPaths.Count);
+        Assert.Equal(3, transport.CompletionRequests);
     }
 
     [Theory]
@@ -187,6 +195,7 @@ public sealed class HelpdeskConnectionsRefreshRegressionTests : AsyncBunitContex
             await InvokeAllRowCallbacksAsync(panel, previous);
             await InvokeAsync(panel, previous.Refresh);
             Assert.Equal(probe ? 2 : 1, transport.PostPaths.Count);
+            Assert.Equal(probe ? 3 : 2, transport.CompletionRequests);
             Assert.Equal(probe ? 1 : 2, transport.GetRequests);
         }
         finally
@@ -205,7 +214,36 @@ public sealed class HelpdeskConnectionsRefreshRegressionTests : AsyncBunitContex
             Assert.DoesNotContain("Late organization", panel.Markup);
         });
         Assert.Equal(probe ? 2 : 1, transport.PostPaths.Count);
+        Assert.Equal(probe ? 3 : 2, transport.CompletionRequests);
         Assert.Equal(probe ? 1 : 2, transport.GetRequests);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Disposal_during_completion_does_not_probe_or_complete_another_row(bool probe)
+    {
+        using var transport = RegisterTransport();
+        var panel = Render<HelpdeskConnectionsPanel>();
+        panel.WaitForAssertion(() => Assert.Contains("Connected", panel.Find(".mud-chip").TextContent));
+        var callback = Button(panel, probe ? "Test connection" : "Refresh status").Instance.OnClick;
+        if (!probe) transport.Additional = ActiveStatus(2) with { LinkId = "second-link", AttemptId = "second-attempt" };
+        var response = transport.DelayNextCompletion();
+        var operation = InvokeAsync(panel, callback);
+        panel.WaitForAssertion(() =>
+        {
+            Assert.Equal(2, transport.CompletionRequests);
+            if (!probe)
+                Assert.All(panel.FindAll(".mud-chip"), chip => Assert.DoesNotContain("Connected", chip.TextContent));
+        });
+
+        await panel.InvokeAsync(() => ((IDisposable)panel.Instance).Dispose());
+        response.TrySetResult(ConnectionsTransport.CompletionResponse(transport.Current));
+        await operation.WaitAsync(CompletionBound);
+
+        Assert.Equal(2, transport.CompletionRequests);
+        Assert.Empty(transport.PostPaths);
+        panel.WaitForAssertion(() => AssertNoRetainedState(panel));
     }
 
     private ConnectionsTransport RegisterTransport()
@@ -218,7 +256,7 @@ public sealed class HelpdeskConnectionsRefreshRegressionTests : AsyncBunitContex
     private static async Task ShowSuccessfulProbeAsync(IRenderedComponent<HelpdeskConnectionsPanel> panel)
     {
         panel.WaitForAssertion(() => Assert.Single(panel.FindAll("[data-testid='helpdesk-link-status']")));
-        await InvokeAsync(panel, Button(panel, "Test connection (read-only)").Instance.OnClick);
+        await InvokeAsync(panel, Button(panel, "Test connection").Instance.OnClick);
         panel.WaitForAssertion(() =>
         {
             Assert.Single(panel.FindAll("[data-testid='helpdesk-connection-test-result']"));
@@ -233,7 +271,7 @@ public sealed class HelpdeskConnectionsRefreshRegressionTests : AsyncBunitContex
         var resume = Button(panel, "Resume").Instance.OnClick;
         var disconnect = Button(panel, "Disconnect").Instance.OnClick;
         var rotation = Button(panel, "Rotate NetRatel → RatelDesk").Instance.OnClick;
-        var test = Button(panel, "Test connection (read-only)").Instance.OnClick;
+        var test = Button(panel, "Test connection").Instance.OnClick;
         await InvokeAsync(panel, disconnect);
         var confirmDisconnect = Button(panel, "Confirm disconnect").Instance.OnClick;
         await InvokeAsync(panel, Button(panel, "Keep connection").Instance.OnClick);
@@ -295,10 +333,12 @@ public sealed class HelpdeskConnectionsRefreshRegressionTests : AsyncBunitContex
     private sealed class ConnectionsTransport : HttpMessageHandler, IHttpClientFactory
     {
         public const string LinkRoot = "/api/v1/admin/service-links";
-        private TaskCompletionSource<HttpResponseMessage>? nextGet, nextProbe, nextAction;
+        private TaskCompletionSource<HttpResponseMessage>? nextGet, nextProbe, nextAction, nextCompletion;
         public ServiceLinkAdminStatus Current { get; set; } = ActiveStatus(1);
+        public ServiceLinkAdminStatus? Additional { get; set; }
         public TimeSpan RequestTimeout { get; set; } = TimeSpan.FromSeconds(10);
         public int GetRequests { get; private set; }
+        public int CompletionRequests { get; private set; }
         public List<string> PostPaths { get; } = [];
         public List<string> CanceledPaths { get; } = [];
 
@@ -312,18 +352,31 @@ public sealed class HelpdeskConnectionsRefreshRegressionTests : AsyncBunitContex
         public TaskCompletionSource<HttpResponseMessage> DelayNextGet() => nextGet = NewGate();
         public TaskCompletionSource<HttpResponseMessage> DelayNextProbe() => nextProbe = NewGate();
         public TaskCompletionSource<HttpResponseMessage> DelayNextAction() => nextAction = NewGate();
+        public TaskCompletionSource<HttpResponseMessage> DelayNextCompletion() => nextCompletion = NewGate();
         private static TaskCompletionSource<HttpResponseMessage> NewGate() => new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public static HttpResponseMessage CompletionResponse(ServiceLinkAdminStatus link) => JsonResponse(
+            new RatelDeskConnectionCompletionDto(Guid.Parse("00000000-0000-0000-0000-000000000007"), "Fixture connection", true, "ready")
+            { OrganizationName = link.PeerTenantId, CustomerName = "Fixture customer" });
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             var path = request.RequestUri!.AbsolutePath;
             TaskCompletionSource<HttpResponseMessage>? gate;
-            if (request.Method == HttpMethod.Get && path == LinkRoot)
+            if (request.Method == HttpMethod.Post && path == "/api/v2/tenants/7/connectors/rateldesk/setup/complete")
+            {
+                var completion = await request.Content!.ReadFromJsonAsync<CompleteRatelDeskConnectionRequest>(cancellationToken);
+                var link = new[] { Current, Additional }.Single(link => link is not null && link.LinkId == completion!.LinkId)!;
+                ++CompletionRequests;
+                gate = nextCompletion;
+                nextCompletion = null;
+                if (gate is null) return CompletionResponse(link);
+            }
+            else if (request.Method == HttpMethod.Get && path == LinkRoot)
             {
                 ++GetRequests;
                 gate = nextGet;
                 nextGet = null;
-                if (gate is null) return JsonResponse(new[] { Current });
+                if (gate is null) return JsonResponse(Additional is null ? new[] { Current } : new[] { Current, Additional });
             }
             else if (request.Method == HttpMethod.Post && path.StartsWith(LinkRoot + "/links/", StringComparison.Ordinal))
             {

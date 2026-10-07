@@ -15,14 +15,15 @@
     }
     else
     {
+        var currentGuidedOwner = guidedSelectionOwner;
         @if (publicSettingsReady == false)
         {
             <MudAlert Dense="true" Severity="Severity.Info">Complete installation setup below to enable connections. Deployment locks show the setting and repair route.</MudAlert>
         }
         <MudText Typo="Typo.h6">Connect RatelDesk</MudText>
         <ServicePublicSettingsPanel Guided="true" ReadyChanged="SettingsReadyChanged" ReciprocalReadyChanged="ReciprocalReadyChanged" BusyChanged="SettingsBusyChanged" Disabled="@(createBusy || reveal is not null)" />
-        <MudCheckBox T="bool" @bind-Value="runTasks" Label="Also run approved tasks (optional)" Dense="true" Disabled="Busy" />
-        <ServiceGrantSelector @key="runTasks" Authority="authority" IncidentOnly="@(!runTasks)" PresetTenantId="PresetTenantId" Changed="SelectionChanged" Disabled="@(Busy || reveal is not null)" />
+        <MudCheckBox T="bool" Value="runTasks" ValueChanged="@((bool value) => RunTasksChanged(currentGuidedOwner, value))" Label="Also run approved tasks (optional)" Dense="true" Disabled="@(Busy || reveal is not null)" />
+        <ServiceGrantSelector @key="currentGuidedOwner" Authority="authority" IncidentOnly="@(!runTasks)" PresetTenantId="PresetTenantId" Changed="@((HelpdeskGrantSelection value) => SelectionChanged(currentGuidedOwner, value))" Disabled="@(Busy || reveal is not null)" />
         <MudPaper Outlined="true" Class="pa-3">
             <MudStack Spacing="2">
                 <MudText Typo="Typo.subtitle2">Create helpdesk incidents from monitoring alerts</MudText>
@@ -83,6 +84,7 @@
     private string peerUrl = "", name = "", peerInstanceId = "", peerTenantId = "";
     private string? error;
     private bool runTasks;
+    private object guidedSelectionOwner = new();
     private bool loading = true, createBusy, settingsBusy, manualConfirmed, disposed;
     private bool Busy => createBusy || settingsBusy;
     private string PeerInstanceId { get => peerInstanceId; set { if (peerInstanceId != value) manualConfirmed = false; peerInstanceId = value; } }
@@ -92,8 +94,8 @@
     private string[] OutboundScopes => selection.Scopes.Contains("netratel.orchestration.invoke")
         ? ["rateldesk.incidents.create", "rateldesk.incident-receipts.read", "rateldesk.incident-targets.read", "rateldesk.orchestration.callback"]
         : ["rateldesk.incidents.create", "rateldesk.incident-receipts.read", "rateldesk.incident-targets.read"];
-    private bool CanStart => publicSettingsReady is not false && reciprocalReady is true && !Busy && reveal is null && selection.IsValid && Uri.TryCreate(peerUrl, UriKind.Absolute, out var uri) && uri.Scheme is "https" or "http" && string.IsNullOrEmpty(uri.UserInfo) && string.IsNullOrEmpty(uri.Query) && string.IsNullOrEmpty(uri.Fragment);
-    private bool CanCreate => publicSettingsReady is not false && !Busy && reveal is null && manualSelection.IsValid && manualConfirmed && !string.IsNullOrWhiteSpace(name) && name.Length <= 128 && !string.IsNullOrWhiteSpace(peerInstanceId) && !string.IsNullOrWhiteSpace(peerTenantId);
+    private bool CanStart => !disposed && publicSettingsReady is not false && reciprocalReady is true && !Busy && reveal is null && selection.IsValid && Uri.TryCreate(peerUrl, UriKind.Absolute, out var uri) && uri.Scheme is "https" or "http" && string.IsNullOrEmpty(uri.UserInfo) && string.IsNullOrEmpty(uri.Query) && string.IsNullOrEmpty(uri.Fragment);
+    private bool CanCreate => !disposed && publicSettingsReady is not false && !Busy && reveal is null && manualSelection.IsValid && manualConfirmed && !string.IsNullOrWhiteSpace(name) && name.Length <= 128 && !string.IsNullOrWhiteSpace(peerInstanceId) && !string.IsNullOrWhiteSpace(peerTenantId);
     protected override async Task OnInitializedAsync()
     {
         if (Uri.TryCreate(PresetPeerUrl, UriKind.Absolute, out _)) peerUrl = PresetPeerUrl!;
@@ -103,7 +105,19 @@
         finally { loading = false; }
     }
     private void ManualSelectionChanged(HelpdeskGrantSelection value) { manualSelection = value; manualConfirmed = false; }
-    private void SelectionChanged(HelpdeskGrantSelection value) { selection = value; manualConfirmed = false; }
+    private bool CanEditGuidedSelection(object owner) => !disposed && !Busy && reveal is null && ReferenceEquals(owner, guidedSelectionOwner);
+    private void RunTasksChanged(object owner, bool value)
+    {
+        if (!CanEditGuidedSelection(owner) || runTasks == value) return;
+        runTasks = value;
+        guidedSelectionOwner = new();
+        selection = new(null, [], [], []);
+    }
+    private void SelectionChanged(object owner, HelpdeskGrantSelection value)
+    {
+        if (!CanEditGuidedSelection(owner)) return;
+        selection = value; manualConfirmed = false;
+    }
     private void SettingsReadyChanged(bool value) => publicSettingsReady = value;
     private void ReciprocalReadyChanged(bool value) => reciprocalReady = value;
     private async Task SettingsBusyChanged(bool value) { if (disposed) return; settingsBusy = value; await BusyChanged.InvokeAsync(Busy); }
