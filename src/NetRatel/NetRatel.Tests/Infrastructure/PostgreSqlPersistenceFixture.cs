@@ -22,7 +22,8 @@ public sealed class PostgreSqlPersistenceFixture : IAsyncLifetime
     public async Task<string> CreateDatabaseAsync(CancellationToken cancellationToken = default)
     {
         var database = "netratel_" + Guid.NewGuid().ToString("N");
-        await using var connection = new NpgsqlConnection(_container.GetConnectionString());
+        var creationConnection = new NpgsqlConnectionStringBuilder(_container.GetConnectionString()) { Pooling = false };
+        await using var connection = new NpgsqlConnection(creationConnection.ConnectionString);
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
         await using var command = new NpgsqlCommand($"CREATE DATABASE \"{database}\"", connection);
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);

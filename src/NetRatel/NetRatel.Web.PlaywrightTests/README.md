@@ -8,6 +8,10 @@ The checks cover:
 - the gateway log explorer at desktop and phone viewports;
 - read-only Services launched from the real client cards/table, offline cache, drawer-open 1280px geometry, light/dark/system themes, keyboard focus and cancellation;
 - Services reflow at 200% zoom equivalent (CSS 640×400 with device scale 2 for physical 1280×800; CSS 195×422 with device scale 2 for physical 390×844), plus a separate 200% text-size case, with every control and last-row field reachable;
+- Flows with the actual published Velox8 surface, node drag, slot layout/connection, ViewPool and minimap; real pointer-created edges, property edits, pan/zoom and canonical geometry/viewport replay after a full browser reload;
+- Flows with the desktop navigation drawer open, narrow layouts, light/dark/system themes and the same paired viewport/device-scale 200% zoom equivalents; every editor control is reachable and Fit graph places all native nodes inside the canvas with their headers and ports unobscured by the collapsible native overview;
+- preserved dirty edits on close, revision conflicts and tenant changes, inert validation/sample preview, independent clone, immutable published history and keyboard focus restoration;
+- tenant-scoped Monitoring links to immutable versions and actual run receipts without history fanout, plus wrong-tenant lookup rejection;
 - dialog/viewport geometry, usable mobile charts and controls, document horizontal overflow, and visible Blazor error UI;
 - the Helpdesk M2M purpose alongside unchanged personal API and HTTP MCP purposes, explicit tenant/resource grants, once-only manual secret reveal, deployment locks, stale-authority status, read-only connection tests and protected callback URL cleanup;
 - screenshots written to `TestResults/playwright` for visual review.

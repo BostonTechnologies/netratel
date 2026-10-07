@@ -157,8 +157,8 @@ public sealed class MonitoringApiTests
         fixture.Config.SavedRule!.OperatorId.Should().Be(OperatorId);
         fixture.Config.SavedRule.Rule.ExecutionPrincipalId.Should().BeNull();
         fixture.Config.SavedRule.Rule.ExecutionCredentialId.Should().BeNull();
-        fixture.Access.Granted.Add(("flow.read", 7));
-        fixture.Access.Granted.Add(("flow.execute", 7));
+        fixture.Access.Granted.Add((NetRatelPermissions.FlowRead, 7));
+        fixture.Access.Granted.Add((NetRatelPermissions.FlowExecute, 7));
         var flowRule = body with { RuleId = Guid.NewGuid(), PublishedFlowVersionId = Guid.NewGuid() };
         Func<Task> selectFlow = async () => await fixture.Api.SaveRuleAsync(7, flowRule.RuleId, new(flowRule, 1, "select flow"), User, default);
         (await selectFlow.Should().ThrowAsync<MonitoringApiException>()).Which.Code.Should().Be("published_flow_unavailable");
@@ -175,8 +175,8 @@ public sealed class MonitoringApiTests
     {
         var fixture = new Fixture();
         fixture.Flows.Published = true;
-        if (readTenant != 0) fixture.Access.Granted.Add(("flow.read", readTenant));
-        if (executeTenant != 0) fixture.Access.Granted.Add(("flow.execute", executeTenant));
+        if (readTenant != 0) fixture.Access.Granted.Add((NetRatelPermissions.FlowRead, readTenant));
+        if (executeTenant != 0) fixture.Access.Granted.Add((NetRatelPermissions.FlowExecute, executeTenant));
         (await fixture.Api.GetPublishedFlowsAsync(7, User, default)).Should().BeEmpty();
         fixture.Flows.ListCalls.Should().Be(0);
         (await fixture.Api.GetConfigurationAsync(7, User, default)).TenantId.Should().Be(7);
@@ -192,8 +192,8 @@ public sealed class MonitoringApiTests
     {
         var fixture = new Fixture();
         fixture.Flows.Published = true;
-        fixture.Access.Granted.Add(("flow.read", 7));
-        fixture.Access.Granted.Add(("flow.execute", 7));
+        fixture.Access.Granted.Add((NetRatelPermissions.FlowRead, 7));
+        fixture.Access.Granted.Add((NetRatelPermissions.FlowExecute, 7));
         (await fixture.Api.GetPublishedFlowsAsync(7, User, default)).Should().ContainSingle().Which.PublishedFlowVersionId.Should().Be(fixture.Flows.VersionId);
         var selectingUser = new ClaimsPrincipal(new ClaimsIdentity([new Claim("netratel_principal_id", OperatorId.ToString("N")),
             new Claim("netratel_integration_credential_id", "current-configuring-credential")], "Test"));
@@ -202,8 +202,8 @@ public sealed class MonitoringApiTests
         var saved = fixture.Config.SavedRule!.Rule;
         saved.ExecutionPrincipalId.Should().Be(OperatorId.ToString("N"));
         saved.ExecutionCredentialId.Should().Be("current-configuring-credential");
-        fixture.Access.Granted.Remove(("flow.read", 7));
-        fixture.Access.Granted.Remove(("flow.execute", 7));
+        fixture.Access.Granted.Remove((NetRatelPermissions.FlowRead, 7));
+        fixture.Access.Granted.Remove((NetRatelPermissions.FlowExecute, 7));
         var renamingUser = new ClaimsPrincipal(new ClaimsIdentity([new Claim("netratel_principal_id", Guid.NewGuid().ToString("N"))], "Test"));
         var renamed = saved with { Revision = 2, Name = "Renamed threshold", ExecutionPrincipalId = "replacement-attacker", ExecutionCredentialId = "replacement-foreign" };
         await fixture.Api.SaveRuleAsync(7, saved.RuleId, new(renamed, 1, "rename unchanged action"), renamingUser, default);

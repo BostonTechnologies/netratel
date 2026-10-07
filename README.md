@@ -46,7 +46,7 @@ matrix and its explicit non-goals.
 
 Useful references: [architecture](docs/ARCHITECTURE.md),
 [configuration](docs/CONFIGURATION.md), [CLI and MCP](docs/CLI_AND_MCP.md),
-[Native Client](docs/CLIENT.md), [Services inventory](docs/SERVICES.md), [Monitoring](docs/MONITORING.md),
+[Native Client](docs/CLIENT.md), [Services inventory](docs/SERVICES.md), [Monitoring](docs/MONITORING.md), [Monitoring flows](docs/FLOWS.md),
 [development and testing](docs/DEVELOPMENT.md),
 [troubleshooting](docs/TROUBLESHOOTING.md), and
 [release engineering](docs/RELEASES.md). The generated [API reference](docs/API_REFERENCE.md)

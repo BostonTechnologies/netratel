@@ -89,8 +89,8 @@ public sealed class MonitoringApiService(IMonitoringResourceAuthorizer authoriza
     public async Task<ImmutableArray<MonitoringPublishedFlowDto>> GetPublishedFlowsAsync(int tenantId, ClaimsPrincipal user, CancellationToken cancellationToken)
     {
         await RequireReadOrManageAsync(user, tenantId, cancellationToken).ConfigureAwait(false);
-        if (!await access.AuthorizeAsync(user, "flow.read", tenantId, cancellationToken).ConfigureAwait(false) ||
-            !await access.AuthorizeAsync(user, "flow.execute", tenantId, cancellationToken).ConfigureAwait(false)) return [];
+        if (!await access.AuthorizeAsync(user, NetRatelPermissions.FlowRead, tenantId, cancellationToken).ConfigureAwait(false) ||
+            !await access.AuthorizeAsync(user, NetRatelPermissions.FlowExecute, tenantId, cancellationToken).ConfigureAwait(false)) return [];
         return Bounded(await flows.ListPublishedAsync(tenantId, MonitoringLimits.MaximumRowsPerRead, cancellationToken).ConfigureAwait(false));
     }
 
@@ -378,8 +378,8 @@ public sealed class MonitoringApiService(IMonitoringResourceAuthorizer authoriza
 
     private async Task RequireFlowSelectionAuthorityAsync(ClaimsPrincipal user, int tenantId, CancellationToken cancellationToken)
     {
-        if (!await access.AuthorizeAsync(user, "flow.read", tenantId, cancellationToken).ConfigureAwait(false) ||
-            !await access.AuthorizeAsync(user, "flow.execute", tenantId, cancellationToken).ConfigureAwait(false))
+        if (!await access.AuthorizeAsync(user, NetRatelPermissions.FlowRead, tenantId, cancellationToken).ConfigureAwait(false) ||
+            !await access.AuthorizeAsync(user, NetRatelPermissions.FlowExecute, tenantId, cancellationToken).ConfigureAwait(false))
             throw new MonitoringApiException(403, "flow_selection_permission_required");
     }
 

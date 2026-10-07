@@ -28,6 +28,10 @@ public static class NetRatelPermissions
     public const string ArtifactPublication = "artifact.publish";
     public const string McpPolicyAdministration = "mcp.policy.admin";
     public const string McpDiscoveryRead = "mcp.discovery.read";
+    public const string FlowRead = "flow.read";
+    public const string FlowEdit = "flow.edit";
+    public const string FlowPublish = "flow.publish";
+    public const string FlowExecute = "flow.execute";
 
     public static IReadOnlySet<string> All { get; } = new HashSet<string>(StringComparer.Ordinal)
     {
@@ -36,6 +40,7 @@ public static class NetRatelPermissions
         MonitoringClear, MonitoringBypass, MonitoringAllTargets,
         ScriptEdit, ScriptExecute, JobManagement, TerminalAccess,
         FileRead, FileWrite, FileDelete, RemoteSupport, SecretUse, SecretReveal,
-        AuditRead, IntegrationManagement, ArtifactPublication, McpPolicyAdministration, McpDiscoveryRead
+        AuditRead, IntegrationManagement, ArtifactPublication, McpPolicyAdministration, McpDiscoveryRead,
+        FlowRead, FlowEdit, FlowPublish, FlowExecute
     };
 }

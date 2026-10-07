@@ -870,9 +870,11 @@ builder.Services.AddAuthentication()
 builder.Services.AddSingleton<IConfigureOptions<JwtBearerOptions>, M2MJwtBearerOptionsConfigurator>();
 
 builder.Services.AddHostedService<OutboxProcessor>();
+builder.Services.AddHostedService<NetRatel.Infrastructure.Flows.FlowRunWorker>();
 builder.Services.AddHostedService<GlobalSearchQueryWarmupService>();
 builder.Services.AddNetRatelApplication();
 builder.Services.AddNetRatelInfrastructure(builder.Configuration);
+builder.Services.AddMonitoringFlowBridge();
 builder.Services.AddNetRatelServiceIdentityApi(builder.Configuration);
 builder.Services.AddServiceLinkProtocol(builder.Configuration);
 builder.Services.AddOrchestrationManagedServices();
@@ -949,6 +951,7 @@ app.UseResponseCompression();
 
 app.UseMiddleware<NetRatel.API.Middleware.CorrelationIdMiddleware>();
 app.UseMiddleware<NetRatel.API.Middleware.CorrelationLoggingMiddleware>();
+app.UseMiddleware<NetRatel.API.Middleware.FlowRequestBodyLimitMiddleware>();
 
 app.MapApiEndpoints();
 app.MapReadyBootstrapStatus(bootstrapDescriptor);

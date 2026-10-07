@@ -7,6 +7,10 @@ public static class IntegrationPermissionCatalog
 {
     public static IReadOnlyList<IntegrationPermissionDescriptor> Delegable { get; } =
     [
+        new(NetRatelPermissions.FlowRead, "Read flows", "View tenant flow drafts, published versions and run history."),
+        new(NetRatelPermissions.FlowEdit, "Edit flows", "Create, clone and change inert tenant flow drafts."),
+        new(NetRatelPermissions.FlowPublish, "Publish flows", "Publish immutable tenant flow definition versions."),
+        new(NetRatelPermissions.FlowExecute, "Execute flows", "Bind and execute approved published tenant flows."),
         new(NetRatelPermissions.TelemetryRead, "Read telemetry", "View status and performance information."),
         new(NetRatelPermissions.MonitoringRead, "Read monitoring", "View rules and alert episodes within the granted tenant."),
         new(NetRatelPermissions.MonitoringManage, "Manage monitoring", "Create or change rules and static target groups within the granted tenant."),

@@ -17,6 +17,7 @@ using NetRatel.Web.Services.Notifications;
 using NetRatel.Web.Services.Search;
 using NetRatel.Web.Services.Access;
 using NetRatel.Web.Services.Branding;
+using NetRatel.Web.Services.Flows;
 using Xunit;
 
 namespace NetRatel.Web.ComponentTests;
@@ -37,6 +38,7 @@ public class MainLayoutTests : AsyncBunitContext
         Services.AddSingleton<IAppBarVersionApiClient, StubAppBarVersionApiClient>();
         Services.AddSingleton<IAccessAdministrationApiService, StubAccessAdministrationApiService>();
         Services.AddSingleton<IDeploymentBrandingApiService, StubDeploymentBrandingApiService>();
+        Services.AddSingleton<IFlowApiService, FakeFlowApi>();
 
         AddAuthorization();
     }
