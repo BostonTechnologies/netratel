@@ -2,6 +2,7 @@ using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using Bunit;
 using AwesomeAssertions;
+using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Web;
 using Microsoft.Extensions.DependencyInjection;
 using MudBlazor.Services;
@@ -260,10 +261,17 @@ public sealed class ClientServicesDialogTests : AsyncBunitContext
         var provider = Render<MudDialogProvider>();
         var launcher = Render<ClientServicesLauncher>(parameters => parameters
             .Add(component => component.TenantId, 3).Add(component => component.AgentId, AgentId));
-        var opening = launcher.Find("[data-testid='client-services-launcher']").ClickAsync(new MouseEventArgs());
+        var launcherButton = launcher.Find("[data-testid='client-services-launcher']");
+        var launcherReferenceId = launcherButton.GetAttribute("blazor:elementReference");
+        launcherReferenceId.Should().NotBeNullOrWhiteSpace();
+        // The provider's focus trap also invokes this JS helper. Count only the
+        // exact launcher element whose restoration this regression governs.
+        int LauncherFocusCount() => JSInterop.Invocations["Blazor._internal.domWrapper.focus"].Count(invocation =>
+            invocation.Arguments[0] is ElementReference element && element.Id == launcherReferenceId);
+        var opening = launcherButton.ClickAsync(new MouseEventArgs());
         provider.WaitForAssertion(() => provider.Find("[data-testid='close-services']").Should().NotBeNull());
         var dialogId = provider.Find(".mud-dialog").Id!.TrimStart('_');
-        var focusBeforeClose = JSInterop.Invocations["Blazor._internal.domWrapper.focus"].Count;
+        var focusBeforeClose = LauncherFocusCount();
         provider.Find("[data-testid='close-services']").Click();
         provider.WaitForAssertion(() =>
         {
@@ -271,7 +279,7 @@ public sealed class ClientServicesDialogTests : AsyncBunitContext
             dismissal.Invocations.Single().Arguments.Should().ContainSingle().Which.Should().Be(dialogId);
         });
         // The native provider has completed Result, but the controlled DOM-dismissal seam is pending.
-        JSInterop.Invocations["Blazor._internal.domWrapper.focus"].Should().HaveCount(focusBeforeClose);
+        LauncherFocusCount().Should().Be(focusBeforeClose);
         opening.IsCompleted.Should().BeFalse();
 
         if (scopeChange is "tenant" or "tenant-away-and-back")
@@ -280,12 +288,17 @@ public sealed class ClientServicesDialogTests : AsyncBunitContext
             launcher.Render(parameters => parameters.Add(component => component.TenantId, 3));
         if (scopeChange == "agent")
             launcher.Render(parameters => parameters.Add(component => component.AgentId, Guid.NewGuid()));
-        if (scopeChange == "disposed") await DisposeComponentsAsync();
+        if (scopeChange == "disposed")
+        {
+            // Run bUnit root disposal on its dispatcher before releasing the
+            // pending dismissal; otherwise queued disposal can miss the roots.
+            await launcher.InvokeAsync(DisposeComponentsAsync);
+            launcher.IsDisposed.Should().BeTrue("the obsolete launcher must be disposed before dismissal completes");
+        }
 
         dismissal.SetVoidResult();
         await opening;
-        JSInterop.Invocations["Blazor._internal.domWrapper.focus"].Should()
-            .HaveCount(focusBeforeClose + (shouldRestore ? 1 : 0));
+        LauncherFocusCount().Should().Be(focusBeforeClose + (shouldRestore ? 1 : 0));
         await _live.Cancelled.Task.WaitAsync(TimeSpan.FromSeconds(2));
     }
 
