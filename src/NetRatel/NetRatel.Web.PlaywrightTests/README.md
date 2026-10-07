@@ -19,7 +19,13 @@ The checks cover:
 - the Helpdesk M2M purpose alongside unchanged personal API and HTTP MCP purposes, explicit tenant/resource grants, once-only manual secret reveal, deployment locks, stale-authority status, read-only connection tests and protected callback URL cleanup;
 - screenshots written to `TestResults/playwright` for visual review.
 
-Build the project and install its pinned Chromium version once:
+Browser acceptance is opt-in under the 7 October 2026 owner CI policy. Required
+PR/main and tag-build validation runs fast Core/API/component regressions and
+does not install Chromium or run this assembly. Dispatch the `browser` suite in
+[integration-validation.yml](../../../.github/workflows/integration-validation.yml)
+for hosted execution with actual source identity, TRX and screenshot retention.
+
+For an explicitly requested local fixture run, build the project and install its pinned Chromium version once:
 
 ```bash
 dotnet build src/NetRatel/NetRatel.Web.PlaywrightTests/NetRatel.Web.PlaywrightTests.csproj
@@ -29,10 +35,12 @@ pwsh src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Debug/net10.0/playwright.ps1 
 Run the local fixture suite:
 
 ```bash
-dotnet test src/NetRatel/NetRatel.Web.PlaywrightTests/NetRatel.Web.PlaywrightTests.csproj
+dotnet test --project src/NetRatel/NetRatel.Web.PlaywrightTests/NetRatel.Web.PlaywrightTests.csproj \
+  --configuration Debug --no-build --filter-not-trait category=compose category=hosted \
+  --results-directory TestResults/playwright --report-trx --report-trx-filename browser.trx
 ```
 
-The fixture host authenticates a local synthetic user and supplies deterministic in-memory telemetry and log data. Do not add live URLs, credentials, storage state, or external control-plane calls to this suite. See [the UX refresh baseline](../../docs/web-ux-refresh.md) for the full responsive viewport matrix and theme-preference contract.
+The fixture host authenticates a local synthetic user and supplies deterministic in-memory telemetry and log data. Do not add live URLs, credentials, storage state, or external control-plane calls to this suite. Its cases retain the responsive viewport matrix and theme-preference contract described above.
 
 The Helpdesk fixture includes light/dark desktop, 360-pixel phone and 200% zoom cases. Its screenshots contain only empty setup forms. Secret-bearing fixture cases capture no screenshots or traces; their deterministic service responses test the Web interaction, not live token issuance.
 

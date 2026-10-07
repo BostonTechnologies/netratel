@@ -241,44 +241,47 @@ exhausted bounded identity storage; missing identities are counted separately.
 `global.json` requires SDK **10.0.401** with roll-forward disabled and
 Microsoft.Testing.Platform. The authoritative invocation and receipt verifier
 are in [.github/workflows/public-pr-validation.yml](../.github/workflows/public-pr-validation.yml).
-After coordinated integration, retain that workflow's sequence and all gates:
+Under the 7 October 2026 owner policy, required PR/main validation runs source
+checks, one build and three fast regression assemblies. Release builds run on
+GitHub-hosted Actions; these commands document their selection:
 
 ```sh
-dotnet restore NetRatel.sln
 tools/ci/verify-product-version.sh
+bash tools/ci/check-postgresql-only.sh
 python3 tools/ci/test-release-validation.py
-bash tools/ci/tests/nginx-gateway-idle.sh
+dotnet restore NetRatel.sln
 dotnet build NetRatel.sln --configuration Release --no-restore
-NETRATEL_GATEWAY_TEST_ASSEMBLY="$PWD/src/NetRatel/NetRatel.Tests/bin/Release/net10.0/NetRatel.Tests.dll" \
-  bash tools/ci/tests/traefik-gateway-routing.sh
-pwsh src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/playwright.ps1 install --with-deps chromium
-dotnet test --solution NetRatel.sln --configuration Release --no-build \
-  --max-parallel-test-modules 1 --filter-not-trait category=compose category=hosted \
-  --results-directory TestResults --report-trx \
-  --report-trx-filename 'netratel-tests-{asm}_{tfm}_{arch}.trx'
+bash tools/ci/run-fast-regressions.sh TestResults/fast
 ```
 
-Set the workflow's `NETRATEL_REVIEW_SOURCE_SHA`,
-`NETRATEL_REVIEW_TEST_MERGE_SHA`, `NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT` and
-`NETRATEL_DOTNET_SDK_VERSION` to the actual candidate/runner values for visual
-receipts. Require successful nonempty receipts for `NetRatel.Tests`,
-`NetRatel.API.IntegrationTests`, `NetRatel.Web.ComponentTests` and
-`NetRatel.Web.PlaywrightTests`, using the workflow's generic receipt-verification
-step. Report counts from those receipts, never a historical test total.
+The shared helper excludes `category=compose`, `category=hosted` and
+`category=manual-integration`, requires successful nonempty TRX receipts for
+`NetRatel.Tests`, `NetRatel.API.IntegrationTests` and
+`NetRatel.Web.ComponentTests`, and propagates the first real failure. Report
+counts from the current receipts. The complete required workflow must succeed
+in strictly less than 20 minutes, including setup and its aggregate; target
+10–15 minutes. Restore, build and tests have separate visible outcomes.
 
-The existing transport lane checks exact routing, TLS-to-private-h2c mapping,
+The optional transport suite checks exact routing, TLS-to-private-h2c mapping,
 default negative and corrected/direct approximately 195-second profiles, then
 requires a native gateway TRX receipt. Extend that same fixture for new
 functional coverage; its historic placeholder extension alone does not prove
 terminal/file renewal continuity. `--native-only` is a diagnostic rerun option,
-not a replacement for the full hosted gate.
+not a replacement for a requested full transport diagnostic.
 
-Retain the workflow's Windows offline installer/ACL/Task Scheduler/process
-selection and `verify-mtp-trx.py --expected-executed 21`, and its native macOS
-installer/command selection with `--expected-executed 3`, on their respective
-hosted runners. Linux cannot establish their native execution. Preserve all
-other `PR validation` dependencies: disclosure, review artifacts, client packages,
-images, source/release/local-first Compose, PostgreSQL regressions/upgrades and
-MCP HTTP image smoke. Release publication/tagging/registry writes are outside
-this PR. Laboratory and CI success leave the owner deployment/soak record above
-pending until actual receipts exist.
+Request expensive functional checks through
+[integration-validation.yml](../.github/workflows/integration-validation.yml),
+which runs only the selected suite when dispatched. Browser/Chromium, complete
+product-pair service links, native client execution/install/update, sustained
+gateway tests and deployment/upgrade checks are manual. Platform diagnostics
+must use their matching hosted OS; Linux cannot establish native Windows or
+macOS execution. Record the actual source SHA, peer and artifact identities,
+retain real failure receipts and preserve their assertions and timeouts.
+
+Tag builds still produce all supported native archives and verify source,
+manifest, SBOM and checksum integrity. Publication still checks authenticated
+artifact receipts, scans, immutable digests and public availability. Those
+checks establish distribution integrity; owner deployment/soak and functional
+acceptance remain pending until actually executed. The historical monitoring
+clear timeout and later physical-incident timeout are unresolved manual
+observations, not passes inferred from the cadence change.

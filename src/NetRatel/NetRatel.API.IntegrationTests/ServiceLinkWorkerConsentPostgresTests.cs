@@ -14,6 +14,7 @@ using Xunit;
 namespace NetRatel.API.IntegrationTests.ServiceLinks;
 
 [Collection(ServiceLinkRealPeerCollection.Name)]
+[Trait("category", "manual-integration")]
 public sealed class ServiceLinkWorkerConsentPostgresTests
 {
     [Theory]

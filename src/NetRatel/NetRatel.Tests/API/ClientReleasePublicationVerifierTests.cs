@@ -18,13 +18,16 @@ public sealed class ClientReleasePublicationVerifierTests
         var directory = NewDirectory();
         try
         {
-            var release = MakeFixture(directory, "complete", Hash);
-            var result = await ClientReleasePublicationVerifier.VerifyAsync(release,
-                Path.Combine(directory, "publication.json"), Path.Combine(directory, "SHA256SUMS"),
-                Commit, TestContext.Current.CancellationToken);
-            Assert.Equal(Commit, result.BuildCommit);
-            Assert.Single(result.Assets);
-            Assert.Equal(Hash, result.Assets[0].SourceSha256);
+            foreach (var functionalPending in new[] { false, true })
+            {
+                var release = MakeFixture(directory, "complete", Hash, functionalPending);
+                var result = await ClientReleasePublicationVerifier.VerifyAsync(release,
+                    Path.Combine(directory, "publication.json"), Path.Combine(directory, "SHA256SUMS"),
+                    Commit, TestContext.Current.CancellationToken);
+                Assert.Equal(Commit, result.BuildCommit);
+                Assert.Single(result.Assets);
+                Assert.Equal(Hash, result.Assets[0].SourceSha256);
+            }
         }
         finally { Directory.Delete(directory, recursive: true); }
     }
@@ -62,13 +65,21 @@ public sealed class ClientReleasePublicationVerifierTests
         finally { Directory.Delete(directory, recursive: true); }
     }
 
-    private static GitHubClientRelease MakeFixture(string directory, string state, string hash)
+    private static GitHubClientRelease MakeFixture(string directory, string state, string hash,
+        bool functionalPending = false)
     {
+        object verification = functionalPending
+            ? new
+            {
+                state, scope = "build-distribution-integrity", requiredSmokes = Array.Empty<string>(),
+                functionalAcceptance = new { state = "pending-owner-testing", executedSmokes = Array.Empty<string>() }
+            }
+            : new { state };
         var publication = JsonSerializer.Serialize(new
         {
             productVersion = "1.2.3",
             publicCommit = Commit,
-            verification = new { state },
+            verification,
             inputReceipt = new
             {
                 repository = "BostonTechnologies/netratel",

@@ -34,6 +34,7 @@ public sealed class ServiceLinkRotationPeerCollection
 }
 
 [Collection(ServiceLinkRealPeerCollection.Name)]
+[Trait("category", "manual-integration")]
 public sealed class ServiceLinkLifecycleTests
 {
     [Theory]

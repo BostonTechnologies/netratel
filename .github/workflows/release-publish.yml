@@ -292,7 +292,7 @@ jobs:
           }
           (temporary / 'promotion-state.json').write_text(json.dumps(state, indent=2) + '\n')
           PY
-      - name: Verify published digests and run release-image smokes
+      - name: Verify published digests and complete distribution bundle
         shell: bash
         run: |
           set -euo pipefail
