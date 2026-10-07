@@ -55,7 +55,17 @@ public sealed partial class ServiceLinkCoordinator
     {
         for (var retry = 0; ; retry++)
         {
-            try { await Progress(a, ct); return a; }
+            try
+            {
+                await Progress(a, ct);
+                if (a.LifecycleState == "active" && connectorSetup is not null &&
+                    OutboundGrant(a).Scopes.Contains("rateldesk.incidents.create", StringComparer.Ordinal))
+                {
+                    await connectorSetup.EnsureApprovedReferenceAsync(int.Parse(a.LocalTenantId,
+                        System.Globalization.CultureInfo.InvariantCulture), a.LinkId!, ct);
+                }
+                return a;
+            }
             catch (DbUpdateConcurrencyException) when (retry < 3)
             {
                 var attemptId = a.AttemptId; db.ChangeTracker.Clear(); a = await Attempt(attemptId, ct);

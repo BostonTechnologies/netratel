@@ -4,6 +4,7 @@ using System.Text.Json;
 using NetRatel.API.Security.M2M;
 using NetRatel.Infrastructure.ServiceLinks.Network;
 using NetRatel.Infrastructure.ServiceIdentity;
+using NetRatel.Application.RatelDesk;
 using NetRatel.Infrastructure.ServiceLinks;
 using NetRatel.Shared.ServiceLinks;
 using Microsoft.EntityFrameworkCore;
@@ -67,6 +68,13 @@ public static class ServiceLinkEndpoints
             .RequireRateLimiting(ServiceIdentityServiceCollectionExtensions.SensitiveRateLimiter);
         admin.MapGet("/identity", (HttpContext http, ServiceLinkIdentityStore identities, CancellationToken ct) =>
             Respond(http, () => identities.GetAsync(ct)));
+        admin.MapPost("/identity/source/flow", (HttpContext http, ServiceLinkIdentityStore identities,
+            IRatelDeskConnectorSetupService setup, CancellationToken ct) => Respond(http, async () =>
+        {
+            await identities.AuthorizeAdoptionAsync(http.User, ct);
+            await setup.PrepareProducerAsync(http.User, ct);
+            return await identities.GetAsync(ct);
+        }));
         admin.MapPost("/identity/source", (HttpContext http, ServiceLinkIdentityStore identities, CancellationToken ct) =>
             WithBody<ServiceLinkAdoptSourceRequest, ServiceLinkIdentityDto>(http, body =>
             {

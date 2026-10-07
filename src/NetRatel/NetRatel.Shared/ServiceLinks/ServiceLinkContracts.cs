@@ -5,6 +5,8 @@ namespace NetRatel.Shared.ServiceLinks;
 public static class ServiceLinkContract
 {
     public const string Version = "bostec.service-link.v1";
+    // Additive permission profile: v1 wire shapes, canonicalization and existing grants remain unchanged.
+    public const string IncidentOnlyCapability = "bostec.service-link.incident-only.v1";
     public const string VerifyScope = "bostec.service-link.verify";
     public const string ControlScope = "bostec.service-link.control";
     public const string InitiatorToResponder = "initiator_to_responder";
@@ -239,6 +241,8 @@ public sealed record ServiceLinkAdminStatus(string AttemptId, string? LinkId, lo
     bool LocalInboundReady, bool LocalOutboundPersisted, bool LocalInboundActive, bool LocalBusinessSenderEnabled,
     bool PeerActiveAcknowledged, string? LastErrorCode, bool DeploymentManaged, IReadOnlyList<ServiceLinkRotationSummary> Rotations)
 {
+    public string? LocalTenantName { get; init; }
+    public string? LocalCustomerName { get; init; }
     public bool AutomaticRotationEnabled { get; init; }
     public int RotationAgeDays { get; init; }
     public int RotationOverlapSeconds { get; init; }

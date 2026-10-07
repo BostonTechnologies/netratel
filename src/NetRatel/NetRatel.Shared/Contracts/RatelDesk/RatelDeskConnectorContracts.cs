@@ -51,3 +51,10 @@ public sealed record RatelDeskManagedLinkOptionDto(string LinkId, string Receive
 public sealed record RatelDeskConnectorSetupDto(Guid FlowSourceInstanceId, string InstallationInstanceId,
     string? AdoptedSourceInstanceId, long IdentityRevision, IReadOnlyList<RatelDeskManagedLinkOptionDto> ManagedLinks);
 public sealed record AdoptRatelDeskFlowSourceRequest(long ExpectedIdentityRevision);
+
+public sealed record CompleteRatelDeskConnectionRequest(string LinkId);
+public sealed record RatelDeskConnectionCompletionDto(Guid ConnectorId, string Name, bool Ready, string Code)
+{
+    public string? OrganizationName { get; init; }
+    public string? CustomerName { get; init; }
+}

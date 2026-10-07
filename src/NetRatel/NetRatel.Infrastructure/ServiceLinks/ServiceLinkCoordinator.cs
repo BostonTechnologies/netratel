@@ -19,7 +19,7 @@ public sealed partial class ServiceLinkCoordinator(
     ServiceLinkProfileService providers, ServiceLinkTransport transport, IDataProtectionProvider protection,
     IOptions<ServiceLinkOptions> options, IServicePublicSettingsResolver publicSettings, TimeProvider clock,
     ServiceLinkProtocolTokenCache protocolTokens,
-    IServiceScopeFactory? scopes = null)
+    IServiceScopeFactory? scopes = null, NetRatel.Application.RatelDesk.IRatelDeskConnectorSetupService? connectorSetup = null)
 {
     private ServiceLinkOptions settings = options.Value;
     private async Task<ServicePublicSettingsEffective> CurrentSettings(CancellationToken ct)
@@ -46,10 +46,12 @@ public sealed partial class ServiceLinkCoordinator(
         var current = await CurrentSettings(ct); var issuer = current.Identity;
         Require(settings.Enabled && issuer.Enabled, "service-link-unavailable", "The deployment has not enabled service identities and reciprocal linking.", 503);
         Require(issuer.ApiBaseUrl.TrimEnd('/') == settings.ApiBaseUrl.TrimEnd('/') && issuer.WebBaseUrl.TrimEnd('/') == settings.WebBaseUrl.TrimEnd('/'), "service-link-configuration-invalid", "Issuer and link canonical addresses must agree.", 503);
+        var source = settings.SourceInstanceId ?? (await db.FlowRuntimeIdentity.AsNoTracking()
+            .Where(row => row.Id == 1).Select(row => (Guid?)row.SourceInstanceId).SingleOrDefaultAsync(ct))?.ToString("D");
         return ServiceLinkPayloadNormalization.Metadata(new ServiceLinkMetadata
         {
             Product = "netratel", ProductVersion = typeof(ServiceLinkCoordinator).Assembly.GetCustomAttributes(false).OfType<System.Reflection.AssemblyInformationalVersionAttribute>().FirstOrDefault()?.InformationalVersion.Split('+')[0] ?? "runtime",
-            InstanceId = issuer.InstanceId, SourceInstanceId = settings.SourceInstanceId, WebBaseUrl = settings.WebBaseUrl.TrimEnd('/'), ApiBaseUrl = settings.ApiBaseUrl.TrimEnd('/'), GatewayBaseUrl = settings.GatewayBaseUrl,
+            InstanceId = issuer.InstanceId, SourceInstanceId = source, WebBaseUrl = settings.WebBaseUrl.TrimEnd('/'), ApiBaseUrl = settings.ApiBaseUrl.TrimEnd('/'), GatewayBaseUrl = settings.GatewayBaseUrl,
             OauthIssuer = issuer.Issuer, OauthMetadataUrl = Endpoint(settings.ApiBaseUrl, "/.well-known/oauth-authorization-server"),
             TokenEndpoint = Endpoint(settings.ApiBaseUrl, "/connect/token"), JwksUri = Endpoint(settings.ApiBaseUrl, "/.well-known/service-jwks.json"), Audience = issuer.Audience,
             ServiceLinkEndpoint = Endpoint(settings.ApiBaseUrl, ServiceLinkContract.EndpointPath),
@@ -58,6 +60,8 @@ public sealed partial class ServiceLinkCoordinator(
             [
                 new("netratel.orchestration.v1", [ServiceIdentityScopes.OrchestrationInvoke, ServiceIdentityScopes.OrchestrationRead],
                 [new("GET", "/internal/health", ServiceIdentityScopes.OrchestrationRead), new("GET", "/api/v1/system/m2m/ping", ServiceIdentityScopes.OrchestrationRead), new("GET", "/internal/catalog/jobs", ServiceIdentityScopes.OrchestrationRead), new("GET", "/internal/catalog/tenants", ServiceIdentityScopes.OrchestrationRead), new("GET", "/internal/catalog/request-definitions", ServiceIdentityScopes.OrchestrationRead), new("POST", "/internal/ingest", ServiceIdentityScopes.OrchestrationInvoke)]),
+                new(ServiceLinkContract.IncidentOnlyCapability, [ServiceLinkContract.ControlScope, ServiceLinkContract.VerifyScope],
+                [new("POST", ServiceLinkContract.EndpointPath + "/links/{link_id}/verify", ServiceLinkContract.VerifyScope), new("GET", ServiceLinkContract.EndpointPath + "/links/{link_id}/status", ServiceLinkContract.ControlScope)]),
                 new(ServiceLinkContract.Version, [ServiceLinkContract.ControlScope, ServiceLinkContract.VerifyScope],
                 [new("POST", ServiceLinkContract.EndpointPath + "/links/{link_id}/verify", ServiceLinkContract.VerifyScope), new("GET", ServiceLinkContract.EndpointPath + "/links/{link_id}/status", ServiceLinkContract.ControlScope), .. new[] { "ack", "commit", "abort", "revoke", "rotate" }.Select(x => new ServiceLinkResourceOperation("POST", ServiceLinkContract.EndpointPath + "/links/{link_id}/" + x, ServiceLinkContract.ControlScope))])
             ]
@@ -113,7 +117,9 @@ public sealed partial class ServiceLinkCoordinator(
             a.LocalTenantId, a.PeerInstanceId, a.PeerTenantId, a.Decision, a.CommitId, a.GrantHash, Descriptor(a), a.GrantSummaryJson is null ? null : Summary(a),
             a.InboundPrincipalId is not null, a.ProtectedOutboundCredential is not null, inbound, sender, a.PeerActiveAcknowledged, EffectiveError(a, inbound, sender),
             provider.ManagedByDeployment, await RotationSummaries(a, ct))
-            { AutomaticRotationEnabled = settings.AutomaticRotationEnabled, RotationAgeDays = settings.RotationAgeDays, RotationOverlapSeconds = settings.RotationOverlapSeconds };
+            { LocalTenantName = ServiceLinkGrantAuthority.TryTenant(a.LocalTenantId, out var namedTenant)
+                ? await db.Tenants.AsNoTracking().Where(t => t.Id == namedTenant).Select(t => t.Name).SingleOrDefaultAsync(ct) : null,
+                AutomaticRotationEnabled = settings.AutomaticRotationEnabled, RotationAgeDays = settings.RotationAgeDays, RotationOverlapSeconds = settings.RotationOverlapSeconds };
     }
     private static bool SenderUsable(ServiceLinkAttempt a, ServiceLinkProfileStatus provider, bool inbound) =>
         inbound && a.LocalBusinessSenderEnabled && a.PeerActiveAcknowledged && provider.Enabled && provider.ManagedSenderEnabled && provider.LinkId == a.LinkId &&

@@ -24,7 +24,12 @@ public sealed partial class ServiceLinkCoordinator
         // This is the peer's acknowledgement backed by the stored reciprocal verification receipts,
         // not a claim that the local server possesses the peer's hash-only inbound secret.
         var peerAcknowledged = a.InitiatorVerificationReceiptId is not null && a.ResponderVerificationReceiptId is not null &&
-            Boolean(peerStatus.RootElement, "local_business_sender_enabled") && String(peerStatus.RootElement, "commit_id") == a.CommitId;
-        return new(true, peerAcknowledged, false, peerAcknowledged ? null : "peer-acknowledgement-pending");
+            (Boolean(peerStatus.RootElement, "local_business_sender_enabled") || IncidentOnlyGrant(InboundGrant(a)) &&
+                Boolean(peerStatus.RootElement, "local_inbound_active") && String(peerStatus.RootElement, "lifecycle_state") == "active") && String(peerStatus.RootElement, "commit_id") == a.CommitId;
+        if (!peerAcknowledged) return new(true, false, false, "peer-acknowledgement-pending");
+        if (connectorSetup is null) return new(true, true, false, "connector-readiness-required");
+        var completion = await connectorSetup.CompleteAsync(int.Parse(a.LocalTenantId,
+            System.Globalization.CultureInfo.InvariantCulture), linkId, actor, ct);
+        return new(true, true, completion.Ready, completion.Ready ? null : completion.Code);
     }
 }

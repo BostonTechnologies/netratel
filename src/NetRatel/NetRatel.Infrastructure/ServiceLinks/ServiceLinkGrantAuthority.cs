@@ -18,6 +18,15 @@ public static class ServiceLinkGrantAuthority
         ClaimsPrincipal? actor, IEffectiveAccessService? access, CancellationToken ct)
     {
         var validTenant = TryTenant(grant.TargetTenantId, out var tenant);
+        if (IncidentOnlyGrant(grant))
+        {
+            Require(validTenant && await ControlResourcesCurrentAsync(db, grant.ResourceConstraints, ct),
+                "grant-unavailable", "The incident-only connection requires its current exact NetRatel tenant.", 403);
+            if (actor is not null)
+                Require(access is not null && await access.AuthorizeAsync(actor, NetRatelPermissions.IntegrationManagement, tenant, ct),
+                    "grant-not-authorized", "Current integration-management authority is required for this connection.", 403);
+            return;
+        }
         Require(grant.TargetProduct == "netratel" && validTenant &&
             grant.ResourceConstraints.TenantId == grant.TargetTenantId && grant.Scopes.Length > 0 &&
             grant.Scopes.All(x => ServiceIdentityScopes.Business.Contains(x, StringComparer.Ordinal)) &&
@@ -30,6 +39,14 @@ public static class ServiceLinkGrantAuthority
             Require(access is not null && await access.AuthorizeAsync(actor, NetRatelPermissions.IntegrationManagement, tenant, ct) &&
                 await access.AuthorizeAsync(actor, NetRatelPermissions.JobManagement, tenant, ct), "grant-not-authorized",
                 "Current integration-management and job-management authority are required for these local operations.", 403);
+    }
+
+    public static Task<bool> ControlResourcesCurrentAsync(OrchestratorDbContext db, ServiceLinkResourceConstraints constraints, CancellationToken ct)
+    {
+        if (!TryTenant(constraints.TenantId, out var tenant) || constraints.OrganizationId is not null ||
+            constraints.CustomerIds.Length != 0 || constraints.RequestIds.Length != 0 || constraints.TaskIds.Length != 0 ||
+            constraints.ResourceIds.Length != 0 || constraints.RequestDefinitionIds.Length != 0) return Task.FromResult(false);
+        return db.Tenants.AsNoTracking().AnyAsync(x => x.Id == tenant, ct);
     }
 
     public static async Task<bool> LocalResourcesCurrentAsync(OrchestratorDbContext db, ServiceLinkResourceConstraints constraints, CancellationToken ct)

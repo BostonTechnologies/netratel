@@ -80,6 +80,11 @@ public interface IRatelDeskConnectorReadiness
 
 public interface IRatelDeskConnectorSetupService
 {
+    Task PrepareProducerAsync(ClaimsPrincipal actor, CancellationToken ct);
     Task<RatelDeskConnectorSetupDto> GetAsync(int tenantId, ClaimsPrincipal actor, CancellationToken ct);
     Task<RatelDeskConnectorSetupDto> AdoptAsync(int tenantId, long expectedIdentityRevision, ClaimsPrincipal actor, CancellationToken ct);
+    Task<RatelDeskConnectionCompletionDto> CompleteAsync(int tenantId, string linkId, ClaimsPrincipal actor, CancellationToken ct);
+    Task<RatelDeskConnectionCompletionDto> CompleteApprovedAsync(int tenantId, string linkId, CancellationToken ct);
+    Task<bool> IsApprovedReferenceReadyAsync(int tenantId, string linkId, CancellationToken cancellationToken);
+    Task EnsureApprovedReferenceAsync(int tenantId, string linkId, CancellationToken ct);
 }

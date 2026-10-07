@@ -88,7 +88,7 @@ public sealed class ServicePrincipalRegistry(OrchestratorDbContext db, IServiceI
     {
         if (row.Status == "revoked") return row.LinkId is not null && row.TerminalControlUntilUtc > time.GetUtcNow() ? [ServiceIdentityScopes.Control] : [];
         if (row.LinkId is null) return row.Status == "active" && credential.Status != "pending" ? ReadArray(row.AllowedScopesJson) : [];
-        if (row.Status == "active" && credential.Status is "active" or "retiring") return [.. ReadArray(row.AllowedScopesJson), ServiceIdentityScopes.Verify, ServiceIdentityScopes.Control];
+        if (row.Status == "active" && credential.Status is "active" or "retiring") return [.. ReadArray(row.AllowedScopesJson).Concat([ServiceIdentityScopes.Verify, ServiceIdentityScopes.Control]).Distinct(StringComparer.Ordinal)];
         return row.Status is "pending" or "prepared" or "verified" or "in_doubt" or "active" ? [ServiceIdentityScopes.Verify, ServiceIdentityScopes.Control] : [];
     }
     public async Task<bool> CanIssueScopesAsync(AuthenticatedServiceClient client, string[] scopes, CancellationToken ct = default)
@@ -227,7 +227,7 @@ public sealed class ServicePrincipalRegistry(OrchestratorDbContext db, IServiceI
         if (string.IsNullOrWhiteSpace(request.Name) || request.Name.Length > 128 || request.TenantId <= 0 ||
             string.IsNullOrWhiteSpace(request.PeerInstanceId) || request.PeerInstanceId.Length > 256 || string.IsNullOrWhiteSpace(request.PeerTenantId) || request.PeerTenantId.Length > 256 ||
             request.Name.Any(char.IsControl) || request.PeerInstanceId.Any(char.IsControl) || request.PeerTenantId.Any(char.IsControl)) throw new ArgumentException("Explicit tenant, name and peer instance/tenant are required.");
-        if (request.Scopes is not { Length: > 0 and <= 2 } || request.Scopes.Distinct(StringComparer.Ordinal).Count() != request.Scopes.Length || request.Scopes.Any(x => !ServiceIdentityScopes.Business.Contains(x, StringComparer.Ordinal))) throw new ArgumentException("Only exact supported narrow business scopes may be approved.");
+        if (request.Scopes is not { Length: > 0 and <= 2 } || request.Scopes.Distinct(StringComparer.Ordinal).Count() != request.Scopes.Length || request.Scopes.Any(x => !ServiceIdentityScopes.Business.Contains(x, StringComparer.Ordinal)) && !(request.LinkId is not null && ServiceLinkValidation.ControlOnlyScopes(request.Scopes))) throw new ArgumentException("Only exact supported narrow business scopes may be approved.");
         if (request.LinkId is not null && (request.AttemptId is null || request.GrantHash?.Length != 64 || request.DescriptorHash?.Length != 64 || request.DirectionId is not ("initiator_to_responder" or "responder_to_initiator") || request.LinkRevision < 1)) throw new ArgumentException("The complete approved ceremony binding is required.");
         if (request.LinkId is null && new[] { request.AttemptId, request.GrantHash, request.DescriptorHash, request.DirectionId }.Any(x => x is not null)) throw new ArgumentException("Partial reciprocal bindings are invalid.");
         ServiceLinkResourceConstraints result;
@@ -257,6 +257,8 @@ public sealed class ServicePrincipalRegistry(OrchestratorDbContext db, IServiceI
     {
         if (constraints.TenantId != Number(tenantId) || constraints.OrganizationId is not null || constraints.CustomerIds.Length != 0 ||
             constraints.RequestIds.Length != 0 || constraints.TaskIds.Length != 0 || !await db.Tenants.AsNoTracking().AnyAsync(x => x.Id == tenantId, ct)) return false;
+        if (ServiceLinkValidation.ControlOnlyScopes(scopes))
+            return await ServiceLinkGrantAuthority.ControlResourcesCurrentAsync(db, constraints, ct);
         if (!await ServiceLinkGrantAuthority.LocalResourcesCurrentAsync(db, constraints, ct)) return false;
         return !scopes.Contains(ServiceIdentityScopes.OrchestrationInvoke, StringComparer.Ordinal) || constraints.RequestDefinitionIds.Length > 0 && constraints.ResourceIds.Length > 0;
     }

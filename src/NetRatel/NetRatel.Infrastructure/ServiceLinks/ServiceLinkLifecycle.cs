@@ -36,6 +36,10 @@ public sealed partial class ServiceLinkCoordinator
         result["local_business_sender_enabled"] = sender; result["peer_active_acknowledged"] = a.PeerActiveAcknowledged;
         result["initiator_verification_receipt_id"] = a.InitiatorVerificationReceiptId;
         result["responder_verification_receipt_id"] = a.ResponderVerificationReceiptId;
+        if (IncidentOnlyGrant(InboundGrant(a)))
+            result["incident_delivery_ready"] = sender && connectorSetup is not null &&
+                await connectorSetup.IsApprovedReferenceReadyAsync(int.Parse(a.LocalTenantId,
+                    System.Globalization.CultureInfo.InvariantCulture), a.LinkId!, ct);
         result["rotations"] = await RotationSummaries(a, ct); return result;
     }
     public async Task<object> StatusAsync(string linkId, ClaimsPrincipal caller, CancellationToken ct)
