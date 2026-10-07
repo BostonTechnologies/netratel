@@ -4,6 +4,7 @@
 @using NetRatel.Shared.Contracts.Monitoring
 @using NetRatel.Shared.Contracts.Services
 @using NetRatel.Web.Services.Monitoring
+@using NetRatel.Web.Components.Shared.Monitoring
 @inject IMonitoringApiService Api
 @inject NetRatel.Web.Services.Services.IClientServicesApiService ServicesApi
 
@@ -11,11 +12,11 @@
 <section class="monitoring-page" data-testid="monitoring-page" @onkeydown="HandleKey">
     @if (_interactive) { <span hidden data-testid="monitoring-interactive"></span> }
     <header class="monitoring-heading">
-        <div><MudText Typo="Typo.h5">Monitoring</MudText><MudText Typo="Typo.body2">Current health, selected rules and alert occurrences.</MudText></div>
+        <MudText Typo="Typo.h5">Monitoring</MudText>
         <div class="monitoring-toolbar">
             <label>Tenant<select data-testid="monitoring-tenant" value="@State.TenantId" @onchange="ChangeTenant" disabled="@(_editor is not null)"><option value="0">Select tenant</option>@foreach (var tenant in _tenants) { <option value="@tenant.TenantId">@tenant.Name</option> }</select></label>
             <label>Search this page<input type="search" @bind="_search" @bind:event="oninput" data-testid="monitoring-search" /></label>
-            <button class="monitoring-button" @onclick="Refresh" disabled="@(State.Loading || _busy || _editor is not null)" data-testid="monitoring-refresh">Refresh</button>
+            <MudTooltip Text="Refresh monitoring"><MudIconButton Icon="@Icons.Material.Filled.Refresh" OnClick="Refresh" Disabled="@(State.Loading || _busy)" aria-label="Refresh monitoring" data-testid="monitoring-refresh" /></MudTooltip>
         </div>
     </header>
     @if (_startupError is not null || State.Error is not null) { <MudAlert Severity="Severity.Error" data-testid="monitoring-read-error">@(_startupError ?? State.Error)</MudAlert> }
@@ -24,61 +25,76 @@
     {
         @if (_pendingWatchAtSaveTenant == State.TenantId && _pendingWatchAtSaveRevision is { } savedRevision) { <MudAlert Severity="Severity.Warning" data-testid="monitoring-watch-pending-at-save">Configuration revision @savedRevision was saved. The server reported selected service watch updates pending at save time. This notice does not confirm their current activation; fresh service evidence is still required.</MudAlert> }
         @if (snapshot.Configuration.WatchPolicyUpdatePending) { <MudAlert Severity="Severity.Warning" data-testid="monitoring-watch-pending">Configuration is saved. Selected service watch activation is pending; current service evidence remains unknown until the policy is accepted.</MudAlert> }
-        <div class="monitoring-counts" aria-label="Monitoring counts">
-            <span>Firing <strong>@snapshot.Summary.ActiveOccurrences</strong></span><span>Pending <strong>@snapshot.Summary.PendingSeries</strong></span><span>Unknown <strong>@snapshot.Summary.UnknownSeries</strong></span><span>Suppressed <strong>@snapshot.Summary.SuppressedOccurrences</strong></span>
+        <div class="monitoring-counts" aria-label="Counts across this tenant">
+            <MudButton Variant="Variant.Outlined" Color="Color.Error" Size="Size.Small" OnClick='() => FilterState("firing")' aria-pressed="@(_stateFilter == "firing")">Firing <strong>@snapshot.Summary.FiringOccurrences</strong></MudButton>
+            <MudButton Variant="Variant.Outlined" Size="Size.Small" OnClick='() => FilterState("pending")' aria-pressed="@(_stateFilter == "pending")">Pending <strong>@snapshot.Summary.PendingSeries</strong></MudButton>
+            <MudButton Variant="Variant.Outlined" Size="Size.Small" OnClick='() => FilterState("unknown")' aria-pressed="@(_stateFilter == "unknown")">Unknown <strong>@snapshot.Summary.UnknownSeries</strong></MudButton>
+            <MudButton Variant="Variant.Outlined" Size="Size.Small" OnClick='() => FilterState("suppressed")' aria-pressed="@(_stateFilter == "suppressed")">Suppressed <strong>@snapshot.Summary.SuppressedOccurrences</strong></MudButton>
+            <MudText Typo="Typo.caption">Tenant totals · @_timeZone.Id</MudText>
         </div>
-        <nav class="monitoring-tabs" aria-label="Monitoring views">
-            @foreach (var tab in new[] { "Active", "Manage", "History" }) { <button class="monitoring-button" aria-pressed="@(_tab == tab)" @onclick="() => _tab = tab" data-testid="@($"monitoring-tab-{tab.ToLowerInvariant()}")">@tab</button> }
+        <nav class="monitoring-tabs" role="tablist" aria-label="Monitoring views">
+            @foreach (var tab in new[] { "Active", "Manage", "History" }) { <MudButton role="tab" Variant="@(_tab == tab ? Variant.Filled : Variant.Text)" Color="Color.Primary" aria-selected="@(_tab == tab)" OnClick="() => _tab = tab" data-testid="@($"monitoring-tab-{tab.ToLowerInvariant()}")">@(tab == "Active" ? "Active alerts" : tab == "Manage" ? "Rules & groups" : "History")</MudButton> }
         </nav>
         @if (_tab == "Active")
         {
             <MudPaper Class="monitoring-panel pa-3">
-                <MudText Typo="Typo.h6">Active alerts and uncertain health</MudText>
-                <p class="monitoring-note">Unknown or offline evidence cannot prove recovery. Acknowledgement records awareness; it does not clear an alert.</p>
-                <div class="monitoring-table-wrap"><table class="monitoring-table"><caption class="monitoring-visually-hidden">Current alert occurrences and evidence</caption><thead><tr><th>Rule / client</th><th>Health</th><th>Evidence</th><th>Occurrence / flow</th><th>Actions</th></tr></thead><tbody>
+                <div class="monitoring-table-wrap"><table class="monitoring-table"><caption class="monitoring-visually-hidden">Current alert occurrences and evidence</caption><thead><tr><th>Client / host</th><th>Rule</th><th>Severity / state</th><th>Latest reading</th><th>Since / acknowledgement</th><th>Actions</th></tr></thead><tbody>
                     @foreach (var row in ActiveRows)
                     {
                         <tr data-testid="monitoring-series-row" data-health="@Health(row)">
-                            <td data-label="Rule / client"><strong>@RuleName(row.Series.RuleId)</strong><div>@ClientName(row.Series.AgentId)</div><code>@row.Series.ResourceKey</code></td>
-                            <td data-label="Health"><span class="monitoring-health" data-state="@Health(row)">@Health(row)</span><div>@row.Phase</div>@if (row.Suppressed) { <span>Suppressed · evaluation continues</span> }</td>
-                            <td data-label="Evidence">@EvidenceValue(row)<div>Observed @Time(row.LatestEvidence?.ObservedAtUtc)</div><div>Received @Time(row.LatestEvidence?.ReceivedAtUtc)</div><div>@ExplainCode(row.LatestEvidence?.UnknownReason)</div></td>
-                            <td data-label="Occurrence / flow">@if (row.Occurrence is { } occurrence) { <code>@occurrence.OccurrenceId</code><div>First breach @Time(occurrence.BreachSinceAtUtc)</div><div>Raised @Time(occurrence.RaisedAtUtc)</div><div>@(occurrence.AcknowledgedAtUtc is null ? "Unacknowledged" : $"Acknowledged {Time(occurrence.AcknowledgedAtUtc)} by {occurrence.AcknowledgedBy}")</div><div>Flow: @occurrence.FlowDispatchDisposition</div>@if (occurrence.FlowOutcome is { } outcome) { <div>@outcome.Outcome · @ExplainCode(outcome.Code)</div>@if (outcome.Outcome == MonitoringFlowOutcomeKind.Succeeded && outcome.Receipt is { } receipt && NetRatel.Application.Monitoring.MonitoringContractValidator.TryValidateIncidentReceipt(receipt, out _)) { <div data-testid="monitoring-incident-receipt">Incident @receipt.IncidentId @receipt.TrackingNumber @if (receipt.IncidentUrl is { } url) { <a href="@url" target="_blank" rel="noopener noreferrer">Open incident</a> }</div> }@if (outcome.FlowRunId is { } runId && runId != Guid.Empty) { <a href="@($"/flows?tenantId={row.Series.TenantId}&run={runId:D}")">Flow run and receipt</a> } }@if (occurrence.PinnedRule.PublishedFlowVersionId is { } flow) { <a href="@($"/flows?tenantId={row.Series.TenantId}&version={flow:D}")">Published flow</a> } } @foreach (var bypass in AppliedBypasses(row)) { <div>@bypass.Reason · ends @Time(bypass.ExpiresAtUtc)</div> }</td>
+                            <td data-label="Client / host"><ClientIdentity Identity="@State.ClientIdentity(row.Series.AgentId)" /><details class="monitoring-details"><summary>Details</summary><dl><dt>Client ID</dt><dd><code>@row.Series.AgentId</code></dd><dt>Resource</dt><dd>@row.Series.ResourceKey</dd><dt>Observed</dt><dd>@Time(row.LatestEvidence?.ObservedAtUtc)</dd><dt>Received</dt><dd>@Time(row.LatestEvidence?.ReceivedAtUtc)</dd><dt>Evidence</dt><dd>@ExplainCode(row.LatestEvidence?.UnknownReason)</dd></dl>@if (row.Occurrence is { } detailOccurrence) { <div>Occurrence <code>@detailOccurrence.OccurrenceId</code></div><div>Flow: @Label(detailOccurrence.FlowDispatchDisposition)</div>@if (detailOccurrence.FlowOutcome is { } outcome) { <div>@Label(outcome.Outcome) · @ExplainCode(outcome.Code)</div>@if (outcome.Outcome == MonitoringFlowOutcomeKind.Succeeded && outcome.Receipt is { } receipt && NetRatel.Application.Monitoring.MonitoringContractValidator.TryValidateIncidentReceipt(receipt, out _)) { <div data-testid="monitoring-incident-receipt">Incident @receipt.IncidentId @receipt.TrackingNumber @if (receipt.IncidentUrl is { } url) { <a href="@url" target="_blank" rel="noopener noreferrer">Open incident</a> }</div> }@if (outcome.FlowRunId is { } runId && runId != Guid.Empty) { <a href="@($"/flows?tenantId={row.Series.TenantId}&run={runId:D}")">Flow run and receipt</a> } }@if (detailOccurrence.PinnedRule.PublishedFlowVersionId is { } flow) { <div><a href="@($"/flows?tenantId={row.Series.TenantId}&version={flow:D}")">Published flow</a></div> } }@foreach (var bypass in AppliedBypasses(row)) { <div>@bypass.Reason · ends @Time(bypass.ExpiresAtUtc)</div> }</details></td>
+                            <td data-label="Rule"><strong>@RuleName(row.Series.RuleId)</strong><div class="monitoring-secondary">@row.Series.ResourceKey</div></td>
+                            <td data-label="Severity / state"><MudChip T="string" Size="Size.Small" Color="@(row.Occurrence?.PinnedRule.Severity == MonitoringSeverity.Critical ? Color.Error : Color.Warning)" Variant="Variant.Outlined">@Label(row.Occurrence?.PinnedRule.Severity)</MudChip><div class="monitoring-health" data-state="@Health(row)">@(row.Suppressed ? "Suppressed" : Health(row) == "Unknown" ? "Unknown" : Label(row.Phase))</div></td>
+                            <td data-label="Latest reading">@EvidenceValue(row)<div class="monitoring-secondary">@Time(row.LatestEvidence?.ObservedAtUtc)</div></td>
+                            <td data-label="Since / acknowledgement">@Time(row.Occurrence?.BreachSinceAtUtc ?? row.WindowStartedAtUtc)<div class="monitoring-secondary">@(row.Occurrence?.AcknowledgedAtUtc is { } at ? $"Acknowledged {Time(at)}" : row.Occurrence is not null ? "Unacknowledged" : "—")</div></td>
                             <td data-label="Actions"><div class="monitoring-row-actions">
                                 @if (row.Occurrence is { EndedAtUtc: null })
                                 {
-                                    <button class="monitoring-button" disabled="@(!snapshot.Permissions.CanAcknowledge || row.Occurrence.AcknowledgedAtUtc is not null)" @onclick='() => OpenOperator(row, "ack")' data-testid="monitoring-ack">Acknowledge</button>
-                                    <button class="monitoring-button" disabled="@(!snapshot.Permissions.CanClear)" @onclick='() => OpenOperator(row, "clear")' data-testid="monitoring-clear">Clear</button>
-                                    <button class="monitoring-button" disabled="@(!snapshot.Permissions.CanBypass)" @onclick='() => OpenOperator(row, "bypass")' data-testid="monitoring-bypass">Bypass</button>
+                                    <MudTooltip Text="Record awareness; alert remains active"><MudIconButton Icon="@Icons.Material.Filled.Done" Size="Size.Small" Disabled="@(!snapshot.Permissions.CanAcknowledge || row.Occurrence.AcknowledgedAtUtc is not null)" OnClick='() => OpenOperator(row, "ack")' aria-label="Acknowledge alert" data-testid="monitoring-ack" /></MudTooltip>
+                                    <MudTooltip Text="Clear this occurrence"><MudIconButton Icon="@Icons.Material.Filled.Clear" Size="Size.Small" Disabled="@(!snapshot.Permissions.CanClear)" OnClick='() => OpenOperator(row, "clear")' aria-label="Clear alert" data-testid="monitoring-clear" /></MudTooltip>
+                                    <MudTooltip Text="Bypass new actions"><MudIconButton Icon="@Icons.Material.Filled.Pause" Size="Size.Small" Disabled="@(!snapshot.Permissions.CanBypass)" OnClick='() => OpenOperator(row, "bypass")' aria-label="Bypass alert actions" data-testid="monitoring-bypass" /></MudTooltip>
                                 }
-                                <span data-testid="monitoring-services"><NetRatel.Web.Components.Dialogs.ClientServicesLauncher TenantId="@row.Series.TenantId" AgentId="@row.Series.AgentId" HostLabel="@ClientName(row.Series.AgentId)" /></span>
+                                <span data-testid="monitoring-services"><ClientServicesLauncher TenantId="@row.Series.TenantId" AgentId="@row.Series.AgentId" HostLabel="@($"{ClientName(row.Series.AgentId)} · {ClientContext(row.Series.AgentId)}".Trim(' ', '·'))" TenantLabel="@TenantName" /></span>
                             </div></td>
                         </tr>
                     }
                 </tbody></table></div>
-                @if (!ActiveRows.Any()) { <p data-testid="monitoring-empty">No active alerts or uncertain series on this page.</p> }
+                @if (!ActiveRows.Any()) { <p data-testid="monitoring-empty">No alerts match this page and filter.</p> }
                 <div class="monitoring-pager"><button class="monitoring-button" disabled="@State.PagingSeries" @onclick="() => PageSeries(null)">First page</button><button class="monitoring-button" disabled="@(State.PagingSeries || snapshot.Series.NextCursor is null)" @onclick="() => PageSeries(snapshot.Series.NextCursor)" data-testid="monitoring-next-series">Next page</button><span>Search and rows are scoped to this page.</span></div>
             </MudPaper>
         }
         else if (_tab == "History")
         {
-            <MudPaper Class="monitoring-panel pa-3"><MudText Typo="Typo.h6">Occurrence history</MudText><p>Clear and suspension are administrative outcomes; recovery is recorded only from a full recovery window.</p>
-                <div class="monitoring-table-wrap"><table class="monitoring-table"><thead><tr><th>Event</th><th>Rule / client</th><th>Outcome</th><th>When / occurrence</th></tr></thead><tbody>@foreach (var item in snapshot.History.Items.Where(MatchesHistory)) { <tr data-testid="monitoring-history-row"><td data-label="Event">@item.Kind</td><td data-label="Rule / client">@item.PinnedRule.Name<div>@ClientName(item.Series.AgentId)</div><code>@item.Series.ResourceKey</code></td><td data-label="Outcome">@item.ClosureDisposition<div>@item.Reason</div></td><td data-label="When / occurrence">@Time(item.AtUtc)<div><code>@item.OccurrenceId</code></div></td></tr> }</tbody></table></div>
-                @if (snapshot.History.Items.IsEmpty) { <p>No occurrence events yet.</p> }
-                <div class="monitoring-pager"><button class="monitoring-button" disabled="@State.PagingHistory" @onclick="() => PageHistory(null)">First page</button><button class="monitoring-button" disabled="@(State.PagingHistory || snapshot.History.NextCursor is null)" @onclick="() => PageHistory(snapshot.History.NextCursor)">Next page</button></div>
+            <MudPaper Class="monitoring-panel pa-3">
+                <div class="monitoring-table-wrap"><table class="monitoring-table"><thead><tr><th>Action</th><th>Rule / client</th><th>Performed by</th><th>Reason</th><th>When</th></tr></thead><tbody>
+                    @foreach (var history in HistoryRows)
+                    {
+                    @if (history.Event is { } item)
+                    {
+                        <tr data-testid="monitoring-history-row"><td data-label="Action">@Label(item.Kind)<div class="monitoring-secondary">@Label(item.ClosureDisposition)</div></td><td data-label="Rule / client">@item.PinnedRule.Name<ClientIdentity Identity="@(item.ClientIdentity ?? State.ClientIdentity(item.Series.AgentId))" /><details class="monitoring-details"><summary>Technical details</summary><div>@item.Series.ResourceKey</div>@if (item.ClientIdentity is null) { <div>Historical client details were not recorded for this legacy event.</div> }<code>@item.OccurrenceId</code></details></td><td data-label="Performed by">@HistoryActor(item)</td><td data-label="Reason">@(item.Reason ?? "—")</td><td data-label="When">@Time(item.AtUtc)<div class="monitoring-secondary">@_timeZone.Id</div></td></tr>
+                    }
+                    else if (history.Audit is { } audit)
+                    {
+                        <tr data-testid="monitoring-history-audit"><td data-label="Action">@ActionName(audit.Action)</td><td data-label="Rule / client">@audit.EntityName<div class="monitoring-secondary">@audit.EntityKind</div></td><td data-label="Performed by">@(audit.OperatorDisplayName ?? "Recorded operator unavailable")</td><td data-label="Reason">@audit.Reason</td><td data-label="When">@Time(audit.AtUtc)<div class="monitoring-secondary">@_timeZone.Id</div></td></tr>
+                    }
+                    }
+                </tbody></table></div>
+                @if (snapshot.History.Items.IsEmpty && (snapshot.History.Audits.IsDefaultOrEmpty)) { <p>No monitoring history yet.</p> }
+                <div class="monitoring-pager"><button class="monitoring-button" disabled="@State.PagingHistory" @onclick="() => PageHistory(null)">First page</button><button class="monitoring-button" disabled="@(State.PagingHistory || snapshot.History.NextCursor is null)" @onclick="() => PageHistory(snapshot.History.NextCursor)">Next page</button><span>History is paged · @_timeZone.Id</span></div>
             </MudPaper>
         }
         else
         {
             <div class="monitoring-manage">
                 <MudPaper Class="monitoring-panel pa-3"><div class="monitoring-section-heading"><MudText Typo="Typo.h6">Rules</MudText><button class="monitoring-button" disabled="@(!snapshot.Permissions.CanManage)" @ref="_newRuleLauncher" @onclick="() => OpenRuleFromLauncher(null, _newRuleLauncher)" data-testid="monitoring-new-rule">New rule</button></div>
-                    @foreach (var rule in snapshot.Configuration.Rules.Where(r => Contains(r.Name))) { <div @key="rule.RuleId" class="monitoring-definition"><div><strong>@rule.Name</strong><div>@rule.Condition.Kind · @(rule.Enabled ? "Enabled" : "Disabled") · @rule.Severity</div><small>Breach @rule.BreachHold.TotalSeconds s · recovery @rule.RecoveryHold.TotalSeconds s</small></div><button class="monitoring-button" disabled="@(!snapshot.Permissions.CanManage)" @ref="_ruleLaunchers[rule.RuleId]" @onclick="() => OpenRuleFromLauncher(rule, _ruleLaunchers[rule.RuleId])" data-testid="monitoring-edit-rule">Edit</button><button class="monitoring-button" disabled="@(!snapshot.Permissions.CanManage)" @onclick='() => OpenDelete("rules", rule.RuleId, rule.Name)'>Remove</button></div> }
+                    @foreach (var rule in snapshot.Configuration.Rules.Where(r => Contains(r.Name))) { <div @key="rule.RuleId" class="monitoring-definition"><div><strong>@rule.Name</strong><div>@Label(rule.Condition.Kind) · @(rule.Enabled ? "Enabled" : "Disabled") · @rule.Severity</div><small>Breach @rule.BreachHold.TotalSeconds s · recovery @rule.RecoveryHold.TotalSeconds s</small></div><button class="monitoring-button" disabled="@(!snapshot.Permissions.CanManage)" @ref="_ruleLaunchers[rule.RuleId]" @onclick="() => OpenRuleFromLauncher(rule, _ruleLaunchers[rule.RuleId])" data-testid="monitoring-edit-rule">Edit</button><button class="monitoring-button" disabled="@(!snapshot.Permissions.CanManage)" @onclick='() => OpenDelete("rules", rule.RuleId, rule.Name)'>Remove</button></div> }
                     @if (snapshot.Configuration.Rules.IsEmpty) { <p>No rules. Templates are choices and are never enabled automatically.</p> }
                 </MudPaper>
                 <MudPaper Class="monitoring-panel pa-3"><div class="monitoring-section-heading"><MudText Typo="Typo.h6">Groups</MudText><button class="monitoring-button" disabled="@(!snapshot.Permissions.CanManage)" @onclick="() => OpenGroup(null)" data-testid="monitoring-new-group">New group</button></div>
                     @foreach (var group in snapshot.Configuration.Groups.Where(g => Contains(g.Name))) { <div class="monitoring-definition"><div><strong>@group.Name</strong><div>@group.AgentIds.Length explicit clients</div></div><button class="monitoring-button" disabled="@(!snapshot.Permissions.CanManage)" @onclick="() => OpenGroup(group)">Edit</button><button class="monitoring-button" disabled="@(!snapshot.Permissions.CanManage)" @onclick='() => OpenDelete("groups", group.GroupId, group.Name)'>Remove</button></div> }
                 </MudPaper>
                 <MudPaper Class="monitoring-panel pa-3"><div class="monitoring-section-heading"><MudText Typo="Typo.h6">Bypasses</MudText><button class="monitoring-button" disabled="@(!snapshot.Permissions.CanBypass)" @onclick="() => OpenBypass()" data-testid="monitoring-new-bypass">New bypass</button></div>
-                    <p>Suppresses new actions while health evaluation continues.</p>@foreach (var bypass in snapshot.Configuration.Bypasses) { <div class="monitoring-definition"><div><strong>@bypass.Reason</strong><div>@(bypass.ExpiresAtUtc <= DateTimeOffset.UtcNow ? "Expired" : "Active") · ends @Time(bypass.ExpiresAtUtc)</div><small>Rule @(bypass.RuleId?.ToString() ?? "all") · group @(bypass.GroupId?.ToString() ?? "all") · client @(bypass.AgentId?.ToString() ?? "all")</small><div>By @bypass.OperatorId · @Time(bypass.StartsAtUtc)</div></div><button class="monitoring-button" disabled="@(!snapshot.Permissions.CanBypass)" @onclick='() => OpenDelete("bypasses", bypass.BypassId, bypass.Reason)'>Revoke</button></div> }
+                    <p>Suppresses new actions while health evaluation continues.</p>@foreach (var bypass in snapshot.Configuration.Bypasses) { <div class="monitoring-definition"><div><strong>@bypass.Reason</strong><div>@(bypass.ExpiresAtUtc <= DateTimeOffset.UtcNow ? "Expired" : "Active") · ends @Time(bypass.ExpiresAtUtc)</div><small>Rule @(bypass.RuleId is { } ruleId ? RuleName(ruleId) : "all") · group @(bypass.GroupId is { } groupId ? snapshot.Configuration.Groups.FirstOrDefault(g => g.GroupId == groupId)?.Name ?? "Removed group" : "all") · client @(bypass.AgentId is { } agentId ? ClientName(agentId) : "all")</small><div>Applied @Time(bypass.StartsAtUtc)</div></div><button class="monitoring-button" disabled="@(!snapshot.Permissions.CanBypass)" @onclick='() => OpenDelete("bypasses", bypass.BypassId, bypass.Reason)'>Revoke</button></div> }
                 </MudPaper>
             </div>
         }
@@ -88,21 +104,23 @@
     @if (_editor is not null && State.Snapshot is { } editSnapshot)
     {
         <aside class="monitoring-editor" role="dialog" aria-labelledby="monitoring-editor-title" aria-modal="true" data-testid="monitoring-editor">
-        <MudFocusTrap DefaultFocus="DefaultFocus.FirstChild"><div class="monitoring-editor-shell"><header><h2 id="monitoring-editor-title">@EditorTitle</h2><span data-testid="monitoring-dirty">@(_draft?.Dirty == true || _formDirty ? "Unsaved changes" : "No unsaved changes")</span></header><div class="monitoring-editor-body">
+        <MudFocusTrap DefaultFocus="DefaultFocus.FirstChild"><div class="monitoring-editor-shell"><header><h2 id="monitoring-editor-title">@EditorTitle</h2><span class="monitoring-secondary" data-testid="monitoring-dirty">@(_draft?.Dirty == true || _formDirty ? "Unsaved changes" : "No unsaved changes")</span></header><div class="monitoring-editor-body"><MudForm Class="monitoring-form">
             @if (_editorError is not null) { <MudAlert Severity="Severity.Error" data-testid="monitoring-editor-error">@_editorError</MudAlert> }
+            @if (_reviewDescription is not null) { <MudAlert Severity="Severity.Info" Dense="true">@_reviewDescription</MudAlert> }
+            @if (_conflict) { <div class="monitoring-conflict-actions"><MudButton OnClick="ReviewConflict" Disabled="@State.Loading" Variant="Variant.Outlined" data-testid="monitoring-review-conflict">Refresh and review</MudButton>@if (_reviewedConflict) { <MudButton OnClick="AcceptReviewedState" Color="Color.Primary" data-testid="monitoring-accept-review">Use reviewed state</MudButton> }</div> }
             @if (_draft is { } draft)
             {
                 <label>Name<input @bind="draft.Name" @bind:event="oninput" maxlength="128" data-testid="monitoring-rule-name" /></label>
                 <label class="monitoring-check"><input type="checkbox" @bind="draft.Enabled" />Enabled</label>
                 <label>Targets<select @bind="draft.TargetMode" @bind:after="InvalidatePreview" data-testid="monitoring-target-mode"><option value="Selected">Selected clients / groups</option>@if (editSnapshot.Permissions.CanTargetAll) { <option value="AllEligible">All eligible clients in this tenant</option> }</select></label>
-                @if (draft.TargetMode == MonitoringTargetMode.Selected) { @ClientPicker(draft.AgentIds) <fieldset><legend>Tenant-local groups</legend>@foreach (var group in editSnapshot.Configuration.Groups) { <label class="monitoring-check"><input type="checkbox" checked="@draft.GroupIds.Contains(group.GroupId)" @onchange="e => Toggle(draft.GroupIds, group.GroupId, e)" />@group.Name</label> }</fieldset> }
+                @if (draft.TargetMode == MonitoringTargetMode.Selected) { <MonitoringTargetPicker @key="_editorGeneration" TenantId="@State.TenantId" SelectedAgents="draft.AgentIds" SelectedGroups="draft.GroupIds" Groups="@editSnapshot.Configuration.Groups" Metric="@draft.Metric" SelectionChanged="SelectionChanged" /> } else { <MudAlert Severity="Severity.Info" Dense="true">All eligible clients in @TenantName, including clients that become eligible later.</MudAlert> }
                 <label>Metric<select value="@draft.Metric" @onchange="MetricChanged" data-testid="monitoring-metric"><option value="CpuUsagePercent">CPU usage %</option><option value="DiskFreePercent">Disk free %</option><option value="DiskFreeSpace">Disk free space</option><option value="ServiceExpectedState">Exact selected service</option></select></label>
                 @if (draft.Metric == MonitoringMetricKind.ServiceExpectedState)
                 {
                     <label>Service platform<select @bind="draft.Platform" @bind:after="InvalidatePreview"><option value="Windows">Windows SCM</option><option value="LinuxSystemd">Linux systemd</option></select></label>
                     <label>Exact stable service name<input @bind="draft.ResourceName" @bind:event="oninput" @bind:after="InvalidatePreview" list="monitoring-service-names" data-testid="monitoring-service-name" /></label>
                     <datalist id="monitoring-service-names">@foreach (var service in _serviceSuggestions.Where(s => s.Platform == draft.Platform)) { <option value="@service.Name">@service.DisplayName</option> }</datalist>
-                    <label>Inventory client<select value="@_inventoryAgent" @onchange="ReadInventory" data-testid="monitoring-inventory-client"><option value="">Choose a client for cached suggestions</option>@foreach (var client in editSnapshot.Clients.Items) { <option value="@client.AgentId">@(client.DisplayName ?? client.AgentId.ToString())</option> }</select></label><button class="monitoring-button" disabled="@(State.PagingClients || editSnapshot.Clients.NextCursor is null)" @onclick="() => State.NextClientsPageAsync(editSnapshot.Clients.NextCursor)">More inventory clients</button><p class="monitoring-note" data-testid="monitoring-inventory-state">@_inventoryNote</p>
+                    <label>Inventory client<select value="@_inventoryAgent" @onchange="ReadInventory" data-testid="monitoring-inventory-client"><option value="">Choose a client for cached suggestions</option>@foreach (var client in editSnapshot.Clients.Items) { <option value="@client.AgentId">@ClientName(client.AgentId)</option> }</select></label><button class="monitoring-button" disabled="@(State.PagingClients || editSnapshot.Clients.NextCursor is null)" @onclick="() => State.NextClientsPageAsync(editSnapshot.Clients.NextCursor)">More inventory clients</button><p class="monitoring-note" data-testid="monitoring-inventory-state">@_inventoryNote</p>
                     <fieldset><legend>Explicit expected service states</legend>@foreach (var expected in ExpectedStateOptions) { <label class="monitoring-check"><input type="checkbox" checked="@draft.ExpectedStates.Contains(expected)" @onchange="e => Toggle(draft.ExpectedStates, expected, e)" />@expected</label> }</fieldset>
                     <p>Unrelated stopped services are not alarms. Missing requires authoritative complete current-watch evidence.</p>
                 }
@@ -119,12 +137,12 @@
                 @if (editSnapshot.PublishedFlows.Count == 0) { <p>No published flow is available. Alerts remain display only.</p> }
                 @if (draft.Original is not null) { <label class="monitoring-check"><input type="checkbox" @bind="draft.ResetConfirmed" />If condition or targets change, suspend the active occurrence and require a new full window.</label> }
                 <button class="monitoring-button" @onclick="Preview" disabled="@_previewBusy" data-testid="monitoring-preview">Preview exact targets</button>
-                @if (_preview is { } preview) { <div data-testid="monitoring-preview-result"><strong>@preview.Total eligible targets</strong>@if (preview.DetailsTruncated) { <p>Details are bounded; additional targets are included in the count.</p> }@foreach (var detail in preview.Details.IsDefault ? [] : preview.Details) { <p>@(detail.DisplayName ?? detail.AgentId.ToString()) · @detail.Support · @ExplainCode(detail.Code) · @Time(detail.EvidenceAtUtc)</p> }</div> }
+                @if (_preview is { } preview) { <div data-testid="monitoring-preview-result"><strong>@preview.Total eligible targets</strong>@if (preview.DetailsTruncated) { <p>Showing bounded details; the count includes every eligible target.</p> }<table class="monitoring-preview-table"><thead><tr><th>Client / host</th><th>Eligibility</th></tr></thead><tbody>@foreach (var detail in preview.Details.IsDefault ? [] : preview.Details) { <tr><td><ClientIdentity Identity="@(detail.Identity ?? new(detail.AgentId, detail.DisplayName ?? "Client metadata unavailable"))" /></td><td>@SupportName(detail.Support)<div class="monitoring-secondary">@ExplainCode(detail.Code)</div></td></tr> }</tbody></table></div> }
                 <label>Change reason<textarea @bind="draft.Reason" @bind:event="oninput" maxlength="512" data-testid="monitoring-reason"></textarea></label>
             }
             else if (_editor == "group")
             {
-                <label>Group name<input @bind="_groupName" @bind:event="oninput" @bind:after="MarkDirty" maxlength="128" data-testid="monitoring-group-name" /></label>@ClientPicker(_groupMembers)<label>Change reason<textarea @bind="_reason" @bind:event="oninput" @bind:after="MarkDirty" maxlength="512" data-testid="monitoring-reason"></textarea></label>
+                <label>Group name<input @bind="_groupName" @bind:event="oninput" @bind:after="MarkDirty" maxlength="128" data-testid="monitoring-group-name" /></label><MonitoringTargetPicker @key="_editorGeneration" TenantId="@State.TenantId" SelectedAgents="_groupMembers" SelectionChanged="SelectionChanged" /><label>Change reason<textarea @bind="_reason" @bind:event="oninput" @bind:after="MarkDirty" maxlength="512" data-testid="monitoring-reason"></textarea></label>
             }
             else
             {
@@ -136,13 +154,13 @@
                     <p>Bypass suppresses new actions. The active episode continues to show actual health and evaluation continues. Starts now.</p>
                     <label>Rule scope<select @bind="_bypassRule" @bind:after="MarkDirty"><option value="">All rules in tenant</option>@foreach (var rule in editSnapshot.Configuration.Rules) { <option value="@rule.RuleId">@rule.Name</option> }</select></label>
                     <label>Group scope<select @bind="_bypassGroup" @bind:after="MarkDirty"><option value="">All groups / clients</option>@foreach (var group in editSnapshot.Configuration.Groups) { <option value="@group.GroupId">@group.Name</option> }</select></label>
-                    <label>Client scope<select @bind="_bypassAgent" @bind:after="MarkDirty"><option value="">All clients in scope</option>@foreach (var client in editSnapshot.Clients.Items) { <option value="@client.AgentId">@(client.DisplayName ?? client.AgentId.ToString())</option> }</select></label>
+                    <label>Client scope<select @bind="_bypassAgent" @bind:after="MarkDirty"><option value="">All clients in scope</option>@foreach (var client in editSnapshot.Clients.Items) { <option value="@client.AgentId">@ClientName(client.AgentId)</option> }</select></label>
                     <button class="monitoring-button" disabled="@(State.PagingClients || editSnapshot.Clients.NextCursor is null)" @onclick="() => State.NextClientsPageAsync(editSnapshot.Clients.NextCursor)">More scope clients</button>
                     <label>Exact resource key (optional)<input @bind="_bypassResource" @bind:event="oninput" @bind:after="MarkDirty" /></label><label>End after minutes (blank = no expiry)<input type="number" min="1" @bind="_bypassMinutes" @bind:after="MarkDirty" /></label>
                 }
                 <label>Reason<textarea @bind="_reason" @bind:event="oninput" @bind:after="MarkDirty" maxlength="512" data-testid="monitoring-reason"></textarea></label>
             }
-        </div><footer><button class="monitoring-button" disabled="@_busy" @onclick="CloseEditor" data-testid="monitoring-cancel">Cancel</button><button class="monitoring-button monitoring-primary" disabled="@(_busy || _previewBusy)" @onclick="Save" data-testid="monitoring-save">@(_busy ? "Saving…" : "Save")</button></footer></div></MudFocusTrap>
+        </MudForm></div><footer><button class="monitoring-button" disabled="@_busy" @onclick="CloseEditor" data-testid="monitoring-cancel">Cancel</button><button class="monitoring-button monitoring-primary" disabled="@(_busy || _previewBusy || _conflict)" @onclick="Save" data-testid="monitoring-save">@(_busy ? $"{SubmitText}…" : SubmitText)</button></footer></div></MudFocusTrap>
         </aside>
     }
 </section>

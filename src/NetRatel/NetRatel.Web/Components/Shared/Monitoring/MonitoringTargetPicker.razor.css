@@ -1,0 +1,10 @@
+.target-picker { min-width:0; border:1px solid var(--mud-palette-divider); border-radius:var(--mud-default-borderradius); padding:.5rem; }
+.target-picker-actions { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:.5rem; }
+.target-picker-clients { max-height:18rem; overflow:auto; }
+.target-picker-client { display:flex; flex-direction:row; align-items:center; gap:.625rem; padding:.5rem; border-bottom:1px solid var(--mud-palette-divider); cursor:pointer; }
+.target-picker-client input { accent-color:var(--mud-palette-primary); width:1rem; height:1rem; flex:none; }
+.target-picker-client ::deep .client-identity { flex:1; }
+.target-picker-support { font-size:.75rem; color:var(--mud-palette-text-secondary); }
+.target-picker-selection { border-top:1px solid var(--mud-palette-divider); padding-top:.5rem; margin-top:.5rem; }
+.target-picker-chips { display:flex; flex-wrap:wrap; gap:.25rem; max-height:8rem; overflow:auto; }
+@media(max-width:600px) { .target-picker-client { flex-wrap:wrap; } .target-picker-support { margin-left:1.625rem; } }
