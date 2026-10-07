@@ -82,6 +82,8 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
         Assert.Equal("16px", geometry.GetProperty("rootFont").GetString());
         await page.GetByTestId("flow-canvas").ScrollIntoViewIfNeededAsync();
         await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, name + "-canvas.png"), Animations = ScreenshotAnimations.Disabled });
+        await page.GetByTestId("flow-properties-close").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("flow-properties")).ToHaveCountAsync(0);
         await page.GetByTestId("flow-overview-toggle").ClickAsync();
         await Assertions.Expect(page.Locator(".veloxdev-wf-minimap")).ToHaveCountAsync(0);
         if (theme == "system")
@@ -131,7 +133,7 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
         var title = page.Locator("[data-node-kind=MapIncident] [data-testid=flow-node-title]");
         var box = (await title.BoundingBoxAsync())!;
         await page.Mouse.MoveAsync(box.X + 70, box.Y + 15); await page.Mouse.DownAsync();
-        await page.Mouse.MoveAsync(box.X + 145, box.Y + 80, new() { Steps = 15 }); await page.Mouse.UpAsync();
+        await page.Mouse.MoveAsync(box.X + 115, box.Y + 110, new() { Steps = 15 }); await page.Mouse.UpAsync();
         await page.Locator($"[data-node-id='{mapping}'] [data-testid=flow-node-settings]").ClickAsync();
         var nodeBeforeSettings = (await page.Locator("[data-node-kind=MapIncident]").BoundingBoxAsync())!;
         await page.GetByTestId("flow-mapping-title").FillAsync("Incident: {ruleName} / {resource}");
