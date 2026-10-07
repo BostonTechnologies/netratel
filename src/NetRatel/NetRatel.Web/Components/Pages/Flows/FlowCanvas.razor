@@ -15,7 +15,7 @@
     <MudTooltip Text="@(_overviewOpen ? "Hide overview" : "Show overview")"><MudIconButton Icon="@Icons.Material.Filled.Map" Size="MudBlazor.Size.Small" OnClick="ToggleOverviewAsync" aria-expanded="@(_overviewOpen ? "true" : "false")" aria-label="@(_overviewOpen ? "Hide overview" : "Show overview")" data-testid="flow-overview-toggle" /></MudTooltip>
 </div>
 <section class="flow-canvas-panel" id="@PanelId" aria-label="Workflow canvas" data-testid="flow-canvas" tabindex="0">
-    <WorkflowSurfaceBehavior @ref="_surface" @key="Adapter.Tree" Tree="Adapter.Tree" IsEnabled="true" ZoomEnabled="true"
+    <FlowSurfaceBehavior @ref="_surface" @key="Adapter.Tree" Tree="Adapter.Tree" IsEnabled="true" ZoomEnabled="true"
         ScrollViewerId="@ScrollId" CanvasId="@CanvasId" Background="var(--mud-palette-background)"
         GridColor="var(--mud-palette-divider)" MajorGridColor="var(--mud-palette-text-disabled)">
         <Minimap Context="viewport">@if (_overviewOpen) { <div data-testid="flow-overview"><WorkflowMinimapOverlay Viewport="viewport" Width="120" Height="76" ScrollViewerId="@ScrollId"
@@ -62,7 +62,7 @@
                 </ItemTemplate>
             </ViewPool>
         </ChildContent>
-    </WorkflowSurfaceBehavior>
+    </FlowSurfaceBehavior>
 </section>
 <p class="flow-canvas-hint">Drag nodes and compatible ports. Pan on blank canvas; Ctrl + wheel zooms. Use node settings for properties; Delete removes the selected node.</p>
 
