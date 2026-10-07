@@ -206,6 +206,8 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
         }
         await Assertions.Expect(page.Locator("[data-node-kind=CreateIncident].selected")).ToHaveCountAsync(1);
         await Assertions.Expect(page.GetByTestId("flow-link")).ToHaveCountAsync(0);
+        Assert.Empty(errors);
+        Assert.False(await page.Locator("#blazor-error-ui").IsVisibleAsync());
 
     }
 

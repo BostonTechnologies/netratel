@@ -30,7 +30,9 @@
             </svg>
             <ViewPool ItemsSource="Adapter.Tree.Nodes.ToArray()" KeySelector="item => item">
                 <ItemTemplate Context="item">
-                    @{ var node = (IWorkflowNodeViewModel)item; var metadata = Adapter.Metadata[node]; }
+                    @{ var node = (IWorkflowNodeViewModel)item; }
+                    @if (Adapter.Metadata.TryGetValue(node, out var metadata))
+                    {
                     <WorkflowSlotLayoutBehavior Node="node" IsEnabled="true">
                         <WorkflowNodeDragBehavior Node="node" IsEnabled="@(!ReadOnly)" Style="@NodeStyle(node)">
                             <article class="flow-node @(SelectedNodeId == metadata.Id ? "selected" : "")" data-node-id="@metadata.Id" data-node-kind="@metadata.Kind" style="@CardStyle(node)">
@@ -44,7 +46,8 @@
                                 <div class="flow-node-body"><span>@KindLabel(metadata.Kind)</span>
                                     @foreach (var slot in node.Slots)
                                     {
-                                        var output = Adapter.Ports[slot].Output;
+                                        if (!Adapter.Ports.TryGetValue(slot, out var port)) continue;
+                                        var output = port.Output;
                                         <div class="flow-port @(output ? "output" : "input")" data-port-node="@metadata.Id" data-port-direction="@(output ? "output" : "input")">
                                             <WorkflowSlotConnectionBehavior Slot="slot" Tree="Adapter.Tree" IsEnabled="@(!ReadOnly)">
                                                 <svg width="24" height="24" viewBox="0 0 24 24" aria-label="@(output ? $"{FlowCanvasAdapter.OutputType(metadata.Kind)} output port" : $"{FlowCanvasAdapter.InputType(metadata.Kind)} input port")"><circle cx="12" cy="12" r="9" fill="var(--mud-palette-primary)" stroke="var(--mud-palette-primary-text)" stroke-width="2" /></svg>
@@ -55,6 +58,7 @@
                             </article>
                         </WorkflowNodeDragBehavior>
                     </WorkflowSlotLayoutBehavior>
+                    }
                 </ItemTemplate>
             </ViewPool>
         </ChildContent>
