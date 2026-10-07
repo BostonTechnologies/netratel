@@ -135,11 +135,83 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         await page.GetByTestId("setup-initializing").WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible });
         var observedRestartTask = await restartTaskStarted.Task.WaitAsync(TimeSpan.FromMilliseconds(20_000));
         await observedRestartTask;
-        await page.GetByTestId("local-login-email").WaitForAsync(new LocatorWaitForOptions
+        try
         {
-            State = WaitForSelectorState.Visible,
-            Timeout = 120_000
-        });
+            await page.GetByTestId("local-login-email").WaitForAsync(new LocatorWaitForOptions
+            {
+                State = WaitForSelectorState.Visible,
+                Timeout = 120_000
+            });
+        }
+        catch
+        {
+            try
+            {
+                // Emit only fixed scalar facts after failure; never capture page content or credentials.
+                var failureState = await page.EvaluateAsync<JsonElement>("""
+                    async () => {
+                        const observe = selector => {
+                            const element = document.querySelector(selector);
+                            const rect = element?.getBoundingClientRect();
+                            const visibility = element ? getComputedStyle(element).visibility : null;
+                            return { present: element !== null, visible: Boolean(rect && rect.width > 0 && rect.height > 0 && visibility !== "hidden" && visibility !== "collapse") };
+                        };
+                        const setup = window.netratelSetup;
+                        const flag = name => typeof setup?.[name] === "boolean" ? setup[name] : null;
+                        const age = Number.isFinite(setup?.progressStartedAt) && setup.progressStartedAt > 0
+                            ? Math.min(600, Math.max(0, Math.floor((Date.now() - setup.progressStartedAt) / 1000))) : null;
+                        const result = {
+                            path: location.pathname === "/setup" ? "setup" : location.pathname === "/login" ? "login" : "other",
+                            dom: {
+                                setupWizard: observe('[data-testid="setup-wizard"]'),
+                                setupInitializing: observe('[data-testid="setup-initializing"]'),
+                                setupClientReady: observe('[data-testid="setup-client-ready"]'),
+                                setupProof: observe('[data-testid="setup-proof"]'),
+                                setupOwnerForm: observe('[data-testid="setup-owner-form"]'),
+                                setupClientError: observe("#setup-client-error"),
+                                setupCheckAgain: observe("#setup-check-again"),
+                                setupReviewDetails: observe("#setup-review-details"),
+                                loginEmail: observe('[data-testid="local-login-email"]'),
+                                loginClientReady: observe('[data-testid="local-login-client-ready"]'),
+                                loginTwoFactor: observe('[data-testid="local-login-two-factor"]'),
+                                loginPanel: observe(".netratel-login-panel"),
+                                loginPrimaryAction: observe(".netratel-login-primary-action")
+                            },
+                            setup: {
+                                present: typeof setup === "object" && setup !== null,
+                                initializeAvailable: typeof setup?.initialize === "function",
+                                pollAvailable: typeof setup?.pollSetup === "function",
+                                initializeInFlight: flag("initializeInFlight"), pollInFlight: flag("pollInFlight"),
+                                stopPolling: flag("stopPolling"), accepted: flag("accepted"),
+                                canReviewDetails: flag("canReviewDetails"), progressAgeSeconds: age
+                            },
+                            api: { httpCode: -1, stateCode: -1, readyCode: -1, recoveryCode: -1, setupRequiredCode: -1 }
+                        };
+                        const controller = new AbortController();
+                        const timer = setTimeout(() => controller.abort(), 2000);
+                        try {
+                            const response = await fetch("/api/v2/setup/status", { credentials: "omit", cache: "no-store", redirect: "manual", signal: controller.signal });
+                            result.api.httpCode = response.status;
+                            if (response.ok && (response.headers.get("content-type") || "").includes("application/json")) {
+                                const status = await response.json();
+                                result.api.stateCode = Number.isInteger(status?.state) && status.state >= 0 && status.state <= 3 ? status.state : -1;
+                                result.api.readyCode = typeof status?.isReady === "boolean" ? Number(status.isReady) : -1;
+                                result.api.recoveryCode = typeof status?.isRecoveryRequired === "boolean" ? Number(status.isRecoveryRequired) : -1;
+                                result.api.setupRequiredCode = typeof status?.setupRequired === "boolean" ? Number(status.setupRequired) : -1;
+                            }
+                        } catch { /* Keep the fixed unknown codes without exception text. */ }
+                        finally { clearTimeout(timer); }
+                        return result;
+                    }
+                    """).WaitAsync(TimeSpan.FromSeconds(3));
+                TestContext.Current.TestOutputHelper?.WriteLine("LOCAL_FIRST_SETUP_LOGIN_FAILURE_STATE " + JsonSerializer.Serialize(failureState));
+            }
+            catch
+            {
+                // A failed observation or output cannot replace the original wait failure.
+            }
+            throw;
+        }
         Assert.Equal("/login", new Uri(page.Url).AbsolutePath);
         await page.UnrouteAsync(initializeRoute);
         Assert.Equal(1, setupSubmissionCount);

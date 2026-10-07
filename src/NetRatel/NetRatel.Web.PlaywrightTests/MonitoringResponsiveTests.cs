@@ -8,7 +8,7 @@ using NetRatel.Web.Services.Monitoring;
 namespace NetRatel.Web.PlaywrightTests;
 
 [Collection(PlaywrightCollection.Name)]
-public sealed class MonitoringResponsiveTests(ClientsManagementBrowserFixture browserFixture) : IClassFixture<ClientsManagementBrowserFixture>, IAsyncLifetime
+public sealed class MonitoringResponsiveTests(ClientsManagementBrowserFixture browserFixture, ITestOutputHelper testOutputHelper) : IClassFixture<ClientsManagementBrowserFixture>, IAsyncLifetime
 {
     private ClientsManagementFixtureHost? _host;
     private readonly FixtureMonitoringApi _api = new();
@@ -131,10 +131,18 @@ public sealed class MonitoringResponsiveTests(ClientsManagementBrowserFixture br
     [Fact]
     public async Task ClearAndBypassHaveDistinctSemanticsAndHistory()
     {
-        var page = await browserFixture.Browser.NewPageAsync();
+        var browser = browserFixture.Browser;
+        var fixture = _host ?? throw new InvalidOperationException("Monitoring fixture was not initialized.");
+        var page = await browser.NewPageAsync();
+        var startupDiagnostics = new ClientsManagementResponsiveTests.BrowserStartupDiagnostics(page);
+        Exception? testFailureInFlight = null;
         try
         {
-            await page.GotoAsync(_host!.BaseAddress + "/monitoring"); await page.GetByTestId("monitoring-clear").First.WaitForAsync();
+            var response = await page.GotoAsync(fixture.BaseAddress + "/monitoring");
+            Assert.NotNull(response);
+            Assert.True(response.Ok, $"Monitoring fixture returned HTTP {response.Status}.");
+            await page.GetByTestId("monitoring-interactive").WaitForAsync(new() { State = WaitForSelectorState.Attached });
+            await page.GetByTestId("monitoring-clear").First.WaitForAsync();
             var oldOccurrence = _api.Active.Occurrence!.OccurrenceId;
             await page.GetByTestId("monitoring-clear").First.ClickAsync();
             await Assertions.Expect(page.GetByTestId("monitoring-editor")).ToContainTextAsync("new full breach window");
@@ -155,7 +163,36 @@ public sealed class MonitoringResponsiveTests(ClientsManagementBrowserFixture br
             await page.GetByTestId("monitoring-tab-history").ClickAsync();
             await Assertions.Expect(page.GetByTestId("monitoring-history-row").First).ToContainTextAsync("ManuallyCleared");
         }
-        finally { await page.CloseAsync(); }
+        catch (Exception exception)
+        {
+            testFailureInFlight = exception;
+            try
+            {
+                await new ClientsManagementResponsiveTests(browserFixture, testOutputHelper).CaptureFailureDiagnosticsBestEffortAsync(
+                    browser,
+                    page,
+                    startupDiagnostics,
+                    fixture,
+                    "monitoring-clear-and-bypass-semantics",
+                    page.ViewportSize?.Width ?? 0,
+                    page.ViewportSize?.Height ?? 0,
+                    100,
+                    exception);
+            }
+            catch (Exception)
+            {
+                // Best-effort diagnostics must preserve the original test failure.
+            }
+            throw;
+        }
+        finally
+        {
+            try { await page.CloseAsync(); }
+            catch (Exception) when (testFailureInFlight is not null)
+            {
+                // Cleanup must preserve the original test failure.
+            }
+        }
     }
     [Fact]
     public async Task DelayedOldTenantReadIsCancelledAndCannotReplaceNewTenant()

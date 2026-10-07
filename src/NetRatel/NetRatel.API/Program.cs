@@ -741,6 +741,8 @@ builder.Services.AddDataProtection()
     .SetApplicationName(
         builder.Configuration.GetSection("DataProtection")["ApplicationName"]
         ?? "NetRatel-Keyring");
+builder.Services.AddSingleton<NetRatel.Application.RatelDesk.IRatelDeskCredentialProtector,
+    NetRatel.API.Services.RatelDesk.RatelDeskCredentialProtector>();
 #endregion
 
 builder.Services.AddSingleton<IAuthorizationHandler, AllowedClientHandler>();
@@ -878,6 +880,7 @@ builder.Services.AddMonitoringFlowBridge();
 builder.Services.AddNetRatelServiceIdentityApi(builder.Configuration);
 builder.Services.AddServiceLinkProtocol(builder.Configuration);
 builder.Services.AddOrchestrationManagedServices();
+builder.Services.AddRatelDeskReceiverAdapter(builder.Configuration);
 builder.Services.AddIdentityCore<LocalUser>(options =>
     {
         options.User.RequireUniqueEmail = true;

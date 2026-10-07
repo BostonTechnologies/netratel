@@ -1,6 +1,9 @@
 using System.Text;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
+using Npgsql;
 using Microsoft.Extensions.DependencyInjection;
+using NetRatel.Infrastructure.ServiceLinks;
 using NetRatel.Application.Flows;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Shared.Contracts.Flows;
@@ -20,9 +23,14 @@ public sealed partial class FlowPersistenceService
         return run is null ? null : Summary(run);
     });
 
-    public Task<FlowRunLease?> ClaimAsync(Guid workerId, CancellationToken ct = default) => WithDb<FlowRunLease?>(async (db, _) =>
+    public Task<FlowRunLease?> ClaimAsync(Guid workerId, CancellationToken ct = default) => WithDb<FlowRunLease?>(async (db, services) =>
     {
         if (workerId == Guid.Empty) return null;
+        // Apply an explicit deployment producer before creating the Flow singleton. The optional
+        // store is solely the existing standalone Flow-test registration seam; the production
+        // receiver/continuity registration requires it and EnsureAsync always resolves it.
+        if (services.GetService<ServiceLinkIdentityStore>() is { } installation)
+            _ = await installation.GetAsync(ct).ConfigureAwait(false);
         await using var transaction = await BeginAsync(db, ct).ConfigureAwait(false); var now = Now;
         FlowRunRecord? run;
         if (db.Database.IsNpgsql())
@@ -33,7 +41,10 @@ public sealed partial class FlowPersistenceService
         if (run.CreatedAtUtc + FlowLimits.MaximumRetryAge <= now || run.Attempts >= FlowLimits.MaximumActionAttempts * 2)
         {
             var actions = await db.FlowActions.Where(action => action.TenantId == run.TenantId && action.RunId == run.Id).ToListAsync(ct).ConfigureAwait(false);
-            foreach (var action in actions.Where(action => action.Status == FlowActionStatus.Dispatching))
+            var uncertainNodes = await db.Set<FlowReceiverEvidenceRecord>().Where(row => row.TenantId == run.TenantId &&
+                row.RunId == run.Id && row.MayHaveCommitted).Select(row => row.NodeId).ToListAsync(ct).ConfigureAwait(false);
+            foreach (var action in actions.Where(action => action.Status == FlowActionStatus.Dispatching ||
+                uncertainNodes.Contains(action.NodeId) && action.Status != FlowActionStatus.Succeeded))
             { action.Status = FlowActionStatus.DeliveryUnknown; action.Code = "interrupted-delivery-unknown"; action.LeaseFence = checked(run.Fence + 1); }
             if (actions.Any(action => action.Status == FlowActionStatus.DeliveryUnknown))
             { run.Status = FlowRunStatus.DeliveryUnknown; run.Code = "delivery-unknown"; }
@@ -43,7 +54,7 @@ public sealed partial class FlowPersistenceService
             run.CompletedAtUtc = now; run.LeaseToken = null; run.LeaseOwner = null; run.LeaseExpiresAtUtc = null; run.Fence++;
             await db.SaveChangesAsync(ct).ConfigureAwait(false); if (transaction is not null) await transaction.CommitAsync(ct).ConfigureAwait(false); return null;
         }
-        var sourceId = await SourceIdentityAsync(db, ct).ConfigureAwait(false);
+        var sourceId = await EnsureSourceInContextAsync(db, ct).ConfigureAwait(false);
         var version = await db.FlowVersions.AsNoTracking().SingleAsync(row => row.TenantId == run.TenantId && row.Id == run.FlowVersionId, ct).ConfigureAwait(false);
         run.Status = FlowRunStatus.Running; run.Fence = checked(run.Fence + 1); run.LeaseToken = Guid.NewGuid(); run.LeaseOwner = workerId;
         run.LeaseExpiresAtUtc = now + FlowLimits.LeaseDuration; run.Attempts++; run.NextAttemptAtUtc = null;
@@ -51,17 +62,15 @@ public sealed partial class FlowPersistenceService
         return new(run.Id, run.LeaseToken.Value, workerId, run.Fence, run.LeaseExpiresAtUtc.Value, sourceId, Version(version), Parse<FlowEventEnvelope>(run.EventJson), run.Attempts);
     });
 
-    private static async Task<Guid> SourceIdentityAsync(OrchestratorDbContext db, CancellationToken ct)
+    // Receipt-only recovery may outlive Monitoring evidence, but never the actual Flow lease.
+    // Use the same caller transaction and PostgreSQL wall-clock floor as fresh-action admission.
+    private async Task<bool> ReceiverLeaseEffectiveAsync(OrchestratorDbContext db, FlowRunLease lease, CancellationToken ct)
     {
-        if (db.Database.IsNpgsql())
-        {
-            var proposed = Guid.NewGuid();
-            await db.Database.ExecuteSqlInterpolatedAsync($"INSERT INTO \"FlowRuntimeIdentity\" (\"Id\", \"SourceInstanceId\") VALUES (1, {proposed}) ON CONFLICT (\"Id\") DO NOTHING", ct).ConfigureAwait(false);
-        }
-        else if (!await db.FlowRuntimeIdentity.AnyAsync(ct).ConfigureAwait(false))
-        { db.FlowRuntimeIdentity.Add(new() { SourceInstanceId = Guid.NewGuid() }); await db.SaveChangesAsync(ct).ConfigureAwait(false); }
-        var id = await db.FlowRuntimeIdentity.Where(row => row.Id == 1).Select(row => row.SourceInstanceId).SingleAsync(ct).ConfigureAwait(false);
-        return id == Guid.Empty ? throw new InvalidOperationException("flow-source-identity") : id;
+        ct.ThrowIfCancellationRequested();
+        if (!db.Database.IsNpgsql()) return lease.ExpiresAtUtc > Now;
+        if (db.Database.CurrentTransaction is not { } transaction) return false;
+        return lease.ExpiresAtUtc > await ClientConnectionEpochStore.EffectiveNowAsync(
+            (NpgsqlConnection)db.Database.GetDbConnection(), (NpgsqlTransaction)transaction.GetDbTransaction(), clock, ct).ConfigureAwait(false);
     }
 
     private async Task<FlowRunRecord?> CurrentLeaseAsync(OrchestratorDbContext db, FlowRunLease lease, CancellationToken ct)
@@ -115,7 +124,8 @@ public sealed partial class FlowPersistenceService
         await using var transaction = await BeginAsync(db, ct).ConfigureAwait(false);
         if (await CurrentLeaseAsync(db, lease, ct).ConfigureAwait(false) is null) return false;
         var row = await db.FlowActions.SingleOrDefaultAsync(row => row.TenantId == lease.Event.TenantId && row.RunId == lease.RunId && row.NodeId == nodeId, ct).ConfigureAwait(false);
-        if (row is null || row.Status != FlowActionStatus.Pending || !FlowContractValidation.ValidPrepared(request, Parse<FlowIncidentActionDraft>(row.DraftJson))) return false;
+        if (row is null || row.Status is not (FlowActionStatus.Pending or FlowActionStatus.RetryWaiting) || row.Attempts != 0 ||
+            !FlowContractValidation.ValidPrepared(request, Parse<FlowIncidentActionDraft>(row.DraftJson))) return false;
         if (row.PreparedJson is not null) return Serialize(Parse<FlowIncidentActionRequest>(row.PreparedJson)) == Serialize(request);
         row.PreparedJson = Serialize(request); row.SemanticFingerprint = request.SemanticFingerprint; row.ConnectorRevision = request.ConnectorRevision;
         await db.SaveChangesAsync(ct).ConfigureAwait(false); if (transaction is not null) await transaction.CommitAsync(ct).ConfigureAwait(false); return true;
@@ -124,13 +134,68 @@ public sealed partial class FlowPersistenceService
     public Task<FlowActionExecutionState?> StartActionAsync(FlowRunLease lease, Guid nodeId, CancellationToken ct = default) => WithDb<FlowActionExecutionState?>(async (db, services) =>
     {
         await using var transaction = await BeginAsync(db, ct).ConfigureAwait(false);
-        var admission = services.GetRequiredService<IFlowTransactionAdmission>();
+        Task<FlowDispatchDecision> CheckFreshAdmissionAsync() =>
+            services.GetRequiredService<IFlowTransactionAdmission>().CanStartActionAsync(db, lease, ct);
         ct.ThrowIfCancellationRequested();
-        if (!(await admission.CanStartActionAsync(db, lease, ct).ConfigureAwait(false)).Allowed || lease.ExpiresAtUtc <= Now) return null;
+        var receiverHint = await db.Set<FlowReceiverEvidenceRecord>().AsNoTracking().SingleOrDefaultAsync(evidence =>
+            evidence.TenantId == lease.Event.TenantId && evidence.RunId == lease.RunId && evidence.NodeId == nodeId, ct).ConfigureAwait(false);
+        var requireFreshMonitoringAdmission = receiverHint is null;
+        if (receiverHint is not null)
+        {
+            var actionHint = await db.FlowActions.AsNoTracking().SingleOrDefaultAsync(action => action.TenantId == lease.Event.TenantId &&
+                action.RunId == lease.RunId && action.NodeId == nodeId, ct).ConfigureAwait(false);
+            // No fresh effect starts under a retired owner or stale Monitoring evidence. A prior
+            // possible commit may still enter a lease-fenced authenticated read-only lookup.
+            requireFreshMonitoringAdmission = !receiverHint.MayHaveCommitted && actionHint?.Status != FlowActionStatus.Dispatching;
+            if (requireFreshMonitoringAdmission &&
+                !(await CheckFreshAdmissionAsync().ConfigureAwait(false)).Allowed)
+                return null;
+            if (!await services.GetRequiredService<IFlowExecutionAuthorityVerifier>()
+                    .AuthorizeAsync(lease.Event.TenantId, lease.Event.Authority, ct).ConfigureAwait(false)) return null;
+        }
+        if (receiverHint is null && !(await CheckFreshAdmissionAsync().ConfigureAwait(false)).Allowed) return null;
+        if (!await ReceiverLeaseEffectiveAsync(db, lease, ct).ConfigureAwait(false)) return null;
         if (await CurrentLeaseAsync(db, lease, ct).ConfigureAwait(false) is null) return null;
         var row = await db.FlowActions.SingleOrDefaultAsync(row => row.TenantId == lease.Event.TenantId && row.RunId == lease.RunId && row.NodeId == nodeId, ct).ConfigureAwait(false);
         if (row is null || row.PreparedJson is null) return null;
         if (row.Status is FlowActionStatus.Succeeded or FlowActionStatus.Failed or FlowActionStatus.DeliveryUnknown) return ActionState(row);
+        var receiver = await db.Set<FlowReceiverEvidenceRecord>().SingleOrDefaultAsync(evidence =>
+            evidence.TenantId == lease.Event.TenantId && evidence.RunId == lease.RunId && evidence.NodeId == nodeId, ct).ConfigureAwait(false);
+        if (receiver is not null)
+        {
+            if (row.Status == FlowActionStatus.Dispatching && row.LeaseFence == lease.Fence) return null;
+            if (row.NextAttemptAtUtc > Now) return ActionState(row);
+            if (row.Attempts >= FlowLimits.MaximumActionAttempts)
+            {
+                if (!receiver.MayHaveCommitted || receiver.FinalReconciliationAttempted)
+                {
+                    row.Status = receiver.MayHaveCommitted ? FlowActionStatus.DeliveryUnknown : FlowActionStatus.Failed;
+                    row.Code = receiver.MayHaveCommitted ? "final-reconciliation-exhausted-unknown" : "action-budget-exhausted";
+                    row.LeaseFence = lease.Fence;
+                    if (!await ReceiverLeaseEffectiveAsync(db, lease, ct).ConfigureAwait(false)) return null;
+                    ct.ThrowIfCancellationRequested();
+                    await db.SaveChangesAsync(ct).ConfigureAwait(false);
+                    if (!await ReceiverLeaseEffectiveAsync(db, lease, ct).ConfigureAwait(false)) return null;
+                    ct.ThrowIfCancellationRequested();
+                    if (transaction is not null) await transaction.CommitAsync(ct).ConfigureAwait(false);
+                    return ActionState(row);
+                }
+                receiver.FinalReconciliationAttempted = true; receiver.RowVersion = checked(receiver.RowVersion + 1);
+            }
+            // A recovered in-flight call is reconciled before any replay, including the fifth POST.
+            // Read-only recovery does not consume another POST attempt or extend either horizon.
+            row.Status = FlowActionStatus.Dispatching; row.LeaseFence = lease.Fence; row.NextAttemptAtUtc = null;
+            if (!await ReceiverLeaseEffectiveAsync(db, lease, ct).ConfigureAwait(false) || requireFreshMonitoringAdmission &&
+                !(await CheckFreshAdmissionAsync().ConfigureAwait(false)).Allowed) return null;
+            ct.ThrowIfCancellationRequested();
+            await db.SaveChangesAsync(ct).ConfigureAwait(false);
+            // Existing locks prevent replacement but do not freeze the owner's deadline.
+            if (!await ReceiverLeaseEffectiveAsync(db, lease, ct).ConfigureAwait(false) || requireFreshMonitoringAdmission &&
+                !(await CheckFreshAdmissionAsync().ConfigureAwait(false)).Allowed) return null;
+            ct.ThrowIfCancellationRequested();
+            if (transaction is not null) await transaction.CommitAsync(ct).ConfigureAwait(false);
+            return ActionState(row);
+        }
         if (row.Status == FlowActionStatus.Dispatching)
         {
             if (row.LeaseFence == lease.Fence) return null;
@@ -151,10 +216,10 @@ public sealed partial class FlowPersistenceService
             else { row.Status = FlowActionStatus.Dispatching; row.LeaseFence = lease.Fence; row.Attempts++; row.NextAttemptAtUtc = null; }
         }
         ct.ThrowIfCancellationRequested();
-        if (!(await admission.CanStartActionAsync(db, lease, ct).ConfigureAwait(false)).Allowed || lease.ExpiresAtUtc <= Now) return null;
+        if (!(await CheckFreshAdmissionAsync().ConfigureAwait(false)).Allowed || lease.ExpiresAtUtc <= Now) return null;
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
         ct.ThrowIfCancellationRequested();
-        if (!(await admission.CanStartActionAsync(db, lease, ct).ConfigureAwait(false)).Allowed || lease.ExpiresAtUtc <= Now) return null;
+        if (!(await CheckFreshAdmissionAsync().ConfigureAwait(false)).Allowed || lease.ExpiresAtUtc <= Now) return null;
         ct.ThrowIfCancellationRequested();
         if (transaction is not null) await transaction.CommitAsync(ct).ConfigureAwait(false);
         return ActionState(row);
@@ -167,15 +232,32 @@ public sealed partial class FlowPersistenceService
         if (await CurrentLeaseAsync(db, lease, ct).ConfigureAwait(false) is null) return false;
         var row = await db.FlowActions.SingleOrDefaultAsync(row => row.TenantId == lease.Event.TenantId && row.RunId == lease.RunId && row.NodeId == nodeId, ct).ConfigureAwait(false);
         if (row is null || row.Status is not (FlowActionStatus.Dispatching or FlowActionStatus.Pending or FlowActionStatus.RetryWaiting)) return false;
+        var receiver = await db.Set<FlowReceiverEvidenceRecord>().SingleOrDefaultAsync(evidence =>
+            evidence.TenantId == lease.Event.TenantId && evidence.RunId == lease.RunId && evidence.NodeId == nodeId, ct).ConfigureAwait(false);
+        if (receiver is not null)
+        {
+            // Full original receiver receipts commit through SaveReceiptAsync only.
+            if (result.Kind == FlowIncidentActionResultKind.Succeeded) return false;
+            if (receiver.MayHaveCommitted && result.Kind is FlowIncidentActionResultKind.Failed or FlowIncidentActionResultKind.Unavailable)
+                result = new(FlowIncidentActionResultKind.DeliveryUnknown, result.Code);
+        }
         if (row.LeaseFence != lease.Fence && !(row.LeaseFence < lease.Fence && row.Status == FlowActionStatus.Dispatching && result.Kind == FlowIncidentActionResultKind.DeliveryUnknown)) return false;
-        if (row.Status is FlowActionStatus.Pending or FlowActionStatus.RetryWaiting && result.Kind is not (FlowIncidentActionResultKind.Failed or FlowIncidentActionResultKind.Unavailable)) return false;
+        if (row.Status is FlowActionStatus.Pending or FlowActionStatus.RetryWaiting &&
+            result.Kind is not (FlowIncidentActionResultKind.Failed or FlowIncidentActionResultKind.Unavailable) &&
+            !(receiver?.MayHaveCommitted == true && result.Kind == FlowIncidentActionResultKind.DeliveryUnknown)) return false;
         row.LeaseFence = lease.Fence;
         row.Code = result.Code;
         row.Status = result.Kind switch { FlowIncidentActionResultKind.Succeeded => FlowActionStatus.Succeeded,
             FlowIncidentActionResultKind.DeliveryUnknown => FlowActionStatus.DeliveryUnknown, FlowIncidentActionResultKind.RetryableSafe => FlowActionStatus.RetryWaiting, _ => FlowActionStatus.Failed };
         if (row.Status == FlowActionStatus.RetryWaiting)
         {
-            if (row.Attempts >= FlowLimits.MaximumActionAttempts) { row.Status = FlowActionStatus.Failed; row.Code = "action-budget-exhausted"; }
+            if (row.Attempts >= FlowLimits.MaximumActionAttempts &&
+                !(row.Attempts == FlowLimits.MaximumActionAttempts && receiver?.MayHaveCommitted == true && !receiver.FinalReconciliationAttempted))
+            {
+                row.Status = receiver?.MayHaveCommitted == true ? FlowActionStatus.DeliveryUnknown : FlowActionStatus.Failed;
+                row.Code = receiver?.MayHaveCommitted == true ? "action-budget-exhausted-unknown" : "action-budget-exhausted";
+                row.NextAttemptAtUtc = null;
+            }
             else row.NextAttemptAtUtc = Now + (result.RetryAfter ?? TimeSpan.FromSeconds(Math.Min(300, 5 * Math.Pow(2, row.Attempts - 1))));
         }
         if (result.Receipt is not null) row.ReceiptJson = Serialize(result.Receipt);

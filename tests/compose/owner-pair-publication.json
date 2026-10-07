@@ -1,9 +1,9 @@
 {
   "ratelDesk": {
-    "version": "0.1.1-beta.15",
-    "source": "e543fb13eb0e23db09fdfd6b4232067cecf61675",
-    "api": "ghcr.io/bostontechnologies/rateldesk-api@sha256:4f266560a2cd925210d492d47ae5ba0ffcbc9c3af44631aff39ee403f4be30b8",
-    "web": "ghcr.io/bostontechnologies/rateldesk-web@sha256:2c623963456ee61ff9040e4462fbd85bb2d8d0f077b0fdad74840f9447f3bec6",
+    "version": "0.1.1-beta.16",
+    "source": "a428d84b228213a3b1036b896610a19e51e19fa6",
+    "api": "ghcr.io/bostontechnologies/rateldesk-api@sha256:7d8c84b756981f4c94c04d2fdeffefe08f472739c06eb60b05e57b74f4110410",
+    "web": "ghcr.io/bostontechnologies/rateldesk-web@sha256:6a79b193ed20a7d14383821aab64dfb8b72fb4a68ec42ef5a16a061710c4d64c",
     "postgres": "postgres@sha256:a3b7f434b2dc57ce85a67e171163eb8ab1a1ebcb39d27484661f26b1dfbe30d6"
   },
   "fixture": {

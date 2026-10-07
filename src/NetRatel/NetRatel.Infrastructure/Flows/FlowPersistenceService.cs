@@ -5,13 +5,14 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.DependencyInjection;
 using NetRatel.Application.Flows;
+using NetRatel.Application.RatelDesk;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Shared.Contracts.Flows;
 
 namespace NetRatel.Infrastructure.Flows;
 
 /// <summary>Operation-scoped contexts and transaction/lease fences own durability; no browser or library model is stored.</summary>
-public sealed partial class FlowPersistenceService(IServiceScopeFactory scopes, TimeProvider clock) : IFlowDefinitionService, IFlowEventIngress, IFlowExecutionStore
+public sealed partial class FlowPersistenceService(IServiceScopeFactory scopes, TimeProvider clock) : IFlowDefinitionService, IFlowEventIngress, IFlowExecutionStore, IFlowReceiverEvidenceStore, IFlowSourceIdentityResolver
 {
     // PostgreSQL stores microseconds; normalize before returning lease timestamps that are compared
     // with a fresh scoped read during receipt commits.

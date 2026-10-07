@@ -1762,8 +1762,6 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.HasIndex("TenantId", "IdempotencyKey")
                         .IsUnique();
 
-                    b.HasIndex("TenantId", "RunId");
-
                     b.ToTable("FlowActions", (string)null);
                 });
 
@@ -1844,6 +1842,75 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.HasIndex("TenantId", "UpdatedAtUtc");
 
                     b.ToTable("FlowDefinitions", (string)null);
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.FlowReceiverEvidenceRecord", b =>
+                {
+                    b.Property<Guid>("RunId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("NodeId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("AutomaticReplayUntilUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("EvidenceFingerprint")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<bool>("FinalReconciliationAttempted")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTimeOffset?>("FirstPostAttemptAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("FullReceiptJson")
+                        .HasColumnType("jsonb");
+
+                    b.Property<long?>("LastPostLeaseFence")
+                        .HasColumnType("bigint");
+
+                    b.Property<bool>("MayHaveCommitted")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTimeOffset>("OriginalCreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("PreparationJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<string>("ReceiverFingerprint")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("ReceiverIdempotencyKey")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<long>("RowVersion")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint");
+
+                    b.Property<int>("SchemaVersion")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.HasKey("RunId", "NodeId");
+
+                    b.HasIndex("TenantId", "RunId", "NodeId")
+                        .IsUnique();
+
+                    b.ToTable("FlowReceiverEvidence", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_FlowReceiverEvidence_V2", "\"SchemaVersion\" = 2 AND \"TenantId\" > 0 AND \"RowVersion\" > 0 AND jsonb_typeof(\"PreparationJson\") = 'object' AND \"AutomaticReplayUntilUtc\" > \"OriginalCreatedAtUtc\" AND \"AutomaticReplayUntilUtc\" <= \"OriginalCreatedAtUtc\" + INTERVAL '24 hours' AND (\"LastPostLeaseFence\" IS NULL OR \"LastPostLeaseFence\" > 0) AND (NOT \"MayHaveCommitted\" OR \"FirstPostAttemptAtUtc\" IS NOT NULL) AND (\"FullReceiptJson\" IS NULL OR jsonb_typeof(\"FullReceiptJson\") = 'object')");
+                        });
                 });
 
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.FlowRunRecord", b =>
@@ -4833,6 +4900,47 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.ToTable("PrimaryClientAgentBindings", (string)null);
                 });
 
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.RatelDeskConnectorRecord", b =>
+                {
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("AuthenticationJson")
+                        .HasColumnType("jsonb");
+
+                    b.Property<string>("ConfigurationJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<long>("CredentialRevision")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("OwnerPrincipalId")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("ProtectedCredential")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ReadinessJson")
+                        .HasColumnType("jsonb");
+
+                    b.Property<long>("Revision")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("RowVersion")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint");
+
+                    b.HasKey("TenantId", "Id");
+
+                    b.ToTable("RatelDeskConnectors", (string)null);
+                });
+
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.RemoteSupportAuditEventRecord", b =>
                 {
                     b.Property<Guid>("Id")
@@ -6051,6 +6159,16 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                         .WithMany()
                         .HasForeignKey("TenantId", "RunId")
                         .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.FlowReceiverEvidenceRecord", b =>
+                {
+                    b.HasOne("NetRatel.Infrastructure.Persistence.FlowActionRecord", null)
+                        .WithOne()
+                        .HasForeignKey("NetRatel.Infrastructure.Persistence.FlowReceiverEvidenceRecord", "TenantId", "RunId", "NodeId")
+                        .HasPrincipalKey("NetRatel.Infrastructure.Persistence.FlowActionRecord", "TenantId", "RunId", "NodeId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
                 });

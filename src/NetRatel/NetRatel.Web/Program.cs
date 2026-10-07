@@ -18,6 +18,7 @@ using NetRatel.Web.Services.Script;
 using NetRatel.Web.Services;
 using NetRatel.Web.Services.Clients;
 using NetRatel.Web.Services.Tenants;
+using NetRatel.Web.Services.RatelDesk;
 using NetRatel.Web.Services.Requests;
 using NetRatel.Web.Services.ClientTasks;
 using NetRatel.Web.Services.Terminal;
@@ -110,6 +111,7 @@ builder.Services.AddScoped<NetRatel.Web.Services.Flows.IFlowApiService, NetRatel
 builder.Services.AddTransient<TelemetryOverviewStreamService>();
 builder.Services.AddTransient<ClientTelemetryStreamService>();
 builder.Services.AddScoped<TenantApiService>();
+builder.Services.AddScoped<IRatelDeskConnectorApiService, RatelDeskConnectorApiService>();
 builder.Services.AddScoped<IAccessAdministrationApiService, AccessAdministrationApiService>();
 builder.Services.AddScoped<IDeploymentBrandingApiService, DeploymentBrandingApiService>();
 builder.Services.AddScoped<RequestApiService>();
@@ -360,6 +362,15 @@ builder.Services.AddHttpClient("OrchestratorApiStreaming", c =>
 
 builder.Services.AddFlowsApiClient(builder.Configuration);
 builder.Services.AddMonitoringApiClient(builder.Configuration);
+// Connector credentials and revision-fenced writes must never be replayed by redirects or transport retries.
+builder.Services.AddHttpClient(RatelDeskConnectorApiService.ClientName, c =>
+{
+    c.BaseAddress = new Uri(builder.Configuration["ApiBaseUrl"] ?? "https://localhost:5001/");
+    c.Timeout = TimeSpan.FromSeconds(30);
+})
+.ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false })
+.AddHttpMessageHandler<TokenAuthorizationHandler>()
+.RemoveAllResilienceHandlers();
 
 builder.Services.AddHttpClient("Bff", (sp, c) =>
 {

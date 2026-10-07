@@ -293,9 +293,12 @@ public sealed class FlowPostgreSqlTests(PostgreSqlPersistenceFixture postgres)
 
     private sealed class Clock : TimeProvider
     {
-        private DateTimeOffset _now = new DateTimeOffset(2026, 10, 2, 20, 0, 0, TimeSpan.Zero).AddTicks(7);
+        private DateTimeOffset _now = CurrentUtc();
         public override DateTimeOffset GetUtcNow() => _now;
         public void Advance(TimeSpan duration) => _now += duration;
+        public void CaptureSystemTime() => _now = CurrentUtc();
+        // Retain the existing seven-tick sub-microsecond precision probe on current UTC.
+        private static DateTimeOffset CurrentUtc() => new(DateTimeOffset.UtcNow.UtcTicks / 10 * 10 + 7, TimeSpan.Zero);
     }
     private sealed class Authority : IFlowExecutionAuthorityVerifier
     {
@@ -350,7 +353,7 @@ public sealed class FlowPostgreSqlTests(PostgreSqlPersistenceFixture postgres)
         {
             var h = new Harness { Connection = await fixture.CreateDatabaseAsync() }; h.Provider = h.NewProvider();
             await using var scope = h.Provider.CreateAsyncScope(); var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
-            await db.Database.MigrateAsync(); db.Tenants.AddRange(new Tenant { Id = 17, Name = "Flows fixture" }, new Tenant { Id = 18, Name = "Foreign tenant" }); await db.SaveChangesAsync(); return h;
+            await db.Database.MigrateAsync(); db.Tenants.AddRange(new Tenant { Id = 17, Name = "Flows fixture" }, new Tenant { Id = 18, Name = "Foreign tenant" }); await db.SaveChangesAsync(); h.Clock.CaptureSystemTime(); return h;
         }
         public ServiceProvider NewProvider()
         {

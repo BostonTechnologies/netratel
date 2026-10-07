@@ -2,12 +2,13 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using NetRatel.Application.Flows;
+using NetRatel.Application.RatelDesk;
 using NetRatel.Shared.Contracts.Flows;
 
 namespace NetRatel.Infrastructure.Flows;
 
 /// <summary>A bounded single-node backend worker. Every external step passes current grants/suppression and durable receipt fences.</summary>
-public sealed class FlowRunProcessor(IFlowExecutionStore store, IFlowRuntimeAdapter runtime, IServiceScopeFactory scopes)
+public sealed partial class FlowRunProcessor(IFlowExecutionStore store, IFlowRuntimeAdapter runtime, IServiceScopeFactory scopes)
 {
     private readonly Guid _workerId = Guid.NewGuid();
     public async Task<bool> ProcessOneAsync(CancellationToken cancellationToken = default)
@@ -29,6 +30,14 @@ public sealed class FlowRunProcessor(IFlowExecutionStore store, IFlowRuntimeAdap
         if (existing is null) return new(FlowIncidentActionResultKind.Failed, "action-lease-lost");
         if (Terminal(existing) is { } terminal) return terminal;
         await using var scope = scopes.CreateAsyncScope(); var provider = scope.ServiceProvider;
+        if (provider.GetService<IFlowReceiverDispatcher>() is { } receiver)
+            return await ExecuteReceiverActionAsync(lease, draft, existing, provider, receiver, ct).ConfigureAwait(false);
+        return await ExecuteLegacyActionAsync(lease, draft, existing, provider, ct).ConfigureAwait(false);
+    }
+
+    private async Task<FlowIncidentActionResult> ExecuteLegacyActionAsync(FlowRunLease lease, FlowIncidentActionDraft draft,
+        FlowActionExecutionState existing, IServiceProvider provider, CancellationToken ct)
+    {
         var gate = await AdmitDispatchAsync(provider, lease, ct).ConfigureAwait(false);
         if (!gate.Allowed)
         {

@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Negative release-gate tests using isolated source fixtures."""
 import base64
+import contextlib
+import copy
+import runpy
+import stat
+from types import SimpleNamespace
 import importlib.util
 import io
 import json
@@ -226,6 +231,23 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
         self.assertIn("NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT:", manual)
         self.assertIn("src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/TestResults/playwright", manual)
         self.assertRegex(manual, r"(?s)name: Retain selected TRX, screenshots and sanitized receipts\s+if: always\(\).*?path: \|\s+TestResults")
+
+        # Retain cheap selector/source checks for opt-in Compose helpers.
+        for relative in (
+            "tools/ci/smoke-oidc-compose.sh",
+            "tools/ci/smoke-postgresql-oidc-upgrade.sh",
+            "tools/ci/smoke-local-first-compose.sh",
+        ):
+            optional_source = (ROOT / relative).read_text(encoding="utf-8")
+            with self.subTest(optional_helper=relative):
+                self.assertNotRegex(optional_source, r"--filter(?:\s|=)", "VSTest filter syntax is invalid under the selected MTP runner.")
+                self.assertNotIn("-- --report-trx", optional_source, "SDK 10 MTP options are passed directly without a legacy separator.")
+                self.assertIn("--report-trx-filename", optional_source)
+
+        browser_test = (ROOT / "src/NetRatel/NetRatel.Web.PlaywrightTests/ClientsManagementResponsiveTests.cs").read_text(encoding="utf-8")
+        self.assertIn("AbortedCriticalStartupScript_FailsAndWritesDiagnosticsBeforeContextDisposal", browser_test)
+        self.assertIn('"startup-diagnostics.json"', browser_test)
+        self.assertIn('"startup-failure.png"', browser_test)
 
         api_root = ROOT / "src/NetRatel/NetRatel.API.IntegrationTests"
         for name in (
@@ -1961,6 +1983,431 @@ class DistributionTests(unittest.TestCase):
         document["files"][0]["checksums"][0]["checksumValue"] = hashlib.sha256(b"actual bytes").hexdigest()
         self.verifier.verify(document, self.root)
 
+
+class PublicationImageJournalTests(unittest.TestCase):
+    """Real local validation with synthetic authority and no external transports."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="netratel-publication-journal-tests-")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.promotion = module("promote-release")
+        self.version = "9.8.7-regression.4"
+        self.revision = "a" * 40
+        self.tooling_revision = "b" * 40
+        self.workflow_revision = "c" * 40
+        self.tag_revision = self.revision
+        self.dirty = ""
+        self.inputs = self.root / "inputs"
+        self.inputs.mkdir()
+        self.receipt_path = self.root / "input-receipt.json"
+        self.commands = []
+        self.downloads = []
+        self.archives = {}
+        self.metadata = []
+        self.receipt = {
+            "repository": self.promotion.REPOSITORY, "workflow": ".github/workflows/release-build.yml",
+            "runId": 1010, "attempt": 2, "headSha": self.revision,
+            "productVersion": self.version, "files": {},
+        }
+        groups = {101: [], 102: [], 103: [], 104: []}
+        for name in self.promotion.required_artifacts(self.version):
+            artifact_id = 101
+            if name.startswith(f"netratel-client-{self.version}-"):
+                artifact_id = next(value for runtime, value in
+                                   (("linux-x64", 102), ("win-x64", 103), ("osx-arm64", 104))
+                                   if runtime in name)
+            content = ("synthetic downloadable artifact: " + name).encode()
+            (self.inputs / name).write_bytes(content)
+            groups[artifact_id].append((name, content))
+        self.promotion.checksums(self.inputs)
+        for artifact_id, payloads in groups.items():
+            archive = self.root / f"{artifact_id}.zip"
+            with zipfile.ZipFile(archive, "w") as output:
+                for name, content in payloads:
+                    output.writestr(name, content)
+            self.archives[artifact_id] = archive
+            digest = "sha256:" + hashlib.sha256(archive.read_bytes()).hexdigest()
+            artifact_name = f"synthetic-original-{artifact_id}"
+            self.metadata.append({"id": artifact_id, "name": artifact_name,
+                                  "digest": digest, "expired": False})
+            for name, content in payloads:
+                self.receipt["files"][name] = {
+                    "artifact": artifact_name, "artifactId": artifact_id, "artifactDigest": digest,
+                    "path": name, "sha256": hashlib.sha256(content).hexdigest(),
+                }
+        self.save_receipt()
+        self.current_run = {"id": 2020, "run_attempt": 3, "path": ".github/workflows/release-publish.yml",
+                            "head_sha": self.workflow_revision, "status": "in_progress", "event": "release"}
+        self.original_run = {"conclusion": "success", "head_sha": self.revision,
+                             "path": ".github/workflows/release-build.yml"}
+        self.environment = {
+            "GITHUB_ACTIONS": "true", "GITHUB_REPOSITORY": self.promotion.REPOSITORY,
+            "RELEASE_TAG": f"v{self.version}", "GITHUB_RUN_ID": "2020", "GITHUB_RUN_ATTEMPT": "3",
+            "GITHUB_SHA": self.workflow_revision,
+            "GITHUB_WORKFLOW_REF": self.promotion.REPOSITORY + "/.github/workflows/release-publish.yml@refs/heads/main",
+            "GITHUB_EVENT_NAME": "release",
+        }
+        self.real_run = self.promotion.run
+        for guard in (
+                patch.dict(os.environ, self.environment, clear=True),
+                patch.object(self.promotion, "ROOT", self.root),
+                patch.object(self.promotion, "run", side_effect=self.command),
+                patch.object(self.promotion, "download_artifact", side_effect=self.download),
+                patch.object(self.promotion.subprocess, "check_output", side_effect=self.tooling_command),
+                patch.object(self.promotion.subprocess, "run", side_effect=AssertionError("Unexpected external subprocess")),
+                patch.object(self.promotion.urllib.request, "urlopen", side_effect=AssertionError("Unexpected network request"))):
+            guard.start()
+            self.addCleanup(guard.stop)
+
+    def save_receipt(self):
+        self.receipt_path.write_text(json.dumps(self.receipt))
+
+    def command(self, *command, env=None):
+        self.commands.append(command)
+        self.assertIsNone(env, "Unexpected external command environment")
+        if command == ("python3", str(Path(self.promotion.__file__).with_name("product-version.py"))):
+            return self.version
+        if command == ("git", "rev-parse", "HEAD"):
+            return self.revision
+        if command == ("git", "rev-list", "-n", "1", f"v{self.version}"):
+            return self.tag_revision
+        if command == ("git", "status", "--porcelain"):
+            return self.dirty
+        if command[:2] == ("gh", "api"):
+            self.assertEqual(len(command), 3, "Unexpected metadata command arguments")
+            endpoint = command[2]
+            prefix = f"repos/{self.promotion.REPOSITORY}/actions/runs/"
+            if endpoint == prefix + "2020/attempts/3":
+                return json.dumps(self.current_run)
+            if endpoint == prefix + "1010/attempts/2":
+                return json.dumps(self.original_run)
+            if endpoint == prefix + "1010":
+                return json.dumps(self.original_run)
+            if endpoint == prefix + "1010/artifacts?per_page=100":
+                return json.dumps({"artifacts": self.metadata})
+            # The fake authority refuses any unowned original run or attempt.
+            if endpoint in (prefix + "1011/attempts/2", prefix + "1010/attempts/1"):
+                return json.dumps({"conclusion": "failure"})
+        raise AssertionError(f"Unexpected external command: {command[:2]}")
+
+    def tooling_command(self, command, **kwargs):
+        self.assertEqual(tuple(command), ("git", "-C", str(Path(self.promotion.__file__).resolve().parents[2]), "rev-parse", "HEAD"))
+        self.assertEqual(kwargs, {"text": True})
+        return self.tooling_revision
+
+    def download(self, artifact_id, destination):
+        self.assertIn(artifact_id, self.archives, "Unexpected unauthenticated artifact download")
+        self.downloads.append(artifact_id)
+        shutil.copyfile(self.archives[artifact_id], destination)
+
+    def args(self, phase="prepared", component="api"):
+        return SimpleNamespace(inputs=self.inputs, receipt=self.receipt_path,
+                               output=self.root / "journal" / f"{phase}.json", component=component,
+                               phase=phase, local_image_config="sha256:" + "d" * 64,
+                               image_digest=None if phase == "prepared" else
+                               self.promotion.IMAGE_REPOSITORIES[component] + "@sha256:" + "e" * 64)
+
+    def write(self, args=None):
+        args = args or self.args()
+        self.promotion.write_publication_image_journal(args)
+        return json.loads(args.output.read_text())
+
+    def refuse(self, args=None):
+        args = args or self.args()
+        with self.assertRaises((ValueError, OSError)):
+            self.promotion.write_publication_image_journal(args)
+        self.assertFalse(args.output.exists())
+        self.assertFalse(any(command[:2] in (("docker", "push"), ("gh", "release"))
+                             for command in self.commands))
+
+    def bind_changed_archive(self, artifact_id=101):
+        digest = "sha256:" + hashlib.sha256(self.archives[artifact_id].read_bytes()).hexdigest()
+        for item in self.receipt["files"].values():
+            if item["artifactId"] == artifact_id:
+                item["artifactDigest"] = digest
+        next(item for item in self.metadata if item["id"] == artifact_id)["digest"] = digest
+        self.save_receipt()
+
+    def test_prepared_and_recorded_phases_bind_real_local_payloads_without_resume_authority(self):
+        for component in self.promotion.COMPONENTS:
+            with self.subTest(component=component):
+                args = self.args(component=component)
+                args.output = self.root / component / "prepared.json"
+                prepared = self.write(args)
+                args.phase = "digest-recorded"
+                args.output = args.output.with_name("digest-recorded.json")
+                args.image_digest = self.promotion.IMAGE_REPOSITORIES[component] + "@sha256:" + "e" * 64
+                recorded = self.write(args)
+                self.assertEqual((prepared["revision"], prepared["version"], prepared["tag"], prepared["component"]),
+                                 (self.revision, self.version, f"v{self.version}", component))
+                self.assertEqual(prepared["imageRepository"], self.promotion.IMAGE_REPOSITORIES[component])
+                self.assertEqual(prepared["imageVersionTag"], self.promotion.release_image_tag(component, self.version))
+                self.assertEqual(prepared["scannedLocalImageConfig"], args.local_image_config)
+                self.assertEqual((prepared["publication"]["runId"], prepared["publication"]["attempt"],
+                                  prepared["publication"]["workflowSourceSha"], prepared["publication"]["toolingSourceSha"]),
+                                 (2020, 3, self.workflow_revision, self.tooling_revision))
+                self.assertFalse(prepared["resumeAuthority"])
+                self.assertFalse(recorded["resumeAuthority"])
+                self.assertIsNone(prepared["imageDigest"])
+                self.assertEqual(recorded["imageDigest"], args.image_digest)
+                self.assertEqual(prepared["inputReceipt"]["files"], self.receipt["files"])
+                for name, item in recorded["inputReceipt"]["files"].items():
+                    self.assertEqual(item["sha256"], hashlib.sha256((self.inputs / name).read_bytes()).hexdigest())
+                stable = lambda document: {key: value for key, value in document.items()
+                                           if key not in {"phase", "recordedAtUtc", "imageDigest"}}
+                self.assertEqual(stable(prepared), stable(recorded))
+        self.assertEqual(set(self.downloads), {101, 102, 103, 104})
+
+    def test_source_tag_dirty_checkout_and_workflow_environment_fail_before_evidence_creation(self):
+        for key, value in (("GITHUB_ACTIONS", "false"), ("GITHUB_REPOSITORY", "example/other"),
+                           ("RELEASE_TAG", "v0.0.0-wrong"), ("GITHUB_RUN_ID", "0"),
+                           ("GITHUB_RUN_ATTEMPT", "-1"), ("GITHUB_SHA", "not-a-source"),
+                           ("GITHUB_WORKFLOW_REF", "example/other/.github/workflows/release-publish.yml@refs/heads/main")):
+            with self.subTest(field=key), patch.dict(os.environ, {key: value}):
+                self.refuse()
+        for field, value in (("tag_revision", "f" * 40), ("dirty", " M unreviewed.py")):
+            with self.subTest(field=field), patch.object(self, field, value):
+                self.refuse()
+        with patch.object(self.promotion.subprocess, "check_output", return_value="malformed-tooling-source"):
+            self.refuse()
+
+    def test_current_publication_authority_requires_the_exact_running_attempt(self):
+        for key, value in (("id", 2021), ("run_attempt", 2), ("path", ".github/workflows/other.yml"),
+                           ("head_sha", "f" * 40), ("status", "completed"), ("event", "push")):
+            with self.subTest(field=key), patch.dict(self.current_run, {key: value}):
+                self.refuse()
+        with patch.dict(os.environ, {"GITHUB_EVENT_NAME": "workflow_dispatch"}):
+            self.refuse()
+
+    def test_component_config_and_published_reference_cannot_claim_another_image(self):
+        for config in ("sha512:" + "d" * 64, "sha256:short", "sha256:" + "D" * 64):
+            with self.subTest(config=config):
+                args = self.args(); args.local_image_config = config; self.refuse(args)
+        args = self.args(); args.image_digest = "sha256:" + "e" * 64; self.refuse(args)
+        self.write()
+        for reference in (None, "sha256:" + "e" * 64,
+                          self.promotion.IMAGE_REPOSITORIES["web"] + "@sha256:" + "e" * 64,
+                          self.promotion.IMAGE_REPOSITORIES["api"] + "@sha256:malformed"):
+            with self.subTest(reference=reference):
+                args = self.args("digest-recorded"); args.image_digest = reference; self.refuse(args)
+
+    def test_cli_rejects_unknown_phase_and_component_before_running_any_transport(self):
+        for option, value in (("--phase", "restore"), ("--component", "unknown")):
+            argv = ["promote-release.py", "image-journal", "--inputs", str(self.inputs),
+                    "--receipt", str(self.receipt_path), "--output", str(self.root / "never.json"),
+                    "--component", "api", "--phase", "prepared", "--local-image-config", "sha256:" + "d" * 64]
+            argv[argv.index(option) + 1] = value
+            with self.subTest(option=option), patch.object(sys, "argv", argv), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as rejected:
+                    runpy.run_path(str(ROOT / "tools/ci/promote-release.py"), run_name="__main__")
+                self.assertEqual(rejected.exception.code, 2)
+        self.assertEqual(self.commands, [])
+        self.assertFalse((self.root / "never.json").exists())
+
+    def test_original_receipt_and_workflow_authority_are_revalidated_before_each_phase(self):
+        for key, value in (("repository", "example/other"), ("workflow", ".github/workflows/other.yml"),
+                           ("headSha", "f" * 40), ("productVersion", "0.0.0-wrong"), ("runId", 1011), ("attempt", 1)):
+            with self.subTest(field=key), patch.dict(self.receipt, {key: value}):
+                self.save_receipt(); self.refuse()
+        self.save_receipt()
+        for key, value in (("conclusion", "failure"), ("head_sha", "f" * 40), ("path", ".github/workflows/other.yml")):
+            with self.subTest(field=key), patch.dict(self.original_run, {key: value}):
+                self.refuse()
+        self.write()
+        prepared = self.args().output.read_bytes()
+        raw_digest = self.root / "raw-published-digest.txt"
+        raw_digest.write_text(self.args("digest-recorded").image_digest)
+        with patch.dict(self.original_run, {"conclusion": "failure"}):
+            self.refuse(self.args("digest-recorded"))
+        self.assertEqual(self.args().output.read_bytes(), prepared)
+        self.assertEqual(raw_digest.read_text(), self.args("digest-recorded").image_digest)
+
+    def test_missing_expired_unowned_or_changed_artifact_metadata_is_rejected(self):
+        before = list(self.downloads)
+        for key, value in (("id", 999), ("expired", True), ("name", "unowned-artifact"), ("digest", "sha256:" + "f" * 64)):
+            with self.subTest(field=key), patch.dict(self.metadata[0], {key: value}):
+                self.refuse()
+                self.assertEqual(self.downloads, before)
+        with patch.object(self, "metadata", self.metadata[1:]):
+            self.refuse()
+            self.assertEqual(self.downloads, before)
+        name = next(iter(self.receipt["files"]))
+        with patch.dict(self.receipt["files"][name], {"artifactId": 999}):
+            self.save_receipt(); self.refuse()
+            self.assertEqual(self.downloads, before)
+
+    def test_original_receipt_creation_requires_the_successful_push_and_exact_source_tag(self):
+        grouped = self.root / "original-downloads"; grouped.mkdir()
+        for metadata in self.metadata:
+            members = [name for name, item in self.receipt["files"].items() if item["artifactId"] == metadata["id"]]
+            runtime = {101: None, 102: "linux-x64", 103: "win-x64", 104: "osx-arm64"}[metadata["id"]]
+            metadata["name"] = (f"netratel-client-{self.version}-{runtime}" if runtime else
+                                f"netratel-{self.version}-linux-x64")
+            directory = grouped / metadata["name"]; directory.mkdir()
+            for name in members: shutil.copyfile(self.inputs / name, directory / name)
+            self.promotion.checksums(directory)
+        self.original_run.update(event="push", head_branch=f"v{self.version}", run_attempt=2)
+        output = self.root / "created-original-receipt.json"
+        for key, value in (("event", "workflow_dispatch"), ("head_branch", "v0.0.0-wrong"), ("run_attempt", 0)):
+            with self.subTest(field=key), patch.dict(self.original_run, {key: value}), self.assertRaises(ValueError):
+                self.promotion.create_input_receipt(grouped, output, 1010, self.version, self.revision)
+            self.assertFalse(output.exists())
+        self.promotion.create_input_receipt(grouped, output, 1010, self.version, self.revision)
+        receipt = json.loads(output.read_text())
+        self.assertEqual(receipt["attempt"], 2)
+        self.assertEqual(set(receipt["files"]), set(self.promotion.required_artifacts(self.version)))
+        args = self.args(); args.receipt = output
+        journal = self.write(args)
+        self.assertEqual(journal["inputReceipt"], receipt)
+
+    def test_authentication_checks_outer_zip_digest_and_selected_inner_payload_bytes(self):
+        self.archives[101].write_bytes(self.archives[101].read_bytes() + b"unapproved outer bytes")
+        self.refuse()
+        # The synthetic authority now authenticates the altered ZIP; its selected inner bytes still must match.
+        name = next(name for name, item in self.receipt["files"].items() if item["artifactId"] == 101)
+        with zipfile.ZipFile(self.archives[101]) as archive:
+            payloads = {member: archive.read(member) for member in archive.namelist()}
+        payloads[name] = b"different authenticated inner payload"
+        with zipfile.ZipFile(self.archives[101], "w") as archive:
+            for member, content in payloads.items(): archive.writestr(member, content)
+        self.bind_changed_archive()
+        self.refuse()
+
+    def test_authenticated_zip_rejects_traversal_absolute_symlink_and_duplicate_members(self):
+        original = self.archives[101].read_bytes()
+        for kind in ("traversal", "absolute", "symlink", "duplicate"):
+            with self.subTest(kind=kind):
+                self.archives[101].write_bytes(original)
+                with zipfile.ZipFile(self.archives[101], "a") as archive:
+                    if kind == "traversal": archive.writestr("../outside.txt", b"unsafe")
+                    elif kind == "absolute": archive.writestr("/outside.txt", b"unsafe")
+                    elif kind == "symlink":
+                        member = zipfile.ZipInfo("link"); member.create_system = 3
+                        member.external_attr = (stat.S_IFLNK | 0o777) << 16
+                        archive.writestr(member, "../outside.txt")
+                    else:
+                        member = archive.namelist()[0]
+                        with self.assertWarns(UserWarning): archive.writestr(member, b"duplicate")
+                self.bind_changed_archive()
+                self.refuse()
+                self.assertFalse((self.root / "outside.txt").exists())
+
+    def test_prepared_identity_changes_preserve_prior_evidence_and_refuse_new_result(self):
+        prepared = self.write()
+        mutations = [
+            (key, value) for key, value in (("revision", "f" * 40), ("version", "0.0.0-wrong"),
+                                           ("component", "web"), ("scannedLocalImageConfig", "sha256:" + "f" * 64),
+                                           ("resumeAuthority", True), ("schema", "untrusted-schema"))
+        ]
+        for key, value in mutations:
+            with self.subTest(field=key):
+                changed = copy.deepcopy(prepared); changed[key] = value
+                self.args().output.write_text(json.dumps(changed)); before = self.args().output.read_bytes()
+                self.refuse(self.args("digest-recorded")); self.assertEqual(self.args().output.read_bytes(), before)
+        for field in ("publication-attempt", "publication-tooling", "publication-source", "inputReceipt"):
+            with self.subTest(field=field):
+                changed = copy.deepcopy(prepared)
+                if field == "publication-attempt": changed["publication"]["attempt"] = 4
+                elif field == "publication-tooling": changed["publication"]["toolingSourceSha"] = "f" * 40
+                elif field == "publication-source": changed["publication"]["workflowSourceSha"] = "f" * 40
+                else: changed[field]["files"][next(iter(changed[field]["files"]))]["sha256"] = "f" * 64
+                self.args().output.write_text(json.dumps(changed)); self.refuse(self.args("digest-recorded"))
+        changed = copy.deepcopy(prepared); changed["unapprovedKey"] = "untrusted"
+        self.args().output.write_text(json.dumps(changed)); self.refuse(self.args("digest-recorded"))
+        del changed["unapprovedKey"]; del changed["tag"]
+        self.args().output.write_text(json.dumps(changed)); self.refuse(self.args("digest-recorded"))
+
+    def test_missing_malformed_nonobject_and_symlink_prepared_documents_are_refused(self):
+        self.refuse(self.args("digest-recorded"))
+        self.args().output.parent.mkdir()
+        for contents in ("{bad-json", "[]", "null", '"not-an-object"'):
+            with self.subTest(contents=contents):
+                self.args().output.write_text(contents); self.refuse(self.args("digest-recorded"))
+        target = self.root / "retained-prepared.json"; target.write_text("retained sentinel")
+        self.args().output.unlink(); self.args().output.symlink_to(target)
+        self.refuse(self.args("digest-recorded")); self.assertEqual(target.read_text(), "retained sentinel")
+
+    def test_phase_files_are_exclusive_and_never_replace_an_existing_document(self):
+        for phase in ("prepared", "digest-recorded"):
+            with self.subTest(phase=phase):
+                if phase == "digest-recorded": self.write()
+                args = self.args(phase); args.output.parent.mkdir(exist_ok=True)
+                args.output.write_bytes(b"existing immutable phase sentinel")
+                with self.assertRaises(FileExistsError): self.promotion.write_publication_image_journal(args)
+                self.assertEqual(args.output.read_bytes(), b"existing immutable phase sentinel")
+                args.output.unlink()
+
+    def test_allowlisted_journals_do_not_serialize_environment_or_receipt_secret_canaries(self):
+        canary = "unit-secret-canary-do-not-serialize"
+        self.receipt["token"] = canary
+        for item in self.receipt["files"].values(): item["password"] = canary
+        self.save_receipt()
+        with patch.dict(os.environ, {"GH_TOKEN": canary, "DOCKER_PASSWORD": canary, "UNRELATED_PRIVATE_VALUE": canary}):
+            self.write(); self.write(self.args("digest-recorded"))
+        for path in self.args().output.parent.iterdir():
+            self.assertNotIn(canary, path.read_text())
+
+    def test_command_error_redacts_secret_canaries_and_creates_no_journal(self):
+        canary = "unit-command-secret-canary"
+        error = subprocess.CalledProcessError(1, ("python3", "product-version.py"),
+                                              stderr=f"token={canary} password={canary} authorization={canary}")
+        with patch.object(self.promotion, "run", self.real_run), \
+                patch.object(self.promotion.subprocess, "run", side_effect=error):
+            with self.assertRaises(ValueError) as rejected:
+                self.promotion.write_publication_image_journal(self.args())
+        self.assertNotIn(canary, str(rejected.exception))
+        self.assertFalse(self.args().output.exists())
+
+    def test_registry_absence_is_only_typed_404_and_never_auth_timeout_or_existing_tag(self):
+        from urllib.error import URLError
+        with patch.object(self.promotion, "public_registry_token", return_value=("bostontechnologies/netratel-api", "synthetic-token")):
+            for status in (401, 403, 429, 500):
+                with self.subTest(status=status):
+                    error = HTTPError("https://registry.example.test", status, "synthetic failure", {}, None)
+                    with patch.object(self.promotion.urllib.request, "urlopen", side_effect=error), self.assertRaises(ValueError):
+                        self.promotion.require_unused_release_tag("api", self.version)
+                    error.close()
+            for error in (URLError("synthetic timeout"), TimeoutError("synthetic timeout")):
+                with patch.object(self.promotion.urllib.request, "urlopen", side_effect=error), self.assertRaises((ValueError, OSError)):
+                    self.promotion.require_unused_release_tag("api", self.version)
+            absent = HTTPError("https://registry.example.test", 404, "Not Found", {}, None)
+            with patch.object(self.promotion.urllib.request, "urlopen", side_effect=absent):
+                self.promotion.require_unused_release_tag("api", self.version)
+            absent.close()
+            with patch.object(self.promotion.urllib.request, "urlopen", return_value=io.BytesIO(b"malformed manifest")), self.assertRaisesRegex(ValueError, "already exists"):
+                self.promotion.require_unused_release_tag("api", self.version)
+
+    def test_existing_public_assets_are_reused_and_only_missing_exact_bytes_are_uploaded(self):
+        directory = self.root / "complete"; directory.mkdir()
+        for name in self.promotion.required_artifacts(self.version): (directory / name).write_bytes(name.encode())
+        record = {"productVersion": self.version, "verification": {"state": "complete"},
+                  "artifacts": {name: hashlib.sha256((directory / name).read_bytes()).hexdigest()
+                                for name in self.promotion.required_artifacts(self.version)}}
+        (directory / "publication.json").write_text(json.dumps(record)); self.promotion.checksums(directory)
+        files = {path.name: "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest() for path in directory.iterdir()}
+        first = min(files)
+        existing = {first: files[first]}
+        uploads = []
+        def transport(*command, env=None):
+            if command[:2] == ("gh", "api"):
+                self.assertEqual(command[2], f"repos/{self.promotion.REPOSITORY}/releases/tags/v{self.version}")
+                return json.dumps({"draft": False, "tag_name": f"v{self.version}",
+                                   "assets": [{"name": name, "digest": digest} for name, digest in existing.items()]})
+            self.assertEqual(command[:3], ("gh", "release", "upload"))
+            self.assertNotIn("--clobber", command)
+            path = Path(command[4]); self.assertEqual(path.parent, directory)
+            self.assertNotIn(path.name, existing)
+            uploads.append(path.name); existing[path.name] = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+            return ""
+        with patch.object(self.promotion, "run", side_effect=transport), contextlib.redirect_stdout(io.StringIO()):
+            self.promotion.publish_assets(directory, f"v{self.version}")
+        self.assertEqual(set(uploads), set(files) - {first})
+        self.assertEqual(existing, files)
+        uploads.clear(); existing[first] = "sha256:" + "f" * 64
+        with patch.object(self.promotion, "run", side_effect=transport), self.assertRaisesRegex(ValueError, "differs"):
+            self.promotion.publish_assets(directory, f"v{self.version}")
+        self.assertEqual(uploads, [])
 
 if __name__ == "__main__":
     unittest.main()

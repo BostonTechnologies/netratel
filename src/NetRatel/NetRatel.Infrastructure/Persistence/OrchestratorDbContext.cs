@@ -64,6 +64,8 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
     public DbSet<JobShadowObservationRecord> JobShadowObservations => Set<JobShadowObservationRecord>();
     public DbSet<ClientWindowsSessionSnapshot> ClientWindowsSessionSnapshots => Set<ClientWindowsSessionSnapshot>();
     public DbSet<ClientServicesSnapshotRecord> ClientServicesSnapshots => Set<ClientServicesSnapshotRecord>();
+    public DbSet<RatelDeskConnectorRecord> RatelDeskConnectors => Set<RatelDeskConnectorRecord>();
+    public DbSet<FlowReceiverEvidenceRecord> FlowReceiverEvidence => Set<FlowReceiverEvidenceRecord>();
     public DbSet<MonitoringTenantConfigurationRecord> MonitoringTenantConfigurations => Set<MonitoringTenantConfigurationRecord>();
     public DbSet<MonitoringRuleRecord> MonitoringRules => Set<MonitoringRuleRecord>();
     public DbSet<MonitoringGroupRecord> MonitoringGroups => Set<MonitoringGroupRecord>();
@@ -123,6 +125,17 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
     {
         MonitoringPersistenceModel.Configure(modelBuilder);
         FlowPersistenceModel.Configure(modelBuilder);
+        FlowReceiverEvidenceModel.Configure(modelBuilder);
+        modelBuilder.Entity<RatelDeskConnectorRecord>(entity =>
+        {
+            entity.ToTable("RatelDeskConnectors");
+            entity.HasKey(record => new { record.TenantId, record.Id });
+            entity.Property(record => record.RowVersion).IsConcurrencyToken();
+            entity.Property(record => record.OwnerPrincipalId).HasMaxLength(32).IsRequired();
+            entity.Property(record => record.ConfigurationJson).HasColumnType("jsonb").IsRequired();
+            entity.Property(record => record.AuthenticationJson).HasColumnType("jsonb");
+            entity.Property(record => record.ReadinessJson).HasColumnType("jsonb");
+        });
         modelBuilder.ConfigureServiceIdentityModel();
         modelBuilder.ConfigureServiceLinkModel();
         modelBuilder.ConfigureManagedOrchestrationModel();

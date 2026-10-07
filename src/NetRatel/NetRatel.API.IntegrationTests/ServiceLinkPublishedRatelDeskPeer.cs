@@ -8,12 +8,12 @@ using NetRatel.Shared.ServiceLinks;
 namespace NetRatel.API.IntegrationTests.ServiceLinks;
 
 /// <summary>Runs the published companion API/Web, without building or impersonating RatelDesk.</summary>
-internal sealed class ServiceLinkPublishedRatelDeskPeer : IAsyncDisposable
+internal sealed partial class ServiceLinkPublishedRatelDeskPeer : IAsyncDisposable
 {
-    public const string PublishedSource = "e543fb13eb0e23db09fdfd6b4232067cecf61675";
-    public const string PublishedVersion = "0.1.1-beta.15";
-    internal const string ApiImage = "ghcr.io/bostontechnologies/rateldesk-api@sha256:4f266560a2cd925210d492d47ae5ba0ffcbc9c3af44631aff39ee403f4be30b8";
-    internal const string WebImage = "ghcr.io/bostontechnologies/rateldesk-web@sha256:2c623963456ee61ff9040e4462fbd85bb2d8d0f077b0fdad74840f9447f3bec6";
+    public const string PublishedSource = "a428d84b228213a3b1036b896610a19e51e19fa6";
+    public const string PublishedVersion = "0.1.1-beta.16";
+    internal const string ApiImage = "ghcr.io/bostontechnologies/rateldesk-api@sha256:7d8c84b756981f4c94c04d2fdeffefe08f472739c06eb60b05e57b74f4110410";
+    internal const string WebImage = "ghcr.io/bostontechnologies/rateldesk-web@sha256:6a79b193ed20a7d14383821aab64dfb8b72fb4a68ec42ef5a16a061710c4d64c";
     private readonly string root = Path.Combine(Path.GetTempPath(), "netratel-rateldesk-pair", Guid.NewGuid().ToString("N"));
     private readonly string project = "netratel-service-link-" + Guid.NewGuid().ToString("N");
     private readonly string password = "aA1!" + Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
@@ -25,7 +25,7 @@ internal sealed class ServiceLinkPublishedRatelDeskPeer : IAsyncDisposable
     public string ApiBaseUrl => Proxy.BaseUrl;
     public string WebBaseUrl { get; }
     public string ReachableHost { get; }
-    public Guid InstanceId { get; } = Guid.NewGuid();
+    public Guid InstanceId { get; private set; } = Guid.NewGuid();
     public string OrganizationId { get; private set; } = "";
     public string CustomerId { get; private set; } = "";
     public HttpClient Administrator { get; private set; } = null!;
@@ -56,6 +56,25 @@ internal sealed class ServiceLinkPublishedRatelDeskPeer : IAsyncDisposable
             var initialized = await peer.ComposeAsync(["run", "--rm", "--no-deps", "api", "--initialize-unattended"]);
             if (!initialized.Contains("RatelDesk initialization completed.", StringComparison.Ordinal))
                 throw new InvalidOperationException("The published RatelDesk image did not complete its actual unattended bootstrap.");
+            // The receiver owns its stable identity in the actual bootstrap marker.
+            // Bind service metadata to that identity before the first API/Web startup
+            // or pairing; neither descriptor state nor initialized database bytes change.
+            var instanceText = (await DockerAsync(["compose", "-p", peer.project, "-f", peer.composeFile,
+                "exec", "-T", "postgres", "psql", "-X", "-v", "ON_ERROR_STOP=1", "-U", "rateldesk", "-d", "rateldesk", "-At", "-c",
+                "SELECT \"InstanceId\" FROM \"InstanceInitializations\" WHERE \"Id\" = 1"], TimeSpan.FromSeconds(5))).Trim();
+            if (!Guid.TryParseExact(instanceText, "D", out var instanceId) || instanceId == Guid.Empty || instanceId.ToString("D") != instanceText)
+                throw new InvalidOperationException("The initialized published peer has no single canonical receiver instance identity.");
+            var compose = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(peer.composeFile))
+                ?? throw new InvalidOperationException("The owned published-peer Compose configuration is unavailable.");
+            var environment = compose["services"]?["api"]?["environment"]?.AsObject()
+                ?? throw new InvalidOperationException("The owned published-peer API environment is unavailable.");
+            if (environment["ServiceIdentity__InstanceId"]?.GetValue<string>() != peer.InstanceId.ToString("D"))
+                throw new InvalidOperationException("The owned published-peer identity configuration changed during initialization.");
+            // Rewrite only this configuration value. Re-running WriteCompose would
+            // generate another database password for the already initialized volume.
+            environment["ServiceIdentity__InstanceId"] = instanceText;
+            File.WriteAllText(peer.composeFile, compose.ToJsonString());
+            peer.InstanceId = instanceId;
             await peer.ComposeAsync(["up", "-d", "--no-build", "--wait", "--wait-timeout", "90", "api", "web"]);
             peer.Administrator = peer.NewClient(cookies: true);
             peer.Anonymous = peer.NewClient();
@@ -205,6 +224,7 @@ internal sealed class ServiceLinkPublishedRatelDeskPeer : IAsyncDisposable
             ["Bootstrap__StateDirectory"] = "/var/lib/rateldesk/bootstrap",
             ["Bootstrap__DataDirectory"] = "/var/lib/rateldesk/data",
             ["StorageOptions__RootPath"] = "/app/storage",
+            ["StorageOptions__PublicApiBaseUrl"] = ApiBaseUrl,
             ["Bootstrap__Unattended__Provider"] = "PostgreSql",
             ["Bootstrap__Unattended__PostgreSqlConnectionString"] = connection,
             ["Bootstrap__Unattended__Email"] = "admin@example.test",
@@ -360,6 +380,13 @@ internal sealed class ServiceLinkPublishedRatelDeskPeer : IAsyncDisposable
     public async Task RestartAsync()
     {
         await ComposeAsync(["restart", "api", "web"]);
+        await StartAfterRestartAsync();
+    }
+
+    internal Task StopForRestartAsync() => ComposeAsync(["stop", "api", "web"]);
+
+    internal async Task StartAfterRestartAsync()
+    {
         await ComposeAsync(["up", "-d", "--no-build", "--wait", "--wait-timeout", "90", "api", "web"]);
         await LoginAsync();
     }
@@ -430,11 +457,12 @@ internal sealed class ServiceLinkPublishedRatelDeskPeer : IAsyncDisposable
         return evidence;
     }
 
-    private Task<string> ComposeAsync(string[] arguments) => DockerAsync(["compose", "-p", project, "-f", composeFile, .. arguments]);
+    private Task<string> ComposeAsync(string[] arguments, CancellationToken ct = default) => DockerAsync(["compose", "-p", project, "-f", composeFile, .. arguments], ct: ct);
 
-    private static async Task<string> DockerAsync(string[] arguments, TimeSpan? operationBudget = null, bool includeStandardError = false)
+    private static async Task<string> DockerAsync(string[] arguments, TimeSpan? operationBudget = null, bool includeStandardError = false, CancellationToken ct = default)
     {
-        using var timeout = new CancellationTokenSource(operationBudget ?? TimeSpan.FromMinutes(3));
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(operationBudget ?? TimeSpan.FromMinutes(3));
         var start = new ProcessStartInfo("docker") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
         foreach (var name in new[] { "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_TLS", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH" }) start.Environment.Remove(name);
         start.ArgumentList.Add("--host=unix:///var/run/docker.sock");
@@ -470,7 +498,10 @@ internal sealed class ServiceLinkPublishedRatelDeskPeer : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        Administrator?.Dispose(); Anonymous?.Dispose();
+        if (OwnedCleanupComplete) return;
+        var failures = new List<Exception>();
+        try { Administrator?.Dispose(); } catch (Exception e) { failures.Add(e); }
+        try { Anonymous?.Dispose(); } catch (Exception e) { failures.Add(e); }
         if (File.Exists(composeFile))
         {
             // An explicit private diagnostic run also retains failures after startup.
@@ -479,10 +510,22 @@ internal sealed class ServiceLinkPublishedRatelDeskPeer : IAsyncDisposable
                 try { await CapturePrivateFailureDiagnosticsAsync(); }
                 catch { /* Optional diagnostic capture must not prevent owned cleanup. */ }
             }
-            try { await ComposeAsync(["down", "--volumes", "--remove-orphans"]); }
-            finally { File.Delete(composeFile); }
+            try
+            {
+                await ComposeAsync(["down", "--volumes", "--remove-orphans"]);
+                // Keep exact compose ownership/private input after failed down.
+                // A later bounded dispose must still address the same stack.
+                File.Delete(composeFile);
+            }
+            catch (Exception e) { failures.Add(e); }
         }
-        await Proxy.DisposeAsync();
-        if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        if (!cleanupProxyDisposed)
+            try { await Proxy.DisposeAsync(); cleanupProxyDisposed = true; } catch (Exception e) { failures.Add(e); }
+        if (!File.Exists(composeFile))
+            try { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); } catch (Exception e) { failures.Add(e); }
+        OwnedCleanupComplete = failures.Count == 0 && cleanupProxyDisposed && !File.Exists(composeFile) && !Directory.Exists(root);
+        if (!OwnedCleanupComplete) throw new AggregateException("Owned RatelDesk cleanup was incomplete.", failures);
     }
+    private bool cleanupProxyDisposed;
+    public bool OwnedCleanupComplete { get; private set; }
 }

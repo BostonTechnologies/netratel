@@ -41,6 +41,7 @@ using NetRatel.Web.Services.Tenants;
 using NetRatel.Web.Services.Telemetry;
 using NetRatel.Web.Services.Services;
 using NetRatel.Web.Components;
+using NetRatel.Web.Services.RatelDesk;
 
 namespace NetRatel.Web.PlaywrightTests;
 
@@ -723,7 +724,7 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
         return Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "TestResults", "playwright"));
     }
 
-    private async Task CaptureFailureDiagnosticsBestEffortAsync(
+    internal async Task CaptureFailureDiagnosticsBestEffortAsync(
         IBrowser browser,
         IPage? page,
         BrowserStartupDiagnostics? startupDiagnostics,
@@ -856,7 +857,7 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
         return sanitized.Length <= 100 ? sanitized : sanitized[..100];
     }
 
-    private sealed class BrowserStartupDiagnostics
+    internal sealed class BrowserStartupDiagnostics
     {
         private const int MaximumTimelineEvents = 250;
         private readonly Stopwatch _clock = Stopwatch.StartNew();
@@ -935,7 +936,7 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
             path.StartsWith("/_blazor/", StringComparison.Ordinal);
     }
 
-    private sealed record BrowserTimelineEvent(long ElapsedMilliseconds, string Kind, string? Path, int? Status, string? Failure, string? Severity)
+    internal sealed record BrowserTimelineEvent(long ElapsedMilliseconds, string Kind, string? Path, int? Status, string? Failure, string? Severity)
     {
         public override string ToString() =>
             $"{ElapsedMilliseconds,5} ms {Kind}{(Severity is null ? "" : $" severity={Severity}")}{(Status is null ? "" : $" status={Status}")}{(Failure is null ? "" : $" failure={Failure}")}{(Path is null ? "" : $" path={Path}")}";
@@ -1008,7 +1009,7 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
         var path = GetSafeRequestPath(requestUrl);
         return path switch
         {
-            "/" or "/clients/mgmt" or "/_framework/blazor.web.js" or "/_content/MudBlazor/MudBlazor.min.js" or "/js/theme-preference.js" or "/app-site.css" or "/NetRatel.Web.styles.css" => path,
+            "/" or "/clients/mgmt" or "/monitoring" or "/_framework/blazor.web.js" or "/_content/MudBlazor/MudBlazor.min.js" or "/js/theme-preference.js" or "/app-site.css" or "/NetRatel.Web.styles.css" => path,
             _ when path.StartsWith("/_framework/", StringComparison.Ordinal) => "/_framework/(asset)",
             _ when path.StartsWith("/_content/", StringComparison.Ordinal) => "/_content/(asset)",
             _ when path.StartsWith("/_blazor", StringComparison.Ordinal) => "/_blazor/(endpoint)",
@@ -1492,6 +1493,7 @@ public sealed class ClientsManagementBrowserFixture : IAsyncLifetime
 [Route("/clients")]
 [Route("/flows")]
 [Route("/monitoring")]
+[Route("/flows/connectors")]
 public sealed class ClientsManagementFixtureApp : ComponentBase
 {
     protected override void BuildRenderTree(RenderTreeBuilder builder)
@@ -1565,6 +1567,7 @@ internal sealed class ClientsManagementFixtureHost : IAsyncDisposable
     public FixtureClientServicesService ServicesData => _application.Services.GetRequiredService<FixtureClientServicesService>();
     public FixtureFlowApiService FlowsData => _application.Services.GetRequiredService<FixtureFlowApiService>();
     public FixtureMonitoringApi MonitoringData => _application.Services.GetRequiredService<FixtureMonitoringApi>();
+    public FixtureRatelDeskConnectorApiService ConnectorsData => _application.Services.GetRequiredService<FixtureRatelDeskConnectorApiService>();
     public IReadOnlyList<string> StartupServerDiagnostics => _serverDiagnostics.Snapshot();
 
     public static async Task<ClientsManagementFixtureHost> StartAsync(Action<IServiceCollection>? configureServices = null)
@@ -1587,6 +1590,8 @@ internal sealed class ClientsManagementFixtureHost : IAsyncDisposable
         builder.Services.AddScoped<GatewayTelemetryApiService>();
         builder.Services.AddScoped<GatewayClientActionApiService>();
         builder.Services.AddSingleton<FixtureClientServicesService>();
+        builder.Services.AddSingleton<FixtureRatelDeskConnectorApiService>();
+        builder.Services.AddSingleton<IRatelDeskConnectorApiService>(services => services.GetRequiredService<FixtureRatelDeskConnectorApiService>());
         builder.Services.AddSingleton<IClientServicesApiService>(services => services.GetRequiredService<FixtureClientServicesService>());
         builder.Services.AddSingleton<IClientServicesLiveStreamService>(services => services.GetRequiredService<FixtureClientServicesService>());
         builder.Services.AddSingleton<FixtureFlowApiService>();
