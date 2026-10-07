@@ -74,7 +74,7 @@ write_state() {
   python3 - "$STATE_PATH" "$status" "$version" <<'PY'
 import json, os, sys, datetime
 path, state, version = sys.argv[1:4]
-payload={"state":state,"version":version,
+payload={"state":state,"version":version,"attemptId":os.environ.get("ATTEMPT_ID") or None,
          "updatedAtUtc":datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00","Z")}
 temporary=f"{path}.{os.getpid()}.{os.urandom(4).hex()}.tmp"
 with open(temporary,"w",encoding="utf-8") as f: json.dump(payload,f,separators=(",",":"))

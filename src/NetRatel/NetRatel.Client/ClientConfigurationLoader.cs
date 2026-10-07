@@ -285,6 +285,7 @@ internal static class ClientConfigurationLoader
             }
 
             options.ApiBaseUrl = ClientEndpointAddress.NormalizeApiBase(options.ApiBaseUrl);
+            options.OutageRecovery.Validate();
         });
         _ = configuredOptions.Value;
         return new ClientOptionsResolution(configuredOptions, apiSource);

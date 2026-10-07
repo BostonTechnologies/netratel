@@ -37,6 +37,8 @@ $script:TrustedOutputsReady = $false
 $script:UpdateLockAcquired = $false
 $script:ServiceEnvironment = @()
 $script:LocalAdministratorMemberSids = $null
+$script:IntendedStartMode = $null
+$script:StartModeGuardActive = $false
 
 try {
     $tls12 = [System.Enum]::Parse([System.Net.SecurityProtocolType], "Tls12")
@@ -48,9 +50,70 @@ catch {
 
 function Write-State($state, $version) {
     $temporary = "$StatePath.tmp"
-    @{ state = $state; version = $version; updatedAtUtc = (Get-Date).ToUniversalTime().ToString("O") } |
+    @{ state = $state; version = $version; attemptId = $script:AttemptId;
+       intendedStartMode = $script:IntendedStartMode; startModeGuardActive = $script:StartModeGuardActive;
+       previousPath = $script:PreviousPath; activePath = $script:ActivePath;
+       updatedAtUtc = (Get-Date).ToUniversalTime().ToString("O") } |
         ConvertTo-Json -Depth 4 | Set-Content -Path $temporary -Encoding UTF8
     Move-Item -Path $temporary -Destination $StatePath -Force
+}
+
+function Set-NetRatelServiceStartMode([string] $Mode) {
+    $startup = @{ Auto = 'Automatic'; Manual = 'Manual'; Disabled = 'Disabled' }[$Mode]
+    if (-not $startup) { throw 'The saved NetRatel service start mode is unsupported.' }
+    Set-Service -Name $ClientService -StartupType $startup -ErrorAction Stop
+    if ((Get-CimInstance Win32_Service -Filter "Name='$ClientService'" -ErrorAction Stop).StartMode -ne $Mode) {
+        throw 'The NetRatel service start mode did not verify.'
+    }
+}
+
+function Enter-NetRatelServiceCutover {
+    $service = Get-CimInstance Win32_Service -Filter "Name='$ClientService'" -ErrorAction Stop
+    [void](Assert-NetRatelOwnedServiceImage -ImagePath ([string]$service.PathName))
+    if (-not $script:StartModeGuardActive) {
+        $script:IntendedStartMode = [string]$service.StartMode
+        if ($script:IntendedStartMode -notin @('Auto', 'Manual')) { throw 'A disabled administrator service is not eligible for update activation.' }
+        # Persist first. An interrupted cutover can restore its intended mode on rerun.
+        $script:StartModeGuardActive = $true
+        Write-State 'guarding_cutover' $script:ToVersion
+    }
+    # A previously queued SCM failure restart cannot be cancelled by clearing
+    # failure actions. Disabled start mode fences it while files are replaced.
+    Set-NetRatelServiceStartMode 'Disabled'
+}
+
+function Exit-NetRatelServiceCutover {
+    if (-not $script:StartModeGuardActive) { return }
+    Set-NetRatelServiceStartMode $script:IntendedStartMode
+    $script:StartModeGuardActive = $false
+    Write-State 'applying' $script:ToVersion
+}
+
+function Repair-NetRatelInterruptedStartMode {
+    if (-not (Test-Path -LiteralPath $StatePath -PathType Leaf)) { return }
+    [void](Assert-NetRatelTrustedPath -Path $StatePath -LeafIsDirectory:$false -AllowLocalAdministrator:$true)
+    $saved = Get-Content -LiteralPath $StatePath -Raw | ConvertFrom-Json -ErrorAction Stop
+    if (-not $saved.startModeGuardActive) { return }
+    if ([string]$saved.intendedStartMode -notin @('Auto', 'Manual')) { throw 'An interrupted cutover has an invalid intended service mode.' }
+    $recoveryLock = [IO.File]::Open($LockPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    try {
+        $service = Get-CimInstance Win32_Service -Filter "Name='$ClientService'" -ErrorAction Stop
+        [void](Assert-NetRatelOwnedServiceImage -ImagePath ([string]$service.PathName))
+        if ([string]$service.PathName -notin @([string]$saved.previousPath, [string]$saved.activePath)) {
+            throw 'An administrator changed the registered image during an interrupted cutover; use the service repair route.'
+        }
+        if ($service.StartMode -notin @('Disabled', [string]$saved.intendedStartMode)) {
+            throw 'An administrator changed the service start mode during an interrupted cutover; use the service repair route.'
+        }
+        Set-NetRatelServiceStartMode ([string]$saved.intendedStartMode)
+        $saved.startModeGuardActive = $false
+        $temporary = "$StatePath.tmp"
+        $saved | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $temporary -Encoding UTF8
+        Move-Item -LiteralPath $temporary -Destination $StatePath -Force
+        Start-Service -Name $ClientService -ErrorAction Stop
+        Write-UpdateLog 'Interrupted cutover restored the verified registered service and its intended start mode; authenticated activation remains unverified.'
+    }
+    finally { $recoveryLock.Dispose() }
 }
 
 function Write-UpdateLog($message) {
@@ -497,6 +560,8 @@ function Initialize-NetRatelUpdaterPreflight {
     $canonicalState = $resolvedState
     if (-not (Test-Path -LiteralPath $canonicalState -PathType Container)) { return $null }
     [void](Assert-NetRatelTrustedPath -Path $canonicalState -LeafIsDirectory:$true -AllowLegacyDirectoryWrites:$true -AllowLocalAdministrator:$true)
+    [void](Assert-NetRatelTrustedPath -Path $LockPath -LeafIsDirectory:$false -AllowMissingLeaf:$true -AllowLocalAdministrator:$true)
+    Repair-NetRatelInterruptedStartMode
     [void](Assert-NetRatelTrustedPath -Path $RequestPath -LeafIsDirectory:$false -AllowMissingLeaf:$true -AllowLocalAdministrator:$true)
     if (-not (Test-Path -LiteralPath $RequestPath -PathType Leaf)) { return $null }
     $request = Get-Content -LiteralPath $RequestPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
@@ -574,6 +639,10 @@ function Initialize-NetRatelUpdaterPreflight {
     if ($script:InstalledVersion -and
         -not [string]::Equals($script:FromVersion, $script:InstalledVersion, [System.StringComparison]::OrdinalIgnoreCase)) {
         throw 'The update request current version does not match the registered client package.'
+    }
+    $requestedExecutable = Join-Path (Join-Path (Join-Path $resolvedRoot 'versions') $version) 'NetRatel.Client.exe'
+    if ([string]::Equals($registeredExecutable, $requestedExecutable, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw 'The requested version is already the registered immutable package; use the service repair route instead of replacing its running version.'
     }
     $script:ToVersion = $version
     return $request
@@ -788,6 +857,7 @@ function Invoke-NetRatelRollback($reason) {
     Archive-ActivationEvidence
     $rollbackStopDeadline = [DateTimeOffset]::UtcNow.AddSeconds(60)
     try {
+        Enter-NetRatelServiceCutover
         $rollbackService = Get-CimInstance Win32_Service -Filter "Name='$ClientService'" -ErrorAction Stop
         if (-not $rollbackService) {
             throw "$ClientService registration disappeared; refusing to move package files without confirming service ownership and stopped state."
@@ -809,6 +879,18 @@ function Invoke-NetRatelRollback($reason) {
             throw "$ClientService did not stop; rollback left the running executable and package files untouched."
         }
 
+        # Restore the live previous image before removing the candidate. An
+        # interruption must leave SCM pointing at an intact owned package so
+        # the durable start-mode guard can be recovered on the next invocation.
+        if (-not [string]::IsNullOrWhiteSpace($script:PreviousPath) -and $script:CandidateInstalled) {
+            $previousExecutable = Assert-NetRatelOwnedServiceImage -ImagePath $script:PreviousPath
+            if (-not (Test-Path -LiteralPath $previousExecutable -PathType Leaf)) {
+                throw 'The previous registered executable is unavailable; candidate files were retained.'
+            }
+            Set-NetRatelServiceImagePath $script:PreviousPath
+            $script:ActivePath = $script:PreviousPath
+            Write-State 'guarding_rollback_previous' $script:ToVersion
+        }
         New-Item -ItemType Directory -Path $FailedDir -Force | Out-Null
         if ($script:CandidateInstalled -and -not [string]::IsNullOrWhiteSpace($script:TargetDir) -and (Test-Path $script:TargetDir)) {
             $failedTarget = Join-Path $FailedDir "$($script:ToVersion)-$((Get-Date).ToUniversalTime().ToString('yyyyMMddHHmmss'))-$($script:AttemptId)"
@@ -816,10 +898,6 @@ function Invoke-NetRatelRollback($reason) {
         }
         if ($script:TargetMovedToBackup -and -not [string]::IsNullOrWhiteSpace($script:TargetBackupPath) -and (Test-Path $script:TargetBackupPath)) {
             Move-Item -Path $script:TargetBackupPath -Destination $script:TargetDir -Force -ErrorAction Stop
-        }
-        if (-not [string]::IsNullOrWhiteSpace($script:PreviousPath) -and $script:CandidateInstalled) {
-            Set-NetRatelServiceImagePath $script:PreviousPath
-            $script:ActivePath = $script:PreviousPath
         }
     }
     catch {
@@ -832,7 +910,7 @@ function Invoke-NetRatelRollback($reason) {
     if (-not [string]::IsNullOrWhiteSpace($script:PresencePath) -and (Test-Path $script:PresencePath)) {
         Remove-Item $script:PresencePath -Force
     }
-    try { Start-Service -Name $ClientService -ErrorAction Stop }
+    try { Exit-NetRatelServiceCutover; Start-Service -Name $ClientService -ErrorAction Stop }
     catch {
         Write-UpdateLog "Rollback service start failed: $($_.Exception.GetType().Name)"
         Write-State "rollback_failed" $script:ToVersion
@@ -935,6 +1013,7 @@ try {
     Write-State "applying" $version
     Write-UpdateLog "Stopping $ClientService for NetRatel client update $version."
     $script:ServiceStopRequested = $true
+    Enter-NetRatelServiceCutover
     Stop-Service -Name $ClientService -Force -ErrorAction Stop
     $stopDeadline = [DateTimeOffset]::UtcNow.AddSeconds(60)
     do {
@@ -955,7 +1034,9 @@ try {
     $script:CandidateInstalled = $true
     $activeExe = Join-Path $targetDir (Split-Path $exe -Leaf)
     $script:ActivePath = "`"$activeExe`" --service"
+    Write-State 'guarding_cutover_active' $version
     Set-NetRatelServiceImagePath $script:ActivePath
+    Exit-NetRatelServiceCutover
     Start-Service -Name $ClientService
     Write-UpdateLog "Started $ClientService with NetRatel client update $version; waiting for readiness marker."
 

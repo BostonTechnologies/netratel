@@ -46,7 +46,7 @@ using System.Threading.Tasks;
 // Use a thread-safe queue to handle input commands
 var input_queue = new ConcurrentQueue<(string Command, string Args)>();
 
-async Task RunClientAsync()
+async Task RunClientAsync(CancellationToken nativeStopping)
 {
     // *** MUST BE FIRST LINES IN Main() ***
     var runtimeBaseDir = AppContext.BaseDirectory ?? Environment.CurrentDirectory;
@@ -88,7 +88,7 @@ async Task RunClientAsync()
     LogManager.Initialize(appBaseDir, ResolveLogDirectory(appBaseDir, cliArgs), ResolveLogFilePrefix(cliArgs));
     NetRatel.Shared.Service.Logging.LogManager.Initialize(LogManager.LogFilePath);
     LogStartupBlock(appBaseDir, cliArgs);
-    using var applicationStopping = new CancellationTokenSource();
+    using var applicationStopping = CancellationTokenSource.CreateLinkedTokenSource(nativeStopping);
 
     if (cliArgs.Any(a => string.Equals(a, "--terminal-pty-self-test", StringComparison.OrdinalIgnoreCase)) ||
         cliArgs.Any(a => string.Equals(a, "--terminal-pty-self-test-native", StringComparison.OrdinalIgnoreCase)) ||
@@ -271,6 +271,11 @@ async Task RunClientAsync()
     LogManager.WriteLog($"[Client] Env={cfg.Environment}, API={cfg.ApiBaseUrl}, apiSource={clientResolution.ApiBaseUrlSource}");
     LogManager.WriteLog($"Application {GlobalContext.version} starting.");
 
+    if (!enrollOnly && !authCheckOnly && !resetAgentIdentity)
+    {
+        await NativeServiceRecoveryPolicy.TryApplyAsync(cliArgs, nativeStopping).ConfigureAwait(false);
+    }
+
     var services = new ServiceCollection();
     services.AddSingleton(clientResolution.ConfiguredOptions);
     services.AddSingleton(sp => sp.GetRequiredService<IOptions<ClientOptions>>().Value);
@@ -283,6 +288,7 @@ async Task RunClientAsync()
     {
         http.BaseAddress = new Uri(cfg.ApiBaseUrl.TrimEnd('/'));
         http.Timeout = TimeSpan.FromSeconds(30);
+        http.MaxResponseContentBufferSize = 64 * 1024;
     }).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
     services.AddScoped<IAgentEnrollmentService>(sp =>
         new AgentEnrollmentService(
@@ -319,7 +325,7 @@ async Task RunClientAsync()
     (string AgentId, string RefreshToken)? creds;
     try
     {
-        creds = await credentialStore.LoadAsync();
+        creds = await credentialStore.LoadAsync(applicationStopping.Token);
     }
     catch (AgentCredentialStoreException ex)
     {
@@ -331,7 +337,7 @@ async Task RunClientAsync()
     {
         try
         {
-            creds = await injectedEnrollmentBootstrap.TryEnrollAsync(cfg, enrollmentService, credentialStore, CancellationToken.None);
+            creds = await injectedEnrollmentBootstrap.TryEnrollAsync(cfg, enrollmentService, credentialStore, applicationStopping.Token);
             if (creds is not null)
             {
                 LogManager.WriteLog($"[Auth] Auto-enrollment from netratel.enroll.json succeeded. AgentId={creds.Value.AgentId}");
@@ -351,14 +357,14 @@ async Task RunClientAsync()
         credentialStore,
         Console.Out,
         Console.Error,
-        CancellationToken.None);
+        applicationStopping.Token);
     if (cliResult.Handled)
     {
         Environment.ExitCode = cliResult.ExitCode;
         return;
     }
 
-    var apiGuard = await ValidateApiBaseUrlAsync(cfg.ApiBaseUrl, CancellationToken.None);
+    var apiGuard = await ValidateApiBaseUrlAsync(cfg.ApiBaseUrl, applicationStopping.Token);
     if (!apiGuard.IsValid)
     {
         LogManager.WriteLog($"[Auth] {apiGuard.Message}");
@@ -376,7 +382,7 @@ async Task RunClientAsync()
             enrollmentService,
             tokenService,
             injectedEnrollmentBootstrap,
-            CancellationToken.None);
+            applicationStopping.Token);
         Environment.ExitCode = authCheckExitCode;
         return;
     }
@@ -402,9 +408,9 @@ async Task RunClientAsync()
 
         try
         {
-            creds = await enrollmentService.EnrollAsync(enrollmentCode, CancellationToken.None);
-            await credentialStore.SaveAsync(creds.Value.AgentId, creds.Value.RefreshToken);
-            creds = await credentialStore.LoadAsync();
+            creds = await enrollmentService.EnrollAsync(enrollmentCode, applicationStopping.Token);
+            await credentialStore.SaveAsync(creds.Value.AgentId, creds.Value.RefreshToken, applicationStopping.Token);
+            creds = await credentialStore.LoadAsync(applicationStopping.Token);
             if (creds is null)
             {
                 LogManager.WriteLog("[Auth] Enrollment credentials were not persisted. Exiting.");
@@ -434,59 +440,9 @@ async Task RunClientAsync()
     var gatewayResolution = rootProvider.GetRequiredService<ClientConfigurationLoader.GatewayOptionsResolution>();
     var gatewayOptions = rootProvider.GetRequiredService<IOptions<GatewayClientOptions>>().Value;
 
-    string initialToken;
     try
     {
-        var tokenResult = await StartupTokenAcquisition.GetAccessTokenAsync(
-            cfg,
-            tokenService,
-            enrollmentService,
-            credentialStore,
-            injectedEnrollmentBootstrap,
-            message => LogManager.WriteLog($"[Auth] {message}"),
-            applicationStopping.Token);
-        initialToken = tokenResult.AccessToken;
-        LogManager.WriteLog($"[Auth] Access token acquired (expiresAtUtc={tokenResult.ExpiresAtUtc:O}; {AccessTokenAuditMetadata.Describe(initialToken)}).");
-    }
-    catch (OperationCanceledException) when (applicationStopping.IsCancellationRequested)
-    {
-        return;
-    }
-    catch (AgentClientAuthException ex)
-    {
-        if (ex.ShouldClearCredentials)
-        {
-            try
-            {
-                await credentialStore.ClearRefreshCredentialsAsync();
-            }
-            catch (AgentCredentialStoreException storeError)
-            {
-                LogManager.WriteLog($"[Auth] Refresh credentials were retained because the installation identity could not be preserved: {storeError.Message}");
-                Environment.ExitCode = 12;
-                return;
-            }
-        }
-        LogManager.WriteLog($"[Auth] Failed to acquire access token: {ex.Message}");
-        Environment.ExitCode = 12;
-        return;
-    }
-
-    var tokenStore = new InMemoryAuthTokenStore();
-    await tokenStore.SaveAsync(initialToken);
-    var tokenTenantId = TryGetTenantId(initialToken);
-    LogManager.WriteLog($"[Auth] Token tenant_id={(tokenTenantId.HasValue ? tokenTenantId.Value.ToString() : "missing")}");
-
-    if (!tokenTenantId.HasValue)
-    {
-        LogManager.WriteLog("[Gateway] The agent token does not contain tenant_id. Exiting.");
-        Environment.ExitCode = 13;
-        return;
-    }
-
-    try
-    {
-        creds = await credentialStore.LoadAsync();
+        creds = await credentialStore.LoadAsync(applicationStopping.Token);
     }
     catch (AgentCredentialStoreException ex)
     {
@@ -501,7 +457,7 @@ async Task RunClientAsync()
         return;
     }
 
-    LogManager.WriteLog($"[Gateway] Starting authenticated Akka presence. AgentId={agentId}, TenantId={tokenTenantId.Value}, endpointSource={gatewayResolution.Source}, Endpoint={gatewayOptions.Endpoint}");
+    LogManager.WriteLog($"[Gateway] Starting authenticated Akka presence. AgentId={agentId}, TenantId=awaiting-authentication, endpointSource={gatewayResolution.Source}, Endpoint={gatewayOptions.Endpoint}");
     var telemetryPublisher = new AgentGatewayTelemetryPublisher(
         gatewayOptions,
         GetAgentVersion(),
@@ -541,7 +497,7 @@ async Task RunClientAsync()
     var gatewayClient = new AgentGatewayPresenceClient(
         gatewayOptions,
         tokenService,
-        tokenTenantId.Value,
+        0,
         agentId,
         GetAgentVersion(),
         terminalShells,
@@ -560,7 +516,21 @@ async Task RunClientAsync()
                 new GatewayPresenceExtension("command", commandGateway.RunForPresenceSessionAsync),
                 new GatewayPresenceExtension("job", jobGateway.RunForPresenceSessionAsync)
             ]),
-        updateCoordinator);
+        updateCoordinator,
+        recoveryOptions: cfg.OutageRecovery,
+        recoveryStateStore: OperationalRecoveryStateStore.ForInstallation(cfg.AutoUpdate.StateDirectory,
+            message => LogManager.WriteLog($"[Recovery] {message}")),
+        acquireToken: stoppingToken => StartupTokenAcquisition.GetAccessTokenAsync(
+            cfg, tokenService, enrollmentService, credentialStore, injectedEnrollmentBootstrap,
+            message => LogManager.WriteLog($"[Auth] {message}"), stoppingToken),
+        resolveTenantId: TryGetTenantId,
+        resolveAgentId: async stoppingToken =>
+        {
+            var currentCredentials = await credentialStore.LoadAsync(stoppingToken).ConfigureAwait(false);
+            return currentCredentials is { } current && Guid.TryParse(current.AgentId, out var currentAgentId)
+                ? currentAgentId : throw new InvalidOperationException("The enrolled agent ID is invalid.");
+        },
+        pendingUpdateAttemptId: updateCoordinator.ReadPendingActivation(DateTimeOffset.UtcNow)?.AttemptId);
     await gatewayClient.RunAsync(applicationStopping.Token).ConfigureAwait(false);
     return;
 }
@@ -673,7 +643,7 @@ static async Task<int> RunAuthCheckAsync(
     LogManager.WriteLog($"[AuthCheck] appBaseDir={appBaseDir}");
     LogManager.WriteLog($"[AuthCheck] apiBaseUrl={cfg.ApiBaseUrl}");
 
-    var creds = existingCredentials ?? await credentialStore.LoadAsync();
+    var creds = existingCredentials ?? await credentialStore.LoadAsync(ct);
     if (creds is null)
     {
         try
@@ -696,8 +666,8 @@ static async Task<int> RunAuthCheckAsync(
         try
         {
             creds = await enrollmentService.EnrollAsync(cfg.EnrollmentCode, ct);
-            await credentialStore.SaveAsync(creds.Value.AgentId, creds.Value.RefreshToken);
-            creds = await credentialStore.LoadAsync();
+            await credentialStore.SaveAsync(creds.Value.AgentId, creds.Value.RefreshToken, ct);
+            creds = await credentialStore.LoadAsync(ct);
             if (creds is null)
             {
                 LogManager.WriteLog("[AuthCheck] Enrollment credentials were not persisted.");
@@ -796,58 +766,16 @@ static async Task<int> RunAuthCheckAsync(
     return 0;
 }
 
-static async Task<(bool IsValid, string Message)> ValidateApiBaseUrlAsync(string apiBaseUrl, CancellationToken ct)
+static Task<(bool IsValid, string Message)> ValidateApiBaseUrlAsync(string apiBaseUrl, CancellationToken ct)
 {
-    if (string.IsNullOrWhiteSpace(apiBaseUrl))
-    {
-        return (false, "ApiBaseUrl is empty. Set Client:ApiBaseUrl to the NetRatel.API base URL.");
-    }
-
-    if (!Uri.TryCreate(apiBaseUrl, UriKind.Absolute, out var _))
-    {
-        return (false, $"ApiBaseUrl is invalid: {apiBaseUrl}");
-    }
-
-    using var client = new HttpClient
-    {
-        BaseAddress = new Uri(apiBaseUrl),
-        Timeout = TimeSpan.FromSeconds(10)
-    };
-
-    try
-    {
-        using var pingProbe = await client.GetAsync("/api/v1/agent-auth/ping", ct);
-        if (pingProbe.StatusCode == HttpStatusCode.Unauthorized || pingProbe.StatusCode == HttpStatusCode.Forbidden)
-        {
-            return (true, "ApiBaseUrl validation passed.");
-        }
-
-        var probeContentType = pingProbe.Content.Headers.ContentType?.MediaType ?? string.Empty;
-        if (probeContentType.StartsWith("text/html", StringComparison.OrdinalIgnoreCase))
-        {
-            return (false, "ApiBaseUrl appears to be NetRatel.Web. Set Client:ApiBaseUrl to NetRatel.API base URL (for example https://netratel-dev-api...).");
-        }
-    }
-    catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
-    {
-        return (false, $"ApiBaseUrl is unreachable ({ex.Message}). Ensure Client:ApiBaseUrl points to NetRatel.API.");
-    }
-
-    try
-    {
-        using var rootProbe = await client.GetAsync("/", ct);
-        var rootContentType = rootProbe.Content.Headers.ContentType?.MediaType ?? string.Empty;
-        if (rootProbe.IsSuccessStatusCode && rootContentType.StartsWith("text/html", StringComparison.OrdinalIgnoreCase))
-        {
-            return (false, "ApiBaseUrl appears to be NetRatel.Web. Set Client:ApiBaseUrl to NetRatel.API base URL (for example https://netratel-dev-api...).");
-        }
-    }
-    catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException)
-    {
-        LogManager.WriteLog($"[Auth] Optional API root probe failed after the auth probe succeeded: {exception.Message}");
-    }
-
-    return (true, "ApiBaseUrl validation passed.");
+    ct.ThrowIfCancellationRequested();
+    // Reachability cannot invalidate a locally valid deployment. Signed token
+    // acquisition belongs to the supervised operational recovery owner.
+    var valid = Uri.TryCreate(apiBaseUrl, UriKind.Absolute, out var uri) &&
+        (uri.Scheme == Uri.UriSchemeHttps || uri.Scheme == Uri.UriSchemeHttp) &&
+        string.IsNullOrEmpty(uri.UserInfo);
+    return Task.FromResult((valid, valid ? "ApiBaseUrl local validation passed." :
+        "ApiBaseUrl must be an absolute HTTP(S) URL without credentials."));
 }
 
 static string? GetArgValue(string[] args, string key)
@@ -2010,7 +1938,7 @@ static bool IsAgentDisabled(AgentClientAuthException ex)
         return true;
     }
 
-    return ex.StatusCode == 403 && ex.Message.Contains("disabled", StringComparison.OrdinalIgnoreCase);
+    return false;
 }
 
 static int? TryGetTenantId(string token)
@@ -2047,11 +1975,12 @@ static string GetAgentVersion()
 var startupArgs = Environment.GetCommandLineArgs().Skip(1).ToArray();
 if (OperatingSystem.IsWindows() && NetRatelWindowsServiceHost.ShouldRunAsService(startupArgs))
 {
-    NetRatelWindowsServiceHost.Run(() => RunClientAsync());
+    NetRatelWindowsServiceHost.Run(RunClientAsync);
 }
 else
 {
-    RunClientAsync().GetAwaiter().GetResult();
+    using var nativeLifetime = new NativeConsoleLifetime();
+    RunClientAsync(nativeLifetime.Stopping).GetAwaiter().GetResult();
 }
 
 [SupportedOSPlatform("windows")]
@@ -2073,10 +2002,11 @@ public sealed class NetRatelWindowsServiceHost : ServiceBase
         "--sas-self-test"
     ];
 
-    private readonly Func<Task> _runAsync;
+    private readonly Func<CancellationToken, Task> _runAsync;
+    private readonly CancellationTokenSource _stopping = new();
     private Task? _runTask;
 
-    private NetRatelWindowsServiceHost(Func<Task> runAsync)
+    private NetRatelWindowsServiceHost(Func<CancellationToken, Task> runAsync)
     {
         _runAsync = runAsync;
         ServiceName = "NetRatel.Client";
@@ -2100,7 +2030,7 @@ public sealed class NetRatelWindowsServiceHost : ServiceBase
             || !Environment.UserInteractive;
     }
 
-    public static void Run(Func<Task> runAsync)
+    public static void Run(Func<CancellationToken, Task> runAsync)
     {
         ServiceBase.Run(new NetRatelWindowsServiceHost(runAsync));
     }
@@ -2110,43 +2040,38 @@ public sealed class NetRatelWindowsServiceHost : ServiceBase
         LogManager.WriteLog("[Service] Windows service start requested.");
         _runTask = Task.Run(async () =>
         {
-            try
-            {
-                await _runAsync().ConfigureAwait(false);
-                var exitCode = Environment.ExitCode == 0 ? 1 : Environment.ExitCode;
-                LogManager.WriteLog($"[Service] Client worker returned; stopping service process. exitCode={exitCode}");
-                Environment.ExitCode = exitCode;
-                Environment.Exit(exitCode);
-            }
-            catch (Exception ex)
-            {
-                LogManager.WriteLog($"[Service] Client service terminated unexpectedly: {ex}");
-                try
-                {
-                    Stop();
-                }
-                catch
-                {
-                    Environment.ExitCode = 1;
-                    Environment.Exit(1);
-                }
-            }
+            var failureExitCode = await NativeServiceWorker.ObserveAsync(_runAsync, _stopping.Token,
+                () => Environment.ExitCode).ConfigureAwait(false);
+            // Terminating while SCM still owns SERVICE_RUNNING is a real failure,
+            // including on installations whose noncrash failure flag is still off.
+            if (failureExitCode.HasValue && !_stopping.IsCancellationRequested)
+                Environment.Exit(failureExitCode.Value);
         });
     }
 
-    protected override void OnStop()
+    protected override void OnStop() => StopWorker("stop");
+    protected override void OnShutdown() => StopWorker("shutdown");
+
+    private void StopWorker(string reason)
     {
-        LogManager.WriteLog("[Service] Windows service stop requested.");
+        LogManager.WriteLog($"[Service] Windows {reason} requested.");
+        _stopping.Cancel();
+        if (reason == "stop") RequestAdditionalTime(15000);
+        try
+        {
+            if (_runTask is not null && !_runTask.Wait(TimeSpan.FromSeconds(10)))
+                LogManager.WriteLog("[Service] Bounded worker shutdown join expired.");
+        }
+        catch (AggregateException ex)
+        {
+            LogManager.WriteLog($"[Service] Worker shutdown observed {ex.InnerException?.GetType().Name}.");
+        }
+        ExitCode = 0;
         Environment.ExitCode = 0;
-        Environment.Exit(0);
+        // Returning reports successful SERVICE_STOPPED; deliberate stop never
+        // masquerades as a worker crash. ServiceBase.Run then returns normally.
     }
 
-    protected override void OnShutdown()
-    {
-        LogManager.WriteLog("[Service] Windows shutdown requested.");
-        Environment.ExitCode = 0;
-        Environment.Exit(0);
-    }
 }
 
 public static class GlobalContext

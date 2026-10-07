@@ -201,6 +201,137 @@ public sealed class ClientAgentTokenServiceTests
         handler.RefreshTokens.Should().Equal("valid-refresh-token", "valid-refresh-token");
     }
 
+    [Theory]
+    [InlineData(401, "proof_clock_skew")]
+    [InlineData(401, "proof_nonce_reused")]
+    [InlineData(403, "agent_disabled")]
+    public async Task StructuredErrorsRetainStatusReasonAndEndpointRole(int status, string code)
+    {
+        var credentials = new FakeCredentialStore(Guid.NewGuid().ToString(), "refresh");
+        using var http = new HttpClient(new StaticResponseHandler((HttpStatusCode)status,
+            $"{{\"extensions\":{{\"code\":\"{code}\"}}}}")) { BaseAddress = new Uri("https://api.example") };
+        var service = new ClientAgentTokenService(http, credentials, credentials);
+        var error = await Assert.ThrowsAsync<AgentClientAuthException>(() => service.GetAccessTokenAsync(CancellationToken.None));
+        error.StatusCode.Should().Be(status);
+        error.Code.Should().Be(code);
+        error.EndpointRole.Should().Be(AgentAuthEndpointRole.Token);
+        error.ShouldClearCredentials.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ProactiveTransientFailureRetainsValidTokenUntilItsOriginalExpiryAndDoesNotNestRetries()
+    {
+        var clock = new RenewalManualTimeProvider();
+        var credentials = new FakeCredentialStore(Guid.NewGuid().ToString(), "refresh");
+        var requests = 0;
+        using var http = new HttpClient(new DelegateHandler((_, _) =>
+        {
+            requests++;
+            if (requests == 1) return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                { Content = JsonContent.Create(new { accessToken = "original", expiresIn = 120 }) });
+            var response = new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+                { Content = JsonContent.Create(new { code = "backend_unavailable" }) };
+            response.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(TimeSpan.FromSeconds(1200));
+            return Task.FromResult(response);
+        })) { BaseAddress = new Uri("https://api.example") };
+        var service = new ClientAgentTokenService(http, credentials, credentials, clock);
+        var original = await service.GetAccessTokenAsync(CancellationToken.None);
+        clock.Advance(TimeSpan.FromSeconds(61));
+        (await service.GetAccessTokenAsync(CancellationToken.None)).Should().Be(original);
+        requests.Should().Be(2);
+        clock.Advance(TimeSpan.FromSeconds(59));
+        var error = await Assert.ThrowsAsync<AgentClientAuthException>(() => service.GetAccessTokenAsync(CancellationToken.None));
+        error.IsRecoverable.Should().BeTrue();
+        error.RetryAfter.Should().Be(TimeSpan.FromSeconds(600));
+        error.RetryAfterWasCapped.Should().BeTrue();
+        requests.Should().Be(3);
+    }
+
+    [Fact]
+    public async Task AcquisitionOmitsOptionalJwtAndUsesInjectedClockEvenAfterCachedTokenExpiry()
+    {
+        var clock = new RenewalManualTimeProvider();
+        var identity = new AuthenticatedAgentIdentity(42, Guid.NewGuid());
+        var credentials = new FakeCredentialStore(identity.ClientId, "refresh");
+        using var signing = new AgentGatewayRenewalTestCredentials();
+        var initialJwt = signing.CreateToken(identity, clock.GetUtcNow().AddMinutes(2), clock.GetUtcNow().AddSeconds(-1));
+        var timestamps = new List<string>();
+        using var http = new HttpClient(new DelegateHandler((request, _) =>
+        {
+            request.Headers.Authorization.Should().BeNull();
+            timestamps.Add(request.Headers.GetValues("X-NetRatel-Timestamp").Single());
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                { Content = JsonContent.Create(new { accessToken = timestamps.Count == 1 ? initialJwt : "replacement", expiresIn = 120 }) });
+        })) { BaseAddress = new Uri("https://api.example") };
+        var service = new ClientAgentTokenService(http, credentials, credentials, clock);
+        await service.GetAccessTokenAsync(CancellationToken.None);
+        clock.Advance(TimeSpan.FromHours(2));
+        await service.GetAccessTokenAsync(CancellationToken.None);
+        timestamps.Should().Equal(clock.GetUtcNow().AddHours(-2).UtcDateTime.ToString("O"), clock.GetUtcNow().UtcDateTime.ToString("O"));
+    }
+
+    [Fact]
+    public async Task ConcurrentAcquisitionIsSingleFlightAndOldRejectionCannotInvalidateNewCache()
+    {
+        var credentials = new FakeCredentialStore(Guid.NewGuid().ToString(), "refresh");
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var requests = 0;
+        using var http = new HttpClient(new DelegateHandler(async (_, ct) =>
+        {
+            requests++;
+            if (requests == 1) { started.SetResult(); await release.Task.WaitAsync(ct); }
+            return new HttpResponseMessage(HttpStatusCode.OK)
+                { Content = JsonContent.Create(new { accessToken = "token-" + requests, expiresIn = 3600 }) };
+        })) { BaseAddress = new Uri("https://api.example") };
+        var service = new ClientAgentTokenService(http, credentials, credentials);
+        var callers = Enumerable.Range(0, 8).Select(_ => service.GetAccessTokenAsync(CancellationToken.None)).ToArray();
+        await started.Task;
+        release.SetResult();
+        var first = await Task.WhenAll(callers);
+        first.Select(value => value.AccessToken).Should().OnlyContain(value => value == "token-1");
+        requests.Should().Be(1);
+        service.InvalidateAccessToken("token-1").Should().BeTrue();
+        (await service.GetAccessTokenAsync(CancellationToken.None)).AccessToken.Should().Be("token-2");
+        service.InvalidateAccessToken("token-1").Should().BeFalse();
+        (await service.GetAccessTokenAsync(CancellationToken.None)).AccessToken.Should().Be("token-2");
+        requests.Should().Be(2);
+    }
+
+    [Theory]
+    [InlineData("9999999999999999999999999999999999999999", 600, true)]
+    [InlineData("120", 120, false)]
+    [InlineData("invalid", null, false)]
+    [InlineData("0", null, false)]
+    [InlineData("-1", null, false)]
+    [InlineData("future-date", 120, false)]
+    [InlineData("past-date", null, false)]
+    public async Task RetryAfterRetainsBoundedRawDeltaOrDateAndIgnoresInvalidHints(string value, int? expectedSeconds, bool capped)
+    {
+        var clock = new RenewalManualTimeProvider();
+        var raw = value switch
+        {
+            "future-date" => clock.GetUtcNow().AddSeconds(120).UtcDateTime.ToString("R"),
+            "past-date" => clock.GetUtcNow().AddSeconds(-1).UtcDateTime.ToString("R"),
+            _ => value
+        };
+        var credentials = new FakeCredentialStore(Guid.NewGuid().ToString(), "refresh");
+        using var http = new HttpClient(new DelegateHandler((_, _) =>
+        {
+            var response = new HttpResponseMessage(HttpStatusCode.ServiceUnavailable) { Content = JsonContent.Create(new { code = "unavailable" }) };
+            response.Headers.TryAddWithoutValidation("Retry-After", raw).Should().BeTrue();
+            return Task.FromResult(response);
+        })) { BaseAddress = new Uri("https://api.example") };
+        var error = await Assert.ThrowsAsync<AgentClientAuthException>(() => new ClientAgentTokenService(http, credentials, credentials, clock).GetAccessTokenAsync(CancellationToken.None));
+        error.RetryAfter.Should().Be(expectedSeconds is { } seconds ? TimeSpan.FromSeconds(seconds) : null);
+        error.RetryAfterWasCapped.Should().Be(capped);
+    }
+
+    private sealed class DelegateHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> send) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) => send(request, cancellationToken);
+    }
+
     private sealed class EnableAfterDisabledHandler : HttpMessageHandler
     {
         public List<string?> RefreshTokens { get; } = [];

@@ -307,6 +307,81 @@ function Set-ServiceState([string]$State, [string]$Name = $serviceName) {
     finally { $controller.Dispose() }
 }
 
+function Write-CutoverState($Record) {
+    $path = Join-Path $StateDir 'state.json'
+    Assert-OwnedPath $path -AllowMissing -File
+    $temporary = "$path.$PID.tmp"
+    Write-PrivateFile $temporary ($Record | ConvertTo-Json -Depth 4)
+    Move-Item -LiteralPath $temporary -Destination $path -Force
+}
+
+function Restore-CutoverMode($Record) {
+    if (-not $Record.startModeGuardActive) { return }
+    $registered = Get-CimInstance Win32_Service -Filter "Name='$serviceName'" -OperationTimeoutSec 10
+    if (-not $registered -or [string]$registered.PathName -notin @([string]$Record.previousPath, [string]$Record.activePath) -or
+        [string]$Record.intendedStartMode -notin @('Auto', 'Manual') -or
+        $registered.StartMode -notin @('Disabled', [string]$Record.intendedStartMode)) {
+        throw 'The interrupted cutover service was changed by an administrator; inspect its preserved state before repair.'
+    }
+    $start = @{ Auto = 'auto'; Manual = 'demand' }[[string]$Record.intendedStartMode]
+    Invoke-ServiceControl @('config', $serviceName, 'start=', $start)
+    if ((Get-CimInstance Win32_Service -Filter "Name='$serviceName'" -OperationTimeoutSec 10).StartMode -ne $Record.intendedStartMode) { throw 'The intended service start mode did not verify.' }
+    $Record.startModeGuardActive = $false
+    Write-CutoverState $Record
+}
+
+function Repair-InterruptedPackageMove([string]$RootDir, [string]$StateDir) {
+    # Resolve these roots from the registered service/environment before its
+    # missing executable is inspected. Only our protected move intent can
+    # authorize restoring the exact registered package while SCM is fenced.
+    Assert-OwnedPath $RootDir
+    Assert-OwnedPath $StateDir
+    $statePath = Join-Path $StateDir 'state.json'
+    Assert-OwnedPath $statePath -File
+    $lockPath = Join-Path $StateDir 'update.lock'
+    Assert-OwnedPath $lockPath -AllowMissing -File
+    $recoveryLock = [IO.File]::Open($lockPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    try {
+        $record = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+        if (-not $record.startModeGuardActive -or -not $record.packageMovePending -or
+            [string]$record.version -notmatch $versionPattern -or [string]$record.repairAttempt -notmatch '^[a-f0-9]{32}$' -or
+            [string]$record.runtimeId -cne $Runtime -or (Get-CanonicalPath ([string]$record.packageRoot)) -ne $RootDir) {
+            throw 'The missing registered package has no attributable protected repair intent.'
+        }
+        $target = Join-Path (Join-Path $RootDir 'versions') ([string]$record.version)
+        $backup = Join-Path (Join-Path $RootDir 'failed') "$($record.version)-replaced-$($record.repairAttempt)"
+        if ((Get-CanonicalPath ([string]$record.packageTarget)) -ne $target -or
+            (Get-CanonicalPath ([string]$record.packageBackup)) -ne $backup) {
+            throw 'The recorded package move escapes the owned repair layout.'
+        }
+        $expectedImage = '"' + (Join-Path $target 'NetRatel.Client.exe') + '" --service'
+        $registered = Get-CimInstance Win32_Service -Filter "Name='$serviceName'" -OperationTimeoutSec 10
+        if (-not $registered -or $registered.StartName -notin @('LocalSystem', 'NT AUTHORITY\SYSTEM') -or
+            $registered.State -ne 'Stopped' -or $registered.StartMode -ne 'Disabled' -or
+            [string]$registered.PathName -ne $expectedImage -or [string]$record.previousPath -ne $expectedImage -or
+            [string]$record.intendedStartMode -notin @('Auto', 'Manual')) {
+            throw 'The service changed during the package move; preserved files require manual inspection.'
+        }
+        Assert-OwnedPath $target -AllowMissing
+        if (Test-Path -LiteralPath $target) { throw 'The registered package target is present; interrupted-move recovery refuses to replace it.' }
+        Assert-OwnedTree $backup
+        Assert-OwnedPath (Join-Path $backup 'NetRatel.Client.exe') -File
+        $manifestPath = Join-Path $backup 'netratel-client-manifest.json'
+        Assert-OwnedPath $manifestPath -File
+        $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+        if ($manifest.schema -cne 'netratel.client.manifest.v1' -or $manifest.product -cne 'NetRatel.Client' -or
+            $manifest.version -cne [string]$record.version -or $manifest.runtimeId -cne $Runtime -or
+            $manifest.executable -cne 'NetRatel.Client.exe' -or $manifest.commitSha -notmatch '^[a-fA-F0-9]{40}$') {
+            throw 'The protected backup does not identify the registered NetRatel package.'
+        }
+        Move-Item -LiteralPath $backup -Destination $target
+        $record.packageMovePending = $false
+        Write-CutoverState $record
+        Write-Host 'Restored the registered package from its protected interrupted repair intent; authenticated activation remains unverified.'
+    }
+    finally { $recoveryLock.Dispose() }
+}
+
 function Get-SafeDiagnosticLine([string]$Line) {
     # Only these fixed Auth messages may bypass the sensitive-line filter.
     # Anchor the entire message, including the optional production timestamp.
@@ -409,11 +484,16 @@ try {
         if (-not $match.Success) { throw 'The existing service image is unsupported; refusing to modify it.' }
         $previousExe = Get-CanonicalPath $match.Groups['exe'].Value
         $previousDir = Split-Path -Parent $previousExe
-        Assert-OwnedPath $previousDir
         if ((Split-Path -Leaf $previousExe) -ne 'NetRatel.Client.exe') { throw 'The existing service executable is not NetRatel.Client.' }
         $registeredRoot = $previousDir
         if ((Split-Path -Leaf $previousDir) -match $versionPattern -and (Split-Path -Leaf (Split-Path -Parent $previousDir)) -eq 'versions') { $registeredRoot = Split-Path -Parent (Split-Path -Parent $previousDir) }
         $previousEnvironment = @((Get-ItemProperty -LiteralPath $serviceRegistry).Environment | Where-Object { $_ -is [string] })
+        if (-not (Test-Path -LiteralPath $previousExe -PathType Leaf)) {
+            $recoveryRoot = Resolve-PathSetting $env:NetRatel_ROOT @((Get-ServiceEnvironment 'NetRatel_UPDATE_ROOT'), $registeredRoot) (Join-Path $env:ProgramFiles 'NetRatel\Client') 'package root'
+            $recoveryState = Resolve-PathSetting $env:NetRatel_STATE @((Get-ServiceEnvironment 'NetRatel_UPDATE_STATE'), (Get-ClientSetting 'Client__AutoUpdate__StateDirectory')) (Join-Path $env:ProgramData 'NetRatel\update') 'updater state'
+            Repair-InterruptedPackageMove $recoveryRoot $recoveryState
+        }
+        Assert-OwnedPath $previousDir
         Assert-OwnedPath $previousExe -File
         Assert-OwnedPath (Join-Path $previousDir 'netratel-client-manifest.json') -File
         $oldManifest = Get-Content -LiteralPath (Join-Path $previousDir 'netratel-client-manifest.json') -Raw | ConvertFrom-Json
@@ -467,6 +547,16 @@ try {
     $lockedEnvironment = if ($lockedService) { @((Get-ItemProperty -LiteralPath $serviceRegistry).Environment | Where-Object { $_ -is [string] }) } else { @() }
     if ([bool]$lockedService -ne [bool]$existingService -or ($existingService -and ($lockedService.PathName -ne $existingService.PathName -or $lockedService.StartName -ne $existingService.StartName -or $lockedService.StartMode -ne $existingService.StartMode -or ($lockedEnvironment -join "`n") -ne ($previousEnvironment -join "`n")))) { throw 'The service changed while waiting for the updater; generate a fresh repair attempt.' }
     if ($existingService) { $existingService = $lockedService }
+    $cutoverStatePath = Join-Path $StateDir 'state.json'
+    if ($existingService -and (Test-Path -LiteralPath $cutoverStatePath -PathType Leaf)) {
+        Assert-OwnedPath $cutoverStatePath -File
+        $interruptedCutover = Get-Content -LiteralPath $cutoverStatePath -Raw | ConvertFrom-Json
+        if ($interruptedCutover.startModeGuardActive) {
+            Restore-CutoverMode $interruptedCutover
+            $existingService = Get-CimInstance Win32_Service -Filter "Name='$serviceName'" -OperationTimeoutSec 10
+            Write-Host 'Restored the intended start mode from the interrupted owned cutover; gateway activation remains unverified.'
+        }
+    }
     @@SEED_BEFORE_MUTATION@@
     $UpdaterDir = Join-Path $RootDir 'updater'
     foreach ($path in @($VersionsDir, $StagingDir, $FailedDir, $UpdaterDir)) { New-OwnedDirectory $path }
@@ -559,14 +649,30 @@ try {
     $cutover = $false
     $stopAttempted = $false
     $previousRunning = $existingService -and $existingService.State -eq 'Running'
+    $cutoverRecord = $null
     $phase = 'local activation'
     try {
         if ($existingService -and -not $InstallAsService) { throw 'A registered service owns this installation; use its service repair installer.' }
-        if ($existingService) { $stopAttempted = $true; Set-ServiceState 'Stopped' }
+        if ($existingService) {
+            if ($existingService.StartMode -notin @('Auto', 'Manual')) { throw 'The existing service is disabled by an administrator; reconcile its start mode before repair.' }
+            $cutoverRecord = [pscustomobject]@{ state = 'guarding_cutover'; version = $resolvedVersion;
+                intendedStartMode = $existingService.StartMode; startModeGuardActive = $true;
+                previousPath = $existingService.PathName; activePath = $existingService.PathName;
+                packageMovePending = $false; packageRoot = $RootDir; packageTarget = $target;
+                packageBackup = $backup; repairAttempt = $attempt; runtimeId = $Runtime }
+            Write-CutoverState $cutoverRecord
+            Invoke-ServiceControl @('config', $serviceName, 'start=', 'disabled')
+            if ((Get-CimInstance Win32_Service -Filter "Name='$serviceName'" -OperationTimeoutSec 10).StartMode -ne 'Disabled') { throw 'Service cutover start-mode fence did not verify.' }
+            $stopAttempted = $true; Set-ServiceState 'Stopped'
+        }
         $cutover = $true
-        if (Test-Path -LiteralPath $target) { Move-Item -LiteralPath $target -Destination $backup; $backedUp = $true }
+        if (Test-Path -LiteralPath $target) {
+            if ($cutoverRecord) { $cutoverRecord.packageMovePending = $true; Write-CutoverState $cutoverRecord }
+            Move-Item -LiteralPath $target -Destination $backup; $backedUp = $true
+        }
         Move-Item -LiteralPath $stageDir -Destination $target
         $activated = $true
+        if ($cutoverRecord) { $cutoverRecord.packageMovePending = $false; Write-CutoverState $cutoverRecord }
         $exe = Join-Path $target 'NetRatel.Client.exe'
         if ($InstallAsService) {
             $enrollment = @{ schema = 'netratel.enroll.v1'; tenantId = [int]$TenantId; enrollmentCode = $EnrollmentCode; issuer = $ApiBase; createdAtUtc = [DateTimeOffset]::UtcNow.ToString('O'); validToUtc = $ValidToUtc } | ConvertTo-Json
@@ -578,8 +684,16 @@ try {
             $updaterChanged = $true
             Write-PrivateFile $updaterPath ([IO.File]::ReadAllText($updaterSource))
             $image = '"' + $exe + '" --service'
-            if (-not $existingService) { Invoke-ServiceControl @('create', $serviceName, 'binPath=', $image, 'obj=', 'LocalSystem', 'start=', 'auto'); $created = $true }
-            else { Invoke-ServiceControl @('config', $serviceName, 'binPath=', $image, 'obj=', 'LocalSystem', 'start=', 'auto') }
+            if (-not $existingService) {
+                Invoke-ServiceControl @('create', $serviceName, 'binPath=', $image, 'obj=', 'LocalSystem', 'start=', 'auto'); $created = $true
+                Invoke-ServiceControl @('failure', $serviceName, 'reset=', '@@WINDOWS_RECOVERY_RESET@@', 'actions=', @@WINDOWS_RECOVERY_ACTIONS@@)
+                Invoke-ServiceControl @('failureflag', $serviceName, '1')
+            }
+            else {
+                $cutoverRecord.activePath = $image
+                Write-CutoverState $cutoverRecord
+                Invoke-ServiceControl @('config', $serviceName, 'binPath=', $image)
+            }
             $overwritten = @('NetRatelCLIENT__Client__ApiBaseUrl', 'NetRatel_UPDATE_ROOT', 'NetRatel_UPDATE_STATE', 'NetRatel_UPDATE_REQUEST', 'NetRatelCLIENT__Client__AutoUpdate__StateDirectory', 'NetRatelCLIENT__Client__AutoUpdate__RequestPath', 'NetRatel_CLIENT_LOG_DIR')
             if ($GatewayEndpoint) { $overwritten += 'NetRatelCLIENT__Gateway__Endpoint' }
             $managed = @('Client__ApiBaseUrl', 'Client__AutoUpdate__StateDirectory', 'Client__AutoUpdate__RequestPath')
@@ -592,7 +706,8 @@ try {
             if ($GatewayEndpoint) { $environment += @("NetRatelCLIENT__Gateway__Endpoint=$GatewayEndpoint", "Gateway__Endpoint=$GatewayEndpoint", "Gateway:Endpoint=$GatewayEndpoint", "NetRatelCLIENT__Gateway:Endpoint=$GatewayEndpoint") }
             New-ItemProperty -LiteralPath $serviceRegistry -Name Environment -PropertyType MultiString -Value $environment -Force | Out-Null
             $configured = Get-CimInstance Win32_Service -Filter "Name='$serviceName'" -OperationTimeoutSec 10
-            if ($configured.PathName -ne $image -or $configured.StartName -notin @('LocalSystem', 'NT AUTHORITY\SYSTEM') -or $configured.StartMode -ne 'Auto') { throw 'The service configuration did not verify.' }
+            if ($configured.PathName -ne $image -or $configured.StartName -notin @('LocalSystem', 'NT AUTHORITY\SYSTEM') -or $configured.StartMode -ne $(if ($existingService) { 'Disabled' } else { 'Auto' })) { throw 'The service configuration did not verify.' }
+            if ($cutoverRecord) { Restore-CutoverMode $cutoverRecord }
             Set-ServiceState 'Running'
             Start-Sleep -Seconds 3
             if ((Get-Service -Name $serviceName).Status -ne 'Running') { throw 'The client service exited during local startup.' }
@@ -621,31 +736,55 @@ try {
     catch {
         $startupFailure = $_
         Write-Diagnostics
+        if ($cutoverRecord -and -not $cutover) { Restore-CutoverMode $cutoverRecord }
         if ($stopAttempted -and -not $cutover -and $previousRunning) {
             try { Set-ServiceState 'Stopped'; Set-ServiceState 'Running'; Write-Host 'The previous service was restarted; package files were untouched.' }
             catch { Write-Host 'The previous service could not be restarted within the bounded recovery; package files were untouched.' }
         }
         if ($cutover -and $script:serviceControlExited) {
             try {
-                if ($InstallAsService -and ($existingService -or $created)) { Set-ServiceState 'Stopped' }
-                if ($created) { Invoke-ServiceControl @('delete', $serviceName) }
+                if ($InstallAsService -and ($existingService -or $created)) {
+                    if ($created -and -not $cutoverRecord) {
+                        $cutoverRecord = [pscustomobject]@{ state='guarding_cutover'; version=$resolvedVersion;
+                            intendedStartMode='Auto'; startModeGuardActive=$true; previousPath=$image; activePath=$image;
+                            packageMovePending=$false; packageRoot=$RootDir; packageTarget=$target;
+                            packageBackup=$backup; repairAttempt=$attempt; runtimeId=$Runtime }
+                    }
+                    if ($cutoverRecord) {
+                        $cutoverRecord.startModeGuardActive = $true
+                        Write-CutoverState $cutoverRecord
+                        Invoke-ServiceControl @('config', $serviceName, 'start=', 'disabled')
+                        if ((Get-CimInstance Win32_Service -Filter "Name='$serviceName'" -OperationTimeoutSec 10).StartMode -ne 'Disabled') { throw 'Rollback start-mode fence did not verify.' }
+                    }
+                    Set-ServiceState 'Stopped'
+                }
+                if ($created) {
+                    Invoke-ServiceControl @('delete', $serviceName)
+                    $cutoverRecord.startModeGuardActive = $false
+                    Write-CutoverState $cutoverRecord
+                }
                 elseif ($existingService) {
                     $startMode = @{ Auto = 'auto'; Manual = 'demand'; Disabled = 'disabled' }[[string]$existingService.StartMode]
                     if (-not $startMode) { throw 'The previous service start mode is unsupported.' }
-                    Invoke-ServiceControl @('config', $serviceName, 'binPath=', [string]$existingService.PathName, 'obj=', 'LocalSystem', 'start=', $startMode)
+                    Invoke-ServiceControl @('config', $serviceName, 'binPath=', [string]$existingService.PathName)
                     if ($previousEnvironment.Count) { New-ItemProperty -LiteralPath $serviceRegistry -Name Environment -PropertyType MultiString -Value $previousEnvironment -Force | Out-Null }
                     else { Remove-ItemProperty -LiteralPath $serviceRegistry -Name Environment -ErrorAction SilentlyContinue }
                 }
                 if ($activated) {
+                    if ($cutoverRecord -and $backedUp) { $cutoverRecord.packageMovePending = $true; Write-CutoverState $cutoverRecord }
                     $bootstrap = Join-Path $target 'netratel.enroll.json'
                     if ($InstallAsService -and (Test-Path -LiteralPath $bootstrap)) { Assert-OwnedPath $bootstrap -File; Remove-Item -LiteralPath $bootstrap }
                     Move-Item -LiteralPath $target -Destination (Join-Path $FailedDir "$resolvedVersion-failed-$attempt")
                 }
-                if ($backedUp) { Move-Item -LiteralPath $backup -Destination $target }
+                if ($backedUp) {
+                    Move-Item -LiteralPath $backup -Destination $target
+                    if ($cutoverRecord) { $cutoverRecord.packageMovePending = $false; Write-CutoverState $cutoverRecord }
+                }
                 if ($updaterChanged) {
                     if (Test-Path -LiteralPath $updaterPath) { Remove-Item -LiteralPath $updaterPath }
                     if (Test-Path -LiteralPath $updaterBackup) { Move-Item -LiteralPath $updaterBackup -Destination $updaterPath }
                 }
+                if ($cutoverRecord -and -not $created) { Restore-CutoverMode $cutoverRecord }
                 if ($previousRunning) { Set-ServiceState 'Running' }
                 Write-Host 'Previous binaries and service configuration restored; credentials were preserved.'
             }

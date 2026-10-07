@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 
 namespace NetRatel.Infrastructure.Services;
 
@@ -16,8 +17,23 @@ public static class PopSignatureService
         return ComputeBodyHash($"{enrollmentCode.Trim().ToUpperInvariant()}:{publicKey.Trim()}:{keyAlgorithm.Trim().ToLowerInvariant()}:{deviceInfoJson}:{scopeFragment}");
     }
 
-    public static string ComputeTokenBodyHash(Guid agentId, string refreshToken, IReadOnlyList<string>? requestedScopes)
+    public static string ComputeTokenBodyHash(Guid agentId, string refreshToken, IReadOnlyList<string>? requestedScopes,
+        int? exchangeVersion = null, Guid? exchangeId = null)
     {
+        if (exchangeVersion.HasValue || exchangeId.HasValue)
+        {
+            // Fixed field order and UTF-8 JSON escaping are part of native exchange v1.
+            // Preserve null, order, and spelling of requested scopes: retries bind the exact request.
+            return ComputeBodyHash(JsonSerializer.Serialize(new
+            {
+                version = exchangeVersion,
+                agentId = agentId.ToString("N"),
+                refreshToken = refreshToken.Trim(),
+                requestedScopes,
+                exchangeId = exchangeId?.ToString("N")
+            }));
+        }
+
         var scopeFragment = requestedScopes is null ? string.Empty : string.Join(' ', requestedScopes);
         return ComputeBodyHash($"{agentId:N}:{refreshToken.Trim()}:{scopeFragment}");
     }

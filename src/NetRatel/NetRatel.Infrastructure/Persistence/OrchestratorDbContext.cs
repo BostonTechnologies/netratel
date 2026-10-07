@@ -886,6 +886,7 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
             entity.HasIndex(x => x.AgentId);
             entity.HasIndex(x => x.TokenHash).IsUnique();
             entity.HasIndex(x => new { x.AgentId, x.CreatedAtUtc });
+            entity.HasIndex(x => new { x.AgentId, x.ExchangeId }).IsUnique();
             entity.HasOne(x => x.Agent)
                 .WithMany(x => x.RefreshTokens)
                 .HasForeignKey(x => x.AgentId)

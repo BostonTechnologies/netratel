@@ -91,7 +91,11 @@ public sealed class ScriptTemplateService : IScriptTemplateService
             ["SEED_BEFORE_MUTATION"] = request.IsUpdateSeed && windows ? "Start-NetRatelSeedHandoff" : "",
             ["SEED_SUCCESS"] = request.IsUpdateSeed && windows ? "Set-NetRatelSeedHandoffResult -State 'installed_started'" : "",
             ["SEED_FAILURE"] = request.IsUpdateSeed && windows ? "Complete-NetRatelSeedFailure $installerFailure" : "",
-            ["SEED_CLEANUP"] = request.IsUpdateSeed && windows ? "Remove-NetRatelSeedHandoffFiles" : ""
+            ["SEED_CLEANUP"] = request.IsUpdateSeed && windows ? "Remove-NetRatelSeedHandoffFiles" : "",
+            ["LINUX_RECOVERY_UNIT"] = "'" + ManagedServiceRecovery.LinuxDropIn.Split('\n')[1] + "'",
+            ["LINUX_RECOVERY_SERVICE"] = string.Join(", ", ManagedServiceRecovery.LinuxDropIn.Split('\n').Skip(3).Where(x => x.Length != 0).Select(x => "'" + x + "'")),
+            ["WINDOWS_RECOVERY_ACTIONS"] = PowerShellLiteral(ManagedServiceRecovery.WindowsActions),
+            ["WINDOWS_RECOVERY_RESET"] = ManagedServiceRecovery.WindowsResetSeconds.ToString(CultureInfo.InvariantCulture)
         };
         var name = windows ? "install.ps1" : "install-linux.sh";
         using var stream = typeof(ScriptTemplateService).Assembly.GetManifestResourceStream("NetRatel.Installers." + name)

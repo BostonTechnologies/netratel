@@ -1,5 +1,9 @@
 # Native Client
 
+For enrolled-client backend outage recovery, native refresh-rotation
+compatibility and backend-first canary rollout, see
+[Native client outage recovery](CLIENT_OUTAGE_RESILIENCE.md).
+
 Install the Native Client only from an owner-approved release artifact and its
 matching `netratel-client-manifest.json`. The release rehearsal verifies the
 manifest, required sidecars, and archive integrity; Linux packages additionally

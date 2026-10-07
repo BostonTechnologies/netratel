@@ -177,11 +177,11 @@ public sealed partial class CommittedConnectionOwnershipMigrationPostgresTests(P
         owner.Should().Be(PrecedingOwnerMigration);
         var expected = services.MigrationIds.Append(HistoricalMonitoringMigration).Append(FlowPreceding149PendingMigration)
             .Append(HistoricalConnectorMigration).Append(owner).Append(CommittedRegistrationMigration)
-            .Append(ReceiverEvidenceMigration).Order(StringComparer.Ordinal).ToArray();
+            .Append(ReceiverEvidenceMigration).Append(NativeRefreshExchangeMigration).Order(StringComparer.Ordinal).ToArray();
         migrations.Should().Equal(expected,
-            "current history retains the exact Services baseline, lower-ID Monitoring, Flow and Connector, genuine owner and registration, and genuine receiver delta");
+            "current history retains the exact Services baseline, lower-ID Monitoring, Flow and Connector, genuine owner and registration, genuine receiver delta and additive native refresh exchange");
         var previous = services.MigrationIds.Last();
-        return new(owner, previous, ReceiverEvidenceMigration,
+        return new(owner, previous, NativeRefreshExchangeMigration,
             migrations.Where(id => StringComparer.Ordinal.Compare(id, previous) <= 0).ToArray(), migrations);
     }
 

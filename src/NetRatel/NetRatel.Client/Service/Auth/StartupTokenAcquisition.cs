@@ -22,7 +22,7 @@ public static class StartupTokenAcquisition
     {
         try
         {
-            return await DisabledAgentTokenRetry.GetAccessTokenAsync(tokenService, log, ct).ConfigureAwait(false);
+            return await tokenService.GetAccessTokenAsync(ct).ConfigureAwait(false);
         }
         catch (AgentClientAuthException exception) when (IsAgentNotFound(exception))
         {
@@ -34,11 +34,16 @@ public static class StartupTokenAcquisition
                     "The stored Agent identity no longer exists. Supply a valid enrollment code or netratel.enroll.json to recover this installation.",
                     exception.StatusCode,
                     shouldClearCredentials: false,
-                    code: exception.Code);
+                    code: exception.Code,
+                    endpointRole: exception.EndpointRole,
+                    failureKind: exception.FailureKind,
+                    retryAfter: exception.RetryAfter,
+                    retryAfterWasCapped: exception.RetryAfterWasCapped,
+                    innerException: exception);
             }
 
             log($"Structured Agent-not-found recovery enrolled AgentId={replacement.Value.AgentId}.");
-            return await DisabledAgentTokenRetry.GetAccessTokenAsync(tokenService, log, ct).ConfigureAwait(false);
+            return await tokenService.GetAccessTokenAsync(ct).ConfigureAwait(false);
         }
     }
 
@@ -56,7 +61,7 @@ public static class StartupTokenAcquisition
         if (!string.IsNullOrWhiteSpace(options.EnrollmentCode))
         {
             var enrolled = await enrollmentService.EnrollAsync(options.EnrollmentCode.Trim(), ct).ConfigureAwait(false);
-            await credentialStore.SaveAsync(enrolled.AgentId, enrolled.RefreshToken).ConfigureAwait(false);
+            await credentialStore.SaveAsync(enrolled.AgentId, enrolled.RefreshToken, ct).ConfigureAwait(false);
         }
         else
         {
@@ -68,6 +73,6 @@ public static class StartupTokenAcquisition
             }
         }
 
-        return await credentialStore.LoadAsync().ConfigureAwait(false);
+        return await credentialStore.LoadAsync(ct).ConfigureAwait(false);
     }
 }

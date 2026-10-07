@@ -21,14 +21,14 @@ public sealed class GatewaySessionDiagnosticsTests
     private const string Secret = "secret-token-or-capability";
 
     [Theory]
-    [InlineData(403, "text/html", null, true, "http-proxy-origin-rejection", "cloudflare")]
-    [InlineData(403, "text/html", null, false, "http-proxy-origin-rejection", "unknown")]
-    [InlineData(200, "application/grpc", "7", false, "grpc-rejection", "unknown")]
-    [InlineData(200, "application/grpc+proto", "16", false, "grpc-rejection", "unknown")]
-    [InlineData(200, "text/plain", null, false, "http-proxy-origin-rejection", "unknown")]
-    [InlineData(403, "application/grpc", "7", false, "http-proxy-origin-rejection", "unknown")]
+    [InlineData(403, "text/html", null, true, "http-proxy-origin-rejection", "cloudflare", 300)]
+    [InlineData(403, "text/html", null, false, "http-proxy-origin-rejection", "unknown", 300)]
+    [InlineData(200, "application/grpc", "7", false, "grpc-rejection", "unknown", 300)]
+    [InlineData(200, "application/grpc+proto", "16", false, "grpc-rejection", "unknown", 1)]
+    [InlineData(200, "text/plain", null, false, "http-proxy-origin-rejection", "unknown", 1)]
+    [InlineData(403, "application/grpc", "7", false, "http-proxy-origin-rejection", "unknown", 300)]
     public async Task RunAsync_ClassifiesObservedResponse_WithoutLoggingSecretsOrAdmitting(
-        int status, string contentType, string? grpcStatus, bool cloudflare, string category, string edge)
+        int status, string contentType, string? grpcStatus, bool cloudflare, string category, string edge, int retrySeconds)
     {
         using var stopping = new CancellationTokenSource();
         var logs = new ConcurrentQueue<string>();
@@ -55,7 +55,7 @@ public sealed class GatewaySessionDiagnosticsTests
                 response.Headers.Add("grpc-message", Secret);
                 response.Headers.Add("Set-Cookie", Secret);
                 return Task.FromResult(response);
-            }));
+            }), nextRandom: () => 0);
 
         await agent.RunAsync(stopping.Token).WaitAsync(TimeSpan.FromSeconds(5));
 
@@ -64,7 +64,8 @@ public sealed class GatewaySessionDiagnosticsTests
             .And.Contain($"httpStatus={status}").And.Contain($"contentType={contentType}")
             .And.Contain("protocol=HTTP/2.0").And.Contain("origin=https://gateway.example.invalid")
             .And.Contain("rpc=presence/connect").And.Contain("sessionLifetime=")
-            .And.Contain("lastHeartbeatAckAge=unknown").And.Contain("Retrying in 1s");
+            .And.Contain("lastHeartbeatAckAge=unknown").And.Contain($"Retrying in {retrySeconds}s")
+            .And.Contain($"state={(retrySeconds == 300 ? "AuthenticationAttention" : "WaitingForBackend")}");
         logs.Should().OnlyContain(message => !message.Contains(Secret, StringComparison.Ordinal));
         extensionStarts.Should().Be(0);
         tokenService.Requests.Should().Be(1);
@@ -113,11 +114,11 @@ public sealed class GatewaySessionDiagnosticsTests
     }
 
     [Theory]
-    [InlineData("tls", "tls")]
-    [InlineData("reset", "http2=0x2")]
-    [InlineData("socket", "socket=ConnectionReset")]
-    [InlineData("canceled", "canceled")]
-    public async Task RunAsync_TypedTransportFailure_IsSanitizedAndRetried(string kind, string transport)
+    [InlineData("tls", "tls", 300)]
+    [InlineData("reset", "http2=0x2", 1)]
+    [InlineData("socket", "socket=ConnectionReset", 1)]
+    [InlineData("canceled", "canceled", 1)]
+    public async Task RunAsync_TypedTransportFailure_IsSanitizedAndRetried(string kind, string transport, int retrySeconds)
     {
         using var stopping = new CancellationTokenSource();
         var logs = new ConcurrentQueue<string>();
@@ -137,12 +138,14 @@ public sealed class GatewaySessionDiagnosticsTests
                 logs.Enqueue(message);
                 if (message.Contains("Gateway session failed", StringComparison.Ordinal)) stopping.Cancel();
             },
-            createHttpHandler: _ => new ResponseHandler((_, _) => Task.FromException<HttpResponseMessage>(exception)));
+            createHttpHandler: _ => new ResponseHandler((_, _) => Task.FromException<HttpResponseMessage>(exception)),
+            nextRandom: () => 0);
 
         await agent.RunAsync(stopping.Token).WaitAsync(TimeSpan.FromSeconds(5));
 
         logs.Should().Contain(message => message.Contains($"transport={transport}", StringComparison.Ordinal) &&
-            message.Contains("Retrying in 1s", StringComparison.Ordinal));
+            message.Contains($"Retrying in {retrySeconds}s", StringComparison.Ordinal) &&
+            message.Contains($"state={(retrySeconds == 300 ? "AuthenticationAttention" : "WaitingForBackend")}", StringComparison.Ordinal));
         logs.Should().OnlyContain(message => !message.Contains(Secret, StringComparison.Ordinal));
         tokenService.Requests.Should().Be(1);
     }

@@ -23,7 +23,7 @@ internal sealed class GatewayHttpDiagnosticsHandler(GatewaySessionDiagnostics di
     }
 }
 
-internal sealed class GatewaySessionDiagnostics(string endpoint)
+internal sealed class GatewaySessionDiagnostics(string endpoint, TimeProvider? timeProvider = null)
 {
     private readonly long _started = Stopwatch.GetTimestamp();
     private readonly string _origin = SanitizedOrigin(endpoint);
@@ -36,7 +36,16 @@ internal sealed class GatewaySessionDiagnostics(string endpoint)
 
     // Generated locally, contains no device identity or credential, and follows one attempt only.
     internal Guid CorrelationId { get; } = Guid.NewGuid();
-    internal void Observe(HttpResponseMessage response) => _response = response;
+    internal TimeSpan? RetryAfter { get; private set; }
+    internal void Observe(HttpResponseMessage response)
+    {
+        _response = response;
+        if (response.StatusCode is not (System.Net.HttpStatusCode.TooManyRequests or System.Net.HttpStatusCode.ServiceUnavailable))
+            return;
+        var hint = response.Headers.RetryAfter;
+        var delay = hint?.Delta ?? (hint?.Date is { } date ? date - (timeProvider ?? TimeProvider.System).GetUtcNow() : null);
+        if (delay > TimeSpan.Zero) RetryAfter = delay;
+    }
     internal void Admitted(Guid serverConnectionId) => _serverConnectionId = serverConnectionId;
     internal void AcknowledgeHeartbeat() => _lastAcknowledgedHeartbeat = Stopwatch.GetTimestamp();
     internal void SessionFailed() => _failed ??= Stopwatch.GetTimestamp();

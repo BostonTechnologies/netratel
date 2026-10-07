@@ -1,5 +1,6 @@
 using System;
 using NetRatel.Shared;
+using NetRatel.Client.Service.Auth;
 
 namespace NetRatel.Client;
 
@@ -16,6 +17,7 @@ public class ClientOptions
     public string? EnrollmentCode { get; set; }
     public string? AgentId { get; set; }
     public AutoUpdateOptions AutoUpdate { get; set; } = new();
+    public OperationalRecoveryOptions OutageRecovery { get; set; } = new();
 }
 
 public sealed class AutoUpdateOptions

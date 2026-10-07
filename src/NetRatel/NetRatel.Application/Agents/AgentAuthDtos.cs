@@ -30,14 +30,19 @@ public sealed record AgentTokenRequest(
     string? ProofNonce = null,
     DateTimeOffset? ProofTimestampUtc = null,
     IReadOnlyList<string>? RequestedScopes = null,
-    string? ClientCertificateThumbprint = null
+    string? ClientCertificateThumbprint = null,
+    int? ExchangeVersion = null,
+    Guid? ExchangeId = null
 );
 
 public sealed record AgentTokenResponse(
     string AccessToken,
     int ExpiresIn,
-    string? RefreshToken = null
+    string? RefreshToken = null,
+    Guid? ExchangeId = null
 );
+
+public sealed record NativeAgentTokenCapabilities(int RefreshExchangeVersion, bool RotationEnabled);
 
 public sealed record OpenIdConfigurationDto(
     [property: JsonPropertyName("issuer")] string Issuer,

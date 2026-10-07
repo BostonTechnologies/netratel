@@ -16,6 +16,11 @@ public static class AuthEndpoints
     {
         var group = app.MapGroup("/api/v1/agents").WithTags("Agent Auth");
 
+        group.MapGet("/token-capabilities", (Microsoft.Extensions.Options.IOptions<SecurityHardeningOptions> hardening) =>
+            Results.Ok(new NativeAgentTokenCapabilities(1, hardening.Value.EnableRefreshRotation)))
+            .AllowAnonymous()
+            .Produces<NativeAgentTokenCapabilities>(StatusCodes.Status200OK);
+
         group.MapPost("/enroll", async (
             AgentEnrollRequest request,
             HttpContext http,
@@ -75,7 +80,7 @@ public static class AuthEndpoints
                     ProofSignature = request.ProofSignature ?? signature,
                     ProofNonce = request.ProofNonce ?? nonce,
                     ProofTimestampUtc = request.ProofTimestampUtc ?? timestamp,
-                    ClientCertificateThumbprint = request.ClientCertificateThumbprint ?? cert?.Thumbprint
+                    ClientCertificateThumbprint = cert?.Thumbprint
                 };
                 var result = await tokens.ExchangeRefreshTokenAsync(effectiveRequest, ct);
                 return Results.Ok(result);
