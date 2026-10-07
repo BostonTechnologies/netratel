@@ -201,6 +201,7 @@ public sealed class GatewaySessionDiagnosticsTests
             createHttpHandler: _ => new ResponseHandler(async (_, cancellation) =>
             {
                 entered.TrySetResult();
+                // slopwatch-ignore: SW004 Existing shutdown fixture holds HTTP work until cancellation so the test proves service shutdown does not retry.
                 await Task.Delay(Timeout.InfiniteTimeSpan, cancellation);
                 throw new InvalidOperationException("unreachable");
             }));

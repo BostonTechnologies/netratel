@@ -62,6 +62,7 @@ public sealed class AgentGatewayPresenceLivenessTests
         using var stopping = new CancellationTokenSource();
         GatewayPresenceSession? session = null;
         var renewed = 0;
+        var extensionLifetime = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var logs = new List<string>();
         var agent = new AgentGatewayPresenceClient(new GatewayClientOptions { Endpoint = "https://gateway.test" },
             tokens, identity.TenantId, identity.AgentId, "test", [], message =>
@@ -71,7 +72,7 @@ public sealed class AgentGatewayPresenceLivenessTests
             }, runForPresenceSession: (current, _, ct) =>
             {
                 session = current;
-                return Task.Delay(Timeout.InfiniteTimeSpan, ct);
+                return extensionLifetime.Task.WaitAsync(ct);
             }, timeProvider: clientClock, nextRandom: () => 0, createCall: transport.Open);
         var run = agent.RunAsync(stopping.Token);
         try
@@ -115,6 +116,7 @@ public sealed class AgentGatewayPresenceLivenessTests
             runForPresenceSession: (session, _, token) =>
             {
                 ready.TrySetResult(session);
+                // slopwatch-ignore: SW004 Existing extension fixture remains pending until owner cancellation; no elapsed-time success condition.
                 return Task.Delay(Timeout.InfiniteTimeSpan, token);
             }, timeProvider: clock, nextRandom: () => 0.5, createCall: transport.Open);
         var run = agent.RunAsync(stopping.Token);
@@ -142,6 +144,7 @@ public sealed class AgentGatewayPresenceLivenessTests
         var tokens = new DelegateTokenService(async token =>
         {
             Interlocked.Increment(ref active);
+            // slopwatch-ignore: SW004 Existing blackholed authentication fixture must block until the virtual attempt deadline cancels its actual token.
             try { await Task.Delay(Timeout.InfiniteTimeSpan, token); return ("unreachable", clock.GetUtcNow()); }
             finally { Interlocked.Decrement(ref active); }
         });
@@ -179,6 +182,7 @@ public sealed class AgentGatewayPresenceLivenessTests
             }, runForPresenceSession: (current, _, token) =>
             {
                 session = current;
+                // slopwatch-ignore: SW004 Existing extension fixture remains pending until owner cancellation; no elapsed-time success condition.
                 return Task.Delay(Timeout.InfiniteTimeSpan, token);
             }, timeProvider: clock, nextRandom: () => 0.5, createCall: transport.Open);
         var run = agent.RunAsync(stopping.Token);
@@ -278,6 +282,7 @@ public sealed class AgentGatewayPresenceLivenessTests
         var tokens = new DelegateTokenService(async token =>
         {
             var request = Interlocked.Increment(ref requests);
+            // slopwatch-ignore: SW004 Virtual-time token response delay deliberately consumes part of the shared renewal budget; assertions advance the fake clock.
             if (request > 1) await Task.Delay(TimeSpan.FromSeconds(20), clock, token);
             return ($"token-{request}", clock.GetUtcNow().AddSeconds(65));
         });
@@ -321,6 +326,7 @@ public sealed class AgentGatewayPresenceLivenessTests
             runForPresenceSession: (_, _, token) =>
             {
                 ready.TrySetResult();
+                // slopwatch-ignore: SW004 Existing extension fixture remains pending until owner cancellation; no elapsed-time success condition.
                 return Task.Delay(Timeout.InfiniteTimeSpan, token);
             }, timeProvider: clock, nextRandom: () => 0.5, createCall: transport.Open);
         var run = agent.RunAsync(stopping.Token);
@@ -503,6 +509,7 @@ public sealed class AgentGatewayPresenceLivenessTests
             }, runForPresenceSession: (_, _, token) =>
             {
                 ready.TrySetResult();
+                // slopwatch-ignore: SW004 Existing extension fixture remains pending until owner cancellation; no elapsed-time success condition.
                 return Task.Delay(Timeout.InfiniteTimeSpan, token);
             }, timeProvider: clock, nextRandom: () => 0.5, createCall: transport.Open);
         var run = agent.RunAsync(stopping.Token);
@@ -548,6 +555,7 @@ public sealed class AgentGatewayPresenceLivenessTests
             }, runForPresenceSession: (owner, _, token) =>
             {
                 session = owner;
+                // slopwatch-ignore: SW004 Existing extension fixture remains pending until owner cancellation; no elapsed-time success condition.
                 return Task.Delay(Timeout.InfiniteTimeSpan, token);
             }, timeProvider: clock, nextRandom: () => 0.5, createCall: transport.Open);
         var run = agent.RunAsync(stopping.Token);
@@ -592,6 +600,7 @@ public sealed class AgentGatewayPresenceLivenessTests
             {
                 session = current;
                 Interlocked.Increment(ref starts);
+                // slopwatch-ignore: SW004 Existing extension fixture remains pending until owner cancellation; no elapsed-time success condition.
                 return Task.Delay(Timeout.InfiniteTimeSpan, token);
             }, timeProvider: clock, nextRandom: () => 0.5, createCall: transport.Open);
         var run = agent.RunAsync(stopping.Token);
@@ -632,6 +641,7 @@ public sealed class AgentGatewayPresenceLivenessTests
             {
                 session = current;
                 ownerToken = token;
+                // slopwatch-ignore: SW004 Existing extension fixture remains pending until owner cancellation; no elapsed-time success condition.
                 return Task.Delay(Timeout.InfiniteTimeSpan, token);
             }, timeProvider: clock, nextRandom: () => 0.5, createCall: transport.Open);
         var run = agent.RunAsync(stopping.Token);
@@ -693,6 +703,7 @@ public sealed class AgentGatewayPresenceLivenessTests
         using var stopping = new CancellationTokenSource();
         GatewayPresenceSession? session = null;
         var failed = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var extensionLifetime = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var agent = new AgentGatewayPresenceClient(new GatewayClientOptions { Endpoint = "https://gateway.test" },
             new ClockTokenService(clock, TimeSpan.FromSeconds(65)), 7, Guid.NewGuid(), "test", [], message =>
             {
@@ -700,7 +711,7 @@ public sealed class AgentGatewayPresenceLivenessTests
             }, runForPresenceSession: (current, _, ct) =>
             {
                 session = current;
-                return Task.Delay(Timeout.InfiniteTimeSpan, ct);
+                return extensionLifetime.Task.WaitAsync(ct);
             }, timeProvider: clock, nextRandom: () => 0, createCall: transport.Open);
         var run = agent.RunAsync(stopping.Token);
         try
@@ -726,6 +737,7 @@ public sealed class AgentGatewayPresenceLivenessTests
     private static async Task WaitUntilAsync(Func<bool> condition)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+        // slopwatch-ignore: SW004 Existing bounded polling yields to stream continuations while observing assertions driven by virtual time; delay is not evidence of success.
         while (!condition()) await Task.Delay(1, timeout.Token);
     }
 
@@ -833,6 +845,7 @@ public sealed class AgentGatewayPresenceLivenessTests
                     (_blockedState == "heartbeat-write" && frame.Heartbeat is not null))
                 {
                     _blocked.TrySetResult();
+                    // slopwatch-ignore: SW004 Existing blocked-write fixture verifies cancellation retires actual I/O; completion requires the owner token to cancel.
                     await Task.Delay(Timeout.InfiniteTimeSpan, writeStopping.Token);
                     return;
                 }

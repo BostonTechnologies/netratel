@@ -247,6 +247,7 @@ public sealed class ClientAgentTokenService : IAgentTokenService
         catch (Exception ex) when (ex is ArgumentException or SecurityTokenException or JsonException)
         {
             // Opaque or unreadable tokens retain the endpoint's lifetime hint.
+            return null;
         }
 
         return null;

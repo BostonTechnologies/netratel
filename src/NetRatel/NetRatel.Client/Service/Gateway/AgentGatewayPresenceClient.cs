@@ -447,7 +447,8 @@ public sealed class AgentGatewayPresenceClient(
                 {
                     intervalStopping.Cancel();
                     try { await interval.ConfigureAwait(false); }
-                    catch (OperationCanceledException) when (intervalStopping.IsCancellationRequested) { }
+                    catch (OperationCanceledException) when (intervalStopping.IsCancellationRequested)
+                    { log("Presence heartbeat interval cancelled by scheduled renewal."); }
                     if (_timeProvider.GetUtcNow() < renewalAtUtc)
                     {
                         renewalDue = WaitForRenewalAsync();
@@ -628,7 +629,7 @@ public sealed class AgentGatewayPresenceClient(
         }
         catch (Exception exception) when (OperationalRecoveryFailure.IsExpected(exception))
         {
-            // Aborted reads and writes are observed here; the initiating failure is preserved.
+            log($"Retired operational I/O observed expected cancellation or transport failure; initiating failure remains authoritative. category={exception.GetType().Name}.");
         }
     }
 
