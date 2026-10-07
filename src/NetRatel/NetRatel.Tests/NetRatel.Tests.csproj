@@ -55,5 +55,7 @@
                       LogicalName="NetRatel.Tests.MigrationBaselines.CommittedConnectionOwnership.Foundation.sql" />
     <EmbeddedResource Include="Infrastructure/MigrationBaselines/CommittedConnectionOwnershipHistoricalServices.sql"
                       LogicalName="NetRatel.Tests.MigrationBaselines.CommittedConnectionOwnership.HistoricalServices.sql" />
+    <EmbeddedResource Include="Infrastructure/MigrationBaselines/CommittedMonitoringRegistrationPreceding.sql"
+                      LogicalName="NetRatel.Tests.MigrationBaselines.CommittedConnectionOwnership.Current148.sql" />
   </ItemGroup>
 </Project>

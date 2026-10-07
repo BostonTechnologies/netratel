@@ -9,7 +9,8 @@ public static class AgentTelemetryProtocolValidator
         TelemetryFrame frame,
         AuthenticatedAgentIdentity identity,
         string supportedProtocolVersion,
-        int maxScopesPerFrame)
+        int maxScopesPerFrame,
+        DateTimeOffset? receivedAtUtc = null)
     {
         if (!string.Equals(frame.ProtocolVersion, supportedProtocolVersion, StringComparison.Ordinal))
         {
@@ -70,7 +71,7 @@ public static class AgentTelemetryProtocolValidator
             return metricValidation;
         }
 
-        metricValidation = ValidateDisks(frame.Disks);
+        metricValidation = ValidateDisks(frame.Disks, frame.ObservedAtUtc.ToDateTimeOffset(), receivedAtUtc ?? TimeProvider.System.GetUtcNow());
         if (!metricValidation.IsValid)
         {
             return metricValidation;
@@ -112,7 +113,7 @@ public static class AgentTelemetryProtocolValidator
         return AgentFrameValidationResult.Success;
     }
 
-    private static AgentFrameValidationResult ValidateDisks(IEnumerable<TelemetryDisk> disks)
+    private static AgentFrameValidationResult ValidateDisks(IEnumerable<TelemetryDisk> disks, DateTimeOffset envelopeObservedAtUtc, DateTimeOffset receivedAtUtc)
     {
         var diskArray = disks as TelemetryDisk[] ?? disks.ToArray();
         if (!HaveValidUniqueScopes(diskArray.Select(disk => disk.Scope)) ||
@@ -120,12 +121,31 @@ public static class AgentTelemetryProtocolValidator
                 !IsNonNegativeFinite(disk.TotalGb) ||
                 !IsNonNegativeFinite(disk.UsedGb) ||
                 !IsNonNegativeFinite(disk.FreeGb) ||
-                !IsPercentage(disk.UsagePercent)))
+                !IsPercentage(disk.UsagePercent) ||
+                disk.HasTotalBytes != disk.HasFreeBytes ||
+                (disk.HasTotalBytes && (disk.TotalBytes == 0 || disk.FreeBytes > disk.TotalBytes)) ||
+                !HasValidDiskCollection(disk, envelopeObservedAtUtc, receivedAtUtc)))
         {
             return Invalid(StatusCode.InvalidArgument, "Disk telemetry contains an unsupported value or duplicate scope.");
         }
 
         return AgentFrameValidationResult.Success;
+    }
+
+    private static bool HasValidDiskCollection(TelemetryDisk disk, DateTimeOffset envelopeObservedAtUtc, DateTimeOffset receivedAtUtc)
+    {
+        var collectedAtUtc = disk.CollectedAtUtc;
+        // Old clients remain transport compatible, but absent proof cannot become complete Monitoring evidence.
+        if (disk.CollectionId.Length == 0 && collectedAtUtc is null &&
+            disk.CollectionQuality == TelemetryDiskCollectionQuality.Unspecified) return true;
+        if (!Guid.TryParseExact(disk.CollectionId, "D", out var id) || id == Guid.Empty ||
+            collectedAtUtc is null || !IsValidTimestamp(collectedAtUtc) ||
+            collectedAtUtc.ToDateTimeOffset() == default ||
+            collectedAtUtc.ToDateTimeOffset() > envelopeObservedAtUtc ||
+            collectedAtUtc.ToDateTimeOffset() > receivedAtUtc ||
+            (int)disk.CollectionQuality is < 1 or > 4) return false;
+        return disk.CollectionQuality != TelemetryDiskCollectionQuality.Complete ||
+            disk.HasTotalBytes && disk.HasFreeBytes;
     }
 
     private static AgentFrameValidationResult ValidateNetworks(IEnumerable<TelemetryNetwork> networks)

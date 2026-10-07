@@ -44,6 +44,7 @@ public sealed class TelemetryInteractiveDemandRegistry(
     private PeriodicTimer? _timer;
     private CancellationTokenSource? _stopping;
     private Task? _sweep;
+    private int _disposeStarted;
 
     public event Action<ClientKey, TelemetrySamplingPolicyState>? PolicyChanged;
 
@@ -119,31 +120,57 @@ public sealed class TelemetryInteractiveDemandRegistry(
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
-        _stopping = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        _timer = new PeriodicTimer(TimeSpan.FromSeconds(5), timeProvider);
-        _sweep = SweepAsync(_stopping.Token);
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeStarted) != 0, this);
+            if (_stopping is not null) return Task.CompletedTask;
+            _stopping = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            _timer = new PeriodicTimer(TimeSpan.FromSeconds(5), timeProvider);
+            _sweep = SweepAsync(_timer, _stopping.Token);
+        }
         return Task.CompletedTask;
     }
 
     public async Task StopAsync(CancellationToken cancellationToken)
     {
-        _stopping?.Cancel();
-        if (_sweep is not null) await _sweep.WaitAsync(cancellationToken).ConfigureAwait(false);
+        Task? sweep;
+        lock (_gate)
+        {
+            _stopping?.Cancel();
+            sweep = _sweep;
+        }
+        if (sweep is not null) await sweep.WaitAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    public ValueTask DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
-        _stopping?.Cancel();
-        _stopping?.Dispose();
-        _timer?.Dispose();
-        return ValueTask.CompletedTask;
+        if (Interlocked.Exchange(ref _disposeStarted, 1) != 0) return;
+        CancellationTokenSource? stopping;
+        Task? sweep;
+        lock (_gate)
+        {
+            stopping = _stopping;
+            stopping?.Cancel();
+            _timer?.Dispose();
+            sweep = _sweep;
+            _stopping = null;
+            _timer = null;
+        }
+        try
+        {
+            if (sweep is not null) await sweep.ConfigureAwait(false);
+        }
+        finally
+        {
+            stopping?.Dispose();
+        }
     }
 
-    private async Task SweepAsync(CancellationToken cancellationToken)
+    private async Task SweepAsync(PeriodicTimer timer, CancellationToken cancellationToken)
     {
         try
         {
-            while (_timer is not null && await _timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
+            while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
             {
                 Sweep();
             }

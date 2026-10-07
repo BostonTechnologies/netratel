@@ -220,10 +220,39 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
         for path in workflow_paths:
             source = path.read_text(encoding="utf-8")
             with self.subTest(workflow=path.name):
-                run_start = source.index("dotnet test --solution NetRatel.sln --configuration Release --no-build")
-                run_command = source[run_start:source.index("\n", run_start)]
-                self.assertIn("--max-parallel-test-modules 1", run_command)
+                # Retain this existing test ID while requiring backend overlap and
+                # join-before-UI ordering, with each individual MTP module bounded.
+                run_start = source.index("setsid bash -c '")
+                run_end = source.index("\n          ' &\n          generic_pid=$!", run_start)
+                run_command = source[run_start:run_end]
+                self.assertIn("set -euo pipefail", run_command)
+                self.assertIn("--configuration Release --no-build --max-parallel-test-modules 1", run_command)
                 self.assertIn("--filter-not-trait category=compose category=hosted", run_command)
+                self.assertIn("--results-directory TestResults --report-trx", run_command)
+                self.assertIn('--report-trx-filename "netratel-tests-{asm}_{tfm}_{arch}.trx"', run_command)
+                expected_projects = (
+                    "src/NetRatel/NetRatel.API.IntegrationTests/NetRatel.API.IntegrationTests.csproj",
+                    "src/NetRatel/NetRatel.Tests/NetRatel.Tests.csproj",
+                    "src/NetRatel/NetRatel.Web.ComponentTests/NetRatel.Web.ComponentTests.csproj",
+                    "src/NetRatel/NetRatel.Web.PlaywrightTests/NetRatel.Web.PlaywrightTests.csproj",
+                )
+                for project in expected_projects:
+                    self.assertEqual(1, run_command.count(project))
+                backend_commands = re.findall(r'^\s*dotnet test --project ([^ ]+) "\$\{generic_test_arguments\[@\]\}" &$' , run_command, re.MULTILINE)
+                self.assertEqual(list(expected_projects[:2]), backend_commands)
+                backend_join = run_command.index('for module_pid in "$api_pid" "$core_pid"; do')
+                ui_start = run_command.index("for module_project in")
+                self.assertLess(run_command.index("core_pid=$!"), backend_join)
+                self.assertLess(backend_join, ui_start)
+                self.assertIn('if wait "$module_pid"; then', run_command[backend_join:ui_start])
+                self.assertIn("module_status=$?", run_command[backend_join:ui_start])
+                self.assertNotIn("exit ", run_command[:ui_start])
+                ui_loop = run_command[ui_start:]
+                self.assertLess(ui_loop.index(expected_projects[2]), ui_loop.index(expected_projects[3]))
+                self.assertIn('if dotnet test --project "$module_project" "${generic_test_arguments[@]}"; then', ui_loop)
+                self.assertIn("module_status=$?", ui_loop)
+                self.assertEqual(2, run_command.count('if [[ "$generic_status" -eq 0 && "$module_status" -ne 0 ]]; then'))
+                self.assertIn('exit "$generic_status"', ui_loop)
                 self.assertIn(
                     "NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT: ${{ github.workspace }}/src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/TestResults/playwright",
                     source,

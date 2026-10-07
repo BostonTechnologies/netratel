@@ -1,3 +1,5 @@
+using NetRatel.Akka.Monitoring;
+using NetRatel.Application.Monitoring;
 using Akka.Actor;
 using Akka.Cluster.Hosting;
 using Akka.Cluster.Sharding;
@@ -34,6 +36,9 @@ public sealed class ClientTelemetryRegion;
 /// <summary>Marker for the bounded local services projection region.</summary>
 public sealed class ClientServicesRegion;
 
+/// <summary>Marker for the bounded local monitoring runtime.</summary>
+public sealed class ClientMonitoringRegion;
+
 /// <summary>Marker used for type-safe access to the local command region.</summary>
 public sealed class ClientCommandRegion;
 
@@ -63,6 +68,9 @@ public static class NetRatelAkkaActorRegistration
             var jobObservations = serviceProvider.GetRequiredService<IJobObservationStore>();
             var remoteSupportLifecycle = serviceProvider.GetRequiredService<IRemoteSupportLifecycleStore>();
             var servicesStore = serviceProvider.GetRequiredService<IClientServicesStore>();
+            var monitoringStore = serviceProvider.GetRequiredService<IMonitoringStore>();
+            var monitoringConfiguration = serviceProvider.GetRequiredService<IMonitoringConfigurationStore>();
+            var monitoringDirectory = serviceProvider.GetRequiredService<IMonitoringClientDirectory>();
             var connectionEpochs = presenceMode == PresenceAuthorityMode.Durable ? serviceProvider.GetRequiredService<IClientConnectionEpochStore>() : null;
             var timeProvider = serviceProvider.GetRequiredService<TimeProvider>();
             akka
@@ -99,6 +107,9 @@ public static class NetRatelAkkaActorRegistration
                     var servicesRegion = system.ActorOf(
                         ClientServicesRouterActor.Props(servicesStore, timeProvider), "client-services");
                     registry.Register<ClientServicesRegion>(servicesRegion);
+
+                    var monitoringRegion = system.ActorOf(ClientMonitoringRouterActor.Props(monitoringStore, monitoringConfiguration, monitoringDirectory, timeProvider), "client-monitoring");
+                    registry.Register<ClientMonitoringRegion>(monitoringRegion);
 
                     var commandRegion = system.ActorOf(
                         ClientCommandRouterActor.Props(commandPersistence),
@@ -156,6 +167,10 @@ public static class NetRatelAkkaActorRegistration
             new AkkaRemoteSupportLifecycleRouter(
                 serviceProvider.GetRequiredService<IRequiredActor<RemoteSupportSessionAuthorityRegion>>(),
                 serviceProvider.GetRequiredService<NetRatelAkkaOptions>().AskTimeout));
+
+        services.AddSingleton<IMonitoringRuntime>(serviceProvider =>
+            new AkkaMonitoringRuntime(serviceProvider.GetRequiredService<IRequiredActor<ClientMonitoringRegion>>(),
+                serviceProvider.GetRequiredService<IMonitoringStore>(), serviceProvider.GetRequiredService<NetRatelAkkaOptions>().AskTimeout));
 
         return services;
     }

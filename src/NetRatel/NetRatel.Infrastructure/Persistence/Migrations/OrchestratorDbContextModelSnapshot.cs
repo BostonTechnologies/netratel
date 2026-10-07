@@ -3894,6 +3894,436 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.ToTable("McpOperatorTerminalSessions", (string)null);
                 });
 
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.MonitoringAuditRecord", b =>
+                {
+                    b.Property<Guid>("AuditId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("AtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<decimal>("ConfigurationRevision")
+                        .HasColumnType("numeric(20,0)");
+
+                    b.Property<string>("DetailsJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<Guid>("EntityId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("EntityKind")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("Operation")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<Guid>("OperatorId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.HasKey("AuditId");
+
+                    b.HasIndex("TenantId", "AtUtc");
+
+                    b.ToTable("MonitoringAudits", (string)null);
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.MonitoringBypassRecord", b =>
+                {
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("BypassId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("DefinitionJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<DateTimeOffset?>("ExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("TenantId", "BypassId");
+
+                    b.HasIndex("TenantId", "ExpiresAtUtc");
+
+                    b.ToTable("MonitoringBypasses", (string)null);
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.MonitoringEventRecord", b =>
+                {
+                    b.Property<Guid>("EventId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("AtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("EventJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<Guid>("OccurrenceId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.HasKey("EventId");
+
+                    b.HasIndex("OccurrenceId");
+
+                    b.HasIndex("TenantId", "AtUtc", "EventId");
+
+                    b.ToTable("MonitoringEvents", (string)null);
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.MonitoringEvidenceRegistrationAttemptRecord", b =>
+                {
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("AgentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("RegistrationId")
+                        .HasColumnType("uuid");
+
+                    b.Property<long>("ConnectionEpoch")
+                        .HasColumnType("bigint");
+
+                    b.Property<Guid>("ConnectionId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset>("ExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("RegistrationOrdinal")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset>("RetainUntilUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<short>("Status")
+                        .HasColumnType("smallint");
+
+                    b.HasKey("TenantId", "AgentId", "RegistrationId");
+
+                    b.HasIndex("RetainUntilUtc");
+
+                    b.HasIndex("TenantId", "AgentId", "RegistrationOrdinal")
+                        .IsUnique();
+
+                    b.ToTable("MonitoringEvidenceRegistrationAttempts", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_MonitoringEvidenceRegistrationAttempts_Shape", "\"TenantId\">0 AND \"AgentId\"<>'00000000-0000-0000-0000-000000000000'::uuid AND \"RegistrationId\"<>'00000000-0000-0000-0000-000000000000'::uuid AND \"ConnectionId\"<>'00000000-0000-0000-0000-000000000000'::uuid AND \"ConnectionEpoch\">0 AND \"RegistrationOrdinal\">0 AND \"Status\" IN (1,2,3) AND \"ExpiresAtUtc\">\"CreatedAtUtc\" AND \"RetainUntilUtc\">=\"ExpiresAtUtc\"");
+                        });
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.MonitoringEvidenceRegistrationCounterRecord", b =>
+                {
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("AgentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<long>("LastIssuedOrdinal")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasDefaultValue(0L);
+
+                    b.HasKey("TenantId", "AgentId");
+
+                    b.ToTable("MonitoringEvidenceRegistrationCounters", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_MonitoringEvidenceRegistrationCounters_Identity", "\"TenantId\">0 AND \"AgentId\"<>'00000000-0000-0000-0000-000000000000'::uuid AND \"LastIssuedOrdinal\">=0");
+                        });
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.MonitoringEvidenceStreamRecord", b =>
+                {
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("AgentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<bool>("Active")
+                        .HasColumnType("boolean");
+
+                    b.Property<long>("CommittedRegistrationOrdinal")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasDefaultValue(0L);
+
+                    b.Property<long>("ConnectionEpoch")
+                        .HasColumnType("bigint");
+
+                    b.Property<Guid>("ConnectionId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("EvidenceStreamId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("RegisteredAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<decimal>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("numeric(20,0)");
+
+                    b.HasKey("TenantId", "AgentId");
+
+                    b.ToTable("MonitoringEvidenceStreams", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_MonitoringEvidenceStreams_Ordinal", "\"CommittedRegistrationOrdinal\">=0");
+                        });
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.MonitoringFlowOutboxRecord", b =>
+                {
+                    b.Property<Guid>("OutboxId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("Attempts")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Code")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("EventId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("FlowRunId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset?>("HandedOffAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("IntentJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<DateTimeOffset?>("LeaseExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("LeaseFence")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint");
+
+                    b.Property<Guid?>("LeaseId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset?>("NextAttemptAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("OccurrenceId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("OutcomeJson")
+                        .HasColumnType("jsonb");
+
+                    b.Property<string>("StableFlowDispatchKey")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<short>("Status")
+                        .HasColumnType("smallint");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid?>("WorkerId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("OutboxId");
+
+                    b.HasIndex("EventId");
+
+                    b.HasIndex("FlowRunId")
+                        .IsUnique()
+                        .HasFilter("\"FlowRunId\" IS NOT NULL");
+
+                    b.HasIndex("StableFlowDispatchKey")
+                        .IsUnique();
+
+                    b.HasIndex("TenantId", "Status", "NextAttemptAtUtc", "LeaseExpiresAtUtc");
+
+                    b.ToTable("MonitoringFlowOutbox", (string)null);
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.MonitoringGroupRecord", b =>
+                {
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("GroupId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("DefinitionJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<decimal>("Revision")
+                        .HasColumnType("numeric(20,0)");
+
+                    b.HasKey("TenantId", "GroupId");
+
+                    b.ToTable("MonitoringGroups", (string)null);
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.MonitoringOccurrenceRecord", b =>
+                {
+                    b.Property<Guid>("OccurrenceId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("AgentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset?>("EndedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("OccurrenceJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<DateTimeOffset>("RaisedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("RaisedEventId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("ResourceKey")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)");
+
+                    b.Property<Guid>("RuleId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.HasKey("OccurrenceId");
+
+                    b.HasIndex("RaisedEventId")
+                        .IsUnique();
+
+                    b.HasIndex("TenantId", "EndedAtUtc");
+
+                    b.HasIndex("TenantId", "RuleId", "AgentId", "ResourceKey")
+                        .IsUnique()
+                        .HasDatabaseName("UX_MonitoringOccurrence_OpenSeries")
+                        .HasFilter("\"EndedAtUtc\" IS NULL");
+
+                    b.ToTable("MonitoringOccurrences", (string)null);
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.MonitoringRuleRecord", b =>
+                {
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("RuleId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("DefinitionJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<decimal>("Revision")
+                        .HasColumnType("numeric(20,0)");
+
+                    b.HasKey("TenantId", "RuleId");
+
+                    b.ToTable("MonitoringRules", (string)null);
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.MonitoringSeriesRecord", b =>
+                {
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("RuleId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("AgentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("ResourceKey")
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)");
+
+                    b.Property<bool>("Acknowledged")
+                        .HasColumnType("boolean");
+
+                    b.Property<Guid?>("ActiveOccurrenceId")
+                        .HasColumnType("uuid");
+
+                    b.Property<short>("EvidenceQuality")
+                        .HasColumnType("smallint");
+
+                    b.Property<Guid?>("LatestOccurrenceId")
+                        .HasColumnType("uuid");
+
+                    b.Property<short>("Phase")
+                        .HasColumnType("smallint");
+
+                    b.Property<string>("StateJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<decimal>("StateRevision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("numeric(20,0)");
+
+                    b.Property<bool>("Suppressed")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTimeOffset>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("TenantId", "RuleId", "AgentId", "ResourceKey");
+
+                    b.HasIndex("TenantId", "AgentId");
+
+                    b.ToTable("MonitoringSeries", (string)null);
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.MonitoringTenantConfigurationRecord", b =>
+                {
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.Property<decimal>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("numeric(20,0)");
+
+                    b.HasKey("TenantId");
+
+                    b.ToTable("MonitoringTenantConfigurations", (string)null);
+                });
+
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.OidcSigningKey", b =>
                 {
                     b.Property<Guid>("Id")
@@ -5751,6 +6181,24 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.HasOne("NetRatel.Infrastructure.Persistence.McpOperatorPolicyRecord", null)
                         .WithMany()
                         .HasForeignKey("PolicyId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.MonitoringEventRecord", b =>
+                {
+                    b.HasOne("NetRatel.Infrastructure.Persistence.MonitoringOccurrenceRecord", null)
+                        .WithMany()
+                        .HasForeignKey("OccurrenceId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.MonitoringFlowOutboxRecord", b =>
+                {
+                    b.HasOne("NetRatel.Infrastructure.Persistence.MonitoringEventRecord", null)
+                        .WithMany()
+                        .HasForeignKey("EventId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
                 });

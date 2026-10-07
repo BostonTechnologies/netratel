@@ -242,6 +242,20 @@ message TelemetryDisk {
   double used_gb = 3;
   double free_gb = 4;
   double usage_percent = 5;
+  optional uint64 total_bytes = 6;
+  optional uint64 free_bytes = 7;
+  // Additive genuine per-resource collection proof. Empty/absent fields remain compatible legacy Unknown.
+  string collection_id = 8;
+  google.protobuf.Timestamp collected_at_utc = 9;
+  TelemetryDiskCollectionQuality collection_quality = 10;
+}
+
+enum TelemetryDiskCollectionQuality {
+  TELEMETRY_DISK_COLLECTION_QUALITY_UNSPECIFIED = 0;
+  TELEMETRY_DISK_COLLECTION_QUALITY_COMPLETE = 1;
+  TELEMETRY_DISK_COLLECTION_QUALITY_PARTIAL = 2;
+  TELEMETRY_DISK_COLLECTION_QUALITY_UNSUPPORTED = 3;
+  TELEMETRY_DISK_COLLECTION_QUALITY_FAILED = 4;
 }
 
 message TelemetryNetwork {

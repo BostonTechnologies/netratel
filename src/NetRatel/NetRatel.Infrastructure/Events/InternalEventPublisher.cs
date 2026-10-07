@@ -3,6 +3,7 @@ using NetRatel.Application.Events;
 using NetRatel.Application.Notifications;
 using NetRatel.Infrastructure.Notifications;
 using NetRatel.Infrastructure.Persistence;
+using NetRatel.Shared.Contracts.Monitoring;
 
 namespace NetRatel.Infrastructure.Events;
 
@@ -19,6 +20,8 @@ public sealed class InternalEventPublisher(
 
     public async Task PublishAsync(OutboxEnvelope envelope, CancellationToken ct)
     {
+        // Scoped monitoring display mirrors must never enter the legacy global notification bus.
+        if (envelope.Type.StartsWith(MonitoringLimits.NotificationEventPrefix, StringComparison.Ordinal)) return;
         var exists = await _db.OutboxProcessedEvents
             .AnyAsync(x => x.EventId == envelope.Id && x.ConsumerName == ConsumerName, ct);
 

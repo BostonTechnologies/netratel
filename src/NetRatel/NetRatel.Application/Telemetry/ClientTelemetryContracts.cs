@@ -13,12 +13,19 @@ public sealed record TelemetryMemory(
     double AvailableMb,
     double UsagePercent);
 
+public enum TelemetryDiskCollectionQuality { Unknown = 0, Complete = 1, Partial = 2, Unsupported = 3, Failed = 4 }
+
 public sealed record TelemetryDisk(
     string Scope,
     double TotalGb,
     double UsedGb,
     double FreeGb,
-    double UsagePercent);
+    double UsagePercent,
+    ulong? TotalBytes = null,
+    ulong? FreeBytes = null,
+    Guid? CollectionId = null,
+    DateTimeOffset? CollectedAtUtc = null,
+    TelemetryDiskCollectionQuality CollectionQuality = TelemetryDiskCollectionQuality.Unknown);
 
 public sealed record TelemetryNetwork(
     string Scope,

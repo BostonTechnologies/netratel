@@ -14,6 +14,32 @@ public sealed class AgentTelemetryProtocolValidatorTests
     private static readonly AuthenticatedAgentIdentity Identity = new(TenantId, AgentId);
 
     [Fact]
+    public void ExactDiskBytesPreserveExplicitZeroFreeSpaceAndOldClientsRemainValid()
+    {
+        var frame = CreateValidFrame();
+        AgentTelemetryProtocolValidator.Validate(frame, Identity, "1.0", 64).IsValid.Should().BeTrue();
+        frame.Disks[0].TotalBytes = 100;
+        frame.Disks[0].FreeBytes = 0;
+        frame.Disks[0].HasFreeBytes.Should().BeTrue();
+        AgentTelemetryProtocolValidator.Validate(frame, Identity, "1.0", 64).IsValid.Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData("total-only")]
+    [InlineData("free-only")]
+    [InlineData("zero-total")]
+    [InlineData("free-exceeds-total")]
+    public void ExactDiskBytesRejectUnpairedOrImpossibleEvidence(string defect)
+    {
+        var frame = CreateValidFrame();
+        if (defect != "free-only") frame.Disks[0].TotalBytes = defect == "zero-total" ? 0UL : 100UL;
+        if (defect != "total-only") frame.Disks[0].FreeBytes = defect == "free-exceeds-total" ? 101UL : 50UL;
+        var result = AgentTelemetryProtocolValidator.Validate(frame, Identity, "1.0", 64);
+        result.IsValid.Should().BeFalse();
+        result.StatusCode.Should().Be(StatusCode.InvalidArgument);
+    }
+
+    [Fact]
     public void Validate_AcceptsSupportedTelemetryFields()
     {
         var result = AgentTelemetryProtocolValidator.Validate(

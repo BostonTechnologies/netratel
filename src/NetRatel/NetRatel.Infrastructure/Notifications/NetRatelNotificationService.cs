@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using NetRatel.Application.Notifications;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Shared.Contracts;
+using NetRatel.Shared.Contracts.Monitoring;
 
 namespace NetRatel.Infrastructure.Notifications;
 
@@ -11,6 +12,8 @@ public sealed class NetRatelNotificationService(
 {
     private readonly OrchestratorDbContext _db = db;
     private readonly NetRatelNotificationDisplaySanitizer _displaySanitizer = displaySanitizer;
+
+    private IQueryable<OutboxMessage> LegacyMessages => _db.OutboxMessages.Where(message => !message.Type.StartsWith(MonitoringLimits.NotificationEventPrefix));
 
     public async Task<PagedResult<NetRatelNotificationDto>> GetPageAsync(
         string userId,
@@ -33,7 +36,7 @@ public sealed class NetRatelNotificationService(
         var safePageSize = pageSize <= 0 ? 20 : Math.Min(pageSize, 200);
         var skip = (safePage - 1) * safePageSize;
 
-        var query = _db.OutboxMessages.AsNoTracking().AsQueryable();
+        var query = LegacyMessages.AsNoTracking().AsQueryable();
 
         if (!string.IsNullOrWhiteSpace(eventType))
             query = query.Where(x => x.Type == eventType.Trim());
@@ -86,7 +89,7 @@ public sealed class NetRatelNotificationService(
     {
         ValidateUserId(userId);
 
-        var message = await _db.OutboxMessages.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id, ct);
+        var message = await LegacyMessages.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id, ct);
         if (message is null)
             return null;
 
@@ -105,7 +108,7 @@ public sealed class NetRatelNotificationService(
             .Where(x => x.UserId == userId)
             .Select(x => x.EventId);
 
-        var messages = await _db.OutboxMessages.AsNoTracking()
+        var messages = await LegacyMessages.AsNoTracking()
             .Where(x => (x.Severity == "Warning" || x.Severity == "Error" || x.Severity == "Critical") && !readEventIds.Contains(x.Id))
             .OrderByDescending(x => x.OccurredUtc)
             .Take(safeTake)
@@ -118,17 +121,17 @@ public sealed class NetRatelNotificationService(
     {
         ValidateUserId(userId);
 
-        var total = await _db.OutboxMessages.AsNoTracking().CountAsync(ct);
+        var total = await LegacyMessages.AsNoTracking().CountAsync(ct);
 
         var readEventIds = _db.OutboxReadReceipts.AsNoTracking()
             .Where(x => x.UserId == userId)
             .Select(x => x.EventId);
 
-        var unread = await _db.OutboxMessages.AsNoTracking()
+        var unread = await LegacyMessages.AsNoTracking()
             .Where(x => !readEventIds.Contains(x.Id))
             .CountAsync(ct);
 
-        var unreadErrors = await _db.OutboxMessages.AsNoTracking()
+        var unreadErrors = await LegacyMessages.AsNoTracking()
             .Where(x => !readEventIds.Contains(x.Id) && (x.Severity == "Warning" || x.Severity == "Error" || x.Severity == "Critical"))
             .CountAsync(ct);
 
@@ -147,6 +150,9 @@ public sealed class NetRatelNotificationService(
         var validIds = ids.Where(x => x != Guid.Empty).Distinct().ToArray();
         if (validIds.Length == 0)
             return 0;
+
+        validIds = await LegacyMessages.Where(message => validIds.Contains(message.Id)).Select(message => message.Id).ToArrayAsync(ct);
+        if (validIds.Length == 0) return 0;
 
         var existing = await _db.OutboxReadReceipts
             .Where(x => x.UserId == userId && validIds.Contains(x.EventId))
@@ -174,7 +180,7 @@ public sealed class NetRatelNotificationService(
 
     public async Task RetryAsync(Guid id, CancellationToken ct)
     {
-        var message = await _db.OutboxMessages.FirstOrDefaultAsync(x => x.Id == id, ct)
+        var message = await LegacyMessages.FirstOrDefaultAsync(x => x.Id == id, ct)
             ?? throw new InvalidOperationException($"Outbox message {id} not found.");
 
         message.Status = OutboxStatuses.Pending;
@@ -187,7 +193,7 @@ public sealed class NetRatelNotificationService(
 
     public async Task DisableAsync(Guid id, CancellationToken ct)
     {
-        var message = await _db.OutboxMessages.FirstOrDefaultAsync(x => x.Id == id, ct)
+        var message = await LegacyMessages.FirstOrDefaultAsync(x => x.Id == id, ct)
             ?? throw new InvalidOperationException($"Outbox message {id} not found.");
 
         message.Status = OutboxStatuses.Disabled;

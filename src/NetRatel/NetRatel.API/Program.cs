@@ -1,4 +1,5 @@
-﻿using Microsoft.AspNetCore.Authentication;
+﻿using NetRatel.API.Services.Monitoring;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Identity;
@@ -484,6 +485,7 @@ builder.Services
 
 builder.Services.AddAuthorization(options =>
 {
+    MonitoringAuthorization.AddPolicies(options);
     string? ResolveAdminId() => builder.Configuration["Authorization:Oidc:AdminGroupId"]
                                  ?? builder.Configuration["Authorization:Azure:AdminGroupId"]
                                  ?? builder.Configuration["AzureAd:AdminGroupId"]
@@ -743,6 +745,7 @@ builder.Services.AddDataProtection()
 
 builder.Services.AddSingleton<IAuthorizationHandler, AllowedClientHandler>();
 builder.Services.AddScoped<IAuthorizationHandler, EffectiveAccessHandler>();
+MonitoringFlowPermissionAuthorization.AddHandlers(builder.Services);
 builder.Services.AddScoped<IAuthorizationHandler, TerminalSessionAccessHandler>();
 builder.Services.AddScoped<InstanceAdministratorInvariant>();
 
@@ -995,6 +998,7 @@ app.UseExceptionHandler(errorApp =>
     });
 });
 app.UseMiddleware<NetRatel.API.Middleware.ExceptionNotificationMiddleware>();
+app.UseMiddleware<NetRatel.API.Middleware.MonitoringHttpBoundsMiddleware>();
 app.UseHttpsRedirection();
 app.UseCors();
 app.UseWebSockets();

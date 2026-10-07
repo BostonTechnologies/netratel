@@ -47,7 +47,7 @@ public sealed class AgentGatewayTelemetryPublisher(
             return;
         }
 
-        var collector = new GatewayTelemetrySnapshotCollector(agentVersion, log);
+        var collector = new GatewayTelemetrySnapshotCollector(agentVersion, log, _timeProvider);
         using var services = new ServiceCollectionCoordinator(serviceInventoryCollector ?? ServiceInventoryCollectorFactory.Create(_timeProvider), _timeProvider);
         var sequenceCursor = new PresenceTelemetrySequenceCursor();
         var retryDelay = InitialRetryDelay;
@@ -201,16 +201,7 @@ public sealed class AgentGatewayTelemetryPublisher(
                 if (includeSlow) nextSlowSampleAtUtc = now.Add(slowInterval);
                 var sequence = sequenceCursor.Next();
                 var snapshot = collector.CreateFrame(session, sequence, now, includeSlow);
-                await SendAcknowledgedAsync(new AgentTelemetryFrame
-                {
-                    ProtocolVersion = options.ProtocolVersion,
-                    TenantId = session.TenantId,
-                    ClientId = session.AgentId.ToString("D"),
-                    ConnectionEpoch = session.ConnectionEpoch,
-                    ConnectionId = session.ConnectionId.ToString("D"),
-                    Sequence = sequence,
-                    Snapshot = snapshot
-                }).ConfigureAwait(false);
+                await SendAcknowledgedAsync(TelemetrySnapshotSerializer.CreateEnvelope(snapshot, session, options.ProtocolVersion)).ConfigureAwait(false);
                 if (servicesEnabled && services.TryTakeCompleted(out var collection) && collection is not null)
                 {
                     foreach (var chunk in ServiceSnapshotSerializer.CreateChunks(collection, session, options.ProtocolVersion))
@@ -304,8 +295,9 @@ public sealed class AgentGatewayTelemetryPublisher(
     }
 }
 
-internal sealed class GatewayTelemetrySnapshotCollector(string agentVersion, Action<string> log)
+internal sealed class GatewayTelemetrySnapshotCollector(string agentVersion, Action<string> log, TimeProvider? timeProvider = null)
 {
+    private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
     private const int MaximumScopesPerFrame = 64;
     private GatewayCpuSample? _previousCpu;
     private readonly Dictionary<string, GatewayNetworkSample> _previousNetworks = new(StringComparer.OrdinalIgnoreCase);
@@ -321,6 +313,8 @@ internal sealed class GatewayTelemetrySnapshotCollector(string agentVersion, Act
         if (includeSlowMetrics)
         {
             _disks = SampleDisks();
+            // Capture the envelope after genuine slow collection. Every copied disk keeps its own older collection clock.
+            observedAtUtc = _timeProvider.GetUtcNow();
             _health = SampleHealth(observedAtUtc);
         }
 
@@ -346,10 +340,11 @@ internal sealed class GatewayTelemetrySnapshotCollector(string agentVersion, Act
             frame.Memory = memory;
         }
 
-        frame.Disks.AddRange(_disks);
+        frame.Disks.AddRange(_disks.Select(disk => disk.Clone()));
         frame.Networks.AddRange(SampleNetworks(observedAtUtc));
         return frame;
     }
+
 
     private bool TrySampleCpu(out TelemetryCpu cpu)
     {
@@ -488,7 +483,15 @@ internal sealed class GatewayTelemetrySnapshotCollector(string agentVersion, Act
     {
         var disks = new List<TelemetryDisk>();
         var scopes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var drive in DriveInfo.GetDrives())
+        DriveInfo[] drives;
+        try { drives = DriveInfo.GetDrives(); }
+        catch (Exception exception)
+        {
+            // Replacing the cache with an empty collection makes missing resources Unknown; never retain old successful bytes.
+            log($"Telemetry shadow disk enumeration failed: {exception.Message}");
+            return disks;
+        }
+        foreach (var drive in drives)
         {
             try
             {
@@ -497,8 +500,11 @@ internal sealed class GatewayTelemetrySnapshotCollector(string agentVersion, Act
                     continue;
                 }
 
-                var totalGb = drive.TotalSize / 1024d / 1024d / 1024d;
-                var freeGb = drive.AvailableFreeSpace / 1024d / 1024d / 1024d;
+                var totalBytes = drive.TotalSize;
+                var freeBytes = drive.AvailableFreeSpace;
+                if (freeBytes < 0 || freeBytes > totalBytes) continue;
+                var totalGb = totalBytes / 1024d / 1024d / 1024d;
+                var freeGb = freeBytes / 1024d / 1024d / 1024d;
                 var usedGb = Math.Max(0, totalGb - freeGb);
                 var scope = NormalizeDiskScope(string.IsNullOrWhiteSpace(drive.Name) ? drive.RootDirectory.FullName : drive.Name);
                 if (string.IsNullOrEmpty(scope) || !scopes.Add(scope) || disks.Count >= MaximumScopesPerFrame)
@@ -509,6 +515,12 @@ internal sealed class GatewayTelemetrySnapshotCollector(string agentVersion, Act
                 disks.Add(new TelemetryDisk
                 {
                     Scope = scope,
+                    TotalBytes = checked((ulong)totalBytes),
+                    FreeBytes = checked((ulong)freeBytes),
+                    // Identity is minted only after this actual DriveInfo read completes, never on a fast frame or retry.
+                    CollectionId = Guid.NewGuid().ToString("D"),
+                    CollectedAtUtc = Timestamp.FromDateTimeOffset(_timeProvider.GetUtcNow()),
+                    CollectionQuality = TelemetryDiskCollectionQuality.Complete,
                     TotalGb = Math.Round(totalGb, 1),
                     UsedGb = Math.Round(usedGb, 1),
                     FreeGb = Math.Round(freeGb, 1),
@@ -528,6 +540,7 @@ internal sealed class GatewayTelemetrySnapshotCollector(string agentVersion, Act
     {
         return RemoteFilePath.TryNormalize(scope, out var path) ? path : string.Empty;
     }
+
 
     private IReadOnlyList<TelemetryNetwork> SampleNetworks(DateTimeOffset now)
     {

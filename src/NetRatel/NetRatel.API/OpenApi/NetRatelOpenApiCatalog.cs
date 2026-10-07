@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.OpenApi;
 using Microsoft.OpenApi;
+using NetRatel.API.Security.Authorization;
 using NetRatel.API.Security.M2M;
 using NetRatel.API.Services.Orchestration;
 
@@ -55,6 +56,14 @@ public static class NetRatelOpenApiCatalog
             ["FileWriter"] = DefaultAuthenticatedSchemes,
             ["ArtifactPublisher"] = DefaultAuthenticatedSchemes,
             ["McpOperatorPolicyAdmin"] = DefaultAuthenticatedSchemes,
+            [MonitoringAuthorization.ReadPolicy] = DefaultAuthenticatedSchemes,
+            [MonitoringAuthorization.ManagePolicy] = DefaultAuthenticatedSchemes,
+            [MonitoringAuthorization.AcknowledgePolicy] = DefaultAuthenticatedSchemes,
+            [MonitoringAuthorization.ClearPolicy] = DefaultAuthenticatedSchemes,
+            [MonitoringAuthorization.BypassPolicy] = DefaultAuthenticatedSchemes,
+            [MonitoringAuthorization.ReadOrManagePolicy] = DefaultAuthenticatedSchemes,
+            [MonitoringAuthorization.PermissionsSummaryPolicy] = DefaultAuthenticatedSchemes,
+            [MonitoringAuthorization.DiscoveryPolicy] = DefaultAuthenticatedSchemes,
 
             // Administrative assertions deliberately do not accept a delegated
             // integration credential, even though they use the default selector.

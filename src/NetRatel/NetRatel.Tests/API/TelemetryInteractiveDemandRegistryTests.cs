@@ -1,5 +1,7 @@
 using AwesomeAssertions;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using NetRatel.API.Gateway;
 using NetRatel.Application.Presence;
 using Xunit;
@@ -8,6 +10,27 @@ namespace NetRatel.Tests.API;
 
 public sealed class TelemetryInteractiveDemandRegistryTests
 {
+    [Fact]
+    public async Task ConcreteAndHostedAliases_CanDisposeTheStartedSingletonRepeatedly()
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton<TelemetryInteractiveDemandRegistry>(_ => CreateRegistry());
+        services.AddSingleton<ITelemetryInteractiveDemandRegistry>(provider =>
+            provider.GetRequiredService<TelemetryInteractiveDemandRegistry>());
+        services.AddSingleton<IHostedService>(provider =>
+            provider.GetRequiredService<TelemetryInteractiveDemandRegistry>());
+        var provider = services.BuildServiceProvider();
+        var registry = provider.GetRequiredService<TelemetryInteractiveDemandRegistry>();
+        provider.GetRequiredService<ITelemetryInteractiveDemandRegistry>().Should().BeSameAs(registry);
+        var hosted = provider.GetRequiredService<IHostedService>();
+        await hosted.StartAsync(CancellationToken.None);
+        await hosted.StopAsync(CancellationToken.None);
+
+        await provider.DisposeAsync();
+        await registry.DisposeAsync();
+        await hosted.StopAsync(CancellationToken.None);
+    }
+
     [Fact]
     public void Leases_SelectMinimumPeriod_AndFinalReleaseRestoresBaseline()
     {
