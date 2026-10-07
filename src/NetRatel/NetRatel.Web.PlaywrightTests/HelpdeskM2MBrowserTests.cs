@@ -46,7 +46,7 @@ public sealed class HelpdeskM2MBrowserTests(ClientsManagementBrowserFixture brow
         await page.GotoAsync(fixture.Address + "/account/integration-credentials?purpose=helpdesk-m2m&theme=" + (dark ? "dark" : "light"));
         await page.GetByTestId("helpdesk-m2m-setup").WaitForAsync();
         await Assertions.Expect(page.GetByTestId("helpdesk-connect")).ToBeDisabledAsync();
-        await Assertions.Expect(page.GetByTestId("helpdesk-local-tenant").GetByRole(AriaRole.Combobox)).ToHaveValueAsync("Fixture tenant");
+        await Assertions.Expect(page.GetByTestId("helpdesk-grant-selector").GetByRole(AriaRole.Combobox, new() { Name = "NetRatel tenant", Exact = true })).ToHaveValueAsync("Fixture tenant");
         await Assertions.Expect(page.GetByTestId("helpdesk-resources")).ToHaveCountAsync(0);
         await Assertions.Expect(page.GetByTestId("helpdesk-definitions")).ToHaveCountAsync(0);
         var start = page.GetByTestId("helpdesk-link-start");
@@ -97,7 +97,7 @@ public sealed class HelpdeskM2MBrowserTests(ClientsManagementBrowserFixture brow
         {
             await page.GotoAsync(fixture.Address + "/account/integration-credentials?purpose=helpdesk-m2m");
             await page.GetByText("Manual service credentials (advanced)", new() { Exact = true }).ClickAsync();
-            await Assertions.Expect(page.GetByTestId("manual-helpdesk-local-tenant").GetByRole(AriaRole.Combobox)).ToHaveValueAsync("Fixture tenant");
+            await Assertions.Expect(page.GetByTestId("manual-helpdesk-grant-selector").GetByRole(AriaRole.Combobox, new() { Name = "NetRatel tenant", Exact = true })).ToHaveValueAsync("Fixture tenant");
             await page.GetByTestId("manual-helpdesk-resources").ClickAsync();
             await page.GetByRole(AriaRole.Option, new() { Name = "Fixture resource (e0497370-a6ab-45eb-a197-4bc7e290158f)", Exact = true }).ClickAsync();
             await page.Keyboard.PressAsync("Escape");
