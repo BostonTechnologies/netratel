@@ -122,7 +122,11 @@
             _timeZoneName = zone;
             StateHasChanged();
         }
-        catch (Exception exception) when (exception is JSException or TimeZoneNotFoundException or InvalidTimeZoneException) { }
+        catch (Exception exception) when (exception is JSException or TimeZoneNotFoundException or InvalidTimeZoneException)
+        {
+            _timeZone = TimeZoneInfo.Utc;
+            _timeZoneName = "UTC";
+        }
     }
 
     private async Task LoadTenantsAsync()
@@ -171,7 +175,7 @@
             var snapshot = await DashboardApi.GetAsync(tenantId, page, token);
             if (!token.IsCancellationRequested && _tenantId == tenantId) { _snapshot = snapshot; _dashboardError = null; }
         }
-        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
         catch (HttpRequestException exception)
         { if (!token.IsCancellationRequested && _tenantId == tenantId) _dashboardError = exception.Message; }
     }
@@ -183,7 +187,7 @@
             var runs = await DashboardApi.GetJobsAsync(tenantId, token);
             if (!token.IsCancellationRequested && _tenantId == tenantId) { _recentRuns = runs; _jobsError = null; _jobsUpdatedAtUtc = DateTimeOffset.UtcNow; }
         }
-        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
         catch (HttpRequestException exception)
         {
             if (!token.IsCancellationRequested && _tenantId == tenantId)
@@ -216,8 +220,17 @@
     private string FormatTime(DateTimeOffset value) => TimeZoneInfo.ConvertTime(value, _timeZone).ToString("yyyy-MM-dd HH:mm:ss zzz") + $" ({_timeZoneName})";
     public async ValueTask DisposeAsync()
     {
-        _request?.Cancel(); _request?.Dispose();
-        if (_timeModule is not null)
-            try { await _timeModule.DisposeAsync(); } catch (JSDisconnectedException) { }
+        _request?.Cancel();
+        try
+        {
+            if (_timeModule is not null) await _timeModule.DisposeAsync();
+        }
+        catch (JSDisconnectedException) { return; }
+        finally
+        {
+            _request?.Dispose();
+            _request = null;
+            _timeModule = null;
+        }
     }
 }
