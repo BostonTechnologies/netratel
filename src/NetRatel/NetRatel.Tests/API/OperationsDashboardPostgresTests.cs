@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using NetRatel.API.Services.Dashboard;
 using NetRatel.API.Services.Monitoring;
+using NetRatel.Application.Presence;
 using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Shared.Contracts.Monitoring;
@@ -20,8 +21,12 @@ public sealed class OperationsDashboardPostgresTests(PostgreSqlPersistenceFixtur
     public async Task Tenant_totals_include_acknowledged_alerts_beyond_the_page_and_presence_obeys_authority_expiry()
     {
         var connection = await fixture.CreateDatabaseAsync();
-        await using var provider = new ServiceCollection().AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(connection)).BuildServiceProvider();
         var now = DateTimeOffset.UtcNow;
+        var clock = new DashboardClock(now);
+        await using var provider = new ServiceCollection().AddLogging().AddSingleton<TimeProvider>(clock)
+            .AddSingleton(new OwnershipPolicy(TimeSpan.FromSeconds(30), TimeSpan.FromMinutes(10), TimeSpan.FromSeconds(10)))
+            .AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(connection))
+            .AddNetRatelClientServicesPersistence().BuildServiceProvider();
         var ids = Enumerable.Range(0, 30).Select(_ => Guid.NewGuid()).ToArray();
         await using (var scope = provider.CreateAsyncScope())
         {
@@ -31,7 +36,6 @@ public sealed class OperationsDashboardPostgresTests(PostgreSqlPersistenceFixtur
                 DeviceInfoJson = JsonSerializer.Serialize(new { hostName = $"host-{index}", ipAddress = $"192.0.2.{index + 1}" }) }));
             db.Agents.Add(new() { Id = Guid.NewGuid(), TenantId = 1, Name = "Deleted client", CreatedAtUtc = now, DeletedAtUtc = now });
             db.Agents.Add(new() { Id = Guid.NewGuid(), TenantId = 2, Name = "Other tenant", CreatedAtUtc = now });
-            db.ClientConnectionOwners.AddRange(Owner(ids[0], now, now.AddMinutes(10)), Owner(ids[1], now, now.AddMinutes(10)), Owner(ids[2], now, now.AddSeconds(-1)));
             for (var index = 0; index < 28; index++) db.MonitoringSeries.Add(Series(1, ids[index], now,
                 index == 0 ? MonitoringSeverity.Critical : MonitoringSeverity.Warning,
                 index == 27 ? MonitoringPhase.Recovering : MonitoringPhase.Firing,
@@ -47,7 +51,17 @@ public sealed class OperationsDashboardPostgresTests(PostgreSqlPersistenceFixtur
             db.JobRuns.Add(new() { Id = 9, JobId = job.Id, TenantId = 2, AgentId = ids[0], CreatedAtUtc = now.AddMinutes(1), Status = 2 });
             await db.SaveChangesAsync();
         }
-        var service = new OperationsDashboardService(new TenantAuthorizer(), provider.GetRequiredService<IServiceScopeFactory>(), TimeProvider.System);
+        var ownership = provider.GetRequiredService<IClientConnectionEpochStore>();
+        for (var index = 0; index < 3; index++)
+        {
+            var admission = await ownership.ReserveAsync(new(new(1, ids[index]), Guid.NewGuid(), Guid.NewGuid(), 0,
+                now, now.AddSeconds(30), now.AddMinutes(index == 2 ? 1 : 10), new("dashboard-fixture", ["presence"], null)), default);
+            admission.Disposition.Should().Be(OwnershipDisposition.Accepted);
+            var reservation = admission.Reservation!;
+            (await ownership.CommitAsync(reservation, new(reservation.Owner, 1, now), default)).Disposition.Should().Be(OwnershipDisposition.Accepted);
+        }
+        clock.Advance(TimeSpan.FromMinutes(2));
+        var service = new OperationsDashboardService(new TenantAuthorizer(), provider.GetRequiredService<IServiceScopeFactory>(), clock);
         var first = await service.ReadAsync(1, 0, 25, new(), default);
         var second = await service.ReadAsync(1, 1, 25, new(), default);
         first.OnlineClients.Should().Be(2); first.OfflineClients.Should().Be(28);
@@ -100,13 +114,12 @@ public sealed class OperationsDashboardPostgresTests(PostgreSqlPersistenceFixtur
             Acknowledged = acknowledged, Suppressed = suppressed, StateJson = JsonSerializer.Serialize(state), UpdatedAtUtc = now };
     }
 
-    private static ClientConnectionOwnerRecord Owner(Guid agentId, DateTimeOffset now, DateTimeOffset authenticationExpiry) => new()
+    private sealed class DashboardClock(DateTimeOffset now) : TimeProvider
     {
-        TenantId = 1, AgentId = agentId, ConnectionId = Guid.NewGuid(), ConnectionEpoch = 1, Active = true,
-        LastHeartbeatSequence = 1, LastReceivedAtUtc = now, PresenceExpiresAtUtc = now.AddMinutes(10),
-        AuthenticationExpiresAtUtc = authenticationExpiry, StartOperationId = Guid.NewGuid(), AdmissionPayloadHash = new string('a', 64),
-        AcceptanceGuardAtUtc = now, AcceptanceClockFloorUtc = now
-    };
+        private DateTimeOffset _now = now;
+        public override DateTimeOffset GetUtcNow() => _now;
+        public void Advance(TimeSpan elapsed) => _now += elapsed;
+    }
 
     private sealed class TenantAuthorizer : IMonitoringResourceAuthorizer
     {
