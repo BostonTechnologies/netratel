@@ -31,6 +31,13 @@ namespace NetRatel.Tests.Infrastructure;
 [Collection(PostgreSqlPersistenceCollection.Name)]
 public sealed class ManagedRatelDeskTokenRacePostgresTests(PostgreSqlPersistenceFixture postgres)
 {
+    [Fact]
+    public async Task Existing_managed_reference_recovers_failed_and_expired_readiness_without_provisioning_or_business_send()
+    {
+        await using var rig = await Rig.CreateAsync(postgres);
+        await rig.VerifyReadinessRecoveryAsync();
+    }
+
     [Theory]
     [InlineData("sender-disabled")]
     [InlineData("unlinked")]
@@ -165,6 +172,7 @@ public sealed class ManagedRatelDeskTokenRacePostgresTests(PostgreSqlPersistence
         private int tokenRequests;
         private int invalidTokenRequests;
         private int businessRequests;
+        private bool readinessTokens;
 
         private Rig(WebApplication app, HttpClient client, string directory, FixedClock clock,
             ServicePublicSettingsEffective settings)
@@ -347,6 +355,53 @@ public sealed class ManagedRatelDeskTokenRacePostgresTests(PostgreSqlPersistence
 
         public Task<string> GetProfileTokenAsync() => profiles.GetAccessTokenAsync(profile, Scope, CancellationToken.None);
 
+        public async Task VerifyReadinessRecoveryAsync()
+        {
+            readinessTokens = true;
+            var services = receiverScope.ServiceProvider;
+            var db = services.GetRequiredService<OrchestratorDbContext>();
+            var identity = services.GetRequiredService<NetRatelIdentityDbContext>();
+            var authority = new RatelDeskConnectorAuthorization(new EffectiveAccessService(identity, new ConfigurationBuilder().Build()), identity);
+            var store = new RatelDeskConnectorStore(db);
+            var installed = services.GetRequiredService<ServiceLinkIdentityStore>();
+            var flow = services.GetRequiredService<FlowPersistenceService>();
+            var network = new RatelDeskReceiverNetworkPolicy(new CurrentOptions<RatelDeskReceiverOptions>(new()),
+                new CurrentOptions<ServiceLinkOptions>(settings.Linking), new CurrentOptions<ServiceIdentityOptions>(settings.Identity));
+            var continuity = new RatelDeskProducerContinuity(flow, new RatelDeskInstallationIdentityReader(installed));
+            var readiness = new RatelDeskConnectorReadiness(authority, store, continuity, profiles, network, clock);
+            var reads = new ReadinessTransport(clock);
+            var receiver = new RatelDeskConnectorReceiver(store, store, store, readiness, binding, reads, flow, network, clock);
+            var setup = new RatelDeskConnectorSetupService(authority, flow, installed, profiles, db, store, receiver);
+            var link = Connector.Authentication!.ManagedLinkId!;
+            var original = await CurrentConnectorAsync();
+            var originalCredential = (await db.Set<ServiceLinkAttempt>().AsNoTracking().SingleAsync()).ProtectedOutboundCredential;
+
+            (await setup.IsApprovedReferenceReadyAsync(TenantId, link, default)).Should().BeFalse();
+            (await CurrentConnectorAsync()).Readiness.Should().BeNull();
+            reads.Unavailable = false;
+            (await setup.IsApprovedReferenceReadyAsync(TenantId, link, default)).Should().BeTrue();
+            reads.CapabilityReads.Should().Be(2); reads.TargetReads.Should().Be(1);
+            // Fresh status/catalog observations remain local. Expiry is driven by the existing virtual clock.
+            (await setup.IsApprovedReferenceReadyAsync(TenantId, link, default)).Should().BeTrue();
+            reads.CapabilityReads.Should().Be(2);
+            clock.Advance(RatelDeskConnectorReadiness.MaximumObservationAge + TimeSpan.FromSeconds(1));
+            (await readiness.CurrentAsync(await CurrentConnectorAsync(), default)).Code.Should().Be("receiver-readiness-expired");
+            (await setup.IsApprovedReferenceReadyAsync(TenantId, link, default)).Should().BeTrue();
+            reads.CapabilityReads.Should().Be(3); reads.TargetReads.Should().Be(2);
+            await ChangeAsync("owner-disabled");
+            (await setup.IsApprovedReferenceReadyAsync(TenantId, link, default)).Should().BeFalse();
+            reads.CapabilityReads.Should().Be(3);
+
+            var after = await CurrentConnectorAsync();
+            after.Id.Should().Be(original.Id); after.Revision.Should().Be(original.Revision);
+            after.CredentialRevision.Should().Be(original.CredentialRevision); after.Authentication.Should().Be(original.Authentication);
+            (await db.RatelDeskConnectors.CountAsync()).Should().Be(1);
+            (await db.Set<ServicePrincipalRegistration>().CountAsync()).Should().Be(1);
+            (await db.Set<ServicePrincipalSecret>().CountAsync()).Should().Be(1);
+            (await db.Set<ServiceLinkAttempt>().AsNoTracking().SingleAsync()).ProtectedOutboundCredential.Should().Be(originalCredential);
+            BusinessRequests.Should().Be(0); reads.BusinessRequests.Should().Be(0); InvalidTokenRequests.Should().Be(0);
+        }
+
         public async Task SendCapturedAsync()
         {
             var bearer = await binding.GetBearerAsync(Connector, Peer, Scope, CancellationToken.None);
@@ -456,15 +511,17 @@ public sealed class ManagedRatelDeskTokenRacePostgresTests(PostgreSqlPersistence
         private async Task<IResult> TokenResponseAsync(HttpRequest request)
         {
             var index = Interlocked.Increment(ref tokenRequests);
-            if (index > release.Length) return Results.StatusCode(500);
+            if (!readinessTokens && index > release.Length) return Results.StatusCode(500);
             var expected = outbound;
             var form = await request.ReadFormAsync();
             if (form.Count != 4 || form["grant_type"] != "client_credentials" || form["client_id"] != expected.ClientId ||
-                form["client_secret"] != expected.ClientSecret || form["scope"] != Scope)
+                form["client_secret"] != expected.ClientSecret ||
+                (readinessTokens ? !ReceiverScopes.Contains(form["scope"].ToString(), StringComparer.Ordinal) : form["scope"] != Scope))
             {
                 Interlocked.Increment(ref invalidTokenRequests); return Results.BadRequest();
             }
             revisionsSent.Enqueue(expected.CredentialRevision);
+            if (readinessTokens) return Results.Json(new { access_token = "synthetic-token-" + index, token_type = "Bearer", expires_in = 900 });
             entered[index - 1].TrySetResult();
             await release[index - 1].Task.WaitAsync(request.HttpContext.RequestAborted);
             return Results.Json(new { access_token = "synthetic-token-" + index, token_type = "Bearer", expires_in = 900 });
@@ -515,6 +572,28 @@ public sealed class ManagedRatelDeskTokenRacePostgresTests(PostgreSqlPersistence
     }
     private sealed class FixedClock : TimeProvider
     {
-        public override DateTimeOffset GetUtcNow() => new(2026, 10, 5, 12, 0, 0, TimeSpan.Zero);
+        private DateTimeOffset current = new(2026, 10, 5, 12, 0, 0, TimeSpan.Zero);
+        public override DateTimeOffset GetUtcNow() => current;
+        internal void Advance(TimeSpan delta) => current += delta;
+    }
+    private sealed class ReadinessTransport(TimeProvider clock) : IRatelDeskReceiverTransport
+    {
+        internal bool Unavailable = true;
+        internal int CapabilityReads, TargetReads, BusinessRequests;
+        public Task<RatelDeskVerifiedCapability> CapabilitiesAsync(RatelDeskSemanticPeer peer, string bearer, CancellationToken ct)
+        {
+            CapabilityReads++;
+            if (Unavailable) throw new RatelDeskReceiverReadException("receiver-unavailable", 503, null);
+            return Task.FromResult(new RatelDeskVerifiedCapability(ReceiverWireValidation.Contract, peer.ReceiverInstanceId,
+                peer.SourceInstanceId, peer.SourceNamespaceId, new(peer.ApiBaseUrl + ReceiverWireValidation.CapabilitiesPath,
+                    peer.ApiBaseUrl + ReceiverWireValidation.CreatePath, peer.ApiBaseUrl + ReceiverWireValidation.ReceiptPath,
+                    peer.ApiBaseUrl + ReceiverWireValidation.TargetsPath), 7776000, 2592000, clock.GetUtcNow()));
+        }
+        public Task ValidateTargetsAsync(RatelDeskSemanticPeer peer, RatelDeskVerifiedCapability capability, string bearer, CancellationToken ct)
+        { TargetReads++; return Task.CompletedTask; }
+        public Task<RatelDeskReceiverObservation> LookupAsync(RatelDeskReceiverPreparationV2 prepared, string bearer, CancellationToken ct)
+        { BusinessRequests++; throw new InvalidOperationException("unexpected-receipt-read"); }
+        public Task<RatelDeskReceiverObservation> CreateAsync(RatelDeskReceiverPreparationV2 prepared, string bearer, CancellationToken ct)
+        { BusinessRequests++; throw new InvalidOperationException("unexpected-incident-create"); }
     }
 }

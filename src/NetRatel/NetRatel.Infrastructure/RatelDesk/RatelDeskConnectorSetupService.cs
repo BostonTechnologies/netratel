@@ -86,7 +86,13 @@ public sealed class RatelDeskConnectorSetupService(IRatelDeskConnectorAuthorizat
         if (connectors is null || receiver is null) return false;
         var connector = (await connectors.ListAsync(tenantId, ct)).FirstOrDefault(x => x.Configuration.Enabled &&
             x.Authentication?.Mode == RatelDeskAuthenticationMode.ManagedServiceLink && x.Authentication.ManagedLinkId == linkId);
-        return connector is not null && (await receiver.CurrentAsync(connector, ct)).Available;
+        if (connector is null) return false;
+        if ((await receiver.CurrentAsync(connector, ct)).Available) return true;
+        if (!await authorization.CanExecuteAsync(connector.OwnerPrincipalId, null, tenantId, ct)) return false;
+        // An authenticated peer check can renew an absent/expired read observation of this existing reference.
+        // The receiver rechecks the current protected grant, source, target and human owner at every phase.
+        // Catalog reads still use CurrentAsync directly; this path never creates a connector or business action.
+        return (await receiver.TestAsync(connector, ct)).AutomaticDeliveryAvailable;
     }
 
     public async Task EnsureApprovedReferenceAsync(int tenantId, string linkId, CancellationToken ct)
