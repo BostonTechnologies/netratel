@@ -113,7 +113,7 @@
             await _module.InvokeVoidAsync("attach", ScrollId, InitialViewport.ScrollX, InitialViewport.ScrollY, _reference);
             if (!_disposed) { IsReady = true; await Ready.InvokeAsync(); }
         }
-        catch (JSDisconnectedException) { }
+        catch (JSDisconnectedException) { return; }
     }
 
     [JSInvokable] public Task ViewportChanged(double x, double y)
@@ -205,10 +205,17 @@
     public async ValueTask DisposeAsync()
     {
         _disposed = true; IsReady = false; Unsubscribe();
-        if (_module is not null)
+        if (_module is { } module)
         {
-            try { await _module.InvokeVoidAsync("detach", ScrollId); await _module.DisposeAsync(); } catch (JSDisconnectedException) { }
+            _module = null;
+            try { await module.InvokeVoidAsync("detach", ScrollId); }
+            catch (JSDisconnectedException) { _reference?.Dispose(); _reference = null; }
+            finally
+            {
+                try { await module.DisposeAsync(); }
+                catch (JSDisconnectedException) { _reference?.Dispose(); _reference = null; }
+            }
         }
-        _reference?.Dispose();
+        _reference?.Dispose(); _reference = null;
     }
 }
