@@ -299,15 +299,16 @@ public sealed class ServiceLinkRotationHttpPostgresTests
         Assert.Single((await pair.StatusAsync(netRatelProduct ? pair.NetRatel.Administrator : pair.RatelDesk.Administrator, ct)).Rotations,
             r => r.RotationId == id);
 
-    private static async Task RestartBothAsync(ServiceLinkPair pair)
-    { await pair.NetRatel.RestartAsync(); await pair.RatelDesk.RestartAsync(); }
-
     private static async Task RestartBothAndObserveRecoveryAsync(ServiceLinkPair pair, ServiceLinkRotationResponseFault fault, CancellationToken ct)
     {
-        await RestartBothAsync(pair);
-        // Arm only AFTER both previous application processes have stopped and their
-        // genuine replacements have started. Earlier duplicates cannot satisfy this.
-        await fault.ObserveRecoveryAfterRestart().WaitAsync(TimeSpan.FromSeconds(30), ct);
+        await pair.NetRatel.StopForRestartAsync();
+        await pair.RatelDesk.StopForRestartAsync();
+        // Arm after both old runtimes stop and before either replacement can retry.
+        // The proxy also excludes handlers admitted before this restart boundary.
+        var recovery = fault.ObserveRecoveryAfterRestart();
+        await pair.NetRatel.StartAfterRestartAsync();
+        await pair.RatelDesk.StartAfterRestartAsync();
+        await recovery.WaitAsync(TimeSpan.FromSeconds(30), ct);
     }
 
     private static async Task WaitForCompletedAsync(ServiceLinkPair pair, string rotationId, CancellationToken ct)

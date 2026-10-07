@@ -205,6 +205,7 @@ internal sealed partial class ServiceLinkPublishedRatelDeskPeer : IAsyncDisposab
             ["Bootstrap__StateDirectory"] = "/var/lib/rateldesk/bootstrap",
             ["Bootstrap__DataDirectory"] = "/var/lib/rateldesk/data",
             ["StorageOptions__RootPath"] = "/app/storage",
+            ["StorageOptions__PublicApiBaseUrl"] = ApiBaseUrl,
             ["Bootstrap__Unattended__Provider"] = "PostgreSql",
             ["Bootstrap__Unattended__PostgreSqlConnectionString"] = connection,
             ["Bootstrap__Unattended__Email"] = "admin@example.test",
@@ -360,6 +361,13 @@ internal sealed partial class ServiceLinkPublishedRatelDeskPeer : IAsyncDisposab
     public async Task RestartAsync()
     {
         await ComposeAsync(["restart", "api", "web"]);
+        await StartAfterRestartAsync();
+    }
+
+    internal Task StopForRestartAsync() => ComposeAsync(["stop", "api", "web"]);
+
+    internal async Task StartAfterRestartAsync()
+    {
         await ComposeAsync(["up", "-d", "--no-build", "--wait", "--wait-timeout", "90", "api", "web"]);
         await LoginAsync();
     }

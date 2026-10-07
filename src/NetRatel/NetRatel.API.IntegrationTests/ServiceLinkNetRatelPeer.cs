@@ -226,10 +226,22 @@ internal sealed partial class ServiceLinkNetRatelPeer : IAsyncDisposable
     public async Task RestartAsync(CancellationToken ct = default)
     {
         if (physicalIncidentMode) { await RestartPhysicalProcessesAsync(ct); return; }
+        await StopForRestartAsync();
+        await StartAfterRestartAsync();
+    }
+
+    internal async Task StopForRestartAsync()
+    {
+        if (physicalIncidentMode) throw new InvalidOperationException("Physical process restart uses its owned process lifecycle.");
         Administrator.Dispose(); Anonymous.Dispose();
-        await app!.DisposeAsync();
-        sibling!.Dispose();
-        await StartAsync();
+        await app!.DisposeAsync(); app = null;
+        sibling!.Dispose(); sibling = null;
+    }
+
+    internal Task StartAfterRestartAsync()
+    {
+        if (physicalIncidentMode) throw new InvalidOperationException("Physical process restart uses its owned process lifecycle.");
+        return StartAsync();
     }
 
     public async Task AdoptActualPhysicalFlowProducerAsync(CancellationToken ct)

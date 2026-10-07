@@ -226,8 +226,16 @@ internal sealed partial class PhysicalIncidentFixture : IPhysicalIncidentFixture
             "The ordinary owner save did not bind the exact approved managed link.");
         var connection = await SendAsync<RatelDeskConnectionTestResult>(pair.NetRatel.Administrator, HttpMethod.Post,
             setupBase + $"/{connector:D}/connection-test", new { }, ct);
+        // Export only the existing bounded server result; no response body, URL, credential or exception text.
+        var readinessCode = connection.Code is "connector-changed-during-readiness" or "receiver-ready" or
+            "receiver-current-authority-denied" or "receiver-readiness-unverified" or "receiver-readiness-timeout" or
+            "connector-busy" or "receiver-authentication-rejected" or "receiver-current-grant-rejected" or
+            "receiver-target-rejected" or "receiver-rate-limited" or "receiver-redirect-refused" or
+            "receiver-capability-unavailable" or "receiver-target-validation-unavailable" ? connection.Code : "unclassified";
         Require(connection.AutomaticDeliveryAvailable && connection.Status == RatelDeskConnectionTestStatus.MappingValidated,
-            "Actual capability/namespace/targets/current credential did not permit delivery.");
+            $"Actual capability/namespace/targets/current credential did not permit delivery (status={(int)connection.Status}, " +
+            $"code={readinessCode}, automaticDelivery={connection.AutomaticDeliveryAvailable}, " +
+            $"retryAfterSeconds={Math.Clamp(connection.RetryAfterSeconds ?? 0, 0, 300)}).");
         var readiness = await ReadReadinessAsync(ct);
         sourceNamespace = readiness.Peer.SourceNamespaceId;
         Require(readiness.Peer.SourceInstanceId == pair.NetRatel.SourceInstanceId && readiness.Peer.ReceiverInstanceId == pair.RatelDesk.InstanceId.ToString("D"),

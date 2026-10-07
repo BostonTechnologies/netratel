@@ -21,6 +21,8 @@ internal sealed class ServiceLinkHttpProxy : IAsyncDisposable
     private string? lostResponseSuffix;
     private int lossPending;
     private readonly object observationSync = new();
+    private long requestAdmissionGeneration;
+    internal long CurrentRequestAdmission => Interlocked.Read(ref requestAdmissionGeneration);
     private PendingObservation? pendingObservation;
     private readonly List<ServiceLinkObservedOperation> completedObservations = [];
     private readonly List<ServiceLinkRotationResponseFault> rotationResponseFaults = [];
@@ -166,6 +168,9 @@ internal sealed class ServiceLinkHttpProxy : IAsyncDisposable
 
     private async Task ForwardAsync(HttpContext context)
     {
+        // Capture admission before any await so an old queued handler cannot
+        // satisfy a recovery observation armed after its application stopped.
+        var requestAdmission = Interlocked.Increment(ref requestAdmissionGeneration);
         var pause = Volatile.Read(ref terminalDelivery);
         if (pause is not null && HttpMethods.IsPost(context.Request.Method) &&
             context.Request.Path.Value is { } path && path.StartsWith(ServiceLinkContract.EndpointPath + "/links/", StringComparison.Ordinal) &&
@@ -220,7 +225,7 @@ internal sealed class ServiceLinkHttpProxy : IAsyncDisposable
                     rotationFault = possibleRotationFaults.SingleOrDefault(x => x.Matches(lifecycle));
                 if (rotationFault is not null)
                 {
-                    rotationClaimOwned = rotationFault.TryClaim(lifecycle);
+                    rotationClaimOwned = rotationFault.TryClaim(lifecycle, requestAdmission);
                     if (!rotationClaimOwned)
                     {
                         // After losing the committed response, hold identical recovery delivery
@@ -539,6 +544,7 @@ internal sealed class ServiceLinkRotationResponseFault(ServiceLinkHttpProxy owne
     private readonly object recoverySync = new();
     private long recoveryGeneration;
     private long awaitedRecoveryGeneration;
+    private long postRestartAdmissionBoundary;
     private TaskCompletionSource<long>? postRestartRecovery;
     private int postRestartRecoveriesProven;
     private bool disposed;
@@ -559,6 +565,7 @@ internal sealed class ServiceLinkRotationResponseFault(ServiceLinkHttpProxy owne
             if (postRestartRecovery is not null)
                 throw new InvalidOperationException("A post-restart recovery generation is already armed.");
             awaitedRecoveryGeneration = checked(recoveryGeneration + 1);
+            postRestartAdmissionBoundary = owner.CurrentRequestAdmission;
             postRestartRecovery = new(TaskCreationOptions.RunContinuationsAsynchronously);
             return postRestartRecovery.Task;
         }
@@ -572,7 +579,7 @@ internal sealed class ServiceLinkRotationResponseFault(ServiceLinkHttpProxy owne
         if (Phase == "offer") boundRotationId ??= request.RotationId;
         return true;
     }
-    internal bool TryClaim(ServiceLinkLifecycleRequest request)
+    internal bool TryClaim(ServiceLinkLifecycleRequest request, long requestAdmission)
     {
         var fingerprint = ServiceLinkLifecycleProjection.Hash(Phase == "verify" ? "verify" : "rotate", request);
         lock (recoverySync)
@@ -582,7 +589,8 @@ internal sealed class ServiceLinkRotationResponseFault(ServiceLinkHttpProxy owne
                 throw new InvalidOperationException("The real background recovery changed a durable rotation operation's semantic payload.");
             if (claimed == 0) { claimed = 1; requestFingerprint ??= fingerprint; return true; }
             recoveryGeneration = checked(recoveryGeneration + 1);
-            if (postRestartRecovery is not null && recoveryGeneration >= awaitedRecoveryGeneration)
+            if (postRestartRecovery is not null && recoveryGeneration >= awaitedRecoveryGeneration &&
+                requestAdmission > postRestartAdmissionBoundary)
             {
                 postRestartRecoveriesProven++;
                 postRestartRecovery.TrySetResult(recoveryGeneration);
