@@ -7,8 +7,15 @@ namespace NetRatel.API.IntegrationTests.ServiceLinks;
 
 internal static class PhysicalDiskIncidentAcceptance
 {
-    public static async Task RunAsync(IPhysicalIncidentFixture runtime, CancellationToken outer)
+    internal static void ReportProgress(Action<string>? progress, string stage)
     {
+        // Diagnostics must not replace the original physical operation or cleanup failure.
+        try { progress?.Invoke(stage); } catch { }
+    }
+
+    public static async Task RunAsync(IPhysicalIncidentFixture runtime, CancellationToken outer, Action<string>? progress = null)
+    {
+        void Mark(string stage) => ReportProgress(progress, stage);
         // Product boot/source adoption/image verification happens before this
         // call. The genuine Client enrolls before the ordinary pairing ceremony
         // selects its newly created job target. The native
@@ -17,10 +24,18 @@ internal static class PhysicalDiskIncidentAcceptance
         budget.CancelAfter(TimeSpan.FromSeconds(300));
         var ct = budget.Token;
         await using var ownership = runtime; // Stops containers before unmounting.
+        Mark("source-identity:start");
         await runtime.AssertExactCurrentSourcesAndPublishedCompanionAsync(ct);
+        Mark("source-identity:complete");
+        Mark("empty-authority:start");
         await runtime.AssertNoFixtureSeededExecutionAuthorityAsync(ct);
+        Mark("empty-authority:complete");
+        Mark("full-client:start");
         await runtime.StartFullProductionClientAsync(ct);
+        Mark("full-client:complete");
+        Mark("admission:start");
         var admitted = await runtime.WaitRealFirstHeartbeatAndTelemetryAdmissionAsync(ct);
+        Mark("admission:complete");
         Assert.NotEqual(Guid.Empty, admitted.AgentId);
         Assert.NotEqual(Guid.Empty, admitted.ConnectionId);
         Assert.NotEqual(Guid.Empty, admitted.EvidenceStreamId);
@@ -28,11 +43,17 @@ internal static class PhysicalDiskIncidentAcceptance
         Assert.Equal("full-production-NetRatel.Client", admitted.Producer);
         // Reuse the actual recorded-form-task HTTP ceremony with this genuinely
         // enrolled AgentId; preserve native ACK/result/provider-callback proof.
+        Mark("recorded-task:start");
         await runtime.RunProtectedRecordedFormTaskAsync(admitted.AgentId, ct);
+        Mark("recorded-task:complete");
+        Mark("second-replica:start");
         await runtime.StartSecondRealApiWorkerReplicaAsync(ct);
+        Mark("second-replica:complete");
 
+        Mark("baseline:start");
         var baseline = await UniqueCollectionsAsync(runtime, admitted.AgentId, after: default,
             condition: _ => true, requiredSpan: TimeSpan.FromSeconds(10), ct);
+        Mark("baseline:complete");
         Assert.All(baseline, sample => Assert.Equal("/netratel-physical-disk", sample.Scope));
         Assert.All(baseline, sample => Assert.True(sample.FreeBytes >= 2L * 1024 * 1024 * 1024));
         Assert.True(baseline.Max(x => x.FreeBytes) - baseline.Min(x => x.FreeBytes) < 16L * 1024 * 1024);
@@ -41,23 +62,39 @@ internal static class PhysicalDiskIncidentAcceptance
         Assert.True(physicalBytes <= minimum / 10 && minimum - physicalBytes >= 2L * 1024 * 1024 * 1024);
         var thresholds = new PhysicalThresholds(minimum - physicalBytes / 2, minimum - physicalBytes / 4,
             HoldSeconds: 10, RecoveryHoldSeconds: 10, FreshnessSeconds: 65);
+        Mark("flow-configuration:start");
         var configured = await runtime.ConfigureOwnerPublishedFlowAndSelectedDiskRuleAsync(admitted.AgentId,
             baseline[0].Scope, thresholds, ct);
+        Mark("flow-configuration:complete");
+        Mark("dry-run:start");
         await runtime.ValidateAndDryRunWithoutEffectsAsync(configured, ct);
+        Mark("dry-run:complete");
+        Mark("initial-durable-read:start");
         var before = await runtime.ReadScopedDurableProofAsync(configured, ct);
+        Mark("initial-durable-read:complete");
         RequireCount(before, 0);
 
+        Mark("response-loss:start");
         await using var loss = await runtime.ArmOneActualReceiver201AfterCommitLossAsync(configured, ct);
+        Mark("response-loss:complete");
+        Mark("first-allocation:start");
         var allocated = await runtime.AllocateOwnedVolumeAsync(physicalBytes, ct);
+        Mark("first-allocation:complete");
+        Mark("first-breach:start");
         var firstBreach = await UniqueCollectionsAsync(runtime, admitted.AgentId, allocated.CompletedAtUtc,
             sample => sample.FreeBytes < thresholds.BreachBytes, TimeSpan.FromSeconds(10), ct);
+        Mark("first-breach:complete");
+        Mark("committed-receipt:start");
         var committed = await loss.WaitIndependentCommittedReceiptAsync(ct);
+        Mark("committed-receipt:complete");
         Assert.Equal(201, committed.ActualUpstreamStatus);
         Assert.True(committed.TransactionCommitted && committed.ResponseAbortedAfterIndependentRead);
         Assert.Equal(1, committed.IncidentRows);
         Assert.Equal(1, committed.ReceiptRows);
         Assert.Equal(1, committed.ConfirmationEnqueues);
+        Mark("ambiguous-action:start");
         var ambiguous = await runtime.WaitDurableMayHaveCommittedActionAsync(configured, ct);
+        Mark("ambiguous-action:complete");
         RequireCount(ambiguous, 1);
         Assert.True(ambiguous.MayHaveCommitted && !ambiguous.ActionSucceeded);
         Assert.Equal(committed.NamespaceId, ambiguous.Actions[0].SourceNamespaceId);
@@ -65,16 +102,26 @@ internal static class PhysicalDiskIncidentAcceptance
         Assert.Equal(committed.Fingerprint, ambiguous.Actions[0].ReceiverFingerprint);
         // Loss holds only the identical action's real retry/lookup requests with
         // the original RequestAborted token. It never fabricates a receiver reply.
+        Mark("worker-restart:start");
         await runtime.RestartRealApiWorkerReplicasWithPersistedStateAsync(ct);
+        Mark("worker-restart:complete");
+        Mark("two-replicas:start");
         await runtime.AssertTwoActualWorkerReplicasAsync(ct);
+        Mark("two-replicas:complete");
+        Mark("rotation:start");
         var rotation = await runtime.RotateThroughActualOwnerServiceLinkAsync(ct);
+        Mark("rotation:complete");
         Assert.True(rotation.AfterCredentialRevision > rotation.BeforeCredentialRevision);
         Assert.Equal(rotation.BeforeSemanticRevision, rotation.AfterSemanticRevision);
         Assert.Equal(rotation.BeforeSourceNamespaceId, rotation.AfterSourceNamespaceId);
         Assert.Equal(ambiguous.Actions[0].SourceNamespaceId, rotation.AfterSourceNamespaceId);
+        Mark("same-key-recovery:start");
         await loss.ObserveRealSameKeyRecoveryAfterRestartAsync(ct);
+        Mark("same-key-recovery:complete");
         loss.ReleaseIdenticalRetryGate();
+        Mark("verified-action:start");
         var completed = await runtime.WaitRealVerifiedReceiptAndActionSuccessAsync(configured, ct);
+        Mark("verified-action:complete");
         RequireCount(completed, 1);
         Assert.True(completed.ActionSucceeded);
         Assert.Equal(ambiguous.Actions, completed.Actions);
@@ -82,23 +129,41 @@ internal static class PhysicalDiskIncidentAcceptance
         Assert.Equal(ambiguous.Incidents, completed.Incidents);
         Assert.Equal(ambiguous.Receipts, completed.Receipts);
         Assert.Equal(ambiguous.ConfirmationEffects, completed.ConfirmationEffects);
+        Mark("continued-breach:start");
         var stillBad = await UniqueCollectionsAsync(runtime, admitted.AgentId, allocated.CompletedAtUtc,
             sample => sample.FreeBytes < thresholds.BreachBytes, TimeSpan.FromSeconds(10), ct);
+        Mark("continued-breach:complete");
+        Mark("sustained-durable-read:start");
         var sustained = await runtime.ReadScopedDurableProofAsync(configured, ct);
+        Mark("sustained-durable-read:complete");
         RequireCount(sustained, 1);
         Assert.Equal(completed.Actions, sustained.Actions);
 
+        Mark("allocation-recovery:start");
         var recovered = await runtime.DeleteOnlyOwnedAllocationAsync(ct);
+        Mark("allocation-recovery:complete");
+        Mark("recovery-collections:start");
         var recoverySamples = await UniqueCollectionsAsync(runtime, admitted.AgentId, recovered.CompletedAtUtc,
             sample => sample.FreeBytes > thresholds.RecoveryBytes, TimeSpan.FromSeconds(10), ct);
+        Mark("recovery-collections:complete");
+        Mark("occurrence-resolution:start");
         await runtime.WaitActualOccurrenceResolvedOnceAsync(configured, completed.Occurrences[0], ct);
+        Mark("occurrence-resolution:complete");
+        Mark("recovery-durable-read:start");
         var recoveredProof = await runtime.ReadScopedDurableProofAsync(configured, ct);
+        Mark("recovery-durable-read:complete");
         RequireCount(recoveredProof, 1);
         Assert.Equal(completed.Actions, recoveredProof.Actions);
+        Mark("second-allocation:start");
         var secondAllocation = await runtime.AllocateOwnedVolumeAsync(physicalBytes, ct);
+        Mark("second-allocation:complete");
+        Mark("second-breach:start");
         var secondBreach = await UniqueCollectionsAsync(runtime, admitted.AgentId, secondAllocation.CompletedAtUtc,
             sample => sample.FreeBytes < thresholds.BreachBytes, TimeSpan.FromSeconds(10), ct);
+        Mark("second-breach:complete");
+        Mark("second-incident:start");
         var second = await runtime.WaitSecondActualOccurrenceAndVerifiedIncidentAsync(configured, ct);
+        Mark("second-incident:complete");
         RequireCount(second, 2);
         Assert.Contains(completed.Actions[0], second.Actions);
         Assert.Contains(completed.Occurrences[0], second.Occurrences);
@@ -109,21 +174,37 @@ internal static class PhysicalDiskIncidentAcceptance
         // Cache the actually CURRENT successor after rotation, and prove it is
         // authorized before unlink. A retired predecessor already returning401
         // would not establish that unlink caused the protected denial.
+        Mark("cached-authority:start");
         await using var cachedAuthorization = await runtime.CaptureActuallyIssuedBusinessAuthorizationPrivatelyAsync(ct);
+        Mark("cached-authority:complete");
         Assert.True(cachedAuthorization.ExpiresAtUtc > DateTimeOffset.UtcNow.AddMinutes(2));
+        Mark("cached-authority-control:start");
         Assert.Equal(HttpStatusCode.OK, await runtime.ProtectedReceiverLookupWithCachedAuthorizationAsync(
             cachedAuthorization, completed.Actions[0], ct));
+        Mark("cached-authority-control:complete");
+        Mark("peer-stop:start");
         await runtime.StopOnlyFixtureRatelDeskPeerAsync(ct);
+        Mark("peer-stop:complete");
+        Mark("owner-unlink:start");
         await runtime.UnlinkThroughActualOwnerAsync(reason: "isolated physical acceptance complete", ct);
+        Mark("owner-unlink:complete");
+        Mark("local-unlink:start");
         await runtime.AssertImmediateLocalSenderAndInboundAuthorityStoppedAsync(ct);
+        Mark("local-unlink:complete");
+        Mark("settled-unlink:start");
         await runtime.RestoreFixtureRatelDeskAndSettleUnlinkAsync(ct);
+        Mark("settled-unlink:complete");
         Assert.True(cachedAuthorization.ExpiresAtUtc > DateTimeOffset.UtcNow.AddSeconds(20));
+        Mark("cached-authority-denial:start");
         var deniedStatus = await runtime.ProtectedReceiverLookupWithCachedAuthorizationAsync(cachedAuthorization,
             completed.Actions[0], ct);
+        Mark("cached-authority-denial:complete");
         var denialObservedAtUtc = DateTimeOffset.UtcNow;
         Assert.Contains(deniedStatus, new[] { HttpStatusCode.Unauthorized, HttpStatusCode.Forbidden });
         Assert.True(cachedAuthorization.ExpiresAtUtc > denialObservedAtUtc);
+        Mark("old-authority-stopped:start");
         await runtime.AssertNoOldAuthorizationCanIssueOrSendAsync(cachedAuthorization, ct);
+        Mark("old-authority-stopped:complete");
         var latestDenialObservedAtUtc = cachedAuthorization.LatestDenialObservedAtUtc
             ?? throw new InvalidOperationException("The actual final cached-token denial observation is missing.");
         Assert.True(latestDenialObservedAtUtc >= denialObservedAtUtc);
@@ -132,19 +213,29 @@ internal static class PhysicalDiskIncidentAcceptance
             cachedAuthorization.ExpiresAtUtc, latestDenialObservedAtUtc,
             cachedAuthorization.PositivelyControlledInboundReplicas, cachedAuthorization.ImmediateDeniedInboundReplicas,
             cachedAuthorization.SettledDeniedInboundReplicas, SamePrivateAuthorizationHandleUsed: true);
+        Mark("terminal-durable-read:start");
         var terminal = await runtime.ReadScopedDurableProofAsync(configured, ct);
+        Mark("terminal-durable-read:complete");
         RequireCount(terminal, 2);
         Assert.Equal(second.Actions, terminal.Actions);
         // Cleanup is part of acceptance. No PASS document may claim a future
         // teardown succeeded. These owned ports must dispose idempotently;
         // await-using still covers failures before this successful path.
+        Mark("cleanup-cached-authority:start");
         await cachedAuthorization.DisposeAsync();
+        Mark("cleanup-cached-authority:complete");
+        Mark("cleanup-loss:start");
         await loss.DisposeAsync();
+        Mark("cleanup-loss:complete");
+        Mark("cleanup-runtime:start");
         await runtime.DisposeAsync();
+        Mark("cleanup-runtime:complete");
         // Export only this typed schema. Native inputs, tokens, raw bodies,
         // arbitrary logs and browser traces never become proof artifacts.
+        Mark("proof-export:start");
         await runtime.WritePrivacySafePhysicalProofAsync(admitted, configured, baseline, firstBreach, stillBad,
             recoverySamples, secondBreach, allocated, recovered, rotation, committed, terminal, unlinkProof, ct);
+        Mark("proof-export:complete");
     }
 
     private static async Task<PhysicalDiskSample[]> UniqueCollectionsAsync(IPhysicalIncidentFixture runtime,

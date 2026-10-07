@@ -44,8 +44,52 @@ jobs:
       - run: dotnet restore NetRatel.sln
       - run: tools/ci/verify-product-version.sh
       - run: python3 tools/ci/test-release-validation.py
-      - run: bash tools/ci/tests/nginx-gateway-idle.sh
-      - run: dotnet build NetRatel.sln --configuration Release --no-restore
+      - name: Check nginx gateway idle and build Release
+        run: |
+          set -euo pipefail
+          build_pid=''
+          cleanup_build() {
+            local status=$?
+            if [[ -n "$build_pid" ]]; then
+              # Match the generic driver's active-job ownership check before
+              # signalling a group; a completed child may retain a wait status.
+              for running_pid in $(jobs -pr); do
+                if [[ "$running_pid" == "$build_pid" ]]; then
+                  kill -TERM -- "-$build_pid" 2>/dev/null || true
+                fi
+              done
+              wait "$build_pid" 2>/dev/null || true
+              build_pid=''
+            fi
+            return "$status"
+          }
+          trap cleanup_build EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+          # The original idle probe reads checked-in assets and spends 65 seconds
+          # on the same quiet stream. It needs no compiled .NET output.
+          # Keep its Docker ownership and cleanup in the original foreground script.
+          setsid dotnet build NetRatel.sln --configuration Release --no-restore &
+          build_pid=$!
+          if bash tools/ci/tests/nginx-gateway-idle.sh; then
+            idle_status=0
+          else
+            idle_status=$?
+          fi
+          # Await both actual commands even after an ordinary probe failure.
+          # Clear ownership immediately after the Release build has been reaped.
+          if wait "$build_pid"; then
+            build_pid=''
+            build_status=0
+          else
+            build_status=$?
+            build_pid=''
+          fi
+          printf 'Nginx idle check completed with exit %s.\n' "$idle_status"
+          printf 'Release build completed with exit %s.\n' "$build_status"
+          # Preserve the original idle-check then build failure precedence.
+          if [[ "$idle_status" -ne 0 ]]; then exit "$idle_status"; fi
+          exit "$build_status"
       - run: pwsh src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/playwright.ps1 install --with-deps chromium
       - name: Run generic tests and final-head visual acceptance
         env:

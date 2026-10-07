@@ -57,25 +57,36 @@ internal sealed partial class PhysicalIncidentFixture : IPhysicalIncidentFixture
     private bool localUnlinkVerified;
     private PhysicalApiProcess[]? terminalProcesses;
     private int Tenant => int.Parse(pair.NetRatel.TenantId, CultureInfo.InvariantCulture);
-    public static async Task<PhysicalIncidentFixture> CreateAsync(CancellationToken ct)
+    public static async Task<PhysicalIncidentFixture> CreateAsync(CancellationToken ct, Action<string>? progress = null)
     {
+        void Mark(string stage) => PhysicalDiskIncidentAcceptance.ReportProgress(progress, stage);
         if (!OperatingSystem.IsLinux()) throw new InvalidOperationException("The required genuine physical disk lane must run on Linux.");
         var fixture = new PhysicalIncidentFixture();
+        Mark("setup:start");
         try
         {
+            Mark("artifacts:start");
             fixture.artifacts = await ServiceLinkNativeArtifacts.ResolveAsync(ct);
+            Mark("artifacts:complete");
+            Mark("pair:start");
             fixture.pair = await ServiceLinkPair.CreateAsync(true, nativeListener: fixture.listener,
                 rotationPolicy: new(false, false), useSystemTime: true, physicalIncidentMode: true);
+            Mark("pair:complete");
+            Mark("producer-adoption:start");
             await fixture.pair.NetRatel.AdoptActualPhysicalFlowProducerAsync(ct);
+            Mark("producer-adoption:complete");
             var repository = FindRepository();
             var helper = Path.Combine(repository, "tools", "testing", "physical-incident", "physical_disk_fixture_process.py");
             var work = Environment.GetEnvironmentVariable("NETRATEL_PHYSICAL_WORK_ROOT")
                 ?? throw new InvalidOperationException("The required Linux lane did not select its owned disk-backed fixture work root.");
+            Mark("disk-provision:start");
             fixture.disk = new PhysicalDiskFixtureProcess(helper, work);
             fixture.provision = await fixture.disk.ProvisionAsync(ct);
+            Mark("disk-provision:complete");
+            Mark("setup:complete");
             return fixture;
         }
-        catch { await fixture.DisposeAsync(); throw; }
+        catch { Mark("setup-cleanup:start"); await fixture.DisposeAsync(); Mark("setup-cleanup:complete"); throw; }
     }
 
     public async Task AssertExactCurrentSourcesAndPublishedCompanionAsync(CancellationToken ct)
