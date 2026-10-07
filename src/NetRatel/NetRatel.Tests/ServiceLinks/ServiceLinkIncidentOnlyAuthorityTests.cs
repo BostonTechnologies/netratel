@@ -39,9 +39,9 @@ public sealed class ServiceLinkIncidentOnlyAuthorityTests
         { LinkId = null, AttemptId = null, GrantHash = null, DescriptorHash = null, DirectionId = null }));
         await Assert.ThrowsAsync<ArgumentException>(() => registry.CreatePendingAsync(request with
         { Scopes = [ServiceIdentityScopes.OrchestrationRead] }, "authenticated-approver"));
-        db.Tenants.Remove(await db.Tenants.SingleAsync());
-        await db.SaveChangesAsync();
-        Assert.False(await ServiceLinkGrantAuthority.ControlResourcesCurrentAsync(db, constraints, CancellationToken.None));
+        Assert.True(await ServiceLinkGrantAuthority.ControlResourcesCurrentAsync(db, constraints, CancellationToken.None));
+        Assert.False(await ServiceLinkGrantAuthority.ControlResourcesCurrentAsync(db,
+            constraints with { TenantId = "72" }, CancellationToken.None));
     }
 
     private sealed class Runtime(ServiceIdentityOptions options) : IServiceIdentityRuntimeOptions
