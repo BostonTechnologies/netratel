@@ -106,6 +106,7 @@ builder.Services.AddScoped<GatewayTelemetryApiService>();
 builder.Services.AddScoped<GatewayTelemetryLiveStreamService>();
 builder.Services.AddScoped<IClientServicesApiService, ClientServicesApiService>();
 builder.Services.AddScoped<IMonitoringApiService, MonitoringApiService>();
+builder.Services.AddScoped<IOperationsDashboardApiService, OperationsDashboardApiService>();
 builder.Services.AddScoped<IClientServicesLiveStreamService, ClientServicesLiveStreamService>();
 builder.Services.AddScoped<NetRatel.Web.Services.Flows.IFlowApiService, NetRatel.Web.Services.Flows.FlowApiService>();
 builder.Services.AddTransient<TelemetryOverviewStreamService>();
