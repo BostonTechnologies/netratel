@@ -184,8 +184,13 @@
             if (!token.IsCancellationRequested && _tenantId == tenantId) { _recentRuns = runs; _jobsError = null; _jobsUpdatedAtUtc = DateTimeOffset.UtcNow; }
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
-        catch (HttpRequestException)
-        { if (!token.IsCancellationRequested && _tenantId == tenantId) _jobsError = "Recent jobs are unavailable. Refresh to try again."; }
+        catch (HttpRequestException exception)
+        {
+            if (!token.IsCancellationRequested && _tenantId == tenantId)
+                _jobsError = exception.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden
+                    ? "You do not have permission to view recent jobs in this tenant."
+                    : "Recent jobs are unavailable. Refresh to try again.";
+        }
     }
 
     private Task PreviousPageAsync() { _page = Math.Max(0, (_snapshot?.Page ?? _page) - 1); return RefreshAsync(); }
@@ -203,7 +208,11 @@
         $"{(long)snapshot.Page * snapshot.PageSize + 1}–{(long)snapshot.Page * snapshot.PageSize + snapshot.Clients.Length} of {snapshot.AlertingClients} clients";
     private static Color SeverityColor(MonitoringSeverity severity) => severity switch { MonitoringSeverity.Critical => Color.Error, MonitoringSeverity.Warning => Color.Warning, _ => Color.Info };
     private static Color RunColor(JobRunStatusDto status) => status switch { JobRunStatusDto.Running => Color.Info, JobRunStatusDto.Succeeded => Color.Success, JobRunStatusDto.Failed or JobRunStatusDto.TimedOut => Color.Error, _ => Color.Default };
-    private static string RunStatus(JobRunStatusDto status) => status == JobRunStatusDto.TimedOut ? "Timed out" : status.ToString();
+    private static string RunStatus(JobRunStatusDto status) => status switch
+    {
+        JobRunStatusDto.Pending => "Pending", JobRunStatusDto.Running => "Running", JobRunStatusDto.Succeeded => "Succeeded",
+        JobRunStatusDto.Failed => "Failed", JobRunStatusDto.Cancelled => "Cancelled", JobRunStatusDto.TimedOut => "Timed out", _ => "Unknown"
+    };
     private string FormatTime(DateTimeOffset value) => TimeZoneInfo.ConvertTime(value, _timeZone).ToString("yyyy-MM-dd HH:mm:ss zzz") + $" ({_timeZoneName})";
     public async ValueTask DisposeAsync()
     {
