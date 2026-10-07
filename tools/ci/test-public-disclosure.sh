@@ -25,6 +25,8 @@ new_fixture() {
 }
 
 accepted_fixture="$(new_fixture accepted)"
+printf '%s\n' 'bostec.service-link.incident-only.v1' 'bostec-service-link.incident-only.v1.md' >> "$accepted_fixture/README.md"
+git -C "$accepted_fixture" add README.md
 "$accepted_fixture/tools/ci/check-public-disclosure.sh" >/dev/null
 
 forbidden_path_fixture="$(new_fixture forbidden-path)"
