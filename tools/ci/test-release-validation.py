@@ -225,10 +225,10 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
         for path in workflow_paths:
             source = path.read_text(encoding="utf-8")
             with self.subTest(workflow=path.name):
-                # Retain this existing test ID while requiring backend overlap and
-                # join-before-UI ordering, with each individual MTP module bounded.
-                run_start = source.index("setsid bash -c '")
-                run_end = source.index("\n          ' &\n          generic_pid=$!", run_start)
+                # Retain this test ID and all module/receipt contracts while
+                # requiring the complete physical wrapper to finish before Core.
+                run_start = source.index("          generic_status=0\n          generic_test_arguments=(")
+                run_end = source.index("\n          generic_pid=$!", run_start)
                 run_command = source[run_start:run_end]
                 self.assertIn("set -euo pipefail", run_command)
                 self.assertIn("--configuration Release --no-build --max-parallel-test-modules 1", run_command)
@@ -243,21 +243,83 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
                 )
                 for project in expected_projects:
                     self.assertEqual(1, run_command.count(project))
-                backend_commands = re.findall(r'^\s*dotnet test --project ([^ ]+) "\$\{generic_test_arguments\[@\]\}" &$' , run_command, re.MULTILINE)
+                backend_commands = re.findall(
+                    r'^\s*setsid dotnet test --project ([^ ]+) "\$\{generic_test_arguments\[@\]\}" &$',
+                    run_command, re.MULTILINE,
+                )
                 self.assertEqual(list(expected_projects[:2]), backend_commands)
-                backend_join = run_command.index('for module_pid in "$api_pid" "$core_pid"; do')
+                api_start = run_command.index(f"setsid dotnet test --project {expected_projects[0]}")
+                core_start = run_command.index(f"setsid dotnet test --project {expected_projects[1]}")
+                physical_command = (
+                    "setsid bash tools/ci/run-physical-disk-incident-proof.sh "
+                    "> TestResults/physical-disk-incident/profile.log 2>&1 &"
+                )
+                self.assertEqual(1, run_command.count(physical_command))
+                self.assertRegex(
+                    run_command,
+                    rf"(?m)^          api_pid=\$!\n          {re.escape(physical_command)}\n"
+                    r'          physical_pid=\$!\n          if wait "\$physical_pid"; then',
+                )
+                physical_start = run_command.index(physical_command)
+                physical_wait = run_command.index('if wait "$physical_pid"; then')
+                physical_clear = run_command.index("physical_pid=''")
+                backend_join = run_command.index("for module_variable in api_pid core_pid; do")
+                backend_done = run_command.index("\n          done\n", backend_join)
+                ui_launch = run_command.index("setsid bash -c '", backend_join)
                 ui_start = run_command.index("for module_project in")
+                self.assertLess(api_start, run_command.index("api_pid=$!"))
+                self.assertLess(run_command.index("api_pid=$!"), physical_start)
+                self.assertLess(physical_start, run_command.index("physical_pid=$!"))
+                self.assertLess(run_command.index("physical_pid=$!"), physical_wait)
+                self.assertLess(physical_wait, physical_clear)
+                self.assertLess(physical_clear, core_start)
+                self.assertLess(core_start, run_command.index("core_pid=$!"))
                 self.assertLess(run_command.index("core_pid=$!"), backend_join)
                 self.assertLess(backend_join, ui_start)
-                self.assertIn('if wait "$module_pid"; then', run_command[backend_join:ui_start])
-                self.assertIn("module_status=$?", run_command[backend_join:ui_start])
+                self.assertLess(backend_done, ui_launch)
+                self.assertLess(ui_launch, ui_start)
+                # The mandatory wrapper cannot be hidden behind a presence or
+                # success condition; nonzero completion still reaches every module.
+                self.assertNotRegex(run_command[:physical_start], r"(?m)^\s*(?:if|case|for|while|until)\b")
+                physical_join = run_command[physical_wait:core_start]
+                self.assertRegex(
+                    physical_join,
+                    r'(?s)if wait "\$physical_pid"; then\s+physical_status=0\s+else\s+physical_status=\$\?\s+fi',
+                )
+                self.assertEqual(1, run_command.count("physical_pid=''"))
+                self.assertLess(physical_join.index("physical_status=$?"), physical_join.index("physical_pid=''"))
+                backend_join_command = run_command[backend_join:ui_launch]
+                self.assertIn('module_pid="${!module_variable}"', backend_join_command)
+                self.assertRegex(
+                    backend_join_command,
+                    r'(?s)if wait "\$module_pid"; then\s+module_status=0\s+else\s+module_status=\$\?\s+fi',
+                )
+                status_fold = (
+                    r'if \[\[ "\$generic_status" -eq 0 && "\$module_status" -ne 0 \]\]; then'
+                    r'\s+generic_status=\$module_status\s+fi'
+                )
+                self.assertRegex(backend_join_command, status_fold)
+                backend_clear = 'printf -v "$module_variable" \'%s\' \'\''
+                self.assertEqual(1, backend_join_command.count(backend_clear))
+                self.assertLess(backend_join_command.index("module_status=$?"), backend_join_command.index(backend_clear))
+                self.assertIn(
+                    'for owned_pid in "$gateway_pid" "$generic_pid" "$physical_pid" "$api_pid" "$core_pid"; do',
+                    source,
+                )
                 self.assertNotIn("exit ", run_command[:ui_start])
+                # Backend status and the unchanged argv cross the quoted nested
+                # shell boundary; both UI modules run serially on ordinary failure.
+                self.assertRegex(run_command, r'generic_status="\$1"\s+shift\s+for module_project in')
+                self.assertIn('\' _ "$generic_status" "${generic_test_arguments[@]}" &', run_command)
                 ui_loop = run_command[ui_start:]
                 self.assertLess(ui_loop.index(expected_projects[2]), ui_loop.index(expected_projects[3]))
-                self.assertIn('if dotnet test --project "$module_project" "${generic_test_arguments[@]}"; then', ui_loop)
+                self.assertIn('if dotnet test --project "$module_project" "$@"; then', ui_loop)
                 self.assertIn("module_status=$?", ui_loop)
+                self.assertRegex(ui_loop, status_fold)
                 self.assertEqual(2, run_command.count('if [[ "$generic_status" -eq 0 && "$module_status" -ne 0 ]]; then'))
                 self.assertIn('exit "$generic_status"', ui_loop)
+                ui_done = ui_loop.index("\n            done\n")
+                self.assertLess(ui_done, ui_loop.index('exit "$generic_status"'))
                 self.assertIn(
                     "NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT: ${{ github.workspace }}/src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/TestResults/playwright",
                     source,
