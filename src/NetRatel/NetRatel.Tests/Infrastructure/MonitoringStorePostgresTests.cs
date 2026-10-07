@@ -365,6 +365,12 @@ public sealed class MonitoringStorePostgresTests(PostgreSqlPersistenceFixture fi
             cleared.State!.Phase.Should().Be(MonitoringPhase.Cleared);
             (await actor.Ask<MonitoringStoreWriteResult>(new ClearMonitoringOccurrence(clear))).Disposition.Should().Be(MonitoringStoreWriteDisposition.Stored);
             (await actor.Ask<MonitoringStoreWriteResult>(new AcknowledgeMonitoringOccurrence(command))).Code.Should().Be("monitoring_occurrence_closed");
+            await using (var rename = rig.Provider.CreateAsyncScope())
+            {
+                var db = rename.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+                (await db.Agents.SingleAsync()).Name = "Renamed controlled client";
+                await db.SaveChangesAsync();
+            }
             for (ulong sequence = 6; sequence <= 7; sequence++)
             {
                 rig.Time.Advance(TimeSpan.FromSeconds(1));
@@ -373,6 +379,9 @@ public sealed class MonitoringStorePostgresTests(PostgreSqlPersistenceFixture fi
             var next = (await actor.Ask<ImmutableArray<MonitoringSeriesState>>(new GetClientMonitoring(rig.Client))).Single();
             next.Phase.Should().Be(MonitoringPhase.Firing);
             next.Occurrence!.OccurrenceId.Should().NotBe(drawer.Occurrence.OccurrenceId);
+            next.Occurrence.ClientIdentity!.DisplayName.Should().Be("Renamed controlled client");
+            (await rig.Store.ReadTenantEventsAsync(rig.Client.TenantId, 20, null, default)).Items
+                .Single(item => item.Kind == MonitoringEventKind.AlertAcknowledged).ClientIdentity!.DisplayName.Should().Be("Beta.3 controlled client");
             (await actor.Ask<MonitoringStoreWriteResult>(new AcknowledgeMonitoringOccurrence(command))).Code.Should().Be("monitoring_occurrence_replaced");
             (await rig.Store.ReadTenantEventsAsync(rig.Client.TenantId, 20, null, default)).Items
                 .Count(item => item.Kind == MonitoringEventKind.AlertCleared).Should().Be(1);

@@ -69,7 +69,8 @@ public sealed partial class MonitoringStore
     {
         if (result.State.Occurrence is { } occurrence)
         {
-            var identity = current is null ? null : ReadState(current).Occurrence?.ClientIdentity;
+            var previousOccurrence = current is null ? null : ReadState(current).Occurrence;
+            var identity = previousOccurrence?.OccurrenceId == occurrence.OccurrenceId ? previousOccurrence.ClientIdentity : null;
             if (identity is null)
             {
                 var agent = await db.Agents.IgnoreQueryFilters().AsNoTracking().Where(agent => agent.TenantId == result.State.Series.TenantId && agent.Id == result.State.Series.AgentId)
