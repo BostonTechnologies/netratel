@@ -4,6 +4,11 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$root"
 
+if ! command -v rg >/dev/null 2>&1; then
+  echo "ripgrep (rg) is required for the PostgreSQL-only provider and deployment scans." >&2
+  exit 1
+fi
+
 if [[ -e compose.sqlite.yaml || -e release/compose.local-sqlite.yaml || -e src/NetRatel/NetRatel.SqliteMigrations ]]; then
   echo "An active first-party SQLite deployment or migration artifact remains." >&2
   exit 1

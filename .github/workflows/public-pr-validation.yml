@@ -777,7 +777,9 @@ jobs:
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
           global-json-file: global.json
-      - run: |
+      - name: Run bash tools/ci/check-postgresql-only.sh
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends ripgrep
           bash tools/ci/check-postgresql-only.sh
           rm -f TestResults/postgresql-regressions/postgresql-regressions.trx
           dotnet test --project src/NetRatel/NetRatel.Tests/NetRatel.Tests.csproj --configuration Release \
