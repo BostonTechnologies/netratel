@@ -84,6 +84,24 @@ public sealed class GatewaySessionDiagnosticsTests
             .And.NotContain(Secret);
     }
 
+    [Fact]
+    public void RenewalFailure_RecordsSafePhaseAndExpiryDeltaWithoutArbitraryDetailOrTrailers()
+    {
+        var clock = new GatewayPresenceTestClock();
+        var diagnostics = new GatewaySessionDiagnostics("https://gateway.example.invalid", clock);
+        var cache = clock.GetUtcNow().AddMinutes(10);
+        var authority = cache.AddMilliseconds(250);
+        diagnostics.Renewal("ack-validation", cache, authority, authority);
+        diagnostics.ProtocolFailure("renewal_authority_overextended");
+        var peerCorrelation = Guid.NewGuid();
+        var trailers = new Metadata { { "x-correlation-id", peerCorrelation.ToString("D") },
+            { "retry-after", "900" }, { "authorization", Secret }, { "grpc-message", Secret }, { "custom-secret", Secret } };
+        var failure = diagnostics.Failure(new RpcException(new Status(StatusCode.DataLoss, Secret), trailers), TimeSpan.FromSeconds(1));
+        failure.Message.Should().Contain("failureOrigin=local-validation").And.Contain("renewalPhase=ack-validation")
+            .And.Contain("serverMinusCacheMs=250").And.Contain("statusDetail=redacted")
+            .And.Contain($"correlation:{peerCorrelation:D}").And.Contain("retryAfterSeconds:600").And.NotContain(Secret);
+    }
+
     [Theory]
     [InlineData(StatusCode.PermissionDenied)]
     [InlineData(StatusCode.Unauthenticated)]

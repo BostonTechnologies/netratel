@@ -136,7 +136,10 @@ internal sealed class WindowsScmServiceInventoryCollector : IServiceInventoryCol
         };
         var state = service.AuthoritativeMissing ? ClientServiceState.Missing : service.CurrentState switch
         {
-            1 when service.Win32ExitCode != 0 || service.ServiceSpecificExitCode != 0 => ClientServiceState.Failed,
+            // ERROR_SERVICE_NEVER_STARTED describes a service that has not run
+            // since boot. The SCM ignores the service-specific code unless the
+            // Win32 code is ERROR_SERVICE_SPECIFIC_ERROR (1066).
+            1 when service.Win32ExitCode is not (0 or 1077) => ClientServiceState.Failed,
             1 => ClientServiceState.Stopped,
             2 or 5 => ClientServiceState.Starting,
             3 => ClientServiceState.Stopping,
@@ -153,6 +156,10 @@ internal sealed class WindowsScmServiceInventoryCollector : IServiceInventoryCol
             4 => "Disabled",
             _ => null
         };
+        if (state == ClientServiceState.Failed)
+            rawState += service.Win32ExitCode == 1066
+                ? $" (Win32 exit 1066; service exit {service.ServiceSpecificExitCode})"
+                : $" (Win32 exit {service.Win32ExitCode})";
         var displayName = new string(service.DisplayName.Take(ClientServicesLimits.MaximumDisplayNameLength)
             .Select(character => char.IsControl(character) ? ' ' : character).ToArray());
         if (displayName.Length > 0 && char.IsHighSurrogate(displayName[^1])) displayName = displayName[..^1];

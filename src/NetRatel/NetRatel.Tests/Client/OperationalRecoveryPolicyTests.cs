@@ -1,5 +1,7 @@
 using System.Globalization;
+using System.Security.Authentication;
 using AwesomeAssertions;
+using Grpc.Core;
 using NetRatel.Client.Service.Auth;
 using Xunit;
 
@@ -7,6 +9,23 @@ namespace NetRatel.Tests.Client;
 
 public sealed class OperationalRecoveryPolicyTests
 {
+    [Theory]
+    [InlineData(StatusCode.DataLoss, false)]
+    [InlineData(StatusCode.Unavailable, false)]
+    [InlineData(StatusCode.Unauthenticated, false)]
+    [InlineData(StatusCode.PermissionDenied, true)]
+    public void RpcClassification_ProtocolLossDoesNotClaimInvalidCredentials(StatusCode status, bool attention)
+    {
+        OperationalRecoveryFailure.RequiresAttention(new RpcException(new Status(status, "redacted"))).Should().Be(attention);
+    }
+
+    [Fact]
+    public void DataLoss_WithTypedTrustFailureStillRequiresAttention()
+    {
+        OperationalRecoveryFailure.RequiresAttention(new RpcException(
+            new Status(StatusCode.DataLoss, "redacted", new AuthenticationException("redacted")))).Should().BeTrue();
+    }
+
     [Theory]
     [InlineData(0, 1, 2, 4, 8, 15)]
     [InlineData(1, 2, 4, 8, 16, 30)]

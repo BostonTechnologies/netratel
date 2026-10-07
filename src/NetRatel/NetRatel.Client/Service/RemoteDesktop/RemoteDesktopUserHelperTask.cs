@@ -193,6 +193,11 @@ internal sealed class RemoteDesktopUserHelperTask
     public async Task<bool> StartForSessionAsync(uint sessionId, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
+        object? serviceObject = null;
+        object? folderObject = null;
+        object? taskObject = null;
+        object? runningObject = null;
+        var taskStatus = "unavailable";
         try
         {
             if (sessionId == uint.MaxValue || sessionId == 0)
@@ -202,32 +207,35 @@ internal sealed class RemoteDesktopUserHelperTask
 
             var serviceType = Type.GetTypeFromProgID("Schedule.Service")
                 ?? throw new InvalidOperationException("Task Scheduler COM service is unavailable.");
-            dynamic service = Activator.CreateInstance(serviceType)
+            serviceObject = Activator.CreateInstance(serviceType)
                 ?? throw new InvalidOperationException("Unable to create Task Scheduler COM service.");
+            dynamic service = serviceObject;
             service.Connect();
-            dynamic rootFolder = service.GetFolder("\\");
-            dynamic task;
+            folderObject = service.GetFolder("\\");
+            dynamic rootFolder = folderObject;
             try
             {
-                task = rootFolder.GetTask(RemoteDesktopUserHelperConstants.TaskName);
+                taskObject = rootFolder.GetTask(RemoteDesktopUserHelperConstants.TaskName);
             }
             catch (COMException ex) when (unchecked((uint)ex.HResult) == ErrorFileNotFound)
             {
                 LogManager.WriteLog($"[RemoteDesktop] Helper task missing; re-registering task={RemoteDesktopUserHelperConstants.TaskName}");
-                await EnsureRegisteredAsync(ct, force: true).ConfigureAwait(false);
-                task = rootFolder.GetTask(RemoteDesktopUserHelperConstants.TaskName);
+                if (!await EnsureRegisteredAsync(ct, force: true).ConfigureAwait(false)) return false;
+                taskObject = rootFolder.GetTask(RemoteDesktopUserHelperConstants.TaskName);
             }
+            dynamic task = taskObject;
+            taskStatus = $"enabled={task.Enabled}, taskState={task.State}, lastTaskResult=0x{unchecked((uint)(int)task.LastTaskResult):X8}";
 
             try
             {
                 ct.ThrowIfCancellationRequested();
-                _ = task.RunEx(null, TaskRunUseSessionId, unchecked((int)sessionId), null);
-                LogManager.WriteLog($"[RemoteDesktop] Requested targeted user helper task RunEx task={RemoteDesktopUserHelperConstants.TaskName} session={sessionId}");
-                return true;
+                runningObject = task.RunEx(null, TaskRunUseSessionId, unchecked((int)sessionId), null);
+                LogManager.WriteLog($"[RemoteDesktop] Requested targeted user helper task RunEx task={RemoteDesktopUserHelperConstants.TaskName} session={sessionId} flags=0x{TaskRunUseSessionId:X} {taskStatus} requestAccepted={runningObject is not null} helperReadiness=unconfirmed");
+                return runningObject is not null;
             }
             catch (COMException ex)
             {
-                LogManager.WriteLog($"[RemoteDesktop] Helper task RunEx COM failure session={sessionId} hresult=0x{ex.HResult:X8}: {ex.Message}");
+                LogManager.WriteLog($"[RemoteDesktop] Helper task RunEx COM failure session={sessionId} hresult=0x{ex.HResult:X8} {taskStatus}: {TrimForLog(ex.Message)}");
             }
 
             return TryLaunchHelperDirectly(sessionId);
@@ -238,8 +246,15 @@ internal sealed class RemoteDesktopUserHelperTask
         }
         catch (Exception ex)
         {
-            LogManager.WriteLog($"[RemoteDesktop] Helper task RunEx warning; continuing without scheduled-task launch: {ex.Message}");
+            LogManager.WriteLog($"[RemoteDesktop] Helper task RunEx warning; continuing without scheduled-task launch: session={sessionId} exception={ex.GetType().Name} hresult=0x{ex.HResult:X8} {taskStatus}: {TrimForLog(ex.Message)}");
             return false;
+        }
+        finally
+        {
+            ReleaseComObject(runningObject);
+            ReleaseComObject(taskObject);
+            ReleaseComObject(folderObject);
+            ReleaseComObject(serviceObject);
         }
     }
 

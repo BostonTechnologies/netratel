@@ -32,6 +32,7 @@ public sealed class AgentEnrollmentService : IAgentEnrollmentService
             os = Environment.OSVersion.Platform.ToString(),
             osVersion = Environment.OSVersion.VersionString,
             hostName = Environment.MachineName,
+            reportedAddress = AgentDeviceIdentity.GetReportedAddress(),
             architecture = System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture.ToString(),
             framework = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription
         };

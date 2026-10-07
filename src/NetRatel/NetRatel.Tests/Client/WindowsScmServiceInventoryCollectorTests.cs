@@ -10,8 +10,10 @@ public sealed class WindowsScmServiceInventoryCollectorTests
 {
     [Theory]
     [InlineData(1, 0, 0, ClientServiceState.Stopped, "SERVICE_STOPPED")]
-    [InlineData(1, 5, 0, ClientServiceState.Failed, "SERVICE_STOPPED")]
-    [InlineData(1, 1066, 7, ClientServiceState.Failed, "SERVICE_STOPPED")]
+    [InlineData(1, 0, 7, ClientServiceState.Stopped, "SERVICE_STOPPED")]
+    [InlineData(1, 1077, 0, ClientServiceState.Stopped, "SERVICE_STOPPED")]
+    [InlineData(1, 5, 0, ClientServiceState.Failed, "SERVICE_STOPPED (Win32 exit 5)")]
+    [InlineData(1, 1066, 7, ClientServiceState.Failed, "SERVICE_STOPPED (Win32 exit 1066; service exit 7)")]
     [InlineData(2, 0, 0, ClientServiceState.Starting, "SERVICE_START_PENDING")]
     [InlineData(3, 0, 0, ClientServiceState.Stopping, "SERVICE_STOP_PENDING")]
     [InlineData(4, 0, 0, ClientServiceState.Running, "SERVICE_RUNNING")]

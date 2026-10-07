@@ -64,6 +64,8 @@ public sealed class ClientAgentTokenServiceTests
 
         var first = await service.GetAccessTokenAsync(CancellationToken.None);
         first.ExpiresAtUtc.Should().Be(issuedAt.AddMinutes(2));
+        service.GetAuthorityExpiryUtc(first.AccessToken, first.ExpiresAtUtc).Should().Be(
+            DateTimeOffset.FromUnixTimeSeconds(issuedAt.AddMinutes(3).ToUnixTimeSeconds()));
         clock.Advance(TimeSpan.FromMinutes(1));
 
         var renewed = await service.GetAccessTokenAsync(CancellationToken.None);
@@ -86,6 +88,7 @@ public sealed class ClientAgentTokenServiceTests
 
         var first = await service.GetAccessTokenAsync(CancellationToken.None);
         first.Should().Be((token, issuedAt.AddMinutes(2)));
+        service.GetAuthorityExpiryUtc(first.AccessToken, first.ExpiresAtUtc).Should().Be(first.ExpiresAtUtc);
         clock.Advance(TimeSpan.FromSeconds(59));
         (await service.GetAccessTokenAsync(CancellationToken.None)).Should().Be(first);
         handler.RequestCount.Should().Be(1);
@@ -412,7 +415,7 @@ public sealed class ClientAgentTokenServiceTests
         }
     }
 
-    private sealed class FakeCredentialStore(string agentId, string refreshToken) : IAgentCredentialStore, IAgentDeviceKeyStore
+    internal sealed class FakeCredentialStore(string agentId, string refreshToken) : IAgentCredentialStore, IAgentDeviceKeyStore
     {
         private (string AgentId, string RefreshToken)? _credentials = (agentId, refreshToken);
         private readonly AgentDeviceKeyMaterial _key = CreateKey();

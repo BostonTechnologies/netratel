@@ -91,6 +91,14 @@ network boundaries and authentication controls. The fragment reserves port
 and set the native `Gateway:Endpoint`/installer Gateway URL to its actual public
 HTTPS origin, for example `https://grpc.example.com:8443`.
 
+An existing streaming entrypoint can retain its validated setting. For a
+CLI-managed `websecure` entrypoint the equivalent setting is
+`--entryPoints.websecure.transport.respondingTimeouts.readTimeout=0s`.
+This is separate from investigating renewal `DataLoss`; neither the proxy change
+nor healthy heartbeats establishes the cause of that status. Source
+implementation does not alter the live proxy or remove the client
+outage-recovery policy.
+
 Attach the gateway router to that listener, keeping the exact namespace and
 private h2c service mapping:
 

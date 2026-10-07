@@ -33,6 +33,10 @@ internal sealed class GatewaySessionDiagnostics(string endpoint, TimeProvider? t
     private Guid? _serverConnectionId;
     private string? _protocolFailure;
     private string? _failureReason;
+    private string _renewalPhase = "not-started";
+    private DateTimeOffset? _cacheExpiry;
+    private DateTimeOffset? _authorityExpiry;
+    private DateTimeOffset? _serverExpiry;
 
     // Generated locally, contains no device identity or credential, and follows one attempt only.
     internal Guid CorrelationId { get; } = Guid.NewGuid();
@@ -51,7 +55,14 @@ internal sealed class GatewaySessionDiagnostics(string endpoint, TimeProvider? t
     internal void SessionFailed() => _failed ??= Stopwatch.GetTimestamp();
     internal void ProtocolFailure(string reason) => _protocolFailure = reason;
     internal void FailureReason(string reason) => _failureReason = reason;
-    internal string AdmissionSummary => $"utc={DateTimeOffset.UtcNow:O}, correlation={CorrelationId:D}, serverConnection={_serverConnectionId?.ToString("D") ?? "unknown"}, origin={_origin}, rpc=presence/connect";
+    internal void Renewal(string phase, DateTimeOffset cacheExpiry, DateTimeOffset authorityExpiry, DateTimeOffset? serverExpiry = null)
+    {
+        _renewalPhase = phase;
+        _cacheExpiry = cacheExpiry;
+        _authorityExpiry = authorityExpiry;
+        _serverExpiry = serverExpiry;
+    }
+    internal string AdmissionSummary => $"utc={(timeProvider ?? TimeProvider.System).GetUtcNow():O}, correlation={CorrelationId:D}, serverConnection={_serverConnectionId?.ToString("D") ?? "unknown"}, origin={_origin}, rpc=presence/connect";
 
     internal (string Key, string Message) Failure(Exception exception, TimeSpan retryDelay)
     {
@@ -79,11 +90,45 @@ internal sealed class GatewaySessionDiagnostics(string endpoint, TimeProvider? t
             ? Stopwatch.GetElapsedTime(acknowledged, observedAt).TotalSeconds.ToString("0.###", CultureInfo.InvariantCulture) + "s"
             : "unknown";
         var reason = _protocolFailure ?? _failureReason;
+        var failureOrigin = _protocolFailure is not null ? "local-validation" : _failureReason is not null ? "local-budget" :
+            rpc is not null ? "remote-rpc" : "transport";
+        var expiryDelta = _serverExpiry is { } server && _cacheExpiry is { } cache
+            ? (server - cache).TotalMilliseconds.ToString("0.###", CultureInfo.InvariantCulture) : "unknown";
         var key = $"{category}/{httpStatus}/{mediaType}/{grpcStatus}/{transport}/{edge}/{reason}";
         return (key, $"Gateway session failed: category={category}, {AdmissionSummary}, httpStatus={httpStatus}, " +
             $"contentType={mediaType}, protocol={protocol}, grpcStatus={grpcStatus}, transport={transport}, edge={edge}, " +
             $"sessionLifetime={Stopwatch.GetElapsedTime(_started, observedAt).TotalSeconds.ToString("0.###", CultureInfo.InvariantCulture)}s, " +
-            $"lastHeartbeatAckAge={lastAckAge}, resetDirection=unknown, reason={reason ?? "unknown"}. Retrying in {retryDelay.TotalSeconds:0}s.");
+            $"lastHeartbeatAckAge={lastAckAge}, resetDirection=unknown, reason={reason ?? "unknown"}, failureOrigin={failureOrigin}, " +
+            $"renewalPhase={_renewalPhase}, cacheExpiry={_cacheExpiry?.ToString("O") ?? "unknown"}, " +
+            $"tokenAuthorityExpiry={_authorityExpiry?.ToString("O") ?? "unknown"}, serverExpiry={_serverExpiry?.ToString("O") ?? "unknown"}, " +
+            $"serverMinusCacheMs={expiryDelta}, statusDetail={SafeStatusDetail(rpc)}, trailers={SafeTrailers(rpc)}. Retrying in {retryDelay.TotalSeconds:0}s.");
+    }
+
+    private static string SafeStatusDetail(RpcException? exception) => exception?.Status.Detail switch
+    {
+        // Exact product phrases only. Arbitrary remote messages, token claims,
+        // debug exceptions and metadata are never emitted as diagnostic text.
+        "Agent renewal admission state is unavailable." => "renewal admission unavailable",
+        "The agent is not active." => "agent inactive",
+        "The authenticated presence renewal credential is invalid." => "renewal credential rejected",
+        "Current presence authorization expired." => "presence authority expired",
+        "Gateway returned an invalid authentication renewal acknowledgement." => "invalid renewal acknowledgement",
+        "Gateway returned an invalid heartbeat acknowledgement." => "invalid heartbeat acknowledgement",
+        null or "" => "none",
+        _ => "redacted"
+    };
+
+    private static string SafeTrailers(RpcException? exception)
+    {
+        if (exception is null) return "none";
+        var correlationEntries = exception.Trailers.Where(entry => entry.Key == "x-correlation-id" && !entry.IsBinary).Take(2).ToArray();
+        var correlation = correlationEntries is { Length: 1 } && Guid.TryParse(correlationEntries[0].Value, out var id)
+            ? id.ToString("D") : null;
+        var retryEntries = exception.Trailers.Where(entry => entry.Key == "retry-after" && !entry.IsBinary).Take(2).ToArray();
+        var retry = retryEntries is { Length: 1 } && uint.TryParse(retryEntries[0].Value, NumberStyles.None, CultureInfo.InvariantCulture, out var seconds)
+            ? Math.Min(seconds, 600).ToString(CultureInfo.InvariantCulture) : null;
+        return correlation is null && retry is null ? "none" :
+            $"correlation:{correlation ?? "none"};retryAfterSeconds:{retry ?? "none"}";
     }
 
     private static int? ReadGrpcStatus(HttpResponseMessage? response)
