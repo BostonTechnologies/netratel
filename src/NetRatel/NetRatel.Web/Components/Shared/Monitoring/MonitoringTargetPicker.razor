@@ -93,7 +93,7 @@
             if (tenant != _tenant || _disposed) return;
             foreach (var identity in identities) _identities[identity.AgentId] = identity;
         }
-        catch (OperationCanceledException) { }
+        catch (OperationCanceledException) { return; }
         catch (HttpRequestException) { _error = "Selected client details are unavailable. Selections are retained; retry to review them."; }
     }
     private MonitoringClientIdentityDto Client(MonitoringClientDto client) => client.Identity ?? new(client.AgentId, client.DisplayName ?? "Client metadata unavailable", null, null);
@@ -115,7 +115,7 @@
             _page = page;
             foreach (var client in page.Items) _identities[client.AgentId] = Client(client);
         }
-        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
         catch (Exception error) when (error is HttpRequestException or System.Text.Json.JsonException)
         { if (!_disposed && generation == _generation) _error = "Could not search this tenant's clients. Retry to load the page."; }
         finally { if (!_disposed && generation == _generation) _loading = false; }

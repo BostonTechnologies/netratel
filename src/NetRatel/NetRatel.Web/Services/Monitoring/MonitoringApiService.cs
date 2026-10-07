@@ -182,7 +182,8 @@ public sealed class MonitoringApiService(IHttpClientFactory clients) : IMonitori
                 _ => message
             };
         }
-        catch (Exception error) when (error is HttpRequestException or System.Text.Json.JsonException or InvalidOperationException) { }
+        catch (Exception error) when (error is HttpRequestException or System.Text.Json.JsonException or InvalidOperationException)
+        { throw new HttpRequestException(message, null, response.StatusCode); }
         throw new HttpRequestException(message, null, response.StatusCode);
     }
 }

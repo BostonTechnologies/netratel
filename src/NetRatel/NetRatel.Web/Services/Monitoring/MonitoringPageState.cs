@@ -83,7 +83,7 @@ public sealed class MonitoringPageState(IMonitoringApiService api) : IDisposable
             Snapshot = new(permissions, config, counts, rows, events, await flows, await clients);
             RememberIdentities(Snapshot);
         }
-        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
         catch (Exception error) when (error is HttpRequestException or System.Text.Json.JsonException)
         {
             if (IsCurrent(tenantId, generation))
@@ -131,7 +131,7 @@ public sealed class MonitoringPageState(IMonitoringApiService api) : IDisposable
             }
             RememberIdentities(Snapshot!);
         }
-        catch (OperationCanceledException) when (read.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (read.IsCancellationRequested) { return; }
         catch (Exception error) when (error is HttpRequestException or System.Text.Json.JsonException)
         { if (Current()) Error = error is HttpRequestException ? error.Message : "Could not read this monitoring page. Try again."; }
         finally

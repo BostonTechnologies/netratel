@@ -61,7 +61,7 @@ public partial class MonitoringPage
     protected override async Task OnInitializedAsync()
     {
         try { _tenants = await Api.GetTenantsAsync(_lifetime.Token); if (_tenants.Count > 0) { State.ClientFilter = RequestedClientId; _stateFilter = RequestedState ?? ""; await State.SelectTenantAsync(_tenants.Any(tenant => tenant.TenantId == RequestedTenantId) ? RequestedTenantId!.Value : _tenants[0].TenantId); } }
-        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { return; }
         catch (Exception error) when (error is HttpRequestException or System.Text.Json.JsonException) { _startupError = "Could not load authorized monitoring tenants. Refresh to try again."; }
     }
     protected override void OnAfterRender(bool firstRender) { if (firstRender) { _interactive = true; StateHasChanged(); } }
@@ -76,7 +76,7 @@ public partial class MonitoringPage
                 if (!string.IsNullOrWhiteSpace(name)) _timeZone = TimeZoneInfo.FindSystemTimeZoneById(name);
                 StateHasChanged();
             }
-            catch (Exception error) when (error is JSException or JSDisconnectedException or TimeZoneNotFoundException or InvalidTimeZoneException) { }
+            catch (Exception error) when (error is JSException or JSDisconnectedException or TimeZoneNotFoundException or InvalidTimeZoneException) { _timeZone = TimeZoneInfo.Utc; }
         }
         if (_restoreEditorFocus is not { } launcher) return;
         _restoreEditorFocus = null;
@@ -85,7 +85,7 @@ public partial class MonitoringPage
             Navigation.Uri != _editorLauncherUri || State.Snapshot?.Permissions.CanManage != true) return;
         // The close render has removed the editor and its trap; return to its actual launcher.
         try { await launcher.FocusAsync(); }
-        catch (JSDisconnectedException) { }
+        catch (JSDisconnectedException) { return; }
     }
     private async Task ChangeTenant(ChangeEventArgs args)
     {
@@ -274,7 +274,7 @@ public partial class MonitoringPage
                 _preview = result;
             }
         }
-        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
         catch (Exception error) when (error is HttpRequestException or System.Text.Json.JsonException or ArgumentException)
         { if (State.IsCurrent(tenant, scope) && editor == _editorGeneration && generation == _previewGeneration) _editorError = error is HttpRequestException ? error.Message : "The target preview is unavailable. Check the exact selection."; }
         finally { if (editor == _editorGeneration && generation == _previewGeneration) _previewBusy = false; }
@@ -295,7 +295,7 @@ public partial class MonitoringPage
             _inventoryNote = model.LastCompleteInventory is { } inventory ? $"Cached inventory observed {Time(inventory.ObservedAtUtc)} · {(model.Connected ? "connected" : "offline / stale")}. Suggestions do not establish current service health." : "No complete inventory. Exact names can be entered manually.";
             if (!model.SupportsServices) _inventoryNote += " Service collection is unsupported or has not been negotiated.";
         }
-        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
         catch (HttpRequestException)
         { if (State.IsCurrent(tenant, scope) && editor == _editorGeneration && generation == _inventoryGeneration) _inventoryNote = "Inventory access is unavailable or not permitted. Enter the exact stable name manually."; }
     }
@@ -343,7 +343,7 @@ public partial class MonitoringPage
                 _busy = false; CloseEditor(); await State.RefreshAsync();
             }
         }
-        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
         catch (Exception error) when (error is HttpRequestException or System.Text.Json.JsonException)
         { if (State.IsCurrent(tenant, scope) && editor == _editorGeneration) { _conflict = error is HttpRequestException { StatusCode: System.Net.HttpStatusCode.Conflict }; _editorError = error is HttpRequestException ? error.Message : "Could not confirm the save. Your edits are retained; refresh before retrying."; } }
         finally { _busy = false; }
