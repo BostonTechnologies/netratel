@@ -213,7 +213,7 @@ public sealed class FlowEditorTests : AsyncBunitContext
         await _dialogs.WaitForAssertionAsync(() => _dialogs.FindAll("[data-testid=flow-save-leave]").Count.Should().Be(1));
         var saving = _dialogs.Find("[data-testid=flow-save-leave]").ClickAsync(new());
         await cut.WaitForAssertionAsync(() => _api.SaveCalls.Should().Be(1));
-        await _dialogs.Find("[data-testid=flow-unsaved-dialog]").KeyDownAsync(new() { Key = "Escape" });
+        await _dialogs.Find("[data-testid=flow-unsaved-dialog]").KeyDownAsync(new Microsoft.AspNetCore.Components.Web.KeyboardEventArgs { Key = "Escape" });
         _dialogs.FindAll("[data-testid=flow-unsaved]").Should().ContainSingle(); closed.Should().Be(0);
         _api.SavePending.SetException(new HttpRequestException("Unavailable")); await saving;
         closed.Should().Be(0); _dialogs.Find("[data-testid=flow-unsaved-error]").TextContent.Should().Contain("unsaved edits are preserved");
