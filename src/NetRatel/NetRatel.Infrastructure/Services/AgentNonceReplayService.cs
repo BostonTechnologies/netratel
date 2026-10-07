@@ -6,15 +6,17 @@ namespace NetRatel.Infrastructure.Services;
 public sealed class AgentNonceReplayService
 {
     private readonly OrchestratorDbContext _db;
+    private readonly TimeProvider _clock;
 
-    public AgentNonceReplayService(OrchestratorDbContext db)
+    public AgentNonceReplayService(OrchestratorDbContext db, TimeProvider? timeProvider = null)
     {
         _db = db;
+        _clock = timeProvider ?? TimeProvider.System;
     }
 
     public async Task<bool> TryRegisterAsync(Guid agentId, string nonce, TimeSpan retention, CancellationToken ct)
     {
-        var now = DateTimeOffset.UtcNow;
+        var now = _clock.GetUtcNow();
         var cutoff = now.Subtract(retention);
 
         var expired = await _db.AgentNonceLogs

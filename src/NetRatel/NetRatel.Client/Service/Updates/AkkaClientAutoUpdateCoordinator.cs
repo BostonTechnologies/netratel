@@ -31,6 +31,8 @@ public interface IAgentGatewayUpdateHandler
     void RecordAcknowledgementFailure(Exception exception);
 }
 
+public sealed record PendingUpdateActivation(Guid AttemptId, Guid ReleaseId, string TargetVersion);
+
 public sealed class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdateHandler, IAsyncDisposable
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { WriteIndented = true };
@@ -88,6 +90,53 @@ public sealed class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdateHandler
         (OperatingSystem.IsWindows() || OperatingSystem.IsLinux()) &&
         !string.Equals(Environment.GetEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER"), "true", StringComparison.OrdinalIgnoreCase) &&
         !File.Exists("/.dockerenv");
+
+    /// <summary>Reads the existing protected handover; it neither creates readiness nor advances update state.</summary>
+    public PendingUpdateActivation? ReadPendingActivation(DateTimeOffset now)
+    {
+        if (!IsEnabled || !NativeServiceRecoveryPolicy.IsOwnedService) return null;
+        return ReadPendingActivationCore(_requestPath, Path.Combine(_stateDirectory, "state.json"), _resultPath,
+            _readyPath, _currentVersion, _runtimeId, now);
+    }
+
+    internal static PendingUpdateActivation? ReadPendingActivationCore(string requestPath, string statePath,
+        string resultPath, string readyPath, string currentVersion, string runtimeId, DateTimeOffset now)
+    {
+        try
+        {
+            foreach (var path in new[] { requestPath, statePath, resultPath, readyPath })
+                if (File.Exists(path) && new FileInfo(path).Length > 64 * 1024) return null;
+            if (!ProtectedUpdateState.IsProtectedFile(requestPath) || !ProtectedUpdateState.IsProtectedFile(statePath)) return null;
+            var request = ReadJson<UpdateRequest>(requestPath);
+            var state = ReadJson<PendingState>(statePath);
+            if (request is null || state is null || request.Schema != "netratel.update.request.v2" ||
+                request.AttemptId == Guid.Empty || request.ReleaseId == Guid.Empty || string.IsNullOrWhiteSpace(request.AdmissionNonce) ||
+                request.ToVersion != currentVersion || request.RuntimeId != runtimeId || state.Version != currentVersion ||
+                state.State is not ("applying" or "verifying") ||
+                state.AttemptId is { } stateAttempt && stateAttempt != request.AttemptId ||
+                request.RequestedAtUtc > now.AddMinutes(1) || request.RequestedAtUtc < now.AddDays(-1) ||
+                state.UpdatedAtUtc > now.AddMinutes(1) || state.UpdatedAtUtc < now.AddSeconds(-180)) return null;
+            if (File.Exists(resultPath))
+            {
+                if (!ProtectedUpdateState.IsProtectedFile(resultPath)) return null;
+                var result = ReadJson<UpdateResult>(resultPath);
+                if (result is null || result.Schema != "netratel.update.result.v2" || result.AttemptId == request.AttemptId) return null;
+            }
+            if (File.Exists(readyPath))
+            {
+                if (!ProtectedUpdateState.IsProtectedFile(readyPath)) return null;
+                var ready = ReadJson<PendingReady>(readyPath);
+                if (ready is null || ready.Schema != "netratel.update.ready.v2") return null;
+                if (ready.AttemptId == request.AttemptId &&
+                    ready.ReleaseId == request.ReleaseId && ready.Version == currentVersion && ready.ConfirmationId != Guid.Empty) return null;
+            }
+            return new(request.AttemptId, request.ReleaseId, request.ToVersion);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Security.SecurityException or EntryPointNotFoundException)
+        {
+            return null;
+        }
+    }
 
     public void PopulateHello(ConnectHello hello)
     {
@@ -647,7 +696,9 @@ public sealed class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdateHandler
     private sealed record UpdateRequest(string Schema, Guid AttemptId, Guid ReleaseId, string AdmissionNonce,
         string RuntimeId, string FromVersion, string ToVersion, string PackagePath, string Sha256,
         string ReadyPath, string PresencePath, string ResultPath, string LogPath, DateTimeOffset RequestedAtUtc);
-    private sealed record UpdateResult(Guid AttemptId, Guid ReleaseId, string State, string? FailureCode, string? Message);
+    private sealed record UpdateResult(Guid AttemptId, Guid ReleaseId, string State, string? FailureCode, string? Message, string? Schema);
+    private sealed record PendingState(string State, string Version, DateTimeOffset UpdatedAtUtc, Guid? AttemptId);
+    private sealed record PendingReady(string Schema, Guid AttemptId, Guid ReleaseId, string Version, Guid ConfirmationId);
     private sealed record ActivationDiagnostic(string Schema, Guid AttemptId, Guid ReleaseId, string TargetVersion,
         string CurrentVersion, string RuntimeId, int ProcessId, string? ExecutablePath, string Stage,
         DateTimeOffset StartedAtUtc, DateTimeOffset? RequestLoadedAtUtc, DateTimeOffset? ActivationContextAttachedAtUtc,

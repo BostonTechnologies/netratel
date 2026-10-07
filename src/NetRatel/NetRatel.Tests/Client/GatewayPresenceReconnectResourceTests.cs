@@ -51,7 +51,9 @@ public sealed class GatewayPresenceReconnectResourceTests
                 peakTimers = Math.Max(peakTimers, clock.ActiveTimerCount);
                 clock.ActiveTimerCount.Should().BeLessThanOrEqualTo(4);
                 current.ResetPendingRead();
-                var retryDelay = TimeSpan.FromSeconds(Math.Min(Math.Pow(2, Math.Min(iteration, 5)), 30));
+                var outageElapsed = clock.GetElapsedTime(0);
+                var retryDelay = TimeSpan.FromSeconds(outageElapsed < TimeSpan.FromMinutes(5)
+                    ? Math.Min(Math.Pow(2, Math.Min(iteration + 1, 5)), 30) * 0.75 : 90);
                 // Completed I/O and cancellation can precede disposal of their wait timers.
                 await WaitUntilAsync(() => current.Disposed && current.AllIoCompleted &&
                     current.ChildCancellationObserved && clock.HasTimer(TimeSpan.FromSeconds(5)) &&

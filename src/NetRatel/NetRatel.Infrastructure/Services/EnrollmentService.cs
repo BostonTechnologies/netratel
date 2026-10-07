@@ -273,6 +273,8 @@ public sealed class EnrollmentService : IEnrollmentService
             {
                 token.RevokedAtUtc = now;
             }
+            foreach (var token in _db.AgentRefreshTokens.Where(item => item.AgentId == agent.Id && item.ProtectedSuccessorToken != null))
+                token.ProtectedSuccessorToken = null;
         }
 
         var refreshToken = GenerateRefreshToken();

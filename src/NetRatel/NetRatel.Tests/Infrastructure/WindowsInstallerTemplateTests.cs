@@ -17,6 +17,78 @@ namespace NetRatel.Tests.Infrastructure;
 public sealed class WindowsInstallerTemplateTests
 {
     [Fact]
+    public async Task UpdaterCutover_FencesQueuedRestart_AndRepairsInterruptedManualMode()
+    {
+        await WithFixture(async root =>
+        {
+            var repositoryRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../../"));
+            var updater = await File.ReadAllTextAsync(Path.Combine(repositoryRoot, "src/NetRatel/NetRatel.Client/tools/netratel-update.ps1"));
+            var result = await RunRenderedFunctions(root, updater, """
+                $ClientService = 'NetRatel.Client'
+                $StatePath = Join-Path $args[1] 'state.json'
+                $LockPath = Join-Path $args[1] 'update.lock'
+                $script:AttemptId = [Guid]::NewGuid().ToString()
+                $script:ToVersion = '1.2.3'
+                $script:PreviousPath = '"C:\owned\versions\1.2.2\NetRatel.Client.exe" --service'
+                $script:ActivePath = '"C:\owned\versions\1.2.3\NetRatel.Client.exe" --service'
+                $script:StartModeGuardActive = $false
+                $script:service = [pscustomobject]@{ PathName = $script:PreviousPath; StartMode = 'Manual'; State = 'Stopped' }
+                $script:started = $false
+                function Get-CimInstance { param($ClassName,$Filter,$ErrorAction) return $script:service }
+                function Assert-NetRatelOwnedServiceImage { param($ImagePath) return $ImagePath }
+                function Assert-NetRatelTrustedPath { param($Path,$LeafIsDirectory,$AllowLocalAdministrator) return $Path }
+                function Set-Service {
+                    param($Name,$StartupType,$ErrorAction)
+                    $saved = Get-Content -LiteralPath $StatePath -Raw | ConvertFrom-Json
+                    if ($StartupType -eq 'Disabled' -and -not $saved.startModeGuardActive) { throw 'Mode guard must be durable before disabling.' }
+                    $script:service.StartMode = @{ Automatic='Auto'; Manual='Manual'; Disabled='Disabled' }[[string]$StartupType]
+                }
+                function Start-Service { param($Name,$ErrorAction) if ($script:service.StartMode -eq 'Disabled') { throw 'Service stranded disabled.' }; $script:started=$true }
+                Enter-NetRatelServiceCutover
+                if ($script:service.StartMode -ne 'Disabled') { throw 'A queued restart can still enter during replacement.' }
+                # Simulate interruption after image switch and before restoring mode.
+                Write-State 'guarding_cutover_active' $script:ToVersion
+                $script:service.PathName = $script:ActivePath
+                $script:StartModeGuardActive = $false
+                Repair-NetRatelInterruptedStartMode
+                if ($script:service.StartMode -ne 'Manual' -or -not $script:started) { throw 'Interrupted cutover did not preserve and restore Manual mode.' }
+                if ((Get-Content -LiteralPath $StatePath -Raw | ConvertFrom-Json).startModeGuardActive) { throw 'Recovered guard remained pending.' }
+                Enter-NetRatelServiceCutover
+                $script:service.PathName = '"C:\administrator\NetRatel.Client.exe" --service'
+                $rejected=$false
+                try { Repair-NetRatelInterruptedStartMode } catch { $rejected=$true }
+                if (-not $rejected -or $script:service.StartMode -ne 'Disabled') { throw 'Administrator registration was modified.' }
+                """, arguments: [root]);
+            result.ExitCode.Should().Be(0, result.Output);
+        });
+    }
+
+    [Fact]
+    public async Task InstallerCutover_RestoresIntendedMode_AndPreservesAdministratorImageOverride()
+    {
+        await WithFixture(async root =>
+        {
+            var result = await RunFunctions(root, """
+                $serviceName = 'NetRatel.Client'
+                $script:service = [pscustomobject]@{ PathName='"C:\owned\NetRatel.Client.exe" --service'; StartMode='Disabled' }
+                $record = [pscustomobject]@{ startModeGuardActive=$true; intendedStartMode='Manual'; previousPath=$script:service.PathName; activePath=$script:service.PathName }
+                function Get-CimInstance { param($ClassName,$Filter,$OperationTimeoutSec) return $script:service }
+                function Invoke-ServiceControl { param($Arguments) $script:service.StartMode = @{ auto='Auto'; demand='Manual'; disabled='Disabled' }[[string]$Arguments[-1]] }
+                function Write-CutoverState { param($Record) $script:savedGuard=$Record.startModeGuardActive }
+                Restore-CutoverMode $record
+                if ($script:service.StartMode -ne 'Manual' -or $record.startModeGuardActive -or $script:savedGuard) { throw 'Installer did not restore Manual start mode.' }
+                $record.startModeGuardActive=$true
+                $script:service.StartMode='Disabled'
+                $script:service.PathName='"C:\administrator\NetRatel.Client.exe" --service'
+                $rejected=$false
+                try { Restore-CutoverMode $record } catch { $rejected=$true }
+                if (-not $rejected -or $script:service.StartMode -ne 'Disabled') { throw 'Administrator override was overwritten.' }
+                """);
+            result.ExitCode.Should().Be(0, result.Output);
+        });
+    }
+
+    [Fact]
     public async Task RenderedDiagnosticsKeepFixedAuthMessagesAndHideSecretCanaries()
     {
         await WithFixture(async root =>

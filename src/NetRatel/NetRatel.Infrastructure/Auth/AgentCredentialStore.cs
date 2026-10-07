@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -5,7 +6,7 @@ using NetRatel.Application.ClientAuth;
 
 namespace NetRatel.Infrastructure.Auth;
 
-public sealed class AgentCredentialStore : IAgentCredentialStore, IAgentDeviceKeyStore
+public sealed class AgentCredentialStore : IAgentCredentialStore, IAgentDeviceKeyStore, IAgentRefreshExchangeStore
 {
     private const string CredentialMachineIdentityEnvironmentVariable = "NetRatel_CREDENTIAL_MACHINE_ID";
     private const string CredentialMachineIdentityFileName = ".netratel-credential-machine-id";
@@ -17,6 +18,11 @@ public sealed class AgentCredentialStore : IAgentCredentialStore, IAgentDeviceKe
         Encoding.UTF8.GetBytes("sto-agent-credential-v1"),
         LinuxUser: "sto",
         KeyLabel: "sto-agent-store-v1");
+    private static readonly CredentialProtectionProfile ExchangeProtection = new(
+        Encoding.UTF8.GetBytes("netratel-native-refresh-exchange-v1"), LinuxUser: null,
+        KeyLabel: "netratel-native-refresh-exchange-v1");
+    private readonly SemaphoreSlim _gate = new(1, 1);
+    private string ExchangePath => _path + ".native-refresh";
     private readonly string _path;
     private readonly string? _legacyPath;
     private readonly Func<string> _machineNameProvider;
@@ -36,63 +42,76 @@ public sealed class AgentCredentialStore : IAgentCredentialStore, IAgentDeviceKe
 
     public static string DefaultPath() => ResolvePath(null);
 
-    public async Task SaveAsync(string agentId, string refreshToken)
+    public Task SaveAsync(string agentId, string refreshToken) => SaveAsync(agentId, refreshToken, CancellationToken.None);
+
+    public async Task SaveAsync(string agentId, string refreshToken, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(agentId)) throw new ArgumentException("agentId is required", nameof(agentId));
         if (string.IsNullOrWhiteSpace(refreshToken)) throw new ArgumentException("refreshToken is required", nameof(refreshToken));
-
-        var existing = await TryLoadPayloadAsync().ConfigureAwait(false);
-        var payload = new CredentialPayload(
-            agentId,
-            refreshToken,
-            existing?.PublicKey,
-            existing?.PrivateKey,
-            existing?.KeyAlgorithm ?? "ecdsa-p256");
-        await WritePayloadAsync(payload, CancellationToken.None).ConfigureAwait(false);
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            using var lease = await AcquireInstallationLeaseAsync(ct).ConfigureAwait(false);
+            var existing = await LoadReconciledPayloadAsync(ct).ConfigureAwait(false);
+            var journal = await ReadExchangeJournalAsync(ct).ConfigureAwait(false);
+            if (journal?.SuccessorRefreshToken is not null && agentId == journal.Exchange.AgentId &&
+                refreshToken == journal.Exchange.ParentRefreshToken)
+                return; // A stale save cannot temporarily restore an already committed parent.
+            // A legitimate legacy refresh can advance beyond our recorded result.
+            // Persist that current credential first, then retire obsolete pending state.
+            await WritePayloadAsync(new CredentialPayload(agentId, refreshToken, existing?.PublicKey,
+                existing?.PrivateKey, existing?.KeyAlgorithm ?? "ecdsa-p256"), ct).ConfigureAwait(false);
+            if (journal is not null && (agentId != journal.Exchange.AgentId ||
+                (refreshToken != journal.Exchange.ParentRefreshToken && refreshToken != journal.SuccessorRefreshToken)))
+                File.Delete(ExchangePath);
+        }
+        finally { _gate.Release(); }
     }
 
-    public async Task<(string AgentId, string RefreshToken)?> LoadAsync()
-    {
-        var payload = await TryLoadPayloadAsync().ConfigureAwait(false);
-        if (payload is null || string.IsNullOrWhiteSpace(payload.AgentId) || string.IsNullOrWhiteSpace(payload.RefreshToken))
-        {
-            return null;
-        }
+    public Task<(string AgentId, string RefreshToken)?> LoadAsync() => LoadCredentialsAsync(CancellationToken.None);
 
-        return (payload.AgentId, payload.RefreshToken);
+    Task<(string AgentId, string RefreshToken)?> IAgentCredentialStore.LoadAsync(CancellationToken ct) => LoadCredentialsAsync(ct);
+
+    public async Task<(string AgentId, string RefreshToken)?> LoadCredentialsAsync(CancellationToken ct)
+    {
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            using var lease = await AcquireInstallationLeaseAsync(ct).ConfigureAwait(false);
+            var payload = await LoadReconciledPayloadAsync(ct).ConfigureAwait(false);
+            return payload is null || string.IsNullOrWhiteSpace(payload.AgentId) || string.IsNullOrWhiteSpace(payload.RefreshToken)
+                ? null : (payload.AgentId, payload.RefreshToken);
+        }
+        finally { _gate.Release(); }
     }
 
     public async Task ClearRefreshCredentialsAsync()
     {
-        var existing = await TryLoadPayloadAsync().ConfigureAwait(false);
-        if (existing is null)
+        await _gate.WaitAsync().ConfigureAwait(false);
+        try
         {
-            return;
+            using var lease = await AcquireInstallationLeaseAsync(CancellationToken.None).ConfigureAwait(false);
+            var existing = await LoadReconciledPayloadAsync(CancellationToken.None).ConfigureAwait(false);
+            if (existing is null) return;
+            if (string.IsNullOrWhiteSpace(existing.PublicKey) || string.IsNullOrWhiteSpace(existing.PrivateKey))
+                throw new AgentCredentialStoreException("Refresh credentials cannot be cleared because this existing credential-only payload has no device key to preserve. Its bytes were left unchanged; provide a validated enrollment recovery before changing this installation identity.");
+            await WritePayloadAsync(new CredentialPayload(null, null, existing.PublicKey, existing.PrivateKey,
+                existing.KeyAlgorithm ?? "ecdsa-p256"), CancellationToken.None).ConfigureAwait(false);
+            File.Delete(ExchangePath);
         }
-
-        if (string.IsNullOrWhiteSpace(existing.PublicKey) || string.IsNullOrWhiteSpace(existing.PrivateKey))
-        {
-            throw new AgentCredentialStoreException(
-                "Refresh credentials cannot be cleared because this existing credential-only payload has no device key to preserve. Its bytes were left unchanged; provide a validated enrollment recovery before changing this installation identity.");
-        }
-
-        var payload = new CredentialPayload(
-            AgentId: null,
-            RefreshToken: null,
-            existing.PublicKey,
-            existing.PrivateKey,
-            existing.KeyAlgorithm ?? "ecdsa-p256");
-        await WritePayloadAsync(payload, CancellationToken.None).ConfigureAwait(false);
+        finally { _gate.Release(); }
     }
 
-    public Task ResetInstallationIdentityAsync()
+    public async Task ResetInstallationIdentityAsync()
     {
-        if (File.Exists(_path))
+        await _gate.WaitAsync().ConfigureAwait(false);
+        try
         {
+            using var lease = await AcquireInstallationLeaseAsync(CancellationToken.None).ConfigureAwait(false);
             File.Delete(_path);
+            File.Delete(ExchangePath);
         }
-
-        return Task.CompletedTask;
+        finally { _gate.Release(); }
     }
 
     [Obsolete("Use ClearRefreshCredentialsAsync so the stable device identity is preserved.")]
@@ -100,56 +119,206 @@ public sealed class AgentCredentialStore : IAgentCredentialStore, IAgentDeviceKe
 
     public async Task<AgentDeviceKeyMaterial> GetOrCreateAsync(CancellationToken ct)
     {
-        var existing = await TryLoadPayloadAsync().ConfigureAwait(false);
-        if (existing is not null &&
-            !string.IsNullOrWhiteSpace(existing.PublicKey) &&
-            !string.IsNullOrWhiteSpace(existing.PrivateKey))
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
         {
-            return new AgentDeviceKeyMaterial(existing.PublicKey, existing.PrivateKey, existing.KeyAlgorithm ?? "ecdsa-p256");
+            using var lease = await AcquireInstallationLeaseAsync(ct).ConfigureAwait(false);
+            var existing = await LoadReconciledPayloadAsync(ct).ConfigureAwait(false);
+            if (existing is not null && !string.IsNullOrWhiteSpace(existing.PublicKey) && !string.IsNullOrWhiteSpace(existing.PrivateKey))
+                return new AgentDeviceKeyMaterial(existing.PublicKey, existing.PrivateKey, existing.KeyAlgorithm ?? "ecdsa-p256");
+            using var ecdsa = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+            var generated = new AgentDeviceKeyMaterial(Convert.ToBase64String(ecdsa.ExportSubjectPublicKeyInfo()),
+                Convert.ToBase64String(ecdsa.ExportPkcs8PrivateKey()), "ecdsa-p256");
+            await WritePayloadAsync(new CredentialPayload(existing?.AgentId, existing?.RefreshToken,
+                generated.PublicKey, generated.PrivateKey, generated.Algorithm), ct).ConfigureAwait(false);
+            return generated;
         }
-
-        using var ecdsa = ECDsa.Create(ECCurve.NamedCurves.nistP256);
-        var privateKey = ecdsa.ExportPkcs8PrivateKey();
-        var publicKey = ecdsa.ExportSubjectPublicKeyInfo();
-
-        var generated = new AgentDeviceKeyMaterial(
-            Convert.ToBase64String(publicKey),
-            Convert.ToBase64String(privateKey),
-            "ecdsa-p256");
-
-        var payload = new CredentialPayload(
-            existing?.AgentId,
-            existing?.RefreshToken,
-            generated.PublicKey,
-            generated.PrivateKey,
-            generated.Algorithm);
-        await WritePayloadAsync(payload, ct).ConfigureAwait(false);
-
-        return generated;
+        finally { _gate.Release(); }
     }
 
     public async Task<AgentDeviceKeyMaterial?> LoadAsync(CancellationToken ct)
     {
-        var payload = await TryLoadPayloadAsync().ConfigureAwait(false);
-        if (payload is null ||
-            string.IsNullOrWhiteSpace(payload.PublicKey) ||
-            string.IsNullOrWhiteSpace(payload.PrivateKey))
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
         {
-            return null;
+            using var lease = await AcquireInstallationLeaseAsync(ct).ConfigureAwait(false);
+            var payload = await LoadReconciledPayloadAsync(ct).ConfigureAwait(false);
+            return payload is null || string.IsNullOrWhiteSpace(payload.PublicKey) || string.IsNullOrWhiteSpace(payload.PrivateKey)
+                ? null : new AgentDeviceKeyMaterial(payload.PublicKey, payload.PrivateKey, payload.KeyAlgorithm ?? "ecdsa-p256");
         }
-
-        return new AgentDeviceKeyMaterial(payload.PublicKey, payload.PrivateKey, payload.KeyAlgorithm ?? "ecdsa-p256");
+        finally { _gate.Release(); }
     }
 
-    private byte[] Protect(byte[] plaintext)
+    public async Task<PendingAgentRefreshExchange?> LoadPendingExchangeAsync(CancellationToken ct)
+    {
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            using var lease = await AcquireInstallationLeaseAsync(ct).ConfigureAwait(false);
+            await LoadReconciledPayloadAsync(ct).ConfigureAwait(false);
+            var journal = await ReadExchangeJournalAsync(ct).ConfigureAwait(false);
+            return journal?.SuccessorRefreshToken is null ? journal?.Exchange : null;
+        }
+        finally { _gate.Release(); }
+    }
+
+    public async Task<PendingAgentRefreshExchange> BeginRefreshExchangeAsync(PendingAgentRefreshExchange exchange, CancellationToken ct)
+    {
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            using var lease = await AcquireInstallationLeaseAsync(ct).ConfigureAwait(false);
+            var payload = await LoadReconciledPayloadAsync(ct).ConfigureAwait(false);
+            var existing = await ReadExchangeJournalAsync(ct).ConfigureAwait(false);
+            if (existing is not null && existing.SuccessorRefreshToken is null) return existing.Exchange;
+            if (payload?.AgentId != exchange.AgentId || payload.RefreshToken != exchange.ParentRefreshToken ||
+                exchange.Version != 1 || exchange.ExchangeId == Guid.Empty || exchange.RequestedScopes is null ||
+                string.IsNullOrWhiteSpace(exchange.DeviceKeyHash) || GetDeviceKeyHash(payload) != exchange.DeviceKeyHash)
+                throw new AgentCredentialStoreException("Native refresh exchange does not match the current protected credentials.");
+            await WriteExchangeJournalAsync(new ExchangeJournal(1, exchange with { RequestedScopes = [.. exchange.RequestedScopes] }, null), ct).ConfigureAwait(false);
+            return exchange;
+        }
+        finally { _gate.Release(); }
+    }
+
+    public async Task CompleteRefreshExchangeAsync(PendingAgentRefreshExchange exchange, string successorRefreshToken, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(successorRefreshToken)) throw new ArgumentException("Successor refresh token is required.", nameof(successorRefreshToken));
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            using var lease = await AcquireInstallationLeaseAsync(ct).ConfigureAwait(false);
+            var payload = await LoadReconciledPayloadAsync(ct).ConfigureAwait(false);
+            var journal = await ReadExchangeJournalAsync(ct).ConfigureAwait(false);
+            if (journal is null || journal.Exchange.ExchangeId != exchange.ExchangeId || payload?.AgentId != exchange.AgentId)
+                throw new AgentClientAuthException("An obsolete native refresh response cannot replace current protected credentials.",
+                    code: "refresh_exchange_obsolete", endpointRole: AgentAuthEndpointRole.Token,
+                    failureKind: AgentAuthFailureKind.LocalContention);
+            if (!SameExchange(journal.Exchange, exchange) ||
+                (journal.SuccessorRefreshToken is not null && journal.SuccessorRefreshToken != successorRefreshToken))
+                throw new AgentClientAuthException("Native refresh result does not match the recorded exchange binding.",
+                    code: "refresh_exchange_result_mismatch", endpointRole: AgentAuthEndpointRole.Token,
+                    failureKind: AgentAuthFailureKind.Protocol);
+            if (payload.RefreshToken != exchange.ParentRefreshToken && payload.RefreshToken != successorRefreshToken)
+                throw new AgentClientAuthException("An obsolete native refresh response cannot replace current protected credentials.",
+                    code: "refresh_exchange_obsolete", endpointRole: AgentAuthEndpointRole.Token,
+                    failureKind: AgentAuthFailureKind.LocalContention);
+            if (GetDeviceKeyHash(payload) != exchange.DeviceKeyHash)
+                throw new AgentCredentialStoreException("Protected native refresh exchange does not match the current registered device key; its bytes were preserved.");
+            // The protected journal commits the successor before the released-format
+            // credential file. A crash at either boundary is reconciled on the next load.
+            await WriteExchangeJournalAsync(journal with { SuccessorRefreshToken = successorRefreshToken }, ct).ConfigureAwait(false);
+            await WritePayloadAsync(payload with { RefreshToken = successorRefreshToken }, ct).ConfigureAwait(false);
+        }
+        finally { _gate.Release(); }
+    }
+
+    private async Task<FileStream> AcquireInstallationLeaseAsync(CancellationToken ct)
+    {
+        var lockPath = ExchangePath + ".lock";
+        var directory = Path.GetDirectoryName(lockPath);
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(directory))
+            {
+                if (OperatingSystem.IsWindows()) WindowsAgentDataDirectory.EnsureForPath(directory);
+                Directory.CreateDirectory(directory);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        { throw new AgentCredentialStoreException(ex); }
+        var started = Stopwatch.GetTimestamp();
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                // The empty file has no pending data. FileShare.None holds the OS
+                // lease until disposal and is released even when a process crashes.
+                var lease = new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+                TryTightenPermissions(lockPath);
+                return lease;
+            }
+            catch (IOException) when (File.Exists(lockPath))
+            {
+                if (Stopwatch.GetElapsedTime(started) >= TimeSpan.FromSeconds(5))
+                    throw new AgentClientAuthException("Protected credential storage is in use by another native operation.",
+                        code: "credential_store_busy", endpointRole: AgentAuthEndpointRole.Token,
+                        failureKind: AgentAuthFailureKind.LocalContention);
+                await Task.Delay(TimeSpan.FromMilliseconds(25), ct).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            { throw new AgentCredentialStoreException(ex); }
+        }
+    }
+
+    private async Task<CredentialPayload?> LoadReconciledPayloadAsync(CancellationToken ct)
+    {
+        var payload = await TryLoadPayloadAsync(ct).ConfigureAwait(false);
+        var journal = await ReadExchangeJournalAsync(ct).ConfigureAwait(false);
+        if (journal is null) return payload;
+        if (payload?.AgentId != journal.Exchange.AgentId ||
+            (payload.RefreshToken != journal.Exchange.ParentRefreshToken && payload.RefreshToken != journal.SuccessorRefreshToken))
+        {
+            // Missing credentials or a later legitimate legacy save wins. Never
+            // restore the recorded parent over a newer credential or reset identity.
+            File.Delete(ExchangePath);
+            return payload;
+        }
+        if (GetDeviceKeyHash(payload) != journal.Exchange.DeviceKeyHash)
+            throw new AgentCredentialStoreException("Protected native refresh exchange does not match the current registered device key; its bytes were preserved.");
+        if (journal.SuccessorRefreshToken is not null && payload.RefreshToken == journal.Exchange.ParentRefreshToken)
+        {
+            payload = payload with { RefreshToken = journal.SuccessorRefreshToken };
+            await WritePayloadAsync(payload, ct).ConfigureAwait(false);
+        }
+        return payload;
+    }
+
+    private async Task<ExchangeJournal?> ReadExchangeJournalAsync(CancellationToken ct)
+    {
+        if (!TryGetExistingCredentialFile(ExchangePath)) return null;
+        try
+        {
+            var bytes = await File.ReadAllBytesAsync(ExchangePath, ct).ConfigureAwait(false);
+            var journal = JsonSerializer.Deserialize<ExchangeJournal>(Unprotect(bytes, ExchangeProtection));
+            if (journal?.Version != 1 || journal.Exchange is null || journal.Exchange.Version != 1 || journal.Exchange.ExchangeId == Guid.Empty ||
+                string.IsNullOrWhiteSpace(journal.Exchange.AgentId) || string.IsNullOrWhiteSpace(journal.Exchange.ParentRefreshToken) ||
+                string.IsNullOrWhiteSpace(journal.Exchange.DeviceKeyHash) || journal.Exchange.RequestedScopes is null)
+                throw new AgentCredentialStoreException("Protected native refresh exchange is invalid; its bytes were preserved.");
+            return journal;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or CryptographicException or JsonException)
+        {
+            throw new AgentCredentialStoreException("Protected native refresh exchange cannot be read; its bytes were preserved.", ex);
+        }
+    }
+
+    private Task WriteExchangeJournalAsync(ExchangeJournal journal, CancellationToken ct) =>
+        WriteProtectedFileAsync(ExchangePath, JsonSerializer.SerializeToUtf8Bytes(journal), ExchangeProtection, ct);
+
+    private static bool SameExchange(PendingAgentRefreshExchange left, PendingAgentRefreshExchange right) =>
+        left.Version == right.Version && left.ExchangeId == right.ExchangeId && left.AgentId == right.AgentId &&
+        left.ParentRefreshToken == right.ParentRefreshToken && left.DeviceKeyHash == right.DeviceKeyHash &&
+        left.RequestedScopes.SequenceEqual(right.RequestedScopes, StringComparer.Ordinal);
+
+    private static string? GetDeviceKeyHash(CredentialPayload payload) => string.IsNullOrWhiteSpace(payload.PublicKey) ||
+        string.IsNullOrWhiteSpace(payload.PrivateKey) ? null :
+        Convert.ToBase64String(SHA256.HashData(Encoding.UTF8.GetBytes($"{(payload.KeyAlgorithm ?? "ecdsa-p256").ToLowerInvariant()}:{payload.PublicKey}")));
+
+    private sealed record ExchangeJournal(int Version, PendingAgentRefreshExchange Exchange, string? SuccessorRefreshToken);
+
+    private byte[] Protect(byte[] plaintext) => ProtectForPurpose(plaintext, CurrentProtection);
+
+    private byte[] ProtectForPurpose(byte[] plaintext, CredentialProtectionProfile protection)
     {
         if (OperatingSystem.IsWindows())
         {
-            return ProtectedData.Protect(plaintext, CurrentProtection.Entropy, DataProtectionScope.CurrentUser);
+            return ProtectedData.Protect(plaintext, protection.Entropy, DataProtectionScope.CurrentUser);
         }
 
         using var aes = Aes.Create();
-        aes.Key = DeriveAesKey(CurrentProtection);
+        aes.Key = DeriveAesKey(protection);
         aes.GenerateIV();
         aes.Mode = CipherMode.CBC;
         aes.Padding = PaddingMode.PKCS7;
@@ -379,16 +548,16 @@ public sealed class AgentCredentialStore : IAgentCredentialStore, IAgentDeviceKe
         }
     }
 
-    private async Task<CredentialPayload?> TryLoadPayloadAsync()
+    private async Task<CredentialPayload?> TryLoadPayloadAsync(CancellationToken ct)
     {
         if (!TryGetExistingCredentialFile(_path))
         {
-            return await TryMigrateLegacyPathAsync().ConfigureAwait(false);
+            return await TryMigrateLegacyPathAsync(ct).ConfigureAwait(false);
         }
 
         try
         {
-            var encrypted = await File.ReadAllBytesAsync(_path).ConfigureAwait(false);
+            var encrypted = await File.ReadAllBytesAsync(_path, ct).ConfigureAwait(false);
             var current = TryDeserialize(encrypted, CurrentProtection);
             if (current is not null)
             {
@@ -399,7 +568,7 @@ public sealed class AgentCredentialStore : IAgentCredentialStore, IAgentDeviceKe
                     // The payload was successfully read using the legacy container
                     // hostname contract. Rewrite it once under a stable identity
                     // before a future recreate gives the container a new hostname.
-                    await WritePayloadAsync(current, CancellationToken.None).ConfigureAwait(false);
+                    await WritePayloadAsync(current, ct).ConfigureAwait(false);
                 }
 
                 return current;
@@ -411,7 +580,7 @@ public sealed class AgentCredentialStore : IAgentCredentialStore, IAgentDeviceKe
                 throw new AgentCredentialStoreException();
             }
 
-            await WritePayloadAsync(legacy, CancellationToken.None).ConfigureAwait(false);
+            await WritePayloadAsync(legacy, ct).ConfigureAwait(false);
             return legacy;
         }
         catch (IOException exception)
@@ -424,7 +593,7 @@ public sealed class AgentCredentialStore : IAgentCredentialStore, IAgentDeviceKe
         }
     }
 
-    private async Task<CredentialPayload?> TryMigrateLegacyPathAsync()
+    private async Task<CredentialPayload?> TryMigrateLegacyPathAsync(CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(_legacyPath) || !TryGetExistingCredentialFile(_legacyPath))
         {
@@ -433,7 +602,7 @@ public sealed class AgentCredentialStore : IAgentCredentialStore, IAgentDeviceKe
 
         try
         {
-            var encrypted = await File.ReadAllBytesAsync(_legacyPath).ConfigureAwait(false);
+            var encrypted = await File.ReadAllBytesAsync(_legacyPath, ct).ConfigureAwait(false);
             var payload = TryDeserialize(encrypted, CurrentProtection) ?? TryDeserialize(encrypted, LegacyStoProtection);
             if (payload is null)
             {
@@ -443,7 +612,7 @@ public sealed class AgentCredentialStore : IAgentCredentialStore, IAgentDeviceKe
             // WritePayloadAsync uses a temp file and atomic rename. The legacy file stays
             // intact until the durable NetRatel-path write has completed, so an interrupted
             // migration cannot lose an installation identity.
-            await WritePayloadAsync(payload, CancellationToken.None).ConfigureAwait(false);
+            await WritePayloadAsync(payload, ct).ConfigureAwait(false);
             TryDeleteLegacyPath(_legacyPath);
             return payload;
         }
@@ -526,33 +695,33 @@ public sealed class AgentCredentialStore : IAgentCredentialStore, IAgentDeviceKe
         return hasCredentials || hasDeviceKey;
     }
 
-    private async Task WritePayloadAsync(CredentialPayload payload, CancellationToken ct)
+    private Task WritePayloadAsync(CredentialPayload payload, CancellationToken ct) =>
+        WriteProtectedFileAsync(_path, JsonSerializer.SerializeToUtf8Bytes(payload), CurrentProtection, ct);
+
+    private async Task WriteProtectedFileAsync(string path, byte[] plaintext, CredentialProtectionProfile protection, CancellationToken ct)
     {
         await EnsurePersistentContainerMachineIdentityAsync(ct).ConfigureAwait(false);
-        var encrypted = Protect(JsonSerializer.SerializeToUtf8Bytes(payload));
-        var directory = Path.GetDirectoryName(_path);
+        var encrypted = ProtectForPurpose(plaintext, protection);
+        var directory = Path.GetDirectoryName(path);
         if (!string.IsNullOrWhiteSpace(directory))
         {
             if (OperatingSystem.IsWindows()) WindowsAgentDataDirectory.EnsureForPath(directory);
             Directory.CreateDirectory(directory);
         }
-
-        var temporaryPath = $"{_path}.{Guid.NewGuid():N}.tmp";
+        var temporaryPath = $"{path}.{Guid.NewGuid():N}.tmp";
         try
         {
-            await File.WriteAllBytesAsync(temporaryPath, encrypted, ct).ConfigureAwait(false);
-            TryTightenPermissions(temporaryPath);
-            File.Move(temporaryPath, _path, overwrite: true);
-        }
-        finally
-        {
-            if (File.Exists(temporaryPath))
+            await using (var stream = new FileStream(temporaryPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
             {
-                File.Delete(temporaryPath);
+                TryTightenPermissions(temporaryPath);
+                await stream.WriteAsync(encrypted, ct).ConfigureAwait(false);
+                await stream.FlushAsync(ct).ConfigureAwait(false);
+                stream.Flush(flushToDisk: true);
             }
+            File.Move(temporaryPath, path, overwrite: true);
         }
-
-        TryTightenPermissions(_path);
+        finally { if (File.Exists(temporaryPath)) File.Delete(temporaryPath); }
+        TryTightenPermissions(path);
     }
 
     private sealed record CredentialPayload(

@@ -681,13 +681,24 @@ if os.environ['SERVICE_MODE'] == 'true':
     environment.setdefault('NetRatel_CLIENT_LOG_DIR', '/var/lib/netratel/logs')
     if effective_gateway:
         environment[gateway_key] = effective_gateway
-    lines = config['lines'] or ['[Unit]', 'Description=NetRatel Client', 'After=network-online.target', '[Service]', 'Restart=always', 'RestartPreventExitStatus=78', '[Install]', 'WantedBy=multi-user.target']
+    lines = config['lines'] or ['[Unit]', 'Description=NetRatel Client', 'After=network-online.target', '[Service]', '[Install]', 'WantedBy=multi-user.target']
+    # Fill the recognized generated policy while retaining explicit administrator
+    # values and effective drop-ins. Runtime readback reports any such overrides.
+    recovery_unit = [@@LINUX_RECOVERY_UNIT@@]
+    recovery_service = [@@LINUX_RECOVERY_SERVICE@@]
+    section, configured = '', set()
+    for line in lines:
+        if line.strip().startswith('['): section = line.strip()
+        elif '=' in line: configured.add((section, line.strip().split('=', 1)[0]))
     output, in_service = [], False
     for line in lines:
         if line.strip().startswith('['):
             in_service = line.strip() == '[Service]'
             output.append(line)
+            if line.strip() == '[Unit]':
+                output.extend(item for item in recovery_unit if ('[Unit]', item.split('=', 1)[0]) not in configured)
             if in_service:
+                output.extend(item for item in recovery_service if ('[Service]', item.split('=', 1)[0]) not in configured)
                 output.extend(['WorkingDirectory=' + root + '/current', 'ExecStart=' + quote(root + '/netratel-client-start.sh')])
                 output.extend('Environment=' + quote(k + '=' + v) for k, v in environment.items())
         elif not (in_service and line.strip().split('=', 1)[0] in ('ExecStart', 'WorkingDirectory', 'Environment')):
@@ -801,6 +812,9 @@ if [ "$SERVICE_MODE" = true ]; then
     ENABLEMENT_CHANGED=true
     systemctl enable netratel-client.service
   fi
+  # This installer is an explicit owned repair/start transaction. Runtime retry
+  # never clears an exhausted service-manager limit.
+  systemctl reset-failed netratel-client.service
   timeout --foreground 60s systemctl start netratel-client.service
   systemctl is-active --quiet netratel-client.service || fail 'The installed client service is not active.'
   printf 'Service: root, active. Executable: %s/current/NetRatel.Client\n' "$ROOT_DIR"

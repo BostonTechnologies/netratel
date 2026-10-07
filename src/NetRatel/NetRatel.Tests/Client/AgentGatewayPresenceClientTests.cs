@@ -429,25 +429,33 @@ public sealed class AgentGatewayPresenceClientTests
     [Fact]
     public async Task RunAsync_DisabledDuringRefresh_ReAdmitsAfterEnableWithoutRestart()
     {
+        var clock = new GatewayPresenceTestClock();
         var gateway = new RefreshGatewayService();
         using var host = await BuildHostAsync(gateway);
         using var stopping = new CancellationTokenSource();
-        var tokenService = new DisabledDuringRefreshTokenService();
+        var tokenService = new DisabledDuringRefreshTokenService(clock);
         var logs = new ConcurrentQueue<string>();
         var agent = new AgentGatewayPresenceClient(
             new GatewayClientOptions { Endpoint = "https://gateway.test" },
             tokenService, 7, Guid.NewGuid(), "0.5.6-test", [], logs.Enqueue,
             createChannel: _ => GrpcChannel.ForAddress("http://localhost",
-                new GrpcChannelOptions { HttpHandler = host.GetTestServer().CreateHandler() }));
+                new GrpcChannelOptions { HttpHandler = host.GetTestServer().CreateHandler() }),
+            timeProvider: clock, nextRandom: () => 0);
         var run = agent.RunAsync(stopping.Token);
         try
         {
+            await WaitUntilAsync(() => clock.HasTimer(TimeSpan.FromSeconds(1)));
+            clock.Advance(TimeSpan.FromSeconds(1));
+            await WaitUntilAsync(() => clock.HasTimer(TimeSpan.FromSeconds(1)));
+            clock.Advance(TimeSpan.FromSeconds(1));
             await tokenService.DisabledResponse.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await WaitUntilAsync(() => clock.HasTimer(TimeSpan.FromSeconds(300)));
             run.IsCompleted.Should().BeFalse();
             tokenService.Enable();
+            clock.Advance(TimeSpan.FromSeconds(300));
             await gateway.SecondAdmission.Task.WaitAsync(TimeSpan.FromSeconds(10));
             run.IsCompleted.Should().BeFalse();
-            logs.Should().Contain(message => message.Contains("Waiting to retry authentication", StringComparison.Ordinal));
+            logs.Should().Contain(message => message.Contains("state=AuthenticationAttention", StringComparison.Ordinal));
         }
         finally
         {
@@ -456,7 +464,13 @@ public sealed class AgentGatewayPresenceClientTests
         }
     }
 
-    private sealed class DisabledDuringRefreshTokenService : IAgentTokenService
+    private static async Task WaitUntilAsync(Func<bool> condition)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+        while (!condition()) await Task.Delay(1, timeout.Token);
+    }
+
+    private sealed class DisabledDuringRefreshTokenService(TimeProvider clock) : IAgentTokenService
     {
         private int _attempts;
         private int _enabled;
@@ -466,13 +480,13 @@ public sealed class AgentGatewayPresenceClientTests
         {
             ct.ThrowIfCancellationRequested();
             if (Interlocked.Increment(ref _attempts) == 1)
-                return Task.FromResult(("initial-token", DateTimeOffset.UtcNow));
+                return Task.FromResult(("initial-token", clock.GetUtcNow().AddSeconds(3)));
             if (Volatile.Read(ref _enabled) == 0)
             {
                 DisabledResponse.TrySetResult();
                 throw new AgentClientAuthException("Agent disabled.", 403, code: "agent_disabled");
             }
-            return Task.FromResult(("enabled-token", DateTimeOffset.UtcNow.AddHours(1)));
+            return Task.FromResult(("enabled-token", clock.GetUtcNow().AddHours(1)));
         }
     }
 
@@ -506,7 +520,7 @@ public sealed class AgentGatewayPresenceClientTests
         public Task<(string AccessToken, DateTimeOffset ExpiresAtUtc)> GetAccessTokenAsync(CancellationToken ct)
         {
             Interlocked.Increment(ref _requestCount);
-            return Task.FromResult(("test-token", DateTimeOffset.UtcNow));
+            return Task.FromResult(("test-token", DateTimeOffset.UtcNow.AddSeconds(3)));
         }
     }
 

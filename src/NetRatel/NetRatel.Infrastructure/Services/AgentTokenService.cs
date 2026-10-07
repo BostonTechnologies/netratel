@@ -4,6 +4,7 @@ using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
@@ -22,8 +23,12 @@ public sealed class AgentTokenService : IAgentTokenService
     private readonly SecurityHardeningOptions _hardening;
     private readonly AgentNonceReplayService _nonceReplay;
     private readonly ILogger<AgentTokenService> _logger;
+    private readonly IDataProtectionProvider _protection;
+    private readonly TimeProvider _clock;
     private static readonly SemaphoreSlim AgentTokenEventsRepairGate = new(1, 1);
-    private static volatile bool _agentTokenEventsTableEnsured;
+    // This service is scoped to a database. A process-wide flag incorrectly skips
+    // recovery for another database/connection after one database was repaired.
+    private bool _agentTokenEventsTableEnsured;
 
     public AgentTokenService(
         OrchestratorDbContext db,
@@ -31,7 +36,9 @@ public sealed class AgentTokenService : IAgentTokenService
         IOptions<AgentAuthOptions> options,
         IOptions<SecurityHardeningOptions> hardening,
         AgentNonceReplayService nonceReplay,
-        ILogger<AgentTokenService> logger)
+        ILogger<AgentTokenService> logger,
+        IDataProtectionProvider protection,
+        TimeProvider? timeProvider = null)
     {
         _db = db;
         _signing = signing;
@@ -39,16 +46,47 @@ public sealed class AgentTokenService : IAgentTokenService
         _hardening = hardening.Value;
         _nonceReplay = nonceReplay;
         _logger = logger;
+        _protection = protection;
+        _clock = timeProvider ?? TimeProvider.System;
     }
 
     public async Task<AgentTokenResponse> ExchangeRefreshTokenAsync(AgentTokenRequest request, CancellationToken ct)
+    {
+        // Serialize every rotating native request, including old-client requests and
+        // acknowledgement, against the same agent/parent rows in PostgreSQL.
+        await using var transaction = _hardening.EnableRefreshRotation && _db.Database.IsRelational()
+            ? await _db.Database.BeginTransactionAsync(ct)
+            : null;
+        try
+        {
+            var result = await ExchangeCoreAsync(request, ct);
+            if (transaction is not null) await transaction.CommitAsync(ct);
+            return result;
+        }
+        catch (AgentAuthException)
+        {
+            // Proof nonces, security events and eligible expired-result removal survive
+            // rejection. Consumption only occurs after all authorization decisions.
+            await SaveChangesWithAgentTokenEventsRecoveryAsync(ct);
+            if (transaction is not null) await transaction.CommitAsync(ct);
+            throw;
+        }
+    }
+
+    private async Task<AgentTokenResponse> ExchangeCoreAsync(AgentTokenRequest request, CancellationToken ct)
     {
         if (request.AgentId == Guid.Empty || string.IsNullOrWhiteSpace(request.RefreshToken))
         {
             throw new AgentAuthException(400, "agentId and refreshToken are required.");
         }
 
-        var agent = await _db.Agents.FirstOrDefaultAsync(x => x.Id == request.AgentId, ct);
+        var extended = request.ExchangeVersion.HasValue || request.ExchangeId.HasValue;
+        if (extended && (request.ExchangeVersion != 1 || !request.ExchangeId.HasValue || request.ExchangeId == Guid.Empty))
+            throw new AgentAuthException(400, "Native refresh exchange version/binding is unsupported.", "refresh_exchange_unsupported");
+
+        var agent = _hardening.EnableRefreshRotation && _db.Database.IsNpgsql()
+            ? await _db.Agents.FromSqlInterpolated($"SELECT * FROM \"Agents\" WHERE \"Id\" = {request.AgentId} FOR UPDATE").FirstOrDefaultAsync(ct)
+            : await _db.Agents.FirstOrDefaultAsync(x => x.Id == request.AgentId, ct);
         if (agent is null)
         {
             await WriteTokenEventAsync(tenantId: null, request.AgentId, "TokenRejectedUnknownAgent", new { reason = "agent_not_found" }, ct);
@@ -56,7 +94,7 @@ public sealed class AgentTokenService : IAgentTokenService
             throw new AgentAuthException(403, "Agent not found.", "agent_not_found");
         }
 
-        var now = DateTimeOffset.UtcNow;
+        var now = _clock.GetUtcNow();
         if (!agent.IsEnabled || agent.Status != AgentStatus.Active)
         {
             await WriteTokenEventAsync(agent.TenantId, agent.Id, "TokenRejectedDisabled", null, ct);
@@ -82,7 +120,7 @@ public sealed class AgentTokenService : IAgentTokenService
             }
         }
 
-        if (_hardening.EnablePoP)
+        if (_hardening.EnablePoP || extended)
         {
             await ValidateProofAsync(agent, request, now, ct);
         }
@@ -91,88 +129,94 @@ public sealed class AgentTokenService : IAgentTokenService
         string? rotatedRefreshToken = null;
         var rotationRecovered = false;
 
+        if (!_hardening.EnableRefreshRotation && await _db.AgentRefreshTokens.AnyAsync(x =>
+                x.AgentId == request.AgentId && x.TokenHash == hash && x.ExchangeId != null, ct))
+            throw new AgentAuthException(403, "The recorded refresh exchange requires the current rotation policy.",
+                "refresh_exchange_policy_changed");
+        if (extended) await ValidateExchangeAgentAsync(agent, ct);
+
+        IReadOnlyList<string>? exchangeScopes = null;
         if (_hardening.EnableRefreshRotation)
         {
-            var refresh = await _db.AgentRefreshTokens
-                .FirstOrDefaultAsync(x => x.AgentId == request.AgentId && x.TokenHash == hash, ct);
-
+            var refresh = _db.Database.IsNpgsql()
+                ? await _db.AgentRefreshTokens.FromSqlInterpolated($"SELECT * FROM \"AgentRefreshTokens\" WHERE \"AgentId\" = {request.AgentId} AND \"TokenHash\" = {hash} FOR UPDATE").FirstOrDefaultAsync(ct)
+                : await _db.AgentRefreshTokens.FirstOrDefaultAsync(x => x.AgentId == request.AgentId && x.TokenHash == hash, ct);
             if (refresh is null)
+                throw new AgentAuthException(401, "Invalid credentials.", "refresh_token_invalid");
+
+            // No recovery, including legacy grace, may outlive the consumed parent.
+            if (refresh.ExpiresAtUtc.HasValue && refresh.ExpiresAtUtc <= now)
             {
-                await WriteTokenEventAsync(agent.TenantId, agent.Id, "TokenRejectedInvalidRefresh", null, ct);
-                await SaveChangesWithAgentTokenEventsRecoveryAsync(ct);
-                throw new AgentAuthException(401, "Invalid credentials.");
+                RetireExchangeResult(refresh);
+                throw new AgentAuthException(401, "Credential expired.", "refresh_token_expired");
             }
 
-            if (refresh.RevokedAtUtc.HasValue)
+            if (refresh.ExchangeId.HasValue)
             {
-                var recoveryWindow = TimeSpan.FromMinutes(Math.Max(1, _hardening.RefreshRotationRecoveryMinutes));
-                var canRecover = refresh.RecoveryUsedAtUtc is null &&
-                                 refresh.ReplacedByTokenId.HasValue &&
-                                 now - refresh.RevokedAtUtc.Value <= recoveryWindow;
-                if (!canRecover)
-                {
-                    await WriteTokenEventAsync(agent.TenantId, agent.Id, "TokenRejectedRefreshReuse", null, ct);
-                    await SaveChangesWithAgentTokenEventsRecoveryAsync(ct);
-                    throw new AgentAuthException(401, "Refresh token has already been used.", "refresh_token_reused");
-                }
-
-                if (!_hardening.EnablePoP)
-                {
-                    await ValidateProofAsync(agent, request, now, ct).ConfigureAwait(false);
-                }
-
-                var replacementTokenId = refresh.ReplacedByTokenId.GetValueOrDefault();
-                var lostReplacement = await _db.AgentRefreshTokens
-                    .FirstOrDefaultAsync(token => token.Id == replacementTokenId, ct)
-                    .ConfigureAwait(false);
-                if (lostReplacement is null || lostReplacement.AgentId != agent.Id)
-                {
-                    await WriteTokenEventAsync(agent.TenantId, agent.Id, "TokenRejectedRotationRecovery", new { reason = "replacement_not_found" }, ct);
-                    await SaveChangesWithAgentTokenEventsRecoveryAsync(ct);
-                    throw new AgentAuthException(401, "Refresh rotation recovery is unavailable.", "refresh_rotation_recovery_unavailable");
-                }
-
-                var recoveryRefreshValue = GenerateRefreshToken();
-                var recoveryReplacement = new AgentRefreshToken
-                {
-                    Id = Guid.NewGuid(),
-                    AgentId = request.AgentId,
-                    TokenHash = EnrollmentService.HashRefreshToken(recoveryRefreshValue),
-                    CreatedAtUtc = now,
-                    ExpiresAtUtc = _options.RefreshTokenLifetimeDays > 0 ? now.AddDays(_options.RefreshTokenLifetimeDays) : null
-                };
-                refresh.RecoveryUsedAtUtc = now;
-                refresh.LastUsedUtc = now;
-                lostReplacement.RevokedAtUtc ??= now;
-                lostReplacement.ReplacedByTokenId = recoveryReplacement.Id;
-                _db.AgentRefreshTokens.Add(recoveryReplacement);
-                rotatedRefreshToken = recoveryRefreshValue;
+                // This check deliberately precedes generic spent-token/grace handling.
+                // An old binary may recover only the immediate, unacknowledged result.
+                if (extended && refresh.ExchangeId != request.ExchangeId)
+                    throw new AgentAuthException(401, "Refresh exchange conflicts with the consumed parent.", "refresh_exchange_conflict");
+                if (!_hardening.EnablePoP && !extended)
+                    await ValidateProofAsync(agent, request, now, ct);
+                if (refresh.ExchangeAcknowledgedAtUtc.HasValue || string.IsNullOrWhiteSpace(refresh.ProtectedSuccessorToken))
+                    throw new AgentAuthException(401, "Refresh exchange result is no longer available.", "refresh_exchange_unavailable");
+                exchangeScopes = await ValidateExchangeBindingAsync(agent, refresh, request, ct);
+                rotatedRefreshToken = await ReadExchangeResultAsync(refresh, now, ct);
                 rotationRecovered = true;
             }
-            else if (refresh.ExpiresAtUtc.HasValue && refresh.ExpiresAtUtc <= now)
+            else if (refresh.RevokedAtUtc.HasValue)
             {
-                await WriteTokenEventAsync(agent.TenantId, agent.Id, "TokenRejectedExpiredRefresh", null, ct);
-                await SaveChangesWithAgentTokenEventsRecoveryAsync(ct);
-                throw new AgentAuthException(401, "Credential expired.");
+                if (extended)
+                    throw new AgentAuthException(401, "The parent credential has already been consumed.", "refresh_token_reused");
+                var recoveryWindow = TimeSpan.FromMinutes(Math.Max(1, _hardening.RefreshRotationRecoveryMinutes));
+                var canRecover = refresh.RecoveryUsedAtUtc is null && refresh.ReplacedByTokenId.HasValue &&
+                                 now - refresh.RevokedAtUtc.Value <= recoveryWindow;
+                if (!canRecover)
+                    throw new AgentAuthException(401, "Refresh token has already been used.", "refresh_token_reused");
+                if (!_hardening.EnablePoP)
+                    await ValidateProofAsync(agent, request, now, ct);
+                var lostReplacement = await _db.AgentRefreshTokens.FirstOrDefaultAsync(x => x.Id == refresh.ReplacedByTokenId, ct);
+                if (lostReplacement is null || lostReplacement.AgentId != agent.Id || lostReplacement.RevokedAtUtc.HasValue ||
+                    (lostReplacement.ExpiresAtUtc.HasValue && lostReplacement.ExpiresAtUtc <= now))
+                    throw new AgentAuthException(401, "Refresh rotation recovery is unavailable.", "refresh_rotation_recovery_unavailable");
+                rotatedRefreshToken = GenerateRefreshToken();
+                var replacement = NewRefreshToken(request.AgentId, rotatedRefreshToken, now,
+                    _options.RefreshTokenLifetimeDays > 0 ? now.AddDays(_options.RefreshTokenLifetimeDays) : null);
+                refresh.RecoveryUsedAtUtc = now;
+                refresh.LastUsedUtc = now;
+                lostReplacement.RevokedAtUtc = now;
+                lostReplacement.ReplacedByTokenId = replacement.Id;
+                _db.AgentRefreshTokens.Add(replacement);
+                rotationRecovered = true;
             }
-
             else
             {
-                var newRefreshValue = GenerateRefreshToken();
-                var replacement = new AgentRefreshToken
+                if (extended)
                 {
-                    Id = Guid.NewGuid(),
-                    AgentId = request.AgentId,
-                    TokenHash = EnrollmentService.HashRefreshToken(newRefreshValue),
-                    CreatedAtUtc = now,
-                    ExpiresAtUtc = _options.RefreshTokenLifetimeDays > 0 ? now.AddDays(_options.RefreshTokenLifetimeDays) : null
-                };
-
+                    if (await _db.AgentRefreshTokens.AnyAsync(x => x.AgentId == agent.Id && x.ExchangeId == request.ExchangeId, ct))
+                        throw new AgentAuthException(401, "Exchange ID belongs to another parent.", "refresh_exchange_conflict");
+                    exchangeScopes = ResolveExchangeScopes(agent, request.RequestedScopes);
+                }
+                await AcknowledgeSuccessorAsync(refresh, now, ct);
+                rotatedRefreshToken = GenerateRefreshToken();
+                var expiry = extended ? refresh.ExpiresAtUtc :
+                    (_options.RefreshTokenLifetimeDays > 0 ? now.AddDays(_options.RefreshTokenLifetimeDays) : (DateTimeOffset?)null);
+                var replacement = NewRefreshToken(request.AgentId, rotatedRefreshToken, now, expiry);
                 refresh.RevokedAtUtc = now;
                 refresh.ReplacedByTokenId = replacement.Id;
                 refresh.LastUsedUtc = now;
+                if (extended)
+                {
+                    refresh.ExchangeId = request.ExchangeId;
+                    refresh.ExchangeTenantId = agent.TenantId;
+                    refresh.ExchangeKeyHash = DeviceKeyHash(agent);
+                    refresh.ExchangeRequestedScopesJson = JsonSerializer.Serialize(request.RequestedScopes);
+                    refresh.ExchangeGrantedScopesJson = JsonSerializer.Serialize(exchangeScopes);
+                    refresh.ExchangeMtlsThumbprint = NormalizeThumbprint(request.ClientCertificateThumbprint);
+                    refresh.ProtectedSuccessorToken = ResultProtector(refresh).Protect(rotatedRefreshToken);
+                }
                 _db.AgentRefreshTokens.Add(replacement);
-                rotatedRefreshToken = newRefreshValue;
             }
         }
         else
@@ -183,17 +227,17 @@ public sealed class AgentTokenService : IAgentTokenService
 
             if (credential is null)
             {
-                throw new AgentAuthException(401, "Invalid credentials.");
+                throw new AgentAuthException(401, "Invalid credentials.", "refresh_token_invalid");
             }
 
             if (credential.RevokedAtUtc.HasValue)
             {
-                throw new AgentAuthException(401, "Credential revoked.");
+                throw new AgentAuthException(401, "Credential revoked.", "refresh_token_revoked");
             }
 
             if (credential.ExpiresAtUtc.HasValue && credential.ExpiresAtUtc <= now)
             {
-                throw new AgentAuthException(401, "Credential expired.");
+                throw new AgentAuthException(401, "Credential expired.", "refresh_token_expired");
             }
 
             credential.LastUsedUtc = now;
@@ -212,7 +256,7 @@ public sealed class AgentTokenService : IAgentTokenService
             new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString("N")),
             new(JwtRegisteredClaimNames.Iat, now.ToUnixTimeSeconds().ToString(), ClaimValueTypes.Integer64)
         };
-        var grantedScopes = ResolveScopes(agent, request.RequestedScopes);
+        var grantedScopes = exchangeScopes ?? (extended ? ResolveExchangeScopes(agent, request.RequestedScopes) : ResolveScopes(agent, request.RequestedScopes));
         if (grantedScopes.Count > 0)
         {
             claims.Add(new Claim("scope", string.Join(' ', grantedScopes)));
@@ -282,8 +326,109 @@ public sealed class AgentTokenService : IAgentTokenService
                 ct);
         }
 
-        return new AgentTokenResponse(tokenValue, (int)(expires - now).TotalSeconds, rotatedRefreshToken);
+        return new AgentTokenResponse(tokenValue, (int)(expires - now).TotalSeconds, rotatedRefreshToken, request.ExchangeId);
     }
+
+    private async Task ValidateExchangeAgentAsync(Agent agent, CancellationToken ct)
+    {
+        if (agent.RevokedAtUtc.HasValue || agent.DeletedAtUtc.HasValue || agent.SupersededByAgentId.HasValue)
+            throw new AgentAuthException(403, "Agent authorization is revoked.", "agent_revoked");
+        var tenantExists = _db.Database.IsNpgsql() && _db.Database.CurrentTransaction is not null
+            ? await _db.Tenants.FromSqlInterpolated($"SELECT * FROM \"Tenants\" WHERE \"Id\" = {agent.TenantId} FOR SHARE").FirstOrDefaultAsync(ct) is not null
+            : await _db.Tenants.AnyAsync(x => x.Id == agent.TenantId, ct);
+        if (!tenantExists)
+            throw new AgentAuthException(403, "Agent tenant is unavailable.", "agent_tenant_invalid");
+    }
+
+    private async Task<IReadOnlyList<string>> ValidateExchangeBindingAsync(Agent agent, AgentRefreshToken parent,
+        AgentTokenRequest request, CancellationToken ct)
+    {
+        await ValidateExchangeAgentAsync(agent, ct);
+        if (parent.ExchangeTenantId != agent.TenantId || parent.ExchangeKeyHash != DeviceKeyHash(agent) ||
+            parent.ExchangeRequestedScopesJson != JsonSerializer.Serialize(request.RequestedScopes) ||
+            parent.ExchangeMtlsThumbprint != NormalizeThumbprint(request.ClientCertificateThumbprint))
+            throw new AgentAuthException(401, "Refresh exchange device or scope binding has changed.", "refresh_exchange_binding_mismatch");
+        var granted = JsonSerializer.Deserialize<string[]>(parent.ExchangeGrantedScopesJson ?? "[]") ?? [];
+        var current = ResolveExchangeScopes(agent, request.RequestedScopes);
+        if (granted.Any(scope => !current.Contains(scope, StringComparer.OrdinalIgnoreCase)))
+            throw new AgentAuthException(403, "Refresh exchange grants are no longer authorized.", "refresh_exchange_authorization_changed");
+        // New grants cannot broaden the authorization captured by this exchange.
+        return granted;
+    }
+
+    private async Task<string> ReadExchangeResultAsync(AgentRefreshToken parent, DateTimeOffset now, CancellationToken ct)
+    {
+        if (parent.ExchangeAcknowledgedAtUtc.HasValue || string.IsNullOrWhiteSpace(parent.ProtectedSuccessorToken) ||
+            !parent.ReplacedByTokenId.HasValue)
+            throw new AgentAuthException(401, "Refresh exchange result is no longer available.", "refresh_exchange_unavailable");
+        var successor = await _db.AgentRefreshTokens.FirstOrDefaultAsync(x => x.Id == parent.ReplacedByTokenId, ct);
+        if (successor is null || successor.AgentId != parent.AgentId || successor.RevokedAtUtc.HasValue ||
+            successor.ReplacedByTokenId.HasValue || (successor.ExpiresAtUtc.HasValue && successor.ExpiresAtUtc <= now))
+        {
+            RetireExchangeResult(parent);
+            throw new AgentAuthException(401, "Refresh exchange successor is no longer valid.", "refresh_exchange_unavailable");
+        }
+        try
+        {
+            var token = ResultProtector(parent).Unprotect(parent.ProtectedSuccessorToken);
+            if (EnrollmentService.HashRefreshToken(token) != successor.TokenHash)
+                throw new CryptographicException("Protected native successor does not match its recorded hash.");
+            parent.LastUsedUtc = now;
+            return token;
+        }
+        catch (CryptographicException)
+        {
+            // A missing/changed key ring is attention, never permission to rotate again.
+            throw new AgentAuthException(503, "Protected refresh exchange result is unavailable.", "refresh_exchange_protection_unavailable");
+        }
+    }
+
+    private async Task AcknowledgeSuccessorAsync(AgentRefreshToken successor, DateTimeOffset now, CancellationToken ct)
+    {
+        var parents = await _db.AgentRefreshTokens.Where(x => x.AgentId == successor.AgentId &&
+            x.ReplacedByTokenId == successor.Id && x.ExchangeId != null && x.ExchangeAcknowledgedAtUtc == null).ToListAsync(ct);
+        foreach (var parent in parents)
+        {
+            parent.ExchangeAcknowledgedAtUtc = now;
+            RetireExchangeResult(parent);
+        }
+    }
+
+    private static void RetireExchangeResult(AgentRefreshToken parent)
+    {
+        parent.ProtectedSuccessorToken = null;
+        parent.ExchangeTenantId = null;
+        parent.ExchangeKeyHash = null;
+        parent.ExchangeRequestedScopesJson = null;
+        parent.ExchangeGrantedScopesJson = null;
+        parent.ExchangeMtlsThumbprint = null;
+        // Exchange ID and immediate replacement decision prevent legacy grace or
+        // a different ID from reclaiming this consumed parent after cleanup.
+    }
+
+    private IDataProtector ResultProtector(AgentRefreshToken parent) => _protection.CreateProtector(
+        "NetRatel.NativeAgent.RefreshExchange.v1", parent.AgentId.ToString("N"), parent.Id.ToString("N"),
+        parent.ExchangeId!.Value.ToString("N"), parent.ReplacedByTokenId!.Value.ToString("N"));
+
+    private static string DeviceKeyHash(Agent agent) => PopSignatureService.ComputeBodyHash(
+        $"{agent.KeyAlgorithm.Trim().ToLowerInvariant()}:{agent.PublicKey?.Trim()}");
+
+    private static string? NormalizeThumbprint(string? thumbprint) => string.IsNullOrWhiteSpace(thumbprint)
+        ? null : thumbprint.Trim().ToUpperInvariant();
+
+    private IReadOnlyList<string> ResolveExchangeScopes(Agent agent, IReadOnlyList<string>? requestedScopes)
+    {
+        var allowed = NormalizeScopes(TryParseScopes(agent.AllowedScopesJson));
+        if (allowed.Count == 0) allowed = ["netratel:connect"];
+        var requested = NormalizeScopes(requestedScopes ?? []);
+        return requested.Count == 0 ? allowed : requested.Where(scope => allowed.Contains(scope, StringComparer.OrdinalIgnoreCase)).ToArray();
+    }
+
+    private static AgentRefreshToken NewRefreshToken(Guid agentId, string value, DateTimeOffset now, DateTimeOffset? expiry) => new()
+    {
+        Id = Guid.NewGuid(), AgentId = agentId, TokenHash = EnrollmentService.HashRefreshToken(value),
+        CreatedAtUtc = now, ExpiresAtUtc = expiry
+    };
 
     public async Task<string> CreateServiceTokenAsync(string tenantId, CancellationToken ct)
     {
@@ -620,7 +765,7 @@ public sealed class AgentTokenService : IAgentTokenService
             throw new AgentAuthException(401, "Nonce replay detected.", "nonce_replay");
         }
 
-        var bodyHash = PopSignatureService.ComputeTokenBodyHash(request.AgentId, request.RefreshToken, request.RequestedScopes);
+        var bodyHash = PopSignatureService.ComputeTokenBodyHash(request.AgentId, request.RefreshToken, request.RequestedScopes, request.ExchangeVersion, request.ExchangeId);
         var message = PopSignatureService.BuildSigningMessage(
             "POST",
             "/api/v1/agents/token",

@@ -20,6 +20,7 @@ public sealed partial class CommittedConnectionOwnershipMigrationPostgresTests
     private const string CommittedRegistrationMigration = "20261006182927_AddCommittedMonitoringRegistration";
     private const string HistoricalConnectorMigration = "20261002200000_AddRatelDeskConnectors";
     private const string ReceiverEvidenceMigration = "20261006195456_AddFlowReceiverEvidence";
+    private const string NativeRefreshExchangeMigration = "20261007120000_AddNativeRefreshExchange";
     private const string Preceding151Sha256 = "d254a6270c98f16886e0d9b25d102f0fec71ad1f507fd2db527ec34ec1379726";
     private const string Preceding148Sha256 = "9877f2b6ba9bcc678da0d248aa903f262dbe9ef4f1459e3e7958742e227938c4";
     private static readonly string[] MonitoringTables =
@@ -83,7 +84,7 @@ public sealed partial class CommittedConnectionOwnershipMigrationPostgresTests
         await AssertRegistrationDeltaAsync(connection, prior.History, ct);
         var firstSchema = await CompleteSchemaAsync(connection, ct);
         var retainedIds = prior.Plan.CurrentMigrationIds.Where(id => id != CommittedRegistrationMigration &&
-            id != ReceiverEvidenceMigration).ToArray();
+            id != ReceiverEvidenceMigration && id != NativeRefreshExchangeMigration).ToArray();
         var retainedHistory = await MigrationHistorySnapshotAsync(connection, retainedIds, ct);
         var monitoring = MonitoringTables.Select(table => new HistoricalTable(table,
             table == "MonitoringEvidenceStreams" ? ["CommittedRegistrationOrdinal"] : [])).ToArray();
@@ -132,7 +133,7 @@ public sealed partial class CommittedConnectionOwnershipMigrationPostgresTests
         await using (var db = Context(database))
             (await db.Database.GetPendingMigrationsAsync(ct)).Should().Equal(
                 [HistoricalMonitoringMigration, FlowPreceding149PendingMigration, HistoricalConnectorMigration,
-                 CommittedRegistrationMigration, ReceiverEvidenceMigration],
+                 CommittedRegistrationMigration, ReceiverEvidenceMigration, NativeRefreshExchangeMigration],
                 "the lower-ID Monitoring, Flow and Connector migrations plus registration and receiver are genuinely unapplied on the authentic preceding schema");
         await using var connection = new NpgsqlConnection(database);
         await connection.OpenAsync(ct);
@@ -368,11 +369,11 @@ public sealed partial class CommittedConnectionOwnershipMigrationPostgresTests
         await ApplyBaselineAsync(database, preceding, ct);
         var plan = CurrentPlan(database, services);
         plan.CurrentMigrationIds.Should().Equal(preceding.MigrationIds.Append(FlowPreceding149PendingMigration)
-            .Append(HistoricalConnectorMigration).Append(ReceiverEvidenceMigration).Order(StringComparer.Ordinal));
+            .Append(HistoricalConnectorMigration).Append(ReceiverEvidenceMigration).Append(NativeRefreshExchangeMigration).Order(StringComparer.Ordinal));
         (await AppliedAsync(database, ct)).Should().Equal(preceding.MigrationIds);
         await using (var db = Context(database))
             (await db.Database.GetPendingMigrationsAsync(ct)).Should().Equal(
-                [FlowPreceding149PendingMigration, HistoricalConnectorMigration, ReceiverEvidenceMigration],
+                [FlowPreceding149PendingMigration, HistoricalConnectorMigration, ReceiverEvidenceMigration, NativeRefreshExchangeMigration],
                 "retained lower-ID Flow and Connector plus genuine receiver are unapplied on authentic current149");
         await using var connection = new NpgsqlConnection(database);
         await connection.OpenAsync(ct);
@@ -655,11 +656,11 @@ public sealed partial class CommittedConnectionOwnershipMigrationPostgresTests
         await ApplyBaselineAsync(database, preceding, ct);
         var plan = CurrentPlan(database, services);
         plan.CurrentMigrationIds.Should().Equal(preceding.MigrationIds.Append(HistoricalConnectorMigration)
-            .Append(ReceiverEvidenceMigration).Order(StringComparer.Ordinal));
+            .Append(ReceiverEvidenceMigration).Append(NativeRefreshExchangeMigration).Order(StringComparer.Ordinal));
         (await AppliedAsync(database, ct)).Should().Equal(preceding.MigrationIds);
         await using (var db = Context(database))
             (await db.Database.GetPendingMigrationsAsync(ct)).Should().Equal(
-                [HistoricalConnectorMigration, ReceiverEvidenceMigration]);
+                [HistoricalConnectorMigration, ReceiverEvidenceMigration, NativeRefreshExchangeMigration]);
         await using var connection = new NpgsqlConnection(database);
         await connection.OpenAsync(ct);
         await AssertMonitoringPresenceAsync(connection, present: true, ct);
@@ -706,8 +707,8 @@ public sealed partial class CommittedConnectionOwnershipMigrationPostgresTests
         var expected = flowPresent ? prior.History.MigrationIds : prior.History.MigrationIds
             .Where(id => id != FlowPreceding149PendingMigration).ToArray();
         (await db.Database.GetAppliedMigrationsAsync(ct)).Should().Equal(expected);
-        var pending = flowPresent ? new[] { HistoricalConnectorMigration, ReceiverEvidenceMigration }
-            : new[] { FlowPreceding149PendingMigration, HistoricalConnectorMigration, ReceiverEvidenceMigration };
+        var pending = flowPresent ? new[] { HistoricalConnectorMigration, ReceiverEvidenceMigration, NativeRefreshExchangeMigration }
+            : new[] { FlowPreceding149PendingMigration, HistoricalConnectorMigration, ReceiverEvidenceMigration, NativeRefreshExchangeMigration };
         (await db.Database.GetPendingMigrationsAsync(ct)).Should().Equal(pending);
         // This checks source/snapshot agreement; this staged schema deliberately has pending IDs.
         db.Database.HasPendingModelChanges().Should().BeFalse();
@@ -736,9 +737,9 @@ public sealed partial class CommittedConnectionOwnershipMigrationPostgresTests
         var down = await ReadScopedReceiverRangeAsync(ReceiverDownResource, ReceiverDownSha256, down: true, ct);
         var up = await ReadScopedReceiverRangeAsync(ReceiverUpResource, ReceiverUpSha256, down: false, ct);
         var prior = await PreparePreceding151Async(populateFlow: true, ct);
-        prior.Plan.CurrentMigration.Should().Be(ReceiverEvidenceMigration);
+        prior.Plan.CurrentMigration.Should().Be(NativeRefreshExchangeMigration);
         prior.Plan.CurrentMigrationIds.Should().Equal(prior.History.MigrationIds
-            .Append(HistoricalConnectorMigration).Append(ReceiverEvidenceMigration).Order(StringComparer.Ordinal));
+            .Append(HistoricalConnectorMigration).Append(ReceiverEvidenceMigration).Append(NativeRefreshExchangeMigration).Order(StringComparer.Ordinal));
         await using var connection = new NpgsqlConnection(prior.Database);
         await connection.OpenAsync(ct);
 
@@ -763,7 +764,8 @@ public sealed partial class CommittedConnectionOwnershipMigrationPostgresTests
         [ new("RatelDeskConnectors", ["AuthenticationJson", "ReadinessJson"]) ];
         var connectorRows = await HistoricalSnapshotsAsync(connection, connectorBase, ct);
         var retainedIds = prior.Plan.CurrentMigrationIds.Where(id => id != ReceiverEvidenceMigration).ToArray();
-        retainedIds.Should().Equal(prior.History.MigrationIds.Append(HistoricalConnectorMigration).Order(StringComparer.Ordinal));
+        retainedIds.Should().Equal(prior.History.MigrationIds.Append(HistoricalConnectorMigration)
+            .Append(NativeRefreshExchangeMigration).Order(StringComparer.Ordinal));
         var retainedHistory = await MigrationHistorySnapshotAsync(connection, retainedIds, ct);
 
         // Execute only the genuine receiver range. The lower Connector and Flow

@@ -246,10 +246,8 @@ public sealed class StartupTokenAcquisitionTests
         var action = StartupTokenAcquisition.GetAccessTokenAsync(
             new ClientOptions { EnrollmentCode = "ENR-VALID" }, tokens, enrollment, credentials,
             new FakeInjectedEnrollmentBootstrap(), _ => { }, stopping.Token);
-        await tokens.FirstRequestStarted.WaitAsync(TimeSpan.FromSeconds(5));
-        stopping.Cancel();
-
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => action);
+        var exception = await Assert.ThrowsAsync<AgentClientAuthException>(() => action);
+        exception.Code.Should().Be("agent_disabled", "the operational owner schedules retries and utility acquisition stays bounded");
         tokens.RequestCount.Should().Be(1);
         enrollment.Codes.Should().BeEmpty();
         (await credentials.LoadAsync()).Should().Be(("agent", "refresh"));

@@ -172,6 +172,8 @@ public sealed class AgentManagementService : IAgentManagementService
             credential.RevokedAtUtc = now;
         foreach (var token in _db.AgentRefreshTokens.Where(candidate => candidate.AgentId == agentId && candidate.RevokedAtUtc == null))
             token.RevokedAtUtc = now;
+        foreach (var token in _db.AgentRefreshTokens.Where(candidate => candidate.AgentId == agentId && candidate.ProtectedSuccessorToken != null))
+            token.ProtectedSuccessorToken = null;
 
         _db.OutboxMessages.Add(new OutboxMessage
         {

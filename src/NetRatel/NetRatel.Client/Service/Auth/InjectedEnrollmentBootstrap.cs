@@ -88,7 +88,7 @@ public sealed class InjectedEnrollmentBootstrap : IInjectedEnrollmentBootstrap
             }
 
             var creds = await enrollmentService.EnrollAsync(payload.EnrollmentCode.Trim(), ct);
-            await credentialStore.SaveAsync(creds.AgentId, creds.RefreshToken);
+            await credentialStore.SaveAsync(creds.AgentId, creds.RefreshToken, ct);
             _fileSystem.Delete(enrollPath);
             return creds;
         }
