@@ -36,12 +36,12 @@ public sealed class FlowEditorTests : AsyncBunitContext
         var closed = 0;
         var cut = RenderEditor(p => p.Add(e => e.Closed, () => closed++));
         await cut.WaitForAssertionAsync(() => cut.Find("[data-testid=flow-name]").GetAttribute("value").Should().Be("Incident flow"));
-        await cut.Find("[data-testid=flow-name]").InputAsync(new() { Value = "Edited flow" });
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-name]").InputAsync(new() { Value = "Edited flow" }));
         cut.Find("[data-testid=flow-dirty]").TextContent.Should().Contain("Unsaved");
-        await cut.Find("[data-testid=flow-close]").ClickAsync(new());
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-close]").ClickAsync(new()));
         await _dialogs.WaitForAssertionAsync(() => _dialogs.Find("[data-testid=flow-unsaved]").TextContent.Should().Contain("Unsaved changes"));
         closed.Should().Be(0); _api.SaveCalls.Should().Be(0);
-        await _dialogs.Find("[data-testid=flow-discard]").ClickAsync(new());
+        await _dialogs.InvokeAsync(() => _dialogs.Find("[data-testid=flow-discard]").ClickAsync(new()));
         closed.Should().Be(1);
     }
 
@@ -51,9 +51,9 @@ public sealed class FlowEditorTests : AsyncBunitContext
         _api.SavePending = new(TaskCreationOptions.RunContinuationsAsynchronously);
         var cut = RenderEditor();
         await cut.WaitForAssertionAsync(() => cut.FindAll("[data-testid=flow-name]").Count.Should().Be(1));
-        await cut.Find("[data-testid=flow-name]").InputAsync(new() { Value = "My unsaved flow" });
-        var save = cut.Find("[data-testid=flow-save]").ClickAsync(new());
-        await cut.Find("[data-testid=flow-save]").ClickAsync(new());
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-name]").InputAsync(new() { Value = "My unsaved flow" }));
+        var save = cut.InvokeAsync(() => cut.Find("[data-testid=flow-save]").ClickAsync(new()));
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-save]").ClickAsync(new()));
         await cut.WaitForAssertionAsync(() => _api.SaveCalls.Should().Be(1)); _api.LastSave!.ExpectedRevision.Should().Be(7);
         _api.SavePending.SetException(new FlowApiException(HttpStatusCode.Conflict));
         await save;
@@ -70,7 +70,7 @@ public sealed class FlowEditorTests : AsyncBunitContext
         var cut = RenderEditor();
         await cut.WaitForAssertionAsync(() => cut.FindAll("[data-testid=flow-name]").Count.Should().Be(1));
         await cut.InvokeAsync(() => cut.Find("[data-testid=flow-name]").InputAsync(new() { Value = "Old scope" }));
-        var save = cut.Find("[data-testid=flow-save]").ClickAsync(new());
+        var save = cut.InvokeAsync(() => cut.Find("[data-testid=flow-save]").ClickAsync(new()));
         await cut.WaitForAssertionAsync(() => _api.SaveCalls.Should().Be(1));
         var replacement = Definition() with { Id = Guid.NewGuid(), TenantId = 23, Name = "Tenant 23", Revision = 1 };
         cut.Render(p => p.Add(e => e.Definition, replacement).Add(e => e.CanEdit, true));
@@ -87,8 +87,8 @@ public sealed class FlowEditorTests : AsyncBunitContext
         _api.SavePending = new(TaskCreationOptions.RunContinuationsAsynchronously);
         var cut = RenderEditor();
         await cut.WaitForAssertionAsync(() => cut.FindAll("[data-testid=flow-name]").Count.Should().Be(1));
-        await cut.Find("[data-testid=flow-name]").InputAsync(new() { Value = "Submitted name" });
-        var save = cut.Find("[data-testid=flow-save]").ClickAsync(new());
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-name]").InputAsync(new() { Value = "Submitted name" }));
+        var save = cut.InvokeAsync(() => cut.Find("[data-testid=flow-save]").ClickAsync(new()));
         await cut.WaitForAssertionAsync(() => _api.SaveCalls.Should().Be(1));
         var adapter = cut.FindComponent<FlowCanvas>().Instance.Adapter;
         var mapping = adapter.Capture().Nodes.Single(n => n.Kind == FlowNodeKind.MapIncident);
@@ -105,13 +105,13 @@ public sealed class FlowEditorTests : AsyncBunitContext
     {
         var cut = RenderEditor();
         await cut.WaitForAssertionAsync(() => cut.FindAll("[data-testid=flow-name]").Count.Should().Be(1));
-        await cut.Find("[data-testid=flow-validate]").ClickAsync(new());
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-validate]").ClickAsync(new()));
         await cut.WaitForAssertionAsync(() => cut.Find("[data-testid=flow-result]").TextContent.Should().Contain("validation found issues"));
-        await cut.Find("[data-testid=flow-dry-run-toggle]").ClickAsync(new());
-        await cut.Find("[data-testid=flow-dry-run]").ClickAsync(new());
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-dry-run-toggle]").ClickAsync(new()));
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-dry-run]").ClickAsync(new()));
         await cut.WaitForAssertionAsync(() => cut.Find("[data-testid=flow-preview]").TextContent.Should().Contain("Preview could not validate"));
         var action = Definition().Draft.Nodes.Single(n => n.Kind == FlowNodeKind.CreateIncident);
-        await cut.Find($"[data-node-id='{action.Id}'] [data-testid=flow-node-settings]").ClickAsync(new());
+        await cut.InvokeAsync(() => cut.Find($"[data-node-id='{action.Id}'] [data-testid=flow-node-settings]").ClickAsync(new()));
         cut.Find("[data-testid=flow-connector-status]").TextContent.Should().Contain("No owned connector");
         cut.Find("[data-testid=flow-connector]").Children.Should().ContainSingle();
         _api.SaveCalls.Should().Be(0); _api.PublishCalls.Should().Be(0); _api.ValidateCalls.Should().Be(1); _api.DryRunCalls.Should().Be(1);
@@ -135,15 +135,15 @@ public sealed class FlowEditorTests : AsyncBunitContext
     {
         var cut = RenderEditor();
         await cut.WaitForAssertionAsync(() => cut.FindAll("[data-testid=flow-name]").Count.Should().Be(1));
-        await cut.Find("[data-testid=flow-add-Condition]").ClickAsync(new());
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-add-Condition]").ClickAsync(new()));
         await cut.InvokeAsync(() => cut.Find("[data-node-kind=Condition] [data-testid=flow-node-settings]").ClickAsync(new()));
         var adapter = cut.FindComponent<FlowCanvas>().Instance.Adapter;
         var before = System.Text.Json.JsonSerializer.Serialize(adapter.Capture());
-        await cut.Find("[data-testid=flow-condition-value]").ChangeAsync(new() { Value = input });
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-condition-value]").ChangeAsync(new() { Value = input }));
         cut.Find("[data-testid=flow-error]").TextContent.Should().Contain("finite numbers").And.Contain("previous valid value is preserved");
         adapter.Capture().Nodes.Single(n => n.Kind == FlowNodeKind.Condition).Condition!.NumericValue.Should().Be(90);
         System.Text.Json.JsonSerializer.Serialize(adapter.Capture()).Should().Be(before);
-        await cut.Find("[data-testid=flow-condition-value]").ChangeAsync(new() { Value = "12.5" });
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-condition-value]").ChangeAsync(new() { Value = "12.5" }));
         cut.FindAll("[data-testid=flow-error]").Should().BeEmpty();
         adapter.Capture().Nodes.Single(n => n.Kind == FlowNodeKind.Condition).Condition!.NumericValue.Should().Be(12.5);
         System.Text.Json.JsonSerializer.Serialize(adapter.Capture()).Should().Contain("12.5");
@@ -156,15 +156,15 @@ public sealed class FlowEditorTests : AsyncBunitContext
         var cut = RenderEditor();
         await cut.WaitForAssertionAsync(() => cut.FindAll("[data-testid=flow-name]").Count.Should().Be(1));
         cut.FindAll("[data-testid=flow-properties]").Should().BeEmpty();
-        await cut.Find("[data-testid=flow-palette-Condition]").ClickAsync(new());
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-palette-Condition]").ClickAsync(new()));
         cut.FindAll("[data-testid=flow-node-title]").Should().HaveCount(3);
         var mapping = Definition().Draft.Nodes.Single(n => n.Kind == FlowNodeKind.MapIncident);
         var action = Definition().Draft.Nodes.Single(n => n.Kind == FlowNodeKind.CreateIncident);
-        await cut.Find($"[data-node-id='{action.Id}'] [data-testid=flow-node-title]").ClickAsync(new());
+        await cut.InvokeAsync(() => cut.Find($"[data-node-id='{action.Id}'] [data-testid=flow-node-title]").ClickAsync(new()));
         cut.FindAll("[data-testid=flow-properties]").Should().BeEmpty();
-        await cut.Find($"[data-node-id='{mapping.Id}'] [data-testid=flow-node-settings]").ClickAsync(new());
+        await cut.InvokeAsync(() => cut.Find($"[data-node-id='{mapping.Id}'] [data-testid=flow-node-settings]").ClickAsync(new()));
         cut.Find("[data-testid=flow-node-name]").GetAttribute("value").Should().Be(mapping.Name);
-        await cut.Find("[data-testid=flow-properties-close]").ClickAsync(new());
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-properties-close]").ClickAsync(new()));
         cut.FindAll("[data-testid=flow-properties]").Should().BeEmpty();
         _api.SaveCalls.Should().Be(0);
     }
@@ -191,10 +191,10 @@ public sealed class FlowEditorTests : AsyncBunitContext
         await cut.WaitForAssertionAsync(() => cut.FindAll("[data-testid=flow-name]").Count.Should().Be(1));
         var mapping = Definition().Draft.Nodes.Single(n => n.Kind == FlowNodeKind.MapIncident);
         var action = Definition().Draft.Nodes.Single(n => n.Kind == FlowNodeKind.CreateIncident);
-        await cut.Find($"[data-node-id='{action.Id}'] [data-testid=flow-node-settings]").ClickAsync(new());
-        await cut.Find($"[data-node-id='{mapping.Id}'] [data-testid=flow-node-delete]").ClickAsync(new());
+        await cut.InvokeAsync(() => cut.Find($"[data-node-id='{action.Id}'] [data-testid=flow-node-settings]").ClickAsync(new()));
+        await cut.InvokeAsync(() => cut.Find($"[data-node-id='{mapping.Id}'] [data-testid=flow-node-delete]").ClickAsync(new()));
         await _dialogs.WaitForAssertionAsync(() => _dialogs.FindAll("[data-testid=flow-delete-confirm]").Count.Should().Be(1));
-        await _dialogs.Find("[data-testid=flow-delete-confirm]").ClickAsync(new());
+        await _dialogs.InvokeAsync(() => _dialogs.Find("[data-testid=flow-delete-confirm]").ClickAsync(new()));
         var graph = cut.FindComponent<FlowCanvas>().Instance.Adapter.Capture();
         graph.Nodes.Should().HaveCount(2); graph.Edges.Should().BeEmpty();
         cut.Find("[data-testid=flow-node-name]").GetAttribute("value").Should().Be(action.Name);
@@ -208,18 +208,18 @@ public sealed class FlowEditorTests : AsyncBunitContext
         _api.SavePending = new(TaskCreationOptions.RunContinuationsAsynchronously);
         var cut = RenderEditor(p => p.Add(e => e.Closed, () => closed++));
         await cut.WaitForAssertionAsync(() => cut.FindAll("[data-testid=flow-name]").Count.Should().Be(1));
-        await cut.Find("[data-testid=flow-name]").InputAsync(new() { Value = "Retained draft" });
-        await cut.Find("[data-testid=flow-close]").ClickAsync(new());
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-name]").InputAsync(new() { Value = "Retained draft" }));
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-close]").ClickAsync(new()));
         await _dialogs.WaitForAssertionAsync(() => _dialogs.FindAll("[data-testid=flow-save-leave]").Count.Should().Be(1));
-        var saving = _dialogs.Find("[data-testid=flow-save-leave]").ClickAsync(new());
+        var saving = _dialogs.InvokeAsync(() => _dialogs.Find("[data-testid=flow-save-leave]").ClickAsync(new()));
         await cut.WaitForAssertionAsync(() => _api.SaveCalls.Should().Be(1));
-        await _dialogs.Find("[data-testid=flow-unsaved-dialog]").KeyDownAsync(new Microsoft.AspNetCore.Components.Web.KeyboardEventArgs { Key = "Escape" });
+        await _dialogs.InvokeAsync(() => _dialogs.Find("[data-testid=flow-unsaved-dialog]").KeyDownAsync(new Microsoft.AspNetCore.Components.Web.KeyboardEventArgs { Key = "Escape" }));
         _dialogs.FindAll("[data-testid=flow-unsaved]").Should().ContainSingle(); closed.Should().Be(0);
         _api.SavePending.SetException(new HttpRequestException("Unavailable")); await saving;
         closed.Should().Be(0); _dialogs.Find("[data-testid=flow-unsaved-error]").TextContent.Should().Contain("unsaved edits are preserved");
         cut.Find("[data-testid=flow-name]").GetAttribute("value").Should().Be("Retained draft");
         _api.SavePending = null;
-        await _dialogs.Find("[data-testid=flow-save-leave]").ClickAsync(new());
+        await _dialogs.InvokeAsync(() => _dialogs.Find("[data-testid=flow-save-leave]").ClickAsync(new()));
         closed.Should().Be(1); _api.SaveCalls.Should().Be(2); _api.PublishCalls.Should().Be(0);
         _dialogs.FindAll("[data-testid=flow-unsaved]").Should().BeEmpty();
     }
@@ -229,16 +229,16 @@ public sealed class FlowEditorTests : AsyncBunitContext
     {
         var cut = RenderEditor();
         await cut.WaitForAssertionAsync(() => cut.FindAll("[data-testid=flow-name]").Count.Should().Be(1));
-        await cut.Find("[data-testid=flow-name]").InputAsync(new() { Value = "Retained navigation" });
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-name]").InputAsync(new() { Value = "Retained navigation" }));
         var navigation = Services.GetRequiredService<NavigationManager>();
         var original = navigation.Uri;
         await cut.InvokeAsync(() => navigation.NavigateTo("/monitoring?tenantId=17"));
         navigation.Uri.Should().Be(original);
         await _dialogs.WaitForAssertionAsync(() => _dialogs.FindAll("[data-testid=flow-keep-editing]").Count.Should().Be(1));
-        await _dialogs.Find("[data-testid=flow-keep-editing]").ClickAsync(new());
+        await _dialogs.InvokeAsync(() => _dialogs.Find("[data-testid=flow-keep-editing]").ClickAsync(new()));
         cut.Find("[data-testid=flow-dirty]").TextContent.Should().Contain("Unsaved");
         await cut.InvokeAsync(() => navigation.NavigateTo("/monitoring?tenantId=17"));
-        await _dialogs.Find("[data-testid=flow-save-leave]").ClickAsync(new());
+        await _dialogs.InvokeAsync(() => _dialogs.Find("[data-testid=flow-save-leave]").ClickAsync(new()));
         navigation.Uri.Should().EndWith("/monitoring?tenantId=17");
         _api.SaveCalls.Should().Be(1); _api.PublishCalls.Should().Be(0);
     }
