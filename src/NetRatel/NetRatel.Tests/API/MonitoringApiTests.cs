@@ -4,6 +4,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Security.Claims;
 using System.Text.Encodings.Web;
+using System.Text.Json;
 using AwesomeAssertions;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
@@ -38,6 +39,37 @@ public sealed class MonitoringApiTests
 {
     private static readonly Guid OperatorId = Guid.Parse("a4b9a726-b36b-48f3-9b59-c6b7f5cd9467");
     private static ClaimsPrincipal User => new(new ClaimsIdentity([new Claim("netratel_principal_id", OperatorId.ToString("N"))], "Test"));
+
+    [Fact]
+    public void Legacy_monitoring_pages_roundtrip_without_new_projections_and_preserve_explicit_empty_arrays()
+    {
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        const string legacyPage = "{\"items\":[],\"nextCursor\":null}";
+        var legacySeries = JsonSerializer.Deserialize<MonitoringSeriesPageDto>(legacyPage, options)!;
+        var legacyEvents = JsonSerializer.Deserialize<MonitoringEventPageDto>(legacyPage, options)!;
+        var seriesJson = JsonSerializer.SerializeToUtf8Bytes(legacySeries, options);
+        var eventJson = JsonSerializer.SerializeToUtf8Bytes(legacyEvents, options);
+        JsonSerializer.Deserialize<MonitoringSeriesPageDto>(seriesJson, options)!.Items.Should().BeEmpty();
+        JsonSerializer.Deserialize<MonitoringEventPageDto>(eventJson, options)!.Items.Should().BeEmpty();
+        using var legacyDocument = JsonDocument.Parse(eventJson);
+        legacyDocument.RootElement.TryGetProperty("clientIdentities", out _).Should().BeFalse();
+        legacyDocument.RootElement.TryGetProperty("audits", out _).Should().BeFalse();
+
+        const string projectedPage = "{\"items\":[],\"nextCursor\":null,\"clientIdentities\":[],\"audits\":[]}";
+        var projectedSeries = JsonSerializer.Deserialize<MonitoringSeriesPageDto>(projectedPage, options)!;
+        var projectedEvents = JsonSerializer.Deserialize<MonitoringEventPageDto>(projectedPage, options)!;
+        projectedSeries.ClientIdentities.IsDefault.Should().BeFalse();
+        projectedEvents.ClientIdentities.IsDefault.Should().BeFalse();
+        projectedEvents.Audits.IsDefault.Should().BeFalse();
+        using var projectedDocument = JsonDocument.Parse(JsonSerializer.SerializeToUtf8Bytes(projectedEvents, options));
+        projectedDocument.RootElement.GetProperty("clientIdentities").GetArrayLength().Should().Be(0);
+        projectedDocument.RootElement.GetProperty("audits").GetArrayLength().Should().Be(0);
+
+        var legacyPreview = new MonitoringTargetPreviewDto([], 1, Details: []);
+        var preview = JsonSerializer.Deserialize<MonitoringTargetPreviewDto>(JsonSerializer.SerializeToUtf8Bytes(legacyPreview, options), options)!;
+        preview.AgentIds.Should().BeEmpty();
+        preview.ClientIdentities.IsDefault.Should().BeTrue();
+    }
 
     [Fact]
     public async Task OmittedOptionalImmutableCollectionsAreInitializedBeforePersistenceAndActualHttpSerialization()
