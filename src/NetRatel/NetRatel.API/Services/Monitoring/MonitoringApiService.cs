@@ -1,5 +1,8 @@
 using System.Collections.Immutable;
 using System.Security.Claims;
+using Microsoft.EntityFrameworkCore;
+using NetRatel.Infrastructure.Persistence;
+using NetRatel.API.Services.AgentDirectory;
 using NetRatel.API.Gateway;
 using NetRatel.Application.Agents;
 using NetRatel.Application.Monitoring;
@@ -17,7 +20,7 @@ public sealed class MonitoringApiService(IMonitoringResourceAuthorizer authoriza
     IMonitoringTenantCatalog tenants, IMonitoringConfigurationStore configurations, IMonitoringRuntime runtime,
     IMonitoringClientDirectory directory, IAgentManagementService agents, IMonitoringPublishedFlowProvider flows,
     IClientServicesRouter services, IClientTelemetryRouter telemetry, IAgentTelemetryGatewaySessionRegistry sessions,
-    MonitoringWatchPolicyReconciler watches, TimeProvider timeProvider, ILogger<MonitoringApiService> logger)
+    MonitoringWatchPolicyReconciler watches, TimeProvider timeProvider, ILogger<MonitoringApiService> logger, IServiceScopeFactory? identityScopes = null)
 {
     public const int MaximumHttpBytes = 4 * 1024 * 1024;
 
@@ -57,7 +60,7 @@ public sealed class MonitoringApiService(IMonitoringResourceAuthorizer authoriza
         RequirePage(maximumCount, cursor);
         var result = await runtime.ReadTenantAsync(tenantId, maximumCount, cursor, cancellationToken).ConfigureAwait(false);
         if (result.Items.Any(item => item.Series.TenantId != tenantId)) throw new InvalidOperationException("Monitoring series returned a different tenant.");
-        return Bounded(result);
+        return Bounded(result with { ClientIdentities = await ReadIdentitiesAsync(tenantId, result.Items.Select(item => item.Series.AgentId), cancellationToken).ConfigureAwait(false) });
     }
 
     public async Task<MonitoringEventPageDto> GetEventsAsync(int tenantId, int maximumCount, string? cursor, ClaimsPrincipal user, CancellationToken cancellationToken)
@@ -66,7 +69,7 @@ public sealed class MonitoringApiService(IMonitoringResourceAuthorizer authoriza
         RequirePage(maximumCount, cursor);
         var result = await runtime.ReadTenantEventsAsync(tenantId, maximumCount, cursor, cancellationToken).ConfigureAwait(false);
         if (result.Items.Any(item => item.Series.TenantId != tenantId)) throw new InvalidOperationException("Monitoring events returned a different tenant.");
-        return Bounded(result);
+        return Bounded(result with { ClientIdentities = await ReadIdentitiesAsync(tenantId, result.Items.Select(item => item.Series.AgentId), cancellationToken).ConfigureAwait(false) });
     }
 
     public async Task<MonitoringSummaryDto> GetSummaryAsync(int tenantId, ClaimsPrincipal user, CancellationToken cancellationToken)
@@ -94,27 +97,76 @@ public sealed class MonitoringApiService(IMonitoringResourceAuthorizer authoriza
         return Bounded(await flows.ListPublishedAsync(tenantId, MonitoringLimits.MaximumRowsPerRead, cancellationToken).ConfigureAwait(false));
     }
 
-    public async Task<MonitoringClientPageDto> GetClientsAsync(int tenantId, int maximumCount, string? cursor, ClaimsPrincipal user, CancellationToken cancellationToken)
+    public async Task<MonitoringClientPageDto> GetClientsAsync(int tenantId, int maximumCount, string? cursor, ClaimsPrincipal user,
+        CancellationToken cancellationToken, string? search = null)
     {
         await RequireReadOrManageAsync(user, tenantId, cancellationToken).ConfigureAwait(false);
         RequirePage(maximumCount, cursor);
-        var ids = (await directory.GetEligibleAgentsAsync(tenantId, cancellationToken).ConfigureAwait(false)).Order().ToArray();
-        var index = 0;
+        if (search?.Length > 256) throw new MonitoringApiException(400, "invalid_monitoring_search");
+        Guid? previous = null;
         if (cursor is not null)
         {
-            if (!Guid.TryParseExact(cursor, "N", out var previous)) throw new MonitoringApiException(400, "invalid_monitoring_cursor");
-            index = Array.FindIndex(ids, id => id == previous) + 1;
-            if (index == 0) throw new MonitoringApiException(400, "invalid_monitoring_cursor");
+            if (!Guid.TryParseExact(cursor, "N", out var parsed)) throw new MonitoringApiException(400, "invalid_monitoring_cursor");
+            previous = parsed;
         }
-        var selected = ids.Skip(index).Take(maximumCount).ToArray();
+        Guid[] selected;
+        int total;
+        if (identityScopes is not null)
+        {
+            await using var scope = identityScopes.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            var query = AgentDirectorySearch.MatchingAgents(db, search, [tenantId]).Where(agent => agent.IsEnabled &&
+                agent.Status == AgentStatus.Active && agent.RevokedAtUtc == null && agent.DeletedAtUtc == null && agent.SupersededAtUtc == null);
+            total = await query.CountAsync(cancellationToken).ConfigureAwait(false);
+            if (previous is { } last) query = query.Where(agent => agent.Id.CompareTo(last) > 0);
+            selected = await query.OrderBy(agent => agent.Id).Select(agent => agent.Id).Take(maximumCount + 1).ToArrayAsync(cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            var ids = (await directory.GetEligibleAgentsAsync(tenantId, cancellationToken).ConfigureAwait(false)).Order().ToArray();
+            total = ids.Length;
+            selected = ids.Where(id => previous is null || id.CompareTo(previous.Value) > 0).Take(maximumCount + 1).ToArray();
+        }
+        var hasNext = selected.Length > maximumCount;
+        selected = selected.Take(maximumCount).ToArray();
+        var identities = (await ReadIdentitiesAsync(tenantId, selected, cancellationToken).ConfigureAwait(false)).ToDictionary(item => item.AgentId);
         var result = ImmutableArray.CreateBuilder<MonitoringClientDto>();
         foreach (var id in selected)
         {
-            var agent = await RequireAgentAsync(tenantId, id, cancellationToken).ConfigureAwait(false);
             var evidence = await GetServiceSupportAsync(new(tenantId, id), cancellationToken).ConfigureAwait(false);
-            result.Add(new(id, agent.DisplayName, evidence.Platform, evidence.Support, evidence.Code));
+            var identity = identities[id];
+            result.Add(new(id, identity.DisplayName, evidence.Platform, evidence.Support, evidence.Code, identity));
         }
-        return new(result.ToImmutable(), index + selected.Length < ids.Length ? selected[^1].ToString("N") : null, ids.Length);
+        return new(result.ToImmutable(), hasNext && selected.Length > 0 ? selected[^1].ToString("N") : null, total);
+    }
+
+    public async Task<ImmutableArray<MonitoringClientIdentityDto>> GetClientIdentitiesAsync(int tenantId, ImmutableArray<Guid> ids,
+        ClaimsPrincipal user, CancellationToken cancellationToken)
+    {
+        await RequireReadOrManageAsync(user, tenantId, cancellationToken).ConfigureAwait(false);
+        if (ids.IsDefault || ids.Length > MonitoringLimits.MaximumTargetClients || ids.Contains(Guid.Empty))
+            throw new MonitoringApiException(400, "invalid_monitoring_identity_scope");
+        return Bounded(await ReadIdentitiesAsync(tenantId, ids, cancellationToken).ConfigureAwait(false));
+    }
+
+    private async Task<ImmutableArray<MonitoringClientIdentityDto>> ReadIdentitiesAsync(int tenantId, IEnumerable<Guid> requested,
+        CancellationToken cancellationToken)
+    {
+        var ids = requested.Distinct().ToArray();
+        if (identityScopes is not null)
+        {
+            await using var scope = identityScopes.CreateAsyncScope();
+            return await MonitoringIdentityProjection.ReadAsync(scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>(),
+                tenantId, ids, cancellationToken).ConfigureAwait(false);
+        }
+        // Non-persistent adapters keep their existing interface; production uses the batched directory projection above.
+        var result = ImmutableArray.CreateBuilder<MonitoringClientIdentityDto>();
+        foreach (var id in ids)
+        {
+            var agent = await agents.GetAsync(tenantId, id, cancellationToken).ConfigureAwait(false);
+            result.Add(MonitoringIdentityPresentation.Create(id, agent?.DisplayName, null, agent?.DeletedAtUtc is not null));
+        }
+        return result.ToImmutable();
     }
 
     public async Task<MonitoringTargetPreviewDto> PreviewTargetsAsync(int tenantId, MonitoringTargetPreviewRequest request, ClaimsPrincipal user, CancellationToken cancellationToken)
@@ -125,18 +177,20 @@ public sealed class MonitoringApiService(IMonitoringResourceAuthorizer authoriza
         if (request.Condition is not null)
             MonitoringContractValidator.RequireRule(new(tenantId, Guid.NewGuid(), 1, 1, "Preview", true, MonitoringSeverity.Warning,
                 request.Targets, request.Condition, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30), TimeSpan.FromMinutes(2)));
+        var identities = await ReadIdentitiesAsync(tenantId, ids, cancellationToken).ConfigureAwait(false);
+        var identityMap = identities.ToDictionary(item => item.AgentId);
         var details = ImmutableArray.CreateBuilder<MonitoringTargetPreviewEntryDto>();
         foreach (var id in ids.Take(100))
         {
-            var agent = await RequireAgentAsync(tenantId, id, cancellationToken).ConfigureAwait(false);
+            var identity = identityMap[id];
             var support = request.Condition?.Kind == MonitoringMetricKind.ServiceExpectedState
                 ? await GetServiceSupportAsync(new(tenantId, id), cancellationToken).ConfigureAwait(false)
                 : await GetMetricSupportAsync(new(tenantId, id), request.Condition, cancellationToken).ConfigureAwait(false);
             if (request.Condition?.ServicePlatform is { } selected && support.Platform is { } actual && selected != actual)
                 support = (MonitoringTargetSupport.Unsupported, "platform-mismatch", support.At, actual);
-            details.Add(new(id, agent.DisplayName, support.Support, support.Code, support.At));
+            details.Add(new(id, identity.DisplayName, support.Support, support.Code, support.At, identity));
         }
-        return new(ids, configuration.Revision, details.ToImmutable(), ids.Length, ids.Length > details.Count);
+        return new(ids, configuration.Revision, details.ToImmutable(), ids.Length, ids.Length > details.Count, identities);
     }
 
     public async Task<MonitoringConfigurationDto> SaveRuleAsync(int tenantId, Guid ruleId, MonitoringRuleWriteDto request, ClaimsPrincipal user, CancellationToken cancellationToken)
@@ -181,7 +235,7 @@ public sealed class MonitoringApiService(IMonitoringResourceAuthorizer authoriza
         }
         var candidate = current with { Rules = current.Rules.Where(item => item.RuleId != ruleId).Append(rule).ToImmutableArray() };
         await ValidateCandidateAsync(candidate, cancellationToken).ConfigureAwait(false);
-        var saved = await configurations.SaveRuleAsync(new(rule, request.ExpectedConfigurationRevision, operatorId, request.Reason, request.ResetPolicy), cancellationToken).ConfigureAwait(false);
+        var saved = await configurations.SaveRuleAsync(new(rule, request.ExpectedConfigurationRevision, operatorId, request.Reason, request.ResetPolicy, OperatorDisplayName(user)), cancellationToken).ConfigureAwait(false);
         return await FinishConfigurationWriteAsync(saved, cancellationToken).ConfigureAwait(false);
     }
 
@@ -200,7 +254,7 @@ public sealed class MonitoringApiService(IMonitoringResourceAuthorizer authoriza
         await ResolveTargetsAsync(tenantId, new(MonitoringTargetMode.Selected, group.AgentIds, []), current, user, NetRatelPermissions.MonitoringManage, cancellationToken).ConfigureAwait(false);
         var candidate = current with { Groups = current.Groups.Where(item => item.GroupId != groupId).Append(group).ToImmutableArray() };
         await ValidateCandidateAsync(candidate, cancellationToken).ConfigureAwait(false);
-        var result = await configurations.SaveGroupAsync(new(group, request.ExpectedConfigurationRevision, operatorId, request.Reason), cancellationToken).ConfigureAwait(false);
+        var result = await configurations.SaveGroupAsync(new(group, request.ExpectedConfigurationRevision, operatorId, request.Reason, OperatorDisplayName(user)), cancellationToken).ConfigureAwait(false);
         return await FinishConfigurationWriteAsync(result, cancellationToken).ConfigureAwait(false);
     }
 
@@ -213,7 +267,7 @@ public sealed class MonitoringApiService(IMonitoringResourceAuthorizer authoriza
         var bypass = new MonitoringBypassDto(bypassId, tenantId, request.RuleId, request.AgentId, request.ResourceKey, operatorId,
             request.Reason, timeProvider.GetUtcNow(), request.ExpiresAtUtc, request.GroupId);
         if (!MonitoringContractValidator.TryValidateBypass(bypass, out _)) throw new MonitoringApiException(400, "invalid_monitoring_bypass");
-        var result = await configurations.SaveBypassAsync(new(bypass, request.ExpectedConfigurationRevision), cancellationToken).ConfigureAwait(false);
+        var result = await configurations.SaveBypassAsync(new(bypass, request.ExpectedConfigurationRevision, OperatorDisplayName(user)), cancellationToken).ConfigureAwait(false);
         return await FinishConfigurationWriteAsync(result, cancellationToken).ConfigureAwait(false);
     }
 
@@ -231,7 +285,7 @@ public sealed class MonitoringApiService(IMonitoringResourceAuthorizer authoriza
         else if ((kind == MonitoringResourceKind.Rule && current.Rules.All(item => item.RuleId != entityId)) ||
                  (kind == MonitoringResourceKind.Group && current.Groups.All(item => item.GroupId != entityId)))
             throw new MonitoringApiException(404, "monitoring_resource_not_found");
-        var command = new MonitoringConfigurationDeleteRequest(tenantId, entityId, request.ExpectedConfigurationRevision, operatorId, request.Reason);
+        var command = new MonitoringConfigurationDeleteRequest(tenantId, entityId, request.ExpectedConfigurationRevision, operatorId, request.Reason, OperatorDisplayName(user));
         var result = kind switch
         {
             MonitoringResourceKind.Rule => await configurations.DeleteRuleAsync(command, cancellationToken).ConfigureAwait(false),
@@ -253,9 +307,10 @@ public sealed class MonitoringApiService(IMonitoringResourceAuthorizer authoriza
         if (configuration.Rules.All(rule => rule.RuleId != ruleId)) throw new MonitoringApiException(404, "monitoring_resource_not_found");
         if (string.IsNullOrWhiteSpace(resourceKey) || resourceKey.Length > MonitoringLimits.MaximumResourceKeyLength || resourceKey.Any(char.IsControl) || request.OccurrenceId == Guid.Empty)
             throw new MonitoringApiException(400, "invalid_monitoring_series");
-        var command = new MonitoringOperatorCommand(new(tenantId, ruleId, agentId, resourceKey), request.OccurrenceId, operatorId, request.Reason, request.ExpectedStateRevision);
+        var command = new MonitoringOperatorCommand(new(tenantId, ruleId, agentId, resourceKey), request.OccurrenceId, operatorId, request.Reason, request.ExpectedStateRevision,
+            request.ExpectedConfigurationRevision, request.ExpectedOperatorRevision, OperatorDisplayName(user));
         var result = clear ? await runtime.ClearAsync(command, cancellationToken).ConfigureAwait(false) : await runtime.AcknowledgeAsync(command, cancellationToken).ConfigureAwait(false);
-        if (result.Disposition != MonitoringStoreWriteDisposition.Stored || result.State is null) throw new MonitoringApiException(409, "monitoring_series_conflict");
+        if (result.Disposition != MonitoringStoreWriteDisposition.Stored || result.State is null) throw new MonitoringApiException(409, result.Code ?? "monitoring_series_conflict");
         if (result.State.Series != command.Series) throw new InvalidOperationException("Monitoring command returned a different series.");
         return Bounded(result.State);
     }
@@ -388,6 +443,12 @@ public sealed class MonitoringApiService(IMonitoringResourceAuthorizer authoriza
         var resource = new MonitoringResource(tenantId, MonitoringResourceKind.Tenant);
         if (!await AllowedAsync(user, NetRatelPermissions.MonitoringRead, resource, cancellationToken).ConfigureAwait(false) &&
             !await AllowedAsync(user, NetRatelPermissions.MonitoringManage, resource, cancellationToken).ConfigureAwait(false)) throw new MonitoringApiException(403, "monitoring_permission_required");
+    }
+
+    private static string? OperatorDisplayName(ClaimsPrincipal user)
+    {
+        var name = user.FindFirstValue("name") ?? user.FindFirstValue(ClaimTypes.Name) ?? user.Identity?.Name;
+        return string.IsNullOrWhiteSpace(name) ? null : new string(name.Trim().Where(c => !char.IsControl(c)).Take(256).ToArray());
     }
 
     private static Guid RequireOperator(ClaimsPrincipal user, string reason)

@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using System.Collections.Immutable;
 using NetRatel.API.Services.Monitoring;
 using NetRatel.Shared.Contracts.Monitoring;
 using NetRatel.API.Middleware;
@@ -35,8 +36,10 @@ public static class MonitoringEndpoints
             ExecuteAsync(() => service.GetEventsAsync(tenantId, maximumCount ?? 50, cursor, http.User, ct))).RequireAuthorization(MonitoringAuthorization.ReadPolicy);
         group.MapGet("/published-flows", (int tenantId, HttpContext http, MonitoringApiService service, CancellationToken ct) =>
             ExecuteAsync(() => service.GetPublishedFlowsAsync(tenantId, http.User, ct))).RequireAuthorization(MonitoringAuthorization.ReadOrManagePolicy);
-        group.MapGet("/clients", (int tenantId, HttpContext http, MonitoringApiService service, int? maximumCount, string? cursor, CancellationToken ct) =>
-            ExecuteAsync(() => service.GetClientsAsync(tenantId, maximumCount ?? 100, cursor, http.User, ct))).RequireAuthorization(MonitoringAuthorization.ReadOrManagePolicy);
+        group.MapGet("/clients", (int tenantId, HttpContext http, MonitoringApiService service, int? maximumCount, string? cursor, string? search, CancellationToken ct) =>
+            ExecuteAsync(() => service.GetClientsAsync(tenantId, maximumCount ?? 25, cursor, http.User, ct, search))).RequireAuthorization(MonitoringAuthorization.ReadOrManagePolicy);
+        group.MapPost("/clients/identities", (int tenantId, [FromBody] ImmutableArray<Guid> ids, HttpContext http, MonitoringApiService service, CancellationToken ct) =>
+            ExecuteAsync(() => service.GetClientIdentitiesAsync(tenantId, ids, http.User, ct))).RequireAuthorization(MonitoringAuthorization.ReadOrManagePolicy);
         group.MapGet("/agents/{agentId:guid}/series", (int tenantId, Guid agentId, HttpContext http, MonitoringApiService service, CancellationToken ct) =>
             ExecuteAsync(() => service.GetClientAsync(tenantId, agentId, http.User, ct))).RequireAuthorization(MonitoringAuthorization.ReadPolicy);
         group.MapPost("/targets/preview", (int tenantId, [FromBody] MonitoringTargetPreviewRequest body, HttpContext http, MonitoringApiService service, CancellationToken ct) =>

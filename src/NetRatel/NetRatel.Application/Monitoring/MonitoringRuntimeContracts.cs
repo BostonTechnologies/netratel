@@ -23,10 +23,10 @@ public sealed record MonitoringConfigurationSnapshot(int TenantId, ulong Revisio
 }
 
 public sealed record MonitoringRuleSaveRequest(MonitoringRuleDto Rule, ulong ExpectedConfigurationRevision,
-    Guid OperatorId, string Reason, MonitoringConditionResetPolicy? ResetPolicy = null);
-public sealed record MonitoringGroupSaveRequest(MonitoringGroupDto Group, ulong ExpectedConfigurationRevision, Guid OperatorId, string Reason);
-public sealed record MonitoringBypassSaveRequest(MonitoringBypassDto Bypass, ulong ExpectedConfigurationRevision);
-public sealed record MonitoringConfigurationDeleteRequest(int TenantId, Guid EntityId, ulong ExpectedConfigurationRevision, Guid OperatorId, string Reason);
+    Guid OperatorId, string Reason, MonitoringConditionResetPolicy? ResetPolicy = null, string? OperatorDisplayName = null);
+public sealed record MonitoringGroupSaveRequest(MonitoringGroupDto Group, ulong ExpectedConfigurationRevision, Guid OperatorId, string Reason, string? OperatorDisplayName = null);
+public sealed record MonitoringBypassSaveRequest(MonitoringBypassDto Bypass, ulong ExpectedConfigurationRevision, string? OperatorDisplayName = null);
+public sealed record MonitoringConfigurationDeleteRequest(int TenantId, Guid EntityId, ulong ExpectedConfigurationRevision, Guid OperatorId, string Reason, string? OperatorDisplayName = null);
 
 public enum MonitoringConfigurationWriteDisposition { Stored, Conflict, NotFound }
 public sealed record MonitoringConfigurationWriteResult(MonitoringConfigurationWriteDisposition Disposition, MonitoringConfigurationSnapshot Configuration);
@@ -46,7 +46,7 @@ public interface IMonitoringConfigurationStore
 public sealed record MonitoringCommitRequest(MonitoringEvaluationResult Evaluation, ulong ExpectedConfigurationRevision,
     MonitoringEvidenceFence? ExpectedEvidenceFence = null);
 public enum MonitoringStoreWriteDisposition { Stored, Conflict, StaleEvidence }
-public sealed record MonitoringStoreWriteResult(MonitoringStoreWriteDisposition Disposition, MonitoringSeriesState? State);
+public sealed record MonitoringStoreWriteResult(MonitoringStoreWriteDisposition Disposition, MonitoringSeriesState? State, string? Code = null);
 
 
 public enum MonitoringOutboxStatus { Pending, Leased, Completed, Skipped, Failed, DeliveryUnknown, Cancelled }
@@ -78,7 +78,8 @@ public interface IMonitoringStore
 }
 
 public sealed record MonitoringOperatorCommand(MonitoringSeriesKey Series, Guid OccurrenceId, Guid OperatorId,
-    string Reason, ulong? ExpectedStateRevision = null);
+    string Reason, ulong? ExpectedStateRevision = null, ulong? ExpectedConfigurationRevision = null,
+    ulong? ExpectedOperatorRevision = null, string? OperatorDisplayName = null);
 
 /// <summary>Sequential per-client runtime; accepted inputs are awaited before the gateway acknowledges them.</summary>
 public interface IMonitoringRuntime

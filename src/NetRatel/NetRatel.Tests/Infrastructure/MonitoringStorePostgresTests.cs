@@ -277,6 +277,81 @@ public sealed class MonitoringStorePostgresTests(PostgreSqlPersistenceFixture fi
     }
 
     [Fact]
+    public async Task Operator_actions_follow_the_same_occurrence_while_samples_continue_and_keep_one_durable_reason()
+    {
+        await using var rig = await CreateRigAsync();
+        await using (var scope = rig.Provider.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            var agent = await db.Agents.SingleAsync();
+            agent.Name = "Beta.3 controlled client";
+            agent.DeviceInfoJson = "{\"hostName\":\"beta3-host\",\"reportedAddress\":\"192.0.2.17\"}";
+            await db.SaveChangesAsync();
+        }
+        var system = ActorSystem.Create("monitoring-operator-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var actor = system.ActorOf(ClientMonitoringRouterActor.Props(rig.Store,
+                rig.Provider.GetRequiredService<IMonitoringConfigurationStore>(), rig.Directory, rig.Time));
+            await actor.Ask<MonitoringInputResult>(new BeginMonitoringStream(rig.Fence));
+            for (ulong sequence = 1; sequence <= 3; sequence++)
+            {
+                rig.Time.Advance(TimeSpan.FromSeconds(1));
+                (await actor.Ask<MonitoringInputResult>(new RecordMonitoringTelemetry(rig.Telemetry(sequence))))
+                    .Disposition.Should().Be(MonitoringInputDisposition.Accepted);
+            }
+            var drawer = (await actor.Ask<ImmutableArray<MonitoringSeriesState>>(new GetClientMonitoring(rig.Client))).Single();
+            drawer.Phase.Should().Be(MonitoringPhase.Firing);
+            rig.Time.Advance(TimeSpan.FromSeconds(1));
+            await actor.Ask<MonitoringInputResult>(new RecordMonitoringTelemetry(rig.Telemetry(4)));
+            var operatorId = Guid.NewGuid();
+            var command = new MonitoringOperatorCommand(rig.Key, drawer.Occurrence!.OccurrenceId, operatorId,
+                "Investigating the controlled test", drawer.StateRevision, 1, drawer.OperatorRevision, "Beta operator");
+            var acknowledged = await actor.Ask<MonitoringStoreWriteResult>(new AcknowledgeMonitoringOccurrence(command));
+            acknowledged.Disposition.Should().Be(MonitoringStoreWriteDisposition.Stored);
+            acknowledged.State!.Phase.Should().Be(MonitoringPhase.Firing);
+            acknowledged.State.Occurrence!.AcknowledgedBy.Should().Be(operatorId);
+            acknowledged.State.StateRevision.Should().BeGreaterThan(drawer.StateRevision);
+            (await actor.Ask<MonitoringStoreWriteResult>(new AcknowledgeMonitoringOccurrence(command))).Disposition
+                .Should().Be(MonitoringStoreWriteDisposition.Stored);
+            var history = await rig.Store.ReadTenantEventsAsync(rig.Client.TenantId, 20, null, default);
+            var acknowledgement = history.Items.Single(item => item.Kind == MonitoringEventKind.AlertAcknowledged);
+            acknowledgement.OperatorId.Should().Be(operatorId);
+            acknowledgement.OperatorDisplayName.Should().Be("Beta operator");
+            acknowledgement.Reason.Should().Be(command.Reason);
+            acknowledgement.ClientIdentity!.DisplayName.Should().Be("Beta.3 controlled client");
+            acknowledgement.ClientIdentity.ReportedAddress.Should().Be("192.0.2.17");
+            history.Audits.Should().ContainSingle(item => item.Action == "save_rule");
+            (await actor.Ask<MonitoringStoreWriteResult>(new ClearMonitoringOccurrence(command))).Code.Should().Be("monitoring_operator_conflict");
+            var clearDrawer = acknowledged.State;
+            rig.Time.Advance(TimeSpan.FromSeconds(1));
+            await actor.Ask<MonitoringInputResult>(new RecordMonitoringTelemetry(rig.Telemetry(5)));
+            var clear = command with { Reason = "Controlled test complete", ExpectedStateRevision = clearDrawer.StateRevision,
+                ExpectedOperatorRevision = clearDrawer.OperatorRevision };
+            var cleared = await actor.Ask<MonitoringStoreWriteResult>(new ClearMonitoringOccurrence(clear));
+            cleared.Disposition.Should().Be(MonitoringStoreWriteDisposition.Stored);
+            cleared.State!.Phase.Should().Be(MonitoringPhase.Cleared);
+            (await actor.Ask<MonitoringStoreWriteResult>(new ClearMonitoringOccurrence(clear))).Disposition.Should().Be(MonitoringStoreWriteDisposition.Stored);
+            (await actor.Ask<MonitoringStoreWriteResult>(new AcknowledgeMonitoringOccurrence(command))).Code.Should().Be("monitoring_occurrence_closed");
+            for (ulong sequence = 6; sequence <= 7; sequence++)
+            {
+                rig.Time.Advance(TimeSpan.FromSeconds(1));
+                await actor.Ask<MonitoringInputResult>(new RecordMonitoringTelemetry(rig.Telemetry(sequence)));
+            }
+            var next = (await actor.Ask<ImmutableArray<MonitoringSeriesState>>(new GetClientMonitoring(rig.Client))).Single();
+            next.Phase.Should().Be(MonitoringPhase.Firing);
+            next.Occurrence!.OccurrenceId.Should().NotBe(drawer.Occurrence.OccurrenceId);
+            (await actor.Ask<MonitoringStoreWriteResult>(new AcknowledgeMonitoringOccurrence(command))).Code.Should().Be("monitoring_occurrence_replaced");
+            (await rig.Store.ReadTenantEventsAsync(rig.Client.TenantId, 20, null, default)).Items
+                .Count(item => item.Kind == MonitoringEventKind.AlertCleared).Should().Be(1);
+            var configuration = rig.Provider.GetRequiredService<IMonitoringConfigurationStore>();
+            (await configuration.DeleteRuleAsync(new(rig.Client.TenantId, rig.Rule.RuleId, 1, operatorId, "Clean up controlled test", "Beta operator"), default))
+                .Disposition.Should().Be(MonitoringConfigurationWriteDisposition.Stored);
+        }
+        finally { await system.Terminate(); }
+    }
+
+    [Fact]
     public async Task Real_actor_restart_resets_pending_continuity_preserves_firing_episode_and_requires_new_window()
     {
         await using var rig = await CreateRigAsync();

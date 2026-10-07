@@ -43,6 +43,21 @@ public sealed partial class MonitoringStore
                 throw new ArgumentException("invalid_unchanged_state");
             return new(MonitoringStoreWriteDisposition.Stored, result.State);
         }
+        if (result.State.Occurrence is { } occurrence)
+        {
+            var identity = current is null ? null : ReadState(current).Occurrence?.ClientIdentity;
+            if (identity is null)
+            {
+                var agent = await db.Agents.IgnoreQueryFilters().AsNoTracking().Where(agent => agent.TenantId == result.State.Series.TenantId && agent.Id == result.State.Series.AgentId)
+                    .Select(agent => new { agent.Name, agent.DeviceInfoJson, agent.DeletedAtUtc }).SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+                identity = MonitoringIdentityPresentation.Create(result.State.Series.AgentId, agent?.Name, agent?.DeviceInfoJson, agent?.DeletedAtUtc is not null);
+            }
+            result = result with
+            {
+                State = result.State with { Occurrence = occurrence with { ClientIdentity = identity } },
+                Events = result.Events.Select(item => item with { ClientIdentity = identity }).ToImmutableArray()
+            };
+        }
         try
         {
             if (request.ExpectedEvidenceFence is { } mutationFence && !await CheckEpochAsync(db, mutationFence, cancellationToken).ConfigureAwait(false))

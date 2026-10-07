@@ -179,10 +179,29 @@ public sealed class ClientMonitoringActor : ReceiveActor, IWithTimers
         MonitoringContractValidator.RequireReason(command.OperatorId, command.Reason);
         var config = await _configurations.GetAsync(_client.TenantId, ct);
         var state = await _store.LoadSeriesAsync(command.Series, ct);
-        if (state is null || state.Occurrence?.OccurrenceId != command.OccurrenceId || command.ExpectedStateRevision is { } expected && expected != state.StateRevision)
-            return new(MonitoringStoreWriteDisposition.Conflict, state);
-        var rule = config.Rules.SingleOrDefault(rule => rule.RuleId == state.Series.RuleId) ?? state.Occurrence.PinnedRule;
-        return await _store.CommitAsync(new(clear ? _evaluator.Clear(state, rule, command.OperatorId, command.Reason) : _evaluator.Acknowledge(state, rule, command.OperatorId), config.Revision), ct);
+        if (state is null || state.Occurrence?.OccurrenceId != command.OccurrenceId)
+            return new(MonitoringStoreWriteDisposition.Conflict, state, "monitoring_occurrence_replaced");
+        if (command.ExpectedConfigurationRevision is { } configurationRevision && configurationRevision != config.Revision)
+            return new(MonitoringStoreWriteDisposition.Conflict, state, "monitoring_configuration_conflict");
+        // An identical action against the same occurrence is idempotent, including its immutable history.
+        if (!clear && state.Occurrence is { EndedAtUtc: null, AcknowledgedAtUtc: not null } ||
+            clear && state.Occurrence.ClosureDisposition == MonitoringClosureDisposition.ManuallyCleared)
+            return new(MonitoringStoreWriteDisposition.Stored, state);
+        if (state.Occurrence.EndedAtUtc is not null || state.Phase is MonitoringPhase.Suspended or MonitoringPhase.NotApplicable)
+            return new(MonitoringStoreWriteDisposition.Conflict, state, "monitoring_occurrence_closed");
+        if (command.ExpectedOperatorRevision is { } operatorRevision && operatorRevision != state.OperatorRevision)
+            return new(MonitoringStoreWriteDisposition.Conflict, state, "monitoring_operator_conflict");
+        var rule = config.Rules.SingleOrDefault(rule => rule.RuleId == state.Series.RuleId);
+        if (rule is null || !rule.Enabled || rule.EvaluationRevision != state.Occurrence.PinnedRule.EvaluationRevision)
+            return new(MonitoringStoreWriteDisposition.Conflict, state, "monitoring_configuration_conflict");
+        // StateRevision also advances for observations. Decide against the current mailbox-serialized state,
+        // then retain the repository's exact CAS; an external concurrent writer still conflicts.
+        var evaluation = clear
+            ? _evaluator.Clear(state, rule, command.OperatorId, command.Reason, command.OperatorDisplayName)
+            : _evaluator.Acknowledge(state, rule, command.OperatorId, command.Reason, command.OperatorDisplayName);
+        var committed = await _store.CommitAsync(new(evaluation, config.Revision), ct);
+        return committed.Disposition == MonitoringStoreWriteDisposition.Conflict
+            ? committed with { Code = "monitoring_operator_conflict" } : committed;
     }
     private static MonitoringInputResult Input(MonitoringInputDisposition disposition) => new(disposition, 0, 0);
 }

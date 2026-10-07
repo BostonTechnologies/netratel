@@ -23,26 +23,32 @@ public sealed record MonitoringBypassWriteDto(ulong ExpectedConfigurationRevisio
 
 public sealed record MonitoringDeleteDto(ulong ExpectedConfigurationRevision, string Reason);
 
-/// <summary>The route and resourceKey query identify the series; no command accepts an operator from the body.</summary>
-public sealed record MonitoringOperatorActionDto(Guid OccurrenceId, string Reason, ulong? ExpectedStateRevision = null);
+/// <summary>Occurrence/operator/configuration fences are independent of telemetry. ExpectedStateRevision is retained for wire compatibility; no command accepts an operator from the body.</summary>
+public sealed record MonitoringOperatorActionDto(Guid OccurrenceId, string Reason, ulong? ExpectedStateRevision = null,
+    ulong? ExpectedConfigurationRevision = null, ulong? ExpectedOperatorRevision = null);
 
 public sealed record MonitoringTargetPreviewRequest(MonitoringTargetSelectionDto Targets, MonitoringConditionDto? Condition = null);
 public enum MonitoringTargetSupport { Unknown, Supported, Unsupported }
 public sealed record MonitoringTargetPreviewEntryDto(Guid AgentId, string? DisplayName,
-    MonitoringTargetSupport Support, string Code, DateTimeOffset? EvidenceAtUtc = null);
+    MonitoringTargetSupport Support, string Code, DateTimeOffset? EvidenceAtUtc = null, MonitoringClientIdentityDto? Identity = null);
 public sealed record MonitoringTargetPreviewDto(ImmutableArray<Guid> AgentIds, ulong ConfigurationRevision,
-    ImmutableArray<MonitoringTargetPreviewEntryDto> Details = default, int Total = 0, bool DetailsTruncated = false);
+    ImmutableArray<MonitoringTargetPreviewEntryDto> Details = default, int Total = 0, bool DetailsTruncated = false, ImmutableArray<MonitoringClientIdentityDto> ClientIdentities = default);
 
 public sealed record MonitoringTenantDto(int TenantId, string Name);
 public sealed record MonitoringPublishedFlowDto(Guid PublishedFlowVersionId, string Name, int Version);
 public sealed record MonitoringClientDto(Guid AgentId, string? DisplayName, ClientServicePlatform? Platform,
-    MonitoringTargetSupport ServicesSupport, string Code);
+    MonitoringTargetSupport ServicesSupport, string Code, MonitoringClientIdentityDto? Identity = null);
 public sealed record MonitoringClientPageDto(ImmutableArray<MonitoringClientDto> Items, string? NextCursor, int Total);
 
-public sealed record MonitoringSeriesPageDto(ImmutableArray<MonitoringSeriesState> Items, string? NextCursor);
-public sealed record MonitoringEventPageDto(ImmutableArray<MonitoringEventIntent> Items, string? NextCursor);
+public sealed record MonitoringSeriesPageDto(ImmutableArray<MonitoringSeriesState> Items, string? NextCursor,
+    ImmutableArray<MonitoringClientIdentityDto> ClientIdentities = default);
+public sealed record MonitoringEventPageDto(ImmutableArray<MonitoringEventIntent> Items, string? NextCursor,
+    ImmutableArray<MonitoringClientIdentityDto> ClientIdentities = default, ImmutableArray<MonitoringHistoryAuditDto> Audits = default);
+
+public sealed record MonitoringHistoryAuditDto(Guid AuditId, string Action, Guid EntityId, string EntityKind,
+    string? EntityName, Guid OperatorId, string? OperatorDisplayName, string Reason, DateTimeOffset AtUtc);
 
 /// <summary>Aggregate counts across the authorized tenant, independently of a paged series view.</summary>
 public sealed record MonitoringSummaryDto(int TenantId, long SeriesCount, long ActiveOccurrences,
     long PendingSeries, long UnknownSeries, long AcknowledgedOccurrences, long SuppressedOccurrences,
-    DateTimeOffset GeneratedAtUtc);
+    DateTimeOffset GeneratedAtUtc, long FiringOccurrences = 0);

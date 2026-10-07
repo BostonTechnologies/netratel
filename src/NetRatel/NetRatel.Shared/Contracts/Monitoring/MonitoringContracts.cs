@@ -15,7 +15,7 @@ public enum MonitoringFlowDispatchDisposition { NoFlowSelected, Suppressed, Enqu
 public enum MonitoringFlowOutcomeKind { Succeeded, Skipped, Failed, DeliveryUnknown }
 public enum MonitoringClosureDisposition { Recovered, ManuallyCleared, RuleDisabled, TargetRemoved, ConfigurationChanged }
 public enum MonitoringConditionResetPolicy { SuspendOccurrenceAndRequireNewWindow }
-public enum MonitoringEventKind { AlertRaised, AlertResolved, AlertCleared, AlertSuspended }
+public enum MonitoringEventKind { AlertRaised, AlertResolved, AlertCleared, AlertSuspended, AlertAcknowledged }
 public enum MonitoringEvaluationDisposition { Accepted, DuplicateOrStaleCursor, WrongSeries, RuleDisabled, TargetNotApplicable }
 
 public sealed record MonitoringTargetSelectionDto(
@@ -72,7 +72,7 @@ public sealed record MonitoringOccurrenceDto(
     MonitoringFlowDispatchDisposition FlowDispatchDisposition,
     Guid? AcknowledgedBy = null, DateTimeOffset? AcknowledgedAtUtc = null,
     DateTimeOffset? EndedAtUtc = null, MonitoringClosureDisposition? ClosureDisposition = null,
-    MonitoringFlowOutcomeDto? FlowOutcome = null);
+    MonitoringFlowOutcomeDto? FlowOutcome = null, MonitoringClientIdentityDto? ClientIdentity = null);
 
 /// <summary>Condition-false is Skipped; action-node keys and receipts are derived by the pinned flow runtime.</summary>
 public sealed record MonitoringIncidentReceiptDto(string IncidentId, string? TrackingNumber = null, string? IncidentUrl = null);
@@ -90,7 +90,7 @@ public sealed record MonitoringSeriesState(
     string EvaluationFingerprint = "", Guid? EvidenceStreamId = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] MonitoringDiskCollectionStamp? LastDiskCollection = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] DateTimeOffset? WindowStartedObservedAtUtc = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] DateTimeOffset? LastDiskTransportReceivedAtUtc = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] DateTimeOffset? LastDiskTransportReceivedAtUtc = null, ulong OperatorRevision = 0);
 
 public sealed record MonitoringBypassDto(
     Guid BypassId, int TenantId, Guid? RuleId, Guid? AgentId, string? ResourceKey,
@@ -99,7 +99,8 @@ public sealed record MonitoringBypassDto(
 public sealed record MonitoringEventIntent(
     Guid EventId, MonitoringEventKind Kind, MonitoringSeriesKey Series, Guid OccurrenceId,
     DateTimeOffset AtUtc, MonitoringRuleDto PinnedRule, MonitoringEvidenceDto Evidence,
-    MonitoringClosureDisposition? ClosureDisposition = null, string? Reason = null);
+    MonitoringClosureDisposition? ClosureDisposition = null, string? Reason = null, Guid? OperatorId = null,
+    string? OperatorDisplayName = null, MonitoringClientIdentityDto? ClientIdentity = null);
 
 /// <summary>Persist this exact intent with state+event; dispatch later rechecks current authorization/suppression.</summary>
 public sealed record MonitoringOutboxIntent(
@@ -109,7 +110,7 @@ public sealed record MonitoringOutboxIntent(
 
 public sealed record MonitoringAuditIntent(
     Guid AuditId, MonitoringSeriesKey Series, string Operation, Guid OperatorId, string Reason,
-    DateTimeOffset AtUtc, Guid? OccurrenceId, ulong RuleRevision, Guid? BypassId = null);
+    DateTimeOffset AtUtc, Guid? OccurrenceId, ulong RuleRevision, Guid? BypassId = null, string? OperatorDisplayName = null);
 
 /// <summary>One transaction must compare ExpectedStateRevision and commit State+Events+Outbox+Audits atomically.</summary>
 public sealed record MonitoringEvaluationResult(
