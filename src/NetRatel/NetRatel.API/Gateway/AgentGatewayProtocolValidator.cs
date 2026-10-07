@@ -1,4 +1,5 @@
 using Grpc.Core;
+using System.Net;
 using NetRatel.AgentGateway.Contracts.V1;
 
 namespace NetRatel.API.Gateway;
@@ -45,6 +46,11 @@ public static class AgentGatewayProtocolValidator
         {
             return Invalid("The capability list exceeds the Phase 1 limits.");
         }
+
+        if (frame.Hello.HostName.Length > 255 || frame.Hello.HostName.Any(char.IsControl) ||
+            frame.Hello.ReportedAddress.Length > 64 || !string.IsNullOrWhiteSpace(frame.Hello.ReportedAddress) &&
+            !IPAddress.TryParse(frame.Hello.ReportedAddress, out _))
+            return Invalid("The reported client host or address is invalid.");
 
         var legacyIdentity = frame.Hello.LegacySpacetimeIdentity;
         if (!string.IsNullOrWhiteSpace(legacyIdentity) &&

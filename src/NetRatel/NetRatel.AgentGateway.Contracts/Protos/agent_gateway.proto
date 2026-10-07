@@ -118,6 +118,9 @@ message ConnectHello {
   string update_channel = 6;
   UpdateActivationContext update_activation = 7;
   int64 update_policy_revision = 8;
+  // Client-reported directory metadata. Diagnostic only; never selects identity or authority.
+  string host_name = 9;
+  string reported_address = 10;
 }
 
 message UpdateActivationContext {

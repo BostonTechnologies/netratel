@@ -1,6 +1,8 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using System.Text.Json;
+using System.Text.Json.Nodes;
+using System.Net;
 using NetRatel.Application.Agents;
 using NetRatel.Application.Events;
 using NetRatel.Infrastructure.Persistence;
@@ -72,6 +74,26 @@ public sealed class AgentManagementService : IAgentManagementService
                 a.RevokedAtUtc,
                 a.DeletedAtUtc))
             .FirstOrDefaultAsync(ct);
+    }
+
+    public async Task ReportIdentityAsync(int tenantId, Guid agentId, string? hostName, string? reportedAddress, CancellationToken ct)
+    {
+        if (tenantId <= 0 || agentId == Guid.Empty || hostName?.Length > 255 || hostName?.Any(char.IsControl) == true ||
+            reportedAddress?.Length > 64 || !string.IsNullOrWhiteSpace(reportedAddress) && !IPAddress.TryParse(reportedAddress, out _))
+            throw new ArgumentException("invalid_reported_client_identity");
+        if (string.IsNullOrWhiteSpace(hostName) && string.IsNullOrWhiteSpace(reportedAddress)) return;
+        var agent = await _db.Agents.SingleOrDefaultAsync(item => item.TenantId == tenantId && item.Id == agentId && item.IsEnabled &&
+            item.Status == AgentStatus.Active && item.RevokedAtUtc == null, ct).ConfigureAwait(false);
+        if (agent is null) return;
+        JsonObject metadata;
+        try { metadata = string.IsNullOrWhiteSpace(agent.DeviceInfoJson) ? new() : JsonNode.Parse(agent.DeviceInfoJson) as JsonObject ?? new(); }
+        catch (JsonException) { metadata = new(); }
+        if (!string.IsNullOrWhiteSpace(hostName)) metadata["hostName"] = hostName.Trim();
+        if (!string.IsNullOrWhiteSpace(reportedAddress)) metadata["reportedAddress"] = IPAddress.Parse(reportedAddress).ToString();
+        var next = metadata.ToJsonString();
+        if (next == agent.DeviceInfoJson) return;
+        agent.DeviceInfoJson = next;
+        await _db.SaveChangesAsync(ct).ConfigureAwait(false);
     }
 
     public async Task DisableAsync(int tenantId, Guid agentId, string reason, string actor, CancellationToken ct)

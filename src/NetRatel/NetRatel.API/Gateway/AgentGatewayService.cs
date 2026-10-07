@@ -5,6 +5,7 @@ using NetRatel.AgentGateway.Contracts.V1;
 using NetRatel.Akka.Configuration;
 using NetRatel.Akka.Observability;
 using NetRatel.Application.Agents;
+using NetRatel.Application.Events;
 using NetRatel.Application.Presence;
 using NetRatel.API.Services;
 
@@ -155,6 +156,17 @@ public sealed class AgentGatewayService(
                 }
             }
 
+            try
+            {
+                await agentManagement.ReportIdentityAsync(client.TenantId, client.AgentId, helloFrame.Hello.HostName,
+                    helloFrame.Hello.ReportedAddress, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+            catch (Exception exception)
+            {
+                logger.LogWarning(exception, "Client directory metadata could not be updated; presence remains admitted. tenantId={TenantId} agentId={AgentId}", client.TenantId, client.AgentId);
+            }
+
             cancellationToken.ThrowIfCancellationRequested();
             logger.LogInformation(
                 "Agent gateway presence session admitted. authority={Authority}, tenantId={TenantId}, agentId={AgentId}, connectionId={ConnectionId}, authScheme={AuthScheme}, correlationId={CorrelationId}",
@@ -163,7 +175,8 @@ public sealed class AgentGatewayService(
                 client.AgentId,
                 connectionId,
                 context.GetHttpContext().User.Identity?.AuthenticationType ?? "unknown",
-                context.GetHttpContext().TraceIdentifier);
+                context.GetHttpContext().Items.TryGetValue(CorrelationConstants.HttpContextItemKey, out var correlation)
+                    ? correlation as string ?? context.GetHttpContext().TraceIdentifier : context.GetHttpContext().TraceIdentifier);
 
             var connected = new ConnectAccepted
             {

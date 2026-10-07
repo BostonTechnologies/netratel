@@ -10,6 +10,28 @@ namespace NetRatel.Tests.Infrastructure;
 public sealed class AgentManagementServiceTests
 {
     [Fact]
+    public async Task Reported_identity_updates_only_the_authenticated_tenant_client_and_preserves_the_configured_name()
+    {
+        await using var db = CreateDb();
+        var id = Guid.NewGuid();
+        db.Agents.Add(new Agent { Id = id, TenantId = 42, Name = "Owner configured name", IsEnabled = true,
+            Status = AgentStatus.Active, DeviceInfoJson = "{\"os\":\"Windows\",\"hostName\":\"old-host\"}" });
+        await db.SaveChangesAsync();
+        var service = new AgentManagementService(db, NullLogger<AgentManagementService>.Instance);
+        await service.ReportIdentityAsync(43, id, "foreign-host", "192.0.2.8", default);
+        db.Agents.Single().DeviceInfoJson.Should().Contain("old-host");
+        await service.ReportIdentityAsync(42, id, "reported-host", "192.0.2.17", default);
+        var updated = db.Agents.Single();
+        updated.Name.Should().Be("Owner configured name");
+        using var metadata = System.Text.Json.JsonDocument.Parse(updated.DeviceInfoJson!);
+        metadata.RootElement.GetProperty("os").GetString().Should().Be("Windows");
+        metadata.RootElement.GetProperty("hostName").GetString().Should().Be("reported-host");
+        metadata.RootElement.GetProperty("reportedAddress").GetString().Should().Be("192.0.2.17");
+        Func<Task> invalid = () => service.ReportIdentityAsync(42, id, "reported-host", "proxy:443", default);
+        await invalid.Should().ThrowAsync<ArgumentException>();
+    }
+
+    [Fact]
     public async Task AgentDirectory_QueryFilter_ReturnsOnlyCanonicalAgent()
     {
         await using var db = CreateDb();
