@@ -72,8 +72,10 @@ jobs:
           gateway_pid=''
           generic_pid=''
           physical_pid=''
+          api_pid=''
+          core_pid=''
           cleanup() {
-            for owned_pid in "$gateway_pid" "$generic_pid" "$physical_pid"; do
+            for owned_pid in "$gateway_pid" "$generic_pid" "$physical_pid" "$api_pid" "$core_pid"; do
               [[ -n "$owned_pid" ]] || continue
               # Only active jobs still owned by this shell may be stopped.
               for running_pid in $(jobs -pr); do
@@ -86,6 +88,8 @@ jobs:
             gateway_pid=''
             generic_pid=''
             physical_pid=''
+            api_pid=''
+            core_pid=''
             for owned_log in TestResults/gateway-transport/profile.log TestResults/physical-disk-incident/profile.log; do
               if [[ -f "$owned_log" ]]; then cat "$owned_log"; fi
             done
@@ -97,37 +101,52 @@ jobs:
           # the physical wrapper builds and verifies its full Client from this checkout.
           setsid bash tools/ci/tests/traefik-gateway-routing.sh > TestResults/gateway-transport/profile.log 2>&1 &
           gateway_pid=$!
-          # Keep browser modules isolated after both backend modules finish.
-          # The owned generic process group still contains every MTP child.
+          generic_status=0
+          generic_test_arguments=(
+            --configuration Release --no-build --max-parallel-test-modules 1
+            --filter-not-trait category=compose category=hosted
+            --results-directory TestResults --report-trx
+            --report-trx-filename "netratel-tests-{asm}_{tfm}_{arch}.trx"
+          )
+          # API starts alongside the complete physical wrapper. Defer only Core until
+          # that owned wrapper has completed its actual proof and teardown.
+          setsid dotnet test --project src/NetRatel/NetRatel.API.IntegrationTests/NetRatel.API.IntegrationTests.csproj "${generic_test_arguments[@]}" &
+          api_pid=$!
+          setsid bash tools/ci/run-physical-disk-incident-proof.sh > TestResults/physical-disk-incident/profile.log 2>&1 &
+          physical_pid=$!
+          if wait "$physical_pid"; then
+            physical_status=0
+          else
+            physical_status=$?
+          fi
+          # Clear ownership only after the original complete wrapper has been reaped.
+          physical_pid=''
+          # A physical failure still runs Core and every remaining generic module.
+          setsid dotnet test --project src/NetRatel/NetRatel.Tests/NetRatel.Tests.csproj "${generic_test_arguments[@]}" &
+          core_pid=$!
+          # Reap both actual backend outcomes before starting either UI module.
+          for module_variable in api_pid core_pid; do
+            module_pid="${!module_variable}"
+            if wait "$module_pid"; then
+              module_status=0
+            else
+              module_status=$?
+            fi
+            printf -v "$module_variable" '%s' ''
+            if [[ "$generic_status" -eq 0 && "$module_status" -ne 0 ]]; then
+              generic_status=$module_status
+            fi
+          done
+          # Keep both browser modules serial in their owned process group. An ordinary
+          # backend or physical failure still leaves all four generic receipts inspectable.
           setsid bash -c '
             set -euo pipefail
-            generic_status=0
-            generic_test_arguments=(
-              --configuration Release --no-build --max-parallel-test-modules 1
-              --filter-not-trait category=compose category=hosted
-              --results-directory TestResults --report-trx
-              --report-trx-filename "netratel-tests-{asm}_{tfm}_{arch}.trx"
-            )
-            dotnet test --project src/NetRatel/NetRatel.API.IntegrationTests/NetRatel.API.IntegrationTests.csproj "${generic_test_arguments[@]}" &
-            api_pid=$!
-            dotnet test --project src/NetRatel/NetRatel.Tests/NetRatel.Tests.csproj "${generic_test_arguments[@]}" &
-            core_pid=$!
-            # Reap both actual outcomes before starting either UI module.
-            for module_pid in "$api_pid" "$core_pid"; do
-              if wait "$module_pid"; then
-                module_status=0
-              else
-                module_status=$?
-              fi
-              if [[ "$generic_status" -eq 0 && "$module_status" -ne 0 ]]; then
-                generic_status=$module_status
-              fi
-            done
-            # An ordinary backend failure still leaves all four receipts inspectable.
+            generic_status="$1"
+            shift
             for module_project in \
               src/NetRatel/NetRatel.Web.ComponentTests/NetRatel.Web.ComponentTests.csproj \
               src/NetRatel/NetRatel.Web.PlaywrightTests/NetRatel.Web.PlaywrightTests.csproj; do
-              if dotnet test --project "$module_project" "${generic_test_arguments[@]}"; then
+              if dotnet test --project "$module_project" "$@"; then
                 module_status=0
               else
                 module_status=$?
@@ -137,24 +156,25 @@ jobs:
               fi
             done
             exit "$generic_status"
-          ' &
+          ' _ "$generic_status" "${generic_test_arguments[@]}" &
           generic_pid=$!
-          setsid bash tools/ci/run-physical-disk-incident-proof.sh > TestResults/physical-disk-incident/profile.log 2>&1 &
-          physical_pid=$!
           overall_status=0
-          # Waiting in this fixed order does not serialize children already running.
-          # Reap every actual outcome before returning an ordinary child failure so owned
-          # physical cleanup can finish and all three outcomes remain inspectable.
+          # Retain the original gateway/generic/physical failure precedence and record
+          # every actual outcome before returning an ordinary child failure.
           for probe in gateway generic physical; do
-            pid_variable="${probe}_pid"
-            owned_pid="${!pid_variable}"
-            if wait "$owned_pid"; then
-              completed_status=0
+            if [[ "$probe" == physical ]]; then
+              completed_status=$physical_status
             else
-              completed_status=$?
+              pid_variable="${probe}_pid"
+              owned_pid="${!pid_variable}"
+              if wait "$owned_pid"; then
+                completed_status=0
+              else
+                completed_status=$?
+              fi
+              # Clear ownership immediately after reaping, before any later cleanup.
+              printf -v "$pid_variable" '%s' ''
             fi
-            # Clear ownership immediately after reaping, before any later cleanup.
-            printf -v "$pid_variable" '%s' ''
             if ! printf '%s\n' "$completed_status" > "TestResults/ci-probe-exits/${probe}.exit"; then
               # A summary write failure is also fatal, but does not stop sibling teardown.
               if [[ "$overall_status" -eq 0 ]]; then overall_status=1; fi
