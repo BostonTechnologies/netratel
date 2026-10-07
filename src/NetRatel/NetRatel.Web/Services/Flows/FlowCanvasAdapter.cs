@@ -52,8 +52,11 @@ public sealed class FlowCanvasAdapter : IAsyncDisposable
     public async Task RemoveAsync(Guid id, CancellationToken token = default)
     {
         var node = Metadata.Single(p => p.Value.Id == id).Key;
+        var slots = Ports.Where(pair => pair.Value.NodeId == id).Select(pair => pair.Key).ToHashSet();
+        foreach (var link in Tree.Links.ToArray().Where(link => slots.Contains(link.Sender) || slots.Contains(link.Receiver)))
+            await CompleteAsync(link.DeleteCommand, null, token);
         await CompleteAsync(node.DeleteCommand, null, token);
-        foreach (var slot in Ports.Where(p => p.Value.NodeId == id).Select(p => p.Key).ToArray()) Ports.Remove(slot);
+        foreach (var slot in slots) Ports.Remove(slot);
         Metadata.Remove(node);
         Changed?.Invoke();
     }

@@ -22,9 +22,9 @@
             Background="var(--mud-palette-surface)" ViewportStroke="var(--mud-palette-primary)" /></div> }</Minimap>
         <ChildContent Context="canvas">
             <svg class="flow-links" width="@canvas.Width" height="@canvas.Height" aria-hidden="true">
-                @foreach (var link in Adapter.Tree.Links)
+                @foreach (var link in Adapter.Tree.Links.ToArray())
                 {
-                    @if (new[] { link.Sender.Anchor.Horizontal, link.Sender.Anchor.Vertical, link.Receiver.Anchor.Horizontal, link.Receiver.Anchor.Vertical }.All(double.IsFinite))
+                    @if (Adapter.Ports.ContainsKey(link.Sender) && Adapter.Ports.ContainsKey(link.Receiver) && new[] { link.Sender.Anchor.Horizontal, link.Sender.Anchor.Vertical, link.Receiver.Anchor.Horizontal, link.Receiver.Anchor.Vertical }.All(double.IsFinite))
                     { <line x1="@link.Sender.Anchor.Horizontal" y1="@link.Sender.Anchor.Vertical" x2="@link.Receiver.Anchor.Horizontal" y2="@link.Receiver.Anchor.Vertical" stroke="var(--mud-palette-primary)" stroke-width="3" data-testid="flow-link" /> }
                 }
             </svg>
