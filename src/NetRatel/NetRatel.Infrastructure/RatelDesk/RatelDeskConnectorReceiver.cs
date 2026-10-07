@@ -1,4 +1,5 @@
 using NetRatel.Application.RatelDesk;
+using NetRatel.Infrastructure.ServiceLinks;
 using NetRatel.Shared.Contracts.RatelDesk;
 
 namespace NetRatel.Infrastructure.RatelDesk;
@@ -79,9 +80,12 @@ public sealed class RatelDeskConnectorReceiver(IRatelDeskConnectorStore connecto
     {
         if (value is null) return existing ?? new(RatelDeskAuthenticationMode.ManualApiBearer, null);
         if (value is { Mode: "api_bearer", ManagedLinkId: null }) return new(RatelDeskAuthenticationMode.ManualApiBearer, null);
-        if (value.Mode == "service_link" && Guid.TryParseExact(value.ManagedLinkId, "D", out var link) &&
-            link != Guid.Empty && link.ToString("D") == value.ManagedLinkId)
-            return new(RatelDeskAuthenticationMode.ManagedServiceLink, value.ManagedLinkId);
+        if (value is { Mode: "service_link", ManagedLinkId: { } managedLinkId })
+        {
+            try { ServiceLinkValidation.Id(managedLinkId); }
+            catch (ServiceLinkProtocolException) { throw new ArgumentException("invalid-connector-authentication-reference"); }
+            return new(RatelDeskAuthenticationMode.ManagedServiceLink, managedLinkId);
+        }
         throw new ArgumentException("invalid-connector-authentication-reference");
     }
 
