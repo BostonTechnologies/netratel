@@ -28,7 +28,7 @@ public sealed class OperationsDashboardPostgresTests(PostgreSqlPersistenceFixtur
             var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
             await db.Database.MigrateAsync();
             db.Agents.AddRange(ids.Select((id, index) => new Agent { Id = id, TenantId = 1, Name = $"Client {index}", CreatedAtUtc = now,
-                DeviceInfoJson = JsonSerializer.Serialize(new { hostname = $"host-{index}", ipAddress = $"192.0.2.{index + 1}" }) }));
+                DeviceInfoJson = JsonSerializer.Serialize(new { hostName = $"host-{index}", ipAddress = $"192.0.2.{index + 1}" }) }));
             db.Agents.Add(new() { Id = Guid.NewGuid(), TenantId = 1, Name = "Deleted client", CreatedAtUtc = now, DeletedAtUtc = now });
             db.Agents.Add(new() { Id = Guid.NewGuid(), TenantId = 2, Name = "Other tenant", CreatedAtUtc = now });
             db.ClientConnectionOwners.AddRange(Owner(ids[0], now, now.AddMinutes(10)), Owner(ids[1], now, now.AddMinutes(10)), Owner(ids[2], now, now.AddSeconds(-1)));
