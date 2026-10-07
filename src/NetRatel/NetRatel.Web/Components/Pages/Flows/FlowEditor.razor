@@ -1,5 +1,6 @@
 @using System.Globalization
 @using System.Text.Json
+@using MudBlazor.Extensions
 @using NetRatel.Shared.Contracts.Flows
 @using NetRatel.Web.Services.Flows
 @using VeloxDev.WorkflowSystem
@@ -335,7 +336,7 @@
     }
     private async Task CloseLeaveDialogAsync()
     {
-        if (_closingLeave || _pendingLeave is null || _leaveDialog is not { Visible: true }) return;
+        if (_closingLeave || _pendingLeave is null || _leaveDialog is null || !_leaveDialog.GetState(dialog => dialog.Visible)) return;
         _closingLeave = true;
         try { await _leaveDialog.CloseAsync(); }
         finally { _closingLeave = false; }
@@ -427,7 +428,7 @@
     private void DeleteDialogVisibleChanged(bool visible) { if (!visible) _pendingDelete = null; }
     private async Task KeepNodeAsync()
     {
-        if (_pendingDelete is not null && _deleteDialog is { Visible: true }) await _deleteDialog.CloseAsync();
+        if (_pendingDelete is not null && _deleteDialog is not null && _deleteDialog.GetState(dialog => dialog.Visible)) await _deleteDialog.CloseAsync();
         _pendingDelete = null;
     }
     private async Task ConfirmRemoveAsync() { if (_pendingDelete is not { } node) return; await KeepNodeAsync(); await RemoveNodeAsync(node); }

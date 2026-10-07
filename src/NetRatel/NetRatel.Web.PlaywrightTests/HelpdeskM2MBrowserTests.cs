@@ -183,7 +183,7 @@ public sealed class HelpdeskM2MBrowserTests(ClientsManagementBrowserFixture brow
             ResponderEndpointSnapshot = new() { Product = "rateldesk", InstanceId = "peer-instance", WebBaseUrl = "https://helpdesk.example.test" }
         };
         fixture.Data.Link = new("fixture-attempt", "fixture-link", 1, "active", "1", "peer-instance", "peer-organization", "commit", "fixture-commit", "fixture-grant-hash", descriptor, null, true, true, false, false, true, "grant-unavailable", false, []) { LocalTenantName = "Fixture tenant" };
-        await using var context = await browserFixture.Browser.NewContextAsync();
+        await using var context = await browserFixture.Browser.NewContextAsync(new() { ViewportSize = new() { Width = 1366, Height = 768 } });
         var page = await context.NewPageAsync();
         await page.GotoAsync(fixture.Address + "/account/integration-credentials");
         await Assertions.Expect(page.GetByText("Needs attention · grant unavailable", new() { Exact = true })).ToBeVisibleAsync();
@@ -192,6 +192,7 @@ public sealed class HelpdeskM2MBrowserTests(ClientsManagementBrowserFixture brow
         await page.GetByRole(AriaRole.Button, new() { Name = "Refresh status", Exact = true }).ClickAsync();
         await Assertions.Expect(page.GetByText("Approved · verify connection", new() { Exact = true })).ToBeVisibleAsync();
         await Assertions.Expect(page.GetByText("Connected", new() { Exact = true })).ToHaveCountAsync(0);
+        await CaptureConnectionAsync(page, "netratel-pairing-after-approved-unverified-light-1366x768.png");
         Assert.Equal(1, fixture.Data.CompleteCount);
         Assert.Equal("fixture-link", fixture.Data.LastCompletion?.LinkId);
         fixture.Data.ConnectionReady = true;
@@ -199,12 +200,20 @@ public sealed class HelpdeskM2MBrowserTests(ClientsManagementBrowserFixture brow
         await Assertions.Expect(page.GetByText("Connected", new() { Exact = true })).ToBeVisibleAsync();
         await Assertions.Expect(page.GetByText("Fixture organization / Fixture customer", new() { Exact = false })).ToBeVisibleAsync();
         await Assertions.Expect(page.GetByRole(AriaRole.Link, new() { Name = "Return to Flow", Exact = true })).ToBeVisibleAsync();
+        await CaptureConnectionAsync(page, "netratel-pairing-after-connected-light-1366x768.png");
         await page.GetByTestId("helpdesk-test-connection").ClickAsync();
         await Assertions.Expect(page.GetByTestId("helpdesk-connection-test-result")).ToContainTextAsync("requires separate receiver capability and target validation");
         Assert.Equal(1, fixture.Data.TestCount);
         Assert.Equal(0, fixture.Data.CreateCount);
         Assert.Equal(0, fixture.Data.StartCount);
         Assert.Equal(3, fixture.Data.CompleteCount);
+    }
+
+    private static async Task CaptureConnectionAsync(IPage page, string filename)
+    {
+        var directory = Environment.GetEnvironmentVariable("NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT") ?? Path.Combine(AppContext.BaseDirectory, "TestResults", "playwright");
+        Directory.CreateDirectory(directory);
+        await page.ScreenshotAsync(new() { Path = Path.Combine(directory, filename), FullPage = true, Animations = ScreenshotAnimations.Disabled });
     }
 }
 
