@@ -124,8 +124,9 @@ jobs:
           # A physical failure still runs Core and every remaining generic module.
           setsid dotnet test --project src/NetRatel/NetRatel.Tests/NetRatel.Tests.csproj "${generic_test_arguments[@]}" &
           core_pid=$!
-          # Reap both actual backend outcomes before starting either UI module.
-          for module_variable in api_pid core_pid; do
+          # Reap Core before starting either UI module. API keeps its owned process
+          # group while the serial browser modules use the remaining job budget.
+          for module_variable in core_pid; do
             module_pid="${!module_variable}"
             if wait "$module_pid"; then
               module_status=0
@@ -158,6 +159,14 @@ jobs:
             exit "$generic_status"
           ' _ "$generic_status" "${generic_test_arguments[@]}" &
           generic_pid=$!
+          # Reap the original API outcome while the UI child runs. The child's Core
+          # status was captured at launch, so fold API explicitly after reaping UI.
+          if wait "$api_pid"; then
+            api_status=0
+          else
+            api_status=$?
+          fi
+          api_pid=''
           overall_status=0
           # Retain the original gateway/generic/physical failure precedence and record
           # every actual outcome before returning an ordinary child failure.
@@ -174,6 +183,11 @@ jobs:
               fi
               # Clear ownership immediately after reaping, before any later cleanup.
               printf -v "$pid_variable" '%s' ''
+            fi
+            if [[ "$probe" == generic && "$api_status" -ne 0 ]]; then
+              # Preserve API/Core/Components/Playwright status precedence after
+              # every actual generic module has completed and been reaped.
+              completed_status=$api_status
             fi
             if ! printf '%s\n' "$completed_status" > "TestResults/ci-probe-exits/${probe}.exit"; then
               # A summary write failure is also fatal, but does not stop sibling teardown.

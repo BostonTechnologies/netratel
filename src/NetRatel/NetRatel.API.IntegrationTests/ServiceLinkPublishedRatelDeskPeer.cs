@@ -25,7 +25,7 @@ internal sealed partial class ServiceLinkPublishedRatelDeskPeer : IAsyncDisposab
     public string ApiBaseUrl => Proxy.BaseUrl;
     public string WebBaseUrl { get; }
     public string ReachableHost { get; }
-    public Guid InstanceId { get; } = Guid.NewGuid();
+    public Guid InstanceId { get; private set; } = Guid.NewGuid();
     public string OrganizationId { get; private set; } = "";
     public string CustomerId { get; private set; } = "";
     public HttpClient Administrator { get; private set; } = null!;
@@ -56,6 +56,25 @@ internal sealed partial class ServiceLinkPublishedRatelDeskPeer : IAsyncDisposab
             var initialized = await peer.ComposeAsync(["run", "--rm", "--no-deps", "api", "--initialize-unattended"]);
             if (!initialized.Contains("RatelDesk initialization completed.", StringComparison.Ordinal))
                 throw new InvalidOperationException("The published RatelDesk image did not complete its actual unattended bootstrap.");
+            // The receiver owns its stable identity in the actual bootstrap marker.
+            // Bind service metadata to that identity before the first API/Web startup
+            // or pairing; neither descriptor state nor initialized database bytes change.
+            var instanceText = (await DockerAsync(["compose", "-p", peer.project, "-f", peer.composeFile,
+                "exec", "-T", "postgres", "psql", "-X", "-v", "ON_ERROR_STOP=1", "-U", "rateldesk", "-d", "rateldesk", "-At", "-c",
+                "SELECT \"InstanceId\" FROM \"InstanceInitializations\" WHERE \"Id\" = 1"], TimeSpan.FromSeconds(5))).Trim();
+            if (!Guid.TryParseExact(instanceText, "D", out var instanceId) || instanceId == Guid.Empty || instanceId.ToString("D") != instanceText)
+                throw new InvalidOperationException("The initialized published peer has no single canonical receiver instance identity.");
+            var compose = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(peer.composeFile))
+                ?? throw new InvalidOperationException("The owned published-peer Compose configuration is unavailable.");
+            var environment = compose["services"]?["api"]?["environment"]?.AsObject()
+                ?? throw new InvalidOperationException("The owned published-peer API environment is unavailable.");
+            if (environment["ServiceIdentity__InstanceId"]?.GetValue<string>() != peer.InstanceId.ToString("D"))
+                throw new InvalidOperationException("The owned published-peer identity configuration changed during initialization.");
+            // Rewrite only this configuration value. Re-running WriteCompose would
+            // generate another database password for the already initialized volume.
+            environment["ServiceIdentity__InstanceId"] = instanceText;
+            File.WriteAllText(peer.composeFile, compose.ToJsonString());
+            peer.InstanceId = instanceId;
             await peer.ComposeAsync(["up", "-d", "--no-build", "--wait", "--wait-timeout", "90", "api", "web"]);
             peer.Administrator = peer.NewClient(cookies: true);
             peer.Anonymous = peer.NewClient();

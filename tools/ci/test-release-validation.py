@@ -228,7 +228,7 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
                 # Retain this test ID and all module/receipt contracts while
                 # requiring the complete physical wrapper to finish before Core.
                 run_start = source.index("          generic_status=0\n          generic_test_arguments=(")
-                run_end = source.index("\n          generic_pid=$!", run_start)
+                run_end = source.index("\n          overall_status=0", run_start)
                 run_command = source[run_start:run_end]
                 self.assertIn("set -euo pipefail", run_command)
                 self.assertIn("--configuration Release --no-build --max-parallel-test-modules 1", run_command)
@@ -263,7 +263,7 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
                 physical_start = run_command.index(physical_command)
                 physical_wait = run_command.index('if wait "$physical_pid"; then')
                 physical_clear = run_command.index("physical_pid=''")
-                backend_join = run_command.index("for module_variable in api_pid core_pid; do")
+                backend_join = run_command.index("for module_variable in core_pid; do")
                 backend_done = run_command.index("\n          done\n", backend_join)
                 ui_launch = run_command.index("setsid bash -c '", backend_join)
                 ui_start = run_command.index("for module_project in")
@@ -278,6 +278,18 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
                 self.assertLess(backend_join, ui_start)
                 self.assertLess(backend_done, ui_launch)
                 self.assertLess(ui_launch, ui_start)
+                api_join = run_command.index('if wait "$api_pid"; then')
+                api_clear = run_command.index("api_pid=''")
+                ui_ownership = run_command.index("generic_pid=$!")
+                self.assertLess(ui_start, ui_ownership)
+                self.assertLess(ui_ownership, api_join)
+                self.assertLess(api_join, api_clear)
+                self.assertRegex(
+                    run_command[api_join:api_clear],
+                    r'(?s)if wait "\$api_pid"; then\s+api_status=0\s+else\s+api_status=\$\?\s+fi',
+                )
+                self.assertEqual(1, run_command.count("api_pid=''"))
+                self.assertNotIn('if wait "$api_pid"; then', run_command[:ui_ownership])
                 # The mandatory wrapper cannot be hidden behind a presence or
                 # success condition; nonzero completion still reaches every module.
                 self.assertNotRegex(run_command[:physical_start], r"(?m)^\s*(?:if|case|for|while|until)\b")
@@ -311,7 +323,7 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
                 # shell boundary; both UI modules run serially on ordinary failure.
                 self.assertRegex(run_command, r'generic_status="\$1"\s+shift\s+for module_project in')
                 self.assertIn('\' _ "$generic_status" "${generic_test_arguments[@]}" &', run_command)
-                ui_loop = run_command[ui_start:]
+                ui_loop = run_command[ui_start:ui_ownership]
                 self.assertLess(ui_loop.index(expected_projects[2]), ui_loop.index(expected_projects[3]))
                 self.assertIn('if dotnet test --project "$module_project" "$@"; then', ui_loop)
                 self.assertIn("module_status=$?", ui_loop)
@@ -320,6 +332,21 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
                 self.assertIn('exit "$generic_status"', ui_loop)
                 ui_done = ui_loop.index("\n            done\n")
                 self.assertLess(ui_done, ui_loop.index('exit "$generic_status"'))
+                # The parent must fold API after reaping the UI process, because
+                # its late status cannot alter the child's captured Core status.
+                final_join = source.index("for probe in gateway generic physical; do", run_end)
+                final_write = source.index('if ! printf', final_join)
+                final_join_command = source[final_join:final_write]
+                self.assertIn('if wait "$owned_pid"; then', final_join_command)
+                self.assertLess(
+                    final_join_command.index('printf -v "$pid_variable"'),
+                    final_join_command.index('if [[ "$probe" == generic && "$api_status" -ne 0 ]]; then'),
+                )
+                self.assertRegex(
+                    final_join_command,
+                    r'if \[\[ "\$probe" == generic && "\$api_status" -ne 0 \]\]; then\s+'
+                    r'(?:#[^\n]*\n\s*)*completed_status=\$api_status\s+fi',
+                )
                 self.assertIn(
                     "NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT: ${{ github.workspace }}/src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/TestResults/playwright",
                     source,
