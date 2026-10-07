@@ -6,12 +6,16 @@ using NetRatel.Shared.Contracts.Flows;
 using NetRatel.Web.Components.Pages.Flows;
 using NetRatel.Web.Services.Flows;
 using Xunit;
+using MudBlazor;
+using MudBlazor.Services;
+using Microsoft.AspNetCore.Components;
 
 namespace NetRatel.Web.ComponentTests;
 
 public sealed class FlowEditorTests : AsyncBunitContext
 {
     private readonly FakeFlowApi _api = new();
+    private IRenderedComponent<MudDialogProvider> _dialogs = default!;
     public FlowEditorTests()
     {
         JSInterop.Mode = JSRuntimeMode.Loose;
@@ -19,7 +23,11 @@ public sealed class FlowEditorTests : AsyncBunitContext
         var editorModule = JSInterop.SetupModule("./js/flows-editor.js");
         editorModule.Mode = JSRuntimeMode.Loose;
         editorModule.Setup<double[]>("geometry", _ => true).SetResult([0, 0, 1000, 800, 1200, 1000]);
+        editorModule.Setup<double[]>("centerPosition", _ => true).SetResult([350, 240]);
+        editorModule.Setup<double[]>("takeDropPosition", _ => true).SetResult([435, 270]);
         Services.AddSingleton<IFlowApiService>(_api);
+        Services.AddMudServices(options => options.PopoverOptions.CheckForPopoverProvider = false);
+        _dialogs = Render<MudDialogProvider>();
     }
 
     [Fact]
@@ -31,9 +39,9 @@ public sealed class FlowEditorTests : AsyncBunitContext
         await cut.Find("[data-testid=flow-name]").InputAsync(new() { Value = "Edited flow" });
         cut.Find("[data-testid=flow-dirty]").TextContent.Should().Contain("Unsaved");
         await cut.Find("[data-testid=flow-close]").ClickAsync(new());
-        cut.Find("[data-testid=flow-unsaved]").TextContent.Should().Contain("Unsaved changes");
+        await _dialogs.WaitForAssertionAsync(() => _dialogs.Find("[data-testid=flow-unsaved]").TextContent.Should().Contain("Unsaved changes"));
         closed.Should().Be(0); _api.SaveCalls.Should().Be(0);
-        await cut.Find("[data-testid=flow-discard]").ClickAsync(new());
+        await _dialogs.Find("[data-testid=flow-discard]").ClickAsync(new());
         closed.Should().Be(1);
     }
 
@@ -103,7 +111,7 @@ public sealed class FlowEditorTests : AsyncBunitContext
         await cut.Find("[data-testid=flow-dry-run]").ClickAsync(new());
         await cut.WaitForAssertionAsync(() => cut.Find("[data-testid=flow-preview]").TextContent.Should().Contain("Preview could not validate"));
         var action = Definition().Draft.Nodes.Single(n => n.Kind == FlowNodeKind.CreateIncident);
-        await cut.Find("[data-testid=flow-select-node]").ChangeAsync(new() { Value = action.Id.ToString() });
+        await cut.Find($"[data-node-id='{action.Id}'] [data-testid=flow-node-settings]").ClickAsync(new());
         cut.Find("[data-testid=flow-connector-status]").TextContent.Should().Contain("No owned connector");
         cut.Find("[data-testid=flow-connector]").Children.Should().ContainSingle();
         _api.SaveCalls.Should().Be(0); _api.PublishCalls.Should().Be(0); _api.ValidateCalls.Should().Be(1); _api.DryRunCalls.Should().Be(1);
@@ -116,7 +124,7 @@ public sealed class FlowEditorTests : AsyncBunitContext
         await cut.WaitForAssertionAsync(() => cut.Find("[data-testid=flow-dirty]").TextContent.Should().Contain("Immutable version 3"));
         cut.FindAll("[data-testid=flow-save]").Should().BeEmpty(); cut.FindAll("[data-testid=flow-publish]").Should().BeEmpty();
         cut.Find("[data-testid=flow-name]").HasAttribute("disabled").Should().BeTrue();
-        cut.Find("[data-testid=flow-connect]").Closest("fieldset")!.HasAttribute("disabled").Should().BeTrue();
+        cut.Find("[data-testid=flow-add-Condition]").HasAttribute("disabled").Should().BeTrue();
         _api.SaveCalls.Should().Be(0);
     }
 
@@ -128,6 +136,7 @@ public sealed class FlowEditorTests : AsyncBunitContext
         var cut = RenderEditor();
         await cut.WaitForAssertionAsync(() => cut.FindAll("[data-testid=flow-name]").Count.Should().Be(1));
         await cut.Find("[data-testid=flow-add-Condition]").ClickAsync(new());
+        await cut.Find("[data-node-kind=Condition] [data-testid=flow-node-settings]").ClickAsync(new());
         var adapter = cut.FindComponent<FlowCanvas>().Instance.Adapter;
         var before = System.Text.Json.JsonSerializer.Serialize(adapter.Capture());
         await cut.Find("[data-testid=flow-condition-value]").ChangeAsync(new() { Value = input });
@@ -139,6 +148,99 @@ public sealed class FlowEditorTests : AsyncBunitContext
         adapter.Capture().Nodes.Single(n => n.Kind == FlowNodeKind.Condition).Condition!.NumericValue.Should().Be(12.5);
         System.Text.Json.JsonSerializer.Serialize(adapter.Capture()).Should().Contain("12.5");
         _api.SaveCalls.Should().Be(0); _api.PublishCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Palette_Label_And_Selection_Do_Not_Spawn_Or_Open_Properties_And_Cog_Targets_Its_Node()
+    {
+        var cut = RenderEditor();
+        await cut.WaitForAssertionAsync(() => cut.FindAll("[data-testid=flow-name]").Count.Should().Be(1));
+        cut.FindAll("[data-testid=flow-properties]").Should().BeEmpty();
+        await cut.Find("[data-testid=flow-palette-Condition]").ClickAsync(new());
+        cut.FindAll("[data-testid=flow-node-title]").Should().HaveCount(3);
+        var mapping = Definition().Draft.Nodes.Single(n => n.Kind == FlowNodeKind.MapIncident);
+        var action = Definition().Draft.Nodes.Single(n => n.Kind == FlowNodeKind.CreateIncident);
+        await cut.Find($"[data-node-id='{action.Id}'] [data-testid=flow-node-title]").ClickAsync(new());
+        cut.FindAll("[data-testid=flow-properties]").Should().BeEmpty();
+        await cut.Find($"[data-node-id='{mapping.Id}'] [data-testid=flow-node-settings]").ClickAsync(new());
+        cut.Find("[data-testid=flow-node-name]").GetAttribute("value").Should().Be(mapping.Name);
+        await cut.Find("[data-testid=flow-properties-close]").ClickAsync(new());
+        cut.FindAll("[data-testid=flow-properties]").Should().BeEmpty();
+        _api.SaveCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Mud_Palette_Drop_Inserts_Exactly_Once_At_The_Canvas_Position_And_Keeps_The_Item()
+    {
+        var cut = RenderEditor();
+        await cut.WaitForAssertionAsync(() => cut.FindAll("[data-testid=flow-name]").Count.Should().Be(1));
+        var container = cut.FindComponent<MudDropContainer<FlowNodeKind>>().Instance;
+        await cut.InvokeAsync(() => container.ItemDropped.InvokeAsync(new(FlowNodeKind.Condition, "canvas", 0)));
+        var graph = cut.FindComponent<FlowCanvas>().Instance.Adapter.Capture();
+        graph.Nodes.Single(n => n.Kind == FlowNodeKind.Condition).Position.Should().Be(new FlowPositionDto(435, 270));
+        await cut.InvokeAsync(() => container.ItemDropped.InvokeAsync(new(FlowNodeKind.Condition, "canvas", 0)));
+        cut.FindAll("[data-node-kind=Condition]").Should().ContainSingle();
+        cut.FindAll("[data-testid=flow-palette-Condition]").Should().ContainSingle();
+        cut.FindAll("[data-testid=flow-properties]").Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Connected_Trash_Target_Removes_Its_Edges_And_Preserves_Other_Selection()
+    {
+        var cut = RenderEditor();
+        await cut.WaitForAssertionAsync(() => cut.FindAll("[data-testid=flow-name]").Count.Should().Be(1));
+        var mapping = Definition().Draft.Nodes.Single(n => n.Kind == FlowNodeKind.MapIncident);
+        var action = Definition().Draft.Nodes.Single(n => n.Kind == FlowNodeKind.CreateIncident);
+        await cut.Find($"[data-node-id='{action.Id}'] [data-testid=flow-node-settings]").ClickAsync(new());
+        await cut.Find($"[data-node-id='{mapping.Id}'] [data-testid=flow-node-delete]").ClickAsync(new());
+        await _dialogs.WaitForAssertionAsync(() => _dialogs.FindAll("[data-testid=flow-delete-confirm]").Count.Should().Be(1));
+        await _dialogs.Find("[data-testid=flow-delete-confirm]").ClickAsync(new());
+        var graph = cut.FindComponent<FlowCanvas>().Instance.Adapter.Capture();
+        graph.Nodes.Should().HaveCount(2); graph.Edges.Should().BeEmpty();
+        cut.Find("[data-testid=flow-node-name]").GetAttribute("value").Should().Be(action.Name);
+        cut.Find("[data-testid=flow-dirty]").TextContent.Should().Contain("Unsaved");
+    }
+
+    [Fact]
+    public async Task Save_And_Leave_Failure_Keeps_Dialog_And_Draft_Then_Success_Leaves_Once()
+    {
+        var closed = 0;
+        _api.SavePending = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cut = RenderEditor(p => p.Add(e => e.Closed, () => closed++));
+        await cut.WaitForAssertionAsync(() => cut.FindAll("[data-testid=flow-name]").Count.Should().Be(1));
+        await cut.Find("[data-testid=flow-name]").InputAsync(new() { Value = "Retained draft" });
+        await cut.Find("[data-testid=flow-close]").ClickAsync(new());
+        await _dialogs.WaitForAssertionAsync(() => _dialogs.FindAll("[data-testid=flow-save-leave]").Count.Should().Be(1));
+        var saving = _dialogs.Find("[data-testid=flow-save-leave]").ClickAsync(new());
+        await cut.WaitForAssertionAsync(() => _api.SaveCalls.Should().Be(1));
+        await _dialogs.Find("[data-testid=flow-unsaved-dialog]").KeyDownAsync(new() { Key = "Escape" });
+        _dialogs.FindAll("[data-testid=flow-unsaved]").Should().ContainSingle(); closed.Should().Be(0);
+        _api.SavePending.SetException(new HttpRequestException("Unavailable")); await saving;
+        closed.Should().Be(0); _dialogs.Find("[data-testid=flow-unsaved-error]").TextContent.Should().Contain("unsaved edits are preserved");
+        cut.Find("[data-testid=flow-name]").GetAttribute("value").Should().Be("Retained draft");
+        _api.SavePending = null;
+        await _dialogs.Find("[data-testid=flow-save-leave]").ClickAsync(new());
+        closed.Should().Be(1); _api.SaveCalls.Should().Be(2); _api.PublishCalls.Should().Be(0);
+        _dialogs.FindAll("[data-testid=flow-unsaved]").Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Internal_Navigation_Retains_Destination_And_Keep_Editing_Leaves_Draft_Intact()
+    {
+        var cut = RenderEditor();
+        await cut.WaitForAssertionAsync(() => cut.FindAll("[data-testid=flow-name]").Count.Should().Be(1));
+        await cut.Find("[data-testid=flow-name]").InputAsync(new() { Value = "Retained navigation" });
+        var navigation = Services.GetRequiredService<NavigationManager>();
+        var original = navigation.Uri;
+        await cut.InvokeAsync(() => navigation.NavigateTo("/monitoring?tenantId=17"));
+        navigation.Uri.Should().Be(original);
+        await _dialogs.WaitForAssertionAsync(() => _dialogs.FindAll("[data-testid=flow-keep-editing]").Count.Should().Be(1));
+        await _dialogs.Find("[data-testid=flow-keep-editing]").ClickAsync(new());
+        cut.Find("[data-testid=flow-dirty]").TextContent.Should().Contain("Unsaved");
+        await cut.InvokeAsync(() => navigation.NavigateTo("/monitoring?tenantId=17"));
+        await _dialogs.Find("[data-testid=flow-save-leave]").ClickAsync(new());
+        navigation.Uri.Should().EndWith("/monitoring?tenantId=17");
+        _api.SaveCalls.Should().Be(1); _api.PublishCalls.Should().Be(0);
     }
 
     private IRenderedComponent<FlowEditor> RenderEditor(Action<ComponentParameterCollectionBuilder<FlowEditor>>? extra = null) => Render<FlowEditor>(p =>

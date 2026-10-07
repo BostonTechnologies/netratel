@@ -10,8 +10,8 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
     private ClientsManagementFixtureHost? _fixture;
 
     [Theory]
-    [InlineData(1280, 800, "light", 1d)]
-    [InlineData(1280, 800, "dark", 1d)]
+    [InlineData(1366, 768, "light", 1d)]
+    [InlineData(1366, 768, "dark", 1d)]
     [InlineData(390, 844, "system", 1d)]
     [InlineData(195, 422, "light", 2d)] // physical390×844 at200% browser zoom equivalent.
     [InlineData(640, 400, "dark", 2d)] // physical1280×800 at200% browser zoom equivalent.
@@ -38,11 +38,28 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
         await page.GetByTestId("flow-fit").ClickAsync();
         await AssertNativeNodesFitAsync(page);
         await AssertNoOverflowAsync(page);
-        foreach (var id in new[] { "flow-close", "flow-name", "flow-save", "flow-validate", "flow-dry-run-toggle", "flow-publish", "flow-reload", "flow-properties-toggle", "flow-fit", "flow-overview-toggle", "flow-select-node", "flow-connect-from", "flow-connect-to", "flow-connect" })
+        foreach (var id in new[] { "flow-close", "flow-name", "flow-save", "flow-validate", "flow-dry-run-toggle", "flow-publish", "flow-reload", "flow-properties-toggle", "flow-fit", "flow-overview-toggle" })
             await AssertControlReachableAsync(page.GetByTestId(id), width, height);
         var actionId = await page.Locator("[data-node-kind=CreateIncident]").GetAttributeAsync("data-node-id");
-        await page.GetByTestId("flow-select-node").SelectOptionAsync(actionId!);
+        var canvasEvidence = EvidenceRoot(); Directory.CreateDirectory(canvasEvidence);
+        await page.ScreenshotAsync(new() { Path = Path.Combine(canvasEvidence, $"flows-{width}x{height}-{theme}-workspace.png"), FullPage = true, Animations = ScreenshotAnimations.Disabled });
+        await Assertions.Expect(page.GetByTestId("flow-properties")).ToHaveCountAsync(0);
+        await page.Locator($"[data-node-id='{actionId}'] [data-testid=flow-node-settings]").ClickAsync();
         await AssertControlReachableAsync(page.GetByTestId("flow-connector"), width, height);
+        if (width > 1100)
+        {
+            var available = (await page.GetByTestId("flow-canvas").BoundingBoxAsync())!.Width;
+            var properties = (await page.GetByTestId("flow-properties").BoundingBoxAsync())!;
+            Assert.InRange(properties.Width, 360, 440);
+            await page.GetByTestId("flow-properties-pin").ClickAsync();
+            await Assertions.Expect(page.GetByTestId("flow-properties-pin")).ToHaveAttributeAsync("aria-pressed", "true");
+            var docked = (await page.GetByTestId("flow-canvas").BoundingBoxAsync())!.Width;
+            Assert.True(docked < available - 350);
+            await page.GetByTestId("flow-properties-close").ClickAsync();
+            await Assertions.Expect(page.GetByTestId("flow-properties")).ToHaveCountAsync(0);
+            Assert.InRange((await page.GetByTestId("flow-canvas").BoundingBoxAsync())!.Width, available - 1, available + 1);
+            await page.Locator($"[data-node-id='{actionId}'] [data-testid=flow-node-settings]").ClickAsync();
+        }
         await Assertions.Expect(page.GetByTestId("flow-connector-status")).ToContainTextAsync("No owned connector");
         await page.GetByTestId("flow-validate").ClickAsync();
         await Assertions.Expect(page.GetByTestId("flow-validation-issues")).ToContainTextAsync("connector reference");
@@ -95,9 +112,14 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
         await page.GetByTestId("flow-editor").WaitForAsync();
         foreach (var kind in new[] { "AlertRaised", "MapIncident", "CreateIncident" })
         {
-            await page.GetByTestId("flow-add-" + kind).ClickAsync();
+            var drop = (await page.GetByTestId("flow-canvas").BoundingBoxAsync())!;
+            var index = Array.IndexOf(new[] { "AlertRaised", "MapIncident", "CreateIncident" }, kind);
+            await page.GetByTestId("flow-palette-" + kind).ClickAsync();
+            await Assertions.Expect(page.Locator("[data-node-kind=" + kind + "]")).ToHaveCountAsync(0);
+            await page.GetByTestId("flow-drag-" + kind).DragToAsync(page.GetByTestId("flow-canvas"), new() { TargetPosition = new() { X = 70 + index * 290, Y = 140 } });
             await page.Locator("[data-node-kind=" + kind + "]").WaitForAsync();
-            await Assertions.Expect(page.GetByTestId("flow-add-" + kind)).ToBeEnabledAsync();
+            await Assertions.Expect(page.GetByTestId("flow-palette-" + kind)).ToHaveCountAsync(1);
+            await Assertions.Expect(page.GetByTestId("flow-add-" + kind)).ToBeDisabledAsync();
         }
         var trigger = await page.Locator("[data-node-kind=AlertRaised]").GetAttributeAsync("data-node-id");
         var mapping = await page.Locator("[data-node-kind=MapIncident]").GetAttributeAsync("data-node-id");
@@ -110,16 +132,34 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
         var box = (await title.BoundingBoxAsync())!;
         await page.Mouse.MoveAsync(box.X + 70, box.Y + 15); await page.Mouse.DownAsync();
         await page.Mouse.MoveAsync(box.X + 145, box.Y + 80, new() { Steps = 15 }); await page.Mouse.UpAsync();
-        await page.GetByTestId("flow-select-node").SelectOptionAsync(mapping!);
-        await page.GetByTestId("flow-mapping-title").FillAsync("Incident: {ruleName} / {resource}"); await page.GetByTestId("flow-mapping-title").PressAsync("Tab");
+        await page.Locator($"[data-node-id='{mapping}'] [data-testid=flow-node-settings]").ClickAsync();
+        var nodeBeforeSettings = (await page.Locator("[data-node-kind=MapIncident]").BoundingBoxAsync())!;
+        await page.GetByTestId("flow-mapping-title").FillAsync("Incident: {ruleName} / {resource}");
+        await page.GetByTestId("flow-mapping-title").PressAsync("End"); await page.GetByTestId("flow-mapping-title").PressAsync("Delete");
+        await Assertions.Expect(page.GetByTestId("flow-node-title")).ToHaveCountAsync(3);
+        await page.GetByTestId("flow-mapping-title").PressAsync("Tab");
+        var nodeAfterSettings = (await page.Locator("[data-node-kind=MapIncident]").BoundingBoxAsync())!;
+        Assert.InRange(nodeAfterSettings.X, nodeBeforeSettings.X - 1, nodeBeforeSettings.X + 1);
+        Assert.InRange(nodeAfterSettings.Y, nodeBeforeSettings.Y - 1, nodeBeforeSettings.Y + 1);
+        await page.GetByTestId("flow-properties-close").ClickAsync();
         var canvas = (await page.GetByTestId("flow-canvas").BoundingBoxAsync())!;
         await page.Mouse.MoveAsync(canvas.X + 200, canvas.Y + 420); await page.Mouse.DownAsync(new() { Button = MouseButton.Middle });
         await page.Mouse.MoveAsync(canvas.X + 130, canvas.Y + 360, new() { Steps = 10 }); await page.Mouse.UpAsync(new() { Button = MouseButton.Middle });
-        await page.Keyboard.DownAsync("Control"); await page.Mouse.WheelAsync(0, -120); await page.Keyboard.UpAsync("Control");
+        await page.GetByTestId("flow-drag-Condition").DragToAsync(page.GetByTestId("flow-name"));
+        await Assertions.Expect(page.Locator("[data-node-kind=Condition]")).ToHaveCountAsync(0);
+        await page.GetByTestId("flow-zoom-in").ClickAsync();
+        await page.WaitForFunctionAsync("() => !document.querySelector('.flow-canvas-tools').innerText.includes('100%')");
+        canvas = (await page.GetByTestId("flow-canvas").BoundingBoxAsync())!;
+        var dropX = canvas.Width * .4f; var dropY = canvas.Height * .6f;
+        await page.GetByTestId("flow-drag-Condition").DragToAsync(page.GetByTestId("flow-canvas"), new() { TargetPosition = new() { X = dropX, Y = dropY } });
+        await Assertions.Expect(page.Locator("[data-node-kind=Condition]")).ToHaveCountAsync(1);
+        var inserted = (await page.Locator("[data-node-kind=Condition]").BoundingBoxAsync())!;
+        Assert.InRange(inserted.X, canvas.X + dropX - 2, canvas.X + dropX + 2);
+        Assert.InRange(inserted.Y, canvas.Y + dropY - 2, canvas.Y + dropY + 2);
         await Assertions.Expect(page.GetByTestId("flow-save")).ToBeEnabledAsync();
         await page.GetByTestId("flow-save").ClickAsync(); await Assertions.Expect(page.GetByTestId("flow-result")).ToContainTextAsync("Draft saved");
         var saved = fixture.FlowsData.SavedGraph!;
-        Assert.Equal(3, saved.Nodes.Count); Assert.Equal(2, saved.Edges.Count);
+        Assert.Equal(4, saved.Nodes.Count); Assert.Equal(2, saved.Edges.Count);
         var mapped = saved.Nodes.Single(n => n.Kind == FlowNodeKind.MapIncident);
         var earlyEvidence = EvidenceRoot(); Directory.CreateDirectory(earlyEvidence);
         await File.WriteAllTextAsync(Path.Combine(earlyEvidence, "flows-native-saved.json"), JsonSerializer.Serialize(saved));
@@ -130,7 +170,7 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
         var canonical = JsonSerializer.Serialize(saved);
         await page.ReloadAsync(new() { WaitUntil = WaitUntilState.DOMContentLoaded });
         await page.GetByTestId("flow-row").Filter(new() { HasText = "Native canvas roundtrip" }).GetByTestId("flow-edit").ClickAsync();
-        await Assertions.Expect(page.GetByTestId("flow-node-title")).ToHaveCountAsync(3); await Assertions.Expect(page.GetByTestId("flow-link")).ToHaveCountAsync(2);
+        await Assertions.Expect(page.GetByTestId("flow-node-title")).ToHaveCountAsync(4); await Assertions.Expect(page.GetByTestId("flow-link")).ToHaveCountAsync(2);
         await page.GetByTestId("flow-name").FillAsync("Native canvas roundtrip restored");
         await page.GetByTestId("flow-save").ClickAsync(); await Assertions.Expect(page.GetByTestId("flow-result")).ToContainTextAsync("Draft saved");
         Assert.Equal(canonical, JsonSerializer.Serialize(fixture.FlowsData.SavedGraph));
@@ -138,6 +178,18 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
         var evidence = EvidenceRoot(); Directory.CreateDirectory(evidence);
         await File.WriteAllTextAsync(Path.Combine(evidence, "flows-native-roundtrip.json"), canonical);
         await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, "flows-native-roundtrip.png"), FullPage = true });
+        var actionBefore = (await page.Locator("[data-node-kind=CreateIncident]").BoundingBoxAsync())!;
+        await page.Locator("[data-node-kind=CreateIncident] [data-testid=flow-node-settings]").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("flow-connector")).ToBeVisibleAsync();
+        await page.GetByTestId("flow-properties-close").ClickAsync();
+        var actionAfter = (await page.Locator("[data-node-kind=CreateIncident]").BoundingBoxAsync())!;
+        Assert.InRange(actionAfter.X, actionBefore.X - 1, actionBefore.X + 1); Assert.InRange(actionAfter.Y, actionBefore.Y - 1, actionBefore.Y + 1);
+        await page.Locator("[data-node-kind=MapIncident] [data-testid=flow-node-delete]").ClickAsync();
+        await page.GetByTestId("flow-delete-confirm").ClickAsync();
+        await Assertions.Expect(page.Locator("[data-node-kind=MapIncident]")).ToHaveCountAsync(0);
+        await Assertions.Expect(page.Locator("[data-node-kind=CreateIncident].selected")).ToHaveCountAsync(1);
+        await Assertions.Expect(page.GetByTestId("flow-link")).ToHaveCountAsync(0);
+
     }
 
     [Fact]
@@ -156,10 +208,10 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
         await Assertions.Expect(page.GetByTestId("flow-close")).ToBeFocusedAsync();
         await page.Keyboard.PressAsync("Escape"); await page.GetByTestId("flow-unsaved").WaitForAsync();
         await page.GetByRole(AriaRole.Button, new() { Name = "Keep editing", Exact = true }).ClickAsync();
-        await page.GetByTestId("flow-tenant").SelectOptionAsync("23"); await page.GetByTestId("flow-tenant-unsaved").WaitForAsync();
+        await page.GetByTestId("flow-tenant").SelectOptionAsync("23"); await page.GetByTestId("flow-unsaved").WaitForAsync();
         await Assertions.Expect(page.GetByTestId("flow-tenant")).ToHaveValueAsync("17");
         await Assertions.Expect(page.GetByTestId("flow-name")).ToHaveValueAsync("My preserved changes");
-        await page.GetByTestId("flow-tenant-discard").ClickAsync(); await Assertions.Expect(page.GetByTestId("flows-empty")).ToContainTextAsync("No flows");
+        await page.GetByTestId("flow-discard").ClickAsync(); await Assertions.Expect(page.GetByTestId("flows-empty")).ToContainTextAsync("No flows");
         await page.GetByTestId("flow-tenant").SelectOptionAsync("17"); await page.GetByTestId("flow-edit").First.ClickAsync();
         await CloseEditorAsync(page);
         await Assertions.Expect(opener).ToBeFocusedAsync();
@@ -190,6 +242,7 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
         Assert.Equal(0, await page.GetByTestId("flow-save").CountAsync());
         Assert.Equal(0, await page.GetByTestId("flow-publish").CountAsync());
         await Assertions.Expect(page.GetByTestId("flow-name")).ToBeDisabledAsync();
+        await Assertions.Expect(page.GetByTestId("flow-node-delete").First).ToBeDisabledAsync();
         await page.GetByTestId("flow-close").ClickAsync();
         await Assertions.Expect(versionOpener).ToBeFocusedAsync();
         await page.GetByTestId("flow-clone").ClickAsync(); await page.GetByTestId("flow-clone-name").FillAsync("Independent copy");
@@ -266,7 +319,7 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
         await control.EvaluateAsync("e => e.scrollIntoView({block:'center',inline:'nearest'})"); var bounds = (await control.BoundingBoxAsync())!;
         Assert.InRange(bounds.X, -1, width); Assert.True(bounds.X + bounds.Width <= width + 1);
         Assert.InRange(bounds.Y, -1, height); Assert.True(bounds.Y + bounds.Height <= height + 1);
-        Assert.True(await control.EvaluateAsync<bool>("e => {const r=e.getBoundingClientRect();const hit=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);return hit===e || e.contains(hit)}"), "A reachable control must not be covered by the app bar, drawer, or another panel.");
+        Assert.True(await control.EvaluateAsync<bool>("e => {const r=e.getBoundingClientRect();const hit=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);return hit===e || e.contains(hit) || (e.matches(':disabled') && hit?.contains(e) && hit.closest('.mud-tooltip-root')===e.closest('.mud-tooltip-root'))}"), $"{await control.GetAttributeAsync("data-testid")} must not be covered by the app bar, drawer, or another panel.");
     }
     private static async Task AssertNoOverflowAsync(IPage page) => Assert.False(await page.EvaluateAsync<bool>("() => document.documentElement.scrollWidth > innerWidth + 1"));
     private static string EvidenceRoot() => Environment.GetEnvironmentVariable("NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT") ?? Path.Combine(Directory.GetCurrentDirectory(), "TestResults", "playwright");
