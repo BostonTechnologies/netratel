@@ -69,6 +69,7 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
                 return x<d.left||x>=d.right||y<d.top||y>=d.bottom||!!document.elementFromPoint(x,y)?.closest('[data-testid=flow-properties]');
             }
             """), "Canvas overview must remain behind overlay properties.");
+        await page.ScreenshotAsync(new() { Path = Path.Combine(canvasEvidence, $"flows-{width}x{height}-{theme}-properties.png"), FullPage = true, Animations = ScreenshotAnimations.Disabled });
         await page.GetByTestId("flow-validate").ClickAsync();
         await Assertions.Expect(page.GetByTestId("flow-validation-issues")).ToContainTextAsync("connector reference");
         await page.GetByTestId("flow-dry-run-toggle").ClickAsync();
@@ -217,6 +218,8 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
         await page.GetByTestId("flow-close").FocusAsync();
         await Assertions.Expect(page.GetByTestId("flow-close")).ToBeFocusedAsync();
         await page.Keyboard.PressAsync("Escape"); await page.GetByTestId("flow-unsaved").WaitForAsync();
+        var evidence = EvidenceRoot(); Directory.CreateDirectory(evidence);
+        await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, "flows-dirty-dialog.png"), FullPage = true, Animations = ScreenshotAnimations.Disabled });
         await page.GetByRole(AriaRole.Button, new() { Name = "Keep editing", Exact = true }).ClickAsync();
         await page.GetByTestId("flow-tenant").SelectOptionAsync("23"); await page.GetByTestId("flow-unsaved").WaitForAsync();
         await Assertions.Expect(page.GetByTestId("flow-tenant")).ToHaveValueAsync("17");
