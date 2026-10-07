@@ -66,6 +66,7 @@ public interface IMonitoringStore
     Task<MonitoringEventPageDto> ReadTenantEventsAsync(int tenantId, int maximumCount, string? cursor, CancellationToken cancellationToken);
     Task<MonitoringSummaryDto> ReadTenantSummaryAsync(int tenantId, CancellationToken cancellationToken);
     Task<MonitoringStoreWriteResult> CommitAsync(MonitoringCommitRequest request, CancellationToken cancellationToken);
+    Task<MonitoringStoreWriteResult> OperateOccurrenceAsync(MonitoringOperatorCommand command, bool clear, CancellationToken cancellationToken);
     Task<MonitoringEvidenceFence?> ReserveEvidenceRegistrationAsync(ClientKey client, Guid connectionId, long connectionEpoch,
         Guid registrationId, CancellationToken cancellationToken) => Task.FromResult<MonitoringEvidenceFence?>(null);
     Task<bool> BeginEvidenceStreamAsync(MonitoringEvidenceFence fence, CancellationToken cancellationToken);

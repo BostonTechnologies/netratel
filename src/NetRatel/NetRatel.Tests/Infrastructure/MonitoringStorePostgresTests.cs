@@ -200,7 +200,7 @@ public sealed class MonitoringStorePostgresTests(PostgreSqlPersistenceFixture fi
         finally
         {
             cancel.Cancel(); await held.RollbackAsync();
-            try { await begin; } catch (OperationCanceledException) { }
+            try { await begin; } catch (OperationCanceledException) { cancel.IsCancellationRequested.Should().BeTrue(); }
         }
         (await rig.Store.EndEvidenceStreamAsync(pending, default)).Should().BeFalse();
         var initial = rig.Evaluator.CreateInitial(rig.Key, rig.Rule);
@@ -274,6 +274,38 @@ public sealed class MonitoringStorePostgresTests(PostgreSqlPersistenceFixture fi
         var history = await scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>().MonitoringOccurrences.SingleAsync();
         history.OccurrenceId.Should().Be(firing.Occurrence!.OccurrenceId);
         history.EndedAtUtc.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task Occurrence_operator_commit_uses_new_telemetry_committed_before_its_lock_without_retrying_a_stale_write()
+    {
+        await using var rig = await CreateRigAsync();
+        await FireAsync(rig);
+        var drawer = (await rig.Store.LoadSeriesAsync(rig.Key, default))!;
+        var pause = new PauseConfigurationInsert();
+        await using var otherApiProcess = CreateProvider(rig.Connection, rig.Directory, rig.Time, pause);
+        var otherStore = otherApiProcess.GetRequiredService<IMonitoringStore>();
+        var command = new MonitoringOperatorCommand(rig.Key, drawer.Occurrence!.OccurrenceId, Guid.NewGuid(),
+            "Read the latest locked occurrence", drawer.StateRevision, 1, drawer.OperatorRevision, "Beta operator");
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var operation = otherStore.OperateOccurrenceAsync(command, false, timeout.Token);
+        try
+        {
+            await pause.Entered.Task.WaitAsync(timeout.Token);
+            rig.Time.Advance(TimeSpan.FromSeconds(1));
+            var sample = rig.Evaluator.Evaluate(drawer, rig.Rule, rig.Observation(3), rig.Fence.ConnectionEpoch, rig.Fence.EvidenceStreamId, []);
+            (await rig.Store.CommitAsync(new(sample, 1, rig.Fence), timeout.Token)).Disposition.Should().Be(MonitoringStoreWriteDisposition.Stored);
+            pause.Resume.TrySetResult();
+            var acknowledged = await operation;
+            acknowledged.Disposition.Should().Be(MonitoringStoreWriteDisposition.Stored);
+            acknowledged.State!.Cursor!.Sequence.Should().Be(3);
+            acknowledged.State.Occurrence!.AcknowledgedBy.Should().Be(command.OperatorId);
+            acknowledged.State.StateRevision.Should().Be(sample.State.StateRevision + 1);
+            (await otherStore.OperateOccurrenceAsync(command, false, timeout.Token)).Disposition.Should().Be(MonitoringStoreWriteDisposition.Stored);
+            (await rig.Store.ReadTenantEventsAsync(rig.Client.TenantId, 20, null, timeout.Token)).Items
+                .Should().ContainSingle(item => item.Kind == MonitoringEventKind.AlertAcknowledged && item.Reason == command.Reason);
+        }
+        finally { pause.Resume.TrySetResult(); }
     }
 
     [Fact]
@@ -850,6 +882,21 @@ public sealed class MonitoringStorePostgresTests(PostgreSqlPersistenceFixture fi
     private sealed class TestDisplayNames : IClientDisplayNameResolver
     {
         public IReadOnlyDictionary<string, string> ResolveDisplayNames(IEnumerable<string> clientIdentities) => new Dictionary<string, string>();
+    }
+    private sealed class PauseConfigurationInsert : DbCommandInterceptor
+    {
+        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Resume { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public override async ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(DbCommand command, CommandEventData eventData,
+            InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            if (command.CommandText.Contains("INSERT INTO \"MonitoringTenantConfigurations\"", StringComparison.Ordinal))
+            {
+                Entered.TrySetResult();
+                await Resume.Task.WaitAsync(cancellationToken);
+            }
+            return result;
+        }
     }
     private sealed class ControlSeriesWrite : DbCommandInterceptor
     {

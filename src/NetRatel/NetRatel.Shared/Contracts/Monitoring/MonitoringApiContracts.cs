@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Text.Json.Serialization;
 using NetRatel.Shared.Contracts.Services;
 
 namespace NetRatel.Shared.Contracts.Monitoring;
@@ -32,7 +33,7 @@ public enum MonitoringTargetSupport { Unknown, Supported, Unsupported }
 public sealed record MonitoringTargetPreviewEntryDto(Guid AgentId, string? DisplayName,
     MonitoringTargetSupport Support, string Code, DateTimeOffset? EvidenceAtUtc = null, MonitoringClientIdentityDto? Identity = null);
 public sealed record MonitoringTargetPreviewDto(ImmutableArray<Guid> AgentIds, ulong ConfigurationRevision,
-    ImmutableArray<MonitoringTargetPreviewEntryDto> Details = default, int Total = 0, bool DetailsTruncated = false, ImmutableArray<MonitoringClientIdentityDto> ClientIdentities = default);
+    ImmutableArray<MonitoringTargetPreviewEntryDto> Details = default, int Total = 0, bool DetailsTruncated = false, [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] ImmutableArray<MonitoringClientIdentityDto> ClientIdentities = default);
 
 public sealed record MonitoringTenantDto(int TenantId, string Name);
 public sealed record MonitoringPublishedFlowDto(Guid PublishedFlowVersionId, string Name, int Version);
@@ -41,9 +42,9 @@ public sealed record MonitoringClientDto(Guid AgentId, string? DisplayName, Clie
 public sealed record MonitoringClientPageDto(ImmutableArray<MonitoringClientDto> Items, string? NextCursor, int Total);
 
 public sealed record MonitoringSeriesPageDto(ImmutableArray<MonitoringSeriesState> Items, string? NextCursor,
-    ImmutableArray<MonitoringClientIdentityDto> ClientIdentities = default);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] ImmutableArray<MonitoringClientIdentityDto> ClientIdentities = default);
 public sealed record MonitoringEventPageDto(ImmutableArray<MonitoringEventIntent> Items, string? NextCursor,
-    ImmutableArray<MonitoringClientIdentityDto> ClientIdentities = default, ImmutableArray<MonitoringHistoryAuditDto> Audits = default);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] ImmutableArray<MonitoringClientIdentityDto> ClientIdentities = default, [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] ImmutableArray<MonitoringHistoryAuditDto> Audits = default);
 
 public sealed record MonitoringHistoryAuditDto(Guid AuditId, string Action, Guid EntityId, string EntityKind,
     string? EntityName, Guid OperatorId, string? OperatorDisplayName, string Reason, DateTimeOffset AtUtc);

@@ -242,18 +242,18 @@ public sealed class MonitoringResponsiveTests(ClientsManagementBrowserFixture br
                     100,
                     exception);
             }
-            catch (Exception)
+            catch (Exception diagnosticsError)
             {
-                // Best-effort diagnostics must preserve the original test failure.
+                testOutputHelper.WriteLine("Secondary diagnostics failure: {0}", diagnosticsError);
             }
             throw;
         }
         finally
         {
             try { await page.CloseAsync(); }
-            catch (Exception) when (testFailureInFlight is not null)
+            catch (Exception cleanupError) when (testFailureInFlight is not null)
             {
-                // Cleanup must preserve the original test failure.
+                testOutputHelper.WriteLine("Secondary browser cleanup failure: {0}", cleanupError);
             }
         }
     }
