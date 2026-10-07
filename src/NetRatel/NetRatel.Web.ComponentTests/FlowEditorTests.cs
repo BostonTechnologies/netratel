@@ -69,7 +69,7 @@ public sealed class FlowEditorTests : AsyncBunitContext
         _api.SavePending = new(TaskCreationOptions.RunContinuationsAsynchronously);
         var cut = RenderEditor();
         await cut.WaitForAssertionAsync(() => cut.FindAll("[data-testid=flow-name]").Count.Should().Be(1));
-        await cut.Find("[data-testid=flow-name]").InputAsync(new() { Value = "Old scope" });
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-name]").InputAsync(new() { Value = "Old scope" }));
         var save = cut.Find("[data-testid=flow-save]").ClickAsync(new());
         await cut.WaitForAssertionAsync(() => _api.SaveCalls.Should().Be(1));
         var replacement = Definition() with { Id = Guid.NewGuid(), TenantId = 23, Name = "Tenant 23", Revision = 1 };
@@ -136,7 +136,7 @@ public sealed class FlowEditorTests : AsyncBunitContext
         var cut = RenderEditor();
         await cut.WaitForAssertionAsync(() => cut.FindAll("[data-testid=flow-name]").Count.Should().Be(1));
         await cut.Find("[data-testid=flow-add-Condition]").ClickAsync(new());
-        await cut.Find("[data-node-kind=Condition] [data-testid=flow-node-settings]").ClickAsync(new());
+        await cut.InvokeAsync(() => cut.Find("[data-node-kind=Condition] [data-testid=flow-node-settings]").ClickAsync(new()));
         var adapter = cut.FindComponent<FlowCanvas>().Instance.Adapter;
         var before = System.Text.Json.JsonSerializer.Serialize(adapter.Capture());
         await cut.Find("[data-testid=flow-condition-value]").ChangeAsync(new() { Value = input });
