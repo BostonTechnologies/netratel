@@ -2,6 +2,15 @@
 @using NetRatel.Web.Services.ServiceLinks
 @inject HelpdeskM2MApiClient Api
 
+@if (Guided && identity is { SourceInstanceId: null })
+{
+    <MudAlert Severity="Severity.Info" Dense="true">Complete this installation's setup so either product can start a connection. This reuses the persistent Flow identity and requires installation integration management permission.</MudAlert>
+    <MudButton OnClick="PrepareFlowAsync" Variant="Variant.Outlined" Disabled="busy" data-testid="helpdesk-complete-setup">Complete setup</MudButton>
+}
+@if (Guided && error is not null)
+{
+    <MudAlert Severity="Severity.Warning" Dense="true">@error</MudAlert>
+}
 <MudExpansionPanels Elevation="0"><MudExpansionPanel Text="Incident producer identity (advanced)">
     <MudStack Spacing="2">
         @if (identity is not null)
@@ -21,6 +30,7 @@
 </MudExpansionPanel></MudExpansionPanels>
 
 @code {
+    [Parameter] public bool Guided { get; set; }
     private ServiceLinkIdentityDto? identity;
     private string sourceId = "";
     private string SourceId { get => sourceId; set { if (sourceId != value) confirmed = false; sourceId = value; } }
@@ -30,7 +40,16 @@
     {
         try { identity = await Api.GetIdentityAsync(); }
         catch (Exception exception) when (exception is OperationCanceledException or HttpRequestException or ServiceAdministrationException or System.Text.Json.JsonException or InvalidDataException)
-        { error = "Producer mapping requires an authorized administrator. Review the persisted producer identity before starting reciprocal setup."; }
+        { error = "Installation setup could not be checked. An installation integration administrator can complete setup here; refresh after it is prepared."; }
+    }
+    private async Task PrepareFlowAsync()
+    {
+        if (busy) return;
+        busy = true; error = null;
+        try { identity = await Api.PrepareFlowSourceAsync(); }
+        catch (Exception exception) when (exception is OperationCanceledException or HttpRequestException or ServiceAdministrationException or System.Text.Json.JsonException or InvalidDataException)
+        { error = "Setup could not be confirmed. Use an installation integration administrator and refresh the persisted settings before retrying."; }
+        finally { busy = false; }
     }
     private async Task AdoptAsync()
     {

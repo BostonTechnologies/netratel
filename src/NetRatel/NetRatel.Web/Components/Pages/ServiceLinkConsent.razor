@@ -15,7 +15,7 @@
 <PageTitle>RatelDesk link approval</PageTitle>
 <MudContainer MaxWidth="MaxWidth.Medium" Class="integration-page" data-testid="service-link-consent-page">
     <MudStack Spacing="2">
-        <MudText Typo="Typo.h5" HtmlTag="h1">@(IsResponder ? "Approve RatelDesk's reciprocal link" : "Review reciprocal RatelDesk link")</MudText>
+        <MudText Typo="Typo.h5" HtmlTag="h1">@(IsResponder ? "Approve RatelDesk connection" : "Complete RatelDesk connection")</MudText>
         @if (loading) { <MudProgressLinear Indeterminate="true" /> }
         else if (error is not null || status is null)
         {
@@ -24,12 +24,12 @@
         }
         else
         {
-            <MudText Typo="Typo.body2">Confirm the canonical instances, distinct tenant and organization IDs, and each direction's exact permissions. Runtime service identities never become administrator accounts.</MudText>
+            <MudText Typo="Typo.caption">1 · Connect   →   2 · Approve   →   3 · Connected</MudText>
             <ServiceLinkConsentDetails Initiator="status.Descriptor.InitiatorEndpointSnapshot" Responder="status.Descriptor.ResponderEndpointSnapshot" Grants="DisplayedGrants" />
             @if (IsResponder && status.GrantSummary is null)
             {
-                <ServiceGrantSelector @key="loadGeneration" Authority="NarrowedAuthority" Changed="SelectionChanged" />
-                <MudSelect T="string" Label="NetRatel → RatelDesk permissions" MultiSelection="true" SelectedValues="outboundScopes" SelectedValuesChanged="OutboundChanged" Variant="Variant.Outlined" Margin="Margin.Dense">
+                <ServiceGrantSelector @key="loadGeneration" Authority="NarrowedAuthority" IncidentOnly="IncidentOnly" Changed="SelectionChanged" />
+                <MudSelect T="string" Style="@(IncidentOnly ? "display:none" : null)" Label="NetRatel → RatelDesk permissions" MultiSelection="true" SelectedValues="outboundScopes" SelectedValuesChanged="OutboundChanged" Variant="Variant.Outlined" Margin="Margin.Dense">
                     @foreach (var scope in RequestedOutboundScopes) { <MudSelectItem Value="@scope">@scope</MudSelectItem> }
                 </MudSelect>
                 @if (selection.Scopes.Contains("netratel.orchestration.invoke") && !outboundScopes.Contains("rateldesk.orchestration.callback"))
@@ -45,7 +45,7 @@
                     @foreach (var scope in outboundScopes) { <input type="hidden" name="outboundScopes" value="@scope" /> }
                     @foreach (var resource in selection.ResourceIds) { <input type="hidden" name="resourceIds" value="@resource" /> }
                     @foreach (var definition in selection.RequestDefinitionIds) { <input type="hidden" name="requestDefinitionIds" value="@definition" /> }
-                    <label class="helpdesk-consent-checkbox"><input type="checkbox" name="confirmed" value="true" @bind="confirmed" required />I approve the exact displayed peer instances, tenant, organization/customer boundaries and both directional permissions.</label>
+                    <label class="helpdesk-consent-checkbox"><input type="checkbox" name="confirmed" value="true" @bind="confirmed" required />I approve this connection for the selected tenant and incident target.</label>
                     <MudButton ButtonType="ButtonType.Submit" Variant="Variant.Filled" Color="Color.Primary" Disabled="@(!CanApproveRemote)">Approve and return to RatelDesk</MudButton>
                 </form>
             }
@@ -56,16 +56,17 @@
                     <AntiforgeryToken />
                     <input type="hidden" name="attemptId" value="@AttemptId" />
                     <input type="hidden" name="grantHash" value="@status.GrantHash" />
-                    <label class="helpdesk-consent-checkbox"><input type="checkbox" name="confirmed" value="true" required />I approve the exact displayed grants and RatelDesk resource selection.</label>
+                    <label class="helpdesk-consent-checkbox"><input type="checkbox" name="confirmed" value="true" required />I approve this connection and the selected RatelDesk incident target.</label>
                     <MudButton ButtonType="ButtonType.Submit" Variant="Variant.Filled" Color="Color.Primary">Approve and complete setup</MudButton>
                 </form>
             }
             else
             {
-                <MudAlert Dense="true" Severity="Severity.Info">Current lifecycle: @status.LifecycleState. Both authenticated checks and active acknowledgements are required before the connection is complete.</MudAlert>
+                <MudAlert Dense="true" Severity="Severity.Info">@ConnectionMessage</MudAlert>
             }
             <HelpdeskConnectionsPanel />
-            <MudButton Href="/account/integration-credentials">Return to integrations</MudButton>
+            @if (status.LifecycleState == "active") { <MudButton Href="/account/integration-credentials/link/return" Color="Color.Primary">Return to Flow or integrations</MudButton> }
+            else { <MudButton Href="/account/integration-credentials">Return to integrations</MudButton> }
         }
     </MudStack>
 </MudContainer>
@@ -84,6 +85,8 @@
     private IEnumerable<string> RequestedInboundScopes => status?.Descriptor.RequestedGrants.Where(grant => grant.TargetProduct == "netratel").SelectMany(grant => grant.Scopes).Distinct(StringComparer.Ordinal) ?? [];
     private IEnumerable<string> RequestedOutboundScopes => status?.Descriptor.RequestedGrants.Where(grant => grant.TargetProduct == "rateldesk").SelectMany(grant => grant.Scopes).Distinct(StringComparer.Ordinal) ?? [];
     private ServiceClientManagementAuthority NarrowedAuthority => authority with { Tenants = authority.Tenants.Select(tenant => tenant with { Scopes = tenant.Scopes.Intersect(RequestedInboundScopes, StringComparer.Ordinal).ToArray() }).ToArray() };
+    private bool IncidentOnly => RequestedInboundScopes.ToHashSet(StringComparer.Ordinal).SetEquals([ServiceLinkContract.ControlScope, ServiceLinkContract.VerifyScope]);
+    private string ConnectionMessage => status?.LifecycleState == "active" ? "Approved. Verify the connection below to confirm it is ready for Flow delivery." : "Completing setup. Resume below to retry the stored approval and authenticated connection checks.";
     private bool CanApproveRemote => authority.CanManage && selection.IsValid && outboundScopes.Count > 0 &&
         (!selection.Scopes.Contains("netratel.orchestration.invoke") || outboundScopes.Contains("rateldesk.orchestration.callback"));
     private ServiceLinkGrant[] DisplayedGrants => status?.GrantSummary?.Grants ?? (status?.Descriptor.RequestedGrants ?? []).Select(grant => grant.TargetProduct == "netratel" && IsResponder
@@ -118,7 +121,7 @@
             }
             status = loadedStatus; authority = loadedAuthority; outboundScopes = loadedOutbound;
         }
-        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
         catch (Exception exception) when (exception is OperationCanceledException or HttpRequestException or JsonException or InvalidDataException or ServiceAdministrationException)
         { if (IsCurrentLoad(generation, attempt, route)) error = "The protected grant summary is unavailable or current authority has changed. Refresh its stored status before approving."; }
         finally { if (IsCurrentLoad(generation, attempt, route)) loading = false; }
@@ -135,7 +138,7 @@
     }
     private static string ResultMessage(string? code) => code switch
     {
-        "upgrade-required" => "Upgrade required: this RatelDesk build does not support bostec.service-link.v1. Manual service credentials remain available.",
+        "upgrade-required" => "Upgrade required: this RatelDesk build does not support the requested connection capability. Manual service credentials remain available.",
         "not-authorized" => "Current integration management authority is required for the selected tenant and resources.",
         "expired" => "This unprepared attempt expired. Start a new approved attempt; prepared connections retain their decision recovery state.",
         "form-expired" => "The approval form expired. Reload the protected review and confirm again.",

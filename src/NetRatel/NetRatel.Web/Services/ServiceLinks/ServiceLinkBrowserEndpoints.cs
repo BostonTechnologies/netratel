@@ -53,7 +53,9 @@ public static class ServiceLinkBrowserEndpoints
                 using var response = await clients.CreateClient("ServiceLinkApi").PostAsJsonAsync(ApiRoot + "/start", request, context.RequestAborted);
                 if (!response.IsSuccessStatusCode) return Failure(await FailureCodeAsync(response, context.RequestAborted));
                 var navigation = await ReadBoundedAsync<ServiceLinkNavigation>(response, context.RequestAborted);
-                return navigation is null ? Failure("needs-attention") : await PinnedNavigationAsync(context, clients, navigation, responderApproval: true);
+                if (navigation is null) return Failure("needs-attention");
+                RememberFlowReturn(context, protection, configuration, form["returnUrl"].ToString());
+                return await PinnedNavigationAsync(context, clients, navigation, responderApproval: true);
             }
             catch (Exception exception) when (IsTransportFailure(exception, context)) { return Failure("needs-attention"); }
         }).RequireAuthorization();
@@ -78,19 +80,51 @@ public static class ServiceLinkBrowserEndpoints
             catch (Exception exception) when (IsTransportFailure(exception, context)) { return Failure("needs-attention"); }
         }).RequireAuthorization();
 
+        app.MapGet(Root + "/return", (HttpContext context, IDataProtectionProvider protection, IConfiguration configuration) =>
+        {
+            ProtectResponse(context);
+            var name = FlowReturnCookieName(configuration);
+            if (!context.Request.Cookies.TryGetValue(name, out var cookie)) return Results.LocalRedirect("/account/integration-credentials");
+            context.Response.Cookies.Delete(name, ContinuationCookieOptions(configuration));
+            try
+            {
+                var saved = JsonSerializer.Deserialize<BrowserFlowReturn>(protection.CreateProtector(SessionPurpose + ".FlowReturn").ToTimeLimitedDataProtector().Unprotect(cookie));
+                var actor = context.User.FindFirstValue(ClaimTypes.NameIdentifier) ?? context.User.FindFirstValue("sub");
+                return saved is not null && !string.IsNullOrEmpty(actor) && saved.Actor == actor && ValidFlowReturn(saved.Url) ? Results.LocalRedirect(saved.Url) : Failure("invalid-proof");
+            }
+            catch (Exception exception) when (exception is CryptographicException or JsonException) { return Failure("session-expired"); }
+        }).RequireAuthorization();
+
+        app.MapGet(Root + "/resume-sign-in", (HttpContext context, IDataProtectionProvider protection, IConfiguration configuration) =>
+        {
+            ProtectResponse(context);
+            var name = ContinuationCookieName(configuration);
+            if (!context.Request.Cookies.TryGetValue(name, out var cookie)) return Failure("session-expired");
+            context.Response.Cookies.Delete(name, ContinuationCookieOptions(configuration));
+            try
+            {
+                var target = protection.CreateProtector(SessionPurpose + ".Continuation").ToTimeLimitedDataProtector().Unprotect(cookie);
+                if (!target.StartsWith(Root + "/approve?", StringComparison.Ordinal) && !target.StartsWith(Root + "/callback?", StringComparison.Ordinal))
+                    return Failure("invalid-proof");
+                return Results.LocalRedirect(target);
+            }
+            catch (CryptographicException) { return Failure("session-expired"); }
+        }).RequireAuthorization();
+
         // Capture the correlation at the server, then remove it from the browser address before rendering consent.
         app.MapGet(Root + "/approve", async (HttpContext context, IHttpClientFactory clients,
             IDataProtectionProvider protection, IConfiguration configuration) =>
         {
             ProtectResponse(context);
-            // Never carry peer correlation into a cookie/OIDC login return URL.
-            if (context.User.Identity?.IsAuthenticated != true) return Failure("session-expired");
-            var binding = GetSessionBinding(context, protection, configuration, create: true);
-            if (binding is null) return Failure("session-expired");
+
             var query = context.Request.Query;
             if (!Single(query, "initiator_web_base_url", 2048, out var origin) ||
                 !Single(query, "attempt_id", 128, out var attempt) || !Single(query, "browser_state", 256, out var state))
                 return Failure("invalid-proof");
+            if (context.User.Identity?.IsAuthenticated != true)
+                return StageSignIn(context, protection, configuration, Root + "/approve" + context.Request.QueryString);
+            var binding = GetSessionBinding(context, protection, configuration, create: true);
+            if (binding is null) return Failure("session-expired");
             try
             {
                 using var response = await clients.CreateClient("ServiceLinkApi").PostAsJsonAsync(ApiRoot + "/remote-review",
@@ -105,15 +139,15 @@ public static class ServiceLinkBrowserEndpoints
             IDataProtectionProvider protection, IConfiguration configuration) =>
         {
             ProtectResponse(context);
-            // An expired session must not copy callback proofs into a login return URL.
-            if (context.User.Identity?.IsAuthenticated != true)
-                return Failure("session-expired");
             var query = context.Request.Query;
-            var binding = GetSessionBinding(context, protection, configuration, create: false);
-            if (binding is null || !Single(query, "attempt_id", 128, out var attempt) ||
+            if (!Single(query, "attempt_id", 128, out var attempt) ||
                 !Single(query, "pairing_code", 256, out var code) || !Single(query, "browser_state", 256, out var state) ||
                 !Single(query, "responder_instance_id", 256, out var instance) || !Single(query, "oauth_issuer", 2048, out var issuer))
                 return Failure("invalid-proof");
+            if (context.User.Identity?.IsAuthenticated != true)
+                return StageSignIn(context, protection, configuration, Root + "/callback" + context.Request.QueryString);
+            var binding = GetSessionBinding(context, protection, configuration, create: false);
+            if (binding is null) return Failure("session-expired");
             try
             {
                 using var response = await clients.CreateClient("ServiceLinkApi").PostAsJsonAsync(ApiRoot + "/callback",
@@ -182,6 +216,42 @@ public static class ServiceLinkBrowserEndpoints
         }).RequireAuthorization();
     }
 
+    private static string FlowReturnCookieName(IConfiguration configuration) => configuration.GetValue<bool>("Authentication:Local:AllowInsecureLocalhost")
+        ? "NetRatel.ServiceLink.FlowReturn" : "__Host-NetRatel.ServiceLink.FlowReturn";
+    private static bool ValidFlowReturn(string? value) => value is { Length: > 0 and <= 2048 } &&
+        (value == "/flows" || value.StartsWith("/flows?", StringComparison.Ordinal)) && !value.Contains('\\') && !value.Any(char.IsControl);
+    private static void RememberFlowReturn(HttpContext context, IDataProtectionProvider protection, IConfiguration configuration, string target)
+    {
+        if (!ValidFlowReturn(target)) return;
+        var actor = context.User.FindFirstValue(ClaimTypes.NameIdentifier) ?? context.User.FindFirstValue("sub");
+        if (string.IsNullOrEmpty(actor)) return;
+        var cookie = protection.CreateProtector(SessionPurpose + ".FlowReturn").ToTimeLimitedDataProtector()
+            .Protect(JsonSerializer.Serialize(new BrowserFlowReturn(actor, target)), TimeSpan.FromHours(1));
+        context.Response.Cookies.Append(FlowReturnCookieName(configuration), cookie, new CookieOptions
+        {
+            HttpOnly = true, Secure = !configuration.GetValue<bool>("Authentication:Local:AllowInsecureLocalhost"),
+            SameSite = SameSiteMode.Lax, Path = "/", IsEssential = true, MaxAge = TimeSpan.FromHours(1)
+        });
+    }
+    private sealed record BrowserFlowReturn(string Actor, string Url);
+
+    private static string ContinuationCookieName(IConfiguration configuration) => configuration.GetValue<bool>("Authentication:Local:AllowInsecureLocalhost")
+        ? "NetRatel.ServiceLink.Continuation" : "__Host-NetRatel.ServiceLink.Continuation";
+    private static CookieOptions ContinuationCookieOptions(IConfiguration configuration) => new()
+    {
+        HttpOnly = true, Secure = !configuration.GetValue<bool>("Authentication:Local:AllowInsecureLocalhost"),
+        SameSite = SameSiteMode.Lax, Path = "/", IsEssential = true, MaxAge = TimeSpan.FromMinutes(10)
+    };
+    public static string SignInDestination(HttpContext? context, IConfiguration configuration) =>
+        context?.Request.Cookies.ContainsKey(ContinuationCookieName(configuration)) == true ? Root + "/resume-sign-in" : "/home";
+    private static IResult StageSignIn(HttpContext context, IDataProtectionProvider protection, IConfiguration configuration, string target)
+    {
+        if (target.Length > 2500) return Failure("invalid-proof");
+        var cookie = protection.CreateProtector(SessionPurpose + ".Continuation").ToTimeLimitedDataProtector().Protect(target, TimeSpan.FromMinutes(10));
+        context.Response.Cookies.Append(ContinuationCookieName(configuration), cookie, ContinuationCookieOptions(configuration));
+        return Results.LocalRedirect("/login?ReturnUrl=" + Uri.EscapeDataString(Root + "/resume-sign-in"));
+    }
+
     private static async Task<IResult> PinnedNavigationAsync(HttpContext context, IHttpClientFactory clients, ServiceLinkNavigation navigation, bool responderApproval)
     {
         using var response = await clients.CreateClient("ServiceLinkApi").GetAsync(ApiRoot + "/attempts/" + Uri.EscapeDataString(navigation.AttemptId), context.RequestAborted);
@@ -209,7 +279,7 @@ public static class ServiceLinkBrowserEndpoints
                 var payload = JsonSerializer.Deserialize<BrowserLinkSession>(protector.Unprotect(cookie));
                 if (payload?.Actor == actor) random = payload.Random;
             }
-            catch (Exception exception) when (exception is CryptographicException or JsonException) { }
+            catch (Exception exception) when (exception is CryptographicException or JsonException) { random = null; }
         }
         if (random is null && create)
         {
@@ -289,7 +359,7 @@ public static class ServiceLinkBrowserEndpoints
                     _ => ErrorCode(response.StatusCode)
                 };
         }
-        catch (Exception exception) when (exception is JsonException or InvalidDataException) { }
+        catch (Exception exception) when (exception is JsonException or InvalidDataException) { return ErrorCode(response.StatusCode); }
         return ErrorCode(response.StatusCode);
     }
     private static bool IsTransportFailure(Exception exception, HttpContext context) => exception is HttpRequestException or JsonException or InvalidDataException ||

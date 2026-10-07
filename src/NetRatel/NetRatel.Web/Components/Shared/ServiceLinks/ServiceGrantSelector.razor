@@ -1,18 +1,21 @@
 @using NetRatel.Shared.ServiceIdentity
+@using NetRatel.Shared.ServiceLinks
 
-<MudStack Spacing="2" data-testid="helpdesk-grant-selector">
-    <MudSelect T="int?" Label="NetRatel tenant" Value="@tenantId" ValueChanged="TenantChanged" Variant="Variant.Outlined" Margin="Margin.Dense" Required="true" Disabled="Disabled" data-testid="helpdesk-local-tenant">
+<MudStack Spacing="2" data-testid="@(TestIdPrefix + "-grant-selector")">
+    <MudSelect T="int?" Label="NetRatel tenant" Value="@tenantId" ValueChanged="TenantChanged" Variant="Variant.Outlined" Margin="Margin.Dense" Required="true" Disabled="Disabled" data-testid="@(TestIdPrefix + "-local-tenant")">
         @foreach (var tenant in Authority.Tenants)
         {
-            <MudSelectItem T="int?" Value="@((int?)tenant.TenantId)">@tenant.Name (tenant @tenant.TenantId)</MudSelectItem>
+            <MudSelectItem T="int?" Value="@((int?)tenant.TenantId)">@tenant.Name</MudSelectItem>
         }
     </MudSelect>
+    @if (!IncidentOnly)
+    {
     <MudText Typo="Typo.subtitle2">RatelDesk → NetRatel</MudText>
     <MudText Typo="Typo.body2">Read approved orchestration information. Task invocation is an additional permission.</MudText>
-    <MudCheckBox T="bool" Value="@invoke" ValueChanged="InvokeChanged" Label="Allow approved orchestration task invocation" Dense="true" Disabled="@(Disabled || !AvailableScopes.Contains("netratel.orchestration.invoke"))" data-testid="helpdesk-invoke" />
+    <MudCheckBox T="bool" Value="@invoke" ValueChanged="InvokeChanged" Label="Allow approved orchestration task invocation" Dense="true" Disabled="@(Disabled || !AvailableScopes.Contains("netratel.orchestration.invoke"))" data-testid="@(TestIdPrefix + "-invoke")" />
     <MudGrid Spacing="2">
         <MudItem xs="12" sm="6">
-            <MudSelect T="string" Label="Approved resources" MultiSelection="true" SelectedValues="@resources" SelectedValuesChanged="ResourcesChanged" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="@(Disabled || tenantId is null)" data-testid="helpdesk-resources">
+            <MudSelect T="string" Label="Approved resources" MultiSelection="true" SelectedValues="@resources" SelectedValuesChanged="ResourcesChanged" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="@(Disabled || tenantId is null)" data-testid="@(TestIdPrefix + "-resources")">
                 @foreach (var resource in SelectedTenant?.Resources ?? [])
                 {
                     <MudSelectItem Value="@resource.Id">@resource.Name (@resource.Id)</MudSelectItem>
@@ -20,7 +23,7 @@
             </MudSelect>
         </MudItem>
         <MudItem xs="12" sm="6">
-            <MudSelect T="string" Label="Approved request definitions" MultiSelection="true" SelectedValues="@definitions" SelectedValuesChanged="DefinitionsChanged" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="@(Disabled || tenantId is null)" data-testid="helpdesk-definitions">
+            <MudSelect T="string" Label="Approved request definitions" MultiSelection="true" SelectedValues="@definitions" SelectedValuesChanged="DefinitionsChanged" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="@(Disabled || tenantId is null)" data-testid="@(TestIdPrefix + "-definitions")">
                 @foreach (var definition in AvailableDefinitions)
                 {
                     <MudSelectItem Value="@definition.Id">@definition.Name (@definition.Id)</MudSelectItem>
@@ -28,11 +31,18 @@
             </MudSelect>
         </MudItem>
     </MudGrid>
-    <MudText Typo="Typo.caption">Select at least one current resource. Invocation also requires an explicit request definition. Empty selections cannot create a service grant.</MudText>
+    <MudText Typo="Typo.caption">Select at least one current resource. Invocation also requires an explicit request definition.</MudText>
+    }
+    else
+    {
+        <MudText Typo="Typo.body2">Create helpdesk incidents from monitoring alerts. This connection grants no access to agents or tasks.</MudText>
+    }
 </MudStack>
 
 @code {
     [Parameter, EditorRequired] public ServiceClientManagementAuthority Authority { get; set; } = new(false, []);
+    [Parameter] public string TestIdPrefix { get; set; } = "helpdesk";
+    [Parameter] public bool IncidentOnly { get; set; }
     [Parameter] public bool Disabled { get; set; }
     [Parameter] public int? PresetTenantId { get; set; }
     [Parameter] public EventCallback<HelpdeskGrantSelection> Changed { get; set; }
@@ -46,7 +56,7 @@
         .Where(definition => definition.ResourceId is not null && resources.Contains(definition.ResourceId));
     protected override async Task OnParametersSetAsync()
     {
-        if (!presetApplied && PresetTenantId is { } requested && Authority.Tenants.Any(tenant => tenant.TenantId == requested))
+        if (!presetApplied && (PresetTenantId ?? (Authority.Tenants.Length == 1 ? Authority.Tenants[0].TenantId : (int?)null)) is { } requested && Authority.Tenants.Any(tenant => tenant.TenantId == requested))
         {
             presetApplied = true; await TenantChanged(requested);
         }
@@ -65,6 +75,6 @@
     }
     private async Task DefinitionsChanged(IEnumerable<string>? values) { definitions = values?.ToHashSet(StringComparer.Ordinal) ?? new(StringComparer.Ordinal); await NotifyAsync(); }
     private Task NotifyAsync() => Changed.InvokeAsync(new HelpdeskGrantSelection(tenantId,
-        AvailableScopes.Where(scope => scope == "netratel.orchestration.read" || invoke && scope == "netratel.orchestration.invoke").Order(StringComparer.Ordinal).ToArray(),
+        IncidentOnly ? [ServiceLinkContract.ControlScope, ServiceLinkContract.VerifyScope] : AvailableScopes.Where(scope => scope == "netratel.orchestration.read" || invoke && scope == "netratel.orchestration.invoke").Order(StringComparer.Ordinal).ToArray(),
         resources.Order(StringComparer.Ordinal).ToArray(), definitions.Order(StringComparer.Ordinal).ToArray()));
 }
