@@ -23,12 +23,17 @@ public static class MonitoringIdentityPresentation
                 }
             }
         }
-        catch (JsonException) { }
+        catch (JsonException) { return Create(agentId, name, null, deleted); }
         var display = Clean(name) ?? host ?? (deleted ? "Deleted client" : "Client details unavailable");
         return new(agentId, display, host, address, deleted, Clean(name) is null && host is null);
     }
 
     private static string? Read(JsonElement root, string key) => root.TryGetProperty(key, out var value) && value.ValueKind == JsonValueKind.String
         ? Clean(value.GetString()) : null;
-    private static string? Clean(string? value) => string.IsNullOrWhiteSpace(value) ? null : new string(value.Trim().Where(c => !char.IsControl(c)).Take(256).ToArray());
+    private static string? Clean(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        var clean = new string(value.Trim().Where(c => !char.IsControl(c)).Take(256).ToArray());
+        return string.IsNullOrWhiteSpace(clean) ? null : clean;
+    }
 }

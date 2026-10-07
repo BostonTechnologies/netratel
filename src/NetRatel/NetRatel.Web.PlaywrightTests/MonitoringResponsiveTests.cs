@@ -128,6 +128,69 @@ public sealed class MonitoringResponsiveTests(ClientsManagementBrowserFixture br
         Assert.False(await page.Locator("#blazor-error-ui").IsVisibleAsync());
         if (theme == "system") { await page.EmulateMediaAsync(new() { ColorScheme = ColorScheme.Light }); await page.Locator("html[data-netratel-theme='light']").WaitForAsync(); }
     }
+    [Theory]
+    [Trait("Category", "ManualBrowserAcceptance")]
+    [InlineData(1366, 768, "light")]
+    [InlineData(1366, 768, "dark")]
+    [InlineData(390, 844, "light")]
+    public async Task CompactMonitoringShowsIdentityReasonAndSelectionsAcrossHundredsOfClients(int width, int height, string theme)
+    {
+        await using var context = await browserFixture.Browser.NewContextAsync(new() { ViewportSize = new() { Width = width, Height = height } });
+        var page = await context.NewPageAsync();
+        await page.GotoAsync(_host!.BaseAddress + "/monitoring");
+        await page.GetByTestId("monitoring-interactive").WaitForAsync(new() { State = WaitForSelectorState.Attached });
+        await page.GetByTestId("monitoring-series-row").First.WaitForAsync();
+        await SetTheme(page, theme);
+        await Assertions.Expect(page.GetByTestId("monitoring-series-row").First).ToContainTextAsync("SQL Server");
+        await Assertions.Expect(page.GetByTestId("monitoring-series-row").First).ToContainTextAsync("sql-host-001");
+        await Assertions.Expect(page.GetByTestId("monitoring-series-row").First).ToContainTextAsync("192.0.2.17");
+        Assert.False(await page.EvaluateAsync<bool>("() => document.documentElement.scrollWidth > innerWidth + 1"));
+        var evidence = EvidenceRoot(); Directory.CreateDirectory(evidence);
+        await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, $"beta3-monitoring-active-{width}-{theme}.png"), Animations = ScreenshotAnimations.Disabled });
+        await page.GetByTestId("monitoring-ack").First.ClickAsync();
+        await page.GetByTestId("monitoring-reason").FillAsync("Investigating while fresh samples arrive");
+        _api.AdvanceTelemetry();
+        await Assertions.Expect(page.GetByTestId("monitoring-save")).ToHaveTextAsync("Acknowledge");
+        await page.GetByTestId("monitoring-save").ClickAsync();
+        await page.GetByTestId("monitoring-editor").WaitForAsync(new() { State = WaitForSelectorState.Hidden });
+        await Assertions.Expect(page.GetByTestId("monitoring-series-row").First).ToContainTextAsync("Acknowledged");
+        await page.GetByTestId("monitoring-tab-history").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("monitoring-history-row").First).ToContainTextAsync("Beta operator");
+        await Assertions.Expect(page.GetByTestId("monitoring-history-row").First).ToContainTextAsync("Investigating while fresh samples arrive");
+        await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, $"beta3-monitoring-history-{width}-{theme}.png"), Animations = ScreenshotAnimations.Disabled });
+        await page.GetByTestId("monitoring-tab-manage").ClickAsync();
+        await page.GetByTestId("monitoring-new-rule").ClickAsync();
+        await page.GetByTestId("monitoring-rule-name").FillAsync("Beta.3 readable target draft");
+        var picker = page.GetByTestId("monitoring-target-picker");
+        await Assertions.Expect(picker).ToContainTextAsync("300 matching clients");
+        await page.GetByTestId("monitoring-client-choice").First.CheckAsync();
+        await page.GetByTestId("monitoring-next-clients").ClickAsync();
+        await Assertions.Expect(picker.Locator(".target-picker-client").First).ToContainTextAsync("Client 025");
+        await Assertions.Expect(page.GetByTestId("monitoring-client-choice")).ToHaveCountAsync(25);
+        await page.GetByTestId("monitoring-client-choice").First.CheckAsync();
+        await Assertions.Expect(picker.Locator(".target-picker-selection")).ToContainTextAsync("2 clients");
+        var search = picker.GetByLabel("Search clients by name, hostname or reported IP");
+        await search.FillAsync("beta-host-299");
+        await Assertions.Expect(picker).ToContainTextAsync("1 matching clients");
+        await page.GetByTestId("monitoring-client-choice").First.CheckAsync();
+        await Assertions.Expect(picker.Locator(".target-picker-selection")).ToContainTextAsync("3 clients");
+        await Assertions.Expect(picker.Locator(".target-picker-chips")).ToContainTextAsync("Client 299");
+        await Assertions.Expect(picker.Locator(".target-picker-chips")).ToContainTextAsync("SQL Server");
+        Assert.Equal(1, _api.Writes);
+        await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, $"beta3-monitoring-rule-drawer-{width}-{theme}.png"), Animations = ScreenshotAnimations.Disabled });
+        await page.GetByTestId("monitoring-cancel").ClickAsync();
+        await page.GetByTestId("monitoring-new-group").ClickAsync();
+        await page.GetByTestId("monitoring-group-name").FillAsync("Beta.3 bounded group draft");
+        await page.GetByTestId("monitoring-client-choice").First.CheckAsync();
+        await page.GetByTestId("monitoring-next-clients").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("monitoring-target-picker").Locator(".target-picker-client").First).ToContainTextAsync("Client 025");
+        await page.GetByTestId("monitoring-client-choice").First.CheckAsync();
+        await Assertions.Expect(page.GetByTestId("monitoring-target-picker").Locator(".target-picker-selection")).ToContainTextAsync("2 clients");
+        await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, $"beta3-monitoring-group-drawer-{width}-{theme}.png"), Animations = ScreenshotAnimations.Disabled });
+        await page.GetByTestId("monitoring-cancel").ClickAsync();
+        Assert.False(await page.Locator("#blazor-error-ui").IsVisibleAsync());
+    }
+
     [Fact]
     public async Task ClearAndBypassHaveDistinctSemanticsAndHistory()
     {
@@ -161,7 +224,7 @@ public sealed class MonitoringResponsiveTests(ClientsManagementBrowserFixture br
             await Assertions.Expect(page.GetByTestId("monitoring-series-row").First).ToContainTextAsync("Suppressed");
             await Assertions.Expect(page.GetByTestId("monitoring-series-row").First).ToHaveAttributeAsync("data-health", "Breach");
             await page.GetByTestId("monitoring-tab-history").ClickAsync();
-            await Assertions.Expect(page.GetByTestId("monitoring-history-row").First).ToContainTextAsync("ManuallyCleared");
+            await Assertions.Expect(page.GetByTestId("monitoring-history-row").First).ToContainTextAsync("Manually cleared");
         }
         catch (Exception exception)
         {
@@ -262,6 +325,7 @@ internal sealed class FixtureMonitoringApi : IMonitoringApiService
     private readonly MonitoringRuleDto _disk;
     private readonly MonitoringRuleDto _service;
     private readonly MonitoringGroupDto _group;
+    private readonly ImmutableArray<MonitoringClientIdentityDto> _estate;
     private ImmutableArray<MonitoringBypassDto> _bypasses = [];
     private ImmutableArray<MonitoringEventIntent> _history = [];
     public MonitoringSeriesState Active { get; private set; }
@@ -272,6 +336,9 @@ internal sealed class FixtureMonitoringApi : IMonitoringApiService
     public CancellationToken DelayedReadToken { get; private set; }
     public FixtureMonitoringApi()
     {
+        _estate = Enumerable.Range(0, 300).Select(index => index == 0 ? new MonitoringClientIdentityDto(Agent,
+            "SQL Server with a long stable host name", "sql-host-001", "192.0.2.17") :
+            new MonitoringClientIdentityDto(Guid.Parse($"{index:x8}-0000-0000-0000-000000000000"), $"Client {index:000}", $"beta-host-{index:000}", $"198.51.{index / 250}.{index % 250 + 1}")).ToImmutableArray();
         _group = new(1, Guid.NewGuid(), 1, "SQL servers", [Agent]);
         _cpu = Rule("SQL CPU", new(MonitoringMetricKind.CpuUsagePercent, MonitoringNumericUnit.Percent, 90, 80, null, null, []));
         _disk = Rule("SQL disk", new(MonitoringMetricKind.DiskFreeSpace, MonitoringNumericUnit.GiB, 5, 8, "/", null, []));
@@ -288,6 +355,7 @@ internal sealed class FixtureMonitoringApi : IMonitoringApiService
             Occurrence: new(Guid.NewGuid(), Guid.NewGuid(), now, now.AddSeconds(-60), _cpu, evidence, MonitoringFlowDispatchDisposition.NoFlowSelected), ApplicableBypassIds: []);
     }
     public void Refire() => Active = NewOccurrence();
+    public void AdvanceTelemetry() => Active = Active with { StateRevision = Active.StateRevision + 1 };
     public void AttachFlowReceipt(Guid versionId, Guid runId, MonitoringIncidentReceiptDto receipt)
     {
         var occurrence = Active.Occurrence!;
@@ -307,13 +375,24 @@ internal sealed class FixtureMonitoringApi : IMonitoringApiService
         if (tenantId == 1 && DelayedTenantOne is not null) { DelayedReadToken = token; return DelayedTenantOne.Task; }
         return Task.FromResult(Configuration(tenantId));
     }
-    public Task<MonitoringSummaryDto> GetSummaryAsync(int tenantId, CancellationToken token = default) => Task.FromResult(new MonitoringSummaryDto(tenantId, 2, Active.Occurrence?.EndedAtUtc is null ? 1 : 0, 0, 1, 0, Active.Suppressed ? 1 : 0, DateTimeOffset.UtcNow));
+    public Task<MonitoringSummaryDto> GetSummaryAsync(int tenantId, CancellationToken token = default) => Task.FromResult(new MonitoringSummaryDto(tenantId, 2, Active.Occurrence?.EndedAtUtc is null ? 1 : 0, 0, 1, 0, Active.Suppressed ? 1 : 0, DateTimeOffset.UtcNow, Active.Phase == MonitoringPhase.Firing ? 1 : 0));
     public Task<MonitoringSeriesPageDto> GetSeriesAsync(int tenantId, string? cursor = null, CancellationToken token = default) => Task.FromResult(new MonitoringSeriesPageDto(tenantId == 1 ? [Active,
-        new(new(1, _disk.RuleId, Agent, "disk:/"), 1, 1, MonitoringPhase.Healthy, MonitoringEvidenceQuality.Unknown)] : [], null));
-    public Task<MonitoringEventPageDto> GetEventsAsync(int tenantId, string? cursor = null, CancellationToken token = default) => Task.FromResult(new MonitoringEventPageDto(tenantId == 1 ? _history : [], null));
-    public Task<MonitoringClientPageDto> GetClientsAsync(int tenantId, string? cursor = null, CancellationToken token = default) => Task.FromResult(new MonitoringClientPageDto([new(Agent, "SQL Server with a long stable host name", ClientServicePlatform.Windows, MonitoringTargetSupport.Supported, "fixture")], null, 1));
+        new(new(1, _disk.RuleId, Agent, "disk:/"), 1, 1, MonitoringPhase.Healthy, MonitoringEvidenceQuality.Unknown)] : [], null, tenantId == 1 ? [_estate[0]] : []));
+    public Task<MonitoringEventPageDto> GetEventsAsync(int tenantId, string? cursor = null, CancellationToken token = default) => Task.FromResult(new MonitoringEventPageDto(tenantId == 1 ? _history : [], null, tenantId == 1 ? [_estate[0]] : []));
+    public Task<MonitoringClientPageDto> GetClientsAsync(int tenantId, string? cursor = null, CancellationToken token = default) => SearchClientsAsync(tenantId, null, cursor, token);
+    public Task<MonitoringClientPageDto> SearchClientsAsync(int tenantId, string? search, string? cursor = null, CancellationToken token = default)
+    {
+        var matched = tenantId == 1 ? _estate.Where(identity => string.IsNullOrWhiteSpace(search) || identity.DisplayName.Contains(search, StringComparison.OrdinalIgnoreCase) ||
+            identity.Hostname?.Contains(search, StringComparison.OrdinalIgnoreCase) == true || identity.ReportedAddress?.Contains(search, StringComparison.OrdinalIgnoreCase) == true).ToArray() : [];
+        var offset = cursor is null ? 0 : int.Parse(cursor, System.Globalization.CultureInfo.InvariantCulture);
+        var items = matched.Skip(offset).Take(25).Select(identity => new MonitoringClientDto(identity.AgentId, identity.DisplayName,
+            ClientServicePlatform.Windows, MonitoringTargetSupport.Supported, "fixture", identity)).ToImmutableArray();
+        return Task.FromResult(new MonitoringClientPageDto(items, offset + items.Length < matched.Length ? (offset + items.Length).ToString(System.Globalization.CultureInfo.InvariantCulture) : null, matched.Length));
+    }
+    public Task<IReadOnlyList<MonitoringClientIdentityDto>> GetClientIdentitiesAsync(int tenantId, IReadOnlyCollection<Guid> ids, CancellationToken token = default) =>
+        Task.FromResult<IReadOnlyList<MonitoringClientIdentityDto>>(tenantId == 1 ? _estate.Where(item => ids.Contains(item.AgentId)).ToArray() : []);
     public Task<IReadOnlyList<MonitoringPublishedFlowDto>> GetPublishedFlowsAsync(int tenantId, CancellationToken token = default) => Task.FromResult<IReadOnlyList<MonitoringPublishedFlowDto>>([]);
-    public Task<MonitoringTargetPreviewDto> PreviewTargetsAsync(int tenantId, MonitoringTargetPreviewRequest request, CancellationToken token = default) => Task.FromResult(new MonitoringTargetPreviewDto([Agent], _revision, [new(Agent, "SQL Server", MonitoringTargetSupport.Unknown, "cached_evidence_only")], 1));
+    public Task<MonitoringTargetPreviewDto> PreviewTargetsAsync(int tenantId, MonitoringTargetPreviewRequest request, CancellationToken token = default) => Task.FromResult(new MonitoringTargetPreviewDto([Agent], _revision, [new(Agent, "SQL Server", MonitoringTargetSupport.Supported, "cpu_telemetry_available", Identity: _estate[0])], 1));
     public Task<MonitoringConfigurationDto> SaveRuleAsync(int tenantId, MonitoringRuleWriteDto request, CancellationToken token = default) { Writes++; if (DelayedRuleSave is not null) return DelayedRuleSave.Task; throw new HttpRequestException("Configuration conflict; edits retained."); }
     public Task<MonitoringConfigurationDto> SaveGroupAsync(int tenantId, MonitoringGroupWriteDto request, CancellationToken token = default) { Writes++; _revision++; return Task.FromResult(Configuration(tenantId)); }
     public Task<MonitoringConfigurationDto> SaveBypassAsync(int tenantId, Guid bypassId, MonitoringBypassWriteDto request, CancellationToken token = default)
@@ -322,11 +401,22 @@ internal sealed class FixtureMonitoringApi : IMonitoringApiService
         _bypasses = _bypasses.Add(bypass); Active = Active with { Suppressed = true, ApplicableBypassIds = [bypassId] }; return Task.FromResult(Configuration(tenantId));
     }
     public Task<MonitoringConfigurationDto> DeleteAsync(int tenantId, string collection, Guid entityId, MonitoringDeleteDto request, CancellationToken token = default) { Writes++; _revision++; return Task.FromResult(Configuration(tenantId)); }
-    public Task AcknowledgeAsync(int tenantId, MonitoringSeriesState series, string reason, CancellationToken token = default) { Writes++; return Task.CompletedTask; }
+    public Task AcknowledgeAsync(int tenantId, MonitoringSeriesState series, string reason, CancellationToken token = default)
+    {
+        if (Active.Occurrence?.OccurrenceId != series.Occurrence?.OccurrenceId || Active.Occurrence?.EndedAtUtc is not null)
+            throw new HttpRequestException("Occurrence changed; review current state.");
+        if (Active.Occurrence?.AcknowledgedAtUtc is not null) return Task.CompletedTask;
+        Writes++; var now = DateTimeOffset.UtcNow; var actor = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+        Active = Active with { StateRevision = Active.StateRevision + 1, OperatorRevision = Active.OperatorRevision + 1,
+            Occurrence = Active.Occurrence! with { AcknowledgedAtUtc = now, AcknowledgedBy = actor, ClientIdentity = _estate[0] } };
+        _history = _history.Add(new(Guid.NewGuid(), MonitoringEventKind.AlertAcknowledged, Active.Series, Active.Occurrence.OccurrenceId,
+            now, _cpu, Active.LatestEvidence!, Reason: reason, OperatorId: actor, OperatorDisplayName: "Beta operator", ClientIdentity: _estate[0]));
+        return Task.CompletedTask;
+    }
     public Task ClearAsync(int tenantId, MonitoringSeriesState series, string reason, CancellationToken token = default)
     {
         Writes++; var now = DateTimeOffset.UtcNow; var occurrence = Active.Occurrence! with { EndedAtUtc = now, ClosureDisposition = MonitoringClosureDisposition.ManuallyCleared };
-        _history = _history.Add(new(Guid.NewGuid(), MonitoringEventKind.AlertCleared, Active.Series, occurrence.OccurrenceId, now, _cpu, Active.LatestEvidence!, MonitoringClosureDisposition.ManuallyCleared, reason));
+        _history = _history.Add(new(Guid.NewGuid(), MonitoringEventKind.AlertCleared, Active.Series, occurrence.OccurrenceId, now, _cpu, Active.LatestEvidence!, MonitoringClosureDisposition.ManuallyCleared, reason, Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"), "Beta operator", _estate[0]));
         Active = Active with { Phase = MonitoringPhase.Cleared, Occurrence = occurrence }; return Task.CompletedTask;
     }
 }
