@@ -435,18 +435,30 @@ public sealed class AgentGatewayPresenceClientTests
         using var stopping = new CancellationTokenSource();
         var tokenService = new DisabledDuringRefreshTokenService(clock);
         var logs = new ConcurrentQueue<string>();
+        var firstOnline = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var agent = new AgentGatewayPresenceClient(
             new GatewayClientOptions { Endpoint = "https://gateway.test" },
-            tokenService, 7, Guid.NewGuid(), "0.5.6-test", [], logs.Enqueue,
+            tokenService, 7, Guid.NewGuid(), "0.5.6-test", [], message =>
+            {
+                logs.Enqueue(message);
+                if (message.StartsWith("Operational state=Online", StringComparison.Ordinal))
+                    firstOnline.TrySetResult();
+            },
             createChannel: _ => GrpcChannel.ForAddress("http://localhost",
                 new GrpcChannelOptions { HttpHandler = host.GetTestServer().CreateHandler() }),
             timeProvider: clock, nextRandom: () => 0);
         var run = agent.RunAsync(stopping.Token);
         try
         {
+            // Renewal is scheduled before the first heartbeat ACK. Advancing its
+            // timer before readiness can instead exercise blocked admission I/O.
+            await firstOnline.Task.WaitAsync(TimeSpan.FromSeconds(5));
             await WaitUntilAsync(() => clock.HasTimer(TimeSpan.FromSeconds(1)));
             clock.Advance(TimeSpan.FromSeconds(1));
-            await WaitUntilAsync(() => clock.HasTimer(TimeSpan.FromSeconds(1)));
+            // Match the retired session's recovery wait, rather than another
+            // one-second heartbeat/renewal timer that has not been retired yet.
+            await WaitUntilAsync(() => logs.Any(message => message.Contains("state=WaitingForBackend", StringComparison.Ordinal)) &&
+                clock.HasTimer(TimeSpan.FromSeconds(1)));
             clock.Advance(TimeSpan.FromSeconds(1));
             await tokenService.DisabledResponse.Task.WaitAsync(TimeSpan.FromSeconds(5));
             await WaitUntilAsync(() => clock.HasTimer(TimeSpan.FromSeconds(300)));
