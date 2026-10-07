@@ -17,7 +17,7 @@ value exactly matches that source version before it builds review artifacts.
 
 The release-build workflow is deliberately non-publishing. It creates a Linux
 CLI archive, a local .NET tool package, a Linux stdio MCP archive, an image-only
-Compose release bundle, and native Client archives for each supported runtime.
+Compose template, and native Client archives for each supported runtime.
 The Linux review bundle and every
 native Client archive set have generated SPDX SBOMs. Every uploaded artifact set carries `SHA256SUMS`; the
 Linux review bundle is checked for expected files, SBOM shape, checksum
@@ -26,32 +26,32 @@ and a stdio MCP initialize, tool-list, and harmless capabilities-read sequence
 before upload; it also verifies an actionable malformed API-URL diagnostic.
 Native Client archives are
 also checked for the expected executable, manifest version/runtime, updater and
-terminal support files. Each matching Linux, Windows, and macOS runner executes
-the freshly published Client; the extracted archive is executed again before
-upload (with the Linux archive additionally running its native PTY self-test).
+terminal support files, source-identical updater scripts, executable presence,
+SBOM coverage and checksums. Native archive producers use
+`verify-client-release-artifact.sh --integrity-only`; client installation,
+updater execution and the Linux native PTY self-test are opt-in diagnostics.
 GitHub Actions creates a Sigstore-backed build-provenance attestation for each
 uploaded release artifact; verify it with `gh attestation verify` after it is
 publicly released. A public GitHub prerelease, OCI publication, or recording
 immutable artifact digests requires an explicit authorized promotion decision;
-it is never performed by a PR or release-rehearsal workflow.
+it is never performed by a PR or non-publishing build workflow.
 Every final image is built with public OCI source, revision, and product-version
 labels, then its saved layers are scanned for generic credential material before
-the image smoke tests run. Its fail-closed `Release rehearsal` aggregate
-requires source validation, archive verification, all native Client packages,
-all final images, both image smoke suites, and the PostgreSQL previous-release
-upgrade gate to succeed. The generic upgrade gate uses a controlled prior
-version and published image digests, then verifies Local and OIDC continuity
-against the candidate images. Its CI job and package repository names do not
-contain an RC version.
+publication. The fail-closed `Release rehearsal` aggregate keeps its generic
+identity and requires fast source/build/regression validation, CLI/stdio archive
+verification and all supported native Client archive producers. Actual release
+images are built and scanned once by the publication path; no throwaway image
+matrix or functional deployment/upgrade rehearsal blocks the tag build.
 
 For the native Client, the generated publish directory includes the executable,
 its update manifest, required sidecars, and the Linux PTY helper. Do not
-advertise a runtime until its final archive has been built and smoke-tested.
+advertise a runtime until its final archive has been built and integrity-verified.
+Report functional acceptance as pending unless a matching manual run exists.
 NetRatel `0.1.0-rc.1` archives and tag remain published historical release
 artifacts. Release availability for `0.1.0-rc.5` is determined by its matching
 immutable prerelease tag and release record; never infer it from a source
-checkout. The release workflow validates the committed version, builds every
-final runtime container, and packages CLI, stdio MCP, and native Client
+checkout. The release workflow validates the committed version and
+packages CLI, stdio MCP, and native Client
 artifacts. Native Client packages are built on their matching Linux, Windows,
 and macOS runners. Publication, signing, package visibility, and a release tag
 remain explicit controlled actions.
@@ -104,27 +104,60 @@ The workflow derives the version and commit from the tagged source, finds its
 successful release build, downloads the matching artifacts, and authenticates
 their checksums and GitHub artifact identities before any registry write. Each
 of the five fixed public packages is built, scanned, and pushed by a separate
-GitHub runner. The final job verifies anonymous digest pulls, runs the OIDC
-Compose and HTTP MCP smokes, creates the digest-pinned Compose bundle, and
+GitHub runner. The final job verifies anonymous digest pulls, creates the digest-pinned Compose bundle, and
 uploads the full asset set with checksums and a publication record. Existing
 assets are reused only when their digests match; image tags are never
 silently overwritten. The Actions run is the progress and failure record.
+New publication records retain legacy `verification.state=complete` with
+`scope=build-distribution-integrity` and `requiredSmokes=[]`; their separate
+`functionalAcceptance` remains `pending-owner-testing` with no executed smokes.
+Older publication records remain readable. A complete distribution record does
+not claim product startup, browser, native-client or reciprocal-link acceptance.
 
 The CLI tool is distributed as the downloadable NuGet package; this path does
 not push to NuGet.org. Do not move an earlier release tag or replace its assets.
 Keep the release issue open until the public downloads and registry digests are
 verified.
 
-## Release rehearsal validation
+## Fast validation and optional functional acceptance
 
-The non-publishing release workflow builds the CLI, stdio MCP, all supported
-native Client packages, and final container images before it produces review
-artifacts. It then runs the image-only Compose bundle against the actual local
-release-equivalent API, Web, and migration images. PR validation runs both that
-smoke and the source Compose variant against a generic OIDC provider. It also
-builds the actual Linux CLI/stdio-MCP archives and every native Client archive,
-generates their SBOMs and checksums, and runs the same archive-content and
-protocol verifiers before retaining the review artifacts. Each Compose smoke
+The 7 October 2026 owner policy requires PR/main validation to succeed in
+strictly less than 20 minutes, targeting 10–15 minutes. It keeps disclosure,
+version, PostgreSQL-only and release-script checks, one solution Release
+restore/build, and three prebuilt fast assemblies with separate nonzero
+all-passing TRX receipts. `tools/ci/run-fast-regressions.sh` excludes
+`category=compose`, `category=hosted` and `category=manual-integration`.
+Restore, build and test outcomes remain independently visible. The same fast
+selection applies to tag-build validation, with real CLI/stdio/native packaging
+and integrity checks retained. Packaging/publication costs are measured
+separately; the under-20-minute acceptance applies to required PR/main runs.
+
+Use [integration-validation.yml](../.github/workflows/integration-validation.yml)
+only through explicit `workflow_dispatch` to select one functional suite at an
+actual source ref, compatible peer and artifact identity. There is no implicit
+PR/main/tag/publication dependency or nightly schedule. Browser/Chromium,
+full-pair links, physical incidents, real-time rotation/recovery, native
+install/update/PTY and deployment/upgrade tests retain their real assertions,
+timeouts, cleanup and useful logs. OIDC and MCP release-image smokes use the
+already published digest-pinned images; they do not perform registry writes.
+
+For example, request browser fixtures at an exact source ref, or select one
+upgrade against a completed public release:
+
+```sh
+gh workflow run integration-validation.yml --ref main -f suite=browser -f source_ref='<commit-or-tag>'
+gh workflow run integration-validation.yml --ref main -f suite=upgrade-local -f release_tag='<completed-release-tag>'
+```
+
+Other explicit choices are `service-link`, `gateway`, `deployment`,
+`release-images`, `native-client`, `physical-incident` and `upgrade-oidc`.
+Published-image and upgrade suites require `release_tag`; other suites use
+`source_ref`. The physical suite requires source containing connector PR #152.
+An upgrade selects and records the latest other completed published release
+through the existing prior-release selector, reusing verified public archives
+and immutable image digests.
+
+When explicitly requested, each Compose smoke
 verifies an anonymous protected API request is rejected, performs an
 authorization-code browser session, verifies the authenticated API request,
 creates a synthetic short-lived enrollment code, enrolls a disposable native

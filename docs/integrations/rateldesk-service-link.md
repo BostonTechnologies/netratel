@@ -129,7 +129,8 @@ Real two-product acceptance and release receipts are tracked by NetRatel
 is recorded in RatelDesk [#119](https://github.com/BostonTechnologies/rateldesk/issues/119)
 and [#116](https://github.com/BostonTechnologies/rateldesk/issues/116). This setup
 guide is not an execution receipt; runtime capability and the actual published
-product pair must pass the integration gates before delivery is reported ready.
+product pair require functional owner acceptance before delivery is reported
+functionally accepted. Build/distribution integrity is recorded separately.
 
 The six complete two-product browser setup, consent and recovery journeys are
 pending owner acceptance of the deployed beta, rather than prerequisites for
@@ -137,7 +138,14 @@ merging the foundation or publishing `v0.1.1-beta.1`. The six-case/24-screenshot
 harness remains available for explicitly requested diagnosis. Its preserved
 [failed run](https://github.com/BostonTechnologies/netratel/actions/runs/37484815621)
 failed at the NetRatel setup-to-login transition before reciprocal-link commands;
-the cause remains unresolved. Required automated protocol, authorization,
-database, component, ordinary browser, native, packaging, upgrade and publication
-checks remain required. Keep the epic, connector and companion acceptance items
-open wherever owner results are still outstanding.
+the cause remains unresolved. Under the 7 October 2026 owner amendment, required
+automatic validation keeps fast protocol, authorization, focused database and
+component regressions. Full-pair classes carry `category=manual-integration`;
+browser, native execution, sustained rotation/recovery and deployment/upgrade
+checks run only when requested through
+[integration-validation.yml](../../.github/workflows/integration-validation.yml).
+Packaging and publication retain source, authenticated artifact, checksum,
+SBOM, scan, immutable digest and public availability checks. A completed
+distribution record with pending owner functional acceptance is accurate and
+does not claim those manual journeys passed. Keep acceptance items open
+wherever owner results are still outstanding.

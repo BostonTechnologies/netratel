@@ -23,6 +23,7 @@ internal sealed record ServiceLinkHistoricalAgePrecondition(int RowsChanged, Gui
     bool AllOtherSecretColumnsUnchanged, bool PrincipalUnchanged);
 
 [Collection(ServiceLinkRotationPeerCollection.Name)]
+[Trait("category", "manual-integration")]
 public sealed class ServiceLinkRotationHttpPostgresTests
 {
     [Theory]

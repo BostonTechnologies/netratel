@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-  echo "Usage: $0 --artifacts <directory> --version <semver> --runtime <rid> --extension <zip|tar.gz>" >&2
+  echo "Usage: $0 --artifacts <directory> --version <semver> --runtime <rid> --extension <zip|tar.gz> [--integrity-only]" >&2
   exit 2
 }
 
@@ -10,12 +10,14 @@ artifacts=""
 version=""
 runtime=""
 extension=""
+integrity_only=false
 while (( $# > 0 )); do
   case "$1" in
     --artifacts) artifacts="${2:-}"; shift 2 ;;
     --version) version="${2:-}"; shift 2 ;;
     --runtime) runtime="${2:-}"; shift 2 ;;
     --extension) extension="${2:-}"; shift 2 ;;
+    --integrity-only) integrity_only=true; shift ;;
     *) usage ;;
   esac
 done
@@ -134,11 +136,17 @@ if [[ "$runtime" == linux-x64 ]]; then
   native_library="$extract_dir/netratel-client-${runtime}/libnetratel_terminal_pty.so"
   [[ -x "$client" ]] || { echo "Linux Client executable is not executable." >&2; exit 1; }
   [[ -f "$native_library" ]] || { echo "Linux Client archive is missing its native PTY library." >&2; exit 1; }
-  "$client" --terminal-pty-self-test-native
+  if [[ "$integrity_only" == false ]]; then
+    "$client" --terminal-pty-self-test-native
+  fi
 elif [[ "$runtime" == win-x64 ]]; then
-  "$extract_dir/netratel-client-${runtime}/NetRatel.Client.exe" --version
+  if [[ "$integrity_only" == false ]]; then
+    "$extract_dir/netratel-client-${runtime}/NetRatel.Client.exe" --version
+  fi
 else
-  "$extract_dir/netratel-client-${runtime}/NetRatel.Client" --version
+  if [[ "$integrity_only" == false ]]; then
+    "$extract_dir/netratel-client-${runtime}/NetRatel.Client" --version
+  fi
 fi
 
 (
@@ -161,4 +169,4 @@ fi
   fi
 )
 
-echo "Verified Client review artifact for $runtime."
+echo "Verified Client artifact integrity for $runtime (integrity-only=$integrity_only)."

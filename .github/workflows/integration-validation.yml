@@ -1,0 +1,331 @@
+name: Optional integration validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: Run only this functional suite on Linux
+        type: choice
+        required: true
+        options: [service-link, gateway, browser, deployment, release-images, native-client, physical-incident, upgrade-local, upgrade-oidc]
+      source_ref:
+        description: Source ref to test (published-image and upgrade suites use release_tag)
+        default: main
+        required: true
+      release_tag:
+        description: Existing completed public release tag, required for published-image and upgrade suites
+        required: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  selected-suite:
+    name: Manual ${{ inputs.suite }} (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ (inputs.suite == 'native-client' || inputs.suite == 'deployment' || inputs.suite == 'upgrade-local' || inputs.suite == 'upgrade-oidc') && 45 || inputs.suite == 'release-images' && 60 || 40 }}
+    env:
+      SUITE: ${{ inputs.suite }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT: ${{ github.workspace }}/TestResults/playwright
+      NETRATEL_SERVICE_LINK_EVIDENCE_DIRECTORY: ${{ github.workspace }}/TestResults/service-link-proof
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ (inputs.suite == 'release-images' || inputs.suite == 'upgrade-local' || inputs.suite == 'upgrade-oidc') && inputs.release_tag || inputs.source_ref }}
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          global-json-file: global.json
+      - name: Record selected source and version
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$SUITE" in service-link|gateway|browser|deployment|release-images|native-client|physical-incident|upgrade-local|upgrade-oidc) ;; *) exit 2 ;; esac
+          source_sha="$(git rev-parse HEAD)"
+          version="$(python3 tools/ci/product-version.py)"
+          export NETRATEL_DOTNET_SDK_VERSION="$(dotnet --version)"
+          [[ "$source_sha" =~ ^[a-f0-9]{40}$ ]]
+          if [[ "$SUITE" == release-images || "$SUITE" == upgrade-local || "$SUITE" == upgrade-oidc ]]; then
+            [[ "$RELEASE_TAG" == "v${version}" ]]
+            test "$(git rev-parse "${RELEASE_TAG}^{commit}")" = "$source_sha"
+            git merge-base --is-ancestor "$source_sha" origin/main
+          fi
+          printf 'SOURCE_SHA=%s\nVERSION=%s\nNETRATEL_REVIEW_SOURCE_SHA=%s\nNETRATEL_REVIEW_TEST_MERGE_SHA=%s\nNETRATEL_SERVICE_LINK_CANDIDATE_SHA=%s\n' \
+            "$source_sha" "$version" "$source_sha" "$source_sha" "$source_sha" >> "$GITHUB_ENV"
+          printf 'NETRATEL_DOTNET_SDK_VERSION=%s\n' "$NETRATEL_DOTNET_SDK_VERSION" >> "$GITHUB_ENV"
+          mkdir -p TestResults
+          python3 - "$source_sha" "$version" <<'PY'
+          import json, os, re, sys
+          from pathlib import Path
+          identity = {"suite": os.environ["SUITE"], "sourceSha": sys.argv[1], "productVersion": sys.argv[2],
+                      "dotnetSdkVersion": os.environ["NETRATEL_DOTNET_SDK_VERSION"],
+                      "runId": os.environ["GITHUB_RUN_ID"], "attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+                      "workflowEventSha": os.environ["GITHUB_SHA"]}
+          if identity["suite"] in ("service-link", "physical-incident"):
+              peer = Path("src/NetRatel/NetRatel.API.IntegrationTests/ServiceLinkPublishedRatelDeskPeer.cs").read_text()
+              identity["companion"] = {name: re.search(rf'\b{name}\s*=\s*"([^"]+)"', peer).group(1)
+                                       for name in ("PublishedSource", "PublishedVersion", "ApiImage", "WebImage")}
+          Path("TestResults/selected-source.json").write_text(json.dumps(identity, indent=2) + "\n")
+          PY
+      - name: Restore and build selected test assembly
+        if: inputs.suite == 'service-link' || inputs.suite == 'physical-incident' || inputs.suite == 'gateway' || inputs.suite == 'browser' || inputs.suite == 'upgrade-oidc'
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$SUITE" in
+            service-link|physical-incident)
+              if [[ "$SUITE" == physical-incident && ! -f tools/ci/run-physical-disk-incident-proof.sh ]]; then
+                echo 'The selected source does not contain the physical incident helper; choose a source including connector PR #152.' >&2
+                exit 1
+              fi
+              project=src/NetRatel/NetRatel.API.IntegrationTests/NetRatel.API.IntegrationTests.csproj ;;
+            gateway) project=src/NetRatel/NetRatel.Tests/NetRatel.Tests.csproj ;;
+            browser|upgrade-oidc) project=src/NetRatel/NetRatel.Web.PlaywrightTests/NetRatel.Web.PlaywrightTests.csproj ;;
+          esac
+          dotnet restore "$project"
+          dotnet build "$project" --configuration Release --no-restore
+      - name: Run service-link interoperability and native receipts
+        if: inputs.suite == 'service-link'
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet test --project src/NetRatel/NetRatel.API.IntegrationTests/NetRatel.API.IntegrationTests.csproj \
+            --configuration Release --no-build --no-restore --max-parallel-test-modules 1 \
+            --filter-trait category=manual-integration \
+            --results-directory TestResults --report-trx \
+            --report-trx-filename 'netratel-tests-{asm}_{tfm}_{arch}.trx'
+          python3 tools/ci/verify-mtp-trx.py TestResults/netratel-tests-NetRatel.API.IntegrationTests_*.trx
+          python3 tools/ci/verify-service-link-native-evidence.py --reports TestResults --evidence TestResults/service-link-proof
+      - name: Run requested physical incident with its original assertions and receipts
+        if: inputs.suite == 'physical-incident'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f tools/ci/run-physical-disk-incident-proof.sh
+          GITHUB_SHA="$SOURCE_SHA" bash tools/ci/run-physical-disk-incident-proof.sh
+      - name: Run sustained authenticated gateway profiles
+        if: inputs.suite == 'gateway'
+        env:
+          NETRATEL_GATEWAY_TEST_ASSEMBLY: ${{ github.workspace }}/src/NetRatel/NetRatel.Tests/bin/Release/net10.0/NetRatel.Tests.dll
+        run: bash tools/ci/tests/traefik-gateway-routing.sh
+      - name: Install requested browser
+        if: inputs.suite == 'browser' || inputs.suite == 'upgrade-oidc'
+        run: pwsh src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/playwright.ps1 install --with-deps chromium
+      - name: Run ordinary browser and UX acceptance
+        if: inputs.suite == 'browser'
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet test --project src/NetRatel/NetRatel.Web.PlaywrightTests/NetRatel.Web.PlaywrightTests.csproj \
+            --configuration Release --no-build --no-restore --max-parallel-test-modules 1 \
+            --filter-not-trait category=compose category=hosted \
+            --results-directory TestResults/browser --report-trx --report-trx-filename browser.trx
+          python3 tools/ci/verify-mtp-trx.py TestResults/browser/browser.trx
+      - name: Install OIDC browser trust tools
+        if: inputs.suite == 'deployment' || inputs.suite == 'release-images' || inputs.suite == 'upgrade-oidc'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libnss3-tools
+      - name: Build source deployment inputs once
+        if: inputs.suite == 'deployment'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/manual-tools/cli" "$RUNNER_TEMP/manual-tools/mcp"
+          dotnet restore src/NetRatel/NetRatel.Cli/NetRatel.Cli.csproj --runtime linux-x64
+          dotnet restore src/NetRatel/NetRatel.Mcp/NetRatel.Mcp.csproj --runtime linux-x64
+          dotnet publish src/NetRatel/NetRatel.Cli/NetRatel.Cli.csproj --configuration Release --no-restore \
+            --runtime linux-x64 --self-contained false --output "$RUNNER_TEMP/manual-tools/cli/netratel-cli-linux-x64"
+          dotnet publish src/NetRatel/NetRatel.Mcp/NetRatel.Mcp.csproj --configuration Release --no-restore \
+            --runtime linux-x64 --self-contained false --output "$RUNNER_TEMP/manual-tools/mcp/netratel-mcp-linux-x64"
+          tar -C "$RUNNER_TEMP/manual-tools/cli" -czf "$RUNNER_TEMP/manual-tools/cli.tar.gz" netratel-cli-linux-x64
+          tar -C "$RUNNER_TEMP/manual-tools/mcp" -czf "$RUNNER_TEMP/manual-tools/mcp.tar.gz" netratel-mcp-linux-x64
+          tools/ci/build-public-image.sh --dockerfile docker/client/Dockerfile.public \
+            --image netratel-client:manual-deployment --version "$VERSION" --revision "$SOURCE_SHA"
+          tools/ci/scan-public-image.sh --image netratel-client:manual-deployment --version "$VERSION" --revision "$SOURCE_SHA"
+          docker image inspect netratel-client:manual-deployment --format '{{.Id}}' > TestResults/source-client-image-id.txt
+          (cd "$RUNNER_TEMP/manual-tools" && sha256sum cli.tar.gz mcp.tar.gz) > TestResults/deployment-tool-SHA256SUMS
+          printf 'NETRATEL_CLIENT_SMOKE_IMAGE=netratel-client:manual-deployment\nNETRATEL_COMPOSE_SMOKE_MODE=source\nNETRATEL_CLI_SMOKE_ARCHIVE=%s/manual-tools/cli.tar.gz\nNETRATEL_MCP_STDIO_SMOKE_ARCHIVE=%s/manual-tools/mcp.tar.gz\n' \
+            "$RUNNER_TEMP" "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - name: Download and validate the selected completed public release
+        if: inputs.suite == 'release-images' || inputs.suite == 'upgrade-local' || inputs.suite == 'upgrade-oidc'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > TestResults/selected-release-metadata.json
+          mkdir -p "$RUNNER_TEMP/manual-release"
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$RUNNER_TEMP/manual-release" \
+            --pattern publication.json --pattern SHA256SUMS \
+            --pattern "netratel-cli-${VERSION}-linux-x64.tar.gz" \
+            --pattern "netratel-mcp-stdio-${VERSION}-linux-x64.tar.gz" \
+            --pattern "netratel-compose-${VERSION}.tar.gz"
+          if [[ "$SUITE" == upgrade-oidc ]]; then
+            gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$RUNNER_TEMP/manual-release" \
+              --pattern "netratel-client-${VERSION}-linux-x64.tar.gz"
+          fi
+          python3 - <<'PY'
+          import hashlib, importlib.util, json, os, re
+          from pathlib import Path
+          spec = importlib.util.spec_from_file_location("promotion", "tools/ci/promote-release.py")
+          promotion = importlib.util.module_from_spec(spec); spec.loader.exec_module(promotion)
+          directory = Path(os.environ["RUNNER_TEMP"]) / "manual-release"
+          release = json.loads(Path("TestResults/selected-release-metadata.json").read_text())
+          version, source = os.environ["VERSION"], os.environ["SOURCE_SHA"]
+          if release.get("draft") is not False or not release.get("published_at") or release.get("tag_name") != os.environ["RELEASE_TAG"]:
+              raise ValueError("Requested release is not published for the selected tag")
+          uploaded = [asset for asset in release["assets"] if asset.get("state") == "uploaded"]
+          assets = {asset["name"]: asset for asset in uploaded}
+          if len(assets) != len(uploaded):
+              raise ValueError("Selected release contains duplicate asset names")
+          for path in directory.iterdir():
+              asset = assets[path.name]
+              digest = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+              if asset.get("size") != path.stat().st_size or asset.get("digest") != digest:
+                  raise ValueError("Public asset identity differs: " + path.name)
+          record = json.loads((directory / "publication.json").read_text())
+          if (record.get("productVersion"), record.get("publicCommit"), record.get("verification", {}).get("state")) != (version, source, "complete"):
+              raise ValueError("Completed publication does not match the selected source/tag/version")
+          promotion.validate_input_receipt_identity(record["inputReceipt"], version, source)
+          receipt = record["inputReceipt"]
+          build = json.loads(promotion.run("gh", "api", f"repos/{promotion.REPOSITORY}/actions/runs/{receipt['runId']}/attempts/{receipt['attempt']}"))
+          if (build.get("conclusion"), build.get("head_sha"), build.get("path")) != ("success", source, ".github/workflows/release-build.yml"):
+              raise ValueError("Publication receipt does not identify a successful exact-source release build")
+          if set(record.get("artifacts", {})) != set(promotion.required_artifacts(version)):
+              raise ValueError("Publication does not bind the required distribution inventory")
+          for name, digest in record["artifacts"].items():
+              if assets[name].get("digest") != "sha256:" + digest:
+                  raise ValueError("Public distribution digest differs: " + name)
+          images = record["images"]; promotion.validate_digests(images)
+          for name, image in images.items():
+              if not image.startswith(promotion.IMAGE_REPOSITORIES[name] + "@sha256:"):
+                  raise ValueError("Publication image repository differs: " + name)
+          sums = {}
+          for line in (directory / "SHA256SUMS").read_text().splitlines():
+              digest, name = line.split(maxsplit=1)
+              if name in sums or Path(name).name != name or not re.fullmatch("[a-f0-9]{64}", digest):
+                  raise ValueError("Invalid publication checksum inventory")
+              sums[name] = digest
+          if set(sums) != set(record["artifacts"]) | {"publication.json"}:
+              raise ValueError("Publication checksum inventory differs")
+          for path in directory.iterdir():
+              if path.name == "SHA256SUMS": continue
+              actual = promotion.sha256(path)
+              if sums[path.name] != actual or (path.name != "publication.json" and record["artifacts"][path.name] != actual):
+                  raise ValueError("Publication artifact checksum differs: " + path.name)
+          with Path(os.environ["GITHUB_ENV"]).open("a") as env:
+              for name, variable in promotion.IMAGE_VARIABLES.items(): env.write(f"{variable}={images[name]}\n")
+              env.write(f"NETRATEL_CLIENT_SMOKE_IMAGE={images['client']}\nNETRATEL_MCP_HTTP_SMOKE_IMAGE={images['mcp-http']}\nNETRATEL_COMPOSE_SMOKE_MODE=release-images\n")
+              for variable, name in (("NETRATEL_CLI_SMOKE_ARCHIVE", f"netratel-cli-{version}-linux-x64.tar.gz"), ("NETRATEL_MCP_STDIO_SMOKE_ARCHIVE", f"netratel-mcp-stdio-{version}-linux-x64.tar.gz"), ("NETRATEL_COMPOSE_SMOKE_BUNDLE", f"netratel-compose-{version}.tar.gz")):
+                  env.write(f"{variable}={directory / name}\n")
+              if os.environ["SUITE"] in ("upgrade-local", "upgrade-oidc"):
+                  for name in ("api", "migrations", "web"):
+                      env.write(f"NETRATEL_UPGRADE_CURRENT_{name.upper()}_IMAGE={images[name]}\n")
+                  env.write(f"NETRATEL_UPGRADE_COMPOSE_BUNDLE={directory / f'netratel-compose-{version}.tar.gz'}\nNETRATEL_UPGRADE_CURRENT_CLI_ARCHIVE={directory / f'netratel-cli-{version}-linux-x64.tar.gz'}\n")
+                  if os.environ["SUITE"] == "upgrade-oidc":
+                      env.write(f"NETRATEL_UPGRADE_CURRENT_CLIENT_ARCHIVE={directory / f'netratel-client-{version}-linux-x64.tar.gz'}\n")
+          Path("TestResults/selected-publication.json").write_text(json.dumps(record, indent=2) + "\n")
+          PY
+      - name: Select and record the completed prior release once
+        if: inputs.suite == 'upgrade-local' || inputs.suite == 'upgrade-oidc'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/ci/select-prior-release.py > TestResults/selected-prior-release.json
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          prior = json.loads(Path("TestResults/selected-prior-release.json").read_text())
+          with Path(os.environ["GITHUB_ENV"]).open("a") as env:
+              env.write(f"NETRATEL_UPGRADE_PRIOR_VERSION={prior['tag']}\n")
+              for name in ("api", "migrations", "web", "client"):
+                  env.write(f"NETRATEL_UPGRADE_PRIOR_{name.upper()}_IMAGE={prior['images'][name]}\n")
+          PY
+      - name: Run the selected PostgreSQL upgrade helper
+        if: inputs.suite == 'upgrade-local' || inputs.suite == 'upgrade-oidc'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$SUITE" in
+            upgrade-local) bash tools/ci/smoke-postgresql-local-upgrade.sh ;;
+            upgrade-oidc) bash tools/ci/smoke-postgresql-oidc-upgrade.sh ;;
+          esac
+      - name: Run selected source or release-image OIDC deployment
+        if: inputs.suite == 'deployment' || inputs.suite == 'release-images'
+        env:
+          NETRATEL_SMOKE_AUTH_ENVIRONMENT: Production
+        run: bash tools/ci/smoke-oidc-compose.sh
+      - name: Run selected published HTTP MCP image smoke
+        if: inputs.suite == 'release-images'
+        run: bash tools/ci/smoke-mcp-http-image.sh
+      - name: Build and execute the selected Linux native client archive
+        if: inputs.suite == 'native-client'
+        shell: bash
+        run: |
+          set -euo pipefail
+          directory=artifacts/netratel-client-linux-x64
+          dotnet restore src/NetRatel/NetRatel.Client/NetRatel.Client.csproj --runtime linux-x64
+          dotnet publish src/NetRatel/NetRatel.Client/NetRatel.Client.csproj --configuration Release --no-restore \
+            --runtime linux-x64 --self-contained true --output "$directory" -p:SourceRevisionId="$SOURCE_SHA"
+          cp LICENSE NOTICE "$directory/"
+          python3 tools/ci/generate-runtime-sbom.py \
+            --project-assets src/NetRatel/NetRatel.Client/obj/project.assets.json \
+            --distribution "$directory" --runtime linux-x64 --name NetRatel-Client-linux-x64 \
+            --version "$VERSION" --output "artifacts/netratel-client-${VERSION}-linux-x64.spdx.json"
+          tar -C artifacts -czf "artifacts/netratel-client-${VERSION}-linux-x64.tar.gz" netratel-client-linux-x64
+          (cd artifacts && sha256sum "netratel-client-${VERSION}-linux-x64.tar.gz" "netratel-client-${VERSION}-linux-x64.spdx.json" > SHA256SUMS)
+          python3 - "artifacts/netratel-client-${VERSION}-linux-x64.tar.gz" <<'PY'
+          import json, os, sys, tarfile
+          with tarfile.open(sys.argv[1]) as archive:
+              manifest = json.load(archive.extractfile("netratel-client-linux-x64/netratel-client-manifest.json"))
+          if (manifest.get("schema"), manifest.get("commitSha"), manifest.get("executable")) != ("netratel.client.manifest.v1", os.environ["SOURCE_SHA"], "NetRatel.Client"):
+              raise ValueError("Native archive source differs from the selected checkout")
+          PY
+          cp artifacts/SHA256SUMS TestResults/native-client-SHA256SUMS
+          tools/ci/verify-client-release-artifact.sh --artifacts artifacts --version "$VERSION" --runtime linux-x64 --extension tar.gz
+      - name: Summarize selected run identity and outcome
+        if: always()
+        env:
+          SELECTED_OUTCOME: ${{ job.status }}
+          WORKFLOW_SOURCE_SHA: ${{ github.workflow_sha }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          identity = Path("TestResults/selected-source.json")
+          with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as summary:
+              summary.write(f"Selected manual suite: {os.environ['SUITE']}\n\nOutcome before artifact upload: {os.environ['SELECTED_OUTCOME']}\n\nWorkflow definition SHA: {os.environ['WORKFLOW_SOURCE_SHA']}\n\n")
+              if identity.is_file(): summary.write("```json\n" + identity.read_text() + "```\n")
+              publication = Path("TestResults/selected-publication.json")
+              if publication.is_file():
+                  record = json.loads(publication.read_text())
+                  release = json.loads(Path("TestResults/selected-release-metadata.json").read_text())
+                  publication_asset = next(asset for asset in release["assets"] if asset["name"] == "publication.json")
+                  release_identity = {"releaseId": release["id"], "tag": release["tag_name"],
+                                      "publicationAsset": {key: publication_asset[key] for key in ("id", "name", "digest")},
+                                      "buildRunId": record["inputReceipt"]["runId"], "buildAttempt": record["inputReceipt"]["attempt"],
+                                      "images": record["images"]}
+                  summary.write("\nSelected completed release identity:\n\n```json\n" + json.dumps(release_identity, indent=2) + "\n```\n")
+              for filename in ("native-client-SHA256SUMS", "deployment-tool-SHA256SUMS", "source-client-image-id.txt"):
+                  artifact = Path("TestResults") / filename
+                  if artifact.is_file(): summary.write(f"\n{filename}:\n\n```text\n{artifact.read_text()}```\n")
+              prior = Path("TestResults/selected-prior-release.json")
+              if prior.is_file(): summary.write("\nSelected prior completed release:\n\n```json\n" + prior.read_text() + "```\n")
+              summary.write("\nOther manual suites were not run. This workflow is not an automatic merge or publication dependency.\n")
+          PY
+      - name: Retain selected TRX, screenshots and sanitized receipts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: manual-${{ inputs.suite }}-evidence
+          path: |
+            TestResults
+            src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/TestResults/playwright
+          if-no-files-found: warn
+          retention-days: 14
