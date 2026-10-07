@@ -640,6 +640,10 @@ function Initialize-NetRatelUpdaterPreflight {
         -not [string]::Equals($script:FromVersion, $script:InstalledVersion, [System.StringComparison]::OrdinalIgnoreCase)) {
         throw 'The update request current version does not match the registered client package.'
     }
+    $requestedExecutable = Join-Path (Join-Path (Join-Path $resolvedRoot 'versions') $version) 'NetRatel.Client.exe'
+    if ([string]::Equals($registeredExecutable, $requestedExecutable, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw 'The requested version is already the registered immutable package; use the service repair route instead of replacing its running version.'
+    }
     $script:ToVersion = $version
     return $request
 }
@@ -875,6 +879,18 @@ function Invoke-NetRatelRollback($reason) {
             throw "$ClientService did not stop; rollback left the running executable and package files untouched."
         }
 
+        # Restore the live previous image before removing the candidate. An
+        # interruption must leave SCM pointing at an intact owned package so
+        # the durable start-mode guard can be recovered on the next invocation.
+        if (-not [string]::IsNullOrWhiteSpace($script:PreviousPath) -and $script:CandidateInstalled) {
+            $previousExecutable = Assert-NetRatelOwnedServiceImage -ImagePath $script:PreviousPath
+            if (-not (Test-Path -LiteralPath $previousExecutable -PathType Leaf)) {
+                throw 'The previous registered executable is unavailable; candidate files were retained.'
+            }
+            Set-NetRatelServiceImagePath $script:PreviousPath
+            $script:ActivePath = $script:PreviousPath
+            Write-State 'guarding_rollback_previous' $script:ToVersion
+        }
         New-Item -ItemType Directory -Path $FailedDir -Force | Out-Null
         if ($script:CandidateInstalled -and -not [string]::IsNullOrWhiteSpace($script:TargetDir) -and (Test-Path $script:TargetDir)) {
             $failedTarget = Join-Path $FailedDir "$($script:ToVersion)-$((Get-Date).ToUniversalTime().ToString('yyyyMMddHHmmss'))-$($script:AttemptId)"
@@ -882,10 +898,6 @@ function Invoke-NetRatelRollback($reason) {
         }
         if ($script:TargetMovedToBackup -and -not [string]::IsNullOrWhiteSpace($script:TargetBackupPath) -and (Test-Path $script:TargetBackupPath)) {
             Move-Item -Path $script:TargetBackupPath -Destination $script:TargetDir -Force -ErrorAction Stop
-        }
-        if (-not [string]::IsNullOrWhiteSpace($script:PreviousPath) -and $script:CandidateInstalled) {
-            Set-NetRatelServiceImagePath $script:PreviousPath
-            $script:ActivePath = $script:PreviousPath
         }
     }
     catch {

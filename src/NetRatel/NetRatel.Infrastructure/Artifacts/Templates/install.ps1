@@ -330,6 +330,58 @@ function Restore-CutoverMode($Record) {
     Write-CutoverState $Record
 }
 
+function Repair-InterruptedPackageMove([string]$RootDir, [string]$StateDir) {
+    # Resolve these roots from the registered service/environment before its
+    # missing executable is inspected. Only our protected move intent can
+    # authorize restoring the exact registered package while SCM is fenced.
+    Assert-OwnedPath $RootDir
+    Assert-OwnedPath $StateDir
+    $statePath = Join-Path $StateDir 'state.json'
+    Assert-OwnedPath $statePath -File
+    $lockPath = Join-Path $StateDir 'update.lock'
+    Assert-OwnedPath $lockPath -AllowMissing -File
+    $recoveryLock = [IO.File]::Open($lockPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    try {
+        $record = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+        if (-not $record.startModeGuardActive -or -not $record.packageMovePending -or
+            [string]$record.version -notmatch $versionPattern -or [string]$record.repairAttempt -notmatch '^[a-f0-9]{32}$' -or
+            [string]$record.runtimeId -cne $Runtime -or (Get-CanonicalPath ([string]$record.packageRoot)) -ne $RootDir) {
+            throw 'The missing registered package has no attributable protected repair intent.'
+        }
+        $target = Join-Path (Join-Path $RootDir 'versions') ([string]$record.version)
+        $backup = Join-Path (Join-Path $RootDir 'failed') "$($record.version)-replaced-$($record.repairAttempt)"
+        if ((Get-CanonicalPath ([string]$record.packageTarget)) -ne $target -or
+            (Get-CanonicalPath ([string]$record.packageBackup)) -ne $backup) {
+            throw 'The recorded package move escapes the owned repair layout.'
+        }
+        $expectedImage = '"' + (Join-Path $target 'NetRatel.Client.exe') + '" --service'
+        $registered = Get-CimInstance Win32_Service -Filter "Name='$serviceName'" -OperationTimeoutSec 10
+        if (-not $registered -or $registered.StartName -notin @('LocalSystem', 'NT AUTHORITY\SYSTEM') -or
+            $registered.State -ne 'Stopped' -or $registered.StartMode -ne 'Disabled' -or
+            [string]$registered.PathName -ne $expectedImage -or [string]$record.previousPath -ne $expectedImage -or
+            [string]$record.intendedStartMode -notin @('Auto', 'Manual')) {
+            throw 'The service changed during the package move; preserved files require manual inspection.'
+        }
+        Assert-OwnedPath $target -AllowMissing
+        if (Test-Path -LiteralPath $target) { throw 'The registered package target is present; interrupted-move recovery refuses to replace it.' }
+        Assert-OwnedTree $backup
+        Assert-OwnedPath (Join-Path $backup 'NetRatel.Client.exe') -File
+        $manifestPath = Join-Path $backup 'netratel-client-manifest.json'
+        Assert-OwnedPath $manifestPath -File
+        $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+        if ($manifest.schema -cne 'netratel.client.manifest.v1' -or $manifest.product -cne 'NetRatel.Client' -or
+            $manifest.version -cne [string]$record.version -or $manifest.runtimeId -cne $Runtime -or
+            $manifest.executable -cne 'NetRatel.Client.exe' -or $manifest.commitSha -notmatch '^[a-fA-F0-9]{40}$') {
+            throw 'The protected backup does not identify the registered NetRatel package.'
+        }
+        Move-Item -LiteralPath $backup -Destination $target
+        $record.packageMovePending = $false
+        Write-CutoverState $record
+        Write-Host 'Restored the registered package from its protected interrupted repair intent; authenticated activation remains unverified.'
+    }
+    finally { $recoveryLock.Dispose() }
+}
+
 function Get-SafeDiagnosticLine([string]$Line) {
     # Only these fixed Auth messages may bypass the sensitive-line filter.
     # Anchor the entire message, including the optional production timestamp.
@@ -432,11 +484,16 @@ try {
         if (-not $match.Success) { throw 'The existing service image is unsupported; refusing to modify it.' }
         $previousExe = Get-CanonicalPath $match.Groups['exe'].Value
         $previousDir = Split-Path -Parent $previousExe
-        Assert-OwnedPath $previousDir
         if ((Split-Path -Leaf $previousExe) -ne 'NetRatel.Client.exe') { throw 'The existing service executable is not NetRatel.Client.' }
         $registeredRoot = $previousDir
         if ((Split-Path -Leaf $previousDir) -match $versionPattern -and (Split-Path -Leaf (Split-Path -Parent $previousDir)) -eq 'versions') { $registeredRoot = Split-Path -Parent (Split-Path -Parent $previousDir) }
         $previousEnvironment = @((Get-ItemProperty -LiteralPath $serviceRegistry).Environment | Where-Object { $_ -is [string] })
+        if (-not (Test-Path -LiteralPath $previousExe -PathType Leaf)) {
+            $recoveryRoot = Resolve-PathSetting $env:NetRatel_ROOT @((Get-ServiceEnvironment 'NetRatel_UPDATE_ROOT'), $registeredRoot) (Join-Path $env:ProgramFiles 'NetRatel\Client') 'package root'
+            $recoveryState = Resolve-PathSetting $env:NetRatel_STATE @((Get-ServiceEnvironment 'NetRatel_UPDATE_STATE'), (Get-ClientSetting 'Client__AutoUpdate__StateDirectory')) (Join-Path $env:ProgramData 'NetRatel\update') 'updater state'
+            Repair-InterruptedPackageMove $recoveryRoot $recoveryState
+        }
+        Assert-OwnedPath $previousDir
         Assert-OwnedPath $previousExe -File
         Assert-OwnedPath (Join-Path $previousDir 'netratel-client-manifest.json') -File
         $oldManifest = Get-Content -LiteralPath (Join-Path $previousDir 'netratel-client-manifest.json') -Raw | ConvertFrom-Json
@@ -600,16 +657,22 @@ try {
             if ($existingService.StartMode -notin @('Auto', 'Manual')) { throw 'The existing service is disabled by an administrator; reconcile its start mode before repair.' }
             $cutoverRecord = [pscustomobject]@{ state = 'guarding_cutover'; version = $resolvedVersion;
                 intendedStartMode = $existingService.StartMode; startModeGuardActive = $true;
-                previousPath = $existingService.PathName; activePath = $existingService.PathName }
+                previousPath = $existingService.PathName; activePath = $existingService.PathName;
+                packageMovePending = $false; packageRoot = $RootDir; packageTarget = $target;
+                packageBackup = $backup; repairAttempt = $attempt; runtimeId = $Runtime }
             Write-CutoverState $cutoverRecord
             Invoke-ServiceControl @('config', $serviceName, 'start=', 'disabled')
             if ((Get-CimInstance Win32_Service -Filter "Name='$serviceName'" -OperationTimeoutSec 10).StartMode -ne 'Disabled') { throw 'Service cutover start-mode fence did not verify.' }
             $stopAttempted = $true; Set-ServiceState 'Stopped'
         }
         $cutover = $true
-        if (Test-Path -LiteralPath $target) { Move-Item -LiteralPath $target -Destination $backup; $backedUp = $true }
+        if (Test-Path -LiteralPath $target) {
+            if ($cutoverRecord) { $cutoverRecord.packageMovePending = $true; Write-CutoverState $cutoverRecord }
+            Move-Item -LiteralPath $target -Destination $backup; $backedUp = $true
+        }
         Move-Item -LiteralPath $stageDir -Destination $target
         $activated = $true
+        if ($cutoverRecord) { $cutoverRecord.packageMovePending = $false; Write-CutoverState $cutoverRecord }
         $exe = Join-Path $target 'NetRatel.Client.exe'
         if ($InstallAsService) {
             $enrollment = @{ schema = 'netratel.enroll.v1'; tenantId = [int]$TenantId; enrollmentCode = $EnrollmentCode; issuer = $ApiBase; createdAtUtc = [DateTimeOffset]::UtcNow.ToString('O'); validToUtc = $ValidToUtc } | ConvertTo-Json
@@ -683,7 +746,9 @@ try {
                 if ($InstallAsService -and ($existingService -or $created)) {
                     if ($created -and -not $cutoverRecord) {
                         $cutoverRecord = [pscustomobject]@{ state='guarding_cutover'; version=$resolvedVersion;
-                            intendedStartMode='Auto'; startModeGuardActive=$true; previousPath=$image; activePath=$image }
+                            intendedStartMode='Auto'; startModeGuardActive=$true; previousPath=$image; activePath=$image;
+                            packageMovePending=$false; packageRoot=$RootDir; packageTarget=$target;
+                            packageBackup=$backup; repairAttempt=$attempt; runtimeId=$Runtime }
                     }
                     if ($cutoverRecord) {
                         $cutoverRecord.startModeGuardActive = $true
@@ -706,11 +771,15 @@ try {
                     else { Remove-ItemProperty -LiteralPath $serviceRegistry -Name Environment -ErrorAction SilentlyContinue }
                 }
                 if ($activated) {
+                    if ($cutoverRecord -and $backedUp) { $cutoverRecord.packageMovePending = $true; Write-CutoverState $cutoverRecord }
                     $bootstrap = Join-Path $target 'netratel.enroll.json'
                     if ($InstallAsService -and (Test-Path -LiteralPath $bootstrap)) { Assert-OwnedPath $bootstrap -File; Remove-Item -LiteralPath $bootstrap }
                     Move-Item -LiteralPath $target -Destination (Join-Path $FailedDir "$resolvedVersion-failed-$attempt")
                 }
-                if ($backedUp) { Move-Item -LiteralPath $backup -Destination $target }
+                if ($backedUp) {
+                    Move-Item -LiteralPath $backup -Destination $target
+                    if ($cutoverRecord) { $cutoverRecord.packageMovePending = $false; Write-CutoverState $cutoverRecord }
+                }
                 if ($updaterChanged) {
                     if (Test-Path -LiteralPath $updaterPath) { Remove-Item -LiteralPath $updaterPath }
                     if (Test-Path -LiteralPath $updaterBackup) { Move-Item -LiteralPath $updaterBackup -Destination $updaterPath }

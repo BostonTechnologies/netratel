@@ -198,7 +198,7 @@ internal sealed class LinuxRecoveryPolicyAdapter : INativeRecoveryPolicyAdapter
 
 internal sealed class WindowsRecoveryPolicyAdapter : INativeRecoveryPolicyAdapter
 {
-    private const uint QueryConfig = 1, ChangeConfig = 2, QueryStatus = 4;
+    private const uint QueryConfig = 1, ChangeConfig = 2, QueryStatus = 4, Start = 0x10;
     private const uint FailureActions = 2, FailureFlag = 4;
     private static readonly ActionEntry[] DesiredActions = [new(1, 30000), new(1, 60000), new(1, 300000)];
 
@@ -237,7 +237,8 @@ internal sealed class WindowsRecoveryPolicyAdapter : INativeRecoveryPolicyAdapte
     public Task ApplyAsync(CancellationToken stopping)
     {
         stopping.ThrowIfCancellationRequested();
-        using var service = Open(QueryConfig | QueryStatus | ChangeConfig);
+        // ChangeServiceConfig2 requires SERVICE_START when failure actions restart the service.
+        using var service = Open(QueryConfig | QueryStatus | ChangeConfig | Start);
         using var actions = new NativeBuffer(Marshal.SizeOf<ActionEntry>() * DesiredActions.Length);
         for (var i = 0; i < DesiredActions.Length; i++) Marshal.StructureToPtr(DesiredActions[i], actions.Pointer + i * Marshal.SizeOf<ActionEntry>(), false);
         var policy = new FailurePolicy { ResetSeconds = ManagedServiceRecovery.WindowsResetSeconds, Count = 3, Actions = actions.Pointer };

@@ -17,6 +17,132 @@ namespace NetRatel.Tests.Infrastructure;
 public sealed class WindowsInstallerTemplateTests
 {
     [Fact]
+    public async Task UpdaterInterruptedRollback_KeepsRegisteredExecutablePresent_AndRestoresGuardOnRerun()
+    {
+        await WithFixture(async root =>
+        {
+            var repositoryRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../../"));
+            var updater = await File.ReadAllTextAsync(Path.Combine(repositoryRoot, "src/NetRatel/NetRatel.Client/tools/netratel-update.ps1"));
+            var result = await RunRenderedFunctions(root, updater, """
+                $ClientService = 'NetRatel.Client'
+                $StatePath = Join-Path $args[1] 'state.json'
+                $LockPath = Join-Path $args[1] 'update.lock'
+                $FailedDir = Join-Path $args[1] 'failed'
+                $previous = Join-Path $args[1] 'versions/1.2.2'
+                $script:TargetDir = Join-Path $args[1] 'versions/1.2.3'
+                New-Item -ItemType Directory -Path $previous,$script:TargetDir,$FailedDir -Force | Out-Null
+                $previousExe = Join-Path $previous 'NetRatel.Client.exe'
+                $candidateExe = Join-Path $script:TargetDir 'NetRatel.Client.exe'
+                Set-Content -LiteralPath $previousExe -Value 'fixture previous package'
+                Set-Content -LiteralPath $candidateExe -Value 'fixture candidate package'
+                $script:PreviousPath = '"' + $previousExe + '" --service'
+                $script:ActivePath = '"' + $candidateExe + '" --service'
+                $script:AttemptId = [Guid]::NewGuid().ToString()
+                $script:ToVersion = '1.2.3'
+                $script:RuntimeId = 'win-x64'
+                $script:CandidateInstalled = $true
+                $script:TargetMovedToBackup = $false
+                $script:StartModeGuardActive = $false
+                $script:movedCandidate = $false
+                $script:started = $false
+                $script:service = [pscustomobject]@{ PathName=$script:ActivePath; StartMode='Manual'; State='Stopped' }
+                function Get-CimInstance { param($ClassName,$Filter,$ErrorAction) return $script:service }
+                function Assert-NetRatelOwnedServiceImage {
+                    param($ImagePath)
+                    $executable = [regex]::Match($ImagePath, '^"([^"]+)" --service$').Groups[1].Value
+                    if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) { throw 'Registered executable is missing.' }
+                    return $executable
+                }
+                function Assert-NetRatelTrustedPath { param($Path,$LeafIsDirectory,$AllowLocalAdministrator) return $Path }
+                function Archive-ActivationEvidence { }
+                function Write-Result { param($status,$message,$errorText) }
+                function Set-NetRatelServiceImagePath { param($ImagePath) [void](Assert-NetRatelOwnedServiceImage $ImagePath); $script:service.PathName=$ImagePath }
+                function Set-Service { param($Name,$StartupType,$ErrorAction) $script:service.StartMode=@{Automatic='Auto';Manual='Manual';Disabled='Disabled'}[[string]$StartupType] }
+                function Start-Service { param($Name,$ErrorAction) [void](Assert-NetRatelOwnedServiceImage $script:service.PathName); if($script:service.StartMode -eq 'Disabled'){throw 'Service remained disabled.'}; $script:started=$true }
+                function Move-Item {
+                    [CmdletBinding()]
+                    param([string]$Path,[string]$LiteralPath,[string]$Destination,[switch]$Force)
+                    $source = if ($LiteralPath) { $LiteralPath } else { $Path }
+                    if ($source -eq $script:TargetDir) {
+                        if ($script:service.StartMode -ne 'Disabled' -or $script:service.State -ne 'Stopped' -or $script:service.PathName -ne $script:PreviousPath) { throw 'Candidate removed before restoring the stopped registered predecessor.' }
+                        [void](Assert-NetRatelOwnedServiceImage $script:service.PathName)
+                        Microsoft.PowerShell.Management\Move-Item -LiteralPath $source -Destination $Destination -Force:$Force
+                        [void](Assert-NetRatelOwnedServiceImage $script:service.PathName)
+                        $script:movedCandidate=$true
+                        throw 'Simulated interruption after candidate removal.'
+                    }
+                    Microsoft.PowerShell.Management\Move-Item -LiteralPath $source -Destination $Destination -Force:$Force
+                }
+                $interrupted=$false
+                try { Invoke-NetRatelRollback 'fixture_interruption' } catch { $interrupted=$true }
+                if(-not $interrupted -or -not $script:movedCandidate){throw 'The rollback interruption boundary was not reached safely.'}
+                $script:StartModeGuardActive=$false
+                Repair-NetRatelInterruptedStartMode
+                if(-not $script:started -or $script:service.StartMode -ne 'Manual'){throw 'Rerun did not restore the predecessor and intended mode.'}
+                if((Get-Content -LiteralPath $StatePath -Raw|ConvertFrom-Json).startModeGuardActive){throw 'Recovered guard stayed active.'}
+                """, arguments: [root]);
+            result.ExitCode.Should().Be(0, result.Output);
+        });
+    }
+
+    [Fact]
+    public async Task InstallerInterruptedPackageMove_RestoresBoundBackupBeforeImageProbe_AndRejectsAdministratorOverride()
+    {
+        await WithFixture(async root =>
+        {
+            var result = await RunFunctions(root, """
+                $RootDir = $args[1]
+                $StateDir = Join-Path $RootDir 'state'
+                $serviceName = 'NetRatel.Client'
+                $Runtime = 'win-x64'
+                $versionPattern = '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$'
+                $version = '1.2.3'
+                $attempt = [Guid]::NewGuid().ToString('N')
+                $target = Join-Path (Join-Path $RootDir 'versions') $version
+                $backup = Join-Path (Join-Path $RootDir 'failed') "$version-replaced-$attempt"
+                New-Item -ItemType Directory -Path $StateDir,$target,(Split-Path -Parent $backup) -Force | Out-Null
+                $exe = Join-Path $target 'NetRatel.Client.exe'
+                Set-Content -LiteralPath $exe -Value 'retained previous package'
+                @{schema='netratel.client.manifest.v1';product='NetRatel.Client';version=$version;runtimeId=$Runtime;executable='NetRatel.Client.exe';commitSha=('a'*40)}|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $target 'netratel-client-manifest.json')
+                $image = '"' + $exe + '" --service'
+                $record = [pscustomobject]@{state='guarding_cutover';version=$version;runtimeId=$Runtime;repairAttempt=$attempt;
+                    packageRoot=$RootDir;packageTarget=$target;packageBackup=$backup;packageMovePending=$true;
+                    previousPath=$image;activePath=$image;intendedStartMode='Manual';startModeGuardActive=$true}
+                $script:service = [pscustomobject]@{PathName=$image;StartName='LocalSystem';StartMode='Disabled';State='Stopped'}
+                function Get-CanonicalPath { param($Path) return [IO.Path]::GetFullPath($Path) }
+                function Get-CimInstance { param($ClassName,$Filter,$OperationTimeoutSec) return $script:service }
+                function Assert-OwnedPath { param($Path,[switch]$AllowMissing,[switch]$File) if(-not $AllowMissing -and -not (Test-Path -LiteralPath $Path)){throw 'Required fixture path missing.'} }
+                function Assert-OwnedTree { param($Path) if(-not (Test-Path -LiteralPath $Path -PathType Container)){throw 'Required backup missing.'} }
+                function Write-PrivateFile { param($Path,$Text) Set-Content -LiteralPath $Path -Value $Text }
+                function Invoke-ServiceControl { param($Arguments) $script:service.StartMode=@{auto='Auto';demand='Manual';disabled='Disabled'}[[string]$Arguments[-1]] }
+                Write-CutoverState $record
+                Move-Item -LiteralPath $target -Destination $backup
+                if(Test-Path -LiteralPath $exe){throw 'Missing-package boundary was not reached.'}
+                $script:service.PathName='"administrator.exe" --service'
+                $rejected=$false
+                try{Repair-InterruptedPackageMove $RootDir $StateDir}catch{$rejected=$true}
+                if(-not $rejected -or (Test-Path -LiteralPath $target) -or -not (Test-Path -LiteralPath $backup)){throw 'Administrator image override did not preserve the backup.'}
+                $script:service.PathName=$image
+                # A recorded sibling backup is never an authorized restore source.
+                $record.packageBackup=Join-Path (Split-Path -Parent $backup) 'unrelated-package'
+                Write-CutoverState $record
+                $rejected=$false
+                try{Repair-InterruptedPackageMove $RootDir $StateDir}catch{$rejected=$true}
+                if(-not $rejected -or (Test-Path -LiteralPath $target)){throw 'An unbound backup was accepted.'}
+                $record.packageBackup=$backup
+                Write-CutoverState $record
+                Repair-InterruptedPackageMove $RootDir $StateDir
+                if(-not (Test-Path -LiteralPath $exe -PathType Leaf) -or (Test-Path -LiteralPath $backup)){throw 'Protected package backup was not restored.'}
+                $saved=Get-Content -LiteralPath (Join-Path $StateDir 'state.json') -Raw|ConvertFrom-Json
+                if($saved.packageMovePending -or -not $saved.startModeGuardActive){throw 'Package completion incorrectly cleared the native start-mode guard.'}
+                Restore-CutoverMode $saved
+                if($script:service.StartMode -ne 'Manual'){throw 'Intended native start mode was not recovered.'}
+                """, root);
+            result.ExitCode.Should().Be(0, result.Output);
+        });
+    }
+
+    [Fact]
     public async Task UpdaterCutover_FencesQueuedRestart_AndRepairsInterruptedManualMode()
     {
         await WithFixture(async root =>
