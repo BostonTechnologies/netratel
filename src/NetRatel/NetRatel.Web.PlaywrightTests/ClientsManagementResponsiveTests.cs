@@ -724,7 +724,7 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
         return Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "TestResults", "playwright"));
     }
 
-    private async Task CaptureFailureDiagnosticsBestEffortAsync(
+    internal async Task CaptureFailureDiagnosticsBestEffortAsync(
         IBrowser browser,
         IPage? page,
         BrowserStartupDiagnostics? startupDiagnostics,
@@ -857,7 +857,7 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
         return sanitized.Length <= 100 ? sanitized : sanitized[..100];
     }
 
-    private sealed class BrowserStartupDiagnostics
+    internal sealed class BrowserStartupDiagnostics
     {
         private const int MaximumTimelineEvents = 250;
         private readonly Stopwatch _clock = Stopwatch.StartNew();
@@ -936,7 +936,7 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
             path.StartsWith("/_blazor/", StringComparison.Ordinal);
     }
 
-    private sealed record BrowserTimelineEvent(long ElapsedMilliseconds, string Kind, string? Path, int? Status, string? Failure, string? Severity)
+    internal sealed record BrowserTimelineEvent(long ElapsedMilliseconds, string Kind, string? Path, int? Status, string? Failure, string? Severity)
     {
         public override string ToString() =>
             $"{ElapsedMilliseconds,5} ms {Kind}{(Severity is null ? "" : $" severity={Severity}")}{(Status is null ? "" : $" status={Status}")}{(Failure is null ? "" : $" failure={Failure}")}{(Path is null ? "" : $" path={Path}")}";
@@ -1009,7 +1009,7 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
         var path = GetSafeRequestPath(requestUrl);
         return path switch
         {
-            "/" or "/clients/mgmt" or "/_framework/blazor.web.js" or "/_content/MudBlazor/MudBlazor.min.js" or "/js/theme-preference.js" or "/app-site.css" or "/NetRatel.Web.styles.css" => path,
+            "/" or "/clients/mgmt" or "/monitoring" or "/_framework/blazor.web.js" or "/_content/MudBlazor/MudBlazor.min.js" or "/js/theme-preference.js" or "/app-site.css" or "/NetRatel.Web.styles.css" => path,
             _ when path.StartsWith("/_framework/", StringComparison.Ordinal) => "/_framework/(asset)",
             _ when path.StartsWith("/_content/", StringComparison.Ordinal) => "/_content/(asset)",
             _ when path.StartsWith("/_blazor", StringComparison.Ordinal) => "/_blazor/(endpoint)",
