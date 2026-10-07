@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Required hosted physical case in the existing Linux dotnet/validate jobs.
+# Opt-in hosted physical case selected by the manual integration workflow.
 # Build one full Client from this exact checkout and require independent receipts.
 set -euo pipefail
 
@@ -77,9 +77,9 @@ cleanup_physical_work_root() {
 }
 trap cleanup_physical_work_root EXIT
 
-# This hosted Category case is intentionally selected here, without the ordinary
-# solution's --filter-not-trait category=hosted. It is required, runs once and
-# fails this same job on any prerequisite/producer/protocol/evidence/cleanup error.
+# This hosted Category case is explicitly selected by the manual physical suite,
+# outside the default fast regressions. It runs once when requested and fails
+# that manual job on any prerequisite/producer/protocol/evidence/cleanup error.
 dotnet test --project src/NetRatel/NetRatel.API.IntegrationTests/NetRatel.API.IntegrationTests.csproj \
   --configuration Release --no-build --max-parallel-test-modules 1 \
   --filter-class NetRatel.API.IntegrationTests.ServiceLinks.PhysicalDiskIncidentTests \

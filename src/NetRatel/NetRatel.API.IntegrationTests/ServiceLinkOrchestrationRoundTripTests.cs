@@ -16,6 +16,7 @@ namespace NetRatel.API.IntegrationTests.ServiceLinks;
 
 /// <summary>Actual product request -> OAuth ingest -> native command -> durable provider callback -> recorded task/worklog.</summary>
 [Collection(ServiceLinkRotationPeerCollection.Name)]
+[Trait("category", "manual-integration")]
 public sealed class ServiceLinkOrchestrationRoundTripTests
 {
     private const string JobName = "Synthetic actual native command";

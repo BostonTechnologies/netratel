@@ -182,196 +182,159 @@ class MtpTestReceiptTests(unittest.TestCase):
 
 class MtpCiRunnerSelectionTests(unittest.TestCase):
     def test_ci_uses_sdk10_mtp_selectors_and_requires_each_generic_test_assembly(self):
-        paths = (
-            ROOT / ".github/workflows/public-pr-validation.yml",
-            ROOT / ".github/workflows/release-build.yml",
-            ROOT / "tools/ci/smoke-oidc-compose.sh",
-            ROOT / "tools/ci/smoke-postgresql-oidc-upgrade.sh",
-            ROOT / "tools/ci/smoke-local-first-compose.sh",
-        )
-        for path in paths:
-            source = path.read_text(encoding="utf-8")
-            with self.subTest(path=path.name):
-                self.assertNotRegex(source, r"--filter(?:\s|=)", "VSTest filter syntax is invalid under the selected MTP runner.")
-                self.assertNotIn("-- --report-trx", source, "SDK 10 MTP options are passed directly without a legacy separator.")
-                self.assertIn("--report-trx-filename", source)
-
+        helper = ROOT / "tools/ci/run-fast-regressions.sh"
+        source = helper.read_text(encoding="utf-8")
         required_assemblies = (
-            "NetRatel.API.IntegrationTests",
             "NetRatel.Tests",
+            "NetRatel.API.IntegrationTests",
             "NetRatel.Web.ComponentTests",
-            "NetRatel.Web.PlaywrightTests",
         )
-        for path in paths[:2]:
-            source = path.read_text(encoding="utf-8")
-            self.assertIn("validate_success_report", source)
-            for assembly in required_assemblies:
-                with self.subTest(path=path.name, assembly=assembly):
-                    self.assertIn(f'"{assembly}"', source)
-            self.assertIn("totals[\"executed\"] == 0", source)
+        assemblies = re.search(r"(?ms)^assemblies=\(\n(.*?)^\)", source)
+        self.assertIsNotNone(assemblies)
+        self.assertEqual(required_assemblies, tuple(assemblies.group(1).split()))
+        self.assertIn("--configuration Release --no-build --max-parallel-test-modules 1", source)
+        self.assertIn("--filter-not-trait category=compose category=hosted category=manual-integration", source)
+        self.assertIn('--report-trx-filename "fast-$assembly.trx"', source)
+        self.assertIn('python3 tools/ci/verify-mtp-trx.py "$report"', source)
+        self.assertNotIn("--expected-executed", source, "New default regressions must remain discoverable.")
+        self.assertNotRegex(source, r"--filter(?:\s|=)", "VSTest filter syntax is invalid under the selected MTP runner.")
+        self.assertNotIn("-- --report-trx", source, "SDK 10 MTP options are passed directly without a legacy separator.")
+        self.assertNotIn("--filter-class", source)
+        self.assertNotIn("NetRatel.Web.PlaywrightTests", source)
+        self.assertNotIn("setsid", source)
 
-        self.assertIn("selected zero test cases", (ROOT / "tools/ci/verify-mtp-trx.py").read_text())
+        for relative in (".github/workflows/public-pr-validation.yml", ".github/workflows/release-build.yml"):
+            workflow = (ROOT / relative).read_text(encoding="utf-8")
+            with self.subTest(workflow=relative):
+                self.assertEqual(1, workflow.count("bash tools/ci/run-fast-regressions.sh"))
+                for manual_command in (
+                    "run-physical-disk-incident-proof.sh", "run-service-link-native-proof.sh",
+                    "run-gateway-native-proof.sh", "smoke-local-first-compose.sh",
+                    "smoke-oidc-compose.sh", "smoke-postgresql-local-upgrade.sh",
+                    "smoke-postgresql-oidc-upgrade.sh", "smoke-release-images.sh",
+                    "playwright.ps1 install", "playwright-browser-evidence",
+                ):
+                    self.assertNotIn(manual_command, workflow)
 
-        for path in paths[:2]:
-            source = path.read_text(encoding="utf-8")
-            with self.subTest(path=path.name, group="native macOS"):
-                self.assertIn("--expected-executed 3", source)
+        manual = (ROOT / ".github/workflows/integration-validation.yml").read_text(encoding="utf-8")
+        triggers = re.search(r"(?ms)^on:\n(.*?)(?=^[A-Za-z_][A-Za-z_0-9-]*:)", manual)
+        self.assertIsNotNone(triggers, "The optional workflow must declare its manual trigger.")
+        self.assertEqual(["workflow_dispatch"], re.findall(r"(?m)^  ([A-Za-z_][A-Za-z_0-9-]*):", triggers.group(1)))
+        jobs = manual.split("\njobs:\n", 1)
+        self.assertEqual(2, len(jobs))
+        self.assertEqual(1, len(re.findall(r"(?m)^  ([A-Za-z_][A-Za-z_0-9-]*):", jobs[1])))
+        self.assertNotRegex(manual, r"(?m)^\s+matrix:", "A manual selection must not fan out into all functional suites.")
+        self.assertNotRegex(manual, r"(?m)^\s+needs:", "Manual suites must not depend on automatic validation.")
+        self.assertIn('source_sha="$(git rev-parse HEAD)"', manual)
+        self.assertIn('"sourceSha": sys.argv[1]', manual)
+        self.assertIn('Path("TestResults/selected-source.json")', manual)
+        self.assertIn("NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT:", manual)
+        self.assertIn("src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/TestResults/playwright", manual)
+        self.assertRegex(manual, r"(?s)name: Retain selected TRX, screenshots and sanitized receipts\s+if: always\(\).*?path: \|\s+TestResults")
 
-    def test_generic_test_modules_are_serialized_and_browser_failure_evidence_is_collected(self):
-        workflow_paths = (
-            ROOT / ".github/workflows/public-pr-validation.yml",
-            ROOT / ".github/workflows/release-build.yml",
-        )
-        for path in workflow_paths:
-            source = path.read_text(encoding="utf-8")
-            with self.subTest(workflow=path.name):
-                # Retain this test ID and all module/receipt contracts while
-                # requiring the complete physical wrapper to finish before Core.
-                run_start = source.index("          generic_status=0\n          generic_test_arguments=(")
-                run_end = source.index("\n          overall_status=0", run_start)
-                run_command = source[run_start:run_end]
-                self.assertIn("set -euo pipefail", run_command)
-                self.assertIn("--configuration Release --no-build --max-parallel-test-modules 1", run_command)
-                self.assertIn("--filter-not-trait category=compose category=hosted", run_command)
-                self.assertIn("--results-directory TestResults --report-trx", run_command)
-                self.assertIn('--report-trx-filename "netratel-tests-{asm}_{tfm}_{arch}.trx"', run_command)
-                expected_projects = (
-                    "src/NetRatel/NetRatel.API.IntegrationTests/NetRatel.API.IntegrationTests.csproj",
-                    "src/NetRatel/NetRatel.Tests/NetRatel.Tests.csproj",
-                    "src/NetRatel/NetRatel.Web.ComponentTests/NetRatel.Web.ComponentTests.csproj",
-                    "src/NetRatel/NetRatel.Web.PlaywrightTests/NetRatel.Web.PlaywrightTests.csproj",
-                )
-                for project in expected_projects:
-                    self.assertEqual(1, run_command.count(project))
-                backend_commands = re.findall(
-                    r'^\s*setsid dotnet test --project ([^ ]+) "\$\{generic_test_arguments\[@\]\}" &$',
-                    run_command, re.MULTILINE,
-                )
-                self.assertEqual(list(expected_projects[:2]), backend_commands)
-                api_start = run_command.index(f"setsid dotnet test --project {expected_projects[0]}")
-                core_start = run_command.index(f"setsid dotnet test --project {expected_projects[1]}")
-                physical_command = (
-                    "setsid bash tools/ci/run-physical-disk-incident-proof.sh "
-                    "> TestResults/physical-disk-incident/profile.log 2>&1 &"
-                )
-                self.assertEqual(1, run_command.count(physical_command))
-                self.assertRegex(
-                    run_command,
-                    rf"(?m)^          api_pid=\$!\n          {re.escape(physical_command)}\n"
-                    r'          physical_pid=\$!\n          if wait "\$physical_pid"; then',
-                )
-                physical_start = run_command.index(physical_command)
-                physical_wait = run_command.index('if wait "$physical_pid"; then')
-                physical_clear = run_command.index("physical_pid=''")
-                backend_join = run_command.index("for module_variable in core_pid; do")
-                backend_done = run_command.index("\n          done\n", backend_join)
-                ui_launch = run_command.index("setsid bash -c '", backend_join)
-                ui_start = run_command.index("for module_project in")
-                self.assertLess(api_start, run_command.index("api_pid=$!"))
-                self.assertLess(run_command.index("api_pid=$!"), physical_start)
-                self.assertLess(physical_start, run_command.index("physical_pid=$!"))
-                self.assertLess(run_command.index("physical_pid=$!"), physical_wait)
-                self.assertLess(physical_wait, physical_clear)
-                self.assertLess(physical_clear, core_start)
-                self.assertLess(core_start, run_command.index("core_pid=$!"))
-                self.assertLess(run_command.index("core_pid=$!"), backend_join)
-                self.assertLess(backend_join, ui_start)
-                self.assertLess(backend_done, ui_launch)
-                self.assertLess(ui_launch, ui_start)
-                api_join = run_command.index('if wait "$api_pid"; then')
-                api_clear = run_command.index("api_pid=''")
-                ui_ownership = run_command.index("generic_pid=$!")
-                self.assertLess(ui_start, ui_ownership)
-                self.assertLess(ui_ownership, api_join)
-                self.assertLess(api_join, api_clear)
-                self.assertRegex(
-                    run_command[api_join:api_clear],
-                    r'(?s)if wait "\$api_pid"; then\s+api_status=0\s+else\s+api_status=\$\?\s+fi',
-                )
-                self.assertEqual(1, run_command.count("api_pid=''"))
-                self.assertNotIn('if wait "$api_pid"; then', run_command[:ui_ownership])
-                # The mandatory wrapper cannot be hidden behind a presence or
-                # success condition; nonzero completion still reaches every module.
-                self.assertNotRegex(run_command[:physical_start], r"(?m)^\s*(?:if|case|for|while|until)\b")
-                physical_join = run_command[physical_wait:core_start]
-                self.assertRegex(
-                    physical_join,
-                    r'(?s)if wait "\$physical_pid"; then\s+physical_status=0\s+else\s+physical_status=\$\?\s+fi',
-                )
-                self.assertEqual(1, run_command.count("physical_pid=''"))
-                self.assertLess(physical_join.index("physical_status=$?"), physical_join.index("physical_pid=''"))
-                backend_join_command = run_command[backend_join:ui_launch]
-                self.assertIn('module_pid="${!module_variable}"', backend_join_command)
-                self.assertRegex(
-                    backend_join_command,
-                    r'(?s)if wait "\$module_pid"; then\s+module_status=0\s+else\s+module_status=\$\?\s+fi',
-                )
-                status_fold = (
-                    r'if \[\[ "\$generic_status" -eq 0 && "\$module_status" -ne 0 \]\]; then'
-                    r'\s+generic_status=\$module_status\s+fi'
-                )
-                self.assertRegex(backend_join_command, status_fold)
-                backend_clear = 'printf -v "$module_variable" \'%s\' \'\''
-                self.assertEqual(1, backend_join_command.count(backend_clear))
-                self.assertLess(backend_join_command.index("module_status=$?"), backend_join_command.index(backend_clear))
-                self.assertIn(
-                    'for owned_pid in "$gateway_pid" "$generic_pid" "$physical_pid" "$api_pid" "$core_pid"; do',
-                    source,
-                )
-                self.assertNotIn("exit ", run_command[:ui_start])
-                # Backend status and the unchanged argv cross the quoted nested
-                # shell boundary; both UI modules run serially on ordinary failure.
-                self.assertRegex(run_command, r'generic_status="\$1"\s+shift\s+for module_project in')
-                self.assertIn('\' _ "$generic_status" "${generic_test_arguments[@]}" &', run_command)
-                ui_loop = run_command[ui_start:ui_ownership]
-                self.assertLess(ui_loop.index(expected_projects[2]), ui_loop.index(expected_projects[3]))
-                self.assertIn('if dotnet test --project "$module_project" "$@"; then', ui_loop)
-                self.assertIn("module_status=$?", ui_loop)
-                self.assertRegex(ui_loop, status_fold)
-                self.assertEqual(2, run_command.count('if [[ "$generic_status" -eq 0 && "$module_status" -ne 0 ]]; then'))
-                self.assertIn('exit "$generic_status"', ui_loop)
-                ui_done = ui_loop.index("\n            done\n")
-                self.assertLess(ui_done, ui_loop.index('exit "$generic_status"'))
-                # The parent must fold API after reaping the UI process, because
-                # its late status cannot alter the child's captured Core status.
-                final_join = source.index("for probe in gateway generic physical; do", run_end)
-                final_write = source.index('if ! printf', final_join)
-                final_join_command = source[final_join:final_write]
-                self.assertIn('if wait "$owned_pid"; then', final_join_command)
-                self.assertLess(
-                    final_join_command.index('printf -v "$pid_variable"'),
-                    final_join_command.index('if [[ "$probe" == generic && "$api_status" -ne 0 ]]; then'),
-                )
-                self.assertRegex(
-                    final_join_command,
-                    r'if \[\[ "\$probe" == generic && "\$api_status" -ne 0 \]\]; then\s+'
-                    r'(?:#[^\n]*\n\s*)*completed_status=\$api_status\s+fi',
-                )
-                self.assertIn(
-                    "NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT: ${{ github.workspace }}/src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/TestResults/playwright",
-                    source,
-                )
-
-        pr_workflow = workflow_paths[0].read_text(encoding="utf-8")
-        browser_output_path = "src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/TestResults/playwright"
-        self.assertIn(f"path: {browser_output_path}", pr_workflow)
-        self.assertIn("NETRATEL_REVIEW_SOURCE_SHA:", pr_workflow)
-        self.assertIn("NETRATEL_REVIEW_TEST_MERGE_SHA:", pr_workflow)
-
-        release_workflow = workflow_paths[1].read_text(encoding="utf-8")
-        self.assertIn("name: Run generic tests", release_workflow)
-        self.assertRegex(release_workflow, r"(?s)if: always\(\).*?name: dotnet-test-results\s+path: TestResults")
-        self.assertRegex(
-            release_workflow,
-            rf"(?s)if: always\(\).*?name: playwright-browser-evidence\s+path: {re.escape(browser_output_path)}\s+if-no-files-found: error",
-        )
-        self.assertIn("NETRATEL_REVIEW_SOURCE_SHA: ${{ github.sha }}", release_workflow)
-        self.assertIn("NETRATEL_REVIEW_TEST_MERGE_SHA: ${{ github.sha }}", release_workflow)
+        # Retain cheap selector/source checks for opt-in Compose helpers.
+        for relative in (
+            "tools/ci/smoke-oidc-compose.sh",
+            "tools/ci/smoke-postgresql-oidc-upgrade.sh",
+            "tools/ci/smoke-local-first-compose.sh",
+        ):
+            optional_source = (ROOT / relative).read_text(encoding="utf-8")
+            with self.subTest(optional_helper=relative):
+                self.assertNotRegex(optional_source, r"--filter(?:\s|=)", "VSTest filter syntax is invalid under the selected MTP runner.")
+                self.assertNotIn("-- --report-trx", optional_source, "SDK 10 MTP options are passed directly without a legacy separator.")
+                self.assertIn("--report-trx-filename", optional_source)
 
         browser_test = (ROOT / "src/NetRatel/NetRatel.Web.PlaywrightTests/ClientsManagementResponsiveTests.cs").read_text(encoding="utf-8")
         self.assertIn("AbortedCriticalStartupScript_FailsAndWritesDiagnosticsBeforeContextDisposal", browser_test)
         self.assertIn('"startup-diagnostics.json"', browser_test)
         self.assertIn('"startup-failure.png"', browser_test)
+
+        api_root = ROOT / "src/NetRatel/NetRatel.API.IntegrationTests"
+        for name in (
+            "ServiceLinkLifecycleTests", "ServiceLinkOrchestrationRoundTripTests",
+            "ServiceLinkRotationHttpPostgresTests", "ServiceLinkTerminalConvergencePostgresTests",
+            "ServiceLinkDatabaseConflictPostgresTests", "ServiceLinkPayloadHttpPostgresTests",
+            "ServiceLinkWorkerConsentPostgresTests", "ServiceLinkOutboundJournalPostgresTests",
+        ):
+            with self.subTest(full_pair_class=name):
+                declaration = (api_root / f"{name}.cs").read_text(encoding="utf-8")
+                self.assertIn(f'[Trait("category", "manual-integration")]\npublic sealed class {name}', declaration)
+        self.assertIn("selected zero test cases", (ROOT / "tools/ci/verify-mtp-trx.py").read_text())
+
+    def test_generic_test_modules_are_serialized_and_browser_failure_evidence_is_collected(self):
+        # Preserve this existing test ID while verifying the amended fast-only
+        # runner and immediate command/receipt failure propagation.
+        helper = ROOT / "tools/ci/run-fast-regressions.sh"
+        verifier = module("verify-mtp-trx")
+        expected_projects = [
+            f"src/NetRatel/{assembly}/{assembly}.csproj"
+            for assembly in ("NetRatel.Tests", "NetRatel.API.IntegrationTests", "NetRatel.Web.ComponentTests")
+        ]
+        for failure in ("none", "command", "zero", "summary"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                fake_bin = directory / "bin"
+                fake_bin.mkdir()
+                command_log = directory / "commands.jsonl"
+                fake_dotnet = fake_bin / "dotnet"
+                fake_dotnet.write_text(
+                    "#!/usr/bin/env python3\n"
+                    "import json, os, pathlib, sys\n"
+                    "args = sys.argv[1:]\n"
+                    "with open(os.environ['NETRATEL_FAST_TEST_COMMAND_LOG'], 'a') as log:\n"
+                    "    log.write(json.dumps(args) + '\\n')\n"
+                    "failure = os.environ['NETRATEL_FAST_TEST_FAILURE']\n"
+                    "if failure in ('command', 'summary'):\n"
+                    "    sys.exit(7)\n"
+                    "count = 0 if failure == 'zero' else 2\n"
+                    f"counters = dict.fromkeys({verifier.COUNTER_NAMES!r}, 0)\n"
+                    "counters.update(total=count, executed=count, passed=count)\n"
+                    "attributes = ' '.join(f'{name}=\"{value}\"' for name, value in counters.items())\n"
+                    "report = pathlib.Path(args[args.index('--results-directory') + 1]) / args[args.index('--report-trx-filename') + 1]\n"
+                    "report.write_text('<TestRun><ResultSummary outcome=\"Completed\"><Counters ' + attributes + '/></ResultSummary></TestRun>')\n",
+                    encoding="utf-8",
+                )
+                fake_dotnet.chmod(0o755)
+                results = directory / "results"
+                # A stale successful report must not rescue a failed command.
+                results.mkdir()
+                stale_report = results / "fast-NetRatel.Tests.trx"
+                stale_report.write_text("stale report", encoding="utf-8")
+                environment = {
+                    **os.environ,
+                    "PATH": str(fake_bin) + os.pathsep + os.environ.get("PATH", ""),
+                    "NETRATEL_FAST_TEST_COMMAND_LOG": str(command_log),
+                    "NETRATEL_FAST_TEST_FAILURE": failure,
+                    "GITHUB_STEP_SUMMARY": str(directory if failure == "summary" else directory / "summary.md"),
+                }
+                completed = subprocess.run(
+                    ["bash", str(helper), str(results)], cwd=ROOT,
+                    env=environment, check=False, capture_output=True, text=True,
+                )
+                commands = [json.loads(line) for line in command_log.read_text().splitlines()]
+                expected_count = 3 if failure == "none" else 1
+                self.assertEqual(expected_count, len(commands), completed.stdout + completed.stderr)
+                self.assertEqual(expected_projects[:expected_count], [args[args.index("--project") + 1] for args in commands])
+                for args in commands:
+                    self.assertEqual("test", args[0])
+                    self.assertIn("--no-build", args)
+                    self.assertEqual("Release", args[args.index("--configuration") + 1])
+                    filter_start = args.index("--filter-not-trait") + 1
+                    self.assertEqual(["category=compose", "category=hosted", "category=manual-integration"], args[filter_start:filter_start + 3])
+                if failure == "none":
+                    self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
+                    for assembly in ("NetRatel.Tests", "NetRatel.API.IntegrationTests", "NetRatel.Web.ComponentTests"):
+                        self.assertEqual(2, verifier.validate_success_report(results / f"fast-{assembly}.trx")["executed"])
+                elif failure in ("command", "summary"):
+                    self.assertEqual(7, completed.returncode)
+                    self.assertFalse(stale_report.exists())
+                else:
+                    self.assertNotEqual(0, completed.returncode)
+                    self.assertIn("selected zero test cases", completed.stderr)
+                if failure != "summary":
+                    self.assertIn("NetRatel.Tests:", (directory / "summary.md").read_text())
+                else:
+                    self.assertIn("failed(7)", completed.stdout)
 
     def test_release_compose_oidc_checks_current_presence_and_bounds_command_conflict_diagnostics(self):
         source = (ROOT / "tools/ci/smoke-oidc-compose.sh").read_text(encoding="utf-8")
@@ -511,7 +474,7 @@ class PublishedClientPackFetchTests(unittest.TestCase):
     def tearDown(self):
         self.directory.cleanup()
 
-    def run_fetch(self, *, selected_runtime=None, missing_assets=()):
+    def run_fetch(self, *, selected_runtime=None, missing_assets=(), verification=None):
         self.fetch_count += 1
         output = Path(self.directory.name) / f"published-pack-{self.fetch_count}"
         output.mkdir()
@@ -519,7 +482,7 @@ class PublishedClientPackFetchTests(unittest.TestCase):
                  for name, data in self.archive_bytes.items()}
         publication = {
             "productVersion": self.source_version,
-            "verification": {"state": "complete"},
+            "verification": verification if verification is not None else {"state": "complete"},
             "publicCommit": self.source_commit,
             "inputReceipt": {"repository": "BostonTechnologies/netratel",
                              "headSha": self.source_commit, "files": files},
@@ -572,10 +535,20 @@ class PublishedClientPackFetchTests(unittest.TestCase):
 
     def test_runtime_filter_downloads_only_requested_archive_and_keeps_metadata(self):
         selected = f"netratel-client-{self.source_version}-win-x64.zip"
-        output = self.run_fetch(selected_runtime="win-x64")
-        self.assertCountEqual(self.downloaded, ["publication.json", "SHA256SUMS", selected])
-        self.assertTrue((output / selected).is_file())
-        self.assertFalse((output / f"netratel-client-{self.source_version}-linux-x64.tar.gz").exists())
+        for verification in (
+            {"state": "complete"},
+            {
+                "state": "complete",
+                "scope": "build-distribution-integrity",
+                "requiredSmokes": [],
+                "functionalAcceptance": {"state": "pending-owner-testing", "executedSmokes": []},
+            },
+        ):
+            with self.subTest(verification=verification):
+                output = self.run_fetch(selected_runtime="win-x64", verification=verification)
+                self.assertCountEqual(self.downloaded, ["publication.json", "SHA256SUMS", selected])
+                self.assertTrue((output / selected).is_file())
+                self.assertFalse((output / f"netratel-client-{self.source_version}-linux-x64.tar.gz").exists())
 
     def test_runtime_filter_still_requires_every_inventory_asset_to_be_published(self):
         linux_archive = f"netratel-client-{self.source_version}-linux-x64.tar.gz"
@@ -750,12 +723,14 @@ fi
         self.assertIn('run_browser_oidc_smoke "$legacy_version" false', upgrade_smoke)
         self.assertIn('run_browser_oidc_smoke "v$(python3 tools/ci/product-version.py)" true', upgrade_smoke)
 
+        manual_workflow = ROOT / ".github/workflows/integration-validation.yml"
+        self.assertIn("libnss3-tools", manual_workflow.read_text())
         for workflow in (
             ROOT / ".github/workflows/public-pr-validation.yml",
             ROOT / ".github/workflows/release-build.yml",
         ):
             with self.subTest(workflow=workflow.name):
-                self.assertIn("libnss3-tools", workflow.read_text())
+                self.assertNotIn("libnss3-tools", workflow.read_text())
 
     def test_pinned_oidc_compose_uses_one_subject_profile_for_browser_code_and_refresh_tokens(self):
         page = (ROOT / "tests/compose/oidc-smoke-login.html").read_text()
@@ -1822,9 +1797,18 @@ class DistributionTests(unittest.TestCase):
             self.assertIn(images["api"], text)
             self.assertIn("INSTALL.md", source.getnames())
         self.assertFalse((self.root / "publication.json").exists())
-        self.assertEqual(json.loads((self.root / "publication.candidate.json").read_text())["publicCommit"], "b" * 40)
+        candidate = json.loads((self.root / "publication.candidate.json").read_text())
+        self.assertEqual(candidate["publicCommit"], "b" * 40)
+        expected_verification = {
+            "state": "candidate",
+            "scope": "build-distribution-integrity",
+            "requiredSmokes": [],
+            "functionalAcceptance": {"state": "pending-owner-testing", "executedSmokes": []},
+        }
+        self.assertEqual(expected_verification, candidate["verification"])
         self.promotion.complete_bundle(self.root, version, "b" * 40, images, receipt)
-        self.assertEqual(json.loads((self.root / "publication.json").read_text())["verification"]["state"], "complete")
+        expected_verification["state"] = "complete"
+        self.assertEqual(expected_verification, json.loads((self.root / "publication.json").read_text())["verification"])
 
     def test_receipt_identity_rejects_wrong_source_missing_files_and_invalid_digest(self):
         receipt = self.receipt()

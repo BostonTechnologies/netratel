@@ -27,6 +27,7 @@ using Xunit;
 
 namespace NetRatel.Tests.API;
 
+[Trait("category", "manual-integration")]
 public sealed class AgentGatewayRenewalTerminalTests(ITestOutputHelper output)
 {
     [Fact]

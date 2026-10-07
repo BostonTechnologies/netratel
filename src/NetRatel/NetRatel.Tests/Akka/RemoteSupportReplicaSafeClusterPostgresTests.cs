@@ -22,6 +22,7 @@ namespace NetRatel.Tests.Akka;
 /// ActorSystems use real loopback remoting and cluster sharding, while their
 /// independently constructed stores share only PostgreSQL.
 /// </summary>
+[Trait("category", "manual-integration")]
 public sealed class RemoteSupportReplicaSafeClusterPostgresTests : IAsyncLifetime
 {
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:16-alpine").Build();

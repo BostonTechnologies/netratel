@@ -7,6 +7,7 @@ using Xunit;
 
 namespace NetRatel.Tests.Client;
 
+[Trait("category", "manual-integration")]
 public sealed class LinuxUpdaterRollbackTests
 {
     [Fact]

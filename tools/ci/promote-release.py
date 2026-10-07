@@ -541,7 +541,10 @@ def finalize_bundle(directory, version, revision, images, input_receipt):
                   "finalSha256": sha256(source_archive),
                   "transformation": "Inserted verified immutable image digests into .env.images.example."
               },
-              "verification": {"state": "candidate", "requiredSmokes": ["oidc-compose", "mcp-http-image"]},
+              "verification": {
+                  "state": "candidate", "scope": "build-distribution-integrity", "requiredSmokes": [],
+                  "functionalAcceptance": {"state": "pending-owner-testing", "executedSmokes": []}
+              },
               "artifacts": {path.name: sha256(path) for path in sorted(directory.iterdir())
                             if path.is_file() and path.name not in {"SHA256SUMS", "publication.json", "publication.candidate.json"}}}
     atomic_json(directory / "publication.candidate.json", record)
@@ -555,7 +558,12 @@ def complete_bundle(directory, version, revision, images, input_receipt):
         raise ValueError("A single uncompleted candidate publication record is required")
     validate_candidate_bundle(directory, version, revision, images, input_receipt)
     record = json.loads(candidate.read_text())
-    record["verification"] = {"state": "complete", "requiredSmokes": ["oidc-compose", "mcp-http-image"]}
+    # Keep the publication lifecycle state readable by existing consumers while
+    # distinguishing verified distribution bytes from owner functional testing.
+    record["verification"] = {
+        "state": "complete", "scope": "build-distribution-integrity", "requiredSmokes": [],
+        "functionalAcceptance": {"state": "pending-owner-testing", "executedSmokes": []}
+    }
     atomic_json(final, record)
     candidate.unlink()
     checksums(directory)
@@ -648,18 +656,9 @@ def promote(args):
     else:
         verify_pristine_staged(args.output, version, input_receipt)
         finalize_bundle(args.output, version, revision, state["images"], input_receipt)
-    environment = {**os.environ, **{IMAGE_VARIABLES[name]: value for name, value in state["images"].items()},
-                   "NETRATEL_COMPOSE_SMOKE_MODE": "release-images",
-                   "NETRATEL_CLIENT_SMOKE_IMAGE": state["images"]["client"],
-                   "NETRATEL_MCP_HTTP_SMOKE_IMAGE": state["images"]["mcp-http"],
-                   "NETRATEL_CLI_SMOKE_ARCHIVE": str(args.output / f"netratel-cli-{version}-linux-x64.tar.gz"),
-                   "NETRATEL_MCP_STDIO_SMOKE_ARCHIVE": str(args.output / f"netratel-mcp-stdio-{version}-linux-x64.tar.gz"),
-                   "NETRATEL_COMPOSE_SMOKE_BUNDLE": str(args.output / f"netratel-compose-{version}.tar.gz")}
-    run("bash", "tools/ci/smoke-oidc-compose.sh", env=environment)
-    run("bash", "tools/ci/smoke-mcp-http-image.sh", env=environment)
     complete_bundle(args.output, version, revision, state["images"], input_receipt)
-    print(f"Promotion verified for {version}@{revision}. Flat assets: {args.output}")
-    print("Owner may now create the prerelease from these exact assets; no stable/latest alias is produced.")
+    print(f"Distribution integrity verified for {version}@{revision}. Flat assets: {args.output}")
+    print("Functional acceptance remains pending owner testing; no stable/latest alias is produced.")
 
 
 def preflight(args):

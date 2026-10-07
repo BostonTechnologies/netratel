@@ -12,6 +12,7 @@ using Xunit;
 
 namespace NetRatel.Tests.Infrastructure;
 
+[Trait("category", "manual-integration")]
 public sealed class LinuxInstallerTransactionTests
 {
     private const string Version = "1.2.3";
