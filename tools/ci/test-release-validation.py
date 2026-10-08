@@ -228,7 +228,7 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
         self.assertNotRegex(selected, r"(?m)^\s+matrix:", "A functional suite selection must not fan out into other functional suites.")
         self.assertIn("if: inputs.suite != 'client-measurement'", selected)
         self.assertIn("if: inputs.suite == 'client-measurement'", measurement)
-        self.assertIn("fromJSON(inputs.assessment_only", measurement,
+        self.assertIn("inputs.assessment_only && '[{\"runtime\":\"linux-x64\",\"runner\":\"ubuntu-latest\"}]'", measurement,
                       "The first trim assessment must permit a single Linux job without repeating A/B.")
         self.assertIn("if: ${{ !inputs.assessment_only }}", measurement)
         self.assertIn("!cancelled() && !inputs.assessment_only", measurement)
@@ -245,6 +245,17 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
         self.assertEqual(2, measurement.count("uses: actions/upload-artifact@"))
         self.assertEqual(2, measurement.count("if-no-files-found: error"))
         self.assertEqual(2, measurement.count("retention-days: 14"))
+        self.assertIn("inputs.measurement_verify_run != '' && '[{\"runtime\":\"win-x64\",\"runner\":\"windows-latest\"}]'", measurement)
+        self.assertEqual(2, measurement.count("uses: actions/download-artifact@"))
+        self.assertEqual(2, measurement.count("run-id: ${{ inputs.measurement_verify_run }}"))
+        self.assertRegex(measurement, r"permissions:\s+contents: read\s+actions: read")
+        self.assertIn("ref: ${{ github.workflow_sha }}", measurement)
+        self.assertIn("--verify-existing downloaded-client-measurement/baseline/win-x64", measurement)
+        self.assertIn("--verify-existing downloaded-client-measurement/head/win-x64", measurement)
+        for step in ("A - baseline", "B - cleanup", "C - bounded"):
+            block = re.search(r"(?ms)^      - name: " + re.escape(step) + r".*?(?=^      - |\Z)", measurement)
+            self.assertIsNotNone(block)
+            self.assertIn("inputs.measurement_verify_run == ''", block.group(0), "Verification reuse must skip every publish step.")
         self.assertNotRegex(manual, r"(?m)^\s+needs:", "Manual suites must not depend on automatic validation.")
         self.assertIn('source_sha="$(git rev-parse HEAD)"', manual)
         self.assertIn('"sourceSha": sys.argv[1]', manual)
@@ -1626,6 +1637,77 @@ class ReleasePublishMetadataTests(unittest.TestCase):
                     [jq, "-r", jq_filter], input=json.dumps(metadata), capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stdout.removesuffix("\n"), expected)
+
+
+class ClientMeasurementHelperTests(unittest.TestCase):
+    def setUp(self):
+        self.helper = module("measure-client-publish")
+
+    def test_windows_uses_git_installation_bash_and_passes_paths_as_literal_posix_arguments(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            git = root / "Git/cmd/git.exe"
+            bash = root / "Git/bin/bash.exe"
+            for file in (git, bash):
+                file.parent.mkdir(parents=True, exist_ok=True)
+                file.touch()
+            with patch.object(self.helper.shutil, "which", side_effect=lambda name: str(git) if name == "git" else "C:/Windows/System32/bash.exe") as which:
+                self.assertEqual(str(bash), self.helper.resolve_bash(platform="nt"))
+                which.assert_called_once_with("git")
+            with patch.object(self.helper, "resolve_bash", return_value=str(bash)):
+                command = self.helper.artifact_verifier_command(Path("D:/a/source tree"), Path("D:/a/artifacts dir"), "1.0.0", "win-x64")
+            self.assertEqual(str(bash), command[0])
+            self.assertIn("/d/a/source tree/tools/ci/verify-client-release-artifact.sh", command)
+            self.assertIn("/d/a/artifacts dir", command)
+            self.assertEqual("/c/Program Files/Git/bin/bash.exe", self.helper.bash_path(r"C:\Program Files\Git\bin\bash.exe"))
+
+    def test_verification_reuses_bound_original_archive_without_changing_measurements_or_building(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, original, evidence, state = (root / name for name in ("source", "original", "receipt", "state"))
+            for directory in (source, original / "artifacts", evidence, state):
+                directory.mkdir(parents=True)
+            (source / "global.json").write_text('{"sdk":{"version":"10.0.401"}}')
+            sha = "a" * 40
+            distribution = root / "fixture/netratel-client-win-x64"
+            distribution.mkdir(parents=True)
+            (distribution / "NetRatel.Client.exe").write_bytes(b"native-probe-test-fixture")
+            (distribution / "netratel-client-manifest.json").write_text(json.dumps({"schema": "netratel.client.manifest.v1",
+                "commitSha": sha, "runtimeId": "win-x64", "executable": "NetRatel.Client.exe"}))
+            archive = original / "artifacts/client.zip"
+            with zipfile.ZipFile(archive, "w") as target:
+                for file in distribution.iterdir():
+                    target.write(file, "netratel-client-win-x64/" + file.name)
+            metrics = {"sourceSha": sha, "runtime": "win-x64", "mode": "untrimmed", "dotnetSdkVersion": "10.0.401",
+                       "runner": {"ImageVersion": "original-image"}, "archiveName": archive.name, "archiveBytes": archive.stat().st_size,
+                       "archiveSha256": self.helper.digest(archive), "productVersion": "1.0.0",
+                       "stages": {"publish": {"exitCode": 0, "seconds": 12.345}}, "exitCode": 1}
+            original_path = original / "metrics.json"
+            original_path.write_text(json.dumps(metrics))
+            preserved = original_path.read_bytes()
+            (original / "distribution-inventory.json").write_text(json.dumps(self.helper.inventory(distribution)))
+            stages = []
+            with patch.object(self.helper.subprocess, "check_output", return_value="10.0.401\n"), \
+                 patch.object(self.helper, "artifact_verifier_command", return_value=["git-bash", "verifier.sh"]), \
+                 patch.object(self.helper, "run_stage", side_effect=lambda receipt, output, stage, *args: stages.append(stage)), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                result = self.helper.verify_existing(SimpleNamespace(verify_existing=original, runtime="win-x64", mode="untrimmed", verify_content=False),
+                                                     source, sha, state, evidence)
+            self.assertEqual(0, result)
+            self.assertEqual(["verify", "launch-fresh", "launch-cached"], stages)
+            self.assertEqual(preserved, original_path.read_bytes())
+            receipt = json.loads((evidence / "verification.json").read_text())
+            self.assertEqual(metrics["archiveSha256"], receipt["original"]["archiveSha256"])
+            self.assertEqual(metrics["runner"], receipt["original"]["runner"])
+            self.assertEqual(metrics["stages"]["publish"]["seconds"], json.loads(original_path.read_text())["stages"]["publish"]["seconds"])
+            archive.write_bytes(archive.read_bytes() + b"changed archive bytes")
+            with patch.object(self.helper.subprocess, "check_output", return_value="10.0.401\n"), \
+                 patch.object(self.helper, "run_stage") as verifier, contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                result = self.helper.verify_existing(SimpleNamespace(verify_existing=original, runtime="win-x64", mode="untrimmed", verify_content=False),
+                                                     source, sha, state, evidence)
+            self.assertEqual(1, result)
+            verifier.assert_not_called()
+            self.assertEqual(preserved, original_path.read_bytes())
 
 
 class ClientRuntimeContentTests(unittest.TestCase):

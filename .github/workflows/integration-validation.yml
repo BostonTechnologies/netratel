@@ -27,6 +27,10 @@ on:
         description: Client measurement only - run a single linux-x64 trim assessment without repeating A/B publishes
         type: boolean
         default: false
+      measurement_verify_run:
+        description: Existing client-measurement run to verify original Windows archive bytes without rebuilding
+        default: ''
+        required: false
 
 permissions:
   contents: read
@@ -344,14 +348,17 @@ jobs:
           retention-days: 14
 
   client-measurement:
-    name: Client ${{ inputs.assessment_only && 'trim assessment' || 'A/B measurement' }} (${{ matrix.runtime }})
+    name: Client ${{ inputs.measurement_verify_run != '' && 'archive verification' || inputs.assessment_only && 'trim assessment' || 'A/B measurement' }} (${{ matrix.runtime }})
     if: inputs.suite == 'client-measurement'
+    permissions:
+      contents: read
+      actions: read
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(inputs.assessment_only && '[{"runtime":"linux-x64","runner":"ubuntu-latest"}]' || '[{"runtime":"linux-x64","runner":"ubuntu-latest"},{"runtime":"win-x64","runner":"windows-latest"},{"runtime":"osx-arm64","runner":"macos-latest"}]') }}
+        include: ${{ fromJSON(inputs.measurement_verify_run != '' && '[{"runtime":"win-x64","runner":"windows-latest"}]' || inputs.assessment_only && '[{"runtime":"linux-x64","runner":"ubuntu-latest"}]' || '[{"runtime":"linux-x64","runner":"ubuntu-latest"},{"runtime":"win-x64","runner":"windows-latest"},{"runtime":"osx-arm64","runner":"macos-latest"}]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -361,38 +368,81 @@ jobs:
         with:
           ref: ${{ inputs.baseline_ref || 'main' }}
           path: client-baseline
+      - name: Check out corrected measurement tooling for verification reuse
+        if: inputs.measurement_verify_run != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: client-measurement-tooling
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
           global-json-file: global.json
       - name: A - baseline production client only
-        if: ${{ !inputs.assessment_only }}
+        if: ${{ !inputs.assessment_only && inputs.measurement_verify_run == '' }}
         shell: bash
         run: |
           python3 tools/ci/measure-client-publish.py --source client-baseline --runtime '${{ matrix.runtime }}' \
             --mode untrimmed --state-root "$RUNNER_TEMP/client-measurement" \
             --evidence 'TestResults/client-measurement/baseline/${{ matrix.runtime }}'
       - name: B - cleanup production client only
-        if: ${{ !cancelled() && !inputs.assessment_only }}
+        if: ${{ !cancelled() && !inputs.assessment_only && inputs.measurement_verify_run == '' }}
         shell: bash
         run: |
           python3 tools/ci/measure-client-publish.py --source . --runtime '${{ matrix.runtime }}' \
             --mode untrimmed --state-root "$RUNNER_TEMP/client-measurement" --verify-content \
             --evidence 'TestResults/client-measurement/head/${{ matrix.runtime }}'
       - name: C - bounded cleanup trimmed JIT assessment
-        if: ${{ !cancelled() && matrix.runtime == 'linux-x64' && (inputs.client_trim_diagnostic || inputs.assessment_only) }}
+        if: ${{ !cancelled() && inputs.measurement_verify_run == '' && matrix.runtime == 'linux-x64' && (inputs.client_trim_diagnostic || inputs.assessment_only) }}
         shell: bash
         run: |
           python3 tools/ci/measure-client-publish.py --source . --runtime linux-x64 \
             --mode trimmed --state-root "$RUNNER_TEMP/client-measurement" --verify-content \
             --evidence TestResults/client-measurement/trimmed/linux-x64
+      - name: Download original measurement evidence
+        if: inputs.measurement_verify_run != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: client-measurement-evidence-win-x64
+          path: downloaded-client-measurement
+          run-id: ${{ inputs.measurement_verify_run }}
+          github-token: ${{ github.token }}
+      - name: Download original native archives
+        if: inputs.measurement_verify_run != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: client-measurement-archives-win-x64
+          path: downloaded-client-measurement
+          run-id: ${{ inputs.measurement_verify_run }}
+          github-token: ${{ github.token }}
+      - name: Verify original A and B archive bytes without restore or publish
+        if: inputs.measurement_verify_run != ''
+        shell: bash
+        env:
+          GITHUB_WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          python3 client-measurement-tooling/tools/ci/measure-client-publish.py --source client-baseline \
+            --runtime win-x64 --mode untrimmed --state-root "$RUNNER_TEMP/client-archive-verification" \
+            --verify-existing downloaded-client-measurement/baseline/win-x64 \
+            --evidence TestResults/client-measurement/verification-baseline/win-x64
+          python3 client-measurement-tooling/tools/ci/measure-client-publish.py --source . \
+            --runtime win-x64 --mode untrimmed --state-root "$RUNNER_TEMP/client-archive-verification" --verify-content \
+            --verify-existing downloaded-client-measurement/head/win-x64 \
+            --evidence TestResults/client-measurement/verification-head/win-x64
       - name: Summarize measured inputs and outcomes
         if: always()
         shell: bash
+        env:
+          MEASUREMENT_VERIFY_RUN: ${{ inputs.measurement_verify_run }}
         run: |
           python3 - <<'PY'
           import json, os
           from pathlib import Path
           with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a') as summary:
+              if os.environ['MEASUREMENT_VERIFY_RUN']:
+                  summary.write('Verified original archived bytes from run ' + os.environ['MEASUREMENT_VERIFY_RUN'] + '; no restore, build or publish was repeated. Original size/duration metrics remain unchanged.\n')
+                  for path in sorted(Path('TestResults/client-measurement').glob('verification-*/win-x64/verification.json')):
+                      summary.write('\n```json\n' + path.read_text() + '```\n')
+                  raise SystemExit(0)
               summary.write('| Mode | Source SHA | Exit | Executable bytes | Extracted bytes | Archive bytes | Restore seconds | Publish seconds |\n')
               summary.write('| --- | --- | --- | --- | --- | --- | --- | --- |\n')
               for path in sorted(Path('TestResults/client-measurement').glob('*/${{ matrix.runtime }}/metrics.json')):
@@ -416,7 +466,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
       - name: Retain native archives, SBOMs and checksums
-        if: always()
+        if: ${{ always() && inputs.measurement_verify_run == '' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: client-measurement-archives-${{ matrix.runtime }}

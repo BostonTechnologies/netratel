@@ -12,9 +12,126 @@ import shutil
 import subprocess
 import sys
 import time
+import zipfile
 
 TOOLS = Path(__file__).resolve().parent
 PROJECT = "src/NetRatel/NetRatel.Client/NetRatel.Client.csproj"
+
+
+def resolve_bash(platform=None):
+    if (platform or os.name) != "nt":
+        executable = shutil.which("bash")
+        if executable:
+            return executable
+    else:
+        # Windows' System32/bash.exe starts WSL. Select the actual Git for
+        # Windows installation, even when System32 precedes Git in PATH.
+        git = shutil.which("git")
+        roots = list(Path(git).resolve().parents) if git else []
+        roots.extend(Path(os.environ[key]) / "Git" for key in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)") if os.environ.get(key))
+        for root in roots:
+            for relative in ("bin/bash.exe", "usr/bin/bash.exe"):
+                candidate = root / relative
+                if candidate.is_file():
+                    return str(candidate)
+    raise FileNotFoundError("Git Bash is required on Windows; a WSL launcher is not an artifact verifier.")
+
+
+def bash_path(value):
+    path = str(value).replace("\\", "/")
+    match = re.match(r"^([A-Za-z]):/(.*)$", path)
+    return "/" + match[1].lower() + "/" + match[2] if match else path
+
+
+def artifact_verifier_command(source, packages, version, runtime):
+    return [resolve_bash(), "--noprofile", "--norc", bash_path(source / "tools/ci/verify-client-release-artifact.sh"),
+            "--artifacts", bash_path(packages), "--version", version, "--runtime", runtime,
+            "--extension", "zip" if runtime == "win-x64" else "tar.gz", "--integrity-only"]
+
+
+def run_stage(metrics, evidence, stage, command, cwd, env=None):
+    command = [str(value) for value in command]
+    started = time.perf_counter()
+    record = metrics["stages"][stage] = {"command": command, "cwd": str(cwd)}
+    with (evidence / f"{stage}.log").open("w", encoding="utf-8") as log:
+        log.write(json.dumps({"command": command, "cwd": str(cwd)}) + "\n")
+        log.flush()
+        process = subprocess.Popen(command, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                   text=True, encoding="utf-8", errors="replace", env=env)
+        for line in process.stdout:
+            log.write(line)
+            print(line, end="", flush=True)
+        result = process.wait()
+    record.update(exitCode=result, seconds=round(time.perf_counter() - started, 3))
+    if result:
+        metrics["failureStage"] = stage
+        metrics["failureKind"] = failure_kind(stage, (evidence / f"{stage}.log").read_text())
+        raise subprocess.CalledProcessError(result, command)
+
+
+def verify_existing(args, source, sha, state, evidence):
+    original_directory = args.verify_existing.resolve()
+    original_path = original_directory / "metrics.json"
+    original = json.loads(original_path.read_text(encoding="utf-8-sig"))
+    if (original["sourceSha"], original["runtime"], original["mode"]) != (sha, args.runtime, args.mode):
+        raise ValueError("Original measurement source/RID/mode differs from the verification checkout")
+    if original["stages"].get("publish", {}).get("exitCode") != 0:
+        raise ValueError("Verification reuse requires a completed original publish")
+    receipt = {"original": {key: original[key] for key in ("sourceSha", "runtime", "mode", "dotnetSdkVersion", "runner",
+                                                          "archiveName", "archiveBytes", "archiveSha256")},
+               "originalMetricsSha256": digest(original_path), "verificationSourceSha": sha,
+               "toolingSourceSha": os.environ.get("GITHUB_WORKFLOW_SHA"),
+               "runner": {key: os.environ.get(key) for key in ("RUNNER_OS", "RUNNER_ARCH", "ImageOS", "ImageVersion", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT")},
+               "startedUtc": datetime.now(timezone.utc).isoformat(), "stages": {},
+               "functionalAcceptance": "pending owner testing"}
+    exit_code = 0
+    try:
+        sdk = subprocess.check_output(["dotnet", "--version"], cwd=source, text=True).strip()
+        receipt["dotnetSdkVersion"] = sdk
+        if sdk != original["dotnetSdkVersion"] or sdk != json.loads((source / "global.json").read_text())["sdk"]["version"]:
+            raise ValueError("Verification SDK differs from the original pinned SDK")
+        packages = original_directory / "artifacts"
+        archive = packages / original["archiveName"]
+        if archive.stat().st_size != original["archiveBytes"] or digest(archive) != original["archiveSha256"]:
+            raise ValueError("Downloaded archive differs from original measured bytes")
+        version = original["productVersion"]
+        run_stage(receipt, evidence, "verify", artifact_verifier_command(source, packages, version, args.runtime), source)
+        extraction = state / "original-archive"
+        extraction.mkdir()
+        with zipfile.ZipFile(archive) as bundle:
+            for entry in bundle.infolist():
+                if not (extraction / entry.filename).resolve().is_relative_to(extraction.resolve()):
+                    raise ValueError("Unsafe original archive entry")
+            bundle.extractall(extraction)
+        distribution = extraction / f"netratel-client-{args.runtime}"
+        manifest = json.loads((distribution / "netratel-client-manifest.json").read_text(encoding="utf-8-sig"))
+        if (manifest.get("schema"), manifest.get("commitSha"), manifest.get("runtimeId"), manifest.get("executable")) != (
+                "netratel.client.manifest.v1", sha, args.runtime, "NetRatel.Client.exe"):
+            raise ValueError("Original archive manifest differs from verification source/RID/executable identity")
+        if inventory(distribution) != json.loads((original_directory / "distribution-inventory.json").read_text()):
+            raise ValueError("Original ZIP contents differ from the measured distribution inventory")
+        if args.verify_content:
+            run_stage(receipt, evidence, "verify-content", [sys.executable, TOOLS / "verify-client-runtime-content.py",
+                      "--sbom", packages / f"netratel-client-{version}-{args.runtime}.spdx.json", "--runtime-graph",
+                      original_directory / "publish.deps.json", "--publish-inputs", original_directory / "publish-inputs.txt",
+                      "--distribution", distribution], source)
+        launch_env = os.environ.copy()
+        launch_env["DOTNET_BUNDLE_EXTRACT_BASE_DIR"] = str(state / "fresh-extraction")
+        for label in ("fresh", "cached"):
+            run_stage(receipt, evidence, "launch-" + label, [distribution / "NetRatel.Client.exe", "--version"], source, launch_env)
+        receipt["launchTimingMeaning"] = "Original archived bytes; --version only, before normal initialization; fresh then cached extraction."
+    except subprocess.CalledProcessError as error:
+        exit_code = error.returncode if error.returncode > 0 else 1
+        receipt["error"] = str(error)
+    except (ValueError, OSError, KeyError) as error:
+        exit_code = 1
+        receipt["error"] = str(error)
+        print(str(error), file=sys.stderr)
+    finally:
+        receipt.update(exitCode=exit_code, finishedUtc=datetime.now(timezone.utc).isoformat())
+        (evidence / "verification.json").write_text(json.dumps(receipt, indent=2) + "\n")
+        print("CLIENT_ARCHIVE_VERIFICATION=" + json.dumps(receipt, separators=(",", ":")), flush=True)
+    return exit_code
 
 
 def digest(path):
@@ -47,11 +164,14 @@ def main():
     parser.add_argument("--state-root", required=True, type=Path)
     parser.add_argument("--evidence", required=True, type=Path)
     parser.add_argument("--verify-content", action="store_true", help="Candidate-only removed-content gate")
+    parser.add_argument("--verify-existing", type=Path, help="Verify a downloaded Windows measurement directory without restore/publish")
     args = parser.parse_args()
     if os.environ.get("GITHUB_ACTIONS") != "true" or os.environ.get("RUNNER_ENVIRONMENT") != "github-hosted":
         parser.error("Release-style measurements must run on a GitHub-hosted Actions runner (AGENTS.md).")
     if args.mode == "trimmed" and args.runtime != "linux-x64":
         parser.error("The initial bounded trimming assessment is linux-x64 only.")
+    if args.verify_existing and (args.runtime != "win-x64" or args.mode != "untrimmed"):
+        parser.error("Verification reuse is limited to the original win-x64 untrimmed archives.")
     source, evidence = args.source.resolve(), args.evidence.resolve()
     sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source, text=True).strip()
     if not re.fullmatch(r"[a-f0-9]{40}", sha):
@@ -61,6 +181,8 @@ def main():
         parser.error("State and evidence directories must be fresh for this source/mode/RID.")
     state.mkdir(parents=True)
     evidence.mkdir(parents=True)
+    if args.verify_existing:
+        return verify_existing(args, source, sha, state, evidence)
     build = state / "build"
     packages = evidence / "artifacts"
     packages.mkdir()
@@ -74,23 +196,7 @@ def main():
                "functionalAcceptance": "pending owner testing"}
 
     def run(stage, command, cwd=source, env=None):
-        command = [str(value) for value in command]
-        started = time.perf_counter()
-        record = metrics["stages"][stage] = {"command": command, "cwd": str(cwd)}
-        with (evidence / f"{stage}.log").open("w", encoding="utf-8") as log:
-            log.write(json.dumps({"command": command, "cwd": str(cwd)}) + "\n")
-            log.flush()
-            process = subprocess.Popen(command, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                       text=True, encoding="utf-8", errors="replace", env=env)
-            for line in process.stdout:
-                log.write(line)
-                print(line, end="", flush=True)
-            result = process.wait()
-        record.update(exitCode=result, seconds=round(time.perf_counter() - started, 3))
-        if result:
-            metrics["failureStage"] = stage
-            metrics["failureKind"] = failure_kind(stage, (evidence / f"{stage}.log").read_text())
-            raise subprocess.CalledProcessError(result, command)
+        return run_stage(metrics, evidence, stage, command, cwd, env)
 
     exit_code = 0
     try:
@@ -180,8 +286,7 @@ def main():
         # logs as well when an operator cannot download the artifact CDN bytes.
         for item in runtime_inventory:
             print("CLIENT_RUNTIME_PACKAGE=" + json.dumps(item, separators=(",", ":")), flush=True)
-        run("verify", ["bash", source / "tools/ci/verify-client-release-artifact.sh", "--artifacts", packages,
-                       "--version", version, "--runtime", args.runtime, "--extension", extension, "--integrity-only"])
+        run("verify", artifact_verifier_command(source, packages, version, args.runtime))
         if args.verify_content:
             run("verify-content", [sys.executable, TOOLS / "verify-client-runtime-content.py", "--sbom", sbom,
                                    "--runtime-graph", graph, "--publish-inputs", evidence / "publish-inputs.txt",
