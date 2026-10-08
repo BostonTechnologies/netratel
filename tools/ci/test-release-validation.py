@@ -1682,23 +1682,38 @@ class ClientMeasurementHelperTests(unittest.TestCase):
                        "runner": {"ImageVersion": "original-image"}, "archiveName": archive.name, "archiveBytes": archive.stat().st_size,
                        "archiveSha256": self.helper.digest(archive), "productVersion": "1.0.0",
                        "stages": {"publish": {"exitCode": 0, "seconds": 12.345}}, "exitCode": 1}
+            sbom = original / "artifacts/netratel-client-1.0.0-win-x64.spdx.json"
+            sbom.write_bytes(b'{"fixture":true}\r\n')
+            checksum_index = original / "artifacts/SHA256SUMS"
+            checksum_index.write_bytes("".join(f"{self.helper.digest(path)}  {path.name}\r\n" for path in (archive, sbom)).encode())
+            preserved_index = checksum_index.read_bytes()
+            preserved_sbom = sbom.read_bytes()
             original_path = original / "metrics.json"
             original_path.write_text(json.dumps(metrics))
             preserved = original_path.read_bytes()
             (original / "distribution-inventory.json").write_text(json.dumps(self.helper.inventory(distribution)))
             stages = []
             with patch.object(self.helper.subprocess, "check_output", return_value="10.0.401\n"), \
-                 patch.object(self.helper, "artifact_verifier_command", return_value=["git-bash", "verifier.sh"]), \
+                 patch.object(self.helper, "artifact_verifier_command", return_value=["git-bash", "verifier.sh"]) as command, \
                  patch.object(self.helper, "run_stage", side_effect=lambda receipt, output, stage, *args: stages.append(stage)), \
                  contextlib.redirect_stdout(io.StringIO()):
-                result = self.helper.verify_existing(SimpleNamespace(verify_existing=original, runtime="win-x64", mode="untrimmed", verify_content=False),
+                result = self.helper.verify_existing(SimpleNamespace(verify_existing=original, runtime="win-x64", mode="untrimmed", verify_content=True),
                                                      source, sha, state, evidence)
             self.assertEqual(0, result)
-            self.assertEqual(["verify", "launch-fresh", "launch-cached"], stages)
+            self.assertEqual(["verify", "verify-content", "launch-fresh", "launch-cached"], stages)
+            command.assert_called_once_with(source, state / "validation-packages", "1.0.0", "win-x64")
             self.assertEqual(preserved, original_path.read_bytes())
+            self.assertEqual(preserved_index, checksum_index.read_bytes())
+            self.assertEqual(preserved_sbom, sbom.read_bytes())
+            validation = state / "validation-packages"
+            self.assertEqual(preserved_index.replace(b"\r\n", b"\n"), (validation / "SHA256SUMS").read_bytes())
+            self.assertEqual(archive.read_bytes(), (validation / archive.name).read_bytes())
+            self.assertEqual(preserved_sbom, (validation / sbom.name).read_bytes())
             receipt = json.loads((evidence / "verification.json").read_text())
             self.assertEqual(metrics["archiveSha256"], receipt["original"]["archiveSha256"])
             self.assertEqual(metrics["runner"], receipt["original"]["runner"])
+            self.assertEqual(hashlib.sha256(preserved_index).hexdigest(), receipt["checksumIndex"]["originalSha256"])
+            self.assertEqual(hashlib.sha256(preserved_index.replace(b"\r\n", b"\n")).hexdigest(), receipt["checksumIndex"]["validationSha256"])
             self.assertEqual(metrics["stages"]["publish"]["seconds"], json.loads(original_path.read_text())["stages"]["publish"]["seconds"])
             archive.write_bytes(archive.read_bytes() + b"changed archive bytes")
             with patch.object(self.helper.subprocess, "check_output", return_value="10.0.401\n"), \

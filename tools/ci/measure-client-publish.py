@@ -95,7 +95,34 @@ def verify_existing(args, source, sha, state, evidence):
         if archive.stat().st_size != original["archiveBytes"] or digest(archive) != original["archiveSha256"]:
             raise ValueError("Downloaded archive differs from original measured bytes")
         version = original["productVersion"]
-        run_stage(receipt, evidence, "verify", artifact_verifier_command(source, packages, version, args.runtime), source)
+        sbom = packages / f"netratel-client-{version}-{args.runtime}.spdx.json"
+        original_index = (packages / "SHA256SUMS").read_bytes()
+        normalized_index = original_index.replace(b"\r\n", b"\n")
+        checksums = {}
+        for line in normalized_index.split(b"\n"):
+            if not line:
+                continue
+            match = re.fullmatch(rb"([a-f0-9]{64})  ([^\r\n]+)", line)
+            if not match:
+                raise ValueError("Original checksum index has a malformed entry")
+            filename = match[2].decode("utf-8")
+            if filename in checksums:
+                raise ValueError("Original checksum index contains duplicate entries")
+            checksums[filename] = match[1].decode("ascii")
+        if checksums != {archive.name: digest(archive), sbom.name: digest(sbom)}:
+            raise ValueError("Original checksum index differs from the archive/SBOM bytes")
+        validation = state / "validation-packages"
+        validation.mkdir()
+        for path in (archive, sbom):
+            shutil.copyfile(path, validation / path.name)
+            if digest(validation / path.name) != checksums[path.name]:
+                raise ValueError("Validation copy differs from original archive/SBOM bytes")
+        (validation / "SHA256SUMS").write_bytes(normalized_index)
+        receipt["checksumIndex"] = {"originalSha256": hashlib.sha256(original_index).hexdigest(),
+                                    "validationSha256": hashlib.sha256(normalized_index).hexdigest(),
+                                    "normalization": "CRLF to LF only in a separate validation copy; original index/archive/SBOM/metrics bytes retained unchanged",
+                                    "entries": checksums}
+        run_stage(receipt, evidence, "verify", artifact_verifier_command(source, validation, version, args.runtime), source)
         extraction = state / "original-archive"
         extraction.mkdir()
         with zipfile.ZipFile(archive) as bundle:
@@ -112,7 +139,7 @@ def verify_existing(args, source, sha, state, evidence):
             raise ValueError("Original ZIP contents differ from the measured distribution inventory")
         if args.verify_content:
             run_stage(receipt, evidence, "verify-content", [sys.executable, TOOLS / "verify-client-runtime-content.py",
-                      "--sbom", packages / f"netratel-client-{version}-{args.runtime}.spdx.json", "--runtime-graph",
+                      "--sbom", validation / sbom.name, "--runtime-graph",
                       original_directory / "publish.deps.json", "--publish-inputs", original_directory / "publish-inputs.txt",
                       "--distribution", distribution], source)
         launch_env = os.environ.copy()
@@ -270,7 +297,7 @@ def main():
                                 f"Compress-Archive -Path '{distribution.name}' -DestinationPath '{archive.name}' -Force"], cwd=packages)
         else:
             run("package", ["tar", "-C", packages, "-czf", archive, distribution.name])
-        (packages / "SHA256SUMS").write_text("".join(f"{digest(path)}  {path.name}\n" for path in (archive, sbom)))
+        (packages / "SHA256SUMS").write_text("".join(f"{digest(path)}  {path.name}\n" for path in (archive, sbom)), newline="\n")
         files = inventory(distribution)
         (evidence / "distribution-inventory.json").write_text(json.dumps(files, indent=2) + "\n")
         metrics.update(executableBytes=(distribution / executable_name).stat().st_size,
