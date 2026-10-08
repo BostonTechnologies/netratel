@@ -1,10 +1,13 @@
 using System.Security.Claims;
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Authorization;
 using NetRatel.Application.Notifications;
 using NetRatel.Application.Observability;
 using NetRatel.API.Services.Orchestration;
 using NetRatel.Shared.Contracts.Monitoring;
+using NetRatel.Infrastructure.Identity.Authorization;
+using NetRatel.Infrastructure.ServiceIdentity;
 
 namespace NetRatel.API.Endpoints;
 
@@ -14,7 +17,23 @@ public static class NotificationEndpoints
     {
         var userNotifications = app.MapGroup("/api/v1/notifications")
             .WithTags("Notifications")
-            .RequireAuthorization("AuditReader");
+            .RequireAuthorization();
+        userNotifications.AddEndpointFilter(async (context, next) =>
+            {
+                var http = context.HttpContext;
+                var authorization = http.RequestServices.GetRequiredService<IAuthorizationService>();
+                if (!(await authorization.AuthorizeAsync(http.User, "AuditReader")).Succeeded)
+                {
+                    if (http.User.FindFirst("netratel_integration_credential_id") is not null ||
+                        http.User.FindFirst(ServiceIdentityClaims.PrincipalId) is not null || string.IsNullOrWhiteSpace(ResolveUserId(http)))
+                        return Results.Forbid();
+                    var access = http.RequestServices.GetRequiredService<IEffectiveAccessService>();
+                    var tenants = await access.GetAuthorizedTenantIdsAsync(http.User, NetRatelPermissions.IntegrationManagement, http.RequestAborted);
+                    if (tenants is { Length: 0 }) return Results.Forbid();
+                    http.RequestServices.GetRequiredService<NetRatelNotificationAudience>().ServiceLinkFailuresOnly = true;
+                }
+                return await next(context);
+            });
 
         userNotifications.MapGet("", async (
             HttpContext http,
@@ -109,7 +128,7 @@ public static class NotificationEndpoints
             return Results.Ok(new BulkMarkReadResult(updated));
         });
 
-        userNotifications.MapGet("/stream", StreamNotificationsAsync);
+        userNotifications.MapGet("/stream", StreamNotificationsAsync).RequireAuthorization("AuditReader");
 
         var events = app.MapGroup("/api/v1/events")
             .WithTags("Events")
@@ -226,7 +245,8 @@ public static class NotificationEndpoints
             {
                 // Monitoring has exact-tenant authorization on its own durable
                 // read path. The legacy global bus must never disclose it.
-                if (notification.EventType.StartsWith(MonitoringLimits.NotificationEventPrefix, StringComparison.Ordinal)) continue;
+                if (notification.EventType.StartsWith(MonitoringLimits.NotificationEventPrefix, StringComparison.Ordinal) ||
+                    notification.EventType == NetRatelNotificationAudience.ServiceLinkFailure) continue;
                 if (!string.IsNullOrWhiteSpace(eventType) &&
                     !string.Equals(notification.EventType, eventType, StringComparison.OrdinalIgnoreCase))
                 {
@@ -272,14 +292,9 @@ public static class NotificationEndpoints
 
     private static string? ResolveUserId(HttpContext context)
     {
-        if (context.Request.Headers.TryGetValue("X-NetRatel-UserId", out var explicitUser) &&
-            !string.IsNullOrWhiteSpace(explicitUser))
-        {
-            return explicitUser.ToString().Trim();
-        }
-
         var user = context.User;
-        return user.FindFirstValue(ClaimTypes.NameIdentifier)
+        return user.FindFirstValue("netratel_principal_id")
+            ?? user.FindFirstValue(ClaimTypes.NameIdentifier)
             ?? user.FindFirstValue("sub")
             ?? user.FindFirstValue("preferred_username")
             ?? user.Identity?.Name;

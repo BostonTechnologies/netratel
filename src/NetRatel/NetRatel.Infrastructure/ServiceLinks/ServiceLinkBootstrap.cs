@@ -119,6 +119,11 @@ public sealed partial class ServiceLinkCoordinator
             Require(existing.Role == "responder" && existing.DescriptorHash == d.DescriptorHash && existing.LocalActorId == actorId && Same(existing.SessionBindingHash, Digest(request.SessionBinding!)) && Same(Unprotect(existing, "browser-state", existing.ProtectedBrowserState!), request.BrowserState), "attempt-conflict", "This attempt is already bound to a different origin, actor or correlation.", 409);
             return Descriptor(existing);
         }
+        if (!string.IsNullOrEmpty(d.RequestedResponderTenantId))
+        {
+            Require(await LocalTenantExists(d.RequestedResponderTenantId, ct), "invalid-tenant", "The requested responder tenant does not exist. Start a fresh setup with a valid selection.", 422);
+            await Authorize(actor, d.RequestedResponderTenantId, ct);
+        }
         if (connectorSetup is not null) await connectorSetup.PrepareProducerAsync(actor, ct);
         var a = new ServiceLinkAttempt { AttemptId = d.AttemptId, Role = "responder", LocalTenantId = d.RequestedResponderTenantId ?? "", LocalActorId = actorId, SessionBindingHash = Digest(request.SessionBinding!), PeerInstanceId = peer.InstanceId, PeerTenantId = d.InitiatorTenantId, DescriptorJson = Json(d), DescriptorHash = d.DescriptorHash, ExpiresAtUnixSeconds = Math.Min(ServiceLinkCanonicalJson.ParseWholeSecondUtcTimestamp(d.ExpiresAt).ToUnixTimeSeconds(), Now + settings.BootstrapLifetimeSeconds), CreatedAtUnixSeconds = Now, UpdatedAtUnixSeconds = Now, NextWorkAtUnixSeconds = Now };
         a.ProtectedBrowserState = Protect(a, "browser-state", request.BrowserState); db.Set<ServiceLinkAttempt>().Add(a); await db.SaveChangesAsync(ct); return d;
@@ -221,7 +226,7 @@ public sealed partial class ServiceLinkCoordinator
             await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct);
             a.ConsentId = NewId(); await CreateInbound(a, actorId, actor, ct); a.NextWorkAtUnixSeconds = Now; await Save(a, ct); await tx.CommitAsync(ct);
         }
-        return await AdminStatus(a, ct);
+        return await AdminStatus(a, actor, ct);
     }
 
     public Task<ServiceLinkExchangeResponse> ExchangeAsync(string attemptId, ServiceLinkExchangeRequest request, CancellationToken ct) =>

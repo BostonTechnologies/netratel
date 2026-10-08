@@ -20,15 +20,28 @@
         else if (error is not null || status is null)
         {
             <MudAlert Dense="true" Severity="Severity.Warning">@(error ?? ResultMessage(Status))</MudAlert>
-            <MudButton Href="/account/integration-credentials?purpose=helpdesk-m2m" Color="Color.Primary">Return to Helpdesk M2M setup</MudButton>
+            @if (ResultFailure.Stage != "request" || ResultFailure.CorrelationId is not null)
+            {
+                <MudText Typo="Typo.caption">Stage: @ResultFailure.Stage · Reference: @(ResultFailure.CorrelationId ?? "unavailable")</MudText>
+            }
+            @if (ResultFailure.Stage == "start")
+            {
+                <MudButton Href="/account/integration-credentials?purpose=helpdesk-m2m" Color="Color.Primary">Correct setup and retry</MudButton>
+            }
+            else
+            {
+                <MudButton Href="/account/integration-credentials" Color="Color.Primary">Review connections</MudButton>
+            }
+            <MudButton Href="/notifications">View notifications</MudButton>
         }
         else
         {
             <MudText Typo="Typo.caption">1 · Connect   →   2 · Approve   →   3 · Connected</MudText>
+            @if (status.GrantSummary is null) { <MudText Typo="Typo.body2">Requested access · not yet approved</MudText> }
             <ServiceLinkConsentDetails Initiator="status.Descriptor.InitiatorEndpointSnapshot" Responder="status.Descriptor.ResponderEndpointSnapshot" Grants="DisplayedGrants" />
-            @if (IsResponder && status.GrantSummary is null)
+            @if (status.AvailableAction == "respond" && IsResponder && status.GrantSummary is null)
             {
-                <ServiceGrantSelector @key="loadGeneration" Authority="NarrowedAuthority" IncidentOnly="IncidentOnly" Changed="SelectionChanged" />
+                <ServiceGrantSelector @key="loadGeneration" Authority="NarrowedAuthority" IncidentOnly="IncidentOnly" PresetTenantId="RequestedLocalTenantId" Changed="SelectionChanged" />
                 <MudSelect T="string" Style="@(IncidentOnly ? "display:none" : null)" Label="NetRatel → RatelDesk permissions" MultiSelection="true" SelectedValues="outboundScopes" SelectedValuesChanged="OutboundChanged" Variant="Variant.Outlined" Margin="Margin.Dense">
                     @foreach (var scope in RequestedOutboundScopes) { <MudSelectItem Value="@scope">@scope</MudSelectItem> }
                 </MudSelect>
@@ -49,7 +62,7 @@
                     <MudButton ButtonType="ButtonType.Submit" Variant="Variant.Filled" Color="Color.Primary" Disabled="@(!CanApproveRemote)">Approve and return to RatelDesk</MudButton>
                 </form>
             }
-            else if (!IsResponder && status.GrantSummary is not null && status.Decision == "undecided" && status.LifecycleState == "approved")
+            else if (status.AvailableAction == "review" && !IsResponder && status.GrantSummary is not null)
             {
                 <MudAlert Dense="true" Severity="Severity.Info">RatelDesk selected the organization/customer and permissions shown above. This final consent approves that exact summary before either business direction is enabled.</MudAlert>
                 <form @key="status" method="post" action="/account/integration-credentials/link/confirm" data-enhance="false" data-testid="service-link-final-approval">
@@ -63,6 +76,14 @@
             else
             {
                 <MudAlert Dense="true" Severity="Severity.Info">@ConnectionMessage</MudAlert>
+                @if (status.AvailableAction == "continue")
+                {
+                    <form method="post" action="/account/integration-credentials/link/continue" data-enhance="false" data-testid="service-link-continue-approval">
+                        <AntiforgeryToken />
+                        <input type="hidden" name="attemptId" value="@status.AttemptId" />
+                        <MudButton ButtonType="ButtonType.Submit" Color="Color.Primary">Continue to RatelDesk approval</MudButton>
+                    </form>
+                }
             }
             <HelpdeskConnectionsPanel />
             @if (status.LifecycleState == "active") { <MudButton Href="/account/integration-credentials/link/return" Color="Color.Primary">Return to Flow or integrations</MudButton> }
@@ -74,6 +95,10 @@
 @code {
     [Parameter] public string? AttemptId { get; set; }
     [SupplyParameterFromQuery(Name = "status")] public string? Status { get; set; }
+    [SupplyParameterFromQuery(Name = "stage")] public string? Stage { get; set; }
+    [SupplyParameterFromQuery(Name = "correlationId")] public string? CorrelationId { get; set; }
+    private ServiceLinkFailure? operationFailure;
+    private ServiceLinkFailure ResultFailure => operationFailure ?? ServiceLinkFailure.From(Status, Stage, CorrelationId);
     private ServiceLinkAdminStatus? status;
     private ServiceClientManagementAuthority authority = new(false, []);
     private HelpdeskGrantSelection selection = new(null, [], [], []);
@@ -84,14 +109,31 @@
     private CancellationTokenSource? loadCancellation;
     private IEnumerable<string> RequestedInboundScopes => status?.Descriptor.RequestedGrants.Where(grant => grant.TargetProduct == "netratel").SelectMany(grant => grant.Scopes).Distinct(StringComparer.Ordinal) ?? [];
     private IEnumerable<string> RequestedOutboundScopes => status?.Descriptor.RequestedGrants.Where(grant => grant.TargetProduct == "rateldesk").SelectMany(grant => grant.Scopes).Distinct(StringComparer.Ordinal) ?? [];
-    private ServiceClientManagementAuthority NarrowedAuthority => authority with { Tenants = authority.Tenants.Select(tenant => tenant with { Scopes = tenant.Scopes.Intersect(RequestedInboundScopes, StringComparer.Ordinal).ToArray() }).ToArray() };
+    private int? RequestedLocalTenantId => int.TryParse(status?.Descriptor.RequestedResponderTenantId, out var tenant) ? tenant : null;
+    private ServiceClientManagementAuthority NarrowedAuthority => authority with { Tenants = authority.Tenants
+        .Where(tenant => string.IsNullOrEmpty(status?.Descriptor.RequestedResponderTenantId) || tenant.TenantId.ToString(CultureInfo.InvariantCulture) == status.Descriptor.RequestedResponderTenantId).Select(tenant => tenant with { Scopes = tenant.Scopes.Intersect(RequestedInboundScopes, StringComparer.Ordinal).ToArray() }).ToArray() };
     private bool IncidentOnly => RequestedInboundScopes.ToHashSet(StringComparer.Ordinal).SetEquals([ServiceLinkContract.ControlScope, ServiceLinkContract.VerifyScope]);
-    private string ConnectionMessage => status?.LifecycleState == "active" ? "Approved. Verify the connection below to confirm it is ready for Flow delivery." : "Completing setup. Resume below to retry the stored approval and authenticated connection checks.";
+    private string ConnectionMessage => status?.OrganizationBindingInvalid == true && status.LifecycleState is not ("revoked" or "expired" or "failed")
+        ? "The proposed local tenant is unavailable. Cancel this unapproved setup and start fresh with an authorized tenant; the original proposal cannot be changed."
+        : status?.CanStartFresh == true && status.LifecycleState is not ("revoked" or "expired" or "failed")
+            ? "This approval expired. Start fresh setup for new consent."
+            : status?.LifecycleState switch
+    {
+        "revoked" => "This connection is disconnected. Start fresh setup for new consent.",
+        "expired" => "This setup expired. Start fresh setup for new consent.",
+        "failed" => "This setup could not complete. Review its status below before starting fresh setup.",
+        "active" => "Approved. Verify the connection below to confirm it is ready for Flow delivery.",
+        _ => status?.GrantSummary is null
+            ? "Approval has not been saved. The original approving account must continue in its authorized browser session."
+            : status?.AvailableAction == "resume"
+                ? "Approval is saved. Resume below to reconcile the stored decision and authenticated connection checks."
+                : "Review the saved approval and current connection status below."
+    };
     private bool CanApproveRemote => authority.CanManage && selection.IsValid && outboundScopes.Count > 0 &&
         (!selection.Scopes.Contains("netratel.orchestration.invoke") || outboundScopes.Contains("rateldesk.orchestration.callback"));
-    private ServiceLinkGrant[] DisplayedGrants => status?.GrantSummary?.Grants ?? (status?.Descriptor.RequestedGrants ?? []).Select(grant => grant.TargetProduct == "netratel" && IsResponder
+    private ServiceLinkGrant[] DisplayedGrants => status?.GrantSummary?.Grants ?? (status?.Descriptor.RequestedGrants ?? []).Select(grant => grant.TargetProduct == "netratel" && status?.AvailableAction == "respond"
         ? grant with { TargetTenantId = selection.TenantId?.ToString(CultureInfo.InvariantCulture) ?? "", Scopes = selection.Scopes, ResourceConstraints = grant.ResourceConstraints with { TenantId = selection.TenantId?.ToString(CultureInfo.InvariantCulture), ResourceIds = selection.ResourceIds, RequestDefinitionIds = selection.RequestDefinitionIds } }
-        : grant.TargetProduct == "rateldesk" && IsResponder ? grant with { CallerTenantId = selection.TenantId?.ToString(CultureInfo.InvariantCulture) ?? "", Scopes = outboundScopes.Order(StringComparer.Ordinal).ToArray() } : grant).ToArray();
+        : grant.TargetProduct == "rateldesk" && status?.AvailableAction == "respond" ? grant with { CallerTenantId = selection.TenantId?.ToString(CultureInfo.InvariantCulture) ?? "", Scopes = outboundScopes.Order(StringComparer.Ordinal).ToArray() } : grant).ToArray();
     protected override async Task OnParametersSetAsync()
     {
         if (disposed) return;
@@ -101,10 +143,10 @@
         var token = loadCancellation.Token;
         var attempt = AttemptId;
         var route = new Uri(Navigation.Uri).AbsolutePath;
-        IsResponder = route.Contains("/respond/", StringComparison.Ordinal);
-        loading = true; error = null; status = null; authority = new(false, []);
+        IsResponder = false;
+        loading = true; error = null; operationFailure = null; status = null; authority = new(false, []);
         selection = new(null, [], [], []); outboundScopes = new(StringComparer.Ordinal); confirmed = false;
-        if (string.IsNullOrEmpty(attempt) || !IsResponder && !route.Contains("/review/", StringComparison.Ordinal))
+        if (string.IsNullOrEmpty(attempt) || !route.Contains("/respond/", StringComparison.Ordinal) && !route.Contains("/review/", StringComparison.Ordinal))
         { loading = false; return; }
         try
         {
@@ -112,18 +154,24 @@
             if (!IsCurrentLoad(generation, attempt, route)) return;
             var loadedAuthority = new ServiceClientManagementAuthority(false, []);
             var loadedOutbound = new HashSet<string>(StringComparer.Ordinal);
-            if (IsResponder && loadedStatus.GrantSummary is null)
+            if (loadedStatus.LocalRole == "responder" && loadedStatus.AvailableAction == "respond" && loadedStatus.GrantSummary is null)
             {
                 loadedAuthority = await Api.GetAuthorityAsync(token);
                 if (!IsCurrentLoad(generation, attempt, route)) return;
                 loadedOutbound = loadedStatus.Descriptor.RequestedGrants.Where(grant => grant.TargetProduct == "rateldesk")
                     .SelectMany(grant => grant.Scopes).ToHashSet(StringComparer.Ordinal);
             }
-            status = loadedStatus; authority = loadedAuthority; outboundScopes = loadedOutbound;
+            status = loadedStatus; IsResponder = loadedStatus.LocalRole == "responder"; authority = loadedAuthority; outboundScopes = loadedOutbound;
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
         catch (Exception exception) when (exception is OperationCanceledException or HttpRequestException or JsonException or InvalidDataException or ServiceAdministrationException)
-        { if (IsCurrentLoad(generation, attempt, route)) error = "The protected grant summary is unavailable or current authority has changed. Refresh its stored status before approving."; }
+        {
+            if (IsCurrentLoad(generation, attempt, route))
+            {
+                operationFailure = (exception as ServiceAdministrationException)?.Failure;
+                error = operationFailure?.Message ?? "The protected grant summary is unavailable or current authority has changed. Refresh its stored status before approving.";
+            }
+        }
         finally { if (IsCurrentLoad(generation, attempt, route)) loading = false; }
     }
     private bool IsCurrentLoad(int generation, string attempt, string route) => !disposed && generation == loadGeneration &&
@@ -136,20 +184,5 @@
         disposed = true; ++loadGeneration; loadCancellation?.Cancel(); loadCancellation?.Dispose(); loadCancellation = null;
         status = null; authority = new(false, []); selection = new(null, [], [], []); outboundScopes.Clear(); confirmed = false;
     }
-    private static string ResultMessage(string? code) => code switch
-    {
-        "upgrade-required" => "Upgrade required: this RatelDesk build does not support the requested connection capability. Manual service credentials remain available.",
-        "not-authorized" => "Current integration management authority is required for the selected tenant and resources.",
-        "expired" => "This unprepared attempt expired. Start a new approved attempt; prepared connections retain their decision recovery state.",
-        "form-expired" => "The approval form expired. Reload the protected review and confirm again.",
-        "session-expired" => "The initiating browser session expired. Sign in and review the durable attempt before starting a new approval.",
-        "needs-attention" => "The operation could not be confirmed. Review the separate directional states and resume recovery before starting another attempt.",
-        "deployment-managed" => "Deployment configuration owns the selected connection. Guided setup cannot replace its registration or protected credentials.",
-        "profile-occupied" => "An existing connection owns this profile. Disconnect it explicitly before approving a replacement.",
-        "source-unavailable" => "The exact persisted incident producer identity has not been configured. Approve its explicit mapping before linking.",
-        "unsupported-peer" => "The selected origin is not a compatible distinct RatelDesk instance.",
-        "service-unavailable" => "The deployment's service issuer or reciprocal link capability is unavailable. Review its configured public identity and service settings.",
-        "callback-required" => "Task invocation requires the reverse correlated task callback grant. Include it or approve read-only orchestration access.",
-        _ => "The link proof or browser session could not be verified. No approval was accepted through this page."
-    };
+    private static string ResultMessage(string? code) => ServiceLinkFailure.From(code).Message;
 }

@@ -44,7 +44,7 @@ public sealed class HelpdeskM2MApiClientResponseBoundsTests
         var error = await Assert.ThrowsAsync<ServiceAdministrationException>(() => ExecuteAsync(client, action));
 
         Assert.Equal(HttpStatusCode.BadRequest, error.StatusCode);
-        Assert.Null(error.Code);
+        Assert.Equal("invalid-request", error.Code);
         Assert.Equal(0, transport.Content.SerializationCount);
         Assert.Equal(Bound + 1, transport.Content.Body.BytesRead);
         Assert.True(transport.Content.IsDisposed);

@@ -108,16 +108,24 @@ public sealed partial class ServiceLinkCoordinator(
         CallerInstanceId = g.CallerInstanceId, CallerTenantId = g.CallerTenantId, TargetInstanceId = g.TargetInstanceId, TargetTenantId = g.TargetTenantId
     };
 
-    private async Task<ServiceLinkAdminStatus> AdminStatus(ServiceLinkAttempt a, CancellationToken ct)
+    private async Task<ServiceLinkAdminStatus> AdminStatus(ServiceLinkAttempt a, ClaimsPrincipal actor, CancellationToken ct)
     {
         var inbound = await ServiceLinkAuthority.InboundUsableAsync(db, a, clock, await CurrentSettings(ct), ct);
         var provider = await providers.GetAsync(a.LinkId, ct);
         var sender = SenderUsable(a, provider, inbound);
+        var invalidBinding = !string.IsNullOrEmpty(a.LocalTenantId) && !await LocalTenantExists(a.LocalTenantId, ct);
+        var approvalExpired = a.Decision == "undecided" && a.InboundPrincipalId is null &&
+            a.ProtectedOutboundCredential is null && !a.ExchangeDispatched &&
+            a.LifecycleState is "awaiting_approval" or "approved" && a.ExpiresAtUnixSeconds <= Now;
+        var terminal = a.LifecycleState is "expired" or "failed" or "revoked" || approvalExpired;
         return new(a.AttemptId, a.LinkId, a.LinkRevision, a.LifecycleState,
             a.LocalTenantId, a.PeerInstanceId, a.PeerTenantId, a.Decision, a.CommitId, a.GrantHash, Descriptor(a), a.GrantSummaryJson is null ? null : Summary(a),
             a.InboundPrincipalId is not null, a.ProtectedOutboundCredential is not null, inbound, sender, a.PeerActiveAcknowledged, EffectiveError(a, inbound, sender),
             provider.ManagedByDeployment, await RotationSummaries(a, ct))
-            { LocalTenantName = ServiceLinkGrantAuthority.TryTenant(a.LocalTenantId, out var namedTenant)
+            { LocalRole = a.Role, AvailableAction = AvailableAction(a, actor, invalidBinding, terminal),
+                CanCancel = !provider.ManagedByDeployment && a.Decision is not ("commit" or "abort") && a.LifecycleState != "revoked",
+                CanStartFresh = terminal, OrganizationBindingInvalid = invalidBinding,
+                LocalTenantName = ServiceLinkGrantAuthority.TryTenant(a.LocalTenantId, out var namedTenant)
                 ? await db.Tenants.AsNoTracking().Where(t => t.Id == namedTenant).Select(t => t.Name).SingleOrDefaultAsync(ct) : null,
                 AutomaticRotationEnabled = settings.AutomaticRotationEnabled, RotationAgeDays = settings.RotationAgeDays, RotationOverlapSeconds = settings.RotationOverlapSeconds };
     }
@@ -128,7 +136,7 @@ public sealed partial class ServiceLinkCoordinator(
         (a.Decision == "commit" && a.LifecycleState == "active" && (!inbound || !sender) ? "grant-unavailable" : null);
 
     public async Task<ServiceLinkAdminStatus> AdminStatusAsync(string attemptId, ClaimsPrincipal actor, CancellationToken ct)
-    { var a = await Attempt(attemptId, ct); await AuthorizeAttempt(a, actor, ct); return await AdminStatus(a, ct); }
+    { var a = await Attempt(attemptId, ct); await AuthorizeInspectionOrCancellation(a, actor, ct); return await AdminStatus(a, actor, ct); }
     private async Task AuthorizeAttempt(ServiceLinkAttempt a, ClaimsPrincipal actor, CancellationToken ct)
     {
         if (!string.IsNullOrEmpty(a.LocalTenantId)) { await Authorize(actor, a.LocalTenantId, ct); return; }
@@ -144,7 +152,11 @@ public sealed partial class ServiceLinkCoordinator(
         var all = await db.Set<ServiceLinkAttempt>().OrderByDescending(x => x.CreatedAtUnixSeconds).Take(100).ToListAsync(ct);
         var result = new List<ServiceLinkAdminStatus>();
         foreach (var a in all)
-            if (ServiceLinkGrantAuthority.TryTenant(a.LocalTenantId, out var tenant) && (tenants is null || tenants.Contains(tenant)) || string.IsNullOrEmpty(a.LocalTenantId) && a.LocalActorId == actor.FindFirstValue("netratel_principal_id")) result.Add(await AdminStatus(a, ct));
+        {
+            try { await AuthorizeInspectionOrCancellation(a, actor, ct); }
+            catch (ServiceLinkProtocolException e) when (e.StatusCode == 403) { continue; }
+            result.Add(await AdminStatus(a, actor, ct));
+        }
         return result.ToArray();
     }
 

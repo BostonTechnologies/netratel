@@ -6,7 +6,7 @@
 {
     @if (settings.Enabled && settings.ReciprocalLinkEnabled)
     {
-        <MudText Typo="Typo.caption" Color="Color.Success">Connections enabled for this installation</MudText>
+        <MudText Typo="Typo.caption" Color="Color.Success" data-testid="helpdesk-installation-enabled">Connections enabled for this installation. Peer approval and verification are still required.</MudText>
     }
     else
     {
@@ -22,7 +22,9 @@
                     <MudText Typo="Typo.body2">Enable protected service connections using this installation's configured public addresses.</MudText>
                     @if (!ValidUrl(webUrl)) { <MudTextField Label="This NetRatel web address" @bind-Value="webUrl" Immediate="true" Variant="Variant.Outlined" Margin="Margin.Dense" /> }
                     @if (!ValidUrl(apiUrl)) { <MudTextField Label="This NetRatel API address" @bind-Value="apiUrl" Immediate="true" Variant="Variant.Outlined" Margin="Margin.Dense" HelperText="Use the deployment's API address; it can differ from the web address." /> }
-                    <MudButton OnClick="EnableAsync" Variant="Variant.Outlined" Color="Color.Primary" Disabled="@(Disabled || busy || !ValidUrl(webUrl) || !ValidUrl(apiUrl))">Enable connections</MudButton>
+                    <MudStack Row="true" Wrap="Wrap.Wrap">
+                        <MudButton OnClick="EnableAsync" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Primary" Disabled="@(Disabled || busy || !ValidUrl(webUrl) || !ValidUrl(apiUrl))" data-testid="helpdesk-enable-connections">Enable connections</MudButton>
+                    </MudStack>
                 }
             </MudStack>
         </MudPaper>

@@ -14,8 +14,13 @@ public sealed partial class ServiceLinkCoordinator
     {
         await CurrentSettings(ct);
         var a = await db.Set<ServiceLinkAttempt>().SingleOrDefaultAsync(x => x.LinkId == identifier || x.AttemptId == identifier, ct) ?? throw new ServiceLinkProtocolException(404, "link-not-found", "The attempt or link does not exist.");
-        await AuthorizeAttempt(a, actor, ct);
-        if (kind == "resume") { a = await ProgressWithRetry(a, ct); return await AdminStatus(a, ct); }
+        if (kind == "cancel") await AuthorizeInspectionOrCancellation(a, actor, ct);
+        else await AuthorizeAttempt(a, actor, ct);
+        if (kind == "resume")
+        {
+            Require(a.InboundPrincipalId is not null || a.Decision == "abort", "approval-required", "Continue the protected browser approval before resuming recovery.", 409);
+            a = await ProgressWithRetry(a, ct); return await AdminStatus(a, actor, ct);
+        }
         if (kind == "rotate")
         {
             Require(a.LifecycleState == "active" && a.Decision == "commit", "rotation-not-active", "Rotation requires both active approved directions.", 409);
@@ -28,10 +33,10 @@ public sealed partial class ServiceLinkCoordinator
                 var pending = await db.Set<ServiceLinkRotation>().SingleOrDefaultAsync(x => x.LinkId == a.LinkId && x.DirectionId == direction && x.ExpectedCurrentCredentialRevision == current.CredentialRevision && x.RotationState != "completed" && x.RotationState != "aborted", ct);
                 if (pending is null) { db.Set<ServiceLinkRotation>().Add(new() { RotationId = NewId(), LinkId = a.LinkId!, DirectionId = direction, ExpectedCurrentCredentialRevision = current.CredentialRevision, ActiveRotationKey = Digest(a.LinkId + "/" + direction + "/" + current.CredentialRevision), IsIssuer = false, RotationState = "requested", CreatedAtUnixSeconds = Now }); await db.SaveChangesAsync(ct); }
             }
-            return await AdminStatus(a, ct);
+            return await AdminStatus(a, actor, ct);
         }
         Require(kind is "cancel" or "revoke", "operation-not-found", "This local lifecycle action is unsupported.");
-        if (kind == "cancel" && a.Decision == "abort") return await AdminStatus(a, ct);
+        if (kind == "cancel" && a.Decision == "abort") return await AdminStatus(a, actor, ct);
         await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct);
         if (a.Decision == "commit" || kind == "revoke")
         {
@@ -55,7 +60,7 @@ public sealed partial class ServiceLinkCoordinator
                 if (a.InboundPrincipalId is not null) await registry.SetStatusAsync(a.InboundPrincipalId.Value, "in_doubt", ct);
             }
         }
-        a.NextWorkAtUnixSeconds = Now; await Save(a, ct); await tx.CommitAsync(ct); return await AdminStatus(a, ct);
+        a.NextWorkAtUnixSeconds = Now; await Save(a, ct); await tx.CommitAsync(ct); return await AdminStatus(a, actor, ct);
     }
 
     private async Task DeliverRevocation(ServiceLinkAttempt a, CancellationToken ct)
