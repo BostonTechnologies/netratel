@@ -8,6 +8,7 @@ using Microsoft.Extensions.DependencyInjection;
 using MudBlazor;
 using MudBlazor.Extensions;
 using MudBlazor.Services;
+using NetRatel.Shared.Contracts.RatelDesk;
 using NetRatel.Shared.ServiceIdentity;
 using NetRatel.Shared.ServiceLinks;
 using NetRatel.Web.Components.Pages;
@@ -228,6 +229,62 @@ public sealed class HelpdeskConsentStateRegressionTests : AsyncBunitContext
             Assert.Empty(page.FindAll("[data-testid='service-link-consent-details']"));
         });
         Assert.Equal(0, transport.CredentialWrites);
+        Assert.Equal(1, transport.AttemptReads);
+    }
+
+    [Theory]
+    [InlineData("approved", 3)]
+    [InlineData("active", 1)]
+    [InlineData("active-awaiting-ack", 2)]
+    public void Parent_and_focused_panel_share_authorized_status_and_complete_once(string initialState, int expectedReads)
+    {
+        using var transport = RegisterTransport();
+        transport.StatusFactory = id => Attempt(id) with
+        {
+            LifecycleState = initialState == "approved" ? transport.AttemptReads switch { 1 => "approved", 2 => "prepared", _ => "active" } : "active",
+            AvailableAction = "resume", Decision = transport.AttemptReads >= expectedReads ? "commit" : "undecided",
+            LocalInboundActive = transport.AttemptReads >= expectedReads, LocalBusinessSenderEnabled = transport.AttemptReads >= expectedReads,
+            PeerActiveAcknowledged = transport.AttemptReads >= expectedReads
+        };
+        Services.GetRequiredService<NavigationManager>().NavigateTo("/account/integration-credentials/link/review/current");
+        var page = Render<ServiceLinkConsent>(parameters => parameters.Add(component => component.AttemptId, "current"));
+
+        page.WaitForAssertion(() =>
+        {
+            Assert.Single(page.FindComponents<HelpdeskConnectionsPanel>());
+            Assert.Equal(1, transport.AttemptReads);
+            Assert.Equal(expectedReads == 1 ? 1 : 0, transport.CompletionWrites);
+        });
+        if (expectedReads == 3)
+            page.WaitForAssertion(() =>
+            {
+                Assert.Contains("Completing setup", page.Find("[data-testid='helpdesk-link-status']").TextContent);
+                Assert.Equal(2, transport.AttemptReads);
+            }, TimeSpan.FromSeconds(4));
+        page.WaitForAssertion(() =>
+        {
+            Assert.Contains("Connected", page.Find("[data-testid='helpdesk-link-status'] .mud-chip").TextContent);
+            Assert.Contains("Fixture organization / Fixture customer", page.Markup);
+            Assert.Equal(expectedReads, transport.AttemptReads);
+            Assert.Equal(1, transport.CompletionWrites);
+            Assert.Equal(0, transport.CredentialWrites);
+        }, TimeSpan.FromSeconds(6));
+    }
+
+    [Fact]
+    public void Static_prerender_defers_status_reads_to_the_interactive_render()
+    {
+        using var transport = RegisterTransport();
+        Services.GetRequiredService<NavigationManager>().NavigateTo("/account/integration-credentials/link/review/current");
+        SetRendererInfo(new RendererInfo("Static", false));
+        var prerender = Render<ServiceLinkConsent>(parameters => parameters.Add(component => component.AttemptId, "current"));
+        Assert.Equal(0, transport.AttemptReads);
+        Assert.Equal(0, transport.CompletionWrites);
+        prerender.Dispose();
+
+        SetRendererInfo(new RendererInfo("Server", true));
+        var interactive = Render<ServiceLinkConsent>(parameters => parameters.Add(component => component.AttemptId, "current"));
+        interactive.WaitForAssertion(() => Assert.Single(interactive.FindAll("[data-testid='service-link-final-approval']")));
         Assert.Equal(1, transport.AttemptReads);
     }
 
@@ -510,6 +567,7 @@ public sealed class HelpdeskConsentStateRegressionTests : AsyncBunitContext
     {
         var transport = new StateTransport();
         Services.AddSingleton<IHttpClientFactory>(transport);
+        SetRendererInfo(new RendererInfo("Server", true));
         return transport;
     }
 
@@ -569,6 +627,7 @@ public sealed class HelpdeskConsentStateRegressionTests : AsyncBunitContext
         public int ProducerWrites { get; private set; }
         public int CredentialWrites { get; private set; }
         public int AttemptReads { get; private set; }
+        public int CompletionWrites { get; private set; }
         public HttpStatusCode? RegistryDenial { get; set; }
         public bool EmptyRegistry { get; set; }
         public bool RegistryTimeout { get; set; }
@@ -590,6 +649,12 @@ public sealed class HelpdeskConsentStateRegressionTests : AsyncBunitContext
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             var path = request.RequestUri!.AbsolutePath;
+            if (request.Method == HttpMethod.Post && path == "/api/v2/tenants/7/connectors/rateldesk/setup/complete")
+            {
+                ++CompletionWrites;
+                return Task.FromResult(JsonResponse(new RatelDeskConnectionCompletionDto(Guid.Parse("00000000-0000-0000-0000-000000000007"), "Fixture connection", true, "ready")
+                { OrganizationName = "Fixture organization", CustomerName = "Fixture customer" }));
+            }
             if (request.Method == HttpMethod.Post && path == ClientRoot) { ++CreateCalls; return create.Task; }
             if (request.Method == HttpMethod.Put && path == ClientRoot + "/settings") { ++SettingsWrites; return Task.FromResult(JsonResponse(Settings)); }
             if (request.Method == HttpMethod.Post && path.EndsWith("/rotate", StringComparison.Ordinal))

@@ -144,6 +144,7 @@
     private ServiceLinkFailure? errorFailure;
     private bool busy, disposed;
     [Parameter] public string? AttemptId { get; set; }
+    [Parameter] public ServiceLinkAdminStatus? InitialStatus { get; set; }
     [Parameter] public bool VerifyOnLoad { get; set; } = true;
     [Parameter] public bool ObserveProgress { get; set; } = true;
     private CancellationTokenSource? observation;
@@ -169,7 +170,8 @@
     protected override async Task OnInitializedAsync()
     {
         Navigation.LocationChanged += LocationChanged;
-        await RefreshAsync();
+        if (RendererInfo.Name != "Static")
+            await LoadAsync(InitialStatus?.AttemptId == AttemptId ? InitialStatus : null);
     }
     private void LocationChanged(object? sender, LocationChangedEventArgs args) { componentLifetime.Cancel(); StopObservation(); }
     private static bool IsProgressing(ServiceLinkAdminStatus link) => !IsHistory(link) && link.Decision != "abort" &&
@@ -243,15 +245,16 @@
             }
         }
     }
-    private async Task RefreshAsync()
+    private Task RefreshAsync() => LoadAsync(null);
+    private async Task LoadAsync(ServiceLinkAdminStatus? initialStatus)
     {
         if (disposed || busy) return;
         StopObservation();
         busy = true; error = null; errorFailure = null; links = []; completions.Clear(); testResults.Clear(); outcomes.Clear(); completionErrors.Clear(); rowFailures.Clear(); failedOutcomes.Clear(); ClearPending();
         try
         {
-            var current = string.IsNullOrEmpty(AttemptId)
-                ? await Api.ListLinksAsync(componentLifetime.Token)
+            var current = initialStatus is not null ? new[] { initialStatus }
+                : string.IsNullOrEmpty(AttemptId) ? await Api.ListLinksAsync(componentLifetime.Token)
                 : new[] { await Api.GetAttemptAsync(AttemptId, componentLifetime.Token) };
             if (!disposed)
             {
@@ -259,6 +262,7 @@
                 foreach (var link in links.Where(link => VerifyOnLoad && LifecycleConnected(link)))
                 {
                     if (disposed) break;
+                    workingAttemptId = link.AttemptId; workingMessage = "Finishing the incident destination check…";
                     await CompleteAsync(link);
                 }
             }
@@ -267,7 +271,7 @@
         { if (!disposed) error = "Current integration management permission is required. Use an authorized account and refresh."; }
         catch (Exception exception) when (exception is HttpRequestException or JsonException or InvalidDataException or ServiceAdministrationException or OperationCanceledException)
         { if (!disposed) error = "Reciprocal connection status is unavailable. Refresh to retry."; }
-        finally { busy = false; }
+        finally { busy = false; workingAttemptId = workingMessage = null; }
         if (!disposed && error is null) StartObservation();
     }
     private string ApprovedTarget(ServiceLinkAdminStatus link) => link.LinkId is not null && completions.TryGetValue(link.LinkId, out var completion) &&
@@ -400,6 +404,8 @@
         StopObservation();
         busy = true; error = null; errorFailure = null; testResults.Remove(link.AttemptId); outcomes.Remove(link.AttemptId); failedOutcomes.Remove(link.AttemptId); rowFailures.Remove(link.AttemptId);
         workingAttemptId = link.AttemptId; workingMessage = "Checking authentication and the incident destination…";
+        if (completions.TryGetValue(link.LinkId, out var previousCompletion))
+            completions[link.LinkId] = previousCompletion with { Ready = false, Code = "receiver-readiness-unverified" };
         try
         {
             var current = await Api.TestLinkAsync(link.LinkId);

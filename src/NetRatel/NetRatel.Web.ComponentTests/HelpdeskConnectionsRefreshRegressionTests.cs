@@ -155,6 +155,8 @@ public sealed class HelpdeskConnectionsRefreshRegressionTests : AsyncBunitContex
             Assert.Single(panel.FindAll("[data-testid='helpdesk-link-status']"));
             Assert.Empty(panel.FindAll("[data-testid='helpdesk-connection-test-result']"));
             Assert.Contains("The read-only authenticated probes could not be confirmed.", panel.Markup);
+            Assert.DoesNotContain("Connected", panel.Find(".mud-chip").TextContent);
+            Assert.Contains("Fixture customer", panel.Markup); // Preserve known destination labels while readiness is unconfirmed.
         });
         await InvokeAsync(panel, Button(panel, "Disconnect").Instance.OnClick);
         transport.DelayNextAction();
@@ -358,6 +360,7 @@ public sealed class HelpdeskConnectionsRefreshRegressionTests : AsyncBunitContex
     {
         var transport = new ConnectionsTransport();
         Services.AddSingleton<IHttpClientFactory>(transport);
+        SetRendererInfo(new RendererInfo("Server", true));
         return transport;
     }
 

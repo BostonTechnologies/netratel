@@ -93,7 +93,7 @@
                 }
             }
             @if (status.AvailableAction is not ("respond" or "review" or "continue" or "return"))
-            { <HelpdeskConnectionsPanel @key="status" AttemptId="@AttemptId" VerifyOnLoad="verifyObservedConnection" ObserveProgress="false" /> }
+            { <HelpdeskConnectionsPanel @key="ConnectionPanelKey" InitialStatus="status" AttemptId="@AttemptId" VerifyOnLoad="verifyObservedConnection" ObserveProgress="false" /> }
             @if (status.LifecycleState == "active") { <MudButton Href="/account/integration-credentials/link/return" Color="Color.Primary">Return to Flow or integrations</MudButton> }
             else { <MudButton Href="/account/integration-credentials">Return to integrations</MudButton> }
         }
@@ -145,9 +145,12 @@
     private ServiceLinkGrant[] DisplayedGrants => status?.GrantSummary?.Grants ?? (status?.Descriptor.RequestedGrants ?? []).Select(grant => grant.TargetProduct == "netratel" && status?.AvailableAction == "respond"
         ? grant with { TargetTenantId = selection.TenantId?.ToString(CultureInfo.InvariantCulture) ?? "", Scopes = selection.Scopes, ResourceConstraints = grant.ResourceConstraints with { TenantId = selection.TenantId?.ToString(CultureInfo.InvariantCulture), ResourceIds = selection.ResourceIds, RequestDefinitionIds = selection.RequestDefinitionIds } }
         : grant.TargetProduct == "rateldesk" && status?.AvailableAction == "respond" ? grant with { CallerTenantId = selection.TenantId?.ToString(CultureInfo.InvariantCulture) ?? "", Scopes = outboundScopes.Order(StringComparer.Ordinal).ToArray() } : grant).ToArray();
+    private object? ConnectionPanelKey => status is null ? null :
+        (status.AttemptId, status.LifecycleState, status.LinkRevision, status.Decision, status.GrantHash, status.AvailableAction, status.Descriptor.DescriptorHash,
+            status.LocalInboundActive, status.LocalBusinessSenderEnabled, status.PeerActiveAcknowledged);
     protected override async Task OnParametersSetAsync()
     {
-        if (disposed) return;
+        if (disposed || RendererInfo.Name == "Static") return;
         var generation = ++loadGeneration;
         loadCancellation?.Cancel(); loadCancellation?.Dispose();
         loadCancellation = new CancellationTokenSource();
@@ -172,7 +175,7 @@
                 loadedOutbound = loadedStatus.Descriptor.RequestedGrants.Where(grant => grant.TargetProduct == "rateldesk")
                     .SelectMany(grant => grant.Scopes).ToHashSet(StringComparer.Ordinal);
             }
-            status = loadedStatus; IsResponder = loadedStatus.LocalRole == "responder"; authority = loadedAuthority; outboundScopes = loadedOutbound;
+            status = loadedStatus; verifyObservedConnection = ReadyForDestinationCheck(loadedStatus); IsResponder = loadedStatus.LocalRole == "responder"; authority = loadedAuthority; outboundScopes = loadedOutbound;
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
         catch (Exception exception) when (exception is OperationCanceledException or HttpRequestException or JsonException or InvalidDataException or ServiceAdministrationException)
@@ -193,8 +196,11 @@
             }
         }
     }
+    private static bool ReadyForDestinationCheck(ServiceLinkAdminStatus value) => value.LifecycleState == "active" &&
+        value.LocalInboundActive && value.LocalBusinessSenderEnabled && value.PeerActiveAcknowledged;
     private static bool AwaitingProgress(ServiceLinkAdminStatus value) => value.Decision != "abort" && !value.CanStartFresh && !value.OrganizationBindingInvalid &&
-        value.LifecycleState is "awaiting_approval" or "approved" or "prepared" or "verified" or "commit_decided" or "in_doubt";
+        (value.LifecycleState is "awaiting_approval" or "approved" or "prepared" or "verified" or "commit_decided" or "in_doubt" ||
+            value.LifecycleState == "active" && !ReadyForDestinationCheck(value));
     private async Task ObserveAttemptAsync(int generation, string attempt, string route, CancellationToken lifetime)
     {
         using var budget = CancellationTokenSource.CreateLinkedTokenSource(lifetime);
@@ -209,9 +215,10 @@
                 // Preserve the user's tenant selection and consent checkbox while the durable proposal is unchanged.
                 if (status is not null && (latest.LifecycleState != status.LifecycleState || latest.LinkRevision != status.LinkRevision ||
                     latest.Decision != status.Decision || latest.GrantHash != status.GrantHash || latest.AvailableAction != status.AvailableAction ||
-                    latest.Descriptor.DescriptorHash != status.Descriptor.DescriptorHash))
+                    latest.LocalInboundActive != status.LocalInboundActive || latest.LocalBusinessSenderEnabled != status.LocalBusinessSenderEnabled ||
+                    latest.PeerActiveAcknowledged != status.PeerActiveAcknowledged || latest.Descriptor.DescriptorHash != status.Descriptor.DescriptorHash))
                 {
-                    verifyObservedConnection = latest.LifecycleState == "active" && status.LifecycleState != "active";
+                    verifyObservedConnection = ReadyForDestinationCheck(latest) && !ReadyForDestinationCheck(status);
                     status = latest; confirmed = false;
                     await InvokeAsync(StateHasChanged);
                 }
