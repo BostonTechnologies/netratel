@@ -433,7 +433,7 @@
 
         try
         {
-            var root = JsonNode.Parse(json)?.AsObject();
+            var root = JsonNode.Parse(json) as JsonObject;
             if (root is null)
             {
                 return new ParsedTaskResult(stdout, stderr, diagnostics, errorSummary);

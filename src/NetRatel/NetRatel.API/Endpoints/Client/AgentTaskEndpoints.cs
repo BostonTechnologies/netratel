@@ -203,8 +203,37 @@ public static class AgentTaskEndpoints
         return visible;
     }
 
-    private static async Task<(string? Value, string? Error)> BuildPayloadAsync(TaskCreateRequestDto request, string taskType, IScriptService scripts, CancellationToken ct)
+    internal static async Task<(string? Value, string? Error)> BuildPayloadAsync(TaskCreateRequestDto request, string taskType, IScriptService scripts, CancellationToken ct)
     {
+        if (request.TaskType is TaskKinds.Legacy_RunPowerShell or TaskKinds.Legacy_ExecPs)
+        {
+            if (request.ShellCommand?.EnvironmentReferences is { Count: > 0 })
+                return (null, "EnvironmentReferences require exec-shell-cmd; legacy PowerShell aliases cannot carry that client-local requirement.");
+            var script = request.ShellCommand?.Command ?? request.Payload;
+            if (request.TaskType == TaskKinds.Legacy_ExecPs && request.ShellCommand is null)
+            {
+                try
+                {
+                    using var document = JsonDocument.Parse(script ?? string.Empty);
+                    script = document.RootElement.ValueKind == JsonValueKind.Object &&
+                             document.RootElement.TryGetProperty("script", out var value) && value.ValueKind == JsonValueKind.String
+                        ? value.GetString()
+                        : null;
+                }
+                catch (JsonException) { script = null; }
+            }
+            return string.IsNullOrWhiteSpace(script)
+                ? (null, "A PowerShell script is required for the legacy task kind.")
+                : (JsonSerializer.Serialize(new ExecLibraryScriptPayload
+                {
+                    ScriptType = ScriptType.PowerShell,
+                    ScriptContent = script,
+                    Preferred = request.ShellCommand?.Preferred ?? request.Preferred,
+                    Parameters = request.Parameters,
+                    WorkingDirectory = request.ShellCommand?.WorkingDirectory ?? request.WorkingDirectory,
+                    TimeoutSeconds = request.ShellCommand?.TimeoutSeconds ?? request.TimeoutSeconds
+                }), null);
+        }
         if (taskType == TaskKinds.ExecShellCommand)
         {
             var command = request.ShellCommand?.Command ?? request.Payload;
@@ -225,9 +254,10 @@ public static class AgentTaskEndpoints
             : (null, $"Unsupported TaskType '{taskType}'.");
     }
 
-    private static string NormalizeTaskType(string value) => value switch
+    internal static string NormalizeTaskType(string value) => value switch
     {
-        TaskKinds.Legacy_RunPowerShell or TaskKinds.Legacy_ExecPs or TaskKinds.Legacy_ExecSh => TaskKinds.ExecShellCommand,
+        TaskKinds.Legacy_RunPowerShell or TaskKinds.Legacy_ExecPs => TaskKinds.ExecLibraryScript,
+        TaskKinds.Legacy_ExecSh => TaskKinds.ExecShellCommand,
         TaskKinds.Legacy_RunLibraryScript => TaskKinds.ExecLibraryScript,
         _ => value
     };
@@ -317,7 +347,8 @@ public static class AgentTaskEndpoints
         try
         {
             using var document = JsonDocument.Parse(resultJson);
-            if (!document.RootElement.TryGetProperty("exitCode", out var value))
+            if (document.RootElement.ValueKind != JsonValueKind.Object ||
+                !document.RootElement.TryGetProperty("exitCode", out var value))
             {
                 return null;
             }

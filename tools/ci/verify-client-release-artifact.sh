@@ -60,7 +60,6 @@ for required_entry in \
   "netratel-client-${runtime}/NOTICE" \
   "netratel-client-${runtime}/THIRD-PARTY-NOTICES.txt" \
   "netratel-client-${runtime}/appsettings.json" \
-  "netratel-client-${runtime}/powershell.config.json" \
   "netratel-client-${runtime}/terminal_pty_helper.py" \
   "netratel-client-${runtime}/updater/netratel-update.ps1" \
   "netratel-client-${runtime}/updater/netratel-update.sh"; do
@@ -130,6 +129,7 @@ else
 fi
 
 python3 "$(dirname "${BASH_SOURCE[0]}")/verify-runtime-sbom.py" --sbom "$artifacts/$sbom" --root "$extract_dir"
+python3 "$(dirname "${BASH_SOURCE[0]}")/verify-client-runtime-content.py" --sbom "$artifacts/$sbom" --distribution "$extract_dir"
 
 if [[ "$runtime" == linux-x64 ]]; then
   client="$extract_dir/netratel-client-${runtime}/NetRatel.Client"

@@ -326,7 +326,6 @@ PY
   }
   upgrade_machine_identity="$machine_identity"
   if sudo -u netratel env HOME=/var/lib/netratel \
-      NETRATEL_POWERSHELL_HOME=/var/lib/netratel/powershell \
       "NetRatel_CREDENTIAL_MACHINE_ID=${machine_identity}" \
       "$native_directory/app/NetRatel.Client" --api "$api_url" --auth-check \
       >"$native_directory/native-auth-check.log" 2>&1; then
@@ -465,7 +464,6 @@ Restart=always
 RestartSec=2
 Environment=HOME=/var/lib/netratel
 Environment=PATH=$native_directory/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-Environment=NETRATEL_POWERSHELL_HOME=/var/lib/netratel/powershell
 Environment=DOTNET_ENVIRONMENT=Production
 Environment=DOTNET_RUNNING_IN_CONTAINER=false
 Environment=DOTNET_BUNDLE_EXTRACT_BASE_DIR=$native_directory/bundle

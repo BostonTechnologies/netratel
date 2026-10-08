@@ -1,0 +1,19 @@
+<Project>
+  <!-- Imported only by the optional client measurement command. Capture the actual
+       post-link publish inputs before the SDK removes them into the single file. -->
+  <Target Name="RecordClientMeasurementInputs" BeforeTargets="GenerateSingleFileBundle"
+          Condition="'$(MSBuildProjectName)' == 'NetRatel.Client' and '$(ClientMeasurementEvidenceDirectory)' != ''">
+    <ItemGroup>
+      <_ClientMeasurementInput Include="@(FilesToBundle);@(ResolvedFileToPublish)" />
+      <_ClientMeasurementDeps Include="@(_ClientMeasurementInput)"
+                              Condition="'%(Filename)%(Extension)' == 'NetRatel.Client.deps.json'" />
+    </ItemGroup>
+    <MakeDir Directories="$(ClientMeasurementEvidenceDirectory)" />
+    <WriteLinesToFile File="$(ClientMeasurementEvidenceDirectory)/publish-inputs.txt"
+                      Lines="@(_ClientMeasurementInput->'%(FullPath)|%(RelativePath)|%(ExcludeFromSingleFile)')"
+                      Overwrite="true" Encoding="UTF-8" />
+    <Error Condition="'@(_ClientMeasurementDeps)' == ''" Text="The client measurement has no final publish dependency graph." />
+    <Copy SourceFiles="@(_ClientMeasurementDeps->Distinct())"
+          DestinationFiles="$(ClientMeasurementEvidenceDirectory)/publish.deps.json" />
+  </Target>
+</Project>

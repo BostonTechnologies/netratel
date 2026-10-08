@@ -12,6 +12,7 @@ using Npgsql;
 using NetRatel.Application.Agents;
 using NetRatel.Application.Events;
 using NetRatel.Infrastructure.Persistence;
+using NetRatel.Shared.Security;
 
 namespace NetRatel.Infrastructure.Services;
 

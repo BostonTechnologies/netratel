@@ -20,7 +20,6 @@ namespace NetRatel.Client.Service.Gateway;
 /// </summary>
 public sealed class AgentJobGatewayClient(
     GatewayClientOptions options,
-    bool useInProcPowerShell,
     Action<string> log)
 {
     private static readonly TimeSpan InitialRetryDelay = TimeSpan.FromSeconds(1);
@@ -62,7 +61,7 @@ public sealed class AgentJobGatewayClient(
         var headers = new Metadata { { "Authorization", $"Bearer {session.GetAccessToken(accessToken)}" } };
         using var call = client.Connect(headers, cancellationToken: stoppingToken);
         using var writer = new JobGatewayWriter(call.RequestStream, session, options.ProtocolVersion);
-        using var taskManager = new ClientTaskManager(useInProcPowerShell, writer.PublishTaskStatusAsync, message => log($"Job execution error: {message}"));
+        using var taskManager = new ClientTaskManager(writer.PublishTaskStatusAsync, message => log($"Job execution error: {message}"));
         taskManager.Start(session.TenantId, environment: 0);
         try
         {

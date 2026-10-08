@@ -108,7 +108,7 @@ public sealed class CommandCancellationTests
         var releaseFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var queuedCancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var statuses = new ConcurrentQueue<(string Id, string Status)>();
-        using var manager = new ClientTaskManager(false, async (id, status, _, _) =>
+        using var manager = new ClientTaskManager(async (id, status, _, _) =>
         {
             statuses.Enqueue((id, status));
             if (id == "first" && status == "started")
@@ -134,25 +134,31 @@ public sealed class CommandCancellationTests
         finally { releaseFirst.TrySetResult(); }
     }
 
-    [Fact]
-    public async Task Running_shell_cancellation_publishes_one_terminal_acknowledgement_with_a_cancelled_execution_token()
+    [Theory]
+    [InlineData(TaskKinds.ExecShellCommand)]
+    [InlineData(TaskKinds.Legacy_ExecPs)]
+    public async Task Running_shell_cancellation_publishes_one_terminal_acknowledgement_with_a_cancelled_execution_token(string taskKind)
     {
         await using var process = new ShellProcessFixture();
         var terminal = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
         var statuses = new ConcurrentQueue<string>();
-        using var manager = new ClientTaskManager(false, (_, status, _, _) =>
+        using var manager = new ClientTaskManager((_, status, _, _) =>
         {
             statuses.Enqueue(status);
             if (status is "cancelled" or "completed" or "failed") terminal.TrySetResult(status);
             return Task.CompletedTask;
         }, _ => { });
         manager.Start(1, 0);
-        manager.EnqueueGatewayCommand("running", TaskKinds.ExecShellCommand, JsonSerializer.Serialize(process.Payload()), 1, 0).Should().BeTrue();
+        var payload = taskKind == TaskKinds.Legacy_ExecPs
+            ? JsonSerializer.Serialize(new { script = process.LegacyPowerShellScript() })
+            : JsonSerializer.Serialize(process.Payload());
+        manager.EnqueueGatewayCommand("running", taskKind, payload, 1, 0).Should().BeTrue();
         await process.WaitUntilRunningAsync();
         manager.CancelGatewayCommand("running").Should().BeTrue();
         (await terminal.Task.WaitAsync(TimeSpan.FromSeconds(5))).Should().Be("cancelled");
         statuses.Should().Equal("started", "cancelled");
         await process.AssertChildExitedAsync();
+        if (taskKind == TaskKinds.Legacy_ExecPs) await process.AssertPrivateLegacyScriptDeletedAsync();
     }
 
     [Theory]
@@ -228,6 +234,25 @@ public sealed class CommandCancellationTests
                 ? "[Console]::Out.WriteLine('before-output'); [Console]::Error.WriteLine('before-error'); $child = Start-Process ping.exe -ArgumentList '-n 60 127.0.0.1' -NoNewWindow -PassThru; [IO.File]::WriteAllText((Join-Path (Get-Location) 'ready.tmp'), [string]$child.Id); Move-Item ready.tmp ready; Wait-Process -Id $child.Id"
                 : "printf 'before-output\\n'; printf 'before-error\\n' >&2; sleep 60 & child=$!; printf '%s' \"$child\" > ready.tmp; mv ready.tmp ready; wait \"$child\""
         };
+
+        public string LegacyPowerShellScript()
+        {
+            static string Literal(string value) => "'" + value.Replace("'", "''") + "'";
+            var child = OperatingSystem.IsWindows()
+                ? "Start-Process ping.exe -ArgumentList '-n 60 127.0.0.1' -NoNewWindow -PassThru"
+                : "Start-Process /bin/sleep -ArgumentList '60' -NoNewWindow -PassThru";
+            return $"[Console]::Out.WriteLine('before-output'); [Console]::Error.WriteLine('before-error'); " +
+                   $"[IO.File]::WriteAllText({Literal(Path.Combine(_directory, "script-path"))}, $PSCommandPath); " +
+                   $"$child = {child}; [IO.File]::WriteAllText({Literal(ReadyPath + ".tmp")}, [string]$child.Id); " +
+                   $"Move-Item -LiteralPath {Literal(ReadyPath + ".tmp")} -Destination {Literal(ReadyPath)}; Wait-Process -Id $child.Id";
+        }
+
+        public async Task AssertPrivateLegacyScriptDeletedAsync()
+        {
+            var scriptPath = await File.ReadAllTextAsync(Path.Combine(_directory, "script-path"));
+            File.Exists(scriptPath).Should().BeFalse();
+            Directory.Exists(Path.GetDirectoryName(scriptPath)).Should().BeFalse();
+        }
 
         public async Task WaitUntilRunningAsync()
         {

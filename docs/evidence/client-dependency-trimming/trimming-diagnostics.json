@@ -1,0 +1,651 @@
+{
+  "assessment": "final_single_corrective_trimmed_jit_publish",
+  "sourceSha": "8047ce86784a581bc99634503eab428817105a9b",
+  "runtime": "linux-x64",
+  "actionsRun": "https://github.com/BostonTechnologies/netratel/actions/runs/37743230006",
+  "sdk": "10.0.401",
+  "publishProperties": {
+    "RuntimeIdentifier": "linux-x64",
+    "SelfContained": "true",
+    "PublishSingleFile": "true",
+    "PublishTrimmed": "true",
+    "PublishAot": "false",
+    "TrimMode": "full",
+    "EnableTrimAnalyzer": "true",
+    "EnableAotAnalyzer": "true",
+    "TrimmerSingleWarn": "false",
+    "IncludeAllContentForSelfExtract": "true",
+    "IncludeNativeLibrariesForSelfExtract": "true",
+    "EnableCompressionInSingleFile": "true"
+  },
+  "outcome": "Publish, packaging, runtime-content/SBOM integrity, and --version artifact checks passed with 416 IL warnings; retain untrimmed production modes. Supported normal functional acceptance remains pending.",
+  "nativeAotPublish": "not attempted; EnableAotAnalyzer=true reports source analysis only",
+  "counts": {
+    "compilerDiagnostics": 359,
+    "compilerByCode": {
+      "IL2026": 177,
+      "IL2072": 3,
+      "IL2075": 2,
+      "IL3050": 177
+    },
+    "compilerByProject": {
+      "NetRatel.Application": 12,
+      "NetRatel.Client": 329,
+      "NetRatel.Shared": 18
+    },
+    "linkerDiagnostics": 57,
+    "linkerByCode": {
+      "IL2026": 56,
+      "IL2072": 1
+    },
+    "totalIlDiagnostics": 416,
+    "nonIlCompilerWarnings": 4,
+    "buildSummaryWarnings": 420,
+    "countingRule": "Count first emission before final Build succeeded summary; retain repeated linker method/API renderings because Release lacks source-location detail and distinct calls can render identically. metrics.json raw counts include summary repetitions."
+  },
+  "packages": {
+    "restoredNuGetPackages": 54,
+    "publishedNuGetPackages": 32,
+    "publishedProjectComponents": 4,
+    "publishedRuntimePacks": 1,
+    "relevantVersions": [
+      {
+        "name": "Google.Protobuf",
+        "version": "3.36.2",
+        "retainedInFinalLinuxRuntimeGraph": true
+      },
+      {
+        "name": "Grpc.Net.Client",
+        "version": "2.84.0",
+        "retainedInFinalLinuxRuntimeGraph": true
+      },
+      {
+        "name": "Microsoft.Extensions.Configuration.Binder",
+        "version": "10.0.12",
+        "retainedInFinalLinuxRuntimeGraph": true
+      },
+      {
+        "name": "Microsoft.Extensions.Http",
+        "version": "10.0.12",
+        "retainedInFinalLinuxRuntimeGraph": true
+      },
+      {
+        "name": "System.Drawing.Common",
+        "version": "10.0.12",
+        "retainedInFinalLinuxRuntimeGraph": true
+      },
+      {
+        "name": "System.IdentityModel.Tokens.Jwt",
+        "version": "8.23.0",
+        "retainedInFinalLinuxRuntimeGraph": true
+      },
+      {
+        "name": "System.ServiceProcess.ServiceController",
+        "version": "10.0.12",
+        "retainedInFinalLinuxRuntimeGraph": true
+      },
+      {
+        "name": "System.Diagnostics.EventLog",
+        "version": "10.0.12",
+        "retainedInFinalLinuxRuntimeGraph": false
+      },
+      {
+        "name": "System.Security.Cryptography.ProtectedData",
+        "version": "10.0.12",
+        "retainedInFinalLinuxRuntimeGraph": false
+      },
+      {
+        "name": "SIPSorcery",
+        "version": "10.0.16",
+        "retainedInFinalLinuxRuntimeGraph": false
+      },
+      {
+        "name": "SIPSorceryMedia.FFmpeg",
+        "version": "10.0.16",
+        "retainedInFinalLinuxRuntimeGraph": false
+      },
+      {
+        "name": "SIPSorceryMedia.Abstractions",
+        "version": "10.0.16",
+        "retainedInFinalLinuxRuntimeGraph": false
+      },
+      {
+        "name": "FFmpeg.AutoGen",
+        "version": "8.1.0",
+        "retainedInFinalLinuxRuntimeGraph": false
+      },
+      {
+        "name": "BouncyCastle.Cryptography",
+        "version": "2.7.0",
+        "retainedInFinalLinuxRuntimeGraph": false
+      }
+    ],
+    "runtimeLibraryGraphUnchangedFromInitial": true,
+    "publishedDotnetRuntimeVersion": "10.0.12"
+  },
+  "remainingBoundaryExamples": [
+    {
+      "boundary": "Signed refresh hash",
+      "file": "src/NetRatel/NetRatel.Shared/Security/PopSignatureService.cs",
+      "sourceSites": [
+        {
+          "line": 27,
+          "codes": [
+            "IL2026",
+            "IL3050"
+          ]
+        }
+      ],
+      "linkerMethods": [
+        "NetRatel.Shared.Security.PopSignatureService.ComputeTokenBodyHash(Guid, String, IReadOnlyList<String>, Nullable<Int32>, Nullable<Guid>)"
+      ],
+      "assessment": "Observed compiler and linker JSON reflection; signed JSON bytes are protocol. Any replacement needs fixed pre-change hash/body vectors."
+    },
+    {
+      "boundary": "Enrollment and token exchange",
+      "file": "src/NetRatel/NetRatel.Client/Service/Auth/AgentEnrollmentService.cs",
+      "sourceSites": [
+        {
+          "line": 46,
+          "codes": [
+            "IL2026",
+            "IL3050"
+          ]
+        },
+        {
+          "line": 47,
+          "codes": [
+            "IL2026",
+            "IL3050"
+          ]
+        },
+        {
+          "line": 80,
+          "codes": [
+            "IL2026",
+            "IL3050"
+          ]
+        }
+      ],
+      "linkerMethods": [
+        "NetRatel.Client.Service.Auth.AgentEnrollmentService.EnrollAsync [async state machine]"
+      ],
+      "assessment": "Observed compiler and linker JSON reflection in device-info/request serialization and response reads. No signed request bytes changed in the focused cycle."
+    },
+    {
+      "boundary": "Token responses and request serialization",
+      "file": "src/NetRatel/NetRatel.Client/Service/Auth/ClientAgentTokenService.cs",
+      "sourceSites": [
+        {
+          "line": 126,
+          "codes": [
+            "IL2026",
+            "IL3050"
+          ]
+        },
+        {
+          "line": 150,
+          "codes": [
+            "IL2026",
+            "IL3050"
+          ]
+        },
+        {
+          "line": 319,
+          "codes": [
+            "IL2026",
+            "IL3050"
+          ]
+        }
+      ],
+      "linkerMethods": [
+        "NetRatel.Client.Service.Auth.ClientAgentTokenService.AcquireAsync [async state machine]",
+        "NetRatel.Client.Service.Auth.ClientAgentTokenService.BuildRequestMessage(Guid, String, String[], AgentDeviceKeyMaterial, PendingAgentRefreshExchange)",
+        "NetRatel.Client.Service.Auth.ClientAgentTokenService.SupportsRefreshExchangeAsync [async state machine]"
+      ],
+      "assessment": "Observed compiler and linker JSON reflection in refresh responses/capabilities and type-erased request bodies."
+    },
+    {
+      "boundary": "Protected credential and pending-exchange storage",
+      "file": "src/NetRatel/NetRatel.Client/Service/Auth/AgentCredentialStore.cs",
+      "sourceSites": [
+        {
+          "line": 289,
+          "codes": [
+            "IL2026",
+            "IL3050"
+          ]
+        },
+        {
+          "line": 303,
+          "codes": [
+            "IL2026",
+            "IL3050"
+          ]
+        },
+        {
+          "line": 691,
+          "codes": [
+            "IL2026",
+            "IL3050"
+          ]
+        },
+        {
+          "line": 719,
+          "codes": [
+            "IL2026",
+            "IL3050"
+          ]
+        }
+      ],
+      "linkerMethods": [
+        "NetRatel.Client.Service.Auth.AgentCredentialStore.ReadExchangeJournalAsync [async state machine]",
+        "NetRatel.Client.Service.Auth.AgentCredentialStore.TryDeserialize(Byte[], AgentCredentialStore.CredentialProtectionProfile)",
+        "NetRatel.Client.Service.Auth.AgentCredentialStore.WriteExchangeJournalAsync(AgentCredentialStore.ExchangeJournal, CancellationToken)",
+        "NetRatel.Client.Service.Auth.AgentCredentialStore.WritePayloadAsync(AgentCredentialStore.CredentialPayload, CancellationToken)"
+      ],
+      "assessment": "Observed compiler and linker JSON reflection. Preserve current property names/order/null handling and pending-exchange journal format; omitted from the focused cycle."
+    },
+    {
+      "boundary": "Scheduled-task COM launch",
+      "file": "src/NetRatel/NetRatel.Client/Service/RemoteDesktop/RemoteDesktopUserHelperTask.cs",
+      "sourceSites": [
+        {
+          "line": 210,
+          "codes": [
+            "IL2072"
+          ]
+        },
+        {
+          "line": 213,
+          "codes": [
+            "IL2026",
+            "IL3050"
+          ]
+        },
+        {
+          "line": 366,
+          "codes": [
+            "IL2072"
+          ]
+        },
+        {
+          "line": 369,
+          "codes": [
+            "IL2026",
+            "IL3050"
+          ]
+        }
+      ],
+      "linkerMethods": [
+        "NetRatel.Client.Service.RemoteDesktop.RemoteDesktopUserHelperTask.StartForSessionAsync [async state machine]"
+      ],
+      "assessment": "Observed compiler IL2072, IL2026 and IL3050 plus actual Linux linker IL2072/IL2026 in StartForSessionAsync. Built-in COM remains a Windows Native AOT incompatibility; annotations cannot implement COM support."
+    },
+    {
+      "boundary": "Console-provider scheduled-task COM launch",
+      "file": "src/NetRatel/NetRatel.Client/Service/RemoteSupport/RemoteSupportConsoleActiveSessionLauncher.cs",
+      "sourceSites": [
+        {
+          "line": 170,
+          "codes": [
+            "IL2072"
+          ]
+        },
+        {
+          "line": 173,
+          "codes": [
+            "IL2026",
+            "IL3050"
+          ]
+        },
+        {
+          "line": 174,
+          "codes": [
+            "IL2026",
+            "IL3050"
+          ]
+        }
+      ],
+      "linkerMethods": [],
+      "assessment": "Observed compiler COM dataflow/dynamic warnings. This launcher produced no linker warning in the final Linux publish."
+    },
+    {
+      "boundary": "Media reflection",
+      "file": "src/NetRatel/NetRatel.Client/Service/RemoteSupport/RemoteSupportInteractiveWebRtcManager.cs",
+      "sourceSites": [
+        {
+          "line": 1212,
+          "codes": [
+            "IL2075"
+          ]
+        },
+        {
+          "line": 1563,
+          "codes": [
+            "IL2075"
+          ]
+        }
+      ],
+      "linkerMethods": [],
+      "assessment": "Observed compiler IL2075 for keyframe methods and bitrate properties. No linker warning here on Linux; media packages are absent from that trimmed Linux runtime graph. Windows/macOS media behavior is untested."
+    },
+    {
+      "boundary": "Terminal helper JSON",
+      "file": "src/NetRatel/NetRatel.Client/Service/Terminal/TerminalHost.cs",
+      "sourceSites": [
+        {
+          "line": 473,
+          "codes": [
+            "IL2026",
+            "IL3050"
+          ]
+        },
+        {
+          "line": 576,
+          "codes": [
+            "IL2026",
+            "IL3050"
+          ]
+        }
+      ],
+      "linkerMethods": [
+        "NetRatel.Client.Service.Terminal.UnixPtyHelperTerminalHost.SendControlAsync [async state machine]",
+        "NetRatel.Client.Service.Terminal.UnixPtyHelperTerminalHost.TryParseStatus(String, UnixPtyHelperTerminalHost.HelperStatus&)"
+      ],
+      "assessment": "Observed compiler and Linux linker JSON reflection for control/status DTOs."
+    },
+    {
+      "boundary": "Updater JSON",
+      "file": "src/NetRatel/NetRatel.Client/Service/Updates/AkkaClientAutoUpdateCoordinator.cs",
+      "sourceSites": [
+        {
+          "line": 268,
+          "codes": [
+            "IL2026",
+            "IL3050"
+          ]
+        },
+        {
+          "line": 273,
+          "codes": [
+            "IL2026",
+            "IL3050"
+          ]
+        },
+        {
+          "line": 482,
+          "codes": [
+            "IL2026",
+            "IL3050"
+          ]
+        },
+        {
+          "line": 500,
+          "codes": [
+            "IL2026",
+            "IL3050"
+          ]
+        },
+        {
+          "line": 623,
+          "codes": [
+            "IL2026",
+            "IL3050"
+          ]
+        },
+        {
+          "line": 631,
+          "codes": [
+            "IL2026",
+            "IL3050"
+          ]
+        }
+      ],
+      "linkerMethods": [
+        "NetRatel.Client.Service.Updates.AkkaClientAutoUpdateCoordinator.AtomicWriteJson<T>(String, T)",
+        "NetRatel.Client.Service.Updates.AkkaClientAutoUpdateCoordinator.ConsumeResultAsync [async state machine]",
+        "NetRatel.Client.Service.Updates.AkkaClientAutoUpdateCoordinator.ReadJson<T>(String)",
+        "NetRatel.Client.Service.Updates.AkkaClientAutoUpdateCoordinator.ReportStateAsync [async state machine]",
+        "NetRatel.Client.Service.Updates.AkkaClientAutoUpdateCoordinator.StageAsync [async state machine]"
+      ],
+      "assessment": "Observed compiler and Linux linker JSON reflection in update claims, reporting and generic local-state helpers. Class name does not establish an Akka package dependency."
+    },
+    {
+      "boundary": "Remote-support signaling JSON",
+      "file": "src/NetRatel/NetRatel.Client/Service/RemoteSupport/RemoteSupportSessionManager.cs",
+      "sourceSites": [
+        {
+          "line": 444,
+          "codes": [
+            "IL2026",
+            "IL3050"
+          ]
+        },
+        {
+          "line": 2129,
+          "codes": [
+            "IL2026",
+            "IL3050"
+          ]
+        },
+        {
+          "line": 2275,
+          "codes": [
+            "IL2026",
+            "IL3050"
+          ]
+        }
+      ],
+      "linkerMethods": [
+        "NetRatel.Client.Service.RemoteSupport.RemoteSupportSessionManager.CloseGatewaySession(String, String)",
+        "NetRatel.Client.Service.RemoteSupport.RemoteSupportSessionManager.OpenPreparedV2Session(String, RemoteSupportPreparedTargetResult, Int64, RemoteSupportSessionIceConfiguration)",
+        "NetRatel.Client.Service.RemoteSupport.RemoteSupportSessionManager.ProcessPreparedV2Signal(RemoteSupportPipeSignal, UInt64, Int64)",
+        "NetRatel.Client.Service.RemoteSupport.RemoteSupportSessionManager.ReadIceServers(String)",
+        "NetRatel.Client.Service.RemoteSupport.RemoteSupportSessionManager.SendExactConsoleProviderMessage(ConnectedConsoleProvider, String, RemoteSupportPipeSignal)",
+        "NetRatel.Client.Service.RemoteSupport.RemoteSupportSessionManager.SendExactHelperMessage(ConnectedUserHelper, String, RemoteSupportPipeSignal)",
+        "NetRatel.Client.Service.RemoteSupport.RemoteSupportSessionManager.SendHandoverNotification(RemoteSupportHandoverNotification)",
+        "NetRatel.Client.Service.RemoteSupport.RemoteSupportSessionManager.WrapProviderSignalPayload(String, String, String, String, Nullable<Int32>, String, String, String, String)"
+      ],
+      "assessment": "Observed compiler and Linux linker JSON reflection beyond existing typed V2 route DTO handling."
+    }
+  ],
+  "configurationBinding": "No compiler/linker Bind warnings observed. SDK enables configuration binding generation when PublishTrimmed=true; production property left unchanged.",
+  "upstreamMediaReadiness": "Restored SIPSorcery 10.0.16 predates task-referenced upstream fixes in tag v10.0.17. This assessment observed no SIPSorcery linker warning and did not attempt Native AOT; absence from trimmed Linux graph does not validate complete Windows/macOS media stack.",
+  "measurements": {
+    "executableBytes": 16083102,
+    "extractedBytes": 17900397,
+    "archiveBytes": 9331008,
+    "archiveSha256": "bf671cf7c52dde8481a5378a9947df43aa839060675e9eb5af9ad86d7b93fad7",
+    "agentInitialization": "not measured",
+    "gatewayReady": "not measured",
+    "residentMemory": "not measured",
+    "functionalAcceptance": "pending owner testing"
+  },
+  "publishSeconds": 27.979,
+  "launchCheck": "--version passed on fresh and cached extraction, before normal initialization; no service/gateway/read-write JSON/media acceptance ran.",
+  "nextBoundedDecision": "The one focused corrective publish is complete and removed exactly four compiler and two linker warnings. End the experiment; retain untrimmed production modes. Future work should address known auth responses/storage using protocol fixtures before any wider COM/media redesign.",
+  "evidenceFiles": [
+    "metrics.json",
+    "evaluated-project.json",
+    "publish.log",
+    "restored-graphs/obj/NetRatel.Client/project.assets.json",
+    "publish.deps.json",
+    "runtime-package-inventory.json",
+    "publish-input-inventory.json"
+  ],
+  "inventoryPurpose": "Diagnostic evidence only; no suppression, warnings allowlist, acceptance baseline or compatibility declaration.",
+  "focusedCycleConfirmedDelta": {
+    "initialSourceSha": "101d59124c918402cb47c7752764611adf9396fd",
+    "initialActionsRun": "https://github.com/BostonTechnologies/netratel/actions/runs/37741600689",
+    "initialCompilerDiagnostics": 363,
+    "finalCompilerDiagnostics": 359,
+    "removedCompilerDiagnostics": 4,
+    "initialLinkerDiagnostics": 59,
+    "finalLinkerDiagnostics": 57,
+    "removedLinkerDiagnostics": [
+      {
+        "code": "IL2026",
+        "method": "NetRatel.Client.Service.Tasks.ClientTaskManager.HandleExecLibraryScriptAsync [async state machine]",
+        "api": "System.Text.Json.JsonSerializer.Deserialize(String, JsonSerializerOptions)"
+      },
+      {
+        "code": "IL2026",
+        "method": "NetRatel.Client.Service.Tasks.ClientTaskManager.HandleExecShellCmdAsync [async state machine]",
+        "api": "System.Text.Json.JsonSerializer.Deserialize(String, JsonSerializerOptions)"
+      }
+    ],
+    "introducedCompilerDiagnostics": 0,
+    "introducedLinkerDiagnostics": 0,
+    "normalization": "Count diagnostics before repeated final build summary. Normalize runner paths, translate unchanged ClientTaskManager source lines by the one removed options-field line, and normalize compiler-generated async state-machine sequence numbers. Compare full compiler message and linker logical method/message multisets.",
+    "removedCompilerSitesAtFinalLineCoordinates": [
+      {
+        "file": "src/NetRatel/NetRatel.Client/Service/Tasks/ClientTaskManager.cs",
+        "line": 383,
+        "column": 23,
+        "code": "IL2026"
+      },
+      {
+        "file": "src/NetRatel/NetRatel.Client/Service/Tasks/ClientTaskManager.cs",
+        "line": 383,
+        "column": 23,
+        "code": "IL3050"
+      },
+      {
+        "file": "src/NetRatel/NetRatel.Client/Service/Tasks/ClientTaskManager.cs",
+        "line": 438,
+        "column": 23,
+        "code": "IL2026"
+      },
+      {
+        "file": "src/NetRatel/NetRatel.Client/Service/Tasks/ClientTaskManager.cs",
+        "line": 438,
+        "column": 23,
+        "code": "IL3050"
+      }
+    ],
+    "removedInitialCompilerSites": [
+      {
+        "file": "src/NetRatel/NetRatel.Client/Service/Tasks/ClientTaskManager.cs",
+        "line": 384,
+        "codes": [
+          "IL2026",
+          "IL3050"
+        ]
+      },
+      {
+        "file": "src/NetRatel/NetRatel.Client/Service/Tasks/ClientTaskManager.cs",
+        "line": 439,
+        "codes": [
+          "IL2026",
+          "IL3050"
+        ]
+      }
+    ],
+    "actualFinalTypedReadSites": [
+      {
+        "file": "src/NetRatel/NetRatel.Client/Service/Tasks/ClientTaskManager.cs",
+        "line": 383,
+        "payload": "ExecShellCommandPayload"
+      },
+      {
+        "file": "src/NetRatel/NetRatel.Client/Service/Tasks/ClientTaskManager.cs",
+        "line": 438,
+        "payload": "ExecLibraryScriptPayload"
+      }
+    ],
+    "taskDeserializeCompilerWarningsRemaining": 0,
+    "taskDeserializeLinkerWarningsRemaining": 0,
+    "unrelatedTaskSerializationCompilerDiagnosticsInitial": 16,
+    "unrelatedTaskSerializationCompilerDiagnosticsFinal": 16,
+    "unrelatedTaskSerializationLinkerDiagnosticsInitial": 8,
+    "unrelatedTaskSerializationLinkerDiagnosticsFinal": 8,
+    "remedy": "TaskPayloadJsonContext using Metadata generation and JsonSerializerDefaults.Web, with two JsonTypeInfo Deserialize overloads; current payload contract regression coverage remains intact.",
+    "scope": "No signed enrollment/token/PoP bytes, credential/journal JSON, production publish/config properties, media or COM execution code changed."
+  },
+  "restoreSeconds": 1.597,
+  "runner": {
+    "RUNNER_OS": "Linux",
+    "RUNNER_ARCH": "X64",
+    "ImageOS": "ubuntu24",
+    "ImageVersion": "20260927.320.1",
+    "GITHUB_RUN_ID": "37743230006",
+    "GITHUB_RUN_ATTEMPT": "1"
+  },
+  "cacheConditions": "Fresh source/mode/RID intermediates; shared runner NuGet cache, sequential A/B/C order.",
+  "initialToFinalTimingComparison": "Not attributable: initial C ran alone; final C followed A and B with shared warm NuGet cache on a separate runner job. Use final B versus final C for the measured trimming comparison at identical source.",
+  "remainingActualLinkerExamples": [
+    {
+      "method": "NetRatel.Client.Service.Auth.AgentCredentialStore.TryDeserialize(Byte[], AgentCredentialStore.CredentialProtectionProfile)",
+      "code": "IL2026",
+      "api": "System.Text.Json.JsonSerializer.Deserialize(ReadOnlySpan<Byte>, JsonSerializerOptions)",
+      "diagnosticOccurrences": 1
+    },
+    {
+      "method": "NetRatel.Client.Service.Auth.AgentCredentialStore.WriteExchangeJournalAsync(AgentCredentialStore.ExchangeJournal, CancellationToken)",
+      "code": "IL2026",
+      "api": "System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(!!0, JsonSerializerOptions)",
+      "diagnosticOccurrences": 1
+    },
+    {
+      "method": "NetRatel.Client.Service.Auth.ClientAgentTokenService.BuildRequestMessage(Guid, String, String[], AgentDeviceKeyMaterial, PendingAgentRefreshExchange)",
+      "code": "IL2026",
+      "api": "System.Text.Json.JsonSerializer.Serialize(!!0, JsonSerializerOptions)",
+      "diagnosticOccurrences": 1
+    },
+    {
+      "method": "NetRatel.Client.Service.RemoteDesktop.RemoteDesktopUserHelperTask.StartForSessionAsync [async state machine]",
+      "code": "IL2026",
+      "api": "Microsoft.CSharp.RuntimeBinder.Binder.Convert(CSharpBinderFlags, Type, Type)",
+      "diagnosticOccurrences": 1
+    },
+    {
+      "method": "NetRatel.Client.Service.RemoteDesktop.RemoteDesktopUserHelperTask.StartForSessionAsync [async state machine]",
+      "code": "IL2026",
+      "api": "Microsoft.CSharp.RuntimeBinder.Binder.GetMember(CSharpBinderFlags, String, Type, IEnumerable<CSharpArgumentInfo>)",
+      "diagnosticOccurrences": 3
+    },
+    {
+      "method": "NetRatel.Client.Service.RemoteDesktop.RemoteDesktopUserHelperTask.StartForSessionAsync [async state machine]",
+      "code": "IL2026",
+      "api": "Microsoft.CSharp.RuntimeBinder.Binder.InvokeMember(CSharpBinderFlags, String, IEnumerable<Type>, Type, IEnumerable<CSharpArgumentInfo>)",
+      "diagnosticOccurrences": 5
+    },
+    {
+      "method": "NetRatel.Client.Service.RemoteDesktop.RemoteDesktopUserHelperTask.StartForSessionAsync [async state machine]",
+      "code": "IL2072",
+      "api": "System.Activator.CreateInstance(Type)",
+      "diagnosticOccurrences": 1
+    },
+    {
+      "method": "NetRatel.Client.Service.RemoteSupport.RemoteSupportSessionManager.ReadIceServers(String)",
+      "code": "IL2026",
+      "api": "System.Text.Json.JsonSerializer.Deserialize(String, JsonSerializerOptions)",
+      "diagnosticOccurrences": 1
+    },
+    {
+      "method": "NetRatel.Client.Service.Tasks.ClientTaskManager.EmitResultAsync [async state machine]",
+      "code": "IL2026",
+      "api": "System.Text.Json.JsonSerializer.Serialize(!!0, JsonSerializerOptions)",
+      "diagnosticOccurrences": 1
+    },
+    {
+      "method": "NetRatel.Client.Service.Terminal.UnixPtyHelperTerminalHost.TryParseStatus(String, UnixPtyHelperTerminalHost.HelperStatus&)",
+      "code": "IL2026",
+      "api": "System.Text.Json.JsonSerializer.Deserialize(String, JsonSerializerOptions)",
+      "diagnosticOccurrences": 1
+    },
+    {
+      "method": "NetRatel.Client.Service.Updates.AkkaClientAutoUpdateCoordinator.ReadJson<T>(String)",
+      "code": "IL2026",
+      "api": "System.Text.Json.JsonSerializer.Deserialize(String, JsonSerializerOptions)",
+      "diagnosticOccurrences": 1
+    },
+    {
+      "method": "NetRatel.Shared.Security.PopSignatureService.ComputeTokenBodyHash(Guid, String, IReadOnlyList<String>, Nullable<Int32>, Nullable<Guid>)",
+      "code": "IL2026",
+      "api": "System.Text.Json.JsonSerializer.Serialize(!!0, JsonSerializerOptions)",
+      "diagnosticOccurrences": 1
+    }
+  ]
+}

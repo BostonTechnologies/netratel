@@ -1,6 +1,4 @@
-using Humanizer;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using Microsoft.Win32;
 using NetRatel.Application.ClientAuth;
@@ -15,7 +13,6 @@ using NetRatel.Client.Service.Tasks;
 using NetRatel.Client.Service.Terminal;
 using NetRatel.Client.Service.Updates;
 using NetRatel.Client.Services;
-using NetRatel.Infrastructure.Auth;
 using NetRatel.Shared;
 using NetRatel.Shared.Client;
 using NetRatel.Shared.Service.ClientEnvironment;
@@ -180,57 +177,6 @@ async Task RunClientAsync(CancellationToken nativeStopping)
         await RemoteDesktopInteractiveHelper.RunAsync(remoteDesktopHelperPipe, CancellationToken.None).ConfigureAwait(false);
         return;
     }
-
-    // Force the application base path SMA uses internally
-    AppContext.SetData("APP_CONTEXT_BASE_DIRECTORY", runtimeBaseDir);
-    AppDomain.CurrentDomain.SetData("APP_CONTEXT_BASE_DIRECTORY", runtimeBaseDir);
-
-    // Keep PowerShell's mutable profile outside a read-only packaged application
-    // directory when a deployment provides a dedicated state location.
-    var home = Environment.GetEnvironmentVariable("NETRATEL_POWERSHELL_HOME");
-    if (string.IsNullOrWhiteSpace(home))
-    {
-        home = Path.Combine(appBaseDir, "_psprofile");
-    }
-    var userConfigDir = Path.Combine(home, "Documents", "PowerShell");
-    Directory.CreateDirectory(userConfigDir);
-
-    // Ensure both config files exist
-    var systemCfg = Path.Combine(appBaseDir, "powershell.config.json"); // keep it next to your exe
-    if (!File.Exists(systemCfg)) File.WriteAllText(systemCfg, "{}");
-    var userCfg = Path.Combine(userConfigDir, "powershell.config.json");
-    if (!File.Exists(userCfg)) File.WriteAllText(userCfg, "{}");
-
-    // Set process env vars PowerShell actually reads
-    Environment.SetEnvironmentVariable("HOME", home, EnvironmentVariableTarget.Process);
-    Environment.SetEnvironmentVariable("USERPROFILE", home, EnvironmentVariableTarget.Process);
-
-    // IMPORTANT: also set env var (not only AppContext) so SMA can pick it up early
-    Environment.SetEnvironmentVariable("POWERSHELL_CONFIG_PATH", userCfg, EnvironmentVariableTarget.Process);
-
-    // Optional (harmless): PSHOME = app base (non-null)
-    Environment.SetEnvironmentVariable("PSHOME", appBaseDir, EnvironmentVariableTarget.Process);
-
-    // Prepend built-ins for module discovery (nice-to-have)
-    var ridRoot = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "win" : "unix";
-    var builtIns = Path.Combine(runtimeBaseDir, "runtimes", ridRoot, "lib", "net9.0", "Modules");
-    if (!Directory.Exists(builtIns))
-    {
-        builtIns = Path.Combine(appBaseDir, "runtimes", ridRoot, "lib", "net9.0", "Modules");
-    }
-    if (Directory.Exists(builtIns))
-    {
-        var sep = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? ";" : ":";
-        var existing = Environment.GetEnvironmentVariable("PSModulePath") ?? string.Empty;
-        if (!existing.Split(new[] { sep }, StringSplitOptions.RemoveEmptyEntries)
-            .Any(p => string.Equals(p, builtIns, StringComparison.OrdinalIgnoreCase)))
-        {
-            var newValue = string.IsNullOrEmpty(existing) ? builtIns : (builtIns + sep + existing);
-            Environment.SetEnvironmentVariable("PSModulePath", newValue, EnvironmentVariableTarget.Process);
-        }
-    }
-
-    /// PS config crap ends
 
     AppDomain.CurrentDomain.UnhandledException += (s, e) =>
     {
@@ -481,11 +427,9 @@ async Task RunClientAsync(CancellationToken nativeStopping)
         message => LogManager.WriteLog($"[Gateway] {message}"));
     var commandGateway = new AgentCommandGatewayClient(
         gatewayOptions,
-        cfg.UseInProcPowerShell,
         message => LogManager.WriteLog($"[Gateway] {message}"));
     var jobGateway = new AgentJobGatewayClient(
         gatewayOptions,
-        cfg.UseInProcPowerShell,
         message => LogManager.WriteLog($"[Gateway] {message}"));
     await using var updateCoordinator = new AkkaClientAutoUpdateCoordinator(
         cfg,

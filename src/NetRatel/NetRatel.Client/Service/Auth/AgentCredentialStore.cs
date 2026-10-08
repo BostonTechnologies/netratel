@@ -1,10 +1,15 @@
+using System;
+using System.IO;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using NetRatel.Application.ClientAuth;
 
-namespace NetRatel.Infrastructure.Auth;
+namespace NetRatel.Client.Service.Auth;
 
 public sealed class AgentCredentialStore : IAgentCredentialStore, IAgentDeviceKeyStore, IAgentRefreshExchangeStore
 {
@@ -485,6 +490,21 @@ public sealed class AgentCredentialStore : IAgentCredentialStore, IAgentDeviceKe
         }
 
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var executableDirectory = Path.GetDirectoryName(Environment.ProcessPath) ?? AppContext.BaseDirectory;
+        return ResolveUnixFallbackPath(home, executableDirectory,
+            Environment.GetEnvironmentVariable("NETRATEL_POWERSHELL_HOME"));
+    }
+
+    internal static string ResolveUnixFallbackPath(string home, string executableDirectory, string? legacyPowerShellHome)
+    {
+        // The removed embedded host changed HOME before credential initialization.
+        // Keep an existing installation in its original directory, including its
+        // refresh journal and container machine identity, without changing HOME.
+        var legacyHome = string.IsNullOrWhiteSpace(legacyPowerShellHome)
+            ? Path.Combine(executableDirectory, "_psprofile") : legacyPowerShellHome;
+        var legacyPath = Path.Combine(legacyHome, ".local", "share", "netratel", "agent.dat");
+        if (TryGetExistingCredentialFile(legacyPath)) return legacyPath;
+
         return Path.Combine(home, ".local", "share", "netratel", "agent.dat");
     }
 

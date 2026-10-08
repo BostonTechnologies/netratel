@@ -870,7 +870,6 @@ public sealed class LocalFirstComposeBrowserSmokeTests
         start.ArgumentList.Add($"SSL_CERT_FILE={certificate}");
         start.ArgumentList.Add($"NetRatel_ROOT={root}");
         start.ArgumentList.Add($"NetRatel_STATE={Path.Combine(home, "state")}");
-        start.ArgumentList.Add($"NETRATEL_POWERSHELL_HOME={Path.Combine(home, "powershell")}");
         start.ArgumentList.Add("NO_PROXY=netratel.example,localhost,127.0.0.1");
         start.ArgumentList.Add("no_proxy=netratel.example,localhost,127.0.0.1");
         start.ArgumentList.Add(executable);

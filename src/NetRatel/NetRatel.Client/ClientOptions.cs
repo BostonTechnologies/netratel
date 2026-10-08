@@ -9,7 +9,6 @@ public class ClientOptions
     public Guid TenantId { get; set; }
     public ClientEnvironment Environment { get; set; } = ClientEnvironment.Dev;
     public string ApiBaseUrl { get; set; } = "https://localhost:5005";
-    public bool UseInProcPowerShell { get; set; }
     public string TerminalBackendPreference { get; set; } = "Auto";
     public bool EnableNativeUnixPty { get; set; } = true;
     public int TerminalGracefulExitTimeoutMs { get; set; } = 1500;

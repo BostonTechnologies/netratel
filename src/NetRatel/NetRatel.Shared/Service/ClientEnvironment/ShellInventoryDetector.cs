@@ -1,46 +1,33 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
-using System.Runtime.InteropServices;
-using NetRatel.Shared.Data;
+using NetRatel.Shared.Service.Shells;
+using ShellCapability = NetRatel.Shared.Data.ShellCapability;
 
 namespace NetRatel.Shared.Service.ClientEnvironment;
 
 /// <summary>Discovers executable interactive shells once for both legacy and gateway transports.</summary>
 public static class ShellInventoryDetector
 {
-    private static readonly IReadOnlyDictionary<string, string[]> KnownShells =
-        new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["pwsh"] = ["pwsh"],
-            ["powershell"] = ["powershell.exe"],
-            ["bash"] = ["bash"],
-            ["sh"] = ["sh"],
-            ["zsh"] = ["zsh"],
-            ["cmd"] = ["cmd.exe"]
-        };
+    private static readonly string[] KnownShells = ["pwsh", "powershell", "bash", "sh", "zsh", "cmd"];
+    private static readonly ConcurrentDictionary<(string Path, long LastWrite), Lazy<string?>> Versions = new();
 
     public static IReadOnlyList<ShellCapability> Detect()
     {
-        var directories = Environment.GetEnvironmentVariable("PATH")?
-            .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries) ?? [];
         var shells = new List<ShellCapability>();
 
-        foreach (var (keyword, executables) in KnownShells)
+        foreach (var keyword in KnownShells)
         {
-            var executable = executables.Select(candidate => FindExecutable(candidate, directories)).FirstOrDefault(path => path is not null);
+            var executable = ShellExecutableResolver.Resolve(keyword);
             if (executable is not null)
             {
                 shells.Add(new ShellCapability
                 {
                     Keyword = keyword,
                     Path = executable,
-                    Version = TryGetVersion(executable, keyword)
+                    Version = Versions.GetOrAdd((executable, File.GetLastWriteTimeUtc(executable).Ticks),
+                        key => new Lazy<string?>(() => TryGetVersion(key.Path, keyword))).Value
                 });
             }
-        }
-
-        if (shells.Count == 0)
-        {
-            AddFallbacks(shells);
         }
 
         return shells;
@@ -60,46 +47,6 @@ public static class ShellInventoryDetector
         "pwsh" or "powershell" or "bash" or "sh" or "zsh" or "cmd" => value.Trim().ToLowerInvariant(),
         _ => null
     };
-
-    private static string? FindExecutable(string executable, IEnumerable<string> directories)
-    {
-        var extensions = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? new[] { "", ".exe", ".cmd", ".bat" } : [""];
-        foreach (var directory in directories)
-        {
-            foreach (var extension in extensions)
-            {
-                try
-                {
-                    var path = Path.Combine(directory, executable + extension);
-                    if (File.Exists(path)) return Path.GetFullPath(path);
-                }
-                catch (ArgumentException)
-                {
-                    // A malformed PATH entry cannot make an unavailable shell appear available.
-                    continue;
-                }
-            }
-        }
-
-        return null;
-    }
-
-    private static void AddFallbacks(ICollection<ShellCapability> shells)
-    {
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-        {
-            var command = Environment.GetEnvironmentVariable("ComSpec");
-            if (!string.IsNullOrWhiteSpace(command) && File.Exists(command))
-                shells.Add(new ShellCapability { Keyword = "cmd", Path = command });
-
-            var powershell = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-            if (File.Exists(powershell)) shells.Add(new ShellCapability { Keyword = "powershell", Path = powershell });
-            return;
-        }
-
-        if (File.Exists("/bin/bash")) shells.Add(new ShellCapability { Keyword = "bash", Path = "/bin/bash" });
-        if (File.Exists("/bin/sh")) shells.Add(new ShellCapability { Keyword = "sh", Path = "/bin/sh" });
-    }
 
     private static string? TryGetVersion(string path, string keyword)
     {

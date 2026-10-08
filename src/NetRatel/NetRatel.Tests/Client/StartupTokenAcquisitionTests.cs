@@ -6,7 +6,6 @@ using AwesomeAssertions;
 using NetRatel.Application.ClientAuth;
 using NetRatel.Client;
 using NetRatel.Client.Service.Auth;
-using NetRatel.Infrastructure.Auth;
 using Xunit;
 
 namespace NetRatel.Tests.Client;

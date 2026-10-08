@@ -1,0 +1,194 @@
+{
+  "actionsRun": "https://github.com/BostonTechnologies/netratel/actions/runs/37745497650",
+  "originalMeasurementRun": "https://github.com/BostonTechnologies/netratel/actions/runs/37743230006",
+  "failedVerificationRun": "https://github.com/BostonTechnologies/netratel/actions/runs/37744824744",
+  "receipts": [
+    {
+      "original": {
+        "sourceSha": "b2a07e8a32d59539431d8040f4e31654f9e3f0f7",
+        "runtime": "win-x64",
+        "mode": "untrimmed",
+        "dotnetSdkVersion": "10.0.401",
+        "runner": {
+          "RUNNER_OS": "Windows",
+          "RUNNER_ARCH": "X64",
+          "ImageOS": "win25-vs2026",
+          "ImageVersion": "20260925.250.1",
+          "GITHUB_RUN_ID": "37743230006",
+          "GITHUB_RUN_ATTEMPT": "1"
+        },
+        "archiveName": "netratel-client-0.1.1-beta.3-win-x64.zip",
+        "archiveBytes": 67079198,
+        "archiveSha256": "de67891bda587dc9a553326a21a8b6e10857109b6f943487eae15d3eb8db9a5c"
+      },
+      "originalMetricsSha256": "611db3b0d54009ded09c717232f13059c85093f1c253d7ea94b1e124007267dc",
+      "verificationSourceSha": "b2a07e8a32d59539431d8040f4e31654f9e3f0f7",
+      "toolingSourceSha": "534c24ccf3583beab09362b7b17b38581cbd8a89",
+      "runner": {
+        "RUNNER_OS": "Windows",
+        "RUNNER_ARCH": "X64",
+        "ImageOS": "win25-vs2026",
+        "ImageVersion": "20260925.250.1",
+        "GITHUB_RUN_ID": "37745497650",
+        "GITHUB_RUN_ATTEMPT": "1"
+      },
+      "startedUtc": "2026-10-08T07:46:57.976707+00:00",
+      "stages": {
+        "verify": {
+          "command": [
+            "C:\\Program Files\\Git\\bin\\bash.exe",
+            "--noprofile",
+            "--norc",
+            "/d/a/netratel/netratel/client-baseline/tools/ci/verify-client-release-artifact.sh",
+            "--artifacts",
+            "/d/a/_temp/client-archive-verification/b2a07e8a32d59539431d8040f4e31654f9e3f0f7/untrimmed/win-x64/validation-packages",
+            "--version",
+            "0.1.1-beta.3",
+            "--runtime",
+            "win-x64",
+            "--extension",
+            "zip",
+            "--integrity-only"
+          ],
+          "cwd": "D:\\a\\netratel\\netratel\\client-baseline",
+          "exitCode": 0,
+          "seconds": 2.161
+        },
+        "launch-fresh": {
+          "command": [
+            "D:\\a\\_temp\\client-archive-verification\\b2a07e8a32d59539431d8040f4e31654f9e3f0f7\\untrimmed\\win-x64\\original-archive\\netratel-client-win-x64\\NetRatel.Client.exe",
+            "--version"
+          ],
+          "cwd": "D:\\a\\netratel\\netratel\\client-baseline",
+          "exitCode": 0,
+          "seconds": 0.876
+        },
+        "launch-cached": {
+          "command": [
+            "D:\\a\\_temp\\client-archive-verification\\b2a07e8a32d59539431d8040f4e31654f9e3f0f7\\untrimmed\\win-x64\\original-archive\\netratel-client-win-x64\\NetRatel.Client.exe",
+            "--version"
+          ],
+          "cwd": "D:\\a\\netratel\\netratel\\client-baseline",
+          "exitCode": 0,
+          "seconds": 0.108
+        }
+      },
+      "functionalAcceptance": "pending owner testing",
+      "dotnetSdkVersion": "10.0.401",
+      "checksumIndex": {
+        "originalSha256": "3317aea17963bc0bb756de9455ff885c4880521c8ed8b383342fb7aaf0ba10be",
+        "validationSha256": "62f3cfc27285aa66272438fe0d48460da907d45a064bf0a3d5014909cce77a0c",
+        "normalization": "CRLF to LF only in a separate validation copy; original index/archive/SBOM/metrics bytes retained unchanged",
+        "entries": {
+          "netratel-client-0.1.1-beta.3-win-x64.zip": "de67891bda587dc9a553326a21a8b6e10857109b6f943487eae15d3eb8db9a5c",
+          "netratel-client-0.1.1-beta.3-win-x64.spdx.json": "e687c5acd2eb628e93f287fbc158f20e999ec0bd27e49a6fc0a3c1972545b031"
+        }
+      },
+      "launchTimingMeaning": "Original archived bytes; --version only, before normal initialization; fresh then cached extraction.",
+      "exitCode": 0,
+      "finishedUtc": "2026-10-08T07:47:09.875895+00:00"
+    },
+    {
+      "original": {
+        "sourceSha": "8047ce86784a581bc99634503eab428817105a9b",
+        "runtime": "win-x64",
+        "mode": "untrimmed",
+        "dotnetSdkVersion": "10.0.401",
+        "runner": {
+          "RUNNER_OS": "Windows",
+          "RUNNER_ARCH": "X64",
+          "ImageOS": "win25-vs2026",
+          "ImageVersion": "20260925.250.1",
+          "GITHUB_RUN_ID": "37743230006",
+          "GITHUB_RUN_ATTEMPT": "1"
+        },
+        "archiveName": "netratel-client-0.1.1-beta.3-win-x64.zip",
+        "archiveBytes": 42764753,
+        "archiveSha256": "07c9d217cbe62c89e7512359f67da3c4230f2e1c6152b9dc424485d6c3aac6a3"
+      },
+      "originalMetricsSha256": "d2ab75efb72b5883606f543b26f64819acafbfae0c2bdd6976f37c3b998794ce",
+      "verificationSourceSha": "8047ce86784a581bc99634503eab428817105a9b",
+      "toolingSourceSha": "534c24ccf3583beab09362b7b17b38581cbd8a89",
+      "runner": {
+        "RUNNER_OS": "Windows",
+        "RUNNER_ARCH": "X64",
+        "ImageOS": "win25-vs2026",
+        "ImageVersion": "20260925.250.1",
+        "GITHUB_RUN_ID": "37745497650",
+        "GITHUB_RUN_ATTEMPT": "1"
+      },
+      "startedUtc": "2026-10-08T07:47:09.983534+00:00",
+      "stages": {
+        "verify": {
+          "command": [
+            "C:\\Program Files\\Git\\bin\\bash.exe",
+            "--noprofile",
+            "--norc",
+            "/d/a/netratel/netratel/tools/ci/verify-client-release-artifact.sh",
+            "--artifacts",
+            "/d/a/_temp/client-archive-verification/8047ce86784a581bc99634503eab428817105a9b/untrimmed/win-x64/validation-packages",
+            "--version",
+            "0.1.1-beta.3",
+            "--runtime",
+            "win-x64",
+            "--extension",
+            "zip",
+            "--integrity-only"
+          ],
+          "cwd": "D:\\a\\netratel\\netratel",
+          "exitCode": 0,
+          "seconds": 1.455
+        },
+        "verify-content": {
+          "command": [
+            "C:\\hostedtoolcache\\windows\\Python\\3.12.10\\x64\\python3.exe",
+            "D:\\a\\netratel\\netratel\\client-measurement-tooling\\tools\\ci\\verify-client-runtime-content.py",
+            "--sbom",
+            "D:\\a\\_temp\\client-archive-verification\\8047ce86784a581bc99634503eab428817105a9b\\untrimmed\\win-x64\\validation-packages\\netratel-client-0.1.1-beta.3-win-x64.spdx.json",
+            "--runtime-graph",
+            "D:\\a\\netratel\\netratel\\downloaded-client-measurement\\head\\win-x64\\publish.deps.json",
+            "--publish-inputs",
+            "D:\\a\\netratel\\netratel\\downloaded-client-measurement\\head\\win-x64\\publish-inputs.txt",
+            "--distribution",
+            "D:\\a\\_temp\\client-archive-verification\\8047ce86784a581bc99634503eab428817105a9b\\untrimmed\\win-x64\\original-archive\\netratel-client-win-x64"
+          ],
+          "cwd": "D:\\a\\netratel\\netratel",
+          "exitCode": 0,
+          "seconds": 0.06
+        },
+        "launch-fresh": {
+          "command": [
+            "D:\\a\\_temp\\client-archive-verification\\8047ce86784a581bc99634503eab428817105a9b\\untrimmed\\win-x64\\original-archive\\netratel-client-win-x64\\NetRatel.Client.exe",
+            "--version"
+          ],
+          "cwd": "D:\\a\\netratel\\netratel",
+          "exitCode": 0,
+          "seconds": 0.509
+        },
+        "launch-cached": {
+          "command": [
+            "D:\\a\\_temp\\client-archive-verification\\8047ce86784a581bc99634503eab428817105a9b\\untrimmed\\win-x64\\original-archive\\netratel-client-win-x64\\NetRatel.Client.exe",
+            "--version"
+          ],
+          "cwd": "D:\\a\\netratel\\netratel",
+          "exitCode": 0,
+          "seconds": 0.087
+        }
+      },
+      "functionalAcceptance": "pending owner testing",
+      "dotnetSdkVersion": "10.0.401",
+      "checksumIndex": {
+        "originalSha256": "c7164fd12620d12d00dfb30947495c2e889b329d60f03083acad0323c244915e",
+        "validationSha256": "834ecec1168bc95c95f6ed88b2dab390a4127c91af75c6a3be852f2ac8b70b5a",
+        "normalization": "CRLF to LF only in a separate validation copy; original index/archive/SBOM/metrics bytes retained unchanged",
+        "entries": {
+          "netratel-client-0.1.1-beta.3-win-x64.zip": "07c9d217cbe62c89e7512359f67da3c4230f2e1c6152b9dc424485d6c3aac6a3",
+          "netratel-client-0.1.1-beta.3-win-x64.spdx.json": "fbde15f7036306a18b7690ce76d754bc07d18caa8a622a610f0e4233c8506a9c"
+        }
+      },
+      "launchTimingMeaning": "Original archived bytes; --version only, before normal initialization; fresh then cached extraction.",
+      "exitCode": 0,
+      "finishedUtc": "2026-10-08T07:47:12.684347+00:00"
+    }
+  ]
+}

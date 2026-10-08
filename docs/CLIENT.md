@@ -21,6 +21,28 @@ them between machines or use an operator OIDC credential in their place. A
 Client that has not enrolled exits rather than starting an unauthenticated
 service.
 
+## Script interpreters
+
+Commands and library scripts run in external processes under the Client's
+executing account. PowerShell scripts require an installed interpreter:
+`Pwsh` selects `pwsh`, and `WindowsPowerShell` selects Windows PowerShell on
+Windows. An explicit selection fails if that interpreter is unavailable.
+For a PowerShell script, `Auto` prefers `pwsh` and can fall back to Windows
+PowerShell on Windows; Linux and macOS require `pwsh`. General shell commands
+retain the platform's existing automatic shell selection.
+
+The Client reports installed shell capabilities and uses the same executable
+resolution for command and library-script execution. Service accounts can use
+standard Windows interpreter locations even with a restricted `PATH`.
+Script `#requires` directives remain enforced by the selected PowerShell
+interpreter. The Client does not provision interpreters. A missing interpreter
+fails that task while the Client continues accepting other work.
+
+Installed settings may still contain `UseInProcPowerShell`; that retired key
+is ignored. Legacy `RunPowerShell` and `ExecPs` dispatches use external
+PowerShell while retaining their result array. Canonical command and library
+tasks retain their exit-code/stdout/stderr result envelope.
+
 ## API and gateway endpoints
 
 Set `Client:ApiBaseUrl` to the public HTTPS origin used for enrollment and HTTP

@@ -2,7 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 
-namespace NetRatel.Infrastructure.Services;
+namespace NetRatel.Shared.Security;
 
 public static class PopSignatureService
 {

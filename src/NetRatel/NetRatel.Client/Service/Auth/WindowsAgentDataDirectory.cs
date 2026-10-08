@@ -1,8 +1,11 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
 using System.Runtime.Versioning;
 using System.Security.AccessControl;
 using System.Security.Principal;
 
-namespace NetRatel.Infrastructure.Auth;
+namespace NetRatel.Client.Service.Auth;
 
 /// <summary>Creates the canonical Windows product root before runtime log/credential children.</summary>
 public static class WindowsAgentDataDirectory

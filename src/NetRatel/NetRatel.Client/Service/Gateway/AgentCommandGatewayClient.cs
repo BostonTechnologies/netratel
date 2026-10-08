@@ -19,7 +19,6 @@ namespace NetRatel.Client.Service.Gateway;
 /// </summary>
 public sealed class AgentCommandGatewayClient(
     GatewayClientOptions options,
-    bool useInProcPowerShell,
     Action<string> log)
 {
     private static readonly TimeSpan InitialRetryDelay = TimeSpan.FromSeconds(1);
@@ -61,7 +60,7 @@ public sealed class AgentCommandGatewayClient(
         var headers = new Metadata { { "Authorization", $"Bearer {session.GetAccessToken(accessToken)}" } };
         using var call = client.Connect(headers, cancellationToken: stoppingToken);
         using var writer = new CommandGatewayWriter(call.RequestStream, session, options.ProtocolVersion);
-        using var taskManager = new ClientTaskManager(useInProcPowerShell, writer.PublishStatusAsync, message => log($"Command execution error: {message}"));
+        using var taskManager = new ClientTaskManager(writer.PublishStatusAsync, message => log($"Command execution error: {message}"));
         taskManager.Start(session.TenantId, environment: 0);
         try
         {

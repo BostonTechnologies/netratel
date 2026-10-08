@@ -7,7 +7,6 @@ using NetRatel.Application.ClientAuth;
 using NetRatel.Application.Events;
 using NetRatel.Client.Service.Updates;
 using NetRatel.Client.Service.Auth;
-using NetRatel.Infrastructure.Auth;
 using System;
 using System.Collections.Generic;
 using System.IO;

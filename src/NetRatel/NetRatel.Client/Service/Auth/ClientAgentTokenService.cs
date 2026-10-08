@@ -1,3 +1,8 @@
+using System;
+using System.Linq;
+using System.Net.Http;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Net;
 using System.Globalization;
 using System.Net.Http.Json;
@@ -7,9 +12,9 @@ using System.Text.Json.Serialization;
 using Microsoft.IdentityModel.JsonWebTokens;
 using Microsoft.IdentityModel.Tokens;
 using NetRatel.Application.ClientAuth;
-using NetRatel.Infrastructure.Services;
+using NetRatel.Shared.Security;
 
-namespace NetRatel.Infrastructure.Auth;
+namespace NetRatel.Client.Service.Auth;
 
 public sealed class ClientAgentTokenService : IAgentTokenService
 {

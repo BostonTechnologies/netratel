@@ -4,9 +4,9 @@ using System.Text;
 using System.Text.Json;
 using AwesomeAssertions;
 using NetRatel.Application.ClientAuth;
-using NetRatel.Infrastructure.Auth;
-using NetRatel.Infrastructure.Services;
+using NetRatel.Client.Service.Auth;
 using Xunit;
+using NetRatel.Shared.Security;
 
 namespace NetRatel.Tests.Client;
 

@@ -4,15 +4,12 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Management.Automation;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
-using NetRatel.Client.Data.PowerShell;
 using NetRatel.Client.Service.Logging;
-using NetRatel.Client.Service.Powershell;
 using NetRatel.Client.Service.Shells;
 using NetRatel.Shared.Contracts.Execution;
 using NetRatel.Shared.Contracts.Tasks;
@@ -25,10 +22,7 @@ namespace NetRatel.Client.Service.Tasks;
 public sealed class ClientTaskManager : IDisposable
 {
     private const int MaximumGatewayResultBytes = 48 * 1024;
-    private static readonly JsonSerializerOptions GatewayPayloadJsonOptions = new(JsonSerializerDefaults.Web);
-    private readonly PowerShellExecutor _powershellExecutor;
     private readonly ExternalShellRunner _shellRunner;
-    private readonly bool _useInProcPowerShell;
     private readonly Action<string> _logError;
     private readonly Func<string, string, string?, int?, Task> _gatewayStatusPublisher;
 
@@ -75,16 +69,21 @@ public sealed class ClientTaskManager : IDisposable
     /// Executes command-gateway dispatches. The gateway is its only transport.
     /// </summary>
     public ClientTaskManager(
-        bool useInProcPowerShell,
+        Func<string, string, string?, int?, Task> gatewayStatusPublisher,
+        Action<string> errorLogger)
+        : this(new ExternalShellRunner(), gatewayStatusPublisher, errorLogger)
+    {
+    }
+
+    internal ClientTaskManager(
+        ExternalShellRunner shellRunner,
         Func<string, string, string?, int?, Task> gatewayStatusPublisher,
         Action<string> errorLogger)
     {
         ArgumentNullException.ThrowIfNull(gatewayStatusPublisher);
         _gatewayStatusPublisher = gatewayStatusPublisher;
         _logError = errorLogger ?? Console.Error.WriteLine;
-        _useInProcPowerShell = useInProcPowerShell;
-        _powershellExecutor = new PowerShellExecutor();
-        _shellRunner = new ExternalShellRunner();
+        _shellRunner = shellRunner;
     }
 
     public void Start(int? tenantId, int environment)
@@ -158,7 +157,6 @@ public sealed class ClientTaskManager : IDisposable
     public void Dispose()
     {
         Stop();
-        (_powershellExecutor as IDisposable)?.Dispose();
     }
 
     public bool EnqueueGatewayCommand(string commandId, string taskType, string? payload, int tenantId, int environment)
@@ -276,9 +274,9 @@ public sealed class ClientTaskManager : IDisposable
         switch (kind)
         {
             case TaskKinds.ExecShellCommand:
-                if (_useInProcPowerShell && string.Equals(rawType, TaskKinds.Legacy_RunPowerShell, StringComparison.OrdinalIgnoreCase))
+                if (string.Equals(rawType, TaskKinds.Legacy_RunPowerShell, StringComparison.OrdinalIgnoreCase))
                 {
-                    await HandlePowerShellTaskAsync(task, sink, ct).ConfigureAwait(false);
+                    await HandleLegacyPowerShellAsync(task, sink, task.Payload, ct).ConfigureAwait(false);
                 }
                 else if (string.Equals(rawType, TaskKinds.Legacy_ExecPs, StringComparison.OrdinalIgnoreCase))
                 {
@@ -382,7 +380,7 @@ public sealed class ClientTaskManager : IDisposable
         ExecShellCommandPayload? payload = null;
         try
         {
-            payload = JsonSerializer.Deserialize<ExecShellCommandPayload>(task.Payload, GatewayPayloadJsonOptions);
+            payload = JsonSerializer.Deserialize(task.Payload, TaskPayloadJsonContext.Default.ExecShellCommandPayload);
         }
         catch (JsonException)
         {
@@ -437,7 +435,7 @@ public sealed class ClientTaskManager : IDisposable
         ExecLibraryScriptPayload? payload = null;
         try
         {
-            payload = JsonSerializer.Deserialize<ExecLibraryScriptPayload>(task.Payload, GatewayPayloadJsonOptions);
+            payload = JsonSerializer.Deserialize(task.Payload, TaskPayloadJsonContext.Default.ExecLibraryScriptPayload);
         }
         catch (JsonException)
         {
@@ -524,22 +522,7 @@ public sealed class ClientTaskManager : IDisposable
         var remainingBytes = MaximumGatewayResultBytes;
         var stdout = BoundOutput(res.Output, ref remainingBytes, out var stdoutTruncated);
         var stderr = BoundOutput(res.Error, ref remainingBytes, out var stderrTruncated);
-
-        if (stdout.Count > 0)
-        {
-            var outputEntries = stdout
-                .Select((line, index) => ("stdout", line, (ulong)index + 1))
-                .ToList();
-            await sink.AppendBatchAsync(outputEntries).ConfigureAwait(false);
-        }
-
-        if (stderr.Count > 0)
-        {
-            var errorEntries = stderr
-                .Select((line, index) => ("stderr", line, (ulong)index + 1))
-                .ToList();
-            await sink.AppendBatchAsync(errorEntries).ConfigureAwait(false);
-        }
+        await AppendOutputLogsAsync(sink, stdout, stderr).ConfigureAwait(false);
 
         var payload = JsonSerializer.Serialize(new
         {
@@ -556,6 +539,25 @@ public sealed class ClientTaskManager : IDisposable
             }
         });
         await SafeStatusAsync(task, res.Success ? TaskStatuses.Completed : TaskStatuses.Failed, res.Success ? "OK" : "Failed", payload, res.ExitCode).ConfigureAwait(false);
+    }
+
+    private static async Task AppendOutputLogsAsync(ITaskLogSink sink, IReadOnlyList<string> stdout, IReadOnlyList<string> stderr)
+    {
+        if (stdout.Count > 0)
+        {
+            var outputEntries = stdout
+                .Select((line, index) => ("stdout", line, (ulong)index + 1))
+                .ToList();
+            await sink.AppendBatchAsync(outputEntries).ConfigureAwait(false);
+        }
+
+        if (stderr.Count > 0)
+        {
+            var errorEntries = stderr
+                .Select((line, index) => ("stderr", line, (ulong)index + 1))
+                .ToList();
+            await sink.AppendBatchAsync(errorEntries).ConfigureAwait(false);
+        }
     }
 
     private static IReadOnlyList<string> BoundOutput(IReadOnlyList<string> lines, ref int remainingBytes, out bool truncated)
@@ -676,230 +678,54 @@ public sealed class ClientTaskManager : IDisposable
         return Convert.ToHexString(bytes).ToLowerInvariant();
     }
 
-    private async Task HandlePowerShellTaskAsync(
+    private async Task HandleLegacyPowerShellAsync(
         CommandExecutionContext task,
         ITaskLogSink sink,
-        CancellationToken ct,
-        string? scriptOverride = null,
-        IReadOnlyDictionary<string, string>? parameters = null)
+        string? script,
+        CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
-
-        string? command = scriptOverride ?? task.Payload;
-
-        if (string.IsNullOrWhiteSpace(command))
+        if (string.IsNullOrWhiteSpace(script))
         {
-            await SafeStatusAsync(task, TaskStatuses.Failed, "PowerShell task payload (command) was empty.", string.Empty).ConfigureAwait(false);
+            await SafeStatusAsync(task, TaskStatuses.Failed, "Missing PowerShell script", null, 1).ConfigureAwait(false);
             return;
         }
 
-        LogManager.WriteLog($"Executing PowerShell for command {task.RequestId}: {command.Substring(0, Math.Min(command.Length, 100))}...");
-
-        long seq = 0;
-        var batch = new List<(string stream, string message, ulong seq)>();
-        var batchLock = new object();
-        Timer? flushTimer = null;
-
-        System.Management.Automation.PowerShell? psRef = null;
-        PSDataCollection<PSObject>? outputRef = null;
-
-        EventHandler<DataAddedEventArgs>? verboseHandler = null;
-        EventHandler<DataAddedEventArgs>? debugHandler = null;
-        EventHandler<DataAddedEventArgs>? warningHandler = null;
-        EventHandler<DataAddedEventArgs>? informationHandler = null;
-        EventHandler<DataAddedEventArgs>? errorHandler = null;
-        EventHandler<DataAddedEventArgs>? outputHandler = null;
-
-        void FlushBatch()
-        {
-            List<(string stream, string message, ulong seq)> toSend;
-            lock (batchLock)
-            {
-                if (batch.Count == 0)
-                {
-                    return;
-                }
-
-                toSend = new List<(string stream, string message, ulong seq)>(batch);
-                batch.Clear();
-                flushTimer?.Dispose();
-                flushTimer = null;
-            }
-
-            try
-            {
-                sink.AppendBatchAsync(toSend).GetAwaiter().GetResult();
-            }
-            catch (Exception ex)
-            {
-                _logError($"Failed to append task log batch for command {task.RequestId}: {ex}");
-            }
-        }
-
-        void Enqueue(string stream, string? message)
-        {
-            if (string.IsNullOrWhiteSpace(message)) return;
-
-            // Interlocked gives you a long; cast to ulong for your tuple
-            var nextSeq = (ulong)Interlocked.Increment(ref seq);
-
-            List<(string stream, string message, ulong seq)>? immediate = null;
-
-            lock (batchLock)
-            {
-                batch.Add((stream, message!, nextSeq));   // nextSeq is now ulong ✅
-
-                if (batch.Count >= 20)
-                {
-                    immediate = new List<(string stream, string message, ulong seq)>(batch);
-                    batch.Clear();
-                    flushTimer?.Dispose();
-                    flushTimer = null;
-                }
-                else if (flushTimer == null)
-                {
-                    flushTimer = new Timer(_ => FlushBatch(), null, 500, Timeout.Infinite);
-                }
-            }
-
-            if (immediate != null)
-            {
-                try
-                {
-                    sink.AppendBatchAsync(immediate).GetAwaiter().GetResult();
-                }
-                catch (Exception ex)
-                {
-                    _logError($"Failed to append task log batch for command {task.RequestId}: {ex}");
-                }
-            }
-        }
-
-        void Configure(System.Management.Automation.PowerShell ps, PSDataCollection<PSObject> output)
-        {
-            psRef = ps;
-            outputRef = output;
-
-            verboseHandler = (_, e) =>
-            {
-                var record = ps.Streams.Verbose[e.Index];
-                Enqueue("Verbose", record?.Message);
-            };
-            ps.Streams.Verbose.DataAdded += verboseHandler;
-
-            debugHandler = (_, e) =>
-            {
-                var record = ps.Streams.Debug[e.Index];
-                Enqueue("Debug", record?.Message);
-            };
-            ps.Streams.Debug.DataAdded += debugHandler;
-
-            warningHandler = (_, e) =>
-            {
-                var record = ps.Streams.Warning[e.Index];
-                Enqueue("Warning", record?.Message);
-            };
-            ps.Streams.Warning.DataAdded += warningHandler;
-
-            informationHandler = (_, e) =>
-            {
-                var record = ps.Streams.Information[e.Index];
-                Enqueue("Information", record?.MessageData?.ToString());
-            };
-            ps.Streams.Information.DataAdded += informationHandler;
-
-            errorHandler = (_, e) =>
-            {
-                var record = ps.Streams.Error[e.Index];
-                if (record != null)
-                {
-                    Enqueue("Error", PowerShellExecutor.FormatErrorRecord(record));
-                }
-            };
-            ps.Streams.Error.DataAdded += errorHandler;
-
-            outputHandler = (_, e) =>
-            {
-                var item = output[e.Index];
-                var text = item?.BaseObject?.ToString();
-                Enqueue("Information", text);
-            };
-            output.DataAdded += outputHandler;
-        }
-
-        CommandResult psResult;
         try
         {
-            psResult = await _powershellExecutor.ExecuteScriptAsync(command, parameters, ct, Configure).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            FlushBatch();
-            await SafeStatusAsync(task, TaskStatuses.Failed, "PowerShell execution cancelled.").ConfigureAwait(false);
-            return;
-        }
-        catch (Exception execEx)
-        {
-            _logError($"PowerShellExecutor failed for command {task.RequestId}: {execEx}");
-            FlushBatch();
-            await SafeStatusAsync(task, TaskStatuses.Failed, "Executor error.", execEx.Message).ConfigureAwait(false);
-            return;
-        }
-        finally
-        {
-            flushTimer?.Dispose();
-            FlushBatch();
-
-            if (psRef != null)
+            var (execution, returnData) = await LegacyPowerShellAdapter.ExecuteAsync(
+                _shellRunner, script, MaximumGatewayResultBytes, ct).ConfigureAwait(false);
+            var remainingBytes = MaximumGatewayResultBytes;
+            var stdout = BoundOutput(execution.Output, ref remainingBytes, out _);
+            var stderr = BoundOutput(execution.Error, ref remainingBytes, out _);
+            await AppendOutputLogsAsync(sink, stdout, stderr).ConfigureAwait(false);
+            if (ct.IsCancellationRequested)
             {
-                if (verboseHandler != null) psRef.Streams.Verbose.DataAdded -= verboseHandler;
-                if (debugHandler != null) psRef.Streams.Debug.DataAdded -= debugHandler;
-                if (warningHandler != null) psRef.Streams.Warning.DataAdded -= warningHandler;
-                if (informationHandler != null) psRef.Streams.Information.DataAdded -= informationHandler;
-                if (errorHandler != null) psRef.Streams.Error.DataAdded -= errorHandler;
+                await PublishCancelledAsync(task, sink, "Cancelled").ConfigureAwait(false);
+                return;
             }
 
-            if (outputRef != null && outputHandler != null)
+            if (execution.Success)
             {
-                outputRef.DataAdded -= outputHandler;
+                // Persisted legacy dispatches expose an array of object properties or
+                // strings through TaskDto.ReturnData. Keep that shape at this boundary.
+                await SafeStatusAsync(task, TaskStatuses.Completed, "Execution successful", returnData, 0).ConfigureAwait(false);
+            }
+            else
+            {
+                var error = stderr.Count > 0 ? string.Join(Environment.NewLine, stderr) : "PowerShell execution failed.";
+                if (error.Length > 1000) error = error[..1000] + "... (truncated)";
+                await SafeStatusAsync(task, TaskStatuses.Failed, "Task Failed.", error, execution.ExitCode).ConfigureAwait(false);
             }
         }
-
-        if (psResult.Success && !psResult.HasErrors)
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            string? returnDataJson = null;
-            if (psResult.StructuredOutput.Any())
-            {
-                returnDataJson = JsonSerializer.Serialize(psResult.StructuredOutput);
-            }
-            else if (psResult.StringOutput.Any())
-            {
-                returnDataJson = JsonSerializer.Serialize(psResult.StringOutput);
-            }
-
-            LogManager.WriteLog($"PowerShell command {task.RequestId} completed successfully.");
-            await SafeStatusAsync(task, TaskStatuses.Completed, "Execution successful", returnDataJson, 0).ConfigureAwait(false);
+            await PublishCancelledAsync(task, sink, "Cancelled").ConfigureAwait(false);
         }
-        else
+        catch (Exception exception)
         {
-            string errorMessage = "PowerShell execution failed.";
-            if (psResult.ErrorMessages.Any())
-            {
-                errorMessage = string.Join(Environment.NewLine, psResult.ErrorMessages);
-            }
-            else if (psResult.ExecutionException != null)
-            {
-                errorMessage = $"C# Execution Exception: {psResult.ExecutionException.Message}";
-            }
-
-            const int maxErrorLength = 1000;
-            if (errorMessage.Length > maxErrorLength)
-            {
-                errorMessage = errorMessage.Substring(0, maxErrorLength) + "... (truncated)";
-            }
-
-            _logError($"PowerShell command {task.RequestId} failed: {errorMessage}");
-            await SafeStatusAsync(task, TaskStatuses.Failed, "Task Failed.", errorMessage, 1).ConfigureAwait(false);
+            await SafeStatusAsync(task, TaskStatuses.Failed, "PowerShell execution failed.",
+                OperatorOutputRedactor.Redact(exception.Message), 1).ConfigureAwait(false);
         }
     }
 
@@ -1046,14 +872,7 @@ public sealed class ClientTaskManager : IDisposable
             await SafeStatusAsync(task, TaskStatuses.Failed, "Missing script", null).ConfigureAwait(false);
             return;
         }
-        try
-        {
-            await HandlePowerShellTaskAsync(task, sink, ct, script).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            await SafeStatusAsync(task, TaskStatuses.Failed, ex.Message, null).ConfigureAwait(false);
-        }
+        await HandleLegacyPowerShellAsync(task, sink, script, ct).ConfigureAwait(false);
     }
 
     private async Task HandleExecShAsync(CommandExecutionContext task, ITaskLogSink sink, CancellationToken ct)

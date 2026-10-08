@@ -12,6 +12,51 @@ namespace NetRatel.Tests.Client;
 public sealed class LibraryScriptPayloadTests
 {
     [Fact]
+    public void GatewayPayloadMetadata_PreservesWebDefaultsAndLiteralParameters()
+    {
+        const string libraryJson = """
+            {
+              "sCrIpTiD": "2",
+              "sCrIpTtYpE": 1,
+              "pReFeRrEd": 3,
+              "tImEoUtSeCoNdS": "30",
+              "pArAmEtErS": { "MiXeDKey": "café/λ 'quoted' \"double\" $(literal)" }
+            }
+            """;
+        var library = JsonSerializer.Deserialize(libraryJson, TaskPayloadJsonContext.Default.ExecLibraryScriptPayload);
+
+        library.Should().NotBeNull();
+        library!.ScriptId.Should().Be(2);
+        library.ScriptType.Should().Be(ScriptType.Bash);
+        library.Preferred.Should().Be(ShellExecutor.Bash);
+        library.TimeoutSeconds.Should().Be(30);
+        library.Parameters.Should().ContainSingle();
+        library.Parameters.Should().Contain("MiXeDKey", "café/λ 'quoted' \"double\" $(literal)");
+
+        const string shellJson = """
+            { "pReFeRrEd": 3, "cOmMaNd": "printf 'café λ'", "tImEoUtSeCoNdS": "30",
+              "eNvIrOnMeNtReFeReNcEs": ["MiXeD"] }
+            """;
+        var shell = JsonSerializer.Deserialize(shellJson, TaskPayloadJsonContext.Default.ExecShellCommandPayload);
+
+        shell.Should().NotBeNull();
+        shell!.Preferred.Should().Be(ShellExecutor.Bash);
+        shell.Command.Should().Be("printf 'café λ'");
+        shell.TimeoutSeconds.Should().Be(30);
+        shell.EnvironmentReferences.Should().Equal("MiXeD");
+    }
+
+    [Theory]
+    [InlineData("""{"scriptType":"Bash"}""")]
+    [InlineData("""{"parameters":{"Count":2}}""")]
+    public void GatewayPayloadMetadata_RejectsPreviouslyUnsupportedFieldTypes(string json)
+    {
+        var deserialize = () => JsonSerializer.Deserialize(json, TaskPayloadJsonContext.Default.ExecLibraryScriptPayload);
+
+        deserialize.Should().Throw<JsonException>();
+    }
+
+    [Fact]
     public void ExecLibraryScriptPayload_Deserializes_LegacyPayload_WithoutScriptContent()
     {
         const string json = """

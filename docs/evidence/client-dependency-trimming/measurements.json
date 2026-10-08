@@ -1,0 +1,983 @@
+{
+  "comparisons": [
+    {
+      "afterLabel": "head",
+      "afterSourceSha": "8047ce86784a581bc99634503eab428817105a9b",
+      "archiveBytes": {
+        "after": 42477787,
+        "before": 67753479,
+        "bytesRemoved": 25275692,
+        "reductionPercent": 37.305
+      },
+      "beforeLabel": "baseline",
+      "beforeSourceSha": "b2a07e8a32d59539431d8040f4e31654f9e3f0f7",
+      "executableBytes": {
+        "after": 49412902,
+        "before": 74433257,
+        "bytesRemoved": 25020355,
+        "reductionPercent": 33.614
+      },
+      "extractedBytes": {
+        "after": 51605383,
+        "before": 79983502,
+        "bytesRemoved": 28378119,
+        "reductionPercent": 35.48
+      },
+      "runtime": "linux-x64",
+      "restoredClosureDeltaCount": {
+        "removed": 124,
+        "added": 0
+      },
+      "publishedRuntimeGraphDeltaCount": {
+        "removed": 94,
+        "added": 0
+      }
+    },
+    {
+      "afterLabel": "trimmed",
+      "afterSourceSha": "8047ce86784a581bc99634503eab428817105a9b",
+      "archiveBytes": {
+        "after": 9331008,
+        "before": 42477787,
+        "bytesRemoved": 33146779,
+        "reductionPercent": 78.033
+      },
+      "beforeLabel": "head",
+      "beforeSourceSha": "8047ce86784a581bc99634503eab428817105a9b",
+      "executableBytes": {
+        "after": 16083102,
+        "before": 49412902,
+        "bytesRemoved": 33329800,
+        "reductionPercent": 67.452
+      },
+      "extractedBytes": {
+        "after": 17900397,
+        "before": 51605383,
+        "bytesRemoved": 33704986,
+        "reductionPercent": 65.313
+      },
+      "runtime": "linux-x64",
+      "restoredClosureDeltaCount": {
+        "removed": 0,
+        "added": 0
+      },
+      "publishedRuntimeGraphDeltaCount": {
+        "removed": 19,
+        "added": 0
+      }
+    },
+    {
+      "afterLabel": "head",
+      "afterSourceSha": "8047ce86784a581bc99634503eab428817105a9b",
+      "archiveBytes": {
+        "after": 42764753,
+        "before": 67079198,
+        "bytesRemoved": 24314445,
+        "reductionPercent": 36.247
+      },
+      "beforeLabel": "baseline",
+      "beforeSourceSha": "b2a07e8a32d59539431d8040f4e31654f9e3f0f7",
+      "executableBytes": {
+        "after": 47828775,
+        "before": 71848455,
+        "bytesRemoved": 24019680,
+        "reductionPercent": 33.431
+      },
+      "extractedBytes": {
+        "after": 50045941,
+        "before": 77435837,
+        "bytesRemoved": 27389896,
+        "reductionPercent": 35.371
+      },
+      "runtime": "win-x64",
+      "restoredClosureDeltaCount": {
+        "removed": 124,
+        "added": 0
+      },
+      "publishedRuntimeGraphDeltaCount": {
+        "removed": 101,
+        "added": 0
+      }
+    },
+    {
+      "afterLabel": "head",
+      "afterSourceSha": "8047ce86784a581bc99634503eab428817105a9b",
+      "archiveBytes": {
+        "after": 40413780,
+        "before": 65800995,
+        "bytesRemoved": 25387215,
+        "reductionPercent": 38.582
+      },
+      "beforeLabel": "baseline",
+      "beforeSourceSha": "b2a07e8a32d59539431d8040f4e31654f9e3f0f7",
+      "executableBytes": {
+        "after": 46586480,
+        "before": 71713456,
+        "bytesRemoved": 25126976,
+        "reductionPercent": 35.038
+      },
+      "extractedBytes": {
+        "after": 48763087,
+        "before": 77247827,
+        "bytesRemoved": 28484740,
+        "reductionPercent": 36.874
+      },
+      "runtime": "osx-arm64",
+      "restoredClosureDeltaCount": {
+        "removed": 124,
+        "added": 0
+      },
+      "publishedRuntimeGraphDeltaCount": {
+        "removed": 94,
+        "added": 0
+      }
+    }
+  ],
+  "interpretation": {
+    "acceptance": "Build/integrity results do not establish owner functional acceptance or permission to promote trimming.",
+    "actualFileInventories": "Captured post-link prebundle inputs plus final loose distribution files. Their asset counts are distinct from .deps entries.",
+    "launch": "Fresh/cached --version artifact probes only; agent initialization, gateway readiness and RSS not measured.",
+    "publishedRuntimeGraph": "Exact final prebundle .deps graph, retaining dependency-only nodes and distinguishing packages/runtimepacks/first-party projects.",
+    "restoredClosure": "Per-RID restored target; package presence here does not mean a shipped runtime asset.",
+    "warningCounts": "Metrics warningsByCode counts raw log occurrences, including repeated MSBuild summaries; full warnings/logs preserve call sites."
+  },
+  "missingFinalRecords": [],
+  "records": [
+    {
+      "agentInitialization": "not measured",
+      "archiveBytes": 67753479,
+      "archiveName": "netratel-client-0.1.1-beta.3-linux-x64.tar.gz",
+      "archiveSha256": "a662556e43c4c157ff151bbad535b134848ebd86e7fa93026598f9e5f1a99537",
+      "cacheConditions": "Fresh source/mode/RID intermediates; shared runner NuGet cache, sequential A/B/C order.",
+      "capturedPrebundleInputBytes": 170754806,
+      "capturedPrebundleInputCount": 616,
+      "declaredDirectPackageReferenceCount": 24,
+      "distributionFileCount": 12,
+      "dotnetSdkVersion": "10.0.401",
+      "error": null,
+      "evaluatedProperties": {
+        "BaseIntermediateOutputPath": "/home/runner/work/_temp/client-measurement/b2a07e8a32d59539431d8040f4e31654f9e3f0f7/untrimmed/linux-x64/build/obj/NetRatel.Client/",
+        "EnableAotAnalyzer": "",
+        "EnableCompressionInSingleFile": "true",
+        "EnableTrimAnalyzer": "",
+        "IncludeAllContentForSelfExtract": "true",
+        "IncludeNativeLibrariesForSelfExtract": "true",
+        "IntermediateOutputPath": "/home/runner/work/_temp/client-measurement/b2a07e8a32d59539431d8040f4e31654f9e3f0f7/untrimmed/linux-x64/build/obj/NetRatel.Client/release_linux-x64/",
+        "ProjectAssetsFile": "/home/runner/work/_temp/client-measurement/b2a07e8a32d59539431d8040f4e31654f9e3f0f7/untrimmed/linux-x64/build/obj/NetRatel.Client/project.assets.json",
+        "PublishAot": "false",
+        "PublishSingleFile": "true",
+        "PublishTrimmed": "false",
+        "RuntimeIdentifier": "linux-x64",
+        "SelfContained": "true",
+        "TargetPath": "/home/runner/work/_temp/client-measurement/b2a07e8a32d59539431d8040f4e31654f9e3f0f7/untrimmed/linux-x64/build/bin/NetRatel.Client/release_linux-x64/NetRatel.Client.dll",
+        "TrimMode": "",
+        "TrimmerSingleWarn": ""
+      },
+      "evidenceSha256": {
+        "distribution-inventory.json": "0f6db404ddcd9e1f1e7bad642d0bb2a08d5d8ec6d15f508a9cb8bf801d019f40",
+        "metrics.json": "4426e31d7a0960e5cf3d90808b1b24090a77b565fc1698ff7e636c79765e1915",
+        "publish-input-inventory.json": "450cc5981ca744f6ff81659c293be92f48d69c115e8112fd72ff89019f073c1d",
+        "restored-graphs/obj/NetRatel.AgentGateway.Contracts/project.assets.json": "7683dbd6847317fcb5d5a8dd532160f309dc7e8bcb182e821cab9df8ea0d78fd",
+        "restored-graphs/obj/NetRatel.Application/project.assets.json": "474e17e52501d61ee352e4b14ad51320ca376d817807fe6a57e44032502503a6",
+        "restored-graphs/obj/NetRatel.Client/project.assets.json": "ed86227b96608ad79373cc6d9cc7640bba189302e3bc032ff518374ed9ae9949",
+        "restored-graphs/obj/NetRatel.Infrastructure/project.assets.json": "67af0b486e92c1c95a1c4c6e2d735f5bbce06078ed91a375e51cbfcf01a0f33d",
+        "restored-graphs/obj/NetRatel.Shared/project.assets.json": "9cc268eb65abfda7a98ae2a39ac179b8662cf5c3ebd04efb40ff5b9040b38374",
+        "runtime-package-inventory.json": "cabd2c348d9da621bfca17cd6ae4d47d31959d7c3dba8998832ab7bc355a9c80"
+      },
+      "executableBytes": 74433257,
+      "exitCode": 0,
+      "extractedBytes": 79983502,
+      "failureKind": null,
+      "failureStage": null,
+      "finishedUtc": "2026-10-08T07:26:29.328646+00:00",
+      "functionalAcceptance": "pending owner testing",
+      "gatewayReady": "not measured",
+      "inventoryAvailability": {
+        "capturedPrebundleInputs": true,
+        "distributionFiles": true,
+        "publishedRuntimeGraph": true,
+        "restoredClosure": true
+      },
+      "label": "baseline",
+      "launchTimingMeaning": "--version only, before normal initialization; fresh then cached single-file extraction, not agent/gateway startup.",
+      "mode": "untrimmed",
+      "productVersion": "0.1.1-beta.3",
+      "publishedNuGetPackageNodesWithAssets": 142,
+      "publishedRuntimeGraphAssetEntryCount": 417,
+      "publishedRuntimeGraphNodeCount": 150,
+      "publishedRuntimeGraphNodesByType": {
+        "package": 144,
+        "project": 5,
+        "runtimepack": 1
+      },
+      "residentMemory": "not measured",
+      "restoredPackageCount": 177,
+      "restoredProjectGraphCount": 5,
+      "restoredProjectReferenceCount": 4,
+      "restoredTarget": "net10.0/linux-x64",
+      "runner": {
+        "GITHUB_RUN_ATTEMPT": "1",
+        "GITHUB_RUN_ID": "37743230006",
+        "ImageOS": "ubuntu24",
+        "ImageVersion": "20260927.320.1",
+        "RUNNER_ARCH": "X64",
+        "RUNNER_OS": "Linux"
+      },
+      "runtime": "linux-x64",
+      "sourceSha": "b2a07e8a32d59539431d8040f4e31654f9e3f0f7",
+      "stages": {
+        "launch-cached": {
+          "exitCode": 0,
+          "seconds": 0.066
+        },
+        "launch-fresh": {
+          "exitCode": 0,
+          "seconds": 0.607
+        },
+        "package": {
+          "exitCode": 0,
+          "seconds": 2.338
+        },
+        "publish": {
+          "exitCode": 0,
+          "seconds": 86.316
+        },
+        "restore": {
+          "exitCode": 0,
+          "seconds": 13.054
+        },
+        "sbom": {
+          "exitCode": 0,
+          "seconds": 0.308
+        },
+        "toolchain": {
+          "exitCode": 0,
+          "seconds": 2.965
+        },
+        "verify": {
+          "exitCode": 0,
+          "seconds": 1.577
+        }
+      },
+      "startedUtc": "2026-10-08T07:24:36.577452+00:00",
+      "warningsByCode": {}
+    },
+    {
+      "agentInitialization": "not measured",
+      "archiveBytes": 42477787,
+      "archiveName": "netratel-client-0.1.1-beta.3-linux-x64.tar.gz",
+      "archiveSha256": "a19ed78783d5a4c789160b81e85428af96b422f2ebb71ceda357120ff081ea5f",
+      "cacheConditions": "Fresh source/mode/RID intermediates; shared runner NuGet cache, sequential A/B/C order.",
+      "capturedPrebundleInputBytes": 95617076,
+      "capturedPrebundleInputCount": 240,
+      "declaredDirectPackageReferenceCount": 13,
+      "distributionFileCount": 11,
+      "dotnetSdkVersion": "10.0.401",
+      "error": null,
+      "evaluatedProperties": {
+        "BaseIntermediateOutputPath": "/home/runner/work/_temp/client-measurement/8047ce86784a581bc99634503eab428817105a9b/untrimmed/linux-x64/build/obj/NetRatel.Client/",
+        "EnableAotAnalyzer": "",
+        "EnableCompressionInSingleFile": "true",
+        "EnableTrimAnalyzer": "",
+        "IncludeAllContentForSelfExtract": "true",
+        "IncludeNativeLibrariesForSelfExtract": "true",
+        "IntermediateOutputPath": "/home/runner/work/_temp/client-measurement/8047ce86784a581bc99634503eab428817105a9b/untrimmed/linux-x64/build/obj/NetRatel.Client/release_linux-x64/",
+        "ProjectAssetsFile": "/home/runner/work/_temp/client-measurement/8047ce86784a581bc99634503eab428817105a9b/untrimmed/linux-x64/build/obj/NetRatel.Client/project.assets.json",
+        "PublishAot": "false",
+        "PublishSingleFile": "true",
+        "PublishTrimmed": "false",
+        "RuntimeIdentifier": "linux-x64",
+        "SelfContained": "true",
+        "TargetPath": "/home/runner/work/_temp/client-measurement/8047ce86784a581bc99634503eab428817105a9b/untrimmed/linux-x64/build/bin/NetRatel.Client/release_linux-x64/NetRatel.Client.dll",
+        "TrimMode": "",
+        "TrimmerSingleWarn": ""
+      },
+      "evidenceSha256": {
+        "distribution-inventory.json": "5a2a77a53f33ffd5d91ce3e240de470761b5da90d38f3a1c8928f67b68188be6",
+        "metrics.json": "ca3dcd07a0912c25b7d73bfdf6a2b0d5dd06f8e5614a45f36e8c94170aaa4456",
+        "publish-input-inventory.json": "5823f624f415e393311d7c07f992c53d45d4e61b957a96edcde9e8da4fa23982",
+        "restored-graphs/obj/NetRatel.AgentGateway.Contracts/project.assets.json": "4f8a4dc27672042eae21c506391d31b4c73484ea0bce369e676fcc4673aad58a",
+        "restored-graphs/obj/NetRatel.Application/project.assets.json": "df69b126518496c096f701f5637a4ece3c2d1d276d27850eaf37dfae22f69925",
+        "restored-graphs/obj/NetRatel.Client/project.assets.json": "a9694239b67b927d218d8d1cdfa2a4afc75f3b2aa0c7b39a5ebc175ab0a4d0c1",
+        "restored-graphs/obj/NetRatel.Shared/project.assets.json": "b256c85818cf37728a732dd3630d61e264855656953a277229ec7abb91dba6c4",
+        "runtime-package-inventory.json": "58b76379c1aa9a03dfc203d50800b1e048ce3baeb881f3f1c9a615a49d335669"
+      },
+      "executableBytes": 49412902,
+      "exitCode": 0,
+      "extractedBytes": 51605383,
+      "failureKind": null,
+      "failureStage": null,
+      "finishedUtc": "2026-10-08T07:26:52.182647+00:00",
+      "functionalAcceptance": "pending owner testing",
+      "gatewayReady": "not measured",
+      "inventoryAvailability": {
+        "capturedPrebundleInputs": true,
+        "distributionFiles": true,
+        "publishedRuntimeGraph": true,
+        "restoredClosure": true
+      },
+      "label": "head",
+      "launchTimingMeaning": "--version only, before normal initialization; fresh then cached single-file extraction, not agent/gateway startup.",
+      "mode": "untrimmed",
+      "productVersion": "0.1.1-beta.3",
+      "publishedNuGetPackageNodesWithAssets": 51,
+      "publishedRuntimeGraphAssetEntryCount": 229,
+      "publishedRuntimeGraphNodeCount": 56,
+      "publishedRuntimeGraphNodesByType": {
+        "package": 51,
+        "project": 4,
+        "runtimepack": 1
+      },
+      "residentMemory": "not measured",
+      "restoredPackageCount": 54,
+      "restoredProjectGraphCount": 4,
+      "restoredProjectReferenceCount": 3,
+      "restoredTarget": "net10.0/linux-x64",
+      "runner": {
+        "GITHUB_RUN_ATTEMPT": "1",
+        "GITHUB_RUN_ID": "37743230006",
+        "ImageOS": "ubuntu24",
+        "ImageVersion": "20260927.320.1",
+        "RUNNER_ARCH": "X64",
+        "RUNNER_OS": "Linux"
+      },
+      "runtime": "linux-x64",
+      "sourceSha": "8047ce86784a581bc99634503eab428817105a9b",
+      "stages": {
+        "launch-cached": {
+          "exitCode": 0,
+          "seconds": 0.055
+        },
+        "launch-fresh": {
+          "exitCode": 0,
+          "seconds": 0.364
+        },
+        "package": {
+          "exitCode": 0,
+          "seconds": 1.598
+        },
+        "publish": {
+          "exitCode": 0,
+          "seconds": 16.384
+        },
+        "restore": {
+          "exitCode": 0,
+          "seconds": 1.728
+        },
+        "sbom": {
+          "exitCode": 0,
+          "seconds": 0.142
+        },
+        "toolchain": {
+          "exitCode": 0,
+          "seconds": 0.221
+        },
+        "verify": {
+          "exitCode": 0,
+          "seconds": 1.109
+        },
+        "verify-content": {
+          "exitCode": 0,
+          "seconds": 0.038
+        }
+      },
+      "startedUtc": "2026-10-08T07:26:29.395806+00:00",
+      "warningsByCode": {}
+    },
+    {
+      "agentInitialization": "not measured",
+      "archiveBytes": 9331008,
+      "archiveName": "netratel-client-0.1.1-beta.3-linux-x64.tar.gz",
+      "archiveSha256": "bf671cf7c52dde8481a5378a9947df43aa839060675e9eb5af9ad86d7b93fad7",
+      "cacheConditions": "Fresh source/mode/RID intermediates; shared runner NuGet cache, sequential A/B/C order.",
+      "capturedPrebundleInputBytes": 23292289,
+      "capturedPrebundleInputCount": 94,
+      "declaredDirectPackageReferenceCount": 13,
+      "distributionFileCount": 11,
+      "dotnetSdkVersion": "10.0.401",
+      "error": null,
+      "evaluatedProperties": {
+        "BaseIntermediateOutputPath": "/home/runner/work/_temp/client-measurement/8047ce86784a581bc99634503eab428817105a9b/trimmed/linux-x64/build/obj/NetRatel.Client/",
+        "EnableAotAnalyzer": "true",
+        "EnableCompressionInSingleFile": "true",
+        "EnableTrimAnalyzer": "true",
+        "IncludeAllContentForSelfExtract": "true",
+        "IncludeNativeLibrariesForSelfExtract": "true",
+        "IntermediateOutputPath": "/home/runner/work/_temp/client-measurement/8047ce86784a581bc99634503eab428817105a9b/trimmed/linux-x64/build/obj/NetRatel.Client/release_linux-x64/",
+        "ProjectAssetsFile": "/home/runner/work/_temp/client-measurement/8047ce86784a581bc99634503eab428817105a9b/trimmed/linux-x64/build/obj/NetRatel.Client/project.assets.json",
+        "PublishAot": "false",
+        "PublishSingleFile": "true",
+        "PublishTrimmed": "true",
+        "RuntimeIdentifier": "linux-x64",
+        "SelfContained": "true",
+        "TargetPath": "/home/runner/work/_temp/client-measurement/8047ce86784a581bc99634503eab428817105a9b/trimmed/linux-x64/build/bin/NetRatel.Client/release_linux-x64/NetRatel.Client.dll",
+        "TrimMode": "full",
+        "TrimmerSingleWarn": "false"
+      },
+      "evidenceSha256": {
+        "distribution-inventory.json": "41c4e6eeefe4f86572ad7e54b96a642f5ad76f8f429b961753a956052fd922bb",
+        "metrics.json": "b6e30191f5a2bc5d27ae752d5e2d2f29c555c856197535d36a3de9dc81c0d54a",
+        "publish-input-inventory.json": "1d5d1ed16741cb784ac84875526447ec6a5436b2706fbb134999d31d707a4636",
+        "restored-graphs/obj/NetRatel.AgentGateway.Contracts/project.assets.json": "dc1e6336df3e95c2b11dc1d53c0231b641400a081fd5cd647ba26dca8d0b8900",
+        "restored-graphs/obj/NetRatel.Application/project.assets.json": "e8fb5e4dfb35698ae00fefded76bdd5e211e2643d348304dde97834ed88e13ab",
+        "restored-graphs/obj/NetRatel.Client/project.assets.json": "b502a4425625a512265c7de7084119e12965d617db0acc88009be1b656bb52e6",
+        "restored-graphs/obj/NetRatel.Shared/project.assets.json": "2337e8c9d32c5dc4f350113b459ccc582518775a25c09d2d3f9a6fad833c725c",
+        "runtime-package-inventory.json": "6046d4e22a49a6771b90b6911920850a6ad3c1232fdb5ced595a33df77b6b90f"
+      },
+      "executableBytes": 16083102,
+      "exitCode": 0,
+      "extractedBytes": 17900397,
+      "failureKind": null,
+      "failureStage": null,
+      "finishedUtc": "2026-10-08T07:27:24.515420+00:00",
+      "functionalAcceptance": "pending owner testing",
+      "gatewayReady": "not measured",
+      "inventoryAvailability": {
+        "capturedPrebundleInputs": true,
+        "distributionFiles": true,
+        "publishedRuntimeGraph": true,
+        "restoredClosure": true
+      },
+      "label": "trimmed",
+      "launchTimingMeaning": "--version only, before normal initialization; fresh then cached single-file extraction, not agent/gateway startup.",
+      "mode": "trimmed",
+      "productVersion": "0.1.1-beta.3",
+      "publishedNuGetPackageNodesWithAssets": 31,
+      "publishedRuntimeGraphAssetEntryCount": 83,
+      "publishedRuntimeGraphNodeCount": 37,
+      "publishedRuntimeGraphNodesByType": {
+        "package": 32,
+        "project": 4,
+        "runtimepack": 1
+      },
+      "residentMemory": "not measured",
+      "restoredPackageCount": 54,
+      "restoredProjectGraphCount": 4,
+      "restoredProjectReferenceCount": 3,
+      "restoredTarget": "net10.0/linux-x64",
+      "runner": {
+        "GITHUB_RUN_ATTEMPT": "1",
+        "GITHUB_RUN_ID": "37743230006",
+        "ImageOS": "ubuntu24",
+        "ImageVersion": "20260927.320.1",
+        "RUNNER_ARCH": "X64",
+        "RUNNER_OS": "Linux"
+      },
+      "runtime": "linux-x64",
+      "sourceSha": "8047ce86784a581bc99634503eab428817105a9b",
+      "stages": {
+        "launch-cached": {
+          "exitCode": 0,
+          "seconds": 0.126
+        },
+        "launch-fresh": {
+          "exitCode": 0,
+          "seconds": 0.178
+        },
+        "package": {
+          "exitCode": 0,
+          "seconds": 0.722
+        },
+        "publish": {
+          "exitCode": 0,
+          "seconds": 27.979
+        },
+        "restore": {
+          "exitCode": 0,
+          "seconds": 1.597
+        },
+        "sbom": {
+          "exitCode": 0,
+          "seconds": 0.103
+        },
+        "toolchain": {
+          "exitCode": 0,
+          "seconds": 0.214
+        },
+        "verify": {
+          "exitCode": 0,
+          "seconds": 0.51
+        },
+        "verify-content": {
+          "exitCode": 0,
+          "seconds": 0.037
+        }
+      },
+      "startedUtc": "2026-10-08T07:26:52.248241+00:00",
+      "warningsByCode": {
+        "IL2026": 466,
+        "IL2072": 8,
+        "IL2075": 4,
+        "IL3050": 354
+      }
+    },
+    {
+      "agentInitialization": "not measured",
+      "archiveBytes": 67079198,
+      "archiveName": "netratel-client-0.1.1-beta.3-win-x64.zip",
+      "archiveSha256": "de67891bda587dc9a553326a21a8b6e10857109b6f943487eae15d3eb8db9a5c",
+      "cacheConditions": "Fresh source/mode/RID intermediates; shared runner NuGet cache, sequential A/B/C order.",
+      "capturedPrebundleInputBytes": 166450448,
+      "capturedPrebundleInputCount": 626,
+      "declaredDirectPackageReferenceCount": 24,
+      "distributionFileCount": 11,
+      "dotnetSdkVersion": "10.0.401",
+      "error": "Command '['bash', 'D:\\\\a\\\\netratel\\\\netratel\\\\client-baseline\\\\tools\\\\ci\\\\verify-client-release-artifact.sh', '--artifacts', 'D:\\\\a\\\\netratel\\\\netratel\\\\TestResults\\\\client-measurement\\\\baseline\\\\win-x64\\\\artifacts', '--version', '0.1.1-beta.3', '--runtime', 'win-x64', '--extension', 'zip', '--integrity-only']' returned non-zero exit status 1.",
+      "evaluatedProperties": {
+        "BaseIntermediateOutputPath": "D:\\a\\_temp\\client-measurement\\b2a07e8a32d59539431d8040f4e31654f9e3f0f7\\untrimmed\\win-x64\\build\\obj\\NetRatel.Client\\",
+        "EnableAotAnalyzer": "",
+        "EnableCompressionInSingleFile": "true",
+        "EnableTrimAnalyzer": "",
+        "IncludeAllContentForSelfExtract": "true",
+        "IncludeNativeLibrariesForSelfExtract": "true",
+        "IntermediateOutputPath": "D:\\a\\_temp\\client-measurement\\b2a07e8a32d59539431d8040f4e31654f9e3f0f7\\untrimmed\\win-x64\\build\\obj\\NetRatel.Client\\release_win-x64\\",
+        "ProjectAssetsFile": "D:\\a\\_temp\\client-measurement\\b2a07e8a32d59539431d8040f4e31654f9e3f0f7\\untrimmed\\win-x64\\build\\obj\\NetRatel.Client\\project.assets.json",
+        "PublishAot": "false",
+        "PublishSingleFile": "true",
+        "PublishTrimmed": "false",
+        "RuntimeIdentifier": "win-x64",
+        "SelfContained": "true",
+        "TargetPath": "D:\\a\\_temp\\client-measurement\\b2a07e8a32d59539431d8040f4e31654f9e3f0f7\\untrimmed\\win-x64\\build\\bin\\NetRatel.Client\\release_win-x64\\NetRatel.Client.dll",
+        "TrimMode": "",
+        "TrimmerSingleWarn": ""
+      },
+      "evidenceSha256": {
+        "distribution-inventory.json": "a7d9bb7ab1cdb65d0c859fcc613a0042d638e60d40c6f2b574aee52cb52a88e4",
+        "metrics.json": "611db3b0d54009ded09c717232f13059c85093f1c253d7ea94b1e124007267dc",
+        "publish-input-inventory.json": "ee237366b4783e01151973ffd422aea2cc3f5f5ce8d230f7eeb2079dbe887c18",
+        "restored-graphs/obj/NetRatel.AgentGateway.Contracts/project.assets.json": "021beb879b1f703d121818deac7b02e2fc1e5547b07e462b9472685e23842ab4",
+        "restored-graphs/obj/NetRatel.Application/project.assets.json": "b477b1012425be383aa56eee75925de2c523444eedb0617ff40dbb5c342f8b9a",
+        "restored-graphs/obj/NetRatel.Client/project.assets.json": "c09e443ee49d37df2324ee20cefb0cd4077ff46d29828503a213b149fe61263f",
+        "restored-graphs/obj/NetRatel.Infrastructure/project.assets.json": "7d01b0f97cd493985c6001ac0d501a77dba27f4d4884325d392487fc772a5c7f",
+        "restored-graphs/obj/NetRatel.Shared/project.assets.json": "bfc840d27fe5613c89a9c3380a7f491f43b8705a8a18b1936cd0b1809bb523a8",
+        "runtime-package-inventory.json": "ca22feea71d23dfe1be1f9343f5fab72abe9336f0e1598dae1ab36e83eff3269"
+      },
+      "executableBytes": 71848455,
+      "exitCode": 1,
+      "extractedBytes": 77435837,
+      "failureKind": "artifact integrity",
+      "failureStage": "verify",
+      "finishedUtc": "2026-10-08T07:27:29.129762+00:00",
+      "functionalAcceptance": "pending owner testing",
+      "gatewayReady": "not measured",
+      "inventoryAvailability": {
+        "capturedPrebundleInputs": true,
+        "distributionFiles": true,
+        "publishedRuntimeGraph": true,
+        "restoredClosure": true
+      },
+      "label": "baseline",
+      "launchTimingMeaning": null,
+      "mode": "untrimmed",
+      "productVersion": "0.1.1-beta.3",
+      "publishedNuGetPackageNodesWithAssets": 147,
+      "publishedRuntimeGraphAssetEntryCount": 427,
+      "publishedRuntimeGraphNodeCount": 156,
+      "publishedRuntimeGraphNodesByType": {
+        "package": 150,
+        "project": 5,
+        "runtimepack": 1
+      },
+      "residentMemory": "not measured",
+      "restoredPackageCount": 177,
+      "restoredProjectGraphCount": 5,
+      "restoredProjectReferenceCount": 4,
+      "restoredTarget": "net10.0/win-x64",
+      "runner": {
+        "GITHUB_RUN_ATTEMPT": "1",
+        "GITHUB_RUN_ID": "37743230006",
+        "ImageOS": "win25-vs2026",
+        "ImageVersion": "20260925.250.1",
+        "RUNNER_ARCH": "X64",
+        "RUNNER_OS": "Windows"
+      },
+      "runtime": "win-x64",
+      "sourceSha": "b2a07e8a32d59539431d8040f4e31654f9e3f0f7",
+      "stages": {
+        "package": {
+          "exitCode": 0,
+          "seconds": 3.241
+        },
+        "publish": {
+          "exitCode": 0,
+          "seconds": 76.96
+        },
+        "restore": {
+          "exitCode": 0,
+          "seconds": 68.236
+        },
+        "sbom": {
+          "exitCode": 0,
+          "seconds": 0.625
+        },
+        "toolchain": {
+          "exitCode": 0,
+          "seconds": 3.331
+        },
+        "verify": {
+          "exitCode": 1,
+          "seconds": 0.056
+        }
+      },
+      "startedUtc": "2026-10-08T07:24:51.436996+00:00",
+      "warningsByCode": {}
+    },
+    {
+      "agentInitialization": "not measured",
+      "archiveBytes": 42764753,
+      "archiveName": "netratel-client-0.1.1-beta.3-win-x64.zip",
+      "archiveSha256": "07c9d217cbe62c89e7512359f67da3c4230f2e1c6152b9dc424485d6c3aac6a3",
+      "cacheConditions": "Fresh source/mode/RID intermediates; shared runner NuGet cache, sequential A/B/C order.",
+      "capturedPrebundleInputBytes": 96167901,
+      "capturedPrebundleInputCount": 240,
+      "declaredDirectPackageReferenceCount": 13,
+      "distributionFileCount": 10,
+      "dotnetSdkVersion": "10.0.401",
+      "error": "Command '['bash', 'D:\\\\a\\\\netratel\\\\netratel\\\\tools\\\\ci\\\\verify-client-release-artifact.sh', '--artifacts', 'D:\\\\a\\\\netratel\\\\netratel\\\\TestResults\\\\client-measurement\\\\head\\\\win-x64\\\\artifacts', '--version', '0.1.1-beta.3', '--runtime', 'win-x64', '--extension', 'zip', '--integrity-only']' returned non-zero exit status 1.",
+      "evaluatedProperties": {
+        "BaseIntermediateOutputPath": "D:\\a\\_temp\\client-measurement\\8047ce86784a581bc99634503eab428817105a9b\\untrimmed\\win-x64\\build\\obj\\NetRatel.Client\\",
+        "EnableAotAnalyzer": "",
+        "EnableCompressionInSingleFile": "true",
+        "EnableTrimAnalyzer": "",
+        "IncludeAllContentForSelfExtract": "true",
+        "IncludeNativeLibrariesForSelfExtract": "true",
+        "IntermediateOutputPath": "D:\\a\\_temp\\client-measurement\\8047ce86784a581bc99634503eab428817105a9b\\untrimmed\\win-x64\\build\\obj\\NetRatel.Client\\release_win-x64\\",
+        "ProjectAssetsFile": "D:\\a\\_temp\\client-measurement\\8047ce86784a581bc99634503eab428817105a9b\\untrimmed\\win-x64\\build\\obj\\NetRatel.Client\\project.assets.json",
+        "PublishAot": "false",
+        "PublishSingleFile": "true",
+        "PublishTrimmed": "false",
+        "RuntimeIdentifier": "win-x64",
+        "SelfContained": "true",
+        "TargetPath": "D:\\a\\_temp\\client-measurement\\8047ce86784a581bc99634503eab428817105a9b\\untrimmed\\win-x64\\build\\bin\\NetRatel.Client\\release_win-x64\\NetRatel.Client.dll",
+        "TrimMode": "",
+        "TrimmerSingleWarn": ""
+      },
+      "evidenceSha256": {
+        "distribution-inventory.json": "2fe57ab219d29766a0bb6ba29ba0d7569115596f92f11edc990a90950f484fff",
+        "metrics.json": "d2ab75efb72b5883606f543b26f64819acafbfae0c2bdd6976f37c3b998794ce",
+        "publish-input-inventory.json": "96bb9e88e5bf3266b15e693faf66e7c44cc6c8ba7e46b75e09abc766c6f037c0",
+        "restored-graphs/obj/NetRatel.AgentGateway.Contracts/project.assets.json": "8fb2c5a88a4ff67d2630a18d1813dcb9553332bf89591594a5558eb3c00c3537",
+        "restored-graphs/obj/NetRatel.Application/project.assets.json": "dbf5f91ce8d24ab9da24a2dfbc18871e2cb4028180f45ee14dbfdce21e23c4e0",
+        "restored-graphs/obj/NetRatel.Client/project.assets.json": "a28f646001791e4b23159525e8367294ad600bafe23a7df889dc252872c66ffc",
+        "restored-graphs/obj/NetRatel.Shared/project.assets.json": "3b6d99d353e3cd5f2e2208aefcc9b33f1c79be89def9c5ac802a9e3fe36fd09f",
+        "runtime-package-inventory.json": "b441858cdd9fa03e9620de8d1df190edb9651ba76b2e711b605bc74c292a10ea"
+      },
+      "executableBytes": 47828775,
+      "exitCode": 1,
+      "extractedBytes": 50045941,
+      "failureKind": "artifact integrity",
+      "failureStage": "verify",
+      "finishedUtc": "2026-10-08T07:27:54.493644+00:00",
+      "functionalAcceptance": "pending owner testing",
+      "gatewayReady": "not measured",
+      "inventoryAvailability": {
+        "capturedPrebundleInputs": true,
+        "distributionFiles": true,
+        "publishedRuntimeGraph": true,
+        "restoredClosure": true
+      },
+      "label": "head",
+      "launchTimingMeaning": null,
+      "mode": "untrimmed",
+      "productVersion": "0.1.1-beta.3",
+      "publishedNuGetPackageNodesWithAssets": 50,
+      "publishedRuntimeGraphAssetEntryCount": 229,
+      "publishedRuntimeGraphNodeCount": 55,
+      "publishedRuntimeGraphNodesByType": {
+        "package": 50,
+        "project": 4,
+        "runtimepack": 1
+      },
+      "residentMemory": "not measured",
+      "restoredPackageCount": 54,
+      "restoredProjectGraphCount": 4,
+      "restoredProjectReferenceCount": 3,
+      "restoredTarget": "net10.0/win-x64",
+      "runner": {
+        "GITHUB_RUN_ATTEMPT": "1",
+        "GITHUB_RUN_ID": "37743230006",
+        "ImageOS": "win25-vs2026",
+        "ImageVersion": "20260925.250.1",
+        "RUNNER_ARCH": "X64",
+        "RUNNER_OS": "Windows"
+      },
+      "runtime": "win-x64",
+      "sourceSha": "8047ce86784a581bc99634503eab428817105a9b",
+      "stages": {
+        "package": {
+          "exitCode": 0,
+          "seconds": 2.312
+        },
+        "publish": {
+          "exitCode": 0,
+          "seconds": 17.495
+        },
+        "restore": {
+          "exitCode": 0,
+          "seconds": 1.552
+        },
+        "sbom": {
+          "exitCode": 0,
+          "seconds": 0.406
+        },
+        "toolchain": {
+          "exitCode": 0,
+          "seconds": 1.953
+        },
+        "verify": {
+          "exitCode": 1,
+          "seconds": 0.045
+        }
+      },
+      "startedUtc": "2026-10-08T07:27:29.318043+00:00",
+      "warningsByCode": {}
+    },
+    {
+      "agentInitialization": "not measured",
+      "archiveBytes": 65800995,
+      "archiveName": "netratel-client-0.1.1-beta.3-osx-arm64.tar.gz",
+      "archiveSha256": "a5ed68e4b18bdf6cd64559a35281ec9cb1341bc3ff1d67e61d050521fa0b67fd",
+      "cacheConditions": "Fresh source/mode/RID intermediates; shared runner NuGet cache, sequential A/B/C order.",
+      "capturedPrebundleInputBytes": 176093228,
+      "capturedPrebundleInputCount": 613,
+      "declaredDirectPackageReferenceCount": 24,
+      "distributionFileCount": 11,
+      "dotnetSdkVersion": "10.0.401",
+      "error": null,
+      "evaluatedProperties": {
+        "BaseIntermediateOutputPath": "/Users/runner/work/_temp/client-measurement/b2a07e8a32d59539431d8040f4e31654f9e3f0f7/untrimmed/osx-arm64/build/obj/NetRatel.Client/",
+        "EnableAotAnalyzer": "",
+        "EnableCompressionInSingleFile": "true",
+        "EnableTrimAnalyzer": "",
+        "IncludeAllContentForSelfExtract": "true",
+        "IncludeNativeLibrariesForSelfExtract": "true",
+        "IntermediateOutputPath": "/Users/runner/work/_temp/client-measurement/b2a07e8a32d59539431d8040f4e31654f9e3f0f7/untrimmed/osx-arm64/build/obj/NetRatel.Client/release_osx-arm64/",
+        "ProjectAssetsFile": "/Users/runner/work/_temp/client-measurement/b2a07e8a32d59539431d8040f4e31654f9e3f0f7/untrimmed/osx-arm64/build/obj/NetRatel.Client/project.assets.json",
+        "PublishAot": "false",
+        "PublishSingleFile": "true",
+        "PublishTrimmed": "false",
+        "RuntimeIdentifier": "osx-arm64",
+        "SelfContained": "true",
+        "TargetPath": "/Users/runner/work/_temp/client-measurement/b2a07e8a32d59539431d8040f4e31654f9e3f0f7/untrimmed/osx-arm64/build/bin/NetRatel.Client/release_osx-arm64/NetRatel.Client.dll",
+        "TrimMode": "",
+        "TrimmerSingleWarn": ""
+      },
+      "evidenceSha256": {
+        "distribution-inventory.json": "df9f243e6ff0a4ba2a968607729286a3ab2a5738ef6b556363ac35c2b392adb8",
+        "metrics.json": "dd1c170bab975ae9fe78605197cbebc3111607d53c56b5827c19d62f4e2e3421",
+        "publish-input-inventory.json": "502b3471f024fb43b5f4f2e29df179bb11fc8ee7cdccca7b6be6ac2e454f6ba2",
+        "restored-graphs/obj/NetRatel.AgentGateway.Contracts/project.assets.json": "5c6b146a0e39e58a631b64326c2f714a34c41da3567b9999c23a9fe098682f36",
+        "restored-graphs/obj/NetRatel.Application/project.assets.json": "f7c8315c48469dcd83941c4ab473172be0ad519d2251da97b09b391fd80bc7f0",
+        "restored-graphs/obj/NetRatel.Client/project.assets.json": "7cf8b6c5f07818b26d746136d0377c8875bb1d51830ae520fa90843f6062c7f8",
+        "restored-graphs/obj/NetRatel.Infrastructure/project.assets.json": "1d9d24a926240e652f8cf346e6d752993b5333d8f51693779e29381b10af484b",
+        "restored-graphs/obj/NetRatel.Shared/project.assets.json": "185f7563f7a1ce9d0b37d4e716a0a92f3bee0c5db06e9f6b97b1487fed779cb5",
+        "runtime-package-inventory.json": "9a2bd9d02011de5ead48642f73d02d825e5d0691bd827acd80238f54bc2cbc30"
+      },
+      "executableBytes": 71713456,
+      "exitCode": 0,
+      "extractedBytes": 77247827,
+      "failureKind": null,
+      "failureStage": null,
+      "finishedUtc": "2026-10-08T07:26:39.160262+00:00",
+      "functionalAcceptance": "pending owner testing",
+      "gatewayReady": "not measured",
+      "inventoryAvailability": {
+        "capturedPrebundleInputs": true,
+        "distributionFiles": true,
+        "publishedRuntimeGraph": true,
+        "restoredClosure": true
+      },
+      "label": "baseline",
+      "launchTimingMeaning": "--version only, before normal initialization; fresh then cached single-file extraction, not agent/gateway startup.",
+      "mode": "untrimmed",
+      "productVersion": "0.1.1-beta.3",
+      "publishedNuGetPackageNodesWithAssets": 141,
+      "publishedRuntimeGraphAssetEntryCount": 414,
+      "publishedRuntimeGraphNodeCount": 149,
+      "publishedRuntimeGraphNodesByType": {
+        "package": 143,
+        "project": 5,
+        "runtimepack": 1
+      },
+      "residentMemory": "not measured",
+      "restoredPackageCount": 177,
+      "restoredProjectGraphCount": 5,
+      "restoredProjectReferenceCount": 4,
+      "restoredTarget": "net10.0/osx-arm64",
+      "runner": {
+        "GITHUB_RUN_ATTEMPT": "1",
+        "GITHUB_RUN_ID": "37743230006",
+        "ImageOS": "macos26",
+        "ImageVersion": "20260907.0351.1",
+        "RUNNER_ARCH": "ARM64",
+        "RUNNER_OS": "macOS"
+      },
+      "runtime": "osx-arm64",
+      "sourceSha": "b2a07e8a32d59539431d8040f4e31654f9e3f0f7",
+      "stages": {
+        "launch-cached": {
+          "exitCode": 0,
+          "seconds": 0.085
+        },
+        "launch-fresh": {
+          "exitCode": 0,
+          "seconds": 1.109
+        },
+        "package": {
+          "exitCode": 0,
+          "seconds": 2.444
+        },
+        "publish": {
+          "exitCode": 0,
+          "seconds": 72.846
+        },
+        "restore": {
+          "exitCode": 0,
+          "seconds": 15.752
+        },
+        "sbom": {
+          "exitCode": 0,
+          "seconds": 0.921
+        },
+        "toolchain": {
+          "exitCode": 0,
+          "seconds": 0.515
+        },
+        "verify": {
+          "exitCode": 0,
+          "seconds": 1.061
+        }
+      },
+      "startedUtc": "2026-10-08T07:25:01.957708+00:00",
+      "warningsByCode": {}
+    },
+    {
+      "agentInitialization": "not measured",
+      "archiveBytes": 40413780,
+      "archiveName": "netratel-client-0.1.1-beta.3-osx-arm64.tar.gz",
+      "archiveSha256": "db9375249c8e4299385ababaaaac1de260c262d00522a60f8c0afd9276b0fd91",
+      "cacheConditions": "Fresh source/mode/RID intermediates; shared runner NuGet cache, sequential A/B/C order.",
+      "capturedPrebundleInputBytes": 101107174,
+      "capturedPrebundleInputCount": 239,
+      "declaredDirectPackageReferenceCount": 13,
+      "distributionFileCount": 10,
+      "dotnetSdkVersion": "10.0.401",
+      "error": null,
+      "evaluatedProperties": {
+        "BaseIntermediateOutputPath": "/Users/runner/work/_temp/client-measurement/8047ce86784a581bc99634503eab428817105a9b/untrimmed/osx-arm64/build/obj/NetRatel.Client/",
+        "EnableAotAnalyzer": "",
+        "EnableCompressionInSingleFile": "true",
+        "EnableTrimAnalyzer": "",
+        "IncludeAllContentForSelfExtract": "true",
+        "IncludeNativeLibrariesForSelfExtract": "true",
+        "IntermediateOutputPath": "/Users/runner/work/_temp/client-measurement/8047ce86784a581bc99634503eab428817105a9b/untrimmed/osx-arm64/build/obj/NetRatel.Client/release_osx-arm64/",
+        "ProjectAssetsFile": "/Users/runner/work/_temp/client-measurement/8047ce86784a581bc99634503eab428817105a9b/untrimmed/osx-arm64/build/obj/NetRatel.Client/project.assets.json",
+        "PublishAot": "false",
+        "PublishSingleFile": "true",
+        "PublishTrimmed": "false",
+        "RuntimeIdentifier": "osx-arm64",
+        "SelfContained": "true",
+        "TargetPath": "/Users/runner/work/_temp/client-measurement/8047ce86784a581bc99634503eab428817105a9b/untrimmed/osx-arm64/build/bin/NetRatel.Client/release_osx-arm64/NetRatel.Client.dll",
+        "TrimMode": "",
+        "TrimmerSingleWarn": ""
+      },
+      "evidenceSha256": {
+        "distribution-inventory.json": "196426712cbc434faffb32bed3e0c44e0fbfb1867dd97c7d105802bec7be6e9e",
+        "metrics.json": "e8fab1214a3a246fb605e854ae5f27070a699d3b1cb3548ec983bc63d597fffa",
+        "publish-input-inventory.json": "15f8a5897407a3a9d8b2df8cede9e1f1516898cbec12762d985458b744864074",
+        "restored-graphs/obj/NetRatel.AgentGateway.Contracts/project.assets.json": "d4d83eaf5679dd3fa57b64b38ca1b7f569a94f0d27741f52fd46321733fd81e1",
+        "restored-graphs/obj/NetRatel.Application/project.assets.json": "4e0849ae18a70fa024ad24a9507fcb5cd8bdf32a68d48580c112fdf40f161843",
+        "restored-graphs/obj/NetRatel.Client/project.assets.json": "b125e69e12defb27bdb98a79ecf9324aa75de2fed3e5aad377f3c9fe297f7469",
+        "restored-graphs/obj/NetRatel.Shared/project.assets.json": "1cb3a0daefbab17346cd1e6859ab4ce422468b5c1e624a6f6c78fd6180efd9a5",
+        "runtime-package-inventory.json": "8c405a7b4198392612e22c8bf69e472bf176891c8291421b847459ae431769d1"
+      },
+      "executableBytes": 46586480,
+      "exitCode": 0,
+      "extractedBytes": 48763087,
+      "failureKind": null,
+      "failureStage": null,
+      "finishedUtc": "2026-10-08T07:27:07.939268+00:00",
+      "functionalAcceptance": "pending owner testing",
+      "gatewayReady": "not measured",
+      "inventoryAvailability": {
+        "capturedPrebundleInputs": true,
+        "distributionFiles": true,
+        "publishedRuntimeGraph": true,
+        "restoredClosure": true
+      },
+      "label": "head",
+      "launchTimingMeaning": "--version only, before normal initialization; fresh then cached single-file extraction, not agent/gateway startup.",
+      "mode": "untrimmed",
+      "productVersion": "0.1.1-beta.3",
+      "publishedNuGetPackageNodesWithAssets": 50,
+      "publishedRuntimeGraphAssetEntryCount": 228,
+      "publishedRuntimeGraphNodeCount": 55,
+      "publishedRuntimeGraphNodesByType": {
+        "package": 50,
+        "project": 4,
+        "runtimepack": 1
+      },
+      "residentMemory": "not measured",
+      "restoredPackageCount": 54,
+      "restoredProjectGraphCount": 4,
+      "restoredProjectReferenceCount": 3,
+      "restoredTarget": "net10.0/osx-arm64",
+      "runner": {
+        "GITHUB_RUN_ATTEMPT": "1",
+        "GITHUB_RUN_ID": "37743230006",
+        "ImageOS": "macos26",
+        "ImageVersion": "20260907.0351.1",
+        "RUNNER_ARCH": "ARM64",
+        "RUNNER_OS": "macOS"
+      },
+      "runtime": "osx-arm64",
+      "sourceSha": "8047ce86784a581bc99634503eab428817105a9b",
+      "stages": {
+        "launch-cached": {
+          "exitCode": 0,
+          "seconds": 0.068
+        },
+        "launch-fresh": {
+          "exitCode": 0,
+          "seconds": 0.506
+        },
+        "package": {
+          "exitCode": 0,
+          "seconds": 1.651
+        },
+        "publish": {
+          "exitCode": 0,
+          "seconds": 22.19
+        },
+        "restore": {
+          "exitCode": 0,
+          "seconds": 2.061
+        },
+        "sbom": {
+          "exitCode": 0,
+          "seconds": 0.247
+        },
+        "toolchain": {
+          "exitCode": 0,
+          "seconds": 0.223
+        },
+        "verify": {
+          "exitCode": 0,
+          "seconds": 0.642
+        },
+        "verify-content": {
+          "exitCode": 0,
+          "seconds": 0.064
+        }
+      },
+      "startedUtc": "2026-10-08T07:26:39.380650+00:00",
+      "warningsByCode": {}
+    }
+  ],
+  "actionsRun": "https://github.com/BostonTechnologies/netratel/actions/runs/37743230006",
+  "windowsVerification": {
+    "outcome": "Original A/B publish and package succeeded. WSL Bash selection and then CRLF checksum-index handling failed verification. Corrected archive-only verification passed with original bytes and metrics preserved.",
+    "actionsRun": "https://github.com/BostonTechnologies/netratel/actions/runs/37745497650",
+    "receipt": "windows-archive-verification.json"
+  }
+}

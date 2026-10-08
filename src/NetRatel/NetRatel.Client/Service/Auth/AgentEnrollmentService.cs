@@ -1,12 +1,17 @@
+using System;
+using System.Linq;
+using System.Net.Http;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using NetRatel.Application.ClientAuth;
 using NetRatel.Application.Agents;
-using NetRatel.Infrastructure.Services;
+using NetRatel.Shared.Security;
 
-namespace NetRatel.Infrastructure.Auth;
+namespace NetRatel.Client.Service.Auth;
 
 public sealed class AgentEnrollmentService : IAgentEnrollmentService
 {
