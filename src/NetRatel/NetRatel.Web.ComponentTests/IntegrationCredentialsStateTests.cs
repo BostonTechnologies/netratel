@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Reflection;
 using Bunit;
 using AwesomeAssertions;
+using Microsoft.AspNetCore.Components;
 using Microsoft.Extensions.DependencyInjection;
 using MudBlazor.Services;
 using NetRatel.Web.Components.Pages;
@@ -22,6 +23,7 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
         Services.AddMudServices(options => options.PopoverOptions.CheckForPopoverProvider = false);
         using var transport = new CredentialTransport();
         Services.AddSingleton<IHttpClientFactory>(transport);
+        SetRendererInfo(new RendererInfo("Server", true));
         var page = Render<IntegrationCredentials>();
         page.WaitForAssertion(() => Field<object>(page.Instance, "_authority").Should().NotBeNull());
 
@@ -57,6 +59,7 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
         Services.AddMudServices(options => options.PopoverOptions.CheckForPopoverProvider = false);
         using var transport = new CredentialTransport();
         Services.AddSingleton<IHttpClientFactory>(transport);
+        SetRendererInfo(new RendererInfo("Server", true));
         var page = Render<IntegrationCredentials>();
         page.WaitForAssertion(() => Field<object>(page.Instance, "_authority").Should().NotBeNull());
         Call(page.Instance, "OpenCreate");
@@ -78,6 +81,7 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
         Services.AddMudServices(options => options.PopoverOptions.CheckForPopoverProvider = false);
         using var transport = new CredentialTransport();
         Services.AddSingleton<IHttpClientFactory>(transport);
+        SetRendererInfo(new RendererInfo("Server", true));
         var page = Render<IntegrationCredentials>();
         page.WaitForAssertion(() => Field<object>(page.Instance, "_authority").Should().NotBeNull());
         Call(page.Instance, "OpenCreate");
