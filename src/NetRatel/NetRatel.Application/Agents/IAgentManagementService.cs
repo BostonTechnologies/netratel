@@ -38,6 +38,7 @@ public interface IAgentManagementService
 {
     Task<AgentListResponse> ListAsync(int tenantId, AgentListQuery query, CancellationToken ct);
     Task<AgentDetailDto?> GetAsync(int tenantId, Guid agentId, CancellationToken ct);
+    Task ReportIdentityAsync(int tenantId, Guid agentId, string? hostName, string? reportedAddress, CancellationToken ct) => Task.CompletedTask;
     Task DisableAsync(int tenantId, Guid agentId, string reason, string actor, CancellationToken ct);
     Task EnableAsync(int tenantId, Guid agentId, string actor, CancellationToken ct);
     Task DeleteAsync(int tenantId, Guid agentId, string reason, string actor, CancellationToken ct);

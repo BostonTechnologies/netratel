@@ -7,6 +7,8 @@ using NetRatel.Shared.Contracts.Flows;
 using NetRatel.Web.Components.Pages.Flows;
 using NetRatel.Web.Services.Flows;
 using Xunit;
+using MudBlazor;
+using MudBlazor.Services;
 
 namespace NetRatel.Web.ComponentTests;
 
@@ -20,6 +22,8 @@ public sealed class FlowsPageTests : AsyncBunitContext
         var module = JSInterop.SetupModule("./js/flows-editor.js"); module.Mode = JSRuntimeMode.Loose;
         module.Setup<double[]>("geometry", _ => true).SetResult([0, 0, 1000, 800, 1200, 1000]);
         Services.AddSingleton<IFlowApiService>(_api);
+        Services.AddMudServices(options => options.PopoverOptions.CheckForPopoverProvider = false);
+        Render<MudDialogProvider>();
     }
 
     [Theory]

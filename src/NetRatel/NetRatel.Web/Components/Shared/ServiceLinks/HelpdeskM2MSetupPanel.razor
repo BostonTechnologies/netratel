@@ -7,7 +7,7 @@
 @inject HelpdeskM2MApiClient Api
 
 <MudStack Spacing="2" Class="helpdesk-m2m-panel" data-testid="helpdesk-m2m-setup">
-    <MudText Typo="Typo.body2">Allow RatelDesk to call this NetRatel instance using a dedicated service identity.</MudText>
+    <MudText Typo="Typo.body2">1 · Connect   →   2 · Approve   →   3 · Connected</MudText>
     @if (loading) { <MudProgressLinear Indeterminate="true" /> }
     else if (!authority.CanManage)
     {
@@ -15,42 +15,48 @@
     }
     else
     {
+        var currentGuidedOwner = guidedSelectionOwner;
         @if (publicSettingsReady == false)
         {
-            <MudAlert Dense="true" Severity="Severity.Info">Configure the service issuer and confirmed public addresses in the advanced panel below before creating a client or connecting RatelDesk.</MudAlert>
+            <MudAlert Dense="true" Severity="Severity.Info">Complete installation setup below to enable connections. Deployment locks show the setting and repair route.</MudAlert>
         }
-        <ServiceGrantSelector Authority="authority" PresetTenantId="PresetTenantId" Changed="SelectionChanged" Disabled="@(Busy || reveal is not null)" />
+        <MudText Typo="Typo.h6">Connect RatelDesk</MudText>
+        <ServicePublicSettingsPanel Guided="true" ReadyChanged="SettingsReadyChanged" ReciprocalReadyChanged="ReciprocalReadyChanged" BusyChanged="SettingsBusyChanged" Disabled="@(createBusy || reveal is not null)" />
+        <MudCheckBox T="bool" Value="runTasks" ValueChanged="@((bool value) => RunTasksChanged(currentGuidedOwner, value))" Label="Also run approved tasks (optional)" Dense="true" Disabled="@(Busy || reveal is not null)" />
+        <ServiceGrantSelector @key="currentGuidedOwner" Authority="authority" IncidentOnly="@(!runTasks)" PresetTenantId="PresetTenantId" Changed="@((HelpdeskGrantSelection value) => SelectionChanged(currentGuidedOwner, value))" Disabled="@(Busy || reveal is not null)" />
         <MudPaper Outlined="true" Class="pa-3">
             <MudStack Spacing="2">
-                <MudText Typo="Typo.subtitle2">Connect RatelDesk · recommended</MudText>
-                <MudText Typo="Typo.body2">Discover its canonical Web, API and issuer addresses. Each administrator then approves the exact two directional grants.</MudText>
+                <MudText Typo="Typo.subtitle2">Create helpdesk incidents from monitoring alerts</MudText>
+                <MudText Typo="Typo.body2">Enter its web address, sign in there and approve the connection. You return here automatically.</MudText>
                 @if (reciprocalReady is false)
                 {
-                    <MudAlert Dense="true" Severity="Severity.Info" data-testid="helpdesk-guided-unavailable">Reciprocal setup is disabled or unavailable under the current service settings. An enabled issuer may still permit manual service clients.</MudAlert>
+                    <MudAlert Dense="true" Severity="Severity.Info" data-testid="helpdesk-guided-unavailable">Connections are disabled. Use Enable connections above, or ask your deployment administrator to enable ServiceLinks:Enabled when locked.</MudAlert>
                 }
-                <MudTextField Label="RatelDesk Web base URL" @bind-Value="peerUrl" Immediate="true" Variant="Variant.Outlined" Margin="Margin.Dense" Placeholder="https://helpdesk.example.com" Disabled="@(Busy || reveal is not null)" data-testid="helpdesk-peer-url" />
-                <MudText Typo="Typo.caption">NetRatel → RatelDesk: approved incident creation, receipt reconciliation and target validation. Orchestration invocation also requires the correlated task callback.</MudText>
+                <MudTextField Label="RatelDesk web address" @bind-Value="peerUrl" Immediate="true" Variant="Variant.Outlined" Margin="Margin.Dense" Placeholder="https://helpdesk.example.com" Disabled="@(Busy || reveal is not null)" data-testid="helpdesk-peer-url" />
+
                 <form method="post" action="/account/integration-credentials/link/start" data-enhance="false" data-testid="helpdesk-link-start">
                     <AntiforgeryToken />
                     <input type="hidden" name="peerWebBaseUrl" value="@peerUrl" />
+                    <input type="hidden" name="returnUrl" value="@ReturnUrl" />
                     <input type="hidden" name="localTenantId" value="@selection.TenantId?.ToString(CultureInfo.InvariantCulture)" />
                     <input type="hidden" name="requestedResponderTenantId" value="@PresetPeerOrganizationId" />
                     @foreach (var scope in selection.Scopes) { <input type="hidden" name="inboundScopes" value="@scope" /> }
                     @foreach (var resource in selection.ResourceIds) { <input type="hidden" name="resourceIds" value="@resource" /> }
                     @foreach (var definition in selection.RequestDefinitionIds) { <input type="hidden" name="requestDefinitionIds" value="@definition" /> }
                     @foreach (var scope in OutboundScopes) { <input type="hidden" name="outboundScopes" value="@scope" /> }
-                    <MudButton ButtonType="ButtonType.Submit" Variant="Variant.Filled" Color="Color.Primary" Disabled="@(!CanStart)" data-testid="helpdesk-connect">Continue to RatelDesk</MudButton>
+                    <MudButton ButtonType="ButtonType.Submit" Variant="Variant.Filled" Color="Color.Primary" Disabled="@(!CanStart)" data-testid="helpdesk-connect">Connect RatelDesk</MudButton>
                 </form>
-                <MudText Typo="Typo.caption">Continue starts discovery. It creates no business authority.</MudText>
+                @if (!selection.IsValid) { <MudText Typo="Typo.caption">Choose a tenant to continue. For approved tasks, also select explicit resources and request definitions.</MudText> }
             </MudStack>
         </MudPaper>
         <MudExpansionPanels Elevation="0"><MudExpansionPanel Text="Manual service credentials (advanced)" data-testid="helpdesk-manual-settings">
             <MudStack Spacing="2">
                 <MudAlert Severity="Severity.Info" Dense="true">This creates the inbound RatelDesk → NetRatel client only. Configure the separate RatelDesk-issued outbound credential through the existing connection profile.</MudAlert>
+                <ServiceGrantSelector TestIdPrefix="manual-helpdesk" Authority="authority" PresetTenantId="PresetTenantId" Changed="ManualSelectionChanged" Disabled="@(Busy || reveal is not null)" />
                 <MudTextField Label="Service name" @bind-Value="name" Immediate="true" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="@(Busy || reveal is not null)" data-testid="helpdesk-service-name" />
                 <MudTextField Label="Approved RatelDesk instance ID" @bind-Value="PeerInstanceId" Immediate="true" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="@(Busy || reveal is not null)" data-testid="helpdesk-peer-instance" />
                 <MudTextField Label="Approved RatelDesk organization ID" @bind-Value="PeerTenantId" Immediate="true" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="@(Busy || reveal is not null)" data-testid="helpdesk-peer-tenant" />
-                <MudText Typo="Typo.body2">Grant: tenant @selection.TenantId · @string.Join(", ", selection.Scopes). Resources: @SetLabel(selection.ResourceIds). Request definitions: @SetLabel(selection.RequestDefinitionIds).</MudText>
+                <MudText Typo="Typo.body2">Grant: tenant @manualSelection.TenantId · @string.Join(", ", manualSelection.Scopes). Resources: @SetLabel(manualSelection.ResourceIds). Request definitions: @SetLabel(manualSelection.RequestDefinitionIds).</MudText>
                 <MudCheckBox T="bool" @bind-Value="manualConfirmed" Label="I approve this exact peer, tenant and resource grant" Disabled="@(Busy || reveal is not null)" Dense="true" />
                 <MudButton OnClick="CreateAsync" Variant="Variant.Filled" Color="Color.Primary" Disabled="@(!CanCreate)" data-testid="helpdesk-create-service">Create and reveal service client</MudButton>
                 @if (reveal is not null)
@@ -59,8 +65,8 @@
                 }
             </MudStack>
         </MudExpansionPanel></MudExpansionPanels>
-        <ServiceLinkSourceIdentity />
-        <ServicePublicSettingsPanel ReadyChanged="SettingsReadyChanged" ReciprocalReadyChanged="ReciprocalReadyChanged" BusyChanged="SettingsBusyChanged" Disabled="@(createBusy || reveal is not null)" />
+        <ServiceLinkSourceIdentity Guided="true" />
+
     }
     @if (error is not null) { <MudAlert Dense="true" Severity="Severity.Warning" data-testid="helpdesk-service-error">@error</MudAlert> }
 </MudStack>
@@ -68,14 +74,17 @@
 @code {
     [Parameter] public EventCallback<bool> BusyChanged { get; set; }
     [Parameter] public EventCallback<bool> SecretVisibleChanged { get; set; }
+    [Parameter] public string? ReturnUrl { get; set; }
     [Parameter] public string? PresetPeerUrl { get; set; }
     [Parameter] public int? PresetTenantId { get; set; }
     [Parameter] public string? PresetPeerOrganizationId { get; set; }
     private ServiceClientManagementAuthority authority = new(false, []);
-    private HelpdeskGrantSelection selection = new(null, [], [], []);
+    private HelpdeskGrantSelection selection = new(null, [], [], []), manualSelection = new(null, [], [], []);
     private ServiceClientReveal? reveal;
     private string peerUrl = "", name = "", peerInstanceId = "", peerTenantId = "";
     private string? error;
+    private bool runTasks;
+    private object guidedSelectionOwner = new();
     private bool loading = true, createBusy, settingsBusy, manualConfirmed, disposed;
     private bool Busy => createBusy || settingsBusy;
     private string PeerInstanceId { get => peerInstanceId; set { if (peerInstanceId != value) manualConfirmed = false; peerInstanceId = value; } }
@@ -85,17 +94,30 @@
     private string[] OutboundScopes => selection.Scopes.Contains("netratel.orchestration.invoke")
         ? ["rateldesk.incidents.create", "rateldesk.incident-receipts.read", "rateldesk.incident-targets.read", "rateldesk.orchestration.callback"]
         : ["rateldesk.incidents.create", "rateldesk.incident-receipts.read", "rateldesk.incident-targets.read"];
-    private bool CanStart => publicSettingsReady is not false && reciprocalReady is true && !Busy && reveal is null && selection.IsValid && Uri.TryCreate(peerUrl, UriKind.Absolute, out var uri) && uri.Scheme is "https" or "http" && string.IsNullOrEmpty(uri.UserInfo) && string.IsNullOrEmpty(uri.Query) && string.IsNullOrEmpty(uri.Fragment);
-    private bool CanCreate => publicSettingsReady is not false && !Busy && reveal is null && selection.IsValid && manualConfirmed && !string.IsNullOrWhiteSpace(name) && name.Length <= 128 && !string.IsNullOrWhiteSpace(peerInstanceId) && !string.IsNullOrWhiteSpace(peerTenantId);
+    private bool CanStart => !disposed && publicSettingsReady is not false && reciprocalReady is true && !Busy && reveal is null && selection.IsValid && Uri.TryCreate(peerUrl, UriKind.Absolute, out var uri) && uri.Scheme is "https" or "http" && string.IsNullOrEmpty(uri.UserInfo) && string.IsNullOrEmpty(uri.Query) && string.IsNullOrEmpty(uri.Fragment);
+    private bool CanCreate => !disposed && publicSettingsReady is not false && !Busy && reveal is null && manualSelection.IsValid && manualConfirmed && !string.IsNullOrWhiteSpace(name) && name.Length <= 128 && !string.IsNullOrWhiteSpace(peerInstanceId) && !string.IsNullOrWhiteSpace(peerTenantId);
     protected override async Task OnInitializedAsync()
     {
         if (Uri.TryCreate(PresetPeerUrl, UriKind.Absolute, out _)) peerUrl = PresetPeerUrl!;
         try { authority = await Api.GetAuthorityAsync(lifetime.Token); reciprocalReady = authority.ReciprocalLinkEnabled; }
-        catch (ServiceAdministrationException exception) when (exception.StatusCode is System.Net.HttpStatusCode.Forbidden or System.Net.HttpStatusCode.Unauthorized) { }
+        catch (ServiceAdministrationException exception) when (exception.StatusCode is System.Net.HttpStatusCode.Forbidden or System.Net.HttpStatusCode.Unauthorized) { authority = new(false, []); }
         catch (Exception exception) when (exception is OperationCanceledException or HttpRequestException or JsonException or InvalidDataException or ServiceAdministrationException) { error = "Current service-management authority is unavailable. Reload before creating a client."; }
         finally { loading = false; }
     }
-    private void SelectionChanged(HelpdeskGrantSelection value) { selection = value; manualConfirmed = false; }
+    private void ManualSelectionChanged(HelpdeskGrantSelection value) { manualSelection = value; manualConfirmed = false; }
+    private bool CanEditGuidedSelection(object owner) => !disposed && !Busy && reveal is null && ReferenceEquals(owner, guidedSelectionOwner);
+    private void RunTasksChanged(object owner, bool value)
+    {
+        if (!CanEditGuidedSelection(owner) || runTasks == value) return;
+        runTasks = value;
+        guidedSelectionOwner = new();
+        selection = new(null, [], [], []);
+    }
+    private void SelectionChanged(object owner, HelpdeskGrantSelection value)
+    {
+        if (!CanEditGuidedSelection(owner)) return;
+        selection = value; manualConfirmed = false;
+    }
     private void SettingsReadyChanged(bool value) => publicSettingsReady = value;
     private void ReciprocalReadyChanged(bool value) => reciprocalReady = value;
     private async Task SettingsBusyChanged(bool value) { if (disposed) return; settingsBusy = value; await BusyChanged.InvokeAsync(Busy); }
@@ -105,8 +127,8 @@
         createBusy = true; error = null; await BusyChanged.InvokeAsync(Busy);
         try
         {
-            var constraints = new ServiceLinkResourceConstraints { TenantId = selection.TenantId!.Value.ToString(CultureInfo.InvariantCulture), ResourceIds = selection.ResourceIds, RequestDefinitionIds = selection.RequestDefinitionIds };
-            var result = await Api.CreateAsync(new ServiceClientCreateRequest(name.Trim(), selection.TenantId.Value, peerInstanceId.Trim(), peerTenantId.Trim(), selection.Scopes, JsonSerializer.Serialize(constraints)), lifetime.Token);
+            var constraints = new ServiceLinkResourceConstraints { TenantId = manualSelection.TenantId!.Value.ToString(CultureInfo.InvariantCulture), ResourceIds = manualSelection.ResourceIds, RequestDefinitionIds = manualSelection.RequestDefinitionIds };
+            var result = await Api.CreateAsync(new ServiceClientCreateRequest(name.Trim(), manualSelection.TenantId.Value, peerInstanceId.Trim(), peerTenantId.Trim(), manualSelection.Scopes, JsonSerializer.Serialize(constraints)), lifetime.Token);
             if (disposed) return;
             reveal = result; manualConfirmed = false; await SecretVisibleChanged.InvokeAsync(true);
         }

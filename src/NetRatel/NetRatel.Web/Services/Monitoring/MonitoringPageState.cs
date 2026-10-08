@@ -15,6 +15,7 @@ public sealed class MonitoringPageState(IMonitoringApiService api) : IDisposable
     private long _seriesPageGeneration, _historyPageGeneration, _clientsPageGeneration;
     private CancellationTokenSource? _seriesPage, _historyPage, _clientsPage;
     private bool _disposed;
+    public Guid? ClientFilter { get; set; }
     public int TenantId { get; private set; }
     public bool Loading { get; private set; }
     public bool PagingSeries { get; private set; }
@@ -22,6 +23,14 @@ public sealed class MonitoringPageState(IMonitoringApiService api) : IDisposable
     public bool PagingClients { get; private set; }
     public string? Error { get; private set; }
     public MonitoringPageSnapshot? Snapshot { get; private set; }
+    private readonly Dictionary<Guid, MonitoringClientIdentityDto> _identities = [];
+    public MonitoringClientIdentityDto? ClientIdentity(Guid agentId) => _identities.GetValueOrDefault(agentId);
+    private void RememberIdentities(MonitoringPageSnapshot snapshot)
+    {
+        foreach (var client in snapshot.Clients.Items) _identities[client.AgentId] = client.Identity ?? new(client.AgentId, client.DisplayName ?? "Client metadata unavailable");
+        foreach (var identity in snapshot.Series.ClientIdentities.IsDefault ? [] : snapshot.Series.ClientIdentities) _identities[identity.AgentId] = identity;
+        foreach (var identity in snapshot.History.ClientIdentities.IsDefault ? [] : snapshot.History.ClientIdentities) _identities[identity.AgentId] = identity;
+    }
     public CancellationToken Token => _scope?.Token ?? CancellationToken.None;
     public long Generation => _generation;
     public bool IsCurrent(int tenantId, long generation) => !_disposed && TenantId == tenantId && _generation == generation;
@@ -33,6 +42,7 @@ public sealed class MonitoringPageState(IMonitoringApiService api) : IDisposable
         TenantId = tenantId;
         var generation = ++_generation;
         Snapshot = null;
+        _identities.Clear();
         Error = null;
         Loading = true;
         await ReadAsync(tenantId, generation, _scope!.Token);
@@ -57,7 +67,7 @@ public sealed class MonitoringPageState(IMonitoringApiService api) : IDisposable
             { Snapshot = null; Error = "You do not have permission to read monitoring for this tenant."; return; }
             var configuration = api.GetConfigurationAsync(tenantId, token);
             var summary = api.GetSummaryAsync(tenantId, token);
-            var series = api.GetSeriesAsync(tenantId, token: token);
+            var series = ClientFilter is { } agentId ? api.GetClientSeriesAsync(tenantId, agentId, token) : api.GetSeriesAsync(tenantId, token: token);
             var history = api.GetEventsAsync(tenantId, token: token);
             var flows = api.GetPublishedFlowsAsync(tenantId, token);
             var clients = api.GetClientsAsync(tenantId, token: token);
@@ -71,8 +81,9 @@ public sealed class MonitoringPageState(IMonitoringApiService api) : IDisposable
                 rows.Items.Any(item => item.Series.TenantId != tenantId) || events.Items.Any(item => item.Series.TenantId != tenantId))
                 throw new HttpRequestException("The monitoring response did not match the selected tenant.");
             Snapshot = new(permissions, config, counts, rows, events, await flows, await clients);
+            RememberIdentities(Snapshot);
         }
-        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
         catch (Exception error) when (error is HttpRequestException or System.Text.Json.JsonException)
         {
             if (IsCurrent(tenantId, generation))
@@ -118,8 +129,9 @@ public sealed class MonitoringPageState(IMonitoringApiService api) : IDisposable
                 var page = await api.GetClientsAsync(tenantId, cursor, read.Token);
                 if (Current()) Snapshot = Snapshot! with { Clients = page };
             }
+            RememberIdentities(Snapshot!);
         }
-        catch (OperationCanceledException) when (read.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (read.IsCancellationRequested) { return; }
         catch (Exception error) when (error is HttpRequestException or System.Text.Json.JsonException)
         { if (Current()) Error = error is HttpRequestException ? error.Message : "Could not read this monitoring page. Try again."; }
         finally

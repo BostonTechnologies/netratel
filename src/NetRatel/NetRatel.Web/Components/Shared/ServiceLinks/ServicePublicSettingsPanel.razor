@@ -2,6 +2,33 @@
 @using NetRatel.Web.Services.ServiceLinks
 @inject HelpdeskM2MApiClient Api
 
+@if (Guided && settings is not null)
+{
+    @if (settings.Enabled && settings.ReciprocalLinkEnabled)
+    {
+        <MudText Typo="Typo.caption" Color="Color.Success">Connections enabled for this installation</MudText>
+    }
+    else
+    {
+        <MudPaper Outlined="true" Class="pa-3">
+            <MudStack Spacing="1">
+                <MudText Typo="Typo.subtitle2">Complete installation setup</MudText>
+                @if (Locked("enabled"))
+                {
+                    <MudAlert Dense="true" Severity="Severity.Info">Deployment configuration locks connections. Your operator must enable ServiceIdentity:Enabled and ServiceLinks:Enabled. The existing issuer and keys are preserved.</MudAlert>
+                }
+                else
+                {
+                    <MudText Typo="Typo.body2">Enable protected service connections using this installation's configured public addresses.</MudText>
+                    @if (!ValidUrl(webUrl)) { <MudTextField Label="This NetRatel web address" @bind-Value="webUrl" Immediate="true" Variant="Variant.Outlined" Margin="Margin.Dense" /> }
+                    @if (!ValidUrl(apiUrl)) { <MudTextField Label="This NetRatel API address" @bind-Value="apiUrl" Immediate="true" Variant="Variant.Outlined" Margin="Margin.Dense" HelperText="Use the deployment's API address; it can differ from the web address." /> }
+                    <MudButton OnClick="EnableAsync" Variant="Variant.Outlined" Color="Color.Primary" Disabled="@(Disabled || busy || !ValidUrl(webUrl) || !ValidUrl(apiUrl))">Enable connections</MudButton>
+                }
+            </MudStack>
+        </MudPaper>
+    }
+    @if (error is not null) { <MudAlert Dense="true" Severity="Severity.Warning">@error</MudAlert> }
+}
 <MudExpansionPanels Elevation="0"><MudExpansionPanel Text="Service issuer and public addresses (advanced)" data-testid="helpdesk-public-settings">
     <MudStack Spacing="2">
         @if (settings is not null)
@@ -38,6 +65,7 @@
 </MudExpansionPanel></MudExpansionPanels>
 
 @code {
+    [Parameter] public bool Guided { get; set; }
     [Parameter] public EventCallback<bool> ReadyChanged { get; set; }
     [Parameter] public EventCallback<bool> ReciprocalReadyChanged { get; set; }
     [Parameter] public EventCallback<bool> BusyChanged { get; set; }
@@ -51,11 +79,18 @@
     protected override async Task OnInitializedAsync()
     {
         try { Set(await Api.GetPublicSettingsAsync()); await NotifyReadyAsync(); }
-        catch (ServiceAdministrationException exception) when (exception.StatusCode is System.Net.HttpStatusCode.Forbidden or System.Net.HttpStatusCode.Unauthorized) { }
+        catch (ServiceAdministrationException exception) when (exception.StatusCode is System.Net.HttpStatusCode.Forbidden or System.Net.HttpStatusCode.Unauthorized) { error = "An installation administrator must enable connections. Current integration-management access is required."; }
         catch (Exception exception) when (exception is OperationCanceledException or HttpRequestException or ServiceAdministrationException or System.Text.Json.JsonException or InvalidDataException)
         { error = "Effective service settings could not be loaded. Refresh before changing the instance identity."; }
     }
     private void Set(ServicePublicSettingsResponse value) { settings = value; enabled = value.Enabled; webUrl = value.WebBaseUrl; apiUrl = value.ApiBaseUrl; issuer = value.Issuer; audience = value.Audience; }
+    private async Task EnableAsync()
+    {
+        if (settings is null || Locked("enabled")) return;
+        enabled = true;
+        if (!ValidUrl(issuer)) issuer = apiUrl.TrimEnd('/') + "/services";
+        await SaveAsync();
+    }
     private async Task SaveAsync()
     {
         if (!CanSave || settings is null) return;

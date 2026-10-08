@@ -137,8 +137,13 @@ public static class ReceiverWireValidation
         Equal(endpoints.TargetValidation, Endpoint(peer.ApiBaseUrl, TargetsPath));
         return new(Contract, peer.ReceiverInstanceId, peer.SourceInstanceId, peer.SourceNamespaceId,
             endpoints, Integer(root, "minimumReceiptRetentionSeconds"),
-            Integer(root, "maximumAutomaticReplaySeconds"), observedAtUtc);
+            Integer(root, "maximumAutomaticReplaySeconds"), observedAtUtc)
+        { OrganizationName = DisplayName(root, "organizationName"), CustomerName = DisplayName(root, "customerName") };
     }
+
+    private static string? DisplayName(JsonElement root, string property) =>
+        root.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.String &&
+        value.GetString() is { Length: > 0 and <= 256 } name && !name.Any(char.IsControl) ? name : null;
 
     public static void Target(byte[] body, RatelDeskSemanticPeer peer)
     {

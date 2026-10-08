@@ -20,7 +20,7 @@ internal static class OperationalRecoveryFailure
         HttpRequestException { HttpRequestError: HttpRequestError.SecureConnectionError } => true,
         RpcException rpc => rpc.StatusCode is not (StatusCode.Unavailable or StatusCode.Internal or
             StatusCode.DeadlineExceeded or StatusCode.ResourceExhausted or StatusCode.Aborted or
-            StatusCode.Cancelled or StatusCode.Unauthenticated),
+            StatusCode.Cancelled or StatusCode.Unauthenticated or StatusCode.DataLoss),
         _ => false
     });
 

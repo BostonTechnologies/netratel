@@ -11,7 +11,16 @@ public sealed partial class ServiceLinkCoordinator
 {
     public async Task<ServiceLinkNavigation> StartAsync(ServiceLinkStartRequest request, ClaimsPrincipal actor, CancellationToken ct)
     {
-        var local = await MetadataAsync(ct); var actorId = await Authorize(actor, request.LocalTenantId, ct);
+        var actorId = await Authorize(actor, request.LocalTenantId, ct);
+        if (connectorSetup is not null)
+        {
+            var tenant = int.Parse(request.LocalTenantId, System.Globalization.CultureInfo.InvariantCulture);
+            var installed = await connectorSetup.GetAsync(tenant, actor, ct);
+            if (installed.AdoptedSourceInstanceId is null)
+                _ = await connectorSetup.AdoptAsync(tenant, installed.IdentityRevision, actor, ct);
+            else await connectorSetup.PrepareProducerAsync(actor, ct);
+        }
+        var local = await MetadataAsync(ct);
         Require(request.SessionBinding.Length is >= 32 and <= 256, "invalid-browser-session", "A protected browser session binding is required.");
         Require(Guid.TryParseExact(local.SourceInstanceId, "D", out _), "identity-unconfigured", "Adopt the existing persistent Flow producer before granting incident delivery. Discovery and manual service creation remain available.", 422);
         var peer = ServiceLinkValidation.Metadata(await transport.GetAsync<ServiceLinkMetadata>(Endpoint(request.PeerWebBaseUrl, ServiceLinkContract.MetadataPath), ct), settings.AllowPrivateHttp, request.PeerWebBaseUrl);
@@ -63,7 +72,16 @@ public sealed partial class ServiceLinkCoordinator
     {
         var remoteTenant = request.RequestedResponderTenantId ?? request.OutboundOrganizationId ?? "";
         var inboundScopes = Set(request.InboundScopes); var outboundScopes = Set(request.OutboundScopes);
-        string[] Capabilities(ServiceLinkMetadata target, string[] scopes) => target.PermissionProfiles.Where(p => scopes.Any(s => p.Scopes.Contains(s, StringComparer.Ordinal))).Select(p => p.Capability).Order(StringComparer.Ordinal).ToArray();
+        string[] Capabilities(ServiceLinkMetadata target, string[] scopes)
+        {
+            if (target.Product == "netratel" && ControlOnlyScopes(scopes))
+            {
+                RequireIncidentOnlySupport(local, peer);
+                return [ServiceLinkContract.IncidentOnlyCapability];
+            }
+            return target.PermissionProfiles.Where(p => p.Capability != ServiceLinkContract.IncidentOnlyCapability && scopes.Any(s => p.Scopes.Contains(s, StringComparer.Ordinal)))
+                .Select(p => p.Capability).Order(StringComparer.Ordinal).ToArray();
+        }
         return
         [
             new() { DirectionId = ServiceLinkContract.InitiatorToResponder, CallerSnapshot = "initiator", TargetSnapshot = "responder", CallerProduct = local.Product, CallerInstanceId = local.InstanceId, CallerTenantId = request.LocalTenantId, TargetProduct = peer.Product, TargetInstanceId = peer.InstanceId, TargetTenantId = remoteTenant, Issuer = peer.OauthIssuer, Audience = peer.Audience, Scopes = outboundScopes, Capabilities = Capabilities(peer, outboundScopes), SourceInstanceId = local.SourceInstanceId, SourceNamespaceId = null,
@@ -75,9 +93,10 @@ public sealed partial class ServiceLinkCoordinator
 
     public async Task<ServiceLinkRequestDescriptor> RemoteReviewAsync(ServiceLinkRemoteReviewRequest request, ClaimsPrincipal actor, CancellationToken ct)
     {
-        Id(request.AttemptId); var local = await MetadataAsync(ct); var tenants = await accessService.GetAuthorizedTenantIdsAsync(actor, NetRatelPermissions.IntegrationManagement, ct);
+        Id(request.AttemptId); var tenants = await accessService.GetAuthorizedTenantIdsAsync(actor, NetRatelPermissions.IntegrationManagement, ct);
         Require(actor.Identity?.IsAuthenticated == true && actor.FindFirst("netratel_integration_credential_id") is null && actor.FindFirst("service_principal_id") is null && (tenants is null || tenants.Length > 0), "administrator-required", "A local product administrator is required.", 403);
         Require(request.SessionBinding is { Length: >= 32 and <= 256 }, "invalid-local-consent", "The responder browser session is required.", 403);
+        var local = await MetadataAsync(ct);
         Require(request.BrowserState.Length is >= 32 and <= 256, "invalid-browser-state", "The bounded initiator correlation is required.");
         var peer = ServiceLinkValidation.Metadata(await transport.GetAsync<ServiceLinkMetadata>(Endpoint(request.InitiatorWebBaseUrl, ServiceLinkContract.MetadataPath), ct), settings.AllowPrivateHttp, request.InitiatorWebBaseUrl);
         Require(peer.Product == "rateldesk" && peer.InstanceId != local.InstanceId, "unsupported-peer", "Select a distinct compatible RatelDesk installation.");
@@ -100,6 +119,7 @@ public sealed partial class ServiceLinkCoordinator
             Require(existing.Role == "responder" && existing.DescriptorHash == d.DescriptorHash && existing.LocalActorId == actorId && Same(existing.SessionBindingHash, Digest(request.SessionBinding!)) && Same(Unprotect(existing, "browser-state", existing.ProtectedBrowserState!), request.BrowserState), "attempt-conflict", "This attempt is already bound to a different origin, actor or correlation.", 409);
             return Descriptor(existing);
         }
+        if (connectorSetup is not null) await connectorSetup.PrepareProducerAsync(actor, ct);
         var a = new ServiceLinkAttempt { AttemptId = d.AttemptId, Role = "responder", LocalTenantId = d.RequestedResponderTenantId ?? "", LocalActorId = actorId, SessionBindingHash = Digest(request.SessionBinding!), PeerInstanceId = peer.InstanceId, PeerTenantId = d.InitiatorTenantId, DescriptorJson = Json(d), DescriptorHash = d.DescriptorHash, ExpiresAtUnixSeconds = Math.Min(ServiceLinkCanonicalJson.ParseWholeSecondUtcTimestamp(d.ExpiresAt).ToUnixTimeSeconds(), Now + settings.BootstrapLifetimeSeconds), CreatedAtUnixSeconds = Now, UpdatedAtUnixSeconds = Now, NextWorkAtUnixSeconds = Now };
         a.ProtectedBrowserState = Protect(a, "browser-state", request.BrowserState); db.Set<ServiceLinkAttempt>().Add(a); await db.SaveChangesAsync(ct); return d;
     }

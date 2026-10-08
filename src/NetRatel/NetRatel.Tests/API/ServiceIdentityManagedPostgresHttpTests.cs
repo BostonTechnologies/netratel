@@ -129,6 +129,24 @@ public sealed class ServiceIdentityManagedPostgresHttpTests(PostgreSqlPersistenc
             Assert.True(enabled.ReciprocalLinkEnabled);
             var enabledAuthority = await client.GetFromJsonAsync<ServiceClientManagementAuthority>("/api/v2/account/service-clients/authority");
             Assert.NotNull(enabledAuthority); Assert.True(enabledAuthority.ReciprocalLinkEnabled);
+            await using (var producerScope = app.Services.CreateAsyncScope())
+            {
+                var producerDb = producerScope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+                var flowProducer = await producerDb.FlowRuntimeIdentity.AsNoTracking().SingleAsync();
+                var adopted = await producerDb.Set<ServiceLinkRuntimeIdentity>().AsNoTracking().SingleAsync();
+                Assert.Equal(flowProducer.SourceInstanceId, adopted.SourceInstanceId);
+                Assert.Empty(await producerDb.Set<ServiceLinkAttempt>().AsNoTracking().ToListAsync());
+            }
+            var humanAccess = (SyntheticAccess)app.Services.GetRequiredService<IEffectiveAccessService>();
+            humanAccess.AllowJobManagement = false;
+            var incidentAuthority = await client.GetFromJsonAsync<ServiceClientManagementAuthority>("/api/v2/account/service-clients/authority");
+            Assert.True(incidentAuthority!.CanManage);
+            var incidentTenant = Assert.Single(incidentAuthority.Tenants);
+            Assert.Equal(73, incidentTenant.TenantId);
+            Assert.Empty(incidentTenant.Scopes);
+            Assert.Empty(incidentTenant.Resources);
+            Assert.Empty(incidentTenant.RequestDefinitions);
+            humanAccess.AllowJobManagement = true;
             var request = new ServiceClientCreateRequest("Synthetic peer", 73, "synthetic-peer", "peer-tenant", [ServiceIdentityScopes.OrchestrationRead], Constraints(resource, 73, false));
             var response = await client.PostAsJsonAsync("/api/v2/account/service-clients/", request); Assert.Equal(HttpStatusCode.Created, response.StatusCode);
             var reveal = await response.Content.ReadFromJsonAsync<ServiceClientReveal>(); Assert.NotNull(reveal);
@@ -156,6 +174,11 @@ public sealed class ServiceIdentityManagedPostgresHttpTests(PostgreSqlPersistenc
         builder.Services.AddNetRatelServiceIdentityApi(builder.Configuration);
         builder.Services.AddOptions<ServiceLinkOptions>(); builder.Services.AddOptions<ClientInstallationEndpointOptions>();
         builder.Services.AddScoped<ServiceLinkIdentityStore>();
+        builder.Services.AddSingleton(TimeProvider.System);
+        builder.Services.AddSingleton<NetRatel.Infrastructure.Flows.FlowPersistenceService>();
+        builder.Services.AddScoped<NetRatel.Application.RatelDesk.IRatelDeskConnectorSetupService>(provider => new NetRatel.Infrastructure.RatelDesk.RatelDeskConnectorSetupService(
+            null!, provider.GetRequiredService<NetRatel.Infrastructure.Flows.FlowPersistenceService>(),
+            provider.GetRequiredService<ServiceLinkIdentityStore>(), null!, provider.GetRequiredService<OrchestratorDbContext>()));
         builder.Services.AddSingleton<IDeploymentBrandingService, SyntheticBranding>();
         builder.Services.AddSingleton<IEffectiveAccessService, SyntheticAccess>();
         builder.Services.AddAuthentication().AddScheme<AuthenticationSchemeOptions, SyntheticHuman>("SyntheticHuman", _ => { });
@@ -174,7 +197,9 @@ public sealed class ServiceIdentityManagedPostgresHttpTests(PostgreSqlPersistenc
     }
     private sealed class SyntheticAccess : IEffectiveAccessService
     {
-        public Task<bool> AuthorizeAsync(ClaimsPrincipal p, string permission, int? tenantId, CancellationToken cancellationToken = default) => Task.FromResult(p.HasClaim("netratel_principal_id", "synthetic-administrator"));
+        public bool AllowJobManagement { get; set; } = true;
+        public Task<bool> AuthorizeAsync(ClaimsPrincipal p, string permission, int? tenantId, CancellationToken cancellationToken = default) => Task.FromResult(p.HasClaim("netratel_principal_id", "synthetic-administrator") &&
+            (permission != NetRatelPermissions.JobManagement || AllowJobManagement));
         public Task<EffectiveAccessSnapshot> GetSnapshotAsync(ClaimsPrincipal p, int? tenantId, CancellationToken cancellationToken = default) => Task.FromResult(new EffectiveAccessSnapshot("synthetic-administrator", false, true, new HashSet<string>()));
         public Task<int[]?> GetAuthorizedTenantIdsAsync(ClaimsPrincipal p, string permission, CancellationToken cancellationToken = default) => Task.FromResult<int[]?>(null);
         public Task ReconcileBuiltInRolesAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;

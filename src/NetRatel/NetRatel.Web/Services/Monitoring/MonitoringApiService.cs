@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Net;
 using System.Net.Http.Json;
 using NetRatel.Shared.Contracts.Monitoring;
@@ -8,10 +9,17 @@ public interface IMonitoringApiService
 {
     Task<IReadOnlyList<MonitoringTenantDto>> GetTenantsAsync(CancellationToken token = default);
     Task<MonitoringClientPageDto> GetClientsAsync(int tenantId, string? cursor = null, CancellationToken token = default);
+    Task<MonitoringClientPageDto> SearchClientsAsync(int tenantId, string? search, string? cursor = null, CancellationToken token = default) => GetClientsAsync(tenantId, cursor, token);
+    Task<IReadOnlyList<MonitoringClientIdentityDto>> GetClientIdentitiesAsync(int tenantId, IReadOnlyCollection<Guid> agentIds, CancellationToken token = default) => Task.FromResult<IReadOnlyList<MonitoringClientIdentityDto>>([]);
     Task<MonitoringPermissionsDto> GetPermissionsAsync(int tenantId, CancellationToken token = default);
     Task<MonitoringConfigurationDto> GetConfigurationAsync(int tenantId, CancellationToken token = default);
     Task<MonitoringSummaryDto> GetSummaryAsync(int tenantId, CancellationToken token = default);
     Task<MonitoringSeriesPageDto> GetSeriesAsync(int tenantId, string? cursor = null, CancellationToken token = default);
+    async Task<MonitoringSeriesPageDto> GetClientSeriesAsync(int tenantId, Guid agentId, CancellationToken token = default)
+    {
+        var page = await GetSeriesAsync(tenantId, token: token);
+        return page with { Items = page.Items.Where(item => item.Series.AgentId == agentId).ToImmutableArray(), NextCursor = null };
+    }
     Task<MonitoringEventPageDto> GetEventsAsync(int tenantId, string? cursor = null, CancellationToken token = default);
     Task<IReadOnlyList<MonitoringPublishedFlowDto>> GetPublishedFlowsAsync(int tenantId, CancellationToken token = default);
     Task<MonitoringTargetPreviewDto> PreviewTargetsAsync(int tenantId, MonitoringTargetPreviewRequest request, CancellationToken token = default);
@@ -21,6 +29,8 @@ public interface IMonitoringApiService
     Task<MonitoringConfigurationDto> DeleteAsync(int tenantId, string collection, Guid entityId, MonitoringDeleteDto request, CancellationToken token = default);
     Task AcknowledgeAsync(int tenantId, MonitoringSeriesState series, string reason, CancellationToken token = default);
     Task ClearAsync(int tenantId, MonitoringSeriesState series, string reason, CancellationToken token = default);
+    Task AcknowledgeOccurrenceAsync(int tenantId, MonitoringSeriesState series, ulong configurationRevision, string reason, CancellationToken token = default) => AcknowledgeAsync(tenantId, series, reason, token);
+    Task ClearOccurrenceAsync(int tenantId, MonitoringSeriesState series, ulong configurationRevision, string reason, CancellationToken token = default) => ClearAsync(tenantId, series, reason, token);
 }
 
 /// <summary>Tenant-scoped reads and explicit operator mutations. Reads never change alert state.</summary>
@@ -37,6 +47,15 @@ public sealed class MonitoringApiService(IHttpClientFactory clients) : IMonitori
         await GetAsync<MonitoringTenantDto[]>("/api/v2/monitoring/tenants", token);
     public Task<MonitoringClientPageDto> GetClientsAsync(int tenantId, string? cursor = null, CancellationToken token = default) =>
         GetAsync<MonitoringClientPageDto>(Root(tenantId) + "/clients" + PageQuery(cursor), token);
+    public Task<MonitoringClientPageDto> SearchClientsAsync(int tenantId, string? search, string? cursor = null, CancellationToken token = default) =>
+        GetAsync<MonitoringClientPageDto>(Root(tenantId) + "/clients?maximumCount=25" +
+            (cursor is null ? "" : "&cursor=" + Uri.EscapeDataString(cursor)) +
+            (string.IsNullOrWhiteSpace(search) ? "" : "&search=" + Uri.EscapeDataString(search.Trim())), token);
+    public async Task<IReadOnlyList<MonitoringClientIdentityDto>> GetClientIdentitiesAsync(int tenantId, IReadOnlyCollection<Guid> agentIds, CancellationToken token = default)
+    {
+        using var message = new HttpRequestMessage(HttpMethod.Post, Root(tenantId) + "/clients/identities") { Content = JsonContent.Create(agentIds) };
+        return await SendReadAsync<MonitoringClientIdentityDto[]>(message, token);
+    }
     public Task<MonitoringPermissionsDto> GetPermissionsAsync(int tenantId, CancellationToken token = default) =>
         GetAsync<MonitoringPermissionsDto>(Root(tenantId) + "/permissions", token);
     public Task<MonitoringConfigurationDto> GetConfigurationAsync(int tenantId, CancellationToken token = default) =>
@@ -45,6 +64,12 @@ public sealed class MonitoringApiService(IHttpClientFactory clients) : IMonitori
         GetAsync<MonitoringSummaryDto>(Root(tenantId) + "/summary", token);
     public Task<MonitoringSeriesPageDto> GetSeriesAsync(int tenantId, string? cursor = null, CancellationToken token = default) =>
         GetAsync<MonitoringSeriesPageDto>(Root(tenantId) + "/series" + PageQuery(cursor), token);
+    public async Task<MonitoringSeriesPageDto> GetClientSeriesAsync(int tenantId, Guid agentId, CancellationToken token = default)
+    {
+        var rows = await GetAsync<MonitoringSeriesState[]>(Root(tenantId) + $"/agents/{agentId:D}/series", token);
+        var identities = await GetClientIdentitiesAsync(tenantId, [agentId], token);
+        return new(rows.ToImmutableArray(), null, identities.ToImmutableArray());
+    }
     public Task<MonitoringEventPageDto> GetEventsAsync(int tenantId, string? cursor = null, CancellationToken token = default) =>
         GetAsync<MonitoringEventPageDto>(Root(tenantId) + "/events" + PageQuery(cursor), token);
     public async Task<IReadOnlyList<MonitoringPublishedFlowDto>> GetPublishedFlowsAsync(int tenantId, CancellationToken token = default) =>
@@ -70,11 +95,16 @@ public sealed class MonitoringApiService(IHttpClientFactory clients) : IMonitori
     public Task ClearAsync(int tenantId, MonitoringSeriesState series, string reason, CancellationToken token = default) =>
         OperatorAsync(tenantId, series, "clear", reason, token);
 
-    private Task OperatorAsync(int tenantId, MonitoringSeriesState series, string operation, string reason, CancellationToken token)
+    public Task AcknowledgeOccurrenceAsync(int tenantId, MonitoringSeriesState series, ulong configurationRevision, string reason, CancellationToken token = default) =>
+        OperatorAsync(tenantId, series, "ack", reason, token, configurationRevision);
+    public Task ClearOccurrenceAsync(int tenantId, MonitoringSeriesState series, ulong configurationRevision, string reason, CancellationToken token = default) =>
+        OperatorAsync(tenantId, series, "clear", reason, token, configurationRevision);
+
+    private Task OperatorAsync(int tenantId, MonitoringSeriesState series, string operation, string reason, CancellationToken token, ulong? configurationRevision = null)
     {
         if (series.Series.TenantId != tenantId || series.Occurrence is not { } occurrence) throw new ArgumentException("A matching alert occurrence is required.");
         var path = Root(tenantId) + $"/agents/{series.Series.AgentId:D}/rules/{series.Series.RuleId:D}/{operation}?resourceKey=" + Uri.EscapeDataString(series.Series.ResourceKey);
-        return WriteAsync(HttpMethod.Post, path, new MonitoringOperatorActionDto(occurrence.OccurrenceId, reason, series.StateRevision), token);
+        return WriteAsync(HttpMethod.Post, path, new MonitoringOperatorActionDto(occurrence.OccurrenceId, reason, ExpectedConfigurationRevision: configurationRevision, ExpectedOperatorRevision: series.OperatorRevision), token);
     }
     private async Task<T> GetAsync<T>(string path, CancellationToken token)
     {
@@ -88,7 +118,7 @@ public sealed class MonitoringApiService(IHttpClientFactory clients) : IMonitori
         try
         {
             using var response = await _http.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
-            EnsureSuccess(response);
+            await EnsureSuccessAsync(response, timeout.Token);
             await response.Content.LoadIntoBufferAsync(MaximumResponseBytes, timeout.Token).ConfigureAwait(false);
             return await response.Content.ReadFromJsonAsync<T>(cancellationToken: timeout.Token).ConfigureAwait(false)
                 ?? throw new HttpRequestException("The monitoring response was empty.");
@@ -104,7 +134,7 @@ public sealed class MonitoringApiService(IHttpClientFactory clients) : IMonitori
         try
         {
             using var response = await _http.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
-            EnsureSuccess(response);
+            await EnsureSuccessAsync(response, timeout.Token);
             await response.Content.LoadIntoBufferAsync(MaximumResponseBytes, timeout.Token).ConfigureAwait(false);
             var saved = await response.Content.ReadFromJsonAsync<MonitoringConfigurationDto>(cancellationToken: timeout.Token).ConfigureAwait(false);
             if (saved is null || saved.TenantId != tenantId || expectedRevision == ulong.MaxValue || saved.Revision != expectedRevision + 1)
@@ -122,12 +152,12 @@ public sealed class MonitoringApiService(IHttpClientFactory clients) : IMonitori
         try
         {
             using var response = await _http.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
-            EnsureSuccess(response);
+            await EnsureSuccessAsync(response, timeout.Token);
         }
         catch (OperationCanceledException) when (!token.IsCancellationRequested)
         { throw new HttpRequestException("The operation could not be confirmed. Refresh to check its result before submitting again."); }
     }
-    private static void EnsureSuccess(HttpResponseMessage response)
+    private static async Task EnsureSuccessAsync(HttpResponseMessage response, CancellationToken token)
     {
         if (response.IsSuccessStatusCode) return;
         var message = response.StatusCode switch
@@ -138,6 +168,22 @@ public sealed class MonitoringApiService(IHttpClientFactory clients) : IMonitori
             HttpStatusCode.NotFound => "This monitoring item is no longer available.",
             _ => "Monitoring is unavailable. Your edits are retained."
         };
+        try
+        {
+            await response.Content.LoadIntoBufferAsync(4096, token);
+            using var problem = await System.Text.Json.JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(token), cancellationToken: token);
+            var code = problem.RootElement.TryGetProperty("title", out var title) ? title.GetString() : null;
+            message = code switch
+            {
+                "monitoring_occurrence_replaced" => "A newer occurrence has replaced this alert. Refresh and review it; your reason is retained.",
+                "monitoring_occurrence_closed" => "This alert occurrence has ended or was suspended. Refresh and review its history; your reason is retained.",
+                "monitoring_operator_conflict" => "Another operator changed this alert. Refresh and review the action; your reason is retained.",
+                "monitoring_rule_revision_conflict" or "monitoring_configuration_conflict" => "The rule or configuration changed. Refresh and review it; your edits are retained.",
+                _ => message
+            };
+        }
+        catch (Exception error) when (error is HttpRequestException or System.Text.Json.JsonException or InvalidOperationException)
+        { throw new HttpRequestException(message, null, response.StatusCode); }
         throw new HttpRequestException(message, null, response.StatusCode);
     }
 }

@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using NetRatel.Shared.ServiceIdentity;
 using NetRatel.Shared.ServiceLinks;
+using NetRatel.Shared.Contracts.RatelDesk;
 
 namespace NetRatel.Web.Services.ServiceLinks;
 
@@ -43,6 +44,10 @@ public sealed class HelpdeskM2MApiClient(IHttpClientFactory clients)
     public Task<ServiceLinkIdentityDto> GetIdentityAsync(CancellationToken ct = default) => GetAsync<ServiceLinkIdentityDto>(LinkRoot + "/identity", ct);
     public Task<ServiceLinkIdentityDto> AdoptSourceAsync(ServiceLinkAdoptSourceRequest request, CancellationToken ct = default) =>
         PostAsync<ServiceLinkIdentityDto>(LinkRoot + "/identity/source", request, ct);
+    public Task<ServiceLinkIdentityDto> PrepareFlowSourceAsync(CancellationToken ct = default) =>
+        PostAsync<ServiceLinkIdentityDto>(LinkRoot + "/identity/source/flow", new { }, ct);
+    public Task<RatelDeskConnectionCompletionDto> CompleteConnectionAsync(int tenantId, string linkId, CancellationToken ct = default) =>
+        PostAsync<RatelDeskConnectionCompletionDto>($"api/v2/tenants/{tenantId}/connectors/rateldesk/setup/complete", new CompleteRatelDeskConnectionRequest(linkId), ct);
     public Task<ServiceLinkTestResult> TestLinkAsync(string linkId, CancellationToken ct = default) =>
         PostAsync<ServiceLinkTestResult>(LinkRoot + "/links/" + Uri.EscapeDataString(linkId) + "/test", new ServiceLinkAdminAction(), ct);
     public async Task ActOnLinkAsync(ServiceLinkAdminStatus link, string action, string? directionId = null, CancellationToken ct = default)
@@ -98,7 +103,7 @@ public sealed class HelpdeskM2MApiClient(IHttpClientFactory clients)
                     _ => null
                 };
         }
-        catch (Exception exception) when (exception is JsonException or InvalidDataException) { }
+        catch (Exception exception) when (exception is JsonException or InvalidDataException) { code = null; }
         throw new ServiceAdministrationException(response.StatusCode, code);
     }
     private static async Task<T> ReadAsync<T>(HttpResponseMessage response, CancellationToken ct)

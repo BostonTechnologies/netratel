@@ -51,6 +51,14 @@ public sealed class MonitoringRuleDraft
         return draft;
     }
 
+    public void AdoptReviewedRevision(MonitoringRuleDto current)
+    {
+        if (Original is null || current.RuleId != RuleId || current.TenantId != Original.TenantId)
+            throw new ArgumentException("A matching existing rule is required.", nameof(current));
+        Original = current;
+        ResetConfirmed = false;
+    }
+
     public void SelectMetric(MonitoringMetricKind metric)
     {
         Metric = metric;

@@ -69,15 +69,33 @@ public sealed partial class MonitoringStore(IServiceScopeFactory scopeFactory, T
         if (last is not null && last.TenantId != tenantId) throw new ArgumentException("foreign_cursor");
         await using var scope = scopeFactory.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
-        var query = last is null ? db.MonitoringEvents.Where(row => row.TenantId == tenantId) :
-            db.MonitoringEvents.FromSqlInterpolated($"""
-                SELECT * FROM "MonitoringEvents" WHERE "TenantId" = {tenantId} AND ("AtUtc", "EventId") < ({last.AtUtc}, {last.EventId})
-                """);
-        var rows = await query.AsNoTracking().OrderByDescending(row => row.AtUtc).ThenByDescending(row => row.EventId)
-            .Take(maximumCount + 1).ToListAsync(cancellationToken).ConfigureAwait(false);
-        var page = BudgetPage(rows.Take(maximumCount), row => Deserialize<MonitoringEventIntent>(row.EventJson));
-        return new(page.Select(row => Deserialize<MonitoringEventIntent>(row.EventJson)).ToImmutableArray(), rows.Count > page.Length && page.Length > 0
-            ? EncodeCursor(new EventCursor(tenantId, page[^1].AtUtc, page[^1].EventId)) : null);
+        // Merge the existing durable event/audit projections before paging. Series audits are represented
+        // by their occurrence events; configuration/bypass audits retain their own immutable attribution.
+        var candidates = await db.Database.SqlQuery<HistoryRow>($"""
+            SELECT "AtUtc", "ItemId", "IsAudit" FROM (
+                SELECT "AtUtc", "EventId" AS "ItemId", FALSE AS "IsAudit" FROM "MonitoringEvents" WHERE "TenantId" = {tenantId}
+                UNION ALL
+                SELECT "AtUtc", "AuditId" AS "ItemId", TRUE AS "IsAudit" FROM "MonitoringAudits" WHERE "TenantId" = {tenantId} AND "EntityKind" <> 'series'
+            ) history WHERE ({last == null} OR ("AtUtc", "ItemId") < ({(last == null ? DateTimeOffset.MaxValue : last.AtUtc)}, {(last == null ? Guid.Empty : last.EventId)}))
+            ORDER BY "AtUtc" DESC, "ItemId" DESC LIMIT {maximumCount + 1}
+            """).ToArrayAsync(cancellationToken).ConfigureAwait(false);
+        var page = candidates.Take(maximumCount).ToArray();
+        var eventIds = page.Where(row => !row.IsAudit).Select(row => row.ItemId).ToArray();
+        var auditIds = page.Where(row => row.IsAudit).Select(row => row.ItemId).ToArray();
+        var events = await db.MonitoringEvents.AsNoTracking().Where(row => row.TenantId == tenantId && eventIds.Contains(row.EventId))
+            .OrderByDescending(row => row.AtUtc).ThenByDescending(row => row.EventId).ToArrayAsync(cancellationToken).ConfigureAwait(false);
+        var audits = await db.MonitoringAudits.AsNoTracking().Where(row => row.TenantId == tenantId && auditIds.Contains(row.AuditId))
+            .OrderByDescending(row => row.AtUtc).ThenByDescending(row => row.AuditId).ToArrayAsync(cancellationToken).ConfigureAwait(false);
+        var items = events.Select(row => Deserialize<MonitoringEventIntent>(row.EventJson)).ToImmutableArray();
+        var historyAudits = audits.Select(row => new MonitoringHistoryAuditDto(row.AuditId, row.Operation, row.EntityId, row.EntityKind,
+            ReadHistoryDetail(row.DetailsJson, "EntityName"), row.OperatorId, ReadHistoryDetail(row.DetailsJson, "OperatorDisplayName"), row.Reason, row.AtUtc)).ToImmutableArray();
+        var eventMap = items.ToDictionary(item => item.EventId);
+        var auditMap = historyAudits.ToDictionary(item => item.AuditId);
+        var bounded = BudgetPage(page, row => row.IsAudit ? (object)auditMap[row.ItemId] : eventMap[row.ItemId]);
+        var retained = bounded.Select(row => row.ItemId).ToHashSet();
+        return new(items.Where(item => retained.Contains(item.EventId)).ToImmutableArray(), candidates.Length > bounded.Length && bounded.Length > 0
+            ? EncodeCursor(new EventCursor(tenantId, bounded[^1].AtUtc, bounded[^1].ItemId)) : null,
+            Audits: historyAudits.Where(item => retained.Contains(item.AuditId)).ToImmutableArray());
     }
 
     public async Task<MonitoringSummaryDto> ReadTenantSummaryAsync(int tenantId, CancellationToken cancellationToken)
@@ -91,7 +109,8 @@ public sealed partial class MonitoringStore(IServiceScopeFactory scopeFactory, T
             await query.LongCountAsync(row => row.Phase == MonitoringPhase.Pending, cancellationToken),
             await query.LongCountAsync(row => row.EvidenceQuality == MonitoringEvidenceQuality.Unknown, cancellationToken),
             await query.LongCountAsync(row => row.ActiveOccurrenceId != null && row.Acknowledged, cancellationToken),
-            await query.LongCountAsync(row => row.ActiveOccurrenceId != null && row.Suppressed, cancellationToken), timeProvider.GetUtcNow());
+            await query.LongCountAsync(row => row.ActiveOccurrenceId != null && row.Suppressed, cancellationToken), timeProvider.GetUtcNow(),
+            await query.LongCountAsync(row => row.ActiveOccurrenceId != null && row.Phase == MonitoringPhase.Firing, cancellationToken));
     }
 
     private static async Task<ImmutableArray<Guid>> EligibleAsync(OrchestratorDbContext db, int tenantId, CancellationToken ct)
@@ -159,6 +178,12 @@ public sealed partial class MonitoringStore(IServiceScopeFactory scopeFactory, T
         if (key.RuleId == Guid.Empty || key.AgentId == Guid.Empty || string.IsNullOrWhiteSpace(key.ResourceKey) ||
             key.ResourceKey.Length > MonitoringLimits.MaximumResourceKeyLength || key.ResourceKey.Any(char.IsControl)) throw new ArgumentException("invalid_series");
     }
+    private static string? ReadHistoryDetail(string json, string property)
+    {
+        using var document = JsonDocument.Parse(json);
+        return document.RootElement.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+    }
+    private sealed record HistoryRow(DateTimeOffset AtUtc, Guid ItemId, bool IsAudit);
     private sealed record SeriesCursor(int TenantId, Guid RuleId, Guid AgentId, string ResourceKey);
     private sealed record EventCursor(int TenantId, DateTimeOffset AtUtc, Guid EventId);
 }

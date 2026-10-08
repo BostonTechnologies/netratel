@@ -37,6 +37,31 @@ public sealed class RatelDeskFlowSourceAdoptionPostgresTests(PostgreSqlPersisten
         (await rig.Db.Set<ServiceLinkAttempt>().CountAsync()).Should().Be(0);
     }
 
+    [Fact]
+    public async Task Guided_preparation_uses_existing_Flow_producer_once_and_preserves_revision_on_repeat()
+    {
+        await using var rig = await Rig.CreateAsync(postgres);
+        await rig.Setup.PrepareProducerAsync(Human, default);
+        var approved = await rig.Identity.GetAsync(default);
+        approved.SourceInstanceId.Should().Be(Producer.ToString("D"));
+        await rig.Setup.PrepareProducerAsync(Human, default);
+        (await rig.Identity.GetAsync(default)).Should().Be(approved);
+        (await rig.Db.Set<ServiceLinkAttempt>().CountAsync()).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Guided_first_preparation_rejects_unauthorized_actor_before_creating_a_new_producer()
+    {
+        await using var rig = await Rig.CreateAsync(postgres);
+        rig.Db.FlowRuntimeIdentity.Remove(await rig.Db.FlowRuntimeIdentity.SingleAsync());
+        await rig.Db.SaveChangesAsync();
+        rig.Access.AllowInstance = false;
+        Func<Task> prepare = () => rig.Setup.PrepareProducerAsync(Human, default);
+        await prepare.Should().ThrowExactlyAsync<ServiceLinkProtocolException>();
+        (await rig.Db.FlowRuntimeIdentity.CountAsync()).Should().Be(0);
+        (await rig.Identity.GetAsync(default)).SourceInstanceId.Should().BeNull();
+    }
+
     [Theory]
     [InlineData("AccountApi")]
     [InlineData("service")]

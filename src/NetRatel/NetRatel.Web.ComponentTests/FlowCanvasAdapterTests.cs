@@ -25,6 +25,38 @@ public sealed class FlowCanvasAdapterTests
         }
     }
 
+    [Theory]
+    [InlineData(.5)]
+    [InlineData(2)]
+    public async Task Insert_At_Current_Zoom_Preserves_Canonical_Position_Through_Save_And_Restore(double scale)
+    {
+        await using var adapter = new FlowCanvasAdapter();
+        await adapter.RestoreAsync(new(FlowLimits.SchemaVersion, [], [], new(scale, 110, 90, -40, -30, 800, 600)));
+        var node = new FlowNodeDto(Guid.NewGuid(), FlowNodeKind.Condition, "Inserted condition", new(235.5, -17.25), new(FlowValueField.NumericValue, FlowComparison.GreaterThan, 5));
+        var native = await adapter.AddAsync(node);
+        Assert.Equal(220 / scale, native.Size.Width); Assert.Equal(140 / scale, native.Size.Height);
+        var captured = adapter.Capture(110, 90);
+        Assert.Equal(node.Position, Assert.Single(captured.Nodes).Position);
+        await using var restored = new FlowCanvasAdapter();
+        await restored.RestoreAsync(captured);
+        Assert.Equal(JsonSerializer.Serialize(captured), JsonSerializer.Serialize(restored.Capture(110, 90)));
+        Assert.Equal(0, adapter.ExecutionCalls);
+    }
+
+    [Fact]
+    public async Task Connected_Node_Deletion_Removes_Both_Incident_Native_Links()
+    {
+        var graph = FlowGraphTemplates.IncidentFromAlert();
+        await using var adapter = new FlowCanvasAdapter();
+        await adapter.RestoreAsync(graph);
+        Assert.Equal(2, adapter.Tree.Links.Count);
+        await adapter.RemoveAsync(graph.Nodes.Single(node => node.Kind == FlowNodeKind.MapIncident).Id);
+        Assert.Empty(adapter.Tree.Links);
+        Assert.Empty(adapter.Capture().Edges);
+        Assert.Equal(2, adapter.Capture().Nodes.Count);
+        Assert.Equal(0, adapter.ExecutionCalls);
+    }
+
     [Fact]
     public async Task Keyboard_Connection_Path_Uses_The_Same_Typed_Native_Commands_And_Rejects_Unsafe_Connections()
     {

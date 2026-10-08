@@ -60,7 +60,9 @@ public static class ServiceLinkAuthority
             var constraints = ServiceLinkCanonicalJson.Deserialize<ServiceLinkResourceConstraints>(principal.ResourceConstraintsJson);
             if (!scopes.Order(StringComparer.Ordinal).SequenceEqual(grant.Scopes.Order(StringComparer.Ordinal)) ||
                 ServiceLinkCanonicalJson.HashObject(constraints) != ServiceLinkCanonicalJson.HashObject(grant.ResourceConstraints) ||
-                !await ServiceLinkGrantAuthority.LocalResourcesCurrentAsync(db, constraints, ct)) return false;
+                !(ServiceLinkValidation.IncidentOnlyGrant(grant)
+                    ? await ServiceLinkGrantAuthority.ControlResourcesCurrentAsync(db, constraints, ct)
+                    : await ServiceLinkGrantAuthority.LocalResourcesCurrentAsync(db, constraints, ct))) return false;
         }
         catch (JsonException) { return false; }
         var secret = await db.Set<ServicePrincipalSecret>().AsNoTracking().SingleOrDefaultAsync(x => x.ServicePrincipalId == principal.Id && x.CredentialRevision == principal.CurrentCredentialRevision, ct);

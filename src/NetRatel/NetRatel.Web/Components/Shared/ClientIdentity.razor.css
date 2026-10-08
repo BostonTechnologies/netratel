@@ -1,0 +1,3 @@
+.client-identity { min-width:0; overflow-wrap:anywhere; line-height:1.35; }
+.client-identity strong { font-size:.875rem; font-weight:500; }
+.client-identity-context { color:var(--mud-palette-text-secondary); font-size:.75rem; margin-top:.125rem; }

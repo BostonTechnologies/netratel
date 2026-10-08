@@ -24,6 +24,9 @@ public static class RatelDeskConnectorEndpoints
         group.MapPost("/setup/source", (int tenantId, AdoptRatelDeskFlowSourceRequest request, HttpContext http,
             IRatelDeskConnectorSetupService service, CancellationToken ct) => ExecuteAsync(http, true,
                 async () => Results.Ok(await service.AdoptAsync(tenantId, request.ExpectedIdentityRevision, http.User, ct)))).RequireAuthorization("InteractiveAccount");
+        group.MapPost("/setup/complete", (int tenantId, CompleteRatelDeskConnectionRequest request, HttpContext http,
+            IRatelDeskConnectorSetupService service, CancellationToken ct) => ExecuteAsync(http, true,
+                async () => Results.Ok(await service.CompleteAsync(tenantId, request.LinkId, http.User, ct)))).RequireAuthorization("InteractiveAccount");
         group.MapGet("", (int tenantId, HttpContext http, IRatelDeskConnectorService service, CancellationToken ct) =>
             ExecuteAsync(http, false, async () => Results.Ok(await service.ListAsync(tenantId, http.User, ct))));
         group.MapGet("/{id:guid}", (int tenantId, Guid id, HttpContext http, IRatelDeskConnectorService service, CancellationToken ct) =>
@@ -46,7 +49,7 @@ public static class RatelDeskConnectorEndpoints
         catch (UnauthorizedAccessException) { return Results.Forbid(); }
         catch (ServiceLinkProtocolException error)
         {
-            var code = error.Code is "source-identity-conflict" or "identity-revision-conflict" or "identity-configuration-drift"
+            var code = error.Code is "source-identity-conflict" or "identity-revision-conflict" or "identity-configuration-drift" or "connection-pending" or "incident-grant-incomplete" or "connector-mapping-conflict"
                 ? error.Code : "receiver-current-profile-unavailable";
             return Results.Json(new { code }, statusCode: error.StatusCode is 400 or 401 or 403 or 409 or 422 or 503 ? error.StatusCode : 503);
         }

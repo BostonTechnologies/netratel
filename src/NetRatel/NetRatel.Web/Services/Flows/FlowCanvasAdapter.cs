@@ -52,8 +52,11 @@ public sealed class FlowCanvasAdapter : IAsyncDisposable
     public async Task RemoveAsync(Guid id, CancellationToken token = default)
     {
         var node = Metadata.Single(p => p.Value.Id == id).Key;
+        var slots = Ports.Where(pair => pair.Value.NodeId == id).Select(pair => pair.Key).ToHashSet();
+        foreach (var link in Tree.Links.ToArray().Where(link => slots.Contains(link.Sender) || slots.Contains(link.Receiver)))
+            await CompleteAsync(link.DeleteCommand, null, token);
         await CompleteAsync(node.DeleteCommand, null, token);
-        foreach (var slot in Ports.Where(p => p.Value.NodeId == id).Select(p => p.Key).ToArray()) Ports.Remove(slot);
+        foreach (var slot in slots) Ports.Remove(slot);
         Metadata.Remove(node);
         Changed?.Invoke();
     }
@@ -76,10 +79,14 @@ public sealed class FlowCanvasAdapter : IAsyncDisposable
     {
         var layout = Tree.Layout;
         var scale = layout.Scale.Horizontal;
-        var nodes = Tree.Nodes.Select(node => Metadata[node] with
-        { Position = new(Math.Round(node.Anchor.Horizontal * scale, 6), Math.Round(node.Anchor.Vertical * scale, 6)) }).ToArray();
-        var edges = Tree.Links.Where(l => Ports.ContainsKey(l.Sender) && Ports.ContainsKey(l.Receiver))
-            .Select(l => new FlowEdgeDto(Ports[l.Sender].NodeId, FlowLimits.OutputPort, Ports[l.Receiver].NodeId, FlowLimits.InputPort)).ToArray();
+        // Native removal can retain nodes in a render snapshot after their identity
+        // has been removed. Capture only identities still owned by this adapter.
+        var nodes = Tree.Nodes.ToArray().Select(node => Metadata.TryGetValue(node, out var definition) ? definition with
+        { Position = new(Math.Round(node.Anchor.Horizontal * scale, 6), Math.Round(node.Anchor.Vertical * scale, 6)) } : null).OfType<FlowNodeDto>().ToArray();
+        var nodeIds = nodes.Select(node => node.Id).ToHashSet();
+        var edges = Tree.Links.ToArray().Select(link => Ports.TryGetValue(link.Sender, out var sender) && Ports.TryGetValue(link.Receiver, out var receiver)
+                && nodeIds.Contains(sender.NodeId) && nodeIds.Contains(receiver.NodeId)
+            ? new FlowEdgeDto(sender.NodeId, FlowLimits.OutputPort, receiver.NodeId, FlowLimits.InputPort) : null).OfType<FlowEdgeDto>().ToArray();
         return new(FlowLimits.SchemaVersion, nodes, edges, new(scale, scrollX, scrollY,
             layout.NegativeOffset.Horizontal, layout.NegativeOffset.Vertical, layout.PositiveOffset.Horizontal, layout.PositiveOffset.Vertical));
     }

@@ -153,30 +153,33 @@ public sealed class MonitoringSeriesEvaluator(TimeProvider timeProvider, Func<Gu
         return Result(state, working, [], []);
     }
 
-    public MonitoringEvaluationResult Acknowledge(MonitoringSeriesState state, MonitoringRuleDto rule, Guid operatorId)
+    public MonitoringEvaluationResult Acknowledge(MonitoringSeriesState state, MonitoringRuleDto rule, Guid operatorId, string reason = "acknowledged", string? operatorDisplayName = null)
     {
         RequireDefinition(state, rule);
-        if (operatorId == Guid.Empty) throw new ArgumentException("operator_required");
+        MonitoringContractValidator.RequireReason(operatorId, reason);
         if (!HasOpenOccurrence(state)) throw new InvalidOperationException("active_occurrence_required");
         if (state.Occurrence!.AcknowledgedAtUtc is not null) return Unchanged(state);
         var now = timeProvider.GetUtcNow();
-        var working = state with { StateRevision = checked(state.StateRevision + 1), Occurrence = state.Occurrence with { AcknowledgedBy = operatorId, AcknowledgedAtUtc = now } };
-        return Result(state, working, [], [], [Audit(state, rule, operatorId, "acknowledge", "acknowledged", now)]);
+        var working = state with { StateRevision = checked(state.StateRevision + 1), OperatorRevision = checked(state.OperatorRevision + 1), Occurrence = state.Occurrence with { AcknowledgedBy = operatorId, AcknowledgedAtUtc = now } };
+        return Result(state, working,
+            [new(_nextId(), MonitoringEventKind.AlertAcknowledged, state.Series, state.Occurrence.OccurrenceId, now, state.Occurrence.PinnedRule,
+                state.LatestEvidence ?? state.Occurrence.RaisedEvidence, Reason: reason, OperatorId: operatorId, OperatorDisplayName: operatorDisplayName)], [],
+            [Audit(state, rule, operatorId, "acknowledge", reason, now) with { OperatorDisplayName = operatorDisplayName }]);
     }
 
-    public MonitoringEvaluationResult Clear(MonitoringSeriesState state, MonitoringRuleDto rule, Guid operatorId, string reason)
+    public MonitoringEvaluationResult Clear(MonitoringSeriesState state, MonitoringRuleDto rule, Guid operatorId, string reason, string? operatorDisplayName = null)
     {
         RequireDefinition(state, rule);
         MonitoringContractValidator.RequireReason(operatorId, reason);
         if (!HasOpenOccurrence(state)) throw new InvalidOperationException("active_occurrence_required");
         var now = timeProvider.GetUtcNow();
         var occurrence = state.Occurrence! with { EndedAtUtc = now, ClosureDisposition = MonitoringClosureDisposition.ManuallyCleared };
-        var working = state with { StateRevision = checked(state.StateRevision + 1), Phase = MonitoringPhase.Cleared, Occurrence = occurrence,
+        var working = state with { StateRevision = checked(state.StateRevision + 1), OperatorRevision = checked(state.OperatorRevision + 1), Phase = MonitoringPhase.Cleared, Occurrence = occurrence,
             WindowStartedAtUtc = null, WindowStartedObservedAtUtc = null, PreviousQualifyingReceivedAtUtc = null, EvidenceQuality = MonitoringEvidenceQuality.Unknown,
             NotBeforeObservedAtUtc = now, NotBeforeReceivedAtUtc = now };
         return Result(state, working,
-            [new(_nextId(), MonitoringEventKind.AlertCleared, state.Series, occurrence.OccurrenceId, now, occurrence.PinnedRule, state.LatestEvidence!, MonitoringClosureDisposition.ManuallyCleared, reason)], [],
-            [Audit(state, rule, operatorId, "clear", reason, now)]);
+            [new(_nextId(), MonitoringEventKind.AlertCleared, state.Series, occurrence.OccurrenceId, now, occurrence.PinnedRule, state.LatestEvidence!, MonitoringClosureDisposition.ManuallyCleared, reason, operatorId, operatorDisplayName)], [],
+            [Audit(state, rule, operatorId, "clear", reason, now) with { OperatorDisplayName = operatorDisplayName }]);
     }
 
     public MonitoringEvaluationResult SetApplicability(MonitoringSeriesState state, MonitoringRuleDto rule, bool applicable, Guid operatorId, string reason)

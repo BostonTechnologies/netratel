@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Security.Claims;
 using Microsoft.EntityFrameworkCore;
 using NetRatel.API.Security.M2M;
+using NetRatel.Application.RatelDesk;
 using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.ServiceIdentity;
@@ -27,15 +28,20 @@ public static class ServiceClientEndpoints
             catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
         });
         group.MapPut("/settings", async (ClaimsPrincipal actor, ServicePublicSettingsUpdate update,
-            IServicePublicSettingsResolver resolver, IServiceIdentityRuntimeOptions runtime, IEffectiveAccessService access, CancellationToken ct) =>
+            IServicePublicSettingsResolver resolver, IServiceIdentityRuntimeOptions runtime, IEffectiveAccessService access,
+            IRatelDeskConnectorSetupService setup, CancellationToken ct) =>
         {
             if (!Interactive(actor) || !await access.AuthorizeAsync(actor, NetRatelPermissions.IntegrationManagement, null, ct)) return Results.Forbid();
             try
             {
-                var settings = await resolver.UpdateAsync(update, ActorId(actor)!, ct); var identity = await runtime.GetAsync(ct);
+                var settings = await resolver.UpdateAsync(update, ActorId(actor)!, ct);
+                // Only validated authorized Enable connections prepares the actual persistent Flow producer.
+                if (settings.Identity.Enabled && settings.Linking.Enabled) await setup.PrepareProducerAsync(actor, ct);
+                var identity = await runtime.GetAsync(ct);
                 return Results.Ok(Settings(settings, identity.InstanceId));
             }
             catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
+            catch (ServiceLinkProtocolException ex) { return Results.Json(new { error = ex.Code }, statusCode: ex.StatusCode); }
             catch (ServiceClientConflictException ex) { return Results.Conflict(new { error = ex.Message }); }
             catch (DbUpdateConcurrencyException) { return Results.Conflict(new { error = "public-settings-revision-conflict" }); }
             catch (DbUpdateException) { return Results.Conflict(new { error = "public-settings-revision-conflict" }); }
@@ -51,11 +57,10 @@ public static class ServiceClientEndpoints
             {
                 if (!await CanManage(actor, tenant.Id, access, ct)) continue;
                 var jobAuthority = await access.AuthorizeAsync(actor, NetRatelPermissions.JobManagement, tenant.Id, ct);
-                if (!jobAuthority) continue;
-                var agents = await db.Agents.AsNoTracking().Where(x => x.TenantId == tenant.Id && x.IsEnabled && x.Status == AgentStatus.Active && x.RevokedAtUtc == null).ToListAsync(ct);
+                var agents = await db.Agents.AsNoTracking().Where(x => jobAuthority && x.TenantId == tenant.Id && x.IsEnabled && x.Status == AgentStatus.Active && x.RevokedAtUtc == null).ToListAsync(ct);
                 var agentIds = agents.Select(x => x.Id).ToArray();
                 var jobs = await db.Jobs.AsNoTracking().Where(x => x.TenantId == tenant.Id && x.AgentId != null && agentIds.Contains(x.AgentId.Value)).OrderBy(x => x.Name).ToListAsync(ct);
-                result.Add(new(tenant.Id, tenant.Name, ServiceIdentityScopes.Business,
+                result.Add(new(tenant.Id, tenant.Name, jobAuthority ? ServiceIdentityScopes.Business : [],
                     agents.Select(x => new ServiceClientResourceChoice(x.Id.ToString("D"), x.Name ?? x.Id.ToString("D"))).ToArray(),
                     jobs.Select(x => new ServiceClientDefinitionChoice(x.Id.ToString(CultureInfo.InvariantCulture), x.Name, x.AgentId?.ToString("D"))).ToArray()));
             }
@@ -67,8 +72,7 @@ public static class ServiceClientEndpoints
             }
             catch (Exception exception) when (exception is ArgumentException or Microsoft.Extensions.Options.OptionsValidationException or ServiceLinkProtocolException)
             {
-                // A broken optional service profile must not turn tenant grant
-                // authority into a claim of guided availability or a global edit right.
+                reciprocalEnabled = false;
             }
             return Results.Ok(new ServiceClientManagementAuthority(result.Count > 0, result.ToArray(), reciprocalEnabled));
         });

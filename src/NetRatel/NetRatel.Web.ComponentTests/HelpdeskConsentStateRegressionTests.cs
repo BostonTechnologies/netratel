@@ -94,6 +94,43 @@ public sealed class HelpdeskConsentStateRegressionTests : AsyncBunitContext
         Assert.Equal(0, transport.CreateCalls);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Retired_guided_task_callbacks_cannot_restore_business_permissions_to_an_incident_only_draft(bool checkbox)
+    {
+        using var transport = RegisterTransport();
+        var panel = Render<HelpdeskM2MSetupPanel>();
+        panel.WaitForAssertion(() => Assert.Equal(2, panel.FindComponents<ServiceGrantSelector>().Count));
+        await panel.InvokeAsync(() => GuidedTasks(panel).Instance.ValueChanged.InvokeAsync(true));
+        var tasks = GuidedSelector(panel);
+        var tasksInstance = tasks.Instance;
+        await panel.InvokeAsync(() => tasks.Instance.Changed.InvokeAsync(TaskSelection));
+        var retiredSelection = tasks.Instance.Changed;
+        var retiredCheckbox = GuidedTasks(panel).Instance.ValueChanged;
+        await panel.InvokeAsync(() => retiredCheckbox.InvokeAsync(false));
+        var incidentOnly = GuidedSelector(panel);
+        Assert.NotSame(tasksInstance, incidentOnly.Instance);
+        Assert.True(incidentOnly.Instance.IncidentOnly);
+        await panel.InvokeAsync(() => incidentOnly.Instance.Changed.InvokeAsync(IncidentSelection));
+
+        await panel.InvokeAsync(() => checkbox ? retiredCheckbox.InvokeAsync(true) : retiredSelection.InvokeAsync(TaskSelection));
+
+        panel.WaitForAssertion(() =>
+        {
+            Assert.False(GuidedTasks(panel).Instance.GetState(component => component.Value));
+            Assert.Same(incidentOnly.Instance, GuidedSelector(panel).Instance);
+            Assert.Equal(IncidentSelection.Scopes.Order(StringComparer.Ordinal), panel.FindAll("input[name='inboundScopes']")
+                .Select(input => input.GetAttribute("value")!).Order(StringComparer.Ordinal));
+            Assert.Empty(panel.FindAll("input[name='resourceIds']"));
+            Assert.Empty(panel.FindAll("input[name='requestDefinitionIds']"));
+            Assert.Equal("7", panel.Find("input[name='localTenantId']").GetAttribute("value"));
+            Assert.DoesNotContain(panel.FindAll("input[name='outboundScopes']"), input => input.GetAttribute("value") == "rateldesk.orchestration.callback");
+        });
+        Assert.Equal(0, transport.CreateCalls);
+        Assert.Equal(0, transport.CredentialWrites);
+    }
+
     [Fact]
     public async Task Editing_the_producer_GUID_requires_new_mapping_consent()
     {
@@ -449,12 +486,16 @@ public sealed class HelpdeskConsentStateRegressionTests : AsyncBunitContext
     }
 
     private static readonly HelpdeskGrantSelection ValidSelection = new(7, ["netratel.orchestration.read"], ["resource-7"], []);
+    private static readonly HelpdeskGrantSelection TaskSelection = new(7, ["netratel.orchestration.read", "netratel.orchestration.invoke"], ["resource-7"], ["definition-7"]);
+    private static readonly HelpdeskGrantSelection IncidentSelection = new(7, [ServiceLinkContract.ControlScope, ServiceLinkContract.VerifyScope], [], []);
 
     private static async Task PrepareManualAsync(IRenderedComponent<HelpdeskM2MSetupPanel> panel)
     {
         panel.WaitForAssertion(() => Assert.Single(panel.FindComponents<ServicePublicSettingsPanel>()));
         foreach (var header in panel.FindAll(".mud-expand-panel-header")) header.Click();
-        await panel.InvokeAsync(() => panel.FindComponent<ServiceGrantSelector>().Instance.Changed.InvokeAsync(ValidSelection));
+        var manualSelector = panel.FindComponents<ServiceGrantSelector>()
+            .Single(selector => selector.Instance.TestIdPrefix == "manual-helpdesk");
+        await panel.InvokeAsync(() => manualSelector.Instance.Changed.InvokeAsync(ValidSelection));
         await panel.InvokeAsync(() => TextField(panel, "Service name").Instance.ValueChanged.InvokeAsync("Fixture manual client"));
         await panel.InvokeAsync(() => TextField(panel, "Approved RatelDesk instance ID").Instance.ValueChanged.InvokeAsync("peer-fixture"));
         await panel.InvokeAsync(() => TextField(panel, "Approved RatelDesk organization ID").Instance.ValueChanged.InvokeAsync("organization-fixture"));
@@ -463,6 +504,10 @@ public sealed class HelpdeskConsentStateRegressionTests : AsyncBunitContext
 
     private static IRenderedComponent<MudTextField<string>> TextField<T>(IRenderedComponent<T> panel, string label) where T : class, IComponent =>
         panel.FindComponents<MudTextField<string>>().Single(field => field.Instance.Label == label);
+    private static IRenderedComponent<ServiceGrantSelector> GuidedSelector(IRenderedComponent<HelpdeskM2MSetupPanel> panel) =>
+        panel.FindComponents<ServiceGrantSelector>().Single(selector => selector.Instance.TestIdPrefix == "helpdesk");
+    private static IRenderedComponent<MudCheckBox<bool>> GuidedTasks(IRenderedComponent<HelpdeskM2MSetupPanel> panel) =>
+        panel.FindComponents<MudCheckBox<bool>>().Single(checkbox => checkbox.Instance.Label == "Also run approved tasks (optional)");
     private static IRenderedComponent<MudCheckBox<bool>> ManualConsent<T>(IRenderedComponent<T> panel) where T : class, IComponent =>
         panel.FindComponents<MudCheckBox<bool>>().Single(field => field.Instance.Label == "I approve this exact peer, tenant and resource grant");
     private static IRenderedComponent<MudButton> Button<T>(IRenderedComponent<T> panel, string label) where T : class, IComponent =>

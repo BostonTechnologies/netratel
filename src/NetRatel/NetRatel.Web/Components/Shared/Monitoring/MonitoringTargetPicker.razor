@@ -1,0 +1,140 @@
+@implements IDisposable
+@using System.Collections.Immutable
+@using NetRatel.Shared.Contracts.Monitoring
+@using NetRatel.Web.Services.Monitoring
+@inject IMonitoringApiService Api
+
+<section class="target-picker" data-testid="monitoring-target-picker">
+    <MudTabs Elevation="0" Rounded="true" KeepPanelsAlive="true" ActivePanelIndex="_tab" ActivePanelIndexChanged="ChangeTab" TabPanelsClass="pt-2">
+        <MudTabPanel Text="Clients">
+            <MudTextField T="string" Label="Search clients by name, hostname or reported IP" Value="_search" ValueChanged="Search" DebounceInterval="300" Variant="Variant.Outlined" Margin="Margin.Dense" Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search" Clearable="true" />
+            @if (_loading) { <MudProgressLinear Indeterminate="true" aria-label="Searching clients" /> }
+            @if (_error is not null) { <MudAlert Severity="Severity.Error">@_error <MudButton OnClick="Reload" Size="Size.Small">Retry</MudButton></MudAlert> }
+            <div class="target-picker-actions">
+                <MudButton OnClick="SelectPage" Disabled="@(_loading || _page.Items.IsEmpty)" Size="Size.Small">Select this page</MudButton>
+                <MudText Typo="Typo.caption">@_page.Total matching clients · pages of 25</MudText>
+            </div>
+            <div class="target-picker-clients">
+                @foreach (var client in _page.Items)
+                {
+                    <label class="target-picker-client" @key="client.AgentId">
+                        <input type="checkbox" checked="@SelectedAgents.Contains(client.AgentId)" @onchange="e => ToggleClient(client.AgentId, e.Value is true)" data-testid="monitoring-client-choice" />
+                        <ClientIdentity Identity="@Client(client)" />
+                        @if (Metric == MonitoringMetricKind.ServiceExpectedState) { <span class="target-picker-support">@Support(client.ServicesSupport)</span> }
+                    </label>
+                }
+                @if (!_loading && _error is null && _page.Items.IsEmpty) { <MudText Typo="Typo.body2" Class="pa-2">No matching clients.</MudText> }
+            </div>
+            <div class="target-picker-actions">
+                <MudButton OnClick="Reload" Disabled="_loading" Size="Size.Small">First page</MudButton>
+                <MudButton OnClick="Next" Disabled="@(_loading || _page.NextCursor is null)" Size="Size.Small" data-testid="monitoring-next-clients">Next page</MudButton>
+            </div>
+        </MudTabPanel>
+        @if (SelectedGroups is not null)
+        {
+            <MudTabPanel Text="Groups">
+                <MudText Typo="Typo.caption">Clients and group members are combined once. Membership changes update the rule's effective targets.</MudText>
+                @foreach (var group in Groups)
+                {
+                    <label class="target-picker-client"><input type="checkbox" checked="@(SelectedGroups?.Contains(group.GroupId) == true)" @onchange="e => ToggleGroup(group.GroupId, e.Value is true)" /><span>@group.Name <small>· @group.AgentIds.Length members</small></span></label>
+                }
+                @if (Groups.Count == 0) { <MudText Typo="Typo.body2" Class="pa-2">No groups in this tenant.</MudText> }
+            </MudTabPanel>
+        }
+    </MudTabs>
+    <div class="target-picker-selection" aria-live="polite">
+        <MudText Typo="Typo.subtitle2">
+            @SelectedAgents.Count clients
+            @if (SelectedGroups is { } selectedGroups)
+            {
+                <span> · @selectedGroups.Count groups · @EffectiveCount effective clients</span>
+            }
+            selected
+        </MudText>
+        <div class="target-picker-chips">
+            @foreach (var id in SelectedAgents.Order())
+            {
+                <MudChip T="Guid" Size="Size.Small" Variant="Variant.Outlined" OnClose="() => ToggleClient(id, false)" title="@ClientIdentityPresentation.Context(Identity(id))">@ClientIdentityPresentation.Name(Identity(id))</MudChip>
+            }
+            @foreach (var group in Groups.Where(group => SelectedGroups?.Contains(group.GroupId) == true))
+            {
+                <MudChip T="Guid" Size="Size.Small" Color="Color.Secondary" Variant="Variant.Outlined" OnClose="() => ToggleGroup(group.GroupId, false)">@group.Name · @group.AgentIds.Length members</MudChip>
+            }
+        </div>
+    </div>
+</section>
+
+@code {
+    [Parameter, EditorRequired] public int TenantId { get; set; }
+    [Parameter, EditorRequired] public HashSet<Guid> SelectedAgents { get; set; } = [];
+    [Parameter] public HashSet<Guid>? SelectedGroups { get; set; }
+    [Parameter] public IReadOnlyList<MonitoringGroupDto> Groups { get; set; } = [];
+    [Parameter] public MonitoringMetricKind? Metric { get; set; }
+    [Parameter] public EventCallback SelectionChanged { get; set; }
+    private readonly Dictionary<Guid, MonitoringClientIdentityDto> _identities = [];
+    private MonitoringClientPageDto _page = new([], null, 0);
+    private CancellationTokenSource? _read;
+    private int _tenant, _tab;
+    private long _generation;
+    private bool _loading, _disposed;
+    private string? _search, _error;
+    private int EffectiveCount => SelectedAgents.Concat(Groups.Where(g => SelectedGroups?.Contains(g.GroupId) == true).SelectMany(g => g.AgentIds)).Distinct().Count();
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_tenant == TenantId) return;
+        _tenant = TenantId; _search = null; _identities.Clear(); _page = new([], null, 0);
+        await Read(null);
+        var missing = SelectedAgents.Where(id => !_identities.ContainsKey(id)).ToArray();
+        if (missing.Length == 0 || _disposed) return;
+        var tenant = _tenant;
+        try
+        {
+            var identities = await Api.GetClientIdentitiesAsync(tenant, missing, _read?.Token ?? default);
+            if (tenant != _tenant || _disposed) return;
+            foreach (var identity in identities) _identities[identity.AgentId] = identity;
+        }
+        catch (OperationCanceledException) { return; }
+        catch (HttpRequestException) { _error = "Selected client details are unavailable. Selections are retained; retry to review them."; }
+    }
+    private MonitoringClientIdentityDto Client(MonitoringClientDto client) => client.Identity ?? new(client.AgentId, client.DisplayName ?? "Client metadata unavailable", null, null);
+    private MonitoringClientIdentityDto? Identity(Guid id) => _identities.GetValueOrDefault(id);
+    private static string Support(MonitoringTargetSupport support) => support switch { MonitoringTargetSupport.Supported => "Service telemetry available", MonitoringTargetSupport.Unsupported => "Services unsupported", _ => "Service support unconfirmed" };
+    private void ChangeTab(int index) => _tab = index;
+    private Task Search(string? value) { _search = value; return Read(null); }
+    private Task Reload() => Read(null);
+    private Task Next() => _page.NextCursor is null ? Task.CompletedTask : Read(_page.NextCursor);
+    private async Task Read(string? cursor)
+    {
+        _read?.Cancel(); _read?.Dispose(); _read = new();
+        var token = _read.Token; var generation = ++_generation; var tenant = _tenant;
+        _loading = true; _error = null;
+        try
+        {
+            var page = await Api.SearchClientsAsync(tenant, _search, cursor, token);
+            if (_disposed || tenant != _tenant || generation != _generation) return;
+            _page = page;
+            foreach (var client in page.Items) _identities[client.AgentId] = Client(client);
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
+        catch (Exception error) when (error is HttpRequestException or System.Text.Json.JsonException)
+        { if (!_disposed && generation == _generation) _error = "Could not search this tenant's clients. Retry to load the page."; }
+        finally { if (!_disposed && generation == _generation) _loading = false; }
+    }
+    private async Task ToggleClient(Guid id, bool selected)
+    {
+        if (selected) SelectedAgents.Add(id); else SelectedAgents.Remove(id);
+        await SelectionChanged.InvokeAsync();
+    }
+    private async Task ToggleGroup(Guid id, bool selected)
+    {
+        if (SelectedGroups is null) return;
+        if (selected) SelectedGroups.Add(id); else SelectedGroups.Remove(id);
+        await SelectionChanged.InvokeAsync();
+    }
+    private async Task SelectPage()
+    {
+        foreach (var client in _page.Items) SelectedAgents.Add(client.AgentId);
+        await SelectionChanged.InvokeAsync();
+    }
+    public void Dispose() { _disposed = true; ++_generation; _read?.Cancel(); _read?.Dispose(); }
+}

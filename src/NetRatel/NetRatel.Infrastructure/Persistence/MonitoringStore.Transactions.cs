@@ -43,6 +43,7 @@ public sealed partial class MonitoringStore
                 throw new ArgumentException("invalid_unchanged_state");
             return new(MonitoringStoreWriteDisposition.Stored, result.State);
         }
+        result = await AttributeClientIdentityAsync(db, result, current, cancellationToken).ConfigureAwait(false);
         try
         {
             if (request.ExpectedEvidenceFence is { } mutationFence && !await CheckEpochAsync(db, mutationFence, cancellationToken).ConfigureAwait(false))
@@ -61,6 +62,28 @@ public sealed partial class MonitoringStore
             await transaction.DisposeAsync().ConfigureAwait(false);
             return new(MonitoringStoreWriteDisposition.Conflict, await LoadSeriesAsync(result.State.Series, cancellationToken).ConfigureAwait(false));
         }
+    }
+
+    private static async Task<MonitoringEvaluationResult> AttributeClientIdentityAsync(OrchestratorDbContext db,
+        MonitoringEvaluationResult result, MonitoringSeriesRecord? current, CancellationToken cancellationToken)
+    {
+        if (result.State.Occurrence is { } occurrence)
+        {
+            var previousOccurrence = current is null ? null : ReadState(current).Occurrence;
+            var identity = previousOccurrence?.OccurrenceId == occurrence.OccurrenceId ? previousOccurrence.ClientIdentity : null;
+            if (identity is null)
+            {
+                var agent = await db.Agents.IgnoreQueryFilters().AsNoTracking().Where(agent => agent.TenantId == result.State.Series.TenantId && agent.Id == result.State.Series.AgentId)
+                    .Select(agent => new { agent.Name, agent.DeviceInfoJson, agent.DeletedAtUtc }).SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+                identity = MonitoringIdentityPresentation.Create(result.State.Series.AgentId, agent?.Name, agent?.DeviceInfoJson, agent?.DeletedAtUtc is not null);
+            }
+            result = result with
+            {
+                State = result.State with { Occurrence = occurrence with { ClientIdentity = identity } },
+                Events = result.Events.Select(item => item with { ClientIdentity = identity }).ToImmutableArray()
+            };
+        }
+        return result;
     }
 
     public async Task<bool> BeginEvidenceStreamAsync(MonitoringEvidenceFence fence, CancellationToken cancellationToken)

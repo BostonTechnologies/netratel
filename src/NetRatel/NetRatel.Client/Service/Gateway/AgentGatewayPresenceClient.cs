@@ -4,8 +4,10 @@ using Grpc.Net.Client;
 using Microsoft.Win32;
 using NetRatel.AgentGateway.Contracts.V1;
 using NetRatel.Application.ClientAuth;
+using NetRatel.Application.Events;
 using NetRatel.Client.Service.Updates;
 using NetRatel.Client.Service.Auth;
+using NetRatel.Infrastructure.Auth;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -182,7 +184,7 @@ public sealed class AgentGatewayPresenceClient(
         }
     }
 
-    private async Task RunSessionAsync(string accessToken, DateTimeOffset expiresAtUtc,
+    private async Task RunSessionAsync(string accessToken, DateTimeOffset cacheExpiresAtUtc,
         int sessionTenantId, Guid sessionAgentId, TimeSpan finiteAttemptBudget, GatewaySessionDiagnostics diagnostics,
         Action<TimeSpan> acknowledged, Action<string> currentAccessTokenChanged, CancellationToken stoppingToken)
     {
@@ -196,12 +198,14 @@ public sealed class AgentGatewayPresenceClient(
                     createHttpHandler?.Invoke(endpoint) ?? new SocketsHttpHandler { EnableMultipleHttp2Connections = true }),
                 DisposeHttpClient = true
             });
+        var authorityExpiresAtUtc = tokenService.GetAuthorityExpiryUtc(accessToken, cacheExpiresAtUtc);
         using var owned = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
         using var authorityExpiry = _timeProvider.CreateTimer(_ => owned.Cancel(), null,
-            expiresAtUtc > _timeProvider.GetUtcNow() ? expiresAtUtc - _timeProvider.GetUtcNow() : TimeSpan.Zero,
+            authorityExpiresAtUtc > _timeProvider.GetUtcNow() ? authorityExpiresAtUtc - _timeProvider.GetUtcNow() : TimeSpan.Zero,
             Timeout.InfiniteTimeSpan);
         var client = new global::NetRatel.AgentGateway.Contracts.V1.AgentGateway.AgentGatewayClient(channel);
-        var headers = new Metadata { { "Authorization", $"Bearer {accessToken}" } };
+        var headers = new Metadata { { "Authorization", $"Bearer {accessToken}" },
+            { CorrelationConstants.HeaderName.ToLowerInvariant(), diagnostics.CorrelationId.ToString("D") } };
         using var call = createCall?.Invoke(headers, owned.Token) ?? client.Connect(headers, cancellationToken: owned.Token);
         var pending = new List<Task>();
         Task? sessionTask = null;
@@ -249,7 +253,7 @@ public sealed class AgentGatewayPresenceClient(
                         var remaining = RemainingBudget();
                         renewalGraceStarted ??= _timeProvider.GetTimestamp();
                         var graceRemaining = renewalIoGrace - _timeProvider.GetElapsedTime(renewalGraceStarted.Value);
-                        var authorityMargin = (expiresAtUtc - _timeProvider.GetUtcNow()).Ticks / 2;
+                        var authorityMargin = (authorityExpiresAtUtc - _timeProvider.GetUtcNow()).Ticks / 2;
                         var grace = TimeSpan.FromTicks(Math.Max(0, Math.Min(graceRemaining.Ticks,
                             Math.Min(remaining.Ticks, authorityMargin))));
                         log($"Token renewal became due while presence I/O was pending. {diagnostics.AdmissionSummary}");
@@ -305,7 +309,8 @@ public sealed class AgentGatewayPresenceClient(
         try
         {
             var operationId = Guid.NewGuid();
-            var hello = new ConnectHello { AgentVersion = agentVersion };
+            var hello = new ConnectHello { AgentVersion = agentVersion, HostName = Environment.MachineName,
+                ReportedAddress = AgentDeviceIdentity.GetReportedAddress() ?? string.Empty };
             hello.Capabilities.Add("presence");
             hello.Capabilities.Add("heartbeat-latency");
             hello.Capabilities.Add("presence-auth-renewal-v1");
@@ -358,9 +363,10 @@ public sealed class AgentGatewayPresenceClient(
             {
                 renewalGraceStarted = null;
                 var now = _timeProvider.GetUtcNow();
-                var delay = expiresAtUtc.AddMinutes(-1) - now;
-                if (delay <= TimeSpan.Zero && expiresAtUtc > now)
-                    delay = TimeSpan.FromTicks(Math.Min(heartbeatInterval.Ticks, (expiresAtUtc - now).Ticks / 2));
+                var refreshDeadline = cacheExpiresAtUtc < authorityExpiresAtUtc ? cacheExpiresAtUtc : authorityExpiresAtUtc;
+                var delay = refreshDeadline.AddMinutes(-1) - now;
+                if (delay <= TimeSpan.Zero && authorityExpiresAtUtc > now)
+                    delay = TimeSpan.FromTicks(Math.Min(heartbeatInterval.Ticks, (authorityExpiresAtUtc - now).Ticks / 2));
                 // Short test/negotiated leases leave half their remaining lifetime
                 // for fresh authentication. Already-expired legacy fake tokens still
                 // prove a first heartbeat before the reconnect path is exercised.
@@ -378,7 +384,7 @@ public sealed class AgentGatewayPresenceClient(
 
             async Task SendHeartbeatAsync()
             {
-                if (expiresAtUtc <= _timeProvider.GetUtcNow())
+                if (authorityExpiresAtUtc <= _timeProvider.GetUtcNow())
                     throw new RpcException(new Status(StatusCode.Unauthenticated, "Current presence authorization expired."));
                 var heartbeatOperation = Guid.NewGuid();
                 var heartbeatSequence = ++sequence;
@@ -398,7 +404,7 @@ public sealed class AgentGatewayPresenceClient(
                     throw new RpcException(new Status(StatusCode.Unavailable, "Gateway closed before acknowledging the heartbeat."));
 
                 var response = call.ResponseStream.Current;
-                if (expiresAtUtc <= _timeProvider.GetUtcNow())
+                if (authorityExpiresAtUtc <= _timeProvider.GetUtcNow())
                     throw new RpcException(new Status(StatusCode.Unauthenticated, "Current presence authorization expired before heartbeat acknowledgement."));
                 ValidateHeartbeatFrame(response, accepted, heartbeatOperation, heartbeatSequence, sessionTenantId, sessionAgentId, diagnostics);
                 if (!GatewayWireProtocol.HasAkkaAuthority(response.HeartbeatAccepted.PresenceAuthority))
@@ -441,7 +447,8 @@ public sealed class AgentGatewayPresenceClient(
                 {
                     intervalStopping.Cancel();
                     try { await interval.ConfigureAwait(false); }
-                    catch (OperationCanceledException) when (intervalStopping.IsCancellationRequested) { }
+                    catch (OperationCanceledException) when (intervalStopping.IsCancellationRequested)
+                    { log("Presence heartbeat interval cancelled by scheduled renewal."); }
                     if (_timeProvider.GetUtcNow() < renewalAtUtc)
                     {
                         renewalDue = WaitForRenewalAsync();
@@ -456,7 +463,7 @@ public sealed class AgentGatewayPresenceClient(
                     // The single presence owner acquires fresh authority, then performs
                     // one bounded request/ACK exchange; children retain their fence.
                     var renewalStarted = _timeProvider.GetTimestamp();
-                    var authorityRemaining = expiresAtUtc - _timeProvider.GetUtcNow();
+                    var authorityRemaining = authorityExpiresAtUtc - _timeProvider.GetUtcNow();
                     var wholeRenewalBudget = TimeSpan.FromTicks(Math.Min(ioBudget.Ticks,
                         Math.Min(finiteAttemptBudget.Ticks, authorityRemaining.Ticks)));
                     if (wholeRenewalBudget <= TimeSpan.Zero)
@@ -475,18 +482,19 @@ public sealed class AgentGatewayPresenceClient(
                     (string AccessToken, DateTimeOffset ExpiresAtUtc) fresh;
                     try
                     {
+                        diagnostics.Renewal("token-acquisition", cacheExpiresAtUtc, authorityExpiresAtUtc);
                         renewalWork = tokenService.GetAccessTokenAsync(renewalStopping.Token);
                         fresh = await AwaitIoAsync(renewalWork, RemainingRenewalBudget()).ConfigureAwait(false);
                     }
                     catch (Exception exception) when (
                         OperationalRecoveryFailure.IsExpected(exception) &&
                         !OperationalRecoveryFailure.RequiresAttention(exception) &&
-                        expiresAtUtc > _timeProvider.GetUtcNow() && !owned.IsCancellationRequested)
+                        authorityExpiresAtUtc > _timeProvider.GetUtcNow() && !owned.IsCancellationRequested)
                     {
                         // Proactive failure while current authenticated presence
                         // remains usable does not create an outage episode.
                         renewalAtUtc = _timeProvider.GetUtcNow() + TimeSpan.FromTicks(Math.Min(
-                            TimeSpan.FromSeconds(30).Ticks, (expiresAtUtc - _timeProvider.GetUtcNow()).Ticks / 2));
+                            TimeSpan.FromSeconds(30).Ticks, (authorityExpiresAtUtc - _timeProvider.GetUtcNow()).Ticks / 2));
                         renewalDue = WaitForRenewalAsync();
                         log($"Proactive authentication renewal is waiting while current authority remains valid. category={exception.GetType().Name}.");
                         continue;
@@ -500,17 +508,18 @@ public sealed class AgentGatewayPresenceClient(
                         }
                         if (renewalWork is not null) pending.Remove(renewalWork);
                     }
-                    if (fresh.ExpiresAtUtc <= expiresAtUtc && expiresAtUtc > _timeProvider.GetUtcNow())
+                    var freshAuthorityExpiry = tokenService.GetAuthorityExpiryUtc(fresh.AccessToken, fresh.ExpiresAtUtc);
+                    if (freshAuthorityExpiry <= authorityExpiresAtUtc && authorityExpiresAtUtc > _timeProvider.GetUtcNow())
                     {
                         // The token service may retain an unexpired cached token
                         // after transient refresh failure. Do not send a redundant
                         // renewal ACK or publish new authority.
                         renewalAtUtc = _timeProvider.GetUtcNow() + TimeSpan.FromTicks(Math.Min(
-                            TimeSpan.FromSeconds(30).Ticks, (expiresAtUtc - _timeProvider.GetUtcNow()).Ticks / 2));
+                            TimeSpan.FromSeconds(30).Ticks, (authorityExpiresAtUtc - _timeProvider.GetUtcNow()).Ticks / 2));
                         renewalDue = WaitForRenewalAsync();
                         continue;
                     }
-                    if (fresh.ExpiresAtUtc <= _timeProvider.GetUtcNow())
+                    if (freshAuthorityExpiry <= _timeProvider.GetUtcNow())
                         throw new RpcException(new Status(StatusCode.Unauthenticated, "Agent token renewal did not extend authority."));
                     try
                     {
@@ -518,26 +527,44 @@ public sealed class AgentGatewayPresenceClient(
                         var renewalSequence = ++sequence;
                         var frame = Envelope(renewalOperation, renewalSequence);
                         frame.Renew = new PresenceAuthRenewal { AccessToken = fresh.AccessToken };
+                        diagnostics.Renewal("request-write", fresh.ExpiresAtUtc, freshAuthorityExpiry);
                         await AwaitWriteAsync(frame, RemainingRenewalBudget(), operationToken: renewalStopping.Token).ConfigureAwait(false);
+                        diagnostics.Renewal("ack-read", fresh.ExpiresAtUtc, freshAuthorityExpiry);
                         if (!await AwaitIoAsync(call.ResponseStream.MoveNext(renewalStopping.Token), RemainingRenewalBudget()).ConfigureAwait(false) ||
                             call.ResponseStream.Current.PayloadCase != GatewayFrame.PayloadOneofCase.Renewed)
                             throw new RpcException(new Status(StatusCode.Unavailable, "Gateway closed before acknowledging authentication renewal."));
                         var renewed = call.ResponseStream.Current;
-                        ValidateHeartbeatFrame(renewed, accepted, renewalOperation, renewalSequence, sessionTenantId, sessionAgentId, diagnostics);
-                        var serverExpiry = renewed.Renewed.ExpiresAtUtc?.ToDateTimeOffset();
-                        if (!GatewayWireProtocol.HasAkkaAuthority(renewed.Renewed.PresenceAuthority) ||
-                            serverExpiry is null || serverExpiry <= expiresAtUtc || serverExpiry <= _timeProvider.GetUtcNow() ||
-                            serverExpiry > fresh.ExpiresAtUtc)
+                        diagnostics.Renewal("ack-validation", fresh.ExpiresAtUtc, freshAuthorityExpiry);
+                        ValidateHeartbeatFrame(renewed, accepted, renewalOperation, renewalSequence, sessionTenantId, sessionAgentId, diagnostics, renewal: true);
+                        DateTimeOffset? serverExpiry;
+                        try { serverExpiry = renewed.Renewed.ExpiresAtUtc?.ToDateTimeOffset(); }
+                        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException)
+                        {
+                            diagnostics.ProtocolFailure("renewal_expiry_timestamp_invalid");
                             throw new RpcException(new Status(StatusCode.DataLoss, "Gateway returned an invalid authentication renewal acknowledgement."));
-                        expiresAtUtc = serverExpiry.Value;
-                        authorityExpiry.Change(expiresAtUtc - _timeProvider.GetUtcNow(), Timeout.InfiniteTimeSpan);
+                        }
+                        diagnostics.Renewal("ack-validation", fresh.ExpiresAtUtc, freshAuthorityExpiry, serverExpiry);
+                        var invalidReason = !GatewayWireProtocol.HasAkkaAuthority(renewed.Renewed.PresenceAuthority) ? "renewal_authority_unsupported" :
+                            serverExpiry is null ? "renewal_expiry_missing" : serverExpiry <= _timeProvider.GetUtcNow() ? "renewal_expiry_elapsed" :
+                            serverExpiry <= authorityExpiresAtUtc ? "renewal_authority_not_extended" : serverExpiry > freshAuthorityExpiry ? "renewal_authority_overextended" : null;
+                        if (invalidReason is not null)
+                        {
+                            diagnostics.ProtocolFailure(invalidReason);
+                            throw new RpcException(new Status(StatusCode.DataLoss, "Gateway returned an invalid authentication renewal acknowledgement."));
+                        }
+                        cacheExpiresAtUtc = fresh.ExpiresAtUtc;
+                        authorityExpiresAtUtc = serverExpiry!.Value;
+                        authorityExpiry.Change(authorityExpiresAtUtc - _timeProvider.GetUtcNow(), Timeout.InfiniteTimeSpan);
                         session.SetAccessToken(fresh.AccessToken);
                         currentAccessTokenChanged(fresh.AccessToken);
                         // Renewal changes credentials; only validated heartbeat progress clears outage history.
                         // Renewal ACK is not a heartbeat RTT sample.
                         lastAcknowledgedRoundTripMs = null;
                         lastAcknowledgedSequence = 0;
-                        log($"Presence authentication renewed. {diagnostics.AdmissionSummary}, connectionEpoch={accepted.ConnectionEpoch}, expiresAtUtc={expiresAtUtc:O}.");
+                        diagnostics.Renewal("complete", cacheExpiresAtUtc, freshAuthorityExpiry, authorityExpiresAtUtc);
+                        log($"Presence authentication renewed. {diagnostics.AdmissionSummary}, connectionEpoch={accepted.ConnectionEpoch}, " +
+                            $"cacheExpiry={cacheExpiresAtUtc:O}, tokenAuthorityExpiry={freshAuthorityExpiry:O}, serverExpiry={authorityExpiresAtUtc:O}, " +
+                            $"serverMinusCacheMs={(authorityExpiresAtUtc - cacheExpiresAtUtc).TotalMilliseconds:0.###}.");
                         renewalDue = ScheduleRenewal();
                     }
                     catch (RpcException exception) when (exception.StatusCode == StatusCode.Unauthenticated)
@@ -557,7 +584,7 @@ public sealed class AgentGatewayPresenceClient(
             }
             owned.Token.ThrowIfCancellationRequested();
         }
-        catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested && expiresAtUtc <= _timeProvider.GetUtcNow())
+        catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested && authorityExpiresAtUtc <= _timeProvider.GetUtcNow())
         {
             diagnostics.SessionFailed();
             diagnostics.FailureReason("access_token_expired");
@@ -602,7 +629,7 @@ public sealed class AgentGatewayPresenceClient(
         }
         catch (Exception exception) when (OperationalRecoveryFailure.IsExpected(exception))
         {
-            // Aborted reads and writes are observed here; the initiating failure is preserved.
+            log($"Retired operational I/O observed expected cancellation or transport failure; initiating failure remains authoritative. category={exception.GetType().Name}.");
         }
     }
 
@@ -703,7 +730,7 @@ public sealed class AgentGatewayPresenceClient(
         }
     }
 
-    private void ValidateHeartbeatFrame(GatewayFrame frame, GatewayFrame accepted, Guid operationId, ulong sequence, int sessionTenantId, Guid sessionAgentId, GatewaySessionDiagnostics diagnostics)
+    private void ValidateHeartbeatFrame(GatewayFrame frame, GatewayFrame accepted, Guid operationId, ulong sequence, int sessionTenantId, Guid sessionAgentId, GatewaySessionDiagnostics diagnostics, bool renewal = false)
     {
         if (!string.Equals(frame.ProtocolVersion, options.ProtocolVersion, StringComparison.Ordinal) ||
             frame.TenantId != sessionTenantId ||
@@ -713,8 +740,10 @@ public sealed class AgentGatewayPresenceClient(
             !string.Equals(frame.OperationId, operationId.ToString("D"), StringComparison.OrdinalIgnoreCase) ||
             frame.Sequence != sequence)
         {
-            diagnostics.ProtocolFailure("invalid heartbeat acknowledgement");
-            throw new RpcException(new Status(StatusCode.DataLoss, "Gateway returned an invalid heartbeat acknowledgement."));
+            diagnostics.ProtocolFailure(renewal ? "renewal_envelope_invalid" : "invalid heartbeat acknowledgement");
+            throw new RpcException(new Status(StatusCode.DataLoss, renewal
+                ? "Gateway returned an invalid authentication renewal acknowledgement."
+                : "Gateway returned an invalid heartbeat acknowledgement."));
         }
     }
 }

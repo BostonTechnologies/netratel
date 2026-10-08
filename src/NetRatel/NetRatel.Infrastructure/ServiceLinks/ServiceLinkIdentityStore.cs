@@ -66,12 +66,15 @@ public sealed class ServiceLinkIdentityStore(OrchestratorDbContext db, IOptionsM
         return Dto(row);
     }
 
-    public async Task<ServiceLinkIdentityDto> AdoptSourceAsync(ClaimsPrincipal actor, Guid sourceInstanceId, long expectedRevision, CancellationToken ct)
-    {
+    public async Task AuthorizeAdoptionAsync(ClaimsPrincipal actor, CancellationToken ct) =>
         Require(actor.Identity?.IsAuthenticated == true && actor.FindFirst("netratel_integration_credential_id") is null &&
             actor.FindFirst(ServiceIdentityClaims.PrincipalId) is null &&
             await access.AuthorizeAsync(actor, NetRatelPermissions.IntegrationManagement, null, ct),
             "administrator-required", "Instance integration-management authority is required to adopt a producer identity.", 403);
+
+    public async Task<ServiceLinkIdentityDto> AdoptSourceAsync(ClaimsPrincipal actor, Guid sourceInstanceId, long expectedRevision, CancellationToken ct)
+    {
+        await AuthorizeAdoptionAsync(actor, ct);
         _ = await GetAsync(ct);
         await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct);
         var row = await db.Set<ServiceLinkRuntimeIdentity>().SingleAsync(x => x.Id == 1, ct);

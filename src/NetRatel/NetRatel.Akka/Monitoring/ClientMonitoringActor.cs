@@ -151,7 +151,7 @@ public sealed class ClientMonitoringActor : ReceiveActor, IWithTimers
         if (rule.Condition.ResourceName is { } resource) return [MonitoringSeriesEvaluator.DiskResourceKey(resource)];
         var resources = new HashSet<string>(existing.Select(key => key.ResourceKey), StringComparer.Ordinal);
         if (telemetry is not null) foreach (var disk in telemetry.Snapshot.Disks)
-        { try { resources.Add(MonitoringSeriesEvaluator.DiskResourceKey(disk.Scope)); } catch (ArgumentException) { } }
+        { try { resources.Add(MonitoringSeriesEvaluator.DiskResourceKey(disk.Scope)); } catch (ArgumentException) { continue; } }
         return resources.Order(StringComparer.Ordinal).ToArray();
     }
     private bool IsApplicable(MonitoringRuleDto rule, MonitoringConfigurationSnapshot config, ImmutableArray<Guid> eligible) =>
@@ -174,15 +174,8 @@ public sealed class ClientMonitoringActor : ReceiveActor, IWithTimers
             if (write.Disposition != MonitoringStoreWriteDisposition.Stored) throw new InvalidOperationException("monitoring_refresh_conflict");
         }
     }
-    private async Task<MonitoringStoreWriteResult> OperateAsync(MonitoringOperatorCommand command, bool clear, CancellationToken ct)
-    {
-        MonitoringContractValidator.RequireReason(command.OperatorId, command.Reason);
-        var config = await _configurations.GetAsync(_client.TenantId, ct);
-        var state = await _store.LoadSeriesAsync(command.Series, ct);
-        if (state is null || state.Occurrence?.OccurrenceId != command.OccurrenceId || command.ExpectedStateRevision is { } expected && expected != state.StateRevision)
-            return new(MonitoringStoreWriteDisposition.Conflict, state);
-        var rule = config.Rules.SingleOrDefault(rule => rule.RuleId == state.Series.RuleId) ?? state.Occurrence.PinnedRule;
-        return await _store.CommitAsync(new(clear ? _evaluator.Clear(state, rule, command.OperatorId, command.Reason) : _evaluator.Acknowledge(state, rule, command.OperatorId), config.Revision), ct);
-    }
+    private Task<MonitoringStoreWriteResult> OperateAsync(MonitoringOperatorCommand command, bool clear, CancellationToken ct) =>
+        // The actor orders its operations; the existing store locks also cover writers on another API process.
+        _store.OperateOccurrenceAsync(command, clear, ct);
     private static MonitoringInputResult Input(MonitoringInputDisposition disposition) => new(disposition, 0, 0);
 }

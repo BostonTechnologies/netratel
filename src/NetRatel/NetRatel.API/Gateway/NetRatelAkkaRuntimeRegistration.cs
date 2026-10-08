@@ -76,6 +76,8 @@ public static class NetRatelAkkaRuntimeRegistration
         services.TryAddScoped<IMonitoringResourceAuthorizer, MonitoringResourceAuthorizer>();
         services.TryAddScoped<IMonitoringTenantCatalog, MonitoringTenantCatalog>();
         services.TryAddScoped<MonitoringApiService>();
+        services.TryAddScoped<NetRatel.API.Services.Dashboard.OperationsDashboardService>();
+        services.TryAddScoped<NetRatel.API.Services.Dashboard.OperationsRecentJobsService>();
         services.Replace(ServiceDescriptor.Singleton<IClientServiceWatchPolicySource, MonitoringServiceWatchPolicySource>());
         services.TryAddSingleton<MonitoringWatchPolicyReconciler>();
         services.AddSingleton<IHostedService>(provider => provider.GetRequiredService<MonitoringWatchPolicyReconciler>());

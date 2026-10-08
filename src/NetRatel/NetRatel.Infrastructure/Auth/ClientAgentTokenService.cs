@@ -80,6 +80,9 @@ public sealed class ClientAgentTokenService : IAgentTokenService
 
     public void InvalidateCache() => Interlocked.Exchange(ref _cache, new CacheState(null, DateTimeOffset.MinValue));
 
+    public DateTimeOffset GetAuthorityExpiryUtc(string accessToken, DateTimeOffset cacheExpiresAtUtc) =>
+        GetJwtExpiry(accessToken) ?? cacheExpiresAtUtc;
+
     private async Task<CacheState> AcquireAsync(CancellationToken ct)
     {
         var credentials = await _credentialStore.LoadAsync(ct).ConfigureAwait(false);
@@ -221,10 +224,16 @@ public sealed class ClientAgentTokenService : IAgentTokenService
         // JWT NumericDate uses whole seconds, while the response hint can retain
         // subsecond precision. Reading exp only shortens cache reuse; the gateway
         // still validates the signature and all authorization claims.
+        var jwtExpiry = GetJwtExpiry(accessToken);
+        return jwtExpiry is { } expiry && expiry < responseExpiry ? expiry : responseExpiry;
+    }
+
+    private static DateTimeOffset? GetJwtExpiry(string accessToken)
+    {
         var handler = new JsonWebTokenHandler();
         if (!handler.CanReadToken(accessToken))
         {
-            return responseExpiry;
+            return null;
         }
 
         try
@@ -232,16 +241,16 @@ public sealed class ClientAgentTokenService : IAgentTokenService
             var token = handler.ReadJsonWebToken(accessToken);
             if (token.TryGetPayloadValue<long>(JwtRegisteredClaimNames.Exp, out var seconds))
             {
-                var jwtExpiry = DateTimeOffset.FromUnixTimeSeconds(seconds);
-                return jwtExpiry < responseExpiry ? jwtExpiry : responseExpiry;
+                return DateTimeOffset.FromUnixTimeSeconds(seconds);
             }
         }
         catch (Exception ex) when (ex is ArgumentException or SecurityTokenException or JsonException)
         {
             // Opaque or unreadable tokens retain the endpoint's lifetime hint.
+            return null;
         }
 
-        return responseExpiry;
+        return null;
     }
 
     private static async Task<ProblemPayload?> TryReadProblemPayloadAsync(HttpResponseMessage response, CancellationToken ct)

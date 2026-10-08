@@ -47,7 +47,7 @@ public sealed partial class MonitoringStore
                 var after = before with { Rules = before.Rules.Where(item => item.RuleId != rule.RuleId).Append(rule).OrderBy(item => item.RuleId).ToImmutableArray() };
                 await ReconcileConfigurationSeriesAsync(db, before, after, eligible, request.OperatorId, request.Reason, definitionChanged ? rule.RuleId : null, ct).ConfigureAwait(false);
                 return after;
-            }, cancellationToken);
+            }, cancellationToken, request.OperatorDisplayName);
     }
 
     public Task<MonitoringConfigurationWriteResult> SaveGroupAsync(MonitoringGroupSaveRequest request, CancellationToken cancellationToken)
@@ -71,7 +71,7 @@ public sealed partial class MonitoringStore
                 foreach (var rule in after.Rules) ValidateTargets(rule, after.Groups, eligible, allowIneligibleExisting: true);
                 await ReconcileConfigurationSeriesAsync(db, before, after, eligible, request.OperatorId, request.Reason, null, ct).ConfigureAwait(false);
                 return after;
-            }, cancellationToken);
+            }, cancellationToken, request.OperatorDisplayName);
     }
 
     public Task<MonitoringConfigurationWriteResult> SaveBypassAsync(MonitoringBypassSaveRequest request, CancellationToken cancellationToken)
@@ -91,7 +91,7 @@ public sealed partial class MonitoringStore
                 var after = before with { Bypasses = before.Bypasses.Add(bypass) };
                 await ReconcileConfigurationSeriesAsync(db, before, after, eligible, bypass.OperatorId, bypass.Reason, null, ct).ConfigureAwait(false);
                 return after;
-            }, cancellationToken);
+            }, cancellationToken, request.OperatorDisplayName);
     }
 
     public Task<MonitoringConfigurationWriteResult> DeleteRuleAsync(MonitoringConfigurationDeleteRequest request, CancellationToken cancellationToken) =>
@@ -136,12 +136,12 @@ public sealed partial class MonitoringStore
                 }
                 await ReconcileConfigurationSeriesAsync(db, before, after, eligible, request.OperatorId, request.Reason, null, cancellation).ConfigureAwait(false);
                 return after;
-            }, ct);
+            }, ct, request.OperatorDisplayName);
     }
 
     private async Task<MonitoringConfigurationWriteResult> MutateConfigurationAsync(int tenant, ulong expectedRevision, Guid operatorId, string reason,
         string kind, Guid entity, string operation,
-        Func<OrchestratorDbContext, MonitoringConfigurationSnapshot, ImmutableArray<Guid>, CancellationToken, Task<MonitoringConfigurationSnapshot?>> mutate, CancellationToken ct)
+        Func<OrchestratorDbContext, MonitoringConfigurationSnapshot, ImmutableArray<Guid>, CancellationToken, Task<MonitoringConfigurationSnapshot?>> mutate, CancellationToken ct, string? operatorDisplayName)
     {
         RequireTenant(tenant);
         await using var scope = scopeFactory.CreateAsyncScope();
@@ -157,7 +157,9 @@ public sealed partial class MonitoringStore
         RequireConfigurationSize(after);
         await EnforceHistoryCapacityAsync(db, tenant, 0, 1, 0, ct).ConfigureAwait(false);
         db.MonitoringAudits.Add(new() { AuditId = Guid.NewGuid(), TenantId = tenant, EntityKind = kind, EntityId = entity, Operation = operation,
-            OperatorId = operatorId, Reason = reason, AtUtc = timeProvider.GetUtcNow(), ConfigurationRevision = row.Revision, DetailsJson = Serialize(new { BeforeRevision = expectedRevision, EntityId = entity }) });
+            OperatorId = operatorId, Reason = reason, AtUtc = timeProvider.GetUtcNow(), ConfigurationRevision = row.Revision, DetailsJson = Serialize(new { BeforeRevision = expectedRevision, EntityId = entity, OperatorDisplayName = operatorDisplayName,
+                EntityName = kind == "rule" ? after.Rules.Concat(before.Rules).FirstOrDefault(item => item.RuleId == entity)?.Name :
+                    kind == "group" ? after.Groups.Concat(before.Groups).FirstOrDefault(item => item.GroupId == entity)?.Name : "Alert bypass" }) });
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
         await transaction.CommitAsync(ct).ConfigureAwait(false);
         return new(MonitoringConfigurationWriteDisposition.Stored, after);

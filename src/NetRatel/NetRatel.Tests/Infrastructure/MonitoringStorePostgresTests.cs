@@ -200,7 +200,7 @@ public sealed class MonitoringStorePostgresTests(PostgreSqlPersistenceFixture fi
         finally
         {
             cancel.Cancel(); await held.RollbackAsync();
-            try { await begin; } catch (OperationCanceledException) { }
+            try { await begin; } catch (OperationCanceledException) { cancel.IsCancellationRequested.Should().BeTrue(); }
         }
         (await rig.Store.EndEvidenceStreamAsync(pending, default)).Should().BeFalse();
         var initial = rig.Evaluator.CreateInitial(rig.Key, rig.Rule);
@@ -274,6 +274,122 @@ public sealed class MonitoringStorePostgresTests(PostgreSqlPersistenceFixture fi
         var history = await scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>().MonitoringOccurrences.SingleAsync();
         history.OccurrenceId.Should().Be(firing.Occurrence!.OccurrenceId);
         history.EndedAtUtc.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task Occurrence_operator_commit_uses_new_telemetry_committed_before_its_lock_without_retrying_a_stale_write()
+    {
+        await using var rig = await CreateRigAsync();
+        await FireAsync(rig);
+        var drawer = (await rig.Store.LoadSeriesAsync(rig.Key, default))!;
+        var pause = new PauseConfigurationInsert();
+        await using var otherApiProcess = CreateProvider(rig.Connection, rig.Directory, rig.Time, pause);
+        var otherStore = otherApiProcess.GetRequiredService<IMonitoringStore>();
+        var command = new MonitoringOperatorCommand(rig.Key, drawer.Occurrence!.OccurrenceId, Guid.NewGuid(),
+            "Read the latest locked occurrence", drawer.StateRevision, 1, drawer.OperatorRevision, "Beta operator");
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var operation = otherStore.OperateOccurrenceAsync(command, false, timeout.Token);
+        try
+        {
+            await pause.Entered.Task.WaitAsync(timeout.Token);
+            rig.Time.Advance(TimeSpan.FromSeconds(1));
+            var sample = rig.Evaluator.Evaluate(drawer, rig.Rule, rig.Observation(3), rig.Fence.ConnectionEpoch, rig.Fence.EvidenceStreamId, []);
+            (await rig.Store.CommitAsync(new(sample, 1, rig.Fence), timeout.Token)).Disposition.Should().Be(MonitoringStoreWriteDisposition.Stored);
+            pause.Resume.TrySetResult();
+            var acknowledged = await operation;
+            acknowledged.Disposition.Should().Be(MonitoringStoreWriteDisposition.Stored);
+            acknowledged.State!.Cursor!.Sequence.Should().Be(3);
+            acknowledged.State.Occurrence!.AcknowledgedBy.Should().Be(command.OperatorId);
+            acknowledged.State.StateRevision.Should().Be(sample.State.StateRevision + 1);
+            (await otherStore.OperateOccurrenceAsync(command, false, timeout.Token)).Disposition.Should().Be(MonitoringStoreWriteDisposition.Stored);
+            (await rig.Store.ReadTenantEventsAsync(rig.Client.TenantId, 20, null, timeout.Token)).Items
+                .Should().ContainSingle(item => item.Kind == MonitoringEventKind.AlertAcknowledged && item.Reason == command.Reason);
+        }
+        finally { pause.Resume.TrySetResult(); }
+    }
+
+    [Fact]
+    public async Task Operator_actions_follow_the_same_occurrence_while_samples_continue_and_keep_one_durable_reason()
+    {
+        await using var rig = await CreateRigAsync();
+        await using (var scope = rig.Provider.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            var agent = await db.Agents.SingleAsync();
+            agent.Name = "Beta.3 controlled client";
+            agent.DeviceInfoJson = "{\"hostName\":\"beta3-host\",\"reportedAddress\":\"192.0.2.17\"}";
+            await db.SaveChangesAsync();
+        }
+        var system = ActorSystem.Create("monitoring-operator-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var actor = system.ActorOf(ClientMonitoringRouterActor.Props(rig.Store,
+                rig.Provider.GetRequiredService<IMonitoringConfigurationStore>(), rig.Directory, rig.Time));
+            await actor.Ask<MonitoringInputResult>(new BeginMonitoringStream(rig.Fence));
+            for (ulong sequence = 1; sequence <= 3; sequence++)
+            {
+                rig.Time.Advance(TimeSpan.FromSeconds(1));
+                (await actor.Ask<MonitoringInputResult>(new RecordMonitoringTelemetry(rig.Telemetry(sequence))))
+                    .Disposition.Should().Be(MonitoringInputDisposition.Accepted);
+            }
+            var drawer = (await actor.Ask<ImmutableArray<MonitoringSeriesState>>(new GetClientMonitoring(rig.Client))).Single();
+            drawer.Phase.Should().Be(MonitoringPhase.Firing);
+            rig.Time.Advance(TimeSpan.FromSeconds(1));
+            await actor.Ask<MonitoringInputResult>(new RecordMonitoringTelemetry(rig.Telemetry(4)));
+            var operatorId = Guid.NewGuid();
+            var command = new MonitoringOperatorCommand(rig.Key, drawer.Occurrence!.OccurrenceId, operatorId,
+                "Investigating the controlled test", drawer.StateRevision, 1, drawer.OperatorRevision, "Beta operator");
+            var acknowledged = await actor.Ask<MonitoringStoreWriteResult>(new AcknowledgeMonitoringOccurrence(command));
+            acknowledged.Disposition.Should().Be(MonitoringStoreWriteDisposition.Stored);
+            acknowledged.State!.Phase.Should().Be(MonitoringPhase.Firing);
+            acknowledged.State.Occurrence!.AcknowledgedBy.Should().Be(operatorId);
+            acknowledged.State.StateRevision.Should().BeGreaterThan(drawer.StateRevision);
+            (await actor.Ask<MonitoringStoreWriteResult>(new AcknowledgeMonitoringOccurrence(command))).Disposition
+                .Should().Be(MonitoringStoreWriteDisposition.Stored);
+            var history = await rig.Store.ReadTenantEventsAsync(rig.Client.TenantId, 20, null, default);
+            var acknowledgement = history.Items.Single(item => item.Kind == MonitoringEventKind.AlertAcknowledged);
+            acknowledgement.OperatorId.Should().Be(operatorId);
+            acknowledgement.OperatorDisplayName.Should().Be("Beta operator");
+            acknowledgement.Reason.Should().Be(command.Reason);
+            acknowledgement.ClientIdentity!.DisplayName.Should().Be("Beta.3 controlled client");
+            acknowledgement.ClientIdentity.ReportedAddress.Should().Be("192.0.2.17");
+            history.Audits.Should().ContainSingle(item => item.Action == "save_rule");
+            (await actor.Ask<MonitoringStoreWriteResult>(new ClearMonitoringOccurrence(command))).Code.Should().Be("monitoring_operator_conflict");
+            var clearDrawer = acknowledged.State;
+            rig.Time.Advance(TimeSpan.FromSeconds(1));
+            await actor.Ask<MonitoringInputResult>(new RecordMonitoringTelemetry(rig.Telemetry(5)));
+            var clear = command with { Reason = "Controlled test complete", ExpectedStateRevision = clearDrawer.StateRevision,
+                ExpectedOperatorRevision = clearDrawer.OperatorRevision };
+            var cleared = await actor.Ask<MonitoringStoreWriteResult>(new ClearMonitoringOccurrence(clear));
+            cleared.Disposition.Should().Be(MonitoringStoreWriteDisposition.Stored);
+            cleared.State!.Phase.Should().Be(MonitoringPhase.Cleared);
+            (await actor.Ask<MonitoringStoreWriteResult>(new ClearMonitoringOccurrence(clear))).Disposition.Should().Be(MonitoringStoreWriteDisposition.Stored);
+            (await actor.Ask<MonitoringStoreWriteResult>(new AcknowledgeMonitoringOccurrence(command))).Code.Should().Be("monitoring_occurrence_closed");
+            await using (var rename = rig.Provider.CreateAsyncScope())
+            {
+                var db = rename.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+                (await db.Agents.SingleAsync()).Name = "Renamed controlled client";
+                await db.SaveChangesAsync();
+            }
+            for (ulong sequence = 6; sequence <= 7; sequence++)
+            {
+                rig.Time.Advance(TimeSpan.FromSeconds(1));
+                await actor.Ask<MonitoringInputResult>(new RecordMonitoringTelemetry(rig.Telemetry(sequence)));
+            }
+            var next = (await actor.Ask<ImmutableArray<MonitoringSeriesState>>(new GetClientMonitoring(rig.Client))).Single();
+            next.Phase.Should().Be(MonitoringPhase.Firing);
+            next.Occurrence!.OccurrenceId.Should().NotBe(drawer.Occurrence.OccurrenceId);
+            next.Occurrence.ClientIdentity!.DisplayName.Should().Be("Renamed controlled client");
+            (await rig.Store.ReadTenantEventsAsync(rig.Client.TenantId, 20, null, default)).Items
+                .Single(item => item.Kind == MonitoringEventKind.AlertAcknowledged).ClientIdentity!.DisplayName.Should().Be("Beta.3 controlled client");
+            (await actor.Ask<MonitoringStoreWriteResult>(new AcknowledgeMonitoringOccurrence(command))).Code.Should().Be("monitoring_occurrence_replaced");
+            (await rig.Store.ReadTenantEventsAsync(rig.Client.TenantId, 20, null, default)).Items
+                .Count(item => item.Kind == MonitoringEventKind.AlertCleared).Should().Be(1);
+            var configuration = rig.Provider.GetRequiredService<IMonitoringConfigurationStore>();
+            (await configuration.DeleteRuleAsync(new(rig.Client.TenantId, rig.Rule.RuleId, 1, operatorId, "Clean up controlled test", "Beta operator"), default))
+                .Disposition.Should().Be(MonitoringConfigurationWriteDisposition.Stored);
+        }
+        finally { await system.Terminate(); }
     }
 
     [Fact]
@@ -775,6 +891,21 @@ public sealed class MonitoringStorePostgresTests(PostgreSqlPersistenceFixture fi
     private sealed class TestDisplayNames : IClientDisplayNameResolver
     {
         public IReadOnlyDictionary<string, string> ResolveDisplayNames(IEnumerable<string> clientIdentities) => new Dictionary<string, string>();
+    }
+    private sealed class PauseConfigurationInsert : DbCommandInterceptor
+    {
+        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Resume { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public override async ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(DbCommand command, CommandEventData eventData,
+            InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            if (command.CommandText.Contains("INSERT INTO \"MonitoringTenantConfigurations\"", StringComparison.Ordinal))
+            {
+                Entered.TrySetResult();
+                await Resume.Task.WaitAsync(cancellationToken);
+            }
+            return result;
+        }
     }
     private sealed class ControlSeriesWrite : DbCommandInterceptor
     {

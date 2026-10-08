@@ -26,7 +26,12 @@ public sealed record RatelDeskVerifiedCapability(
     string ContractVersion, string ReceiverInstanceId, Guid SourceInstanceId,
     Guid SourceNamespaceId, RatelDeskReceiverEndpoints Endpoints,
     long MinimumReceiptRetentionSeconds, long MaximumAutomaticReplaySeconds,
-    DateTimeOffset ObservedAtUtc);
+    DateTimeOffset ObservedAtUtc)
+{
+    // Presentation observed through the authenticated receiver; never used as authority or a delivery identity.
+    public string? OrganizationName { get; init; }
+    public string? CustomerName { get; init; }
+}
 
 public sealed record RatelDeskReceiverPreparationV2(
     int SchemaVersion, Guid ConnectorId, long ConnectorRevision,

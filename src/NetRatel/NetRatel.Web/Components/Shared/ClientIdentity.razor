@@ -1,0 +1,15 @@
+@using NetRatel.Shared.Contracts.Monitoring
+@using NetRatel.Web.Services.Monitoring
+
+<div class="client-identity" data-testid="client-identity">
+    <strong>@ClientIdentityPresentation.Name(Identity)</strong>
+    @if (ClientIdentityPresentation.Context(Identity, TenantLabel) is { Length: > 0 } context)
+    {
+        <div class="client-identity-context">@context</div>
+    }
+</div>
+
+@code {
+    [Parameter] public MonitoringClientIdentityDto? Identity { get; set; }
+    [Parameter] public string? TenantLabel { get; set; }
+}
