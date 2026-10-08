@@ -405,11 +405,21 @@ jobs:
               summary.write('\nOnly the client reference closure was restored/published. Fresh per-source/mode/RID intermediates retain per-project paths; NuGet cache is shared sequentially on this runner. Full commands, logs, final prebundle inputs/runtime graph, package inventories, archives, SBOMs and checksums are retained.\n')
               summary.write('\nThe --version timings cover a fresh and cached single-file launch only. Agent initialization, gateway readiness and RSS were not measured; owner functional acceptance remains pending. Normal distributed publish remains untrimmed.\n')
           PY
-      - name: Retain measurement logs, inventories and native archives
+      - name: Retain measurement logs and inventories
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: client-measurement-${{ matrix.runtime }}
-          path: TestResults/client-measurement
+          name: client-measurement-evidence-${{ matrix.runtime }}
+          path: |
+            TestResults/client-measurement
+            !TestResults/client-measurement/**/artifacts/**
+          if-no-files-found: error
+          retention-days: 14
+      - name: Retain native archives, SBOMs and checksums
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: client-measurement-archives-${{ matrix.runtime }}
+          path: TestResults/client-measurement/**/artifacts/**
           if-no-files-found: error
           retention-days: 14

@@ -176,6 +176,10 @@ def main():
                               "assets": {kind: list(entry.get(kind, {})) for kind in ("runtime", "native", "resources", "runtimeTargets")}}
                              for name, entry in sorted(target.items())]
         (evidence / "runtime-package-inventory.json").write_text(json.dumps(runtime_inventory, indent=2) + "\n")
+        # Keep exact runtime inventory and metrics available in ordinary Actions
+        # logs as well when an operator cannot download the artifact CDN bytes.
+        for item in runtime_inventory:
+            print("CLIENT_RUNTIME_PACKAGE=" + json.dumps(item, separators=(",", ":")), flush=True)
         run("verify", ["bash", source / "tools/ci/verify-client-release-artifact.sh", "--artifacts", packages,
                        "--version", version, "--runtime", args.runtime, "--extension", extension, "--integrity-only"])
         if args.verify_content:
@@ -210,6 +214,7 @@ def main():
         metrics.update(exitCode=exit_code, warningsByCode=dict(sorted(warnings.items())),
                        finishedUtc=datetime.now(timezone.utc).isoformat())
         (evidence / "metrics.json").write_text(json.dumps(metrics, indent=2) + "\n")
+        print("CLIENT_MEASUREMENT_METRICS=" + json.dumps(metrics, separators=(",", ":")), flush=True)
     return exit_code
 
 
