@@ -99,9 +99,10 @@ public static class TenantEndpoints
 
             var domains = NormalizeDomains(request.Domains);
 
+            TenantInfo? updated;
             try
             {
-                var updated = await tenants.UpdateAsync(
+                updated = await tenants.UpdateAsync(
                     new UpdateTenantCommand(
                         id,
                         request.Name?.Trim() ?? existing.Name,
@@ -134,6 +135,10 @@ public static class TenantEndpoints
                 changedFields.Add("contactEmail");
             if (request.AutoUpdate.HasValue && existing.AutoUpdate != request.AutoUpdate.Value)
                 changedFields.Add("autoUpdate");
+            if (updated is not null && existing.AutoUpdateChannel != updated.AutoUpdateChannel)
+                changedFields.Add("autoUpdateChannel");
+            if (updated is not null && existing.AutoUpdateTargetVersion != updated.AutoUpdateTargetVersion)
+                changedFields.Add("autoUpdateTargetVersion");
             if (!existing.Domains.SequenceEqual(domains, StringComparer.OrdinalIgnoreCase))
                 changedFields.Add("domains");
 

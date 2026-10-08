@@ -1,0 +1,57 @@
+@using NetRatel.Shared.Contracts
+@using NetRatel.Web.Services
+@inject IClientArtifactsService Artifacts
+
+<MudPaper Class="mt-2 pa-3" Elevation="0" data-testid="tenant-update-policy">
+    <MudStack Spacing="2">
+        <MudText Typo="Typo.subtitle1">Tenant rollout eligibility</MudText>
+        <MudText Typo="Typo.body2" Color="Color.Secondary">
+            Global release automation downloads and publishes packages. Each tenant's automatic updates, release channel, and target version pin determine which releases its clients can receive.
+        </MudText>
+        <MudSelect T="int?" @bind-Value="_selectedTenantId" Label="Tenant rollout policy" Variant="Variant.Outlined" Margin="Margin.Dense">
+            @foreach (var tenant in Tenants)
+            {
+                <MudSelectItem T="int?" Value="@tenant.TenantId">@tenant.Name</MudSelectItem>
+            }
+        </MudSelect>
+        @if (SelectedTenant is { } selected)
+        {
+            <MudText Typo="Typo.body2" data-testid="tenant-policy-current">
+                Automatic updates: @(selected.AutoUpdate ? "on" : "off") · Channel: @(AllowsPrereleases(selected) ? "Stable releases and prereleases" : "Stable releases only")
+            </MudText>
+            @if (!string.IsNullOrWhiteSpace(selected.AutoUpdateTargetVersion))
+            {
+                <MudText Typo="Typo.body2" Style="overflow-wrap: anywhere;">Target version pin: @selected.AutoUpdateTargetVersion. Only this version is eligible within the selected channel.</MudText>
+            }
+            @if (selected.AutoUpdate && !AllowsPrereleases(selected) && _publishedPrereleases.Count > 0)
+            {
+                <MudAlert Severity="Severity.Warning" Dense="true" data-testid="tenant-prerelease-excluded">
+                    @selected.Name uses stable releases only. Enabled published prereleases (@string.Join(", ", _publishedPrereleases)) are excluded, even when global prerelease deployment is on. Excluded releases create no update attempts. A client already on a beta needs a newer eligible release before an update is offered.
+                </MudAlert>
+            }
+            <MudLink Href="@($"/tenants?search={Uri.EscapeDataString(selected.Name)}")">Edit tenant update policy</MudLink>
+        }
+    </MudStack>
+</MudPaper>
+
+@code {
+    [Parameter] public IReadOnlyList<TenantDto> Tenants { get; set; } = [];
+    private int? _selectedTenantId;
+    private IReadOnlyList<string> _publishedPrereleases = [];
+    private TenantDto? SelectedTenant => Tenants.FirstOrDefault(tenant => tenant.TenantId == _selectedTenantId);
+    private static bool AllowsPrereleases(TenantDto tenant) =>
+        string.Equals(tenant.AutoUpdateChannel, "prerelease", StringComparison.OrdinalIgnoreCase);
+
+    protected override void OnParametersSet()
+    {
+        if (SelectedTenant is null) _selectedTenantId = Tenants.FirstOrDefault()?.TenantId;
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        // The published management catalogue, not the GitHub discovery label, proves these offers are enabled.
+        var releases = await Artifacts.GetUpdateReleasePageAsync(0, 5, channel: "prerelease", enabled: true);
+        _publishedPrereleases = releases.Items.Where(release => release.Enabled && release.Channel == "prerelease")
+            .Select(release => release.Version).Distinct(StringComparer.Ordinal).ToArray();
+    }
+}

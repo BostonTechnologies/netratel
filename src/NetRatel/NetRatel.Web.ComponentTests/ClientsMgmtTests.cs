@@ -31,6 +31,39 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
         Services.AddSingleton<ITenantApiService>(new StubTenantApiService());
     }
 
+    [Theory]
+    [InlineData("stable", true)]
+    [InlineData("prerelease", false)]
+    public void Tenant_policy_identifies_enabled_published_prereleases_excluded_by_the_selected_channel(string channel, bool excluded)
+    {
+        _artifacts.PublishedPrereleases.Add(new()
+        {
+            Version = "0.4.103-rc.1", RuntimeId = "linux-x64", Channel = "prerelease", Enabled = true
+        });
+        _artifacts.PublishedPrereleases.Add(new()
+        {
+            Version = "0.4.104-rc.1", RuntimeId = "linux-x64", Channel = "prerelease", Enabled = false
+        });
+        var tenant = new TenantDto(7, "Canary", null, null, [], null, null, true, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow)
+        { AutoUpdateChannel = channel, AutoUpdateTargetVersion = "0.4.103-rc.1" };
+        var cut = Render<TenantUpdatePolicySummary>(parameters => parameters.Add(component => component.Tenants, [tenant]));
+        cut.WaitForAssertion(() =>
+        {
+            cut.Markup.Should().Contain("Global release automation downloads and publishes packages");
+            cut.Markup.Should().Contain("Target version pin: 0.4.103-rc.1");
+            cut.FindAll("[data-testid='tenant-prerelease-excluded']").Count.Should().Be(excluded ? 1 : 0);
+            if (excluded)
+            {
+                var explanation = cut.Find("[data-testid='tenant-prerelease-excluded']").TextContent;
+                explanation.Should().Contain("0.4.103-rc.1").And.NotContain("0.4.104-rc.1");
+                explanation.Should().Contain("even when global prerelease deployment is on");
+                explanation.Should().Contain("Excluded releases create no update attempts");
+            }
+        });
+        Assert.Equal<(int, int, string?, bool?)?>((0, 5, "prerelease", true), _artifacts.EligibilityQuery);
+        _artifacts.SaveCalls.Should().Be(0);
+    }
+
     [Fact]
     public async Task GenerationDisplaysTheCreatedSnapshotWhenConfigurationChangesAfterPreview()
     {
@@ -76,7 +109,7 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
             cut.Markup.Should().Contain("Suspended");
             cut.Find("button[aria-label='Advanced: upload artifact']").Should().NotBeNull();
             _artifacts.ArtifactPageRequests.Should().Be(0);
-            _artifacts.ReleasePageRequests.Should().Be(0);
+            _artifacts.ReleasePageRequests.Should().Be(1, "the bounded tenant eligibility summary reads published prereleases");
         });
 
         await cut.InvokeAsync(() => cut.FindAll(".mud-tab").Single(x => x.TextContent.Trim() == "Packages").Click());
@@ -398,6 +431,8 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
 
     private sealed class StubClientArtifactsService : IClientArtifactsService
     {
+        internal List<ClientUpdateReleaseModel> PublishedPrereleases { get; } = [];
+        internal (int Page, int PageSize, string? Channel, bool? Enabled)? EligibilityQuery { get; private set; }
         public ClientInstallEndpointSummary EndpointPreview { get; } = new(
             "https://web.example.invalid", "https://preview-api.example.invalid", "https://preview-api.example.invalid",
             "branding-site-url:administrator", "client-artifacts-public-base-url", "shared-api-origin");
@@ -548,6 +583,12 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
             CancellationToken ct = default)
         {
             ReleasePageRequests++;
+            if (channel == "prerelease" && enabled == true)
+            {
+                EligibilityQuery = (page, pageSize, channel, enabled);
+                return Task.FromResult(new ClientUpdateReleasePageModel
+                { Page = page, PageSize = pageSize, Total = PublishedPrereleases.Count, Items = PublishedPrereleases });
+            }
             return Task.FromResult(new ClientUpdateReleasePageModel
             {
                 Total = 1,

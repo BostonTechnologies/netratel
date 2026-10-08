@@ -1,3 +1,4 @@
+using System.Text.Json;
 using NetRatel.Application.RatelDesk;
 using NetRatel.Infrastructure.ServiceLinks;
 using NetRatel.Shared.Contracts.RatelDesk;
@@ -68,7 +69,7 @@ public sealed class RatelDeskConnectorReceiver(IRatelDeskConnectorStore connecto
                 (int)Math.Clamp(Math.Ceiling(error.RetryAfter.Value.TotalSeconds), 1, 300)));
         }
         catch (UnauthorizedAccessException) { return await FailureAsync(new(RatelDeskConnectionTestStatus.AuthenticationRejected, "receiver-current-authority-denied")); }
-        catch (Exception error) when (error is InvalidDataException or ArgumentException or InvalidOperationException or
+        catch (Exception error) when (error is InvalidDataException or IOException or JsonException or ArgumentException or InvalidOperationException or
             HttpRequestException or NetRatel.Infrastructure.ServiceLinks.ServiceLinkProtocolException)
         { return await FailureAsync(new(RatelDeskConnectionTestStatus.Unavailable, "receiver-readiness-unverified")); }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)

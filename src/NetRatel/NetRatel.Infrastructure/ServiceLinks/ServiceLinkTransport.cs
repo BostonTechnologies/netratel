@@ -11,6 +11,7 @@ public sealed class ServiceLinkProtocolException(int statusCode, string code, st
 {
     public int StatusCode { get; } = statusCode;
     public string Code { get; } = code;
+    public string? ExistingAttemptId { get; init; }
 }
 
 public sealed record ServiceLinkAccessToken(string AccessToken, int ExpiresIn);

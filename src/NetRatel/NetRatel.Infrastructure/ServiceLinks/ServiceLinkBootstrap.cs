@@ -25,13 +25,35 @@ public sealed partial class ServiceLinkCoordinator
         Require(Guid.TryParseExact(local.SourceInstanceId, "D", out _), "identity-unconfigured", "Adopt the existing persistent Flow producer before granting incident delivery. Discovery and manual service creation remain available.", 422);
         var peer = ServiceLinkValidation.Metadata(await transport.GetAsync<ServiceLinkMetadata>(Endpoint(request.PeerWebBaseUrl, ServiceLinkContract.MetadataPath), ct), settings.AllowPrivateHttp, request.PeerWebBaseUrl);
         Require(peer.Product == "rateldesk" && peer.InstanceId != local.InstanceId, "unsupported-peer", "Select a distinct compatible RatelDesk installation.", 422);
-        var attemptId = NewId(); var verifier = Proof(); var browserState = Proof();
         var grants = request.RequestedGrants.Length == 0 ? BuildProposal(local, peer, request) : request.RequestedGrants;
         grants = Grants(grants, local, peer, proposal: true);
         var inbound = grants.Single(x => x.TargetInstanceId == local.InstanceId);
         Require(inbound.TargetTenantId == request.LocalTenantId, "invalid-tenant-grant", "The proposal must retain its selected local tenant.");
         await ServiceLinkGrantAuthority.ValidateLocalGrantAsync(db, inbound, actor, accessService, ct);
         await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct);
+        var peerTenant = grants.Single(x => x.TargetInstanceId == peer.InstanceId).TargetTenantId;
+        await RequireAvailableRelationship(request.LocalTenantId, peer.InstanceId, peerTenant, null, actor, ct);
+        var pending = await db.Set<ServiceLinkAttempt>().Where(x => x.Role == "initiator" && x.LocalTenantId == request.LocalTenantId &&
+            x.PeerInstanceId == peer.InstanceId && x.Decision == "undecided" && x.LifecycleState == "awaiting_approval" &&
+            x.GrantSummaryJson == null && x.ExpiresAtUnixSeconds > Now).OrderBy(x => x.CreatedAtUnixSeconds).ToListAsync(ct);
+        foreach (var retained in pending)
+        {
+            var old = Descriptor(retained);
+            var sameProposal = old.RequestedResponderTenantId == request.RequestedResponderTenantId &&
+                ServiceLinkCanonicalJson.HashObject(ServiceLinkPayloadNormalization.Grants(old.RequestedGrants)) == ServiceLinkCanonicalJson.HashObject(grants) &&
+                ServiceLinkCanonicalJson.HashObject(ServiceLinkPayloadNormalization.Metadata(old.InitiatorEndpointSnapshot), "product_version") == ServiceLinkCanonicalJson.HashObject(local, "product_version") &&
+                ServiceLinkCanonicalJson.HashObject(ServiceLinkPayloadNormalization.Metadata(old.ResponderEndpointSnapshot), "product_version") == ServiceLinkCanonicalJson.HashObject(peer, "product_version");
+            if (!sameProposal)
+            {
+                if (!string.IsNullOrEmpty(peerTenant) && old.RequestedGrants.Any(g => g.TargetInstanceId == peer.InstanceId && g.TargetTenantId == peerTenant))
+                    throw ExistingRelationship(retained.AttemptId);
+                continue;
+            }
+            if (retained.LocalActorId != actorId || !Same(retained.SessionBindingHash, Digest(request.SessionBinding)))
+                throw ExistingRelationship(retained.AttemptId);
+            return await ContinueAsync(retained.AttemptId, new(request.SessionBinding), actor, ct);
+        }
+        var attemptId = NewId(); var verifier = Proof(); var browserState = Proof();
         var descriptor = new ServiceLinkRequestDescriptor
         {
             AttemptId = attemptId, ExpiresAt = Timestamp(Now + settings.BootstrapLifetimeSeconds), InitiatorInstanceId = local.InstanceId,
@@ -55,14 +77,28 @@ public sealed partial class ServiceLinkCoordinator
     public async Task<ServiceLinkNavigation> ContinueAsync(string attemptId, ServiceLinkContinueRequest request, ClaimsPrincipal actor, CancellationToken ct)
     {
         Id(attemptId); var a = await Attempt(attemptId, ct); var actorId = await Authorize(actor, a.LocalTenantId, ct);
-        Require(a.Role == "initiator" && a.LocalActorId == actorId && a.Decision == "undecided" && a.LifecycleState == "awaiting_approval" &&
+        Require(a.LocalActorId == actorId && a.Decision == "undecided" &&
             a.ExpiresAtUnixSeconds > Now && a.ProtectedBrowserState is not null && request.SessionBinding is { Length: >= 32 and <= 256 } &&
-            Same(a.SessionBindingHash, Digest(request.SessionBinding)), "invalid-local-consent", "The original live initiating browser session is required to continue this approval.", 403);
+            Same(a.SessionBindingHash, Digest(request.SessionBinding)), "invalid-local-consent", "The original live approving browser session is required to continue this approval.", 403);
         await EnsureLocalIdentity(a, ct);
         var descriptor = Descriptor(a);
         Require(descriptor.DescriptorHash == a.DescriptorHash && ServiceLinkPayloadNormalization.DescriptorHashMatches(descriptor, a.DescriptorHash),
             "descriptor-binding-mismatch", "The retained descriptor differs from its approved navigation.", 409);
         var browserState = Unprotect(a, "browser-state", a.ProtectedBrowserState!);
+        if (a.Role == "responder")
+        {
+            Require(CanReturnApproval(a), "invalid-local-consent", "The original live approved callback is required.", 403);
+            var summary = Summary(a);
+            Require(summary.AttemptId == a.AttemptId && summary.LinkId == a.LinkId && summary.DescriptorHash == a.DescriptorHash &&
+                ServiceLinkPayloadNormalization.SummaryHashMatches(summary, a.GrantHash!),
+                "grant-binding-mismatch", "The retained approved grant changed.", 409);
+            await ServiceLinkGrantAuthority.ValidateLocalGrantAsync(db, InboundGrant(a), actor, accessService, ct);
+            var code = Unprotect(a, "pairing-code", a.ProtectedPairingCode!);
+            Require(Same(a.PairingCodeHash, Digest(code)), "invalid-pairing-proof", "The retained pairing proof changed.", 403);
+            return new(a.AttemptId, CallbackNavigation(a, browserState, code), a.LifecycleState);
+        }
+        Require(a.Role == "initiator" && a.LifecycleState == "awaiting_approval" && a.GrantSummaryJson is null && a.ProtectedVerifier is not null,
+            "invalid-local-consent", "The original pending initiating approval is required.", 403);
         var url = descriptor.ResponderEndpointSnapshot.ApprovalEndpoint + "?initiator_web_base_url=" + Uri.EscapeDataString(descriptor.InitiatorEndpointSnapshot.WebBaseUrl) +
             "&attempt_id=" + Uri.EscapeDataString(a.AttemptId) + "&browser_state=" + Uri.EscapeDataString(browserState);
         return new(a.AttemptId, url, a.LifecycleState);
@@ -123,6 +159,7 @@ public sealed partial class ServiceLinkCoordinator
         {
             Require(await LocalTenantExists(d.RequestedResponderTenantId, ct), "invalid-tenant", "The requested responder tenant does not exist. Start a fresh setup with a valid selection.", 422);
             await Authorize(actor, d.RequestedResponderTenantId, ct);
+            await RequireAvailableRelationship(d.RequestedResponderTenantId, peer.InstanceId, d.InitiatorTenantId, d.AttemptId, actor, ct);
         }
         if (connectorSetup is not null) await connectorSetup.PrepareProducerAsync(actor, ct);
         var a = new ServiceLinkAttempt { AttemptId = d.AttemptId, Role = "responder", LocalTenantId = d.RequestedResponderTenantId ?? "", LocalActorId = actorId, SessionBindingHash = Digest(request.SessionBinding!), PeerInstanceId = peer.InstanceId, PeerTenantId = d.InitiatorTenantId, DescriptorJson = Json(d), DescriptorHash = d.DescriptorHash, ExpiresAtUnixSeconds = Math.Min(ServiceLinkCanonicalJson.ParseWholeSecondUtcTimestamp(d.ExpiresAt).ToUnixTimeSeconds(), Now + settings.BootstrapLifetimeSeconds), CreatedAtUnixSeconds = Now, UpdatedAtUnixSeconds = Now, NextWorkAtUnixSeconds = Now };
@@ -151,6 +188,7 @@ public sealed partial class ServiceLinkCoordinator
             Require(ServiceLinkCanonicalJson.HashObject(Summary(a).Grants) == ServiceLinkCanonicalJson.HashObject(selected), "consent-conflict", "The immutable approved grant cannot change.", 409);
             return new(a.AttemptId, CallbackNavigation(a, browserState, Unprotect(a, "pairing-code", a.ProtectedPairingCode!)), a.LifecycleState);
         }
+        await RequireAvailableRelationship(request.LocalTenantId, a.PeerInstanceId, a.PeerTenantId, a.AttemptId, actor, ct);
         a.LocalTenantId = request.LocalTenantId; a.LinkId = NewId(); a.ConsentId = NewId();
         a.ActiveRelationshipKey = Digest(a.LocalTenantId + "\n" + a.PeerInstanceId + "\n" + a.PeerTenantId);
         var summary = new ServiceLinkGrantSummary { AttemptId = a.AttemptId, LinkId = a.LinkId, DescriptorHash = d.DescriptorHash, ExpiresAt = Timestamp(a.ExpiresAtUnixSeconds), InitiatorInstanceId = d.InitiatorInstanceId, ResponderInstanceId = Local(a).InstanceId, InitiatorEndpointSnapshot = d.InitiatorEndpointSnapshot, ResponderEndpointSnapshot = d.ResponderEndpointSnapshot, Grants = selected };
@@ -203,6 +241,8 @@ public sealed partial class ServiceLinkCoordinator
         Require(a.GrantHash is null || a.GrantHash == review.GrantHash, "grant-conflict", "The immutable reviewed grant changed.", 409);
         if (ServiceLinkCanonicalJson.HashObject(ServiceLinkPayloadNormalization.Summary(summary)) == review.GrantHash)
             summary = ServiceLinkPayloadNormalization.Summary(summary);
+        await RequireAvailableRelationship(a.LocalTenantId, a.PeerInstanceId,
+            selected.Single(x => x.TargetInstanceId == a.PeerInstanceId).TargetTenantId, a.AttemptId, actor, ct);
         a.LinkId = summary.LinkId; a.GrantSummaryJson = Json(summary); a.GrantHash = review.GrantHash; a.ExpiresAtUnixSeconds = expiry;
         a.PeerTenantId = selected.Single(x => x.TargetInstanceId == a.PeerInstanceId).TargetTenantId; a.LifecycleState = "approved";
         a.ActiveRelationshipKey = Digest(a.LocalTenantId + "\n" + a.PeerInstanceId + "\n" + a.PeerTenantId);

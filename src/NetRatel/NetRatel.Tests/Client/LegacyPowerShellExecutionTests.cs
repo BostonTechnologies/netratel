@@ -10,6 +10,12 @@ using Xunit;
 
 namespace NetRatel.Tests.Client;
 
+// Keep real PowerShell startup within the existing completion guard without
+// competing with other native-process and database-container fixtures.
+[CollectionDefinition(nameof(LegacyPowerShellExecutionCollection), DisableParallelization = true)]
+public sealed class LegacyPowerShellExecutionCollection;
+
+[Collection(nameof(LegacyPowerShellExecutionCollection))]
 public sealed class LegacyPowerShellExecutionTests
 {
     [Theory]

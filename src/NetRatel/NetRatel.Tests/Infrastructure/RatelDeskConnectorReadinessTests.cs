@@ -12,6 +12,54 @@ namespace NetRatel.Tests.Infrastructure;
 
 public sealed class RatelDeskConnectorReadinessTests
 {
+    [Fact]
+    public async Task A_different_canonical_receiver_identity_has_a_specific_safe_result_without_authorizing_delivery()
+    {
+        var fixture = new Fixture(RatelDeskAuthenticationMode.ManagedServiceLink);
+        var before = fixture.Store.Current;
+        fixture.Bindings.OnCapture = (_, _) => Task.FromResult(before.Readiness!.Peer);
+        fixture.Bindings.Bearer = "synthetic-receiver-bearer";
+        fixture.Transport.OnCapabilities = peer => ReceiverWireValidation.Capability(
+            RatelDeskReceiverFixture.Capability(peer with { ReceiverInstanceId = "99999999-9999-4999-8999-999999999999" }),
+            peer, RatelDeskReceiverFixture.Now);
+
+        var result = await fixture.Receiver.TestAsync(before, default);
+
+        result.Should().Be(new RatelDeskConnectionTestResult(RatelDeskConnectionTestStatus.Unavailable,
+            "receiver-identity-mismatch"));
+        fixture.Store.Current.Readiness.Should().BeNull();
+        fixture.Store.Current.Revision.Should().Be(before.Revision);
+        fixture.Store.Current.CredentialRevision.Should().Be(before.CredentialRevision);
+        fixture.Store.Current.Authentication.Should().Be(before.Authentication);
+        fixture.Store.Current.Configuration.Should().Be(before.Configuration);
+        fixture.Transport.Calls.Should().Be(1);
+    }
+
+    [Theory]
+    [InlineData("invalid-json")]
+    [InlineData("incomplete-response")]
+    public async Task A_failed_receiver_response_returns_a_safe_test_result_without_retaining_previous_readiness(string failure)
+    {
+        var fixture = new Fixture();
+        var before = fixture.Store.Current;
+        fixture.Bindings.OnCapture = (_, _) => Task.FromResult(before.Readiness!.Peer);
+        fixture.Bindings.Bearer = "synthetic-receiver-bearer";
+        fixture.Transport.OnCapabilities = peer => failure == "invalid-json"
+            ? ReceiverWireValidation.Capability("invalid receiver JSON"u8.ToArray(), peer, RatelDeskReceiverFixture.Now)
+            : throw new IOException("synthetic private response detail");
+
+        var result = await fixture.Receiver.TestAsync(before, default);
+
+        result.Should().Be(new RatelDeskConnectionTestResult(RatelDeskConnectionTestStatus.Unavailable,
+            "receiver-readiness-unverified"));
+        fixture.Store.Current.Readiness.Should().BeNull();
+        fixture.Store.Current.Revision.Should().Be(before.Revision);
+        fixture.Store.Current.CredentialRevision.Should().Be(before.CredentialRevision);
+        fixture.Store.Current.Authentication.Should().Be(before.Authentication);
+        fixture.Store.Current.Configuration.Should().Be(before.Configuration);
+        fixture.Transport.Calls.Should().Be(1);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -124,14 +172,14 @@ public sealed class RatelDeskConnectorReadinessTests
         internal Transport Transport { get; } = new();
         internal RatelDeskConnectorReadiness Readiness { get; }
         internal RatelDeskConnectorReceiver Receiver { get; }
-        internal Fixture()
+        internal Fixture(RatelDeskAuthenticationMode mode = RatelDeskAuthenticationMode.ManualApiBearer)
         {
-            var peer = RatelDeskReceiverFixture.Peer(RatelDeskAuthenticationMode.ManualApiBearer);
+            var peer = RatelDeskReceiverFixture.Peer(mode);
             var capability = ReceiverWireValidation.Capability(RatelDeskReceiverFixture.Capability(peer), peer, RatelDeskReceiverFixture.Now);
             Store = new(new(peer.ConnectorId, peer.LocalTenantId, 1, 7, "human-owner",
                 new("receiver", peer.ApiBaseUrl, peer.OrganizationId, peer.CustomerId, peer.AssignedToId,
                     Array.Empty<Guid>(), new(), true), "synthetic-protected-credential", 2,
-                new(RatelDeskAuthenticationMode.ManualApiBearer, null), new(1, peer, capability, RatelDeskReceiverFixture.Now)));
+                new(mode, peer.LinkId), new(1, peer, capability, RatelDeskReceiverFixture.Now)));
             var network = new RatelDeskReceiverNetworkPolicy(new Options<RatelDeskReceiverOptions>(new()),
                 new Options<ServiceLinkOptions>(new()), new Options<ServiceIdentityOptions>(new()));
             var clock = new Clock();
@@ -175,6 +223,7 @@ public sealed class RatelDeskConnectorReadinessTests
     private sealed class Binding : IRatelDeskOutboundBindingResolver
     {
         internal int CaptureCalls { get; private set; }
+        internal string? Bearer { get; set; }
         internal Func<RatelDeskConnectorState, CancellationToken, Task<RatelDeskSemanticPeer>>? OnCapture { get; set; }
         public Task<RatelDeskSemanticPeer> CaptureAsync(RatelDeskConnectorState connector,
             RatelDeskConnectorAuthentication authentication, Guid source, CancellationToken ct)
@@ -183,13 +232,14 @@ public sealed class RatelDeskConnectorReadinessTests
             return OnCapture?.Invoke(connector, ct) ?? throw new InvalidOperationException("unexpected-capture");
         }
         public Task<string> GetBearerAsync(RatelDeskConnectorState current, RatelDeskSemanticPeer captured,
-            string scope, CancellationToken ct) => throw new InvalidOperationException("unexpected-token-read");
+            string scope, CancellationToken ct) => Task.FromResult(Bearer ?? throw new InvalidOperationException("unexpected-token-read"));
     }
     private sealed class Transport : IRatelDeskReceiverTransport
     {
         internal int Calls { get; private set; }
+        internal Func<RatelDeskSemanticPeer, RatelDeskVerifiedCapability>? OnCapabilities { get; set; }
         public Task<RatelDeskVerifiedCapability> CapabilitiesAsync(RatelDeskSemanticPeer peer, string bearer, CancellationToken ct)
-        { Calls++; throw new InvalidOperationException("unexpected-capability-HTTP"); }
+        { Calls++; return Task.FromResult(OnCapabilities?.Invoke(peer) ?? throw new InvalidOperationException("unexpected-capability-HTTP")); }
         public Task ValidateTargetsAsync(RatelDeskSemanticPeer peer, RatelDeskVerifiedCapability capability, string bearer, CancellationToken ct)
         { Calls++; throw new InvalidOperationException("unexpected-target-HTTP"); }
         public Task<RatelDeskReceiverObservation> LookupAsync(RatelDeskReceiverPreparationV2 prepared, string bearer, CancellationToken ct)

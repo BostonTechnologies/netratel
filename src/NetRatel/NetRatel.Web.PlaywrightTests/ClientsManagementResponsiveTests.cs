@@ -1490,6 +1490,7 @@ public sealed class ClientsManagementBrowserFixture : IAsyncLifetime
 }
 
 [Route("/clients/mgmt")]
+[Route("/tenants")]
 [Route("/clients")]
 [Route("/flows")]
 [Route("/monitoring")]
@@ -2082,6 +2083,7 @@ internal sealed class FixtureClientArtifactsService : IClientArtifactsService
     public int ArtifactPageRequests { get; private set; }
     public int ReleasePageRequests { get; private set; }
     public int AttemptPageRequests { get; private set; }
+    public List<ClientUpdateReleaseModel> PublishedPrereleases { get; } = [];
 
     public Task<List<ClientArtifactSummaryModel>> ListAsync(string? rid, CancellationToken ct = default) => Task.FromResult(new List<ClientArtifactSummaryModel>());
     public Task<List<ClientUpdateReleaseModel>> ListUpdateReleasesAsync(string? rid, CancellationToken ct = default) => Task.FromResult(new List<ClientUpdateReleaseModel> { _release });
@@ -2097,6 +2099,9 @@ internal sealed class FixtureClientArtifactsService : IClientArtifactsService
     public Task<ClientUpdateReleasePageModel> GetUpdateReleasePageAsync(int page, int pageSize, string? search = null, string? runtimeId = null, string? version = null, string? channel = null, bool? enabled = null, CancellationToken ct = default)
     {
         ReleasePageRequests++;
+        if (channel == "prerelease" && enabled == true)
+            return Task.FromResult(new ClientUpdateReleasePageModel
+            { Total = PublishedPrereleases.Count, Page = page, PageSize = pageSize, Items = PublishedPrereleases });
         return Task.FromResult(new ClientUpdateReleasePageModel { Total = 1, Page = page, PageSize = pageSize, Items = [_release] });
     }
 

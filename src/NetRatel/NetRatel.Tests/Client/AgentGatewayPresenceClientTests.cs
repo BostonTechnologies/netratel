@@ -338,7 +338,8 @@ public sealed class AgentGatewayPresenceClientTests
     [Fact]
     public async Task RunAsync_CancelsExtensionsBeforeReconnectingAfterTransportDisconnect()
     {
-        var gateway = new RefreshGatewayService(disconnectAfterFirstHeartbeat: true);
+        var firstExtensionStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var gateway = new RefreshGatewayService(disconnectAfterFirstHeartbeat: firstExtensionStarted.Task);
         using var host = await BuildHostAsync(gateway);
         using var stopping = new CancellationTokenSource();
         var extensionCleanupStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -366,7 +367,9 @@ public sealed class AgentGatewayPresenceClientTests
                     "updater activation heartbeat must be accepted before optional extensions start");
                 sessions.Enqueue(session);
                 sessionToken = token;
-                return HoldExtensionUntilReleasedAsync(token, extensionCleanupStarted, extensionCleanupRelease);
+                var extension = HoldExtensionUntilReleasedAsync(token, extensionCleanupStarted, extensionCleanupRelease);
+                if (session.ConnectionEpoch == 1) firstExtensionStarted.TrySetResult();
+                return extension;
             },
             updateHandler: updateHandler,
             createChannel: _ => GrpcChannel.ForAddress("http://localhost",
@@ -564,7 +567,7 @@ public sealed class AgentGatewayPresenceClientTests
     private sealed class RefreshGatewayService : global::NetRatel.AgentGateway.Contracts.V1.AgentGateway.AgentGatewayBase
     {
         private readonly string _presenceAuthority;
-        private readonly bool _disconnectAfterFirstHeartbeat;
+        private readonly Task? _disconnectAfterFirstHeartbeat;
         private readonly string? _heartbeatMismatch;
         private readonly bool _holdFirstHeartbeatAcknowledgement;
         private int _connectionEpoch;
@@ -572,7 +575,7 @@ public sealed class AgentGatewayPresenceClientTests
 
         public RefreshGatewayService(
             string presenceAuthority = "akka",
-            bool disconnectAfterFirstHeartbeat = false,
+            Task? disconnectAfterFirstHeartbeat = null,
             string? heartbeatMismatch = null,
             bool holdFirstHeartbeatAcknowledgement = false)
         {
@@ -645,9 +648,12 @@ public sealed class AgentGatewayPresenceClientTests
                         }
                     }).ConfigureAwait(false);
 
-                    if (connectionEpoch == 1 && _disconnectAfterFirstHeartbeat &&
+                    if (connectionEpoch == 1 && _disconnectAfterFirstHeartbeat is not null &&
                         Interlocked.Exchange(ref _disconnectIssued, 1) == 0)
                     {
+                        // This scenario requires a running extension. An ACK write alone
+                        // does not prove that the client consumed it before the stream closes.
+                        await _disconnectAfterFirstHeartbeat.WaitAsync(context.CancellationToken).ConfigureAwait(false);
                         return;
                     }
 

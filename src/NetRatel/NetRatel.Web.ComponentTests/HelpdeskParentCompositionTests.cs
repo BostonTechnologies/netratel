@@ -54,6 +54,24 @@ public sealed class HelpdeskParentCompositionTests : AsyncBunitContext
         });
     }
 
+    [Fact]
+    public void System_connections_are_default_and_personal_credential_creation_belongs_to_its_own_tab()
+    {
+        JSInterop.Mode = JSRuntimeMode.Loose;
+        Services.AddMudServices(options => options.PopoverOptions.CheckForPopoverProvider = false);
+        Services.AddScoped<HelpdeskM2MApiClient>();
+        Services.AddSingleton<IHttpClientFactory, CompositionTransport>();
+        ComponentFactories.AddStub<HelpdeskConnectionsPanel>();
+        var page = Render<IntegrationCredentials>();
+
+        page.WaitForAssertion(() => Assert.Single(page.FindAll("[data-testid='open-system-connection']")));
+        Assert.Empty(page.FindAll("[data-testid='open-create-integration']"));
+        page.FindAll("[role='tab']").Single(tab => tab.TextContent.Trim() == "API & MCP credentials").Click();
+        Assert.Single(page.FindAll("[data-testid='open-create-integration']"));
+        Assert.Empty(page.FindAll("[data-testid='open-system-connection']"));
+        Assert.Contains("No API or MCP credentials yet", page.Markup);
+    }
+
     private sealed class CompositionTransport : HttpMessageHandler, IHttpClientFactory
     {
         public HttpClient CreateClient(string name) => new(this, disposeHandler: false) { BaseAddress = new Uri("https://api.example.test") };

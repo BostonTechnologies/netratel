@@ -72,7 +72,14 @@ public sealed class RatelDeskManualProfileProbeTests
             ((Dictionary<string, object?>)target["mapping"]!)[field] = field == "categoryIds" ? new[] { Guid.NewGuid().ToString("D") } : "another-target";
         else target[field] = Guid.NewGuid().ToString("D");
         f.Handler.Responses.Enqueue(JsonReply(Capability())); f.Handler.Responses.Enqueue(JsonReply(target));
-        await ((Func<Task>)(() => f.Probe.CaptureAsync(Connector, Source, Bearer, default))).Should().ThrowAsync<InvalidDataException>();
+        Func<Task> capture = () => f.Probe.CaptureAsync(Connector, Source, Bearer, default);
+        if (field == "receiverInstanceId")
+        {
+            var error = (await capture.Should().ThrowAsync<RatelDeskReceiverReadException>()).Which;
+            error.Code.Should().Be("receiver-identity-mismatch");
+            error.HttpStatus.Should().BeNull();
+        }
+        else await capture.Should().ThrowAsync<InvalidDataException>();
         (f.Handler.Requests.Count).Should().Be(2);
     }
 
