@@ -1,8 +1,11 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
 
-namespace NetRatel.Infrastructure.Auth;
+namespace NetRatel.Client.Service.Auth;
 
 /// <summary>Public device context observed by the native client, never inferred from its proxy.</summary>
 public static class AgentDeviceIdentity

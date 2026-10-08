@@ -1,5 +1,5 @@
 using System.Net;
-using NetRatel.Infrastructure.Auth;
+using NetRatel.Client.Service.Auth;
 using Xunit;
 
 namespace NetRatel.Tests.Client;

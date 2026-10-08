@@ -12,7 +12,6 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using NetRatel.Client.Service.Logging;
-using NetRatel.Client.Service.Powershell;
 using NetRatel.Shared.Contracts.Execution;
 using NetRatel.Shared.Contracts.Tasks;
 using NetRatel.Shared.Service.Shells;
@@ -23,8 +22,8 @@ namespace NetRatel.Client.Service.Shells
 
     public sealed class ExternalShellRunner
     {
-        // Live view over the singleton inventory
-        private ShellInventory Inv => ClientRuntime.Shells;
+        private readonly Func<string, string?> _resolveExecutable;
+        private string? FindShell(string keyword) => _resolveExecutable(keyword);
 
         public sealed class RunResult
         {
@@ -42,8 +41,14 @@ namespace NetRatel.Client.Service.Shells
         private readonly TimeSpan _defaultTimeout;
 
         public ExternalShellRunner(TimeSpan? defaultTimeout = null)
+            : this(defaultTimeout, ShellExecutableResolver.Resolve)
+        {
+        }
+
+        internal ExternalShellRunner(TimeSpan? defaultTimeout, Func<string, string?> resolveExecutable)
         {
             _defaultTimeout = defaultTimeout ?? TimeSpan.FromMinutes(5);
+            _resolveExecutable = resolveExecutable;
         }
 
         public Task<RunResult> RunShellCommandAsync(ExecShellCommandPayload payload, CancellationToken ct)
@@ -55,6 +60,24 @@ namespace NetRatel.Client.Service.Shells
             CancellationToken ct,
             IReadOnlyDictionary<string, string>? parameters)
             => RunScriptByTypeAsync(payload.ScriptType, payload.Preferred, scriptContent, payload.WorkingDirectory, payload.TimeoutSeconds, ct, parameters);
+
+        public Task<RunResult> RunPowerShellScriptAsync(
+            string content,
+            ShellExecutor preferred,
+            string? workingDirectory,
+            int? timeoutSeconds,
+            CancellationToken ct)
+            => RunPowerShellScriptFileAsync(preferred, content, workingDirectory, timeoutSeconds, ct, parameters: null);
+
+        internal Task<RunResult> RunPowerShellScriptAsync(
+            string content,
+            ShellExecutor preferred,
+            string? workingDirectory,
+            int? timeoutSeconds,
+            CancellationToken ct,
+            string requirementsContent)
+            => RunPowerShellScriptFileAsync(preferred, content, workingDirectory, timeoutSeconds, ct,
+                parameters: null, requirementsContent);
 
         private Task<RunResult> RunByPreferenceAsync(ShellExecutor pref, string command, string? cwd, int? timeoutSec, CancellationToken ct)
         {
@@ -70,11 +93,8 @@ namespace NetRatel.Client.Service.Shells
 
             if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             {
-                var bestPs = Inv.Find("pwsh") ?? Inv.Find("powershell");
-                if (bestPs?.Keyword.Equals("pwsh", StringComparison.OrdinalIgnoreCase) == true)
-                    return RunPwshCommandAsync(command, cwd, timeout, ct);
-                if (bestPs != null)
-                    return RunWinPSCommandAsync(command, cwd, timeout, ct);
+                if (FindShell("pwsh") is not null || FindShell("powershell") is not null)
+                    return RunViaTempPs1Async(ResolvePowerShellHost(ShellExecutor.Auto, command, FindShell, isWindows: true), command, timeout, cwd, ct);
                 return RunCmdCommandAsync(command, cwd, timeout, ct);
             }
 
@@ -121,7 +141,8 @@ namespace NetRatel.Client.Service.Shells
             string? cwd,
             int? timeoutSec,
             CancellationToken ct,
-            IReadOnlyDictionary<string, string>? parameters)
+            IReadOnlyDictionary<string, string>? parameters,
+            string? requirementsContent = null)
         {
             var timeout = TimeSpan.FromSeconds(timeoutSec ?? (int)_defaultTimeout.TotalSeconds);
             var scriptPath = WritePrivateTemp(".ps1", content);
@@ -129,32 +150,42 @@ namespace NetRatel.Client.Service.Shells
 
             try
             {
-                var (shellPath, _) = ResolvePowerShellHost(pref);
-                if (parameters is { Count: > 0 })
+                var shellPath = ResolvePowerShellHost(pref, requirementsContent ?? content, FindShell, OperatingSystem.IsWindows());
+                var hasParameters = parameters is { Count: > 0 };
+                var windowsPowerShell = OperatingSystem.IsWindows() &&
+                    Path.GetFileName(shellPath).Equals("powershell.exe", StringComparison.OrdinalIgnoreCase);
+                if (hasParameters || windowsPowerShell)
                 {
                     static string Esc(string? value) => (value ?? string.Empty).Replace("'", "''");
 
                     var wrapper = new StringBuilder();
-                    wrapper.AppendLine("$ErrorActionPreference = 'Stop'");
-                    wrapper.AppendLine("$ProgressPreference = 'SilentlyContinue'");
-                    wrapper.AppendLine("$__netratelParams = @{}");
-
-                    foreach (var kv in parameters)
+                    wrapper.Append(PowerShellUtf8Output);
+                    if (hasParameters)
                     {
-                        if (string.IsNullOrWhiteSpace(kv.Key)) continue;
-                        var name = kv.Key.Trim().TrimStart('-');
-                        if (name.Length == 0) continue;
-                        wrapper.Append("$__netratelParams['")
-                               .Append(Esc(name))
-                               .Append("'] = '")
-                               .Append(Esc(kv.Value))
-                               .AppendLine("'");
+                        wrapper.AppendLine("$ErrorActionPreference = 'Stop'");
+                        wrapper.AppendLine("$ProgressPreference = 'SilentlyContinue'");
+                        wrapper.AppendLine("$__netratelParams = @{}");
+                        foreach (var kv in parameters!)
+                        {
+                            if (string.IsNullOrWhiteSpace(kv.Key)) continue;
+                            var name = kv.Key.Trim().TrimStart('-');
+                            if (name.Length == 0) continue;
+                            wrapper.Append("$__netratelParams['")
+                                   .Append(Esc(name))
+                                   .Append("'] = '")
+                                   .Append(Esc(kv.Value))
+                                   .AppendLine("'");
+                        }
+                        wrapper.Append("& '").Append(Esc(scriptPath)).AppendLine("' @__netratelParams");
+                        wrapper.AppendLine("exit $LASTEXITCODE");
                     }
-
-                    wrapper.Append("& '")
-                           .Append(Esc(scriptPath))
-                           .AppendLine("' @__netratelParams");
-                    wrapper.AppendLine("exit $LASTEXITCODE");
+                    else
+                    {
+                        // Dot-sourcing keeps an explicit script exit in the outer
+                        // host, without turning a native command's status into a
+                        // script exit code when the original script did not do so.
+                        wrapper.Append(". '").Append(Esc(scriptPath)).AppendLine("'");
+                    }
 
                     wrapperPath = WritePrivateTemp(".ps1", wrapper.ToString());
                 }
@@ -162,7 +193,7 @@ namespace NetRatel.Client.Service.Shells
                 var fileToRun = wrapperPath ?? scriptPath;
                 var argsText = $"-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {QuoteArgument(fileToRun)}";
                 LogManager.WriteLog($"[Shell] {shellPath} {MaskArgumentsForLog(argsText)}");
-                return await StartAsync(shellPath, argsText, cwd, timeout, ct).ConfigureAwait(false);
+                return await StartAsync(shellPath, argsText, cwd, timeout, ct, outputEncoding: Encoding.UTF8).ConfigureAwait(false);
             }
             finally
             {
@@ -175,13 +206,13 @@ namespace NetRatel.Client.Service.Shells
         }
 
         private Task<RunResult> RunPwshCommandAsync(string command, string? cwd, TimeSpan timeout, CancellationToken ct)
-            => RunViaTempPs1Async(Inv.Find("pwsh")?.Path ?? Throw("pwsh"), command, timeout, cwd, ct, isPwsh: true);
+            => RunViaTempPs1Async(ResolvePowerShellHost(ShellExecutor.Pwsh, command, FindShell, OperatingSystem.IsWindows()), command, timeout, cwd, ct);
 
         private Task<RunResult> RunWinPSCommandAsync(string command, string? cwd, TimeSpan timeout, CancellationToken ct)
-            => RunViaTempPs1Async(Inv.Find("powershell")?.Path ?? Throw("powershell"), command, timeout, cwd, ct, isPwsh: false);
+            => RunViaTempPs1Async(ResolvePowerShellHost(ShellExecutor.WindowsPowerShell, command, FindShell, OperatingSystem.IsWindows()), command, timeout, cwd, ct);
 
         private Task<RunResult> RunBashCommandAsync(string command, string? cwd, TimeSpan timeout, CancellationToken ct)
-            => RunDirectAsync((Inv.Find("bash")?.Path ?? Inv.Find("sh")?.Path) ?? Throw("bash/sh"), "-lc", command, timeout, cwd, ct);
+            => RunDirectAsync((FindShell("bash") ?? FindShell("sh")) ?? Throw("bash/sh"), "-lc", command, timeout, cwd, ct);
 
         private Task<RunResult> RunBashScriptAsync(
             string script,
@@ -192,7 +223,7 @@ namespace NetRatel.Client.Service.Shells
         {
             var timeout = TimeSpan.FromSeconds(timeoutSeconds ?? (int)_defaultTimeout.TotalSeconds);
             var environment = CreateBashParameterEnvironment(parameters);
-            var shellPath = (Inv.Find("bash")?.Path ?? Inv.Find("sh")?.Path) ?? Throw("bash/sh");
+            var shellPath = (FindShell("bash") ?? FindShell("sh")) ?? Throw("bash/sh");
             return RunDirectAsync(shellPath, "-lc", script, timeout, cwd, ct, environment);
         }
 
@@ -223,13 +254,7 @@ namespace NetRatel.Client.Service.Shells
 
         private Task<RunResult> RunCmdCommandAsync(string command, string? cwd, TimeSpan timeout, CancellationToken ct)
         {
-            var cap = Inv.Find("cmd");
-            var path = cap?.Path ?? Environment.GetEnvironmentVariable("ComSpec"); // e.g., C:\Windows\System32\cmd.exe
-            if (string.IsNullOrWhiteSpace(path) || (!path.Equals("cmd.exe", StringComparison.OrdinalIgnoreCase) && !File.Exists(path)))
-            {
-                // last resort: let PATH resolve
-                path = "cmd.exe";
-            }
+            var path = FindShell("cmd") ?? Throw("cmd");
             return RunDirectAsync(path, "/d /s /c", command, timeout, cwd, ct);
         }
 
@@ -238,6 +263,7 @@ namespace NetRatel.Client.Service.Shells
         private static string WrapPSBlock(string userCode)
         {
             var sb = new StringBuilder();
+            sb.Append(PowerShellUtf8Output);
             sb.AppendLine("$ErrorActionPreference = 'Stop'");
             sb.AppendLine("$ProgressPreference = 'SilentlyContinue'");
             sb.AppendLine("try {");
@@ -250,6 +276,9 @@ namespace NetRatel.Client.Service.Shells
             return sb.ToString();
         }
 
+        private const string PowerShellUtf8Output =
+            "[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)\n$OutputEncoding = [Console]::OutputEncoding\n";
+
         internal static string WritePrivateTemp(string ext, string contents)
             => WritePrivateTemp(ext, contents, tempRootOverride: null);
 
@@ -259,7 +288,11 @@ namespace NetRatel.Client.Service.Shells
             try
             {
                 var path = Path.Combine(privateDirectory, $"netratel_{Guid.NewGuid():N}{ext}");
-                File.WriteAllText(path, contents, new UTF8Encoding(false));
+                // Windows PowerShell 5.1 reads BOM-less scripts as the system ANSI
+                // encoding. Both external engines understand a UTF-8 script BOM.
+                var powerShellScript = ext.Equals(".ps1", StringComparison.OrdinalIgnoreCase);
+                var scriptContents = powerShellScript && contents.StartsWith('\uFEFF') ? contents[1..] : contents;
+                File.WriteAllText(path, scriptContents, new UTF8Encoding(powerShellScript));
                 return path;
             }
             catch
@@ -553,7 +586,7 @@ namespace NetRatel.Client.Service.Shells
             }
         }
 
-        private async Task<RunResult> RunViaTempPs1Async(string shellPath, string command, TimeSpan timeout, string? cwd, CancellationToken ct, bool isPwsh)
+        private async Task<RunResult> RunViaTempPs1Async(string shellPath, string command, TimeSpan timeout, string? cwd, CancellationToken ct)
         {
             var ps1 = WritePrivateTemp(".ps1", WrapPSBlock(command));
             try
@@ -563,7 +596,7 @@ namespace NetRatel.Client.Service.Shells
                 args.Append("-File ").Append(QuoteArgument(ps1));
                 var argsText = args.ToString();
                 LogManager.WriteLog($"[Shell] {shellPath} {MaskArgumentsForLog(argsText)}");
-                return await StartAsync(shellPath, argsText, cwd, timeout, ct).ConfigureAwait(false);
+                return await StartAsync(shellPath, argsText, cwd, timeout, ct, outputEncoding: Encoding.UTF8).ConfigureAwait(false);
             }
             finally
             {
@@ -584,115 +617,109 @@ namespace NetRatel.Client.Service.Shells
             return StartAsync(shellPath, args, cwd, timeout, ct, environment);
         }
 
-        private (string Path, bool IsPwsh) ResolvePowerShellHost(ShellExecutor preference)
+        internal static string ResolvePowerShellHost(
+            ShellExecutor preference,
+            string script,
+            Func<string, string?> resolve,
+            bool isWindows)
         {
             if (preference == ShellExecutor.Pwsh)
+                return resolve("pwsh") ?? Throw("pwsh");
+            if (preference == ShellExecutor.WindowsPowerShell)
             {
-                var explicitPwsh = Inv.Find("pwsh")?.Path;
-                if (!string.IsNullOrWhiteSpace(explicitPwsh))
-                {
-                    return (explicitPwsh!, true);
-                }
+                if (!isWindows) throw new InvalidOperationException("Windows PowerShell requires Windows; install and select pwsh on this platform.");
+                return resolve("powershell") ?? Throw("Windows PowerShell");
             }
-            else if (preference == ShellExecutor.WindowsPowerShell)
-            {
-                var explicitWinPs = Inv.Find("powershell")?.Path;
-                if (!string.IsNullOrWhiteSpace(explicitWinPs))
-                {
-                    return (explicitWinPs!, false);
-                }
+            if (preference != ShellExecutor.Auto)
+                throw new InvalidOperationException($"PowerShell scripts require a PowerShell executor, not {preference}.");
 
-                var resolvedWin = TryResolveExecutable(OperatingSystem.IsWindows() ? "powershell.exe" : "powershell");
-                if (!string.IsNullOrWhiteSpace(resolvedWin))
-                {
-                    return (resolvedWin!, false);
-                }
-            }
-
-            var pwsh = Inv.Find("pwsh")?.Path;
-            if (!string.IsNullOrWhiteSpace(pwsh))
+            // Only choose an engine for the supported #requires engine/version hints.
+            // The selected external engine still parses and validates the original
+            // script, including all other #requires options and exact versions.
+            var requiresDesktop = false;
+            var requiresCore = false;
+            foreach (var options in ReadPowerShellRequirements(script))
             {
-                return (pwsh!, true);
+                var edition = PowerShellEditionPattern.Match(options).Groups["edition"].Value;
+                requiresDesktop |= edition.Equals("Desktop", StringComparison.OrdinalIgnoreCase);
+                requiresCore |= edition.Equals("Core", StringComparison.OrdinalIgnoreCase);
+                var versionText = PowerShellVersionPattern.Match(options).Groups["version"].Value;
+                if (Version.TryParse(versionText.Contains('.') ? versionText : versionText + ".0", out var version) &&
+                    (version.Major > 5 || version.Major == 5 && version.Minor > 1)) requiresCore = true;
             }
 
-            var winPs = Inv.Find("powershell")?.Path;
-            if (!string.IsNullOrWhiteSpace(winPs))
+            if (requiresDesktop)
             {
-                return (winPs!, false);
+                if (!isWindows) throw new InvalidOperationException("The script requires Windows PowerShell (Desktop edition), which is unavailable on this platform.");
+                if (requiresCore) throw new InvalidOperationException("The script requires incompatible PowerShell Desktop and Core versions or editions.");
+                return resolve("powershell") ?? Throw("Windows PowerShell required by #requires -PSEdition Desktop");
             }
 
-            return FindPwshOrWindowsPowerShell();
+            var pwsh = resolve("pwsh");
+            if (pwsh is not null) return pwsh;
+            if (isWindows && !requiresCore)
+                return resolve("powershell") ?? Throw("pwsh or Windows PowerShell");
+            return Throw(requiresCore ? "pwsh required by the script's #requires engine/version directive" : "pwsh");
         }
 
-        private static (string Path, bool IsPwsh) FindPwshOrWindowsPowerShell()
+        private static IEnumerable<string> ReadPowerShellRequirements(string script)
         {
-            var pwshNames = OperatingSystem.IsWindows()
-                ? new[] { "pwsh.exe", "pwsh" }
-                : new[] { "pwsh", "pwsh.exe" };
-            foreach (var name in pwshNames)
+            using var reader = new StringReader(script);
+            var blockCommentDepth = 0;
+            char? quote = null;
+            string? hereStringEnd = null;
+            while (reader.ReadLine() is { } line)
             {
-                var resolved = TryResolveExecutable(name);
-                if (!string.IsNullOrWhiteSpace(resolved))
+                var offset = 0;
+                if (hereStringEnd is not null)
                 {
-                    return (resolved!, true);
+                    if (!line.StartsWith(hereStringEnd, StringComparison.Ordinal)) continue;
+                    offset = hereStringEnd.Length;
+                    hereStringEnd = null;
                 }
-            }
-
-            var winPsNames = OperatingSystem.IsWindows()
-                ? new[] { "powershell.exe", "powershell" }
-                : new[] { "powershell" };
-            foreach (var name in winPsNames)
-            {
-                var resolved = TryResolveExecutable(name);
-                if (!string.IsNullOrWhiteSpace(resolved))
+                for (var index = offset; index < line.Length; index++)
                 {
-                    return (resolved!, false);
-                }
-            }
-
-            var fallback = OperatingSystem.IsWindows() ? "powershell.exe" : "pwsh";
-            var isPwsh = !fallback.Contains("power", StringComparison.OrdinalIgnoreCase);
-            return (fallback, isPwsh);
-        }
-
-        private static string? TryResolveExecutable(string candidate)
-        {
-            if (string.IsNullOrWhiteSpace(candidate))
-            {
-                return null;
-            }
-
-            if (Path.IsPathRooted(candidate) && File.Exists(candidate))
-            {
-                return candidate;
-            }
-
-            var pathEnv = Environment.GetEnvironmentVariable("PATH");
-            if (string.IsNullOrWhiteSpace(pathEnv))
-            {
-                return null;
-            }
-
-            foreach (var segment in pathEnv.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
-            {
-                try
-                {
-                    var trimmed = segment.Trim();
-                    if (trimmed.Length == 0) continue;
-                    var probe = Path.Combine(trimmed, candidate);
-                    if (File.Exists(probe))
+                    var character = line[index];
+                    var next = index + 1 < line.Length ? line[index + 1] : '\0';
+                    if (blockCommentDepth > 0)
                     {
-                        return probe;
+                        if (character == '<' && next == '#') { blockCommentDepth++; index++; }
+                        else if (character == '#' && next == '>') { blockCommentDepth--; index++; }
+                        continue;
                     }
-                }
-                catch
-                {
-                    // ignore path resolution errors
+                    if (quote is not null)
+                    {
+                        if (quote == '"' && character == '`') { index++; continue; }
+                        if (character != quote) continue;
+                        if (quote == '\'' && next == '\'') { index++; continue; }
+                        quote = null;
+                        continue;
+                    }
+                    if (character == '`') { index++; continue; }
+                    if (character == '<' && next == '#') { blockCommentDepth++; index++; continue; }
+                    if (character == '#')
+                    {
+                        const string directive = "#requires";
+                        var comment = line[index..];
+                        if (comment.StartsWith(directive, StringComparison.OrdinalIgnoreCase) &&
+                            comment.Length > directive.Length && char.IsWhiteSpace(comment[directive.Length]))
+                            yield return comment[directive.Length..].Trim();
+                        break;
+                    }
+                    if (character == '@' && next is '\'' or '"' && string.IsNullOrWhiteSpace(line[(index + 2)..]))
+                    {
+                        hereStringEnd = next + "@";
+                        break;
+                    }
+                    if (character is '\'' or '"') quote = character;
                 }
             }
-
-            return null;
         }
+
+        private static readonly Regex PowerShellEditionPattern = new(
+            "(?:^|\\s)-PSEdition\\s+['\"]?(?<edition>Desktop|Core)['\"]?(?=\\s|$)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private static readonly Regex PowerShellVersionPattern = new(
+            @"(?:^|\s)-Version\s+(?<version>\d+(?:\.\d+){0,3})(?=\s|$)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         private static string QuoteArgument(string? value)
         {
@@ -784,7 +811,8 @@ namespace NetRatel.Client.Service.Shells
             string? cwd,
             TimeSpan timeout,
             CancellationToken ct,
-            IReadOnlyDictionary<string, string>? environment = null)
+            IReadOnlyDictionary<string, string>? environment = null,
+            Encoding? outputEncoding = null)
         {
             ct.ThrowIfCancellationRequested();
             var res = new RunResult();
@@ -795,6 +823,8 @@ namespace NetRatel.Client.Service.Shells
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
+                StandardOutputEncoding = outputEncoding,
+                StandardErrorEncoding = outputEncoding,
                 CreateNoWindow = true
             };
             if (environment is not null)

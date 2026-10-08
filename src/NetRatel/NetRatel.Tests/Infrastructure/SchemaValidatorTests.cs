@@ -1,8 +1,8 @@
 using AwesomeAssertions;
-using NetRatel.Shared.Tooling;
+using NetRatel.Infrastructure.Tooling;
 using Xunit;
 
-namespace NetRatel.Shared.Tests;
+namespace NetRatel.Tests.Infrastructure;
 
 public class SchemaValidatorTests
 {

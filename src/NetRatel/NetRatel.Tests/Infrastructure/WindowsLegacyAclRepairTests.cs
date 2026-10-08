@@ -4,7 +4,7 @@ using System.Runtime.Versioning;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using AwesomeAssertions;
-using NetRatel.Infrastructure.Auth;
+using NetRatel.Client.Service.Auth;
 using Xunit;
 
 namespace NetRatel.Tests.Infrastructure;

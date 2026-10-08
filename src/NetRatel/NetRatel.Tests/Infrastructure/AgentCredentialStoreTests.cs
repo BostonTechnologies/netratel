@@ -2,7 +2,9 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using AwesomeAssertions;
-using NetRatel.Infrastructure.Auth;
+using NetRatel.Application.ClientAuth;
+using NetRatel.Client.Service.Auth;
+using NetRatel.Shared.Security;
 using Xunit;
 
 namespace NetRatel.Tests.Infrastructure;
@@ -283,6 +285,59 @@ public sealed class AgentCredentialStoreTests
         finally
         {
             Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task UnixFallback_RetainsAnExistingEmbeddedProfileIdentityAndPendingExchange(bool configuredProfile)
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"netratel-agent-profile-{Guid.NewGuid():N}");
+        var accountHome = Path.Combine(directory, "account-home");
+        var executableDirectory = Path.Combine(directory, "application");
+        var oldProfileHome = configuredProfile ? Path.Combine(directory, "old-state") : null;
+        var legacyPath = Path.Combine(oldProfileHome ?? Path.Combine(executableDirectory, "_psprofile"),
+            ".local", "share", "netratel", "agent.dat");
+        var accountPath = Path.Combine(accountHome, ".local", "share", "netratel", "agent.dat");
+        var originalHome = Environment.GetEnvironmentVariable("HOME");
+        var originalUserProfile = Environment.GetEnvironmentVariable("USERPROFILE");
+
+        try
+        {
+            AgentCredentialStore.ResolveUnixFallbackPath(accountHome, executableDirectory, oldProfileHome)
+                .Should().Be(accountPath, "new installations use the executing account's intended home");
+            Directory.Exists(executableDirectory).Should().BeFalse("discovery must not recreate embedded profiles");
+
+            var original = new AgentCredentialStore(legacyPath,
+                machineNameProvider: () => "original-container", containerRuntimeProvider: () => true);
+            var key = await original.GetOrCreateAsync(CancellationToken.None);
+            var agent = Guid.NewGuid().ToString();
+            await original.SaveAsync(agent, "parent-token");
+            var pending = new PendingAgentRefreshExchange(1, Guid.NewGuid(), agent, "parent-token",
+                PopSignatureService.ComputeBodyHash($"{key.Algorithm.ToLowerInvariant()}:{key.PublicKey}"),
+                ["netratel:connect"]);
+            await original.BeginRefreshExchangeAsync(pending, CancellationToken.None);
+            var credentialsBefore = await File.ReadAllBytesAsync(legacyPath);
+            var journalBefore = await File.ReadAllBytesAsync(legacyPath + ".native-refresh");
+
+            var resolved = AgentCredentialStore.ResolveUnixFallbackPath(accountHome, executableDirectory, oldProfileHome);
+            resolved.Should().Be(legacyPath);
+            var restarted = new AgentCredentialStore(resolved,
+                machineNameProvider: () => OperatingSystem.IsLinux() ? "recreated-container" : "original-container",
+                containerRuntimeProvider: () => true);
+            (await restarted.LoadAsync()).Should().Be((agent, "parent-token"));
+            (await restarted.GetOrCreateAsync(CancellationToken.None)).Should().Be(key);
+            (await restarted.LoadPendingExchangeAsync(CancellationToken.None))!.ExchangeId.Should().Be(pending.ExchangeId);
+            (await File.ReadAllBytesAsync(legacyPath)).Should().Equal(credentialsBefore);
+            (await File.ReadAllBytesAsync(legacyPath + ".native-refresh")).Should().Equal(journalBefore);
+            File.Exists(accountPath).Should().BeFalse();
+            Environment.GetEnvironmentVariable("HOME").Should().Be(originalHome);
+            Environment.GetEnvironmentVariable("USERPROFILE").Should().Be(originalUserProfile);
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
         }
     }
 

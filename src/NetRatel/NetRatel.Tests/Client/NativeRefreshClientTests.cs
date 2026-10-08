@@ -3,10 +3,10 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using AwesomeAssertions;
 using NetRatel.Application.ClientAuth;
-using NetRatel.Infrastructure.Auth;
-using NetRatel.Infrastructure.Services;
+using NetRatel.Client.Service.Auth;
 using NetRatel.Tests.API;
 using Xunit;
+using NetRatel.Shared.Security;
 
 namespace NetRatel.Tests.Client;
 

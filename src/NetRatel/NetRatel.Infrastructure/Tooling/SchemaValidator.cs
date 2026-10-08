@@ -1,7 +1,7 @@
 using System.Collections.Generic;
 using NJsonSchema;
 
-namespace NetRatel.Shared.Tooling;
+namespace NetRatel.Infrastructure.Tooling;
 
 /// <summary>
 /// Provides JSON schema validation helpers.

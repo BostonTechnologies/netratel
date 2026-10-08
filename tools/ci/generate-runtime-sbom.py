@@ -37,13 +37,16 @@ def runtime_target(assets: dict, runtime: str | None) -> dict:
     raise ValueError("project assets file has no resolved targets")
 
 
-def packages_from_assets(assets_path: Path, runtime: str | None, distribution: Path) -> list[dict]:
+def packages_from_assets(assets_path: Path, runtime: str | None, distribution: Path,
+                         runtime_graph: Path | None = None) -> list[dict]:
     assets = json.loads(assets_path.read_text(encoding="utf-8"))
     name = assets["project"]["restore"]["projectName"]
-    deps_path = distribution / f"{name}.deps.json"
+    deps_path = runtime_graph or distribution / f"{name}.deps.json"
     distributed_graphs = list(distribution.glob("*.deps.json"))
-    if not deps_path.is_file() and len(distributed_graphs) == 1:
+    if not runtime_graph and not deps_path.is_file() and len(distributed_graphs) == 1:
         deps_path = distributed_graphs[0]
+    if runtime_graph and not deps_path.is_file():
+        raise ValueError(f"Explicit publish runtime graph does not exist: {runtime_graph}")
     if not deps_path.is_file():
         candidates = list((assets_path.parent.parent / "bin/Release").glob(
             f"*/{runtime}/{name}.deps.json" if runtime else f"*/{name}.deps.json"))
@@ -126,6 +129,8 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--project-assets", action="append", required=True, type=Path)
     parser.add_argument("--distribution", action="append", required=True, type=Path)
+    parser.add_argument("--runtime-graph", action="append", type=Path,
+                        help="Exact post-link/prebundle .deps.json; one per distribution when supplied")
     parser.add_argument("--runtime")
     parser.add_argument("--name", required=True)
     parser.add_argument("--version", required=True)
@@ -138,14 +143,17 @@ def main() -> int:
         parser.error("every --distribution input must be a directory")
     if len(args.project_assets) != len(args.distribution):
         parser.error("each distribution must have one matching project-assets input")
+    if args.runtime_graph and len(args.runtime_graph) != len(args.distribution):
+        parser.error("each distribution must have one matching --runtime-graph input")
     if len({path.name for path in args.distribution}) != len(args.distribution):
         parser.error("distribution basenames must be unique")
 
     root_id = spdx_id(args.name, "Package")
     dependency_packages = {
         package["SPDXID"]: package
-        for assets_path, distribution in zip(args.project_assets, args.distribution)
-        for package in packages_from_assets(assets_path, args.runtime, distribution)
+        for assets_path, distribution, runtime_graph in zip(
+            args.project_assets, args.distribution, args.runtime_graph or [None] * len(args.distribution))
+        for package in packages_from_assets(assets_path, args.runtime, distribution, runtime_graph)
     }
     files = []
     relationships = []

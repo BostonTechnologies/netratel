@@ -13,7 +13,7 @@ public sealed class CommandExitStatusTests
     public async Task Gateway_shell_command_accepts_camel_case_wire_payload()
     {
         var completion = new TaskCompletionSource<(string Status, string? Result, int? ExitCode)>(TaskCreationOptions.RunContinuationsAsynchronously);
-        using var manager = new ClientTaskManager(false, (_, status, result, code) =>
+        using var manager = new ClientTaskManager((_, status, result, code) =>
         {
             if (status is "completed" or "failed" or "cancelled") completion.TrySetResult((status, result, code));
             return Task.CompletedTask;
@@ -36,7 +36,7 @@ public sealed class CommandExitStatusTests
     public async Task Gateway_shell_status_uses_exit_code_and_preserves_both_output_streams(int exitCode, string expected)
     {
         var completion = new TaskCompletionSource<(string Status, string? Result, int? ExitCode)>(TaskCreationOptions.RunContinuationsAsynchronously);
-        using var manager = new ClientTaskManager(false, (_, status, result, code) =>
+        using var manager = new ClientTaskManager((_, status, result, code) =>
         {
             if (status is "completed" or "failed" or "cancelled") completion.TrySetResult((status, result, code));
             return Task.CompletedTask;

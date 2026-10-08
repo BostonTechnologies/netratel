@@ -222,8 +222,21 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
         self.assertEqual(["workflow_dispatch"], re.findall(r"(?m)^  ([A-Za-z_][A-Za-z_0-9-]*):", triggers.group(1)))
         jobs = manual.split("\njobs:\n", 1)
         self.assertEqual(2, len(jobs))
-        self.assertEqual(1, len(re.findall(r"(?m)^  ([A-Za-z_][A-Za-z_0-9-]*):", jobs[1])))
-        self.assertNotRegex(manual, r"(?m)^\s+matrix:", "A manual selection must not fan out into all functional suites.")
+        self.assertEqual(["selected-suite", "client-measurement"],
+                         re.findall(r"(?m)^  ([A-Za-z_][A-Za-z_0-9-]*):", jobs[1]))
+        selected, measurement = jobs[1].split("\n  client-measurement:", 1)
+        self.assertNotRegex(selected, r"(?m)^\s+matrix:", "A functional suite selection must not fan out into other functional suites.")
+        self.assertIn("if: inputs.suite != 'client-measurement'", selected)
+        self.assertIn("if: inputs.suite == 'client-measurement'", measurement)
+        self.assertIn("fromJSON(inputs.assessment_only", measurement,
+                      "The first trim assessment must permit a single Linux job without repeating A/B.")
+        self.assertIn("if: ${{ !inputs.assessment_only }}", measurement)
+        self.assertIn("!cancelled() && !inputs.assessment_only", measurement)
+        self.assertIn("--source client-baseline", measurement)
+        self.assertIn("--source .", measurement)
+        self.assertNotIn("dotnet build", measurement)
+        self.assertNotIn("build-public-image", measurement)
+        self.assertNotIn("continue-on-error", measurement)
         self.assertNotRegex(manual, r"(?m)^\s+needs:", "Manual suites must not depend on automatic validation.")
         self.assertIn('source_sha="$(git rev-parse HEAD)"', manual)
         self.assertIn('"sourceSha": sys.argv[1]', manual)
@@ -1605,6 +1618,49 @@ class ReleasePublishMetadataTests(unittest.TestCase):
                     [jq, "-r", jq_filter], input=json.dumps(metadata), capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stdout.removesuffix("\n"), expected)
+
+
+class ClientRuntimeContentTests(unittest.TestCase):
+    def setUp(self):
+        self.content = module("verify-client-runtime-content")
+        self.sbom = module("generate-runtime-sbom")
+
+    def test_supported_external_helpers_survive_and_embedded_engine_and_server_assets_fail(self):
+        document = {"packages": [{"name": "NetRatel.Client"}, {"name": "SIPSorcery"}],
+                    "files": [{"fileName": "netratel-client-win-x64/updater/netratel-update.ps1"}]}
+        self.content.verify(document)
+        for name in ("Microsoft.PowerShell.SDK", "System.Management.Automation", "NetRatel.Infrastructure",
+                     "Microsoft.EntityFrameworkCore.Relational", "Npgsql", "NJsonSchema"):
+            with self.subTest(package=name), self.assertRaisesRegex(ValueError, "removed dependency"):
+                self.content.verify({**document, "packages": [{"name": name}]})
+        for path in ("netratel-client-linux-x64/powershell.config.json", "System.Management.Automation.dll",
+                     "runtimes/unix/lib/net9.0/Modules/Microsoft.PowerShell.Management/Microsoft.PowerShell.Management.psd1",
+                     "NetRatel.Infrastructure.dll"):
+            with self.subTest(path=path), self.assertRaisesRegex(ValueError, "removed engine/server content"):
+                self.content.verify(document, inputs=[path])
+
+    def test_explicit_final_graph_excludes_restored_and_stale_untrimmed_dependencies(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            assets = root / "project.assets.json"
+            assets.write_text(json.dumps({"project": {"restore": {"projectName": "NetRatel.Client"}},
+                                          "packageFolders": {}, "targets": {"net10.0/linux-x64": {
+                                              "Microsoft.PowerShell.SDK/7.6.6": {"type": "package"}}}}))
+            distribution = root / "distribution"
+            distribution.mkdir()
+            stale_graph = {"runtimeTarget": {"name": "net10.0/linux-x64"},
+                           "targets": {"net10.0/linux-x64": {"Microsoft.PowerShell.SDK/7.6.6": {}}},
+                           "libraries": {"Microsoft.PowerShell.SDK/7.6.6": {"type": "package"}}}
+            (distribution / "NetRatel.Client.deps.json").write_text(json.dumps(stale_graph))
+            final_graph = root / "final.deps.json"
+            final_graph.write_text(json.dumps({"runtimeTarget": {"name": "net10.0/linux-x64"},
+                                               "targets": {"net10.0/linux-x64": {"NetRatel.Client/1.0.0": {}, "SIPSorcery/10.0.16": {}}},
+                                               "libraries": {"NetRatel.Client/1.0.0": {"type": "project"},
+                                                             "SIPSorcery/10.0.16": {"type": "package"}}}))
+            packages = self.sbom.packages_from_assets(assets, "linux-x64", distribution, final_graph)
+            self.assertEqual(["NetRatel.Client", "SIPSorcery"], [package["name"] for package in packages])
+            with self.assertRaisesRegex(ValueError, "Explicit publish runtime graph does not exist"):
+                self.sbom.packages_from_assets(assets, "linux-x64", distribution, root / "missing.deps.json")
 
 
 class DistributionTests(unittest.TestCase):

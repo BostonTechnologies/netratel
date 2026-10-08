@@ -7,7 +7,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using NetRatel.Client.Service.Gateway;
 using NetRatel.Client.Service.Logging;
-using NetRatel.Infrastructure.Auth;
+using NetRatel.Client.Service.Auth;
 
 namespace NetRatel.ServiceLink.NativeRunner;
 
@@ -76,7 +76,7 @@ internal static class Program
             }
             // Preserve all production #160 admission/heartbeat/renewal/teardown defaults.
             var options = new GatewayClientOptions { Endpoint = input.GatewayEndpoint };
-            var jobs = new AgentJobGatewayClient(options, useInProcPowerShell: false, RecordEvent);
+            var jobs = new AgentJobGatewayClient(options, RecordEvent);
             var presence = new AgentGatewayPresenceClient(options, tokens, input.TenantId, agentId,
                 clientVersion, [], RecordEvent,
                 runForPresenceSession: jobs.RunForPresenceSessionAsync);

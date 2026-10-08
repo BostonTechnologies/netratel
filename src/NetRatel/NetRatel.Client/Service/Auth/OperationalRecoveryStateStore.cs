@@ -1,7 +1,6 @@
 using System;
 using System.IO;
 using System.Text.Json;
-using NetRatel.Infrastructure.Auth;
 
 namespace NetRatel.Client.Service.Auth;
 

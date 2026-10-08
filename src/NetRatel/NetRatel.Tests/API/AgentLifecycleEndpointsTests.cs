@@ -22,6 +22,7 @@ using NetRatel.Application.Agents;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.Services;
 using Xunit;
+using NetRatel.Shared.Security;
 
 namespace NetRatel.Tests.API;
 

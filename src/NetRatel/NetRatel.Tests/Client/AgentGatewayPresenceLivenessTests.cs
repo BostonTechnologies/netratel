@@ -10,7 +10,6 @@ using NetRatel.Application.ClientAuth;
 using NetRatel.Application.Agents;
 using IAgentTokenService = NetRatel.Application.ClientAuth.IAgentTokenService;
 using NetRatel.API.Gateway;
-using NetRatel.Infrastructure.Auth;
 using NetRatel.Tests.API;
 using NetRatel.Client.Service.Auth;
 using NetRatel.Client.Service.Gateway;

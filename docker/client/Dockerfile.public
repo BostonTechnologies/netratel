@@ -19,7 +19,6 @@ RUN set -eux; \
 COPY ["global.json", "Directory.Build.props", "Directory.Build.targets", "./"]
 COPY ["src/NetRatel/NetRatel.Client/NetRatel.Client.csproj", "src/NetRatel/NetRatel.Client/"]
 COPY ["src/NetRatel/NetRatel.Application/NetRatel.Application.csproj", "src/NetRatel/NetRatel.Application/"]
-COPY ["src/NetRatel/NetRatel.Infrastructure/NetRatel.Infrastructure.csproj", "src/NetRatel/NetRatel.Infrastructure/"]
 COPY ["src/NetRatel/NetRatel.Shared/NetRatel.Shared.csproj", "src/NetRatel/NetRatel.Shared/"]
 COPY ["src/NetRatel/NetRatel.AgentGateway.Contracts/NetRatel.AgentGateway.Contracts.csproj", "src/NetRatel/NetRatel.AgentGateway.Contracts/"]
 RUN dotnet restore "src/NetRatel/NetRatel.Client/NetRatel.Client.csproj" --runtime linux-x64
@@ -52,6 +51,5 @@ RUN set -eux; \
 WORKDIR /app
 COPY --from=build --chown=netratel:netratel /out ./
 COPY --chown=netratel:netratel LICENSE NOTICE /app/licenses/
-ENV NETRATEL_POWERSHELL_HOME=/var/lib/netratel/powershell
 USER netratel
 ENTRYPOINT ["/app/NetRatel.Client"]

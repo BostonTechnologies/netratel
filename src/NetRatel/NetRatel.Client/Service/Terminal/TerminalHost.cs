@@ -1,4 +1,5 @@
 using NetRatel.Client.Service.Logging;
+using NetRatel.Shared.Service.Shells;
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
@@ -198,47 +199,7 @@ internal sealed class TerminalHostFactory
         };
 
     internal static string? ResolveExecutable(string exeName)
-    {
-        var normalized = exeName switch
-        {
-            "powershell" => RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "powershell.exe" : "powershell",
-            "cmd" => RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "cmd.exe" : "cmd",
-            _ => exeName
-        };
-
-        if (Path.IsPathRooted(normalized) && File.Exists(normalized))
-        {
-            return normalized;
-        }
-
-        var pathDirs = Environment.GetEnvironmentVariable("PATH")?
-            .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
-            ?? Array.Empty<string>();
-
-        var extensions = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
-            ? new[] { "", ".exe", ".cmd", ".bat" }
-            : new[] { "" };
-
-        foreach (var dir in pathDirs)
-        {
-            foreach (var extension in extensions)
-            {
-                try
-                {
-                    var candidate = Path.Combine(dir, normalized + extension);
-                    if (File.Exists(candidate))
-                    {
-                        return candidate;
-                    }
-                }
-                catch
-                {
-                }
-            }
-        }
-
-        return null;
-    }
+        => ShellExecutableResolver.Resolve(exeName);
 }
 
 internal sealed class UnixPtyHelperTerminalHost : ITerminalHostSession

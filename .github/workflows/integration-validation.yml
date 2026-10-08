@@ -4,10 +4,10 @@ on:
   workflow_dispatch:
     inputs:
       suite:
-        description: Run only this functional suite on Linux
+        description: Run only this optional suite (client measurements use matching hosted OS runners)
         type: choice
         required: true
-        options: [service-link, gateway, browser, deployment, release-images, native-client, physical-incident, upgrade-local, upgrade-oidc]
+        options: [service-link, gateway, browser, deployment, release-images, native-client, physical-incident, upgrade-local, upgrade-oidc, client-measurement]
       source_ref:
         description: Source ref to test (published-image and upgrade suites use release_tag)
         default: main
@@ -15,6 +15,18 @@ on:
       release_tag:
         description: Existing completed public release tag, required for published-image and upgrade suites
         required: false
+      baseline_ref:
+        description: Baseline commit/ref for client-measurement only; resolved and recorded once per checkout
+        default: main
+        required: false
+      client_trim_diagnostic:
+        description: Include one linux-x64 trimmed JIT assessment for client-measurement
+        type: boolean
+        default: true
+      assessment_only:
+        description: Client measurement only - run a single linux-x64 trim assessment without repeating A/B publishes
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -23,6 +35,7 @@ permissions:
 jobs:
   selected-suite:
     name: Manual ${{ inputs.suite }} (Linux)
+    if: inputs.suite != 'client-measurement'
     runs-on: ubuntu-latest
     timeout-minutes: ${{ (inputs.suite == 'native-client' || inputs.suite == 'deployment' || inputs.suite == 'upgrade-local' || inputs.suite == 'upgrade-oidc') && 45 || inputs.suite == 'release-images' && 60 || 40 }}
     env:
@@ -328,4 +341,75 @@ jobs:
             TestResults
             src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/TestResults/playwright
           if-no-files-found: warn
+          retention-days: 14
+
+  client-measurement:
+    name: Client ${{ inputs.assessment_only && 'trim assessment' || 'A/B measurement' }} (${{ matrix.runtime }})
+    if: inputs.suite == 'client-measurement'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(inputs.assessment_only && '[{"runtime":"linux-x64","runner":"ubuntu-latest"}]' || '[{"runtime":"linux-x64","runner":"ubuntu-latest"},{"runtime":"win-x64","runner":"windows-latest"},{"runtime":"osx-arm64","runner":"macos-latest"}]') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_ref }}
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: ${{ !inputs.assessment_only }}
+        with:
+          ref: ${{ inputs.baseline_ref || 'main' }}
+          path: client-baseline
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          global-json-file: global.json
+      - name: A - baseline production client only
+        if: ${{ !inputs.assessment_only }}
+        shell: bash
+        run: |
+          python3 tools/ci/measure-client-publish.py --source client-baseline --runtime '${{ matrix.runtime }}' \
+            --mode untrimmed --state-root "$RUNNER_TEMP/client-measurement" \
+            --evidence 'TestResults/client-measurement/baseline/${{ matrix.runtime }}'
+      - name: B - cleanup production client only
+        if: ${{ !cancelled() && !inputs.assessment_only }}
+        shell: bash
+        run: |
+          python3 tools/ci/measure-client-publish.py --source . --runtime '${{ matrix.runtime }}' \
+            --mode untrimmed --state-root "$RUNNER_TEMP/client-measurement" --verify-content \
+            --evidence 'TestResults/client-measurement/head/${{ matrix.runtime }}'
+      - name: C - bounded cleanup trimmed JIT assessment
+        if: ${{ !cancelled() && matrix.runtime == 'linux-x64' && (inputs.client_trim_diagnostic || inputs.assessment_only) }}
+        shell: bash
+        run: |
+          python3 tools/ci/measure-client-publish.py --source . --runtime linux-x64 \
+            --mode trimmed --state-root "$RUNNER_TEMP/client-measurement" --verify-content \
+            --evidence TestResults/client-measurement/trimmed/linux-x64
+      - name: Summarize measured inputs and outcomes
+        if: always()
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a') as summary:
+              summary.write('| Mode | Source SHA | Exit | Executable bytes | Extracted bytes | Archive bytes | Restore seconds | Publish seconds |\n')
+              summary.write('| --- | --- | --- | --- | --- | --- | --- | --- |\n')
+              for path in sorted(Path('TestResults/client-measurement').glob('*/${{ matrix.runtime }}/metrics.json')):
+                  result = json.loads(path.read_text())
+                  values = [path.parents[1].name, result['sourceSha'], result['exitCode']]
+                  values += [result.get(key, 'not produced') for key in ('executableBytes', 'extractedBytes', 'archiveBytes')]
+                  values += [result['stages'].get(stage, {}).get('seconds', 'not run') for stage in ('restore', 'publish')]
+                  summary.write('| ' + ' | '.join(map(str, values)) + ' |\n')
+                  if result.get('failureKind'): summary.write('\nFailure: ' + result['failureKind'] + ' (' + result.get('failureStage', '') + ').\n')
+              summary.write('\nOnly the client reference closure was restored/published. Fresh per-source/mode/RID intermediates retain per-project paths; NuGet cache is shared sequentially on this runner. Full commands, logs, final prebundle inputs/runtime graph, package inventories, archives, SBOMs and checksums are retained.\n')
+              summary.write('\nThe --version timings cover a fresh and cached single-file launch only. Agent initialization, gateway readiness and RSS were not measured; owner functional acceptance remains pending. Normal distributed publish remains untrimmed.\n')
+          PY
+      - name: Retain measurement logs, inventories and native archives
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: client-measurement-${{ matrix.runtime }}
+          path: TestResults/client-measurement
+          if-no-files-found: error
           retention-days: 14

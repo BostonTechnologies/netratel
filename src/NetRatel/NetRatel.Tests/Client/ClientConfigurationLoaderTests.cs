@@ -66,7 +66,7 @@ public sealed class ClientConfigurationLoaderTests
     }
 
     [Fact]
-    public void Load_PackagedDefaultsAndLegacySettings_PreserveInstalledValuesWithoutOverrides()
+    public void Load_PackagedDefaultsAndLegacySettings_IgnoreRetiredPowerShellSettingAndPreserveInstalledValues()
     {
         var root = Path.Combine(Path.GetTempPath(), $"netratel-client-config-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
@@ -90,7 +90,6 @@ public sealed class ClientConfigurationLoaderTests
             options.Environment.Should().Be(ClientEnvironment.Prod);
             options.ApiBaseUrl.Should().Be("https://legacy.example.invalid");
             options.TerminalBackendPreference.Should().Be("Legacy");
-            options.UseInProcPowerShell.Should().BeTrue();
             options.EnableNativeUnixPty.Should().BeFalse();
             options.AutoUpdate.Channel.Should().Be("Prerelease");
             gatewayOptions.Endpoint.Should().Be("https://legacy.example.invalid");
