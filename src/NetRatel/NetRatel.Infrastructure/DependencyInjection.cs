@@ -61,6 +61,7 @@ public static class DependencyInjection
         services.AddSingleton<IRequestEventBus, RequestEventBus>();
         services.AddScoped<IClientDisplayNameResolver, LegacyClientIdentityRedactionResolver>();
         services.AddScoped<NetRatelNotificationDisplaySanitizer>();
+        services.AddScoped<NetRatelNotificationAudience>();
         services.AddScoped<INetRatelNotificationService, NetRatelNotificationService>();
         services.AddScoped<IEventRecorder, OutboxEventRecorder>();
         services.AddScoped<IEventPublisher, InternalEventPublisher>();

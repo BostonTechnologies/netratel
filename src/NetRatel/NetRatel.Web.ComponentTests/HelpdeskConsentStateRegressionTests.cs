@@ -420,7 +420,7 @@ public sealed class HelpdeskConsentStateRegressionTests : AsyncBunitContext
         {
             Assert.Empty(page.FindAll("[data-testid='service-link-final-approval']"));
             Assert.Empty(page.FindAll("[data-testid='service-link-consent-details']"));
-            Assert.Contains("Current integration management authority is required", page.Markup);
+            Assert.Contains("Your current account cannot perform this operation", page.Markup);
             Assert.DoesNotContain("peer-old", page.Markup);
         });
         Assert.Equal(reads, transport.AttemptReads);
@@ -447,7 +447,7 @@ public sealed class HelpdeskConsentStateRegressionTests : AsyncBunitContext
         {
             Assert.Empty(page.FindAll("[data-testid='service-link-responder-approval']"));
             Assert.DoesNotContain("peer-old", page.Markup);
-            Assert.Contains("protected grant summary is unavailable", page.Markup);
+            Assert.Contains("Your current account cannot perform this operation", page.Markup);
         });
         navigation.NavigateTo("/account/integration-credentials/link/respond/new");
         await page.InvokeAsync(() => SetAttemptAsync(page.Instance, "new"));
@@ -476,6 +476,33 @@ public sealed class HelpdeskConsentStateRegressionTests : AsyncBunitContext
         await load;
 
         page.WaitForAssertion(() => Assert.Empty(page.FindAll("[data-testid='service-link-final-approval']")));
+    }
+
+    [Theory]
+    [InlineData("responder", "respond", "review", "service-link-responder-approval")]
+    [InlineData("initiator", "continue", "respond", "service-link-continue-approval")]
+    [InlineData("initiator", "review", "respond", "service-link-final-approval")]
+    [InlineData("responder", "none", "respond", null)]
+    public void Consent_uses_authorized_durable_action_instead_of_the_route(string role, string action, string route, string? expectedForm)
+    {
+        using var transport = RegisterTransport();
+        ComponentFactories.AddStub<HelpdeskConnectionsPanel>();
+        Services.GetRequiredService<NavigationManager>().NavigateTo($"/account/integration-credentials/link/{route}/pending");
+        transport.StatusFactory = id => Attempt(id, action != "review") with { LocalRole = role, AvailableAction = action };
+
+        var page = Render<ServiceLinkConsent>(parameters => parameters.Add(component => component.AttemptId, "pending"));
+
+        page.WaitForAssertion(() =>
+        {
+            var forms = page.FindAll("form");
+            if (expectedForm is null) Assert.Empty(forms);
+            else Assert.Equal(expectedForm, Assert.Single(forms).GetAttribute("data-testid"));
+            if (action is "none" or "continue")
+            {
+                Assert.Contains("Approval has not been saved", page.Markup);
+                Assert.DoesNotContain("Approval is saved", page.Markup);
+            }
+        });
     }
 
     private StateTransport RegisterTransport()
@@ -518,7 +545,7 @@ public sealed class HelpdeskConsentStateRegressionTests : AsyncBunitContext
     private static HttpResponseMessage RotationResponse(string secret) => JsonResponse(new ServiceClientReveal(StateTransport.Client, secret,
         "https://issuer.example.test", "https://issuer.example.test/token", "api-fixture", StateTransport.Client.Scopes));
 
-    private static ServiceLinkAdminStatus Attempt(string id, bool responder = false) => new(id, "link-" + id, 1, "approved", "7", "peer-" + id,
+    private static ServiceLinkAdminStatus Attempt(string id, bool responder = false) => new(id, "link-" + id, 1, responder ? "awaiting_approval" : "approved", "7", "peer-" + id,
         "organization-fixture", "undecided", null, "hash-" + id,
         new ServiceLinkRequestDescriptor
         {
@@ -527,7 +554,8 @@ public sealed class HelpdeskConsentStateRegressionTests : AsyncBunitContext
             ResponderEndpointSnapshot = new ServiceLinkMetadata { Product = "netratel", InstanceId = "local", WebBaseUrl = "https://web.example.test" },
             RequestedGrants = [new ServiceLinkGrant { TargetProduct = "netratel", Scopes = ["netratel.orchestration.read", "netratel.orchestration.invoke"] },
                 new ServiceLinkGrant { TargetProduct = "rateldesk", Scopes = ["rateldesk.incidents.create", "rateldesk.orchestration.callback"] }]
-        }, responder ? null : new ServiceLinkGrantSummary { AttemptId = id }, false, false, false, false, false, null, false, []);
+        }, responder ? null : new ServiceLinkGrantSummary { AttemptId = id }, false, false, false, false, false, null, false, [])
+        { LocalRole = responder ? "responder" : "initiator", AvailableAction = responder ? "respond" : "review", CanCancel = true };
 
     private sealed class StateTransport : HttpMessageHandler, IHttpClientFactory
     {
@@ -546,6 +574,7 @@ public sealed class HelpdeskConsentStateRegressionTests : AsyncBunitContext
         public bool AttemptTimeout { get; set; }
         public string? FailedAttempt { get; set; }
         public bool ResponderAttempts { get; set; }
+        public Func<string, ServiceLinkAdminStatus>? StatusFactory { get; set; }
         public static ServiceClientMetadata Client => new(Guid.Parse("00000000-0000-0000-0000-000000000007"), "Fixture manual client", "manual-fixture", 7,
             "peer-fixture", "organization-fixture", ["netratel.orchestration.read"], "{}", "active", "web", false, 1, 1,
             DateTimeOffset.Parse("2026-10-01T00:00:00Z"), DateTimeOffset.Parse("2027-10-01T00:00:00Z"));
@@ -586,7 +615,7 @@ public sealed class HelpdeskConsentStateRegressionTests : AsyncBunitContext
                 var id = path[(path.LastIndexOf('/') + 1)..];
                 if (attempts.TryGetValue(id, out var delayed)) return delayed.Task;
                 if (id == FailedAttempt) return Task.FromResult(new HttpResponseMessage(HttpStatusCode.Forbidden) { Content = JsonContent.Create(new { code = "not-authorized" }) });
-                return Task.FromResult(JsonResponse(Attempt(id, ResponderAttempts)));
+                return Task.FromResult(JsonResponse(StatusFactory?.Invoke(id) ?? Attempt(id, ResponderAttempts)));
             }
             return Task.FromResult(JsonResponse(Array.Empty<object>()));
         }

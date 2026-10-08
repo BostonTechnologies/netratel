@@ -24,20 +24,20 @@ public static class ServiceLinkEndpointPolicy
             uri.Query.Length != 0 ||
             uri.Fragment.Length != 0)
         {
-            throw new ArgumentException($"{fieldName} must be an absolute HTTP or HTTPS URL without credentials, a query string, or a fragment.", fieldName);
+            throw Rejected($"{fieldName} must be an absolute HTTP or HTTPS URL without credentials, a query string, or a fragment.", fieldName);
         }
 
         if (IsRejectedHost(uri.Host))
         {
-            throw new ArgumentException($"{fieldName} targets a reserved link-local, multicast, unspecified, or metadata address.", fieldName);
+            throw Rejected($"{fieldName} targets a reserved link-local, multicast, unspecified, or metadata address.", fieldName);
         }
 
         if (!allowPrivateHttp && IPAddress.TryParse(uri.Host, out var literal) && IsPrivateNetworkAddress(literal))
-            throw new ArgumentException($"{fieldName} targets a private address without the current deployment opt-in.", fieldName);
+            throw Rejected($"{fieldName} targets a private address without the current deployment opt-in.", fieldName);
 
         if (uri.Scheme == "http" && (!allowPrivateHttp || IsPublicIp(uri.Host)))
         {
-            throw new ArgumentException($"{fieldName} must use HTTPS unless explicit private HTTP is enabled.", fieldName);
+            throw Rejected($"{fieldName} must use HTTPS unless explicit private HTTP is enabled.", fieldName);
         }
     }
 
@@ -57,7 +57,7 @@ public static class ServiceLinkEndpointPolicy
         bool allowPrivateHttp)
     {
         if (!IsAllowed(uri, allowPrivateHttp))
-            throw new ArgumentException($"{fieldName} is not allowed by the outbound integration policy.", fieldName);
+            throw Rejected($"{fieldName} is not allowed by the outbound integration policy.", fieldName);
         ValidateResolvedAddressesCore(uri, addresses, fieldName, allowPrivateHttp);
     }
 
@@ -68,13 +68,20 @@ public static class ServiceLinkEndpointPolicy
         bool allowPrivateHttp)
     {
         if (addresses.Count == 0)
-            throw new ArgumentException($"{fieldName} did not resolve to an address.", fieldName);
+            throw Rejected($"{fieldName} did not resolve to an address.", fieldName);
         if (addresses.Any(IsRejectedAddress))
-            throw new ArgumentException($"{fieldName} resolved to a reserved link-local, multicast, unspecified, or metadata address.", fieldName);
+            throw Rejected($"{fieldName} resolved to a reserved link-local, multicast, unspecified, or metadata address.", fieldName);
         if (!allowPrivateHttp && addresses.Any(IsPrivateNetworkAddress))
-            throw new ArgumentException($"{fieldName} resolved to a private address without the current deployment opt-in.", fieldName);
+            throw Rejected($"{fieldName} resolved to a private address without the current deployment opt-in.", fieldName);
         if (uri.Scheme == "http" && (!allowPrivateHttp || addresses.Any(address => !IsPrivateNetworkAddress(address))))
-            throw new ArgumentException($"{fieldName} resolved to a public address while private HTTP is enabled.", fieldName);
+            throw Rejected($"{fieldName} resolved to a public address while private HTTP is enabled.", fieldName);
+    }
+
+    private static ArgumentException Rejected(string message, string parameter)
+    {
+        var error = new ArgumentException(message, parameter);
+        error.Data["ServiceLink.NetworkPolicyRejected"] = true;
+        return error;
     }
 
     public static bool IsPrivateNetworkAddress(IPAddress address)

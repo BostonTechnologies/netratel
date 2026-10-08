@@ -90,21 +90,20 @@ public sealed class HelpdeskM2MApiClient(IHttpClientFactory clients)
     private static async Task CheckResponseAsync(HttpResponseMessage response, CancellationToken ct)
     {
         if (response.IsSuccessStatusCode) return;
-        string? code = null;
+        var failure = ServiceLinkFailure.From(null, statusCode: (int)response.StatusCode);
         try
         {
             using var problem = await ReadAsync<JsonDocument>(response, ct);
-            if (problem.RootElement.TryGetProperty("code", out var field) && field.ValueKind == JsonValueKind.String)
-                code = field.GetString() switch
-                {
-                    "upgrade-required" or "unsupported-contract" or "service-link-unsupported" => "upgrade-required",
-                    "deployment-owned-profile" => "deployment-managed", "grant-unavailable" => "grant-unavailable",
-                    "callback-required" => "callback-required", "source-identity-unavailable" or "identity-unconfigured" => "source-unavailable",
-                    _ => null
-                };
+            if (problem.RootElement.ValueKind == JsonValueKind.Object)
+            {
+                string? Field(string name) => problem.RootElement.TryGetProperty(name, out var field) && field.ValueKind == JsonValueKind.String
+                    ? field.GetString() : null;
+                failure = ServiceLinkFailure.From(Field("code"), Field("stage"), Field("correlationId"), (int)response.StatusCode);
+            }
         }
-        catch (Exception exception) when (exception is JsonException or InvalidDataException) { code = null; }
-        throw new ServiceAdministrationException(response.StatusCode, code);
+        catch (Exception exception) when (exception is JsonException or InvalidDataException)
+        { throw new ServiceAdministrationException(response.StatusCode, failure); }
+        throw new ServiceAdministrationException(response.StatusCode, failure);
     }
     private static async Task<T> ReadAsync<T>(HttpResponseMessage response, CancellationToken ct)
     {
@@ -125,8 +124,15 @@ public sealed class HelpdeskM2MApiClient(IHttpClientFactory clients)
     }
 }
 
-public sealed class ServiceAdministrationException(HttpStatusCode statusCode, string? code) : Exception("Service administration did not complete.")
+public sealed class ServiceAdministrationException : Exception
 {
-    public HttpStatusCode StatusCode { get; } = statusCode;
-    public string? Code { get; } = code;
+    public ServiceAdministrationException(HttpStatusCode statusCode, string? code)
+        : this(statusCode, ServiceLinkFailure.From(code, statusCode: (int)statusCode)) { }
+    public ServiceAdministrationException(HttpStatusCode statusCode, ServiceLinkFailure failure) : base(failure.Message)
+    { StatusCode = statusCode; Failure = failure; }
+    public HttpStatusCode StatusCode { get; }
+    public ServiceLinkFailure Failure { get; }
+    public string Code => Failure.Code;
+    public string Stage => Failure.Stage;
+    public string? CorrelationId => Failure.CorrelationId;
 }

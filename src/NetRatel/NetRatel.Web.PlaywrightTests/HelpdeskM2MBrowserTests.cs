@@ -85,6 +85,65 @@ public sealed class HelpdeskM2MBrowserTests(ClientsManagementBrowserFixture brow
         await Assertions.Expect(page.GetByRole(AriaRole.Option, new() { Name = "Connect RatelDesk", Exact = true })).ToBeVisibleAsync();
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Parent_native_submission_preserves_optional_peer_organization_and_flow_return(bool preset)
+    {
+        await using var fixture = await HelpdeskM2MFixture.StartAsync();
+        fixture.Data.AcceptStart = true;
+        await using var context = await browserFixture.Browser.NewContextAsync();
+        var page = await context.NewPageAsync();
+        const string peer = "https://helpdesk.example.test";
+        const string organization = "fixture-organization-exact";
+        const string returnUrl = "/flows?flowId=fixture";
+        var query = "?purpose=helpdesk-m2m" + (preset
+            ? "&peer_url=" + Uri.EscapeDataString(peer) + "&tenant_id=1&peer_tenant_id=" + organization + "&returnUrl=" + Uri.EscapeDataString(returnUrl)
+            : "");
+        await page.GotoAsync(fixture.Address + "/account/integration-credentials" + query);
+        var form = page.GetByTestId("helpdesk-link-start");
+        await form.WaitForAsync();
+        await Assertions.Expect(form.Locator("input[name=requestedResponderTenantId]")).ToHaveValueAsync(preset ? organization : "");
+        await Assertions.Expect(form.Locator("input[name=returnUrl]")).ToHaveValueAsync(preset ? returnUrl : "");
+        if (preset) await Assertions.Expect(page.GetByTestId("helpdesk-peer-url")).ToHaveValueAsync(peer);
+        else await page.GetByTestId("helpdesk-peer-url").FillAsync(peer);
+        await Assertions.Expect(page.GetByTestId("helpdesk-connect")).ToBeEnabledAsync();
+
+        await page.GetByTestId("helpdesk-connect").ClickAsync();
+        await page.WaitForURLAsync(fixture.Address + "/fixture-peer-approval?attempt_id=fixture-submission");
+
+        Assert.Equal(1, fixture.Data.StartCount);
+        var submitted = Assert.IsType<ServiceLinkStartRequest>(fixture.Data.LastStart);
+        Assert.Equal(peer, submitted.PeerWebBaseUrl);
+        Assert.Equal("1", submitted.LocalTenantId);
+        Assert.Equal(preset ? organization : null, submitted.RequestedResponderTenantId);
+        Assert.Equal(new[] { ServiceLinkContract.ControlScope, ServiceLinkContract.VerifyScope }, submitted.InboundScopes);
+        Assert.Equal(new[] { "rateldesk.incident-receipts.read", "rateldesk.incident-targets.read", "rateldesk.incidents.create" }, submitted.OutboundScopes);
+        Assert.Empty(submitted.InboundResourceIds);
+        Assert.Empty(submitted.InboundRequestDefinitionIds);
+        var returned = await context.APIRequest.GetAsync(fixture.Address + "/account/integration-credentials/link/return", new() { MaxRedirects = 0 });
+        Assert.Equal(preset ? returnUrl : "/account/integration-credentials", returned.Headers["location"]);
+    }
+
+    [Fact]
+    public async Task Failed_start_offers_input_correction_with_safe_diagnostics_and_no_resume()
+    {
+        await using var fixture = await HelpdeskM2MFixture.StartAsync();
+        await using var context = await browserFixture.Browser.NewContextAsync();
+        var page = await context.NewPageAsync();
+        await page.GotoAsync(fixture.Address + "/account/integration-credentials?purpose=helpdesk-m2m");
+        await page.GetByTestId("helpdesk-peer-url").FillAsync("https://helpdesk.example.test");
+        await Assertions.Expect(page.GetByTestId("helpdesk-connect")).ToBeEnabledAsync();
+        await page.GetByTestId("helpdesk-connect").ClickAsync();
+        await page.GetByTestId("service-link-consent-page").WaitForAsync();
+
+        Assert.Equal(1, fixture.Data.StartCount);
+        await Assertions.Expect(page.GetByRole(AriaRole.Link, new() { Name = "Correct setup and retry", Exact = true })).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByRole(AriaRole.Link, new() { Name = "View notifications", Exact = true })).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByText("Stage: start", new() { Exact = false })).ToContainTextAsync("0123456789abcdef0123456789abcdef");
+        Assert.DoesNotContain("Resume", await page.Locator("body").InnerTextAsync());
+    }
+
     [Fact]
     public async Task ManualClientRevealIsClearedAndOnlyManualRowsCanRotateOrRevoke()
     {
@@ -173,8 +232,12 @@ public sealed class HelpdeskM2MBrowserTests(ClientsManagementBrowserFixture brow
         Assert.True(System.Net.Http.Headers.CacheControlHeaderValue.Parse(approval.Headers["cache-control"]).NoStore);
     }
 
-    [Fact]
-    public async Task ActiveButUnavailableGrantIsNotConnectedAndTestUsesOnlyReadOnlyProbe()
+    [Theory]
+    [InlineData(1366, 768, false)]
+    [InlineData(1366, 768, true)]
+    [InlineData(390, 844, false)]
+    [InlineData(390, 844, true)]
+    public async Task ActiveButUnavailableGrantIsNotConnectedAndTestUsesOnlyReadOnlyProbe(int width, int height, bool dark)
     {
         await using var fixture = await HelpdeskM2MFixture.StartAsync();
         var descriptor = new ServiceLinkRequestDescriptor
@@ -183,16 +246,16 @@ public sealed class HelpdeskM2MBrowserTests(ClientsManagementBrowserFixture brow
             ResponderEndpointSnapshot = new() { Product = "rateldesk", InstanceId = "peer-instance", WebBaseUrl = "https://helpdesk.example.test" }
         };
         fixture.Data.Link = new("fixture-attempt", "fixture-link", 1, "active", "1", "peer-instance", "peer-organization", "commit", "fixture-commit", "fixture-grant-hash", descriptor, null, true, true, false, false, true, "grant-unavailable", false, []) { LocalTenantName = "Fixture tenant" };
-        await using var context = await browserFixture.Browser.NewContextAsync(new() { ViewportSize = new() { Width = 1366, Height = 768 } });
+        await using var context = await browserFixture.Browser.NewContextAsync(new() { ViewportSize = new() { Width = width, Height = height } });
         var page = await context.NewPageAsync();
-        await page.GotoAsync(fixture.Address + "/account/integration-credentials");
+        await page.GotoAsync(fixture.Address + "/account/integration-credentials?theme=" + (dark ? "dark" : "light"));
         await Assertions.Expect(page.GetByText("Needs attention · grant unavailable", new() { Exact = true })).ToBeVisibleAsync();
         Assert.Equal(0, await page.GetByTestId("helpdesk-test-connection").CountAsync());
         fixture.Data.Link = fixture.Data.Link with { LocalInboundActive = true, LocalBusinessSenderEnabled = true, LastErrorCode = null };
         await page.GetByRole(AriaRole.Button, new() { Name = "Refresh status", Exact = true }).ClickAsync();
         await Assertions.Expect(page.GetByText("Approved · verify connection", new() { Exact = true })).ToBeVisibleAsync();
         await Assertions.Expect(page.GetByText("Connected", new() { Exact = true })).ToHaveCountAsync(0);
-        await CaptureConnectionAsync(page, "netratel-pairing-after-approved-unverified-light-1366x768.png");
+        await CaptureConnectionAsync(page, $"netratel-pairing-approved-unverified-{width}-{(dark ? "dark" : "light")}.png");
         Assert.Equal(1, fixture.Data.CompleteCount);
         Assert.Equal("fixture-link", fixture.Data.LastCompletion?.LinkId);
         fixture.Data.ConnectionReady = true;
@@ -200,13 +263,53 @@ public sealed class HelpdeskM2MBrowserTests(ClientsManagementBrowserFixture brow
         await Assertions.Expect(page.GetByText("Connected", new() { Exact = true })).ToBeVisibleAsync();
         await Assertions.Expect(page.GetByText("Fixture organization / Fixture customer", new() { Exact = false })).ToBeVisibleAsync();
         await Assertions.Expect(page.GetByRole(AriaRole.Link, new() { Name = "Return to Flow", Exact = true })).ToBeVisibleAsync();
-        await CaptureConnectionAsync(page, "netratel-pairing-after-connected-light-1366x768.png");
+        await CaptureConnectionAsync(page, $"netratel-pairing-connected-{width}-{(dark ? "dark" : "light")}.png");
         await page.GetByTestId("helpdesk-test-connection").ClickAsync();
         await Assertions.Expect(page.GetByTestId("helpdesk-connection-test-result")).ToContainTextAsync("requires separate receiver capability and target validation");
+        Assert.False(await page.EvaluateAsync<bool>("() => document.documentElement.scrollWidth > window.innerWidth + 1"));
         Assert.Equal(1, fixture.Data.TestCount);
         Assert.Equal(0, fixture.Data.CreateCount);
         Assert.Equal(0, fixture.Data.StartCount);
         Assert.Equal(3, fixture.Data.CompleteCount);
+    }
+
+    [Theory]
+    [InlineData(1366, 768, false)]
+    [InlineData(1366, 768, true)]
+    [InlineData(390, 844, false)]
+    [InlineData(390, 844, true)]
+    public async Task Installation_enable_and_pending_failed_states_fit_the_viewport(int width, int height, bool dark)
+    {
+        await using var fixture = await HelpdeskM2MFixture.StartAsync();
+        fixture.Data.ConnectionsDisabled = true;
+        fixture.Data.Link = new("fixture-pending", null, 0, "awaiting_approval", "1", "fixture-peer", "fixture-organization",
+            "undecided", null, null, new ServiceLinkRequestDescriptor
+            {
+                InitiatorEndpointSnapshot = new() { Product = "rateldesk", WebBaseUrl = "https://helpdesk.example.test" },
+                ResponderEndpointSnapshot = new() { Product = "netratel", WebBaseUrl = "https://web.example.test" }
+            }, null, false, false, false, false, false, null, false, [])
+        { LocalRole = "responder", AvailableAction = "respond", CanCancel = true, LocalTenantName = "Fixture tenant" };
+        await using var context = await browserFixture.Browser.NewContextAsync(new() { ViewportSize = new() { Width = width, Height = height } });
+        var page = await context.NewPageAsync();
+        await page.GotoAsync(fixture.Address + "/account/integration-credentials?purpose=helpdesk-m2m&theme=" + (dark ? "dark" : "light"));
+        var enable = page.GetByTestId("helpdesk-enable-connections");
+        await enable.WaitForAsync();
+        var button = await enable.BoundingBoxAsync();
+        var parent = await enable.Locator("..").BoundingBoxAsync();
+        Assert.NotNull(button); Assert.NotNull(parent);
+        Assert.True(button.Width < parent.Width - 12, "The enable button should fit its text instead of stretching across the column.");
+        Assert.InRange(button.Height, 20, 48);
+        Assert.False(await page.EvaluateAsync<bool>("() => document.documentElement.scrollWidth > window.innerWidth + 1"));
+        await CaptureConnectionAsync(page, $"netratel-installation-enable-{width}-{(dark ? "dark" : "light")}.png");
+        await page.GetByRole(AriaRole.Button, new() { Name = "Close", Exact = true }).ClickAsync();
+        await Assertions.Expect(page.GetByRole(AriaRole.Link, new() { Name = "Resume local approval", Exact = true })).ToHaveAttributeAsync("href", "/account/integration-credentials/link/respond/fixture-pending");
+        await CaptureConnectionAsync(page, $"netratel-pairing-pending-{width}-{(dark ? "dark" : "light")}.png");
+        fixture.Data.Link = fixture.Data.Link with { LifecycleState = "failed", AvailableAction = "none", CanCancel = false, CanStartFresh = true, LastErrorCode = "invalid-organization" };
+        await page.GetByRole(AriaRole.Button, new() { Name = "Refresh status", Exact = true }).ClickAsync();
+        await Assertions.Expect(page.GetByRole(AriaRole.Button, new() { Name = "Reconnect with new approval", Exact = true })).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByRole(AriaRole.Link, new() { Name = "Resume local approval", Exact = true })).ToHaveCountAsync(0);
+        Assert.False(await page.EvaluateAsync<bool>("() => document.documentElement.scrollWidth > window.innerWidth + 1"));
+        await CaptureConnectionAsync(page, $"netratel-pairing-failed-{width}-{(dark ? "dark" : "light")}.png");
     }
 
     private static async Task CaptureConnectionAsync(IPage page, string filename)
@@ -241,11 +344,14 @@ internal sealed class HelpdeskM2MFixture(WebApplication app, string address, Hel
         app.MapGet("/_content/MudBlazor/{file}", (string file) => Results.File(ResolveAsset(file), file.EndsWith(".css", StringComparison.Ordinal) ? "text/css" : "text/javascript"));
         app.MapGet("/app-site.css", () => Results.File(Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../NetRatel.Web/wwwroot/app-site.css")), "text/css"));
         app.Use(async (context, next) => { if (context.Request.Path.StartsWithSegments("/account/integration-credentials")) ServiceLinkBrowserEndpoints.ProtectResponse(context); await next(); });
+        app.MapGet("/fixture-peer-approval", () => Results.Content("Fixture peer sign-in", "text/html"));
         app.UseAuthentication(); app.UseAuthorization(); app.UseAntiforgery();
         app.MapServiceLinkBrowserEndpoints();
         app.MapRazorComponents<HelpdeskFixtureApp>().AddAdditionalAssemblies(typeof(IntegrationCredentials).Assembly).AddInteractiveServerRenderMode();
         await app.StartAsync();
-        return new HelpdeskM2MFixture(app, app.Urls.Single(), app.Services.GetRequiredService<HelpdeskFixtureData>());
+        var data = app.Services.GetRequiredService<HelpdeskFixtureData>();
+        data.BrowserAddress = app.Urls.Single();
+        return new HelpdeskM2MFixture(app, data.BrowserAddress, data);
     }
     private static string ResolveAsset(string name)
     {
@@ -293,7 +399,9 @@ internal sealed class HelpdeskFixtureAuthentication(IOptionsMonitor<Authenticati
 internal sealed class HelpdeskFixtureData
 {
     public int CreateCount, RotateCount, RevokeCount, StartCount, TestCount, CompleteCount;
-    public bool WithOrchestrationResources, ConnectionReady;
+    public bool WithOrchestrationResources, ConnectionReady, AcceptStart, ConnectionsDisabled;
+    public ServiceLinkStartRequest? LastStart;
+    public string BrowserAddress = "";
     public CompleteRatelDeskConnectionRequest? LastCompletion;
     public ServiceLinkAdminStatus? Link;
     public ServiceClientCreateRequest? LastCreate;
@@ -311,7 +419,7 @@ internal sealed class HelpdeskFixtureClients(HelpdeskFixtureData data) : IHttpCl
             if (path == "/api/v2/account/integration-credentials") return Json(Array.Empty<object>());
             if (path == "/api/v2/account/integration-credentials/authority") return Json(new { tenants = new[] { new { tenantId = 1, name = "Fixture tenant", permissions = new[] { new { id = "telemetry.read", label = "Read telemetry", description = "Read this tenant" } } } }, instancePermissions = Array.Empty<object>(), configuredHttpMcpServerUrl = "https://mcp.example.test/mcp" });
             if (path == "/api/v2/account/service-clients/deployment") return Json(new[] { new ServiceClientDeploymentMetadata("deployment-client", "fixture-audience", ["netratel.orchestration.read"]) });
-            if (path == "/api/v2/account/service-clients/settings") return Json(new ServicePublicSettingsResponse(true, "https://web.example.test", "https://api.example.test", "https://issuer.example.test", "fixture-audience", "fixture-instance", "https://gateway.example.test", 1, ["issuer"], true));
+            if (path == "/api/v2/account/service-clients/settings") return Json(new ServicePublicSettingsResponse(!data.ConnectionsDisabled, "https://web.example.test", "https://api.example.test", "https://issuer.example.test", "fixture-audience", "fixture-instance", "https://gateway.example.test", 1, ["issuer"], !data.ConnectionsDisabled));
             if (path == "/api/v2/account/service-clients/authority") return Json(new ServiceClientManagementAuthority(true, [new(1, "Fixture tenant", ["netratel.orchestration.read", "netratel.orchestration.invoke"], data.WithOrchestrationResources ? [new("e0497370-a6ab-45eb-a197-4bc7e290158f", "Fixture resource")] : [], data.WithOrchestrationResources ? [new("9", "Fixture request definition", "e0497370-a6ab-45eb-a197-4bc7e290158f")] : [])], true));
             if (path == "/api/v2/tenants/1/connectors/rateldesk/setup/complete")
             {
@@ -323,7 +431,21 @@ internal sealed class HelpdeskFixtureClients(HelpdeskFixtureData data) : IHttpCl
             if (path == "/api/v1/admin/service-links") return Json(data.Link is null ? Array.Empty<ServiceLinkAdminStatus>() : new[] { data.Link });
             if (path == "/api/v1/admin/service-links/links/fixture-link/test") { data.TestCount++; return Json(new ServiceLinkTestResult(true, true, false, null)); }
             if (path == "/api/v1/admin/service-links/identity") return Json(new ServiceLinkIdentityDto("fixture-instance", "71376348-1f0a-4887-9cbe-031d5f879fb1", 1));
-            if (path == "/api/v1/admin/service-links/start") { data.StartCount++; return Json(new { code = "upgrade-required" }, HttpStatusCode.BadRequest); }
+            if (path == "/api/v1/admin/service-links/start")
+            {
+                data.StartCount++;
+                data.LastStart = await request.Content!.ReadFromJsonAsync<ServiceLinkStartRequest>(ct);
+                return data.AcceptStart
+                    ? Json(new ServiceLinkNavigation("fixture-submission", data.BrowserAddress + "/fixture-peer-approval?attempt_id=fixture-submission", "awaiting_approval"))
+                    : Json(new { code = "upgrade-required", stage = "start", correlationId = "0123456789abcdef0123456789abcdef" }, HttpStatusCode.BadRequest);
+            }
+            if (path == "/api/v1/admin/service-links/attempts/fixture-submission")
+                return Json(new ServiceLinkAdminStatus("fixture-submission", null, 0, "awaiting_approval", "1", "fixture-peer", data.LastStart?.RequestedResponderTenantId,
+                    "undecided", null, null, new ServiceLinkRequestDescriptor
+                    {
+                        InitiatorEndpointSnapshot = new() { Product = "netratel", WebBaseUrl = "https://web.example.test" },
+                        ResponderEndpointSnapshot = new() { Product = "rateldesk", WebBaseUrl = "https://helpdesk.example.test", ApprovalEndpoint = data.BrowserAddress + "/fixture-peer-approval" }
+                    }, null, false, false, false, false, false, null, false, []) { LocalRole = "initiator", AvailableAction = "continue", CanCancel = true });
             if (path == "/api/v2/account/service-clients")
             {
                 if (request.Method == HttpMethod.Get) return Json(data.Manual is { } manual ? new[] { data.Deployment, manual } : new[] { data.Deployment });

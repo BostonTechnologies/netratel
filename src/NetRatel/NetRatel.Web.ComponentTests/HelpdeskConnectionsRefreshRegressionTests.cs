@@ -24,6 +24,7 @@ public sealed class HelpdeskConnectionsRefreshRegressionTests : AsyncBunitContex
         Services.AddMudServices(options => options.PopoverOptions.CheckForPopoverProvider = false);
         Services.AddScoped<HelpdeskM2MApiClient>();
         ComponentFactories.AddStub<ServiceClientRegistryPanel>();
+        ComponentFactories.AddStub<Microsoft.AspNetCore.Components.Forms.AntiforgeryToken>();
     }
 
     [Theory]
@@ -246,6 +247,38 @@ public sealed class HelpdeskConnectionsRefreshRegressionTests : AsyncBunitContex
         panel.WaitForAssertion(() => AssertNoRetainedState(panel));
     }
 
+    [Theory]
+    [InlineData("continue", "initiator", "awaiting_approval")]
+    [InlineData("respond", "responder", "awaiting_approval")]
+    [InlineData("review", "initiator", "approved")]
+    [InlineData("resume", "responder", "prepared")]
+    [InlineData("none", "responder", "expired")]
+    [InlineData("none", "responder", "revoked")]
+    public void Pending_list_uses_the_authorized_action_and_never_generic_resume_for_unsaved_consent(string action, string role, string state)
+    {
+        using var transport = RegisterTransport();
+        transport.Current = ActiveStatus(1) with
+        {
+            LifecycleState = state, Decision = "undecided", GrantSummary = null,
+            LocalRole = role, AvailableAction = action, CanCancel = state is not ("expired" or "revoked"), CanStartFresh = state is "expired" or "revoked",
+            OrganizationBindingInvalid = state == "revoked"
+        };
+        var panel = Render<HelpdeskConnectionsPanel>();
+
+        panel.WaitForAssertion(() =>
+        {
+            var continuation = panel.FindAll("form[data-testid='helpdesk-resume-approval']");
+            Assert.Equal(action == "continue" ? 1 : 0, continuation.Count);
+            var exactReview = panel.FindAll("a").Single(anchor => anchor.TextContent.Trim() == "Review exact grants");
+            Assert.Contains(action == "respond" ? "/respond/" : "/review/", exactReview.GetAttribute("href"));
+            Assert.Equal(action == "resume" ? 1 : 0, panel.FindAll("button").Count(button => button.TextContent.Trim() == "Resume"));
+            if (action == "respond") Assert.Contains("Resume local approval", panel.Markup);
+            if (action == "review") Assert.Contains("Review and approve", panel.Markup);
+            if (state is "expired" or "revoked") Assert.Contains("Reconnect with new approval", panel.Markup);
+            if (state == "revoked") Assert.Contains("Disconnected", panel.Markup);
+        });
+    }
+
     private ConnectionsTransport RegisterTransport()
     {
         var transport = new ConnectionsTransport();
@@ -324,7 +357,7 @@ public sealed class HelpdeskConnectionsRefreshRegressionTests : AsyncBunitContex
             AttemptId = "shared-attempt", LinkId = "shared-link", ProposedLinkRevision = revision,
             Grants = [new ServiceLinkGrant { DirectionId = ServiceLinkContract.InitiatorToResponder,
                 CallerProduct = "NetRatel", TargetProduct = "RatelDesk" }]
-        }, true, true, true, true, true, null, false, []);
+        }, true, true, true, true, true, null, false, []) { LocalRole = "initiator", AvailableAction = "resume" };
 
     private sealed record RowCallbacks(EventCallback<MouseEventArgs> Refresh, EventCallback<MouseEventArgs> Resume,
         EventCallback<MouseEventArgs> PrepareDisconnect, EventCallback<MouseEventArgs> ConfirmDisconnect,
