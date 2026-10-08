@@ -111,7 +111,8 @@ public sealed class HelpdeskM2MBrowserTests(ClientsManagementBrowserFixture brow
         await Assertions.Expect(page.GetByTestId("helpdesk-connect")).ToBeEnabledAsync();
 
         await page.GetByTestId("helpdesk-connect").ClickAsync();
-        await page.WaitForURLAsync(fixture.Address + "/fixture-peer-approval?attempt_id=fixture-submission");
+        await Assertions.Expect(page).ToHaveURLAsync(fixture.Address + "/fixture-peer-approval?attempt_id=fixture-submission");
+        await Assertions.Expect(page.Locator("body")).ToContainTextAsync("Fixture peer sign-in");
 
         Assert.Equal(1, fixture.Data.StartCount);
         var submitted = Assert.IsType<ServiceLinkStartRequest>(fixture.Data.LastStart);
@@ -371,6 +372,8 @@ public sealed class HelpdeskM2MBrowserTests(ClientsManagementBrowserFixture brow
         await Assertions.Expect(page.GetByText("Example API automation", new() { Exact = true })).ToBeVisibleAsync();
         await Assertions.Expect(current).ToBeHiddenAsync();
         await page.GetByRole(AriaRole.Tab, new() { Name = "System connections", Exact = true }).ClickAsync();
+        Assert.True(await page.GetByRole(AriaRole.Tab).EvaluateAllAsync<bool>("tabs => tabs.every(tab => { const range = document.createRange(); range.selectNodeContents(tab); const text = range.getBoundingClientRect(); const bounds = tab.getBoundingClientRect(); return text.left >= bounds.left - 1 && text.right <= bounds.right + 1 && bounds.left >= 0 && bounds.right <= innerWidth; })"),
+            "Both tab labels must fit their visible controls without clipping.");
         await current.GetByTestId("helpdesk-resume-setup").ClickAsync();
         var card = current.Locator("[data-attempt-id='current-attempt']");
         await Assertions.Expect(card.GetByTestId("helpdesk-operation-result")).ToContainTextAsync("Status updated");

@@ -47,7 +47,13 @@ public sealed class TenantUpdateChannelResponsiveTests(ClientsManagementBrowserF
             await Assertions.Expect(page.GetByTestId("tenant-target-version")).ToContainTextAsync("0.4.103-rc.1");
             await channel.FocusAsync();
             await channel.PressAsync("Space");
-            await page.GetByRole(AriaRole.Option, new() { Name = "Stable releases and prereleases", Exact = true }).PressAsync("Enter");
+            await Assertions.Expect(channel).ToHaveAttributeAsync("aria-expanded", "true");
+            var prerelease = page.GetByRole(AriaRole.Option, new() { Name = "Stable releases and prereleases", Exact = true });
+            var optionId = await prerelease.GetAttributeAsync("id");
+            Assert.False(string.IsNullOrWhiteSpace(optionId));
+            await channel.PressAsync("ArrowDown");
+            await Assertions.Expect(channel).ToHaveAttributeAsync("aria-activedescendant", optionId!);
+            await channel.PressAsync("Enter");
             await Assertions.Expect(channel).ToHaveTextAsync("Stable releases and prereleases");
             await AssertFitsAsync(page, channel, width);
             var root = Environment.GetEnvironmentVariable("NETRATEL_PLAYWRIGHT_ARTIFACTS")
