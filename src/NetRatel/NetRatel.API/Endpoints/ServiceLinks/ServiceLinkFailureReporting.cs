@@ -6,13 +6,13 @@ namespace NetRatel.API.Endpoints.ServiceLinks;
 
 public static partial class ServiceLinkEndpoints
 {
-    private static async Task<IResult> FailureAsync(HttpContext http, int statusCode, string code)
+    private static async Task<IResult> FailureAsync(HttpContext http, int statusCode, string code, string? existingAttemptId = null)
     {
         // This ID is generated locally, never copied from an untrusted request header.
         var correlation = Guid.NewGuid().ToString("N");
         var stage = HttpMethods.IsGet(http.Request.Method) ? "status" :
             ServiceLinkFailure.NormalizeStage(http.Request.Path.Value?.TrimEnd('/').Split('/').LastOrDefault());
-        var failure = ServiceLinkFailure.From(code, stage, correlation, statusCode);
+        var failure = ServiceLinkFailure.From(code, stage, correlation, statusCode, existingAttemptId);
         http.RequestServices.GetService<ILoggerFactory>()?.CreateLogger("ServiceLinkFailure").LogWarning(
             "Service-link operation failed. Code={Code} Stage={Stage} CorrelationId={CorrelationId}",
             failure.Code, failure.Stage, failure.CorrelationId);
@@ -50,7 +50,8 @@ public static partial class ServiceLinkEndpoints
         return Results.Problem(statusCode: statusCode, title: failure.Message,
             extensions: new Dictionary<string, object?>
             {
-                ["code"] = ServiceLinkFailure.ProtocolCode(code, statusCode), ["stage"] = failure.Stage, ["correlationId"] = failure.CorrelationId
+                ["code"] = ServiceLinkFailure.ProtocolCode(code, statusCode), ["stage"] = failure.Stage, ["correlationId"] = failure.CorrelationId,
+                ["existingAttemptId"] = failure.ExistingAttemptId
             });
     }
 }

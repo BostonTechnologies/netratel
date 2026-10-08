@@ -22,6 +22,7 @@ public sealed class TenantServiceTests
             "Konrad",
             "security@camelot-estate.co.za",
             AutoUpdate: false));
+        created.AutoUpdateChannel.Should().Be("stable");
 
         var updated = await service.UpdateAsync(new UpdateTenantCommand(
             created.TenantId,
@@ -31,13 +32,17 @@ public sealed class TenantServiceTests
             created.Domains,
             created.ContactPerson,
             created.ContactEmail,
-            AutoUpdate: true));
+            AutoUpdate: true,
+            AutoUpdateChannel: "prerelease",
+            AutoUpdateTargetVersion: "0.4.103-rc.1"));
 
         updated.Should().NotBeNull();
         updated!.AutoUpdate.Should().BeTrue();
         updated.Version.Should().Be(2);
         var reloaded = await service.GetAsync(created.TenantId);
         reloaded!.AutoUpdate.Should().BeTrue();
+        reloaded.AutoUpdateChannel.Should().Be("prerelease");
+        reloaded.AutoUpdateTargetVersion.Should().Be("0.4.103-rc.1");
         reloaded.Version.Should().Be(2);
     }
 

@@ -13,6 +13,23 @@ namespace NetRatel.Tests.ServiceLinks;
 
 public sealed class ServiceLinkFailureReportingTests
 {
+    [Fact]
+    public async Task Existing_connection_recovery_exposes_only_a_bounded_local_attempt_hint()
+    {
+        await using var services = new ServiceCollection().AddLogging().BuildServiceProvider();
+        var context = new DefaultHttpContext { RequestServices = services };
+        context.Request.Method = "POST";
+        context.Request.Path = "/api/v1/admin/service-links/remote-approve";
+        var attempt = new string('a', 48);
+        var result = await ServiceLinkEndpoints.Respond<string>(context,
+            () => throw new ServiceLinkProtocolException(409, "relationship-already-exists", "not displayed") { ExistingAttemptId = attempt });
+        var problem = Assert.IsType<ProblemDetails>(Assert.IsAssignableFrom<IValueHttpResult>(result).Value);
+        Assert.Equal("relationship-already-exists", problem.Extensions["code"]);
+        Assert.Equal(attempt, problem.Extensions["existingAttemptId"]);
+        Assert.Null(ServiceLinkFailure.From("relationship-already-exists", existingAttemptId: "https://private.invalid/path").ExistingAttemptId);
+        Assert.Null(ServiceLinkFailure.From("service-link-conflict", existingAttemptId: attempt).ExistingAttemptId);
+    }
+
     [Theory]
     [InlineData("organization-disabled", "invalid-organization")]
     [InlineData("unsupported-peer", "unsupported-peer")]

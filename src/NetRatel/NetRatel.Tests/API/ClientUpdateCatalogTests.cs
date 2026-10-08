@@ -46,6 +46,8 @@ public sealed class ClientUpdateCatalogTests
         catalog.GetOffer(74, Guid.NewGuid(), "linux-x64", "0.4.101", "stable")!.Version.Should().Be("0.4.102");
         catalog.GetOffer(74, Guid.NewGuid(), "linux-x64", "0.4.101", "prerelease")!.Version.Should().Be("0.4.102",
             "the agent cannot opt a stable tenant into prerelease deployment");
+        catalog.GetOffer(74, Guid.NewGuid(), "linux-x64", "0.4.103-beta.2", "prerelease").Should().BeNull(
+            "a stable-only tenant cannot receive the newer published prerelease or downgrade its beta client to the older stable release");
         catalog.GetOffer(75, Guid.NewGuid(), "linux-x64", "0.4.101", "stable").Should().BeNull(
             "a pinned target must not bypass the stable-only policy");
         var prerelease = catalog.GetOffer(tenantId, agentId, "linux-x64", "0.4.102-rc.1", "prerelease");

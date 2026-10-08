@@ -98,7 +98,7 @@ public sealed class HelpdeskM2MApiClient(IHttpClientFactory clients)
             {
                 string? Field(string name) => problem.RootElement.TryGetProperty(name, out var field) && field.ValueKind == JsonValueKind.String
                     ? field.GetString() : null;
-                failure = ServiceLinkFailure.From(Field("code"), Field("stage"), Field("correlationId"), (int)response.StatusCode);
+                failure = ServiceLinkFailure.From(Field("code"), Field("stage"), Field("correlationId"), (int)response.StatusCode, Field("existingAttemptId"));
             }
         }
         catch (Exception exception) when (exception is JsonException or InvalidDataException)

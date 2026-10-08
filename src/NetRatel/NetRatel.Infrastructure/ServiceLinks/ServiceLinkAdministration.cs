@@ -56,9 +56,10 @@ public sealed partial class ServiceLinkCoordinator
             "The original local administrator must inspect or cancel this unapproved attempt with current authority.", 403);
     }
 
-    private static string AvailableAction(ServiceLinkAttempt a, ClaimsPrincipal actor, bool invalidBinding, bool terminal)
+    private string AvailableAction(ServiceLinkAttempt a, ClaimsPrincipal actor, bool invalidBinding, bool terminal)
     {
         if (invalidBinding || terminal) return "none";
+        if (CanReturnApproval(a)) return a.LocalActorId == ActorId(actor) ? "return" : "none";
         if (a.Decision == "undecided" && a.InboundPrincipalId is null)
         {
             if (a.LocalActorId != ActorId(actor) || a.ProtectedBrowserState is null) return "none";

@@ -481,6 +481,7 @@ public sealed class HelpdeskConsentStateRegressionTests : AsyncBunitContext
     [Theory]
     [InlineData("responder", "respond", "review", "service-link-responder-approval")]
     [InlineData("initiator", "continue", "respond", "service-link-continue-approval")]
+    [InlineData("responder", "return", "review", "service-link-continue-approval")]
     [InlineData("initiator", "review", "respond", "service-link-final-approval")]
     [InlineData("responder", "none", "respond", null)]
     public void Consent_uses_authorized_durable_action_instead_of_the_route(string role, string action, string route, string? expectedForm)
@@ -488,7 +489,7 @@ public sealed class HelpdeskConsentStateRegressionTests : AsyncBunitContext
         using var transport = RegisterTransport();
         ComponentFactories.AddStub<HelpdeskConnectionsPanel>();
         Services.GetRequiredService<NavigationManager>().NavigateTo($"/account/integration-credentials/link/{route}/pending");
-        transport.StatusFactory = id => Attempt(id, action != "review") with { LocalRole = role, AvailableAction = action };
+        transport.StatusFactory = id => Attempt(id, action is not ("review" or "return")) with { LocalRole = role, AvailableAction = action };
 
         var page = Render<ServiceLinkConsent>(parameters => parameters.Add(component => component.AttemptId, "pending"));
 

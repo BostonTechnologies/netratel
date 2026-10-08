@@ -110,7 +110,7 @@ public static class ReceiverWireValidation
             throw new InvalidDataException("receiver-observation-time-invalid");
         using var doc = Parse(body); var root = doc.RootElement;
         Equal(Text(root, "contractVersion"), Contract);
-        Equal(Text(root, "receiverInstanceId"), peer.ReceiverInstanceId);
+        ReceiverIdentity(root, peer.ReceiverInstanceId);
         Equal(Text(root, "sourceInstanceId"), peer.SourceInstanceId.ToString("D"));
         Equal(Text(root, "sourceNamespaceId"), peer.SourceNamespaceId.ToString("D"));
         Equal(Text(root, "keyHeader"), "Idempotency-Key");
@@ -150,7 +150,7 @@ public static class ReceiverWireValidation
         RequirePeer(peer);
         using var doc = Parse(body); var root = doc.RootElement;
         Equal(Text(root, "contractVersion"), Contract);
-        Equal(Text(root, "receiverInstanceId"), peer.ReceiverInstanceId);
+        ReceiverIdentity(root, peer.ReceiverInstanceId);
         Equal(Text(root, "sourceInstanceId"), peer.SourceInstanceId.ToString("D"));
         Equal(Text(root, "sourceNamespaceId"), peer.SourceNamespaceId.ToString("D"));
         if (!Flag(root, "valid")) throw new InvalidDataException("receiver-target-unverified");
@@ -243,4 +243,11 @@ public static class ReceiverWireValidation
             throw new InvalidDataException("receiver-identity-unverified");
     private static void Equal(string? actual, string expected)
     { if (!string.Equals(actual, expected, StringComparison.Ordinal)) throw new InvalidDataException("receiver-binding-unverified"); }
+
+    private static void ReceiverIdentity(JsonElement root, string expected)
+    {
+        var actual = CanonicalGuid(Text(root, "receiverInstanceId")).ToString("D");
+        if (!string.Equals(actual, expected, StringComparison.Ordinal))
+            throw new RatelDeskReceiverReadException("receiver-identity-mismatch", null, null);
+    }
 }

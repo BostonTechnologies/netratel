@@ -51,7 +51,7 @@ public static class ServiceLinkBrowserEndpoints
             try
             {
                 using var response = await clients.CreateClient("ServiceLinkApi").PostAsJsonAsync(ApiRoot + "/start", request, context.RequestAborted);
-                if (!response.IsSuccessStatusCode) return Failure(context, await FailureCodeAsync(response, context.RequestAborted));
+                if (!response.IsSuccessStatusCode) return await FailureForAttemptAsync(context, clients, await FailureCodeAsync(response, context.RequestAborted));
                 var navigation = await ReadBoundedAsync<ServiceLinkNavigation>(response, context.RequestAborted);
                 if (navigation is null) return Failure(context, "peer-unavailable");
                 RememberFlowReturn(context, protection, configuration, form["returnUrl"].ToString());
@@ -65,19 +65,34 @@ public static class ServiceLinkBrowserEndpoints
         {
             ProtectResponse(context);
             if (!await ValidFormAsync(context, antiforgery)) return Failure(context, "form-expired");
-            var binding = GetSessionBinding(context, protection, configuration, create: false);
-            if (binding is null) return Failure(context, "session-expired");
             var form = await context.Request.ReadFormAsync(context.RequestAborted);
             var attempt = Bounded(form["attemptId"].ToString(), 128);
             try
             {
+                using var statusResponse = await clients.CreateClient("ServiceLinkApi").GetAsync(ApiRoot + "/attempts/" + Uri.EscapeDataString(attempt), context.RequestAborted);
+                if (!statusResponse.IsSuccessStatusCode)
+                    return await FailureForAttemptAsync(context, clients, await FailureCodeAsync(statusResponse, context.RequestAborted));
+                var status = await ReadBoundedAsync<ServiceLinkAdminStatus>(statusResponse, context.RequestAborted);
+                if (status?.AttemptId != attempt || status.Descriptor?.AttemptId != attempt)
+                    return Failure(context, "invalid-proof");
+                var returning = status.LocalRole == "responder" && status.AvailableAction == "return";
+                if (!returning && (status.LocalRole != "initiator" || status.AvailableAction != "continue"))
+                    return Failure(context, ServiceLinkFailure.From("needs-attention", "continue"), attempt);
+                // An approved responder returns its retained consent; it does not start another ceremony.
+                // The API still enforces actor, authority, grant and retained-proof checks on this POST.
+                var binding = GetSessionBinding(context, protection, configuration, create: false);
+                if (binding is null) return Failure(context, ServiceLinkFailure.From("session-expired", "continue"), attempt);
                 using var response = await clients.CreateClient("ServiceLinkApi").PostAsJsonAsync(ApiRoot + "/attempts/" + Uri.EscapeDataString(attempt) + "/continue",
                     new ServiceLinkContinueRequest(binding), context.RequestAborted);
-                if (!response.IsSuccessStatusCode) return Failure(context, await FailureCodeAsync(response, context.RequestAborted));
+                if (!response.IsSuccessStatusCode)
+                    return await FailureForAttemptAsync(context, clients, await FailureCodeAsync(response, context.RequestAborted), attempt);
                 var navigation = await ReadBoundedAsync<ServiceLinkNavigation>(response, context.RequestAborted);
-                return navigation is null ? Failure(context, "peer-unavailable") : await PinnedNavigationAsync(context, clients, navigation, responderApproval: true);
+                if (navigation is null) return Failure(context, ServiceLinkFailure.From("peer-unavailable", "continue"), attempt);
+                if (navigation.AttemptId != attempt) return Failure(context, ServiceLinkFailure.From("invalid-proof", "continue"), attempt);
+                return await PinnedNavigationAsync(context, clients, navigation, responderApproval: !returning);
             }
-            catch (Exception exception) when (IsTransportFailure(exception, context)) { return Failure(context, "peer-unavailable"); }
+            catch (Exception exception) when (IsTransportFailure(exception, context))
+            { return await FailureForAttemptAsync(context, clients, ServiceLinkFailure.From("peer-unavailable", "continue"), attempt); }
         }).RequireAuthorization();
 
         app.MapGet(Root + "/return", (HttpContext context, IDataProtectionProvider protection, IConfiguration configuration) =>
@@ -129,7 +144,7 @@ public static class ServiceLinkBrowserEndpoints
             {
                 using var response = await clients.CreateClient("ServiceLinkApi").PostAsJsonAsync(ApiRoot + "/remote-review",
                     new ServiceLinkRemoteReviewRequest(origin, attempt, state) { SessionBinding = binding }, context.RequestAborted);
-                if (!response.IsSuccessStatusCode) return Failure(context, await FailureCodeAsync(response, context.RequestAborted));
+                if (!response.IsSuccessStatusCode) return await FailureForAttemptAsync(context, clients, await FailureCodeAsync(response, context.RequestAborted), attempt);
                 return Results.LocalRedirect(Root + "/respond/" + Uri.EscapeDataString(attempt));
             }
             catch (Exception exception) when (IsTransportFailure(exception, context)) { return Failure(context, "peer-unavailable"); }
@@ -152,7 +167,7 @@ public static class ServiceLinkBrowserEndpoints
             {
                 using var response = await clients.CreateClient("ServiceLinkApi").PostAsJsonAsync(ApiRoot + "/callback",
                     new ServiceLinkCallbackRequest(attempt, code, state, instance, issuer, binding), context.RequestAborted);
-                if (!response.IsSuccessStatusCode) return Failure(context, await FailureCodeAsync(response, context.RequestAborted));
+                if (!response.IsSuccessStatusCode) return await FailureForAttemptAsync(context, clients, await FailureCodeAsync(response, context.RequestAborted), attempt);
                 return Results.LocalRedirect(Root + "/review/" + Uri.EscapeDataString(attempt));
             }
             catch (Exception exception) when (IsTransportFailure(exception, context)) { return Failure(context, "peer-unavailable"); }
@@ -171,7 +186,7 @@ public static class ServiceLinkBrowserEndpoints
             {
                 using var response = await clients.CreateClient("ServiceLinkApi").PostAsJsonAsync(ApiRoot + "/attempts/" + Uri.EscapeDataString(attempt) + "/approve",
                     new ServiceLinkLocalApproveRequest(Bounded(form["grantHash"].ToString(), 64), binding), context.RequestAborted);
-                return !response.IsSuccessStatusCode ? Failure(context, await FailureCodeAsync(response, context.RequestAborted)) :
+                return !response.IsSuccessStatusCode ? await FailureForAttemptAsync(context, clients, await FailureCodeAsync(response, context.RequestAborted), attempt) :
                     Results.LocalRedirect(Root + "/review/" + Uri.EscapeDataString(attempt));
             }
             catch (Exception exception) when (IsTransportFailure(exception, context)) { return Failure(context, "peer-unavailable"); }
@@ -208,7 +223,7 @@ public static class ServiceLinkBrowserEndpoints
                     : grant with { CallerTenantId = localTenant, Scopes = outboundScopes }).ToArray();
                 using var response = await clients.CreateClient("ServiceLinkApi").PostAsJsonAsync(ApiRoot + "/remote-approve",
                     new ServiceLinkRemoteApproveRequest(attempt, localTenant, grants, "") { SessionBinding = binding }, context.RequestAborted);
-                if (!response.IsSuccessStatusCode) return Failure(context, await FailureCodeAsync(response, context.RequestAborted));
+                if (!response.IsSuccessStatusCode) return await FailureForAttemptAsync(context, clients, await FailureCodeAsync(response, context.RequestAborted), attempt);
                 var navigation = await ReadBoundedAsync<ServiceLinkNavigation>(response, context.RequestAborted);
                 return navigation is null ? Failure(context, "peer-unavailable") : await PinnedNavigationAsync(context, clients, navigation, responderApproval: false);
             }
@@ -343,15 +358,43 @@ public static class ServiceLinkBrowserEndpoints
         };
         return Failure(context, ServiceLinkFailure.From(code, stage, Guid.NewGuid().ToString("N")));
     }
-    private static IResult Failure(HttpContext context, ServiceLinkFailure failure)
+    private static IResult Failure(HttpContext context, ServiceLinkFailure failure, string? authorizedAttemptId = null)
     {
         // Recheck the allowlist even for API fields. No attempt is inferred from a failed start.
         failure = ServiceLinkFailure.From(failure.Code, failure.Stage, failure.CorrelationId);
         var target = Root + "/result?status=" + Uri.EscapeDataString(failure.Code) +
             "&stage=" + Uri.EscapeDataString(failure.Stage);
         if (failure.CorrelationId is not null) target += "&correlationId=" + failure.CorrelationId;
+        if (ServiceLinkFailure.NormalizeAttemptId(authorizedAttemptId) is { } attempt)
+            target += "&attemptId=" + Uri.EscapeDataString(attempt);
         return Results.LocalRedirect(target);
     }
+    private static async Task<IResult> FailureForAttemptAsync(HttpContext context, IHttpClientFactory clients,
+        ServiceLinkFailure failure, string? selectedAttemptId = null)
+    {
+        // A problem response can suggest a local connection, but the reference is never authority.
+        // Only an individual, authenticated status read may put it on the recovery page.
+        var candidates = new[] { failure.ExistingAttemptId, selectedAttemptId }
+            .Select(ServiceLinkFailure.NormalizeAttemptId).OfType<string>().Distinct(StringComparer.Ordinal);
+        foreach (var attempt in candidates)
+        {
+            try
+            {
+                using var response = await clients.CreateClient("ServiceLinkApi").GetAsync(ApiRoot + "/attempts/" + Uri.EscapeDataString(attempt), context.RequestAborted);
+                if (!response.IsSuccessStatusCode) continue;
+                var status = await ReadBoundedAsync<ServiceLinkAdminStatus>(response, context.RequestAborted);
+                if (status?.AttemptId == attempt && status.Descriptor?.AttemptId == attempt)
+                    return Failure(context, failure, attempt);
+            }
+            catch (Exception exception) when (IsTransportFailure(exception, context))
+            {
+                // Keep the original operation error if its recovery context cannot be authorized.
+                return Failure(context, failure);
+            }
+        }
+        return Failure(context, failure);
+    }
+
     private static async Task<ServiceLinkFailure> FailureCodeAsync(HttpResponseMessage response, CancellationToken cancellationToken)
     {
         try
@@ -361,7 +404,7 @@ public static class ServiceLinkBrowserEndpoints
             {
                 string? Field(string name) => problem.RootElement.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
                     ? value.GetString() : null;
-                return ServiceLinkFailure.From(Field("code"), Field("stage"), Field("correlationId"), (int)response.StatusCode);
+                return ServiceLinkFailure.From(Field("code"), Field("stage"), Field("correlationId"), (int)response.StatusCode, Field("existingAttemptId"));
             }
         }
         catch (Exception exception) when (exception is JsonException or InvalidDataException)

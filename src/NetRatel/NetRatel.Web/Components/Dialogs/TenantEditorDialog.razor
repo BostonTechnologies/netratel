@@ -76,6 +76,25 @@
                             Auto Update
                         </MudSwitch>
                     </MudItem>
+
+                    <MudItem xs="12">
+                        <MudSelect T="string" @bind-Value="_model.AutoUpdateChannel"
+                                   Label="Release channel" Variant="Variant.Outlined"
+                                   HelperText="Global release automation does not change this tenant's channel."
+                                   data-testid="tenant-release-channel">
+                            <MudSelectItem Value="@("stable")">Stable releases only</MudSelectItem>
+                            <MudSelectItem Value="@("prerelease")">Stable releases and prereleases</MudSelectItem>
+                        </MudSelect>
+                    </MudItem>
+
+                    @if (!string.IsNullOrWhiteSpace(_model.AutoUpdateTargetVersion))
+                    {
+                        <MudItem xs="12">
+                            <MudText Typo="Typo.body2" Style="overflow-wrap: anywhere;" data-testid="tenant-target-version">
+                                Target version pin: @_model.AutoUpdateTargetVersion. Only this version is eligible within the selected channel.
+                            </MudText>
+                        </MudItem>
+                    }
                 </MudGrid>
             </MudForm>
         </MudStack>
@@ -117,6 +136,8 @@
             ContactPerson = Tenant.ContactPerson,
             ContactEmail = Tenant.ContactEmail,
             AutoUpdate = Tenant.AutoUpdate,
+            AutoUpdateChannel = Tenant.AutoUpdateChannel,
+            AutoUpdateTargetVersion = Tenant.AutoUpdateTargetVersion,
             Domains = Tenant.Domains.ToList()
         };
 
