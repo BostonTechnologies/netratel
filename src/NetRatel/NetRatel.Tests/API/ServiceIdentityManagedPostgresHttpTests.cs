@@ -57,7 +57,11 @@ public sealed class ServiceIdentityManagedPostgresHttpTests(PostgreSqlPersistenc
                 Assert.DoesNotContain(created.ClientSecret, (await db.Set<ServicePrincipalSecret>().SingleAsync()).SecretHash);
             }
             var client = first.GetTestClient(); var token = await TokenAsync(client, created);
-            Assert.Equal("RS256", new JwtSecurityTokenHandler().ReadJwtToken(token).Header.Alg);
+            var jwt = new JwtSecurityTokenHandler().ReadJwtToken(token);
+            Assert.Equal("RS256", jwt.Header.Alg);
+            Assert.DoesNotContain(jwt.Claims, claim => claim.Type is "attempt_id" or "direction_id");
+            Assert.Equal(created.Principal.LinkId, Assert.Single(jwt.Claims.Where(x => x.Type == ServiceIdentityClaims.LinkId)).Value);
+            Assert.Equal(created.Principal.GrantHash, Assert.Single(jwt.Claims.Where(x => x.Type == ServiceIdentityClaims.GrantHash)).Value);
             Assert.Equal(HttpStatusCode.OK, await ProtectedAsync(client, token));
             Assert.Equal(HttpStatusCode.BadRequest, (await TokenResponseAsync(client, created, "netratel.api")).StatusCode);
             var jwks = await client.GetStringAsync("/.well-known/service-jwks.json"); Assert.DoesNotContain("\"d\":", jwks);
