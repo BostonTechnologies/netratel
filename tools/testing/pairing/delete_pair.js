@@ -46,10 +46,10 @@ async function main() {
     await deleteLocal(nrPage, context, nr, baseline);
     native('stop', 'netratel');
     native('restart', 'rateldesk');
-    await login(rdPage, rd);
+    await account(rdPage, rd);
     await deleteLocal(rdPage, context, rd, baseline);
     native('restart', 'netratel');
-    await login(nrPage, nr);
+    await account(nrPage, nr);
     expect(await jsonRequest(context, nr, '/api/v1/admin/system-connections')).toEqual([]);
     expect(await jsonRequest(context, rd, '/api/v1/admin/system-connections')).toEqual([]);
     const cached = await control('cached-receiver-status');

@@ -70,7 +70,7 @@ async function login(page, entry) {
       await page.getByRole('button', { name: /^Sign in to / }).click();
     }
     await expect(page).not.toHaveURL(/\/login(?:[/?]|$)/);
-    await account(page, entry);
+    record(entry.name + '-normal-rendered-local-login', 'passed', { loginHttpStatus });
   } catch (error) {
     await page.screenshot({ path: path.join(evidence, entry.name + '-login-failure.png'),
       fullPage: true, animations: 'disabled', mask: [page.locator('input')] });
@@ -79,9 +79,13 @@ async function login(page, entry) {
   } finally {
     page.off('response', observeLogin);
   }
+  await account(page, entry);
 }
 async function account(page, entry) {
   await page.goto(entry.web + '/account/integration-credentials');
+  if (entry.name === 'netratel')
+    await page.getByTestId('integration-credentials-client-ready').waitFor({ state: 'attached' });
+  else await page.locator('[data-testid="integration-credentials-page"][data-interactive="true"]').waitFor({ state: 'attached' });
   const tab = page.getByRole('tab', { name: 'System connections', exact: true });
   if (await tab.count()) await tab.click();
   await expect(page.getByTestId(identifiers[entry.name].panel)).toBeVisible();
