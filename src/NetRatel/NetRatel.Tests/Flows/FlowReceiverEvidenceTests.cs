@@ -312,9 +312,9 @@ public sealed class FlowReceiverEvidenceTests
             var draft = new FlowIncidentActionDraft(17, lease.RunId, node.Id, node.ConnectorId!.Value, node.ConnectorRevision!.Value,
                 lease.SourceInstanceId, FlowActionKeys.Create(lease, node.Id), lease.Event, FlowPureEvaluation.Map(map, lease.Event.Data));
             var action = FlowTestData.Prepared(draft, safeReplay: true);
-            var peer = new RatelDeskSemanticPeer(RatelDeskAuthenticationMode.ManualApiBearer, 17, draft.ConnectorId,
-                null, null, null, Guid.NewGuid().ToString("D"), "organization-17", "https://api.example.test/help",
-                null, null, null, null, null, lease.SourceInstanceId, Guid.NewGuid(), "organization-17", "customer-17", null, []);
+            var peer = new RatelDeskSemanticPeer(RatelDeskAuthenticationMode.PairedSystem, 17, draft.ConnectorId,
+                Guid.NewGuid().ToString("D"), 1, new string('a', 64), Guid.NewGuid().ToString("D"), "organization-17", "https://api.example.test/help",
+                "https://issuer.example.test/services", "rateldesk-api", "https://api.example.test/help/connect/token", "paired-test-client", "paired", lease.SourceInstanceId, Guid.NewGuid(), "organization-17", "customer-17", null, []);
             var capability = new RatelDeskVerifiedCapability(ReceiverWireValidation.Contract, peer.ReceiverInstanceId,
                 peer.SourceInstanceId, peer.SourceNamespaceId,
                 new(ReceiverWireValidation.Endpoint(peer.ApiBaseUrl, ReceiverWireValidation.CapabilitiesPath),

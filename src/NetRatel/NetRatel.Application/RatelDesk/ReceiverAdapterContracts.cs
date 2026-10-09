@@ -3,9 +3,9 @@ using NetRatel.Shared.Contracts.RatelDesk;
 
 namespace NetRatel.Application.RatelDesk;
 
-public enum RatelDeskAuthenticationMode { ManualApiBearer = 1, ManagedServiceLink = 2 }
+public enum RatelDeskAuthenticationMode { PairedSystem = 2 }
 
-// Reference only. Managed credentials remain in the existing ServiceLinkAttempt profile.
+// Reference only. Paired credentials remain in protected server connection storage.
 public sealed record RatelDeskConnectorAuthentication(
     RatelDeskAuthenticationMode Mode, string? ManagedLinkId);
 

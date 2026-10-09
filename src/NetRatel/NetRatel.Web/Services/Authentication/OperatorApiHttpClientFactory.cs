@@ -40,10 +40,9 @@ public sealed class OperatorApiHttpClientFactory(
     }
 
     private static bool RequiresOperatorCredential(string name) =>
-        name is "OrchestratorApi" or "OrchestratorApiStreaming" or "ServiceLinkApi" or
+        name is "OrchestratorApi" or "OrchestratorApiStreaming" or "PairingApi" or
             NetRatel.Web.Services.Flows.FlowApiService.ClientName or
-            NetRatel.Web.Services.Monitoring.MonitoringApiService.ClientName or
-            NetRatel.Web.Services.RatelDesk.RatelDeskConnectorApiService.ClientName ||
+            NetRatel.Web.Services.Monitoring.MonitoringApiService.ClientName ||
         string.Equals(name, DownloadClientName, StringComparison.Ordinal);
 
     private sealed class PooledMessageHandlerLease(HttpMessageHandler innerHandler) : DelegatingHandler(innerHandler)

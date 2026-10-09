@@ -18,7 +18,6 @@ using NetRatel.Web.Services.Script;
 using NetRatel.Web.Services;
 using NetRatel.Web.Services.Clients;
 using NetRatel.Web.Services.Tenants;
-using NetRatel.Web.Services.RatelDesk;
 using NetRatel.Web.Services.Requests;
 using NetRatel.Web.Services.ClientTasks;
 using NetRatel.Web.Services.Terminal;
@@ -46,8 +45,7 @@ using NetRatel.Web.OpenApi;
 using Scalar.AspNetCore;
 using NetRatel.Web.Bootstrap;
 using NetRatel.Shared.Authentication;
-using NetRatel.Web.Services.ServiceLinks;
-using OpenTelemetry.Instrumentation.AspNetCore;
+using NetRatel.Web.Services.Pairing;
 
 var builder = WebApplication.CreateBuilder(args);
 // Public install URLs are bearer capabilities; suppress raw-path request/forwarder logs.
@@ -60,12 +58,6 @@ const string localAuthenticationScheme = "NetRatelLocal";
 const string browserSessionScheme = "NetRatelWebSession";
 
 builder.AddServiceDefaults();
-builder.Services.PostConfigure<AspNetCoreTraceInstrumentationOptions>(options =>
-{
-    var existingFilter = options.Filter;
-    options.Filter = context => !context.Request.Path.StartsWithSegments("/account/integration-credentials/link")
-        && (existingFilter?.Invoke(context) ?? true);
-});
 // Add services to the container. Version Bump
 var maxEditorPayloadBytes = builder.Configuration.GetValue(
     "ScriptLibrary:MaxEditorPayloadBytes",
@@ -112,7 +104,6 @@ builder.Services.AddScoped<NetRatel.Web.Services.Flows.IFlowApiService, NetRatel
 builder.Services.AddTransient<TelemetryOverviewStreamService>();
 builder.Services.AddTransient<ClientTelemetryStreamService>();
 builder.Services.AddScoped<TenantApiService>();
-builder.Services.AddScoped<IRatelDeskConnectorApiService, RatelDeskConnectorApiService>();
 builder.Services.AddScoped<IAccessAdministrationApiService, AccessAdministrationApiService>();
 builder.Services.AddScoped<IDeploymentBrandingApiService, DeploymentBrandingApiService>();
 builder.Services.AddScoped<RequestApiService>();
@@ -333,22 +324,15 @@ builder.Services.AddHttpClient("OrchestratorApi", c =>
 .AddHttpMessageHandler<RedirectReissueHandler>()
 .AddHttpMessageHandler<TokenAuthorizationHandler>();
 
-// Human-authenticated service administration does not replay mutations after redirects or transport failures.
-builder.Services.AddScoped<HelpdeskM2MApiClient>();
-builder.Services.AddHttpClient("ServiceLinkApi", c =>
+// Pairing mutations are sent once; operation IDs bind retries to the same server operation.
+builder.Services.AddScoped<IPairingApiClient, PairingApiClient>();
+builder.Services.AddHttpClient("PairingApi", c =>
 {
     c.BaseAddress = new Uri(builder.Configuration["ApiBaseUrl"] ?? "https://localhost:5001/");
     c.Timeout = TimeSpan.FromSeconds(45);
 })
 .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false })
 .AddHttpMessageHandler<TokenAuthorizationHandler>()
-.RemoveAllResilienceHandlers();
-builder.Services.AddHttpClient("ServiceLinkDiscoveryApi", c =>
-{
-    c.BaseAddress = new Uri(builder.Configuration["ApiBaseUrl"] ?? "https://localhost:5001/");
-    c.Timeout = TimeSpan.FromSeconds(15);
-})
-.ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false })
 .RemoveAllResilienceHandlers();
 
 builder.Services.AddHttpClient("OrchestratorApiStreaming", c =>
@@ -363,16 +347,6 @@ builder.Services.AddHttpClient("OrchestratorApiStreaming", c =>
 
 builder.Services.AddFlowsApiClient(builder.Configuration);
 builder.Services.AddMonitoringApiClient(builder.Configuration);
-// Connector credentials and revision-fenced writes must never be replayed by redirects or transport retries.
-builder.Services.AddHttpClient(RatelDeskConnectorApiService.ClientName, c =>
-{
-    c.BaseAddress = new Uri(builder.Configuration["ApiBaseUrl"] ?? "https://localhost:5001/");
-    c.Timeout = TimeSpan.FromSeconds(30);
-})
-.ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false })
-.AddHttpMessageHandler<TokenAuthorizationHandler>()
-.RemoveAllResilienceHandlers();
-
 builder.Services.AddHttpClient("Bff", (sp, c) =>
 {
     var accessor = sp.GetRequiredService<IHttpContextAccessor>();
@@ -475,14 +449,12 @@ app.UseStaticFiles(new StaticFileOptions
 
 app.Use(async (context, next) =>
 {
-    if (string.Equals(context.Request.Path.Value, "/logout", StringComparison.OrdinalIgnoreCase) ||
-        string.Equals(context.Request.Path.Value, "/auth/logout", StringComparison.OrdinalIgnoreCase) ||
-        string.Equals(context.Request.Path.Value, "/api/v2/local-auth/logout", StringComparison.OrdinalIgnoreCase))
-        ServiceLinkBrowserEndpoints.ClearBrowserSession(context);
-    if (context.Request.Path.StartsWithSegments("/account/integration-credentials/link") ||
-        context.Request.Path.StartsWithSegments("/api/integrations/service-link") ||
-        context.Request.Path == "/connect/token" || context.Request.Path == "/account/integration-credentials")
-        ServiceLinkBrowserEndpoints.ProtectResponse(context);
+    if (context.Request.Path == "/account/integration-credentials" || context.Request.Path == "/connect/token")
+    {
+        context.Response.Headers.CacheControl = "no-store";
+        context.Response.Headers.Pragma = "no-cache";
+        context.Response.Headers["Referrer-Policy"] = "no-referrer";
+    }
     await next();
 });
 
@@ -574,7 +546,7 @@ app.Use(async (ctx, next) =>
         !ctx.Request.Path.StartsWithSegments("/api/docs", StringComparison.OrdinalIgnoreCase) &&
         !ctx.Request.Path.StartsWithSegments("/api/openapi", StringComparison.OrdinalIgnoreCase) &&
         !ctx.Request.Path.StartsWithSegments("/api/v1", StringComparison.OrdinalIgnoreCase) &&
-        !ctx.Request.Path.StartsWithSegments("/api/integrations/service-link", StringComparison.OrdinalIgnoreCase) &&
+        !ctx.Request.Path.Equals("/api/pairing/v1/metadata", StringComparison.OrdinalIgnoreCase) &&
         // The CLI's tenant-scoped telemetry command is intentionally served
         // by the same local Web gateway as the existing API surface. The API
         // remains the authorization boundary: its TelemetryReader policy and
@@ -601,7 +573,6 @@ app.MapScalarApiReference(
         options.Servers = new[] { new ScalarServer(ScalarApiReferenceOptions.BuildPublicServerUrl(request)) };
     }).AllowAnonymous();
 app.MapReverseProxy().AllowAnonymous();
-app.MapServiceLinkBrowserEndpoints();
 app.MapRazorPages();
 
 app.MapControllers();

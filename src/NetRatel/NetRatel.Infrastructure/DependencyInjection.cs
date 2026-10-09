@@ -72,7 +72,7 @@ public static class DependencyInjection
         services.AddScoped<ISecretService, SecretService>();
         services.AddScoped<IScriptService, ScriptService>();
 
-        services.AddScoped<IM2MConnectivityService, M2MConnectivityService>();
+        services.AddScoped<IM2MConnectivityService, NetRatel.Infrastructure.SystemPairing.PairingConnectivityService>();
         services.AddScoped<IEnrollmentService, EnrollmentService>();
         services.AddScoped<IEnrollmentCodeIssueService, EnrollmentCodeIssueService>();
         services.AddScoped<IAgentTokenService, AgentTokenService>();
@@ -120,10 +120,5 @@ public static class DependencyInjection
         await scope.ServiceProvider.GetRequiredService<IEffectiveAccessService>()
             .ReconcileBuiltInRolesAsync(ct);
 
-        if (!await db.M2MConnectivitySettings.AnyAsync(ct))
-        {
-            db.M2MConnectivitySettings.Add(new M2MConnectivitySettings { Enabled = false });
-            await db.SaveChangesAsync(ct);
-        }
     }
 }

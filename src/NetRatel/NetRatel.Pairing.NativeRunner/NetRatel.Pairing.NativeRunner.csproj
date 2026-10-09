@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsTestProject>false</IsTestProject>
+    <IsPackable>false</IsPackable>
+    <NetRatelSourceRoot Condition="'$(NetRatelSourceRoot)' == ''">$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)/..'))</NetRatelSourceRoot>
+    <NativeProofRepositoryRoot>$([System.IO.Path]::GetFullPath('$(NetRatelSourceRoot)/../..'))</NativeProofRepositoryRoot>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="$(NetRatelSourceRoot)/NetRatel.Client/NetRatel.Client.csproj" />
+  </ItemGroup>
+  <Target Name="ResolvePinnedNativeProofSource" BeforeTargets="GetAssemblyAttributes">
+    <!-- Test-proof provenance only. Do not populate or change product PublicSourceRevision. -->
+    <Exec Command="git -C &quot;$(NativeProofRepositoryRoot)&quot; rev-parse HEAD" ConsoleToMSBuild="true" StandardOutputImportance="Low">
+      <Output TaskParameter="ConsoleOutput" ItemName="NativeProofGitHead" />
+    </Exec>
+    <PropertyGroup>
+      <ActualNativeProofSourceSha>@(NativeProofGitHead)</ActualNativeProofSourceSha>
+      <PairingProofSourceSha Condition="'$(PairingProofSourceSha)' == ''">$(ActualNativeProofSourceSha)</PairingProofSourceSha>
+    </PropertyGroup>
+    <Error Condition="!$([System.Text.RegularExpressions.Regex]::IsMatch('$(PairingProofSourceSha)', '^[0-9a-f]{40}$'))" Text="The native proof runner needs one exact checked-out Git commit, not an arbitrary source label." />
+    <Error Condition="'$(PairingProofSourceSha)' != '$(ActualNativeProofSourceSha)'" Text="The native proof source stamp differs from the actual checked-out source." />
+    <ItemGroup>
+      <AssemblyMetadata Include="PairingProofSourceSha" Value="$(PairingProofSourceSha)" />
+    </ItemGroup>
+  </Target>
+</Project>

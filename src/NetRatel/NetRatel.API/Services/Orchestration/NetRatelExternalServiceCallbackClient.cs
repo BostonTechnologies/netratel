@@ -1,44 +1,30 @@
-using System.Net;
-using System.Net.Http.Headers;
-using System.Net.Http.Json;
-using Microsoft.Extensions.Options;
-using NetRatel.Application.Events;
+using System.Globalization;
 using Microsoft.EntityFrameworkCore;
+using NetRatel.Application.Events;
 using NetRatel.Application.Jobs;
 using NetRatel.Application.Requests;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.ServiceIdentity;
-using NetRatel.Infrastructure.ServiceLinks;
+using NetRatel.Infrastructure.SystemPairing;
+using NetRatel.Shared.SystemPairing;
 
 namespace NetRatel.API.Services.Orchestration;
 
+/// <summary>Delivers only a durable execution result belonging to one currently authorized connection.</summary>
 public sealed class NetRatelExternalServiceCallbackClient(
-    HttpClient httpClient,
-    INetRatelSystemTokenService tokenService,
-    IOptions<NetRatelExternalServiceCallbackOptions> options,
+    OrchestratorDbContext db,
+    PairingBusinessProfileService profiles,
+    IRequestService requests,
+    IJobRunService runs,
+    PairingTransport transport,
+    IServicePrincipalRegistry registry,
     IEventRecorder events,
-    ILogger<NetRatelExternalServiceCallbackClient> logger,
-    OrchestratorDbContext? db = null,
-    ServiceLinkProfileService? profiles = null,
-    IRequestService? requests = null,
-    IJobRunService? runs = null,
-    ServiceLinkTransport? managedTransport = null) : INetRatelExternalServiceCallbackClient
+    ILogger<NetRatelExternalServiceCallbackClient> logger) : INetRatelExternalServiceCallbackClient
 {
-    private const string CallbackRejectedEventType = "DomainEvent.Orchestration.ExternalServiceCallbackRejected";
-    private const string CallbackFailedEventType = "DomainEvent.Orchestration.ExternalServiceCallbackFailed";
-
-    private static readonly TimeSpan[] RetryDelays =
-    {
-        TimeSpan.FromMilliseconds(250),
-        TimeSpan.FromSeconds(1),
-        TimeSpan.FromSeconds(2)
-    };
-
-    private readonly HttpClient _httpClient = httpClient;
-    private readonly INetRatelSystemTokenService _tokenService = tokenService;
-    private readonly NetRatelExternalServiceCallbackOptions _options = options.Value;
-    private readonly IEventRecorder _events = events;
-    private readonly ILogger<NetRatelExternalServiceCallbackClient> _logger = logger;
+    private const string CallbackPath = "/api/v1/orchestration/provider/callback";
+    private const string RejectedEvent = "DomainEvent.Orchestration.ExternalServiceCallbackRejected";
+    private const string FailedEvent = "DomainEvent.Orchestration.ExternalServiceCallbackFailed";
+    private static readonly TimeSpan[] RetryDelays = [TimeSpan.FromMilliseconds(250), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(2)];
 
     public async Task SendStatusAsync(NetRatelExternalServiceCallbackRequest request, string correlationId, CancellationToken ct = default)
     {
@@ -47,231 +33,87 @@ public sealed class NetRatelExternalServiceCallbackClient(
 
     public async Task<bool> TrySendStatusAsync(NetRatelExternalServiceCallbackRequest request, string correlationId, CancellationToken ct = default)
     {
-        ManagedOrchestrationRequestBinding? binding = null;
-        if (db is not null)
-        {
-            if (int.TryParse(request.NetRatelRequestId, out var requestId))
-                binding = await db.Set<ManagedOrchestrationRequestBinding>().AsNoTracking().SingleOrDefaultAsync(x => x.RequestId == requestId, ct);
-            if (binding is null)
-            {
-                // A forged/missing local id must never move a managed execution to the legacy signer.
-                if (await db.Set<ManagedOrchestrationRequestBinding>().AsNoTracking().AnyAsync(x => x.ExecutionId == request.ExecutionId, ct) ||
-                    int.TryParse(request.NetRatelRequestId, out var localId) && await db.Requests.AsNoTracking().AnyAsync(x => x.Id == localId && x.SourceSystem.StartsWith("service:"), ct)) return false;
-            }
-            else
-            {
-                if (profiles is null || requests is null || runs is null || binding.LinkId is null || binding.GrantHash is null || binding.CallbackUrl is null ||
-                    binding.ExecutionId != request.ExecutionId || request.NetRatelRunId != binding.ExecutionId ||
-                    request.RequestId != binding.RequestId.ToString(System.Globalization.CultureInfo.InvariantCulture) || request.RequestTaskId != binding.RequestTaskId || correlationId != binding.CorrelationId ||
-                    !ulong.TryParse(binding.ExecutionId, out var runId)) return false;
-                var stored = await requests.GetAsync(binding.RequestId, ct);
-                var details = await runs.GetDetailsAsync(runId, ct);
-                if (stored is null || details is null || details.Run.Status == JobRunState.Pending || !OrchestrationCallbackProjection.Matches(stored, details.Run, binding) ||
-                    !await OrchestrationCallbackProjection.TerminalReadyAsync(db, details, ct) ||
-                    request.Status != OrchestrationCallbackProjection.Status(details.Run.Status) ||
-                    !await db.Set<ServicePrincipalRegistration>().AsNoTracking().AnyAsync(x => x.Id == binding.ServicePrincipalId &&
-                        x.TenantId == binding.TenantId && x.Status == "active" && x.LinkId == binding.LinkId && x.LinkRevision == binding.LinkRevision &&
-                        x.GrantHash == binding.GrantHash && x.PeerInstanceId == binding.PeerInstanceId && x.PeerTenantId == binding.PeerTenantId, ct)) return false;
-                if (!await db.Set<ServiceLinkAttempt>().AsNoTracking().AnyAsync(x => x.LinkId == binding.LinkId &&
-                    x.InboundPrincipalId == binding.ServicePrincipalId && x.LinkRevision == binding.LinkRevision && x.GrantHash == binding.GrantHash, ct)) return false;
-                request = OrchestrationCallbackProjection.Build(stored, details, binding);
-            }
-        }
-        var resolved = ResolveLegacyCallbackTarget();
-        if (binding is null && (resolved.CallbackUri is null || string.IsNullOrWhiteSpace(resolved.Audience))) return false;
-        for (var attempt = 0; attempt < RetryDelays.Length + 1; attempt++)
+        if (!int.TryParse(request.NetRatelRequestId, NumberStyles.None, CultureInfo.InvariantCulture, out var requestId)) return false;
+        var binding = await db.Set<ManagedOrchestrationRequestBinding>().AsNoTracking().SingleOrDefaultAsync(x => x.RequestId == requestId, ct);
+        if (binding is null || binding.LinkId is null || binding.GrantHash is null || binding.CallbackUrl is null ||
+            binding.ExecutionId != request.ExecutionId || request.NetRatelRunId != binding.ExecutionId ||
+            request.RequestId != binding.RequestId.ToString(CultureInfo.InvariantCulture) || request.RequestTaskId != binding.RequestTaskId ||
+            correlationId != binding.CorrelationId || !ulong.TryParse(binding.ExecutionId, NumberStyles.None, CultureInfo.InvariantCulture, out var runId)) return false;
+        var stored = await requests.GetAsync(binding.RequestId, ct);
+        var details = await runs.GetDetailsAsync(runId, ct);
+        if (stored is null || details is null || details.Run.Status == JobRunState.Pending ||
+            !OrchestrationCallbackProjection.Matches(stored, details.Run, binding) ||
+            !await OrchestrationCallbackProjection.TerminalReadyAsync(db, details, ct) ||
+            request.Status != OrchestrationCallbackProjection.Status(details.Run.Status)) return false;
+        request = OrchestrationCallbackProjection.Build(stored, details, binding);
+
+        for (var attempt = 0; attempt <= RetryDelays.Length; attempt++)
         {
             try
             {
-                Uri callbackUri;
-                string token;
-                if (binding is not null)
+                if (!await CurrentInboundAuthorityAsync(binding, ct)) return false;
+                var authorization = await profiles.GetCallbackAuthorizationAsync(binding.LinkId, binding.TenantId,
+                    binding.PeerInstanceId, binding.PeerTenantId, binding.LinkRevision, binding.GrantHash, binding.CallbackUrl,
+                    binding.ParentRequestId, binding.RequestTaskId, ct);
+                var uri = new Uri(authorization.CallbackUrl, UriKind.Absolute);
+                var status = await transport.PostBusinessStatusAsync(uri.GetLeftPart(UriPartial.Authority), CallbackPath,
+                    OrchestrationCallbackProjection.ManagedWire(request), authorization.BearerToken, correlationId, ct);
+                if (status is >= 200 and < 300) return true;
+                if (status < 500 || attempt == RetryDelays.Length)
                 {
-                    var authorization = await profiles!.GetCallbackAuthorizationAsync(binding.LinkId!, binding.TenantId,
-                        binding.PeerInstanceId, binding.PeerTenantId, binding.LinkRevision, binding.GrantHash!, binding.CallbackUrl!,
-                        binding.ParentRequestId, binding.RequestTaskId, ct);
-                    callbackUri = new Uri(authorization.CallbackUrl, UriKind.Absolute);
-                    token = authorization.BearerToken;
-                }
-                else
-                {
-                    callbackUri = resolved.CallbackUri!;
-                    token = await _tokenService.GetTokenAsync(resolved.Audience!, ct);
-                }
-                if (binding is not null)
-                {
-                    if (managedTransport is null) return false;
-                    var managedStatus = await managedTransport.PostStatusAsync(callbackUri.AbsoluteUri, OrchestrationCallbackProjection.ManagedWire(request), correlationId, token, ct);
-                    if (managedStatus is >= 200 and < 300) return true;
-                    if (managedStatus < 500 || attempt >= RetryDelays.Length)
-                    {
-                        await RecordAsync(managedStatus is 400 or 401 or 403 ? CallbackRejectedEventType : CallbackFailedEventType,
-                            "Warning", $"The approved peer rejected the callback with status {managedStatus}.", request, correlationId, managedStatus, null, ct);
-                        return false;
-                    }
-                    await Task.Delay(RetryDelays[attempt], ct);
-                    continue;
-                }
-                using var requestMessage = new HttpRequestMessage(HttpMethod.Post, callbackUri)
-                {
-                    Content = JsonContent.Create(request)
-                };
-                requestMessage.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-                requestMessage.Headers.Remove("X-Correlation-Id");
-                requestMessage.Headers.Add("X-Correlation-Id", correlationId);
-
-                using var response = await _httpClient.SendAsync(requestMessage, ct);
-                if (response.IsSuccessStatusCode)
-                {
-                    return true;
-                }
-
-                var statusCode = (int)response.StatusCode;
-                if (response.StatusCode is HttpStatusCode.BadRequest
-                    or HttpStatusCode.Unauthorized
-                    or HttpStatusCode.Forbidden)
-                {
-                    var responseBody = binding is null ? await SafeReadBodyAsync(response, ct) : null;
-                    _logger.LogWarning(
-                        "NetRatel callback rejected by ExternalService. Status={StatusCode} taskId={RequestTaskId} netratelRequestId={NetRatelRequestId} executionId={ExecutionId} body={ResponseBody}",
-                        statusCode,
-                        request.RequestTaskId,
-                        request.NetRatelRequestId ?? request.RequestId,
-                        request.ExecutionId,
-                        responseBody);
-                    await RecordAsync(
-                        CallbackRejectedEventType,
-                        "Warning",
-                        $"ExternalService rejected NetRatel callback with status {statusCode}.",
-                        request,
-                        correlationId,
-                        statusCode,
-                        responseBody,
-                        ct);
-                    return false;
-                }
-
-                if (statusCode < 500 || attempt >= RetryDelays.Length)
-                {
-                    var responseBody = binding is null ? await SafeReadBodyAsync(response, ct) : null;
-                    _logger.LogWarning(
-                        "NetRatel callback failed without retry. Status={StatusCode} taskId={RequestTaskId} netratelRequestId={NetRatelRequestId} executionId={ExecutionId} body={ResponseBody}",
-                        statusCode,
-                        request.RequestTaskId,
-                        request.NetRatelRequestId ?? request.RequestId,
-                        request.ExecutionId,
-                        responseBody);
-                    await RecordAsync(
-                        CallbackFailedEventType,
-                        "Error",
-                        $"ExternalService callback failed with status {statusCode}.",
-                        request,
-                        correlationId,
-                        statusCode,
-                        responseBody,
-                        ct);
+                    await RecordAsync(status is 400 or 401 or 403 ? RejectedEvent : FailedEvent,
+                        "The paired system rejected the correlated callback.", request, correlationId, status, null, ct);
                     return false;
                 }
             }
-            catch (ServiceLinkProtocolException)
+            catch (PairingException error)
             {
-                // Disable, unlink, identity drift, and expired grants stop before business HTTP.
+                // Revocation and changed mapping authority stop before business transport.
+                await RecordAsync(RejectedEvent, "The connection no longer authorizes this correlated callback.",
+                    request, correlationId, error.StatusCode, error.Code, ct);
                 return false;
             }
-            catch (HttpRequestException ex) when (attempt < RetryDelays.Length)
+            catch (Exception error) when (error is HttpRequestException || error is OperationCanceledException && !ct.IsCancellationRequested)
             {
-                _logger.LogWarning(
-                    ex,
-                    "Transient network error while sending NetRatel callback. Retry={RetryAttempt}",
-                    attempt + 1);
+                if (attempt == RetryDelays.Length)
+                {
+                    await RecordAsync(FailedEvent, "The paired system could not be reached for the correlated callback.",
+                        request, correlationId, null, error is OperationCanceledException ? "callback-timeout" : "callback-network-unavailable", ct);
+                    return false;
+                }
             }
-            catch (HttpRequestException ex)
-            {
-                _logger.LogWarning(
-                    ex,
-                    "NetRatel callback failed after retries exhausted. taskId={RequestTaskId} netratelRequestId={NetRatelRequestId} executionId={ExecutionId}",
-                    request.RequestTaskId,
-                    request.NetRatelRequestId ?? request.RequestId,
-                    request.ExecutionId);
-                await RecordAsync(
-                    CallbackFailedEventType,
-                    "Error",
-                    $"ExternalService callback failed after retries exhausted: {ex.Message}",
-                    request,
-                    correlationId,
-                    null,
-                    null,
-                    ct);
-                return false;
-            }
-
-            if (attempt < RetryDelays.Length)
-            {
-                await Task.Delay(RetryDelays[attempt], ct);
-            }
+            if (attempt < RetryDelays.Length) await Task.Delay(RetryDelays[attempt], ct);
         }
         return false;
     }
 
-    private (Uri? CallbackUri, string? Audience) ResolveLegacyCallbackTarget()
+    private async Task<bool> CurrentInboundAuthorityAsync(ManagedOrchestrationRequestBinding binding, CancellationToken ct)
     {
-        var baseUrl = _options.BaseUrl;
-        var audience = _options.Audience;
-
-        if (string.IsNullOrWhiteSpace(baseUrl))
-        {
-            return (null, audience);
-        }
-
-        return (new Uri(new Uri(baseUrl.TrimEnd('/') + "/", UriKind.Absolute), "api/v1/orchestration/provider/callback"), audience);
+        var row = await db.Set<ServicePrincipalRegistration>().AsNoTracking().SingleOrDefaultAsync(x => x.Id == binding.ServicePrincipalId, ct);
+        if (row is null || row.TenantId != binding.TenantId || row.Status != "active" || row.LinkId != binding.LinkId ||
+            row.LinkRevision != binding.LinkRevision || row.GrantHash != binding.GrantHash ||
+            row.PeerInstanceId != binding.PeerInstanceId || row.PeerTenantId != binding.PeerTenantId) return false;
+        var secret = await db.Set<ServicePrincipalSecret>().AsNoTracking().SingleOrDefaultAsync(x =>
+            x.ServicePrincipalId == row.Id && x.CredentialRevision == row.CurrentCredentialRevision, ct);
+        return secret is not null && await registry.CanIssueScopesAsync(new(row, secret), [OrchestrationManagedAuthorization.InvokeScope], ct);
     }
 
-    private async Task RecordAsync(
-        string eventType,
-        string severity,
-        string message,
-        NetRatelExternalServiceCallbackRequest request,
-        string correlationId,
-        int? statusCode,
-        string? responseBody,
-        CancellationToken ct)
+    private async Task RecordAsync(string type, string message, NetRatelExternalServiceCallbackRequest request,
+        string correlationId, int? status, string? code, CancellationToken ct)
     {
-        await _events.RecordAsync(new DomainEvent
+        logger.LogWarning("Correlated callback could not be delivered. LocalRequestId={RequestId} ExecutionId={ExecutionId} Status={Status} Code={Code} CorrelationId={CorrelationId}",
+            request.NetRatelRequestId, request.ExecutionId, status, code, correlationId);
+        await events.RecordAsync(new DomainEvent
         {
-            EventType = eventType,
-            Source = "Orchestration",
-            CorrelationId = correlationId,
-            EntityId = request.NetRatelRunId ?? request.ExecutionId,
-            Severity = severity,
-            Message = message,
+            EventType = type, Source = "Orchestration", CorrelationId = correlationId,
+            EntityId = request.NetRatelRunId ?? request.ExecutionId, Severity = "Warning", Message = message,
             Payload = new
             {
-                request.RequestTaskId,
-                request.RequestId,
-                request.NetRatelRequestId,
-                request.NetRatelRunId,
-                request.ExecutionId,
-                request.Status,
-                request.Message,
-                request.ResultJson,
-                request.ErrorJson,
-                request.WorklogSummary,
-                request.StartedAtUtc,
-                request.CompletedAtUtc,
-                StatusCode = statusCode,
-                ResponseBody = responseBody
+                request.RequestTaskId, request.RequestId, request.NetRatelRequestId, request.NetRatelRunId,
+                request.ExecutionId, request.Status, request.Message, request.ResultJson, request.ErrorJson,
+                request.WorklogSummary, request.StartedAtUtc, request.CompletedAtUtc,
+                StatusCode = status, FailureCode = code
             }
         }, ct);
-    }
-
-    private static async Task<string?> SafeReadBodyAsync(HttpResponseMessage response, CancellationToken ct)
-    {
-        var body = await response.Content.ReadAsStringAsync(ct);
-        if (string.IsNullOrWhiteSpace(body))
-        {
-            return null;
-        }
-
-        return body.Length <= 1024 ? body : body[..1024];
     }
 }

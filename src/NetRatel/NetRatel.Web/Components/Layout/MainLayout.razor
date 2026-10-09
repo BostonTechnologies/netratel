@@ -72,7 +72,7 @@
                      aria-label="Settings"
                      AnchorOrigin="Origin.TopRight"
                      TransformOrigin="Origin.TopRight">
-                <MudMenuItem Href="/settings/connectivity">Connectivity</MudMenuItem>
+                <MudMenuItem Href="/account/integration-credentials">System connections</MudMenuItem>
             </MudMenu>
         </div>
         <div class="netratel-appbar-mobile-actions">
@@ -102,7 +102,7 @@
                              aria-current="@(themePreference.Mode is ThemePreferenceMode.Dark ? "true" : "false")"
                              OnClick="@(() => themePreference.SetModeAsync(ThemePreferenceMode.Dark))">Dark</MudMenuItem>
                 <MudDivider />
-                <MudMenuItem Icon="@Icons.Material.Filled.Settings" Href="/settings/connectivity">Connectivity</MudMenuItem>
+                <MudMenuItem Icon="@Icons.Material.Filled.Settings" Href="/account/integration-credentials">System connections</MudMenuItem>
             </MudMenu>
         </div>
         </div>

@@ -314,9 +314,9 @@ public sealed class FlowReceiverEvidencePostgresTests(PostgreSqlPersistenceFixtu
             (await h.Store.GetOrCreateActionAsync(h.Lease, h.Draft)).Should().NotBeNull();
             h.Request = FlowTestData.Prepared(h.Draft, safeReplay: true);
             var original = (await h.Evidence.GetOriginalCreatedAtAsync(h.Lease, default))!.Value;
-            var peer = new RatelDeskSemanticPeer(RatelDeskAuthenticationMode.ManualApiBearer, TenantId, h.Draft.ConnectorId,
-                null, null, null, Guid.NewGuid().ToString("D"), "organization-17", "https://api.example.test/help",
-                null, null, null, null, null, h.Lease.SourceInstanceId, Guid.NewGuid(), "organization-17", "customer-17", null, []);
+            var peer = new RatelDeskSemanticPeer(RatelDeskAuthenticationMode.PairedSystem, TenantId, h.Draft.ConnectorId,
+                Guid.NewGuid().ToString("D"), 1, new string('a', 64), Guid.NewGuid().ToString("D"), "organization-17", "https://api.example.test/help",
+                "https://issuer.example.test/services", "rateldesk-api", "https://api.example.test/help/connect/token", "paired-test-client", "paired", h.Lease.SourceInstanceId, Guid.NewGuid(), "organization-17", "customer-17", null, []);
             var capability = new RatelDeskVerifiedCapability(ReceiverWireValidation.Contract, peer.ReceiverInstanceId, peer.SourceInstanceId,
                 peer.SourceNamespaceId, new(ReceiverWireValidation.Endpoint(peer.ApiBaseUrl, ReceiverWireValidation.CapabilitiesPath),
                     ReceiverWireValidation.Endpoint(peer.ApiBaseUrl, ReceiverWireValidation.CreatePath),

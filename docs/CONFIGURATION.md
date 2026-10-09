@@ -75,13 +75,13 @@ Back up PostgreSQL and persistent key/artifact volumes
 together. Replacing a Data Protection key ring invalidates cookies and
 protected state.
 
-## Helpdesk service credentials
+## RatelDesk connections
 
-Use [RatelDesk service credentials and reciprocal linking](integrations/rateldesk-service-link.md)
-for tenant-owned `helpdesk-m2m` clients, the two administrator approval paths,
-deployment locks, rotation and callback configuration. These managed identities
-are separate from personal API/MCP credentials, native-agent keys and the
-existing deployment `M2M` configuration.
+Use [RatelDesk pairing](integrations/rateldesk-pairing.md) to generate a code,
+pair the systems, and save the tenant mapping and selected capabilities.
+Pairing credentials stay protected on the server and are separate from
+personal API/MCP credentials and native-agent keys. Upgrade both products
+and pair afresh; the previous NetRatel ↔ RatelDesk setup is retired.
 
 ## Public client install links
 

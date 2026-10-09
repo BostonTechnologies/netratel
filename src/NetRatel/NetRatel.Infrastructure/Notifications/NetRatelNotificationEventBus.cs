@@ -30,7 +30,7 @@ public sealed class NetRatelNotificationEventBus : INetRatelNotificationEventBus
     public void Publish(NetRatelNotificationDto notification)
     {
         // Personal setup failures are read through the authenticated durable path.
-        if (notification.EventType == NetRatelNotificationAudience.ServiceLinkFailure) return;
+        if (notification.EventType == NetRatelNotificationAudience.PairingFailure) return;
         PublishToKey(GlobalKey, notification);
         if (!string.IsNullOrWhiteSpace(notification.TenantId))
             PublishToKey(notification.TenantId, notification);

@@ -3,7 +3,6 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using NetRatel.API.Services.Events;
 using NetRatel.API.Services.Jobs;
@@ -13,13 +12,14 @@ using NetRatel.Application.Requests;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.Services;
 using NetRatel.Infrastructure.ServiceIdentity;
-using NetRatel.Infrastructure.ServiceLinks;
+using NetRatel.Infrastructure.SystemPairing;
+using NetRatel.Shared.SystemPairing;
 using NetRatel.Shared.Contracts.Jobs;
 
 namespace NetRatel.API.Endpoints;
 
 /// <summary>
-/// ExternalService's M2M catalogue and submission contract. PostgreSQL owns the
+/// Paired RatelDesk scoped catalogue and submission contract. PostgreSQL owns the
 /// catalogue/request records and the fenced Akka gateway owns dispatch.
 /// </summary>
 public static class InternalEndpoints
@@ -32,79 +32,27 @@ public static class InternalEndpoints
         group.MapGet("/catalog/jobs", async (HttpContext http, IJobDefinitionService jobs, OrchestratorDbContext db, CancellationToken ct) =>
         {
             var principal = await OrchestrationManagedAuthorization.ResolveAsync(http, OrchestrationManagedAuthorization.ReadScope, ct);
-            if (OrchestrationManagedAuthorization.IsManaged(http.User) && principal is null) return Results.Forbid();
+            if (principal is null) return Results.Forbid();
             var definitions = await FilterDefinitionsAsync(db, await jobs.ListAsync(ct), principal, ct);
             return Results.Ok(await MapCatalogJobsAsync(db, definitions, ct));
         }).RequireAuthorization(OrchestrationManagedAuthorization.ReadPolicy);
         group.MapGet("/catalog/tenants", async (HttpContext http, OrchestratorDbContext db, CancellationToken ct) =>
         {
             var principal = await OrchestrationManagedAuthorization.ResolveAsync(http, OrchestrationManagedAuthorization.ReadScope, ct);
-            if (OrchestrationManagedAuthorization.IsManaged(http.User) && principal is null) return Results.Forbid();
+            if (principal is null) return Results.Forbid();
             var tenants = db.Tenants.AsNoTracking();
-            if (principal is not null) tenants = tenants.Where(tenant => tenant.Id == principal.TenantId);
+            tenants = tenants.Where(tenant => tenant.Id == principal.TenantId);
             return Results.Ok(await tenants.OrderBy(tenant => tenant.Name)
                 .Select(tenant => new NetRatelCatalogTenantDto { TenantId = tenant.Id, Name = tenant.Name, IsActive = true }).ToArrayAsync(ct));
         }).RequireAuthorization(OrchestrationManagedAuthorization.ReadPolicy);
         group.MapGet("/catalog/request-definitions", async (HttpContext http, IJobDefinitionService jobs, OrchestratorDbContext db, CancellationToken ct) =>
         {
             var principal = await OrchestrationManagedAuthorization.ResolveAsync(http, OrchestrationManagedAuthorization.ReadScope, ct);
-            if (OrchestrationManagedAuthorization.IsManaged(http.User) && principal is null) return Results.Forbid();
+            if (principal is null) return Results.Forbid();
             var definitions = await FilterDefinitionsAsync(db, await jobs.ListAsync(ct), principal, ct);
             var catalog = await MapCatalogJobsAsync(db, definitions, ct);
             return Results.Ok(catalog.Select(ToRequestDefinition));
         }).RequireAuthorization(OrchestrationManagedAuthorization.ReadPolicy);
-
-        group.MapPost("/catalog/request-definitions", async (
-            CreateNetRatelCatalogRequestDefinitionRequest request,
-            IJobDefinitionService jobs,
-            OrchestratorDbContext db,
-            CancellationToken ct) =>
-        {
-            if (string.IsNullOrWhiteSpace(request.Name)) return Results.BadRequest(new { message = "Name is required." });
-            var target = await ResolveTargetAsync(db, request.TenantId, request.ClientIdentity, ct).ConfigureAwait(false);
-            if (target is null) return Results.UnprocessableEntity(TargetProblem(request.TenantId, request.ClientIdentity));
-            var job = await jobs.CreateAsync(new CreateJobDefinitionCommand(
-                request.Name.Trim(), NormalizeFolder(request.FolderPath), NormalizeOptional(request.Description), target.TenantId,
-                target.ClientIdentity, AgentId: target.AgentId), ct).ConfigureAwait(false);
-            var item = (await MapCatalogJobsAsync(db, [job], ct).ConfigureAwait(false)).Single();
-            return Results.Created($"/internal/catalog/request-definitions/{job.Id}", ToRequestDefinition(item));
-        }).RequireAuthorization("M2MOnly");
-
-        group.MapPost("/catalog/request-definitions/{requestDefinitionId}/inputs/sync", async (
-            [FromRoute] string requestDefinitionId,
-            SyncNetRatelCatalogRequestDefinitionInputsRequest request,
-            IJobDefinitionService jobs,
-            OrchestratorDbContext db,
-            CancellationToken ct) =>
-        {
-            if (!ulong.TryParse(requestDefinitionId, out var jobId)) return Results.BadRequest(new { message = "Request definition id must be a valid NetRatel job id." });
-            var job = await jobs.GetAsync(jobId, ct).ConfigureAwait(false);
-            if (job is null) return Results.NotFound(new { message = $"No NetRatel request definition matched '{requestDefinitionId}'." });
-
-            var desired = request.Inputs.Where(input => !string.IsNullOrWhiteSpace(input.Key))
-                .GroupBy(input => input.Key.Trim(), StringComparer.OrdinalIgnoreCase).Select(group => group.First()).ToArray();
-            var existing = await jobs.ListParamsAsync(jobId, ct).ConfigureAwait(false);
-            var byName = existing.ToDictionary(parameter => parameter.Name, StringComparer.OrdinalIgnoreCase);
-            var desiredNames = desired.Select(input => input.Key.Trim()).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            foreach (var input in desired)
-            {
-                var name = input.Key.Trim();
-                if (byName.TryGetValue(name, out var current))
-                {
-                    await jobs.UpdateParamAsync(new UpdateJobParameterCommand(current.Id, name, NormalizeType(input.Type), input.Required,
-                        NormalizeOptional(input.DefaultValue), NormalizeOptional(input.HelpText), NormalizeOptional(input.OptionsJson)), ct).ConfigureAwait(false);
-                }
-                else
-                {
-                    await jobs.AddParamAsync(new AddJobParameterCommand(jobId, name, NormalizeType(input.Type), input.Required,
-                        NormalizeOptional(input.DefaultValue), NormalizeOptional(input.HelpText), NormalizeOptional(input.OptionsJson)), ct).ConfigureAwait(false);
-                }
-            }
-            foreach (var parameter in existing.Where(parameter => !desiredNames.Contains(parameter.Name)))
-                await jobs.DeleteParamAsync(parameter.Id, ct).ConfigureAwait(false);
-
-            return Results.Ok(ToRequestDefinition((await MapCatalogJobsAsync(db, [job], ct).ConfigureAwait(false)).Single()));
-        }).RequireAuthorization("M2MOnly");
 
         group.MapPost("/ingest", async (
             NetRatelIngestRequest request,
@@ -117,125 +65,96 @@ public static class InternalEndpoints
             ILoggerFactory loggers,
             CancellationToken ct) =>
         {
-            var managed = OrchestrationManagedAuthorization.IsManaged(http.User);
             var principal = await OrchestrationManagedAuthorization.ResolveAsync(http, OrchestrationManagedAuthorization.InvokeScope, ct);
-            if (managed && principal is null) return Results.Forbid();
-            if (!managed && string.IsNullOrWhiteSpace(request.JobName)) return Results.BadRequest(new { message = "JobName is required." });
-            var correlationId = FirstNonEmpty(request.CorrelationId, http.Request.Headers["X-Correlation-Id"].FirstOrDefault(), http.TraceIdentifier) ?? $"corr-{Guid.NewGuid():N}";
-            if (managed && (!ValidIdentifier(request.RequestId) || !ValidIdentifier(request.RequestTaskId) || !ValidIdentifier(request.CorrelationId) ||
-                http.Request.Headers["X-Correlation-Id"].FirstOrDefault() is { Length: > 0 } header && header != request.CorrelationId))
+            if (principal is null) return Results.Forbid();
+            if (!ValidIdentifier(request.RequestId) || !ValidIdentifier(request.RequestTaskId) || !ValidIdentifier(request.CorrelationId) ||
+                http.Request.Headers["X-Correlation-Id"].FirstOrDefault() is { Length: > 0 } header && header != request.CorrelationId)
                 return Results.BadRequest(new { code = "invalid_correlation" });
+            var correlationId = request.CorrelationId!;
             JsonObject payload;
             try { payload = JsonNode.Parse(string.IsNullOrWhiteSpace(request.PayloadJson) ? "{}" : request.PayloadJson) as JsonObject ?? throw new JsonException(); }
             catch (JsonException) { return Results.BadRequest(new { code = "invalid_payload" }); }
-            JobDefinitionInfo? job;
-            if (principal is not null)
-            {
-                var id = FirstNonEmpty(request.NetRatelRequestDefinitionId, request.NetRatelJobDefinitionId);
-                if (!ulong.TryParse(id, NumberStyles.None, CultureInfo.InvariantCulture, out var jobId) || jobId.ToString(CultureInfo.InvariantCulture) != id ||
-                    request.NetRatelJobDefinitionId is { Length: > 0 } alternate && alternate != id ||
-                    !OrchestrationManagedAuthorization.Constraints(principal).RequestDefinitionIds.Contains(id, StringComparer.Ordinal))
-                    return Results.Forbid();
-                job = await jobs.GetAsync(jobId, ct);
-                if (job is null || (await FilterDefinitionsAsync(db, [job], principal, ct)).Count != 1) return Results.Forbid();
-            }
-            else job = await ResolveJobAsync(jobs, request, ct);
-            if (job is null) return Results.NotFound(new { message = $"No NetRatel job definition matched '{request.JobName}'." });
+            var id = FirstNonEmpty(request.NetRatelRequestDefinitionId, request.NetRatelJobDefinitionId);
+            if (!ulong.TryParse(id, NumberStyles.None, CultureInfo.InvariantCulture, out var jobId) || jobId.ToString(CultureInfo.InvariantCulture) != id ||
+                request.NetRatelJobDefinitionId is { Length: > 0 } alternate && alternate != id ||
+                !OrchestrationManagedAuthorization.Constraints(principal).RequestDefinitionIds.Contains(id, StringComparer.Ordinal))
+                return Results.Forbid();
+            var job = await jobs.GetAsync(jobId, ct);
+            if (job is null || (await FilterDefinitionsAsync(db, [job], principal, ct)).Count != 1) return Results.Forbid();
             var target = await ValidateTargetAsync(db, job, ct);
-            if (target is null)
+            if (target is null || principal.LinkId is not { Length: > 0 } mappingId) return Results.Forbid();
+            PairingBusinessProfile profile;
+            try { profile = await http.RequestServices.GetRequiredService<PairingBusinessProfileService>()
+                .ResolveAsync(principal.TenantId, mappingId, "rateldesk.orchestration.callback", ct); }
+            catch (PairingException) { return Results.Forbid(); }
+            if (profile.Revision != principal.LinkRevision || profile.AuthorityHash != principal.GrantHash ||
+                profile.Peer.InstallationId != principal.PeerInstanceId || profile.Mapping.RatelDeskOrganizationId != principal.PeerTenantId)
+                return Results.Forbid();
+            var callbackUrl = profile.Peer.ApiOrigin + "/api/v1/orchestration/provider/callback";
+            if (request.CallbackUrl is { Length: > 0 } suppliedCallback && suppliedCallback != callbackUrl) return Results.Forbid();
+            var fingerprint = IngestFingerprint(request, job, payload);
+            var priorBinding = await db.Set<ManagedOrchestrationRequestBinding>().AsNoTracking().SingleOrDefaultAsync(x =>
+                x.ServicePrincipalId == principal.Id && x.ParentRequestId == request.RequestId && x.RequestTaskId == request.RequestTaskId, ct);
+            if (priorBinding is not null)
             {
-                if (managed) return Results.Forbid();
-                var problem = TargetProblem(job.TenantId, job.ClientIdentity, job.Id); problem.CorrelationId = correlationId;
-                return Results.UnprocessableEntity(problem);
+                if (priorBinding.IngestFingerprint != fingerprint || priorBinding.CorrelationId != correlationId ||
+                    priorBinding.TenantId != target.TenantId || priorBinding.AgentId != target.AgentId || priorBinding.LinkId != principal.LinkId ||
+                    priorBinding.LinkRevision != principal.LinkRevision || priorBinding.GrantHash != principal.GrantHash)
+                    return Results.Conflict(new { code = "ingest_binding_conflict" });
+                var prior = await ManagedOrchestrationRecovery.RecoverAsync(db, requests,
+                    http.RequestServices.GetRequiredService<IJobRunService>(), priorBinding, ct);
+                if (prior is null || prior.ExecutionId != priorBinding.ExecutionId || prior.ExecutionId is not { } executionId)
+                    return Results.Conflict(new { code = "ingest_recovery_required" });
+                return Results.Ok(new NetRatelIngestResponse { RequestId = prior.Id.ToString(), RunId = executionId, ExecutionId = executionId, Status = prior.Status, Message = prior.ResultMessage });
             }
-            ManagedOrchestrationRequestBinding? binding = null;
-            if (principal is not null)
+            var binding = new ManagedOrchestrationRequestBinding
             {
-                string? callbackUrl = null;
-                if (principal.LinkId is { Length: > 0 } linkId)
-                {
-                    ServiceLinkResolvedProfile profile;
-                    try { profile = await http.RequestServices.GetRequiredService<ServiceLinkProfileService>()
-                        .ResolveAsync(principal.TenantId, linkId, "rateldesk.orchestration.callback", ct); }
-                    catch (ServiceLinkProtocolException) { return Results.Forbid(); }
-                    if (profile.LinkRevision != principal.LinkRevision || profile.GrantHash != principal.GrantHash ||
-                        profile.PeerInstanceId != principal.PeerInstanceId || profile.PeerTenantId != principal.PeerTenantId) return Results.Forbid();
-                    callbackUrl = ServiceLinkValidation.Endpoint(profile.Peer.ApiBaseUrl, "/api/v1/orchestration/provider/callback");
-                }
-                if (request.CallbackUrl is { Length: > 0 } suppliedCallback && suppliedCallback != callbackUrl) return Results.Forbid();
-                var fingerprint = IngestFingerprint(request, job, payload);
-                var priorBinding = await db.Set<ManagedOrchestrationRequestBinding>().AsNoTracking().SingleOrDefaultAsync(x =>
-                    x.ServicePrincipalId == principal.Id && x.ParentRequestId == request.RequestId && x.RequestTaskId == request.RequestTaskId, ct);
-                if (priorBinding is not null)
-                {
-                    if (priorBinding.IngestFingerprint != fingerprint || priorBinding.CorrelationId != correlationId ||
-                        priorBinding.TenantId != target.TenantId || priorBinding.AgentId != target.AgentId || priorBinding.LinkId != principal.LinkId ||
-                        priorBinding.LinkRevision != principal.LinkRevision || priorBinding.GrantHash != principal.GrantHash)
-                        return Results.Conflict(new { code = "ingest_binding_conflict" });
-                    var prior = await ManagedOrchestrationRecovery.RecoverAsync(db, requests,
-                        http.RequestServices.GetRequiredService<IJobRunService>(), priorBinding, ct);
-                    if (prior is null || prior.ExecutionId != priorBinding.ExecutionId || prior.ExecutionId is not { } executionId)
-                        return Results.Conflict(new { code = "ingest_recovery_required" });
-                    return Results.Ok(new NetRatelIngestResponse { RequestId = prior.Id.ToString(), RunId = executionId, ExecutionId = executionId, Status = prior.Status, Message = prior.ResultMessage });
-                }
-                binding = new ManagedOrchestrationRequestBinding
-                {
-                    ServicePrincipalId = principal.Id, TenantId = target.TenantId, AgentId = target.AgentId,
-                    JobDefinitionId = job.Id.ToString(CultureInfo.InvariantCulture), ParentRequestId = request.RequestId,
-                    RequestTaskId = request.RequestTaskId, CorrelationId = correlationId, IngestFingerprint = fingerprint,
-                    LinkId = principal.LinkId, LinkRevision = principal.LinkRevision, GrantHash = principal.GrantHash,
-                    PeerInstanceId = principal.PeerInstanceId, PeerTenantId = principal.PeerTenantId, CallbackUrl = callbackUrl,
-                    CreatedAtUtc = http.RequestServices.GetRequiredService<TimeProvider>().GetUtcNow()
-                };
-            }
-            else
-            {
-                var existing = await ExternalServiceIngestRequestMatcher.FindExistingAsync(requests, request, ct);
-                if (existing is not null) return Results.Ok(new NetRatelIngestResponse { RequestId = existing.Id.ToString(), RunId = existing.ExecutionId, ExecutionId = existing.ExecutionId ?? existing.Id.ToString(), Status = existing.Status, Message = existing.ResultMessage });
-            }
+                ServicePrincipalId = principal.Id, TenantId = target.TenantId, AgentId = target.AgentId,
+                JobDefinitionId = job.Id.ToString(CultureInfo.InvariantCulture), ParentRequestId = request.RequestId,
+                RequestTaskId = request.RequestTaskId, CorrelationId = correlationId, IngestFingerprint = fingerprint,
+                LinkId = principal.LinkId, LinkRevision = principal.LinkRevision, GrantHash = principal.GrantHash,
+                PeerInstanceId = principal.PeerInstanceId, PeerTenantId = principal.PeerTenantId, CallbackUrl = callbackUrl,
+                CreatedAtUtc = http.RequestServices.GetRequiredService<TimeProvider>().GetUtcNow()
+            };
             RequestInfo created;
             await using (var transaction = db.Database.IsRelational() ? await db.Database.BeginTransactionAsync(ct) : null)
             {
-                created = await requests.CreateAsync(new CreateRequestCommand(binding?.SourceSystem ?? "external-service.api", job.ClientIdentity, job.Id.ToString(), request.PayloadJson, target.TenantId, target.AgentId), ct);
-                if (binding is not null)
-                {
-                    binding.RequestId = created.Id;
-                    // The external request and its proven-undispatched run intent
-                    // become durable together, before the first actor start call.
-                    var runId = http.RequestServices.GetRequiredService<JobAuthorityIdGenerator>().Next();
-                    var now = http.RequestServices.GetRequiredService<TimeProvider>().GetUtcNow();
-                    var runs = http.RequestServices.GetRequiredService<IJobRunService>();
-                    await runs.UpsertRunAsync(new(runId, job.Id, target.TenantId, job.ClientIdentity, binding.SourceSystem,
-                        JobRunState.Pending, 0, now, null, null, null, EnrichPayload(request, created.Id, job),
-                        JobExecutionRuntimePolicy.MergeOptionsJson(job.OptionsJson, JobExecutionRuntimePolicy.FromJobAndIngest(job, request)), target.AgentId), ct);
-                    db.Set<JobRunControlRecord>().Add(new() { RunId = checked((long)runId) });
-                    binding.ExecutionId = runId.ToString(CultureInfo.InvariantCulture);
-                    created = (await requests.UpdateAsync(new(created.Id, null, null, null, binding.ExecutionId,
-                        null, null, null, null, null), ct))!;
-                    db.Set<ManagedOrchestrationRequestBinding>().Add(binding);
-                    try { await db.SaveChangesAsync(ct); }
-                    catch (DbUpdateException) { return Results.Conflict(new { code = "ingest_binding_conflict" }); }
-                }
+                created = await requests.CreateAsync(new CreateRequestCommand(binding.SourceSystem, job.ClientIdentity, job.Id.ToString(), request.PayloadJson, target.TenantId, target.AgentId), ct);
+                binding.RequestId = created.Id;
+                // Persist the request, scoped binding and proven-undispatched run intent before the first actor call.
+                var runId = http.RequestServices.GetRequiredService<JobAuthorityIdGenerator>().Next();
+                var now = http.RequestServices.GetRequiredService<TimeProvider>().GetUtcNow();
+                var runs = http.RequestServices.GetRequiredService<IJobRunService>();
+                await runs.UpsertRunAsync(new(runId, job.Id, target.TenantId, job.ClientIdentity, binding.SourceSystem,
+                    JobRunState.Pending, 0, now, null, null, null, EnrichPayload(request, created.Id, job),
+                    JobExecutionRuntimePolicy.MergeOptionsJson(job.OptionsJson, JobExecutionRuntimePolicy.FromJobAndIngest(job, request)), target.AgentId), ct);
+                db.Set<JobRunControlRecord>().Add(new() { RunId = checked((long)runId) });
+                binding.ExecutionId = runId.ToString(CultureInfo.InvariantCulture);
+                created = (await requests.UpdateAsync(new(created.Id, null, null, null, binding.ExecutionId,
+                    null, null, null, null, null), ct))!;
+                db.Set<ManagedOrchestrationRequestBinding>().Add(binding);
+                try { await db.SaveChangesAsync(ct); }
+                catch (DbUpdateException) { return Results.Conflict(new { code = "ingest_binding_conflict" }); }
                 if (transaction is not null) await transaction.CommitAsync(ct);
             }
             requestEvents.Publish(new RequestChangedEvent(created.Id, "external-service-created", created.UpdatedAtUtc));
             try
             {
                 var inputs = EnrichPayload(request, created.Id, job);
-                var invocation = new RunJobRequest(binding?.SourceSystem ?? "external-service.api", inputs, null, request.ExpectedRuntimeSeconds, request.GraceSeconds, request.HardTimeoutSeconds);
-                var run = binding is null ? await authority.StartAsync(job.Id, invocation, ct) :
-                    await authority.StartManagedAsync(job.Id, invocation, created.Id, http.User, ct);
+                var invocation = new RunJobRequest(binding.SourceSystem, inputs, null, request.ExpectedRuntimeSeconds, request.GraceSeconds, request.HardTimeoutSeconds);
+                var run = await authority.StartManagedAsync(job.Id, invocation, created.Id, http.User, ct);
                 var logs = created.Logs.Concat([$"[{DateTimeOffset.UtcNow:O}] Accepted via /internal/ingest. JobRun {run.Id} started for job {job.Name} ({job.Id})."]).ToArray();
-                if (binding is not null) binding.ExecutionId = run.Id.ToString(CultureInfo.InvariantCulture);
-                var updated = await requests.UpdateAsync(new UpdateRequestCommand(created.Id, null, job.ClientIdentity, job.Id.ToString(), run.Id.ToString(), binding is null ? "Processing" : null, null, null, inputs, logs), ct).ConfigureAwait(false);
+                binding.ExecutionId = run.Id.ToString(CultureInfo.InvariantCulture);
+                var updated = await requests.UpdateAsync(new UpdateRequestCommand(created.Id, null, job.ClientIdentity, job.Id.ToString(), run.Id.ToString(), null, null, null, inputs, logs), ct).ConfigureAwait(false);
                 if (updated is not null) requestEvents.Publish(new RequestChangedEvent(updated.Id, "external-service-accepted", updated.UpdatedAtUtc));
                 return Results.Ok(new NetRatelIngestResponse { RequestId = created.Id.ToString(), RunId = run.Id.ToString(), ExecutionId = run.Id.ToString(), Status = "Accepted", Message = $"Request {created.Id} accepted for job '{job.Name}'." });
             }
             catch (Exception exception) when (exception is InvalidOperationException or KeyNotFoundException)
             {
-                loggers.CreateLogger("NetRatel.API.Endpoints.Internal").LogWarning(exception, "ExternalService ingest could not dispatch job {JobId}. correlationId={CorrelationId}", job.Id, correlationId);
+                loggers.CreateLogger("NetRatel.API.Endpoints.Internal").LogWarning(exception, "Paired ingest could not dispatch job {JobId}. correlationId={CorrelationId}", job.Id, correlationId);
                 var logs = created.Logs.Concat([$"[{DateTimeOffset.UtcNow:O}] Failed to start NetRatel job: {exception.Message}"]).ToArray();
-                var failed = await requests.UpdateAsync(new UpdateRequestCommand(created.Id, null, job.ClientIdentity, job.Id.ToString(), null, binding is null ? "Failed" : null, binding is null ? exception.Message : null, null, request.PayloadJson, logs), ct).ConfigureAwait(false);
+                // An uncertain actor outcome remains recoverable through this exact durable binding.
+                var failed = await requests.UpdateAsync(new UpdateRequestCommand(created.Id, null, job.ClientIdentity, job.Id.ToString(), null, null, null, null, request.PayloadJson, logs), ct).ConfigureAwait(false);
                 if (failed is not null) requestEvents.Publish(new RequestChangedEvent(failed.Id, "external-service-failed", failed.UpdatedAtUtc));
                 return Results.Conflict(new { code = "job_authority_unavailable", detail = exception.Message, correlationId });
             }
@@ -245,9 +164,8 @@ public static class InternalEndpoints
     }
 
     private static async Task<IReadOnlyList<JobDefinitionInfo>> FilterDefinitionsAsync(OrchestratorDbContext db,
-        IReadOnlyList<JobDefinitionInfo> definitions, ServicePrincipalRegistration? principal, CancellationToken ct)
+        IReadOnlyList<JobDefinitionInfo> definitions, ServicePrincipalRegistration principal, CancellationToken ct)
     {
-        if (principal is null) return definitions;
         var constraints = OrchestrationManagedAuthorization.Constraints(principal);
         if (constraints.TenantId != principal.TenantId.ToString(CultureInfo.InvariantCulture)) return [];
         var result = new List<JobDefinitionInfo>();
@@ -339,15 +257,6 @@ public static class InternalEndpoints
         Inputs = job.Inputs
     };
 
-    private static async Task<JobDefinitionInfo?> ResolveJobAsync(IJobDefinitionService jobs, NetRatelIngestRequest request, CancellationToken ct)
-    {
-        if (!string.IsNullOrWhiteSpace(request.NetRatelJobDefinitionId) && ulong.TryParse(request.NetRatelJobDefinitionId, out var requestedId)) return await jobs.GetAsync(requestedId, ct).ConfigureAwait(false);
-        if (ulong.TryParse(request.JobName, out var numericId)) return await jobs.GetAsync(numericId, ct).ConfigureAwait(false);
-        var name = request.JobName.Trim();
-        var matches = (await jobs.ListAsync(ct).ConfigureAwait(false)).Where(job => string.Equals($"{job.FolderPath.TrimEnd('/')}/{job.Name}".Trim(), name, StringComparison.OrdinalIgnoreCase) || string.Equals(job.Name, name, StringComparison.OrdinalIgnoreCase)).ToArray();
-        return matches.Length == 1 ? matches[0] : null;
-    }
-
     private static async Task<ResolvedTarget?> ResolveTargetAsync(OrchestratorDbContext db, int? tenantId, string? clientIdentity, CancellationToken ct)
     {
         if (tenantId is not { } tenant || string.IsNullOrWhiteSpace(clientIdentity)) return null;
@@ -365,14 +274,6 @@ public static class InternalEndpoints
 
     private static Task<ResolvedTarget?> ValidateTargetAsync(OrchestratorDbContext db, JobDefinitionInfo job, CancellationToken ct) => ResolveTargetAsync(db, job.TenantId, job.AgentId?.ToString() ?? job.ClientIdentity, ct);
 
-    private static NetRatelIngestProblem TargetProblem(int? tenantId, string? identity, ulong? jobId = null) => new()
-    {
-        ErrorCode = "target_client_not_found",
-        Message = tenantId is null ? "A tenant-bound, active Agent target is required before this request can be dispatched." : "The target client is not bound to an active gateway Agent for this tenant. Rebind or retarget it before retrying.",
-        NetRatelJobDefinitionId = jobId?.ToString(),
-        TargetClientIdentity = identity
-    };
-
     private static string EnrichPayload(NetRatelIngestRequest request, int requestId, JobDefinitionInfo job)
     {
         JsonObject root;
@@ -389,7 +290,6 @@ public static class InternalEndpoints
     private static NetRatelCatalogInputDefinitionDto MapInput(CatalogParameter parameter) => new() { Key = parameter.Name, Label = parameter.Name, Type = parameter.Type, Required = parameter.Required, DefaultValue = parameter.DefaultValue, HelpText = parameter.Description, OptionsJson = parameter.OptionsJson, Order = 0 };
     private static string NormalizeFolder(string? value) { var result = string.IsNullOrWhiteSpace(value) ? "/" : value.Trim(); return result.StartsWith('/') ? result : $"/{result}"; }
     private static string DisplayName(string? folder, string name) { var value = NormalizeFolder(folder).TrimEnd('/'); return string.IsNullOrEmpty(value) ? name : $"{value}/{name}"; }
-    private static string NormalizeType(string? value) => value?.Trim().ToLowerInvariant() switch { "textarea" => "textarea", "number" => "number", "boolean" => "boolean", "select" => "select", "radio" => "radio", "date" => "date", "datetime" => "datetime", _ => "text" };
     private static string? NormalizeOptional(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
     private static string? FirstNonEmpty(params string?[] values) => values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim();
     private sealed record ResolvedTarget(int TenantId, Guid AgentId, string ClientIdentity);

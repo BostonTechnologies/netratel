@@ -5,7 +5,7 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 
-namespace NetRatel.API.IntegrationTests.ServiceLinks;
+namespace NetRatel.API.IntegrationTests.SystemPairing;
 
 internal sealed record PhysicalReceiptIdentity(Guid SourceInstanceId, Guid NamespaceId, string Key,
     string Fingerprint, string IncidentId, Guid ReceiptId, Guid ConfirmationEffectId);

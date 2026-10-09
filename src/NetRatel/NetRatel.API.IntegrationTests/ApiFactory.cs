@@ -69,7 +69,7 @@ public sealed class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
     private readonly string _root;
     private readonly PostgreSqlContainer _postgres;
     private readonly bool _ownsPostgres;
-    private readonly bool _isolateServiceLinkHostSettings;
+    private readonly bool _isolatePeerHostSettings;
     private IReadOnlyDictionary<string, string?> _settings = new Dictionary<string, string?>();
     private IReadOnlyDictionary<string, string?> _previousEnvironment = new Dictionary<string, string?>();
 
@@ -79,23 +79,23 @@ public sealed class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
     }
 
     // Only real service-link peers opt in; the collection fixture keeps its original constructor.
-    internal ApiFactory(bool isolateServiceLinkHostSettings)
+    internal ApiFactory(bool isolatePeerHostSettings)
         : this(new PostgreSqlBuilder("postgres:16-alpine").Build(), ownsPostgres: true,
-            isolateServiceLinkHostSettings: isolateServiceLinkHostSettings)
+            isolatePeerHostSettings: isolatePeerHostSettings)
     {
     }
 
-    private ApiFactory(PostgreSqlContainer postgres, bool ownsPostgres, bool isolateServiceLinkHostSettings = false)
+    private ApiFactory(PostgreSqlContainer postgres, bool ownsPostgres, bool isolatePeerHostSettings = false)
     {
         _postgres = postgres;
         _ownsPostgres = ownsPostgres;
-        _isolateServiceLinkHostSettings = isolateServiceLinkHostSettings;
+        _isolatePeerHostSettings = isolatePeerHostSettings;
         _root = Path.Combine(Path.GetTempPath(), "netratel-api-openapi", Guid.NewGuid().ToString("N"));
     }
 
     private ApiFactory(PostgreSqlContainer postgres, IReadOnlyDictionary<string, string?> settings,
-        bool isolateServiceLinkHostSettings = false)
-        : this(postgres, ownsPostgres: false, isolateServiceLinkHostSettings: isolateServiceLinkHostSettings)
+        bool isolatePeerHostSettings = false)
+        : this(postgres, ownsPostgres: false, isolatePeerHostSettings: isolatePeerHostSettings)
     {
         _settings = settings;
     }
@@ -141,7 +141,7 @@ public sealed class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
         }
 
         var sibling = new ApiFactory(_postgres, settings,
-            isolateServiceLinkHostSettings: _isolateServiceLinkHostSettings);
+            isolatePeerHostSettings: _isolatePeerHostSettings);
         sibling.ApplyEnvironmentSettings(settings.Keys.Concat(RetiredSelectorConfigurationKeys));
         return sibling;
     }
@@ -323,7 +323,7 @@ public sealed class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
 
     protected override IHost CreateHost(IHostBuilder builder)
     {
-        if (_isolateServiceLinkHostSettings)
+        if (_isolatePeerHostSettings)
         {
             var settings = _settings.ToDictionary(setting => setting.Key, setting => setting.Value, StringComparer.OrdinalIgnoreCase);
             // The actual peer always has a current database and non-null settings.
@@ -332,7 +332,7 @@ public sealed class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
                 string.IsNullOrWhiteSpace(connectionString) || settings.Values.Any(static value => value is null) ||
                 settings.ContainsKey("ConnectionStrings:Default") ||
                 settings.Keys.Any(static key => key.StartsWith("M2MClients", StringComparison.OrdinalIgnoreCase)))
-                throw new InvalidOperationException("Isolated service-link host settings require a nonempty database, non-null values and no default or deployment-client overrides.");
+                throw new InvalidOperationException("Isolated peer host settings require a nonempty database, non-null values and no default or deployment-client overrides.");
 
             // Default cannot supply authority while this peer's NetRatelDb is present.
             // Retired selectors have no production consumers; keep ambient values suppressed.
@@ -446,7 +446,7 @@ public sealed class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
 
     private void ApplyEnvironmentSettings(IEnumerable<string> configurationKeys)
     {
-        if (_isolateServiceLinkHostSettings) return;
+        if (_isolatePeerHostSettings) return;
         var keys = configurationKeys.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         var environmentKeys = keys.Select(EnvironmentKey).Distinct(StringComparer.Ordinal).ToArray();
         _previousEnvironment = environmentKeys.ToDictionary(
@@ -464,7 +464,7 @@ public sealed class ApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
 
     private void RestoreEnvironmentSettings()
     {
-        if (_isolateServiceLinkHostSettings) return;
+        if (_isolatePeerHostSettings) return;
         foreach (var setting in _previousEnvironment)
         {
             Environment.SetEnvironmentVariable(setting.Key, setting.Value);

@@ -16,8 +16,6 @@ public sealed class ServiceIdentityOptions
     public int AccessTokenLifetimeSeconds { get; set; } = 300;
     public int ClockSkewSeconds { get; set; } = 15;
     public int CredentialMaximumAgeDays { get; set; } = 90;
-    public int ManualRotationOverlapSeconds { get; set; } = 600;
-    public int TerminalControlRecoverySeconds { get; set; } = 3600;
 }
 
 public sealed class ServiceIdentityOptionsValidator : IValidateOptions<ServiceIdentityOptions>
@@ -38,20 +36,17 @@ public sealed class ServiceIdentityOptionsValidator : IValidateOptions<ServiceId
             errors.Add("ServiceIdentity:InstanceId must be a canonical installation GUID.");
         if (string.IsNullOrWhiteSpace(value.Audience) || value.Audience.Length > 256 || value.Audience.Any(char.IsControl)) errors.Add("ServiceIdentity:Audience is required.");
         if (value.AccessTokenLifetimeSeconds is < 60 or > 900 || value.ClockSkewSeconds is < 0 or > 60 ||
-            value.CredentialMaximumAgeDays is < 1 or > 365 || value.ManualRotationOverlapSeconds is < 60 or > 3600 ||
-            value.TerminalControlRecoverySeconds is < 60 or > 86400) errors.Add("Service identity lifetime or overlap exceeds supported bounds.");
+            value.CredentialMaximumAgeDays is < 1 or > 365) errors.Add("Service identity lifetime exceeds supported bounds.");
         return errors.Count == 0 ? ValidateOptionsResult.Success : ValidateOptionsResult.Fail(errors);
     }
 }
 
 public static class ServiceIdentityScopes
 {
-    public const string Verify = "bostec.service-link.verify";
-    public const string Control = "bostec.service-link.control";
     public const string OrchestrationRead = "netratel.orchestration.read";
     public const string OrchestrationInvoke = "netratel.orchestration.invoke";
     public static readonly string[] Business = [OrchestrationRead, OrchestrationInvoke];
-    public static readonly string[] All = [.. Business, Verify, Control];
+    public static readonly string[] All = Business;
 }
 
 public static class ServiceIdentityClaims
@@ -63,9 +58,7 @@ public static class ServiceIdentityClaims
     public const string TenantId = "tenant_id";
     public const string PeerInstanceId = "peer_instance_id";
     public const string PeerTenantId = "peer_tenant_id";
-    public const string LinkId = "link_id";
-    public const string LinkRevision = "link_revision";
-    public const string AttemptId = "attempt_id";
+    public const string LinkId = "mapping_id";
+    public const string LinkRevision = "mapping_revision";
     public const string GrantHash = "grant_hash";
-    public const string DirectionId = "direction_id";
 }

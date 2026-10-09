@@ -129,9 +129,9 @@ public sealed class FlowReceiverAdapterTests
             Draft = new(Lease.Event.TenantId, Lease.RunId, node.Id, node.ConnectorId!.Value, node.ConnectorRevision!.Value,
                 Lease.SourceInstanceId, FlowActionKeys.Create(Lease, node.Id), Lease.Event, FlowPureEvaluation.Map(mapping, Lease.Event.Data));
             var action = FlowTestData.Prepared(Draft, safeReplay: true);
-            var peer = new RatelDeskSemanticPeer(RatelDeskAuthenticationMode.ManualApiBearer, 17, Draft.ConnectorId,
-                null, null, null, Guid.NewGuid().ToString("D"), "organization-17", "https://api.example.test/help",
-                null, null, null, null, null, Draft.SourceInstanceId, Guid.NewGuid(), "organization-17", "customer-17", null, []);
+            var peer = new RatelDeskSemanticPeer(RatelDeskAuthenticationMode.PairedSystem, 17, Draft.ConnectorId,
+                Guid.NewGuid().ToString("D"), 1, new string('a', 64), Guid.NewGuid().ToString("D"), "organization-17", "https://api.example.test/help",
+                "https://issuer.example.test/services", "rateldesk-api", "https://api.example.test/help/connect/token", "paired-test-client", "paired", Draft.SourceInstanceId, Guid.NewGuid(), "organization-17", "customer-17", null, []);
             var capability = new RatelDeskVerifiedCapability(ReceiverWireValidation.Contract, peer.ReceiverInstanceId,
                 peer.SourceInstanceId, peer.SourceNamespaceId,
                 new(ReceiverWireValidation.Endpoint(peer.ApiBaseUrl, ReceiverWireValidation.CapabilitiesPath),
@@ -168,7 +168,7 @@ public sealed class FlowReceiverAdapterTests
         public Task<bool> SaveAsync(RatelDeskConnectorState state, long expected, CancellationToken ct) => throw new NotSupportedException();
     }
     private sealed class BindingStore : IRatelDeskConnectorBindingStore
-    { public Task<RatelDeskConnectorAuthentication> GetAuthenticationAsync(int tenantId, Guid id, CancellationToken ct) => Task.FromResult(new RatelDeskConnectorAuthentication(RatelDeskAuthenticationMode.ManualApiBearer, null)); }
+    { public Task<RatelDeskConnectorAuthentication> GetAuthenticationAsync(int tenantId, Guid id, CancellationToken ct) => Task.FromResult(new RatelDeskConnectorAuthentication(RatelDeskAuthenticationMode.PairedSystem, "00000000-0000-4000-8000-000000000017")); }
     private sealed class Authorization : IRatelDeskConnectorAuthorization
     {
         public bool EventAllowed { get; set; } = true;

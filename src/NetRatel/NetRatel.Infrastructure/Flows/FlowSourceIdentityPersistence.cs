@@ -2,7 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using NetRatel.Application.RatelDesk;
 using NetRatel.Infrastructure.Persistence;
-using NetRatel.Infrastructure.ServiceLinks;
+using NetRatel.Infrastructure.SystemPairing;
 
 namespace NetRatel.Infrastructure.Flows;
 
@@ -10,8 +10,6 @@ public sealed partial class FlowPersistenceService
 {
     Task<Guid> IFlowSourceIdentityResolver.EnsureAsync(CancellationToken ct) => WithDb(async (db, services) =>
     {
-        // Production connector setup always requires the real installation/deployment store.
-        _ = await services.GetRequiredService<ServiceLinkIdentityStore>().GetAsync(ct).ConfigureAwait(false);
         await using var tx = await BeginAsync(db, ct).ConfigureAwait(false);
         var source = await EnsureSourceInContextAsync(db, ct).ConfigureAwait(false);
         if (tx is not null) await tx.CommitAsync(ct).ConfigureAwait(false);
@@ -26,7 +24,7 @@ public sealed partial class FlowPersistenceService
             return preserved != Guid.Empty ? preserved : throw new InvalidOperationException("flow-source-identity");
         // Keep the actual persisted Flow producer when present. For the first producer only,
         // reuse an already explicitly adopted source, otherwise create one durable singleton.
-        var adopted = await db.Set<ServiceLinkRuntimeIdentity>().AsNoTracking().Where(row => row.Id == 1)
+        var adopted = await db.Set<InstallationIdentityRecord>().AsNoTracking().Where(row => row.Id == 1)
             .Select(row => row.SourceInstanceId).SingleOrDefaultAsync(ct).ConfigureAwait(false);
         var proposed = adopted ?? Guid.NewGuid();
         if (proposed == Guid.Empty) throw new InvalidOperationException("flow-source-identity");

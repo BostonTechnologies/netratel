@@ -36,7 +36,7 @@ public sealed class NetRatelExternalServiceCallbackReplayService(
             throw new InvalidOperationException("Notification payload does not contain enough ExternalService callback data to replay.");
         }
 
-        await _callbackClient.SendStatusAsync(
+        var delivered = await _callbackClient.TrySendStatusAsync(
             new NetRatelExternalServiceCallbackRequest
             {
                 RequestTaskId = payload.RequestTaskId,
@@ -54,6 +54,7 @@ public sealed class NetRatelExternalServiceCallbackReplayService(
             },
             string.IsNullOrWhiteSpace(notification.CorrelationId) ? $"replay-{notification.Id:N}" : notification.CorrelationId,
             ct);
+        if (!delivered) throw new InvalidOperationException("The correlated callback was not delivered. Check the current connection and peer availability before retrying.");
     }
 
     private static ReplayPayload? DeserializePayload(string payloadJson)

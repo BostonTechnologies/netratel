@@ -207,7 +207,6 @@ public sealed class RatelDeskReceiverProtocolTests
         }
         body["authenticationModes"] = new JsonArray("api_bearer");
         Assert.Throws<InvalidDataException>(() => ReceiverWireValidation.Capability(RatelDeskReceiverFixture.Bytes(body), peer, RatelDeskReceiverFixture.Now));
-        _ = ReceiverWireValidation.Capability(RatelDeskReceiverFixture.Bytes(body), peer with { Mode = RatelDeskAuthenticationMode.ManualApiBearer }, RatelDeskReceiverFixture.Now);
     }
 
     [Theory]
@@ -264,41 +263,6 @@ public sealed class RatelDeskReceiverProtocolTests
         var duplicate = Encoding.UTF8.GetString(RatelDeskReceiverFixture.Target(peer)).Replace(
             "\"mapping\":{", "\"mapping\":{\"customerId\":\"customer-1\",", StringComparison.Ordinal);
         Assert.Throws<InvalidDataException>(() => ReceiverWireValidation.Target(Encoding.UTF8.GetBytes(duplicate), peer));
-    }
-
-    [Fact]
-    public void Manual_bootstrap_captures_registered_identities_and_keeps_all_managed_authentication_fields_absent()
-    {
-        var peer = RatelDeskReceiverFixture.Peer(RatelDeskAuthenticationMode.ManualApiBearer);
-        var result = ReceiverWireValidation.CaptureManual(RatelDeskReceiverFixture.Capability(peer),
-            RatelDeskReceiverFixture.Connector(), RatelDeskReceiverFixture.Api, peer.SourceInstanceId, RatelDeskReceiverFixture.Now);
-        Assert.Equal(peer.SourceInstanceId, result.Peer.SourceInstanceId);
-        Assert.Equal(peer.SourceNamespaceId, result.Peer.SourceNamespaceId);
-        Assert.Equal(peer.ReceiverInstanceId, result.Peer.ReceiverInstanceId);
-        Assert.Equal(RatelDeskAuthenticationMode.ManualApiBearer, result.Peer.Mode);
-        Assert.Null(result.Peer.LinkId);
-        Assert.Null(result.Peer.LinkRevision);
-        Assert.Null(result.Peer.GrantHash);
-        Assert.Null(result.Peer.Issuer);
-        Assert.Null(result.Peer.Audience);
-        Assert.Null(result.Peer.TokenEndpoint);
-        Assert.Null(result.Peer.ClientId);
-        Assert.Null(result.Peer.DirectionId);
-    }
-
-    [Theory]
-    [InlineData("receiverInstanceId", "00000000000000000000000000000008")]
-    [InlineData("receiverInstanceId", "ABCDEFAB-1234-4234-8234-123456789ABC")]
-    [InlineData("sourceNamespaceId", "00000000-0000-0000-0000-000000000000")]
-    [InlineData("sourceNamespaceId", "00000000000000000000000000000007")]
-    [InlineData("sourceInstanceId", "00000000-0000-0000-0000-000000000002")]
-    public void Manual_bootstrap_rejects_noncanonical_or_mismatched_registered_source_identity(string field, string value)
-    {
-        var peer = RatelDeskReceiverFixture.Peer(RatelDeskAuthenticationMode.ManualApiBearer);
-        var body = JsonNode.Parse(RatelDeskReceiverFixture.Capability(peer))!;
-        body[field] = value;
-        Assert.Throws<InvalidDataException>(() => ReceiverWireValidation.CaptureManual(RatelDeskReceiverFixture.Bytes(body),
-            RatelDeskReceiverFixture.Connector(), peer.ApiBaseUrl, peer.SourceInstanceId, RatelDeskReceiverFixture.Now));
     }
 
     [Theory]
@@ -476,20 +440,14 @@ internal static class RatelDeskReceiverFixture
         return action with { SemanticFingerprint = FlowContractValidation.Fingerprint(action) };
     }
 
-    internal static RatelDeskSemanticPeer Peer(RatelDeskAuthenticationMode mode = RatelDeskAuthenticationMode.ManagedServiceLink) => new(mode, 71,
-        Id(6), mode == RatelDeskAuthenticationMode.ManagedServiceLink ? "approved-link" : null,
-        mode == RatelDeskAuthenticationMode.ManagedServiceLink ? 1 : null,
-        mode == RatelDeskAuthenticationMode.ManagedServiceLink ? new string('a', 64) : null, Id(8).ToString("D"), "org-1", Api,
-        mode == RatelDeskAuthenticationMode.ManagedServiceLink ? "https://issuer.example.test/services" : null,
-        mode == RatelDeskAuthenticationMode.ManagedServiceLink ? "rateldesk-api" : null,
-        mode == RatelDeskAuthenticationMode.ManagedServiceLink ? Api + "/connect/token" : null,
-        mode == RatelDeskAuthenticationMode.ManagedServiceLink ? "stable-client" : null,
-        mode == RatelDeskAuthenticationMode.ManagedServiceLink ? "initiator_to_responder" : null,
+    internal static RatelDeskSemanticPeer Peer(RatelDeskAuthenticationMode mode = RatelDeskAuthenticationMode.PairedSystem) => new(mode, 71,
+        Id(6), Id(7).ToString("D"), 1, new string('a', 64), Id(8).ToString("D"), "org-1", Api,
+        "https://issuer.example.test/services", "rateldesk-api", Api + "/connect/token", "stable-client", "paired",
         Id(1), Id(7), "org-1", "customer-1", null, []);
 
     internal static RatelDeskConnectorState Connector() => new(Id(6), 71, 1, 1, "human-owner",
         new("Helpdesk", Api, "org-1", "customer-1", null, [], new(), true), "protected-test-value", 1,
-        new(RatelDeskAuthenticationMode.ManualApiBearer, null));
+        new(RatelDeskAuthenticationMode.PairedSystem, Id(7).ToString("D")));
 
     internal static byte[] Target(RatelDeskSemanticPeer peer) => JsonSerializer.SerializeToUtf8Bytes(new
     {
@@ -507,10 +465,10 @@ internal static class RatelDeskReceiverFixture
         maxKeyLength = 256, keyPattern = ReceiverWireValidation.KeyPattern, minimumReceiptRetentionSeconds = 7776000,
         maximumAutomaticReplaySeconds = 2592000, receiptEvictionEnabled = false, atomicIncidentReceiptAndEffects = true,
         supportsReceiptLookup = true, supportsSafeSameKeyReplay = true,
-        authenticationModes = new[] { peer.Mode == RatelDeskAuthenticationMode.ManagedServiceLink ? "oauth_client_credentials" : "api_bearer" }
+        authenticationModes = new[] { "oauth_client_credentials" }
     });
 
-    internal static RatelDeskReceiverPreparationV2 Prepared(RatelDeskAuthenticationMode mode = RatelDeskAuthenticationMode.ManagedServiceLink)
+    internal static RatelDeskReceiverPreparationV2 Prepared(RatelDeskAuthenticationMode mode = RatelDeskAuthenticationMode.PairedSystem)
     {
         var peer = Peer(mode);
         var action = Action();

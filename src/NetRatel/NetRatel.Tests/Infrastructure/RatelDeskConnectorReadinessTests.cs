@@ -4,7 +4,6 @@ using Microsoft.Extensions.Options;
 using NetRatel.Application.RatelDesk;
 using NetRatel.Infrastructure.RatelDesk;
 using NetRatel.Infrastructure.ServiceIdentity;
-using NetRatel.Infrastructure.ServiceLinks;
 using NetRatel.Shared.Contracts.RatelDesk;
 using Xunit;
 
@@ -15,7 +14,7 @@ public sealed class RatelDeskConnectorReadinessTests
     [Fact]
     public async Task A_different_canonical_receiver_identity_has_a_specific_safe_result_without_authorizing_delivery()
     {
-        var fixture = new Fixture(RatelDeskAuthenticationMode.ManagedServiceLink);
+        var fixture = new Fixture(RatelDeskAuthenticationMode.PairedSystem);
         var before = fixture.Store.Current;
         fixture.Bindings.OnCapture = (_, _) => Task.FromResult(before.Readiness!.Peer);
         fixture.Bindings.Bearer = "synthetic-receiver-bearer";
@@ -147,20 +146,22 @@ public sealed class RatelDeskConnectorReadinessTests
     }
 
     [Fact]
-    public async Task An_expired_timestamp_remains_historical_evidence_without_authorizing_delivery()
+    public async Task Older_validation_does_not_require_another_Test_while_current_pairing_authority_remains_valid()
     {
         var fixture = new Fixture();
         var observed = fixture.Store.Current.Readiness!;
-        var expired = observed.TargetValidatedAtUtc - RatelDeskConnectorReadiness.MaximumObservationAge - TimeSpan.FromSeconds(1);
+        var expired = observed.TargetValidatedAtUtc - TimeSpan.FromDays(1);
         var historical = observed with
         {
             TargetValidatedAtUtc = expired,
             Capability = observed.Capability with { ObservedAtUtc = expired }
         };
         var result = await fixture.Readiness.CurrentAsync(fixture.Store.Current with { Readiness = historical }, default);
-        result.Should().Be((false, "receiver-readiness-expired"));
+        result.Should().Be((true, "receiver-ready"));
         historical.TargetValidatedAtUtc.Should().Be(expired);
-        fixture.Store.AuthenticationReads.Should().Be(0);
+        fixture.Store.AuthenticationReads.Should().Be(1);
+        fixture.Continuity.Calls.Should().Be(1);
+        fixture.Bindings.CaptureCalls.Should().Be(1);
         fixture.Transport.Calls.Should().Be(0);
     }
 
@@ -172,7 +173,7 @@ public sealed class RatelDeskConnectorReadinessTests
         internal Transport Transport { get; } = new();
         internal RatelDeskConnectorReadiness Readiness { get; }
         internal RatelDeskConnectorReceiver Receiver { get; }
-        internal Fixture(RatelDeskAuthenticationMode mode = RatelDeskAuthenticationMode.ManualApiBearer)
+        internal Fixture(RatelDeskAuthenticationMode mode = RatelDeskAuthenticationMode.PairedSystem)
         {
             var peer = RatelDeskReceiverFixture.Peer(mode);
             var capability = ReceiverWireValidation.Capability(RatelDeskReceiverFixture.Capability(peer), peer, RatelDeskReceiverFixture.Now);
@@ -180,11 +181,11 @@ public sealed class RatelDeskConnectorReadinessTests
                 new("receiver", peer.ApiBaseUrl, peer.OrganizationId, peer.CustomerId, peer.AssignedToId,
                     Array.Empty<Guid>(), new(), true), "synthetic-protected-credential", 2,
                 new(mode, peer.LinkId), new(1, peer, capability, RatelDeskReceiverFixture.Now)));
-            var network = new RatelDeskReceiverNetworkPolicy(new Options<RatelDeskReceiverOptions>(new()),
-                new Options<ServiceLinkOptions>(new()), new Options<ServiceIdentityOptions>(new()));
+            var network = new RatelDeskReceiverNetworkPolicy(new Options<RatelDeskReceiverOptions>(new()));
             var clock = new Clock();
-            // Manual readiness does not use the managed profile service. Null makes accidental access fail this test.
-            Readiness = new(new Authority(), Store, Continuity, null!, network, clock);
+            // Owning fixture compares current scoped pairing authority without a network request.
+            Bindings.OnCapture = (_, _) => Task.FromResult(Store.Current.Readiness!.Peer);
+            Readiness = new(new Authority(), Store, Continuity, Bindings, network, clock);
             Receiver = new(Store, Store, Store, Readiness, Bindings, Transport, new Source(), network, clock);
         }
     }

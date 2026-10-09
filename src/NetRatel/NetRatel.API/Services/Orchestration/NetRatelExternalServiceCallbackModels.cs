@@ -1,12 +1,5 @@
 namespace NetRatel.API.Services.Orchestration;
 
-public sealed class NetRatelExternalServiceCallbackOptions
-{
-    public string BaseUrl { get; set; } = string.Empty;
-    public string Audience { get; set; } = string.Empty;
-    public string ClientId { get; set; } = "netratel.api";
-}
-
 public sealed class NetRatelExternalServiceCallbackRequest
 {
     public string RequestTaskId { get; set; } = string.Empty;
@@ -31,9 +24,4 @@ public interface INetRatelExternalServiceCallbackClient
         await SendStatusAsync(request, correlationId, ct);
         return true;
     }
-}
-
-public interface INetRatelSystemTokenService
-{
-    Task<string> GetTokenAsync(string audience, CancellationToken ct = default);
 }

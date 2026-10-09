@@ -70,7 +70,7 @@ public sealed class OperatorApiCredentialIsolationTests
 
     [Theory]
     [InlineData("OrchestratorApi")]
-    [InlineData("RatelDeskConnectorApi")]
+    [InlineData("PairingApi")]
     public async Task Pooled_factory_keeps_two_circuit_tokens_isolated_when_http_context_is_absent_and_auth_updates_arrive_out_of_order(string clientName)
     {
         var requests = new ConcurrentQueue<ObservedRequest>();
@@ -307,7 +307,7 @@ public sealed class OperatorApiCredentialIsolationTests
         services.AddTransient<RedirectReissueHandler>();
         services.AddTransient<TokenAuthorizationHandler>();
         AddOperatorApiClient(services, "OrchestratorApi", baseAddress, primaryHandler);
-        AddOperatorApiClient(services, "RatelDeskConnectorApi", baseAddress, primaryHandler);
+        AddOperatorApiClient(services, "PairingApi", baseAddress, primaryHandler);
         var downloadClientName = typeof(IWebClientDownloadService).Name;
         AddOperatorApiClient(services, downloadClientName, baseAddress, primaryHandler);
         services.AddScoped<IWebClientDownloadService>(provider => new WebClientDownloadService(

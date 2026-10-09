@@ -18,7 +18,7 @@ namespace NetRatel.Tests.Infrastructure;
 
 /// <summary>
 /// Upgrades the authentic preceding foundation and historical Services schemas, then
-/// exercises the committed-ownership migration's guarded Down/Up within the current registered history.
+/// exercises the historical committed-ownership range's guarded Down/Up before the forward-only pairing cutover.
 /// Legacy allocator, cache and prepared Job rows grant no current connection authority.
 /// </summary>
 [Collection(PostgreSqlPersistenceCollection.Name)]
@@ -29,9 +29,10 @@ public sealed partial class CommittedConnectionOwnershipMigrationPostgresTests(P
     private const string FoundationSha256 = "432115f47c10fb74e6b68a5403fa0c9ef4fa74f63855074a212584a9aad42a8e";
     private const string ServicesSha256 = "90af775cdc7f48184d086feaedd45977fbebdeedeb997b4deedec2ce3296f6dc";
     private const string HistoricalServicesMigration = "20261002170000_AddClientServicesSnapshots";
+    private const string PairingCutoverMigration = "20261009073210_ReplaceServiceLinksWithSystemPairing";
 
     [Fact]
-    public async Task True_foundation_upgrade_preserves_legacy_jobs_and_matches_fresh_current_schema()
+    public async Task True_foundation_upgrade_preserves_legacy_jobs_and_matches_fresh_pre_pairing_schema()
     {
         using var budget = new CancellationTokenSource(TimeSpan.FromMinutes(3));
         var ct = budget.Token;
@@ -178,11 +179,13 @@ public sealed partial class CommittedConnectionOwnershipMigrationPostgresTests(P
         var expected = services.MigrationIds.Append(HistoricalMonitoringMigration).Append(FlowPreceding149PendingMigration)
             .Append(HistoricalConnectorMigration).Append(owner).Append(CommittedRegistrationMigration)
             .Append(ReceiverEvidenceMigration).Append(NativeRefreshExchangeMigration).Order(StringComparer.Ordinal).ToArray();
-        migrations.Should().Equal(expected,
-            "current history retains the exact Services baseline, lower-ID Monitoring, Flow and Connector, genuine owner and registration, genuine receiver delta and additive native refresh exchange");
+        migrations.Should().Equal(expected.Append(PairingCutoverMigration),
+            "registered history retains the exact historical ownership range followed only by the forward-only pairing cutover");
+        // These historical Down/Up proofs explicitly stop at the shipped native-refresh range.
+        // PairingUpgradePostgresTests separately proves the latest forward cutover and revocation.
         var previous = services.MigrationIds.Last();
         return new(owner, previous, NativeRefreshExchangeMigration,
-            migrations.Where(id => StringComparer.Ordinal.Compare(id, previous) <= 0).ToArray(), migrations);
+            expected.Where(id => StringComparer.Ordinal.Compare(id, previous) <= 0).ToArray(), expected);
     }
 
     private static async Task ApplyBaselineAsync(string database, Baseline baseline, CancellationToken ct)
@@ -360,7 +363,8 @@ public sealed partial class CommittedConnectionOwnershipMigrationPostgresTests(P
     {
         await using var db = Context(database);
         (await db.Database.GetAppliedMigrationsAsync(ct)).Should().Equal(plan.CurrentMigrationIds);
-        (await db.Database.GetPendingMigrationsAsync(ct)).Should().BeEmpty();
+        (await db.Database.GetPendingMigrationsAsync(ct)).Should().Equal([PairingCutoverMigration],
+            "the historical range leaves only the separately tested forward-only pairing cutover unapplied");
         db.Database.HasPendingModelChanges().Should().BeFalse();
     }
 

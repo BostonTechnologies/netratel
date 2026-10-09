@@ -136,7 +136,7 @@ Use [integration-validation.yml](../.github/workflows/integration-validation.yml
 only through explicit `workflow_dispatch` to select one functional suite at an
 actual source ref, compatible peer and artifact identity. There is no implicit
 PR/main/tag/publication dependency or nightly schedule. Browser/Chromium,
-full-pair links, physical incidents, real-time rotation/recovery, native
+source-pair acceptance, native
 install/update/PTY and deployment/upgrade tests retain their real assertions,
 timeouts, cleanup and useful logs. OIDC and MCP release-image smokes use the
 already published digest-pinned images; they do not perform registry writes.
@@ -149,10 +149,13 @@ gh workflow run integration-validation.yml --ref main -f suite=browser -f source
 gh workflow run integration-validation.yml --ref main -f suite=upgrade-local -f release_tag='<completed-release-tag>'
 ```
 
-Other explicit choices are `service-link`, `gateway`, `deployment`,
-`release-images`, `native-client`, `physical-incident` and `upgrade-oidc`.
+Other explicit choices are `pairing`, `gateway`, `deployment`,
+`release-images`, `native-client` and `upgrade-oidc`.
 Published-image and upgrade suites require `release_tag`; other suites use
-`source_ref`. The physical suite requires source containing connector PR #152.
+`source_ref`. Pairing also requires an explicit RatelDesk `companion_ref`;
+it builds both current source checkouts and uses the actual Client. Generic
+owned-volume telemetry helpers remain available independently; the old
+service-link rotation proof and its pinned released-peer selector are retired.
 An upgrade selects and records the latest other completed published release
 through the existing prior-release selector, reusing verified public archives
 and immutable image digests.

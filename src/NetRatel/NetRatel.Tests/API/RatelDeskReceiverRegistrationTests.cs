@@ -11,7 +11,6 @@ namespace NetRatel.Tests.API;
 public sealed class RatelDeskReceiverRegistrationTests
 {
     [Theory]
-    [InlineData(RatelDeskReceiverHttpPipeline.ManualClient)]
     [InlineData(RatelDeskReceiverHttpPipeline.ManagedClient)]
     public async Task Receiver_client_removes_global_resilience_replays_without_changing_other_clients(string name)
     {

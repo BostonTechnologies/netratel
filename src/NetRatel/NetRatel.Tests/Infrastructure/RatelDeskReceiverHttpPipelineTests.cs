@@ -5,7 +5,6 @@ using Microsoft.Extensions.Options;
 using NetRatel.Application.RatelDesk;
 using NetRatel.Infrastructure.RatelDesk;
 using NetRatel.Infrastructure.ServiceIdentity;
-using NetRatel.Infrastructure.ServiceLinks;
 using NetRatel.Shared.Contracts.RatelDesk;
 using Xunit;
 
@@ -16,8 +15,7 @@ public sealed class RatelDeskReceiverHttpPipelineTests
     private const string Bearer = "rdk_synthetic_receiver_test_credential";
 
     [Theory]
-    [InlineData(RatelDeskAuthenticationMode.ManualApiBearer, RatelDeskReceiverHttpPipeline.ManualClient)]
-    [InlineData(RatelDeskAuthenticationMode.ManagedServiceLink, RatelDeskReceiverHttpPipeline.ManagedClient)]
+    [InlineData(RatelDeskAuthenticationMode.PairedSystem, RatelDeskReceiverHttpPipeline.ManagedClient)]
     public async Task Create_sends_exact_durable_body_and_identity_headers_on_the_selected_client(RatelDeskAuthenticationMode mode, string client)
     {
         using var fixture = new HttpFixture();
@@ -192,8 +190,7 @@ public sealed class RatelDeskReceiverHttpPipelineTests
     }
 
     [Theory]
-    [InlineData(RatelDeskAuthenticationMode.ManualApiBearer)]
-    [InlineData(RatelDeskAuthenticationMode.ManagedServiceLink)]
+    [InlineData(RatelDeskAuthenticationMode.PairedSystem)]
     public void Safe_handler_disables_redirects_proxies_cookies_and_connection_reuse(RatelDeskAuthenticationMode mode)
     {
         using var fixture = new HttpFixture();
@@ -403,8 +400,7 @@ public sealed class RatelDeskReceiverHttpPipelineTests
         internal HttpFixture()
         {
             Factory = new(Handler);
-            Network = new RatelDeskReceiverNetworkPolicy(new Monitor<RatelDeskReceiverOptions>(new()),
-                new Monitor<ServiceLinkOptions>(new()), new Monitor<ServiceIdentityOptions>(new()));
+            Network = new RatelDeskReceiverNetworkPolicy(new Monitor<RatelDeskReceiverOptions>(new()));
             Pipeline = new(Factory, Network, Clock, Limiter);
             Transport = new(Pipeline, Clock);
         }

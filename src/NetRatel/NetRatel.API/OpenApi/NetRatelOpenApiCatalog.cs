@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.OpenApi;
 using Microsoft.OpenApi;
+using NetRatel.API.Endpoints.SystemPairing;
 using NetRatel.API.Security.Authorization;
 using NetRatel.API.Security.M2M;
 using NetRatel.API.Services.Orchestration;
@@ -14,7 +15,7 @@ public static class NetRatelOpenApiCatalog
     private static readonly HashSet<string> InteractiveAccountSchemes = ["Bearer", "LocalSession"];
     private static readonly HashSet<string> M2MSchemes = ["M2M"];
     private static readonly HashSet<string> ManagedServiceSchemes = [ServiceIdentityAuthenticationHandler.SchemeName];
-    private static readonly HashSet<string> OrchestrationSchemes = ["M2M", ServiceIdentityAuthenticationHandler.SchemeName];
+    private static readonly HashSet<string> OrchestrationSchemes = [ServiceIdentityAuthenticationHandler.SchemeName];
     private static readonly HashSet<string> AgentSchemes = ["Agent"];
     private static readonly HashSet<string> MachineTokenSchemes = ["MachineToken"];
     private static readonly HashSet<string> LocalSessionSchemes = ["LocalSession"];
@@ -24,8 +25,6 @@ public static class NetRatelOpenApiCatalog
         new Dictionary<string, HashSet<string>>(StringComparer.Ordinal)
         {
             ["M2MOnly"] = M2MSchemes,
-            [ServiceIdentityServiceCollectionExtensions.VerifyPolicy] = ManagedServiceSchemes,
-            [ServiceIdentityServiceCollectionExtensions.ControlPolicy] = ManagedServiceSchemes,
             [OrchestrationManagedAuthorization.ReadPolicy] = OrchestrationSchemes,
             [OrchestrationManagedAuthorization.InvokePolicy] = OrchestrationSchemes,
             ["AgentAccess"] = AgentSchemes,
@@ -92,6 +91,14 @@ public static class NetRatelOpenApiCatalog
         operation.OperationId = $"{(description.HttpMethod ?? "operation").ToLowerInvariant()}_{Normalize(path)}";
 
         var metadata = description.ActionDescriptor.EndpointMetadata;
+        if (metadata?.OfType<PairingSetupAuthenticationMetadata>().Any() == true)
+        {
+            operation.Security = [new OpenApiSecurityRequirement
+            {
+                [new OpenApiSecuritySchemeReference(PairingEndpoints.SetupAuthenticationScheme, document)] = []
+            }];
+            return Task.CompletedTask;
+        }
         if (metadata?.OfType<IAllowAnonymous>().Any() == true)
         {
             operation.Security = [];

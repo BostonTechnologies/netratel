@@ -69,7 +69,7 @@ bash tools/ci/run-fast-regressions.sh TestResults/fast
 evaluate to the release-manifest version.
 
 Required CI runs fast unit, component and focused API/PostgreSQL regressions
-after one restore/build. Full service-link pairs, physical incidents, native
+after one restore/build. Full product-pair checks, physical incidents, native
 client execution, browser acceptance and deployment/upgrade checks are opt-in
 through the manual integration workflow. See [release validation](docs/RELEASES.md)
 for selecting one functional suite and interpreting pending owner acceptance.

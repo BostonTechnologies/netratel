@@ -2,7 +2,7 @@ using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text.Encodings.Web;
 using NetRatel.Infrastructure.ServiceIdentity;
-using NetRatel.Infrastructure.ServiceLinks;
+using NetRatel.Shared.SystemPairing;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
@@ -55,14 +55,14 @@ public sealed class ServiceIdentityAuthenticationHandler(IOptionsMonitor<Authent
             foreach (var name in new[] { "sub", "client_id", "token_use", "auth_mode", ServiceIdentityClaims.PrincipalId, ServiceIdentityClaims.CredentialRevision, ServiceIdentityClaims.GrantRevision,
                          ServiceIdentityClaims.TenantId, ServiceIdentityClaims.PeerInstanceId, ServiceIdentityClaims.PeerTenantId, ServiceIdentityClaims.LinkRevision, "scope", "target_instance_id", "target_tenant_id", "caller_instance_id", "caller_tenant_id" })
                 if (principal.FindAll(name).Count() != 1) return AuthenticateResult.Fail("Ambiguous service identity.");
-            foreach (var name in new[] { ServiceIdentityClaims.LinkId, ServiceIdentityClaims.AttemptId, ServiceIdentityClaims.GrantHash, ServiceIdentityClaims.DirectionId })
-                if (principal.FindAll(name).Count() > 1) return AuthenticateResult.Fail("Ambiguous service link binding.");
+            foreach (var name in new[] { ServiceIdentityClaims.LinkId, ServiceIdentityClaims.GrantHash })
+                if (principal.FindAll(name).Count() != 1) return AuthenticateResult.Fail("Ambiguous connection binding.");
             if (principal.FindFirstValue("target_instance_id") != settings.InstanceId || principal.FindFirstValue("target_tenant_id") != principal.FindFirstValue(ServiceIdentityClaims.TenantId) ||
                 principal.FindFirstValue("caller_instance_id") != principal.FindFirstValue(ServiceIdentityClaims.PeerInstanceId) || principal.FindFirstValue("caller_tenant_id") != principal.FindFirstValue(ServiceIdentityClaims.PeerTenantId)) return AuthenticateResult.Fail("Wrong service instance or tenant.");
             if (await registry.ResolvePrincipalAsync(principal, null, Context.RequestAborted) is null) return AuthenticateResult.Fail("The current service grant is unavailable.");
             return AuthenticateResult.Success(new AuthenticationTicket(principal, SchemeName));
         }
-        catch (Exception ex) when (ex is SecurityTokenException or ArgumentException or InvalidOperationException or ServiceLinkProtocolException or ServiceClientConflictException)
+        catch (Exception ex) when (ex is SecurityTokenException or ArgumentException or InvalidOperationException or PairingException or ServiceClientConflictException)
         {
             return AuthenticateResult.Fail("Invalid or unavailable service authentication.");
         }

@@ -1,9 +1,9 @@
-// Candidate physical orchestration: registered through PhysicalDiskIncidentTests.
-// Runtime proof is emitted only after real product commands and owned cleanup succeed.
+// Reusable assertions for an optional owned-volume native proof.
+// The bounded candidate-pair acceptance entry point is PairingLifecycleTests.
 using System.Net;
 using Xunit;
 
-namespace NetRatel.API.IntegrationTests.ServiceLinks;
+namespace NetRatel.API.IntegrationTests.SystemPairing;
 
 internal static class PhysicalDiskIncidentAcceptance
 {
@@ -16,16 +16,16 @@ internal static class PhysicalDiskIncidentAcceptance
     public static async Task RunAsync(IPhysicalIncidentFixture runtime, CancellationToken outer, Action<string>? progress = null)
     {
         void Mark(string stage) => ReportProgress(progress, stage);
-        // Product boot/source adoption/image verification happens before this
-        // call. The genuine Client enrolls before the ordinary pairing ceremony
-        // selects its newly created job target. The native
+        // Product boot and candidate source verification happen before this
+        // call. The genuine Client enrolls and contributes current tenant resources;
+        // the pairing mapping authorizes its real tenant and capabilities. The native
         // lifetime is bounded to the existing 300-second physical-process limit.
         using var budget = CancellationTokenSource.CreateLinkedTokenSource(outer);
         budget.CancelAfter(TimeSpan.FromSeconds(300));
         var ct = budget.Token;
         await using var ownership = runtime; // Stops containers before unmounting.
         Mark("source-identity:start");
-        await runtime.AssertExactCurrentSourcesAndPublishedCompanionAsync(ct);
+        await runtime.AssertExactCurrentCandidateSourcesAsync(ct);
         Mark("source-identity:complete");
         Mark("empty-authority:start");
         await runtime.AssertNoFixtureSeededExecutionAuthorityAsync(ct);
@@ -41,7 +41,7 @@ internal static class PhysicalDiskIncidentAcceptance
         Assert.NotEqual(Guid.Empty, admitted.EvidenceStreamId);
         Assert.True(admitted.ConnectionEpoch > 0 && admitted.CommittedOwner && admitted.ProductionSystemClock);
         Assert.Equal("full-production-NetRatel.Client", admitted.Producer);
-        // Reuse the actual recorded-form-task HTTP ceremony with this genuinely
+        // Reuse the actual recorded-form-task HTTP path with this genuinely
         // enrolled AgentId; preserve native ACK/result/provider-callback proof.
         Mark("recorded-task:start");
         await runtime.RunProtectedRecordedFormTaskAsync(admitted.AgentId, ct);
@@ -108,13 +108,6 @@ internal static class PhysicalDiskIncidentAcceptance
         Mark("two-replicas:start");
         await runtime.AssertTwoActualWorkerReplicasAsync(ct);
         Mark("two-replicas:complete");
-        Mark("rotation:start");
-        var rotation = await runtime.RotateThroughActualOwnerServiceLinkAsync(ct);
-        Mark("rotation:complete");
-        Assert.True(rotation.AfterCredentialRevision > rotation.BeforeCredentialRevision);
-        Assert.Equal(rotation.BeforeSemanticRevision, rotation.AfterSemanticRevision);
-        Assert.Equal(rotation.BeforeSourceNamespaceId, rotation.AfterSourceNamespaceId);
-        Assert.Equal(ambiguous.Actions[0].SourceNamespaceId, rotation.AfterSourceNamespaceId);
         Mark("same-key-recovery:start");
         await loss.ObserveRealSameKeyRecoveryAfterRestartAsync(ct);
         Mark("same-key-recovery:complete");
@@ -167,13 +160,12 @@ internal static class PhysicalDiskIncidentAcceptance
         RequireCount(second, 2);
         Assert.Contains(completed.Actions[0], second.Actions);
         Assert.Contains(completed.Occurrences[0], second.Occurrences);
-        Assert.All(second.Actions, action => Assert.Equal(rotation.AfterSourceNamespaceId, action.SourceNamespaceId));
+        Assert.All(second.Actions, action => Assert.Equal(committed.NamespaceId, action.SourceNamespaceId));
         Assert.Equal(2, second.Actions.Select(x => x.ReceiverKey).Distinct().Count());
         Assert.Equal(2, second.Actions.Select(x => x.OccurrenceId).Distinct().Count());
 
-        // Cache the actually CURRENT successor after rotation, and prove it is
-        // authorized before unlink. A retired predecessor already returning401
-        // would not establish that unlink caused the protected denial.
+        // Cache currently issued mapping authority and prove it works before deletion.
+        // That positive control establishes that deletion causes the later denial.
         Mark("cached-authority:start");
         await using var cachedAuthorization = await runtime.CaptureActuallyIssuedBusinessAuthorizationPrivatelyAsync(ct);
         Mark("cached-authority:complete");
@@ -234,7 +226,7 @@ internal static class PhysicalDiskIncidentAcceptance
         // arbitrary logs and browser traces never become proof artifacts.
         Mark("proof-export:start");
         await runtime.WritePrivacySafePhysicalProofAsync(admitted, configured, baseline, firstBreach, stillBad,
-            recoverySamples, secondBreach, allocated, recovered, rotation, committed, terminal, unlinkProof, ct);
+            recoverySamples, secondBreach, allocated, recovered, committed, terminal, unlinkProof, ct);
         Mark("proof-export:complete");
     }
 
@@ -319,8 +311,6 @@ internal sealed record PhysicalDurableProof(Guid[] Occurrences, Guid[] RaisedEve
 internal sealed record PhysicalCommittedLoss(int ActualUpstreamStatus, bool TransactionCommitted,
     bool ResponseAbortedAfterIndependentRead, Guid NamespaceId, string Key, string Fingerprint,
     int IncidentRows, int ReceiptRows, int ConfirmationEnqueues);
-internal sealed record PhysicalRotation(long BeforeCredentialRevision, long AfterCredentialRevision,
-    long BeforeSemanticRevision, long AfterSemanticRevision, Guid BeforeSourceNamespaceId, Guid AfterSourceNamespaceId);
 internal sealed record PhysicalUnlinkProof(int PositiveControlStatusBeforeUnlink, int ProtectedDenialStatus,
     DateTimeOffset CachedAuthorizationCommonExpiresAtUtc, DateTimeOffset LatestDenialObservedAtUtc,
     int PositivelyControlledInboundReplicas, int ImmediateDeniedInboundReplicas, int SettledDeniedInboundReplicas,
@@ -340,12 +330,12 @@ internal interface IPhysicalCommittedResponseLoss : IAsyncDisposable
     void ReleaseIdenticalRetryGate();
 }
 
-// PhysicalIncidentFixture implements these ports with actual production processes. In particular
+// Implementations of these optional ports must use actual production processes. In particular
 // no constructor/port may populate Agents, owner/evidence, FlowRunNode, incidents
 // or receipts in SQL. Only genuine product commands create business authority.
 internal interface IPhysicalIncidentFixture : IAsyncDisposable
 {
-    Task AssertExactCurrentSourcesAndPublishedCompanionAsync(CancellationToken ct);
+    Task AssertExactCurrentCandidateSourcesAsync(CancellationToken ct);
     Task AssertNoFixtureSeededExecutionAuthorityAsync(CancellationToken ct);
     Task StartFullProductionClientAsync(CancellationToken ct);
     Task<PhysicalAdmission> WaitRealFirstHeartbeatAndTelemetryAdmissionAsync(CancellationToken ct);
@@ -363,7 +353,6 @@ internal interface IPhysicalIncidentFixture : IAsyncDisposable
     Task<PhysicalDurableProof> WaitDurableMayHaveCommittedActionAsync(PhysicalRule rule, CancellationToken ct);
     Task RestartRealApiWorkerReplicasWithPersistedStateAsync(CancellationToken ct);
     Task AssertTwoActualWorkerReplicasAsync(CancellationToken ct);
-    Task<PhysicalRotation> RotateThroughActualOwnerServiceLinkAsync(CancellationToken ct);
     Task<PhysicalDurableProof> WaitRealVerifiedReceiptAndActionSuccessAsync(PhysicalRule rule, CancellationToken ct);
     Task WaitActualOccurrenceResolvedOnceAsync(PhysicalRule rule, Guid occurrence, CancellationToken ct);
     Task<PhysicalDurableProof> WaitSecondActualOccurrenceAndVerifiedIncidentAsync(PhysicalRule rule, CancellationToken ct);
@@ -377,6 +366,6 @@ internal interface IPhysicalIncidentFixture : IAsyncDisposable
     // actual successful cleanup receipt only; never reopen a disposed provider.
     Task WritePrivacySafePhysicalProofAsync(PhysicalAdmission admitted, PhysicalRule rule, PhysicalDiskSample[] baseline,
         PhysicalDiskSample[] firstBreach, PhysicalDiskSample[] continuedBad, PhysicalDiskSample[] recovery,
-        PhysicalDiskSample[] secondBreach, PhysicalAllocation allocated, PhysicalAllocation recovered, PhysicalRotation rotation,
+        PhysicalDiskSample[] secondBreach, PhysicalAllocation allocated, PhysicalAllocation recovered,
         PhysicalCommittedLoss loss, PhysicalDurableProof terminal, PhysicalUnlinkProof unlink, CancellationToken ct);
 }

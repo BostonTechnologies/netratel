@@ -7,14 +7,15 @@ using Microsoft.AspNetCore.Components;
 using Microsoft.Extensions.DependencyInjection;
 using MudBlazor.Services;
 using NetRatel.Web.Components.Pages;
-using NetRatel.Web.Services.ServiceLinks;
+using NetRatel.Web.Services.Pairing;
+using NetRatel.Shared.SystemPairing;
 using Xunit;
 
 namespace NetRatel.Web.ComponentTests;
 
 public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
 {
-    public IntegrationCredentialsStateTests() => Services.AddScoped<HelpdeskM2MApiClient>();
+    public IntegrationCredentialsStateTests() => Services.AddSingleton<IPairingApiClient>(new NoPairingApi());
 
     [Fact]
     public async Task Pending_create_cannot_close_back_or_reopen_and_its_secret_stays_in_its_acknowledgment()
@@ -111,6 +112,17 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
 
     private static Task CallAsync(object instance, string name) =>
         (Task)instance.GetType().GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(instance, null)!;
+
+    private sealed class NoPairingApi : IPairingApiClient
+    {
+        public Task<PairingConnectionDto[]> ListAsync(CancellationToken ct = default) => Task.FromResult(Array.Empty<PairingConnectionDto>());
+        public Task<PairingCodeResponse> GenerateCodeAsync(CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<PairingConnectionDto> ConnectAsync(PairingConnectRequest request, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<PairingDirectories> DirectoryAsync(string pairId, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<PairingConnectionDto> SaveAsync(PairingMapping mapping, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<PairingTestResult> TestAsync(PairingConnectionDto connection, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task DeleteAsync(PairingConnectionDto connection, CancellationToken ct = default) => throw new NotSupportedException();
+    }
 
     private sealed class CredentialTransport : HttpMessageHandler, IHttpClientFactory
     {

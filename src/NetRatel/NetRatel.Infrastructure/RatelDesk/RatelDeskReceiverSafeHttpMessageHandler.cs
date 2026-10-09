@@ -1,7 +1,7 @@
 using System.Net;
 using System.Net.Sockets;
 using NetRatel.Application.RatelDesk;
-using NetRatel.Infrastructure.ServiceLinks.Network;
+using NetRatel.Infrastructure.SystemPairing.Network;
 
 namespace NetRatel.Infrastructure.RatelDesk;
 
@@ -37,21 +37,21 @@ public static class RatelDeskReceiverSafeHttpMessageHandler
         IReadOnlyList<IPAddress> addresses = IPAddress.TryParse(context.DnsEndPoint.Host, out var literal)
             ? [literal] : await Dns.GetHostAddressesAsync(context.DnsEndPoint.Host, cancellationToken);
         policy.ValidateEndpoint(mode, approvedApiBase, uri.OriginalString);
-        ServiceLinkEndpointPolicy.ValidateResolvedAddresses(uri, addresses, "RatelDesk receiver endpoint",
+        PairingEndpointPolicy.ValidateResolvedAddresses(uri, addresses, "RatelDesk receiver endpoint",
             policy.CurrentAllowPrivateHttp(mode));
         SocketException? lastConnectionError = null;
         foreach (var address in addresses)
         {
             cancellationToken.ThrowIfCancellationRequested();
             policy.ValidateEndpoint(mode, approvedApiBase, uri.OriginalString);
-            ServiceLinkEndpointPolicy.ValidateResolvedAddresses(uri, addresses, "RatelDesk receiver endpoint",
+            PairingEndpointPolicy.ValidateResolvedAddresses(uri, addresses, "RatelDesk receiver endpoint",
                 policy.CurrentAllowPrivateHttp(mode));
             var socket = new Socket(address.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
             try
             {
                 await socket.ConnectAsync(new IPEndPoint(address, context.DnsEndPoint.Port), cancellationToken);
                 policy.ValidateEndpoint(mode, approvedApiBase, uri.OriginalString);
-                ServiceLinkEndpointPolicy.ValidateResolvedAddresses(uri, addresses, "RatelDesk receiver endpoint",
+                PairingEndpointPolicy.ValidateResolvedAddresses(uri, addresses, "RatelDesk receiver endpoint",
                     policy.CurrentAllowPrivateHttp(mode));
                 return new NetworkStream(socket, ownsSocket: true);
             }

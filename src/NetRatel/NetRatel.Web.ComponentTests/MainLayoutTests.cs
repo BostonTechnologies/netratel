@@ -145,7 +145,11 @@ public class MainLayoutTests : AsyncBunitContext
             cut.Markup.Should().Contain("System");
             cut.Markup.Should().Contain("Light");
             cut.Markup.Should().Contain("Dark");
-            cut.Markup.Should().Contain("Connectivity");
+            cut.Markup.Should().Contain("System connections");
+            var menuId = cut.Find(".netratel-appbar-mobile-actions .mud-menu-icon-button-activator")
+                .GetAttribute("aria-controls");
+            cut.Find($"#{menuId} a[href='/account/integration-credentials']")
+                .TextContent.Should().Contain("System connections");
 
             var mobileActions = cut.Find(".netratel-appbar-mobile-actions");
             mobileActions.QuerySelector(".netratel-appbar-version-chip").Should().BeNull();

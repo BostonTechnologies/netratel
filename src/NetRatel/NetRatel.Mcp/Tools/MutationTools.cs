@@ -56,8 +56,8 @@ public sealed class MutationTools(INetRatelAgentClient client)
 
     public async Task<NetRatelToolResponse> netratel_connectivity(string operation, JsonElement? request = null, bool confirm = false, CancellationToken cancellationToken = default)
     {
-        if (operation == "settings") return await ReadAsync(operation, () => client.GetAsync("/api/v1/admin/connectivity/settings", true, cancellationToken)).ConfigureAwait(false);
-        if (operation == "netratel") return await ReadAsync(operation, () => client.GetAsync("/api/v1/admin/orchestration/netratel", true, cancellationToken)).ConfigureAwait(false);
+        if (operation == "settings") return await ReadAsync(operation, () => client.GetAsync("/api/v2/mcp/operator/connectivity/settings", true, cancellationToken)).ConfigureAwait(false);
+        if (operation == "netratel") return await ReadAsync(operation, () => client.GetAsync("/api/v2/mcp/operator/connectivity/netratel", true, cancellationToken)).ConfigureAwait(false);
         return Invalid(operation, "Supported operations are settings and netratel.");
     }
 

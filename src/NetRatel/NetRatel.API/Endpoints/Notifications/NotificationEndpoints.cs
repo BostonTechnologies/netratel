@@ -30,7 +30,7 @@ public static class NotificationEndpoints
                     var access = http.RequestServices.GetRequiredService<IEffectiveAccessService>();
                     var tenants = await access.GetAuthorizedTenantIdsAsync(http.User, NetRatelPermissions.IntegrationManagement, http.RequestAborted);
                     if (tenants is { Length: 0 }) return Results.Forbid();
-                    http.RequestServices.GetRequiredService<NetRatelNotificationAudience>().ServiceLinkFailuresOnly = true;
+                    http.RequestServices.GetRequiredService<NetRatelNotificationAudience>().PairingFailuresOnly = true;
                 }
                 return await next(context);
             });
@@ -246,7 +246,7 @@ public static class NotificationEndpoints
                 // Monitoring has exact-tenant authorization on its own durable
                 // read path. The legacy global bus must never disclose it.
                 if (notification.EventType.StartsWith(MonitoringLimits.NotificationEventPrefix, StringComparison.Ordinal) ||
-                    notification.EventType == NetRatelNotificationAudience.ServiceLinkFailure) continue;
+                    notification.EventType == NetRatelNotificationAudience.PairingFailure) continue;
                 if (!string.IsNullOrWhiteSpace(eventType) &&
                     !string.Equals(notification.EventType, eventType, StringComparison.OrdinalIgnoreCase))
                 {
