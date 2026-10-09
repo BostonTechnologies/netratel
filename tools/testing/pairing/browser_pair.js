@@ -88,17 +88,42 @@ async function account(page, entry) {
   await expect(page.getByTestId('generate-pairing-code')).toBeEnabled();
   await closeNavigation(page);
 }
-async function closeNavigation(page) {
+async function navigationDrawer(page) {
   const drawer = page.getByTestId('app-navigation-drawer');
-  if (!await drawer.count()) return;
-  const bounds = await drawer.boundingBox();
-  if (bounds && bounds.x + bounds.width > 1) {
+  if (!await drawer.count()) return null;
+  const content = page.getByTestId('app-main-content');
+  if (await content.getAttribute('data-interactive') !== null)
+    await expect(content).toHaveAttribute('data-interactive', 'true');
+  return drawer;
+}
+async function closeNavigation(page) {
+  const drawer = await navigationDrawer(page);
+  if (!drawer) return;
+  if ((await drawer.getAttribute('class')).split(/\s+/).includes('mud-drawer--open')) {
     await page.getByTestId('navigation-toggle').click();
   }
+  await expect(drawer).toHaveClass(/\bmud-drawer--closed\b/);
   await expect.poll(async () => {
     const current = await drawer.boundingBox();
     return !current || current.x + current.width <= 1;
   }, { message: 'Close the rendered navigation drawer before reading or using the form' }).toBe(true);
+}
+async function resizeForVisualCapture(page, size) {
+  const previous = page.viewportSize();
+  const drawer = await navigationDrawer(page);
+  // Both normal account layouts use Lg (1280px). Observe a real breakpoint
+  // transition, rather than the old geometry before the resize notification.
+  const downward = previous.width >= 1280 && size.width < 1280;
+  const upward = previous.width < 1280 && size.width >= 1280;
+  if (drawer && downward) {
+    if (!(await drawer.getAttribute('class')).split(/\s+/).includes('mud-drawer--open'))
+      await page.getByTestId('navigation-toggle').click();
+    await expect(drawer).toHaveClass(/\bmud-drawer--open\b/);
+  }
+  await page.setViewportSize(size);
+  if (drawer && downward) await expect(drawer).toHaveClass(/\bmud-drawer--closed\b/);
+  if (drawer && upward) await expect(drawer).toHaveClass(/\bmud-drawer--open\b/);
+  await closeNavigation(page);
 }
 async function assertNoBrowserError(page) {
   const error = page.locator('#blazor-error-ui');
@@ -116,8 +141,7 @@ async function assertNoBrowserError(page) {
 }
 async function visualMatrix(page, stem) {
   for (const theme of ['light', 'dark']) {
-    await page.setViewportSize({ width: 1440, height: 900 });
-    await closeNavigation(page);
+    await resizeForVisualCapture(page, { width: 1440, height: 900 });
     await page.emulateMedia({ colorScheme: theme });
     await page.getByTestId('theme-preference-menu').click();
     await page.getByTestId('theme-option-' + theme).click();
@@ -125,16 +149,14 @@ async function visualMatrix(page, stem) {
     const attribute = page.url().startsWith(product('netratel').web) ? 'data-netratel-theme' : 'data-helpdesk-theme';
     await expect(page.locator('html')).toHaveAttribute(attribute, theme);
     for (const [viewport, size] of Object.entries({ desktop: { width: 1440, height: 900 }, narrow: { width: 390, height: 844 } })) {
-      await page.setViewportSize(size);
-      await closeNavigation(page);
+      await resizeForVisualCapture(page, size);
       await assertNoBrowserError(page);
       // Generated codes and code fields never enter persistent screenshots.
       await page.screenshot({ path: path.join(evidence, stem + '-' + theme + '-' + viewport + '.png'),
         fullPage: true, animations: 'disabled', mask: [page.getByTestId('generated-pairing-code'), page.getByTestId('pairing-code'), page.getByLabel('Pairing code', { exact: true }), page.locator('input[type="password"]')] });
     }
   }
-  await page.setViewportSize({ width: 1440, height: 900 });
-  await closeNavigation(page);
+  await resizeForVisualCapture(page, { width: 1440, height: 900 });
 }
 async function selectChoice(page, testId, name) {
   // MudSelect also labels a hidden input; its accessible combobox is the visible trigger.

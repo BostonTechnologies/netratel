@@ -83,8 +83,10 @@
                         <MudText Typo="Typo.body2" Class="mt-2">@ChoiceName(connection.PairId, mapping.NetRatelTenantId, true) → @ChoiceName(connection.PairId, mapping.RatelDeskOrganizationId, false)@(mapping.RatelDeskCustomerId is { } customer ? $" · {CustomerName(connection.PairId, customer)}" : "")</MudText>
                         <MudText Typo="Typo.caption">@Capabilities(mapping)</MudText>
                     }
-                    @if (connection.LastTest is { } result) { <MudText Typo="Typo.body2" Color="@(result.Success ? Color.Success : Color.Error)" Class="mt-2" data-testid="connection-test-result">@result.Message · @result.TestedAtUtc.ToString("yyyy-MM-dd HH:mm") UTC</MudText> }
-                    else { <MudText Typo="Typo.caption">Not tested</MudText> }
+                    <div>
+                        @if (connection.LastTest is { } result) { <MudText Typo="Typo.body2" Color="@(result.Success ? Color.Success : Color.Error)" Class="mt-2" data-testid="connection-test-result">@result.Message · @result.TestedAtUtc.ToString("yyyy-MM-dd HH:mm") UTC</MudText> }
+                        else { <MudText Typo="Typo.caption">Not tested</MudText> }
+                    </div>
                     @if (_rowErrors.TryGetValue(Key(connection), out var rowError)) { <MudAlert Severity="Severity.Error" Class="mt-2" data-testid="connection-error">@rowError</MudAlert> }
                     <MudStack Row="true" Spacing="1" Class="mt-2">
                         <MudButton Variant="Variant.Text" Size="Size.Small" OnClick="@(() => ViewAsync(connection))" Disabled="@(_busy || _deleting.Contains(Key(connection)))" data-testid="connection-view">View</MudButton>
