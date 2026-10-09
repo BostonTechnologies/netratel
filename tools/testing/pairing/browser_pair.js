@@ -278,9 +278,12 @@ async function seedCustomer(context, rd) {
   const organizations = await jsonRequest(context, rd, '/api/v1/organizations/');
   const organization = Array.isArray(organizations) ? organizations[0] : organizations.items?.[0];
   expect(organization?.id).toBeTruthy();
-  return jsonRequest(context, rd, '/api/v1/customers/', {
-    name: 'Acceptance customer', organizationId: organization.id, state: 0,
+  const email = 'acceptance-customer@example.test';
+  const customer = await jsonRequest(context, rd, '/api/v1/customers/', {
+    name: 'Acceptance customer', email, organizationId: organization.id, state: 0,
   }, 'POST');
+  expect(customer.email).toBe(email);
+  return customer;
 }
 async function main() {
   const browser = await chromium.launch({ headless: true });
