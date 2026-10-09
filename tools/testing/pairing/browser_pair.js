@@ -241,9 +241,29 @@ async function visiblePair(page, consumer, generatorPage, generator, mappingName
   else await expect(page.getByTestId(ids.rdCustomer)).toHaveCount(0);
   await final.getByRole('checkbox', { name: /^Run automation/ }).setChecked(capabilities.automation);
   await visualMatrix(page, consumer.name + '-final-save-form');
-  await final.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(page.getByTestId(ids.success)).toContainText('Connected');
-  await expect(page.getByTestId(ids.final)).toHaveCount(0);
+  const connected = page.getByTestId(ids.success).filter({ hasText: 'Connected' });
+  const saveError = page.getByTestId(consumer.name === 'netratel' ? 'pairing-save-error' : ids.error);
+  const saveControl = page.getByTestId(consumer.name === 'netratel' ? 'pairing-save' : 'save-system-connection');
+  const saveStarted = Date.now();
+  const saveOutcome = async () => {
+    const errorText = await saveError.isVisible() ? await saveError.innerText() : '';
+    const reference = errorText.split(/\bReference:/i)[1]?.trim().match(/^([a-z0-9_-]{1,80})\.?$/i)?.[1] || null;
+    return { elapsedMs: Date.now() - saveStarted, terminalKind: await connected.isVisible() ? 'connected' : await saveError.isVisible() ? 'error' : 'pending',
+      reference, controlState: await saveControl.count() ? await saveControl.isDisabled() ? 'disabled' : 'enabled' : 'absent' };
+  };
+  try {
+    await final.getByRole('button', { name: 'Save', exact: true }).click();
+    // Wait for this one async Save's real outcome at the existing page action deadline.
+    await connected.or(saveError).first().waitFor({ state: 'visible' });
+    await expect(page.getByTestId(ids.success)).toContainText('Connected');
+    await expect(page.getByTestId(ids.final)).toHaveCount(0);
+    record(consumer.name + '-single-save-terminal', 'passed', await saveOutcome());
+  } catch (error) {
+    record(consumer.name + '-single-save-terminal', 'failed', await saveOutcome());
+    await page.screenshot({ path: path.join(evidence, consumer.name + '-save-failure.png'), fullPage: true, animations: 'disabled',
+      mask: [page.getByTestId('generated-pairing-code'), page.getByTestId('pairing-code'), page.getByLabel('Pairing code', { exact: true }), page.locator('input')] });
+    throw error;
+  }
   const rows = await jsonRequest(page.context(), consumer, '/api/v1/admin/system-connections');
   const saved = rows.find(row => row.mapping?.name === mappingName);
   expect(saved?.status?.toLowerCase()).toBe('connected');
