@@ -1,4 +1,6 @@
 using System.Reflection;
+using System.Net;
+using System.Net.Http.Json;
 using AwesomeAssertions;
 using Bunit;
 using Microsoft.Extensions.DependencyInjection;
@@ -90,6 +92,36 @@ public sealed class PairingConnectionsTests : AsyncBunitContext
     }
 
     [Fact]
+    public async Task Actual_peer_code_rejection_keeps_entered_form_and_fresh_code_pairs_without_signing_in_again()
+    {
+        using var transport = new PeerCodeRejectionTransport();
+        Services.AddSingleton<IPairingApiClient>(new PairingApiClient(transport));
+        var panel = Render<PairingConnectionsPanel>();
+        panel.WaitForAssertion(() => panel.Find("[data-testid='create-connection']").HasAttribute("disabled").Should().BeFalse());
+        await panel.Find("[data-testid='create-connection']").ClickAsync(new());
+        const string address = "desk.internal:8443/";
+        panel.Find("[data-testid='pairing-address']").Input(address);
+        panel.Find("[data-testid='pairing-code']").Input("ABCD-EFGH");
+        await panel.Find("[data-testid='pair-and-connect']").ClickAsync(new());
+        panel.Find("[data-testid='pairing-error']").TextContent.Should()
+            .Contain("Generate a new code").And.Contain("peer-code-ref").And.NotContain("sign-in");
+        panel.FindAll("[data-testid='pairing-create-form']").Should().HaveCount(1);
+        ((AngleSharp.Html.Dom.IHtmlInputElement)panel.Find("[data-testid='pairing-address']")).Value.Should().Be(address);
+        ((AngleSharp.Html.Dom.IHtmlInputElement)panel.Find("[data-testid='pairing-code']")).Value.Should().Be("ABCD-EFGH");
+        panel.Find("[data-testid='pair-and-connect']").HasAttribute("disabled").Should().BeFalse();
+        var firstOperation = transport.Connects.Single().OperationId;
+        panel.Find("[data-testid='pairing-code']").Input("JKLM-NPQR");
+        await panel.Find("[data-testid='pair-and-connect']").ClickAsync(new());
+        transport.Connects.Should().HaveCount(2);
+        transport.Connects[1].Address.Should().Be("https://desk.internal:8443");
+        transport.Connects[1].OperationId.Should().NotBe(firstOperation);
+        panel.FindAll("[data-testid='pairing-create-form']").Should().BeEmpty();
+        panel.FindAll("[data-testid='pairing-error']").Should().BeEmpty();
+        panel.FindAll("[data-testid='pairing-final-form']").Should().HaveCount(1);
+        panel.Markup.Should().Contain("Systems paired");
+    }
+
+    [Fact]
     public async Task Delete_removes_only_the_selected_mapping_and_a_late_test_cannot_restore_it()
     {
         var selected = FakeApi.Configured(Guid.Parse("11111111-1111-1111-1111-111111111111"), "First mapping");
@@ -125,6 +157,28 @@ public sealed class PairingConnectionsTests : AsyncBunitContext
     }
 
     private static T Field<T>(object target, string name) => (T)target.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(target)!;
+
+    private sealed class PeerCodeRejectionTransport : HttpMessageHandler, IHttpClientFactory
+    {
+        public List<PairingConnectRequest> Connects { get; } = [];
+        public HttpClient CreateClient(string name) => new(this, false) { BaseAddress = new("https://api.test/") };
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            if (request.Method == HttpMethod.Get && path == PairingProtocol.AdminRoute)
+                return new(HttpStatusCode.OK) { Content = JsonContent.Create(Array.Empty<PairingConnectionDto>()) };
+            if (request.Method == HttpMethod.Post && path == PairingProtocol.AdminRoute + "/pair")
+            {
+                Connects.Add((await request.Content!.ReadFromJsonAsync<PairingConnectRequest>(cancellationToken: ct))!);
+                return Connects.Count == 1
+                    ? new(HttpStatusCode.Unauthorized) { Content = JsonContent.Create(new { code = "pairing_code_rejected", correlationId = "peer-code-ref", message = "The pairing code is wrong, expired or replaced." }) }
+                    : new(HttpStatusCode.OK) { Content = JsonContent.Create(FakeApi.Unconfigured()) };
+            }
+            if (request.Method == HttpMethod.Get && path.EndsWith("/directory", StringComparison.Ordinal))
+                return new(HttpStatusCode.OK) { Content = JsonContent.Create(new PairingDirectories([new("12", "Monitoring tenant")], [new("org-1", "Support organization")], [])) };
+            throw new InvalidOperationException("Unexpected pairing administration request.");
+        }
+    }
 
     private sealed class FakeApi : IPairingApiClient
     {

@@ -11,6 +11,7 @@ function counts() { return JSON.parse(native('counts')); }
 async function deleteLocal(page, context, entry, expected) {
   await account(page, entry);
   const rows = await jsonRequest(context, entry, '/api/v1/admin/system-connections');
+  expect(rows.length, 'Each owner must delete an actual persisted local connection from its rendered page').toBeGreaterThan(0);
   for (const row of rows) {
     const card = page.getByTestId(identifiers[entry.name].row).filter({ hasText: row.mapping?.name || row.peer.product });
     await card.getByTestId(identifiers[entry.name].delete).click();
@@ -43,8 +44,8 @@ async function main() {
     expect(activeCredential.credentialSha256).toMatch(/^[0-9a-f]{64}$/);
     native('stop', 'rateldesk');
     await deleteLocal(nrPage, context, nr, baseline);
-    native('restart', 'rateldesk');
     native('stop', 'netratel');
+    native('restart', 'rateldesk');
     await login(rdPage, rd);
     await deleteLocal(rdPage, context, rd, baseline);
     native('restart', 'netratel');

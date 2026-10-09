@@ -90,32 +90,38 @@ public sealed class PairingApiClient(IHttpClientFactory clients) : IPairingApiCl
         throw new PairingApiException(code ?? $"http-{(int)response.StatusCode}", FailureText(code, response.StatusCode), reference);
     }
 
-    private static string FailureText(string? code, HttpStatusCode status) => code switch
+    // Both products use finite error codes. Only recognized aliases override the
+    // HTTP fallback; an unknown or bare 401 still requires interactive sign-in.
+    private static string FailureText(string? code, HttpStatusCode status) => code?.Replace('_', '-') switch
     {
-        "invalid-code" or "pairing-code-invalid" or "code-expired" => "The pairing code is invalid, expired or already used. Generate a new code on the other system.",
+        "invalid-code" or "pairing-code-invalid" or "pairing-code-rejected" or "pairing-code-used" or "code-expired" => "The pairing code is invalid, expired, replaced or already used. Generate a new code on the other system.",
         "invalid-address" or "address-invalid" or "invalid-origin" => "Enter a valid HTTP or HTTPS system address, including its port when needed.",
-        "destination-blocked" or "unsafe-address" or "target-blocked" or "address-blocked" => "The address resolves to a blocked destination. Use the intended NetRatel or RatelDesk system address.",
-        "metadata-mismatch" or "invalid-peer" or "peer-identity-mismatch" or "peer-origin-mismatch" or "peer-alias-unverified" or "peer-proof-invalid" or "caller-proof-invalid" or "caller-identity-mismatch" => "The system identity could not be verified. Check the address and its Web/API configuration.",
-        "peer-incompatible" or "same-installation" => "Enter the other product's compatible installation address. NetRatel must pair with RatelDesk.",
+        "destination-blocked" or "unsafe-address" or "target-blocked" or "address-blocked" or "blocked-address" => "The address resolves to a blocked destination. Use the intended NetRatel or RatelDesk system address.",
+        "metadata-mismatch" or "identity-mismatch" or "invalid-peer" or "peer-identity-mismatch" or "peer-origin-mismatch" or "peer-alias-unverified" or "peer-proof-invalid" or "peer-identity-unproven" or "caller-proof-invalid" or "caller-identity-mismatch" or "caller-identity-unproven" or "wrong-business-origin" or "wrong-business-route" => "The system identity could not be verified. Check the address and its Web/API configuration.",
+        "peer-incompatible" or "incompatible-peer" or "same-installation" or "wrong-product" => "Enter the other product's compatible installation address. NetRatel must pair with RatelDesk.",
         "peer-identity-changed" => "The other system's signing identity changed. Restore its original protected signing keys before pairing again.",
         "public-address-unavailable" => "Configure this installation's public Web and API addresses before pairing.",
-        "producer-unavailable" or "producer-identity-drift" => "Restore the installation's preserved Flow producer identity before pairing.",
+        "producer-unavailable" or "producer-identity-drift" or "invalid-producer" => "Restore the installation's preserved Flow producer identity before pairing.",
+        "invalid-receiver" or "receiver-identity-unavailable" => "Restore the other system's preserved incident receiver identity before pairing.",
         "installation-identity-invalid" or "installation-identity-drift" => "Restore this installation's immutable installation identity before pairing.",
-        "operation-required" or "exchange-invalid" or "pairing-retry-unavailable" => "This pairing operation can no longer be retried. Generate a fresh code on the other system and start Create Connection again.",
-        "exchange-response-invalid" or "peer-response-invalid" or "peer-response-too-large" => "The other system returned an invalid response. Check both systems run compatible pairing releases and retry this operation.",
-        "pair-incomplete" => "Pairing has not completed. Retry Pair & connect with the same address and code before choosing the mapping.",
-        "pairing-authentication-required" or "pairing-revoked" => "System pairing access has been revoked. Generate a fresh code and pair the systems again.",
-        "administrator-required" or "integration-management-required" => "Sign in with a current administrator account permitted to manage integrations.",
-        "administrator-unavailable" => "The administrator who authorized this pairing is no longer active. Pair again with a current authorized administrator.",
+        "operation-required" or "exchange-invalid" or "pairing-retry-unavailable" or "invalid-pairing-request" or "pairing-operation-changed" or "operation-changed" => "This pairing operation can no longer be retried. Generate a fresh code on the other system and start Create Connection again.",
+        "exchange-response-invalid" or "peer-response-invalid" or "peer-response-too-large" or "invalid-exchange" or "invalid-response" or "invalid-directory" or "mapping-mismatch" or "invalid-business-credential" or "unexpected-credential" => "The other system returned an invalid response. Check both systems run compatible pairing releases and retry this operation.",
+        "pair-incomplete" or "pairing-incomplete" or "connection-incomplete" or "connection-required" => "Pairing has not completed. Retry Pair & connect with the same address and code before choosing the mapping.",
+        "pairing-authentication-required" or "pairing-revoked" or "invalid-pairing-auth" or "pairing-generation-changed" => "System pairing access has been revoked. Generate a fresh code and pair the systems again.",
+        "administrator-required" or "integration-management-required" or "human-administrator-required" => "Sign in with a current administrator account permitted to manage integrations.",
+        "administrator-unavailable" or "owner-unavailable" or "setup-authority-removed" => "The administrator who authorized this pairing is no longer authorized. Pair again with a current authorized administrator.",
         "automation-catalog-unavailable" => "Run automation needs current job definitions with active agents owned by the selected NetRatel tenant. Add the required jobs or leave Run automation disabled.",
         "tls-failed" => "The remote certificate could not be verified. Correct the certificate or use its valid DNS name.",
-        "mapping-required" => "Save the tenant mapping before testing this connection.",
-        "invalid-mapping" or "mapping-invalid" or "invalid-configuration" => "Choose an authorized NetRatel tenant and RatelDesk organization, a customer for incidents, a name and at least one capability.",
-        "customer-required" or "invalid-customer" => "Choose an authorized RatelDesk customer belonging to the selected organization.",
-        "mapping-conflict" or "revision-conflict" => "This connection changed. Reopen its current configuration before saving your changes.",
-        "mapping-deleted" or "pair-deleted" or "pair-not-found" or "connection-not-found" or "pair-unavailable" => "This connection was removed. Refresh the list before proceeding.",
-        "authority-changed" or "access-denied" or "not-authorized" or "mapping-not-authorized" => "Your current access no longer permits this operation. Review the selected tenant, organization and customer with an administrator.",
-        "peer-unavailable" or "connection-unavailable" => "The other system could not be reached. Check its address and availability, then retry this operation.",
+        "mapping-required" or "connection-selection-required" => "Save the tenant mapping before testing this connection.",
+        "invalid-mapping" or "mapping-invalid" or "invalid-configuration" or "unexpected-customer" => "Choose an authorized NetRatel tenant and RatelDesk organization, a customer for incidents, a name and at least one capability.",
+        "customer-required" or "invalid-customer" or "customer-not-authorized" => "Choose an authorized RatelDesk customer belonging to the selected organization.",
+        "mapping-conflict" or "revision-conflict" or "mapping-changed" or "mapping-revision-changed" or "save-operation-changed" or "wrong-mapping" or "wrong-pair" => "This connection changed. Reopen its current configuration before saving your changes.",
+        "mapping-deleted" or "pair-deleted" or "pairing-deleted" or "pair-not-found" or "connection-not-found" or "pair-unavailable" or "pairing-unavailable" or "connection-deleted" or "connection-revoked" or "mapping-unavailable" => "This connection was removed. Refresh the list before proceeding.",
+        "authority-changed" or "access-denied" or "not-authorized" or "mapping-not-authorized" or "organization-not-authorized" or "tenant-not-authorized" or "business-access-unavailable" => "Your current access no longer permits this operation. Review the selected tenant, organization and customer with an administrator.",
+        "invalid-saved-state" => "The saved connection is invalid. Delete this connection and pair again with a fresh code.",
+        "business-validation-failed" => "Saved connection access could not be verified. Review the selected resources and permissions, then retry Save.",
+        "peer-unavailable" or "peer-unreachable" or "connection-unavailable" => "The other system could not be reached. Check its address, availability and certificate, then retry this operation.",
+        "peer-timeout" or "peer-response-lost" or "peer-response-interrupted" => "The other system's response did not complete. Retry this same operation to recover its recorded result.",
         _ => status switch
         {
             HttpStatusCode.BadRequest => "The request was rejected. Review the address, code or selected configuration and try again.",

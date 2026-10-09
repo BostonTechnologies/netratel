@@ -49,6 +49,42 @@ public sealed class PairingApiClientTests
         error.Reference.Should().Be("safe-ref-17");
     }
 
+    [Theory]
+    [InlineData(HttpStatusCode.Unauthorized, "pairing_code_rejected", "Generate a new code")]
+    [InlineData(HttpStatusCode.Conflict, "pairing_code_used", "Generate a new code")]
+    [InlineData(HttpStatusCode.Conflict, "pairing_operation_changed", "Generate a fresh code")]
+    [InlineData(HttpStatusCode.Unauthorized, "pairing_generation_changed", "pair the systems again")]
+    [InlineData(HttpStatusCode.Forbidden, "customer_not_authorized", "Choose an authorized RatelDesk customer")]
+    [InlineData(HttpStatusCode.Conflict, "mapping_revision_changed", "Reopen its current configuration")]
+    [InlineData(HttpStatusCode.BadGateway, "identity_mismatch", "identity could not be verified")]
+    [InlineData(HttpStatusCode.BadGateway, "peer_unavailable", "certificate")]
+    public async Task Structured_peer_failures_use_known_recovery_actions_instead_of_interactive_sign_in_expiry(
+        HttpStatusCode status, string code, string action)
+    {
+        using var transport = new Transport(_ => new(status)
+        {
+            Content = JsonContent.Create(new { code, correlationId = "peer-safe-ref", message = "Untrusted private peer details" })
+        });
+        var error = await Assert.ThrowsAsync<PairingApiException>(() => new PairingApiClient(transport)
+            .ConnectAsync(new("https://desk.test", "ABCD-EFGH", Guid.NewGuid())));
+        error.Code.Should().Be(code);
+        error.Message.Should().Contain(action).And.NotContain("Sign in again").And.NotContain("private peer details");
+        error.Reference.Should().Be("peer-safe-ref");
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("authentication_required")]
+    public async Task Missing_or_unknown_unauthorized_response_still_requires_interactive_sign_in(string? code)
+    {
+        using var transport = new Transport(_ => new(HttpStatusCode.Unauthorized)
+        {
+            Content = JsonContent.Create(new { code, correlationId = "local-auth-ref" })
+        });
+        var error = await Assert.ThrowsAsync<PairingApiException>(() => new PairingApiClient(transport).ListAsync());
+        error.Message.Should().Contain("Sign in again").And.NotContain("Generate a");
+    }
+
     [Fact]
     public async Task Oversized_administration_response_fails_with_a_bounded_read()
     {

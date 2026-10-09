@@ -66,34 +66,60 @@ async function account(page, entry) {
   if (await tab.count()) await tab.click();
   await expect(page.getByTestId(identifiers[entry.name].panel)).toBeVisible();
   await expect(page.getByTestId('generate-pairing-code')).toBeEnabled();
+  await closeNavigation(page);
+}
+async function closeNavigation(page) {
+  const drawer = page.getByTestId('app-navigation-drawer');
+  if (!await drawer.count()) return;
+  const bounds = await drawer.boundingBox();
+  if (bounds && bounds.x + bounds.width > 1) {
+    await page.getByTestId('navigation-toggle').click();
+  }
+  await expect.poll(async () => {
+    const current = await drawer.boundingBox();
+    return !current || current.x + current.width <= 1;
+  }, { message: 'Close the rendered navigation drawer before reading or using the form' }).toBe(true);
 }
 async function assertNoBrowserError(page) {
   const error = page.locator('#blazor-error-ui');
   if (await error.count()) await expect(error).not.toBeVisible();
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 2),
     { message: 'The actual account form must fit its viewport', timeout: 5000 }).toBe(false);
+  const ids = identifiers[page.url().startsWith(product('netratel').web) ? 'netratel' : 'rateldesk'];
+  const forms = page.getByTestId(ids.pairForm).or(page.getByTestId(ids.final));
+  for (const form of await forms.all()) {
+    if (await form.isVisible()) await expect.poll(() => form.locator('input:visible').evaluateAll(inputs => inputs.every(input => {
+      const bounds = input.getBoundingClientRect();
+      return bounds.left >= -1 && bounds.right <= window.innerWidth + 1;
+    })), { message: 'The rendered form fields must be readable without horizontal clipping' }).toBe(true);
+  }
 }
 async function visualMatrix(page, stem) {
   for (const theme of ['light', 'dark']) {
     await page.setViewportSize({ width: 1440, height: 900 });
+    await closeNavigation(page);
     await page.emulateMedia({ colorScheme: theme });
     await page.getByTestId('theme-preference-menu').click();
     await page.getByTestId('theme-option-' + theme).click();
+    await expect(page.getByTestId('theme-option-' + theme)).toBeHidden();
     const attribute = page.url().startsWith(product('netratel').web) ? 'data-netratel-theme' : 'data-helpdesk-theme';
     await expect(page.locator('html')).toHaveAttribute(attribute, theme);
     for (const [viewport, size] of Object.entries({ desktop: { width: 1440, height: 900 }, narrow: { width: 390, height: 844 } })) {
       await page.setViewportSize(size);
+      await closeNavigation(page);
       await assertNoBrowserError(page);
       // Generated codes and code fields never enter persistent screenshots.
       await page.screenshot({ path: path.join(evidence, stem + '-' + theme + '-' + viewport + '.png'),
-        fullPage: true, mask: [page.getByTestId('generated-pairing-code'), page.getByTestId('pairing-code'), page.getByLabel('Pairing code', { exact: true }), page.locator('input[type="password"]')] });
+        fullPage: true, animations: 'disabled', mask: [page.getByTestId('generated-pairing-code'), page.getByTestId('pairing-code'), page.getByLabel('Pairing code', { exact: true }), page.locator('input[type="password"]')] });
     }
   }
   await page.setViewportSize({ width: 1440, height: 900 });
 }
 async function selectChoice(page, testId, name) {
   const field = page.getByTestId(testId);
-  await field.click();
+  // MudSelect forwards attributes to both its wrapper and rendered input.
+  const input = field.locator('input');
+  await (await input.count() ? input.first() : field.first()).click();
   await page.getByRole('option', { name, exact: true }).click();
 }
 async function visiblePair(page, consumer, generatorPage, generator, mappingName, capabilities) {
@@ -120,6 +146,10 @@ async function visiblePair(page, consumer, generatorPage, generator, mappingName
   await expect(page.getByTestId('pair-and-connect')).toBeEnabled();
   await page.getByTestId('pair-and-connect').click();
   await expect(page.getByTestId(ids.error)).toBeVisible();
+  const rejectionReason = (await page.getByTestId(ids.error).innerText()).split(/\bReference:/i)[0];
+  expect(rejectionReason).toMatch(/code/i);
+  expect(rejectionReason).toMatch(/reject|expir|invalid|not (?:accepted|valid|active)|could not be accepted/i);
+  await expect(page.getByTestId(ids.error)).not.toContainText(/sign[\s-]?in/i);
   await expect(page.getByTestId(ids.final)).toHaveCount(0);
   await visualMatrix(page, consumer.name + '-replaced-code-inline-failure');
   record(consumer.name + '-replaced-code-rejected-inline', 'passed');
