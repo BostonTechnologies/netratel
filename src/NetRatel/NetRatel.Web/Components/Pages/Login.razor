@@ -157,7 +157,7 @@
         var authState = await AuthStateProvider.GetAuthenticationStateAsync();
         if (authState.User.Identity?.IsAuthenticated == true)
         {
-            Nav.NavigateTo(ReturnUrl == "/account/integration-credentials/link/resume-sign-in" ? ReturnUrl : "/", forceLoad: true);
+            Nav.NavigateTo("/", forceLoad: true);
         }
     }
 

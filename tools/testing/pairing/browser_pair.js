@@ -47,18 +47,38 @@ async function jsonRequest(context, entry, route, data, method = 'GET') {
   return response.status() === 204 ? null : response.json();
 }
 async function login(page, entry) {
-  await page.goto(entry.web + '/login');
-  if (entry.name === 'netratel') {
-    await page.getByTestId('local-login-email').fill(entry.email);
-    await page.getByTestId('local-login-password').fill(state.adminPassword);
-    await page.getByTestId('local-login-submit').click();
-  } else {
-    await page.locator('input[name="email"]').fill(entry.email);
-    await page.locator('input[name="password"]').fill(state.adminPassword);
-    await page.getByRole('button', { name: /^Sign in to / }).click();
+  let loginHttpStatus = null;
+  const loginPath = entry.name === 'netratel' ? '/api/v2/local-auth/login' : '/local-login';
+  const observeLogin = response => {
+    if (response.request().method() === 'POST' && new URL(response.url()).pathname === loginPath)
+      loginHttpStatus = response.status();
+  };
+  page.on('response', observeLogin);
+  try {
+    await page.goto(entry.web + '/login');
+    if (entry.name === 'netratel') {
+      // Plain prerendered inputs can be replaced during interactive hydration.
+      await page.getByTestId('local-login-client-ready').waitFor({ state: 'attached' });
+      await page.waitForFunction(() => typeof window.netratelSetup?.localLogin === 'function');
+      await page.getByTestId('local-login-email').fill(entry.email);
+      await page.getByTestId('local-login-password').fill(state.adminPassword);
+      await page.getByTestId('local-login-submit').click();
+    } else {
+      await page.locator('[data-testid="local-login-form"][data-interactive="true"]').waitFor({ state: 'attached' });
+      await page.locator('input[name="email"]').fill(entry.email);
+      await page.locator('input[name="password"]').fill(state.adminPassword);
+      await page.getByRole('button', { name: /^Sign in to / }).click();
+    }
+    await expect(page).not.toHaveURL(/\/login(?:[/?]|$)/);
+    await account(page, entry);
+  } catch (error) {
+    await page.screenshot({ path: path.join(evidence, entry.name + '-login-failure.png'),
+      fullPage: true, animations: 'disabled', mask: [page.locator('input')] });
+    record(entry.name + '-normal-rendered-local-login', 'failed', { loginHttpStatus });
+    throw error;
+  } finally {
+    page.off('response', observeLogin);
   }
-  await expect(page).not.toHaveURL(/\/login(?:[/?]|$)/);
-  await account(page, entry);
 }
 async function account(page, entry) {
   await page.goto(entry.web + '/account/integration-credentials');
