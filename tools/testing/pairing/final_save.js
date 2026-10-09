@@ -121,8 +121,24 @@ async function main() {
     const saved = rows[0];
     expect(saved.pairId).toBe(pairId); expect(saved.status.toLowerCase()).toBe('connected');
     assertMapping(saved.mapping);
-    const connectors = await jsonRequest(context, nr, `/api/v2/tenants/${tenant.id}/connectors/rateldesk`);
+    // This owner-only v2 read is exposed by the API, not the Web proxy.
+    const connectorResponse = await context.request.get(nr.api + `/api/v2/tenants/${tenant.id}/connectors/rateldesk`, {
+      headers: { Origin: nr.api, 'X-Requested-With': 'XMLHttpRequest', 'X-NetRatel-Account-Request': '1' }, timeout: 30000,
+    });
+    record('netratel-api-receiver-readiness-read', connectorResponse.status() === 200 ? 'passed' : 'failed', {
+      httpStatus: connectorResponse.status(),
+    });
+    expect(connectorResponse.status()).toBe(200);
+    const connectors = await connectorResponse.json();
+    expect(Array.isArray(connectors)).toBe(true);
     const connector = connectors.find(x => x.id === saved.mapping.id);
+    const readinessCodes = ['receiver-ready', 'connector-disabled-or-owner-denied', 'receiver-readiness-required',
+      'receiver-readiness-expired', 'receiver-semantic-target-changed', 'receiver-paired-grant-changed',
+      'receiver-readiness-invalid', 'receiver-current-authority-unavailable'];
+    record('netratel-current-receiver-readiness', connector?.automaticDeliveryAvailable === true ? 'passed' : 'failed', {
+      connectorCount: connectors.length, mappingMatched: Boolean(connector), automaticDeliveryAvailable: connector?.automaticDeliveryAvailable === true,
+      availabilityCode: readinessCodes.includes(connector?.availabilityCode) ? connector.availabilityCode : 'unknown',
+    });
     expect(connector?.automaticDeliveryAvailable).toBe(true);
     expect(counts()).toEqual(baselineCounts);
     const observations = JSON.parse(fs.readFileSync(path.join(fixture, 'save-frontdoor-observations.json'), 'utf8'));
