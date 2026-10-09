@@ -134,13 +134,16 @@ async function visualMatrix(page, stem) {
     }
   }
   await page.setViewportSize({ width: 1440, height: 900 });
+  await closeNavigation(page);
 }
 async function selectChoice(page, testId, name) {
-  const field = page.getByTestId(testId);
-  // MudSelect forwards attributes to both its wrapper and rendered input.
-  const input = field.locator('input');
-  await (await input.count() ? input.first() : field.first()).click();
-  await page.getByRole('option', { name, exact: true }).click();
+  // MudSelect also labels a hidden input; its accessible combobox is the visible trigger.
+  const trigger = page.getByTestId(testId).and(page.getByRole('combobox'));
+  await expect(trigger).toHaveCount(1);
+  await trigger.click();
+  const option = page.getByRole('option', { name, exact: true });
+  await expect(option).toHaveCount(1);
+  await option.click();
 }
 async function visiblePair(page, consumer, generatorPage, generator, mappingName, capabilities) {
   const ids = identifiers[consumer.name];
