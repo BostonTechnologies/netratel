@@ -102,15 +102,26 @@ async function navigationDrawer(page) {
 }
 async function closeNavigation(page) {
   const drawer = await navigationDrawer(page);
-  if (!drawer) return;
+  if (!drawer || page.viewportSize().width >= 1280) return;
   if ((await drawer.getAttribute('class')).split(/\s+/).includes('mud-drawer--open')) {
     await page.getByTestId('navigation-toggle').click();
   }
-  await expect(drawer).toHaveClass(/\bmud-drawer--closed\b/);
-  await expect.poll(async () => {
-    const current = await drawer.boundingBox();
-    return !current || current.x + current.width <= 1;
-  }, { message: 'Close the rendered navigation drawer before reading or using the form' }).toBe(true);
+  await assertNavigationState(page, drawer, 'closed');
+  await assertNavigationState(page, drawer, 'offscreen');
+}
+async function assertNavigationState(page, drawer, expectedState) {
+  try {
+    if (expectedState === 'offscreen') {
+      await expect.poll(async () => {
+        const bounds = await drawer.boundingBox();
+        return !bounds || bounds.x + bounds.width <= 1;
+      }, { message: 'Narrow navigation must be offscreen before reading or using the form' }).toBe(true);
+    } else await expect(drawer).toHaveClass(new RegExp('\\bmud-drawer--' + expectedState + '\\b'));
+  } catch (error) {
+    record('rendered-navigation-state', 'failed', { expectedState, viewport: page.viewportSize(),
+      classes: (await drawer.getAttribute('class')).slice(0, 512), bounds: await drawer.boundingBox() });
+    throw error;
+  }
 }
 async function resizeForVisualCapture(page, size) {
   const previous = page.viewportSize();
@@ -118,15 +129,13 @@ async function resizeForVisualCapture(page, size) {
   // Both normal account layouts use Lg (1280px). Observe a real breakpoint
   // transition, rather than the old geometry before the resize notification.
   const downward = previous.width >= 1280 && size.width < 1280;
-  const upward = previous.width < 1280 && size.width >= 1280;
   if (drawer && downward) {
     if (!(await drawer.getAttribute('class')).split(/\s+/).includes('mud-drawer--open'))
       await page.getByTestId('navigation-toggle').click();
-    await expect(drawer).toHaveClass(/\bmud-drawer--open\b/);
+    await assertNavigationState(page, drawer, 'open');
   }
   await page.setViewportSize(size);
-  if (drawer && downward) await expect(drawer).toHaveClass(/\bmud-drawer--closed\b/);
-  if (drawer && upward) await expect(drawer).toHaveClass(/\bmud-drawer--open\b/);
+  if (drawer && downward) await assertNavigationState(page, drawer, 'closed');
   await closeNavigation(page);
 }
 async function assertNoBrowserError(page) {
