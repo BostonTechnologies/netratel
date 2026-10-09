@@ -150,7 +150,11 @@ async function owner(entry) {
 async function apiJson(api, route, data, method = 'GET', allowed = null) {
   const response = await api.fetch(route, { method, data, timeout: 30000 });
   if (allowed && allowed.includes(response.status())) return { status: response.status(), body: await response.json() };
-  requireProof(response.ok(), `Actual owner ${method} ${route} returned HTTP ${response.status()}`);
+  if (!response.ok()) {
+    let code = 'unknown';
+    try { const body = await response.json(); if (typeof body.code === 'string' && /^[a-z0-9_-]{1,80}$/.test(body.code)) code = body.code; } catch {}
+    throw new Error(`Actual owner ${method} ${route} returned HTTP ${response.status()} (${code})`);
+  }
   return response.status() === 204 ? null : response.json();
 }
 function product(name) { const entry = state.products[name]; return { ...entry, name, api: `http://127.0.0.1:${entry.apiPort}`, web: `http://127.0.0.1:${entry.webPort}` }; }
@@ -224,9 +228,9 @@ async function actualIncident(nrApi, rdApi, mapping, sample) {
   const condition = { kind: 2, unit: 1, breachThreshold: breach, recoveryThreshold: recovery, resourceName: sample.disk.scope, servicePlatform: null, expectedServiceStates: [] };
   const preview = await apiJson(nrApi, monitoring + '/targets/preview', { targets, condition }, 'POST');
   requireProof(preview.agentIds.includes(sample.agentId), 'Current owner must be allowed to monitor the genuinely enrolled disk');
-  await apiJson(nrApi, monitoring + '/rules/' + ruleId, { expectedRevision: current.revision, reason: 'Controlled current disk threshold for disposable pairing acceptance', rule: {
+  await apiJson(nrApi, monitoring + '/rules/' + ruleId, { expectedConfigurationRevision: current.revision, reason: 'Controlled current disk threshold for disposable pairing acceptance', rule: {
     tenantId: tenant, ruleId, revision: 1, evaluationRevision: 1, name: 'Actual source-pair disk threshold', enabled: true, severity: 1,
-    targets, condition, breachHold: '00:00:01', recoveryHold: '00:00:01', freshnessBudget: '00:00:30', publishedFlowVersionId: version.id,
+    targets, condition, breachHold: '00:00:01', recoveryHold: '00:00:01', freshnessBudget: '00:01:05', publishedFlowVersionId: version.id,
   } }, 'PUT');
   const original = await until('Actual monitored Flow committed incident receipt', async () => {
     const rows = sql('rateldesk', `SELECT COALESCE(json_agg(json_build_object('id',"Id",'key',"Key",'fingerprint',"Fingerprint",'incidentId',"IncidentId",'namespaceId',"SourceNamespaceId",'accepted',"AcceptedJson")), '[]'::json) FROM "IncidentCreateReceipts" WHERE "SourceNamespaceId"=${literal(mapping.mapping.id)}::uuid`);
