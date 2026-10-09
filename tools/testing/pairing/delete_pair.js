@@ -18,7 +18,7 @@ async function deleteLocal(page, context, entry, expected) {
     const route = '/api/v1/admin/system-connections/' + encodeURIComponent(row.pairId)
       + (row.mapping ? '/mappings/' + row.mapping.id : '');
     // A repeated local DELETE uses the real owner cookie and is harmless.
-    const repeated = await context.request.delete(entry.web + route, { headers: { Origin: entry.web } });
+    const repeated = await context.request.delete(entry.web + route, { headers: { Origin: entry.web, 'X-Requested-With': 'XMLHttpRequest', 'X-NetRatel-Account-Request': '1' } });
     expect([200, 204, 404]).toContain(repeated.status());
   }
   expect(await jsonRequest(context, entry, '/api/v1/admin/system-connections')).toEqual([]);

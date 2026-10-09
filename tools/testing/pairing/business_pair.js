@@ -141,7 +141,7 @@ async function control(action) {
 }
 async function owner(entry) {
   const { request } = require(path.join(runtimeRoot, 'browser/node_modules/@playwright/test'));
-  const api = await request.newContext({ baseURL: entry.api, extraHTTPHeaders: { Origin: entry.web, 'X-NetRatel-Account-Request': '1' } });
+  const api = await request.newContext({ baseURL: entry.api, extraHTTPHeaders: { Origin: entry.web, 'X-Requested-With': 'XMLHttpRequest', 'X-NetRatel-Account-Request': '1' } });
   const endpoint = entry.name === 'netratel' ? '/api/v2/local-auth/login' : '/api/v1/local-auth/login';
   const response = await api.post(endpoint, { data: { email: entry.email, password: state.adminPassword, rememberMe: false } });
   requireProof(response.status() === 204, `Actual ${entry.name} owner login failed (HTTP ${response.status()})`);

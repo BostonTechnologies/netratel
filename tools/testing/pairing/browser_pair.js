@@ -37,7 +37,7 @@ function record(stage, status, details = {}) {
 }
 async function jsonRequest(context, entry, route, data, method = 'GET') {
   const response = await context.request.fetch(entry.web + route, {
-    method, data, headers: { Origin: entry.web }, timeout: 30000,
+    method, data, headers: { Origin: entry.web, 'X-Requested-With': 'XMLHttpRequest', 'X-NetRatel-Account-Request': '1' }, timeout: 30000,
   });
   if (!response.ok()) {
     let code = 'unknown';
