@@ -281,7 +281,7 @@ public sealed class PairingCodePostgresTests(PostgreSqlPersistenceFixture postgr
         private readonly RSA signing = RSA.Create(2048); private readonly object sync = new();
         internal int Reads; internal int Saves; internal int Tests; internal int Exchanges; internal bool InvalidSourceIds;
         internal PairingMetadata Metadata => new(PairingProtocol.Contract, "rateldesk", "00000000-0000-4000-8000-000000000073", "Fixture peer",
-            "https://peer.example.test", "https://peer.example.test", null, Convert.ToBase64String(signing.ExportSubjectPublicKeyInfo()));
+            "https://peer.example.test", "https://peer.example.test", null, Convert.ToBase64String(signing.ExportSubjectPublicKeyInfo()), "00000000-0000-4000-8000-000000000073");
         internal PairingExchangeRequest Request(string code) => Sign(new(code, Guid.NewGuid(), Metadata, Base64UrlEncoder.Encode(RandomNumberGenerator.GetBytes(32))));
         internal PairingExchangeRequest Sign(PairingExchangeRequest value) => value with { Signature = Signature(JsonSerializer.Serialize(value with { Signature = "" }, PairingTransport.Json)) };
         private string Signature(string value) { lock (sync) return Convert.ToBase64String(signing.SignData(Encoding.UTF8.GetBytes(value), HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1)); }

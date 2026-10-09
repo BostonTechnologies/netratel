@@ -2,6 +2,7 @@ using System.Reflection;
 using AwesomeAssertions;
 using Bunit;
 using Microsoft.Extensions.DependencyInjection;
+using MudBlazor;
 using MudBlazor.Services;
 using NetRatel.Shared.SystemPairing;
 using NetRatel.Web.Components.Pages.Flows;
@@ -30,8 +31,8 @@ public sealed class PairingConnectionsTests : AsyncBunitContext
         await panel.Find("[data-testid='create-connection']").ClickAsync(new());
         panel.Find("[data-testid='pairing-create-form']").QuerySelectorAll("input").Should().HaveCount(2);
         panel.Find("[data-testid='pair-and-connect']").HasAttribute("disabled").Should().BeTrue();
-        panel.Find("[data-testid='pairing-address'] input").Input("http://10.20.30.40:8080///");
-        panel.Find("[data-testid='pairing-code'] input").Input("ABCD-EFGH");
+        panel.Find("[data-testid='pairing-address']").Input("http://10.20.30.40:8080///");
+        panel.Find("[data-testid='pairing-code']").Input("ABCD-EFGH");
         panel.Find("[data-testid='pair-and-connect']").HasAttribute("disabled").Should().BeFalse();
         await panel.Find("[data-testid='pair-and-connect']").ClickAsync(new());
         api.ConnectCalls.Should().Be(1); api.LastConnect!.Address.Should().Be("http://10.20.30.40:8080");
@@ -50,14 +51,18 @@ public sealed class PairingConnectionsTests : AsyncBunitContext
         Services.AddSingleton<IPairingApiClient>(api);
         var panel = Render<PairingConnectionsPanel>();
         panel.WaitForAssertion(() => panel.FindAll("[data-testid='pairing-final-form']").Should().HaveCount(1));
-        Set(panel.Instance, "_name", "On call incidents"); Set(panel.Instance, "_createIncidents", true); Set(panel.Instance, "_customer", "customer-1");
-        await panel.InvokeAsync(() => CallAsync(panel.Instance, "SaveAsync"));
+        panel.Find("[data-testid='pairing-connection-name']").Input("On call incidents");
+        var incidents = panel.FindComponents<MudCheckBox<bool>>().Single(x => x.Instance.Label!.StartsWith("Create incidents", StringComparison.Ordinal));
+        await panel.InvokeAsync(() => incidents.Instance.ValueChanged.InvokeAsync(true));
+        var customer = panel.FindComponents<MudSelect<string>>().Single(x => x.Instance.Label == "RatelDesk customer");
+        await panel.InvokeAsync(() => customer.Instance.ValueChanged.InvokeAsync("customer-1"));
+        await panel.Find("[data-testid='pairing-save']").ClickAsync(new());
         panel.Find("[data-testid='pairing-save-error']").TextContent.Should().Contain("customer permission changed").And.Contain("ref-save");
         Field<string>(panel.Instance, "_name").Should().Be("On call incidents");
         panel.FindAll("[data-testid='connection-card']").Should().HaveCount(1);
         var mappingId = api.LastSave!.Id;
         api.RejectSave = false;
-        await panel.InvokeAsync(() => CallAsync(panel.Instance, "SaveAsync"));
+        await panel.Find("[data-testid='pairing-save']").ClickAsync(new());
         api.LastSave!.Id.Should().Be(mappingId); api.LastSave.RunAutomation.Should().BeFalse();
         api.LastSave.RatelDeskCustomerId.Should().Be("customer-1");
         api.ConnectCalls.Should().Be(0); api.TestCalls.Should().Be(0); api.SaveCalls.Should().Be(2);
@@ -72,8 +77,8 @@ public sealed class PairingConnectionsTests : AsyncBunitContext
         var api = new FakeApi { LoseConnectResponse = true }; Services.AddSingleton<IPairingApiClient>(api);
         var panel = Render<PairingConnectionsPanel>();
         await panel.Find("[data-testid='create-connection']").ClickAsync(new());
-        panel.Find("[data-testid='pairing-address'] input").Input("desk.internal:8443/");
-        panel.Find("[data-testid='pairing-code'] input").Input("ABCD-EFGH");
+        panel.Find("[data-testid='pairing-address']").Input("desk.internal:8443/");
+        panel.Find("[data-testid='pairing-code']").Input("ABCD-EFGH");
         await panel.Find("[data-testid='pair-and-connect']").ClickAsync(new());
         var operation = api.LastConnect!.OperationId;
         panel.Find("[data-testid='pairing-error']").TextContent.Should().Contain("Reference:");
@@ -93,8 +98,11 @@ public sealed class PairingConnectionsTests : AsyncBunitContext
         Services.AddSingleton<IPairingApiClient>(api);
         var panel = Render<PairingConnectionsPanel>();
         panel.WaitForAssertion(() => panel.FindAll("[data-testid='connection-card']").Should().HaveCount(2));
-        var pendingTest = CallAsync(panel.Instance, "TestAsync", selected);
-        await panel.InvokeAsync(() => CallAsync(panel.Instance, "DeleteAsync", selected));
+        var selectedCard = panel.FindAll("[data-testid='connection-card']").Single(x => x.TextContent.Contains("First mapping", StringComparison.Ordinal));
+        var pendingTest = selectedCard.QuerySelector("[data-testid='connection-test']")!.ClickAsync(new());
+        panel.WaitForAssertion(() => api.TestCalls.Should().Be(1));
+        selectedCard = panel.FindAll("[data-testid='connection-card']").Single(x => x.TextContent.Contains("First mapping", StringComparison.Ordinal));
+        await selectedCard.QuerySelector("[data-testid='connection-delete']")!.ClickAsync(new());
         api.LastDeleted!.Mapping!.Id.Should().Be(selected.Mapping!.Id);
         api.TestGate.SetResult(new(true, "Authenticated mapping checked; no incident or task created.", DateTimeOffset.UtcNow));
         await pendingTest;
@@ -117,8 +125,6 @@ public sealed class PairingConnectionsTests : AsyncBunitContext
     }
 
     private static T Field<T>(object target, string name) => (T)target.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(target)!;
-    private static void Set(object target, string name, object value) => target.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(target, value);
-    private static Task CallAsync(object target, string name, params object[] args) => (Task)target.GetType().GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(target, args)!;
 
     private sealed class FakeApi : IPairingApiClient
     {

@@ -14,8 +14,10 @@ public sealed class PairingRatelDeskBindingResolver(IRatelDeskConnectorStore con
         var profile = await profiles.ResolveAsync(connector.TenantId, mappingId.ToString("D"), "rateldesk.incidents.create", ct);
         if (source != await flowIdentity.EnsureAsync(ct) || profile.Credential.SourceInstanceId != source.ToString("D") || profile.Mapping.RatelDeskOrganizationId != connector.Configuration.OrganizationId || profile.Mapping.RatelDeskCustomerId != connector.Configuration.CustomerId || profile.Peer.ApiOrigin != connector.Configuration.Origin)
             throw new UnauthorizedAccessException("saved-incident-target-changed");
+        if (!Guid.TryParseExact(profile.Peer.ReceiverInstanceId, "D", out var receiver) || receiver == Guid.Empty || receiver.ToString("D") != profile.Peer.ReceiverInstanceId)
+            throw new UnauthorizedAccessException("signed-receiver-identity-unavailable");
         return new(RatelDeskAuthenticationMode.PairedSystem, connector.TenantId, connector.Id, mappingId.ToString("D"), profile.Revision,
-            profile.AuthorityHash, profile.Peer.InstallationId, profile.Mapping.RatelDeskOrganizationId, profile.Peer.ApiOrigin,
+            profile.AuthorityHash, receiver.ToString("D"), profile.Mapping.RatelDeskOrganizationId, profile.Peer.ApiOrigin,
             profile.Credential.Issuer, profile.Credential.Audience, profile.Credential.TokenEndpoint, profile.Credential.ClientId,
             "netratel_to_rateldesk", source, mappingId, connector.Configuration.OrganizationId, connector.Configuration.CustomerId,
             connector.Configuration.AssignedToId, connector.Configuration.CategoryIds.Select(x => x.ToString("D")).Order(StringComparer.Ordinal).ToArray());

@@ -103,7 +103,7 @@ async function visiblePair(page, consumer, generatorPage, generator, mappingName
   const codePanel = generatorPage.getByTestId('generated-pairing-code');
   await expect(codePanel).toBeVisible();
   const readCode = async () => (generator.name === 'netratel'
-    ? await codePanel.locator('input').inputValue() : await codePanel.innerText()).match(/\b[A-Z0-9]{4}-[A-Z0-9]{4}\b/);
+    ? await (await codePanel.evaluate(element => element.tagName === 'INPUT') ? codePanel : codePanel.locator('input')).inputValue() : await codePanel.innerText()).match(/\b[A-Z0-9]{4}-[A-Z0-9]{4}\b/);
   const replaced = await readCode();
   await generatorPage.getByTestId('generate-pairing-code').click();
   await expect.poll(async () => (await readCode())?.[0]).not.toBe(replaced?.[0]);

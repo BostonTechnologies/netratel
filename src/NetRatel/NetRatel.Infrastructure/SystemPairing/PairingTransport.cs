@@ -60,8 +60,10 @@ public sealed class PairingTransport(HttpClient http)
         if (peer is null || peer.Contract != PairingProtocol.Contract || peer.Product != product || !Guid.TryParseExact(peer.InstallationId, "D", out var id) || id == Guid.Empty || id.ToString("D") != peer.InstallationId || peer.Name is not { Length: > 0 and <= 128 } || peer.SigningPublicKey is not { Length: > 0 and <= 8192 })
             throw new PairingException(422, "peer-incompatible", "This address does not identify a compatible installation.");
         _ = Origin(peer.ApiOrigin); _ = Origin(peer.WebOrigin);
-        if (product == "netratel" && !Guid.TryParseExact(peer.ProducerInstanceId, "D", out _))
-            throw new PairingException(422, "producer-unavailable", "The NetRatel installation has no persistent Flow producer identity.");
+        if (product == "netratel" && (!Guid.TryParseExact(peer.ProducerInstanceId, "D", out var producer) || producer == Guid.Empty || producer.ToString("D") != peer.ProducerInstanceId || peer.ReceiverInstanceId is not null))
+            throw new PairingException(422, "producer-unavailable", "The NetRatel installation has no valid persistent Flow producer identity.");
+        if (product == "rateldesk" && (peer.ProducerInstanceId is not null || !Guid.TryParseExact(peer.ReceiverInstanceId, "D", out var receiver) || receiver == Guid.Empty || receiver.ToString("D") != peer.ReceiverInstanceId))
+            throw new PairingException(422, "receiver-identity-unavailable", "The RatelDesk installation has no valid preserved incident receiver identity.");
     }
     public async Task<T> SendAsync<T>(string origin, HttpMethod method, string path, object? body,
         string? secret, string? localInstallationId, CancellationToken ct, string? nonce = null, string? callerSecretHash = null)

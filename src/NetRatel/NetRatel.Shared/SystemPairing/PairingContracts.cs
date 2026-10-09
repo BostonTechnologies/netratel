@@ -7,7 +7,7 @@ public static class PairingProtocol
     public const string AdminRoute = "/api/v1/admin/system-connections";
 }
 public sealed record PairingMetadata(string Contract, string Product, string InstallationId, string Name,
-    string WebOrigin, string ApiOrigin, string? ProducerInstanceId, string SigningPublicKey = "");
+    string WebOrigin, string ApiOrigin, string? ProducerInstanceId, string SigningPublicKey = "", string? ReceiverInstanceId = null);
 public sealed record PairingMetadataProof(PairingMetadata Metadata, string Nonce, string Signature);
 public sealed record PairingExchangeRequest(string Code, Guid OperationId, PairingMetadata Peer, string InboundSecret, string Signature = "");
 public sealed record PairingExchangeResponse(string PairId, PairingMetadata Peer, string InboundSecret, string Signature = "");

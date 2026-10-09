@@ -30,7 +30,7 @@ internal static class PairingBusinessAuthorityFixture
         var json = JsonSerializer.Serialize(mapping, PairingTransport.Json);
         db.Add(new SystemPairRecord { Id = pairId, PeerInstanceId = peer, AdministratorId = administrator,
             ProtectedOutboundSecret = "owning-layer-fixture-ciphertext",
-            PeerMetadataJson = JsonSerializer.Serialize(new PairingMetadata(PairingProtocol.Contract, "rateldesk", peer, "Scoped test peer", "https://peer.example.test", "https://peer.example.test", null), PairingTransport.Json), CreatedAtUtc = DateTimeOffset.UtcNow });
+            PeerMetadataJson = JsonSerializer.Serialize(new PairingMetadata(PairingProtocol.Contract, "rateldesk", peer, "Scoped test peer", "https://peer.example.test", "https://peer.example.test", null, ReceiverInstanceId: peer), PairingTransport.Json), CreatedAtUtc = DateTimeOffset.UtcNow });
         // Immutable peer identities are unique, including separate named mappings.
         var existing = await db.Set<SystemPairRecord>().AsNoTracking().SingleOrDefaultAsync(x => x.PeerInstanceId == peer, ct);
         if (existing is not null)

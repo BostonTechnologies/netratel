@@ -90,13 +90,19 @@ def source_identity(source):
 
 
 def create_state():
+    identities = {name: source_identity(source) for name, source in REPOS.items()}
+    if os.environ.get('PAIRING_REQUIRE_CLEAN_SOURCE') == '1':
+        for name, identity in identities.items():
+            expected = os.environ.get('PAIRING_EXPECTED_' + name.upper() + '_SHA')
+            if not expected or identity['dirty'] or identity['sha'] != expected:
+                raise RuntimeError('Reviewed source changed during build; no fixture may start')
     FIXTURE.mkdir(mode=0o700, parents=True, exist_ok=True)
     FIXTURE.chmod(0o700)
     suffix = uuid.uuid4().hex[:12]
     state = {'fixtureId': suffix, 'container': 'pairing-acceptance-' + suffix,
         'databasePort': free_port(), 'databasePassword': secrets.token_hex(32),
         'adminPassword': secrets.token_hex(32), 'products': {},
-        'sources': {name: source_identity(source) for name, source in REPOS.items()}}
+        'sources': identities}
     for product in REPOS:
         directory = FIXTURE / product
         directory.mkdir(mode=0o700)
@@ -327,18 +333,24 @@ def cleanup(state, purge=False):
         stop_product(state, product)
     for pid in state.get('helperPids', {}).values():
         stop_process(pid)
-    # The native Client helper records its isolated owned container here.
+    # Daemon/query failure is never evidence that an owned resource is absent.
+    health = subprocess.run(DOCKER + ['info', '--format', '{{.ServerVersion}}'],
+        env=docker_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+    if health.returncode:
+        raise RuntimeError('Docker daemon is unavailable; owned cleanup cannot be verified')
+    def existing_containers():
+        result = subprocess.run(DOCKER + ['ps', '--all', '--format', '{{.Names}}'],
+            env=docker_env(), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10)
+        if result.returncode:
+            raise RuntimeError('Docker resource query failed; owned absence cannot be verified')
+        return set(result.stdout.splitlines())
     for container in [state.get('clientContainer'), state['container']]:
         if not container:
             continue
-        exists = subprocess.run(DOCKER + ['inspect', container], env=docker_env(),
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
-        if exists.returncode == 0:
+        if container in existing_containers():
             command(DOCKER + ['rm', '--force', container], environment=docker_env(),
                 log_name='resource-cleanup.log')
-        absent = subprocess.run(DOCKER + ['inspect', container], env=docker_env(),
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
-        if absent.returncode == 0:
+        if container in existing_containers():
             raise RuntimeError('An owned disposable container survived cleanup')
     state['helperPids'] = {}
     state['resourcesStopped'] = True

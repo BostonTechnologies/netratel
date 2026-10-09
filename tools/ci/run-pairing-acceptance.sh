@@ -12,6 +12,8 @@ for PAIRING_SOURCE_VARIABLE in NETRATEL_PAIRING_SOURCE_ROOT RATELDESK_PAIRING_SO
     exit 2
   fi
 done
+export PAIRING_EXPECTED_NETRATEL_SHA="$(git -C "$NETRATEL_PAIRING_SOURCE_ROOT" rev-parse HEAD)"
+export PAIRING_EXPECTED_RATELDESK_SHA="$(git -C "$RATELDESK_PAIRING_SOURCE_ROOT" rev-parse HEAD)"
 case "$NETRATEL_PAIRING_RUNTIME_ROOT" in /*) ;; *) printf '%s\n' 'Runtime root must be absolute' >&2; exit 2 ;; esac
 if [[ -e "$NETRATEL_PAIRING_RUNTIME_ROOT/actual-pair" || -e "$NETRATEL_PAIRING_RUNTIME_ROOT/acceptance-receipt.json" || -e "$NETRATEL_PAIRING_RUNTIME_ROOT/pending-receipt.json" ]]; then
   printf '%s\n' 'A fresh fixture and receipt directory is required' >&2
