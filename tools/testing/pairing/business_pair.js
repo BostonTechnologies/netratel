@@ -86,8 +86,8 @@ async function runProxy() {
           requireProof(reply.status === 200, 'Identical original incident replay must return its original committed receipt with HTTP 200');
           result = { status: reply.status, receipt: JSON.parse(reply.body.toString('utf8')) };
         } else if (command.action === 'cached-receiver-status') {
-          requireProof(original !== null, 'An actual issued business credential must exist');
-          const headers = { ...original.headers }; delete headers['idempotency-key'];
+          requireProof(original !== null && lost, 'An actual committed original incident request must exist');
+          const headers = { ...original.headers };
           const authorization = headers.authorization;
           requireProof(typeof authorization === 'string' && authorization.startsWith('Bearer '), 'The original actual business authorization must remain in private proxy memory');
           const token = authorization.slice('Bearer '.length);
@@ -95,7 +95,7 @@ async function runProxy() {
           requireProof(parts.length === 3, 'Revocation proof requires the actual signed bearer expiry');
           const claims = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
           requireProof(Number.isSafeInteger(claims.exp) && claims.exp > 0, 'Actual signed bearer expiry is required to distinguish revocation from natural expiry');
-          const reply = await upstream('GET', '/api/v1/integrations/netratel/capabilities', headers, Buffer.alloc(0));
+          const reply = await upstream(original.method, original.route, headers, original.body);
           result = { status: reply.status, expiresAtUnixSeconds: claims.exp, credentialSha256: crypto.createHash('sha256').update(token).digest('hex') };
         } else if (command.action === 'callback-replay') {
           requireProof(callback !== null, 'An actual authenticated callback must have been captured');

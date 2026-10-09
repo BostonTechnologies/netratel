@@ -39,6 +39,7 @@ async function main() {
     expect(baseline.jobRunCount).toBe(1); expect(baseline.taskCount).toBe(1);
     const activeCredential = await control('cached-receiver-status');
     expect(activeCredential.status, 'The exact cached business credential must be accepted immediately before deletion').toBe(200);
+    expect(counts(), 'Exact committed replay must preserve all business counts before deletion').toEqual(baseline);
     expect(Number.isSafeInteger(activeCredential.expiresAtUnixSeconds)).toBe(true);
     expect(activeCredential.expiresAtUnixSeconds).toBeGreaterThan(Math.floor(Date.now() / 1000));
     expect(activeCredential.credentialSha256).toMatch(/^[0-9a-f]{64}$/);
