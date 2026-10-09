@@ -121,7 +121,7 @@ async function main() {
     const saved = rows[0];
     expect(saved.pairId).toBe(pairId); expect(saved.status.toLowerCase()).toBe('connected');
     assertMapping(saved.mapping);
-    const connectors = await jsonRequest(context, nr, `/api/v2/tenants/${tenant.id}/rateldesk-connectors`);
+    const connectors = await jsonRequest(context, nr, `/api/v2/tenants/${tenant.id}/connectors/rateldesk`);
     const connector = connectors.find(x => x.id === saved.mapping.id);
     expect(connector?.automaticDeliveryAvailable).toBe(true);
     expect(counts()).toEqual(baselineCounts);
