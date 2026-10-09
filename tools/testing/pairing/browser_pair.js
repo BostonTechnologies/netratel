@@ -179,6 +179,8 @@ async function selectChoice(page, testId, name) {
   const option = page.getByRole('option', { name, exact: true });
   await expect(option).toHaveCount(1);
   await option.click();
+  await expect(trigger).toHaveText(name);
+  await expect(option).toBeHidden();
 }
 async function visiblePair(page, consumer, generatorPage, generator, mappingName, capabilities) {
   const ids = identifiers[consumer.name];
@@ -230,17 +232,44 @@ async function visiblePair(page, consumer, generatorPage, generator, mappingName
   expect(nr?.id).toBeTruthy(); expect(rd?.id).toBeTruthy();
   await selectChoice(page, ids.nrTenant, nr.name);
   await selectChoice(page, ids.rdOrg, rd.name);
-  await final.getByLabel('Connection name', { exact: true }).fill(mappingName);
   await final.getByRole('checkbox', { name: /^Create incidents/ }).setChecked(capabilities.incidents);
+  let customer = null;
   if (capabilities.incidents) {
     const choices = directory.ratelDeskCustomers || directory.customers;
-    const customer = choices.find(choice => choice.parentId === rd.id);
+    customer = choices.find(choice => choice.parentId === rd.id);
     expect(customer, 'An authorized existing customer is required').toBeTruthy();
     await selectChoice(page, ids.rdCustomer, customer.name);
   }
   else await expect(page.getByTestId(ids.rdCustomer)).toHaveCount(0);
   await final.getByRole('checkbox', { name: /^Run automation/ }).setChecked(capabilities.automation);
-  await visualMatrix(page, consumer.name + '-final-save-form');
+  await expect(final.getByRole('button', { name: 'Save', exact: true })).toBeEnabled();
+  const nameInput = final.getByLabel('Connection name', { exact: true });
+  const nrChoice = page.getByTestId(ids.nrTenant).and(page.getByRole('combobox'));
+  const rdChoice = page.getByTestId(ids.rdOrg).and(page.getByRole('combobox'));
+  const incidentBox = final.getByRole('checkbox', { name: /^Create incidents/ });
+  const automationBox = final.getByRole('checkbox', { name: /^Run automation/ });
+  const assertInputs = async () => {
+    await expect(nrChoice).toHaveText(nr.name); await expect(rdChoice).toHaveText(rd.name);
+    if (customer) await expect(page.getByTestId(ids.rdCustomer).and(page.getByRole('combobox'))).toHaveText(customer.name);
+    else await expect(page.getByTestId(ids.rdCustomer)).toHaveCount(0);
+    await expect(nameInput).toHaveValue(mappingName);
+    await expect(incidentBox).toBeChecked({ checked: capabilities.incidents });
+    await expect(automationBox).toBeChecked({ checked: capabilities.automation });
+  };
+  try {
+    await nameInput.fill(mappingName);
+    await nameInput.press('Tab');
+    await assertInputs();
+    await visualMatrix(page, consumer.name + '-final-save-form');
+    await assertInputs();
+  } catch (error) {
+    let comparisons = { observationUnavailable: true };
+    try { comparisons = { netRatelTenantMatches: (await nrChoice.innerText()).trim() === nr.name, ratelDeskOrganizationMatches: (await rdChoice.innerText()).trim() === rd.name,
+      customerMatches: customer ? (await page.getByTestId(ids.rdCustomer).and(page.getByRole('combobox')).innerText()).trim() === customer.name : await page.getByTestId(ids.rdCustomer).count() === 0,
+      nameMatches: await nameInput.inputValue() === mappingName, createIncidentsChecked: await incidentBox.isChecked(), runAutomationChecked: await automationBox.isChecked() }; } catch {}
+    record(consumer.name + '-final-input-values', 'failed', comparisons);
+    throw error;
+  }
   const connected = page.getByTestId(ids.success).filter({ hasText: 'Connected' });
   const saveError = page.getByTestId(consumer.name === 'netratel' ? 'pairing-save-error' : ids.error);
   const saveControl = page.getByTestId(consumer.name === 'netratel' ? 'pairing-save' : 'save-system-connection');
@@ -266,7 +295,15 @@ async function visiblePair(page, consumer, generatorPage, generator, mappingName
   }
   const rows = await jsonRequest(page.context(), consumer, '/api/v1/admin/system-connections');
   const saved = rows.find(row => row.mapping?.name === mappingName);
+  const persisted = { rowPresent: !!saved, nameMatches: saved?.mapping?.name === mappingName, connected: saved?.status?.toLowerCase() === 'connected',
+    netRatelTenantMatches: String(saved?.mapping?.netRatelTenantId) === String(nr.id), ratelDeskOrganizationMatches: saved?.mapping?.ratelDeskOrganizationId === rd.id,
+    customerMatches: (saved?.mapping?.ratelDeskCustomerId ?? null) === (customer?.id ?? null), createIncidentsMatches: saved?.mapping?.createIncidents === capabilities.incidents, runAutomationMatches: saved?.mapping?.runAutomation === capabilities.automation };
+  if (!Object.values(persisted).every(Boolean)) record(consumer.name + '-persisted-mapping-values', 'failed', persisted);
   expect(saved?.status?.toLowerCase()).toBe('connected');
+  expect(saved.mapping.name).toBe(mappingName);
+  expect(String(saved.mapping.netRatelTenantId)).toBe(String(nr.id));
+  expect(saved.mapping.ratelDeskOrganizationId).toBe(rd.id);
+  expect(saved.mapping.ratelDeskCustomerId ?? null).toBe(customer?.id ?? null);
   expect(saved.mapping.createIncidents).toBe(capabilities.incidents);
   expect(saved.mapping.runAutomation).toBe(capabilities.automation);
   await visualMatrix(page, consumer.name + '-connected');
