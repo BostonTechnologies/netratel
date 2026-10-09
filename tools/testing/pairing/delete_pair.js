@@ -14,6 +14,7 @@ async function deleteLocal(page, context, entry, expected) {
   expect(rows.length, 'Each owner must delete an actual persisted local connection from its rendered page').toBeGreaterThan(0);
   for (const row of rows) {
     const card = page.getByTestId(identifiers[entry.name].row).filter({ hasText: row.mapping?.name || row.peer.product });
+    await expect(card.getByTestId(identifiers[entry.name].delete)).toBeEnabled();
     await card.getByTestId(identifiers[entry.name].delete).click();
     await expect(card).toHaveCount(0);
     const route = '/api/v1/admin/system-connections/' + encodeURIComponent(row.pairId)
@@ -24,6 +25,19 @@ async function deleteLocal(page, context, entry, expected) {
   }
   expect(await jsonRequest(context, entry, '/api/v1/admin/system-connections')).toEqual([]);
   expect(counts()).toEqual(expected);
+  await expect(page.getByTestId('generate-pairing-code')).toBeEnabled();
+  await expect(page.getByTestId(identifiers[entry.name].create)).toBeEnabled();
+  if (entry.name === 'rateldesk') {
+    const refresh = page.getByRole('button', { name: 'Refresh connections', exact: true });
+    await expect(refresh).toBeEnabled();
+    await refresh.click();
+    await expect(page.getByTestId(identifiers[entry.name].row)).toHaveCount(0);
+    await expect(page.getByTestId('generate-pairing-code')).toBeEnabled();
+    await expect(page.getByTestId(identifiers[entry.name].create)).toBeEnabled();
+    await expect(refresh).toBeEnabled();
+    expect(await jsonRequest(context, entry, '/api/v1/admin/system-connections')).toEqual([]);
+    expect(counts()).toEqual(expected);
+  }
   await visualMatrix(page, entry.name + '-deleted-peer-offline');
 }
 async function main() {

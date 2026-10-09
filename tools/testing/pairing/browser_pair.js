@@ -89,7 +89,6 @@ async function account(page, entry) {
   const tab = page.getByRole('tab', { name: 'System connections', exact: true });
   if (await tab.count()) await tab.click();
   await expect(page.getByTestId(identifiers[entry.name].panel)).toBeVisible();
-  await expect(page.getByTestId('generate-pairing-code')).toBeEnabled();
   await closeNavigation(page);
 }
 async function navigationDrawer(page) {
@@ -185,6 +184,7 @@ async function selectChoice(page, testId, name) {
 async function visiblePair(page, consumer, generatorPage, generator, mappingName, capabilities) {
   const ids = identifiers[consumer.name];
   await account(generatorPage, generator);
+  await expect(generatorPage.getByTestId('generate-pairing-code')).toBeEnabled();
   await generatorPage.getByTestId('generate-pairing-code').click();
   const codePanel = generatorPage.getByTestId('generated-pairing-code');
   await expect(codePanel).toBeVisible();
@@ -196,6 +196,7 @@ async function visiblePair(page, consumer, generatorPage, generator, mappingName
   const code = await readCode();
   expect(code, 'Generator must show a readable short code').not.toBeNull();
   await account(page, consumer);
+  await expect(page.getByTestId(ids.create)).toBeEnabled();
   await page.getByTestId(ids.create).click();
   const form = page.getByTestId(ids.pairForm);
   await expect(form.locator('input:not([type="hidden"])')).toHaveCount(2);
