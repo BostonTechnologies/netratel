@@ -208,7 +208,7 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
             with self.subTest(workflow=relative):
                 self.assertEqual(1, workflow.count("bash tools/ci/run-fast-regressions.sh"))
                 for manual_command in (
-                    "run-physical-disk-incident-proof.sh", "run-service-link-native-proof.sh",
+                    "run-physical-disk-incident-proof.sh", "run-pairing-acceptance.sh",
                     "run-gateway-native-proof.sh", "smoke-local-first-compose.sh",
                     "smoke-oidc-compose.sh", "smoke-postgresql-local-upgrade.sh",
                     "smoke-postgresql-oidc-upgrade.sh", "smoke-release-images.sh",
@@ -282,15 +282,9 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
         self.assertIn('"startup-failure.png"', browser_test)
 
         api_root = ROOT / "src/NetRatel/NetRatel.API.IntegrationTests"
-        for name in (
-            "ServiceLinkLifecycleTests", "ServiceLinkOrchestrationRoundTripTests",
-            "ServiceLinkRotationHttpPostgresTests", "ServiceLinkTerminalConvergencePostgresTests",
-            "ServiceLinkDatabaseConflictPostgresTests", "ServiceLinkPayloadHttpPostgresTests",
-            "ServiceLinkWorkerConsentPostgresTests", "ServiceLinkOutboundJournalPostgresTests",
-        ):
-            with self.subTest(full_pair_class=name):
-                declaration = (api_root / f"{name}.cs").read_text(encoding="utf-8")
-                self.assertIn(f'[Trait("category", "manual-integration")]\npublic sealed class {name}', declaration)
+        declaration = (api_root / "PairingLifecycleTests.cs").read_text(encoding="utf-8")
+        self.assertIn('[Trait("category", "manual-integration")]', declaration)
+        self.assertIn('public sealed class PairingLifecycleTests', declaration)
         self.assertIn("selected zero test cases", (ROOT / "tools/ci/verify-mtp-trx.py").read_text())
 
     def test_generic_test_modules_are_serialized_and_browser_failure_evidence_is_collected(self):

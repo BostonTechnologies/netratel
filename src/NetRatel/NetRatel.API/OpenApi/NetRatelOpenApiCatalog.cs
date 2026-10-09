@@ -14,7 +14,7 @@ public static class NetRatelOpenApiCatalog
     private static readonly HashSet<string> InteractiveAccountSchemes = ["Bearer", "LocalSession"];
     private static readonly HashSet<string> M2MSchemes = ["M2M"];
     private static readonly HashSet<string> ManagedServiceSchemes = [ServiceIdentityAuthenticationHandler.SchemeName];
-    private static readonly HashSet<string> OrchestrationSchemes = ["M2M", ServiceIdentityAuthenticationHandler.SchemeName];
+    private static readonly HashSet<string> OrchestrationSchemes = [ServiceIdentityAuthenticationHandler.SchemeName];
     private static readonly HashSet<string> AgentSchemes = ["Agent"];
     private static readonly HashSet<string> MachineTokenSchemes = ["MachineToken"];
     private static readonly HashSet<string> LocalSessionSchemes = ["LocalSession"];
@@ -24,8 +24,6 @@ public static class NetRatelOpenApiCatalog
         new Dictionary<string, HashSet<string>>(StringComparer.Ordinal)
         {
             ["M2MOnly"] = M2MSchemes,
-            [ServiceIdentityServiceCollectionExtensions.VerifyPolicy] = ManagedServiceSchemes,
-            [ServiceIdentityServiceCollectionExtensions.ControlPolicy] = ManagedServiceSchemes,
             [OrchestrationManagedAuthorization.ReadPolicy] = OrchestrationSchemes,
             [OrchestrationManagedAuthorization.InvokePolicy] = OrchestrationSchemes,
             ["AgentAccess"] = AgentSchemes,

@@ -41,7 +41,6 @@ using NetRatel.Web.Services.Tenants;
 using NetRatel.Web.Services.Telemetry;
 using NetRatel.Web.Services.Services;
 using NetRatel.Web.Components;
-using NetRatel.Web.Services.RatelDesk;
 
 namespace NetRatel.Web.PlaywrightTests;
 
@@ -1568,7 +1567,6 @@ internal sealed class ClientsManagementFixtureHost : IAsyncDisposable
     public FixtureClientServicesService ServicesData => _application.Services.GetRequiredService<FixtureClientServicesService>();
     public FixtureFlowApiService FlowsData => _application.Services.GetRequiredService<FixtureFlowApiService>();
     public FixtureMonitoringApi MonitoringData => _application.Services.GetRequiredService<FixtureMonitoringApi>();
-    public FixtureRatelDeskConnectorApiService ConnectorsData => _application.Services.GetRequiredService<FixtureRatelDeskConnectorApiService>();
     public IReadOnlyList<string> StartupServerDiagnostics => _serverDiagnostics.Snapshot();
 
     public static async Task<ClientsManagementFixtureHost> StartAsync(Action<IServiceCollection>? configureServices = null)
@@ -1591,8 +1589,6 @@ internal sealed class ClientsManagementFixtureHost : IAsyncDisposable
         builder.Services.AddScoped<GatewayTelemetryApiService>();
         builder.Services.AddScoped<GatewayClientActionApiService>();
         builder.Services.AddSingleton<FixtureClientServicesService>();
-        builder.Services.AddSingleton<FixtureRatelDeskConnectorApiService>();
-        builder.Services.AddSingleton<IRatelDeskConnectorApiService>(services => services.GetRequiredService<FixtureRatelDeskConnectorApiService>());
         builder.Services.AddSingleton<IClientServicesApiService>(services => services.GetRequiredService<FixtureClientServicesService>());
         builder.Services.AddSingleton<IClientServicesLiveStreamService>(services => services.GetRequiredService<FixtureClientServicesService>());
         builder.Services.AddSingleton<FixtureFlowApiService>();

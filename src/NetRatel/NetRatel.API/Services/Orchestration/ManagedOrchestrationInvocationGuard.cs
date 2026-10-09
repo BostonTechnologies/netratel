@@ -4,11 +4,12 @@ using Microsoft.EntityFrameworkCore;
 using NetRatel.Application.Jobs;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.ServiceIdentity;
+using NetRatel.Infrastructure.SystemPairing;
 
 namespace NetRatel.API.Services.Orchestration;
 
 /// <summary>Rechecks the server-owned ingress grant at the real gateway dispatch boundary.</summary>
-public sealed class ManagedOrchestrationInvocationGuard(OrchestratorDbContext db, IServicePrincipalRegistry registry, TimeProvider clock)
+public sealed class ManagedOrchestrationInvocationGuard(OrchestratorDbContext db, IServicePrincipalRegistry registry, TimeProvider clock, PairingAuthority authority)
 {
     public async Task AuthorizeStartAsync(int requestId, JobDefinitionInfo job, ClaimsPrincipal principal, CancellationToken ct, ulong? preparedRunId = null)
     {
@@ -49,7 +50,7 @@ public sealed class ManagedOrchestrationInvocationGuard(OrchestratorDbContext db
             row.PeerTenantId != binding.PeerTenantId || job.TenantId != binding.TenantId || job.AgentId != binding.AgentId ||
             job.Id.ToString(CultureInfo.InvariantCulture) != binding.JobDefinitionId)
             throw new ManagedOrchestrationGrantUnavailableException("The managed target or approved grant changed before dispatch.");
-        var constraints = OrchestrationManagedAuthorization.Constraints(row);
+        var constraints = await authority.ResourcesAsync(row.TenantId, ct);
         if (!constraints.ResourceIds.Contains(binding.AgentId.ToString("D"), StringComparer.Ordinal) ||
             !constraints.RequestDefinitionIds.Contains(binding.JobDefinitionId, StringComparer.Ordinal))
             throw new ManagedOrchestrationGrantUnavailableException("The managed target is outside its current approved grant.");
@@ -59,8 +60,7 @@ public sealed class ManagedOrchestrationInvocationGuard(OrchestratorDbContext db
         var now = clock.GetUtcNow();
         var credential = await db.Set<ServicePrincipalSecret>().AsNoTracking().SingleOrDefaultAsync(x =>
             x.ServicePrincipalId == row.Id && x.CredentialRevision == row.CurrentCredentialRevision, ct);
-        if (credential is null || credential.Status is not ("active" or "retiring") || credential.ExpiresAtUtc <= now ||
-            credential.RetireAtUtc is { } retireAt && retireAt <= now ||
+        if (credential is null || credential.Status != "active" || credential.ExpiresAtUtc <= now ||
             !await registry.CanIssueScopesAsync(new AuthenticatedServiceClient(row, credential), [OrchestrationManagedAuthorization.InvokeScope], ct) ||
             !await db.Agents.AsNoTracking().AnyAsync(x => x.Id == binding.AgentId && x.TenantId == binding.TenantId && x.IsEnabled &&
                 x.Status == AgentStatus.Active && x.RevokedAtUtc == null && x.DeletedAtUtc == null && x.SupersededAtUtc == null && x.SupersededByAgentId == null, ct))

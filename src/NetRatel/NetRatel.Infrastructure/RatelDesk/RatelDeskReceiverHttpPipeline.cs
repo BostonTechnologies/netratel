@@ -10,8 +10,7 @@ public sealed record RatelDeskReceiverReply(int Status, byte[] Body, string? Loc
 public sealed class RatelDeskReceiverHttpPipeline(IHttpClientFactory clients,
     RatelDeskReceiverNetworkPolicy network, TimeProvider time, RatelDeskTransportLimiter limiter)
 {
-    public const string ManualClient = "RatelDesk.Receiver.ManualApiBearer";
-    public const string ManagedClient = "RatelDesk.Receiver.ManagedServiceLink";
+    public const string ManagedClient = "RatelDesk.Receiver.PairedSystem";
     public static readonly TimeSpan OperationTimeout = TimeSpan.FromSeconds(10);
 
     public async Task<RatelDeskReceiverReply> ReadAsync(RatelDeskAuthenticationMode mode,
@@ -63,8 +62,7 @@ public sealed class RatelDeskReceiverHttpPipeline(IHttpClientFactory clients,
         network.ValidateEndpoint(mode, approvedApiBase, endpoint);
         using var client = clients.CreateClient(mode switch
         {
-            RatelDeskAuthenticationMode.ManualApiBearer => ManualClient,
-            RatelDeskAuthenticationMode.ManagedServiceLink => ManagedClient,
+            RatelDeskAuthenticationMode.PairedSystem => ManagedClient,
             _ => throw new UnauthorizedAccessException("unsupported-connector-authentication-mode")
         });
         using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token);

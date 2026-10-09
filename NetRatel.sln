@@ -51,7 +51,7 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NetRatel.Migrations", "src\
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "NetRatel.ClientArtifactCrashProbe", "tools\NetRatel.ClientArtifactCrashProbe\NetRatel.ClientArtifactCrashProbe.csproj", "{842CA9C5-178C-498C-A576-9B0C542A877B}"
 EndProject
-Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "NetRatel.ServiceLink.NativeRunner", "src\NetRatel\NetRatel.ServiceLink.NativeRunner\NetRatel.ServiceLink.NativeRunner.csproj", "{B3BA45A6-6DCC-5B20-BCC9-07472E3BBAEE}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "NetRatel.Pairing.NativeRunner", "src\NetRatel\NetRatel.Pairing.NativeRunner\NetRatel.Pairing.NativeRunner.csproj", "{B3BA45A6-6DCC-5B20-BCC9-07472E3BBAEE}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

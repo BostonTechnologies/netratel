@@ -1,6 +1,6 @@
 using NetRatel.Application.Flows;
 using NetRatel.Application.RatelDesk;
-using NetRatel.Infrastructure.ServiceLinks;
+using NetRatel.Shared.SystemPairing;
 using NetRatel.Shared.Contracts.RatelDesk;
 
 namespace NetRatel.Infrastructure.RatelDesk;
@@ -53,7 +53,7 @@ public sealed class RatelDeskFlowReceiverAdapter(IRatelDeskConnectorStore connec
             return new(FlowIncidentPreparationStatus.Unavailable, Code: "receiver-preparation-unavailable",
                 RetryAfter: error.RetryAfter ?? TimeSpan.FromSeconds(5));
         }
-        catch (ServiceLinkProtocolException error)
+        catch (PairingException error)
         {
             return error.StatusCode is 401 or 403 or 409 or 422
                 ? new(FlowIncidentPreparationStatus.Denied, Code: "receiver-current-profile-denied")

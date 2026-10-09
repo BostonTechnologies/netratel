@@ -1,8 +1,8 @@
 """Candidate full production Client process, private installation and actual TLS.
 
 Requires an already-built exact-current CI image. This module never builds,
-pulls, publishes, updates, or removes an image and never starts the reduced
-ServiceLink.NativeRunner in place of the full production telemetry producer.
+pulls, publishes, updates, or removes an image. It starts the full production
+telemetry producer with its normal enrollment and gateway admission.
 """
 from __future__ import annotations
 

@@ -214,7 +214,7 @@
             </MudTd>
             <MudTd>
                 <MudStack Row="true" Spacing="1" @onclick:stopPropagation="true">
-                    @if (context.EventType == NetRatelNotificationAudience.ServiceLinkFailure)
+                    @if (context.EventType == NetRatelNotificationAudience.PairingFailure)
                     {
                         <MudButton Size="Size.Small" Variant="Variant.Outlined" Href="/account/integration-credentials">Open connection setup</MudButton>
                     }

@@ -1,13 +1,11 @@
 using System.Security.Claims;
-using System.IdentityModel.Tokens.Jwt;
-using Microsoft.IdentityModel.Tokens;
 using Microsoft.AspNetCore.Authorization;
 using NetRatel.Infrastructure.ServiceIdentity;
-using NetRatel.Shared.ServiceLinks;
+using NetRatel.Shared.SystemPairing;
 
 namespace NetRatel.API.Services.Orchestration;
 
-/// <summary>These alternatives apply only to the existing bounded orchestration routes.</summary>
+/// <summary>The bounded orchestration routes require a current saved connection and scoped business credential.</summary>
 public static class OrchestrationManagedAuthorization
 {
     public const string ReadScope = "netratel.orchestration.read";
@@ -18,27 +16,8 @@ public static class OrchestrationManagedAuthorization
 
     public static IServiceCollection AddOrchestrationManagedServices(this IServiceCollection services)
     {
-        services.AddAuthentication().AddPolicyScheme(AuthenticationScheme, AuthenticationScheme, options =>
-        {
-            options.ForwardDefaultSelector = http =>
-            {
-                var authorization = http.Request.Headers.Authorization.ToString();
-                if (authorization.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
-                {
-                    var token = authorization[7..].Trim();
-                    if (token.Length <= 32768)
-                    {
-                        try
-                        {
-                            var jwt = new JwtSecurityTokenHandler().ReadJwtToken(token);
-                            if (jwt.Claims.Any(claim => claim.Type == "token_use" && claim.Value == "netratel_service")) return "ManagedService";
-                        }
-                        catch (Exception error) when (error is ArgumentException or SecurityTokenException) { }
-                    }
-                }
-                return "M2M";
-            };
-        });
+        services.AddAuthentication().AddPolicyScheme(AuthenticationScheme, AuthenticationScheme,
+            options => options.ForwardDefault = "ManagedService");
         services.AddAuthorization(options =>
         {
             options.AddPolicy(ReadPolicy, policy => policy.AddAuthenticationSchemes(AuthenticationScheme)
@@ -64,25 +43,19 @@ public static class OrchestrationManagedAuthorization
         return await registry.ResolvePrincipalAsync(http.User, scope, ct).ConfigureAwait(false);
     }
 
-    public static ServiceLinkResourceConstraints Constraints(ServicePrincipalRegistration principal) =>
+    public static PairingResourceConstraints Constraints(ServicePrincipalRegistration principal) =>
         ServicePrincipalRegistry.ReadConstraints(principal);
 }
 
 public sealed record OrchestrationServiceRequirement(string Scope) : IAuthorizationRequirement;
 
 public sealed class OrchestrationServiceAuthorizationHandler(
-    IServicePrincipalRegistry registry,
-    IServiceProvider services) : AuthorizationHandler<OrchestrationServiceRequirement>
+    IServicePrincipalRegistry registry) : AuthorizationHandler<OrchestrationServiceRequirement>
 {
     protected override async Task HandleRequirementAsync(AuthorizationHandlerContext context, OrchestrationServiceRequirement requirement)
     {
-        if (OrchestrationManagedAuthorization.IsManaged(context.User))
-        {
-            if (await registry.ResolvePrincipalAsync(context.User, requirement.Scope).ConfigureAwait(false) is not null)
-                context.Succeed(requirement);
-            return;
-        }
-        if ((await services.GetRequiredService<IAuthorizationService>().AuthorizeAsync(context.User, context.Resource, "M2MOnly").ConfigureAwait(false)).Succeeded)
+        if (OrchestrationManagedAuthorization.IsManaged(context.User) &&
+            await registry.ResolvePrincipalAsync(context.User, requirement.Scope).ConfigureAwait(false) is not null)
             context.Succeed(requirement);
     }
 }

@@ -18,10 +18,10 @@ public sealed class NetRatelNotificationService(
 
     private IQueryable<OutboxMessage> VisibleMessages(string userId)
     {
-        var personalOnly = audience?.ServiceLinkFailuresOnly == true;
+        var personalOnly = audience?.PairingFailuresOnly == true;
         return LegacyMessages
-            .Where(message => message.Type != NetRatelNotificationAudience.ServiceLinkFailure || message.EntityId == userId)
-            .Where(message => !personalOnly || message.Type == NetRatelNotificationAudience.ServiceLinkFailure);
+            .Where(message => message.Type != NetRatelNotificationAudience.PairingFailure || message.EntityId == userId)
+            .Where(message => !personalOnly || message.Type == NetRatelNotificationAudience.PairingFailure);
     }
 
     public async Task<PagedResult<NetRatelNotificationDto>> GetPageAsync(
@@ -189,7 +189,7 @@ public sealed class NetRatelNotificationService(
 
     public async Task RetryAsync(Guid id, CancellationToken ct)
     {
-        var message = await LegacyMessages.FirstOrDefaultAsync(x => x.Id == id && x.Type != NetRatelNotificationAudience.ServiceLinkFailure, ct)
+        var message = await LegacyMessages.FirstOrDefaultAsync(x => x.Id == id && x.Type != NetRatelNotificationAudience.PairingFailure, ct)
             ?? throw new InvalidOperationException($"Outbox message {id} not found.");
 
         message.Status = OutboxStatuses.Pending;
@@ -202,7 +202,7 @@ public sealed class NetRatelNotificationService(
 
     public async Task DisableAsync(Guid id, CancellationToken ct)
     {
-        var message = await LegacyMessages.FirstOrDefaultAsync(x => x.Id == id && x.Type != NetRatelNotificationAudience.ServiceLinkFailure, ct)
+        var message = await LegacyMessages.FirstOrDefaultAsync(x => x.Id == id && x.Type != NetRatelNotificationAudience.PairingFailure, ct)
             ?? throw new InvalidOperationException($"Outbox message {id} not found.");
 
         message.Status = OutboxStatuses.Disabled;

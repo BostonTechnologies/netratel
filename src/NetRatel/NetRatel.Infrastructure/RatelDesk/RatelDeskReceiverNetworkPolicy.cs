@@ -1,8 +1,7 @@
 using Microsoft.Extensions.Options;
 using NetRatel.Application.RatelDesk;
 using NetRatel.Infrastructure.ServiceIdentity;
-using NetRatel.Infrastructure.ServiceLinks;
-using NetRatel.Infrastructure.ServiceLinks.Network;
+using NetRatel.Infrastructure.SystemPairing.Network;
 
 namespace NetRatel.Infrastructure.RatelDesk;
 
@@ -14,8 +13,6 @@ public sealed class RatelDeskReceiverOptions
     // Additive exact API/path-base restriction. Neither list is populated from discovery.
     public string[] AllowedApiBases { get; set; } = [];
     public bool RestrictToConfiguredPeers { get; set; }
-    // Manual bearer mode has its own explicit private-network permission.
-    public bool AllowPrivateHttp { get; set; }
     // Empty optional deployment/env values do not create an enabled restriction.
     // Explicit RestrictToConfiguredPeers remains authoritative even when these are empty.
     public string[] EffectiveOrigins() => (AllowedOrigins ?? []).Where(x => !string.IsNullOrWhiteSpace(x)).ToArray();
@@ -38,10 +35,10 @@ public sealed class RatelDeskReceiverOptionsValidator : IValidateOptions<RatelDe
                 // Preserve historical exact root HTTPS AllowedOrigins semantics.
                 if (uri.Scheme != "https" || uri.AbsolutePath != "/")
                     throw new ArgumentException("RatelDesk:AllowedOrigins requires root HTTPS origins.");
-                ServiceLinkEndpointPolicy.Validate(uri, "RatelDesk:AllowedOrigins", allowPrivateHttp: true);
+                PairingEndpointPolicy.Validate(uri, "RatelDesk:AllowedOrigins", allowPrivateHttp: true);
             }
             foreach (var api in value.EffectiveApiBases())
-                ServiceLinkEndpointPolicy.Validate(new Uri(RatelDeskApiBase.Canonical(api)),
+                PairingEndpointPolicy.Validate(new Uri(RatelDeskApiBase.Canonical(api)),
                     "RatelDesk:AllowedApiBases", allowPrivateHttp: true); // Structural restriction; selected mode admits each operation.
             if (value.EffectiveOrigins().Select(RatelDeskApiBase.Canonical).Distinct(StringComparer.Ordinal).Count() != value.EffectiveOrigins().Length ||
                 value.EffectiveApiBases().Select(RatelDeskApiBase.Canonical).Distinct(StringComparer.Ordinal).Count() != value.EffectiveApiBases().Length)
@@ -68,16 +65,9 @@ public static class RatelDeskApiBase
 }
 
 /// <summary>Policy applies to a durable owner-approved connector or exact approved link, never a browser/discovery URL.</summary>
-public sealed class RatelDeskReceiverNetworkPolicy(IOptionsMonitor<RatelDeskReceiverOptions> manual,
-    IOptionsMonitor<ServiceLinkOptions> links, IOptionsMonitor<ServiceIdentityOptions> identities)
+public sealed class RatelDeskReceiverNetworkPolicy(IOptionsMonitor<RatelDeskReceiverOptions> manual)
 {
-    public bool CurrentAllowPrivateHttp(RatelDeskAuthenticationMode mode) => mode switch
-    {
-        RatelDeskAuthenticationMode.ManualApiBearer => manual.CurrentValue.AllowPrivateHttp,
-        // Matches ServicePublicSettingsResolver's existing effective opt-in rule.
-        RatelDeskAuthenticationMode.ManagedServiceLink => links.CurrentValue.AllowPrivateHttp || identities.CurrentValue.AllowPrivateHttp,
-        _ => throw new UnauthorizedAccessException("unsupported-connector-authentication-mode")
-    };
+    public bool CurrentAllowPrivateHttp(RatelDeskAuthenticationMode mode) => mode == RatelDeskAuthenticationMode.PairedSystem ? true : throw new UnauthorizedAccessException("paired-connection-required");
 
     public string ValidateApprovedApiBase(RatelDeskAuthenticationMode mode, string apiBase)
     {
@@ -92,7 +82,7 @@ public sealed class RatelDeskReceiverNetworkPolicy(IOptionsMonitor<RatelDeskRece
             bases.Length != 0 && !bases.Any(x => RatelDeskApiBase.Canonical(x) == canonical) ||
             current.RestrictToConfiguredPeers && origins.Length == 0 && bases.Length == 0)
             throw new UnauthorizedAccessException("receiver-deployment-origin-denied");
-        ServiceLinkEndpointPolicy.Validate(uri, "Approved RatelDesk API", CurrentAllowPrivateHttp(mode));
+        PairingEndpointPolicy.Validate(uri, "Approved RatelDesk API", CurrentAllowPrivateHttp(mode));
         return canonical;
     }
 
@@ -106,7 +96,7 @@ public sealed class RatelDeskReceiverNetworkPolicy(IOptionsMonitor<RatelDeskRece
               endpoint == ReceiverWireValidation.Endpoint(api, ReceiverWireValidation.TargetsPath) ||
               IsReceiptEndpoint(api, endpoint)))
             throw new InvalidDataException("receiver-endpoint-outside-approved-api-base");
-        ServiceLinkEndpointPolicy.Validate(new Uri(endpoint, UriKind.Absolute), "RatelDesk receiver endpoint", CurrentAllowPrivateHttp(mode));
+        PairingEndpointPolicy.Validate(new Uri(endpoint, UriKind.Absolute), "RatelDesk receiver endpoint", CurrentAllowPrivateHttp(mode));
     }
 
     public static bool IsReceiptEndpoint(string canonicalApiBase, string endpoint)

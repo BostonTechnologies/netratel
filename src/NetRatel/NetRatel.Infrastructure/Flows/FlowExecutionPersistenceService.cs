@@ -3,7 +3,8 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Npgsql;
 using Microsoft.Extensions.DependencyInjection;
-using NetRatel.Infrastructure.ServiceLinks;
+using NetRatel.Shared.SystemPairing;
+using NetRatel.Infrastructure.SystemPairing;
 using NetRatel.Application.Flows;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Shared.Contracts.Flows;
@@ -29,7 +30,7 @@ public sealed partial class FlowPersistenceService
         // Apply an explicit deployment producer before creating the Flow singleton. The optional
         // store is solely the existing standalone Flow-test registration seam; the production
         // receiver/continuity registration requires it and EnsureAsync always resolves it.
-        if (services.GetService<ServiceLinkIdentityStore>() is { } installation)
+        if (services.GetService<InstallationIdentityStore>() is { } installation)
             _ = await installation.GetAsync(ct).ConfigureAwait(false);
         await using var transaction = await BeginAsync(db, ct).ConfigureAwait(false); var now = Now;
         FlowRunRecord? run;

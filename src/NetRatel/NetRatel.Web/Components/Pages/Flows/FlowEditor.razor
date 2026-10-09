@@ -381,7 +381,7 @@
     private Task ConnectRatelDeskAsync()
     {
         var returnUrl = $"/flows?tenantId={Definition.TenantId}&draftId={Definition.Id:D}&nodeId={_selected:D}";
-        return RequestLeaveAsync(() => { _allowNavigation = true; Navigation.NavigateTo($"/account/integration-credentials?purpose=helpdesk-m2m&tenant_id={Definition.TenantId}&returnUrl={Uri.EscapeDataString(returnUrl)}"); return Task.CompletedTask; });
+        return RequestLeaveAsync(() => { _allowNavigation = true; Navigation.NavigateTo($"/account/integration-credentials?tab=connections&tenant_id={Definition.TenantId}&returnUrl={Uri.EscapeDataString(returnUrl)}"); return Task.CompletedTask; });
     }
     private void UpdateNode(FlowNodeDto node) { if (ReadOnly || !CanEdit || _busy || _adapter is null) return; _adapter.Update(node); _ = CheckDirty(); }
     private Task MoveNodeAsync(FlowNodeDto definition, bool x, ChangeEventArgs args) => CommandAsync("move", async (tenant, id, token) =>

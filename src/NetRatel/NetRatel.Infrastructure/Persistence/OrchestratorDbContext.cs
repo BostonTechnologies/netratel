@@ -1,14 +1,13 @@
 using Microsoft.EntityFrameworkCore;
 using NetRatel.Application.Operations;
 using NetRatel.Infrastructure.ServiceIdentity;
-using NetRatel.Infrastructure.ServiceLinks;
+using NetRatel.Infrastructure.SystemPairing;
 
 namespace NetRatel.Infrastructure.Persistence;
 
 public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> options) : DbContext(options)
 {
     public DbSet<BootstrapInitializationRecord> BootstrapInitializations => Set<BootstrapInitializationRecord>();
-    public DbSet<M2MConnectivitySettings> M2MConnectivitySettings => Set<M2MConnectivitySettings>();
     public DbSet<EnrollmentCode> EnrollmentCodes => Set<EnrollmentCode>();
     public DbSet<Agent> Agents => Set<Agent>();
     public DbSet<DevelopmentOperatorTargetGrant> DevelopmentOperatorTargetGrants => Set<DevelopmentOperatorTargetGrant>();
@@ -137,7 +136,7 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
             entity.Property(record => record.ReadinessJson).HasColumnType("jsonb");
         });
         modelBuilder.ConfigureServiceIdentityModel();
-        modelBuilder.ConfigureServiceLinkModel();
+        modelBuilder.ConfigurePairingModel();
         modelBuilder.ConfigureManagedOrchestrationModel();
         modelBuilder.ConfigureJobRunControlModel();
         modelBuilder.ConfigureClientConnectionOwnershipModel();
@@ -168,7 +167,6 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
             entity.HasIndex(record => record.BootstrapInstanceId).IsUnique();
         });
 
-        modelBuilder.Entity<M2MConnectivitySettings>().ToTable("M2MConnectivitySettings");
 
         modelBuilder.Entity<EnrollmentCode>(entity =>
         {

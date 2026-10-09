@@ -1,6 +1,6 @@
 using System.Text.Json;
 using NetRatel.Application.RatelDesk;
-using NetRatel.Infrastructure.ServiceLinks;
+using NetRatel.Shared.SystemPairing;
 using NetRatel.Shared.Contracts.RatelDesk;
 
 namespace NetRatel.Infrastructure.RatelDesk;
@@ -70,7 +70,7 @@ public sealed class RatelDeskConnectorReceiver(IRatelDeskConnectorStore connecto
         }
         catch (UnauthorizedAccessException) { return await FailureAsync(new(RatelDeskConnectionTestStatus.AuthenticationRejected, "receiver-current-authority-denied")); }
         catch (Exception error) when (error is InvalidDataException or IOException or JsonException or ArgumentException or InvalidOperationException or
-            HttpRequestException or NetRatel.Infrastructure.ServiceLinks.ServiceLinkProtocolException)
+            HttpRequestException or NetRatel.Shared.SystemPairing.PairingException)
         { return await FailureAsync(new(RatelDeskConnectionTestStatus.Unavailable, "receiver-readiness-unverified")); }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         { return new(RatelDeskConnectionTestStatus.Unavailable, "receiver-readiness-timeout"); }
@@ -79,17 +79,10 @@ public sealed class RatelDeskConnectorReceiver(IRatelDeskConnectorStore connecto
     public static RatelDeskConnectorAuthentication Parse(RatelDeskConnectorAuthenticationDto? value,
         RatelDeskConnectorAuthentication? existing = null)
     {
-        if (value is null) return existing ?? new(RatelDeskAuthenticationMode.ManualApiBearer, null);
-        if (value is { Mode: "api_bearer", ManagedLinkId: null }) return new(RatelDeskAuthenticationMode.ManualApiBearer, null);
-        if (value is { Mode: "service_link", ManagedLinkId: { } managedLinkId })
-        {
-            try { ServiceLinkValidation.Id(managedLinkId); }
-            catch (ServiceLinkProtocolException) { throw new ArgumentException("invalid-connector-authentication-reference"); }
-            return new(RatelDeskAuthenticationMode.ManagedServiceLink, managedLinkId);
-        }
+        if (value is null && existing?.Mode == RatelDeskAuthenticationMode.PairedSystem) return existing;
+        if (value is { Mode: "pairing", ManagedLinkId: { } id } && Guid.TryParseExact(id, "D", out _)) return new(RatelDeskAuthenticationMode.PairedSystem, id);
         throw new ArgumentException("invalid-connector-authentication-reference");
     }
 
-    public static RatelDeskConnectorAuthenticationDto ToDto(RatelDeskConnectorAuthentication? value) =>
-        value?.Mode == RatelDeskAuthenticationMode.ManagedServiceLink ? new("service_link", value.ManagedLinkId) : new("api_bearer");
+    public static RatelDeskConnectorAuthenticationDto ToDto(RatelDeskConnectorAuthentication? value) => new("pairing", value?.ManagedLinkId);
 }

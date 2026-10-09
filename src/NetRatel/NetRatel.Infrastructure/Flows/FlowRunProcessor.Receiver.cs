@@ -2,7 +2,7 @@ using Microsoft.Extensions.DependencyInjection;
 using NetRatel.Application.Flows;
 using NetRatel.Application.RatelDesk;
 using NetRatel.Infrastructure.RatelDesk;
-using NetRatel.Infrastructure.ServiceLinks;
+using NetRatel.Shared.SystemPairing;
 using NetRatel.Shared.Contracts.Flows;
 
 namespace NetRatel.Infrastructure.Flows;
@@ -77,7 +77,7 @@ public sealed partial class FlowRunProcessor
         }
         catch (UnauthorizedAccessException)
         { observation = new(RatelDeskReceiverObservationKind.AuthenticationRejected, "receiver-current-authority-denied"); }
-        catch (ServiceLinkProtocolException error)
+        catch (PairingException error)
         {
             observation = new(error.StatusCode is 401 or 403
                 ? RatelDeskReceiverObservationKind.AuthenticationRejected : RatelDeskReceiverObservationKind.TransientReadFailure,

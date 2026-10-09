@@ -17,7 +17,7 @@ The checks cover:
 - Monitoring tenant-scoped counts, exact rule/group/bypass editors, manual clear/refire history, honest Unknown evidence, cached Services launch, failed draft retention, guarded duplicate saves and late-tenant response cancellation;
 - Monitoring at desktop with drawer open, light/dark/system themes, narrow viewports and the same true 200% zoom-equivalent geometry;
 - the combined Monitoring/Flows route and service registrations, ordered Signals navigation, and an actual occurrence-link journey through its paired run receipt and immutable published graph;
-- the Helpdesk M2M purpose alongside unchanged personal API and HTTP MCP purposes, explicit tenant/resource grants, once-only manual secret reveal, deployment locks, stale-authority status, read-only connection tests and protected callback URL cleanup;
+- System connections pairing alongside the separate personal API and HTTP MCP credentials tab; address/code pairing, final tenant mapping and independent capability choices, one Save, visible errors and View/Test/Delete;
 - screenshots written to `TestResults/playwright` for visual review.
 
 Browser acceptance is opt-in under the 7 October 2026 owner CI policy. Required

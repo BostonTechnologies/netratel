@@ -7,7 +7,7 @@ namespace NetRatel.Infrastructure.RatelDesk;
 
 /// <summary>Preparation is read-only. The #145 flow store persists its exact result before dispatch acquires any side effect.</summary>
 public sealed class RatelDeskFlowConnector(IRatelDeskConnectorStore store, IRatelDeskConnectorAuthorization authorization,
-    IRatelDeskOriginPolicy origins, IRatelDeskConnectorReadiness? readiness = null) : IFlowConnectorCatalog, IFlowIncidentActionDispatcher
+    IRatelDeskConnectorReadiness? readiness = null) : IFlowConnectorCatalog, IFlowIncidentActionDispatcher
 {
     public async Task<FlowConnectorReferenceDto?> GetAsync(int tenantId, Guid connectorId, FlowExecutionAuthorityDto authority, CancellationToken cancellationToken = default)
     {
@@ -81,7 +81,7 @@ public sealed class RatelDeskFlowConnector(IRatelDeskConnectorStore store, IRate
     private Task<bool> AllowedAsync(FlowExecutionAuthorityDto authority, int tenantId, CancellationToken cancellationToken) =>
         authorization.CanExecuteAsync(authority.PrincipalId, authority.IntegrationCredentialId, tenantId, cancellationToken);
     private async Task<bool> IsUsableAsync(RatelDeskConnectorState state, CancellationToken cancellationToken) =>
-        state.Configuration.Enabled && state.ProtectedCredential is not null && origins.TryValidate(state.Configuration.Origin, out _) &&
+        state.Configuration.Enabled && state.Authentication?.Mode == RatelDeskAuthenticationMode.PairedSystem &&
         await authorization.CanExecuteAsync(state.OwnerPrincipalId, null, state.TenantId, cancellationToken).ConfigureAwait(false);
     private static int MapPriority(RatelDeskPriorityMapping mapping, string severity) => severity.ToLowerInvariant() switch
     { "critical" => mapping.Critical, "error" or "high" => mapping.Error, "warning" or "medium" => mapping.Warning, _ => mapping.Information };

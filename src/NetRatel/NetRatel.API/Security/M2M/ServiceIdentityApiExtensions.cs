@@ -8,8 +8,6 @@ namespace NetRatel.API.Security.M2M;
 
 public static class ServiceIdentityServiceCollectionExtensions
 {
-    public const string VerifyPolicy = "ServiceLinkVerify";
-    public const string ControlPolicy = "ServiceLinkControl";
     public const string SensitiveRateLimiter = "ServiceIssuerSensitive";
 
     public static IServiceCollection AddNetRatelServiceIdentityApi(this IServiceCollection services, IConfiguration configuration)
@@ -24,12 +22,6 @@ public static class ServiceIdentityServiceCollectionExtensions
             sp.GetRequiredService<IOptionsMonitor<M2MDeploymentClientsOptions>>()));
         services.AddSingleton<IServiceClientDeploymentCatalog>(sp => sp.GetRequiredService<IM2MDeploymentProfileResolver>());
         services.AddAuthentication().AddScheme<AuthenticationSchemeOptions, ServiceIdentityAuthenticationHandler>(ServiceIdentityAuthenticationHandler.SchemeName, _ => { });
-        services.AddAuthorization(o =>
-        {
-            foreach (var (policy, scope) in new[] { (VerifyPolicy, ServiceIdentityScopes.Verify), (ControlPolicy, ServiceIdentityScopes.Control) })
-                o.AddPolicy(policy, p => p.AddAuthenticationSchemes(ServiceIdentityAuthenticationHandler.SchemeName).RequireAuthenticatedUser()
-                    .RequireAssertion(c => c.User.FindAll("scope").SelectMany(x => x.Value.Split(' ')).Contains(scope, StringComparer.Ordinal)));
-        });
         services.AddRateLimiter(o => o.AddPolicy(SensitiveRateLimiter, http => RateLimitPartition.GetFixedWindowLimiter(
             http.Connection.RemoteIpAddress?.ToString() ?? "unknown", _ => new FixedWindowRateLimiterOptions
             { PermitLimit = 20, Window = TimeSpan.FromMinutes(1), QueueLimit = 0, AutoReplenishment = true })));

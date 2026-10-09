@@ -21,11 +21,13 @@ using NetRatel.Application.Presence;
 using NetRatel.Application.Scripts;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.ServiceIdentity;
-using NetRatel.Infrastructure.ServiceLinks;
+using NetRatel.Infrastructure.SystemPairing;
+using NetRatel.Infrastructure.Identity;
+using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Infrastructure.Services;
 using NetRatel.Shared.Contracts.Jobs;
 using NetRatel.Shared.ServiceIdentity;
-using NetRatel.Shared.ServiceLinks;
+using NetRatel.Shared.SystemPairing;
 using NetRatel.Tests.Infrastructure;
 using Xunit;
 
@@ -672,6 +674,7 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
             var h = new Harness();
             var services = new ServiceCollection();
             services.AddDbContext<OrchestratorDbContext>(o => o.UseNpgsql(connection).AddInterceptors(h.Gate));
+            services.AddDbContext<NetRatelIdentityDbContext>(o => o.UseNpgsql(connection));
             services.AddSingleton<TimeProvider>(h.Clock);
             services.AddSingleton(new OwnershipPolicy(TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(60), TimeSpan.FromSeconds(10)));
             services.AddSingleton<IClientConnectionEpochStore, ClientConnectionEpochStore>();
@@ -688,6 +691,9 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
             await using var scope = h.Services.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
             await db.Database.MigrateAsync(ct);
+            var identity = scope.ServiceProvider.GetRequiredService<NetRatelIdentityDbContext>();
+            await identity.Database.MigrateAsync(ct);
+            await PairingBusinessAuthorityFixture.SeedAdministratorAsync(identity, "owned-test-admin", ct);
             var now = h.Clock.GetUtcNow();
             db.Tenants.Add(new() { Id = 7, Name = "Bounded ownership tenant", CreatedAtUtc = now, UpdatedAtUtc = now });
             db.Agents.Add(new() { Id = h.AgentId, TenantId = 7, CreatedAtUtc = now });
@@ -757,7 +763,8 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
             var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
             var run = (await scope.ServiceProvider.GetRequiredService<IJobRunService>().GetAsync(runId, ct))!;
             var registry = Registry(db);
-            return await Authority(scope.ServiceProvider, false, new(db, registry, Clock)).StartManagedAsync(41,
+            return await Authority(scope.ServiceProvider, false, new(db, registry, Clock,
+                new PairingAuthority(new PairingBusinessAuthorityFixture.Access(), scope.ServiceProvider.GetRequiredService<NetRatelIdentityDbContext>(), db))).StartManagedAsync(41,
                 new(run.StartedBy, run.InputsJson, null), requestId, _managedPrincipal!, ct);
         }
         public async Task<bool> CancelAsync(ulong runId, bool replica, CancellationToken ct)
@@ -801,10 +808,8 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
             if (authorized)
             {
                 var registry = Registry(db);
-                var constraints = JsonSerializer.Serialize(new ServiceLinkResourceConstraints
-                    { TenantId = "7", ResourceIds = [AgentId.ToString("D")], RequestDefinitionIds = ["41"] }, ServiceLinkCanonicalJson.Json);
-                var created = await registry.CreateAsync(new ServiceClientCreateRequest("Bounded cancel invoker", 7,
-                    "owned-peer", "owned-peer-tenant", [ServiceIdentityScopes.OrchestrationInvoke], constraints), "owned-test-admin", ct: ct);
+                var created = await PairingBusinessAuthorityFixture.CreateAsync(db, registry, 7,
+                    [ServiceIdentityScopes.OrchestrationInvoke], "owned-test-admin", ct: ct);
                 var authenticated = await registry.AuthenticateClientAsync(created.Principal.ClientId, created.ClientSecret, ct);
                 Assert.NotNull(authenticated);
                 Assert.True(await registry.CanIssueScopesAsync(authenticated, [ServiceIdentityScopes.OrchestrationInvoke], ct));
@@ -821,6 +826,7 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
             db.Set<JobRunControlRecord>().Add(new() { RunId = checked((long)runId) });
             db.Set<ManagedOrchestrationRequestBinding>().Add(new() { RequestId = request.Id, ServicePrincipalId = principalId, TenantId = 7,
                 AgentId = AgentId, JobDefinitionId = "41", ExecutionId = "8001", ParentRequestId = "actual-parent", RequestTaskId = "actual-task", CorrelationId = "actual-correlation",
+                LinkId = registration?.LinkId, GrantHash = registration?.GrantHash,
                 LinkRevision = registration?.LinkRevision ?? 0, PeerInstanceId = registration?.PeerInstanceId ?? "", PeerTenantId = registration?.PeerTenantId ?? "" });
             if (authorized)
                 await requests.UpdateAsync(new(request.Id, null, null, null, "8001", null, null, null, null, null), ct);
@@ -831,7 +837,9 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
         {
             var settings = new OwnedPublicSettings();
             var options = new OptionsMonitor<ServiceIdentityOptions>(new OptionsFactory<ServiceIdentityOptions>([], []), [], new OptionsCache<ServiceIdentityOptions>());
-            return new(db, new ServiceIdentityRuntimeOptions(settings), options, settings, new EmptyServiceClientDeploymentCatalog(), Clock);
+            var identity = Services.GetRequiredService<NetRatelIdentityDbContext>();
+            return new(db, new ServiceIdentityRuntimeOptions(settings), options, new EmptyServiceClientDeploymentCatalog(),
+                new PairingAuthority(new PairingBusinessAuthorityFixture.Access(), identity, db), Clock);
         }
         private static ClaimsPrincipal Principal(ServicePrincipalRegistration row) => new(new ClaimsIdentity(new[]
         {
@@ -842,6 +850,7 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
             new Claim(ServiceIdentityClaims.TenantId, "7"), new Claim(ServiceIdentityClaims.PeerInstanceId, row.PeerInstanceId),
             new Claim(ServiceIdentityClaims.PeerTenantId, row.PeerTenantId),
             new Claim(ServiceIdentityClaims.LinkRevision, row.LinkRevision.ToString(System.Globalization.CultureInfo.InvariantCulture)),
+            new Claim(ServiceIdentityClaims.LinkId, row.LinkId), new Claim(ServiceIdentityClaims.GrantHash, row.GrantHash),
             new Claim("scope", ServiceIdentityScopes.OrchestrationInvoke)
         }, "owned-managed-test"));
         public async ValueTask DisposeAsync() { Gate.Release(); Registration.Dispose(); await _actors.Terminate(); await Services.DisposeAsync(); }
@@ -851,8 +860,7 @@ public sealed class JobRunOwnedBoundaryPostgresTests(PostgreSqlPersistenceFixtur
     {
         public Task<ServicePublicSettingsEffective> ResolveAsync(CancellationToken ct = default) => Task.FromResult(new ServicePublicSettingsEffective(
             new ServiceIdentityOptions { Enabled = true, Issuer = "https://owned.example.test/services", ApiBaseUrl = "https://owned.example.test",
-                WebBaseUrl = "https://web.owned.example.test", InstanceId = "d47bd363-5b79-4c9f-ae3b-47f79ae5ea06" }, new ServiceLinkOptions(), 1, []));
-        public Task<ServicePublicSettingsEffective> UpdateAsync(ServicePublicSettingsUpdate update, string actorId, CancellationToken ct = default) => throw new NotSupportedException();
+                WebBaseUrl = "https://web.owned.example.test", InstanceId = "d47bd363-5b79-4c9f-ae3b-47f79ae5ea06" }, 1, []));
     }
 
     private sealed class RecordingGateway(Harness harness) : IAgentJobGatewaySessionRegistry

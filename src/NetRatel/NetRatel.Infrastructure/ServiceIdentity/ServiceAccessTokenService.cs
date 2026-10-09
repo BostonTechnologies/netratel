@@ -1,7 +1,6 @@
 using System.Globalization;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
-using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 
 namespace NetRatel.Infrastructure.ServiceIdentity;
@@ -28,11 +27,10 @@ public sealed class ServiceAccessTokenService(ServiceSigningKeyStore keys, IServ
             new("jti", Guid.NewGuid().ToString("N")), new("target_instance_id", settings.InstanceId), new("caller_instance_id", row.PeerInstanceId),
             new("target_tenant_id", Number(row.TenantId)), new("caller_tenant_id", row.PeerTenantId)
         };
-        foreach (var (type, value) in new[] { (ServiceIdentityClaims.LinkId, row.LinkId), (ServiceIdentityClaims.AttemptId, row.AttemptId), (ServiceIdentityClaims.GrantHash, row.GrantHash), (ServiceIdentityClaims.DirectionId, row.DirectionId) })
+        foreach (var (type, value) in new[] { (ServiceIdentityClaims.LinkId, row.LinkId), (ServiceIdentityClaims.GrantHash, row.GrantHash) })
             if (value is not null) claims.Add(new(type, value));
         var now = time.GetUtcNow();
-        var expires = new[] { now.AddSeconds(settings.AccessTokenLifetimeSeconds), client.Credential.ExpiresAtUtc, client.Credential.RetireAtUtc ?? DateTimeOffset.MaxValue,
-            row.Status == "revoked" ? row.TerminalControlUntilUtc ?? now : DateTimeOffset.MaxValue }.Min();
+        var expires = new[] { now.AddSeconds(settings.AccessTokenLifetimeSeconds), client.Credential.ExpiresAtUtc }.Min();
         var jwt = new JwtSecurityToken(settings.Issuer, settings.Audience, claims, now.UtcDateTime, expires.UtcDateTime, new SigningCredentials(signing.Key, SecurityAlgorithms.RsaSha256));
         jwt.Header["typ"] = "at+jwt";
         return new(new JwtSecurityTokenHandler().WriteToken(jwt), (int)(expires - now).TotalSeconds, string.Join(' ', scopes.Order(StringComparer.Ordinal)));

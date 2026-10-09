@@ -7,13 +7,16 @@ on:
         description: Run only this optional suite (client measurements use matching hosted OS runners)
         type: choice
         required: true
-        options: [service-link, gateway, browser, deployment, release-images, native-client, physical-incident, upgrade-local, upgrade-oidc, client-measurement]
+        options: [pairing, gateway, browser, deployment, release-images, native-client, upgrade-local, upgrade-oidc, client-measurement]
       source_ref:
         description: Source ref to test (published-image and upgrade suites use release_tag)
         default: main
         required: true
       release_tag:
         description: Existing completed public release tag, required for published-image and upgrade suites
+        required: false
+      companion_ref:
+        description: Explicit RatelDesk source ref for the pairing suite (both candidates are built from source)
         required: false
       baseline_ref:
         description: Baseline commit/ref for client-measurement only; resolved and recorded once per checkout
@@ -46,20 +49,40 @@ jobs:
       SUITE: ${{ inputs.suite }}
       RELEASE_TAG: ${{ inputs.release_tag }}
       NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT: ${{ github.workspace }}/TestResults/playwright
-      NETRATEL_SERVICE_LINK_EVIDENCE_DIRECTORY: ${{ github.workspace }}/TestResults/service-link-proof
+      NETRATEL_PAIRING_EVIDENCE_DIRECTORY: ${{ github.workspace }}/TestResults/pairing
+      RATELDESK_PAIRING_REF: ${{ inputs.companion_ref }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ (inputs.suite == 'release-images' || inputs.suite == 'upgrade-local' || inputs.suite == 'upgrade-oidc') && inputs.release_tag || inputs.source_ref }}
           fetch-depth: 0
+      - name: Require explicit companion candidate
+        if: inputs.suite == 'pairing'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$RATELDESK_PAIRING_REF"
+      - name: Check out companion candidate
+        if: inputs.suite == 'pairing'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: BostonTechnologies/rateldesk
+          ref: ${{ inputs.companion_ref }}
+          path: work/rateldesk
+          fetch-depth: 0
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
           global-json-file: global.json
+      - name: Set up pairing browser runtime
+        if: inputs.suite == 'pairing'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
       - name: Record selected source and version
         shell: bash
         run: |
           set -euo pipefail
-          case "$SUITE" in service-link|gateway|browser|deployment|release-images|native-client|physical-incident|upgrade-local|upgrade-oidc) ;; *) exit 2 ;; esac
+          case "$SUITE" in pairing|gateway|browser|deployment|release-images|native-client|upgrade-local|upgrade-oidc) ;; *) exit 2 ;; esac
           source_sha="$(git rev-parse HEAD)"
           version="$(python3 tools/ci/product-version.py)"
           export NETRATEL_DOTNET_SDK_VERSION="$(dotnet --version)"
@@ -69,7 +92,7 @@ jobs:
             test "$(git rev-parse "${RELEASE_TAG}^{commit}")" = "$source_sha"
             git merge-base --is-ancestor "$source_sha" origin/main
           fi
-          printf 'SOURCE_SHA=%s\nVERSION=%s\nNETRATEL_REVIEW_SOURCE_SHA=%s\nNETRATEL_REVIEW_TEST_MERGE_SHA=%s\nNETRATEL_SERVICE_LINK_CANDIDATE_SHA=%s\n' \
+          printf 'SOURCE_SHA=%s\nVERSION=%s\nNETRATEL_REVIEW_SOURCE_SHA=%s\nNETRATEL_REVIEW_TEST_MERGE_SHA=%s\nNETRATEL_PAIRING_CANDIDATE_SHA=%s\n' \
             "$source_sha" "$version" "$source_sha" "$source_sha" "$source_sha" >> "$GITHUB_ENV"
           printf 'NETRATEL_DOTNET_SDK_VERSION=%s\n' "$NETRATEL_DOTNET_SDK_VERSION" >> "$GITHUB_ENV"
           mkdir -p TestResults
@@ -80,48 +103,39 @@ jobs:
                       "dotnetSdkVersion": os.environ["NETRATEL_DOTNET_SDK_VERSION"],
                       "runId": os.environ["GITHUB_RUN_ID"], "attempt": os.environ["GITHUB_RUN_ATTEMPT"],
                       "workflowEventSha": os.environ["GITHUB_SHA"]}
-          if identity["suite"] in ("service-link", "physical-incident"):
-              peer = Path("src/NetRatel/NetRatel.API.IntegrationTests/ServiceLinkPublishedRatelDeskPeer.cs").read_text()
-              identity["companion"] = {name: re.search(rf'\b{name}\s*=\s*"([^"]+)"', peer).group(1)
-                                       for name in ("PublishedSource", "PublishedVersion", "ApiImage", "WebImage")}
           Path("TestResults/selected-source.json").write_text(json.dumps(identity, indent=2) + "\n")
           PY
       - name: Restore and build selected test assembly
-        if: inputs.suite == 'service-link' || inputs.suite == 'physical-incident' || inputs.suite == 'gateway' || inputs.suite == 'browser' || inputs.suite == 'upgrade-oidc'
+        if: inputs.suite == 'pairing' || inputs.suite == 'gateway' || inputs.suite == 'browser' || inputs.suite == 'upgrade-oidc'
         shell: bash
         run: |
           set -euo pipefail
           case "$SUITE" in
-            service-link|physical-incident)
-              if [[ "$SUITE" == physical-incident && ! -f tools/ci/run-physical-disk-incident-proof.sh ]]; then
-                echo 'The selected source does not contain the physical incident helper; choose a source including connector PR #152.' >&2
-                exit 1
-              fi
-              project=src/NetRatel/NetRatel.API.IntegrationTests/NetRatel.API.IntegrationTests.csproj ;;
+            pairing) project=src/NetRatel/NetRatel.API.IntegrationTests/NetRatel.API.IntegrationTests.csproj ;;
             gateway) project=src/NetRatel/NetRatel.Tests/NetRatel.Tests.csproj ;;
             browser|upgrade-oidc) project=src/NetRatel/NetRatel.Web.PlaywrightTests/NetRatel.Web.PlaywrightTests.csproj ;;
           esac
           dotnet restore "$project"
           dotnet build "$project" --configuration Release --no-restore
-      - name: Run service-link interoperability and native receipts
-        if: inputs.suite == 'service-link'
+      - name: Run pairing lifecycle acceptance
+        if: inputs.suite == 'pairing'
+        env:
+          NETRATEL_PAIRING_ACCEPTANCE: '1'
+          NETRATEL_PAIRING_SOURCE_ROOT: ${{ github.workspace }}
+          RATELDESK_PAIRING_SOURCE_ROOT: ${{ github.workspace }}/work/rateldesk
+          NETRATEL_PAIRING_RUNTIME_ROOT: ${{ runner.temp }}/pairing-${{ github.run_id }}-${{ github.run_attempt }}
+          PAIRING_BROWSER_WITH_DEPS: '1'
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p "$NETRATEL_PAIRING_RUNTIME_ROOT"
           dotnet test --project src/NetRatel/NetRatel.API.IntegrationTests/NetRatel.API.IntegrationTests.csproj \
             --configuration Release --no-build --no-restore --max-parallel-test-modules 1 \
-            --filter-trait category=manual-integration \
+            --filter-class NetRatel.API.IntegrationTests.SystemPairing.PairingLifecycleTests \
             --results-directory TestResults --report-trx \
             --report-trx-filename 'netratel-tests-{asm}_{tfm}_{arch}.trx'
           python3 tools/ci/verify-mtp-trx.py TestResults/netratel-tests-NetRatel.API.IntegrationTests_*.trx
-          python3 tools/ci/verify-service-link-native-evidence.py --reports TestResults --evidence TestResults/service-link-proof
-      - name: Run requested physical incident with its original assertions and receipts
-        if: inputs.suite == 'physical-incident'
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -f tools/ci/run-physical-disk-incident-proof.sh
-          GITHUB_SHA="$SOURCE_SHA" bash tools/ci/run-physical-disk-incident-proof.sh
+          cp "$NETRATEL_PAIRING_RUNTIME_ROOT/acceptance-receipt.json" TestResults/pairing-acceptance-receipt.json
       - name: Run sustained authenticated gateway profiles
         if: inputs.suite == 'gateway'
         env:

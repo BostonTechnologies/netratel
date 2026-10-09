@@ -3,14 +3,15 @@ using Microsoft.EntityFrameworkCore;
 using NetRatel.Application.Jobs;
 using NetRatel.Application.Requests;
 using NetRatel.Infrastructure.Persistence;
-using NetRatel.Infrastructure.ServiceLinks;
+using NetRatel.Infrastructure.SystemPairing;
+using NetRatel.Shared.SystemPairing;
 
 namespace NetRatel.API.Services.Orchestration;
 
 /// <summary>Reconciles durable job authority with durable callbacks; every invocation has its own DI scope.</summary>
 public sealed class OrchestrationCallbackReconciler(OrchestratorDbContext db, IRequestService requests,
     IJobRunService runs, IRequestEventBus changes, INetRatelExternalServiceCallbackClient callbacks,
-    ServiceLinkProfileService profiles, TimeProvider clock, ILogger<OrchestrationCallbackReconciler> logger)
+    PairingBusinessProfileService profiles, TimeProvider clock, ILogger<OrchestrationCallbackReconciler> logger)
 {
     public async Task ReconcileAsync(CancellationToken ct)
     {
@@ -29,7 +30,7 @@ public sealed class OrchestrationCallbackReconciler(OrchestratorDbContext db, IR
             ct.ThrowIfCancellationRequested();
             try { await ReconcileManagedAsync(binding, ct); }
             catch (DbUpdateConcurrencyException) { db.ChangeTracker.Clear(); }
-            catch (ServiceLinkProtocolException) { db.ChangeTracker.Clear(); }
+            catch (PairingException) { db.ChangeTracker.Clear(); }
             catch (Exception error) when (error is not OperationCanceledException)
             {
                 db.ChangeTracker.Clear();
@@ -41,11 +42,11 @@ public sealed class OrchestrationCallbackReconciler(OrchestratorDbContext db, IR
 
     private async Task ReconcileManagedAsync(ManagedOrchestrationRequestBinding binding, CancellationToken ct)
     {
-        // Resolve before creating or leasing delivery. A disabled link cannot acquire a peer token or send.
+        // Resolve before creating or leasing delivery. A revoked connection cannot acquire a peer token or send.
         var profile = await profiles.ResolveAsync(binding.TenantId, binding.LinkId!, "rateldesk.orchestration.callback", ct);
-        if (profile.LinkRevision != binding.LinkRevision || profile.GrantHash != binding.GrantHash ||
-            profile.PeerInstanceId != binding.PeerInstanceId || profile.PeerTenantId != binding.PeerTenantId ||
-            ServiceLinkValidation.Endpoint(profile.Peer.ApiBaseUrl, "/api/v1/orchestration/provider/callback") != binding.CallbackUrl) return;
+        if (profile.Revision != binding.LinkRevision || profile.AuthorityHash != binding.GrantHash ||
+            profile.Peer.InstallationId != binding.PeerInstanceId || profile.Mapping.RatelDeskOrganizationId != binding.PeerTenantId ||
+            profile.Peer.ApiOrigin + "/api/v1/orchestration/provider/callback" != binding.CallbackUrl) return;
         var request = await ManagedOrchestrationRecovery.RecoverAsync(db, requests, runs, binding, ct);
         if (request is null || !ulong.TryParse(binding.ExecutionId, NumberStyles.None, CultureInfo.InvariantCulture, out var runId)) return;
         var details = await runs.GetDetailsAsync(runId, ct);

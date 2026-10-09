@@ -1,5 +1,4 @@
 using Microsoft.Extensions.Options;
-using NetRatel.Infrastructure.ServiceLinks;
 
 namespace NetRatel.Infrastructure.ServiceIdentity;
 

@@ -1,0 +1,8 @@
+.pairing-form, .pairing-code, .pairing-card { padding: 1rem; }
+.pairing-code { max-width: 30rem; }
+.pairing-form { max-width: 48rem; }
+.pairing-tenant-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1rem; }
+.pairing-card { overflow-wrap: anywhere; }
+@media (max-width: 600px) {
+    .pairing-tenant-grid { grid-template-columns: minmax(0, 1fr); }
+}

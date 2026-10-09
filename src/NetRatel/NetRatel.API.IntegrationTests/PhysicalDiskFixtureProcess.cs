@@ -2,7 +2,7 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 
-namespace NetRatel.API.IntegrationTests.ServiceLinks;
+namespace NetRatel.API.IntegrationTests.SystemPairing;
 
 // Owns only the reviewed helper process and its private stdin/stdout. The root
 // helper's scope is its new UUID directory, loop device and exact Client IDs.

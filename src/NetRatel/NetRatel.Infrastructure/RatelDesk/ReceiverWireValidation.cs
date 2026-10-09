@@ -38,7 +38,7 @@ public static class ReceiverWireValidation
 
     private static void RequirePeer(RatelDeskSemanticPeer peer)
     {
-        if (peer.Mode is not (RatelDeskAuthenticationMode.ManualApiBearer or RatelDeskAuthenticationMode.ManagedServiceLink) ||
+        if (peer.Mode != RatelDeskAuthenticationMode.PairedSystem ||
             peer.LocalTenantId <= 0 || peer.ConnectorId == Guid.Empty ||
             peer.SourceInstanceId == Guid.Empty || peer.SourceNamespaceId == Guid.Empty ||
             peer.OrganizationId is not { Length: > 0 and <= 64 } || string.IsNullOrWhiteSpace(peer.OrganizationId) || peer.OrganizationId.Any(char.IsControl) ||
@@ -83,25 +83,6 @@ public static class ReceiverWireValidation
             foreach (var child in element.EnumerateArray()) ValidateDuplicates(child);
     }
 
-    // The first identity comes from authenticated capability JSON, before target validation.
-    public static RatelDeskManualProfileObservation CaptureManual(byte[] body,
-        RatelDeskConnectorState connector, string canonicalApiBase, Guid source, DateTimeOffset observedAtUtc)
-    {
-        if (source == Guid.Empty || observedAtUtc == default || observedAtUtc.Offset != TimeSpan.Zero)
-            throw new InvalidDataException("flow-source-identity-invalid");
-        using var doc = Parse(body); var root = doc.RootElement;
-        var receiver = CanonicalGuid(Text(root, "receiverInstanceId"));
-        var sourceNamespace = CanonicalGuid(Text(root, "sourceNamespaceId"));
-        Equal(Text(root, "sourceInstanceId"), source.ToString("D"));
-        var peer = new RatelDeskSemanticPeer(RatelDeskAuthenticationMode.ManualApiBearer, connector.TenantId,
-            connector.Id, null, null, null, receiver.ToString("D"), connector.Configuration.OrganizationId,
-            canonicalApiBase, null, null, null, null, null, source, sourceNamespace,
-            connector.Configuration.OrganizationId, connector.Configuration.CustomerId,
-            connector.Configuration.AssignedToId, connector.Configuration.CategoryIds
-                .Select(x => x.ToString("D")).Order(StringComparer.Ordinal).ToArray());
-        return new(peer, Capability(body, peer, observedAtUtc));
-    }
-
     public static RatelDeskVerifiedCapability Capability(byte[] body,
         RatelDeskSemanticPeer peer, DateTimeOffset observedAtUtc)
     {
@@ -122,7 +103,7 @@ public static class ReceiverWireValidation
             Flag(root, "receiptEvictionEnabled") || !Flag(root, "atomicIncidentReceiptAndEffects") ||
             !Flag(root, "supportsReceiptLookup") || !Flag(root, "supportsSafeSameKeyReplay"))
             throw new InvalidDataException("receiver-replay-guarantees-unverified");
-        var mode = peer.Mode == RatelDeskAuthenticationMode.ManagedServiceLink ? "oauth_client_credentials" : "api_bearer";
+        const string mode = "oauth_client_credentials";
         var modes = Required(root, "authenticationModes", JsonValueKind.Array);
         if (modes.GetArrayLength() is < 1 or > 8 ||
             modes.EnumerateArray().Any(x => x.ValueKind != JsonValueKind.String ||

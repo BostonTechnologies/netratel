@@ -63,7 +63,8 @@ using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Infrastructure.Identity.Branding;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.API.OpenApi;
-using NetRatel.API.Endpoints.ServiceLinks;
+using NetRatel.API.Endpoints.SystemPairing;
+using NetRatel.Infrastructure.SystemPairing;
 
 if (args is ["--gssapi-application-smoke"])
 {
@@ -842,25 +843,7 @@ builder.Services.AddHealthChecks().AddCheck<ClientUpdateCatalogHealthCheck>(
     "client-update-catalog", tags: ["ready", "client-updates", "akka-authority"]);
 builder.Services.AddScoped<JobTaskBridge>();
 builder.Services.AddSingleton<JobAuthorityIdGenerator>();
-builder.Services.Configure<NetRatelExternalServiceCallbackOptions>(builder.Configuration.GetSection("Orchestration:ExternalService"));
-builder.Services.AddScoped<INetRatelSystemTokenService, NetRatelSystemTokenService>();
-builder.Services.AddScoped<INetRatelExternalServiceCallbackReplayService, NetRatelExternalServiceCallbackReplayService>();
-builder.Services.AddHttpClient<INetRatelExternalServiceCallbackClient, NetRatelExternalServiceCallbackClient>((sp, http) =>
-{
-    var callbackOptions = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<NetRatelExternalServiceCallbackOptions>>().Value;
-    if (!string.IsNullOrWhiteSpace(callbackOptions.BaseUrl))
-    {
-        http.BaseAddress = new Uri(callbackOptions.BaseUrl);
-    }
-});
-#pragma warning disable EXTEXP0001
-builder.Services.AddHttpClient("ConnectivityProbe", http =>
-{
-    http.Timeout = TimeSpan.FromSeconds(6);
-})
-.RemoveAllResilienceHandlers();
-#pragma warning restore EXTEXP0001
-
+builder.Services.AddScoped<INetRatelExternalServiceCallbackClient, NetRatelExternalServiceCallbackClient>();
 // M2M (machine-to-machine) configuration and services
 builder.Services.Configure<M2MOptions>(builder.Configuration.GetSection("M2M"));
 builder.Services.AddSingleton<IClientCredentialsTokenService, ClientCredentialsTokenService>();
@@ -878,7 +861,8 @@ builder.Services.AddNetRatelApplication();
 builder.Services.AddNetRatelInfrastructure(builder.Configuration);
 builder.Services.AddMonitoringFlowBridge();
 builder.Services.AddNetRatelServiceIdentityApi(builder.Configuration);
-builder.Services.AddServiceLinkProtocol(builder.Configuration);
+builder.Services.AddSystemPairing(builder.Configuration);
+builder.Services.AddPairingApi();
 builder.Services.AddOrchestrationManagedServices();
 builder.Services.AddRatelDeskReceiverAdapter(builder.Configuration);
 builder.Services.AddIdentityCore<LocalUser>(options =>
@@ -899,7 +883,7 @@ builder.Services.AddIdentityCore<LocalUser>(options =>
     .AddEntityFrameworkStores<NetRatelIdentityDbContext>()
     .AddDefaultTokenProviders();
 builder.Services.AddScoped<Microsoft.AspNetCore.Authentication.IClaimsTransformation, LocalPrincipalClaimsTransformation>();
-builder.Services.AddScoped<IM2MConnectivityService, RuntimeM2MConnectivityService>();
+builder.Services.AddScoped<IM2MConnectivityService, NetRatel.Infrastructure.SystemPairing.PairingConnectivityService>();
 
 // Increase upload limits (for large client artifacts)
 builder.Services.Configure<FormOptions>(o =>
@@ -955,6 +939,7 @@ app.UseResponseCompression();
 app.UseMiddleware<NetRatel.API.Middleware.CorrelationIdMiddleware>();
 app.UseMiddleware<NetRatel.API.Middleware.CorrelationLoggingMiddleware>();
 app.UseMiddleware<NetRatel.API.Middleware.FlowRequestBodyLimitMiddleware>();
+app.UseMiddleware<NetRatel.API.Middleware.PairingRequestBodyLimitMiddleware>();
 
 app.MapApiEndpoints();
 app.MapReadyBootstrapStatus(bootstrapDescriptor);

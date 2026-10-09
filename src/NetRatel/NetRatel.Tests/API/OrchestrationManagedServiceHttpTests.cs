@@ -30,13 +30,13 @@ using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.Identity;
 using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Infrastructure.Identity.Branding;
-using NetRatel.Infrastructure.ServiceLinks;
+using NetRatel.Infrastructure.SystemPairing;
 using NetRatel.Infrastructure.Requests;
 using NetRatel.Infrastructure.ServiceIdentity;
 using NetRatel.Infrastructure.Services;
 using NetRatel.Shared.Contracts.Jobs;
 using NetRatel.Shared.ServiceIdentity;
-using NetRatel.Shared.ServiceLinks;
+using NetRatel.Shared.SystemPairing;
 using NetRatel.Tests.Infrastructure;
 using Xunit;
 
@@ -67,10 +67,10 @@ public sealed class OrchestrationManagedServiceHttpTests(PostgreSqlPersistenceFi
                 db.Jobs.AddRange(new JobDefinition { Id = 7001, TenantId = 71, AgentId = allowedAgent, ClientIdentity = allowedAgent.ToString("D"), Name = "Permitted job", FolderPath = "/", CreatedAtUtc = now, UpdatedAtUtc = now },
                     new JobDefinition { Id = 7002, TenantId = 72, AgentId = otherAgent, ClientIdentity = otherAgent.ToString("D"), Name = "Other job", FolderPath = "/", CreatedAtUtc = now, UpdatedAtUtc = now });
                 await db.SaveChangesAsync();
+                await PairingBusinessAuthorityFixture.SeedAdministratorAsync(scope.ServiceProvider.GetRequiredService<NetRatelIdentityDbContext>());
                 var registry = scope.ServiceProvider.GetRequiredService<IServicePrincipalRegistry>();
-                var constraints = ServiceLinkCanonicalJson.Canonicalize(JsonSerializer.Serialize(new ServiceLinkResourceConstraints { TenantId = "71", ResourceIds = [allowedAgent.ToString("D")], RequestDefinitionIds = ["7001"] }, ServiceLinkCanonicalJson.Json));
-                read = await registry.CreateAsync(new ServiceClientCreateRequest("Approved reader", 71, "peer-instance", "peer-tenant", [ServiceIdentityScopes.OrchestrationRead], constraints), "synthetic-admin");
-                invoke = await registry.CreateAsync(new ServiceClientCreateRequest("Approved invoker", 71, "peer-instance", "peer-tenant", [ServiceIdentityScopes.OrchestrationInvoke], constraints), "synthetic-admin");
+                read = await PairingBusinessAuthorityFixture.CreateAsync(db, registry, 71, [ServiceIdentityScopes.OrchestrationRead], protection: scope.ServiceProvider.GetRequiredService<IDataProtectionProvider>());
+                invoke = await PairingBusinessAuthorityFixture.CreateAsync(db, registry, 71, [ServiceIdentityScopes.OrchestrationInvoke], protection: scope.ServiceProvider.GetRequiredService<IDataProtectionProvider>());
             }
             var client = app.GetTestClient();
             var readToken = await TokenAsync(client, read, ServiceIdentityScopes.OrchestrationRead);
@@ -111,16 +111,85 @@ public sealed class OrchestrationManagedServiceHttpTests(PostgreSqlPersistenceFi
             Assert.Equal(1, app.Services.GetRequiredService<InvocationCounter>().Starts);
             await using (var scope = app.Services.CreateAsyncScope()) await scope.ServiceProvider.GetRequiredService<IServicePrincipalRegistry>().RevokeAsync(invoke.Principal.Id);
             Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsJsonAsync("/internal/ingest", Ingest("7001"))).StatusCode);
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", readToken);
+            Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/internal/catalog/jobs")).StatusCode);
             await using (var scope = app.Services.CreateAsyncScope())
             {
                 var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>(); (await db.Agents.SingleAsync(x => x.Id == allowedAgent)).IsEnabled = false; await db.SaveChangesAsync();
             }
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", readToken);
-            Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/internal/catalog/jobs")).StatusCode);
-            // Retained ES256 legacy clients still use their established policy and full catalog.
+            Assert.Empty((await client.GetFromJsonAsync<JsonElement>("/internal/catalog/jobs")).EnumerateArray());
+            // Independent deployment-client authentication retains its own policy, without the retired catalog fallback.
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", LegacyToken(legacyKey));
             Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/broad-legacy")).StatusCode);
-            var legacyCatalog = await client.GetFromJsonAsync<JsonElement>("/internal/catalog/jobs"); Assert.Contains(legacyCatalog.EnumerateArray(), item => item.GetProperty("id").GetString() == "7001"); Assert.Contains(legacyCatalog.EnumerateArray(), item => item.GetProperty("id").GetString() == "7002");
+            Assert.NotEqual(HttpStatusCode.OK, (await client.GetAsync("/internal/catalog/jobs")).StatusCode);
+        }
+        finally { Directory.Delete(directory, true); }
+    }
+
+    [Fact]
+    public async Task Empty_saved_tenant_catalog_gains_current_jobs_and_removal_denies_only_that_resource()
+    {
+        var connection = await postgres.CreateDatabaseAsync();
+        var directory = Path.Combine(Path.GetTempPath(), "netratel-current-orchestration-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        using var legacyKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        try
+        {
+            await using var app = await StartAsync(connection, directory, legacyKey);
+            CreatedServiceClient credential;
+            var agent = Guid.NewGuid(); var foreignAgent = Guid.NewGuid();
+            await using (var scope = app.Services.CreateAsyncScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+                await db.Database.MigrateAsync();
+                var identity = scope.ServiceProvider.GetRequiredService<NetRatelIdentityDbContext>();
+                await identity.Database.MigrateAsync(); await PairingBusinessAuthorityFixture.SeedAdministratorAsync(identity);
+                var now = DateTimeOffset.UtcNow;
+                db.Tenants.AddRange(new Tenant { Id = 71, Name = "Empty authorized tenant", CreatedAtUtc = now, UpdatedAtUtc = now },
+                    new Tenant { Id = 72, Name = "Foreign tenant", CreatedAtUtc = now, UpdatedAtUtc = now });
+                db.Agents.Add(new() { Id = foreignAgent, TenantId = 72, CreatedAtUtc = now });
+                db.Jobs.Add(new() { Id = 7002, TenantId = 72, AgentId = foreignAgent, ClientIdentity = foreignAgent.ToString("D"), Name = "Foreign job", FolderPath = "/", CreatedAtUtc = now, UpdatedAtUtc = now });
+                await db.SaveChangesAsync();
+                credential = await PairingBusinessAuthorityFixture.CreateAsync(db, scope.ServiceProvider.GetRequiredService<IServicePrincipalRegistry>(),
+                    71, ServiceIdentityScopes.Business, protection: scope.ServiceProvider.GetRequiredService<IDataProtectionProvider>());
+                var stored = ServicePrincipalRegistry.ReadConstraints(credential.Principal);
+                Assert.Equal("71", stored.TenantId); Assert.Empty(stored.ResourceIds); Assert.Empty(stored.RequestDefinitionIds);
+            }
+            var client = app.GetTestClient();
+            var token = await TokenAsync(client, credential, string.Join(' ', ServiceIdentityScopes.Business));
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            Assert.Empty((await client.GetFromJsonAsync<JsonElement>("/internal/catalog/jobs")).EnumerateArray());
+            Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsJsonAsync("/internal/ingest", Ingest("7002"))).StatusCode);
+            await using (var scope = app.Services.CreateAsyncScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>(); var now = DateTimeOffset.UtcNow;
+                db.Agents.Add(new() { Id = agent, TenantId = 71, CreatedAtUtc = now });
+                db.Jobs.Add(new() { Id = 7001, TenantId = 71, AgentId = agent, ClientIdentity = agent.ToString("D"), Name = "Permitted job", FolderPath = "/", CreatedAtUtc = now, UpdatedAtUtc = now });
+                await db.SaveChangesAsync();
+            }
+            var catalog = await client.GetFromJsonAsync<JsonElement>("/internal/catalog/jobs");
+            Assert.Single(catalog.EnumerateArray()); Assert.Equal(71, catalog[0].GetProperty("tenantId").GetInt32());
+            var accepted = await client.PostAsJsonAsync("/internal/ingest", Ingest("7001")); accepted.EnsureSuccessStatusCode();
+            Assert.Equal(1, app.Services.GetRequiredService<InvocationCounter>().Starts);
+            await using (var scope = app.Services.CreateAsyncScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+                (await db.Agents.SingleAsync(x => x.Id == agent)).SupersededAtUtc = DateTimeOffset.UtcNow;
+                await db.SaveChangesAsync();
+            }
+            Assert.Empty((await client.GetFromJsonAsync<JsonElement>("/internal/catalog/jobs")).EnumerateArray());
+            Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsJsonAsync("/internal/ingest", Ingest("7001"))).StatusCode);
+            Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/internal/health")).StatusCode);
+            Assert.NotEmpty(await TokenAsync(client, credential, string.Join(' ', ServiceIdentityScopes.Business)));
+            await using (var scope = app.Services.CreateAsyncScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+                var original = await db.Set<ServicePrincipalRegistration>().AsNoTracking().SingleAsync();
+                Assert.Empty(ServicePrincipalRegistry.ReadConstraints(original).ResourceIds);
+                Assert.Empty(ServicePrincipalRegistry.ReadConstraints(original).RequestDefinitionIds);
+            }
+            Assert.Equal(1, app.Services.GetRequiredService<InvocationCounter>().Starts);
         }
         finally { Directory.Delete(directory, true); }
     }
@@ -136,12 +205,18 @@ public sealed class OrchestrationManagedServiceHttpTests(PostgreSqlPersistenceFi
         builder.Services.AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(connection));
         builder.Services.AddDbContext<NetRatelIdentityDbContext>(options => options.UseNpgsql(connection));
         builder.Services.AddClientInstallationOptions(builder.Configuration);
-        builder.Services.AddOptions<ServiceLinkOptions>().Bind(builder.Configuration.GetSection(ServiceLinkOptions.SectionName));
+        builder.Services.AddScoped<PairingAuthority>();
+        builder.Services.AddSingleton<NetRatel.Infrastructure.Flows.FlowPersistenceService>();
+        builder.Services.AddSingleton<NetRatel.Application.RatelDesk.IFlowSourceIdentityResolver>(p => p.GetRequiredService<NetRatel.Infrastructure.Flows.FlowPersistenceService>());
+        builder.Services.AddScoped<InstallationIdentityStore>();
+        builder.Services.AddScoped<PairingBusinessProfileService>();
+        builder.Services.AddSingleton(new PairingTransport(new HttpClient()));
         builder.Services.AddScoped<IDeploymentBrandingService, DeploymentBrandingService>();
-        builder.Services.AddScoped<IEffectiveAccessService, EffectiveAccessService>();
-        builder.Services.AddScoped<ServiceLinkIdentityStore>();
+        builder.Services.AddSingleton<IEffectiveAccessService, PairingBusinessAuthorityFixture.Access>();
+
         builder.Services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo(directory)).SetApplicationName("NetRatel.Orchestration.Tests");
         builder.Services.AddNetRatelServiceIdentityApi(builder.Configuration);
+        builder.Services.AddScoped<IServicePublicSettingsResolver, Settings>();
         builder.Services.Configure<NetRatel.Application.Agents.AgentAuthOptions>(_ => { }); builder.Services.AddScoped<OidcSigningService>();
         builder.Services.AddScoped<NetRatel.Application.Agents.IAgentTokenService, AgentTokenService>(); builder.Services.AddScoped<AgentNonceReplayService>();
         builder.Services.AddSingleton<LegacyHandlerCounter>(); builder.Services.AddSingleton<InvocationCounter>();
@@ -161,6 +236,9 @@ public sealed class OrchestrationManagedServiceHttpTests(PostgreSqlPersistenceFi
         var app = builder.Build(); app.UseAuthentication(); app.UseAuthorization(); app.UseRateLimiter(); app.MapInternalEndpoints(); app.MapSystemEndpoints(); app.MapM2MTokenEndpoints(); app.MapServiceIdentityMetadataEndpoints();
         app.MapGet("/broad-legacy", () => Results.Ok()).RequireAuthorization("M2MOnly"); await app.StartAsync(); return app;
     }
+
+    private sealed class Settings(IOptionsMonitor<ServiceIdentityOptions> options) : IServicePublicSettingsResolver
+    { public Task<ServicePublicSettingsEffective> ResolveAsync(CancellationToken ct = default) => Task.FromResult(new ServicePublicSettingsEffective(options.CurrentValue, 1, [])); }
 
     private sealed class LegacyHandlerCounter { public int Authentications; }
     private sealed class InvocationCounter { public int Starts; }

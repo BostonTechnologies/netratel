@@ -1,0 +1,274 @@
+@using System.Text.RegularExpressions
+@using NetRatel.Shared.SystemPairing
+@using NetRatel.Web.Services.Pairing
+@implements IDisposable
+@inject IPairingApiClient Api
+@inject IJSRuntime JS
+
+<section class="pairing-connections" data-testid="system-connections">
+    <MudStack Row="true" Wrap="Wrap.Wrap" AlignItems="AlignItems.Center" Spacing="2" Class="mb-4">
+        <MudButton Variant="Variant.Outlined" Size="Size.Small" OnClick="GenerateAsync" Disabled="@_busy" data-testid="generate-pairing-code">Generate a Pairing Code</MudButton>
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.Link" OnClick="OpenCreate" Disabled="@(_busy || _loading)" data-testid="create-connection">Create Connection</MudButton>
+    </MudStack>
+    @if (_error is not null) { <MudAlert Severity="Severity.Error" Class="mb-3" data-testid="pairing-error">@_error</MudAlert> }
+    @if (_notice is not null) { <MudAlert Severity="Severity.Success" Class="mb-3" data-testid="pairing-success">@_notice</MudAlert> }
+    @if (_code is { } generatedCode)
+    {
+        <MudPaper Class="pairing-code mb-4" Elevation="0" Outlined="true" data-testid="pairing-code-panel">
+            <MudTextField T="string" Label="Pairing code" Value="@generatedCode.Code" ReadOnly="true" Variant="Variant.Outlined" data-testid="generated-pairing-code" />
+            <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween" Class="mt-2">
+                <MudText Typo="Typo.caption">Expires @generatedCode.ExpiresAtUtc.ToString("yyyy-MM-dd HH:mm:ss") UTC · single use</MudText>
+                <MudButton Variant="Variant.Text" Size="Size.Small" StartIcon="@Icons.Material.Filled.ContentCopy" OnClick="CopyCodeAsync">Copy</MudButton>
+            </MudStack>
+            @if (_clipboardError) { <MudText Typo="Typo.caption">Clipboard access is unavailable. Select and copy the code above.</MudText> }
+        </MudPaper>
+    }
+    @if (_createOpen)
+    {
+        <MudPaper Class="pairing-form mb-4" Elevation="0" Outlined="true" data-testid="pairing-create-form">
+            <MudText Typo="Typo.h6" Class="mb-3">Create Connection</MudText>
+            <MudTextField T="string" Label="Address" @bind-Value="_address" Immediate="true" Disabled="@_busy" Variant="Variant.Outlined" Placeholder="https://rateldesk.example.com" data-testid="pairing-address" />
+            <MudTextField T="string" Label="Pairing code" @bind-Value="_pairingCode" Immediate="true" Disabled="@_busy" Variant="Variant.Outlined" Placeholder="XXXX-XXXX" Class="mt-3" data-testid="pairing-code" autocomplete="off" />
+            <MudStack Row="true" Spacing="2" Class="mt-3">
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.Link" Disabled="@(!CanPair || _busy)" OnClick="PairAsync" data-testid="pair-and-connect">@(_busy ? "Pairing…" : "Pair & connect")</MudButton>
+                <MudButton Variant="Variant.Text" Size="Size.Small" OnClick="CloseCreate" Disabled="@_busy">Cancel</MudButton>
+            </MudStack>
+        </MudPaper>
+    }
+    @if (_selected is { } selected)
+    {
+        <MudPaper Class="pairing-form mb-4" Elevation="0" Outlined="true" data-testid="pairing-final-form">
+            <MudText Typo="Typo.h6">@(selected.Mapping is null ? "Systems paired" : "Connection configuration")</MudText>
+            <MudText Typo="Typo.body2" Class="mb-3">@selected.Peer.Name · @selected.Peer.WebOrigin</MudText>
+            @if (_directoryLoading) { <MudProgressLinear Indeterminate="true" Class="mb-3" /><MudText Typo="Typo.body2">Loading your available tenants and organizations…</MudText> }
+            @if (_directoryError is not null) { <MudAlert Severity="Severity.Error" Class="mb-3" data-testid="pairing-directory-error">@_directoryError <MudButton Variant="Variant.Text" Size="Size.Small" OnClick="ReloadDirectoryAsync" Disabled="@_busy">Retry</MudButton></MudAlert> }
+            <div class="pairing-tenant-grid">
+                <MudSelect T="string" Label="NetRatel tenant" Value="@_netRatelTenant" ValueChanged="TenantChanged" Variant="Variant.Outlined" Disabled="@(_busy || _directoryLoading || _directory is null)" data-testid="pairing-netratel-tenant">
+                    @foreach (var tenant in _directory?.NetRatelTenants ?? []) { <MudSelectItem T="string" Value="@tenant.Id">@tenant.Name</MudSelectItem> }
+                </MudSelect>
+                <MudSelect T="string" Label="RatelDesk tenant / organization" Value="@_organization" ValueChanged="OrganizationChanged" Variant="Variant.Outlined" Disabled="@(_busy || _directoryLoading || _directory is null)" data-testid="pairing-rateldesk-organization">
+                    @foreach (var organization in _directory?.RatelDeskOrganizations ?? []) { <MudSelectItem T="string" Value="@organization.Id">@organization.Name</MudSelectItem> }
+                </MudSelect>
+            </div>
+            @if (_createIncidents)
+            {
+                <MudSelect T="string" Label="RatelDesk customer" Value="@_customer" ValueChanged="CustomerChanged" Variant="Variant.Outlined" Disabled="@(_busy || _directoryLoading || _directory is null)" Class="mt-3" data-testid="pairing-rateldesk-customer">
+                    @foreach (var customer in Customers) { <MudSelectItem T="string" Value="@customer.Id">@customer.Name</MudSelectItem> }
+                </MudSelect>
+            }
+            <MudTextField T="string" Label="Connection name" @bind-Value="_name" Immediate="true" Disabled="@_busy" Variant="Variant.Outlined" Class="mt-3" MaxLength="128" data-testid="pairing-connection-name" />
+            <MudCheckBox T="bool" Value="@_createIncidents" ValueChanged="IncidentsChanged" Disabled="@_busy" Label="Create incidents — NetRatel → RatelDesk" data-testid="pairing-create-incidents" />
+            <MudCheckBox T="bool" @bind-Value="_runAutomation" Disabled="@_busy" Label="Run automation — RatelDesk → NetRatel" data-testid="pairing-run-automation" />
+            @if (_saveError is not null) { <MudAlert Severity="Severity.Error" Class="my-3" data-testid="pairing-save-error">@_saveError</MudAlert> }
+            <MudStack Row="true" Spacing="2" Class="mt-3">
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" Disabled="@(_busy || !CanSave)" OnClick="SaveAsync" data-testid="pairing-save">Save</MudButton>
+                <MudButton Variant="Variant.Text" Size="Size.Small" Disabled="@_busy" OnClick="CloseConfiguration">Close</MudButton>
+            </MudStack>
+        </MudPaper>
+    }
+    @if (_loading) { <MudSkeleton Height="110px" /> }
+    else if (_connections.Length == 0) { <MudText Typo="Typo.body2" Color="Color.Secondary" data-testid="pairing-empty">No system connections yet.</MudText> }
+    else
+    {
+        <MudStack Spacing="2">
+            @foreach (var connection in _connections)
+            {
+                <MudPaper Class="pairing-card" Elevation="0" Outlined="true" data-testid="connection-card" @key="Key(connection)">
+                    <MudStack Row="true" Wrap="Wrap.Wrap" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
+                        <div><MudText Typo="Typo.subtitle1">@(connection.Mapping?.Name ?? $"NetRatel ↔ {connection.Peer.Name}")</MudText><MudText Typo="Typo.caption">@connection.Peer.WebOrigin</MudText></div>
+                        <MudChip T="string" Size="Size.Small" Color="@(Connected(connection) ? Color.Success : Color.Warning)">@Status(connection)</MudChip>
+                    </MudStack>
+                    @if (connection.Mapping is { } mapping)
+                    {
+                        <MudText Typo="Typo.body2" Class="mt-2">@ChoiceName(connection.PairId, mapping.NetRatelTenantId, true) → @ChoiceName(connection.PairId, mapping.RatelDeskOrganizationId, false)@(mapping.RatelDeskCustomerId is { } customer ? $" · {CustomerName(connection.PairId, customer)}" : "")</MudText>
+                        <MudText Typo="Typo.caption">@Capabilities(mapping)</MudText>
+                    }
+                    @if (connection.LastTest is { } result) { <MudText Typo="Typo.body2" Color="@(result.Success ? Color.Success : Color.Error)" Class="mt-2" data-testid="connection-test-result">@result.Message · @result.TestedAtUtc.ToString("yyyy-MM-dd HH:mm") UTC</MudText> }
+                    else { <MudText Typo="Typo.caption">Not tested</MudText> }
+                    @if (_rowErrors.TryGetValue(Key(connection), out var rowError)) { <MudAlert Severity="Severity.Error" Class="mt-2" data-testid="connection-error">@rowError</MudAlert> }
+                    <MudStack Row="true" Spacing="1" Class="mt-2">
+                        <MudButton Variant="Variant.Text" Size="Size.Small" OnClick="@(() => ViewAsync(connection))" Disabled="@(_busy || _deleting.Contains(Key(connection)))" data-testid="connection-view">View</MudButton>
+                        <MudButton Variant="Variant.Text" Size="Size.Small" OnClick="@(() => TestAsync(connection))" Disabled="@(_busy || connection.Mapping is null || _deleting.Contains(Key(connection)))" data-testid="connection-test">Test connection</MudButton>
+                        <MudButton Variant="Variant.Text" Size="Size.Small" Color="Color.Error" OnClick="@(() => DeleteAsync(connection))" Disabled="@_deleting.Contains(Key(connection))" data-testid="connection-delete">Delete connection</MudButton>
+                    </MudStack>
+                </MudPaper>
+            }
+        </MudStack>
+    }
+</section>
+
+@code {
+    private readonly CancellationTokenSource _lifetime = new();
+    private readonly Dictionary<string, PairingDirectories> _directories = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _rowErrors = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _deleted = new(StringComparer.Ordinal), _deleting = new(StringComparer.Ordinal);
+    private PairingConnectionDto[] _connections = [];
+    private PairingConnectionDto? _selected;
+    private PairingDirectories? _directory;
+    private PairingCodeResponse? _code;
+    private string _address = "", _pairingCode = "", _name = "", _netRatelTenant = "", _organization = "", _customer = "";
+    private string? _error, _saveError, _notice, _directoryError, _operationInput;
+    private Guid _operationId = Guid.NewGuid(), _mappingId;
+    private bool _loading = true, _busy, _createOpen, _createIncidents, _runAutomation, _directoryLoading, _clipboardError, _disposed;
+    private int _selectionGeneration, _listGeneration;
+    private bool CanPair => TryNormalizeAddress(_address, out _) && Regex.IsMatch(_pairingCode.Trim(), "^[A-Za-z0-9]{4}-?[A-Za-z0-9]{4}$");
+    private IEnumerable<PairingChoice> Customers => (_directory?.Customers ?? []).Where(x => x.ParentId == _organization);
+    private bool CanSave => _directory is not null && !_directoryLoading && !string.IsNullOrWhiteSpace(_name) && _name.Length <= 128 &&
+        _directory.NetRatelTenants.Any(x => x.Id == _netRatelTenant) && _directory.RatelDeskOrganizations.Any(x => x.Id == _organization) &&
+        (_createIncidents || _runAutomation) && (!_createIncidents || Customers.Any(x => x.Id == _customer));
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+    private async Task LoadAsync()
+    {
+        var generation = ++_listGeneration; _loading = true; _error = null;
+        try
+        {
+            var connections = await Api.ListAsync(_lifetime.Token);
+            if (_disposed || generation != _listGeneration) return;
+            _connections = connections.Where(x => !Deleted(x)).ToArray();
+            await Task.WhenAll(_connections.Where(x => x.Mapping is not null).Select(x => x.PairId).Distinct().Select(LoadNamesAsync));
+            if (_disposed || generation != _listGeneration) return;
+            var incomplete = _connections.FirstOrDefault(x => !Connected(x));
+            if (incomplete is not null) await ViewAsync(incomplete);
+        }
+        catch (Exception e) when (Expected(e)) { if (!_disposed && generation == _listGeneration) _error = Failure(e); }
+        finally { if (!_disposed && generation == _listGeneration) _loading = false; }
+    }
+    private async Task LoadNamesAsync(string pairId)
+    {
+        try { var directory = await Api.DirectoryAsync(pairId, _lifetime.Token); if (!_disposed) _directories[pairId] = directory; }
+        catch (Exception e) when (Expected(e)) { /* View reloads directory and shows its failure; cards remain deletable. */ }
+    }
+    private void OpenCreate()
+    {
+        if (_busy || _disposed) return;
+        CloseConfiguration(); _createOpen = true; _error = _notice = null; _address = _pairingCode = "";
+        _operationId = Guid.NewGuid(); _operationInput = null;
+    }
+    private void CloseCreate() { if (_busy) return; _createOpen = false; _pairingCode = ""; }
+    private async Task GenerateAsync()
+    {
+        if (_busy || _disposed) return;
+        _busy = true; _error = _notice = null; _code = null; _clipboardError = false;
+        try { var code = await Api.GenerateCodeAsync(_lifetime.Token); if (!_disposed) _code = code; }
+        catch (Exception e) when (Expected(e)) { if (!_disposed) _error = Failure(e); }
+        finally { if (!_disposed) _busy = false; }
+    }
+    private async Task CopyCodeAsync()
+    {
+        if (_code is null) return;
+        try { await JS.InvokeVoidAsync("navigator.clipboard.writeText", _code.Code); _clipboardError = false; }
+        catch (JSException) { _clipboardError = true; }
+    }
+    private async Task PairAsync()
+    {
+        if (_busy || !CanPair || _disposed || !TryNormalizeAddress(_address, out var address)) return;
+        var code = _pairingCode.Trim().ToUpperInvariant(); var input = address + "\n" + code;
+        if (_operationInput is not null && _operationInput != input) _operationId = Guid.NewGuid();
+        _operationInput = input; _busy = true; _error = _notice = null;
+        try
+        {
+            var connection = await Api.ConnectAsync(new(address, code, _operationId), _lifetime.Token);
+            if (_disposed || Deleted(connection)) return;
+            Upsert(connection); _pairingCode = ""; _operationInput = null; _createOpen = false; _notice = "Systems paired.";
+            await ViewAsync(connection);
+        }
+        catch (Exception e) when (Expected(e)) { if (!_disposed) _error = Failure(e); }
+        finally { if (!_disposed) _busy = false; }
+    }
+    private async Task ViewAsync(PairingConnectionDto connection)
+    {
+        if (_disposed || Deleted(connection)) return;
+        var generation = ++_selectionGeneration;
+        _selected = connection; _saveError = _directoryError = null; _createOpen = false; _pairingCode = "";
+        _mappingId = connection.Mapping?.Id ?? Guid.NewGuid(); _name = connection.Mapping?.Name ?? $"NetRatel ↔ {connection.Peer.Name}";
+        _netRatelTenant = connection.Mapping?.NetRatelTenantId ?? ""; _organization = connection.Mapping?.RatelDeskOrganizationId ?? ""; _customer = connection.Mapping?.RatelDeskCustomerId ?? "";
+        _createIncidents = connection.Mapping?.CreateIncidents ?? false; _runAutomation = connection.Mapping?.RunAutomation ?? false; _directory = null;
+        await LoadDirectoryAsync(connection, generation);
+    }
+    private Task ReloadDirectoryAsync() => _selected is { } selected ? LoadDirectoryAsync(selected, _selectionGeneration) : Task.CompletedTask;
+    private async Task LoadDirectoryAsync(PairingConnectionDto connection, int generation)
+    {
+        _directoryLoading = true; _directoryError = null;
+        try
+        {
+            var directory = await Api.DirectoryAsync(connection.PairId, _lifetime.Token);
+            if (!CurrentSelection(connection, generation)) return;
+            _directory = directory; _directories[connection.PairId] = directory;
+            if (string.IsNullOrEmpty(_netRatelTenant)) _netRatelTenant = directory.NetRatelTenants.FirstOrDefault()?.Id ?? "";
+            if (string.IsNullOrEmpty(_organization)) _organization = directory.RatelDeskOrganizations.FirstOrDefault()?.Id ?? "";
+        }
+        catch (Exception e) when (Expected(e)) { if (CurrentSelection(connection, generation)) _directoryError = Failure(e); }
+        finally { if (CurrentSelection(connection, generation)) _directoryLoading = false; }
+    }
+    private void CloseConfiguration() { _selectionGeneration++; _selected = null; _directory = null; _directoryLoading = false; _saveError = _directoryError = null; }
+    private void TenantChanged(string value) { _netRatelTenant = value; _saveError = null; }
+    private void OrganizationChanged(string value) { _organization = value; _customer = ""; _saveError = null; }
+    private void CustomerChanged(string value) { _customer = value; _saveError = null; }
+    private void IncidentsChanged(bool value) { _createIncidents = value; _saveError = null; }
+    private async Task SaveAsync()
+    {
+        if (_busy || _disposed || _selected is not { } selected || !CanSave) return;
+        var generation = _selectionGeneration;
+        var mapping = new PairingMapping(_mappingId, selected.PairId, _name.Trim(), _netRatelTenant, _organization, _createIncidents ? _customer : null, _createIncidents, _runAutomation);
+        _busy = true; _saveError = _notice = null;
+        try
+        {
+            var connection = await Api.SaveAsync(mapping, _lifetime.Token);
+            if (!CurrentSelection(selected, generation) || Deleted(connection)) return;
+            Upsert(connection); _selected = connection;
+            if (Connected(connection)) { _notice = "Connected. The selected mapping and capabilities are active."; CloseConfiguration(); }
+            else _saveError = "The systems are paired, but activation did not complete. Review the selected resources and retry Save. Reference: mapping-not-active.";
+        }
+        catch (Exception e) when (Expected(e)) { if (CurrentSelection(selected, generation)) _saveError = Failure(e); }
+        finally { if (!_disposed) _busy = false; }
+    }
+    private async Task TestAsync(PairingConnectionDto connection)
+    {
+        if (_busy || _disposed || Deleted(connection) || connection.Mapping is null) return;
+        _busy = true; _rowErrors.Remove(Key(connection));
+        try { var result = await Api.TestAsync(connection, _lifetime.Token); if (!_disposed && !Deleted(connection)) Upsert(connection with { LastTest = result }); }
+        catch (Exception e) when (Expected(e)) { if (!_disposed && !Deleted(connection)) _rowErrors[Key(connection)] = Failure(e); }
+        finally { if (!_disposed) _busy = false; }
+    }
+    private async Task DeleteAsync(PairingConnectionDto connection)
+    {
+        var key = Key(connection); if (_disposed || !_deleting.Add(key)) return; _rowErrors.Remove(key);
+        try
+        {
+            await Api.DeleteAsync(connection, _lifetime.Token);
+            if (_disposed) return;
+            _deleted.Add(key); _listGeneration++; _loading = false; _connections = _connections.Where(x => Key(x) != key).ToArray();
+            if (_selected is { } selected && (Key(selected) == key || selected.PairId == connection.PairId && connection.Mapping is null)) CloseConfiguration();
+            _notice = "Connection deleted. Its local access has been revoked.";
+        }
+        catch (Exception e) when (Expected(e)) { if (!_disposed) _rowErrors[key] = Failure(e); }
+        finally { if (!_disposed) _deleting.Remove(key); }
+    }
+    private void Upsert(PairingConnectionDto connection)
+    {
+        if (Deleted(connection)) return;
+        _connections = _connections.Where(x => Key(x) != Key(connection) && !(x.PairId == connection.PairId && x.Mapping is null && connection.Mapping is not null)).Append(connection).OrderBy(x => x.Mapping?.Name ?? x.Peer.Name).ToArray();
+    }
+    private bool CurrentSelection(PairingConnectionDto connection, int generation) => !_disposed && generation == _selectionGeneration && !Deleted(connection) && _selected?.PairId == connection.PairId;
+    private bool Deleted(PairingConnectionDto connection) => _deleted.Contains(Key(connection)) || _deleted.Contains("pair:" + connection.PairId) || _deleting.Contains(Key(connection)) || _deleting.Contains("pair:" + connection.PairId);
+    private static string Key(PairingConnectionDto connection) => connection.Mapping is { } mapping ? "mapping:" + mapping.Id.ToString("D") : "pair:" + connection.PairId;
+    private static bool Connected(PairingConnectionDto connection) => connection.Mapping is not null && connection.Status.Equals("connected", StringComparison.OrdinalIgnoreCase);
+    private static string Status(PairingConnectionDto connection) => Connected(connection) ? "Connected" : connection.Mapping is null ? "Paired · configuration needed" : "Configuration needed";
+    private static string Capabilities(PairingMapping mapping) => string.Join(" · ", new[] { mapping.CreateIncidents ? "Create incidents · NetRatel → RatelDesk" : null, mapping.RunAutomation ? "Run automation · RatelDesk → NetRatel" : null }.Where(x => x is not null));
+    private string ChoiceName(string pairId, string id, bool netRatel) => _directories.TryGetValue(pairId, out var directory) ? (netRatel ? directory.NetRatelTenants : directory.RatelDeskOrganizations).FirstOrDefault(x => x.Id == id)?.Name ?? $"Unavailable ({id})" : $"Unavailable ({id})";
+    private string CustomerName(string pairId, string id) => _directories.TryGetValue(pairId, out var directory) ? directory.Customers.FirstOrDefault(x => x.Id == id)?.Name ?? $"Unavailable customer ({id})" : $"Unavailable customer ({id})";
+    private static bool Expected(Exception e) => e is PairingApiException or HttpRequestException or IOException or OperationCanceledException or System.Text.Json.JsonException;
+    private static string Failure(Exception e) => e is PairingApiException api ? $"{api.Message} Reference: {api.Code} / {api.Reference}." : $"The request did not complete. Check the system's availability, then retry this operation; your draft is retained. Reference: {Guid.NewGuid():N}.";
+    internal static bool TryNormalizeAddress(string value, out string address)
+    {
+        address = value.Trim(); if (!address.Contains("://", StringComparison.Ordinal)) address = "https://" + address;
+        if (!Uri.TryCreate(address, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https") || string.IsNullOrWhiteSpace(uri.Host) || !string.IsNullOrEmpty(uri.UserInfo) || !string.IsNullOrEmpty(uri.Query) || !string.IsNullOrEmpty(uri.Fragment)) { address = ""; return false; }
+        address = uri.AbsoluteUri.TrimEnd('/'); return true;
+    }
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true; _selectionGeneration++; _listGeneration++; _code = null; _pairingCode = ""; _operationInput = null; _lifetime.Cancel(); _lifetime.Dispose();
+    }
+}

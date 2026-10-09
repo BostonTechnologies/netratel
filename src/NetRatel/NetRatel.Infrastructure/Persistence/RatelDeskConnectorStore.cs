@@ -28,14 +28,14 @@ public sealed class RatelDeskConnectorStore(OrchestratorDbContext db) : IRatelDe
     {
         if (state.TenantId <= 0 || state.Id == Guid.Empty || state.RowVersion != checked(expectedRowVersion + 1) || state.Revision <= 0)
             throw new ArgumentException("invalid-connector-state");
-        await using var transaction = db.Database.IsRelational()
+        await using var transaction = db.Database.IsRelational() && db.Database.CurrentTransaction is null
             ? await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken).ConfigureAwait(false) : null;
         // Serialize different-ID admission before its lookup/count/insert; row CAS alone cannot bound a tenant aggregate.
         if (expectedRowVersion == 0 && db.Database.IsNpgsql())
             await db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock({733460001}, {state.TenantId})", cancellationToken).ConfigureAwait(false);
         var record = await db.RatelDeskConnectors.SingleOrDefaultAsync(r => r.TenantId == state.TenantId && r.Id == state.Id, cancellationToken).ConfigureAwait(false);
         var configurationJson = JsonSerializer.Serialize(state.Configuration);
-        var authentication = state.Authentication ?? new(RatelDeskAuthenticationMode.ManualApiBearer, null);
+        var authentication = state.Authentication;
         var authenticationJson = state.Authentication is null ? null : JsonSerializer.Serialize(authentication);
         if (record is null && expectedRowVersion != 0 || record is not null &&
             (record.RowVersion != expectedRowVersion || record.OwnerPrincipalId != state.OwnerPrincipalId || state.Revision < record.Revision || state.CredentialRevision < record.CredentialRevision))
@@ -44,7 +44,7 @@ public sealed class RatelDeskConnectorStore(OrchestratorDbContext db) : IRatelDe
             state.Revision == record.Revision && configurationJson != JsonSerializer.Serialize(
                 JsonSerializer.Deserialize<RatelDeskConnectorConfiguration>(record.ConfigurationJson) ?? throw new InvalidOperationException("invalid-connector-record")) ||
             state.Revision == record.Revision && JsonSerializer.Serialize(authentication) != JsonSerializer.Serialize(
-                record.AuthenticationJson is null ? new RatelDeskConnectorAuthentication(RatelDeskAuthenticationMode.ManualApiBearer, null) :
+                record.AuthenticationJson is null ? null :
                 JsonSerializer.Deserialize<RatelDeskConnectorAuthentication>(record.AuthenticationJson) ?? throw new InvalidOperationException("invalid-connector-authentication")) ||
             state.CredentialRevision == record.CredentialRevision && state.ProtectedCredential != record.ProtectedCredential)) return false;
         if (record is null)
@@ -73,7 +73,7 @@ public sealed class RatelDeskConnectorStore(OrchestratorDbContext db) : IRatelDe
     public async Task<RatelDeskConnectorAuthentication> GetAuthenticationAsync(int tenantId, Guid connectorId, CancellationToken ct)
     {
         var current = await GetAsync(tenantId, connectorId, ct).ConfigureAwait(false) ?? throw new UnauthorizedAccessException("connector-not-found");
-        return current.Authentication ?? new(RatelDeskAuthenticationMode.ManualApiBearer, null);
+        return current.Authentication?.Mode == RatelDeskAuthenticationMode.PairedSystem ? current.Authentication : throw new UnauthorizedAccessException("paired-connection-required");
     }
 
     public Task<bool> SaveReadinessAsync(RatelDeskConnectorState current, RatelDeskReadinessObservation observation, CancellationToken ct)
