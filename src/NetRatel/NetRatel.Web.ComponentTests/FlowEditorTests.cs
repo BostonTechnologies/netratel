@@ -238,6 +238,7 @@ public sealed class FlowEditorTests : AsyncBunitContext
         await _dialogs.InvokeAsync(() => _dialogs.Find("[data-testid=flow-keep-editing]").ClickAsync(new()));
         cut.Find("[data-testid=flow-dirty]").TextContent.Should().Contain("Unsaved");
         await cut.InvokeAsync(() => navigation.NavigateTo("/monitoring?tenantId=17"));
+        await _dialogs.WaitForAssertionAsync(() => _dialogs.FindAll("[data-testid=flow-save-leave]").Count.Should().Be(1));
         await _dialogs.InvokeAsync(() => _dialogs.Find("[data-testid=flow-save-leave]").ClickAsync(new()));
         navigation.Uri.Should().EndWith("/monitoring?tenantId=17");
         _api.SaveCalls.Should().Be(1); _api.PublishCalls.Should().Be(0);
