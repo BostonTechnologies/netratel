@@ -7,9 +7,10 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using NetRatel.Infrastructure.SystemPairing.Network;
 using NetRatel.Shared.SystemPairing;
+using NetRatel.Application.Events;
 namespace NetRatel.Infrastructure.SystemPairing;
 
-public sealed class PairingTransport(HttpClient http)
+public sealed class PairingTransport(HttpClient http, ICorrelationContext? correlation = null)
 {
     public static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     public static string Origin(string value)
@@ -72,6 +73,7 @@ public sealed class PairingTransport(HttpClient http)
         if (!path.StartsWith('/') || path.Contains('?') || path.Contains('#') || path.Contains("..", StringComparison.Ordinal)) throw new InvalidOperationException("fixed-pairing-route-required");
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct); deadline.CancelAfter(TimeSpan.FromSeconds(15));
         using var request = new HttpRequestMessage(method, Origin(origin) + PairingProtocol.Route + path);
+        if (correlation is not null) request.Headers.Add("X-Correlation-Id", PairingReadinessDiagnostics.NewReference(correlation.GetOrCreate()));
         if (nonce is not null) request.Headers.Add("X-Pairing-Nonce", nonce);
         if (body is not null) request.Content = JsonContent.Create(body, options: Json);
         if (secret is not null) { request.Headers.Authorization = new("Pairing", secret); request.Headers.Add("X-Pairing-Peer", localInstallationId); request.Headers.Add("X-Pairing-Caller", callerSecretHash ?? throw new InvalidOperationException("pairing-caller-generation-required")); }
@@ -81,24 +83,48 @@ public sealed class PairingTransport(HttpClient http)
         using var buffer = new MemoryStream(); var bytes = new byte[4096]; int read;
         while ((read = await stream.ReadAsync(bytes, deadline.Token)) != 0)
         { if (buffer.Length + read > 65536) throw new PairingException(502, "peer-response-too-large", "The peer returned an oversized response."); await buffer.WriteAsync(bytes.AsMemory(0, read), deadline.Token); }
+        var bodySecret = body switch { PairingSaveRequest save => save.Credential?.ClientSecret, PairingExchangeRequest exchange => exchange.InboundSecret, _ => null };
+        var codeSecret = body is PairingExchangeRequest codeExchange ? codeExchange.Code : null;
+        var sensitive = new[] { secret, bodySecret, codeSecret, codeSecret?.Trim().Replace("-", "", StringComparison.Ordinal).ToUpperInvariant() }.Where(x => !string.IsNullOrEmpty(x)).ToArray();
+        bool SafeDiagnostic(PairingReadinessDiagnostic? diagnostic)
+        {
+            if (!PairingReadinessDiagnostics.IsValid(diagnostic)) return false;
+            var serialized = JsonSerializer.Serialize(diagnostic, Json);
+            return !sensitive.Any(value => serialized.Contains(value!, StringComparison.Ordinal)) && !ContainsPairingCode(serialized, codeSecret);
+        }
         if (!response.IsSuccessStatusCode)
         {
-            string? message = null; string? code = null;
-            try { using var doc = JsonDocument.Parse(buffer.ToArray()); if (doc.RootElement.TryGetProperty("message", out var item)) message = item.GetString(); if (doc.RootElement.TryGetProperty("code", out item)) code = item.GetString(); } catch (JsonException) { }
+            string? message = null; string? code = null; PairingReadinessDiagnostic? diagnostic = null;
+            try
+            {
+                using var doc = JsonDocument.Parse(buffer.ToArray());
+                if (doc.RootElement.TryGetProperty("message", out var item) && item.ValueKind == JsonValueKind.String) message = item.GetString();
+                if (doc.RootElement.TryGetProperty("code", out item) && item.ValueKind == JsonValueKind.String) code = item.GetString();
+                if (doc.RootElement.TryGetProperty("diagnostic", out item))
+                {
+                    try { diagnostic = item.Deserialize<PairingReadinessDiagnostic>(Json); } catch (JsonException) { }
+                    if (!SafeDiagnostic(diagnostic)) diagnostic = null;
+                }
+            }
+            catch (Exception error) when (error is JsonException or InvalidOperationException) { }
             if (code is not { Length: > 0 and <= 80 } || code.Any(x => !char.IsAsciiLetterOrDigit(x) && x is not '-' and not '_')) code = "peer-rejected";
-            var bodySecret = body switch { PairingSaveRequest save => save.Credential?.ClientSecret, PairingExchangeRequest exchange => exchange.InboundSecret, _ => null };
-            var codeSecret = body is PairingExchangeRequest codeExchange ? codeExchange.Code : null;
-            var sensitive = new[] { secret, bodySecret, codeSecret, codeSecret?.Trim().Replace("-", "", StringComparison.Ordinal).ToUpperInvariant() }.Where(x => !string.IsNullOrEmpty(x)).ToArray();
             if (sensitive.Any(x => code.Contains(x!, StringComparison.Ordinal)) || ContainsPairingCode(code, codeSecret)) code = "peer-rejected";
             if (message is not { Length: > 0 and <= 1024 } || sensitive.Any(x => message.Contains(x!, StringComparison.Ordinal)) || ContainsPairingCode(message, codeSecret)) message = $"The peer rejected this operation (HTTP {(int)response.StatusCode}).";
-            throw new PairingException((int)response.StatusCode, code, message);
+            throw new PairingException((int)response.StatusCode, code,
+                diagnostic is not null ? PairingReadinessDiagnostics.Describe(diagnostic) : message, diagnostic);
         }
         if (typeof(T) == typeof(bool)) return (T)(object)true;
         try
         {
             var parsed = JsonSerializer.Deserialize<T>(buffer.ToArray(), Json) ?? throw new JsonException();
             if (parsed is PairingDirectory directory && (directory.Tenants is null || directory.Customers is null || directory.Tenants.Length > 10000 || directory.Customers.Length > 10000 || directory.Tenants.Concat(directory.Customers).Any(x => x is null || x.Id is not { Length: > 0 and <= 128 } || x.Name is not { Length: > 0 and <= 256 }))) throw new JsonException();
-            if (parsed is PairingTestResult test && test.Message is not { Length: > 0 and <= 1024 }) throw new JsonException();
+            if (parsed is PairingTestResult test)
+            {
+                if (test.Message is not { Length: > 0 and <= 1024 }) throw new JsonException();
+                var diagnostic = !test.Success && SafeDiagnostic(test.Diagnostic) ? test.Diagnostic : null;
+                parsed = (T)(object)(test with { Diagnostic = diagnostic,
+                    Message = diagnostic is not null ? PairingReadinessDiagnostics.Describe(diagnostic) : test.Message });
+            }
             if (parsed is PairingSaveResponse saved && saved.Mapping is null) throw new JsonException();
             return parsed;
         }
@@ -126,15 +152,22 @@ public sealed class PairingTransport(HttpClient http)
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct); deadline.CancelAfter(TimeSpan.FromSeconds(15));
         using var request = new HttpRequestMessage(HttpMethod.Post, credential.TokenEndpoint)
         { Content = new FormUrlEncodedContent(new Dictionary<string, string> { ["grant_type"] = "client_credentials", ["client_id"] = credential.ClientId, ["client_secret"] = credential.ClientSecret, ["scope"] = scope }) };
+        if (correlation is not null) request.Headers.Add("X-Correlation-Id", PairingReadinessDiagnostics.NewReference(correlation.GetOrCreate()));
         using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token);
         if (!response.IsSuccessStatusCode) throw new PairingException((int)response.StatusCode, "business-access-rejected", $"The peer rejected the selected connection credential (HTTP {(int)response.StatusCode}).");
         await using var stream = await response.Content.ReadAsStreamAsync(deadline.Token);
         using var buffer = new MemoryStream(); var bytes = new byte[4096]; int read;
         while ((read = await stream.ReadAsync(bytes, deadline.Token)) != 0)
         { if (buffer.Length + read > 32768) throw new PairingException(502, "token-response-invalid", "The peer returned an oversized token response."); await buffer.WriteAsync(bytes.AsMemory(0, read), deadline.Token); }
-        using var doc = JsonDocument.Parse(buffer.ToArray());
-        if (!doc.RootElement.TryGetProperty("access_token", out var token) || token.GetString() is not { Length: > 0 and <= 16384 } value) throw new PairingException(502, "token-response-invalid", "The peer did not return a usable scoped access token.");
-        return value;
+        try
+        {
+            using var doc = JsonDocument.Parse(buffer.ToArray());
+            if (!doc.RootElement.TryGetProperty("access_token", out var token) || token.ValueKind != JsonValueKind.String ||
+                token.GetString() is not { Length: > 0 and <= 16384 } value) throw new JsonException();
+            return value;
+        }
+        catch (Exception error) when (error is JsonException or InvalidOperationException)
+        { throw new PairingException(502, "token-response-invalid", "The peer did not return a usable scoped access token."); }
     }
     public async Task<int> PostBusinessStatusAsync(string apiOrigin, string path, object body, string bearer, string correlationId, CancellationToken ct)
     {

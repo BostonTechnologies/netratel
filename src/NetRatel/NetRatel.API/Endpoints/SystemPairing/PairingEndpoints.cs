@@ -62,7 +62,7 @@ public static class PairingEndpoints
         http.Response.Headers.CacheControl = "no-store";
         if (humanMutation && http.User.HasClaim("auth_mode", "local") && http.Request.Headers["X-NetRatel-Account-Request"] != "1") return Results.Forbid();
         try { return await action(); }
-        catch (PairingException error) { return await FailureAsync(http, error.StatusCode, error.Code, error.Message, humanMutation); }
+        catch (PairingException error) { return await FailureAsync(http, error.StatusCode, error.Code, error.Message, humanMutation, diagnostic: error.Diagnostic); }
         catch (HttpRequestException error)
         {
             var blocked = false; for (Exception? current = error; current != null; current = current.InnerException) if (current.Data.Contains("Pairing.NetworkPolicyRejected")) blocked = true;
@@ -73,10 +73,15 @@ public static class PairingEndpoints
         catch (Exception error) when (error is ArgumentException or System.Text.Json.JsonException or System.Security.Cryptography.CryptographicException or Microsoft.EntityFrameworkCore.DbUpdateException or InvalidOperationException)
         { return await FailureAsync(http, 409, "connection-storage-unavailable", "The connection could not be persisted or its protected credentials could not be read. Check the safe reference in the server logs, then retry this same connection.", humanMutation, error.GetType().Name); }
     }
-    private static async Task<IResult> FailureAsync(HttpContext http, int status, string code, string message, bool notify, string? failureType = null)
+    private static async Task<IResult> FailureAsync(HttpContext http, int status, string code, string message, bool notify, string? failureType = null,
+        PairingReadinessDiagnostic? diagnostic = null)
     {
-        var reference = Guid.NewGuid().ToString("N");
-        http.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("SystemPairing").LogWarning("Pairing operation failed Code={Code} Reference={Reference} FailureType={FailureType}", code, reference, failureType);
+        if (!PairingReadinessDiagnostics.IsValid(diagnostic)) diagnostic = null;
+        var reference = diagnostic?.Reference ?? Guid.NewGuid().ToString("N");
+        if (diagnostic is not null) message = PairingReadinessDiagnostics.Describe(diagnostic);
+        http.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("SystemPairing").LogWarning(
+            "Pairing operation failed Code={Code} Reference={Reference} FailureType={FailureType} Stage={Stage} Reason={Reason} HttpStatus={HttpStatus}",
+            code, reference, failureType, diagnostic?.Stage, diagnostic?.Code, diagnostic?.HttpStatus);
         // Mutating interactive failures notify only their current administrator. Peer/read traffic never emits notifications.
         var actor = PairingAuthority.ActorId(http.User);
         if (notify && !string.IsNullOrEmpty(actor) && (status >= 500 || code == "connection-storage-unavailable") && http.RequestServices.GetRequiredService<PairingFailureNotificationGate>().Reserve(actor, code))
@@ -88,7 +93,7 @@ public static class PairingEndpoints
             }
             catch (Exception) when (!http.RequestAborted.IsCancellationRequested) { }
         }
-        return Results.Json(new { code, message, correlationId = reference }, statusCode: status);
+        return Results.Json(new { code, message, correlationId = reference, diagnostic }, statusCode: status);
     }
 }
 

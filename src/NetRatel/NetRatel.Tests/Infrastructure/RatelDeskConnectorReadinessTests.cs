@@ -1,4 +1,7 @@
 using System.Security.Claims;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using AwesomeAssertions;
 using Microsoft.Extensions.Options;
 using NetRatel.Application.RatelDesk;
@@ -6,11 +9,72 @@ using NetRatel.Infrastructure.RatelDesk;
 using NetRatel.Infrastructure.ServiceIdentity;
 using NetRatel.Shared.Contracts.RatelDesk;
 using Xunit;
+using NetRatel.Application.Events;
+using NetRatel.Shared.SystemPairing;
+using Microsoft.EntityFrameworkCore;
 
 namespace NetRatel.Tests.Infrastructure;
 
 public sealed class RatelDeskConnectorReadinessTests
 {
+    [Theory]
+    [InlineData("capability-endpoint", "receiver-capabilities", "receiver-endpoint-mismatch")]
+    [InlineData("receipt-token", "receipt-token", "business-access-rejected")]
+    [InlineData("target-json", "receiver-targets", "receiver-json-unverified")]
+    [InlineData("wrapped-endpoint", "receiver-capabilities", "receiver-endpoint-outside-approved-api-base")]
+    [InlineData("wrapped-private", "receiver-capabilities", "receiver-transport-unavailable")]
+    [InlineData("cleanup-failure", "receiver-capabilities", "receiver-endpoint-outside-approved-api-base")]
+    [InlineData("deployment-origin", "paired-binding", "receiver-deployment-origin-denied")]
+    [InlineData("deployment-policy", "paired-binding", "receiver-deployment-policy-invalid")]
+    [InlineData("address-blocked", "receiver-capabilities", "receiver-address-blocked")]
+    [InlineData("persistence", "readiness-persistence", "receiver-persistence-unavailable")]
+    public async Task Readiness_failures_identify_the_original_stage_without_exposing_peer_or_exception_text(string fault, string stage, string reason)
+    {
+        const string privateValue = "synthetic-private-token-must-not-appear";
+        var fixture = new Fixture(); var before = fixture.Store.Current; var peer = before.Readiness!.Peer;
+        fixture.Bindings.OnCapture = (_, _) => Task.FromResult(peer);
+        fixture.Bindings.Bearer = privateValue;
+        fixture.Transport.OnCapabilities = current =>
+        {
+            if (fault is "wrapped-endpoint" or "cleanup-failure")
+                throw new HttpRequestException(privateValue, new InvalidDataException("receiver-endpoint-outside-approved-api-base"));
+            if (fault == "wrapped-private") throw new HttpRequestException(privateValue, new InvalidDataException(privateValue));
+            if (fault == "address-blocked")
+            {
+                var blocked = new ArgumentException(privateValue); blocked.Data["Pairing.NetworkPolicyRejected"] = true;
+                throw new HttpRequestException(privateValue, blocked);
+            }
+            var body = JsonNode.Parse(RatelDeskReceiverFixture.Capability(current))!;
+            if (fault == "capability-endpoint") body["createEndpoint"] = "https://different-api.example.test/api/v1/incidents/";
+            return ReceiverWireValidation.Capability(Encoding.UTF8.GetBytes(body.ToJsonString()), current, RatelDeskReceiverFixture.Now);
+        };
+        if (fault == "receipt-token") fixture.Bindings.OnBearer = () => throw new NetRatel.Shared.SystemPairing.PairingException(401, "business-access-rejected", privateValue);
+        if (fault == "deployment-origin") fixture.Bindings.OnCapture = (_, _) => throw new UnauthorizedAccessException("receiver-deployment-origin-denied");
+        if (fault == "deployment-policy") fixture.Bindings.OnCapture = (_, _) => throw new InvalidOperationException("receiver-deployment-policy-invalid");
+        if (fault == "cleanup-failure") fixture.Store.BeforeClear = () =>
+        {
+            if (fixture.Store.Current.Readiness is null) throw new DbUpdateException(privateValue);
+        };
+        fixture.Transport.OnTargets = fault == "persistence" ? () => { } : () => throw new JsonException(privateValue);
+        if (fault == "persistence") fixture.Store.BeforeSaveReadiness = () => throw new DbUpdateException(privateValue);
+        var result = await fixture.Receiver.TestAsync(before, default);
+        result.Code.Should().Be(reason);
+        result.AutomaticDeliveryAvailable.Should().BeFalse();
+        var json = JsonSerializer.Serialize(result, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        json.Should().NotContain(privateValue).And.NotContain("different-api.example.test");
+        using var document = JsonDocument.Parse(json);
+        var diagnostic = document.RootElement.GetProperty("diagnostic");
+        diagnostic.GetProperty("stage").GetString().Should().Be(stage);
+        diagnostic.GetProperty("code").GetString().Should().Be(reason);
+        Guid.TryParseExact(diagnostic.GetProperty("reference").GetString(), "N", out _).Should().BeTrue();
+        diagnostic.GetProperty("reference").GetString().Should().Be(Correlation.Reference);
+        if (fault != "receipt-token") diagnostic.GetProperty("httpStatus").ValueKind.Should().Be(JsonValueKind.Null);
+        else diagnostic.GetProperty("httpStatus").GetInt32().Should().Be(401);
+        fixture.Store.Current.Readiness.Should().BeNull();
+        fixture.Store.Current.Authentication.Should().Be(before.Authentication);
+        fixture.Store.Current.Configuration.Should().Be(before.Configuration);
+        if (fault == "receipt-token") { result.Status.Should().Be(RatelDeskConnectionTestStatus.AuthenticationRejected); fixture.Transport.Calls.Should().Be(0); }
+    }
     [Fact]
     public async Task A_different_canonical_receiver_identity_has_a_specific_safe_result_without_authorizing_delivery()
     {
@@ -24,7 +88,7 @@ public sealed class RatelDeskConnectorReadinessTests
 
         var result = await fixture.Receiver.TestAsync(before, default);
 
-        result.Should().Be(new RatelDeskConnectionTestResult(RatelDeskConnectionTestStatus.Unavailable,
+        (result with { Diagnostic = null }).Should().Be(new RatelDeskConnectionTestResult(RatelDeskConnectionTestStatus.Unavailable,
             "receiver-identity-mismatch"));
         fixture.Store.Current.Readiness.Should().BeNull();
         fixture.Store.Current.Revision.Should().Be(before.Revision);
@@ -49,8 +113,10 @@ public sealed class RatelDeskConnectorReadinessTests
 
         var result = await fixture.Receiver.TestAsync(before, default);
 
-        result.Should().Be(new RatelDeskConnectionTestResult(RatelDeskConnectionTestStatus.Unavailable,
-            "receiver-readiness-unverified"));
+        (result with { Diagnostic = null }).Should().Be(new RatelDeskConnectionTestResult(RatelDeskConnectionTestStatus.Unavailable,
+            failure == "invalid-json" ? "receiver-json-unverified" : "receiver-response-interrupted"));
+        result.Diagnostic!.Stage.Should().Be("receiver-capabilities");
+        PairingReadinessDiagnostics.IsValid(result.Diagnostic).Should().BeTrue();
         fixture.Store.Current.Readiness.Should().BeNull();
         fixture.Store.Current.Revision.Should().Be(before.Revision);
         fixture.Store.Current.CredentialRevision.Should().Be(before.CredentialRevision);
@@ -186,7 +252,7 @@ public sealed class RatelDeskConnectorReadinessTests
             // Owning fixture compares current scoped pairing authority without a network request.
             Bindings.OnCapture = (_, _) => Task.FromResult(Store.Current.Readiness!.Peer);
             Readiness = new(new Authority(), Store, Continuity, Bindings, network, clock);
-            Receiver = new(Store, Store, Store, Readiness, Bindings, Transport, new Source(), network, clock);
+            Receiver = new(Store, Store, Store, Readiness, Bindings, Transport, new Source(), network, clock, new Correlation());
         }
     }
 
@@ -195,6 +261,7 @@ public sealed class RatelDeskConnectorReadinessTests
     {
         internal RatelDeskConnectorState Current { get; set; } = initial;
         internal Action? BeforeClear { get; set; }
+        internal Action? BeforeSaveReadiness { get; set; }
         internal int AuthenticationReads { get; private set; }
         public Task<RatelDeskConnectorState?> GetAsync(int tenantId, Guid id, CancellationToken ct) =>
             Task.FromResult<RatelDeskConnectorState?>(Current.TenantId == tenantId && Current.Id == id ? Current : null);
@@ -212,8 +279,11 @@ public sealed class RatelDeskConnectorReadinessTests
             AuthenticationReads++;
             return Task.FromResult(Current.Authentication!);
         }
-        public Task<bool> SaveReadinessAsync(RatelDeskConnectorState current, RatelDeskReadinessObservation observation, CancellationToken ct) =>
-            SaveAsync(current with { RowVersion = current.RowVersion + 1, Readiness = observation }, current.RowVersion, ct);
+        public Task<bool> SaveReadinessAsync(RatelDeskConnectorState current, RatelDeskReadinessObservation observation, CancellationToken ct)
+        {
+            BeforeSaveReadiness?.Invoke();
+            return SaveAsync(current with { RowVersion = current.RowVersion + 1, Readiness = observation }, current.RowVersion, ct);
+        }
         public Task<bool> ClearReadinessAsync(RatelDeskConnectorState current, CancellationToken ct)
         {
             BeforeClear?.Invoke();
@@ -225,6 +295,7 @@ public sealed class RatelDeskConnectorReadinessTests
     {
         internal int CaptureCalls { get; private set; }
         internal string? Bearer { get; set; }
+        internal Func<string>? OnBearer { get; set; }
         internal Func<RatelDeskConnectorState, CancellationToken, Task<RatelDeskSemanticPeer>>? OnCapture { get; set; }
         public Task<RatelDeskSemanticPeer> CaptureAsync(RatelDeskConnectorState connector,
             RatelDeskConnectorAuthentication authentication, Guid source, CancellationToken ct)
@@ -233,16 +304,17 @@ public sealed class RatelDeskConnectorReadinessTests
             return OnCapture?.Invoke(connector, ct) ?? throw new InvalidOperationException("unexpected-capture");
         }
         public Task<string> GetBearerAsync(RatelDeskConnectorState current, RatelDeskSemanticPeer captured,
-            string scope, CancellationToken ct) => Task.FromResult(Bearer ?? throw new InvalidOperationException("unexpected-token-read"));
+            string scope, CancellationToken ct) => Task.FromResult(OnBearer?.Invoke() ?? Bearer ?? throw new InvalidOperationException("unexpected-token-read"));
     }
     private sealed class Transport : IRatelDeskReceiverTransport
     {
         internal int Calls { get; private set; }
         internal Func<RatelDeskSemanticPeer, RatelDeskVerifiedCapability>? OnCapabilities { get; set; }
+        internal Action? OnTargets { get; set; }
         public Task<RatelDeskVerifiedCapability> CapabilitiesAsync(RatelDeskSemanticPeer peer, string bearer, CancellationToken ct)
         { Calls++; return Task.FromResult(OnCapabilities?.Invoke(peer) ?? throw new InvalidOperationException("unexpected-capability-HTTP")); }
         public Task ValidateTargetsAsync(RatelDeskSemanticPeer peer, RatelDeskVerifiedCapability capability, string bearer, CancellationToken ct)
-        { Calls++; throw new InvalidOperationException("unexpected-target-HTTP"); }
+        { Calls++; if (OnTargets is null) throw new InvalidOperationException("unexpected-target-validation"); OnTargets(); return Task.CompletedTask; }
         public Task<RatelDeskReceiverObservation> LookupAsync(RatelDeskReceiverPreparationV2 prepared, string bearer, CancellationToken ct)
         { Calls++; throw new InvalidOperationException("unexpected-receipt-HTTP"); }
         public Task<RatelDeskReceiverObservation> CreateAsync(RatelDeskReceiverPreparationV2 prepared, string bearer, CancellationToken ct)
@@ -265,6 +337,12 @@ public sealed class RatelDeskConnectorReadinessTests
     private sealed class Clock : TimeProvider
     {
         public override DateTimeOffset GetUtcNow() => RatelDeskReceiverFixture.Now;
+    }
+    private sealed class Correlation : ICorrelationContext
+    {
+        internal const string Reference = "67f452da36d541b892c21f50dd7d8f83";
+        public string? Current => "corr-" + Reference;
+        public string GetOrCreate() => Current!;
     }
     private sealed class Options<T>(T value) : IOptionsMonitor<T>
     {

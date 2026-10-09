@@ -22,7 +22,8 @@ public sealed record PairingBusinessCredential(string ClientId, string ClientSec
 public sealed record PairingSaveRequest(Guid OperationId, long Revision, PairingMapping Mapping,
     PairingBusinessCredential? Credential);
 public sealed record PairingSaveResponse(PairingMapping Mapping, PairingBusinessCredential? Credential);
-public sealed record PairingTestResult(bool Success, string Message, DateTimeOffset TestedAtUtc);
+public sealed record PairingTestResult(bool Success, string Message, DateTimeOffset TestedAtUtc,
+    PairingReadinessDiagnostic? Diagnostic = null);
 public sealed record PairingConnectRequest(string Address, string PairingCode, Guid OperationId);
 public sealed record PairingCodeResponse(string Code, DateTimeOffset ExpiresAtUtc);
 public sealed record PairingConnectionDto(string Id, string PairId, PairingMapping? Mapping,
@@ -37,8 +38,9 @@ public sealed record PairingResourceConstraints
     [System.Text.Json.Serialization.JsonPropertyName("resource_ids")] public string[] ResourceIds { get; init; } = [];
     [System.Text.Json.Serialization.JsonPropertyName("request_definition_ids")] public string[] RequestDefinitionIds { get; init; } = [];
 }
-public sealed class PairingException(int statusCode, string code, string message) : Exception(message)
+public sealed class PairingException(int statusCode, string code, string message, PairingReadinessDiagnostic? diagnostic = null) : Exception(message)
 {
     public int StatusCode { get; } = statusCode;
     public string Code { get; } = code;
+    public PairingReadinessDiagnostic? Diagnostic { get; } = PairingReadinessDiagnostics.IsValid(diagnostic) ? diagnostic : null;
 }

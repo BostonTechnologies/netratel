@@ -24,18 +24,34 @@ public sealed class PairingApiClient(IHttpClientFactory clients) : IPairingApiCl
     private const int ResponseLimit = 131072;
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
-    public Task<PairingConnectionDto[]> ListAsync(CancellationToken ct = default) =>
-        SendAsync<PairingConnectionDto[]>(HttpMethod.Get, Root, null, ct);
+    public async Task<PairingConnectionDto[]> ListAsync(CancellationToken ct = default) =>
+        (await SendAsync<PairingConnectionDto[]>(HttpMethod.Get, Root, null, ct)).Select(NormalizeConnection).ToArray();
     public Task<PairingCodeResponse> GenerateCodeAsync(CancellationToken ct = default) =>
         SendAsync<PairingCodeResponse>(HttpMethod.Post, Root + "/code", new { }, ct);
-    public Task<PairingConnectionDto> ConnectAsync(PairingConnectRequest request, CancellationToken ct = default) =>
-        SendAsync<PairingConnectionDto>(HttpMethod.Post, Root + "/pair", request, ct);
+    public async Task<PairingConnectionDto> ConnectAsync(PairingConnectRequest request, CancellationToken ct = default) =>
+        NormalizeConnection(await SendAsync<PairingConnectionDto>(HttpMethod.Post, Root + "/pair", request, ct));
     public Task<PairingDirectories> DirectoryAsync(string pairId, CancellationToken ct = default) =>
         SendAsync<PairingDirectories>(HttpMethod.Get, PairPath(pairId) + "/directory", null, ct);
-    public Task<PairingConnectionDto> SaveAsync(PairingMapping mapping, CancellationToken ct = default) =>
-        SendAsync<PairingConnectionDto>(HttpMethod.Put, PairPath(mapping.PairId) + $"/mappings/{mapping.Id:D}", mapping, ct);
-    public Task<PairingTestResult> TestAsync(PairingConnectionDto connection, CancellationToken ct = default) =>
-        SendAsync<PairingTestResult>(HttpMethod.Post, MappingPath(connection), new { }, ct, "/test");
+    public async Task<PairingConnectionDto> SaveAsync(PairingMapping mapping, CancellationToken ct = default) =>
+        NormalizeConnection(await SendAsync<PairingConnectionDto>(HttpMethod.Put, PairPath(mapping.PairId) + $"/mappings/{mapping.Id:D}", mapping, ct));
+    public async Task<PairingTestResult> TestAsync(PairingConnectionDto connection, CancellationToken ct = default) =>
+        NormalizeTest(await SendAsync<PairingTestResult>(HttpMethod.Post, MappingPath(connection), new { }, ct, "/test"));
+
+    private static PairingConnectionDto NormalizeConnection(PairingConnectionDto connection) =>
+        connection.LastTest is { } result ? connection with { LastTest = NormalizeTest(result) } : connection;
+
+    private static PairingTestResult NormalizeTest(PairingTestResult result)
+    {
+        if (result.Success)
+            return result with { Message = "Authenticated access and the saved tenant mapping/capabilities are current.", Diagnostic = null };
+        if (PairingReadinessDiagnostics.IsValid(result.Diagnostic))
+            return result with { Message = $"{PairingReadinessDiagnostics.Describe(result.Diagnostic!)} Reference: {result.Diagnostic!.Reference}." };
+        return result with
+        {
+            Message = "Authenticated access or the saved mapping/capabilities could not be verified. Review the selected resources and current permissions, then retry Test connection.",
+            Diagnostic = null
+        };
+    }
 
     public async Task DeleteAsync(PairingConnectionDto connection, CancellationToken ct = default)
     {
@@ -73,6 +89,7 @@ public sealed class PairingApiClient(IHttpClientFactory clients) : IPairingApiCl
     {
         if (response.IsSuccessStatusCode) return;
         string? code = null, reference = null;
+        PairingReadinessDiagnostic? diagnostic = null;
         try
         {
             using var problem = await ReadAsync<JsonDocument>(response, ct);
@@ -84,10 +101,24 @@ public sealed class PairingApiClient(IHttpClientFactory clients) : IPairingApiCl
                 if (code is null && problem.RootElement.TryGetProperty("extensions", out var extensions) && extensions.ValueKind == JsonValueKind.Object &&
                     extensions.TryGetProperty("code", out var extensionCode) && extensionCode.ValueKind == JsonValueKind.String)
                     code = extensionCode.GetString();
+                if (problem.RootElement.TryGetProperty("diagnostic", out var evidence) && evidence.ValueKind == JsonValueKind.Object)
+                {
+                    try
+                    {
+                        var candidate = evidence.Deserialize<PairingReadinessDiagnostic>(Json);
+                        if (PairingReadinessDiagnostics.IsValid(candidate)) diagnostic = candidate;
+                    }
+                    catch (JsonException) { }
+                }
             }
         }
         catch (Exception e) when (e is JsonException or InvalidDataException) { }
-        throw new PairingApiException(code ?? $"http-{(int)response.StatusCode}", FailureText(code, response.StatusCode), reference);
+        // A readiness diagnostic never turns a bare or unknown local 401 into a peer failure.
+        var useDiagnostic = diagnostic is not null && (response.StatusCode != HttpStatusCode.Unauthorized ||
+            PairingReadinessDiagnostics.IsAllowedReason(code?.Replace('_', '-')));
+        throw new PairingApiException(code ?? $"http-{(int)response.StatusCode}",
+            useDiagnostic ? PairingReadinessDiagnostics.Describe(diagnostic!) : FailureText(code, response.StatusCode),
+            useDiagnostic ? diagnostic!.Reference : reference);
     }
 
     // Both products use finite error codes. Only recognized aliases override the
@@ -120,6 +151,7 @@ public sealed class PairingApiClient(IHttpClientFactory clients) : IPairingApiCl
         "authority-changed" or "access-denied" or "not-authorized" or "mapping-not-authorized" or "organization-not-authorized" or "tenant-not-authorized" or "business-access-unavailable" => "Your current access no longer permits this operation. Review the selected tenant, organization and customer with an administrator.",
         "invalid-saved-state" => "The saved connection is invalid. Delete this connection and pair again with a fresh code.",
         "business-validation-failed" => "Saved connection access could not be verified. Review the selected resources and permissions, then retry Save.",
+        "receiver-readiness-unverified" => "Receiver readiness could not be verified. Check the server reference, then retry this same connection.",
         "peer-unavailable" or "peer-unreachable" or "connection-unavailable" => "The other system could not be reached. Check its address, availability and certificate, then retry this operation.",
         "peer-timeout" or "peer-response-lost" or "peer-response-interrupted" => "The other system's response did not complete. Retry this same operation to recover its recorded result.",
         _ => status switch

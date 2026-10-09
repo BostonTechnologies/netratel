@@ -113,9 +113,10 @@ public static class ReceiverWireValidation
             throw new InvalidDataException("receiver-authentication-mode-unverified");
         var endpoints = new RatelDeskReceiverEndpoints(Endpoint(peer.ApiBaseUrl, CapabilitiesPath),
             Text(root, "createEndpoint"), Text(root, "receiptEndpointTemplate"), Text(root, "targetValidationEndpoint"));
-        Equal(endpoints.Create, Endpoint(peer.ApiBaseUrl, CreatePath));
-        Equal(endpoints.ReceiptTemplate, Endpoint(peer.ApiBaseUrl, ReceiptPath));
-        Equal(endpoints.TargetValidation, Endpoint(peer.ApiBaseUrl, TargetsPath));
+        if (endpoints.Create != Endpoint(peer.ApiBaseUrl, CreatePath) ||
+            endpoints.ReceiptTemplate != Endpoint(peer.ApiBaseUrl, ReceiptPath) ||
+            endpoints.TargetValidation != Endpoint(peer.ApiBaseUrl, TargetsPath))
+            throw new InvalidDataException("receiver-endpoint-mismatch");
         return new(Contract, peer.ReceiverInstanceId, peer.SourceInstanceId, peer.SourceNamespaceId,
             endpoints, Integer(root, "minimumReceiptRetentionSeconds"),
             Integer(root, "maximumAutomaticReplaySeconds"), observedAtUtc)
