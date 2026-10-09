@@ -193,6 +193,50 @@ async function startClient(nrApi, tenant) {
   } finally { fs.rmSync(clientConfig, { force: true }); }
 }
 const receipt = { fixtureId: state.fixtureId, results: [], stages: {}, historyPreserved: false, cleanupComplete: false };
+let incidentContext = null;
+// Failure evidence contains only this fixed source-code catalogue and typed observations.
+const diagnosticCodes = new Set(`partial unsupported invalid_clock future_clock stale before_evaluation_fence before_receipt_fence reordered_clock unknown_service unproven_missing stale_watch_policy invalid_number numeric_uncertainty stream_unavailable restart stream_changed disk_collection_unavailable disk_collection_metadata_required disk_collection_clock_mismatch disk_collection_changed reordered_disk_collection
+monitoring_immutable_event_invalid flow_handoff_unknown flow_event_conflict flow_capacity_pending flow_ingress_rejected flow_handoff_unverified flow_receipt_pending flow_run_pending flow_succeeded flow_skipped flow_failed flow_delivery_unknown
+monitoring-admission-invalid monitoring-authority-unavailable monitoring-dispatch-unavailable monitoring-event-invalid monitoring-evidence-changed monitoring-evidence-or-occurrence-unavailable monitoring-evidence-unavailable monitoring-intent-mismatch monitoring-outbox-changed monitoring-owner-expired monitoring-owner-unavailable monitoring-published-flow-unavailable monitoring-run-mismatch monitoring-run-unavailable monitoring-target-removed monitoring-target-unavailable
+execution-authority-revoked execution-budget-exhausted execution-cancelled execution-completed execution-failed flow-disabled flow-state-invalid delivery-unknown retry-waiting interrupted-delivery-unknown action-budget-exhausted action-budget-exhausted-unknown action-failed action-lease-lost action-not-reached action-outcome-not-committed action-receipt-not-committed action-state-invalid
+runtime-input-invalid runtime-graph-adaptation runtime-plan runtime-failed condition-false historical-receiver-evidence-unavailable receiver-preparation-retry receiver-preparation-unavailable receiver-preparation-not-committed receiver-evidence-not-persisted receiver-final-reconciliation-required receiver-create-not-started
+connector-current-authority-denied connector-current-owner-or-revision-denied connector-disabled-or-owner-denied connector-unavailable receiver-auth-rejected receiver-authentication-rejected receiver-binding-unverified receiver-capability-drift receiver-current-authority-denied receiver-current-authority-unavailable receiver-current-grant-rejected receiver-current-profile-denied receiver-current-profile-unavailable receiver-current-target-rejected receiver-endpoint-unreachable receiver-identity-mismatch receiver-paired-grant-changed receiver-rate-limited receiver-read-unavailable receiver-readiness-expired receiver-readiness-invalid receiver-readiness-required receiver-readiness-timeout receiver-readiness-unverified receiver-receipt-missing receiver-receipt-unverified receiver-target-rejected receiver-target-unverified incident-created incident-receipt-verified delivery-transport-unknown delivery-interrupted automatic-replay-horizon-exhausted`.split(/\s+/));
+function diagnosticCode(value) { return value == null ? null : diagnosticCodes.has(value) ? value : 'unrecognized'; }
+function diagnosticId(value) { return typeof value === 'string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(value) ? value : null; }
+function diagnosticNumber(value, maximum = Number.MAX_SAFE_INTEGER) { return Number.isSafeInteger(value) && value >= 0 && value <= maximum ? value : null; }
+function diagnosticTime(value) { return typeof value === 'string' && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,7})?(?:Z|[+-]\d\d:\d\d)$/.test(value) && Number.isFinite(Date.parse(value)) ? value : null; }
+function diagnosticCollection(value) { return { collectionId: diagnosticId(value?.collectionId), collectedAtUtc: diagnosticTime(value?.collectedAtUtc) }; }
+async function captureIncidentFailure(nrApi) {
+  if (!incidentContext || !nrApi) return;
+  const c = incidentContext, snapshot = { tenantId: c.tenant, agentId: diagnosticId(c.agentId), ruleId: diagnosticId(c.ruleId), flowId: diagnosticId(c.flowId), flowVersionId: diagnosticId(c.flowVersionId), ruleWriteAccepted: c.ruleWriteAccepted };
+  async function observe(name, operation) {
+    try { snapshot[name] = await operation(); }
+    catch (error) { snapshot[name] = { exceptionType: ['Error', 'TypeError', 'SyntaxError', 'TimeoutError'].includes(error.constructor.name) ? error.constructor.name : 'Error' }; }
+  }
+  await observe('monitoring', async () => {
+    const rows = await apiJson(nrApi, `/api/v2/tenants/${c.tenant}/monitoring/agents/${c.agentId}/series`);
+    return rows.filter(r => r.series.ruleId === c.ruleId && r.series.agentId === c.agentId).slice(0, 4).map(r => ({
+      phase: diagnosticNumber(r.phase, 7), evidenceQuality: diagnosticNumber(r.evidenceQuality, 1), stateRevision: diagnosticNumber(r.stateRevision), suppressed: r.suppressed === true,
+      cursor: { connectionEpoch: diagnosticNumber(r.cursor?.connectionEpoch), sequence: diagnosticNumber(r.cursor?.sequence) },
+      evidence: { quality: diagnosticNumber(r.latestEvidence?.quality, 1), classification: diagnosticNumber(r.latestEvidence?.classification, 3), unknownReason: diagnosticCode(r.latestEvidence?.unknownReason), observedAtUtc: diagnosticTime(r.latestEvidence?.observedAtUtc), receivedAtUtc: diagnosticTime(r.latestEvidence?.receivedAtUtc) },
+      lastDiskCollection: diagnosticCollection(r.lastDiskCollection), observedFence: diagnosticTime(r.notBeforeObservedAtUtc), receivedFence: diagnosticTime(r.notBeforeReceivedAtUtc), windowStartedAtUtc: diagnosticTime(r.windowStartedAtUtc), windowStartedObservedAtUtc: diagnosticTime(r.windowStartedObservedAtUtc),
+      occurrence: { id: diagnosticId(r.occurrence?.occurrenceId), eventId: diagnosticId(r.occurrence?.raisedEventId), flowDispatchDisposition: diagnosticNumber(r.occurrence?.flowDispatchDisposition, 6), flowRunId: diagnosticId(r.occurrence?.flowOutcome?.flowRunId), outcome: diagnosticNumber(r.occurrence?.flowOutcome?.outcome, 3), code: diagnosticCode(r.occurrence?.flowOutcome?.code) },
+    }));
+  });
+  await observe('sample', async () => {
+    const rows = await apiJson(nrApi, '/api/v2/agent-telemetry'), row = rows.find(r => r.tenantId === c.tenant && r.agentId === c.agentId);
+    return { present: !!row, authoritative: row?.isAuthoritative === true, observedAtUtc: diagnosticTime(row?.observedAtUtc), receivedAtUtc: diagnosticTime(row?.receivedAtUtc), disks: (row?.disks || []).filter(d => d.scope === c.diskScope).slice(0, 4).map(d => ({ ...diagnosticCollection(d), quality: diagnosticNumber(d.collectionQuality, 4) })) };
+  });
+  await observe('outbox', async () => sql('netratel', `SELECT COALESCE(json_agg(json_build_object('id',o."OutboxId",'occurrenceId',o."OccurrenceId",'status',o."Status",'attempts',o."Attempts",'code',o."Code",'flowRunId',o."FlowRunId",'nextAttemptAtUtc',o."NextAttemptAtUtc",'handedOffAtUtc',o."HandedOffAtUtc")), '[]'::json) FROM (SELECT * FROM "MonitoringFlowOutbox" WHERE "TenantId"=${c.tenant} AND "OccurrenceId" IN (SELECT "OccurrenceId" FROM "MonitoringOccurrences" WHERE "TenantId"=${c.tenant} AND "RuleId"=${literal(c.ruleId)}::uuid AND "AgentId"=${literal(c.agentId)}::uuid) ORDER BY "CreatedAtUtc" LIMIT 4) o`).map(r => ({ id: diagnosticId(r.id), occurrenceId: diagnosticId(r.occurrenceId), status: diagnosticNumber(r.status, 6), attempts: diagnosticNumber(r.attempts), code: diagnosticCode(r.code), flowRunId: diagnosticId(r.flowRunId), nextAttemptAtUtc: diagnosticTime(r.nextAttemptAtUtc), handedOffAtUtc: diagnosticTime(r.handedOffAtUtc) })));
+  await observe('flowRuns', async () => sql('netratel', `SELECT COALESCE(json_agg(json_build_object('id',r."Id",'eventId',r."EventId",'occurrenceId',r."OccurrenceId",'status',r."Status",'attempts',r."Attempts",'code',r."Code",'createdAtUtc',r."CreatedAtUtc",'completedAtUtc',r."CompletedAtUtc")), '[]'::json) FROM (SELECT * FROM "FlowRuns" WHERE "TenantId"=${c.tenant} AND "FlowId"=${literal(c.flowId)}::uuid ORDER BY "CreatedAtUtc" LIMIT 4) r`).map(r => ({ id: diagnosticId(r.id), eventId: diagnosticId(r.eventId), occurrenceId: diagnosticId(r.occurrenceId), status: diagnosticNumber(r.status, 7), attempts: diagnosticNumber(r.attempts), code: diagnosticCode(r.code), createdAtUtc: diagnosticTime(r.createdAtUtc), completedAtUtc: diagnosticTime(r.completedAtUtc) })));
+  await observe('flowActions', async () => sql('netratel', `SELECT COALESCE(json_agg(json_build_object('runId',a."RunId",'nodeId',a."NodeId",'status',a."Status",'attempts',a."Attempts",'code',a."Code",'receiptPresent',a."ReceiptJson" IS NOT NULL)), '[]'::json) FROM (SELECT a.* FROM "FlowActions" a JOIN "FlowRuns" r ON r."Id"=a."RunId" WHERE r."TenantId"=${c.tenant} AND r."FlowId"=${literal(c.flowId)}::uuid ORDER BY r."CreatedAtUtc",a."NodeId" LIMIT 4) a`).map(r => ({ runId: diagnosticId(r.runId), nodeId: diagnosticId(r.nodeId), status: diagnosticNumber(r.status, 6), attempts: diagnosticNumber(r.attempts), code: diagnosticCode(r.code), receiptPresent: r.receiptPresent === true })));
+  await observe('committedCounts', async () => counts());
+  await observe('receiverProxy', async () => {
+    const value = await control('observations');
+    return { lost: value.lost === true, observedCount: diagnosticNumber(value.observations.length), observations: value.observations.slice(0, 8).map(r => ({ status: diagnosticNumber(r.status, 599), committedBeforeLoss: r.committedBeforeLoss === true, receiptCount: diagnosticNumber(r.receiptCount), incidentCount: diagnosticNumber(r.incidentCount), keySha256: typeof r.key === 'string' ? crypto.createHash('sha256').update(r.key).digest('hex') : null, bodySha256: typeof r.bodySha256 === 'string' && /^[a-f0-9]{64}$/.test(r.bodySha256) ? r.bodySha256 : null })) };
+  });
+  receipt.incidentFailure = snapshot;
+}
 function record(stage, details = {}) {
   receipt.results.push({ stage, status: 'passed', ...details }); receipt.stages[stage] = 'passed';
   safeJson(path.join(evidence, 'receipt.json'), receipt); console.log(stage + ': passed');
@@ -228,10 +272,12 @@ async function actualIncident(nrApi, rdApi, mapping, sample) {
   const condition = { kind: 2, unit: 1, breachThreshold: breach, recoveryThreshold: recovery, resourceName: sample.disk.scope, servicePlatform: null, expectedServiceStates: [] };
   const preview = await apiJson(nrApi, monitoring + '/targets/preview', { targets, condition }, 'POST');
   requireProof(preview.agentIds.includes(sample.agentId), 'Current owner must be allowed to monitor the genuinely enrolled disk');
+  incidentContext = { tenant, agentId: sample.agentId, diskScope: sample.disk.scope, ruleId, flowId: flow.id, flowVersionId: version.id, ruleWriteAccepted: false };
   await apiJson(nrApi, monitoring + '/rules/' + ruleId, { expectedConfigurationRevision: current.revision, reason: 'Controlled current disk threshold for disposable pairing acceptance', rule: {
     tenantId: tenant, ruleId, revision: 1, evaluationRevision: 1, name: 'Actual source-pair disk threshold', enabled: true, severity: 1,
     targets, condition, breachHold: '00:00:01', recoveryHold: '00:00:01', freshnessBudget: '00:01:05', publishedFlowVersionId: version.id,
   } }, 'PUT');
+  incidentContext.ruleWriteAccepted = true;
   const original = await until('Actual monitored Flow committed incident receipt', async () => {
     const rows = sql('rateldesk', `SELECT COALESCE(json_agg(json_build_object('id',"Id",'key',"Key",'fingerprint',"Fingerprint",'incidentId',"IncidentId",'namespaceId',"SourceNamespaceId",'accepted',"AcceptedJson")), '[]'::json) FROM "IncidentCreateReceipts" WHERE "SourceNamespaceId"=${literal(mapping.mapping.id)}::uuid`);
     requireProof(rows.length <= 1, 'One controlled occurrence must never create duplicate receiver receipts'); return rows.length === 1 ? rows[0] : null;
@@ -350,6 +396,7 @@ async function runBusiness() {
     const durable = counts(); requireProof(durable.rateldesk.receipts === 1 && durable.rateldesk.incidents === 1 && durable.netratel.jobs === 1, 'Restart must preserve exactly one incident/receipt and actual job history');
     receipt.historyPreserved = true; record('historyPreserved');
   } catch (error) {
+    await captureIncidentFailure(nrApi);
     receipt.results.push({ stage: 'actualBusinessAcceptance', status: 'failed', exceptionType: error.constructor.name, reason: String(error.message).split('\n')[0].slice(0, 240) });
     safeJson(path.join(evidence, 'receipt.json'), receipt); throw error;
   } finally {
