@@ -186,6 +186,8 @@ def environment_for(state, product, role):
             Authentication__Local__AllowInsecureLocalhost='true',
             NetRatel_HTTP_PORT=str(entry['apiPort']),
             NetRatelAkka__GatewayGrpcPort=str(entry['gatewayPort']),
+            # Match the Client's five-second genuine collection cadence in server policy.
+            TelemetryInteractive__BaselineSlowIntervalSeconds='5',
             Bootstrap__Unattended__PasswordFile=str(directory / 'admin-password'),
             Bootstrap__Unattended__Email=entry['email'],
             Bootstrap__Unattended__DisplayName='Disposable NetRatel Administrator',
