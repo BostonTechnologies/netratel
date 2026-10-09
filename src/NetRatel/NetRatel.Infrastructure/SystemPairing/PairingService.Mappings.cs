@@ -128,7 +128,7 @@ public sealed partial class PairingService
             var validation = await ReceiveTestAsync(pair, mappingId, ct);
             if (validation.Success) validation = await transport.SendAsync<PairingTestResult>(peer.ApiOrigin, HttpMethod.Post, "/mappings/" + mappingId.ToString("D") + "/test", null,
                 Unprotect(pair.Id + "/outbound", pair.ProtectedOutboundSecret), installed.InstanceId.ToString("D"), ct, callerSecretHash: pair.InboundSecretHash);
-            if (!validation.Success) throw new PairingException(422, "saved-access-unavailable", validation.Message);
+            if (!validation.Success) throw new PairingException(422, "saved-access-unavailable", validation.Message, validation.Diagnostic);
         }
         catch (Exception error) when (error is PairingException or HttpRequestException or IOException or OperationCanceledException)
         {
@@ -200,7 +200,10 @@ public sealed partial class PairingService
             if (!validation.AutomaticDeliveryAvailable)
             {
                 await db.Set<PairingConnectionRecord>().Where(x => x.Id == id && x.DeletedAtUtc == null && x.OperationId == row.OperationId && x.Revision == row.Revision).ExecuteUpdateAsync(x => x.SetProperty(y => y.Active, false), ct);
-                return new(false, "The saved incident target could not be validated: " + validation.Code + ". Correct the mapping and Save again.", clock.GetUtcNow());
+                return new(false, validation.Diagnostic is { } diagnostic && PairingReadinessDiagnostics.IsValid(diagnostic)
+                    ? PairingReadinessDiagnostics.Describe(diagnostic)
+                    : "The saved incident receiver could not be validated. Check the server reference, then retry this connection.",
+                    clock.GetUtcNow(), validation.Diagnostic);
             }
         }
         await RequireUnchangedAsync(pair, id, row.OperationId, row.Revision, ct);
@@ -217,7 +220,8 @@ public sealed partial class PairingService
             if (current.Success) current = await transport.SendAsync<PairingTestResult>(peer.ApiOrigin, HttpMethod.Post, "/mappings/" + id.ToString("D") + "/test", null,
                 Unprotect(pair.Id + "/outbound", pair.ProtectedOutboundSecret!), installed.InstanceId.ToString("D"), ct, callerSecretHash: pair.InboundSecretHash);
         }
-        catch (PairingException error) { current = new(false, error.Message, clock.GetUtcNow()); }
+        catch (PairingException error) { current = new(false, error.Diagnostic is { } diagnostic ? PairingReadinessDiagnostics.Describe(diagnostic) : error.Message,
+            clock.GetUtcNow(), error.Diagnostic); }
         var stillCurrent = await db.Set<SystemPairRecord>().AsNoTracking().AnyAsync(x => x.Id == pair.Id && x.Revision == pair.Revision && x.DeletedAtUtc == null, ct);
         var updated = stillCurrent ? await db.Set<PairingConnectionRecord>().Where(x => x.Id == id && x.DeletedAtUtc == null && x.OperationId == row.OperationId && x.Revision == row.Revision)
             .ExecuteUpdateAsync(x => x.SetProperty(y => y.LastTestJson, Json(current)), ct) : 0;

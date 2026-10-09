@@ -229,6 +229,44 @@ public sealed class PairingCodePostgresTests(PostgreSqlPersistenceFixture postgr
         Assert.Empty(await db.Requests.ToArrayAsync()); Assert.Empty(await db.JobRuns.ToArrayAsync());
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Automatic_Save_validation_preserves_the_diagnostic_and_inactive_draft_for_the_same_retry(bool peerHttpError)
+    {
+        await using var rig = await Rig.CreateAsync(postgres);
+        var diagnostic = new PairingReadinessDiagnostic("receiver-capabilities", "receiver-endpoint-outside-approved-api-base",
+            "67f452da36d541b892c21f50dd7d8f83");
+        PairingConnectionRecord rejected;
+        PairingMapping mapping;
+        await using (var scope = rig.Scope())
+        {
+            var service = scope.ServiceProvider.GetRequiredService<PairingService>();
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            db.Tenants.Add(new() { Id = 71, Name = "Automation tenant", CreatedAtUtc = rig.Clock.Now, UpdatedAtUtc = rig.Clock.Now });
+            await db.SaveChangesAsync();
+            var paired = await service.ExchangeAsync(rig.Peer.Request((await service.GenerateAsync(Human, default)).Code), default);
+            mapping = new(Guid.NewGuid(), paired.PairId, "Retained validation draft", "71", PairingBusinessAuthorityFixture.Organization, null, false, true);
+            rig.Peer.TestFailure = diagnostic; rig.Peer.TestHttpError = peerHttpError;
+            var error = await Assert.ThrowsAsync<PairingException>(() => service.SaveAsync(paired.PairId, mapping.Id, mapping, Human, default));
+            Assert.Equal(diagnostic, error.Diagnostic); Assert.Equal(PairingReadinessDiagnostics.Describe(diagnostic), error.Message);
+            rejected = await db.Set<PairingConnectionRecord>().AsNoTracking().SingleAsync();
+            Assert.False(rejected.Active); Assert.Null(rejected.DeletedAtUtc);
+            Assert.Equal(mapping, Assert.Single(await service.ListAsync(Human, default)).Mapping);
+            Assert.Single(await db.Set<SystemPairRecord>().AsNoTracking().ToArrayAsync());
+            Assert.Empty(await db.Requests.ToArrayAsync()); Assert.Empty(await db.JobRuns.ToArrayAsync());
+        }
+        rig.Peer.TestFailure = null;
+        await rig.RestartAsync();
+        await using var retry = rig.Scope();
+        var connected = await retry.ServiceProvider.GetRequiredService<PairingService>().SaveAsync(mapping.PairId, mapping.Id, mapping, Human, default);
+        Assert.Equal("Connected", connected.Status); Assert.Equal(mapping, connected.Mapping);
+        var accepted = await retry.ServiceProvider.GetRequiredService<OrchestratorDbContext>().Set<PairingConnectionRecord>().AsNoTracking().SingleAsync();
+        Assert.True(accepted.Active); Assert.Equal(rejected.OperationId, accepted.OperationId);
+        Assert.Equal(rejected.Revision, accepted.Revision); Assert.Equal(rejected.InboundPrincipalId, accepted.InboundPrincipalId);
+        Assert.Equal(2, rig.Peer.Saves); Assert.Equal(2, rig.Peer.Tests);
+    }
+
     private static ClaimsPrincipal Human => PairingAuthority.Retained(PairingBusinessAuthorityFixture.Administrator);
     private sealed class Clock : TimeProvider { internal DateTimeOffset Now { get; set; } = DateTimeOffset.UtcNow; public override DateTimeOffset GetUtcNow() => Now; }
     private sealed class Monitor : IOptionsMonitor<ServiceIdentityOptions>
@@ -280,6 +318,8 @@ public sealed class PairingCodePostgresTests(PostgreSqlPersistenceFixture postgr
     {
         private readonly RSA signing = RSA.Create(2048); private readonly object sync = new();
         internal int Reads; internal int Saves; internal int Tests; internal int Exchanges; internal bool InvalidSourceIds;
+        internal PairingReadinessDiagnostic? TestFailure;
+        internal bool TestHttpError;
         internal PairingMetadata Metadata => new(PairingProtocol.Contract, "rateldesk", "00000000-0000-4000-8000-000000000073", "Fixture peer",
             "https://peer.example.test", "https://peer.example.test", null, Convert.ToBase64String(signing.ExportSubjectPublicKeyInfo()), "00000000-0000-4000-8000-000000000073");
         internal PairingExchangeRequest Request(string code) => Sign(new(code, Guid.NewGuid(), Metadata, Base64UrlEncoder.Encode(RandomNumberGenerator.GetBytes(32))));
@@ -317,6 +357,13 @@ public sealed class PairingCodePostgresTests(PostgreSqlPersistenceFixture postgr
             {
                 Assert.NotNull(request.Headers.Authorization); Assert.Single(request.Headers.GetValues("X-Pairing-Caller"));
                 Interlocked.Increment(ref Tests);
+                if (TestFailure is { } diagnostic)
+                {
+                    if (TestHttpError) return new(HttpStatusCode.UnprocessableEntity)
+                    { Content = JsonContent.Create(new { code = "saved-access-unavailable", message = "synthetic-private-peer-message", diagnostic }, options: PairingTransport.Json) };
+                    return new(HttpStatusCode.OK) { Content = JsonContent.Create(new PairingTestResult(false,
+                        "synthetic-private-peer-message", DateTimeOffset.UtcNow, diagnostic), options: PairingTransport.Json) };
+                }
                 return new(HttpStatusCode.OK) { Content = JsonContent.Create(new PairingTestResult(true, "Owning-layer peer access is current", DateTimeOffset.UtcNow), options: PairingTransport.Json) };
             }
             Assert.Equal(PairingProtocol.Route + "/metadata", request.RequestUri.AbsolutePath);

@@ -79,10 +79,83 @@ public sealed class PairingApiClientTests
     {
         using var transport = new Transport(_ => new(HttpStatusCode.Unauthorized)
         {
-            Content = JsonContent.Create(new { code, correlationId = "local-auth-ref" })
+            Content = JsonContent.Create(new
+            {
+                code, correlationId = "local-auth-ref",
+                diagnostic = new PairingReadinessDiagnostic("receipt-token", "business-access-rejected", Guid.NewGuid().ToString("N"), 401)
+            })
         });
         var error = await Assert.ThrowsAsync<PairingApiException>(() => new PairingApiClient(transport).ListAsync());
         error.Message.Should().Contain("Sign in again").And.NotContain("Generate a");
+        error.Reference.Should().Be("local-auth-ref");
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.UnprocessableEntity, "receiver-readiness-unverified", "receiver-targets", "receiver-target-rejected", 403, "incident target validation")]
+    [InlineData(HttpStatusCode.Unauthorized, "business-access-rejected", "receipt-token", "business-access-rejected", 401, "receipt access token")]
+    public async Task Save_readiness_failure_uses_validated_stage_and_linked_reference_without_peer_text(
+        HttpStatusCode status, string code, string stage, string reason, int peerStatus, string expectedStage)
+    {
+        var reference = Guid.NewGuid().ToString("N");
+        using var transport = new Transport(_ => new(status)
+        {
+            Content = JsonContent.Create(new
+            {
+                code, correlationId = "outer-safe-ref", message = "Bearer PRIVATE-PEER-TOKEN",
+                diagnostic = new PairingReadinessDiagnostic(stage, reason, reference, peerStatus)
+            })
+        });
+        var mapping = new PairingMapping(Guid.NewGuid(), new string('a', 64), "Incident connection", "4", "org-one", "customer-one", true, false);
+        var error = await Assert.ThrowsAsync<PairingApiException>(() => new PairingApiClient(transport).SaveAsync(mapping));
+        error.Code.Should().Be(code);
+        error.Reference.Should().Be(reference);
+        error.Message.Should().Contain(expectedStage).And.Contain($"HTTP {peerStatus}").And.NotContain("PRIVATE-PEER-TOKEN").And.NotContain("Sign in again");
+    }
+
+    [Theory]
+    [InlineData("PRIVATE-PEER-STAGE", "receiver-target-rejected", "d9816845e68c47b8b85960bff27bc87c")]
+    [InlineData("receiver-targets", "PRIVATE-PEER-CODE", "d9816845e68c47b8b85960bff27bc87c")]
+    [InlineData("receiver-targets", "receiver-target-rejected", "PRIVATE-PEER-REFERENCE")]
+    public async Task Forged_diagnostic_fields_are_ignored_and_never_exposed(string stage, string reason, string reference)
+    {
+        using var transport = new Transport(_ => new(HttpStatusCode.UnprocessableEntity)
+        {
+            Content = JsonContent.Create(new
+            {
+                code = "receiver-readiness-unverified", correlationId = "outer-safe-ref", message = "PRIVATE-PEER-MESSAGE",
+                diagnostic = new PairingReadinessDiagnostic(stage, reason, reference, 403)
+            })
+        });
+        var error = await Assert.ThrowsAsync<PairingApiException>(() => new PairingApiClient(transport).GenerateCodeAsync());
+        error.Reference.Should().Be("outer-safe-ref");
+        error.Message.Should().Contain("Receiver readiness could not be verified").And.NotContain("PRIVATE-PEER").And.NotContain("HTTP 403");
+    }
+
+    [Fact]
+    public async Task Test_and_refreshed_last_test_messages_use_local_diagnostics_and_drop_forged_peer_details()
+    {
+        var reference = Guid.NewGuid().ToString("N");
+        var testedAt = DateTimeOffset.UtcNow;
+        var mapping = new PairingMapping(Guid.NewGuid(), new string('a', 64), "Incident connection", "4", "org-one", "customer-one", true, false);
+        var peer = new PairingMetadata(PairingProtocol.Contract, "rateldesk", Guid.NewGuid().ToString("D"), "Desk", "https://desk.test", "https://api.desk.test", null);
+        var card = new PairingConnectionDto(mapping.Id.ToString("D"), mapping.PairId, mapping, peer, "Connected");
+        using var transport = new Transport(request => new(HttpStatusCode.OK)
+        {
+            Content = request.RequestUri!.AbsolutePath.EndsWith("/test", StringComparison.Ordinal)
+                ? JsonContent.Create(new PairingTestResult(false, "PRIVATE-PEER-MESSAGE", testedAt,
+                    new("receiver-capabilities", "receiver-authentication-rejected", reference, 401)))
+                : JsonContent.Create(new[] { card with { LastTest = new(false, "PRIVATE-PEER-MESSAGE", testedAt,
+                    new("receiver-targets", "receiver-target-rejected", "PRIVATE-PEER-REFERENCE", 403)) } })
+        });
+        var client = new PairingApiClient(transport);
+        var test = await client.TestAsync(card);
+        test.Success.Should().BeFalse(); test.TestedAtUtc.Should().Be(testedAt);
+        test.Message.Should().Contain("receiver capabilities").And.Contain("HTTP 401").And.Contain(reference).And.NotContain("PRIVATE-PEER");
+        test.Diagnostic!.Reference.Should().Be(reference);
+        var lastTest = (await client.ListAsync()).Single().LastTest!;
+        lastTest.Success.Should().BeFalse(); lastTest.TestedAtUtc.Should().Be(testedAt);
+        lastTest.Diagnostic.Should().BeNull();
+        lastTest.Message.Should().Contain("could not be verified").And.NotContain("PRIVATE-PEER").And.NotContain("HTTP 403");
     }
 
     [Fact]

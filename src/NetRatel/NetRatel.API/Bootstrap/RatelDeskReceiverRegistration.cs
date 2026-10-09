@@ -17,7 +17,13 @@ public static class RatelDeskReceiverRegistration
         services.TryAddSingleton<RatelDeskReceiverNetworkPolicy>();
         services.AddHttpClient(RatelDeskReceiverHttpPipeline.ManagedClient, http => http.Timeout = Timeout.InfiniteTimeSpan)
             .ConfigureAdditionalHttpMessageHandlers((handlers, _) =>
-            { for (var i = handlers.Count - 1; i >= 0; i--) if (handlers[i] is Microsoft.Extensions.Http.Resilience.ResilienceHandler) handlers.RemoveAt(i); })
+            {
+                // Approved external receiver endpoints and durable receipt keys must
+                // reach the strict socket policy with their original authority/path bytes.
+                for (var i = handlers.Count - 1; i >= 0; i--)
+                    if (handlers[i] is Microsoft.Extensions.Http.Resilience.ResilienceHandler ||
+                        handlers[i].GetType().FullName == "Microsoft.Extensions.ServiceDiscovery.Http.ResolvingHttpDelegatingHandler") handlers.RemoveAt(i);
+            })
             .ConfigurePrimaryHttpMessageHandler(p => RatelDeskReceiverSafeHttpMessageHandler.Create(RatelDeskAuthenticationMode.PairedSystem, p.GetRequiredService<RatelDeskReceiverNetworkPolicy>()));
         services.TryAddSingleton<IRatelDeskReceiverFingerprint, RatelDeskReceiverFingerprint>();
         services.TryAddSingleton<ReceiverPreparationBuilder>();

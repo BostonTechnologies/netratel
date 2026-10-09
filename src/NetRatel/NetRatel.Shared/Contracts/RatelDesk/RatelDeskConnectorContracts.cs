@@ -18,7 +18,8 @@ public sealed record SaveRatelDeskConnectorRequest(long ExpectedRevision, RatelD
 public sealed record RotateRatelDeskConnectorCredentialRequest(long ExpectedCredentialRevision, string Credential);
 public enum RatelDeskConnectionTestStatus { MappingValidated, AuthenticationRejected, MappingRejected, Unavailable }
 public sealed record RatelDeskConnectionTestResult(RatelDeskConnectionTestStatus Status, string Code,
-    bool AutomaticDeliveryAvailable = false, int? RetryAfterSeconds = null);
+    bool AutomaticDeliveryAvailable = false, int? RetryAfterSeconds = null,
+    NetRatel.Shared.SystemPairing.PairingReadinessDiagnostic? Diagnostic = null);
 
 /// <summary>Subset of the actual RatelDesk CreateIncidentDto; priority is the numeric TicketPriority (0..3).</summary>
 public sealed record RatelDeskCreateIncidentDto(string Title, string Description, int Priority,

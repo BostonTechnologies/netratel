@@ -1,4 +1,6 @@
 using System.Net.Http.Headers;
+using NetRatel.Application.Events;
+using NetRatel.Shared.SystemPairing;
 using NetRatel.Application.RatelDesk;
 using NetRatel.Shared.Contracts.RatelDesk;
 
@@ -8,7 +10,7 @@ public sealed record RatelDeskReceiverReply(int Status, byte[] Body, string? Loc
     TimeSpan? RetryAfter, string? MediaType, bool NoStore);
 
 public sealed class RatelDeskReceiverHttpPipeline(IHttpClientFactory clients,
-    RatelDeskReceiverNetworkPolicy network, TimeProvider time, RatelDeskTransportLimiter limiter)
+    RatelDeskReceiverNetworkPolicy network, TimeProvider time, RatelDeskTransportLimiter limiter, ICorrelationContext? correlation = null)
 {
     public const string ManagedClient = "RatelDesk.Receiver.PairedSystem";
     public static readonly TimeSpan OperationTimeout = TimeSpan.FromSeconds(10);
@@ -51,6 +53,7 @@ public sealed class RatelDeskReceiverHttpPipeline(IHttpClientFactory clients,
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", bearer);
         request.Headers.Accept.Add(new("application/json"));
         request.Headers.Add("X-NetRatel-Source-Instance", source.ToString("D"));
+        if (correlation is not null) request.Headers.Add("X-Correlation-Id", PairingReadinessDiagnostics.NewReference(correlation.GetOrCreate()));
         if (idempotencyKey is not null) request.Headers.Add("Idempotency-Key", idempotencyKey);
         if (body is not null)
         {

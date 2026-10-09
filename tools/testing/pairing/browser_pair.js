@@ -362,5 +362,5 @@ async function main() {
     await context.close();
   } finally { await browser.close(); }
 }
-module.exports = { product, record, jsonRequest, login, account, visualMatrix, identifiers, state, root, fixture, evidence };
+module.exports = { product, record, jsonRequest, login, account, visualMatrix, selectChoice, seedCustomer, identifiers, state, root, fixture, evidence };
 if (require.main === module) main().catch(error => { record('actual-rendered-pair-acceptance', 'failed', { exceptionType: error.constructor.name, reason: String(error.message).split('\n')[0].slice(0, 240) }); process.exitCode = 1; });
