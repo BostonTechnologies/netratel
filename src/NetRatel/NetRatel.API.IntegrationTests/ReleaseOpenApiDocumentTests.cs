@@ -29,6 +29,7 @@ public sealed class ReleaseOpenApiDocumentTests
         foreach (var path in document["paths"]!.AsObject())
         {
             path.Key.Should().NotContain("/api/v2/mcp/local-delegation/");
+            path.Key.Should().NotContain("/api/integrations/service-link/");
             foreach (var operation in path.Value!.AsObject().Where(pair => pair.Key is "get" or "post" or "put" or "delete" or "patch"))
             {
                 var operationId = operation.Value!["operationId"]!.GetValue<string>();
@@ -52,12 +53,35 @@ public sealed class ReleaseOpenApiDocumentTests
         SecuritySchemes(document, "/api/v1/client-artifacts/{rid}/{version}/download", "get")
             .Should().BeEquivalentTo(["Agent", "Bearer", "LocalSession", "M2M"]);
         SecuritySchemes(document, "/api/v1/system/version", "get").Should().BeEmpty();
-        SecuritySchemes(document, "/api/integrations/service-link/v1/links/{linkId}/status", "get")
-            .Should().BeEquivalentTo([ServiceIdentityAuthenticationHandler.SchemeName]);
-        foreach (var operation in new[] { "verify", "ack", "commit", "abort", "revoke", "rotate" })
+        SecuritySchemes(document, "/api/pairing/v1/metadata", "get").Should().BeEmpty();
+        SecuritySchemes(document, "/api/pairing/v1/exchange", "post").Should().BeEmpty();
+        schemes["PairingSetup"]!["type"]!.GetValue<string>().Should().Be("apiKey");
+        schemes["PairingSetup"]!["in"]!.GetValue<string>().Should().Be("header");
+        schemes["PairingSetup"]!["name"]!.GetValue<string>().Should().Be("Authorization");
+        foreach (var (path, method) in new[]
         {
-            SecuritySchemes(document, $"/api/integrations/service-link/v1/links/{{linkId}}/{operation}", "post")
-                .Should().BeEquivalentTo([ServiceIdentityAuthenticationHandler.SchemeName]);
+            ("/api/pairing/v1/directory", "get"),
+            ("/api/pairing/v1/mappings/{id}", "put"),
+            ("/api/pairing/v1/mappings/{id}/test", "post"),
+            ("/api/pairing/v1/mappings/{id}", "delete"),
+            ("/api/pairing/v1/pair", "delete")
+        })
+        {
+            SecuritySchemes(document, path, method).Should().BeEquivalentTo(["PairingSetup"]);
+        }
+        foreach (var (path, method) in new[]
+        {
+            ("/api/v1/admin/system-connections", "get"),
+            ("/api/v1/admin/system-connections/code", "post"),
+            ("/api/v1/admin/system-connections/pair", "post"),
+            ("/api/v1/admin/system-connections/{pairId}/directory", "get"),
+            ("/api/v1/admin/system-connections/{pairId}/mappings/{id}", "put"),
+            ("/api/v1/admin/system-connections/{pairId}/mappings/{id}/test", "post"),
+            ("/api/v1/admin/system-connections/{pairId}/mappings/{id}", "delete"),
+            ("/api/v1/admin/system-connections/{pairId}", "delete")
+        })
+        {
+            SecuritySchemes(document, path, method).Should().BeEquivalentTo(["Bearer", "LocalSession"]);
         }
         schemes[ServiceIdentityAuthenticationHandler.SchemeName]!["type"]!.GetValue<string>().Should().Be("http");
         schemes[ServiceIdentityAuthenticationHandler.SchemeName]!["scheme"]!.GetValue<string>().Should().Be("Bearer");
@@ -65,18 +89,21 @@ public sealed class ReleaseOpenApiDocumentTests
         foreach (var path in orchestrationReadPaths)
         {
             SecuritySchemes(document, path, "get")
-                .Should().BeEquivalentTo(["M2M", ServiceIdentityAuthenticationHandler.SchemeName]);
+                .Should().BeEquivalentTo([ServiceIdentityAuthenticationHandler.SchemeName]);
         }
         SecuritySchemes(document, "/internal/ingest", "post")
-            .Should().BeEquivalentTo(["M2M", ServiceIdentityAuthenticationHandler.SchemeName]);
+            .Should().BeEquivalentTo([ServiceIdentityAuthenticationHandler.SchemeName]);
         foreach (var path in new[] { "/internal/catalog/request-definitions", "/internal/catalog/request-definitions/{requestDefinitionId}/inputs/sync" })
         {
-            SecuritySchemes(document, path, "post").Should().BeEquivalentTo(["M2M"]);
+            document["paths"]![path]?["post"].Should().BeNull("the retired M2M write operation is absent");
         }
 
         (await client.GetAsync("/api/v1/system/version")).StatusCode.Should().Be(HttpStatusCode.OK);
         (await client.GetAsync("/api/v1/jobs")).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
-        (await client.GetAsync("/api/integrations/service-link/v1/links/unapproved/status")).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        (await client.GetAsync("/api/v1/admin/system-connections")).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        (await client.GetAsync("/api/pairing/v1/directory")).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        (await client.PostAsync($"/api/pairing/v1/mappings/{Guid.NewGuid()}/test", new StringContent("{}", System.Text.Encoding.UTF8, "application/json")))
+            .StatusCode.Should().Be(HttpStatusCode.Unauthorized);
         foreach (var path in orchestrationReadPaths)
         {
             using var protectedRead = await client.GetAsync(path);

@@ -198,8 +198,9 @@ public sealed class ApiEndpointRegistrationSourceTests
             "app.MapNotificationEndpoints();",
             "app.MapAgentAuthEndpoints();",
             "app.MapM2MTokenEndpoints();",
+            "app.MapServiceIdentityMetadataEndpoints();",
+            "app.MapPairingEndpoints();",
             "app.MapInternalEndpoints();",
-            "app.MapAdminConnectivityEndpoints();",
             "app.MapMachineTokenAuthenticationStatusEndpoints();",
             "app.MapAiAgentOpsEndpoints();"
         };
@@ -250,8 +251,20 @@ public sealed class ApiEndpointRegistrationSourceTests
     public void Internal_ExternalService_Contract_Uses_PostgreSql_And_Akka_Without_Spacetime()
     {
         var source = File.ReadAllText(Path.Combine(RepoRoot, "src/NetRatel/NetRatel.API/Endpoints/Internal/InternalEndpoints.cs"));
+        var authorization = File.ReadAllText(Path.Combine(RepoRoot, "src/NetRatel/NetRatel.API/Services/Orchestration/OrchestrationManagedAuthorization.cs"));
 
-        source.Should().Contain("RequireAuthorization(\"M2MOnly\")");
+        source.Should().Contain("RequireAuthorization(OrchestrationManagedAuthorization.ReadPolicy)");
+        source.Should().Contain("RequireAuthorization(OrchestrationManagedAuthorization.InvokePolicy)");
+        source.Should().Contain("ResolveAsync(http, OrchestrationManagedAuthorization.ReadScope, ct)");
+        source.Should().Contain("ResolveAsync(http, OrchestrationManagedAuthorization.InvokeScope, ct)");
+        authorization.Should().Contain("options.ForwardDefault = \"ManagedService\"");
+        authorization.Should().Contain("registry.ResolvePrincipalAsync(http.User, scope, ct)");
+        source.Should().Contain("job.TenantId == principal.TenantId");
+        source.Should().Contain("constraints.ResourceIds.Contains(target.AgentId.ToString(\"D\"), StringComparer.Ordinal)");
+        source.Should().Contain("profile.Revision != principal.LinkRevision || profile.AuthorityHash != principal.GrantHash");
+        source.Should().Contain("profile.Peer.InstallationId != principal.PeerInstanceId || profile.Mapping.RatelDeskOrganizationId != principal.PeerTenantId");
+        source.Should().Contain("db.Set<ManagedOrchestrationRequestBinding>().Add(binding)");
+        source.Should().Contain("authority.StartManagedAsync");
         source.Should().Contain("IAkkaJobAuthorityService");
         source.Should().Contain("OrchestratorDbContext");
         source.Should().NotContain("SpacetimeDbService");

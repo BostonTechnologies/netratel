@@ -775,7 +775,12 @@ builder.Services.AddOpenApi(options =>
             Type = SecuritySchemeType.Http,
             Scheme = "Bearer",
             BearerFormat = "JWT",
-            Description = "Managed service access token constrained by the current peer, tenant, credential revision and approved scope. Reciprocal link verification and control require their distinct service scopes."
+            Description = "Service access token constrained by the current saved connection, real tenant, credential revision and approved business scope."
+        };
+        document.Components.SecuritySchemes[PairingEndpoints.SetupAuthenticationScheme] = new OpenApiSecurityScheme
+        {
+            Name = "Authorization", Type = SecuritySchemeType.ApiKey, In = ParameterLocation.Header,
+            Description = "Pairing <setup-secret> with X-Pairing-Peer and X-Pairing-Caller generation proof. Setup access cannot authorize incident or automation business operations."
         };
         document.Components.SecuritySchemes["Agent"] = new OpenApiSecurityScheme { Type = SecuritySchemeType.Http, Scheme = "Bearer", BearerFormat = "JWT", Description = "Native NetRatel Client token." };
         document.Components.SecuritySchemes["MachineToken"] = new OpenApiSecurityScheme { Type = SecuritySchemeType.Http, Scheme = "Bearer", BearerFormat = "JWT", Description = "Machine-token API credential." };

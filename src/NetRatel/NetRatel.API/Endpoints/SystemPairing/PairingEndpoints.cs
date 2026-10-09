@@ -9,6 +9,8 @@ namespace NetRatel.API.Endpoints.SystemPairing;
 public static class PairingEndpoints
 {
     public const string RateLimiter = "SystemPairingSensitive";
+    public const string SetupAuthenticationScheme = "PairingSetup";
+    private static readonly PairingSetupAuthenticationMetadata SetupAuthentication = new();
     public static IServiceCollection AddPairingApi(this IServiceCollection services)
     {
         services.AddSingleton<PairingFailureNotificationGate>();
@@ -33,11 +35,11 @@ public static class PairingEndpoints
         var peer = app.MapGroup(PairingProtocol.Route).WithTags("System pairing").DisableAntiforgery();
         peer.MapGet("/metadata", (HttpContext http, PairingService pairing, CancellationToken ct) => ExecuteAsync(http, false, async () => Results.Ok(await pairing.MetadataProofAsync(http.Request.Headers["X-Pairing-Nonce"].ToString(), ct)))).AllowAnonymous();
         peer.MapPost("/exchange", (PairingExchangeRequest request, HttpContext http, PairingService pairing, CancellationToken ct) => ExecuteAsync(http, false, async () => Results.Ok(await pairing.ExchangeAsync(request, ct)))).AllowAnonymous().RequireRateLimiting(RateLimiter);
-        peer.MapGet("/directory", (HttpContext http, PairingService pairing, CancellationToken ct) => ExecuteAsync(http, false, async () => Results.Ok(await pairing.DirectoryAsync(await AuthenticateAsync(http, pairing, ct), ct)))).AllowAnonymous();
-        peer.MapPut("/mappings/{id:guid}", (Guid id, PairingSaveRequest request, HttpContext http, PairingService pairing, CancellationToken ct) => ExecuteAsync(http, false, async () => Results.Ok(await pairing.ReceiveSaveAsync(await AuthenticateAsync(http, pairing, ct), id, request, ct)))).AllowAnonymous();
-        peer.MapPost("/mappings/{id:guid}/test", (Guid id, HttpContext http, PairingService pairing, CancellationToken ct) => ExecuteAsync(http, false, async () => Results.Ok(await pairing.ReceiveTestAsync(await AuthenticateAsync(http, pairing, ct), id, ct)))).AllowAnonymous();
-        peer.MapDelete("/mappings/{id:guid}", (Guid id, HttpContext http, PairingService pairing, CancellationToken ct) => ExecuteAsync(http, false, async () => { await pairing.ReceiveDeleteAsync(await AuthenticateAsync(http, pairing, ct), id, ct); return Results.NoContent(); })).AllowAnonymous();
-        peer.MapDelete("/pair", (HttpContext http, PairingService pairing, CancellationToken ct) => ExecuteAsync(http, false, async () => { await pairing.ReceiveDeleteAsync(await AuthenticateAsync(http, pairing, ct), null, ct); return Results.NoContent(); })).AllowAnonymous();
+        peer.MapGet("/directory", (HttpContext http, PairingService pairing, CancellationToken ct) => ExecuteAsync(http, false, async () => Results.Ok(await pairing.DirectoryAsync(await AuthenticateAsync(http, pairing, ct), ct)))).AllowAnonymous().WithMetadata(SetupAuthentication);
+        peer.MapPut("/mappings/{id:guid}", (Guid id, PairingSaveRequest request, HttpContext http, PairingService pairing, CancellationToken ct) => ExecuteAsync(http, false, async () => Results.Ok(await pairing.ReceiveSaveAsync(await AuthenticateAsync(http, pairing, ct), id, request, ct)))).AllowAnonymous().WithMetadata(SetupAuthentication);
+        peer.MapPost("/mappings/{id:guid}/test", (Guid id, HttpContext http, PairingService pairing, CancellationToken ct) => ExecuteAsync(http, false, async () => Results.Ok(await pairing.ReceiveTestAsync(await AuthenticateAsync(http, pairing, ct), id, ct)))).AllowAnonymous().WithMetadata(SetupAuthentication);
+        peer.MapDelete("/mappings/{id:guid}", (Guid id, HttpContext http, PairingService pairing, CancellationToken ct) => ExecuteAsync(http, false, async () => { await pairing.ReceiveDeleteAsync(await AuthenticateAsync(http, pairing, ct), id, ct); return Results.NoContent(); })).AllowAnonymous().WithMetadata(SetupAuthentication);
+        peer.MapDelete("/pair", (HttpContext http, PairingService pairing, CancellationToken ct) => ExecuteAsync(http, false, async () => { await pairing.ReceiveDeleteAsync(await AuthenticateAsync(http, pairing, ct), null, ct); return Results.NoContent(); })).AllowAnonymous().WithMetadata(SetupAuthentication);
         var local = app.MapGroup(PairingProtocol.AdminRoute).RequireAuthorization("InteractiveAccount").WithTags("System connections");
         local.MapGet("", (HttpContext http, PairingService pairing, CancellationToken ct) => ExecuteAsync(http, false, async () => Results.Ok(await pairing.ListAsync(http.User, ct))));
         local.MapPost("/code", (HttpContext http, PairingService pairing, CancellationToken ct) => ExecuteAsync(http, true, async () => Results.Ok(await pairing.GenerateAsync(http.User, ct)))).RequireRateLimiting(RateLimiter);
@@ -89,6 +91,9 @@ public static class PairingEndpoints
         return Results.Json(new { code, message, correlationId = reference }, statusCode: status);
     }
 }
+
+/// <summary>Documents the setup authentication enforced inside pairing handlers.</summary>
+public sealed class PairingSetupAuthenticationMetadata { }
 
 /// <summary>Bound operational failure notifications while every failed request keeps its own inline reference.</summary>
 public sealed class PairingFailureNotificationGate

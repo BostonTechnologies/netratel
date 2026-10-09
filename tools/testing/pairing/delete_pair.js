@@ -36,6 +36,11 @@ async function main() {
     const baseline = counts();
     expect(baseline.incidentCount).toBe(1); expect(baseline.receiptCount).toBe(1);
     expect(baseline.jobRunCount).toBe(1); expect(baseline.taskCount).toBe(1);
+    const activeCredential = await control('cached-receiver-status');
+    expect(activeCredential.status, 'The exact cached business credential must be accepted immediately before deletion').toBe(200);
+    expect(Number.isSafeInteger(activeCredential.expiresAtUnixSeconds)).toBe(true);
+    expect(activeCredential.expiresAtUnixSeconds).toBeGreaterThan(Math.floor(Date.now() / 1000));
+    expect(activeCredential.credentialSha256).toMatch(/^[0-9a-f]{64}$/);
     native('stop', 'rateldesk');
     await deleteLocal(nrPage, context, nr, baseline);
     native('restart', 'rateldesk');
@@ -47,9 +52,12 @@ async function main() {
     expect(await jsonRequest(context, nr, '/api/v1/admin/system-connections')).toEqual([]);
     expect(await jsonRequest(context, rd, '/api/v1/admin/system-connections')).toEqual([]);
     const cached = await control('cached-receiver-status');
+    expect(cached.credentialSha256).toBe(activeCredential.credentialSha256);
+    expect(cached.expiresAtUnixSeconds).toBe(activeCredential.expiresAtUnixSeconds);
+    expect(cached.expiresAtUnixSeconds, 'The original credential must still be unexpired when durable deletion denies it').toBeGreaterThan(Math.floor(Date.now() / 1000));
     expect([401, 403, 404, 410]).toContain(cached.status);
     expect(counts()).toEqual(baseline);
-    record('deleteWhilePeerOffline', 'passed', { bothLocalPages: true, repeatedDeleteHarmless: true, historyPreserved: true, cachedBusinessCredentialDenied: true });
+    record('deleteWhilePeerOffline', 'passed', { bothLocalPages: true, repeatedDeleteHarmless: true, historyPreserved: true, cachedBusinessCredentialDenied: true, unexpiredCredentialRevoked: true });
     await context.close();
   } finally { await browser.close(); }
 }

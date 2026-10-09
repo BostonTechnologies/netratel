@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.OpenApi;
 using Microsoft.OpenApi;
+using NetRatel.API.Endpoints.SystemPairing;
 using NetRatel.API.Security.Authorization;
 using NetRatel.API.Security.M2M;
 using NetRatel.API.Services.Orchestration;
@@ -90,6 +91,14 @@ public static class NetRatelOpenApiCatalog
         operation.OperationId = $"{(description.HttpMethod ?? "operation").ToLowerInvariant()}_{Normalize(path)}";
 
         var metadata = description.ActionDescriptor.EndpointMetadata;
+        if (metadata?.OfType<PairingSetupAuthenticationMetadata>().Any() == true)
+        {
+            operation.Security = [new OpenApiSecurityRequirement
+            {
+                [new OpenApiSecuritySchemeReference(PairingEndpoints.SetupAuthenticationScheme, document)] = []
+            }];
+            return Task.CompletedTask;
+        }
         if (metadata?.OfType<IAllowAnonymous>().Any() == true)
         {
             operation.Security = [];

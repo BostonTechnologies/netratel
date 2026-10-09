@@ -175,7 +175,10 @@ def environment_for(state, product, role):
         ReverseProxy__Clusters__apiCluster__Destinations__api1__Address=api + '/',
         ServiceIdentity__ApiBaseUrl=canonical_api, ServiceIdentity__WebBaseUrl=web,
         ServiceIdentity__Issuer=canonical_api + '/services',
-        ServiceIdentity__Audience=product + '.services')
+        ServiceIdentity__Audience=product + '.services',
+        # Keep the actual captured credential alive through bounded native work
+        # and restarts, so the final denial proves revocation rather than expiry.
+        ServiceIdentity__AccessTokenLifetimeSeconds='900')
     if product == 'netratel':
         environment.update(ConnectionStrings__NetRatelDb=connection,
             DataProtection__KeysDirectory=str(directory / 'keys'),

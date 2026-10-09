@@ -4,6 +4,7 @@ using System.Text;
 using Microsoft.IdentityModel.Tokens;
 using System.Net.Http.Json;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using NetRatel.Infrastructure.SystemPairing.Network;
 using NetRatel.Shared.SystemPairing;
 namespace NetRatel.Infrastructure.SystemPairing;
@@ -88,8 +89,8 @@ public sealed class PairingTransport(HttpClient http)
             var bodySecret = body switch { PairingSaveRequest save => save.Credential?.ClientSecret, PairingExchangeRequest exchange => exchange.InboundSecret, _ => null };
             var codeSecret = body is PairingExchangeRequest codeExchange ? codeExchange.Code : null;
             var sensitive = new[] { secret, bodySecret, codeSecret, codeSecret?.Trim().Replace("-", "", StringComparison.Ordinal).ToUpperInvariant() }.Where(x => !string.IsNullOrEmpty(x)).ToArray();
-            if (sensitive.Any(x => code.Contains(x!, StringComparison.Ordinal))) code = "peer-rejected";
-            if (message is not { Length: > 0 and <= 1024 } || sensitive.Any(x => message.Contains(x!, StringComparison.Ordinal))) message = $"The peer rejected this operation (HTTP {(int)response.StatusCode}).";
+            if (sensitive.Any(x => code.Contains(x!, StringComparison.Ordinal)) || ContainsPairingCode(code, codeSecret)) code = "peer-rejected";
+            if (message is not { Length: > 0 and <= 1024 } || sensitive.Any(x => message.Contains(x!, StringComparison.Ordinal)) || ContainsPairingCode(message, codeSecret)) message = $"The peer rejected this operation (HTTP {(int)response.StatusCode}).";
             throw new PairingException((int)response.StatusCode, code, message);
         }
         if (typeof(T) == typeof(bool)) return (T)(object)true;
@@ -102,6 +103,21 @@ public sealed class PairingTransport(HttpClient http)
             return parsed;
         }
         catch (JsonException) { throw new PairingException(502, "peer-response-invalid", "The peer returned an invalid pairing response."); }
+    }
+    private static bool ContainsPairingCode(string value, string? code)
+    {
+        if (code is not { Length: > 0 and <= 32 }) return false;
+        var normalized = code.Trim().Replace("-", "", StringComparison.Ordinal).ToUpperInvariant();
+        if (normalized.Length != 8 || normalized.Any(character => !char.IsAsciiLetterOrDigit(character))) return false;
+        // Redemption accepts case changes and hyphens anywhere. Match the same
+        // capability in peer diagnostics without changing ordinary secret comparison.
+        var pattern = string.Join("-*", normalized.Select(character => Regex.Escape(character.ToString())));
+        try
+        {
+            return Regex.IsMatch(value, pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.NonBacktracking,
+                TimeSpan.FromMilliseconds(100));
+        }
+        catch (RegexMatchTimeoutException) { return true; }
     }
     public async Task<string> TokenAsync(PairingMetadata peer, PairingBusinessCredential credential, string scope, CancellationToken ct)
     {
