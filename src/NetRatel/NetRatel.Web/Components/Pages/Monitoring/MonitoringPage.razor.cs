@@ -34,9 +34,27 @@ public partial class MonitoringPage
     private MonitoringPageState State => _state ??= new(Api);
     private IReadOnlyList<MonitoringTenantDto> _tenants = [];
     private readonly CancellationTokenSource _lifetime = new();
-    private string? _startupError, _editor, _editorError;
+    private string? _startupError, _editor, _editorError, _invalidField, _successMessage;
+    private bool _focusInvalid;
+    private ElementReference _editorRoot;
+    private void IgnoreFormSubmit() { }
+    private Dictionary<string, object> FieldAttributes(string field) => new()
+    {
+        ["data-monitoring-field"] = field,
+        ["aria-invalid"] = _invalidField == field ? "true" : "false",
+        ["aria-describedby"] = _invalidField == field ? $"monitoring-field-error-{field}" : ""
+    };
+    private RenderFragment FieldFeedback(string field) => builder =>
+    {
+        if (_invalidField != field || _editorError is null) return;
+        builder.OpenElement(0, "small");
+        builder.AddAttribute(1, "id", $"monitoring-field-error-{field}");
+        builder.AddAttribute(2, "class", "monitoring-field-error");
+        builder.AddContent(3, _editorError);
+        builder.CloseElement();
+    };
     private string _tab = "Active", _search = "", _reason = "", _groupName = "", _deleteName = "", _deleteCollection = "";
-    private bool _interactive, _busy, _formDirty, _previewBusy;
+    private bool _interactive, _busy, _formDirty;
     private MonitoringRuleDraft? _draft;
     private MonitoringGroupDto? _originalGroup;
     private HashSet<Guid> _groupMembers = [];
@@ -45,11 +63,10 @@ public partial class MonitoringPage
     private Guid? _bypassRule, _bypassGroup, _bypassAgent, _inventoryAgent;
     private string _bypassResource = "";
     private int? _bypassMinutes = 60;
-    private MonitoringTargetPreviewDto? _preview;
-    private long _editorGeneration, _previewGeneration, _inventoryGeneration;
+    private long _editorGeneration, _inventoryGeneration;
     private ulong? _pendingWatchAtSaveRevision;
     private int _pendingWatchAtSaveTenant;
-    private CancellationTokenSource? _previewRead, _inventoryRead;
+    private CancellationTokenSource? _inventoryRead;
     private string _inventoryNote = "Suggestions read cached inventory only. No collection is requested.";
     private IReadOnlyList<ClientServiceObservation> _serviceSuggestions = [];
     private static readonly ClientServiceState[] ExpectedStateOptions = [ClientServiceState.Running, ClientServiceState.Stopped, ClientServiceState.Failed, ClientServiceState.Starting, ClientServiceState.Stopping, ClientServiceState.Paused];
@@ -109,6 +126,16 @@ public partial class MonitoringPage
             catch (Exception error) when (error is JSException or JSDisconnectedException or TimeZoneNotFoundException or InvalidTimeZoneException) { _timeZone = TimeZoneInfo.Utc; }
         }
         if (await ApplyRequestedScope()) { StateHasChanged(); return; }
+        if (_focusInvalid && _editor is not null)
+        {
+            _focusInvalid = false;
+            try
+            {
+                await using var module = await JS.InvokeAsync<IJSObjectReference>("import", "./js/monitoring-editor.js");
+                await module.InvokeVoidAsync("focusInvalidField", _editorRoot);
+            }
+            catch (Exception error) when (error is JSException or JSDisconnectedException) { }
+        }
         if (_restoreEditorFocus is not { } launcher) return;
         _restoreEditorFocus = null;
         if (_lifetime.IsCancellationRequested || _editor is not null || _tab != "Manage" ||
@@ -122,7 +149,7 @@ public partial class MonitoringPage
     {
         if (_editor is not null || !int.TryParse(args.Value?.ToString(), out var tenant) || !_tenants.Any(t => t.TenantId == tenant)) return;
         CloseEditor(); _search = ""; _stateFilter = ""; RequestedTenantId = tenant; RequestedClientId = null; RequestedState = null;
-        RememberQuery(); State.ClientFilter = null; _pendingWatchAtSaveRevision = null; await State.SelectTenantAsync(tenant);
+        RememberQuery(); State.ClientFilter = null; _pendingWatchAtSaveRevision = null; _successMessage = null; await State.SelectTenantAsync(tenant);
         Navigation.NavigateTo($"/monitoring?tenantId={tenant}", replace: true);
     }
     private Task Refresh() => State.RefreshAsync();
@@ -170,7 +197,6 @@ public partial class MonitoringPage
     private void FilterState(string filter) { _stateFilter = _stateFilter == filter ? "" : filter; _tab = "Active"; }
     private static string HistoryActor(MonitoringEventIntent item) => item.OperatorDisplayName ??
         (item.Kind is MonitoringEventKind.AlertCleared or MonitoringEventKind.AlertAcknowledged ? "Recorded operator unavailable" : "System");
-    private static string SupportName(MonitoringTargetSupport support) => support switch { MonitoringTargetSupport.Supported => "Supported", MonitoringTargetSupport.Unsupported => "Unsupported", _ => "Evidence needed" };
     private static string ActionName(string action) => action.Replace('_', '-') switch { "rule-upsert" => "Rule changed", "group-upsert" => "Group changed", "bypass-upsert" => "Bypass applied", "rule-delete" => "Rule removed", "group-delete" => "Group removed", "bypass-delete" => "Bypass revoked", "save-rule" => "Rule changed", "save-group" => "Group changed", "save-bypass" => "Bypass applied", "delete-rule" => "Rule removed", "delete-group" => "Group removed", "delete-bypass" => "Bypass revoked", "ack" => "Acknowledged", "clear" => "Alert cleared", _ => action.Replace('_', ' ').Replace('-', ' ') };
     private static string Label(Enum? value) => value switch
     {
@@ -204,7 +230,7 @@ public partial class MonitoringPage
     private void BeginEditor(string kind)
     {
         if (_busy) return;
-        CloseEditor(); _restoreEditorFocus = null; _conflict = _reviewedConflict = false; _reviewDescription = null; _editorConfigurationRevision = State.Snapshot?.Configuration.Revision ?? 0; _editor = kind; _editorGeneration++; _reason = ""; _formDirty = false; _editorError = null;
+        CloseEditor(); _restoreEditorFocus = null; _conflict = _reviewedConflict = false; _reviewDescription = null; _editorConfigurationRevision = State.Snapshot?.Configuration.Revision ?? 0; _editor = kind; _editorGeneration++; _reason = ""; _formDirty = false; _editorError = null; _invalidField = null; _focusInvalid = false; _successMessage = null;
     }
     private void OpenRule(MonitoringRuleDto? rule) { if (_busy || rule is not null && rule.TenantId != State.TenantId) return; BeginEditor("rule"); _draft = MonitoringRuleDraft.Create(rule); }
     private void OpenRuleFromLauncher(MonitoringRuleDto? rule, ElementReference launcher)
@@ -230,25 +256,22 @@ public partial class MonitoringPage
         if (_busy) return;
         _restoreEditorFocus = _editor == "rule" ? _editorLauncher : null;
         _editorLauncher = null;
-        _previewRead?.Cancel(); _inventoryRead?.Cancel(); _editorGeneration++; _previewGeneration++; _inventoryGeneration++;
+        _inventoryRead?.Cancel(); _editorGeneration++; _inventoryGeneration++;
         _focusCloseGeneration = _editorGeneration;
-        _editor = null; _draft = null; _operatorSeries = null; _preview = null; _previewBusy = false;
+        _editor = null; _draft = null; _operatorSeries = null; _invalidField = null; _focusInvalid = false;
         _serviceSuggestions = []; _inventoryAgent = null; _inventoryNote = "Suggestions read cached inventory only. No collection is requested.";
     }
     private void HandleKey(KeyboardEventArgs args) { if (args.Key == "Escape" && !_busy) CloseEditor(); }
     private void MarkDirty() => _formDirty = true;
-    private void InvalidatePreview() { _preview = null; _previewGeneration++; _previewRead?.Cancel(); _previewBusy = false; }
-    private void MetricChanged(ChangeEventArgs args) { if (_draft is not null && Enum.TryParse<MonitoringMetricKind>(args.Value?.ToString(), out var kind)) { _draft.SelectMetric(kind); InvalidatePreview(); } }
-    private void Toggle<T>(HashSet<T> values, T value, ChangeEventArgs args) { if (args.Value is true) values.Add(value); else values.Remove(value); MarkDirty(); InvalidatePreview(); }
-
-    private void SelectionChanged() { MarkDirty(); InvalidatePreview(); }
+    private void MetricChanged(ChangeEventArgs args) { if (_draft is not null && Enum.TryParse<MonitoringMetricKind>(args.Value?.ToString(), out var kind)) _draft.SelectMetric(kind); }
+    private void Toggle<T>(HashSet<T> values, T value, ChangeEventArgs args) { if (args.Value is true) values.Add(value); else values.Remove(value); MarkDirty(); }
+    private void SelectionChanged() => MarkDirty();
     private async Task ReviewConflict()
     {
         if (_busy) return;
         var previousOccurrence = _operatorSeries?.Occurrence?.OccurrenceId;
         await State.RefreshAsync();
         if (State.Snapshot is not { } snapshot) return;
-        _preview = null;
         if (_operatorSeries is { } original)
         {
             var current = snapshot.Series.Items.FirstOrDefault(row => row.Series == original.Series);
@@ -291,27 +314,6 @@ public partial class MonitoringPage
         _conflict = _reviewedConflict = false; _editorError = null;
     }
 
-    private async Task Preview()
-    {
-        if (_previewBusy || _draft is null || State.Snapshot is null) return;
-        _previewRead?.Cancel(); _previewRead?.Dispose(); _previewRead = CancellationTokenSource.CreateLinkedTokenSource(State.Token);
-        var token = _previewRead.Token; var generation = ++_previewGeneration; var editor = _editorGeneration; var tenant = State.TenantId; var scope = State.Generation;
-        _previewBusy = true; _editorError = null;
-        try
-        {
-            var rule = _draft.Build(tenant);
-            var result = await Api.PreviewTargetsAsync(tenant, new(rule.Targets, rule.Condition), token);
-            if (State.IsCurrent(tenant, scope) && editor == _editorGeneration && generation == _previewGeneration)
-            {
-                if (result.ConfigurationRevision != State.Snapshot.Configuration.Revision) throw new HttpRequestException("Configuration changed. Refresh after cancelling this editor, then preview again.");
-                _preview = result;
-            }
-        }
-        catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
-        catch (Exception error) when (error is HttpRequestException or System.Text.Json.JsonException or ArgumentException)
-        { if (State.IsCurrent(tenant, scope) && editor == _editorGeneration && generation == _previewGeneration) _editorError = error is HttpRequestException ? error.Message : "The target preview is unavailable. Check the exact selection."; }
-        finally { if (editor == _editorGeneration && generation == _previewGeneration) _previewBusy = false; }
-    }
     private async Task ReadInventory(ChangeEventArgs args)
     {
         _inventoryRead?.Cancel(); _inventoryRead?.Dispose(); _inventoryRead = CancellationTokenSource.CreateLinkedTokenSource(State.Token);
@@ -337,15 +339,14 @@ public partial class MonitoringPage
         if (_busy || _editor is null || State.Snapshot is not { } snapshot) return;
         var tenant = State.TenantId; var scope = State.Generation; var editor = _editorGeneration; var token = State.Token;
         var reason = _draft?.Reason ?? _reason;
-        _editorError = null;
-        if (string.IsNullOrWhiteSpace(reason) || reason.Length > 512) { _editorError = "Enter a reason (up to 512 characters)."; return; }
+        _editorError = null; _invalidField = null;
         if (_draft is not null)
-        {
-            _editorError = _draft.Validate(tenant, snapshot.Permissions, snapshot.PublishedFlows);
-            if (_editorError is not null) return;
-            if (_preview is null || _preview.ConfigurationRevision != snapshot.Configuration.Revision || _preview.AgentIds.IsEmpty)
-            { _editorError = "Preview the current exact targets before saving. Unknown or unsupported targets are shown in the preview."; return; }
-        }
+            _editorError = _draft.Validate(tenant, snapshot.Permissions, snapshot.PublishedFlows, out _invalidField);
+        else if (string.IsNullOrWhiteSpace(reason) || reason.Length > 512)
+        { _editorError = "Enter a reason (up to 512 characters)."; _invalidField = nameof(MonitoringRuleDraft.Reason); }
+        else if (_editor == "group" && (string.IsNullOrWhiteSpace(_groupName) || _groupName.Length > 128))
+        { _editorError = "Enter a group name (up to 128 characters)."; _invalidField = "GroupName"; }
+        if (_editorError is not null) { _focusInvalid = _invalidField is not null; return; }
         _busy = true;
         try
         {
@@ -373,13 +374,16 @@ public partial class MonitoringPage
             {
                 _pendingWatchAtSaveTenant = tenant;
                 _pendingWatchAtSaveRevision = saved?.WatchPolicyUpdatePending == true ? saved.Revision : null;
+                _successMessage = $"{EditorTitle} saved successfully.";
                 _busy = false; CloseEditor(); await State.RefreshAsync();
             }
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
+        catch (OperationCanceledException)
+        { if (State.IsCurrent(tenant, scope) && editor == _editorGeneration) _editorError = "The save timed out. Your edits are retained; refresh to check the result before retrying."; }
         catch (Exception error) when (error is HttpRequestException or System.Text.Json.JsonException)
         { if (State.IsCurrent(tenant, scope) && editor == _editorGeneration) { _conflict = error is HttpRequestException { StatusCode: System.Net.HttpStatusCode.Conflict }; _editorError = error is HttpRequestException ? error.Message : "Could not confirm the save. Your edits are retained; refresh before retrying."; } }
         finally { _busy = false; }
     }
-    public void Dispose() { _lifetime.Cancel(); _lifetime.Dispose(); _previewRead?.Cancel(); _previewRead?.Dispose(); _inventoryRead?.Cancel(); _inventoryRead?.Dispose(); _state?.Dispose(); }
+    public void Dispose() { _lifetime.Cancel(); _lifetime.Dispose(); _inventoryRead?.Cancel(); _inventoryRead?.Dispose(); _state?.Dispose(); }
 }

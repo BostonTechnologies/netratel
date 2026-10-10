@@ -90,19 +90,38 @@ public sealed class MonitoringRuleDraft
     }
 
     public string? Validate(int tenantId, MonitoringPermissionsDto permissions, IReadOnlyList<MonitoringPublishedFlowDto> flows)
+        => Validate(tenantId, permissions, flows, out _);
+
+    public string? Validate(int tenantId, MonitoringPermissionsDto permissions, IReadOnlyList<MonitoringPublishedFlowDto> flows, out string? field)
     {
+        field = null;
         if (!permissions.CanManage || permissions.TenantId != tenantId) return "You do not have permission to manage these rules.";
-        if (TargetMode == MonitoringTargetMode.AllEligible && !permissions.CanTargetAll) return "All eligible clients requires tenant-wide target permission.";
-        if (string.IsNullOrWhiteSpace(Reason) || Reason.Length > MonitoringLimits.MaximumReasonLength) return "Enter a reason for this configuration change.";
-        if (BreachHoldSeconds is < 1 or > 3600 || RecoveryHoldSeconds is < 1 or > 3600 || FreshnessSeconds is < 1 or > 900)
-            return "Holds must be 1–3600 seconds and freshness must be 1–900 seconds.";
+        if (string.IsNullOrWhiteSpace(Name) || Name.Trim().Length > MonitoringLimits.MaximumNameLength)
+            return Invalid(nameof(Name), "Enter a rule name (up to 128 characters).", out field);
         var rule = Build(tenantId);
-        if (!ValidForDefinition(rule)) return "Check the name, exact target/service/volume, units, thresholds and expected states. CPU breach must exceed recovery; disk breach must be below recovery.";
-        if (PublishedFlowVersionId is { } flow && !flows.Any(item => item.PublishedFlowVersionId == flow)) return "Select a currently published flow version or Display only.";
+        if (TargetMode == MonitoringTargetMode.AllEligible && !permissions.CanTargetAll)
+            return Invalid(nameof(TargetMode), "All eligible clients requires tenant-wide target permission.", out field);
+        if (!MonitoringContractValidator.TryValidateTargets(rule.Targets, out _))
+            return Invalid(nameof(TargetMode), "Select at least one client or group within the target limits.", out field);
+        if (BreachHoldSeconds is < 1 or > 3600) return Invalid(nameof(BreachHoldSeconds), "Full breach hold must be 1–3600 seconds.", out field);
+        if (RecoveryHoldSeconds is < 1 or > 3600) return Invalid(nameof(RecoveryHoldSeconds), "Full recovery hold must be 1–3600 seconds.", out field);
+        if (FreshnessSeconds is < 1 or > 900) return Invalid(nameof(FreshnessSeconds), "Freshness budget must be 1–900 seconds.", out field);
+        if (!ValidForDefinition(rule))
+        {
+            if (Metric == MonitoringMetricKind.ServiceExpectedState)
+                return Invalid(ExpectedStates.Count == 0 ? nameof(ExpectedStates) : nameof(ResourceName), "Enter an exact stable service name and select its expected states for this platform.", out field);
+            return Invalid(nameof(BreachThreshold), "Check the exact volume, units and thresholds. CPU breach must exceed recovery; disk breach must be below recovery.", out field);
+        }
+        if (PublishedFlowVersionId is { } flow && !flows.Any(item => item.PublishedFlowVersionId == flow))
+            return Invalid(nameof(PublishedFlowVersionId), "Select a currently published flow version or Display only.", out field);
         if (Original is not null && rule.EvaluationRevision != Original.EvaluationRevision && !ResetConfirmed)
-            return "Confirm the condition/scope reset. Any active occurrence is suspended and a new full window is required.";
+            return Invalid(nameof(ResetConfirmed), "Confirm the condition/scope reset. Any active occurrence is suspended and a new full window is required.", out field);
+        if (string.IsNullOrWhiteSpace(Reason) || Reason.Length > MonitoringLimits.MaximumReasonLength)
+            return Invalid(nameof(Reason), "Enter a change reason (up to 512 characters).", out field);
         return null;
     }
+
+    private static string Invalid(string name, string message, out string? field) { field = name; return message; }
 
     private static bool ValidForDefinition(MonitoringRuleDto rule) => MonitoringContractValidator.TryValidateRule(
         rule with { PublishedFlowVersionId = null, ExecutionPrincipalId = null, ExecutionCredentialId = null }, out _);

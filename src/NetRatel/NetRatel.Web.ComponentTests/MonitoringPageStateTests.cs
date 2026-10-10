@@ -109,6 +109,8 @@ public sealed class MonitoringPageStateTests
 
 internal class MonitoringTestApi : IMonitoringApiService
 {
+    public int PreviewCalls { get; private set; }
+    public IReadOnlyList<MonitoringPublishedFlowDto> PublishedFlows { get; set; } = [];
     public bool CanRead { get; set; } = true;
     public Func<int, CancellationToken, Task<MonitoringConfigurationDto>>? ConfigurationRead { get; set; }
     public Func<int, string?, CancellationToken, Task<MonitoringSeriesPageDto>>? SeriesRead { get; set; }
@@ -122,8 +124,8 @@ internal class MonitoringTestApi : IMonitoringApiService
     public Task<MonitoringSeriesPageDto> GetSeriesAsync(int tenantId, string? cursor = null, CancellationToken token = default) => SeriesRead?.Invoke(tenantId, cursor, token) ?? Task.FromResult(new MonitoringSeriesPageDto([], null));
     public Task<MonitoringEventPageDto> GetEventsAsync(int tenantId, string? cursor = null, CancellationToken token = default) => EventsRead?.Invoke(tenantId, cursor, token) ?? Task.FromResult(new MonitoringEventPageDto([], null));
     public Task<MonitoringClientPageDto> GetClientsAsync(int tenantId, string? cursor = null, CancellationToken token = default) => Task.FromResult(new MonitoringClientPageDto([new(Guid.Parse("11111111-1111-1111-1111-111111111111"), "SQL Server", NetRatel.Shared.Contracts.Services.ClientServicePlatform.Windows, MonitoringTargetSupport.Supported, "cached")], null, 1));
-    public Task<IReadOnlyList<MonitoringPublishedFlowDto>> GetPublishedFlowsAsync(int tenantId, CancellationToken token = default) => Task.FromResult<IReadOnlyList<MonitoringPublishedFlowDto>>([]);
-    public Task<MonitoringTargetPreviewDto> PreviewTargetsAsync(int tenantId, MonitoringTargetPreviewRequest request, CancellationToken token = default) => Task.FromResult(new MonitoringTargetPreviewDto(request.Targets.AgentIds, 1, [], request.Targets.AgentIds.Length));
+    public Task<IReadOnlyList<MonitoringPublishedFlowDto>> GetPublishedFlowsAsync(int tenantId, CancellationToken token = default) => Task.FromResult(PublishedFlows);
+    public Task<MonitoringTargetPreviewDto> PreviewTargetsAsync(int tenantId, MonitoringTargetPreviewRequest request, CancellationToken token = default) { PreviewCalls++; return Task.FromResult(new MonitoringTargetPreviewDto(request.Targets.AgentIds, 1, [], request.Targets.AgentIds.Length)); }
     public Task<MonitoringConfigurationDto> SaveRuleAsync(int tenantId, MonitoringRuleWriteDto request, CancellationToken token = default) =>
         RuleSave?.Invoke(tenantId, request, token) ?? Task.FromResult(Configuration(tenantId) with { Revision = request.ExpectedConfigurationRevision + 1 });
     public Task<MonitoringConfigurationDto> SaveGroupAsync(int tenantId, MonitoringGroupWriteDto request, CancellationToken token = default) => Task.FromResult(Configuration(tenantId) with { Revision = request.ExpectedConfigurationRevision + 1 });
