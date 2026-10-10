@@ -20,11 +20,25 @@ public sealed class MonitoringPageTests : AsyncBunitContext
         Services.AddSingleton<IMonitoringApiService>(_api);
         Services.AddSingleton<IClientServicesApiService>(new EmptyServices());
     }
-    [Fact]
-    public void FailedSaveRetainsDirtyInputsAndCancelDoesNotWrite()
+    [Theory]
+    [InlineData("network", "Network unavailable")]
+    [InlineData("conflict", "Configuration conflict")]
+    [InlineData("timeout", "timed out")]
+    [InlineData("json", "confirm the save")]
+    public void FailedSaveRetainsDirtyInputsAndCancelDoesNotWrite(string failure, string feedback)
     {
         var calls = 0;
-        _api.RuleSave = (_, _, _) => { calls++; throw new HttpRequestException("Configuration conflict; edits retained"); };
+        _api.RuleSave = (_, _, _) =>
+        {
+            calls++;
+            throw failure switch
+            {
+                "conflict" => new HttpRequestException("Configuration conflict; edits retained", null, System.Net.HttpStatusCode.Conflict),
+                "timeout" => new TaskCanceledException(),
+                "json" => new System.Text.Json.JsonException(),
+                _ => new HttpRequestException("Network unavailable; edits retained")
+            };
+        };
         var cut = Render<MonitoringPage>();
         cut.WaitForAssertion(() => Assert.NotEmpty(cut.FindAll("[data-testid='monitoring-tab-manage']")));
         cut.Find("[data-testid='monitoring-tab-manage']").Click();
@@ -32,11 +46,10 @@ public sealed class MonitoringPageTests : AsyncBunitContext
         cut.Find("[data-testid='monitoring-rule-name']").Input("SQL CPU");
         cut.Find("[data-testid='monitoring-client-choice']").Change(true);
         cut.Find("[data-testid='monitoring-reason']").Input("add explicit CPU rule");
-        cut.Find("[data-testid='monitoring-preview']").Click();
-        cut.WaitForAssertion(() => Assert.Contains("eligible", cut.Find("[data-testid='monitoring-preview-result']").TextContent));
         cut.Find("[data-testid='monitoring-save']").Click();
-        cut.WaitForAssertion(() => Assert.Contains("conflict", cut.Find("[data-testid='monitoring-editor-error']").TextContent));
+        cut.WaitForAssertion(() => Assert.Contains(feedback, cut.Find("[data-testid='monitoring-editor-error']").TextContent));
         Assert.Equal("SQL CPU", cut.Find("[data-testid='monitoring-rule-name']").GetAttribute("value"));
+        Assert.Equal("add explicit CPU rule", cut.Find("[data-testid='monitoring-reason']").GetAttribute("value"));
         Assert.Contains("Unsaved", cut.Find("[data-testid='monitoring-dirty']").TextContent);
         Assert.Single(cut.FindAll("[data-testid='monitoring-save']"));
         Assert.Single(cut.FindAll("[data-testid='monitoring-cancel']"));
@@ -52,11 +65,13 @@ public sealed class MonitoringPageTests : AsyncBunitContext
         cut.WaitForAssertion(() => Assert.NotEmpty(cut.FindAll("[data-testid='monitoring-tab-manage']")));
         cut.Find("[data-testid='monitoring-tab-manage']").Click(); cut.Find("[data-testid='monitoring-new-rule']").Click();
         cut.Find("[data-testid='monitoring-rule-name']").Input("SQL CPU"); cut.Find("[data-testid='monitoring-client-choice']").Change(true);
-        cut.Find("[data-testid='monitoring-reason']").Input("configure CPU"); cut.Find("[data-testid='monitoring-preview']").Click();
-        cut.WaitForAssertion(() => Assert.NotEmpty(cut.FindAll("[data-testid='monitoring-preview-result']")));
+        cut.Find("[data-testid='monitoring-reason']").Input("configure CPU");
         var first = cut.Find("[data-testid='monitoring-save']").ClickAsync(new());
         cut.WaitForAssertion(() => Assert.True(cut.Find("[data-testid='monitoring-save']").HasAttribute("disabled")));
         Assert.True(cut.Find("[data-testid='monitoring-tenant']").HasAttribute("disabled"));
+        await cut.Find("[data-testid='monitoring-save']").ClickAsync(new());
+        Assert.Contains("Saving", cut.Find("[data-testid='monitoring-saving']").TextContent);
+        Assert.Equal(1, calls);
         saving.SetResult(_api.Configuration(1) with { Revision = 2 }); await first;
         Assert.Equal(1, calls);
     }
@@ -83,8 +98,7 @@ public sealed class MonitoringPageTests : AsyncBunitContext
         cut.WaitForAssertion(() => Assert.NotEmpty(cut.FindAll("[data-testid='monitoring-tab-manage']")));
         cut.Find("[data-testid='monitoring-tab-manage']").Click(); cut.Find("[data-testid='monitoring-new-rule']").Click();
         cut.Find("[data-testid='monitoring-rule-name']").Input("SQL CPU"); cut.Find("[data-testid='monitoring-client-choice']").Change(true);
-        cut.Find("[data-testid='monitoring-reason']").Input("save selected targets"); cut.Find("[data-testid='monitoring-preview']").Click();
-        cut.WaitForAssertion(() => Assert.NotEmpty(cut.FindAll("[data-testid='monitoring-preview-result']")));
+        cut.Find("[data-testid='monitoring-reason']").Input("save selected targets");
         cut.Find("[data-testid='monitoring-save']").Click();
         cut.WaitForAssertion(() => Assert.Contains("pending at save time", cut.Find("[data-testid='monitoring-watch-pending-at-save']").TextContent));
         Assert.Empty(cut.FindAll("[data-testid='monitoring-editor']"));
@@ -116,6 +130,66 @@ public sealed class MonitoringPageTests : AsyncBunitContext
         Assert.Equal(receipt.IncidentUrl, cut.Find("[data-testid='monitoring-incident-receipt'] a").GetAttribute("href"));
         Assert.Contains("noopener", cut.Find("[data-testid='monitoring-incident-receipt'] a").GetAttribute("rel"));
         Assert.Contains(cut.FindAll("a"), link => link.GetAttribute("href") == $"/flows?tenantId=1&run={runId:D}");
+    }
+    [Fact]
+    public void GroupOnlyCreateAndFlowOnlyEditSaveDirectlyAndReadBackExactVersion()
+    {
+        var agent = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        var group = new MonitoringGroupDto(1, Guid.NewGuid(), 1, "SQL servers", [agent]);
+        var firstFlow = Guid.NewGuid(); var secondFlow = Guid.NewGuid();
+        _api.PublishedFlows = [new(firstFlow, "Incident from alert", 1), new(secondFlow, "Incident from alert", 2)];
+        var current = _api.Configuration(1) with { Groups = [group] };
+        _api.ConfigurationRead = (_, _) => Task.FromResult(current);
+        MonitoringRuleWriteDto? write = null;
+        _api.RuleSave = (_, request, _) =>
+        {
+            write = request;
+            current = current with { Revision = current.Revision + 1, Rules = [request.Rule] };
+            return Task.FromResult(current);
+        };
+        var cut = Render<MonitoringPage>();
+        cut.WaitForAssertion(() => Assert.NotEmpty(cut.FindAll("[data-testid='monitoring-tab-manage']")));
+        cut.Find("[data-testid='monitoring-tab-manage']").Click(); cut.Find("[data-testid='monitoring-new-rule']").Click();
+        cut.Find("[data-testid='monitoring-rule-name']").Input("Group CPU");
+        cut.FindAll("[role='tab']").Single(tab => tab.TextContent.Trim() == "Groups").Click();
+        cut.FindAll("[data-testid='monitoring-target-picker'] input[type='checkbox']").Last().Change(true);
+        cut.Find("[data-testid='monitoring-flow']").Change(firstFlow.ToString());
+        cut.Find("[data-testid='monitoring-reason']").Input("create rule");
+        Assert.Empty(cut.FindAll("[data-testid='monitoring-preview']"));
+        cut.Find("[data-testid='monitoring-save']").Click();
+        cut.WaitForAssertion(() => Assert.Empty(cut.FindAll("[data-testid='monitoring-editor']")));
+        Assert.NotNull(write); Assert.Empty(write.Rule.Targets.AgentIds); Assert.Equal([group.GroupId], write.Rule.Targets.GroupIds);
+        Assert.Equal(firstFlow, current.Rules[0].PublishedFlowVersionId);
+        var evaluation = current.Rules[0].EvaluationRevision; var condition = current.Rules[0].Condition;
+        cut.Find("[data-testid='monitoring-edit-rule']").Click();
+        Assert.Equal("Group CPU", cut.Find("[data-testid='monitoring-rule-name']").GetAttribute("value"));
+        Assert.Equal(firstFlow.ToString(), cut.Find("[data-testid='monitoring-flow']").GetAttribute("value"));
+        cut.Find("[data-testid='monitoring-flow']").Change(secondFlow.ToString());
+        cut.Find("[data-testid='monitoring-reason']").Input("bind another published version");
+        cut.Find("[data-testid='monitoring-save']").Click();
+        cut.WaitForAssertion(() => Assert.Empty(cut.FindAll("[data-testid='monitoring-editor']")));
+        Assert.Equal(secondFlow, current.Rules[0].PublishedFlowVersionId);
+        Assert.Equal(evaluation, current.Rules[0].EvaluationRevision); Assert.Equal(condition, current.Rules[0].Condition);
+        Assert.Null(write!.ResetPolicy); Assert.Equal(0, _api.PreviewCalls);
+        cut.Find("[data-testid='monitoring-edit-rule']").Click();
+        Assert.Equal(secondFlow.ToString(), cut.Find("[data-testid='monitoring-flow']").GetAttribute("value"));
+    }
+    [Fact]
+    public void ValidationRetainsDraftAndAssociatesErrorWithRequiredReasonInFooter()
+    {
+        var cut = Render<MonitoringPage>();
+        cut.WaitForAssertion(() => Assert.NotEmpty(cut.FindAll("[data-testid='monitoring-tab-manage']")));
+        cut.Find("[data-testid='monitoring-tab-manage']").Click(); cut.Find("[data-testid='monitoring-new-rule']").Click();
+        cut.Find("[data-testid='monitoring-rule-name']").Input("Draft retained"); cut.Find("[data-testid='monitoring-client-choice']").Change(true);
+        cut.Find("[data-testid='monitoring-save']").Click();
+        cut.WaitForAssertion(() => Assert.Contains("512", cut.Find("footer [data-testid='monitoring-editor-error']").TextContent));
+        var reason = cut.Find("[data-testid='monitoring-reason']");
+        Assert.Equal("true", reason.GetAttribute("aria-invalid")); Assert.True(reason.HasAttribute("required"));
+        Assert.Contains("512", cut.Find("#" + reason.GetAttribute("aria-describedby")).TextContent);
+        Assert.Equal("alert", cut.Find("[data-testid='monitoring-editor-error']").GetAttribute("role"));
+        Assert.Equal("Draft retained", cut.Find("[data-testid='monitoring-rule-name']").GetAttribute("value"));
+        Assert.Equal("true", cut.Find("[data-testid='monitoring-tab-manage']").GetAttribute("aria-selected"));
+        Assert.Equal(0, _api.PreviewCalls);
     }
     private sealed class EmptyServices : IClientServicesApiService
     {

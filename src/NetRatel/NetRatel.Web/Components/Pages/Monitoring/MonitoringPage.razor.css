@@ -30,7 +30,7 @@
 .monitoring-editor-shell { width:min(100vw,32rem); height:100dvh; background:var(--mud-palette-surface); color:var(--mud-palette-text-primary); display:flex; flex-direction:column; box-shadow:var(--mud-elevation-8); }
 .monitoring-editor-shell header,.monitoring-editor-shell footer { flex:none; padding:1rem; border-bottom:1px solid var(--mud-palette-divider); }
 .monitoring-editor-shell header h2 { font-size:1.125rem; margin:0 0 .25rem; }
-.monitoring-editor-shell footer { border-top:1px solid var(--mud-palette-divider); border-bottom:0; display:flex; justify-content:flex-end; gap:.75rem; }
+.monitoring-editor-shell footer { border-top:1px solid var(--mud-palette-divider); border-bottom:0; display:flex; flex-direction:column; gap:.5rem; }
 .monitoring-editor-body { flex:1; overflow:auto; min-height:0; padding:1rem; display:flex; flex-direction:column; gap:1rem; overflow-wrap:anywhere; }
 .monitoring-editor-body fieldset { min-width:0; border:1px solid var(--mud-palette-divider); padding:.5rem; }
 .monitoring-page .monitoring-check { flex-direction:row; align-items:center; margin:.3rem 0; }
@@ -58,9 +58,12 @@
 .monitoring-row-actions ::deep .mud-icon-button { padding:.375rem; }
 .monitoring-editor-shell ::deep .monitoring-form { display:flex; flex-direction:column; gap:1rem; }
 .monitoring-editor-body ::deep .monitoring-form { display:flex; flex-direction:column; gap:1rem; }
-.monitoring-preview-table { width:100%; border-collapse:collapse; }
-.monitoring-preview-table td,.monitoring-preview-table th { padding:.5rem; border-bottom:1px solid var(--mud-palette-divider); text-align:left; font-size:.8125rem; }
 .monitoring-conflict-actions { display:flex; gap:.5rem; flex-wrap:wrap; }
 @media(max-width:650px) { .monitoring-table th:first-child,.monitoring-table th:last-child { width:auto; } }
 
 .monitoring-client-filter { display:flex; flex-wrap:wrap; align-items:center; gap:.5rem; }
+
+.monitoring-editor-actions { display:flex; justify-content:flex-end; gap:.75rem; flex-wrap:wrap; }
+.monitoring-footer-error,.monitoring-field-error { color:var(--mud-palette-error); font-size:.8125rem; overflow-wrap:anywhere; }
+.monitoring-save-status,.monitoring-save-success { font-size:.875rem; }
+.monitoring-editor-shell footer { padding:.75rem 1rem; max-height:45dvh; overflow:auto; }

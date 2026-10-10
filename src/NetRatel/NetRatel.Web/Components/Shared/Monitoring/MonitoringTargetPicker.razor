@@ -9,9 +9,9 @@
         <MudTabPanel Text="Clients">
             <MudTextField T="string" Label="Search clients by name, hostname or reported IP" Value="_search" ValueChanged="Search" DebounceInterval="300" Variant="Variant.Outlined" Margin="Margin.Dense" Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search" Clearable="true" />
             @if (_loading) { <MudProgressLinear Indeterminate="true" aria-label="Searching clients" /> }
-            @if (_error is not null) { <MudAlert Severity="Severity.Error">@_error <MudButton OnClick="Reload" Size="Size.Small">Retry</MudButton></MudAlert> }
+            @if (_error is not null) { <MudAlert Severity="Severity.Error">@_error <MudButton ButtonType="ButtonType.Button" OnClick="Reload" Size="Size.Small">Retry</MudButton></MudAlert> }
             <div class="target-picker-actions">
-                <MudButton OnClick="SelectPage" Disabled="@(_loading || _page.Items.IsEmpty)" Size="Size.Small">Select this page</MudButton>
+                <MudButton ButtonType="ButtonType.Button" OnClick="SelectPage" Disabled="@(_loading || _page.Items.IsEmpty)" Size="Size.Small">Select this page</MudButton>
                 <MudText Typo="Typo.caption">@_page.Total matching clients · pages of 25</MudText>
             </div>
             <div class="target-picker-clients">
@@ -26,8 +26,8 @@
                 @if (!_loading && _error is null && _page.Items.IsEmpty) { <MudText Typo="Typo.body2" Class="pa-2">No matching clients.</MudText> }
             </div>
             <div class="target-picker-actions">
-                <MudButton OnClick="Reload" Disabled="_loading" Size="Size.Small">First page</MudButton>
-                <MudButton OnClick="Next" Disabled="@(_loading || _page.NextCursor is null)" Size="Size.Small" data-testid="monitoring-next-clients">Next page</MudButton>
+                <MudButton ButtonType="ButtonType.Button" OnClick="Reload" Disabled="_loading" Size="Size.Small">First page</MudButton>
+                <MudButton ButtonType="ButtonType.Button" OnClick="Next" Disabled="@(_loading || _page.NextCursor is null)" Size="Size.Small" data-testid="monitoring-next-clients">Next page</MudButton>
             </div>
         </MudTabPanel>
         @if (SelectedGroups is not null)
