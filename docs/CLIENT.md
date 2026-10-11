@@ -228,6 +228,55 @@ partial publication evidence are shown instead of treating an incomplete pack
 as installable. A client receives updates from its NetRatel instance; it does
 not need direct GitHub access.
 
+### Automatic update routing and recovery
+
+The configured REST origin may be the Web hostname. Web forwards
+`/api/v2/agent-updates/releases/{releaseId}/claim` and
+`/api/v2/agent-updates/attempts/{attemptId}/result` to the API without rewriting
+the path or body. The explicit agent bearer token remains the API's identity;
+these calls do not require a browser session. Artifact downloads continue using
+the same-origin v1 client-artifact route and retain size, checksum, manifest,
+runtime and version verification.
+
+The gateway evaluates the offer on every accepted presence heartbeat (15 seconds
+by default). The recovery coordinator retries transport/routing failures only on
+a fresh eligible offer after cooldowns of 30, 60, 120, 240 and then 300 seconds.
+The 300-second cap continues while eligibility remains; there is no exhausted
+budget that suppresses recovery permanently. Withdrawing an offer, disabling
+updates, suspending/suppressing the agent, or selecting another release cancels
+stale work. Shutdown cancels active work. One reader serializes staging, and a
+handover fence prevents another updater launch, including after an uncertain
+launch outcome. Invalid artifacts and terminal policy rejection are not staged
+again automatically.
+
+Claim retries retain their admission nonce. Progress-report retries resume the
+same phase without repeating verified downloads; a failed failure report retains
+the original error. Existing authority rules still govern failed pre-activation
+attempts, interrupted downloads and five-minute stale-claim recovery. Tenant
+enablement, channel and target pins determine eligibility; the client's packaged
+channel is advisory. Suspended agents, suppressed releases and incompatible or
+older versions remain excluded. Diagnostics identify current/target version,
+runtime, release/attempt, stage, safe route template, failure code and retry delay
+without logging tokens, nonces, HTTP bodies or download query strings.
+
+For later owner deployment validation, record the eligible catalog offer and its
+target version, a successful authenticated claim through Web, verified artifact
+staging, updater handover, gateway activation/readmission and confirmation, the
+accepted result, and the running executable reporting the target version. An
+unauthenticated 401 only proves authentication reachability. Preserve agent ID
+and tenant binding throughout.
+
+Already installed beta.2/beta.6 binaries retain their old in-memory offer
+suppression; deploying Web alone does not give them coordinator recovery. After
+the Web fix is deployed and the route and eligibility are verified, the owner can
+restart an affected client service once to clear that suppression and receive a
+fresh offer. If a claim response was lost, first inspect the attempt: a fresh
+`Claimed` record with a different nonce is fenced for five minutes; wait for that
+existing recovery window before restarting. Staged/activating attempts require
+inspection of their existing lifecycle rather than clearing records or bypassing
+nonce checks. A routing failure before claiming needs no re-enrollment or
+identity reset. These are later owner actions, not deployment evidence.
+
 ### Previously installed prerelease updater
 
 The published `v0.1.0-rc.7` Linux updater rejects a newer prerelease with
