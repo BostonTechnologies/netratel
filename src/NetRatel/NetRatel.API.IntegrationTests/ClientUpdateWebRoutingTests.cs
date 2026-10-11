@@ -10,6 +10,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using NetRatel.API.Models;
 using NetRatel.API.Services;
 using NetRatel.Infrastructure.Persistence;
 using WebHost::NetRatel.Web.Configuration;
@@ -33,11 +34,19 @@ public sealed class ClientUpdateWebRoutingTests(ApiFactory factory)
             await db.SaveChangesAsync();
             tenantId = tenant.Id;
             db.Agents.Add(new Agent { Id = agentId, TenantId = tenantId });
-            db.ClientUpdateReleases.Add(new ClientUpdateReleaseRecord { PublicId = releaseId, Revision = 1,
-                RuntimeId = "linux-x64", Version = "91.2.4", Channel = "stable", Enabled = true,
-                ArtifactKey = "linux-x64/91.2.4.zip", Sha256 = new string('a', 64), SizeBytes = 42,
-                ManifestJson = "{}", PublishedAtUtc = DateTimeOffset.UtcNow });
             await db.SaveChangesAsync();
+            // The shared fixture can already contain publications. Allocate catalog
+            // revisions through the authority, including when running this test alone.
+            var publisher = scope.ServiceProvider.GetRequiredService<IClientUpdatePublisher>();
+            foreach (var version in new[] { "91.2.3", "91.2.4" })
+            {
+                var release = await publisher.PublishArtifactAsync(new ClientArtifactSummaryDto
+                {
+                    Rid = "linux-x64", Version = version, FileName = $"linux-x64-{version}.zip",
+                    Sha256 = new string('a', 64), Size = 42, UploadedAt = DateTimeOffset.UtcNow
+                }, "{}", "Web routing fixture", CancellationToken.None);
+                if (version == "91.2.4") releaseId = release.PublicId;
+            }
         }
 
         // Load the shipped routes, change only the destination transport to the authenticated API fixture.
