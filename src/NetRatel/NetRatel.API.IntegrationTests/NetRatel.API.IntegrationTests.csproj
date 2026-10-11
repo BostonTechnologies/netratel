@@ -23,6 +23,7 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../NetRatel.API/NetRatel.API.csproj" />
+    <ProjectReference Include="../NetRatel.Web/NetRatel.Web.csproj" Aliases="WebHost" />
     <!-- Build the actual runner without importing its executable Program type. -->
     <ProjectReference Include="../NetRatel.Pairing.NativeRunner/NetRatel.Pairing.NativeRunner.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
