@@ -18,6 +18,23 @@ namespace NetRatel.Tests.Client;
 public sealed class ClientAutoUpdateRetryTests
 {
     [Fact]
+    public async Task TokenAcquisitionFailureIdentifiesAuthenticationBeforeAnyUpdateRequest()
+    {
+        await using var rig = new Rig();
+        rig.TokenFailure = HttpStatusCode.ServiceUnavailable;
+        rig.Offer();
+        var diagnostic = await rig.Outcome("retry-on-fresh-offer");
+        Assert.Contains("stage=agent-authentication endpoint=agent-token code=http_503", diagnostic);
+        Assert.Equal(0, rig.Claims);
+        rig.Clock.Advance(TimeSpan.FromSeconds(30));
+        rig.Offer();
+        await rig.Launched.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(1, rig.Claims);
+        Assert.Equal(1, rig.Launches);
+        rig.AssertSafeDiagnostics();
+    }
+
+    [Fact]
     public async Task SameReleaseRecoversAfterRoute404WithoutDuplicateHandover()
     {
         await using var rig = new Rig();
@@ -228,7 +245,7 @@ public sealed class ClientAutoUpdateRetryTests
         internal Guid AttemptId = Guid.NewGuid();
         internal ClientUpdateOffer Release;
         internal readonly AkkaClientAutoUpdateCoordinator Coordinator;
-        internal HttpStatusCode? ClaimFailure, DownloadFailure;
+        internal HttpStatusCode? ClaimFailure, DownloadFailure, TokenFailure;
         internal string? ReportFailure;
         internal bool DropClaimResponse, FailAfterCommit, InvalidArtifact, HoldDownload, DelayCancellation;
         internal int Claims, Downloads, Launches;
@@ -338,8 +355,15 @@ public sealed class ClientAutoUpdateRetryTests
 
         private static HttpResponseMessage Error(HttpStatusCode status) => new(status)
             { Content = new StringContent("secret-test-token ?signature=signed-query-secret") };
-        public Task<(string AccessToken, DateTimeOffset ExpiresAtUtc)> GetAccessTokenAsync(CancellationToken ct) =>
-            Task.FromResult(("secret-test-token", Clock.GetUtcNow().AddHours(1)));
+        public Task<(string AccessToken, DateTimeOffset ExpiresAtUtc)> GetAccessTokenAsync(CancellationToken ct)
+        {
+            if (TokenFailure is { } status)
+            {
+                TokenFailure = null;
+                throw new HttpRequestException("secret-test-token", null, status);
+            }
+            return Task.FromResult(("secret-test-token", Clock.GetUtcNow().AddHours(1)));
+        }
         public async ValueTask DisposeAsync()
         {
             AllowCancellation.TrySetResult();

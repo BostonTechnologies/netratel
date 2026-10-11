@@ -361,6 +361,7 @@ public sealed class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdateHandler
 
     private async Task StageAsync(UpdateAttempt attempt, CancellationToken cancellationToken)
     {
+        attempt.Operation = "agent-authentication";
         var token = await _tokenService.GetAccessTokenAsync(cancellationToken).ConfigureAwait(false);
         var offer = attempt.Offer;
         while (true)
@@ -520,6 +521,7 @@ public sealed class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdateHandler
     {
         var stage = operation ?? attempt.Operation;
         var endpoint = stage == "claim" ? "/api/v2/agent-updates/releases/{releaseId}/claim"
+            : stage == "agent-authentication" ? "agent-token"
             : stage.StartsWith("state/result-reporting", StringComparison.Ordinal) ? "/api/v2/agent-updates/attempts/{attemptId}/result"
             : stage == "download/verification" ? "/api/v1/client-artifacts/{runtimeId}/{version}/raw-download" : "native-updater/local-state";
         _writeLog($"[UpdateManagement] current={_currentVersion} target={attempt.Offer.Version} runtime={_runtimeId} " +
@@ -682,9 +684,11 @@ public sealed class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdateHandler
         }
         if (result.State is "RolledBack" or "RollbackUnverified")
             AtomicWriteJson(_suspensionPath, new { result.AttemptId, result.ReleaseId, reason = result.FailureCode, suspendedAtUtc = DateTimeOffset.UtcNow });
+        var operation = "agent-authentication";
         try
         {
             var token = await _tokenService.GetAccessTokenAsync(cancellationToken).ConfigureAwait(false);
+            operation = "state/result-reporting";
             using var request = new HttpRequestMessage(HttpMethod.Post, $"/api/v2/agent-updates/attempts/{result.AttemptId}/result")
             {
                 Content = JsonContent.Create(new { state = result.State, result.FailureCode, result.Message })
@@ -697,8 +701,9 @@ public sealed class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdateHandler
         catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             _writeLog($"[UpdateManagement] current={_currentVersion} target={ReadJson<UpdateRequest>(_requestPath)?.ToVersion ?? "unknown"} " +
-                $"runtime={_runtimeId} release={result.ReleaseId} attempt={result.AttemptId} stage=state/result-reporting " +
-                $"endpoint=/api/v2/agent-updates/attempts/{{attemptId}}/result code={FailureCode(exception)} retry=deferred nextDelaySeconds=30");
+                $"runtime={_runtimeId} release={result.ReleaseId} attempt={result.AttemptId} stage={operation} " +
+                $"endpoint={(operation == "agent-authentication" ? "agent-token" : "/api/v2/agent-updates/attempts/{attemptId}/result")} " +
+                $"code={FailureCode(exception)} retry=deferred nextDelaySeconds=30");
         }
     }
 
