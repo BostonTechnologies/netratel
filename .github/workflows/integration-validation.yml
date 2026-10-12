@@ -414,7 +414,7 @@ jobs:
             --evidence TestResults/client-measurement/trimmed/linux-x64
       - name: Download original measurement evidence
         if: inputs.measurement_verify_run != ''
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: client-measurement-evidence-win-x64
           path: downloaded-client-measurement
@@ -422,7 +422,7 @@ jobs:
           github-token: ${{ github.token }}
       - name: Download original native archives
         if: inputs.measurement_verify_run != ''
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: client-measurement-archives-win-x64
           path: downloaded-client-measurement
