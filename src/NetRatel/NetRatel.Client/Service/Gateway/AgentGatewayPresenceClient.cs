@@ -1,7 +1,6 @@
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Grpc.Net.Client;
-using Microsoft.Win32;
 using NetRatel.AgentGateway.Contracts.V1;
 using NetRatel.Application.ClientAuth;
 using NetRatel.Application.Events;
@@ -13,8 +12,6 @@ using System.Collections.Generic;
 using System.IO;
 using System.Security.Authentication;
 using System.Net.Http;
-using System.Net.NetworkInformation;
-using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -47,7 +44,8 @@ public sealed class AgentGatewayPresenceClient(
     Func<string, int?>? resolveTenantId = null,
     Func<CancellationToken, Task<Guid>>? resolveAgentId = null,
     Guid? pendingUpdateAttemptId = null,
-    bool supportsUninstall = false)
+    bool supportsUninstall = false,
+    Func<Action, IDisposable>? subscribeRecoveryNotifications = null)
 {
     private static readonly TimeSpan DefaultExtensionShutdownTimeout = TimeSpan.FromSeconds(5);
     private readonly TimeSpan _extensionShutdownTimeout = ResolveExtensionShutdownTimeout(extensionShutdownTimeout);
@@ -65,34 +63,9 @@ public sealed class AgentGatewayPresenceClient(
         string? lastFailureKey = null;
         long lastFailureLog = 0;
         var suppressedFailures = 0;
-        NetworkAvailabilityChangedEventHandler networkRestored = (_, args) =>
-        {
-            if (args.IsAvailable) retry.NotifyRecoveryHint();
-        };
-        NetworkChange.NetworkAvailabilityChanged += networkRestored;
-        PowerModeChangedEventHandler resumed = (_, args) =>
-        {
-            if (args.Mode == PowerModes.Resume) retry.NotifyRecoveryHint();
-        };
-        var powerNotifications = false;
-        if (OperatingSystem.IsWindows())
-        {
-            try
-            {
-                SystemEvents.PowerModeChanged += resumed;
-                powerNotifications = true;
-            }
-            catch (InvalidOperationException)
-            {
-                // Session-zero hosts may not have a desktop event source. The
-                // monotonic timer and network hint retain the same deadline.
-                log("Power notification source is unavailable; operational recovery retains its timer and network notifications.");
-            }
-        }
-        using var resume = OperatingSystem.IsWindows() ? null :
-            PosixSignalRegistration.Create(PosixSignal.SIGCONT, _ => retry.NotifyRecoveryHint());
-        try
-        {
+        using var recoveryNotifications = subscribeRecoveryNotifications is null
+            ? NativeRecoveryNotifications.Subscribe(retry.NotifyRecoveryHint, log)
+            : subscribeRecoveryNotifications(retry.NotifyRecoveryHint);
         while (!stoppingToken.IsCancellationRequested)
         {
             try { await retry.WaitForNextAttemptAsync(stoppingToken).ConfigureAwait(false); }
@@ -176,12 +149,6 @@ public sealed class AgentGatewayPresenceClient(
                 }
                 else suppressedFailures++;
             }
-        }
-        }
-        finally
-        {
-            NetworkChange.NetworkAvailabilityChanged -= networkRestored;
-            if (OperatingSystem.IsWindows() && powerNotifications) SystemEvents.PowerModeChanged -= resumed;
         }
     }
 
