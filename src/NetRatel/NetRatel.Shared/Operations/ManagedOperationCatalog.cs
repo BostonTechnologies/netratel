@@ -85,6 +85,8 @@ public static class ManagedOperationCatalog
         new("netratel_monitoring", "delete_silence", "monitoring.bypass", true, false, typeof(MonitoringDeleteDto), "bypassId"),
         new("netratel_monitoring", "acknowledge", "monitoring.ack", true, true, typeof(MonitoringOperatorActionDto), "ruleId", ResourceKey: true),
         new("netratel_monitoring", "clear", "monitoring.clear", true, true, typeof(MonitoringOperatorActionDto), "ruleId", ResourceKey: true),
+        new("netratel_monitoring", "acknowledge_offline", "monitoring.ack", true, false, typeof(MonitoringOperatorActionDto), "ruleId"),
+        new("netratel_monitoring", "clear_offline", "monitoring.clear", true, false, typeof(MonitoringOperatorActionDto), "ruleId"),
         new("netratel_flows", "list", "flow.read", false, false),
         new("netratel_flows", "get", "flow.read", false, false, IdProperty: "flowId"),
         new("netratel_flows", "template", "flow.read", false, false),

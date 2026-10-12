@@ -1208,7 +1208,10 @@ public sealed class NetRatelMcpHttpTests(PostgreSqlPersistenceFixture postgres)
     [Fact]
     public void Every_http_mutation_available_in_development_follows_its_catalogued_scope()
     {
-        var authorization = new McpOperationScopeAuthorization(HostContext("dev"), ValidOptions());
+        var options = ValidOptions();
+        var authorization = new McpOperationScopeAuthorization(HostContext("dev"), options);
+        var operatorHost = HostContext("dev", operatorSurfaceEnabled: true);
+        var operatorAuthorization = new McpOperationScopeAuthorization(operatorHost, options);
         var callerWithoutTheScope = Principal("mcp:read");
         var mutations = NetRatelMcpCatalog.Tools
             .Where(tool => tool.AvailableOverHttp)
@@ -1224,16 +1227,33 @@ public sealed class NetRatelMcpHttpTests(PostgreSqlPersistenceFixture postgres)
             .Should().OnlyHaveUniqueItems();
         foreach (var mutation in mutations)
         {
-            var access = McpOperationAccessCatalog.Find(mutation.ToolName, mutation.OperationName)!;
-            var expectedCode = access.RequiredScope switch
+            var access = McpOperationAccessCatalog.Find(mutation.ToolName, mutation.OperationName);
+            access.Should().NotBeNull();
+            var expected = access!.RequiredScope == McpOperationAccessScope.Admin
+                ? McpOperationScopeDecision.Denied("missing_operation_scope")
+                : access.DevelopmentCompatibilityScope switch
             {
-                McpOperationAccessScope.Admin => "missing_operation_scope",
-                McpOperationAccessScope.Onboarding => "missing_development_onboarding_scope",
-                _ => "missing_development_write_scope"
+                McpDevelopmentCompatibilityScope.HostRequirement => McpOperationScopeDecision.Permit,
+                McpDevelopmentCompatibilityScope.DevelopmentOnboarding => McpOperationScopeDecision.Denied("missing_development_onboarding_scope"),
+                McpDevelopmentCompatibilityScope.DevelopmentWrite => McpOperationScopeDecision.Denied("missing_development_write_scope"),
+                _ => throw new InvalidOperationException("Unclassified development scope.")
             };
             authorization.Evaluate(callerWithoutTheScope, mutation.ToolName, Arguments(mutation.OperationName))
-                .Should().Be(new McpOperationScopeDecision(false, expectedCode));
-            access.Should().NotBeNull();
+                .Should().Be(expected, $"{mutation.ToolName}/{mutation.OperationName} retains its catalogued development compatibility scope");
+            var descriptor = NetRatelMcpCatalog.FindOperation(mutation.ToolName, mutation.OperationName)!;
+            if (NetRatelMcpCatalog.IsAvailableOverHttpIn(descriptor, operatorHost))
+            {
+                operatorAuthorization.Evaluate(Principal("unrelated:scope"), mutation.ToolName, Arguments(mutation.OperationName))
+                    .Should().Be(McpOperationScopeDecision.Denied("missing_operation_scope"));
+                operatorAuthorization.Evaluate(Principal(options.RequiredScopeFor(access.RequiredScope)), mutation.ToolName, Arguments(mutation.OperationName))
+                    .Should().Be(McpOperationScopeDecision.Permit);
+            }
+            else
+            {
+                operatorAuthorization.Evaluate(Principal(options.RequiredScopeFor(access.RequiredScope)), mutation.ToolName, Arguments(mutation.OperationName))
+                    .Should().Be(McpOperationScopeDecision.Denied("operation_not_available_over_http"),
+                        "a matching scope must not reopen a legacy-only mutation on the operator surface");
+            }
         }
     }
 

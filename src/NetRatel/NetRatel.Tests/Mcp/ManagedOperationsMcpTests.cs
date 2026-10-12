@@ -5,6 +5,7 @@ using AwesomeAssertions;
 using NetRatel.Mcp.Core;
 using NetRatel.Mcp.Tools;
 using NetRatel.Shared.Contracts.Flows;
+using NetRatel.Shared.Contracts.Monitoring;
 using NetRatel.Shared.Contracts.Services;
 using NetRatel.Shared.Operations;
 using Xunit;
@@ -81,6 +82,57 @@ public sealed class ManagedOperationsMcpTests
         call.Body!["request"]!["data"]!["operationId"]!.GetValue<string>().Should().Be(command.OperationId.ToString("D"));
         call.Body["request"]!["data"]!["serviceName"]!.GetValue<string>().Should().Be(command.ServiceName);
         call.Body["confirm"]!.GetValue<bool>().Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData(NetRatelMcpTransport.StreamableHttp, "acknowledge_offline")]
+    [InlineData(NetRatelMcpTransport.StreamableHttp, "clear_offline")]
+    [InlineData(NetRatelMcpTransport.Stdio, "acknowledge_offline")]
+    [InlineData(NetRatelMcpTransport.Stdio, "clear_offline")]
+    public async Task Offline_alert_actions_keep_tenant_authority_and_explicit_confirmation(NetRatelMcpTransport transport, string operation)
+    {
+        var client = new RecordingClient();
+        var tools = Tools(client, transport);
+        var ruleId = Guid.NewGuid();
+        var action = new MonitoringOperatorActionDto(Guid.NewGuid(), "Reviewed offline alert", ExpectedConfigurationRevision: 17, ExpectedOperatorRevision: 3);
+        var request = JsonSerializer.SerializeToElement(new { tenantId = 7, ruleId, data = action }, ManagedOperationCatalog.JsonOptions);
+
+        (await tools.netratel_monitoring(operation, request)).RequiresConfirmation.Should().BeTrue();
+        (await tools.netratel_monitoring(operation, request, true)).Success.Should().BeTrue();
+
+        client.Calls.Should().HaveCount(2);
+        client.Calls[0].Body!["confirm"]!.GetValue<bool>().Should().BeFalse();
+        var confirmed = client.Calls[1];
+        confirmed.Path.Should().Be($"/api/v2/mcp/operator/application/netratel_monitoring/{operation}");
+        confirmed.Body!["confirm"]!.GetValue<bool>().Should().BeTrue();
+        confirmed.Body["request"]!.AsObject().Select(property => property.Key).Should().BeEquivalentTo("tenantId", "ruleId", "data");
+        confirmed.Body["request"]!["data"]!["occurrenceId"]!.GetValue<string>().Should().Be(action.OccurrenceId.ToString("D"));
+        var descriptor = McpOperationTargetCatalog.Find("netratel_monitoring", operation)!;
+        descriptor.Model.Should().Be(McpOperationTargetModel.Tenant);
+    }
+
+    [Fact]
+    public void Aggregate_actions_forbid_client_resource_overrides_and_keep_normal_client_UUIDs_strict()
+    {
+        var action = new MonitoringOperatorActionDto(Guid.NewGuid(), "Reviewed offline alert");
+        var request = JsonSerializer.SerializeToNode(new { tenantId = 7, ruleId = Guid.NewGuid(), data = action }, ManagedOperationCatalog.JsonOptions)!.AsObject();
+        var aggregate = ManagedOperationCatalog.Find("netratel_monitoring", "acknowledge_offline")!;
+        ManagedOperationCatalog.TryValidate(aggregate, JsonSerializer.SerializeToElement(request), out _).Should().BeTrue();
+        request["agentId"] = Guid.Empty;
+        ManagedOperationCatalog.TryValidate(aggregate, JsonSerializer.SerializeToElement(request), out _).Should().BeFalse();
+        request.Remove("agentId");
+        request["resourceKey"] = MonitoringOfflinePresentation.ResourceKey;
+        ManagedOperationCatalog.TryValidate(aggregate, JsonSerializer.SerializeToElement(request), out _).Should().BeFalse();
+        request["agentId"] = Guid.Empty;
+        var normal = ManagedOperationCatalog.Find("netratel_monitoring", "acknowledge")!;
+        ManagedOperationCatalog.TryValidate(normal, JsonSerializer.SerializeToElement(request), out _).Should().BeFalse();
+
+        var schema = NetRatelMcpToolDefinitions.CreateForHttp("prod").Single(tool => tool.ProtocolTool.Name == "netratel_monitoring")
+            .ProtocolTool.InputSchema.GetProperty("oneOf").EnumerateArray()
+            .Single(operation => operation.GetProperty("properties").GetProperty("operation").GetProperty("const").GetString() == "acknowledge_offline")
+            .GetProperty("properties").GetProperty("request");
+        schema.GetProperty("additionalProperties").GetBoolean().Should().BeFalse();
+        schema.GetProperty("properties").EnumerateObject().Select(property => property.Name).Should().BeEquivalentTo("tenantId", "ruleId", "data");
     }
 
     [Theory]

@@ -320,6 +320,36 @@ public sealed class NetRatelCliTests
     }
 
     [Theory]
+    [InlineData("acknowledge-offline", "acknowledge_offline", false)]
+    [InlineData("clear-offline", "clear_offline", true)]
+    public async Task OfflineMonitoringActions_Use_The_Tenant_Rule_Without_A_Fabricated_Client(string command, string operation, bool confirmed)
+    {
+        var ruleId = Guid.NewGuid();
+        var occurrenceId = Guid.NewGuid();
+        var code = await RunCliAsync([
+            "monitoring", command, "--tenant-id", "7", "--rule-id", ruleId.ToString("D"),
+            "--body", JsonSerializer.Serialize(new { occurrenceId, reason = "Reviewed offline alert", expectedConfigurationRevision = 17, expectedOperatorRevision = 3 }),
+            .. confirmed ? new[] { "--confirm" } : []
+        ], async request =>
+        {
+            if (request.RequestUri!.Host == "auth.example")
+                return Json(HttpStatusCode.OK, """{"access_token":"minted-token"}""");
+
+            request.RequestUri.AbsolutePath.Should().Be($"/api/v2/mcp/operator/application/netratel_monitoring/{operation}");
+            using var body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync());
+            body.RootElement.GetProperty("confirm").GetBoolean().Should().Be(confirmed);
+            var target = body.RootElement.GetProperty("request");
+            target.EnumerateObject().Select(property => property.Name).Should().BeEquivalentTo("tenantId", "ruleId", "data");
+            target.GetProperty("ruleId").GetGuid().Should().Be(ruleId);
+            target.GetProperty("data").GetProperty("occurrenceId").GetGuid().Should().Be(occurrenceId);
+            target.GetProperty("data").GetProperty("expectedOperatorRevision").GetUInt64().Should().Be(3);
+            return Json(HttpStatusCode.OK, "{}");
+        });
+
+        code.Should().Be(CliExitCodes.Success);
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task FlowPublish_Preserves_Revision_And_Explicit_Confirmation(bool confirmed)

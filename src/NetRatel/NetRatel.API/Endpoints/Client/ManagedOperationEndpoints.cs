@@ -150,6 +150,9 @@ public static class ManagedOperationEndpoints
             "delete_silence" => MonitoringEndpoints.ExecuteAsync(() => service.DeleteAsync(tenant, Id(request, "bypassId"), MonitoringResourceKind.Bypass, Data<MonitoringDeleteDto>(request), user, ct)),
             "acknowledge" or "clear" => MonitoringEndpoints.ExecuteAsync(() => service.ActAsync(tenant, Id(request, "agentId"), Id(request, "ruleId"), Text(request, "resourceKey")!,
                 Data<MonitoringOperatorActionDto>(request), operation == "clear", user, ct)),
+            "acknowledge_offline" or "clear_offline" => MonitoringEndpoints.ExecuteAsync(() => service.ActAsync(tenant, Guid.Empty,
+                Id(request, "ruleId"), MonitoringOfflinePresentation.ResourceKey, Data<MonitoringOperatorActionDto>(request),
+                operation == "clear_offline", user, ct)),
             _ => throw new InvalidOperationException("Unmapped managed monitoring operation.")
         };
     }

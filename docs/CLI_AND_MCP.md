@@ -98,7 +98,7 @@ so scripts can inspect status, revisions, cursors, and operation identifiers.
 | Start, stop, restart, or inspect a service operation | `services start`, `stop`, `restart`, `operation` | `client.manage` |
 | Read monitoring configuration, evidence, alerts, and clients | `monitoring configuration`, `summary`, `series`, `events`, `clients`, `client-series` | `monitoring.read` |
 | Create or edit rules and static groups | `monitoring save-rule`, `save-group`, `delete-rule`, `delete-group` | `monitoring.manage` |
-| Acknowledge or clear an occurrence | `monitoring acknowledge`, `clear` | `monitoring.ack`, `monitoring.clear`, respectively |
+| Acknowledge or clear an occurrence | `monitoring acknowledge`, `clear`; aggregate offline alerts use `acknowledge-offline`, `clear-offline` | `monitoring.ack`, `monitoring.clear`, respectively |
 | Create or revoke monitoring silence | `monitoring save-silence`, `delete-silence` | `monitoring.bypass` |
 | Inspect drafts, versions, run history, templates, or connectors | `flows list`, `get`, `versions`, `version`, `runs`, `run`, `template`, `connectors` | `flow.read` |
 | Validate or simulate a draft | `flows validate`, `dry-run` | `flow.read` |
@@ -116,9 +116,10 @@ that include every eligible tenant client additionally require
 Use `--body` or `--body-file` for the operation's typed **data object only**.
 Tenant and target identifiers belong in flags. The two body options are
 mutually exclusive; files must contain UTF-8 JSON and fit within the bounded
-request limit. Configuration edits must retain the revisions returned by the
-latest read. On a revision conflict, read again, reconcile the intended
-change, and request another review.
+request limit. Use the current configuration revision as
+`expectedConfigurationRevision`; monitoring group/rule writes carry their
+next resource revision as described below. On a revision conflict, read again,
+reconcile the intended change, and request another review.
 
 ### Service investigation and control
 
@@ -168,11 +169,41 @@ netratel flows publish --tenant-id 7 --flow-id "$FLOW_ID" \
 
 For `monitoring save-group`, `group-change.json` contains `group`,
 `expectedConfigurationRevision`, and `reason`. The `group` contains
-`tenantId`, `groupId`, its current `revision`, `name`, and the selected
-`agentIds`. Keep the nested tenant and group identifiers equal to the flags.
-Rule edits follow the same pattern with `rule`. Acknowledge and clear actions
-must use the current occurrence ID and exact resource key from monitoring
-evidence, together with the supplied state/configuration/operator revisions.
+`tenantId`, `groupId`, its next `revision`, `name`, and the selected
+`agentIds`. Use `revision: 1` for a new group and the current group revision
+plus one for an edit; `expectedConfigurationRevision` remains the current
+tenant configuration revision. Keep the nested tenant and group identifiers
+equal to the flags. Rules follow the same resource revision pattern. When
+changing a rule's evaluation inputs (conditions, targets, hold/freshness
+settings, or offline settings), also increment its `evaluationRevision` and set `resetPolicy` to
+`SuspendOccurrenceAndRequireNewWindow`; otherwise retain its evaluation
+revision. A new rule starts both revisions at 1.
+
+Acknowledge and clear actions use the current occurrence ID and exact series
+identity returned by monitoring evidence, with its configuration and operator
+revision fences. `expectedStateRevision` is retained for compatibility;
+ordinary telemetry updates alone do not invalidate the action. For a
+per-client series, use `acknowledge` or `clear` with its nonempty `--agent-id`,
+`--rule-id`, and exact `--resource-key`. When the returned series has the
+all-zero agent UUID and `resourceKey: "clients:offline"`, use
+`acknowledge-offline` or `clear-offline` instead:
+
+```sh
+netratel monitoring acknowledge-offline --tenant-id 7 --rule-id "$RULE_ID" \
+  --body-file occurrence-action.json
+netratel monitoring acknowledge-offline --tenant-id 7 --rule-id "$RULE_ID" \
+  --body-file occurrence-action.json --confirm
+```
+
+The body contains `occurrenceId`, `reason`, and the observed
+`expectedConfigurationRevision` / `expectedOperatorRevision`. The dedicated
+offline operations accept no agent ID or resource override. The API verifies
+the saved tenant/rule/offline occurrence before review and dispatch, then
+uses the same occurrence/revision checks as the Web action. These are tenant
+rule actions: a tenant-level policy for the exact operation is required;
+client-only or tag-only grants do not authorize them, and exact-client denies
+do not match a tenant aggregate action. MCP names these operations
+`acknowledge_offline` and `clear_offline`.
 
 Tenant monitoring and flow operations require an explicit tenant-wide MCP
 policy for the selected operation, in addition to the current application

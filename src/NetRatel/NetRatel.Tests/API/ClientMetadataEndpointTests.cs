@@ -28,19 +28,24 @@ public sealed class ClientMetadataEndpointTests
     private static string Path => $"/api/v2/agents/7/{AgentId:D}/metadata";
 
     [Fact]
-    public async Task Metadata_requires_management_permission_for_the_exact_tenant_and_a_visible_client()
+    public async Task Metadata_read_and_update_require_their_distinct_permissions_for_the_exact_tenant_and_visible_client()
     {
         using var host = await HostAsync();
         using var http = host.GetTestClient();
         (await http.GetAsync(Path)).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
-        http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test", "reader");
+        http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test", "ungranted");
         (await http.GetAsync(Path)).StatusCode.Should().Be(HttpStatusCode.Forbidden);
         (await http.PutAsJsonAsync(Path, new UpdateClientMetadataRequest("Unauthorized", []))).StatusCode.Should().Be(HttpStatusCode.Forbidden);
-        http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test", "manager");
+        http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test", "reader");
+        (await http.GetAsync(Path)).StatusCode.Should().Be(HttpStatusCode.OK);
+        (await http.PutAsJsonAsync(Path, new UpdateClientMetadataRequest("Unauthorized", []))).StatusCode.Should().Be(HttpStatusCode.Forbidden);
         var foreignPath = Path.Replace("/agents/7/", "/agents/8/", StringComparison.Ordinal);
         (await http.GetAsync(foreignPath)).StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test", "manager");
+        (await http.GetAsync(Path)).StatusCode.Should().Be(HttpStatusCode.Forbidden);
         (await http.PutAsJsonAsync(foreignPath, new UpdateClientMetadataRequest("Unauthorized", []))).StatusCode.Should().Be(HttpStatusCode.Forbidden);
         var missingPath = Path.Replace(AgentId.ToString("D"), Guid.NewGuid().ToString("D"), StringComparison.Ordinal);
+        http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test", "reader");
         (await http.GetAsync(missingPath)).StatusCode.Should().Be(HttpStatusCode.NotFound);
 
         using var scope = host.Services.CreateScope();
@@ -51,6 +56,7 @@ public sealed class ClientMetadataEndpointTests
         agent.DeletedAtUtc = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync();
         (await http.GetAsync(Path)).StatusCode.Should().Be(HttpStatusCode.NotFound);
+        http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test", "manager");
         (await http.PutAsJsonAsync(Path, new UpdateClientMetadataRequest("Removed", []))).StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
@@ -89,6 +95,7 @@ public sealed class ClientMetadataEndpointTests
 
         using var cleared = await http.PutAsJsonAsync(Path, new UpdateClientMetadataRequest(" ", []));
         cleared.StatusCode.Should().Be(HttpStatusCode.OK);
+        http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test", "reader");
         var read = await http.GetFromJsonAsync<ClientMetadataDto>(Path);
         read!.FriendlyName.Should().BeNull();
         read.Tags.Should().BeEmpty();
@@ -171,7 +178,8 @@ public sealed class ClientMetadataEndpointTests
     {
         public Task<bool> AuthorizeAsync(ClaimsPrincipal principal, string permission, int? tenantId,
             CancellationToken cancellationToken = default) => Task.FromResult(tenantId == 7 &&
-                permission == NetRatelPermissions.ClientManagement && principal.FindFirstValue(ClaimTypes.NameIdentifier) == "manager");
+                (permission, principal.FindFirstValue(ClaimTypes.NameIdentifier)) is
+                    (NetRatelPermissions.ClientManagement, "manager") or (NetRatelPermissions.TelemetryRead, "reader"));
         public Task<EffectiveAccessSnapshot> GetSnapshotAsync(ClaimsPrincipal principal, int? tenantId,
             CancellationToken cancellationToken = default) => throw new NotSupportedException();
         public Task ReconcileBuiltInRolesAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;

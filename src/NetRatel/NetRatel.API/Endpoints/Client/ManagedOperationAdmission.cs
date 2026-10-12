@@ -81,13 +81,18 @@ internal sealed partial class ManagedOperationAdmission(
         if (!decision.IsAllowed)
             return Denied(decision.FailureCode ?? "policy_denied");
         var admitted = new ManagedOperationAdmissionResult(actor.User, decision, route, actor.ServicePrincipal, null);
-        return descriptor.Tool == "netratel_ai"
-            ? await AdmitAiContextAsync(descriptor, request, admitted, cancellationToken).ConfigureAwait(false)
+        if (descriptor.Tool == "netratel_ai")
+            return await AdmitAiContextAsync(descriptor, request, admitted, cancellationToken).ConfigureAwait(false);
+        return IsOfflineMonitoringOperation(descriptor)
+            ? await AdmitOfflineOccurrenceAsync(request, admitted, cancellationToken).ConfigureAwait(false)
             : admitted;
     }
 
     public async Task RecordAcceptedAsync(ManagedOperationAdmissionResult admitted, CancellationToken cancellationToken)
     {
+        if (admitted.OfflineOccurrence is { } occurrence &&
+            !await OfflineOccurrenceExistsAsync(occurrence, cancellationToken).ConfigureAwait(false))
+            throw new McpOperatorAdmissionRejectedException("monitoring_occurrence_unavailable");
         // Context is immutable after investigation creation, but its current
         // client membership, profile and policy can change between review and
         // dispatch. Re-resolve every target before recording any acceptance.
@@ -188,4 +193,5 @@ internal sealed record ManagedOperationAdmissionResult(ClaimsPrincipal? User, Mc
     McpOperatorRouteAccessRequest? Route, string? ServicePrincipal, string? FailureCode)
 {
     public IReadOnlyList<McpOperatorRouteAccessRequest> ContextRoutes { get; init; } = [];
+    public ManagedOfflineOccurrence? OfflineOccurrence { get; init; }
 }

@@ -256,6 +256,8 @@ internal static partial class NetRatelCli
             ("netratel_monitoring", "delete_silence") => "Revoke a monitoring silence with the current configuration revision and a reason.",
             ("netratel_monitoring", "acknowledge") => "Acknowledge the exact alert occurrence using occurrenceId and an audited reason.",
             ("netratel_monitoring", "clear") => "Clear the exact alert occurrence using occurrenceId and a reason; a continuing breach must satisfy a new breach window.",
+            ("netratel_monitoring", "acknowledge_offline") => "Acknowledge the tenant rule's aggregate clients:offline occurrence. Use its ruleId and occurrenceId; no agent ID or resource override is accepted.",
+            ("netratel_monitoring", "clear_offline") => "Clear the tenant rule's aggregate clients:offline occurrence. Use its ruleId and occurrenceId; requires a tenant-level operation policy.",
             ("netratel_flows", "list") => "List tenant flow drafts and their publication state.",
             ("netratel_flows", "get") => "Read one flow draft, graph and current revision.",
             ("netratel_flows", "template") => "Read a valid starting graph for a new monitoring flow.",
