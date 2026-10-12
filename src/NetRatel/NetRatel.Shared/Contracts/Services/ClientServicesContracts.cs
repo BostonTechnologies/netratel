@@ -106,7 +106,9 @@ public sealed record ClientServicesReadModelDto(
     DateTimeOffset GeneratedAtUtc,
     long Revision = 0,
     ClientServicesSnapshotDto? LastPartialInventory = null,
-    ServiceCollectionAttemptDto? LatestInventoryAttempt = null);
+    ServiceCollectionAttemptDto? LatestInventoryAttempt = null,
+    bool SupportsServiceControl = false,
+    bool CanControlServices = false);
 
 public enum ClientServicesRefreshStatus
 {

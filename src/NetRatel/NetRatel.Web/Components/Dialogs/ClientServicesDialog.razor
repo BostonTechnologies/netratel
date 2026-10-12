@@ -40,6 +40,28 @@
             </div>
         </section>
         <section class="client-services-scroll" aria-label="Services inventory" data-testid="services-inventory">
+            @if (_pendingControl is { } pending)
+            {
+                <section class="service-control-confirm" aria-label="Confirm service operation" data-testid="service-control-confirm">
+                    <strong>@pending.Action @pending.Service.Name on @HostLabel</strong>
+                    <label>Reason (optional)<input type="text" @bind="_controlReason" maxlength="256" aria-label="Service operation reason" /></label>
+                    <div class="service-control-buttons">
+                        <MudButton Color="Color.Primary" Variant="Variant.Filled" Size="Size.Small" OnClick="ConfirmControlAsync" Disabled="@(!CanControl)" data-testid="service-control-confirm-button">Confirm @pending.Action.ToString().ToLowerInvariant()</MudButton>
+                        <MudButton Size="Size.Small" OnClick="@(() => _pendingControl = null)" data-testid="service-control-cancel">Cancel</MudButton>
+                    </div>
+                </section>
+            }
+            @if (_controlMessage is not null)
+            {
+                <MudAlert Severity="@(_operation?.Status == "Completed" ? Severity.Success : Severity.Info)" Dense="true" data-testid="service-control-result">
+                    @_controlMessage
+                    @if (_operationId is { } operationId) { <small class="service-operation-id">Operation @operationId.ToString("D")</small> }
+                </MudAlert>
+            }
+            @if (_model is { CanControlServices: true, Connected: true, SupportsServiceControl: false })
+            {
+                <p class="services-notice" data-testid="service-control-unsupported">Service controls are unavailable for this client. Windows and systemd clients need an agent that advertises service control.</p>
+            }
             @if (_loading) { <MudProgressLinear Indeterminate="true" aria-label="Loading services" /> }
             @if (_error is not null) { <MudAlert Severity="Severity.Warning" Dense="true" data-testid="services-error">@_error</MudAlert> }
             @if (_refreshMessage is not null) { <MudAlert Severity="Severity.Info" Dense="true" data-testid="services-refresh-result">@_refreshMessage</MudAlert> }
@@ -67,13 +89,27 @@
             {
                 <p class="client-services-count">@FilteredRows.Count of @Rows.Count services · Monitoring watches only explicitly selected names.</p>
                 <table class="client-services-table">
-                    <caption class="services-visually-hidden">Read-only service inventory and selected watch evidence</caption>
+                    <caption class="services-visually-hidden">Service inventory, selected watch evidence and authorized service controls</caption>
                     <thead><tr><th scope="col">Service</th><th scope="col">State</th><th scope="col">Monitoring / observation</th><th scope="col">Platform details</th></tr></thead>
                     <tbody>
                         @foreach (var row in FilteredRows)
                         {
                             <tr data-testid="service-row" data-service-name="@row.Observation.Name">
-                                <td data-label="Service"><strong>@row.Observation.DisplayName</strong><code>@row.Observation.Name</code></td>
+                                <td data-label="Service"><strong>@row.Observation.DisplayName</strong><code>@row.Observation.Name</code>
+                                    @if (_model?.CanControlServices == true)
+                                    {
+                                        <div class="service-control-buttons">
+                                            @foreach (var action in ServiceActions)
+                                            {
+                                                var selectedAction = action;
+                                                var service = row.Observation;
+                                                <MudButton Size="Size.Small" Variant="Variant.Text" Color="@(action == ClientServiceControlAction.Stop ? Color.Warning : Color.Primary)"
+                                                           Disabled="@(!CanControlService(service))" OnClick="@(() => BeginControl(service, selectedAction))"
+                                                           aria-label="@($"{action} service {service.Name}")" data-service-action="@action.ToString().ToLowerInvariant()">@action</MudButton>
+                                            }
+                                        </div>
+                                    }
+                                </td>
                                 <td data-label="State"><span class="service-state" data-state="@row.Observation.State">@row.Observation.State</span></td>
                                 <td data-label="Monitoring / observation"><span>@(row.Monitored ? "Monitored" : "Not monitored") · @row.Evidence</span>
                                     @if (row.HasObservation)
@@ -118,6 +154,7 @@ else
     private CancellationTokenSource? _runCancellation;
     private Task? _liveTask;
     private Task? _ageTask;
+    private Task? _controlTask;
     private int _activeTenant;
     private Guid _activeAgent;
     private long _generation;
@@ -131,9 +168,17 @@ else
     private string? _refreshMessage;
     private ClientServicesRefreshWait? _refreshWait;
     private DateTimeOffset _now = DateTimeOffset.UtcNow;
+    private static readonly ClientServiceControlAction[] ServiceActions = [ClientServiceControlAction.Start, ClientServiceControlAction.Stop, ClientServiceControlAction.Restart];
+    private (ClientServiceObservation Service, ClientServiceControlAction Action)? _pendingControl;
+    private string? _controlReason;
+    private string? _controlMessage;
+    private Guid? _operationId;
+    private ClientServiceOperationDto? _operation;
+    private bool _controlling;
 
     private string ConnectionLabel => _model is null ? "Loading" : _model.Connected ? "Online" : "Offline";
     private bool CanRefresh => !_loading && !_refreshing && _refreshWait is null && _model is { Connected: true, SupportsServices: true };
+    private bool CanControl => !_loading && !_controlling && _model is { Connected: true, SupportsServiceControl: true, CanControlServices: true };
     private ClientServicesSnapshotDto? DisplayedInventory => _model?.LastCompleteInventory ?? _model?.LastPartialInventory;
     private string RetainedInventoryMessage => _model?.LastCompleteInventory is not null ? "Last complete inventory is retained." :
         _model?.LastPartialInventory is not null ? "Available partial inventory is retained." : "";
@@ -157,6 +202,11 @@ else
         _search = "";
         _filter = "All";
         _streamState = "Connecting";
+        _pendingControl = null;
+        _operation = null;
+        _operationId = null;
+        _controlMessage = null;
+        _controlling = false;
         try
         {
             var model = await ServicesApi.GetAsync(_activeTenant, _activeAgent, token);
@@ -225,6 +275,130 @@ else
         }
     }
 
+    private bool CanControlService(ClientServiceObservation service) => CanControl &&
+        service.Platform is ClientServicePlatform.Windows or ClientServicePlatform.LinuxSystemd &&
+        service.State is not (ClientServiceState.Missing or ClientServiceState.Unsupported) &&
+        !ClientServiceControlRules.IsProtectedService(service.Name);
+
+    private void BeginControl(ClientServiceObservation service, ClientServiceControlAction action)
+    {
+        if (!CanControlService(service)) return;
+        _pendingControl = (service, action);
+        _controlReason = null;
+    }
+
+    private async Task ConfirmControlAsync()
+    {
+        if (!CanControl || _pendingControl is not { } pending || _runCancellation is null) return;
+        var generation = _generation;
+        var token = _runCancellation.Token;
+        var operationId = Guid.NewGuid();
+        _operationId = operationId;
+        _operation = null;
+        _pendingControl = null;
+        _controlling = true;
+        _controlMessage = $"Requesting {pending.Action.ToString().ToLowerInvariant()} for {pending.Service.Name}…";
+        try
+        {
+            var response = await ServicesApi.ControlAsync(_activeTenant, _activeAgent,
+                new(operationId, pending.Service.Name, pending.Service.Platform, pending.Action, _controlReason), token);
+            if (!IsCurrent(generation)) return;
+            ApplyOperation(response, operationId);
+            if (_controlling) _controlTask = TrackOperationAsync(operationId, generation, token);
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (ClientServiceControlApiException error)
+        {
+            if (IsCurrent(generation)) { _controlling = false; _controlMessage = ControlFailure(error.Code); }
+        }
+        catch (Exception exception) when (exception is HttpRequestException or System.Text.Json.JsonException)
+        {
+            if (IsCurrent(generation))
+            {
+                _controlMessage = "The request response was interrupted. Checking the saved operation before allowing another action.";
+                _controlTask = TrackOperationAsync(operationId, generation, token);
+            }
+        }
+        finally { if (IsCurrent(generation)) StateHasChanged(); }
+    }
+
+    private async Task TrackOperationAsync(Guid operationId, long generation, CancellationToken token)
+    {
+        var deadline = DateTimeOffset.UtcNow.AddMinutes(3);
+        var notFoundDeadline = DateTimeOffset.UtcNow.AddSeconds(30);
+        try
+        {
+            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(2));
+            while (IsCurrent(generation) && _controlling && await timer.WaitForNextTickAsync(token))
+            {
+                try
+                {
+                    var operation = await ServicesApi.GetOperationAsync(_activeTenant, _activeAgent, operationId, token);
+                    if (!IsCurrent(generation)) return;
+                    ApplyOperation(operation, operationId);
+                    if (!_controlling && operation.Status == "Completed" && CanRefresh) await RefreshAsync();
+                }
+                catch (HttpRequestException error) when (error.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden)
+                {
+                    if (!IsCurrent(generation)) return;
+                    _controlling = false;
+                    _controlMessage = "Access to this operation has changed. Its saved execution continues independently of this dialog.";
+                    if (_model is not null) _model = _model with { CanControlServices = false };
+                }
+                catch (HttpRequestException error) when (error.StatusCode == System.Net.HttpStatusCode.NotFound && DateTimeOffset.UtcNow >= notFoundDeadline)
+                {
+                    if (!IsCurrent(generation)) return;
+                    _controlling = false;
+                    _controlMessage = "No saved operation was found for this request. You can request the action again.";
+                }
+                catch (Exception exception) when (exception is HttpRequestException or System.Text.Json.JsonException)
+                {
+                    if (IsCurrent(generation)) _controlMessage = _operation is null
+                        ? "Checking whether the service operation was saved. Its request is not replayed."
+                        : "The operation is saved, but its current result is unavailable. Reconnecting to check its outcome.";
+                }
+                if (!IsCurrent(generation)) return;
+                if (_controlling && DateTimeOffset.UtcNow >= deadline)
+                {
+                    _controlling = false;
+                    _controlMessage = "The service operation outcome is unconfirmed. Refresh the inventory before requesting another action; the original request is not replayed.";
+                }
+                StateHasChanged();
+            }
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+    }
+
+    private void ApplyOperation(ClientServiceOperationDto operation, Guid operationId)
+    {
+        if (operation.OperationId != operationId || operation.TenantId != _activeTenant || operation.AgentId != _activeAgent) return;
+        _operation = operation;
+        _controlling = !ClientServiceControlRules.IsTerminal(operation.Status) && operation.Status != "OutcomeUnknown";
+        _controlMessage = operation.Status switch
+        {
+            "Completed" => $"{operation.Action} completed for {operation.ServiceName}. Verified state: {operation.Result?.State}.",
+            "Failed" or "Cancelled" => $"{operation.Action} for {operation.ServiceName}: {ControlFailure(operation.FailureCode)}",
+            "OutcomeUnknown" => $"The outcome for {operation.ServiceName} is unconfirmed. Refresh its state before requesting another action.",
+            _ => $"{operation.Action} for {operation.ServiceName}: {operation.Status.ToLowerInvariant()}…"
+        };
+    }
+
+    private static string ControlFailure(string? code) => code switch
+    {
+        "client_offline" => "The client is offline. No action was dispatched.",
+        "service_control_unsupported" => "This client needs an upgrade before it can control services.",
+        "agent_service_protected" => "Use client offboarding to remove the NetRatel service.",
+        "service_operation_in_progress" or "service_controller_busy" => "Another service operation is in progress. Wait for its result.",
+        "service_not_in_inventory" or "service_identity_unavailable" => "Refresh the inventory to confirm the exact service identity.",
+        "service_access_denied" => "The installed client does not have permission to control this service.",
+        "service_disabled" => "The service is disabled in the operating system.",
+        "service_has_running_dependents" => "The service has running dependents. No dependent services were stopped automatically.",
+        "service_operation_timeout" or "service_result_unconfirmed" => "The final state is unconfirmed. Refresh before retrying.",
+        "service_not_found" => "The service no longer exists on this client.",
+        "service_operation_expired" => "The request expired before service control began.",
+        _ => "The service operation did not complete. Refresh its state and review the operation audit."
+    };
+
     private async Task UpdateAgeAsync(long generation, CancellationToken token)
     {
         try
@@ -291,6 +465,20 @@ else
                     null, null, null, null, null, default);
                 rows[ServiceIdentity(unknown)] = new ServiceRow(unknown, true, false, "Awaiting selected watch", false);
             }
+            if (_operation?.Result is { State: not ClientServiceState.Unknown } result)
+            {
+                var identity = $"{(int)result.Platform}:{(result.Platform == ClientServicePlatform.Windows ? result.ServiceName.ToUpperInvariant() : result.ServiceName)}";
+                if (rows.TryGetValue(identity, out var observed) && result.ObservedAtUtc > observed.Observation.ObservedAtUtc)
+                    rows[identity] = observed with
+                    {
+                        Observation = observed.Observation with
+                        {
+                            State = result.State, ObservedAtUtc = result.ObservedAtUtc, RawState = result.State.ToString(),
+                            ActiveState = null, SubState = null, AuthoritativeMissing = result.State == ClientServiceState.Missing
+                        },
+                        Evidence = "Service action result", HasObservation = true
+                    };
+            }
             return rows.Values.OrderBy(row => row.Observation.Name, StringComparer.OrdinalIgnoreCase).ToArray();
         }
     }
@@ -332,6 +520,7 @@ else
         // Both owned loops honor cancellation; requests which finish late are also fenced above.
         if (_liveTask is not null) await _liveTask;
         if (_ageTask is not null) await _ageTask;
+        if (_controlTask is not null) await _controlTask;
         _runCancellation?.Dispose();
     }
 }

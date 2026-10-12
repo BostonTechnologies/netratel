@@ -1,5 +1,6 @@
 using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Shared.Operations;
+using System.Security.Claims;
 
 namespace NetRatel.API.Security.Integration;
 
@@ -21,6 +22,8 @@ internal static class McpLocalDelegationPermissionMapper
             return null;
         if (IsInstanceRead(tool, operation))
             return NetRatelPermissions.McpDiscoveryRead;
+        if (ManagedOperationCatalog.Find(tool, operation) is { } managed)
+            return managed.Permission;
 
         return tool switch
         {
@@ -29,6 +32,8 @@ internal static class McpLocalDelegationPermissionMapper
             "netratel_clients" => access.RequiredScope == McpOperationAccessScope.Observe
                 ? NetRatelPermissions.TelemetryRead
                 : NetRatelPermissions.ClientManagement,
+            "netratel_files" when operation is "preview_delete" or "delete" or "confirm_delete" or
+                "preview_artifact_cleanup" or "artifact_cleanup" or "confirm_artifact_cleanup" or "cleanup" => NetRatelPermissions.FileDelete,
             "netratel_files" => access.RequiredScope switch
             {
                 McpOperationAccessScope.Files => NetRatelPermissions.FileRead,
@@ -54,4 +59,21 @@ internal static class McpLocalDelegationPermissionMapper
         McpOperationAccessScope.Admin => ["PolicyAdministrator"],
         _ => []
     };
+
+    public static IReadOnlyList<string> AdditionalPermissions(string tool, string operation) =>
+        tool == "netratel_files" && operation is "preview_move" or "move" or "confirm_move"
+            ? [NetRatelPermissions.FileDelete]
+            : ManagedOperationCatalog.Find(tool, operation)?.AdditionalPermissions ?? [];
+
+    public static async Task<bool> AuthorizeAsync(IEffectiveAccessService access, ClaimsPrincipal principal,
+        string tool, string operation, int? tenantId, CancellationToken cancellationToken)
+    {
+        if (RequiredPermission(tool, operation) is not { } permission ||
+            !await access.AuthorizeAsync(principal, permission, tenantId, cancellationToken).ConfigureAwait(false))
+            return false;
+        foreach (var additional in AdditionalPermissions(tool, operation))
+            if (!await access.AuthorizeAsync(principal, additional, tenantId, cancellationToken).ConfigureAwait(false))
+                return false;
+        return true;
+    }
 }

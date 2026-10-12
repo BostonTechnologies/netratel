@@ -120,10 +120,10 @@
                                 <p class="flow-help">The title and description feed every action. Priority applies to incident actions.</p>
                                 <p class="flow-help">Fields: {ruleName}, {clientName}, {resource}, {metric}, {severity}, {value}, {serviceState}, {occurredAt}, {offlineSummary}, {offlineCount}, {offlineClients}.</p>
                             }
-                            @if (selected.Kind == FlowNodeKind.CreateIncident)
+                            @if (selected.Kind is FlowNodeKind.CreateIncident or FlowNodeKind.InvestigateWithAi)
                             {
-                                <label>RatelDesk connector<select value="@(selected.ConnectorId?.ToString() ?? "")" @onchange="e => SelectConnector(selected, e)" data-testid="flow-connector"><option value="">Choose an available reference</option>
-                                    @foreach (var connector in Connectors.Where(c => c.TenantId == Definition.TenantId && c.Kind == FlowActionKind.RatelDeskIncident)) { <option value="@connector.Id">@connector.Name @(connector.CanExecute && connector.Enabled ? "" : "(unavailable)")</option> }
+                                <label>@(selected.Kind == FlowNodeKind.InvestigateWithAi ? "Netclaw connection" : "RatelDesk connector")<select value="@(selected.ConnectorId?.ToString() ?? "")" @onchange="e => SelectConnector(selected, e)" data-testid="flow-connector"><option value="">Choose an available reference</option>
+                                    @foreach (var connector in Connectors.Where(c => c.TenantId == Definition.TenantId && c.Kind == TargetKind(selected))) { <option value="@connector.Id">@connector.Name @(connector.CanExecute && connector.Enabled ? "" : "(unavailable)")</option> }
                                 </select></label>
                                 @if (SelectedConnector(selected) is { } reference)
                                 {
@@ -135,9 +135,17 @@
                                     else
                                     { <p role="status" data-testid="flow-connector-status">@(reference.Enabled && reference.CanExecute ? "Available for authorized server execution" : $"Unavailable: {reference.UnavailableReason ?? (reference.Enabled ? "Receiver capability is not verified" : "Connector disabled")}")</p> }
                                 }
-                                else { <p role="status" data-testid="flow-connector-status">No owned connector reference is available. Configure one in Flows connectors before publishing this action.</p> }
-                                <MudButton Variant="Variant.Outlined" Size="MudBlazor.Size.Small" StartIcon="@Icons.Material.Filled.Link" OnClick="ConnectRatelDeskAsync" Disabled="@_busy" data-testid="flow-connect-rateldesk">Connect RatelDesk</MudButton>
-                                <a href="@($"/flows/connectors?tenantId={Definition.TenantId}")">Manage RatelDesk connectors</a>
+                                else { <p role="status" data-testid="flow-connector-status">@(selected.Kind == FlowNodeKind.InvestigateWithAi ? "No owned Netclaw connection is available. Pair and verify one before publishing this action." : "No owned connector reference is available. Configure one in Flows connectors before publishing this action.")</p> }
+                                @if (selected.Kind == FlowNodeKind.InvestigateWithAi)
+                                {
+                                    <p class="flow-help">Opens one investigation for this alert with the affected clients as context. You can follow its progress and respond to approval requests in AI Ops.</p>
+                                    <a href="@($"/ai/integration?tenantId={Definition.TenantId}")">Configure Netclaw</a>
+                                }
+                                else
+                                {
+                                    <MudButton Variant="Variant.Outlined" Size="MudBlazor.Size.Small" StartIcon="@Icons.Material.Filled.Link" OnClick="ConnectRatelDeskAsync" Disabled="@_busy" data-testid="flow-connect-rateldesk">Connect RatelDesk</MudButton>
+                                    <a href="@($"/flows/connectors?tenantId={Definition.TenantId}")">Manage RatelDesk connectors</a>
+                                }
                                 <button type="button" @onclick="() => ConvertToGroup(selected)" data-testid="flow-convert-action-group">Add more actions</button>
                             }
                             @if (selected.Kind == FlowNodeKind.ActionGroup)
@@ -406,7 +414,7 @@
     private void ConvertToGroup(FlowNodeDto node) => UpdateNode(node with
     {
         Kind = FlowNodeKind.ActionGroup, Name = "Action group", ConnectorId = null, ConnectorRevision = null,
-        Actions = [new(Guid.NewGuid(), FlowActionKind.RatelDeskIncident, node.ConnectorId, node.ConnectorRevision)
+        Actions = [new(Guid.NewGuid(), TargetKind(node), node.ConnectorId, node.ConnectorRevision)
             { Name = SelectedConnector(node)?.Name }]
     });
     private bool HasNodeKind(FlowNodeKind kind) => _adapter?.Metadata.Values.Any(node =>
@@ -470,7 +478,7 @@
         _from = _from == node.ToString() ? "" : _from; _to = _to == node.ToString() ? "" : _to;
         await CheckDirty();
     });
-    private static string PaletteHelp(FlowNodeKind kind) => kind switch { FlowNodeKind.AlertRaised => "Starts when a monitoring occurrence fires.", FlowNodeKind.Condition => "Checks a selected alert value.", FlowNodeKind.MapIncident => "Sets the message title, description and incident priority.", FlowNodeKind.CreateIncident => "Delivers an incident through an approved RatelDesk connection.", FlowNodeKind.ActionGroup => "Sends the same alert to Discord, Slack and RatelDesk independently.", _ => "Unsupported node." };
+    private static string PaletteHelp(FlowNodeKind kind) => kind switch { FlowNodeKind.AlertRaised => "Starts when a monitoring occurrence fires.", FlowNodeKind.Condition => "Checks a selected alert value.", FlowNodeKind.MapIncident => "Sets the message title, description and incident priority.", FlowNodeKind.CreateIncident => "Delivers an incident through an approved RatelDesk connection.", FlowNodeKind.InvestigateWithAi => "Starts a Netclaw investigation with the alert and affected systems.", FlowNodeKind.ActionGroup => "Runs notification, incident and AI actions independently.", _ => "Unsupported node." };
     private Task ConnectAsync() => CommandAsync("connect", async (tenant, id, token) =>
     { if (!CanEdit || ReadOnly || !Guid.TryParse(_from, out var from) || !Guid.TryParse(_to, out var to)) { _error = "Select an output and an input."; return; } var generation = _generation; await _adapter!.ConnectAsync(from, to, token); if (Current(generation, tenant, id)) await CheckDirty(); });
     private Task DisconnectAsync(FlowEdgeDto edge) => CommandAsync("disconnect", async (tenant, id, token) => { if (!CanEdit || ReadOnly) return; var generation = _generation; await _adapter!.DisconnectAsync(edge, token); if (Current(generation, tenant, id)) await CheckDirty(); });
@@ -487,10 +495,11 @@
     private void UpdatePriority(FlowNodeDto node, ChangeEventArgs e) => UpdateNode(node with { Mapping = (node.Mapping ?? new("{ruleName}", "")) with { Priority = int.TryParse(e.Value?.ToString(), out var priority) ? priority : null } });
     private void SelectConnector(FlowNodeDto node, ChangeEventArgs e)
     {
-        var reference = Guid.TryParse(e.Value?.ToString(), out var id) ? Connectors.FirstOrDefault(c => c.Id == id && c.TenantId == Definition.TenantId && c.Kind == FlowActionKind.RatelDeskIncident) : null;
+        var reference = Guid.TryParse(e.Value?.ToString(), out var id) ? Connectors.FirstOrDefault(c => c.Id == id && c.TenantId == Definition.TenantId && c.Kind == TargetKind(node)) : null;
         UpdateNode(node with { ConnectorId = reference?.Id, ConnectorRevision = reference is { Revision: > 0 } ? reference.Revision : null });
     }
-    private FlowConnectorReferenceDto? SelectedConnector(FlowNodeDto node) => Connectors.FirstOrDefault(c => c.Id == node.ConnectorId && c.TenantId == Definition.TenantId && c.Kind == FlowActionKind.RatelDeskIncident);
+    private static FlowActionKind TargetKind(FlowNodeDto node) => node.Kind == FlowNodeKind.InvestigateWithAi ? FlowActionKind.NetclawInvestigation : FlowActionKind.RatelDeskIncident;
+    private FlowConnectorReferenceDto? SelectedConnector(FlowNodeDto node) => Connectors.FirstOrDefault(c => c.Id == node.ConnectorId && c.TenantId == Definition.TenantId && c.Kind == TargetKind(node));
     private string NodeLabel(Guid? id) => id is null ? "" : _adapter?.Metadata.Values.FirstOrDefault(n => n.Id == id)?.Name ?? "Unknown node";
     private static string Number(double value) => value.ToString("0.######", CultureInfo.InvariantCulture);
     private static string IssueText(FlowValidationIssueDto issue) => issue.Code switch

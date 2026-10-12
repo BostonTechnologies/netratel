@@ -1,4 +1,6 @@
-﻿using NetRatel.API.Services.Monitoring;
+﻿using NetRatel.API.Endpoints.Client;
+using NetRatel.Infrastructure.Netclaw;
+using NetRatel.API.Services.Monitoring;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authentication.Cookies;
@@ -616,6 +618,12 @@ builder.Services.AddAuthorization(options =>
         policy.AddRequirements(new EffectiveAccessRequirement(NetRatelPermissions.FileWrite));
     });
 
+    options.AddPolicy("FileDeleter", policy =>
+    {
+        policy.RequireAuthenticatedUser();
+        policy.AddRequirements(new EffectiveAccessRequirement(NetRatelPermissions.FileDelete));
+    });
+
     options.AddPolicy("ArtifactPublisher", policy =>
     {
         policy.RequireAuthenticatedUser();
@@ -871,6 +879,8 @@ builder.Services.AddPairingApi();
 builder.Services.AddOrchestrationManagedServices();
 builder.Services.AddRatelDeskReceiverAdapter(builder.Configuration);
 builder.Services.AddNotificationConnectors();
+builder.Services.AddNetclawInvestigations();
+builder.Services.AddScoped<ManagedOperationAdmission>();
 builder.Services.AddIdentityCore<LocalUser>(options =>
     {
         options.User.RequireUniqueEmail = true;
@@ -948,6 +958,7 @@ app.UseMiddleware<NetRatel.API.Middleware.FlowRequestBodyLimitMiddleware>();
 app.UseMiddleware<NetRatel.API.Middleware.PairingRequestBodyLimitMiddleware>();
 
 app.MapApiEndpoints();
+app.MapManagedOperationEndpoints();
 app.MapReadyBootstrapStatus(bootstrapDescriptor);
 
 app.UseExceptionHandler(errorApp =>

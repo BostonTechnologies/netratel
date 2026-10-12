@@ -10,6 +10,8 @@ using NetRatel.Application.Operations;
 using NetRatel.Application.Presence;
 using NetRatel.API.Services.Jobs;
 using NetRatel.Shared.Security;
+using NetRatel.API.Services;
+using NetRatel.Shared.Contracts.Services;
 
 namespace NetRatel.API.Gateway;
 
@@ -24,7 +26,8 @@ public sealed class AgentCommandGatewayService(
     IMcpOperatorTaskStore operatorTasks,
     IHostEnvironment environment,
     ILogger<AgentCommandGatewayService> logger,
-    TimeProvider timeProvider)
+    TimeProvider timeProvider,
+    ClientServiceControlService? serviceControl = null)
     : AgentCommandGateway.AgentCommandGatewayBase
 {
     private const string Authority = "akka";
@@ -53,6 +56,8 @@ public sealed class AgentCommandGatewayService(
         try
         {
             registration = commandSessions.Register(session.Client, session.ConnectionId, session.ConnectionEpoch, provisional: true);
+            commandSessions.SetServiceControlSupport(session.Client, registration.RegistrationId,
+                requestStream.Current.Hello.Capabilities.Contains(ClientServiceControlRules.Capability));
         }
         catch (AgentGatewayRegistrationFencedException exception)
         {
@@ -169,6 +174,12 @@ public sealed class AgentCommandGatewayService(
             var statusTimestamp = result.CurrentStatusTimestamp
                 ?? throw new RpcException(new Status(StatusCode.FailedPrecondition, "The committed command lifecycle timestamp is unavailable."));
             var safeResult = BoundResult(lifecycle.ResultJson);
+            if (serviceControl is not null)
+            {
+                await serviceControl.RecordLifecycleAsync(session.Client, lifecycle.CommandId, status,
+                    statusTimestamp, lifecycle.ResultJson, cancellationToken).ConfigureAwait(false);
+                RequireCurrent(registration);
+            }
             RequireCurrent(registration);
             await operatorCommands.RecordLifecycleAsync(
                 lifecycle.CommandId,

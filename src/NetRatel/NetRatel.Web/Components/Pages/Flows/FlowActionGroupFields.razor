@@ -9,7 +9,7 @@
             <label>Action type<select value="@((int)action.Kind)" @onchange="e => ChangeKindAsync(action, e)" data-testid="flow-action-kind">
                 @foreach (var kind in Enum.GetValues<FlowActionKind>()) { <option value="@((int)kind)">@KindLabel(kind)</option> }
             </select></label>
-            <label>Notification or incident target<select value="@(action.ConnectorId?.ToString() ?? "")" @onchange="e => SelectTargetAsync(action, e)" data-testid="flow-action-target">
+            <label>Action target<select value="@(action.ConnectorId?.ToString() ?? "")" @onchange="e => SelectTargetAsync(action, e)" data-testid="flow-action-target">
                 <option value="">Choose an enabled target</option>
                 @foreach (var target in Targets.Where(target => target.TenantId == TenantId && target.Kind == action.Kind &&
                     (target.Enabled && target.CanExecute || target.Id == action.ConnectorId)))
@@ -39,6 +39,7 @@
     <button type="button" disabled="@(Disabled || (Node.Actions?.Count ?? 0) >= FlowLimits.MaximumActionsPerGroup)" @onclick="AddAsync" data-testid="flow-action-add">Add action</button>
     <p class="flow-help">@(Node.Actions?.Count ?? 0) / @FlowLimits.MaximumActionsPerGroup actions</p>
     <button type="button" disabled="@Disabled" @onclick="ManageTargetsRequested" data-testid="flow-manage-notifications">Manage notification targets</button>
+    <a href="@($"/ai/integration?tenantId={TenantId}")">Configure Netclaw</a>
 </div>
 
 @code {
@@ -50,7 +51,7 @@
     [Parameter] public EventCallback ManageTargetsRequested { get; set; }
 
     public static string KindLabel(FlowActionKind kind) => kind switch
-    { FlowActionKind.RatelDeskIncident => "RatelDesk incident", FlowActionKind.Discord => "Discord notification", FlowActionKind.Slack => "Slack notification", _ => "Unsupported action" };
+    { FlowActionKind.RatelDeskIncident => "RatelDesk incident", FlowActionKind.Discord => "Discord notification", FlowActionKind.Slack => "Slack notification", FlowActionKind.NetclawInvestigation => "AI investigation", _ => "Unsupported action" };
 
     private FlowConnectorReferenceDto? SelectedTarget(FlowActionTargetDto action) => Targets.FirstOrDefault(target =>
         target.TenantId == TenantId && target.Kind == action.Kind && target.Id == action.ConnectorId);

@@ -1,124 +1,265 @@
 @page "/ai/ops"
-@inject IHttpClientFactory Clients
-@inject ISnackbar Snackbar
+@rendermode InteractiveServer
+@attribute [Authorize]
+@using NetRatel.Shared.Contracts.Netclaw
+@using NetRatel.Web.Services
+@implements IAsyncDisposable
+@inject INetclawApiService Api
 
-<MudPaper Class="p-6 space-y-4">
-  <MudText Typo="Typo.h5">AI Ops (MCP)</MudText>
-
-  <MudGrid>
-    <MudItem xs="12" md="4"><MudTextField @bind-Value="_tenant" Label="Tenant" Required="true" /></MudItem>
-    <MudItem xs="12" md="4">
-      <MudSelect T="string" @bind-Value="_searchProp" Label="Target selector" Required="true">
-        <MudSelectItem T="string" Value='@("clientName")'>clientName</MudSelectItem>
-        <MudSelectItem T="string" Value='@("ipAddress")'>ipAddress</MudSelectItem>
-        <MudSelectItem T="string" Value='@("hostName")'>hostName</MudSelectItem>
-      </MudSelect>
-    </MudItem>
-    <MudItem xs="12" md="4"><MudTextField @bind-Value="_searchValue" Label="Target value" Required="true" /></MudItem>
-  </MudGrid>
-
-  <MudDivider Class="my-4"/>
-
-  <MudStack Row="true" Spacing="2">
-    <MudButton OnClick="@(()=>RunTool("os.info"))" Color="Color.Primary">OS Info</MudButton>
-    <MudButton OnClick="@(()=>RunTool("processes.list"))" Color="Color.Primary">Processes</MudButton>
-    <MudButton OnClick="@(()=>RunTool("processes.top_cpu"))" Color="Color.Primary">Top CPU</MudButton>
-    <MudButton OnClick="@(()=>RunTool("disk.free"))" Color="Color.Primary">Disk Free</MudButton>
-  </MudStack>
-
-  <MudPaper Class="p-3 mt-4">
-    <MudText Typo="Typo.subtitle1">Live output</MudText>
-    <MudList T="string" Dense="true">
-      @foreach (var e in _events)
-      {
-        <MudListItem T="string">
-          <MudText>@e.TimestampUtc — <b>@e.Status</b> @e.Message</MudText>
-        </MudListItem>
-      }
-    </MudList>
-  </MudPaper>
-
-  @if (!string.IsNullOrWhiteSpace(_finalJson))
-  {
-    <MudPaper Class="p-3 mt-4">
-      <MudText Typo="Typo.subtitle1">Result</MudText>
-      <pre><code class="language-json">@_finalJson</code></pre>
-    </MudPaper>
-  }
-</MudPaper>
+<PageTitle>AI Ops · Investigations</PageTitle>
+<main class="ai-ops" data-testid="ai-ops">
+    <header class="ai-heading">
+        <div><p class="ai-eyebrow">AI OPERATIONS</p><h1>Investigations</h1><p>Follow alerts, inspect systems and work through the evidence with your AI assistant.</p></div>
+        <a class="ai-connection" href="@($"/ai/integration?tenantId={_tenant}")">@(_connection?.LastTestSucceeded == true && _connection.Enabled ? "● Netclaw connected" : "Connect Netclaw")</a>
+    </header>
+    <div class="ai-toolbar">
+        <label>Tenant<select value="@_tenant" @onchange="ChooseTenantAsync" disabled="@(_loading || _busy)">
+            @foreach (var tenant in _tenants) { <option value="@tenant.TenantId">@tenant.TenantName</option> }
+        </select></label>
+        <button type="button" @onclick="ReloadAsync" disabled="@(_loading || _busy || _tenant == 0)">Refresh</button>
+        <button type="button" class="ai-primary" @onclick="() => _creating = !_creating" disabled="@(Access?.CanInvestigate != true || _busy)" data-testid="ai-new-investigation">New investigation</button>
+    </div>
+    @if (_error is not null) { <div class="ai-notice" role="alert">@_error</div> }
+    @if (_loading) { <p role="status">Loading your authorized investigation workspace…</p> }
+    else if (_tenants.Count == 0) { <div class="ai-empty"><h2>No investigation access</h2><p>A tenant role with read telemetry permission grants access to this workspace.</p></div> }
+    else
+    {
+        <div class="ai-metrics" aria-label="Recent investigation status">
+            <div><span>Active in recent history</span><strong>@_items.Count(x => x.State is InvestigationState.Processing or InvestigationState.Queued)</strong></div>
+            <div><span>Waiting for your decision</span><strong>@_items.Count(x => x.State == InvestigationState.AwaitingApproval)</strong></div>
+            <div><span>Needs recovery</span><strong>@_items.Count(x => x.State == InvestigationState.DeliveryUnknown)</strong></div>
+        </div>
+        @if (_creating)
+        {
+            <section class="ai-create" aria-label="New investigation">
+                <h2>Start with a question and the right systems</h2>
+                <label>Investigation title<input @bind="_title" maxlength="200" placeholder="For example: PostgreSQL latency after the update" /></label>
+                <label>Find systems<input @bind="_systemSearch" @bind:event="oninput" placeholder="Hostname, friendly name or tag" /></label>
+                <div class="ai-system-picker">
+                    @foreach (var client in FilteredClients)
+                    {
+                        <label @key="client.AgentId"><input type="checkbox" checked="@_selectedClients.Contains(client.AgentId)" @onchange="e => SelectClient(client.AgentId, e)" />
+                            <span><strong>@client.HostName</strong><small>@client.FriendlyName @string.Join(" · ", client.Tags)</small></span></label>
+                    }
+                </div>
+                <p>@_selectedClients.Count / 20 systems selected. Metadata is included with each request.</p>
+                <div class="ai-actions"><button type="button" class="ai-primary" disabled="@(_busy || _selectedClients.Count == 0 || string.IsNullOrWhiteSpace(_title))" @onclick="CreateAsync">Open investigation</button><button type="button" @onclick="() => _creating = false" disabled="@_busy">Cancel</button></div>
+            </section>
+        }
+        <div class="ai-workspace">
+            <aside class="ai-investigation-list" aria-label="Recent investigations">
+                <label>Find investigations<input @bind="_search" @bind:event="oninput" placeholder="Title or client" /></label>
+                <label>Status<select @bind="_filter"><option value="all">All recent investigations</option><option value="active">Active</option><option value="approval">Waiting for approval</option><option value="recovery">Needs recovery</option><option value="archived">Archived</option></select></label>
+                @if (!FilteredItems.Any()) { <p class="ai-muted">No matching investigations. Open one or add an AI investigation action to a monitoring Flow.</p> }
+                @foreach (var item in FilteredItems)
+                {
+                    <button type="button" @key="item.Id" class="ai-investigation @(_snapshot?.Investigation.Id == item.Id ? "selected" : "")" @onclick="() => OpenAsync(item.Id)" disabled="@_busy" aria-pressed="@(_snapshot?.Investigation.Id == item.Id)">
+                        <span class="ai-state">@StateLabel(item.State)</span><strong>@item.Title</strong>
+                        <small>@(item.OccurrenceId is null ? "Manual investigation" : "Monitoring alert") · @item.AgentIds.Count system(s)</small>
+                        <small>@item.LastActivityUtc.ToLocalTime().ToString("g")</small>
+                    </button>
+                }
+            </aside>
+            <section class="ai-conversation" aria-label="Investigation chat">
+                @if (_snapshot is null)
+                {
+                    <div class="ai-empty"><div class="ai-symbol">✦</div><h2>Start from an alert. Find the cause.</h2><p>Open an investigation to review its evidence and conversation, or choose systems for a new investigation.</p><a href="/flows">Configure an AI action in Flows</a></div>
+                }
+                else
+                {
+                    <header class="ai-chat-heading"><div><span class="ai-state">@StateLabel(_snapshot.Investigation.State)</span><h2>@_snapshot.Investigation.Title</h2><small>@_snapshot.Investigation.Id</small></div>
+                        @if (_snapshot.Investigation.State != InvestigationState.Archived && Access?.CanInvestigate == true)
+                        { <button type="button" @onclick="() => _showArchive = !_showArchive" disabled="@_busy">Archive</button> }
+                    </header>
+                    <div class="ai-context" aria-label="System context">
+                        @foreach (var client in _snapshot.Clients) { <span title="@string.Join(", ", client.Tags)">@client.HostName</span> }
+                        @if (_snapshot.Investigation.OccurrenceId is not null) { <a href="@($"/monitoring?tenantId={_tenant}")">View monitoring</a> }
+                        @if (_snapshot.Investigation.FlowRunId is { } run) { <a href="@($"/flows?tenantId={_tenant}&run={run:D}")">Flow run</a> }
+                    </div>
+                    @if (_showArchive)
+                    {
+                        <div class="ai-notice"><p>Archive this investigation and keep its transcript.</p>
+                            @if (_snapshot.Investigation.State != InvestigationState.Idle) { <label class="ai-check"><input type="checkbox" @bind="_acknowledgeRemote" />I understand that the existing remote turn may still be running.</label> }
+                            <div class="ai-actions"><button type="button" disabled="@(_busy || _snapshot.Investigation.State != InvestigationState.Idle && !_acknowledgeRemote)" @onclick="ArchiveAsync">Archive investigation</button><button type="button" @onclick="() => _showArchive = false">Keep open</button></div></div>
+                    }
+                    <div class="ai-transcript" role="log" aria-label="Saved conversation">
+                        @foreach (var item in _events)
+                        {
+                            @if (item.Type is "operator" or "assistant")
+                            {
+                                <article @key="item.Sequence" class="ai-message @(item.Type == "operator" ? "operator" : "assistant")"><header><strong>@(item.Type == "operator" ? "Operator" : "AI assistant")</strong><time>@item.CreatedAtUtc.ToLocalTime().ToString("HH:mm")</time></header><div>@item.Text</div></article>
+                            }
+                            else if (item.Type is "tool_call" or "tool_result")
+                            { <details class="ai-activity" @key="item.Sequence"><summary>@item.Text</summary><small>@item.CreatedAtUtc.ToString("u") · @item.CallId</small></details> }
+                            else if (item.Type != "approval_request")
+                            { <p class="ai-timeline" @key="item.Sequence">@item.Text</p> }
+                        }
+                        @if (_snapshot.Draft is { Length: > 0 } draft) { <article class="ai-message assistant ai-draft"><header><strong>AI assistant</strong><span>Working…</span></header><div>@draft</div></article> }
+                        @if (Cursor < _snapshot.LastSequence) { <button type="button" @onclick="LoadMoreAsync" disabled="@_busy">Load more saved messages</button> }
+                    </div>
+                    @if (_snapshot.Investigation.State == InvestigationState.AwaitingApproval)
+                    {
+                        @foreach (var approval in _snapshot.PendingApprovals)
+                        {
+                            <div class="ai-approval" role="status" @key="approval.CallId"><strong>Your decision is needed</strong><p>@(_events.LastOrDefault(x => x.CallId == approval.CallId && x.Type == "approval_request")?.Text ?? "The assistant requests approval to use a tool.")</p>
+                                <div class="ai-actions">@foreach (var option in approval.Options) { <button type="button" class="@(option.Key == "deny" ? "" : "ai-primary")" disabled="@(_busy || Access?.CanInvestigate != true)" @onclick="() => ApproveAsync(approval.CallId, option.Key)">@option.Label</button> }</div></div>
+                        }
+                    }
+                    @if (_snapshot.Investigation.State == InvestigationState.DeliveryUnknown)
+                    { <div class="ai-notice"><strong>Check the existing conversation</strong><p>The last turn has an unconfirmed outcome. Recover its saved Netclaw session to inspect admission and completion evidence.</p><button type="button" @onclick="RecoverAsync" disabled="@(_busy || Access?.CanInvestigate != true)">Recover session</button></div> }
+                    @if (_snapshot.Investigation.State is InvestigationState.Processing or InvestigationState.Queued) { <p class="ai-processing" role="status">● @(_snapshot.Investigation.State == InvestigationState.Queued ? "Request saved. Waiting for the assistant transport…" : "The assistant is investigating. You can leave this page and return to its saved conversation.")</p> }
+                    <div class="ai-composer"><label>Your question<textarea @bind="_message" placeholder="Ask the assistant to investigate, explain its findings or review a proposed change…" maxlength="16000" rows="3" disabled="@(_pendingMessage is not null || _busy || Access?.CanInvestigate != true || _snapshot.Investigation.State != InvestigationState.Idle)"></textarea></label>
+                        <div><small>Tool use follows the tenant credential permissions and approval decisions.</small><button type="button" class="ai-primary" @onclick="SendAsync" disabled="@(_busy || Access?.CanInvestigate != true || _snapshot.Investigation.State != InvestigationState.Idle || string.IsNullOrWhiteSpace(_message))">@(_pendingMessage is null ? "Send" : "Retry same request")</button></div>
+                    </div>
+                }
+            </section>
+        </div>
+    }
+</main>
 
 @code {
-  private string _tenant = "";
-  private string _searchProp = "clientName";
-  private string _searchValue = "";
-  private List<TaskEventDto> _events = new();
-  private string? _finalJson;
-
-  private HttpClient Api => Clients.CreateClient("OrchestratorApi");
-
-  private async Task RunTool(string tool)
-  {
-    _events.Clear();
-    _finalJson = null;
-
-    if (string.IsNullOrWhiteSpace(_tenant) || string.IsNullOrWhiteSpace(_searchValue))
+    [SupplyParameterFromQuery(Name = "tenantId")] public int? RequestedTenant { get; set; }
+    [SupplyParameterFromQuery(Name = "investigation")] public Guid? RequestedInvestigation { get; set; }
+    [SupplyParameterFromQuery(Name = "occurrenceId")] public Guid? RequestedOccurrence { get; set; }
+    [SupplyParameterFromQuery(Name = "agentId")] public Guid? RequestedAgent { get; set; }
+    private IReadOnlyList<NetclawTenantDto> _tenants = [];
+    private IReadOnlyList<InvestigationClientDto> _clients = [];
+    private IReadOnlyList<InvestigationSummaryDto> _items = [];
+    private readonly HashSet<Guid> _selectedClients = [];
+    private readonly List<InvestigationEventDto> _events = [];
+    private NetclawConnectionDto? _connection;
+    private InvestigationSnapshotDto? _snapshot;
+    private string? _error;
+    private string _search = "", _systemSearch = "", _filter = "all", _title = "", _message = "";
+    private int _tenant, _generation;
+    private bool _loading = true, _busy, _creating, _disposed, _showArchive, _acknowledgeRemote;
+    private Guid _createRequestId = Guid.NewGuid();
+    private InvestigationMessageRequest? _pendingMessage;
+    private CancellationTokenSource _scope = new();
+    private Task _polling = Task.CompletedTask;
+    private NetclawTenantDto? Access => _tenants.FirstOrDefault(x => x.TenantId == _tenant);
+    private long Cursor => _events.LastOrDefault()?.Sequence ?? 0;
+    private IEnumerable<InvestigationClientDto> FilteredClients => _clients.Where(x => _systemSearch.Length == 0 ||
+        x.HostName.Contains(_systemSearch, StringComparison.OrdinalIgnoreCase) || x.FriendlyName?.Contains(_systemSearch, StringComparison.OrdinalIgnoreCase) == true || x.Tags.Any(t => t.Contains(_systemSearch, StringComparison.OrdinalIgnoreCase)));
+    private IEnumerable<InvestigationSummaryDto> FilteredItems => _items.Where(x => (_search.Length == 0 || x.Title.Contains(_search, StringComparison.OrdinalIgnoreCase) || x.AgentIds.Any(id => _clients.Any(c => c.AgentId == id && c.HostName.Contains(_search, StringComparison.OrdinalIgnoreCase)))) && (_filter switch
+    { "active" => x.State is InvestigationState.Processing or InvestigationState.Queued, "approval" => x.State == InvestigationState.AwaitingApproval, "recovery" => x.State == InvestigationState.DeliveryUnknown, "archived" => x.State == InvestigationState.Archived, _ => true }));
+    protected override async Task OnInitializedAsync()
     {
-      Snackbar.Add("Tenant and Target value are required.", Severity.Warning);
-      return;
-    }
-
-    var target = new { Tenant = _tenant, TargetCliSearchProperty = _searchProp, TargetCliSearchString = _searchValue };
-    var resp = await Api.PostAsJsonAsync($"/api/v1/mcp/tools/{tool}/invoke", target);
-    resp.EnsureSuccessStatusCode();
-    var body = await resp.Content.ReadFromJsonAsync<Dictionary<string,object>>();
-    var requestId = body!["requestId"]!.ToString();
-
-    _ = Stream(requestId!);
-  }
-
-  private async Task Stream(string requestId)
-  {
-    using var req = new HttpRequestMessage(HttpMethod.Get, $"/api/v1/mcp/requests/{requestId}/events");
-    using var resp = await Api.SendAsync(req, HttpCompletionOption.ResponseHeadersRead);
-    resp.EnsureSuccessStatusCode();
-
-    using var stream = await resp.Content.ReadAsStreamAsync();
-    using var reader = new StreamReader(stream);
-    string? line;
-    string? eventType = null;
-    string? id = null;
-    var dataLines = new List<string>();
-
-    while ((line = await reader.ReadLineAsync()) is not null)
-    {
-      if (line.StartsWith(":")) continue; // comment
-      if (string.IsNullOrEmpty(line))
-      {
-        if (eventType == "update" && dataLines.Count > 0)
+        try
         {
-          var json = string.Join("\n", dataLines);
-          var ev = System.Text.Json.JsonSerializer.Deserialize<TaskEventDto>(json);
-          if (ev is not null)
-          {
-            _events.Insert(0, ev);
-            StateHasChanged();
-            if (ev.Status == "Success" && !string.IsNullOrWhiteSpace(ev.DataChunk))
-            {
-              _finalJson = ev.DataChunk;
-              StateHasChanged();
-            }
-          }
+            _tenants = await Api.TenantsAsync(_scope.Token);
+            _tenant = RequestedTenant is { } requested ? _tenants.FirstOrDefault(x => x.TenantId == requested)?.TenantId ?? 0 : _tenants.FirstOrDefault()?.TenantId ?? 0;
+            if (_tenant > 0) await LoadTenantAsync();
+            else if (RequestedTenant.HasValue) _error = "The linked tenant is unavailable to this account.";
         }
-        // reset event
-        eventType = null; id = null; dataLines.Clear();
-        continue;
-      }
-
-      if (line.StartsWith("event:")) eventType = line.Substring(6).Trim();
-      else if (line.StartsWith("id:")) id = line.Substring(3).Trim();
-      else if (line.StartsWith("data:")) dataLines.Add(line.Substring(5).TrimStart());
+        catch (HttpRequestException exception) { _error = exception.Message; }
+        catch (OperationCanceledException) when (_scope.IsCancellationRequested) { return; }
+        catch (OperationCanceledException) { _error = "The workspace request timed out. Refresh to reconnect."; }
+        finally { _loading = false; }
+        _polling = PollAsync(_scope.Token);
     }
-  }
-
-  public record TaskEventDto(string EventId, string RequestId, string Status, string? Message, string? DataChunk, string TimestampUtc);
+    private async Task LoadTenantAsync()
+    {
+        var tenant = _tenant; var generation = _generation; var ct = _scope.Token;
+        var clients = await Api.ClientsAsync(tenant, ct); var items = await Api.ListAsync(tenant, ct); var connection = await Api.ConnectionAsync(tenant, ct);
+        if (!Current(tenant, generation)) return;
+        _clients = clients; _items = items; _connection = connection;
+        if (RequestedTenant == tenant && RequestedAgent is { } agent && clients.Any(x => x.AgentId == agent)) { _selectedClients.Add(agent); _creating = true; }
+        if (RequestedTenant == tenant && RequestedInvestigation is { } id) await OpenCoreAsync(id);
+    }
+    private bool Current(int tenant, int generation) => !_disposed && tenant == _tenant && generation == _generation;
+    private async Task ChooseTenantAsync(ChangeEventArgs e)
+    {
+        if (!int.TryParse(e.Value?.ToString(), out var tenant) || tenant == _tenant || !_tenants.Any(x => x.TenantId == tenant)) return;
+        ++_generation; _tenant = tenant; _snapshot = null; _events.Clear(); _items = []; _clients = []; _selectedClients.Clear(); _connection = null;
+        _creating = false; _message = ""; _pendingMessage = null; _error = null; _showArchive = false;
+        await CommandAsync(LoadTenantAsync);
+    }
+    private async Task CommandAsync(Func<Task> action)
+    {
+        if (_busy || _disposed) return; _busy = true; _error = null;
+        try { await action(); }
+        catch (OperationCanceledException) when (_scope.IsCancellationRequested) { return; }
+        catch (OperationCanceledException) { _error = "The request timed out. Its saved state remains available through Refresh."; }
+        catch (HttpRequestException exception) { _error = exception.Message; }
+        finally { _busy = false; }
+    }
+    private Task ReloadAsync() => CommandAsync(async () =>
+    {
+        var generation = _generation; var tenant = _tenant;
+        var items = await Api.ListAsync(tenant, _scope.Token); var connection = await Api.ConnectionAsync(tenant, _scope.Token);
+        if (!Current(tenant, generation)) return; _items = items; _connection = connection;
+        if (_snapshot is not null) Apply(await Api.GetAsync(tenant, _snapshot.Investigation.Id, Cursor, _scope.Token));
+        else if (RequestedTenant == tenant && RequestedInvestigation is { } requested) await OpenCoreAsync(requested);
+    });
+    private Task OpenAsync(Guid id) => CommandAsync(() => OpenCoreAsync(id));
+    private async Task OpenCoreAsync(Guid id)
+    {
+        var tenant = _tenant; var generation = _generation;
+        var snapshot = await Api.GetAsync(tenant, id, 0, _scope.Token); if (!Current(tenant, generation)) return;
+        _events.Clear(); _snapshot = null; _message = ""; _pendingMessage = null; _showArchive = false; Apply(snapshot);
+    }
+    private void Apply(InvestigationSnapshotDto snapshot)
+    {
+        if (snapshot.Investigation.TenantId != _tenant || _snapshot is not null && (_snapshot.Investigation.Id != snapshot.Investigation.Id || _snapshot.LastSequence > snapshot.LastSequence)) return;
+        foreach (var item in snapshot.Events) if (_events.All(x => x.Sequence != item.Sequence)) _events.Add(item);
+        _events.Sort((left, right) => left.Sequence.CompareTo(right.Sequence)); _snapshot = snapshot;
+        if (_pendingMessage is not null && _events.Any(x => x.Type == "operator" && x.MessageId == _pendingMessage.MessageId)) { _pendingMessage = null; _message = ""; }
+        _items = _items.Where(x => x.Id != snapshot.Investigation.Id).Append(snapshot.Investigation).OrderByDescending(x => x.LastActivityUtc).ToArray();
+    }
+    private void SelectClient(Guid id, ChangeEventArgs e)
+    { if (e.Value is true && _selectedClients.Count < 20) _selectedClients.Add(id); else _selectedClients.Remove(id); }
+    private Task CreateAsync() => CommandAsync(async () =>
+    {
+        var request = new InvestigationCreateRequest(_createRequestId, _title, _selectedClients.ToArray(), RequestedTenant == _tenant ? RequestedOccurrence : null);
+        var snapshot = await Api.CreateAsync(_tenant, request, _scope.Token);
+        _events.Clear(); _snapshot = null; Apply(snapshot); _creating = false; _createRequestId = Guid.NewGuid(); _title = "";
+    });
+    private Task SendAsync() => CommandAsync(async () =>
+    {
+        if (_snapshot is null || _snapshot.Investigation.State != InvestigationState.Idle) return;
+        _pendingMessage ??= new(Guid.NewGuid(), _message.Trim());
+        Apply(await Api.SendAsync(_tenant, _snapshot.Investigation.Id, _pendingMessage, _scope.Token));
+        _pendingMessage = null; _message = "";
+    });
+    private Task ApproveAsync(string callId, string key) => CommandAsync(async () =>
+    { if (_snapshot is not null) Apply(await Api.ApproveAsync(_tenant, _snapshot.Investigation.Id, callId, key, _scope.Token)); });
+    private Task RecoverAsync() => CommandAsync(async () =>
+    { if (_snapshot is not null) Apply(await Api.ReconcileAsync(_tenant, _snapshot.Investigation.Id, _scope.Token)); });
+    private Task ArchiveAsync() => CommandAsync(async () =>
+    {
+        if (_snapshot is null) return;
+        Apply(await Api.ArchiveAsync(_tenant, _snapshot.Investigation.Id, new(_snapshot.ActiveMessageId ?? Guid.Empty, _acknowledgeRemote), _scope.Token));
+        _showArchive = false; _acknowledgeRemote = false;
+    });
+    private Task LoadMoreAsync() => CommandAsync(async () =>
+    { if (_snapshot is not null) Apply(await Api.GetAsync(_tenant, _snapshot.Investigation.Id, Cursor, _scope.Token)); });
+    private async Task PollAsync(CancellationToken ct)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(2)); var ticks = 0;
+        try
+        {
+            while (await timer.WaitForNextTickAsync(ct))
+            {
+                if (_busy || _tenant == 0) continue;
+                await InvokeAsync(async () =>
+                {
+                    var tenant = _tenant; var generation = _generation; var id = _snapshot?.Investigation.Id;
+                    try
+                    {
+                        if (id is { } selected)
+                        { var snapshot = await Api.GetAsync(tenant, selected, Cursor, ct); if (Current(tenant, generation) && _snapshot?.Investigation.Id == selected) Apply(snapshot); }
+                        if (++ticks % 5 == 0) { var items = await Api.ListAsync(tenant, ct); if (Current(tenant, generation)) _items = items; }
+                    }
+                    catch (HttpRequestException exception) { if (Current(tenant, generation)) _error = exception.Message; }
+                    catch (OperationCanceledException) when (!ct.IsCancellationRequested) { if (Current(tenant, generation)) _error = "Live updates are reconnecting. Your saved conversation remains visible."; }
+                    if (!_disposed) StateHasChanged();
+                });
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
+    }
+    private static string StateLabel(InvestigationState state) => state switch
+    { InvestigationState.Idle => "Ready", InvestigationState.Processing => "Investigating", InvestigationState.AwaitingApproval => "Approval needed", InvestigationState.DeliveryUnknown => "Outcome unconfirmed", InvestigationState.Queued => "Queued", _ => "Archived" };
+    public async ValueTask DisposeAsync() { _disposed = true; ++_generation; await _scope.CancelAsync(); await _polling; _scope.Dispose(); }
 }

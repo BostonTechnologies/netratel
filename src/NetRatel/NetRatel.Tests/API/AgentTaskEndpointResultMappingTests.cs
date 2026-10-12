@@ -3,6 +3,7 @@ using AwesomeAssertions;
 using NetRatel.API.Endpoints;
 using NetRatel.Application.Jobs;
 using NetRatel.Shared.Contracts.Execution;
+using NetRatel.Shared.Contracts.Services;
 using NetRatel.Shared.Contracts.Tasks;
 using Xunit;
 
@@ -10,6 +11,21 @@ namespace NetRatel.Tests.API;
 
 public sealed class AgentTaskEndpointResultMappingTests
 {
+    [Fact]
+    public async Task Generic_task_allowlist_rejects_typed_service_control_even_with_a_supplied_request_id()
+    {
+        var request = new TaskCreateRequestDto
+        {
+            TaskType = ClientServiceControlRules.TaskType,
+            RequestId = Guid.NewGuid().ToString("N"),
+            Payload = "{\"serviceName\":\"Spooler\",\"action\":\"Stop\"}"
+        };
+        var result = await AgentTaskEndpoints.BuildPayloadAsync(request,
+            AgentTaskEndpoints.NormalizeTaskType(request.TaskType), null!, CancellationToken.None);
+        result.Value.Should().BeNull();
+        result.Error.Should().Contain("Unsupported TaskType");
+    }
+
     [Theory]
     [InlineData(TaskKinds.Legacy_RunPowerShell, "Write-Output 'legacy'")]
     [InlineData(TaskKinds.Legacy_ExecPs, "{\"script\":\"Write-Output 'legacy'\"}")]

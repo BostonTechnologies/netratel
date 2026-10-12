@@ -98,7 +98,11 @@ public static class McpOperatorClientFileEndpoints
             var safeEntries = entries
                 .Where(entry => entry.Name.Length <= 512 &&
                     TryCreateReadPolicy(context.Decision, entry.FullPath, out _))
-                .Select(entry => new McpOperatorFileEntry(entry.Name, entry.FullPath, entry.IsDirectory, entry.SizeBytes))
+                .Select(entry => new McpOperatorFileEntry(entry.Name, entry.FullPath, entry.IsDirectory, entry.SizeBytes)
+                {
+                    CreatedUtc = entry.CreatedUtc,
+                    LastModifiedUtc = entry.LastModifiedUtc
+                })
                 .Take(pageSize ?? MaximumPageSize)
                 .ToArray();
             return Results.Ok(new McpOperatorFileBrowseResult(
@@ -1919,7 +1923,7 @@ public static class McpOperatorClientFileEndpoints
     {
         "session_unavailable" => Failure("target_offline", context),
         "capability_unavailable" => Failure("capability_unavailable", context),
-        "access_denied" => Failure("file_access_denied", context),
+        "access_denied" or "protected_path" => Failure("file_access_denied", context),
         "file_too_large" or "artifact_too_large" => Results.Problem(
             statusCode: StatusCodes.Status413PayloadTooLarge,
             title: "The file exceeds the policy-admitted MCP transfer limit.",
@@ -2009,7 +2013,11 @@ public static class McpOperatorClientFileEndpoints
 
     private sealed record McpOperatorFileRouteContextResult(McpOperatorFileRouteContext? Context, IResult? Failure);
 
-    private sealed record McpOperatorFileEntry(string Name, string Path, bool IsDirectory, long SizeBytes);
+    private sealed record McpOperatorFileEntry(string Name, string Path, bool IsDirectory, long SizeBytes)
+    {
+        public DateTimeOffset? CreatedUtc { get; init; }
+        public DateTimeOffset? LastModifiedUtc { get; init; }
+    }
 
     private sealed record McpOperatorFileBrowseResult(
         int TenantId,

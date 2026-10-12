@@ -53,7 +53,19 @@ public static partial class RemoteFilePath
     public static bool TryGetParent(string? value, out string parent)
     {
         parent = string.Empty;
-        if (!TryNormalize(value, out var path) || IsRoot(path))
+        return TryNormalize(value, out var path) && TryGetNormalizedParent(path, out parent);
+    }
+
+    public static bool TryGetDirectoryParent(string? value, out string parent)
+    {
+        parent = string.Empty;
+        return TryNormalizeDirectory(value, out var path) && TryGetNormalizedParent(path, out parent);
+    }
+
+    private static bool TryGetNormalizedParent(string path, out string parent)
+    {
+        parent = string.Empty;
+        if (path == "/" || (path.Length == 3 && path[1] == ':' && path[2] == '\\'))
         {
             return false;
         }
@@ -86,6 +98,60 @@ public static partial class RemoteFilePath
         return IsWindows(normalizedParent)
             ? (IsRoot(normalizedParent) ? normalizedParent : normalizedParent + "\\") + child
             : (normalizedParent == "/" ? "/" : normalizedParent + "/") + child;
+    }
+
+    /// <summary>A single folder name is checked using the remote operating system's rules.</summary>
+    public static bool TryJoinDirectory(string? parent, string? name, out string path)
+    {
+        path = string.Empty;
+        if (!TryNormalizeDirectory(parent, out var normalizedParent) ||
+            string.IsNullOrWhiteSpace(name) || name.Length > 255 || name is "." or ".." ||
+            name.Any(char.IsControl) || name.IndexOfAny(['/', '\\']) >= 0)
+        {
+            return false;
+        }
+
+        if (IsWindows(normalizedParent))
+        {
+            var stem = name.Split('.')[0];
+            if (name.IndexOfAny(['<', '>', ':', '"', '|', '?', '*']) >= 0 || name.EndsWith('.') || name.EndsWith(' ') ||
+                stem.Equals("CON", StringComparison.OrdinalIgnoreCase) || stem.Equals("PRN", StringComparison.OrdinalIgnoreCase) ||
+                stem.Equals("AUX", StringComparison.OrdinalIgnoreCase) || stem.Equals("NUL", StringComparison.OrdinalIgnoreCase) ||
+                (stem.Length == 4 && stem[3] is >= '1' and <= '9' &&
+                 (stem.StartsWith("COM", StringComparison.OrdinalIgnoreCase) || stem.StartsWith("LPT", StringComparison.OrdinalIgnoreCase))))
+            {
+                return false;
+            }
+        }
+
+        path = IsWindows(normalizedParent)
+            ? (normalizedParent.Length == 3 ? normalizedParent : normalizedParent + "\\") + name
+            : (normalizedParent == "/" ? "/" : normalizedParent + "/") + name;
+        return path.Length <= 4096;
+    }
+
+    public static bool TryNormalizeDirectory(string? value, out string path)
+    {
+        path = string.Empty;
+        if (string.IsNullOrEmpty(value) || value.Length > 4096 || value.Any(char.IsControl))
+        {
+            return false;
+        }
+
+        // Spaces are part of a Unix filename. Trimming a selected mutation path
+        // could otherwise delete a different, similarly named sibling.
+        if (value.StartsWith("/", StringComparison.Ordinal))
+        {
+            if (value.StartsWith("//", StringComparison.Ordinal)) return false;
+            path = value == "/" ? "/" : value.TrimEnd('/');
+        }
+        else if (value != value.Trim() || !TryNormalize(value, out path) || !IsWindows(path))
+        {
+            return false;
+        }
+
+        var separator = IsWindows(path) ? '\\' : '/';
+        return !path.Split(separator, StringSplitOptions.RemoveEmptyEntries).Any(component => component is "." or "..");
     }
 
     [GeneratedRegex("^[A-Za-z]:")]

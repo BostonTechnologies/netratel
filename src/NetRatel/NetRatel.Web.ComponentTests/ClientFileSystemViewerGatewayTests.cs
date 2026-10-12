@@ -1,8 +1,10 @@
 using System.Net;
+using System.Net.Http.Json;
 using System.Text.Json;
 using BlazorDownloadFile;
 using Bunit;
 using AwesomeAssertions;
+using Microsoft.AspNetCore.Components.Web;
 using Microsoft.Extensions.DependencyInjection;
 using MudBlazor.Services;
 using NetRatel.Shared.Contracts;
@@ -64,8 +66,10 @@ public sealed class ClientFileSystemViewerGatewayTests : AsyncBunitContext
         ((GatewayFileHttpClientFactory)factory).RequestedClientNames.Should().Contain("OrchestratorApiStreaming");
     }
 
-    [Fact]
-    public async Task Normalizes_A_StaleWindowsDriveRoot_BeforeListing()
+    [Theory]
+    [InlineData("C:", "C:\\", "C%3A%5C")]
+    [InlineData("/data ", "/data ", "%2Fdata%20")]
+    public async Task NormalizesDriveRootsAndPreservesExactUnixFolderNamesBeforeListing(string initialPath, string displayedPath, string encodedPath)
     {
         var factory = Services.GetRequiredService<IHttpClientFactory>();
         var dialogProvider = Render<MudBlazor.MudDialogProvider>();
@@ -74,14 +78,14 @@ public sealed class ClientFileSystemViewerGatewayTests : AsyncBunitContext
             {
                 { component => component.TenantId, 3 },
                 { component => component.AgentId, AgentId },
-                { component => component.InitialPath, "C:" }
+                { component => component.InitialPath, initialPath }
             });
 
         dialogProvider.WaitForAssertion(() =>
         {
-            dialogProvider.Find("[data-testid='file-explorer-location']").TextContent.Should().Be("C:\\");
+            dialogProvider.Find("[data-testid='file-explorer-location']").TextContent.Should().Be(displayedPath);
             ((GatewayFileHttpClientFactory)factory).RequestedUris.Should().ContainSingle()
-                .Which.Should().Be($"/api/v2/agents/3/{AgentId:D}/filesystem?path=C%3A%5C");
+                .Which.Should().Be($"/api/v2/agents/3/{AgentId:D}/filesystem?path={encodedPath}");
         });
     }
 
@@ -197,6 +201,115 @@ public sealed class ClientFileSystemViewerGatewayTests : AsyncBunitContext
         var upload = () => Services.GetRequiredService<GatewayFileSystemApiService>().UploadAsync(3, AgentId, "/data/target", content);
         await upload.Should().ThrowAsync<HttpRequestException>();
         attempts.Should().Be(1);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task FolderMutationShowsRemoteDetailWithoutAutomaticReplay(bool create)
+    {
+        var factory = (GatewayFileHttpClientFactory)Services.GetRequiredService<IHttpClientFactory>();
+        var attempts = 0;
+        factory.Respond = (request, _) =>
+        {
+            request.Method.Should().Be(create ? HttpMethod.Post : HttpMethod.Delete);
+            request.RequestUri!.AbsolutePath.Should().Be($"/api/v2/agents/3/{AgentId:D}/filesystem/directory");
+            Interlocked.Increment(ref attempts);
+            return Task.FromResult(JsonResponse(HttpStatusCode.Conflict,
+                new { code = "directory_not_empty", detail = "This folder is not empty. Only empty folders can be deleted." }));
+        };
+        var files = Services.GetRequiredService<GatewayFileSystemApiService>();
+        var mutate = () => create ? files.CreateDirectoryAsync(3, AgentId, "/data", "folder") : files.DeleteDirectoryAsync(3, AgentId, "/data/folder");
+        (await mutate.Should().ThrowAsync<HttpRequestException>()).Which.Message.Should().Contain("Only empty folders can be deleted");
+        attempts.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task FolderControlsFollowListingPermissionsAndCreationRefreshesTheOpenBrowser()
+    {
+        var factory = (GatewayFileHttpClientFactory)Services.GetRequiredService<IHttpClientFactory>();
+        var created = false;
+        var createCalls = 0;
+        factory.Respond = async (request, token) =>
+        {
+            if (request.Method == HttpMethod.Post)
+            {
+                var body = await request.Content!.ReadFromJsonAsync<GatewayFileSystemCreateDirectoryRequest>(token);
+                body.Should().Be(new GatewayFileSystemCreateDirectoryRequest("/data", "reports"));
+                createCalls++;
+                created = true;
+                return JsonResponse(HttpStatusCode.OK, new GatewayFileSystemWriteResponse(3, AgentId, "/data/reports", "akka"));
+            }
+            return JsonResponse(HttpStatusCode.OK, new GatewayFileSystemListResponse(3, AgentId, "/data", "akka",
+                created ? [new GatewayFileSystemEntryDto("reports", "/data/reports", true, 0)
+                {
+                    CreatedUtc = new DateTimeOffset(2026, 1, 1, 10, 0, 0, TimeSpan.Zero),
+                    LastModifiedUtc = new DateTimeOffset(2026, 1, 2, 11, 0, 0, TimeSpan.Zero)
+                }] : []) { CanCreateDirectory = true, CanDeleteDirectory = false, CanWriteFiles = true });
+        };
+        var provider = Render<MudBlazor.MudDialogProvider>();
+        await Services.GetRequiredService<MudBlazor.IDialogService>().ShowAsync<ClientFileSystemViewer>("File Browser",
+            new MudBlazor.DialogParameters<ClientFileSystemViewer>
+            {
+                { component => component.TenantId, 3 }, { component => component.AgentId, AgentId },
+                { component => component.InitialPath, "/data" }
+            });
+        provider.WaitForAssertion(() => provider.Find("[data-testid='file-explorer-new-folder']").Should().NotBeNull());
+        provider.Find("[data-testid='file-explorer-new-folder']").Click();
+        provider.Find("[data-testid='file-explorer-folder-name']").Input("reports");
+        provider.Find("[data-testid='file-explorer-create-folder-submit']").Click();
+        provider.WaitForAssertion(() =>
+        {
+            provider.FindAll("[data-testid='file-explorer']").Should().ContainSingle();
+            provider.Find("[data-testid='file-explorer-list']").TextContent.Should().Contain("reports");
+            provider.Find("[data-testid='file-explorer-entry-created']").TextContent.Should().Be("2026-01-01 10:00");
+            provider.Find("[data-testid='file-explorer-entry-modified']").TextContent.Should().Be("2026-01-02 11:00");
+            provider.FindAll("[data-testid='file-explorer-delete-folder']").Should().BeEmpty();
+            createCalls.Should().Be(1);
+        });
+    }
+
+    [Fact]
+    public async Task NonemptyFolderDeletionRequiresConfirmationAndKeepsTheBrowserOpenWithTheFailure()
+    {
+        var factory = (GatewayFileHttpClientFactory)Services.GetRequiredService<IHttpClientFactory>();
+        var deleteCalls = 0;
+        factory.Respond = (request, _) =>
+        {
+            if (request.Method == HttpMethod.Delete)
+            {
+                request.RequestUri!.Query.Should().Be("?path=%2Fdata%2Freports");
+                deleteCalls++;
+                return Task.FromResult(JsonResponse(HttpStatusCode.Conflict,
+                    new { code = "directory_not_empty", detail = "This folder is not empty. Only empty folders can be deleted." }));
+            }
+            return Task.FromResult(JsonResponse(HttpStatusCode.OK, new GatewayFileSystemListResponse(3, AgentId, "/data", "akka",
+                [new GatewayFileSystemEntryDto("reports", "/data/reports", true, 0)]) { CanDeleteDirectory = true }));
+        };
+        var provider = Render<MudBlazor.MudDialogProvider>();
+        await Services.GetRequiredService<MudBlazor.IDialogService>().ShowAsync<ClientFileSystemViewer>("File Browser",
+            new MudBlazor.DialogParameters<ClientFileSystemViewer>
+            {
+                { component => component.TenantId, 3 }, { component => component.AgentId, AgentId },
+                { component => component.InitialPath, "/data" }, { component => component.HostLabel, "linux-client" }
+            });
+        provider.WaitForAssertion(() => provider.Find("[data-testid='file-explorer-delete-folder']").Should().NotBeNull());
+        var deleting = provider.Find("[data-testid='file-explorer-delete-folder']").ClickAsync(new MouseEventArgs());
+        provider.WaitForAssertion(() =>
+        {
+            provider.Markup.Should().Contain("/data/reports").And.Contain("linux-client");
+            provider.FindAll("button").Should().Contain(button => button.TextContent.Trim() == "Delete folder");
+            deleteCalls.Should().Be(0);
+        });
+        provider.FindAll("button").Single(button => button.TextContent.Trim() == "Delete folder").Click();
+        await deleting;
+        provider.WaitForAssertion(() =>
+        {
+            provider.FindAll("[data-testid='file-explorer']").Should().ContainSingle();
+            provider.Find("[data-testid='file-explorer-mutation-error']").TextContent.Should().Contain("Only empty folders can be deleted");
+            provider.Find("[data-testid='file-explorer-list']").TextContent.Should().Contain("reports");
+            deleteCalls.Should().Be(1);
+        });
     }
 
     private static HttpResponseMessage JsonResponse(HttpStatusCode status, object payload) =>

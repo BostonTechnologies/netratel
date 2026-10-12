@@ -62,6 +62,17 @@ public sealed class McpOperatorDelegationMiddleware(
                 return;
             }
         }
+        else if (delegation.Tool == "netratel_files" &&
+            !await IsAuthorizedExternalFileExecutionAsync(delegation, context.RequestServices, context.RequestAborted).ConfigureAwait(false))
+        {
+            context.Response.StatusCode = StatusCodes.Status403Forbidden;
+            await context.Response.WriteAsJsonAsync(new
+            {
+                code = "delegated_file_permission_denied",
+                layer = "delegation"
+            }, context.RequestAborted);
+            return;
+        }
 
         context.Items[HttpContextItemKey] = delegation;
         await next(context);
@@ -104,8 +115,33 @@ public sealed class McpOperatorDelegationMiddleware(
             new Claim("auth_mode", "integration_credential"),
             new Claim("integration_credential_purpose", "http_mcp")
         ], "McpLocalExecution"));
-        return await access.AuthorizeAsync(principal, delegation.IngressPermission, authorizationTenantId, cancellationToken)
-            .ConfigureAwait(false);
+        if (delegation.Tool == "netratel_files")
+        {
+            if (delegation.IngressPermission != McpLocalDelegationPermissionMapper.RequiredPermission(delegation.Tool, delegation.Operation))
+                return false;
+            return await McpLocalDelegationPermissionMapper.AuthorizeAsync(access, principal, delegation.Tool, delegation.Operation,
+                authorizationTenantId, cancellationToken).ConfigureAwait(false);
+        }
+        return await access.AuthorizeAsync(principal, delegation.IngressPermission, authorizationTenantId, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<bool> IsAuthorizedExternalFileExecutionAsync(McpOperatorDelegation delegation,
+        IServiceProvider services, CancellationToken cancellationToken)
+    {
+        if (delegation.Identity.ExternalIssuer is not { Length: > 0 } issuer ||
+            !McpLocalDelegationTargetRequirements.TryGetAuthorizationTenant(delegation, out var tenantId) || tenantId is not > 0 ||
+            services.GetService<IApplicationPrincipalResolver>() is not { } principals ||
+            services.GetService<IEffectiveAccessService>() is not { } access)
+            return false;
+        // Only the signed caller's issuer and subject resolve the account.
+        // Neither the relay service token nor OAuth roles supply application grants.
+        var identity = new ClaimsIdentity([new Claim("iss", issuer), new Claim("sub", delegation.Identity.Subject)], "Oidc");
+        var user = new ClaimsPrincipal(identity);
+        var principalId = await principals.ResolveExternalAsync(user, cancellationToken).ConfigureAwait(false);
+        if (principalId is null) return false;
+        identity.AddClaim(new Claim("netratel_principal_id", principalId));
+        return await McpLocalDelegationPermissionMapper.AuthorizeAsync(access, user, delegation.Tool, delegation.Operation,
+            tenantId, cancellationToken).ConfigureAwait(false);
     }
 }
 

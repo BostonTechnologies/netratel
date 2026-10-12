@@ -126,6 +126,9 @@ public static class McpOperationAccessCatalog
 {
     public static IReadOnlyList<McpOperationAccessDescriptor> Operations { get; } =
     [
+        .. ManagedOperationCatalog.Operations.Select(operation => new McpOperationAccessDescriptor(
+            operation.Tool, operation.Operation, operation.Scope, McpOperationMinimumRole.Operator,
+            DevelopmentCompatibilityScopeFor(operation.Scope))),
         .. Register(McpOperationAccessScope.Read, "netratel_auth", "status"),
         .. Register(McpOperationAccessScope.Read, "netratel_health", "get"),
         .. Register(McpOperationAccessScope.Read, "netratel_system", "version"),

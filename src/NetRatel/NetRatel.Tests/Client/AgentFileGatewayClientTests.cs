@@ -18,6 +18,41 @@ namespace NetRatel.Tests.Client;
 
 public sealed class AgentFileGatewayClientTests
 {
+    [Theory]
+    [InlineData("create_directory", "new", null)]
+    [InlineData("delete_directory", "empty", null)]
+    [InlineData("delete_directory", "nonempty", "directory_not_empty")]
+    [InlineData("delete_directory", "file", "not_a_directory")]
+    [InlineData("delete_directory", "root", "protected_path")]
+    public async Task FolderOperationsEnforceTypeEmptyDirectoryAndRootBoundaries(string operation, string kind, string? failure)
+    {
+        using var directory = new TestDirectory();
+        var target = kind == "root" ? directory.Path : Path.Combine(directory.Path, "target");
+        if (kind is "empty" or "nonempty") Directory.CreateDirectory(target);
+        if (kind == "nonempty") File.WriteAllText(Path.Combine(target, "keep.txt"), "preserved");
+        if (kind == "file") File.WriteAllText(target, "preserved");
+        var gateway = new DirectoryOperationGateway(directory.Path, target, operation);
+        using var host = await BuildHostAsync(gateway);
+        using var stopping = new CancellationTokenSource();
+        var run = NewClient(host).RunForPresenceSessionAsync(NewPresence(), "test-token", stopping.Token);
+        try
+        {
+            var result = await gateway.Result.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            if (failure is null) result.Completed.Should().NotBeNull();
+            else result.Failed.Code.Should().Be(failure);
+            if (kind == "new") Directory.Exists(target).Should().BeTrue();
+            if (kind == "empty") Directory.Exists(target).Should().BeFalse();
+            if (kind == "nonempty") File.ReadAllText(Path.Combine(target, "keep.txt")).Should().Be("preserved");
+            if (kind == "file") File.ReadAllText(target).Should().Be("preserved");
+            if (kind == "root") Directory.Exists(target).Should().BeTrue();
+        }
+        finally
+        {
+            stopping.Cancel();
+            await run.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+    }
+
     [Fact]
     public void Operation_cleanup_is_idempotent_when_completion_races_stream_teardown()
     {
@@ -355,7 +390,7 @@ public sealed class AgentFileGatewayClientTests
         _ => GrpcChannel.ForAddress("http://localhost", new GrpcChannelOptions { HttpHandler = host.GetTestServer().CreateHandler() }),
         startWorker, cleanupTimeout, enumerateEntries);
 
-    private static async Task<IHost> BuildHostAsync(ResetFileGateway gateway)
+    private static async Task<IHost> BuildHostAsync<TGateway>(TGateway gateway) where TGateway : AgentFileGateway.AgentFileGatewayBase
     {
         var builder = Host.CreateDefaultBuilder();
         builder.ConfigureWebHost(web =>
@@ -370,10 +405,44 @@ public sealed class AgentFileGatewayClientTests
             web.Configure(app =>
             {
                 app.UseRouting();
-                app.UseEndpoints(endpoints => endpoints.MapGrpcService<ResetFileGateway>());
+                app.UseEndpoints(endpoints => endpoints.MapGrpcService<TGateway>());
             });
         });
         return await builder.StartAsync();
+    }
+
+    private sealed class DirectoryOperationGateway(string root, string path, string operation) : AgentFileGateway.AgentFileGatewayBase
+    {
+        public TaskCompletionSource<AgentFileFrame> Result { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public override async Task Connect(IAsyncStreamReader<AgentFileFrame> requests,
+            IServerStreamWriter<GatewayFileFrame> responses, ServerCallContext context)
+        {
+            if (!await requests.MoveNext(context.CancellationToken)) return;
+            var hello = requests.Current.Clone();
+            hello.Hello.Capabilities.Should().Contain("file-delete-directory-v1");
+            var accepted = Frame(0);
+            accepted.Accepted = new FileConnectAccepted { FileAuthority = "akka" };
+            await responses.WriteAsync(accepted, context.CancellationToken);
+            var dispatch = Frame(1);
+            dispatch.Dispatch = new FileRequestDispatch
+            {
+                RequestId = Guid.NewGuid().ToString("D"), AttemptId = Guid.NewGuid().ToString("D"),
+                Operation = operation, Path = path, AllowedRoots = { root }
+            };
+            await responses.WriteAsync(dispatch, context.CancellationToken);
+            while (await requests.MoveNext(context.CancellationToken))
+            {
+                if (requests.Current.Completed is not null || requests.Current.Failed is not null)
+                    Result.TrySetResult(requests.Current.Clone());
+            }
+
+            GatewayFileFrame Frame(ulong sequence) => new()
+            {
+                ProtocolVersion = hello.ProtocolVersion, TenantId = hello.TenantId, ClientId = hello.ClientId,
+                ConnectionEpoch = hello.ConnectionEpoch, ConnectionId = hello.ConnectionId, Sequence = sequence
+            };
+        }
     }
 
     private sealed class TestDirectory : IDisposable

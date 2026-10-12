@@ -23,7 +23,9 @@ using NetRatel.API.Services.RemoteSupport;
 using NetRatel.Akka.Observability;
 using NetRatel.Akka.Configuration;
 using NetRatel.Application.Presence;
+using NetRatel.Application.Agents;
 using NetRatel.Application.RemoteSupport;
+using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Shared.Contracts.FileSystem;
 using NetRatel.Shared.Contracts.RemoteSupport;
 using Xunit;
@@ -32,6 +34,79 @@ namespace NetRatel.Tests.API;
 
 public sealed class GatewayCapabilityEndpointTests
 {
+    [Fact]
+    public async Task FolderMutationsUseSeparatePermissionsAndTheSelectedParentBoundary()
+    {
+        var agentId = Guid.NewGuid();
+        using var app = await BuildAppAsync();
+        var client = app.GetTestClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test");
+        var path = $"/api/v2/agents/3/{agentId:D}/filesystem/directory";
+        var registry = app.Services.GetRequiredService<FileRegistry>();
+        var access = app.Services.GetRequiredService<FileAccess>();
+        var created = await client.PostAsJsonAsync(path, new GatewayFileSystemCreateDirectoryRequest("/data", "new folder"));
+        created.StatusCode.Should().Be(HttpStatusCode.OK);
+        registry.CreatedPaths.Should().Equal("/data/new folder");
+        registry.LastPolicy!.AllowedRoots.Should().Equal("/data");
+        access.Permissions.Remove(NetRatelPermissions.FileWrite);
+        (await client.PostAsJsonAsync(path, new GatewayFileSystemCreateDirectoryRequest("/data", "denied"))).StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        registry.CreatedPaths.Should().ContainSingle();
+        (await client.DeleteAsync(path + "?path=%2Fdata%2Fempty")).StatusCode.Should().Be(HttpStatusCode.OK);
+        registry.DeletedPaths.Should().Equal("/data/empty");
+        access.Permissions.Remove(NetRatelPermissions.FileDelete);
+        (await client.DeleteAsync(path + "?path=%2Fdata%2Fdenied")).StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        registry.DeletedPaths.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task FolderActionsRejectOtherTenantsDeletedAgentsAndRootDeletionBeforeDispatch()
+    {
+        var agentId = Guid.NewGuid();
+        using var app = await BuildAppAsync();
+        var client = app.GetTestClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test");
+        var registry = app.Services.GetRequiredService<FileRegistry>();
+        var directory = app.Services.GetRequiredService<FileAgentDirectory>();
+        var path = $"/api/v2/agents/3/{agentId:D}/filesystem/directory";
+        (await client.PostAsJsonAsync(path.Replace("/agents/3/", "/agents/4/", StringComparison.Ordinal),
+            new GatewayFileSystemCreateDirectoryRequest("/data", "denied"))).StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        directory.Deleted = true;
+        (await client.PostAsJsonAsync(path, new GatewayFileSystemCreateDirectoryRequest("/data", "denied"))).StatusCode.Should().Be(HttpStatusCode.NotFound);
+        directory.Deleted = false;
+        (await client.DeleteAsync(path + "?path=%2F")).StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        registry.CreatedPaths.Should().BeEmpty();
+        registry.DeletedPaths.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task NonemptyFolderFailureRemainsAConflictWithAnActionableMessage()
+    {
+        using var app = await BuildAppAsync();
+        var client = app.GetTestClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test");
+        app.Services.GetRequiredService<FileRegistry>().FailureCode = "directory_not_empty";
+        var response = await client.DeleteAsync($"/api/v2/agents/3/{Guid.NewGuid():D}/filesystem/directory?path=%2Fdata%2Ffolder");
+        response.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        (await response.Content.ReadAsStringAsync()).Should().Contain("Only empty folders can be deleted");
+    }
+
+    [Fact]
+    public async Task FolderMutationsPreserveExactUnixNamesAndTheirParentBoundary()
+    {
+        using var app = await BuildAppAsync();
+        var client = app.GetTestClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test");
+        var registry = app.Services.GetRequiredService<FileRegistry>();
+        var route = $"/api/v2/agents/3/{Guid.NewGuid():D}/filesystem/directory";
+        (await client.PostAsJsonAsync(route, new GatewayFileSystemCreateDirectoryRequest("/data ", "reports ")))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+        registry.CreatedPaths.Should().Equal("/data /reports ");
+        registry.LastPolicy!.AllowedRoots.Should().Equal("/data ");
+        (await client.DeleteAsync(route + "?path=" + Uri.EscapeDataString("/data/ "))).StatusCode.Should().Be(HttpStatusCode.OK);
+        registry.DeletedPaths.Should().Equal("/data/ ");
+        registry.LastPolicy!.AllowedRoots.Should().Equal("/data");
+    }
+
     [Fact]
     public async Task FileList_UsesTheAgentIdGatewayRegistry()
     {
@@ -223,10 +298,15 @@ public sealed class GatewayCapabilityEndpointTests
                 {
                     policyOptions.AddPolicy("FileReader", policy => policy.RequireAuthenticatedUser());
                     policyOptions.AddPolicy("FileWriter", policy => policy.RequireAuthenticatedUser());
+                    policyOptions.AddPolicy("FileDeleter", policy => policy.RequireAuthenticatedUser());
                     policyOptions.AddPolicy("RemoteSupportOperator", policy => policy.RequireAuthenticatedUser());
                 });
                 services.AddSingleton<FileRegistry>();
                 services.AddSingleton<IAgentFileGatewaySessionRegistry>(provider => provider.GetRequiredService<FileRegistry>());
+                services.AddSingleton<FileAccess>();
+                services.AddSingleton<IEffectiveAccessService>(provider => provider.GetRequiredService<FileAccess>());
+                services.AddSingleton<FileAgentDirectory>();
+                services.AddSingleton<IAgentManagementService>(provider => provider.GetRequiredService<FileAgentDirectory>());
                 services.AddSingleton<V2LifecycleRouter>();
                 services.AddSingleton<IRemoteSupportLifecycleRouter>(provider => provider.GetRequiredService<V2LifecycleRouter>());
                 services.AddSingleton(TimeProvider.System);
@@ -263,6 +343,24 @@ public sealed class GatewayCapabilityEndpointTests
     private sealed class FileRegistry : IAgentFileGatewaySessionRegistry
     {
         public string? FailureCode { get; set; }
+        public List<string> CreatedPaths { get; } = [];
+        public List<string> DeletedPaths { get; } = [];
+        public GatewayFileAccessPolicy? LastPolicy { get; private set; }
+
+        public GatewayFileGatewayAvailability? GetAvailability(ClientKey client) => new(Guid.NewGuid(), 1,
+            ["file-create-directory-v1", "file-delete-directory-v1", "file-delete-v1", "file-policy-roots-v1"], DateTimeOffset.UtcNow);
+        public Task CreateDirectoryAsync(ClientKey client, string path, GatewayFileAccessPolicy accessPolicy, CancellationToken cancellationToken)
+        {
+            CreatedPaths.Add(path);
+            LastPolicy = accessPolicy;
+            return Task.CompletedTask;
+        }
+        public Task DeleteDirectoryAsync(ClientKey client, string path, GatewayFileAccessPolicy accessPolicy, CancellationToken cancellationToken)
+        {
+            DeletedPaths.Add(path);
+            LastPolicy = accessPolicy;
+            return FailureCode is { } code ? Task.FromException(new AgentFileGatewayOperationException(code)) : Task.CompletedTask;
+        }
 
         public AgentFileGatewayRegistration Register(ClientKey client, Guid connectionId, ulong connectionEpoch) => throw new NotSupportedException();
         public Task<IReadOnlyList<GatewayFileEntry>> ListAsync(ClientKey client, string path, int pageSize, CancellationToken cancellationToken) =>
@@ -276,6 +374,28 @@ public sealed class GatewayCapabilityEndpointTests
         public Task<bool> TryAddReadChunkAsync(ClientKey client, NetRatel.AgentGateway.Contracts.V1.FileTransferChunk chunk, CancellationToken cancellationToken) => Task.FromResult(false);
         public bool TryComplete(ClientKey client, NetRatel.AgentGateway.Contracts.V1.FileRequestCompleted completed) => false;
         public bool TryFail(ClientKey client, NetRatel.AgentGateway.Contracts.V1.FileRequestFailed failed) => false;
+    }
+
+    private sealed class FileAccess : IEffectiveAccessService
+    {
+        public HashSet<string> Permissions { get; } = [NetRatelPermissions.FileRead, NetRatelPermissions.FileWrite, NetRatelPermissions.FileDelete];
+        public Task<bool> AuthorizeAsync(ClaimsPrincipal principal, string permission, int? tenantId, CancellationToken cancellationToken = default) =>
+            Task.FromResult(tenantId == 3 && Permissions.Contains(permission));
+        public Task<EffectiveAccessSnapshot> GetSnapshotAsync(ClaimsPrincipal principal, int? tenantId, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new EffectiveAccessSnapshot("test-admin", false, false, tenantId == 3 ? Permissions : new HashSet<string>()));
+        public Task ReconcileBuiltInRolesAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+    }
+
+    private sealed class FileAgentDirectory : IAgentManagementService
+    {
+        public bool Deleted { get; set; }
+        public Task<AgentDetailDto?> GetAsync(int tenantId, Guid agentId, CancellationToken ct) =>
+            Task.FromResult<AgentDetailDto?>(new(tenantId, agentId, "Test", true, null, DateTimeOffset.UtcNow, "test", null, null, null,
+                Deleted ? DateTimeOffset.UtcNow : null));
+        public Task<AgentListResponse> ListAsync(int tenantId, AgentListQuery query, CancellationToken ct) => throw new NotSupportedException();
+        public Task DisableAsync(int tenantId, Guid agentId, string reason, string actor, CancellationToken ct) => throw new NotSupportedException();
+        public Task EnableAsync(int tenantId, Guid agentId, string actor, CancellationToken ct) => throw new NotSupportedException();
+        public Task DeleteAsync(int tenantId, Guid agentId, string reason, string actor, CancellationToken ct) => throw new NotSupportedException();
     }
 
     private sealed class V2LifecycleRouter : IRemoteSupportLifecycleRouter

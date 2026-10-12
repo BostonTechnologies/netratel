@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using NetRatel.Infrastructure.Netclaw;
 using NetRatel.Application.Operations;
 using NetRatel.Infrastructure.ServiceIdentity;
 using NetRatel.Infrastructure.SystemPairing;
@@ -7,6 +8,10 @@ namespace NetRatel.Infrastructure.Persistence;
 
 public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> options) : DbContext(options)
 {
+    public DbSet<NetclawConnectionRecord> NetclawConnections => Set<NetclawConnectionRecord>();
+    public DbSet<AiInvestigationRecord> AiInvestigations => Set<AiInvestigationRecord>();
+    public DbSet<AiInvestigationEventRecord> AiInvestigationEvents => Set<AiInvestigationEventRecord>();
+    public DbSet<AiInvestigationApprovalRecord> AiInvestigationApprovals => Set<AiInvestigationApprovalRecord>();
     public DbSet<BootstrapInitializationRecord> BootstrapInitializations => Set<BootstrapInitializationRecord>();
     public DbSet<EnrollmentCode> EnrollmentCodes => Set<EnrollmentCode>();
     public DbSet<Agent> Agents => Set<Agent>();
@@ -64,6 +69,7 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
     public DbSet<JobShadowObservationRecord> JobShadowObservations => Set<JobShadowObservationRecord>();
     public DbSet<ClientWindowsSessionSnapshot> ClientWindowsSessionSnapshots => Set<ClientWindowsSessionSnapshot>();
     public DbSet<ClientServicesSnapshotRecord> ClientServicesSnapshots => Set<ClientServicesSnapshotRecord>();
+    public DbSet<ClientServiceOperationRecord> ClientServiceOperations => Set<ClientServiceOperationRecord>();
     public DbSet<RatelDeskConnectorRecord> RatelDeskConnectors => Set<RatelDeskConnectorRecord>();
     public DbSet<NotificationConnectorRecord> NotificationConnectors => Set<NotificationConnectorRecord>();
     public DbSet<FlowReceiverEvidenceRecord> FlowReceiverEvidence => Set<FlowReceiverEvidenceRecord>();
@@ -124,6 +130,8 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        ClientServiceOperationModel.Configure(modelBuilder);
+        NetclawPersistenceModel.Configure(modelBuilder);
         MonitoringPersistenceModel.Configure(modelBuilder);
         FlowPersistenceModel.Configure(modelBuilder);
         FlowReceiverEvidenceModel.Configure(modelBuilder);

@@ -8,15 +8,19 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.TestHost;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using NetRatel.API.Endpoints.Client;
+using NetRatel.API.Gateway;
 using NetRatel.API.Security.Authorization;
 using NetRatel.Application.Commands;
 using NetRatel.Application.Presence;
 using NetRatel.Infrastructure.Identity.Authorization;
+using NetRatel.Infrastructure.Persistence;
+using NetRatel.Shared.Contracts.Services;
 using Xunit;
 
 namespace NetRatel.Tests.API;
@@ -24,6 +28,37 @@ namespace NetRatel.Tests.API;
 public sealed class AgentCommandGatewayReadEndpointTests
 {
     private static readonly Guid AgentId = Guid.Parse("d83a5a63-60e6-4a91-b659-46ae1d523bf7");
+
+    [Fact]
+    public async Task Script_execute_alone_cannot_dispatch_or_cancel_a_typed_service_operation()
+    {
+        using var app = await BuildAppAsync();
+        using var client = app.GetTestClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test");
+        var commandPath = $"/api/v2/agents/7/{AgentId:D}/commands";
+        foreach (var taskType in new[] { "service-control", " SERVICE-CONTROL " })
+        {
+            var rejected = await client.PostAsJsonAsync(commandPath, new GatewayCommandDispatchRequest(taskType, "{}", 0, null));
+            rejected.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+            (await rejected.Content.ReadAsStringAsync()).Should().Contain("service_control_requires_dedicated_route");
+        }
+        app.Services.GetRequiredService<TestDispatcher>().Dispatches.Should().Be(0);
+
+        var operationId = Guid.NewGuid();
+        using var scope = app.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+        db.ClientServiceOperations.Add(new ClientServiceOperationRecord
+        {
+            Id = operationId, TenantId = 7, AgentId = AgentId, ServiceName = "Spooler", RequestedBy = "manager",
+            Platform = ClientServicePlatform.Windows, Action = ClientServiceControlAction.Restart
+        });
+        await db.SaveChangesAsync();
+        using var session = app.Services.GetRequiredService<IAgentCommandGatewaySessionRegistry>().Register(new ClientKey(7, AgentId), Guid.NewGuid(), 1);
+        var cancel = await client.PostAsJsonAsync($"{commandPath}/{operationId:N}/cancel", new GatewayCommandCancelRequest("script operator"));
+        cancel.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        (await cancel.Content.ReadAsStringAsync()).Should().Contain("service_operation_cannot_be_cancelled");
+        session.Reader.TryRead(out _).Should().BeFalse();
+    }
 
     [Fact]
     public async Task Get_preserves_tenant_permission_and_agent_fencing_while_reporting_store_failures()
@@ -65,6 +100,7 @@ public sealed class AgentCommandGatewayReadEndpointTests
 
     private static async Task<IHost> BuildAppAsync()
     {
+        var database = Guid.NewGuid().ToString("N");
         var builder = Host.CreateDefaultBuilder();
         builder.ConfigureWebHost(web =>
         {
@@ -85,6 +121,10 @@ public sealed class AgentCommandGatewayReadEndpointTests
                 services.AddSingleton<Microsoft.AspNetCore.Authorization.IAuthorizationHandler, EffectiveAccessHandler>();
                 services.AddSingleton<TestCommandRouter>();
                 services.AddSingleton<IClientCommandRouter>(provider => provider.GetRequiredService<TestCommandRouter>());
+                services.AddSingleton<TestDispatcher>();
+                services.AddSingleton<IAgentCommandAuthorityDispatcher>(provider => provider.GetRequiredService<TestDispatcher>());
+                services.AddSingleton<IAgentCommandGatewaySessionRegistry, AgentCommandGatewaySessionRegistry>();
+                services.AddDbContext<OrchestratorDbContext>(options => options.UseInMemoryDatabase(database));
             });
             web.Configure(app =>
             {
@@ -95,6 +135,17 @@ public sealed class AgentCommandGatewayReadEndpointTests
             });
         });
         return await builder.StartAsync();
+    }
+
+    private sealed class TestDispatcher : IAgentCommandAuthorityDispatcher
+    {
+        public int Dispatches { get; private set; }
+        public bool IsAvailable(ClientKey client) => true;
+        public Task DispatchAsync(ClientKey client, string commandId, string correlationId, string taskType, string payloadJson, int environment, CancellationToken cancellationToken)
+        {
+            Dispatches++;
+            return Task.CompletedTask;
+        }
     }
 
     private static CommandState State(ClientKey client, string source, bool isAuthoritative) => new(

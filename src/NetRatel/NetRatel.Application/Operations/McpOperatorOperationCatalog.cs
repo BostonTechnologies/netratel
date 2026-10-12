@@ -25,6 +25,12 @@ public static class McpOperatorOperationCatalog
 {
     public static IReadOnlyList<McpOperatorOperationDescriptor> Operations { get; } =
     [
+        .. ManagedOperationCatalog.Operations.Select(operation => new McpOperatorOperationDescriptor(
+            operation.Tool, operation.Operation,
+            operation.Tool is "netratel_clients" or "netratel_services" ? McpOperatorOperationFamily.ClientAdministration :
+                operation.Mutation ? McpOperatorOperationFamily.AutomationWrite : McpOperatorOperationFamily.AutomationRead,
+            ManagedConfirmationClass(operation),
+            false, operation.Scope, McpOperationMinimumRole.Operator)),
         .. Register(McpOperatorOperationFamily.Observability, McpOperatorConfirmationClass.None, "netratel_auth", "status"),
         .. Register(McpOperatorOperationFamily.Observability, McpOperatorConfirmationClass.None, "netratel_health", "get"),
         .. Register(McpOperatorOperationFamily.Observability, McpOperatorConfirmationClass.None, "netratel_system", "version"),
@@ -111,6 +117,17 @@ public static class McpOperatorOperationCatalog
             : Operations.SingleOrDefault(entry =>
                 string.Equals(entry.ToolName, toolName, StringComparison.Ordinal) &&
                 string.Equals(entry.OperationName, operationName, StringComparison.Ordinal));
+
+    private static McpOperatorConfirmationClass ManagedConfirmationClass(ManagedOperationDescriptor operation) =>
+        (operation.Tool, operation.Operation) switch
+        {
+            ("netratel_services", "control") or ("netratel_ai", "send" or "respond" or "reconcile") =>
+                McpOperatorConfirmationClass.RemoteExecution,
+            ("netratel_ai", "pair") => McpOperatorConfirmationClass.CredentialIssuance,
+            ("netratel_monitoring", "delete_rule" or "delete_group" or "delete_silence") =>
+                McpOperatorConfirmationClass.Destructive,
+            _ => operation.Mutation ? McpOperatorConfirmationClass.StandardMutation : McpOperatorConfirmationClass.None
+        };
 
     private static McpOperatorOperationDescriptor[] Register(
         McpOperatorOperationFamily family,

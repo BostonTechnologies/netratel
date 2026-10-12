@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.DependencyInjection;
 using ModelContextProtocol.Server;
+using NetRatel.Shared.Operations;
 
 namespace NetRatel.Mcp.Core;
 
@@ -11,7 +12,7 @@ namespace NetRatel.Mcp.Core;
 /// the SDK's reflection-generated open request envelope. Each catalogued read
 /// operation is represented by a closed, discriminated input schema.
 /// </summary>
-public static class NetRatelMcpToolDefinitions
+public static partial class NetRatelMcpToolDefinitions
 {
     private const string EnvelopeDescription = "Use operation to select exactly one catalogued operation. Put operation-specific fields only in request.";
     private static readonly Type[] HttpHandlerTypes = [typeof(NetRatelMcpCatalogTools), typeof(NetRatelMcpOperationalTools)];
@@ -192,6 +193,7 @@ public static class NetRatelMcpToolDefinitions
 
     private static RequestDefinition? RequestSchema(string tool, string operation, string instance, bool operatorSurfaceEnabled) => (tool, operation) switch
     {
+        _ when ManagedOperationCatalog.Find(tool, operation) is { } managed => ManagedRequestSchema(managed),
         ("netratel_clients", "presence") when operatorSurfaceEnabled => ProductionClientTargetRequest(),
         ("netratel_clients", "presence") => Request([
             Integer("tenantId", "Optional positive tenant identifier.", 1, int.MaxValue),

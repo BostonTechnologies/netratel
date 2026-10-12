@@ -5,7 +5,11 @@ public sealed record FileSystemEntryDto(
     string Name,
     string FullPath,
     bool IsDirectory,
-    long SizeBytes);
+    long SizeBytes)
+{
+    public DateTimeOffset? CreatedUtc { get; init; }
+    public DateTimeOffset? LastModifiedUtc { get; init; }
+}
 
 public sealed record FileSystemListResponse(
     string RequestId,

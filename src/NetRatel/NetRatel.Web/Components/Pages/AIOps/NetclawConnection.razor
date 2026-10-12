@@ -1,0 +1,95 @@
+@page "/ai/integration"
+@rendermode InteractiveServer
+@attribute [Authorize]
+@using NetRatel.Shared.Contracts.Netclaw
+@using NetRatel.Web.Services
+@implements IDisposable
+@inject INetclawApiService Api
+
+<PageTitle>Netclaw AI harness</PageTitle>
+<main class="netclaw-page" data-testid="netclaw-settings-page">
+    <a href="@($"/ai/ops?tenantId={_tenant}")">← AI investigations</a>
+    <header><div><h1>Netclaw AI harness</h1><p>Connect your daemon to the operations AI assistant.</p></div><span class="netclaw-status @(Connected ? "verified" : "unverified")">@(Connected ? "Connected" : "Not verified")</span></header>
+    <label>Tenant<select value="@_tenant" @onchange="TenantAsync" disabled="@_busy">@foreach (var tenant in _tenants) { <option value="@tenant.TenantId">@tenant.TenantName</option> }</select></label>
+    @if (_error is not null) { <div role="alert" class="netclaw-notice"><p>@_error</p><button type="button" @onclick="() => CommandAsync(LoadAsync)" disabled="@(_busy || _tenant == 0)">Reload saved connection</button></div> }
+    @if (_loading) { <p role="status">Loading connection…</p> }
+    else if (_tenants.Count == 0) { <p>No authorized tenant is available.</p> }
+    else if (Access?.CanConfigure != true) { <p>Tenant administration permission is required to configure this connection.</p> }
+    else
+    {
+        @if (_connection?.HasDeviceToken == true && !_editing)
+        {
+            <section><h2>@(Connected ? "Connected to Netclaw" : "Saved Netclaw connection")</h2><code>@_connection.DaemonAddress</code>
+                @if (_connection.LastTestedAtUtc is { } tested) { <p>@(_connection.LastTestSucceeded == true ? "Authenticated SignalR verified" : "Last connection test did not complete") @tested.ToLocalTime().ToString("g").</p> }
+                <div class="netclaw-actions"><button type="button" class="primary" @onclick="TestAsync" disabled="@(_busy || !_connection.Enabled)">@(_busy ? "Working…" : "Test connection")</button><button type="button" @onclick="() => _editing = true" disabled="@_busy">Edit / Re-pair</button><button type="button" @onclick="ToggleAsync" disabled="@_busy">@(_connection.Enabled ? "Disable" : "Enable")</button></div>
+            </section>
+        }
+        else
+        {
+            <section><h2>Pair &amp; connect</h2><p>Run <code>netclaw daemon pair</code> on your Netclaw server, then enter its address and one-time code.</p>
+                <label>Netclaw address<input @bind="_address" placeholder="https://netclaw.example.com" autocomplete="off" spellcheck="false" disabled="@_busy" data-testid="netclaw-address" /></label>
+                <label>Pairing code<input type="password" @bind="_code" autocomplete="off" spellcheck="false" disabled="@_busy" data-testid="netclaw-pairing-code" /></label>
+                <div class="netclaw-actions"><button type="button" class="primary" @onclick="PairAsync" disabled="@(_busy || string.IsNullOrWhiteSpace(_address) || string.IsNullOrWhiteSpace(_code))" data-testid="netclaw-pair-connect">@(_busy ? "Pairing and verifying…" : "Pair & connect")</button>
+                    @if (_connection?.HasDeviceToken == true) { <button type="button" @onclick="CancelEdit" disabled="@_busy">Cancel</button> }
+                </div>
+            </section>
+        }
+        @if (_result is not null) { <p role="status" class="netclaw-notice">@(_result.Success ? "Authenticated SignalR session verified. Open an investigation to chat." : "The connection is saved. Test it again after the daemon is reachable.")</p> }
+        <details><summary>Advanced diagnostics</summary><dl><dt>Profile revision</dt><dd>@(_connection?.Revision ?? 0)</dd><dt>Device credential</dt><dd>@(_connection?.HasDeviceToken == true ? "Stored securely" : "Not configured")</dd><dt>Protocol</dt><dd>Native SignalR · /hub/session · EnsureSession</dd><dt>Last result</dt><dd>@(_connection?.LastTestCode ?? "Not tested")</dd></dl></details>
+        <details><summary>Grant Netclaw access to NetRatel tools</summary><p>The chat connection and the MCP tool credential are separate. Create an HTTP MCP credential for this tenant and register it with your Netclaw daemon. Choose the permissions for telemetry, services, files, monitoring and flows.</p><a href="/account/integration-credentials">Manage integration credentials</a><p>Netclaw tool approvals appear inside the investigation conversation. The selected credential permissions continue to govern each operation.</p></details>
+        <footer><a href="@($"/ai/ops?tenantId={_tenant}")">Open AI investigations</a><a href="https://netclaw.dev/architecture/overview/" target="_blank" rel="noopener noreferrer">Netclaw documentation</a></footer>
+    }
+</main>
+
+@code {
+    [SupplyParameterFromQuery(Name = "tenantId")] public int? RequestedTenant { get; set; }
+    private IReadOnlyList<NetclawTenantDto> _tenants = [];
+    private NetclawConnectionDto? _connection;
+    private NetclawTestResult? _result;
+    private string _address = "", _code = "";
+    private string? _error;
+    private int _tenant;
+    private bool _loading = true, _busy, _editing, _disposed;
+    private readonly CancellationTokenSource _lifetime = new();
+    private NetclawTenantDto? Access => _tenants.FirstOrDefault(x => x.TenantId == _tenant);
+    private bool Connected => _connection is { Enabled: true, HasDeviceToken: true, LastTestSucceeded: true };
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            _tenants = await Api.TenantsAsync(_lifetime.Token);
+            _tenant = RequestedTenant is { } requested ? _tenants.FirstOrDefault(x => x.TenantId == requested)?.TenantId ?? 0 : _tenants.FirstOrDefault()?.TenantId ?? 0;
+            if (_tenant > 0) await LoadAsync();
+            else if (RequestedTenant.HasValue) _error = "The linked tenant is unavailable to this account.";
+        }
+        catch (HttpRequestException exception) { _error = exception.Message; }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { return; }
+        catch (OperationCanceledException) { _error = "The connection request timed out. Reload its saved state."; }
+        finally { _loading = false; }
+    }
+    private async Task LoadAsync() { _connection = await Api.ConnectionAsync(_tenant, _lifetime.Token); _address = _connection.DaemonAddress ?? ""; _editing = !_connection.HasDeviceToken; }
+    private async Task TenantAsync(ChangeEventArgs e)
+    {
+        if (!int.TryParse(e.Value?.ToString(), out var tenant) || !_tenants.Any(x => x.TenantId == tenant) || tenant == _tenant) return;
+        _tenant = tenant; _code = ""; _result = null; _connection = null; await CommandAsync(LoadAsync);
+    }
+    private async Task CommandAsync(Func<Task> action)
+    {
+        if (_busy || _disposed) return; _busy = true; _error = null;
+        try { await action(); }
+        catch (HttpRequestException exception) { _error = exception.Message; }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { return; }
+        catch (OperationCanceledException) { _error = "The operation timed out. Reload the connection before using another pairing code."; }
+        finally { _busy = false; }
+    }
+    private Task PairAsync() => CommandAsync(async () =>
+    {
+        try { _result = await Api.PairAsync(_tenant, new(_address.Trim(), _code, _connection?.Revision ?? 0), _lifetime.Token); _connection = _result.Connection; _editing = false; }
+        finally { _code = ""; }
+    });
+    private Task TestAsync() => CommandAsync(async () => { _result = await Api.TestAsync(_tenant, _lifetime.Token); _connection = _result.Connection; });
+    private Task ToggleAsync() => CommandAsync(async () =>
+    { if (_connection is not null) { _connection = await Api.EnabledAsync(_tenant, new(_connection.Revision, !_connection.Enabled), _lifetime.Token); _result = null; } });
+    private void CancelEdit() { _editing = false; _code = ""; _address = _connection?.DaemonAddress ?? ""; }
+    public void Dispose() { _disposed = true; _code = ""; _lifetime.Cancel(); _lifetime.Dispose(); }
+}

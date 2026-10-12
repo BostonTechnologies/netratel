@@ -3,6 +3,7 @@ using NetRatel.Client.Service.Logging;
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 
@@ -15,7 +16,11 @@ namespace NetRatel.Client.Services
             string Name,
             string FullPath,
             bool IsDirectory,
-            long SizeBytes);
+            long SizeBytes)
+        {
+            public DateTimeOffset? CreatedUtc { get; init; }
+            public DateTimeOffset? LastModifiedUtc { get; init; }
+        }
 
         public IEnumerable<BrowseEntry> EnumerateEntries(string path)
         {
@@ -25,18 +30,37 @@ namespace NetRatel.Client.Services
                 throw new DirectoryNotFoundException(path);
             }
 
-            foreach (var dir in directoryInfo.EnumerateDirectories())
+            // FileSystemInfo returned by enumeration already carries the directory
+            // entry metadata. Do not walk descendants or issue one gateway stat per row.
+            foreach (var entry in directoryInfo.EnumerateFileSystemInfos())
             {
-                yield return new BrowseEntry(path, dir.Name, dir.FullName, true, 0);
-            }
-
-            foreach (var file in directoryInfo.EnumerateFiles())
-            {
-                long fileSize = -1;
-                try { fileSize = file.Length; } catch { }
-                yield return new BrowseEntry(path, file.Name, file.FullName, false, fileSize);
+                yield return ReadBrowseEntry(path, entry);
             }
         }
+
+        private static BrowseEntry ReadBrowseEntry(string parentPath, FileSystemInfo entry)
+        {
+            var isDirectory = entry is DirectoryInfo;
+            var result = new BrowseEntry(parentPath, entry.Name, entry.FullName, isDirectory, isDirectory ? 0 : -1);
+            try
+            {
+                return result with
+                {
+                    SizeBytes = entry is FileInfo file ? file.Length : 0,
+                    CreatedUtc = NormalizeObservedTimestamp(entry.CreationTimeUtc),
+                    LastModifiedUtc = NormalizeObservedTimestamp(entry.LastWriteTimeUtc)
+                };
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                // A vanished or unreadable entry must not discard the rest of this listing.
+                return result;
+            }
+        }
+
+        public static DateTimeOffset? NormalizeObservedTimestamp(DateTime timestamp) =>
+            timestamp == DateTime.MinValue || timestamp == DateTime.FromFileTimeUtc(0)
+                ? null : new DateTimeOffset(DateTime.SpecifyKind(timestamp, DateTimeKind.Utc));
 
         public async Task<byte[]> ReadFileBytesAsync(string path)
         {
@@ -81,7 +105,8 @@ namespace NetRatel.Client.Services
             if (string.IsNullOrWhiteSpace(path)) return false;
 
             // 1. Disallow ".." components to prevent traversal
-            if (path.Contains("..")) return false;
+            if (path.Split([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries)
+                .Any(component => component is "." or "..")) return false;
 
             // 2. Check for valid drive letter format (Windows specific example)
             //    Adapt for Linux if needed (e.g., must start with '/')
@@ -155,6 +180,39 @@ namespace NetRatel.Client.Services
 
             resolvedPath = string.Empty;
             return false;
+        }
+
+        /// <summary>
+        /// Mutations cannot remove a filesystem or approved root, or act through
+        /// a final symlink/junction whose referent differs from the selected entry.
+        /// </summary>
+        public bool IsGatewayMutationTargetAllowed(string requestedPath, string resolvedPath, IReadOnlyList<string> allowedRoots)
+        {
+            try
+            {
+                var target = Path.TrimEndingDirectorySeparator(Path.GetFullPath(resolvedPath));
+                var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+                if (string.Equals(target, Path.TrimEndingDirectorySeparator(Path.GetPathRoot(target) ?? target), comparison))
+                    return false;
+
+                FileSystemInfo requested = Directory.Exists(requestedPath)
+                    ? new DirectoryInfo(requestedPath) : new FileInfo(requestedPath);
+                if (requested.LinkTarget is not null || (requested.Exists && (requested.Attributes & FileAttributes.ReparsePoint) != 0))
+                    return false;
+
+                foreach (var root in allowedRoots)
+                {
+                    if (TryResolveGatewayPath(root, [root], requireExisting: true, out var physicalRoot) &&
+                        string.Equals(target, Path.TrimEndingDirectorySeparator(physicalRoot), comparison))
+                        return false;
+                }
+
+                return true;
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+            {
+                return false;
+            }
         }
 
         private static bool TryResolveGatewayPathUnderRoot(

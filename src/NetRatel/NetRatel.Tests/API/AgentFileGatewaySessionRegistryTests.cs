@@ -27,12 +27,40 @@ public sealed class AgentFileGatewaySessionRegistryTests
             RequestId = dispatch.Dispatch.RequestId,
             AttemptId = dispatch.Dispatch.AttemptId,
             IsLastPage = true,
-            Entries = { new FileEntry { Name = "messages", FullPath = "/var/log/messages", SizeBytes = 42 } }
+            Entries = { new FileEntry
+            {
+                Name = "messages", FullPath = "/var/log/messages", SizeBytes = 42,
+                CreatedUtc = Google.Protobuf.WellKnownTypes.Timestamp.FromDateTimeOffset(new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero)),
+                LastModifiedUtc = Google.Protobuf.WellKnownTypes.Timestamp.FromDateTimeOffset(new DateTimeOffset(2026, 1, 2, 0, 0, 0, TimeSpan.Zero))
+            } }
         }).Should().BeTrue();
         registry.TryComplete(client, new FileRequestCompleted { RequestId = dispatch.Dispatch.RequestId, AttemptId = dispatch.Dispatch.AttemptId }).Should().BeTrue();
 
         var entries = await listing;
         entries.Should().ContainSingle(entry => entry.FullPath == "/var/log/messages" && entry.SizeBytes == 42);
+        entries[0].CreatedUtc.Should().Be(new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero));
+        entries[0].LastModifiedUtc.Should().Be(new DateTimeOffset(2026, 1, 2, 0, 0, 0, TimeSpan.Zero));
+    }
+
+    [Fact]
+    public async Task DirectoryDeletionRequiresTheDirectoryOnlyCapabilityAndCarriesItsParentBoundary()
+    {
+        var client = new ClientKey(3, Guid.NewGuid());
+        var connection = Guid.NewGuid();
+        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connection, 2));
+        using var old = registry.Register(client, connection, 2, new HashSet<string>(["file-delete-v1", "file-policy-roots-v1"]));
+        var denied = () => registry.DeleteDirectoryAsync(client, "/data/empty", new(["/data"]), CancellationToken.None);
+        (await denied.Should().ThrowAsync<AgentFileGatewayOperationException>()).Which.Code.Should().Be("capability_unavailable");
+        old.Reader.TryRead(out _).Should().BeFalse();
+        using var current = registry.Register(client, connection, 2,
+            new HashSet<string>(["file-delete-v1", "file-delete-directory-v1", "file-policy-roots-v1"]));
+        var deletion = registry.DeleteDirectoryAsync(client, "/data/empty", new(["/data"]), CancellationToken.None);
+        var dispatch = await current.Reader.ReadAsync();
+        dispatch.Dispatch.Operation.Should().Be("delete_directory");
+        dispatch.Dispatch.AllowedRoots.Should().Equal("/data");
+        registry.TryAccept(client, new FileRequestAccepted { RequestId = dispatch.Dispatch.RequestId, AttemptId = dispatch.Dispatch.AttemptId }).Should().BeTrue();
+        registry.TryComplete(client, new FileRequestCompleted { RequestId = dispatch.Dispatch.RequestId, AttemptId = dispatch.Dispatch.AttemptId }).Should().BeTrue();
+        await deletion;
     }
 
     [Fact]

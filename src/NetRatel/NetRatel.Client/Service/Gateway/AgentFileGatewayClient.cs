@@ -143,7 +143,7 @@ public sealed class AgentFileGatewayClient
             await writer.WriteAsync(new AgentFileFrame
             {
                 Sequence = 0,
-                Hello = new AgentFileHello { Capabilities = { "file-list", "file-read", "file-write", "file-stat-v1", "file-create-directory-v1", "file-delete-v1", "file-copy-v1", "file-move-v1", "chunk-sha256", "file-policy-roots-v1" } }
+                Hello = new AgentFileHello { Capabilities = { "file-list", "file-read", "file-write", "file-stat-v1", "file-create-directory-v1", "file-delete-v1", "file-delete-directory-v1", "file-copy-v1", "file-move-v1", "chunk-sha256", "file-policy-roots-v1" } }
             }, streamToken).ConfigureAwait(false);
 
             if (!await call.ResponseStream.MoveNext(streamToken).ConfigureAwait(false) ||
@@ -309,10 +309,17 @@ public sealed class AgentFileGatewayClient
             !fileSystem.TryResolveGatewayPath(
                 dispatch.Path,
                 dispatch.AllowedRoots,
-                requireExisting: operationName is "list" or "read" or "stat" or "delete",
+                requireExisting: operationName is "list" or "read" or "stat" or "delete" or "delete_directory",
                 out resolvedPath))
         {
             await WriteFailureAsync(dispatch.RequestId, dispatch.AttemptId, "access_denied", writer, stoppingToken).ConfigureAwait(false);
+            return;
+        }
+
+        if (operationName is "create_directory" or "delete" or "delete_directory" &&
+            !fileSystem.IsGatewayMutationTargetAllowed(dispatch.Path, resolvedPath, dispatch.AllowedRoots))
+        {
+            await WriteFailureAsync(dispatch.RequestId, dispatch.AttemptId, "protected_path", writer, stoppingToken).ConfigureAwait(false);
             return;
         }
 
@@ -344,6 +351,7 @@ public sealed class AgentFileGatewayClient
                 workers.Start(() => HandleCreateDirectoryAsync(operation, operations, writer, stoppingToken));
                 break;
             case "delete":
+            case "delete_directory":
                 workers.Start(() => HandleDeleteAsync(operation, operations, writer, stoppingToken));
                 break;
             case "copy":
@@ -382,7 +390,15 @@ public sealed class AgentFileGatewayClient
             foreach (var entry in enumerateEntries(operation.Path))
             {
                 operation.Token.ThrowIfCancellationRequested();
-                page.Add(new FileEntry { Name = entry.Name, FullPath = entry.FullPath, IsDirectory = entry.IsDirectory, SizeBytes = entry.SizeBytes });
+                page.Add(new FileEntry
+                {
+                    Name = entry.Name,
+                    FullPath = entry.FullPath,
+                    IsDirectory = entry.IsDirectory,
+                    SizeBytes = entry.SizeBytes,
+                    CreatedUtc = entry.CreatedUtc is { } created ? Timestamp.FromDateTimeOffset(created) : null,
+                    LastModifiedUtc = entry.LastModifiedUtc is { } modified ? Timestamp.FromDateTimeOffset(modified) : null
+                });
                 if (page.Count == pageSize)
                 {
                     await WritePageAsync(operation, pageIndex++, page, false, writer, stoppingToken).ConfigureAwait(false);
@@ -478,7 +494,9 @@ public sealed class AgentFileGatewayClient
                     IsDirectory = isDirectory,
                     SizeBytes = sizeBytes,
                     LastModifiedUtc = Timestamp.FromDateTime(lastModifiedUtc),
-                    MimeType = ContentType(entry.FullName, isDirectory)
+                    MimeType = ContentType(entry.FullName, isDirectory),
+                    CreatedUtc = FileSystemService.NormalizeObservedTimestamp(entry.CreationTimeUtc) is { } created
+                        ? Timestamp.FromDateTimeOffset(created) : null
                 }
             }, stoppingToken).ConfigureAwait(false);
             await WriteCompletedAsync(operation, writer, stoppingToken).ConfigureAwait(false);
@@ -534,6 +552,12 @@ public sealed class AgentFileGatewayClient
         try
         {
             operation.Token.ThrowIfCancellationRequested();
+            if (operation.Operation == "delete_directory" && !Directory.Exists(operation.Path))
+            {
+                await WriteFailureAsync(operation.RequestId.ToString("D"), operation.AttemptId.ToString("D"),
+                    File.Exists(operation.Path) ? "not_a_directory" : "directory_not_found", writer, stoppingToken).ConfigureAwait(false);
+                return;
+            }
             if (File.Exists(operation.Path))
             {
                 File.Delete(operation.Path);

@@ -24,6 +24,11 @@
 .client-services-table td, .client-services-table th { padding: .5rem; vertical-align: top; overflow-wrap: anywhere; border-bottom: 1px solid var(--mud-palette-divider); }
 .client-services-table code, .client-services-table time, .client-services-table small { display: block; margin-top: .2rem; font-size: .75rem; color: var(--mud-palette-text-secondary); overflow-wrap: anywhere; }
 .service-state { font-weight: 600; }
+.service-control-buttons { display: flex; flex-wrap: wrap; gap: .15rem; margin-top: .3rem; }
+.service-control-confirm { display: flex; flex-direction: column; gap: .5rem; margin: .25rem 0 .75rem; padding: .75rem; border: 1px solid var(--mud-palette-primary); border-radius: 6px; }
+.service-control-confirm label { display: flex; flex-direction: column; gap: .2rem; font-size: .8rem; }
+.service-control-confirm input { padding: .5rem; font: inherit; color: inherit; background: var(--mud-palette-background-gray); border: 1px solid var(--mud-palette-divider); border-radius: 4px; }
+.service-operation-id { display: block; margin-top: .2rem; overflow-wrap: anywhere; }
 .service-state[data-state=Failed], .service-state[data-state=Missing] { color: var(--mud-palette-error); }
 .service-state[data-state=Running] { color: var(--mud-palette-success-darken); }
 .services-visually-hidden { position: absolute; top: 0; left: 0; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }

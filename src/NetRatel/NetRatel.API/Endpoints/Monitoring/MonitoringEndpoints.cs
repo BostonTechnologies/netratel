@@ -65,7 +65,7 @@ public static class MonitoringEndpoints
         return app;
     }
 
-    private static async Task<IResult> ExecuteAsync<T>(Func<Task<T>> operation)
+    internal static async Task<IResult> ExecuteAsync<T>(Func<Task<T>> operation)
     {
         try { return Results.Ok(await operation().ConfigureAwait(false)); }
         catch (MonitoringApiException exception) { return Results.Problem(statusCode: exception.StatusCode, title: exception.Code); }

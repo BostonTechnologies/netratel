@@ -26,6 +26,15 @@
     <MudPaper Elevation="2" Class="pa-4 mb-4">
         <MudGrid Spacing="3" Justify="Justify.FlexStart">
             <MudItem xs="12" sm="6" md="3">
+                <MudSelect T="int?" Label="Tenant" @bind-Value="SelectedTenantId" Clearable="true" AnchorOrigin="Origin.BottomCenter">
+                    <MudSelectItem T="int?" Value="@((int?)null)">All Tenants</MudSelectItem>
+                    @foreach (var tenant in TenantOptions)
+                    {
+                        <MudSelectItem T="int?" Value="@tenant.TenantId">@tenant.Name</MudSelectItem>
+                    }
+                </MudSelect>
+            </MudItem>
+            <MudItem xs="12" sm="6" md="3">
                 <MudTextField T="string"
                               Value="_search"
                               ValueChanged="OnSearchChanged"
@@ -35,15 +44,6 @@
                               AdornmentIcon="@Icons.Material.Filled.Search"
                               Immediate="true"
                               Clearable="true" />
-            </MudItem>
-            <MudItem xs="12" sm="6" md="3">
-                <MudSelect T="int?" Label="Tenant" @bind-Value="SelectedTenantId" Clearable="true" AnchorOrigin="Origin.BottomCenter">
-                    <MudSelectItem T="int?" Value="@((int?)null)">All Tenants</MudSelectItem>
-                    @foreach (var tenant in TenantOptions)
-                    {
-                        <MudSelectItem T="int?" Value="@tenant.TenantId">@tenant.Name</MudSelectItem>
-                    }
-                </MudSelect>
             </MudItem>
             <MudItem xs="12" sm="6" md="3">
                 <MudSelect T="string" Label="Operating System" @bind-Value="SelectedOs" Clearable="true" AnchorOrigin="Origin.BottomCenter">
@@ -82,7 +82,7 @@
         </MudGrid>
     </MudPaper>
 
-    @if (_isLoading)
+    @if (_isLoading && _clients.Count == 0)
     {
         <div class="d-flex align-center" role="status" aria-live="polite" aria-busy="true">
             <MudProgressCircular Color="Color.Primary" Indeterminate="true" />

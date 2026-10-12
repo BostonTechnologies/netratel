@@ -71,6 +71,7 @@ public static class NetRatelAkkaRuntimeRegistration
             serviceProvider.GetRequiredService<AgentTelemetryGatewaySessionRegistry>());
         services.TryAddSingleton<IClientServiceWatchPolicySource, EmptyClientServiceWatchPolicySource>();
         services.TryAddSingleton<ClientServicesCoordinator>();
+        services.TryAddScoped<ClientServiceControlService>();
         services.TryAddScoped<ClientOffboardingService>();
         services.TryAddSingleton<IMonitoringClientDirectory, MonitoringClientDirectory>();
         services.TryAddSingleton<IMonitoringPublishedFlowProvider, UnavailableMonitoringPublishedFlowProvider>();

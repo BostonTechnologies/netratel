@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Threading.Channels;
 using Google.Protobuf;
+using Google.Protobuf.WellKnownTypes;
 using NetRatel.AgentGateway.Contracts.V1;
 using NetRatel.Application.Presence;
 
@@ -81,6 +82,9 @@ public interface IAgentFileGatewaySessionRegistry
         CancellationToken cancellationToken) =>
         DeleteAsync(client, path, cancellationToken);
 
+    Task DeleteDirectoryAsync(ClientKey client, string path, GatewayFileAccessPolicy accessPolicy, CancellationToken cancellationToken) =>
+        Task.FromException(new AgentFileGatewayOperationException("capability_unavailable"));
+
     Task CopyAsync(
         ClientKey client,
         string sourcePath,
@@ -120,7 +124,11 @@ public interface IAgentFileGatewaySessionRegistry
     bool TryFail(ClientKey client, FileRequestFailed failed);
 }
 
-public sealed record GatewayFileEntry(string Name, string FullPath, bool IsDirectory, long SizeBytes);
+public sealed record GatewayFileEntry(string Name, string FullPath, bool IsDirectory, long SizeBytes)
+{
+    public DateTimeOffset? CreatedUtc { get; init; }
+    public DateTimeOffset? LastModifiedUtc { get; init; }
+}
 
 /// <summary>
 /// Bounded metadata for one canonical file or directory. It intentionally
@@ -132,7 +140,10 @@ public sealed record GatewayFileMetadata(
     bool IsDirectory,
     long SizeBytes,
     DateTimeOffset LastModifiedUtc,
-    string MimeType);
+    string MimeType)
+{
+    public DateTimeOffset? CreatedUtc { get; init; }
+}
 
 /// <summary>
 /// Server-issued physical-root constraint for an operator-policy file request.
@@ -297,6 +308,9 @@ public sealed class AgentFileGatewaySessionRegistry(IClientPresenceRouter presen
         GatewayFileAccessPolicy accessPolicy,
         CancellationToken cancellationToken) =>
         GetSession(client).DeleteAsync(path, accessPolicy, cancellationToken);
+
+    public Task DeleteDirectoryAsync(ClientKey client, string path, GatewayFileAccessPolicy accessPolicy, CancellationToken cancellationToken) =>
+        GetSession(client).DeleteDirectoryAsync(path, accessPolicy, cancellationToken);
 
     public Task CopyAsync(
         ClientKey client,
@@ -599,17 +613,26 @@ internal sealed class AgentFileGatewaySession(
     public Task DeleteAsync(string path, CancellationToken cancellationToken) =>
         DeleteAsync(path, null, cancellationToken);
 
-    public async Task DeleteAsync(
+    public Task DeleteAsync(
         string path,
         GatewayFileAccessPolicy? accessPolicy,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken) => DeletePathAsync("delete", path, accessPolicy, cancellationToken);
+
+    public Task DeleteDirectoryAsync(string path, GatewayFileAccessPolicy accessPolicy, CancellationToken cancellationToken)
+    {
+        if (!negotiatedCapabilities.Contains("file-delete-directory-v1", StringComparer.Ordinal))
+            return Task.FromException(new AgentFileGatewayOperationException("capability_unavailable"));
+        return DeletePathAsync("delete_directory", path, accessPolicy, cancellationToken);
+    }
+
+    private async Task DeletePathAsync(string operation, string path, GatewayFileAccessPolicy? accessPolicy, CancellationToken cancellationToken)
     {
         if (!supportsDelete)
         {
             throw new AgentFileGatewayOperationException("capability_unavailable");
         }
 
-        var pending = await BeginAsync("delete", path, 0, accessPolicy, cancellationToken).ConfigureAwait(false);
+        var pending = await BeginAsync(operation, path, 0, accessPolicy, cancellationToken).ConfigureAwait(false);
         try
         {
             await pending.Accepted.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -765,7 +788,11 @@ internal sealed class AgentFileGatewaySession(
                 return false;
             }
 
-            pending.Entries[entry.FullPath] = new GatewayFileEntry(entry.Name, entry.FullPath, entry.IsDirectory, entry.SizeBytes);
+            pending.Entries[entry.FullPath] = new GatewayFileEntry(entry.Name, entry.FullPath, entry.IsDirectory, entry.SizeBytes)
+            {
+                CreatedUtc = ReadOptionalTimestamp(entry.CreatedUtc),
+                LastModifiedUtc = ReadOptionalTimestamp(entry.LastModifiedUtc)
+            };
         }
 
         pending.NextPageIndex++;
@@ -834,7 +861,16 @@ internal sealed class AgentFileGatewaySession(
             metadata.IsDirectory,
             metadata.SizeBytes,
             lastModifiedUtc,
-            metadata.MimeType));
+            metadata.MimeType)
+        {
+            CreatedUtc = ReadOptionalTimestamp(metadata.CreatedUtc)
+        });
+    }
+
+    private static DateTimeOffset? ReadOptionalTimestamp(Timestamp? timestamp)
+    {
+        try { return timestamp?.ToDateTimeOffset(); }
+        catch (InvalidOperationException) { return null; }
     }
 
     public bool TryComplete(FileRequestCompleted completed)

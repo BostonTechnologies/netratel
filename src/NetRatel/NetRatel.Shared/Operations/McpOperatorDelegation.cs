@@ -128,7 +128,11 @@ public sealed record McpOperatorDelegationIdentity(
     IReadOnlyCollection<string> Groups,
     IReadOnlyCollection<string> Roles,
     IReadOnlyCollection<string> Scopes,
-    int? ActiveTenantId = null);
+    int? ActiveTenantId = null)
+{
+    /// <summary>Issuer of the validated external identity, distinct from the delegation assertion issuer.</summary>
+    public string? ExternalIssuer { get; init; }
+}
 
 /// <summary>Creates bounded audit facts from an already-validated OAuth principal.</summary>
 public static class McpOperatorDelegationIdentityFactory
@@ -143,18 +147,22 @@ public static class McpOperatorDelegationIdentityFactory
 
         var clientId = First(principal, "client_id");
         var authorizedParty = First(principal, "azp");
+        var externalIssuer = First(principal, "iss");
         var groups = Values(principal, "groups");
         var roles = Values(principal, "roles", ClaimTypes.Role, "role");
         var scopes = ScopeValues(principal);
         if (!TryOptionalPositiveInt(First(principal, "tenant_id", "tenantId"), out var activeTenantId))
             return false;
-        if (!IsSafeOptional(clientId) || !IsSafeOptional(authorizedParty) ||
+        if (!IsSafeOptional(clientId) || !IsSafeOptional(authorizedParty) || !IsSafeOptional(externalIssuer) ||
             !groups.All(IsSafe) || !roles.All(IsSafe) || !scopes.All(IsSafe))
         {
             return false;
         }
 
-        identity = new McpOperatorDelegationIdentity(subject!, clientId, authorizedParty, groups, roles, scopes, activeTenantId);
+        identity = new McpOperatorDelegationIdentity(subject!, clientId, authorizedParty, groups, roles, scopes, activeTenantId)
+        {
+            ExternalIssuer = externalIssuer
+        };
         return true;
     }
 
@@ -312,6 +320,7 @@ public sealed class McpOperatorDelegationTokenService
         };
         AddOptional(claims, "client_id", identity.ClientId);
         AddOptional(claims, "azp", identity.AuthorizedParty);
+        AddOptional(claims, "mcp_external_issuer", identity.ExternalIssuer);
         if (identity.ActiveTenantId is { } activeTenantId)
             claims.Add(new Claim("mcp_active_tenant_id", activeTenantId.ToString(System.Globalization.CultureInfo.InvariantCulture)));
         AddOptional(claims, "mcp_resource", request.Resource);
@@ -377,7 +386,10 @@ public sealed class McpOperatorDelegationTokenService
                 Values(principal, "groups"),
                 Values(principal, "roles"),
                 Values(principal, "scope"),
-                OptionalPositiveIntClaim(principal, "mcp_active_tenant_id"));
+                OptionalPositiveIntClaim(principal, "mcp_active_tenant_id"))
+            {
+                ExternalIssuer = OptionalClaim(principal, "mcp_external_issuer")
+            };
             ValidateIdentity(identity);
             var tool = RequireClaim(principal, "mcp_tool");
             var operation = RequireClaim(principal, "mcp_operation");
@@ -494,6 +506,7 @@ public sealed class McpOperatorDelegationTokenService
         RequireValue(identity.Subject, nameof(identity.Subject));
         ValidateOptional(identity.ClientId, nameof(identity.ClientId));
         ValidateOptional(identity.AuthorizedParty, nameof(identity.AuthorizedParty));
+        ValidateOptional(identity.ExternalIssuer, nameof(identity.ExternalIssuer));
         if (identity.ActiveTenantId is <= 0)
             throw new InvalidOperationException("Delegation ActiveTenantId must be positive when supplied.");
         ValidateValues(identity.Groups, nameof(identity.Groups));

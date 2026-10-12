@@ -19,10 +19,14 @@
         <section class="file-explorer-shell" data-testid="file-explorer">
             <MudStack Spacing="1" Class="file-explorer-toolbar">
                 <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center" Class="file-explorer-navigation">
-                    <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.ArrowUpward" OnClick="GoUpAsync" Disabled="_loading || !CanGoUp">Up</MudButton>
-                    <MudTextField @bind-Value="_currentPath" Label="Remote path" Variant="Variant.Outlined" Margin="Margin.Dense" Immediate="true" OnKeyDown="HandlePathKeyDownAsync" Class="flex-grow-1" data-testid="file-explorer-path" />
-                    <MudIconButton Icon="@Icons.Material.Filled.Refresh" Color="Color.Primary" OnClick="RefreshAsync" Disabled="_loading" aria-label="Refresh directory" />
-                    <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.UploadFile" OnClick="ChooseUploadAsync" Disabled="_loading || _uploading || _gatewayReconnecting">Upload</MudButton>
+                    <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.ArrowUpward" OnClick="GoUpAsync" Disabled="_loading || _mutating || !CanGoUp">Up</MudButton>
+                    <MudTextField @bind-Value="_currentPath" Label="Remote path" Variant="Variant.Outlined" Margin="Margin.Dense" Immediate="true" OnKeyDown="HandlePathKeyDownAsync" Disabled="_mutating" Class="flex-grow-1" data-testid="file-explorer-path" />
+                    <MudIconButton Icon="@Icons.Material.Filled.Refresh" Color="Color.Primary" OnClick="RefreshAsync" Disabled="_loading || _mutating" aria-label="Refresh directory" />
+                    @if (_canCreateDirectory)
+                    {
+                        <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.CreateNewFolder" OnClick="ShowCreateDirectory" Disabled="_loading || _mutating || _gatewayReconnecting" data-testid="file-explorer-new-folder">New folder</MudButton>
+                    }
+                    <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.UploadFile" OnClick="ChooseUploadAsync" Disabled="_loading || _uploading || _mutating || _gatewayReconnecting || !_canWriteFiles">Upload</MudButton>
                     @if (_uploading)
                     {
                         <MudText Typo="Typo.caption">@_uploadState</MudText>
@@ -47,6 +51,23 @@
                     }
                     <input @ref="_uploadInput" type="file" class="file-explorer-upload-input" @onchange="UploadAsync" />
                 </MudStack>
+                @if (_creatingDirectory)
+                {
+                    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1" Class="file-explorer-navigation" data-testid="file-explorer-create-folder">
+                        <MudTextField @bind-Value="_newDirectoryName" Label="New folder name" HelperText="Enter one folder name, without path separators." Error="@(_newDirectoryName.Length > 0 && !CanCreateDirectory)" ErrorText="Enter a valid folder name for this system." Variant="Variant.Outlined" Margin="Margin.Dense" Immediate="true" Disabled="_mutating" Class="flex-grow-1" data-testid="file-explorer-folder-name" />
+                        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="CreateDirectoryAsync" Disabled="_mutating || !CanCreateDirectory" data-testid="file-explorer-create-folder-submit">Create folder</MudButton>
+                        <MudButton Variant="Variant.Text" OnClick="CancelCreateDirectory" Disabled="_mutating">Cancel</MudButton>
+                    </MudStack>
+                }
+                @if (_mutating)
+                {
+                    <MudProgressLinear Indeterminate="true" />
+                    <MudText Typo="Typo.caption" data-testid="file-explorer-mutation-state">@_mutationState</MudText>
+                }
+                @if (!string.IsNullOrWhiteSpace(_mutationError))
+                {
+                    <MudAlert Severity="Severity.Error" Variant="Variant.Outlined" Dense="true" data-testid="file-explorer-mutation-error">@_mutationError</MudAlert>
+                }
                 <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1" Class="file-explorer-location">
                     <MudIcon Icon="@Icons.Material.Filled.FolderOpen" />
                     <MudText Typo="Typo.body2" data-testid="file-explorer-location">@_currentPath</MudText>
@@ -89,20 +110,28 @@
                         <span>Name</span>
                         <span>Type</span>
                         <span>Size</span>
+                        <span>Created (UTC)</span>
+                        <span>Modified (UTC)</span>
                         <span aria-label="Actions"></span>
                     </div>
                     <Virtualize Items="FilteredEntries" Context="entry" ItemSize="52" TItem="FileSystemEntryDto">
                         <div class="file-explorer-row" role="listitem" data-testid="file-explorer-entry">
-                            <MudButton Variant="Variant.Text" Class="file-explorer-name" OnClick="@(() => OpenEntryAsync(entry))">
+                            <MudButton Variant="Variant.Text" Class="file-explorer-name" OnClick="@(() => OpenEntryAsync(entry))" Disabled="_mutating">
                                 <MudIcon Icon="@(entry.IsDirectory ? Icons.Material.Filled.Folder : Icons.Material.Filled.Description)" Class="me-2" />
-                                <span>@entry.Name</span>
+                                <span class="file-explorer-name-text">@entry.Name<span class="file-explorer-mobile-metadata">@(entry.LastModifiedUtc is null ? "Modified time not reported" : $"Modified {FormatTimestamp(entry.LastModifiedUtc)} UTC")</span></span>
                             </MudButton>
                             <MudText Typo="Typo.body2">@(entry.IsDirectory ? "Folder" : GetFileType(entry.Name))</MudText>
                             <MudText Typo="Typo.body2">@(entry.IsDirectory ? "—" : FormatBytes(entry.SizeBytes))</MudText>
+                            <span class="file-explorer-timestamp" data-testid="file-explorer-entry-created">@FormatTimestamp(entry.CreatedUtc)</span>
+                            <span class="file-explorer-timestamp" data-testid="file-explorer-entry-modified">@FormatTimestamp(entry.LastModifiedUtc)</span>
                             <MudStack Row="true" Spacing="0" Justify="Justify.FlexEnd">
                                 @if (entry.IsDirectory)
                                 {
-                                    <MudIconButton Icon="@Icons.Material.Filled.FolderOpen" OnClick="@(() => OpenDirectoryAsync(entry.FullPath))" aria-label="Open folder" />
+                                    <MudIconButton Icon="@Icons.Material.Filled.FolderOpen" OnClick="@(() => OpenDirectoryAsync(entry.FullPath))" Disabled="_mutating" aria-label="Open folder" />
+                                    @if (_canDeleteDirectory && RemoteFilePath.TryGetDirectoryParent(entry.FullPath, out _))
+                                    {
+                                        <MudIconButton Icon="@Icons.Material.Filled.DeleteOutline" Color="Color.Error" OnClick="@(() => DeleteDirectoryAsync(entry))" Disabled="_mutating" aria-label="Delete empty folder" data-testid="file-explorer-delete-folder" />
+                                    }
                                 }
                                 else
                                 {
@@ -129,17 +158,23 @@
     .file-explorer-location { min-width: 0; }
     .file-explorer-location .mud-typography { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .file-explorer-list { flex: 1 1 auto; min-height: 0; overflow: auto; border: 1px solid rgba(14, 90, 135, 0.16); border-radius: 8px; }
-    .file-explorer-row { display: grid; grid-template-columns: minmax(14rem, 1fr) minmax(6rem, 9rem) minmax(5rem, 8rem) minmax(8rem, auto); align-items: center; gap: 0.75rem; min-height: 3.25rem; padding: 0.25rem 0.5rem; border-bottom: 1px solid rgba(14, 90, 135, 0.08); }
+    .file-explorer-row { display: grid; grid-template-columns: minmax(12rem, 1fr) minmax(4rem, 6rem) minmax(5rem, 7rem) minmax(9rem, 11rem) minmax(9rem, 11rem) minmax(8rem, auto); align-items: center; gap: 0.75rem; min-height: 3.25rem; padding: 0.25rem 0.5rem; border-bottom: 1px solid rgba(14, 90, 135, 0.08); }
     .file-explorer-heading { position: sticky; top: 0; z-index: 1; min-height: 2.5rem; font-size: 0.75rem; font-weight: 600; color: var(--mud-palette-text-secondary); background: var(--mud-palette-surface); }
     .file-explorer-name { min-width: 0; justify-content: flex-start; text-align: left; text-transform: none; }
     .file-explorer-name span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .file-explorer-name-text { display: block; text-align: left; }
+    .file-explorer-mobile-metadata { display: none; color: var(--mud-palette-text-secondary); font-size: 0.7rem; }
+    .file-explorer-timestamp { color: var(--mud-palette-text-secondary); font-size: 0.75rem; }
     .file-explorer-upload-input { display: none; }
     .file-explorer-state { flex: 1 1 auto; min-height: 12rem; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.75rem; color: var(--mud-palette-text-secondary); }
+    @@media (max-width: 950px) {
+        .file-explorer-row { grid-template-columns: minmax(0, 1fr) auto; gap: 0.25rem 0.5rem; }
+        .file-explorer-row > :nth-child(2), .file-explorer-row > :nth-child(3), .file-explorer-timestamp, .file-explorer-heading { display: none; }
+        .file-explorer-mobile-metadata { display: block; }
+    }
     @@media (max-width: 600px) {
         .file-explorer-dialog .file-explorer-content { height: calc(100dvh - 5.5rem); }
         .file-explorer-shell { padding: 0.75rem; }
-        .file-explorer-row { grid-template-columns: minmax(0, 1fr) auto; gap: 0.25rem 0.5rem; }
-        .file-explorer-row > :nth-child(2), .file-explorer-row > :nth-child(3), .file-explorer-heading { display: none; }
     }
 </style>
 
@@ -163,6 +198,15 @@
     private string _filter = string.Empty;
     private bool _loading;
     private bool _gatewayReconnecting;
+    private bool _disposed;
+    private bool _canWriteFiles;
+    private bool _canCreateDirectory;
+    private bool _canDeleteDirectory;
+    private bool _creatingDirectory;
+    private bool _mutating;
+    private string _newDirectoryName = string.Empty;
+    private string? _mutationError;
+    private string? _mutationState;
     private readonly CancellationTokenSource _directoryLifecycle = new();
     private bool _uploading;
     private double _uploadPercent;
@@ -179,18 +223,19 @@
     private DotNetObjectReference<ClientFileSystemViewer>? _downloadCallbacks;
 
     private List<FileSystemEntryDto> FilteredEntries { get { ApplyFilter(); return _filteredEntries; } }
-    private bool CanGoUp => RemoteFilePath.TryGetParent(_currentPath, out _);
+    private bool CanGoUp => RemoteFilePath.TryGetDirectoryParent(_currentPath, out _);
     private bool IsGatewayClient => TenantId is not null && AgentId is not null;
+    private bool CanCreateDirectory => _canCreateDirectory && RemoteFilePath.TryJoinDirectory(_currentPath, _newDirectoryName, out _);
 
     protected override async Task OnInitializedAsync()
     {
-        _currentPath = RemoteFilePath.TryNormalize(InitialPath, out var initialPath) ? initialPath : "/";
+        _currentPath = RemoteFilePath.TryNormalizeDirectory(InitialPath, out var initialPath) ? initialPath : "/";
         await RefreshAsync();
     }
 
     private async Task RefreshAsync()
     {
-        if (!RemoteFilePath.TryNormalize(_currentPath, out var normalizedPath)) { _lastDirectoryError = "Enter an absolute Unix path or Windows drive path."; return; }
+        if (!RemoteFilePath.TryNormalizeDirectory(_currentPath, out var normalizedPath)) { _lastDirectoryError = "Enter an absolute Unix path or Windows drive path."; return; }
         _currentPath = normalizedPath;
         _loading = true;
         _lastDirectoryError = null;
@@ -213,7 +258,7 @@
     }
 
     private Task HandlePathKeyDownAsync(KeyboardEventArgs args) =>
-        string.Equals(args.Key, "Enter", StringComparison.OrdinalIgnoreCase) && !_loading
+        string.Equals(args.Key, "Enter", StringComparison.OrdinalIgnoreCase) && !_loading && !_mutating
             ? RefreshAsync()
             : Task.CompletedTask;
 
@@ -221,14 +266,68 @@
 
     private async Task OpenDirectoryAsync(string path)
     {
-        if (!RemoteFilePath.TryNormalize(path, out var normalizedPath)) { _lastDirectoryError = "The selected remote path is invalid."; return; }
+        if (!RemoteFilePath.TryNormalizeDirectory(path, out var normalizedPath)) { _lastDirectoryError = "The selected remote path is invalid."; return; }
         _currentPath = normalizedPath;
         await RefreshAsync();
     }
 
     private async Task GoUpAsync()
     {
-        if (RemoteFilePath.TryGetParent(_currentPath, out var parent)) { _currentPath = parent; await RefreshAsync(); }
+        if (RemoteFilePath.TryGetDirectoryParent(_currentPath, out var parent)) { _currentPath = parent; await RefreshAsync(); }
+    }
+
+    private void ShowCreateDirectory()
+    {
+        _creatingDirectory = true;
+        _newDirectoryName = string.Empty;
+        _mutationError = null;
+    }
+
+    private void CancelCreateDirectory() => _creatingDirectory = false;
+
+    private async Task CreateDirectoryAsync()
+    {
+        if (_mutating || !CanCreateDirectory || !IsGatewayClient) return;
+        var parent = _currentPath;
+        var name = _newDirectoryName;
+        _mutating = true;
+        _mutationState = $"Creating {name}…";
+        _mutationError = null;
+        try
+        {
+            await GatewayFileSystemApi.CreateDirectoryAsync(TenantId!.Value, AgentId!.Value, parent, name, _directoryLifecycle.Token);
+            if (_disposed) return;
+            _creatingDirectory = false;
+            _newDirectoryName = string.Empty;
+            Snackbar.Add($"Created folder {name}.", Severity.Success);
+            await RefreshAsync();
+        }
+        catch (OperationCanceledException) when (_disposed) { return; }
+        catch (Exception exception) { _mutationError = exception.Message; }
+        finally { _mutating = false; _mutationState = null; }
+    }
+
+    private async Task DeleteDirectoryAsync(FileSystemEntryDto entry)
+    {
+        if (_mutating || !_canDeleteDirectory || !IsGatewayClient || !entry.IsDirectory || !RemoteFilePath.TryGetDirectoryParent(entry.FullPath, out _)) return;
+        _mutating = true;
+        _mutationError = null;
+        _mutationState = "Review folder deletion…";
+        try
+        {
+            var confirmed = await DialogService.ShowMessageBoxAsync("Delete empty folder",
+                $"Delete '{entry.FullPath}' on {HostLabel}? Only an empty folder can be deleted.",
+                yesText: "Delete folder", cancelText: "Cancel");
+            if (confirmed != true || _disposed) return;
+            _mutationState = $"Deleting {entry.Name}…";
+            await GatewayFileSystemApi.DeleteDirectoryAsync(TenantId!.Value, AgentId!.Value, entry.FullPath, _directoryLifecycle.Token);
+            if (_disposed) return;
+            Snackbar.Add($"Deleted folder {entry.Name}.", Severity.Success);
+            await RefreshAsync();
+        }
+        catch (OperationCanceledException) when (_disposed) { return; }
+        catch (Exception exception) { _mutationError = exception.Message; }
+        finally { _mutating = false; _mutationState = null; }
     }
 
     private async Task OpenFileAsync(FileSystemEntryDto entry)
@@ -285,7 +384,11 @@
             return;
         }
 
-        var destination = RemoteFilePath.Join(_currentPath, fileName);
+        if (!RemoteFilePath.TryJoinDirectory(_currentPath, fileName, out var destination))
+        {
+            Snackbar.Add("The upload destination is invalid.", Severity.Error);
+            return;
+        }
 
         if (_entries.Any(entry => string.Equals(entry.Name, fileName, StringComparison.OrdinalIgnoreCase)) &&
             !await JSRuntime.InvokeAsync<bool>("confirm", $"Overwrite remote file '{fileName}'?"))
@@ -379,9 +482,18 @@
             _gatewayReconnecting = true;
             await InvokeAsync(StateHasChanged);
         }, _directoryLifecycle.Token);
+        _canWriteFiles = response.CanWriteFiles;
+        _canCreateDirectory = response.CanCreateDirectory;
+        _canDeleteDirectory = response.CanDeleteDirectory;
         return new FileSystemListResponse("akka-gateway", response.Path, "completed", null,
-            response.Entries.Select(entry => new FileSystemEntryDto(response.Path, entry.Name, entry.FullPath, entry.IsDirectory, entry.SizeBytes)).ToArray());
+            response.Entries.Select(entry => new FileSystemEntryDto(response.Path, entry.Name, entry.FullPath, entry.IsDirectory, entry.SizeBytes)
+            {
+                CreatedUtc = entry.CreatedUtc,
+                LastModifiedUtc = entry.LastModifiedUtc
+            }).ToArray());
     }
+
+    private static string FormatTimestamp(DateTimeOffset? timestamp) => timestamp?.UtcDateTime.ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture) ?? "Not reported";
 
     private void ApplyFilter()
     {
@@ -422,6 +534,8 @@
 
     public void Dispose()
     {
+        if (_disposed) return;
+        _disposed = true;
         _directoryLifecycle.Cancel();
         _directoryLifecycle.Dispose();
         _uploadCallbacks?.Dispose();

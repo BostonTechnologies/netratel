@@ -80,6 +80,198 @@ The release rehearsal currently packages and validates Linux x64 for the CLI
 and stdio MCP. Other CLI/MCP runtime archives are not advertised until their
 matching runners build and smoke-test them.
 
+## Client operations, monitoring, and flows
+
+The `services`, `monitoring`, `flows`, `ai`, and `clients-v2 metadata` /
+`clients-v2 set-metadata` commands use the same closed operation catalog as
+HTTP and stdio MCP. Each command requires `--tenant-id`. Client operations
+also require the registered `--agent-id`; use the UUID returned by client
+discovery, rather than a hostname. `--help` describes the operation, its
+permission, and its accepted flags. Responses retain the API's JSON structure
+so scripts can inspect status, revisions, cursors, and operation identifiers.
+
+| Task | CLI commands | Required tenant permission |
+| --- | --- | --- |
+| Read client tags and friendly name | `clients-v2 metadata` | `telemetry.read` |
+| Change tags or friendly name | `clients-v2 set-metadata` | `client.manage` |
+| View or refresh service inventory | `services inventory`, `services refresh` | `telemetry.read` |
+| Start, stop, restart, or inspect a service operation | `services start`, `stop`, `restart`, `operation` | `client.manage` |
+| Read monitoring configuration, evidence, alerts, and clients | `monitoring configuration`, `summary`, `series`, `events`, `clients`, `client-series` | `monitoring.read` |
+| Create or edit rules and static groups | `monitoring save-rule`, `save-group`, `delete-rule`, `delete-group` | `monitoring.manage` |
+| Acknowledge or clear an occurrence | `monitoring acknowledge`, `clear` | `monitoring.ack`, `monitoring.clear`, respectively |
+| Create or revoke monitoring silence | `monitoring save-silence`, `delete-silence` | `monitoring.bypass` |
+| Inspect drafts, versions, run history, templates, or connectors | `flows list`, `get`, `versions`, `version`, `runs`, `run`, `template`, `connectors` | `flow.read` |
+| Validate or simulate a draft | `flows validate`, `dry-run` | `flow.read` |
+| Create, save, clone, or enable a draft | `flows create`, `save-draft`, `clone`, `set-enabled` | `flow.edit` |
+| Publish an immutable version | `flows publish` | `flow.publish` |
+
+Mutating commands in these groups request an authority-checked review unless
+`--confirm` is supplied. Read the returned review and repeat the same request
+with `--confirm` when the change is approved. The API rechecks current grants
+and target scope for execution. A review does not reserve a configuration
+revision or grant permission that the credential lacks. Monitoring targets
+that include every eligible tenant client additionally require
+`monitoring.targets.all`.
+
+Use `--body` or `--body-file` for the operation's typed **data object only**.
+Tenant and target identifiers belong in flags. The two body options are
+mutually exclusive; files must contain UTF-8 JSON and fit within the bounded
+request limit. Configuration edits must retain the revisions returned by the
+latest read. On a revision conflict, read again, reconcile the intended
+change, and request another review.
+
+### Service investigation and control
+
+Read inventory first to obtain the exact service name and reported platform.
+Supported control platforms are `Windows` and `LinuxSystemd`; use canonical
+names such as `Spooler` or `sshd.service`. A caller-generated operation UUID
+identifies one action. Reuse it when checking or retrying that same request;
+create a new UUID for a different action.
+
+```sh
+netratel services inventory --tenant-id 7 --agent-id "$AGENT_ID"
+netratel services restart --tenant-id 7 --agent-id "$AGENT_ID" \
+  --service-name sshd.service --platform LinuxSystemd \
+  --operation-id "$OPERATION_ID" --reason "Investigate service alert"
+
+# After reviewing the returned request:
+netratel services restart --tenant-id 7 --agent-id "$AGENT_ID" \
+  --service-name sshd.service --platform LinuxSystemd \
+  --operation-id "$OPERATION_ID" --reason "Investigate service alert" --confirm
+netratel services operation --tenant-id 7 --agent-id "$AGENT_ID" \
+  --operation-id "$OPERATION_ID"
+```
+
+An accepted or queued operation is still pending. Inspect `services operation`
+for the outcome and fresh evidence before reporting that the service changed
+state. For an uncertain delivery outcome, inspect the existing operation ID
+before submitting more work. To update stale inventory, review and confirm
+`services refresh`, then read `services inventory` again.
+
+### Tags, groups, and flow drafts
+
+```sh
+netratel clients-v2 metadata --tenant-id 7 --agent-id "$AGENT_ID"
+netratel clients-v2 set-metadata --tenant-id 7 --agent-id "$AGENT_ID" \
+  --body '{"friendlyName":"Application server","tags":["linux","production"]}'
+netratel monitoring configuration --tenant-id 7
+netratel monitoring clients --tenant-id 7 --limit 50
+netratel monitoring save-group --tenant-id 7 --group-id "$GROUP_ID" \
+  --body-file group-change.json
+netratel flows get --tenant-id 7 --flow-id "$FLOW_ID"
+netratel flows connectors --tenant-id 7
+netratel flows save-draft --tenant-id 7 --flow-id "$FLOW_ID" \
+  --body-file flow-draft.json
+netratel flows publish --tenant-id 7 --flow-id "$FLOW_ID" \
+  --body '{"expectedRevision":9}'
+```
+
+For `monitoring save-group`, `group-change.json` contains `group`,
+`expectedConfigurationRevision`, and `reason`. The `group` contains
+`tenantId`, `groupId`, its current `revision`, `name`, and the selected
+`agentIds`. Keep the nested tenant and group identifiers equal to the flags.
+Rule edits follow the same pattern with `rule`. Acknowledge and clear actions
+must use the current occurrence ID and exact resource key from monitoring
+evidence, together with the supplied state/configuration/operator revisions.
+
+Tenant monitoring and flow operations require an explicit tenant-wide MCP
+policy for the selected operation, in addition to the current application
+permission. A policy for one exact client does not grant tenant configuration,
+history, or group/rule administration. `monitoring client-series`,
+`acknowledge`, and `clear` also check the exact selected client's current
+target policy. The optional `--search` filter belongs to `monitoring clients`
+and accepts at most 256 characters; monitoring series and events use their
+own bounded pages without a text search.
+
+For `flows save-draft`, the data contains `expectedRevision`, `name`, and
+`graph`. Obtain a graph from `flows get` or `flows template`; inspect
+`flows connectors` before adding a node. `flows validate` accepts the graph
+object itself. `flows dry-run` accepts the typed sample-event request and
+simulates it without sending operational work. Publishing creates an
+immutable version; a monitoring binding that executes it separately requires
+the applicable `flow.execute` authority.
+
+### Folder browsing and mutations
+
+`files-v2 browse` and `stat` return nullable `createdUtc` and
+`lastModifiedUtc` values from the client. Listings inspect immediate entries
+only: they do not recursively scan folder contents or calculate folder sizes.
+An older client or a filesystem without available metadata can return null;
+do not infer timestamps from those missing values.
+
+Use `files-v2 preview-create-directory` followed by
+`confirm-create-directory` to create a folder. Use `preview-delete` followed
+by `confirm-delete` to delete a file or an **empty** folder. These established
+file commands require the returned plan token and idempotency key as well as
+`--confirm`; inspect each command's help for its exact arguments. They retain
+their existing policy-root and target checks. Folder deletion does not
+recursively delete contents. Filesystem roots, approved roots, and final
+symlink/junction targets are protected from directory mutations.
+
+Browsing requires `file.read`, creation requires `file.write`, and deletion
+requires `file.delete`. The Web file browser uses these same tenant grants to
+show its New folder and Delete empty folder controls and checks client
+capabilities before offering them.
+
+### Netclaw connection and AI investigations
+
+The `ai` group uses the same tenant Netclaw connection and investigation
+records as `/ai/ops`. `ai connection`, `clients`, `list`, and `get` require
+`telemetry.read`. Pairing, testing the connection, and enabling it require
+`tenant.admin`. Create and archive operations require both `client.manage`
+and `telemetry.read`; sending messages, responding to an approval, and
+reconciling delivery additionally require `secret.use`. Alert-linked
+investigations also require `monitoring.read` for creation, reading, and
+subsequent actions.
+
+Current MCP policy must permit the exact operation for every client in an
+investigation's context. The API resolves saved context before reads and
+mutations; it does not accept a replacement client list when opening an
+existing investigation. `ai clients` omits denied clients, and `ai list`
+omits an entire investigation if any of its context clients is denied.
+These cached context checks do not require clients to be online.
+
+```sh
+netratel ai connection --tenant-id 7
+netratel ai clients --tenant-id 7
+netratel ai list --tenant-id 7 --skip 0
+netratel ai create --tenant-id 7 --body-file investigation.json
+netratel ai get --tenant-id 7 --investigation-id "$INVESTIGATION_ID"
+netratel ai send --tenant-id 7 --investigation-id "$INVESTIGATION_ID" \
+  --body-file message.json
+netratel ai get --tenant-id 7 --investigation-id "$INVESTIGATION_ID" --after 12
+```
+
+An investigation create body contains `requestId`, `title`, and `agentIds`,
+with an optional alert `occurrenceId`. Select systems from `ai clients` and
+use a new request UUID for each investigation; reuse the same UUID when
+checking or retrying the same create request. A send body contains
+`messageId` and `text`; preserve the message UUID for a retry. Review the
+create/send request, then repeat with `--confirm` to dispatch it.
+
+Read the investigation snapshot to see the processing state, observed events,
+and pending approvals. A transcript page contains at most 200 events. Advance
+`--after` to the last **returned event's** `sequence`, and continue until it
+reaches the snapshot's `lastSequence`; advancing straight to `lastSequence`
+can skip events when a transcript spans several pages. `ai list` returns
+`{items,hasMore,nextSkip}` after scanning at most 100 rows per request.
+Pass its `nextSkip` as the next `--skip` while `hasMore` is true, even when
+policy filtering returns no visible `items`. This preserves bounded paging
+without skipping accessible history or treating a filtered page as the end.
+For a pending approval, use `ai respond --investigation-id ... --call-id ...`
+with `{"selectedKey":"..."}` from the options actually returned by that
+approval. Select and confirm the intended option explicitly. For a
+`DeliveryUnknown` state, review and confirm `ai reconcile` before attempting
+another message. Archive requests carry the expected message ID and require
+explicit acknowledgement when delivery may have occurred.
+
+Administrators can use `ai pair --body-file pairing.json` with `address`,
+`pairingCode`, and the current `expectedRevision`, then `ai test-connection`
+and `ai set-enabled` with `{"expectedRevision":...,"enabled":true}`.
+Keep a pairing-code file private, remove it after pairing, and never include
+the pairing code or device token in an investigation prompt. All three
+administrative operations follow the same review / `--confirm` boundary.
+
 ## stdio MCP configuration
 
 The stdio MCP server requires an explicit absolute configuration-file path in

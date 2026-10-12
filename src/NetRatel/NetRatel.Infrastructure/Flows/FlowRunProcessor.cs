@@ -32,6 +32,8 @@ public sealed partial class FlowRunProcessor(IFlowExecutionStore store, IFlowRun
         await using var scope = scopes.CreateAsyncScope(); var provider = scope.ServiceProvider;
         if (existing.Status == FlowActionStatus.RetryWaiting && existing.NextAttemptAtUtc > provider.GetRequiredService<TimeProvider>().GetUtcNow())
             return new(FlowIncidentActionResultKind.RetryableSafe, "retry-waiting");
+        if (draft.Kind == FlowActionKind.NetclawInvestigation)
+            return await ExecuteNetclawActionAsync(lease, draft, provider, ct).ConfigureAwait(false);
         if (draft.Kind is FlowActionKind.Discord or FlowActionKind.Slack)
             return await ExecuteNotificationActionAsync(lease, draft, existing, provider, ct).ConfigureAwait(false);
         if (provider.GetService<IFlowReceiverDispatcher>() is { } receiver)

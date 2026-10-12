@@ -130,6 +130,10 @@ public sealed class NetRatelCliTests
             "tenants-v2",
             "onboarding-v2",
             "clients-v2",
+            "services",
+            "monitoring",
+            "flows",
+            "ai",
             "notifications-v2",
             "events-v2",
             "connectivity-v2",
@@ -194,7 +198,286 @@ public sealed class NetRatelCliTests
         var clients = root.Children.OfType<System.CommandLine.Command>().Single(command => command.Name == "clients-v2");
 
         clients.Children.OfType<System.CommandLine.Command>().Select(command => command.Name).Should().BeEquivalentTo(
-            ["get", "presence", "capabilities", "binding", "telemetry", "update-attempts", "update-metadata", "preview-ping", "confirm-ping", "preview-software-update", "confirm-software-update", "preview-disable", "confirm-disable", "preview-enable", "confirm-enable", "preview-delete", "confirm-delete"]);
+            ["get", "presence", "capabilities", "binding", "telemetry", "update-attempts", "update-metadata", "metadata", "set-metadata", "preview-ping", "confirm-ping", "preview-software-update", "confirm-software-update", "preview-disable", "confirm-disable", "preview-enable", "confirm-enable", "preview-delete", "confirm-delete"]);
+    }
+
+    [Theory]
+    [InlineData("services", "inventory", "netratel_services", "{\"services\":[{\"serviceName\":\"sshd.service\"}]}", "sshd.service")]
+    [InlineData("clients-v2", "metadata", "netratel_clients", "{\"tags\":[\"linux\",\"production\"]}", "production")]
+    public async Task ManagedClientReads_Send_Exact_Tenant_And_Agent_Through_Authenticated_Adapter(
+        string command, string operation, string tool, string response, string expectedOutput)
+    {
+        var agentId = Guid.NewGuid();
+        var output = new StringWriter();
+        var requests = 0;
+
+        var code = await RunCliAsync([command, operation, "--tenant-id", "7", "--agent-id", agentId.ToString("D")], async request =>
+        {
+            if (request.RequestUri!.Host == "auth.example")
+                return Json(HttpStatusCode.OK, """{"access_token":"minted-token"}""");
+
+            requests++;
+            request.Method.Should().Be(HttpMethod.Post);
+            request.RequestUri.AbsolutePath.Should().Be($"/api/v2/mcp/operator/application/{tool}/{operation}");
+            request.Headers.Authorization!.Parameter.Should().Be("minted-token");
+            using var body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync());
+            body.RootElement.GetProperty("confirm").GetBoolean().Should().BeFalse();
+            var target = body.RootElement.GetProperty("request");
+            target.GetProperty("tenantId").GetInt32().Should().Be(7);
+            target.GetProperty("agentId").GetGuid().Should().Be(agentId);
+            target.EnumerateObject().Should().HaveCount(2);
+            return Json(HttpStatusCode.OK, response);
+        }, output);
+
+        code.Should().Be(CliExitCodes.Success);
+        requests.Should().Be(1);
+        output.ToString().Should().Contain(expectedOutput);
+    }
+
+    [Theory]
+    [InlineData("start", "Windows", "Spooler", "Start", false)]
+    [InlineData("stop", "LinuxSystemd", "sshd.service", "Stop", false)]
+    [InlineData("restart", "LinuxSystemd", "sshd.service", "Restart", false)]
+    [InlineData("restart", "Windows", "Spooler", "Restart", true)]
+    public async Task ServiceActions_Send_Exact_Selection_And_Stable_Operation_Id(
+        string command, string platform, string service, string action, bool bodySelection)
+    {
+        var agentId = Guid.NewGuid();
+        var operationId = Guid.NewGuid();
+        var output = new StringWriter();
+        string[] selection = bodySelection
+            ? ["--body", JsonSerializer.Serialize(new { operationId, serviceName = service, platform, reason = "Investigating alert" })]
+            : ["--service-name", service, "--platform", platform, "--operation-id", operationId.ToString("D"), "--reason", "Investigating alert"];
+
+        var code = await RunCliAsync([
+            "services", command, "--tenant-id", "7", "--agent-id", agentId.ToString("D"),
+            .. selection, "--confirm"
+        ], async request =>
+        {
+            if (request.RequestUri!.Host == "auth.example")
+                return Json(HttpStatusCode.OK, """{"access_token":"minted-token"}""");
+
+            request.RequestUri.AbsolutePath.Should().Be("/api/v2/mcp/operator/application/netratel_services/control");
+            using var body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync());
+            body.RootElement.GetProperty("confirm").GetBoolean().Should().BeTrue();
+            var target = body.RootElement.GetProperty("request");
+            target.GetProperty("agentId").GetGuid().Should().Be(agentId);
+            var data = target.GetProperty("data");
+            data.GetProperty("operationId").GetGuid().Should().Be(operationId);
+            data.GetProperty("serviceName").GetString().Should().Be(service);
+            data.GetProperty("platform").GetString().Should().Be(platform);
+            data.GetProperty("action").GetString().Should().Be(action);
+            data.GetProperty("reason").GetString().Should().Be("Investigating alert");
+            return Json(HttpStatusCode.Accepted, """{"status":"Queued"}""");
+        }, output);
+
+        code.Should().Be(CliExitCodes.Success);
+        output.ToString().Should().Contain("Queued");
+    }
+
+    [Fact]
+    public async Task MonitoringSaveGroup_Reads_Typed_File_And_Requests_Authorized_Review_By_Default()
+    {
+        var groupId = Guid.NewGuid();
+        var agentId = Guid.NewGuid();
+        var bodyPath = Path.GetTempFileName();
+        var output = new StringWriter();
+        try
+        {
+            await File.WriteAllTextAsync(bodyPath, JsonSerializer.Serialize(new
+            {
+                group = new { tenantId = 7, groupId, revision = 2, name = "Production Linux", agentIds = new[] { agentId } },
+                expectedConfigurationRevision = 17,
+                reason = "Scope monitoring to selected clients"
+            }));
+
+            var code = await RunCliAsync([
+                "monitoring", "save-group", "--tenant-id", "7", "--group-id", groupId.ToString("D"),
+                "--body-file", bodyPath
+            ], async request =>
+            {
+                if (request.RequestUri!.Host == "auth.example")
+                    return Json(HttpStatusCode.OK, """{"access_token":"minted-token"}""");
+
+                request.RequestUri.AbsolutePath.Should().Be("/api/v2/mcp/operator/application/netratel_monitoring/save_group");
+                using var body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync());
+                body.RootElement.GetProperty("confirm").GetBoolean().Should().BeFalse();
+                var target = body.RootElement.GetProperty("request");
+                target.GetProperty("groupId").GetGuid().Should().Be(groupId);
+                var data = target.GetProperty("data");
+                data.GetProperty("expectedConfigurationRevision").GetUInt64().Should().Be(17);
+                data.GetProperty("group").GetProperty("agentIds")[0].GetGuid().Should().Be(agentId);
+                return Json(HttpStatusCode.OK, """{"status":"review_required","requiredPermission":"monitoring.manage"}""");
+            }, output);
+
+            code.Should().Be(CliExitCodes.Success);
+            output.ToString().Should().Contain("review_required");
+        }
+        finally
+        {
+            File.Delete(bodyPath);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task FlowPublish_Preserves_Revision_And_Explicit_Confirmation(bool confirmed)
+    {
+        var flowId = Guid.NewGuid();
+        var code = await RunCliAsync([
+            "flows", "publish", "--tenant-id", "7", "--flow-id", flowId.ToString("D"),
+            "--body", """{"expectedRevision":9}""", .. confirmed ? new[] { "--confirm" } : []
+        ], async request =>
+        {
+            if (request.RequestUri!.Host == "auth.example")
+                return Json(HttpStatusCode.OK, """{"access_token":"minted-token"}""");
+
+            request.RequestUri.AbsolutePath.Should().Be("/api/v2/mcp/operator/application/netratel_flows/publish");
+            using var body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync());
+            body.RootElement.GetProperty("confirm").GetBoolean().Should().Be(confirmed);
+            var target = body.RootElement.GetProperty("request");
+            target.GetProperty("flowId").GetGuid().Should().Be(flowId);
+            target.GetProperty("data").GetProperty("expectedRevision").GetInt64().Should().Be(9);
+            return Json(HttpStatusCode.OK, "{}");
+        });
+
+        code.Should().Be(CliExitCodes.Success);
+    }
+
+    [Fact]
+    public async Task ServiceAction_Rejects_Conflicting_Body_Action_Before_Authentication_Or_Dispatch()
+    {
+        var calls = 0;
+        var errors = new StringWriter();
+        var code = await RunCliAsync([
+            "services", "start", "--tenant-id", "7", "--agent-id", Guid.NewGuid().ToString("D"),
+            "--body", JsonSerializer.Serialize(new
+            {
+                operationId = Guid.NewGuid(), serviceName = "sshd.service", platform = "LinuxSystemd", action = "Stop"
+            }), "--confirm"
+        ], _ =>
+        {
+            calls++;
+            return Task.FromResult(Json(HttpStatusCode.OK, "{}"));
+        }, errors: errors);
+
+        code.Should().Be(CliExitCodes.ValidationError);
+        calls.Should().Be(0);
+        errors.ToString().Should().Contain("body action must match");
+    }
+
+    [Fact]
+    public async Task ManagedOperations_Preserve_Permission_Denial_Without_Retry()
+    {
+        var calls = 0;
+        var errors = new StringWriter();
+        var code = await RunCliAsync(["monitoring", "configuration", "--tenant-id", "7"], request =>
+        {
+            if (request.RequestUri!.Host == "auth.example")
+                return Task.FromResult(Json(HttpStatusCode.OK, """{"access_token":"minted-token"}"""));
+
+            calls++;
+            return Task.FromResult(Json(HttpStatusCode.Forbidden, """{"code":"permission_denied"}"""));
+        }, errors: errors);
+
+        code.Should().Be(CliExitCodes.AuthError);
+        calls.Should().Be(1);
+        errors.ToString().Should().Contain("403");
+    }
+
+    [Fact]
+    public async Task AiTranscriptRead_Preserves_The_Exact_Int64_Sequence()
+    {
+        var investigationId = Guid.NewGuid();
+        var code = await RunCliAsync([
+            "ai", "get", "--tenant-id", "7", "--investigation-id", investigationId.ToString("D"),
+            "--after", "9007199254740993"
+        ], async request =>
+        {
+            if (request.RequestUri!.Host == "auth.example")
+                return Json(HttpStatusCode.OK, """{"access_token":"minted-token"}""");
+
+            request.RequestUri.AbsolutePath.Should().Be("/api/v2/mcp/operator/application/netratel_ai/get");
+            using var body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync());
+            var target = body.RootElement.GetProperty("request");
+            target.GetProperty("investigationId").GetGuid().Should().Be(investigationId);
+            target.GetProperty("after").GetInt64().Should().Be(9007199254740993L);
+            return Json(HttpStatusCode.OK, """{"events":[]}""");
+        });
+
+        code.Should().Be(CliExitCodes.Success);
+    }
+
+    [Theory]
+    [InlineData("series")]
+    [InlineData("events")]
+    public async Task Monitoring_Does_Not_Offer_A_Search_Argument_That_The_Server_Ignores(string operation)
+    {
+        var calls = 0;
+        var code = await RunCliAsync(["monitoring", operation, "--tenant-id", "7", "--search", "linux"], _ =>
+        {
+            calls++;
+            return Task.FromResult(Json(HttpStatusCode.OK, "{}"));
+        });
+        code.Should().Be(CliExitCodes.ValidationError);
+        calls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task AiList_Rejects_Offsets_Outside_The_Store_Bound_Before_Authentication()
+    {
+        var calls = 0;
+        var code = await RunCliAsync(["ai", "list", "--tenant-id", "7", "--skip", "100001"], _ =>
+        {
+            calls++;
+            return Task.FromResult(Json(HttpStatusCode.OK, "{}"));
+        });
+        code.Should().Be(CliExitCodes.ValidationError);
+        calls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Monitoring_Client_Search_Is_Forwarded_Alongside_Its_Page_Cursor()
+    {
+        var code = await RunCliAsync([
+            "monitoring", "clients", "--tenant-id", "7", "--search", "linux edge", "--limit", "25", "--cursor", "next-page"
+        ], async request =>
+        {
+            if (request.RequestUri!.Host == "auth.example")
+                return Json(HttpStatusCode.OK, """{"access_token":"minted-token"}""");
+            using var document = JsonDocument.Parse(await request.Content!.ReadAsStringAsync());
+            var target = document.RootElement.GetProperty("request");
+            target.GetProperty("search").GetString().Should().Be("linux edge");
+            target.GetProperty("cursor").GetString().Should().Be("next-page");
+            target.GetProperty("limit").GetInt32().Should().Be(25);
+            return Json(HttpStatusCode.OK, "{}");
+        });
+        code.Should().Be(CliExitCodes.Success);
+    }
+
+    [Fact]
+    public async Task AiApprovalResponse_Preserves_The_Exact_Call_And_Selected_Option()
+    {
+        var investigationId = Guid.NewGuid();
+        var code = await RunCliAsync([
+            "ai", "respond", "--tenant-id", "7", "--investigation-id", investigationId.ToString("D"),
+            "--call-id", "call:repair/one", "--body", """{"selectedKey":"deny"}""", "--confirm"
+        ], async request =>
+        {
+            if (request.RequestUri!.Host == "auth.example")
+                return Json(HttpStatusCode.OK, """{"access_token":"minted-token"}""");
+
+            request.RequestUri.AbsolutePath.Should().Be("/api/v2/mcp/operator/application/netratel_ai/respond");
+            using var body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync());
+            body.RootElement.GetProperty("confirm").GetBoolean().Should().BeTrue();
+            var target = body.RootElement.GetProperty("request");
+            target.GetProperty("callId").GetString().Should().Be("call:repair/one");
+            target.GetProperty("data").GetProperty("selectedKey").GetString().Should().Be("deny");
+            return Json(HttpStatusCode.OK, "{}");
+        });
+
+        code.Should().Be(CliExitCodes.Success);
     }
 
     [Fact]

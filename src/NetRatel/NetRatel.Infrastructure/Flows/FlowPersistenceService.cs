@@ -110,7 +110,7 @@ public sealed partial class FlowPersistenceService(IServiceScopeFactory scopes, 
         }
         graph = graph with { Nodes = graph.Nodes.Select(node => node.Kind switch
         {
-            FlowNodeKind.CreateIncident => node with { ConnectorRevision = pinned[node.Id].ConnectorRevision },
+            FlowNodeKind.CreateIncident or FlowNodeKind.InvestigateWithAi => node with { ConnectorRevision = pinned[node.Id].ConnectorRevision },
             FlowNodeKind.ActionGroup => node with { Actions = node.Actions!.Select(action => pinned[action.Id]).ToArray() },
             _ => node
         }).ToArray() };
