@@ -1,6 +1,6 @@
 # Monitoring
 
-Monitoring evaluates authenticated CPU, disk and explicitly selected service evidence. Rules, static groups, alert occurrences, operator commands and suppression belong to one application tenant. Memory remains available as telemetry; it is not a phase-one rule kind.
+Monitoring evaluates authenticated CPU, disk and explicitly selected service evidence. A rule can additionally alert when its selected clients go offline. Rules, static groups, alert occurrences, operator commands and suppression belong to one application tenant. Memory remains available as telemetry; it is not a phase-one rule kind.
 
 A series is identified by tenant, rule, agent and stable resource key. Disk series use normalized volume paths. Windows service names compare without case; systemd unit names compare exactly. Static groups select clients and do not create a second alarm identity. Overlapping client/group membership deduplicates. An all-client rule also covers future eligible registrations and requires `monitoring.targets.all` authority.
 
@@ -19,6 +19,18 @@ Fresh accepted breaches move Healthy → Pending → Firing. The full breach hol
 An acknowledgement marks the same occurrence and does not rearm it. Manual clear requires a reason, ends that occurrence and fences the cleared evidence; a new occurrence needs new observations and a new full hold. Disabling a rule or removing a target suspends its applicability rather than claiming recovery. Semantic condition/target/hold/freshness edits require an explicit reset policy and evaluation revision. Rename/severity/action edits do not replay or replace a pinned occurrence.
 
 Suppression is an audited tenant/rule/client/group/resource overlay with a reason and optional expiry. Evaluation continues. Expiry may release at most one currently fresh, previously undelivered active occurrence; it cannot replay historical resolved episodes or an already delivered occurrence.
+
+## Alert if Offline
+
+In `/monitoring`, open a rule's side panel and enable **Alert if Offline**. The same direct-client, static-group or all-eligible selection applies to this additional condition. It is off by default for existing rules. Set **Offline grace (seconds)** between 1 and 3,600; the default is 60 seconds. This grace is the offline breach hold. Recovery uses the rule's existing recovery hold.
+
+The server checks committed connection ownership and authentication expiry in bounded passes starting on a five-second interval. Large tenant sets resume from a continuation cursor; a pass has a 20-second budget. It can detect an outage without new telemetry or an open browser. Inactive, revoked, deleted, superseded and pending-offboarding clients are excluded. Grace and recovery require successive current observations; a worker restart or an excessive observation gap cannot manufacture continuity.
+
+Each rule has one offline occurrence for its complete deduplicated target scope. If ten clients in a site group go offline, the rule raises one occurrence and enqueues its selected flow once. The affected membership continues to update as more clients disconnect or return. The occurrence resolves after the remaining offline clients recover and the recovery hold completes. A later outage can then raise a new occurrence. Distinct rules remain independent: selecting the same client in two rules can produce one occurrence for each rule.
+
+RatelDesk, Discord and Slack receive the same bounded outage summary. Up to ten client names are listed when the list fits within 512 characters. Larger counts or longer lists use count-only text such as **18 clients are offline**. Full current membership remains available to the monitoring UI and dashboard counts. A client bypass excludes that client from outbound names and counts while retaining its offline state in the dashboard. If every affected client is bypassed, the occurrence is suppressed. Expiry can release one still-current, undelivered occurrence after the next presence check.
+
+The aggregate series uses the reserved `clients:offline` resource and an empty agent ID; it does not pretend that a disconnected client has a live telemetry owner. Its dispatch path rechecks current rule applicability, membership, suppression, occurrence and authority. Existing CPU, disk and service series keep their per-client identity. Enabling this option without selecting a published flow still raises the alert in the UX; choosing a flow adds the configured external actions. Acknowledgement, manual clear and rule changes retain the normal episode semantics described above.
 
 ## Persistence and display
 

@@ -4756,6 +4756,39 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.ToTable("MonitoringTenantConfigurations", (string)null);
                 });
 
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.NotificationConnectorRecord", b =>
+                {
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("ConfigurationJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<DateTimeOffset?>("DeletedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("OwnerPrincipalId")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("ProtectedWebhookUrl")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<long>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint");
+
+                    b.HasKey("TenantId", "Id");
+
+                    b.ToTable("NotificationConnectors", (string)null);
+                });
+
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.OidcSigningKey", b =>
                 {
                     b.Property<Guid>("Id")

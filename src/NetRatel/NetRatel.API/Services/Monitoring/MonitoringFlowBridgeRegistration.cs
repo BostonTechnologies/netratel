@@ -13,6 +13,7 @@ public static class MonitoringFlowBridgeRegistration
         services.Replace(ServiceDescriptor.Scoped<IFlowDispatchGuard, MonitoringFlowDispatchGuard>());
         services.TryAddSingleton<MonitoringFlowOutboxProcessor>();
         services.AddHostedService<MonitoringFlowOutboxWorker>();
+        services.AddHostedService<MonitoringOfflineWorker>();
         return services;
     }
 }

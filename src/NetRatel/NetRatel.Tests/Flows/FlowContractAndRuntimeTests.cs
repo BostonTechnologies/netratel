@@ -3,6 +3,7 @@ using AwesomeAssertions;
 using NetRatel.Application.Flows;
 using NetRatel.Infrastructure.Flows;
 using NetRatel.Shared.Contracts.Flows;
+using NetRatel.Shared.Contracts.Monitoring;
 using Xunit;
 
 namespace NetRatel.Tests.Flows;
@@ -115,11 +116,74 @@ public sealed class FlowContractAndRuntimeTests
         (await adapter.ExecuteAsync(lease with { Event = lease.Event with { TenantId = 99 } }, (_, _) => throw new InvalidOperationException())).Code.Should().Be("runtime-input-invalid");
         (await adapter.ExecuteAsync(lease with { Version = lease.Version with { ConfigurationHash = new string('0', 64) } }, (_, _) => throw new InvalidOperationException())).Code.Should().Be("runtime-input-invalid");
     }
+
+    [Fact]
+    public void Historical_graph_and_action_JSON_omit_new_optional_fields_and_retain_their_fingerprint()
+    {
+        var graph = FlowTestData.Graph(); var json = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        var historical = JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            graph.SchemaVersion,
+            Nodes = graph.Nodes.Select(node => new { node.Id, node.Kind, node.Name, node.Position, node.Condition, node.Mapping, node.ConnectorId, node.ConnectorRevision }),
+            graph.Edges, graph.Viewport
+        }, json);
+        JsonSerializer.SerializeToUtf8Bytes(graph, json).Should().Equal(historical);
+        var lease = FlowTestData.Lease("historical", 90);
+        JsonSerializer.Serialize(lease.Event.Data, json).Should().NotContain("offlineSummary");
+        var action = FlowGraphValidator.ActionTargets(lease.Version.Graph).Single();
+        var draft = new FlowIncidentActionDraft(17, lease.RunId, action.Id, action.ConnectorId!.Value, 1, lease.SourceInstanceId,
+            FlowActionKeys.Create(lease, action.Id), lease.Event, new("title", "description"));
+        JsonSerializer.Serialize(draft, json).Should().NotContain("\"kind\"");
+    }
+
+    [Fact]
+    public void Action_groups_reject_duplicate_destinations_and_child_ID_aliases()
+    {
+        var graph = FlowTestData.GroupGraph(); var group = graph.Nodes.Single(node => node.Kind == FlowNodeKind.ActionGroup);
+        FlowGraphValidator.ValidatePublished(graph).Valid.Should().BeTrue();
+        var duplicate = group.Actions![0] with { Id = Guid.NewGuid() };
+        FlowGraphValidator.ValidateDraft(graph with { Nodes = graph.Nodes.Select(node => node.Id == group.Id
+            ? group with { Actions = [.. group.Actions!, duplicate] } : node).ToArray() }).Issues.Should().Contain(issue => issue.Code == "duplicate-action-target");
+        FlowGraphValidator.ValidateDraft(graph with { Nodes = graph.Nodes.Select(node => node.Id == group.Id
+            ? group with { Actions = [group.Actions![0] with { Id = graph.Nodes[0].Id }] } : node).ToArray() }).Issues.Should().Contain(issue => issue.Code == "action-id");
+    }
+
+    [Fact]
+    public async Task A_slow_group_target_does_not_prevent_its_siblings_from_starting_and_partial_results_are_visible()
+    {
+        var lease = FlowTestData.GroupLease(); var started = new System.Collections.Concurrent.ConcurrentDictionary<Guid, bool>();
+        var allStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var result = await new VeloxFlowRuntimeAdapter().ExecuteAsync(lease, async (draft, ct) =>
+        {
+            started.TryAdd(draft.ActionNodeId, true);
+            if (started.Count == 3) allStarted.TrySetResult();
+            await allStarted.Task.WaitAsync(TimeSpan.FromSeconds(5), ct);
+            draft.IdempotencyKey.Should().Be(FlowActionKeys.Create(lease, draft.ActionNodeId));
+            return draft.Kind == FlowActionKind.Discord
+                ? new(FlowIncidentActionResultKind.Failed, "disabled-target")
+                : new(FlowIncidentActionResultKind.Succeeded, "delivered", new("accepted"));
+        });
+        started.Should().HaveCount(3); result.Status.Should().Be(FlowRunStatus.PartiallySucceeded);
+    }
+
+    [Fact]
+    public void Offline_events_require_a_valid_explicit_aggregate_and_share_the_bounded_summary_with_existing_templates()
+    {
+        var input = FlowTestData.EventData("Monitored clients", 3) with
+        { AgentId = Guid.Empty, Resource = MonitoringOfflinePresentation.ResourceKey, Metric = "ClientOffline", OfflineSummary = new(3, 8, "hv01, hv02, dns", false) };
+        FlowPureEvaluation.ValidEventData(input).Should().BeTrue();
+        FlowPureEvaluation.ValidEventData(input with { OfflineSummary = null }).Should().BeFalse();
+        FlowPureEvaluation.ValidEventData(input with { Metric = "CpuUsagePercent" }).Should().BeFalse();
+        var mapped = FlowPureEvaluation.Map(FlowTestData.Graph().Nodes.Single(node => node.Kind == FlowNodeKind.MapIncident).Mapping!, input);
+        mapped.Description.Should().Contain("3 clients are offline: hv01, hv02, dns.");
+    }
 }
 
 internal static class FlowTestData
 {
     public static readonly Guid ConnectorId = Guid.Parse("c654819a-aa09-45e1-a464-e3e9edc6e325");
+    public static readonly Guid DiscordConnectorId = Guid.Parse("15357d3a-0c25-4e61-b4f6-8ce4f5157e96");
+    public static readonly Guid SlackConnectorId = Guid.Parse("a008f41f-d546-49c8-9f52-f7258b7a17fb");
     public static readonly FlowExecutionAuthorityDto Authority = new("test-configuring-principal");
     public static FlowGraphDto Graph(bool withCondition = false)
     {
@@ -131,6 +195,22 @@ internal static class FlowTestData
             Edges = [new(graph.Nodes[0].Id, "out", condition.Id, "in"), new(condition.Id, "out", graph.Nodes[1].Id, "in"), graph.Edges[1]] };
     }
     public static FlowEventDataDto EventData(string name, double value) => new(Guid.NewGuid(), Guid.NewGuid(), "CPU threshold", name, "cpu", "CpuUsagePercent", "Critical", value, null, DateTimeOffset.UtcNow);
+    public static FlowGraphDto GroupGraph()
+    {
+        var graph = Graph();
+        return graph with { Nodes = graph.Nodes.Select(node => node.Kind == FlowNodeKind.CreateIncident ? node with
+        {
+            Kind = FlowNodeKind.ActionGroup, Name = "Notify operations", ConnectorId = null, ConnectorRevision = null,
+            Actions = [new(Guid.NewGuid(), FlowActionKind.RatelDeskIncident, ConnectorId, 1),
+                new(Guid.NewGuid(), FlowActionKind.Discord, DiscordConnectorId, 1), new(Guid.NewGuid(), FlowActionKind.Slack, SlackConnectorId, 1)]
+        } : node).ToArray() };
+    }
+    public static FlowRunLease GroupLease()
+    {
+        var lease = Lease("group", 90); var graph = GroupGraph();
+        return lease with { Version = lease.Version with { Graph = graph,
+            ConfigurationHash = FlowContractValidation.Hash(JsonSerializer.SerializeToUtf8Bytes(graph, new JsonSerializerOptions(JsonSerializerDefaults.Web))) } };
+    }
     public static FlowRunLease Lease(string name, double value, bool condition = false)
     {
         var graph = Graph(condition); var versionId = Guid.NewGuid(); var flowId = Guid.NewGuid(); var now = DateTimeOffset.UtcNow;

@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Security.Claims;
 using System.Text.Json;
 using AwesomeAssertions;
@@ -75,6 +76,20 @@ public sealed class OperationsDashboardPostgresTests(PostgreSqlPersistenceFixtur
         highest.ActiveOccurrences.Should().Be(2); highest.AcknowledgedOccurrences.Should().Be(1);
         highest.Identity.DisplayName.Should().Be("Client 0"); highest.Identity.Hostname.Should().Be("host-0");
         first.Clients.Concat(second.Clients).Sum(client => client.ActiveOccurrences).Should().Be(first.ActiveOccurrences);
+        await using (var scope = provider.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            db.MonitoringSeries.Add(Series(1, Guid.Empty, now, MonitoringSeverity.Critical,
+                offlineClients: [ids[0], ids[29]]));
+            await db.SaveChangesAsync();
+        }
+        var grouped = await service.ReadAsync(1, 0, 50, new(), default);
+        grouped.ActiveOccurrences.Should().Be(first.ActiveOccurrences + 1);
+        grouped.FiringClients.Should().Be(first.FiringClients + 1); // Existing alerting client is counted once across both kinds.
+        grouped.AlertingClients.Should().Be(first.AlertingClients + 1);
+        grouped.Clients.Should().NotContain(client => client.AgentId == Guid.Empty);
+        grouped.Clients.Single(client => client.AgentId == ids[0]).ActiveOccurrences.Should().Be(3);
+        grouped.Clients.Single(client => client.AgentId == ids[29]).ActiveOccurrences.Should().Be(1);
         var jobs = await new OperationsRecentJobsService(new JobsAccess(), provider.GetRequiredService<IServiceScopeFactory>()).ReadAsync(1, new(), default);
         jobs.Should().HaveCount(6); jobs.Select(job => job.RunId).Should().Equal(8, 7, 6, 5, 4, 3);
         jobs.Should().OnlyContain(job => job.JobName == "Inventory" && job.ClientIdentity!.DisplayName == "Client 0");
@@ -96,20 +111,22 @@ public sealed class OperationsDashboardPostgresTests(PostgreSqlPersistenceFixtur
 
     private static MonitoringSeriesRecord Series(int tenantId, Guid agentId, DateTimeOffset now,
         MonitoringSeverity severity, MonitoringPhase phase = MonitoringPhase.Firing, bool acknowledged = false,
-        bool suppressed = false, bool unknown = false, bool active = true)
+        bool suppressed = false, bool unknown = false, bool active = true, IReadOnlyList<Guid>? offlineClients = null)
     {
         var ruleId = Guid.NewGuid(); var occurrenceId = Guid.NewGuid();
-        var key = new MonitoringSeriesKey(tenantId, ruleId, agentId, "cpu");
+        var resource = offlineClients is null ? "cpu" : MonitoringOfflinePresentation.ResourceKey;
+        var key = new MonitoringSeriesKey(tenantId, ruleId, agentId, resource);
         var rule = new MonitoringRuleDto(tenantId, ruleId, 1, 1, "Controlled CPU", true, severity,
-            new(MonitoringTargetMode.Selected, [agentId], []), new(MonitoringMetricKind.CpuUsagePercent, MonitoringNumericUnit.Percent, 80, 70, null, null, []),
-            TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30), TimeSpan.FromMinutes(2));
+            new(MonitoringTargetMode.Selected, offlineClients?.ToImmutableArray() ?? [agentId], []), new(MonitoringMetricKind.CpuUsagePercent, MonitoringNumericUnit.Percent, 80, 70, null, null, []),
+            TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30), TimeSpan.FromMinutes(2), AlertIfOffline: offlineClients is not null);
         var evidence = new MonitoringEvidenceDto(new(1, 1), Guid.NewGuid(), now, now,
-            unknown ? MonitoringEvidenceQuality.Unknown : MonitoringEvidenceQuality.Fresh, MonitoringClassification.Breach, 90, 1, null);
+            unknown ? MonitoringEvidenceQuality.Unknown : MonitoringEvidenceQuality.Fresh, MonitoringClassification.Breach, offlineClients?.Count ?? 90, 1, null,
+            OfflineSummary: offlineClients is null ? null : new(offlineClients.Count, offlineClients.Count, string.Join(", ", offlineClients), false));
         var occurrence = new MonitoringOccurrenceDto(occurrenceId, Guid.NewGuid(), now, now, rule, evidence,
             MonitoringFlowDispatchDisposition.NoFlowSelected, acknowledged ? Guid.NewGuid() : null, acknowledged ? now : null);
         var state = new MonitoringSeriesState(key, 1, 1, phase, evidence.Quality, LatestEvidence: evidence,
-            Occurrence: active ? occurrence : null, Suppressed: suppressed, ApplicableBypassIds: []);
-        return new() { TenantId = tenantId, RuleId = ruleId, AgentId = agentId, ResourceKey = "cpu", StateRevision = 1,
+            Occurrence: active ? occurrence : null, Suppressed: suppressed, ApplicableBypassIds: [], OfflineAgentIds: offlineClients?.ToImmutableArray() ?? default);
+        return new() { TenantId = tenantId, RuleId = ruleId, AgentId = agentId, ResourceKey = resource, StateRevision = 1,
             Phase = phase, EvidenceQuality = evidence.Quality, ActiveOccurrenceId = active ? occurrenceId : null,
             Acknowledged = acknowledged, Suppressed = suppressed, StateJson = JsonSerializer.Serialize(state), UpdatedAtUtc = now };
     }

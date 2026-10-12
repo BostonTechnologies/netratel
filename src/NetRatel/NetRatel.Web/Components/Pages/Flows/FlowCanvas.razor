@@ -43,7 +43,7 @@
                                         <MudTooltip Text="Delete node"><MudIconButton Icon="@Icons.Material.Filled.DeleteOutline" Size="MudBlazor.Size.Small" OnClick="() => Delete.InvokeAsync(metadata.Id)" Disabled="@ReadOnly" aria-label="@($"Delete {metadata.Name}")" data-testid="flow-node-delete" /></MudTooltip>
                                     </div>
                                 </header>
-                                <div class="flow-node-body"><span>@KindLabel(metadata.Kind)</span>
+                                <div class="flow-node-body"><span>@(metadata.Kind == FlowNodeKind.ActionGroup ? $"{metadata.Actions?.Count ?? 0} notification / incident actions" : KindLabel(metadata.Kind))</span>
                                     @foreach (var slot in node.Slots)
                                     {
                                         if (!Adapter.Ports.TryGetValue(slot, out var port)) continue;
@@ -203,7 +203,7 @@
         adapter.Tree.GetHelper().LinkAdded -= LinkChanged; adapter.Tree.GetHelper().LinkRemoved -= LinkChanged;
         foreach (var node in adapter.Tree.Nodes) node.PropertyChanged -= PropertyChanged;
     }
-    public static string KindLabel(FlowNodeKind kind) => kind switch { FlowNodeKind.AlertRaised => "Alert raised", FlowNodeKind.Condition => "Typed condition", FlowNodeKind.MapIncident => "Map incident fields", FlowNodeKind.CreateIncident => "RatelDesk: Create incident", _ => "Unsupported node" };
+    public static string KindLabel(FlowNodeKind kind) => kind switch { FlowNodeKind.AlertRaised => "Alert raised", FlowNodeKind.Condition => "Typed condition", FlowNodeKind.MapIncident => "Map alert fields", FlowNodeKind.CreateIncident => "RatelDesk: Create incident", FlowNodeKind.ActionGroup => "Action group", _ => "Unsupported node" };
     private static string NodeStyle(IWorkflowNodeViewModel node) => FormattableString.Invariant($"width:{node.Size.Width}px;height:{node.Size.Height}px;");
     private static string CardStyle(IWorkflowNodeViewModel node) => FormattableString.Invariant($"transform:scale({node.Size.Width / 220});");
     public async ValueTask DisposeAsync()

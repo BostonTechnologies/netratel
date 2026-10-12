@@ -26,7 +26,7 @@ public sealed class FlowCanvasAdapter : IAsyncDisposable
         await CompleteAsync(node.SetAnchorCommand, new Anchor(definition.Position.X, definition.Position.Y), cancellationToken);
         await CompleteAsync(node.SetSizeCommand, new Size(220, 140), cancellationToken);
         if (definition.Kind != FlowNodeKind.AlertRaised) await AddPortAsync(node, definition.Id, false, cancellationToken);
-        if (definition.Kind != FlowNodeKind.CreateIncident) await AddPortAsync(node, definition.Id, true, cancellationToken);
+        if (!FlowGraphValidator.IsTerminal(definition.Kind)) await AddPortAsync(node, definition.Id, true, cancellationToken);
         return node;
     }
 
@@ -111,7 +111,7 @@ public sealed class FlowCanvasAdapter : IAsyncDisposable
     // The shared safe draft validator permits incomplete editing without weakening typed gestures.
     public static bool StructurallySafe(FlowGraphDto graph) => FlowGraphValidator.ValidateDraft(graph).Valid;
 
-    public static string InputType(FlowNodeKind kind) => kind == FlowNodeKind.CreateIncident ? "incident" : "alert";
+    public static string InputType(FlowNodeKind kind) => FlowGraphValidator.IsTerminal(kind) ? "incident" : "alert";
     public static string OutputType(FlowNodeKind kind) => kind == FlowNodeKind.MapIncident ? "incident" : "alert";
 
     // ExecuteAsync queues work. Subscribe before execution and await the matching native completion to prevent replay races.

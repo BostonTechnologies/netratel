@@ -39,7 +39,9 @@ public sealed partial class FlowPersistenceService
         else run = await db.FlowRuns.Where(row => (row.Status == FlowRunStatus.Queued || row.Status == FlowRunStatus.Running || row.Status == FlowRunStatus.RetryWaiting) &&
             (row.NextAttemptAtUtc == null || row.NextAttemptAtUtc <= now) && (row.LeaseExpiresAtUtc == null || row.LeaseExpiresAtUtc <= now)).OrderBy(row => row.CreatedAtUtc).FirstOrDefaultAsync(ct).ConfigureAwait(false);
         if (run is null) return null;
-        if (run.CreatedAtUtc + FlowLimits.MaximumRetryAge <= now || run.Attempts >= FlowLimits.MaximumActionAttempts * 2)
+        var version = await db.FlowVersions.AsNoTracking().SingleAsync(row => row.TenantId == run.TenantId && row.Id == run.FlowVersionId, ct).ConfigureAwait(false);
+        var expectedActions = FlowGraphValidator.ActionTargets(Parse<FlowGraphDto>(version.GraphJson)).Count;
+        if (run.CreatedAtUtc + FlowLimits.MaximumRetryAge <= now || run.Attempts >= FlowLimits.MaximumActionAttempts * 2 * Math.Max(1, expectedActions))
         {
             var actions = await db.FlowActions.Where(action => action.TenantId == run.TenantId && action.RunId == run.Id).ToListAsync(ct).ConfigureAwait(false);
             var uncertainNodes = await db.Set<FlowReceiverEvidenceRecord>().Where(row => row.TenantId == run.TenantId &&
@@ -47,16 +49,20 @@ public sealed partial class FlowPersistenceService
             foreach (var action in actions.Where(action => action.Status == FlowActionStatus.Dispatching ||
                 uncertainNodes.Contains(action.NodeId) && action.Status != FlowActionStatus.Succeeded))
             { action.Status = FlowActionStatus.DeliveryUnknown; action.Code = "interrupted-delivery-unknown"; action.LeaseFence = checked(run.Fence + 1); }
-            if (actions.Any(action => action.Status == FlowActionStatus.DeliveryUnknown))
+            foreach (var action in actions.Where(action => action.Status is FlowActionStatus.Pending or FlowActionStatus.RetryWaiting))
+            { action.Status = FlowActionStatus.Failed; action.Code = "execution-budget-exhausted"; action.NextAttemptAtUtc = null; }
+            if (actions.Any(action => action.Status == FlowActionStatus.Succeeded) &&
+                (actions.Count != expectedActions || actions.Any(action => action.Status != FlowActionStatus.Succeeded)))
+            { run.Status = FlowRunStatus.PartiallySucceeded; run.Code = "actions-partially-succeeded"; }
+            else if (actions.Any(action => action.Status == FlowActionStatus.DeliveryUnknown))
             { run.Status = FlowRunStatus.DeliveryUnknown; run.Code = "delivery-unknown"; }
-            else if (actions.Count == 1 && actions[0].Status == FlowActionStatus.Succeeded && actions[0].ReceiptJson is not null)
+            else if (actions.Count == expectedActions && expectedActions > 0 && actions.All(action => action.Status == FlowActionStatus.Succeeded && action.ReceiptJson is not null))
             { run.Status = FlowRunStatus.Succeeded; run.Code = "execution-completed"; }
             else { run.Status = FlowRunStatus.Failed; run.Code = "execution-budget-exhausted"; }
             run.CompletedAtUtc = now; run.LeaseToken = null; run.LeaseOwner = null; run.LeaseExpiresAtUtc = null; run.Fence++;
             await db.SaveChangesAsync(ct).ConfigureAwait(false); if (transaction is not null) await transaction.CommitAsync(ct).ConfigureAwait(false); return null;
         }
         var sourceId = await EnsureSourceInContextAsync(db, ct).ConfigureAwait(false);
-        var version = await db.FlowVersions.AsNoTracking().SingleAsync(row => row.TenantId == run.TenantId && row.Id == run.FlowVersionId, ct).ConfigureAwait(false);
         run.Status = FlowRunStatus.Running; run.Fence = checked(run.Fence + 1); run.LeaseToken = Guid.NewGuid(); run.LeaseOwner = workerId;
         run.LeaseExpiresAtUtc = now + FlowLimits.LeaseDuration; run.Attempts++; run.NextAttemptAtUtc = null;
         await db.SaveChangesAsync(ct).ConfigureAwait(false); if (transaction is not null) await transaction.CommitAsync(ct).ConfigureAwait(false);
@@ -96,8 +102,8 @@ public sealed partial class FlowPersistenceService
     {
         if (draft.RunId != lease.RunId || draft.TenantId != lease.Event.TenantId || draft.SourceInstanceId != lease.SourceInstanceId ||
             draft.IdempotencyKey != FlowActionKeys.Create(lease, draft.ActionNodeId) || Serialize(draft.Event) != Serialize(lease.Event)) return null;
-        var node = lease.Version.Graph.Nodes.SingleOrDefault(node => node.Id == draft.ActionNodeId);
-        if (node is null || node.Kind != FlowNodeKind.CreateIncident || node.ConnectorId != draft.ConnectorId || node.ConnectorRevision != draft.ConnectorRevision) return null;
+        var target = FlowGraphValidator.ActionTargets(lease.Version.Graph).SingleOrDefault(action => action.Id == draft.ActionNodeId);
+        if (target is null || target.Kind != draft.Kind || target.ConnectorId != draft.ConnectorId || target.ConnectorRevision != draft.ConnectorRevision) return null;
         var mapping = lease.Version.Graph.Nodes.SingleOrDefault(node => node.Kind == FlowNodeKind.MapIncident)?.Mapping;
         if (mapping is null) return null;
         try { if (Serialize(FlowPureEvaluation.Map(mapping, lease.Event.Data)) != Serialize(draft.Fields)) return null; }
@@ -108,7 +114,8 @@ public sealed partial class FlowPersistenceService
         if (action is not null)
         {
             if (Serialize(Parse<FlowIncidentActionDraft>(action.DraftJson)) != Serialize(draft)) return null;
-            if (action.Status == FlowActionStatus.Dispatching && action.LeaseFence < lease.Fence && action.PreparedJson is not null && !Parse<FlowIncidentActionRequest>(action.PreparedJson).SupportsSafeReplay)
+            if (action.Status == FlowActionStatus.Dispatching && action.LeaseFence < lease.Fence &&
+                (draft.Kind != FlowActionKind.RatelDeskIncident || action.PreparedJson is not null && !Parse<FlowIncidentActionRequest>(action.PreparedJson).SupportsSafeReplay))
             { action.Status = FlowActionStatus.DeliveryUnknown; action.Code = "interrupted-delivery-unknown"; action.LeaseFence = lease.Fence; }
             else if (action.Status is FlowActionStatus.Pending or FlowActionStatus.RetryWaiting) action.LeaseFence = lease.Fence;
             await db.SaveChangesAsync(ct).ConfigureAwait(false); if (transaction is not null) await transaction.CommitAsync(ct).ConfigureAwait(false);
@@ -158,7 +165,11 @@ public sealed partial class FlowPersistenceService
         if (!await ReceiverLeaseEffectiveAsync(db, lease, ct).ConfigureAwait(false)) return null;
         if (await CurrentLeaseAsync(db, lease, ct).ConfigureAwait(false) is null) return null;
         var row = await db.FlowActions.SingleOrDefaultAsync(row => row.TenantId == lease.Event.TenantId && row.RunId == lease.RunId && row.NodeId == nodeId, ct).ConfigureAwait(false);
-        if (row is null || row.PreparedJson is null) return null;
+        if (row is null) return null;
+        var notification = Parse<FlowIncidentActionDraft>(row.DraftJson).Kind is FlowActionKind.Discord or FlowActionKind.Slack;
+        // A notification draft already contains its exact immutable content and revision. No
+        // RatelDesk target or receiver preparation is relevant to an incoming webhook.
+        if (row.PreparedJson is null && !notification) return null;
         if (row.Status is FlowActionStatus.Succeeded or FlowActionStatus.Failed or FlowActionStatus.DeliveryUnknown) return ActionState(row);
         var receiver = await db.Set<FlowReceiverEvidenceRecord>().SingleOrDefaultAsync(evidence =>
             evidence.TenantId == lease.Event.TenantId && evidence.RunId == lease.RunId && evidence.NodeId == nodeId, ct).ConfigureAwait(false);
@@ -200,7 +211,7 @@ public sealed partial class FlowPersistenceService
         if (row.Status == FlowActionStatus.Dispatching)
         {
             if (row.LeaseFence == lease.Fence) return null;
-            if (!Parse<FlowIncidentActionRequest>(row.PreparedJson).SupportsSafeReplay)
+            if (notification || !Parse<FlowIncidentActionRequest>(row.PreparedJson!).SupportsSafeReplay)
             { row.Status = FlowActionStatus.DeliveryUnknown; row.Code = "interrupted-delivery-unknown"; row.LeaseFence = lease.Fence; }
         }
         if (row.Status != FlowActionStatus.DeliveryUnknown)
@@ -230,7 +241,7 @@ public sealed partial class FlowPersistenceService
     {
         if (!ValidResult(result)) return false;
         await using var transaction = await BeginAsync(db, ct).ConfigureAwait(false);
-        if (await CurrentLeaseAsync(db, lease, ct).ConfigureAwait(false) is null) return false;
+        var run = await CurrentLeaseAsync(db, lease, ct).ConfigureAwait(false); if (run is null) return false;
         var row = await db.FlowActions.SingleOrDefaultAsync(row => row.TenantId == lease.Event.TenantId && row.RunId == lease.RunId && row.NodeId == nodeId, ct).ConfigureAwait(false);
         if (row is null || row.Status is not (FlowActionStatus.Dispatching or FlowActionStatus.Pending or FlowActionStatus.RetryWaiting)) return false;
         var receiver = await db.Set<FlowReceiverEvidenceRecord>().SingleOrDefaultAsync(evidence =>
@@ -252,14 +263,24 @@ public sealed partial class FlowPersistenceService
             FlowIncidentActionResultKind.DeliveryUnknown => FlowActionStatus.DeliveryUnknown, FlowIncidentActionResultKind.RetryableSafe => FlowActionStatus.RetryWaiting, _ => FlowActionStatus.Failed };
         if (row.Status == FlowActionStatus.RetryWaiting)
         {
-            if (row.Attempts >= FlowLimits.MaximumActionAttempts &&
+            var now = Now;
+            var delay = result.RetryAfter ?? TimeSpan.FromSeconds(Math.Min(300, 5 * Math.Pow(2, row.Attempts - 1)));
+            // A confirmed rejection stays known even when its Retry-After exceeds our run budget.
+            // Compare the duration before adding it so no provider delay is shortened or overflows.
+            if (delay >= FlowLimits.MaximumRetryAge - (now - run.CreatedAtUtc))
+            {
+                row.Status = receiver?.MayHaveCommitted == true ? FlowActionStatus.DeliveryUnknown : FlowActionStatus.Failed;
+                row.Code = receiver?.MayHaveCommitted == true ? "retry-budget-exhausted-unknown" : "retry-budget-exhausted";
+                row.NextAttemptAtUtc = null;
+            }
+            else if (row.Attempts >= FlowLimits.MaximumActionAttempts &&
                 !(row.Attempts == FlowLimits.MaximumActionAttempts && receiver?.MayHaveCommitted == true && !receiver.FinalReconciliationAttempted))
             {
                 row.Status = receiver?.MayHaveCommitted == true ? FlowActionStatus.DeliveryUnknown : FlowActionStatus.Failed;
                 row.Code = receiver?.MayHaveCommitted == true ? "action-budget-exhausted-unknown" : "action-budget-exhausted";
                 row.NextAttemptAtUtc = null;
             }
-            else row.NextAttemptAtUtc = Now + (result.RetryAfter ?? TimeSpan.FromSeconds(Math.Min(300, 5 * Math.Pow(2, row.Attempts - 1))));
+            else row.NextAttemptAtUtc = now + delay;
         }
         if (result.Receipt is not null) row.ReceiptJson = Serialize(result.Receipt);
         await db.SaveChangesAsync(ct).ConfigureAwait(false); if (transaction is not null) await transaction.CommitAsync(ct).ConfigureAwait(false); return true;
@@ -272,13 +293,24 @@ public sealed partial class FlowPersistenceService
         var actions = await db.FlowActions.Where(row => row.TenantId == run.TenantId && row.RunId == run.Id).ToListAsync(ct).ConfigureAwait(false);
         foreach (var action in actions.Where(row => row.Status == FlowActionStatus.Dispatching))
         { action.Status = FlowActionStatus.DeliveryUnknown; action.Code = "action-receipt-not-committed"; action.LeaseFence = lease.Fence; }
-        if (actions.Any(row => row.Status == FlowActionStatus.DeliveryUnknown)) result = new(FlowRunStatus.DeliveryUnknown, "delivery-unknown");
-        else if (actions.Any(row => row.Status == FlowActionStatus.RetryWaiting)) result = new(FlowRunStatus.RetryWaiting, "retry-waiting");
-        else if (actions.Any(row => row.Status == FlowActionStatus.Failed)) result = new(FlowRunStatus.Failed, actions.First(row => row.Status == FlowActionStatus.Failed).Code ?? "action-failed");
-        else if (actions.Count == 1 && actions[0].Status == FlowActionStatus.Succeeded && actions[0].ReceiptJson is not null)
-            result = new(FlowRunStatus.Succeeded, "execution-completed");
-        else if (result.Status == FlowRunStatus.Succeeded && (actions.Count != 1 || actions[0].Status != FlowActionStatus.Succeeded)) return false;
-        run.Status = result.Status; run.Code = result.Code; run.NextAttemptAtUtc = result.Status == FlowRunStatus.RetryWaiting ? actions.Where(row => row.NextAttemptAtUtc.HasValue).Min(row => row.NextAttemptAtUtc) : null;
+        var expectedActions = FlowGraphValidator.ActionTargets(lease.Version.Graph).Count;
+        var unstarted = actions.Any(row => row.Status == FlowActionStatus.Pending) ||
+            actions.Count > 0 && actions.Count < expectedActions;
+        if (unstarted)
+            result = new(FlowRunStatus.RetryWaiting, "actions-pending");
+        else if (actions.Count > 0)
+            result = FlowActionOutcomes.Aggregate(actions.Select(action => new FlowIncidentActionResult(action.Status switch
+            {
+                FlowActionStatus.Succeeded when action.ReceiptJson is not null => FlowIncidentActionResultKind.Succeeded,
+                FlowActionStatus.RetryWaiting => FlowIncidentActionResultKind.RetryableSafe,
+                FlowActionStatus.DeliveryUnknown => FlowIncidentActionResultKind.DeliveryUnknown,
+                _ => FlowIncidentActionResultKind.Failed
+            }, action.Code ?? "action-failed")).ToArray());
+        else if (result.Status is FlowRunStatus.Succeeded or FlowRunStatus.PartiallySucceeded) return false;
+        run.Status = result.Status; run.Code = result.Code;
+        run.NextAttemptAtUtc = result.Status == FlowRunStatus.RetryWaiting
+            ? unstarted ? Now.AddSeconds(5) : actions.Where(row => row.Status == FlowActionStatus.RetryWaiting).Min(row => row.NextAttemptAtUtc) ?? Now.AddSeconds(5)
+            : null;
         run.CompletedAtUtc = result.Status == FlowRunStatus.RetryWaiting ? null : Now; run.LeaseToken = null; run.LeaseOwner = null; run.LeaseExpiresAtUtc = null;
         await db.SaveChangesAsync(ct).ConfigureAwait(false); if (transaction is not null) await transaction.CommitAsync(ct).ConfigureAwait(false); return true;
     });
@@ -286,7 +318,9 @@ public sealed partial class FlowPersistenceService
     public Task<int> PruneHistoryAsync(CancellationToken ct = default) => WithDb(async (db, _) =>
     {
         var cutoff = Now - FlowLimits.HistoryRetention;
-        var ids = await db.FlowRuns.Where(row => row.CompletedAtUtc < cutoff && row.Status != FlowRunStatus.DeliveryUnknown).OrderBy(row => row.CompletedAtUtc).Select(row => row.Id).Take(100).ToListAsync(ct).ConfigureAwait(false);
+        var ids = await db.FlowRuns.Where(row => row.CompletedAtUtc < cutoff && row.Status != FlowRunStatus.DeliveryUnknown &&
+                !db.FlowActions.Any(action => action.RunId == row.Id && action.TenantId == row.TenantId && action.Status == FlowActionStatus.DeliveryUnknown))
+            .OrderBy(row => row.CompletedAtUtc).Select(row => row.Id).Take(100).ToListAsync(ct).ConfigureAwait(false);
         if (ids.Count == 0) return 0;
         // Ambiguous deliveries retain their keys/semantic evidence for explicit reconciliation.
         if (db.Database.IsRelational()) return await db.FlowRuns.Where(row => ids.Contains(row.Id)).ExecuteDeleteAsync(ct).ConfigureAwait(false);
@@ -294,7 +328,7 @@ public sealed partial class FlowPersistenceService
     });
     private static bool ValidCode(string code) => FlowGraphValidator.IsBoundedText(code, 128) && code.All(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '.' or '_');
     private static bool ValidResult(FlowIncidentActionResult result) => Enum.IsDefined(result.Kind) && ValidCode(result.Code) &&
-        (result.RetryAfter is null || result.RetryAfter >= TimeSpan.Zero && result.RetryAfter <= TimeSpan.FromHours(1)) &&
+        (result.RetryAfter is null || result.RetryAfter >= TimeSpan.Zero) &&
         (result.Kind != FlowIncidentActionResultKind.Succeeded || result.Receipt is not null) &&
         (result.Receipt is null || result.Kind == FlowIncidentActionResultKind.Succeeded && FlowGraphValidator.IsBoundedText(result.Receipt.IncidentId, 256) &&
             (result.Receipt.TrackingId is null || FlowGraphValidator.IsBoundedText(result.Receipt.TrackingId, 256)) &&

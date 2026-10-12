@@ -23,17 +23,23 @@ public sealed partial class MonitoringStore
         if (candidate is null || Deserialize<MonitoringOutboxIntent>(candidate.IntentJson) is not { } intent ||
             MonitoringCanonicalFlowEvent.Create(intent) != input) return new(false, "monitoring-intent-mismatch");
         var configRow = await LockFlowAdmissionConfigurationSnapshotAsync(db, input.TenantId, ct).ConfigureAwait(false);
+        var offline = MonitoringOfflinePresentation.IsSeries(intent.Series);
         var client = new ClientKey(input.TenantId, intent.Series.AgentId);
-        var observed = await db.MonitoringEvidenceStreams.AsNoTracking().SingleOrDefaultAsync(row =>
-            row.TenantId == client.TenantId && row.AgentId == client.AgentId, ct).ConfigureAwait(false);
-        if (observed is not { Active: true, CommittedRegistrationOrdinal: > 0 }) return new(false, "monitoring-evidence-unavailable");
-        var ownerKey = new OwnerKey(client, observed.ConnectionId, observed.ConnectionEpoch);
-        if (await ClientConnectionEpochStore.LockEffectiveOwnerSnapshotAsync(db, ownerKey, clock, ct).ConfigureAwait(false) is null)
-            return new(false, "monitoring-owner-unavailable");
-        var evidence = await LockFlowAdmissionEvidenceSnapshotAsync(db, client, ct).ConfigureAwait(false);
-        var fence = new MonitoringEvidenceFence(client, observed.ConnectionId, observed.ConnectionEpoch, observed.EvidenceStreamId,
-            observed.CommittedRegistrationOrdinal);
-        if (evidence is not { Active: true } || !MatchesFence(evidence, fence)) return new(false, "monitoring-evidence-changed");
+        OwnerKey? ownerKey = null;
+        MonitoringEvidenceFence? fence = null;
+        if (!offline)
+        {
+            var observed = await db.MonitoringEvidenceStreams.AsNoTracking().SingleOrDefaultAsync(row =>
+                row.TenantId == client.TenantId && row.AgentId == client.AgentId, ct).ConfigureAwait(false);
+            if (observed is not { Active: true, CommittedRegistrationOrdinal: > 0 }) return new(false, "monitoring-evidence-unavailable");
+            ownerKey = new OwnerKey(client, observed.ConnectionId, observed.ConnectionEpoch);
+            if (await ClientConnectionEpochStore.LockEffectiveOwnerSnapshotAsync(db, ownerKey.Value, clock, ct).ConfigureAwait(false) is null)
+                return new(false, "monitoring-owner-unavailable");
+            var evidence = await LockFlowAdmissionEvidenceSnapshotAsync(db, client, ct).ConfigureAwait(false);
+            fence = new MonitoringEvidenceFence(client, observed.ConnectionId, observed.ConnectionEpoch, observed.EvidenceStreamId,
+                observed.CommittedRegistrationOrdinal);
+            if (evidence is not { Active: true } || !MatchesFence(evidence, fence)) return new(false, "monitoring-evidence-changed");
+        }
         var series = await LockFlowAdmissionSeriesSnapshotAsync(db, intent.Series, ct).ConfigureAwait(false);
         var outbox = (await db.MonitoringFlowOutbox.FromSqlInterpolated($"""
             SELECT * FROM "MonitoringFlowOutbox" WHERE "TenantId"={input.TenantId} AND "OutboxId"={candidate.OutboxId} FOR UPDATE
@@ -49,22 +55,29 @@ public sealed partial class MonitoringStore
             JsonSerializer.Deserialize<FlowEventEnvelope>(run.EventJson, new JsonSerializerOptions(JsonSerializerDefaults.Web)) != input ||
             run.EventFingerprint != FlowContractValidation.Hash(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(input, new JsonSerializerOptions(JsonSerializerDefaults.Web)))))
             return new(false, "monitoring-run-mismatch");
-        if (!await db.Agents.AsNoTracking().AnyAsync(agent => agent.TenantId == client.TenantId && agent.Id == client.AgentId &&
+        if (!offline && !await db.Agents.AsNoTracking().AnyAsync(agent => agent.TenantId == client.TenantId && agent.Id == client.AgentId &&
             agent.IsEnabled && agent.Status == AgentStatus.Active && agent.RevokedAtUtc == null && agent.DeletedAtUtc == null && agent.SupersededAtUtc == null, ct).ConfigureAwait(false))
             return new(false, "monitoring-target-unavailable");
         var configuration = await ReadFlowAdmissionConfigurationAsync(db, input.TenantId, configRow.Revision, clock, ct).ConfigureAwait(false);
         var rule = configuration.Rules.SingleOrDefault(item => item.TenantId == input.TenantId && item.RuleId == intent.Series.RuleId);
-        if (rule is null || !Applicable(rule, client.AgentId, configuration, [client.AgentId])) return new(false, "monitoring-target-removed");
+        if (rule is null || !(offline ? rule.Enabled && rule.AlertIfOffline : Applicable(rule, client.AgentId, configuration, [client.AgentId])))
+            return new(false, "monitoring-target-removed");
         if (!await (from version in db.FlowVersions.AsNoTracking()
             join definition in db.FlowDefinitions.AsNoTracking() on new { version.TenantId, Id = version.FlowId } equals new { definition.TenantId, definition.Id }
             where version.TenantId == input.TenantId && version.Id == input.FlowVersionId && definition.Enabled
             select version.Id).AnyAsync(ct).ConfigureAwait(false)) return new(false, "monitoring-published-flow-unavailable");
-        var currentOwner = await ClientConnectionEpochStore.LockEffectiveOwnerSnapshotAsync(db, ownerKey, clock, ct).ConfigureAwait(false);
+        var state = series is null ? null : ReadState(series);
+        if (offline)
+        {
+            if (state is null || !await CanDispatchOfflineAsync(db, state, rule, intent, configuration, clock, ct).ConfigureAwait(false))
+                return new(false, "monitoring-offline-occurrence-unavailable");
+            return new(true, "monitoring-dispatch-admitted");
+        }
+        var currentOwner = await ClientConnectionEpochStore.LockEffectiveOwnerSnapshotAsync(db, ownerKey!.Value, clock, ct).ConfigureAwait(false);
         if (currentOwner is null) return new(false, "monitoring-owner-expired");
         var now = await EvidenceNowAsync(db, clock, ct).ConfigureAwait(false);
-        var state = series is null ? null : ReadState(series);
-        if (state is null || state.Cursor?.ConnectionEpoch != ownerKey.Epoch ||
-            !new MonitoringSeriesEvaluator(new AdmissionClock(now)).CanDispatch(state, rule, intent, fence.EvidenceStreamId,
+        if (state is null || state.Cursor?.ConnectionEpoch != ownerKey.Value.Epoch ||
+            !new MonitoringSeriesEvaluator(new AdmissionClock(now)).CanDispatch(state, rule, intent, fence!.EvidenceStreamId,
                 configuration.Bypasses, configuration.Groups)) return new(false, "monitoring-evidence-or-occurrence-unavailable");
         ct.ThrowIfCancellationRequested();
         return new(true, "monitoring-dispatch-admitted");

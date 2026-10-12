@@ -28,7 +28,7 @@ public sealed class VeloxFlowRuntimeAdapter : IFlowRuntimeAdapter
                 var node = new NodeDefaultViewModel(); node.SetHelper(new AllowlistedNodeHelper(definition, state)); models.Add(definition.Id, node);
                 await CompleteCommandAsync(tree.CreateNodeCommand, node, cancellationToken).ConfigureAwait(false);
                 if (definition.Kind != FlowNodeKind.AlertRaised) await AddPortAsync(node, definition.Id, false, ports, cancellationToken).ConfigureAwait(false);
-                if (definition.Kind != FlowNodeKind.CreateIncident) await AddPortAsync(node, definition.Id, true, ports, cancellationToken).ConfigureAwait(false);
+                if (!FlowGraphValidator.IsTerminal(definition.Kind)) await AddPortAsync(node, definition.Id, true, ports, cancellationToken).ConfigureAwait(false);
             }
             foreach (var edge in lease.Version.Graph.Edges)
             {
@@ -101,8 +101,25 @@ public sealed class VeloxFlowRuntimeAdapter : IFlowRuntimeAdapter
                     state.Result = new(result.Kind switch { FlowIncidentActionResultKind.Succeeded => FlowRunStatus.Succeeded,
                         FlowIncidentActionResultKind.RetryableSafe => FlowRunStatus.RetryWaiting, FlowIncidentActionResultKind.DeliveryUnknown => FlowRunStatus.DeliveryUnknown, _ => FlowRunStatus.Failed }, result.Code);
                     return result.Receipt;
+                case FlowNodeKind.ActionGroup:
+                    if (state.Fields is null) throw new InvalidOperationException("runtime-mapping-required");
+                    // Every action owns a separate scope/receipt. Start all bounded siblings so one
+                    // slow destination cannot consume their opportunity to run within this lease.
+                    var results = await Task.WhenAll(definition.Actions!.Select(action => ExecuteChildAsync(action, ct))).ConfigureAwait(false);
+                    state.Result = FlowActionOutcomes.Aggregate(results);
+                    return null;
                 default: throw new InvalidOperationException("runtime-node-kind");
             }
+        }
+
+        private async Task<FlowIncidentActionResult> ExecuteChildAsync(FlowActionTargetDto target, CancellationToken ct)
+        {
+            var draft = new FlowIncidentActionDraft(state.Lease.Event.TenantId, state.Lease.RunId, target.Id,
+                target.ConnectorId!.Value, target.ConnectorRevision!.Value, state.Lease.SourceInstanceId,
+                FlowActionKeys.Create(state.Lease, target.Id), state.Lease.Event, state.Fields!) { Kind = target.Kind };
+            try { return await state.Action(draft, ct).ConfigureAwait(false); }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { return new(FlowIncidentActionResultKind.Failed, "action-cancelled"); }
+            catch (Exception) { return new(FlowIncidentActionResultKind.Failed, "action-execution-failed"); }
         }
     }
 }

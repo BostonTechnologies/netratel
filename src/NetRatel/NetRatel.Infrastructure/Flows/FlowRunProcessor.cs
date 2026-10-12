@@ -30,9 +30,45 @@ public sealed partial class FlowRunProcessor(IFlowExecutionStore store, IFlowRun
         if (existing is null) return new(FlowIncidentActionResultKind.Failed, "action-lease-lost");
         if (Terminal(existing) is { } terminal) return terminal;
         await using var scope = scopes.CreateAsyncScope(); var provider = scope.ServiceProvider;
+        if (existing.Status == FlowActionStatus.RetryWaiting && existing.NextAttemptAtUtc > provider.GetRequiredService<TimeProvider>().GetUtcNow())
+            return new(FlowIncidentActionResultKind.RetryableSafe, "retry-waiting");
+        if (draft.Kind is FlowActionKind.Discord or FlowActionKind.Slack)
+            return await ExecuteNotificationActionAsync(lease, draft, existing, provider, ct).ConfigureAwait(false);
         if (provider.GetService<IFlowReceiverDispatcher>() is { } receiver)
             return await ExecuteReceiverActionAsync(lease, draft, existing, provider, receiver, ct).ConfigureAwait(false);
         return await ExecuteLegacyActionAsync(lease, draft, existing, provider, ct).ConfigureAwait(false);
+    }
+
+    private async Task<FlowIncidentActionResult> ExecuteNotificationActionAsync(FlowRunLease lease, FlowIncidentActionDraft draft,
+        FlowActionExecutionState existing, IServiceProvider provider, CancellationToken ct)
+    {
+        var gate = await AdmitDispatchAsync(provider, lease, ct).ConfigureAwait(false);
+        if (!gate.Allowed)
+        {
+            var denied = new FlowIncidentActionResult(existing.Status == FlowActionStatus.Dispatching
+                ? FlowIncidentActionResultKind.DeliveryUnknown : FlowIncidentActionResultKind.Failed, SafeCode(gate.Code));
+            await store.CompleteActionAsync(lease, draft.ActionNodeId, denied, ct).ConfigureAwait(false);
+            return denied;
+        }
+        if (provider.GetService<IFlowNotificationActionDispatcher>() is not { } dispatcher)
+        {
+            var unavailable = new FlowIncidentActionResult(FlowIncidentActionResultKind.Unavailable, "notification-connector-unavailable");
+            await store.CompleteActionAsync(lease, draft.ActionNodeId, unavailable, ct).ConfigureAwait(false);
+            return unavailable;
+        }
+        var started = await store.StartActionAsync(lease, draft.ActionNodeId, ct).ConfigureAwait(false);
+        if (started is null) return new(FlowIncidentActionResultKind.Failed, "action-lease-lost");
+        if (Terminal(started) is { } terminal) return terminal;
+        if (started.Status == FlowActionStatus.RetryWaiting) return new(FlowIncidentActionResultKind.RetryableSafe, "retry-waiting");
+        if (started.Status != FlowActionStatus.Dispatching) return new(FlowIncidentActionResultKind.Failed, "action-state-invalid");
+        FlowIncidentActionResult result;
+        try { result = await dispatcher.DispatchAsync(draft, ct).ConfigureAwait(false); }
+        catch (OperationCanceledException) { result = new(FlowIncidentActionResultKind.DeliveryUnknown, "notification-delivery-interrupted"); }
+        catch (Exception) { result = new(FlowIncidentActionResultKind.DeliveryUnknown, "notification-delivery-unknown"); }
+        using var completion = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        if (!await store.CompleteActionAsync(lease, draft.ActionNodeId, result, completion.Token).ConfigureAwait(false))
+            return new(FlowIncidentActionResultKind.DeliveryUnknown, "action-receipt-not-committed");
+        return result;
     }
 
     private async Task<FlowIncidentActionResult> ExecuteLegacyActionAsync(FlowRunLease lease, FlowIncidentActionDraft draft,

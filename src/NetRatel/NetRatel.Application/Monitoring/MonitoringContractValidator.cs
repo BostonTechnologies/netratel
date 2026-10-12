@@ -16,6 +16,7 @@ public static class MonitoringContractValidator
             rule.BreachHold < MonitoringLimits.MinimumHold || rule.BreachHold > MonitoringLimits.MaximumHold ||
             rule.RecoveryHold < MonitoringLimits.MinimumHold || rule.RecoveryHold > MonitoringLimits.MaximumHold ||
             rule.FreshnessBudget < MonitoringLimits.MinimumFreshness || rule.FreshnessBudget > MonitoringLimits.MaximumFreshness ||
+            rule.OfflineGraceSeconds is < 1 or > 3600 ||
             rule.PublishedFlowVersionId == Guid.Empty)
             return Fail("invalid_rule", out error);
         if (rule.PublishedFlowVersionId is not null
@@ -149,6 +150,12 @@ public static class MonitoringContractValidator
             writer.Write(rule.BreachHold.Ticks);
             writer.Write(rule.RecoveryHold.Ticks);
             writer.Write(rule.FreshnessBudget.Ticks);
+            // Preserve the exact v1 fingerprint for existing rules with offline monitoring disabled.
+            if (rule.AlertIfOffline)
+            {
+                writer.Write("offline.v1");
+                writer.Write(rule.OfflineGraceSeconds ?? MonitoringOfflinePresentation.DefaultGraceSeconds);
+            }
         }
         return Convert.ToHexString(SHA256.HashData(memory.ToArray()));
     }

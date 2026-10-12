@@ -52,4 +52,5 @@ public sealed record MonitoringHistoryAuditDto(Guid AuditId, string Action, Guid
 /// <summary>Aggregate counts across the authorized tenant, independently of a paged series view.</summary>
 public sealed record MonitoringSummaryDto(int TenantId, long SeriesCount, long ActiveOccurrences,
     long PendingSeries, long UnknownSeries, long AcknowledgedOccurrences, long SuppressedOccurrences,
-    DateTimeOffset GeneratedAtUtc, long FiringOccurrences = 0);
+    DateTimeOffset GeneratedAtUtc, long FiringOccurrences = 0,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] long OfflineClients = 0);

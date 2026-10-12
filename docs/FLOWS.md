@@ -1,6 +1,6 @@
 # Monitoring flows
 
-Flows are part of the `0.1.1-beta.1` development work. The Flows editor is useful for bounded drafts and previews; automatic incident delivery requires an authorized connector whose receiver provides verified atomic idempotency. A normal RatelDesk create endpoint alone does not establish that contract. Executable connector readiness depends on the separately verified receiver integration; until then the connector stays unavailable for executable publication.
+Flows support bounded drafts, previews, RatelDesk incidents and Discord/Slack notifications. Automatic incident delivery requires an authorized RatelDesk connector whose receiver provides verified atomic idempotency. A normal create endpoint alone does not establish that contract. Discord and Slack use separately configured incoming webhook targets; see [notification connectors](NOTIFICATION-CONNECTORS.md).
 
 ## Editing and publishing
 
@@ -10,14 +10,16 @@ The initial catalogue is deliberately small:
 
 1. Alert raised.
 2. An optional typed condition.
-3. Map incident fields.
-4. RatelDesk: Create incident.
+3. Map alert fields.
+4. RatelDesk: Create incident, or an action group containing one to eight RatelDesk, Discord or Slack actions.
 
-A published graph has one reachable acyclic path, at most one condition, one mapping and one external action. Drafts can remain incomplete while being edited. Publish requires a complete valid path and an enabled, currently authorized connector with executable receiver capability. Publish pins the connector configuration revision and creates an immutable version. Later draft edits and credential rotation cannot silently change the semantic target or fields of an existing version/run. Clone creates a disabled draft with new node IDs.
+A published graph has one reachable acyclic path, at most one condition, one mapping and one terminal action or action group. Drafts can remain incomplete while being edited. Publish requires a complete valid path and enabled, currently authorized connectors with the capability required by each action. Publish pins every connector configuration revision and creates an immutable version. Later draft edits and credential rotation cannot silently change the semantic target or fields of an existing version/run. After editing a target, choose **Use updated target** in the action settings and republish any flow that should use it. Clone creates a disabled draft with new node IDs.
+
+Select an existing incident action and use **Add more actions** to retain that incident target while adding notification actions. Each child has a stable ID and its own target, durable delivery state and receipt. The mapped title and description feed every action; priority applies to incident actions. One failed destination does not prevent the other children from running. History shows each result and reports a partially succeeded run when some destinations succeed and others fail or remain uncertain. A safe retry resumes only the children that still need delivery; successful children are not sent again.
 
 Read, draft save, validate and dry run never construct an executing workflow or create an incident. Dry run is pure DTO evaluation and shows mapped fields or an explicit condition-false skip. Publish stores a version; monitoring's durable event ingress is the execution boundary. No browser execution endpoint is exposed.
 
-Allowed mapping placeholders are `{ruleName}`, `{clientName}`, `{resource}`, `{metric}`, `{severity}`, `{value}`, `{serviceState}` and `{occurredAt}`. Numeric comparisons use a finite numeric value. Text comparisons use exact ordinal equality/inequality. Arbitrary code, CLR type names, SQL, shell commands, webhooks, loops, runtime redirects, schedules and remediation are unavailable.
+Allowed mapping placeholders are `{ruleName}`, `{clientName}`, `{resource}`, `{metric}`, `{severity}`, `{value}`, `{serviceState}`, `{occurredAt}`, `{offlineSummary}`, `{offlineCount}` and `{offlineClients}`. Offline events automatically include the bounded outage summary in incident descriptions and notifications even when an older template does not contain the new placeholders. Numeric comparisons use a finite numeric value. Text comparisons use exact ordinal equality/inequality. Arbitrary code, CLR type names, SQL, shell commands, arbitrary webhook URLs in graphs, loops, runtime redirects, schedules and remediation are unavailable.
 
 ## Authority and durable execution
 
@@ -29,7 +31,7 @@ Monitoring supplies the persisted configuring principal and optional integration
 
 Each run creates a separate actual VeloxDev Core compiler/model/helper/runtime context. The backend worker can continue while every browser is closed. The initial topology is one bounded worker; no additional broker or cluster is required.
 
-Before the first send, the database commits a stable action key and the exact prepared semantic payload, including the resolved organization, customer, assignment, categories, priority, plain title/description and source occurrence metadata. A database transaction marks the action `Dispatching` under the current run lease before the dispatcher is called. The lease token, worker identity, increasing fence and expiry protect every receipt/outcome write. A stale worker cannot overwrite a reclaimed run.
+Before the first send, the database commits a stable action key and the exact semantic draft, pinned target revision and source occurrence metadata. Incident preparation additionally resolves the organization, customer, assignment, categories and priority into its durable receiver payload. A database transaction marks each action `Dispatching` under the current run lease before its dispatcher is called. The lease token, worker identity, increasing fence and expiry protect every receipt/outcome write. A stale worker cannot overwrite a reclaimed run.
 
 Recovery preserves these distinctions:
 
@@ -42,6 +44,8 @@ Recovery preserves these distinctions:
 | Explicit safe transient failure | Retry within the bounded attempts/backoff/age budget. |
 | Suppressed, revoked, disabled, unavailable or invalid dependency | Preserve an explicit failed/skipped outcome. |
 
+Incoming webhooks do not provide the verified replay contract used for RatelDesk incidents. Notification rate-limit rejections can be retried within the run budget, but a timeout or ambiguous response after a send is recorded as `DeliveryUnknown`. Recovery does not blindly post the notification again.
+
 Exhausting a retry budget preserves a verified success receipt or an ambiguous send instead of overwriting it with a generic failure. An event aimed at a known version of a disabled flow records a real failed run, and re-enabling the definition does not resurrect that event. Metric recovery does not automatically resolve a helpdesk incident.
 
 The initial bounds are eight nodes, seven edges, 32 KiB canonical graph, 8 KiB event, 24 KiB prepared action, 20-second execution deadline, 60-second lease, five action attempts and a 24-hour retry age. There are at most 128 definitions/tenant, 128 versions/definition, 256 active runs/tenant and 4,096 retained runs/tenant. Run history reads return at most 100 rows. Detailed terminal history is pruned after 90 days; ambiguous deliveries retain their keys and evidence. After pruning, an original event older than the 24-hour ingress window cannot start a new action. The monitoring bridge must retain the original immutable event timestamp when redelivering. Receiver deduplication retention must cover the supported retry window before safe replay can be enabled.
@@ -50,7 +54,7 @@ The initial bounds are eight nodes, seven edges, 32 KiB canonical graph, 8 KiB e
 
 NetRatel pins the actual published `VeloxDev.Core` and `VeloxDev.Razor` packages to **8.0.0**. The published source metadata points to upstream commit `784efa2f28a25568a9d37a263035b92d3873f068`. Core's assets target net5.0 and Razor's assets target net6.0; the host targets .NET 10 InteractiveServer with MudBlazor 9.11.0. Compatibility is checked by the assembled stage's normal build and browser tests.
 
-The adapter uses real native create/connect/move commands and waits for the matching completion event before replaying a following edge. Library command task completion alone does not guarantee model mutation has finished. Replacement canvases get unique instance IDs and keyed component lifetimes; callbacks and JS imports are fenced by cancellation and the selected tenant/flow generation. Captured geometry is canonical finite data. The backend adapter reconstructs only the four reviewed node types and uses the actual Core compiler/runtime; it never calls the library's arbitrary-type deserializer.
+The adapter uses real native create/connect/move commands and waits for the matching completion event before replaying a following edge. Library command task completion alone does not guarantee model mutation has finished. Replacement canvases get unique instance IDs and keyed component lifetimes; callbacks and JS imports are fenced by cancellation and the selected tenant/flow generation. Captured geometry is canonical finite data. The backend adapter reconstructs only the reviewed node types, including the bounded action group, and uses the actual Core compiler/runtime; it never calls the library's arbitrary-type deserializer.
 
 The native Razor CSS/JS assets are referenced under `_content/VeloxDev.Razor/` using the application's base path. The full upstream MIT copyright/permission notice is in [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt) and is copied into build/publish output.
 

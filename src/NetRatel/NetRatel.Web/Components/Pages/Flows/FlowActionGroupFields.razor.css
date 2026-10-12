@@ -1,0 +1,9 @@
+.flow-action-group{min-width:0}
+.flow-action-group .flow-group-target{border:1px solid var(--mud-palette-divider);border-radius:6px;padding:.65rem;margin:.6rem 0;min-width:0}
+.flow-group-target legend{padding:0 .25rem;font-size:.8rem}
+.flow-group-target label{display:flex;flex-direction:column;gap:.3rem;margin-bottom:.6rem;font-size:.8125rem}
+.flow-action-group select,.flow-action-group button{font:inherit;font-size:.8125rem;max-width:100%;min-width:0;background:var(--mud-palette-surface);color:var(--mud-palette-text-primary);border:1px solid var(--mud-palette-divider);border-radius:4px;padding:.4rem .55rem}
+.flow-action-group select:focus-visible,.flow-action-group button:focus-visible{outline:2px solid var(--mud-palette-primary);outline-offset:2px}
+.flow-action-group p{font-size:.75rem;overflow-wrap:anywhere}
+.flow-action-group button{cursor:pointer}.flow-action-group button:disabled{opacity:.55;cursor:default}
+.flow-help{color:var(--mud-palette-text-secondary)}

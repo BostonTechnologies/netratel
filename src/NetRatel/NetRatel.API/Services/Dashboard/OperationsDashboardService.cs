@@ -38,23 +38,36 @@ public sealed class OperationsDashboardService(IMonitoringResourceAuthorizer aut
             WHERE a."TenantId"={tenantId} AND a."DeletedAtUtc" IS NULL AND a."SupersededAtUtc" IS NULL
             """).SingleAsync(cancellationToken).ConfigureAwait(false);
         var counts = await db.Database.SqlQuery<DashboardAlertCounts>($"""
+            WITH series AS (SELECT * FROM "MonitoringSeries" WHERE "TenantId"={tenantId}),
+            members AS (
+                SELECT member."AgentId", s."Phase", s."ActiveOccurrenceId"
+                FROM series s CROSS JOIN LATERAL jsonb_array_elements_text(
+                    CASE WHEN s."AgentId"={Guid.Empty} AND s."ResourceKey"={MonitoringOfflinePresentation.ResourceKey}
+                    THEN COALESCE(s."StateJson" -> 'OfflineAgentIds', '[]'::jsonb)
+                    ELSE jsonb_build_array(s."AgentId") END) AS member("AgentId")
+            )
             SELECT count(*) FILTER (WHERE "ActiveOccurrenceId" IS NOT NULL) AS "ActiveOccurrences",
-                count(DISTINCT "AgentId") FILTER (WHERE "ActiveOccurrenceId" IS NOT NULL AND "Phase"={(short)MonitoringPhase.Firing}) AS "FiringClients",
-                count(DISTINCT "AgentId") FILTER (WHERE "ActiveOccurrenceId" IS NOT NULL) AS "AlertingClients",
+                (SELECT count(DISTINCT "AgentId") FROM members WHERE "ActiveOccurrenceId" IS NOT NULL AND "Phase"={(short)MonitoringPhase.Firing}) AS "FiringClients",
+                (SELECT count(DISTINCT "AgentId") FROM members WHERE "ActiveOccurrenceId" IS NOT NULL) AS "AlertingClients",
                 count(*) FILTER (WHERE "Phase"={(short)MonitoringPhase.Pending}) AS "PendingSeries",
                 count(*) FILTER (WHERE "EvidenceQuality"={(short)MonitoringEvidenceQuality.Unknown}) AS "UnknownSeries",
                 count(*) FILTER (WHERE "ActiveOccurrenceId" IS NOT NULL AND "Suppressed") AS "SuppressedOccurrences"
-            FROM "MonitoringSeries" WHERE "TenantId"={tenantId}
+            FROM series
             """).SingleAsync(cancellationToken).ConfigureAwait(false);
-        // Project only scalars from the pinned occurrence; large evidence/history payloads stay in storage.
+        // A grouped outage is one tenant occurrence, while each currently affected client can open that shared alert.
+        // Project only the bounded member IDs and pinned severity; evidence/history payloads stay in storage.
         var rows = await db.Database.SqlQuery<DashboardAlertClientCounts>($"""
-            SELECT "AgentId", max(("StateJson" -> 'Occurrence' -> 'PinnedRule' ->> 'Severity')::int) AS "HighestSeverity",
+            SELECT member."AgentId"::uuid AS "AgentId", max(("StateJson" -> 'Occurrence' -> 'PinnedRule' ->> 'Severity')::int) AS "HighestSeverity",
                 count(*) AS "ActiveOccurrences", count(*) FILTER (WHERE "Acknowledged") AS "AcknowledgedOccurrences",
                 count(*) FILTER (WHERE "Phase"={(short)MonitoringPhase.Firing}) AS "FiringOccurrences",
                 count(*) FILTER (WHERE "EvidenceQuality"={(short)MonitoringEvidenceQuality.Unknown}) AS "UnknownOccurrences",
                 count(*) FILTER (WHERE "Suppressed") AS "SuppressedOccurrences"
-            FROM "MonitoringSeries" WHERE "TenantId"={tenantId} AND "ActiveOccurrenceId" IS NOT NULL
-            GROUP BY "AgentId" ORDER BY "HighestSeverity" DESC,"ActiveOccurrences" DESC,"AgentId"
+            FROM "MonitoringSeries" s CROSS JOIN LATERAL jsonb_array_elements_text(
+                CASE WHEN s."AgentId"={Guid.Empty} AND s."ResourceKey"={MonitoringOfflinePresentation.ResourceKey}
+                THEN COALESCE(s."StateJson" -> 'OfflineAgentIds', '[]'::jsonb)
+                ELSE jsonb_build_array(s."AgentId") END) AS member("AgentId")
+            WHERE "TenantId"={tenantId} AND "ActiveOccurrenceId" IS NOT NULL
+            GROUP BY member."AgentId" ORDER BY "HighestSeverity" DESC,"ActiveOccurrences" DESC,"AgentId"
             LIMIT {pageSize} OFFSET {checked(page * pageSize)}
             """).ToListAsync(cancellationToken).ConfigureAwait(false);
         var identities = (await MonitoringIdentityProjection.ReadAsync(db, tenantId,

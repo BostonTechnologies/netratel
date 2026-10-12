@@ -11,7 +11,7 @@ public static class FlowContractValidation
         ValidAuthority(input.Authority) && JsonSerializer.SerializeToUtf8Bytes(input).Length <= FlowLimits.MaximumEventBytes;
     public static bool ValidAuthority(FlowExecutionAuthorityDto? authority) => authority is not null &&
         FlowGraphValidator.IsBoundedText(authority.PrincipalId, 256) && (authority.IntegrationCredentialId is null || FlowGraphValidator.IsBoundedText(authority.IntegrationCredentialId, 256));
-    public static bool ValidPrepared(FlowIncidentActionRequest? action, FlowIncidentActionDraft draft) => action is not null &&
+    public static bool ValidPrepared(FlowIncidentActionRequest? action, FlowIncidentActionDraft draft) => draft.Kind == FlowActionKind.RatelDeskIncident && action is not null &&
         action.TenantId == draft.TenantId && action.RunId == draft.RunId && action.ActionNodeId == draft.ActionNodeId && action.ConnectorId == draft.ConnectorId &&
         action.ConnectorRevision == draft.ConnectorRevision && action.ConnectorRevision > 0 && action.SourceInstanceId == draft.SourceInstanceId &&
         action.IdempotencyKey == draft.IdempotencyKey && JsonSerializer.Serialize(action.Event) == JsonSerializer.Serialize(draft.Event) &&

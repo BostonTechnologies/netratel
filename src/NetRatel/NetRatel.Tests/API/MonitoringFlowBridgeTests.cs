@@ -26,6 +26,7 @@ public sealed class MonitoringFlowBridgeTests
     {
         var rig = new Rig();
         var canonical = MonitoringFlowEventFactory.Create(rig.Intent)!;
+        canonical.Should().Be(MonitoringCanonicalFlowEvent.Create(rig.Intent));
         rig.Clock.Now = rig.Clock.Now.AddHours(1);
         MonitoringFlowEventFactory.Create(rig.Intent).Should().Be(canonical);
         canonical.Data.ClientName.Should().Be(rig.Client.AgentId.ToString("D"));
@@ -39,6 +40,30 @@ public sealed class MonitoringFlowBridgeTests
             _ => canonical with { Data = canonical.Data with { ClientName = "un-pinned friendly name" } }
         };
         MonitoringFlowEventFactory.Matches(altered, rig.Intent).Should().BeFalse();
+    }
+
+    [Fact]
+    public void GroupedOfflineIntentUsesTheSameValidEnvelopeAtTheBridgeAndPersistenceBoundary()
+    {
+        var rig = new Rig();
+        var summary = new MonitoringOfflineSnapshotDto(11, 11, "", true);
+        var intent = rig.Intent with
+        {
+            Series = MonitoringOfflinePresentation.Series(rig.Client.TenantId, rig.Rule.RuleId),
+            PinnedRule = rig.Rule with { AlertIfOffline = true, Targets = new(MonitoringTargetMode.Selected, [], [Guid.NewGuid()]) },
+            PinnedEvidence = rig.Intent.PinnedEvidence with { NumericValue = 11, OfflineSummary = summary },
+            OfflineSummary = summary
+        };
+        var input = MonitoringFlowEventFactory.Create(intent);
+        input.Should().NotBeNull();
+        input.Should().Be(MonitoringCanonicalFlowEvent.Create(intent));
+        FlowContractValidation.ValidEnvelope(input!).Should().BeTrue();
+        input!.Data.AgentId.Should().Be(Guid.Empty);
+        input.Data.ClientName.Should().Be("Monitored clients");
+        input.Data.Resource.Should().Be(MonitoringOfflinePresentation.ResourceKey);
+        input.Data.Metric.Should().Be("ClientOffline");
+        input.Data.OfflineSummary.Should().Be(summary);
+        MonitoringOfflinePresentation.IsValid(input.Data.OfflineSummary).Should().BeTrue();
     }
 
     [Fact]
@@ -126,6 +151,33 @@ public sealed class MonitoringFlowBridgeTests
         rig.Completion.Outcome.Should().BeNull();
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Notification_only_and_partial_group_runs_settle_with_real_action_counts_and_preserve_incident_receipts(bool notificationOnly)
+    {
+        var rig = new Rig(); var graph = NetRatel.Tests.Flows.FlowTestData.GroupGraph();
+        if (notificationOnly) graph = graph with { Nodes = graph.Nodes.Select(node => node.Kind == FlowNodeKind.ActionGroup
+            ? node with { Actions = node.Actions!.Where(action => action.Kind == FlowActionKind.Discord).ToArray() } : node).ToArray() };
+        rig.Version = rig.Version with { Graph = graph,
+            ConfigurationHash = FlowContractValidation.Hash(JsonSerializer.SerializeToUtf8Bytes(graph, new JsonSerializerOptions(JsonSerializerDefaults.Web))) };
+        rig.Run = rig.Run with { Status = notificationOnly ? FlowRunStatus.Succeeded : FlowRunStatus.PartiallySucceeded,
+            CompletedAtUtc = rig.Clock.Now, Code = notificationOnly ? "execution-completed" : "actions-partially-succeeded" };
+        rig.ActionResults = FlowGraphValidator.ActionTargets(graph).Select(action => new FlowActionSummaryDto(action.Id, "persisted-key-" + action.Id,
+            !notificationOnly && action.Kind == FlowActionKind.Discord ? FlowActionStatus.Failed : FlowActionStatus.Succeeded, 1, 1,
+            "target-result", !notificationOnly && action.Kind == FlowActionKind.Discord ? null : new("accepted-" + action.Kind)) { Kind = action.Kind }).ToArray();
+        (await rig.Processor.ReconcileReceiptAsync(new(rig.Lease.OutboxId, rig.Intent, rig.Run.Id), default)).Should().BeTrue();
+        var outcome = rig.Reconciled!;
+        outcome.Outcome.Should().Be(notificationOnly ? MonitoringFlowOutcomeKind.Succeeded : MonitoringFlowOutcomeKind.PartiallySucceeded);
+        outcome.ActionResults.Should().Be(notificationOnly ? new MonitoringFlowActionCountsDto(1, 1, 0, 0) : new(3, 2, 1, 0));
+        if (notificationOnly) outcome.Receipt.Should().BeNull();
+        else outcome.Receipt!.IncidentId.Should().Be("accepted-RatelDeskIncident");
+        rig.State.Occurrence!.FlowDispatchDisposition.Should().Be(notificationOnly
+            ? MonitoringFlowDispatchDisposition.Completed : MonitoringFlowDispatchDisposition.PartiallySucceeded);
+        (await rig.Processor.ProcessLeaseAsync(rig.Lease with { FlowRunId = rig.Run.Id }, default)).Should().BeTrue();
+        rig.Completion!.Status.Should().Be(MonitoringOutboxStatus.Completed);
+    }
+
     [Fact]
     public async Task ImmutablePublishedVersionRemainsValidWhenDefinitionIsDisabledAndHashCorruptionFails()
     {
@@ -175,6 +227,7 @@ public sealed class MonitoringFlowBridgeTests
         public MonitoringFlowOutcomeDto? Reconciled { get; private set; }
         public FlowEventEnvelope? CapturedEnvelope { get; private set; }
         public FlowActionReceiptDto? Receipt { get; private set; }
+        public IReadOnlyList<FlowActionSummaryDto>? ActionResults { get; set; }
         public IMonitoringStore Store { get; }
         public IFlowDefinitionService Flows { get; }
         public MonitoringFlowOutboxProcessor Processor { get; }
@@ -219,8 +272,8 @@ public sealed class MonitoringFlowBridgeTests
             {
                 nameof(IFlowDefinitionService.GetVersionAsync) => Task.FromResult<FlowVersionDto?>(Version),
                 nameof(IFlowDefinitionService.GetRunByIdAsync) => Task.FromResult<FlowRunDetailDto?>(new(Run,
-                    MonitoringFlowEventFactory.Create(Intent)!.Data, Receipt is null ? [] :
-                    [new(Version.Graph.Nodes.Single(node => node.Kind == FlowNodeKind.CreateIncident).Id, "persisted-action-key", FlowActionStatus.Succeeded, 1, 1, "incident-created", Receipt)])),
+                    MonitoringFlowEventFactory.Create(Intent)!.Data, ActionResults ?? (Receipt is null ? [] :
+                    [new(Version.Graph.Nodes.Single(node => node.Kind == FlowNodeKind.CreateIncident).Id, "persisted-action-key", FlowActionStatus.Succeeded, 1, 1, "incident-created", Receipt)]))),
                 nameof(IFlowDefinitionService.ListAsync) => Task.FromResult<IReadOnlyList<FlowDefinitionDto>>([Definition()]),
                 nameof(IFlowDefinitionService.GetAsync) => Task.FromResult<FlowDefinitionDto?>(Definition()),
                 _ => throw new NotSupportedException(method.Name)

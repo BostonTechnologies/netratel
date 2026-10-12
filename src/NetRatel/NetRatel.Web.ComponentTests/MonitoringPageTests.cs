@@ -20,6 +20,56 @@ public sealed class MonitoringPageTests : AsyncBunitContext
         Services.AddSingleton<IMonitoringApiService>(_api);
         Services.AddSingleton<IClientServicesApiService>(new EmptyServices());
     }
+    [Fact]
+    public void Offline_checkbox_and_grace_are_saved_with_the_rule_scope()
+    {
+        MonitoringRuleDto? saved = null;
+        _api.RuleSave = (tenant, request, _) =>
+        {
+            saved = request.Rule;
+            return Task.FromResult(_api.Configuration(tenant) with { Revision = 2, Rules = [request.Rule] });
+        };
+        var cut = Render<MonitoringPage>();
+        cut.WaitForAssertion(() => Assert.NotEmpty(cut.FindAll("[data-testid='monitoring-tab-manage']")));
+        cut.Find("[data-testid='monitoring-tab-manage']").Click();
+        cut.Find("[data-testid='monitoring-new-rule']").Click();
+        cut.Find("[data-testid='monitoring-rule-name']").Input("Factory monitoring");
+        cut.Find("[data-testid='monitoring-client-choice']").Change(true);
+        cut.Find("[data-testid='monitoring-alert-if-offline']").Change(true);
+        cut.Find("[data-testid='monitoring-offline-grace']").Change("120");
+        cut.Find("[data-testid='monitoring-reason']").Input("Notify if this client loses presence");
+        cut.Find("[data-testid='monitoring-save']").Click();
+        cut.WaitForAssertion(() => Assert.NotNull(saved));
+        var captured = Assert.IsType<MonitoringRuleDto>(saved);
+        Assert.True(captured.AlertIfOffline);
+        Assert.Equal(120, captured.OfflineGraceSeconds);
+        Assert.Single(captured.Targets.AgentIds);
+    }
+
+    [Fact]
+    public void One_offline_row_exposes_full_membership_without_per_client_service_actions()
+    {
+        var ids = Enumerable.Range(0, 11).Select(_ => Guid.NewGuid()).ToArray();
+        var draft = MonitoringRuleDraft.Create(); draft.Name = "Factory monitoring"; draft.Enabled = true; draft.AlertIfOffline = true;
+        draft.AgentIds.UnionWith(ids);
+        var rule = draft.Build(1);
+        var now = DateTimeOffset.UtcNow;
+        var evidence = new MonitoringEvidenceDto(new(1, 3), rule.RuleId, now, now,
+            MonitoringEvidenceQuality.Fresh, MonitoringClassification.Breach, 11, 0, null,
+            OfflineSummary: new(11, 11, "", true));
+        var occurrence = new MonitoringOccurrenceDto(Guid.NewGuid(), Guid.NewGuid(), now, now.AddMinutes(-1), rule, evidence,
+            MonitoringFlowDispatchDisposition.NoFlowSelected);
+        var state = new MonitoringSeriesState(MonitoringOfflinePresentation.Series(1, rule.RuleId), 3, 1, MonitoringPhase.Firing,
+            MonitoringEvidenceQuality.Fresh, LatestEvidence: evidence, Occurrence: occurrence, ApplicableBypassIds: [], OfflineAgentIds: [.. ids]);
+        _api.ConfigurationRead = (tenant, _) => Task.FromResult(_api.Configuration(tenant) with { Rules = [rule] });
+        _api.SeriesRead = (_, _, _) => Task.FromResult(new MonitoringSeriesPageDto([state], null));
+        var cut = Render<MonitoringPage>();
+        cut.WaitForAssertion(() => Assert.Contains("11 clients are offline.", cut.Markup));
+        Assert.Single(cut.FindAll("[data-testid='monitoring-series-row']"));
+        Assert.Equal(11, cut.FindAll("[data-testid='monitoring-offline-members'] small").Count);
+        Assert.Empty(cut.FindAll("[data-testid='monitoring-services']"));
+        Assert.Single(cut.FindAll("[data-testid='monitoring-ack']"));
+    }
     [Theory]
     [InlineData("network", "Network unavailable")]
     [InlineData("conflict", "Configuration conflict")]

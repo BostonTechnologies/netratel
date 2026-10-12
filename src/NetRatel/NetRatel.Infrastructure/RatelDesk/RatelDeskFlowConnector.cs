@@ -38,7 +38,8 @@ public sealed class RatelDeskFlowConnector(IRatelDeskConnectorStore store, IRate
         {
             var priority = draft.Fields.Priority ?? MapPriority(state.Configuration.Priorities, draft.Event.Data.Severity);
             var description = draft.Fields.Description + "\n\nNetRatel monitoring occurrence\n" +
-                $"Client: {draft.Event.Data.ClientName} ({draft.Event.Data.AgentId:D})\nResource: {draft.Event.Data.Resource}\n" +
+                (draft.Event.Data.OfflineSummary is null ? $"Client: {draft.Event.Data.ClientName} ({draft.Event.Data.AgentId:D})\n" :
+                    $"Scope: {draft.Event.Data.ClientName}\n") + $"Resource: {draft.Event.Data.Resource}\n" +
                 $"Rule: {draft.Event.Data.RuleName} ({draft.Event.Data.RuleId:D})\nSeverity: {draft.Event.Data.Severity}\n" +
                 $"Metric: {draft.Event.Data.Metric}\nObserved value: {draft.Event.Data.NumericValue?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? draft.Event.Data.ServiceState ?? "Unknown"}\n" +
                 $"Observed at: {draft.Event.Data.ObservedAtUtc:O}\nOccurred at: {draft.Event.OccurredAtUtc:O}\n" +

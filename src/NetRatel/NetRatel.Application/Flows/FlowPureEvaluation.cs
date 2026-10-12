@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using NetRatel.Shared.Contracts.Flows;
+using NetRatel.Shared.Contracts.Monitoring;
 
 namespace NetRatel.Application.Flows;
 
@@ -25,10 +26,15 @@ public static class FlowPureEvaluation
         }
         return fields is null ? new(false, false, "mapping-required", null, visited, []) : new(true, false, "inert-preview", fields, visited, []);
     }
-    public static bool ValidEventData(FlowEventDataDto? data) => data is not null && data.AgentId != Guid.Empty && data.RuleId != Guid.Empty &&
+    public static bool ValidEventData(FlowEventDataDto? data) => data is not null && data.RuleId != Guid.Empty &&
+        (data.AgentId != Guid.Empty || ValidOfflineSummary(data)) &&
+        (data.OfflineSummary is null || ValidOfflineSummary(data)) &&
         new[] { data.RuleName, data.ClientName, data.Resource, data.Metric, data.Severity }.All(value => FlowGraphValidator.IsBoundedText(value, FlowLimits.MaximumEventTextLength)) &&
         (data.ServiceState is null || FlowGraphValidator.IsBoundedText(data.ServiceState, 128)) &&
         (data.NumericValue is null || double.IsFinite(data.NumericValue.Value)) && data.ObservedAtUtc != default;
+
+    private static bool ValidOfflineSummary(FlowEventDataDto data) => data.Resource == MonitoringOfflinePresentation.ResourceKey &&
+        data.Metric == "ClientOffline" && MonitoringOfflinePresentation.IsValid(data.OfflineSummary);
 
     public static bool Matches(FlowConditionDto condition, FlowEventDataDto input)
     {
@@ -49,6 +55,8 @@ public static class FlowPureEvaluation
     public static FlowIncidentFieldsDto Map(FlowIncidentMappingDto mapping, FlowEventDataDto input)
     {
         var title = Expand(mapping.TitleTemplate, input); var description = Expand(mapping.DescriptionTemplate, input);
+        if (input.OfflineSummary is { } offline && !description.Contains(offline.Summary, StringComparison.Ordinal))
+            description += "\n\n" + offline.Summary;
         if (!FlowGraphValidator.IsBoundedText(title, FlowLimits.MaximumTitleLength) || !FlowGraphValidator.IsBoundedText(description, FlowLimits.MaximumDescriptionLength, multiline: true))
             throw new InvalidOperationException("mapping-output-limit");
         return new(title, description, mapping.Priority);
@@ -63,7 +71,10 @@ public static class FlowPureEvaluation
             if (end < 0) throw new InvalidOperationException("mapping-template");
             output.Append(template[(index + 1)..end] switch { "ruleName" => input.RuleName, "clientName" => input.ClientName, "resource" => input.Resource,
                 "metric" => input.Metric, "severity" => input.Severity, "value" => input.NumericValue?.ToString("R", CultureInfo.InvariantCulture) ?? "Unknown",
-                "serviceState" => input.ServiceState ?? "Unknown", "occurredAt" => input.ObservedAtUtc.ToString("O", CultureInfo.InvariantCulture), _ => throw new InvalidOperationException("mapping-template") });
+                "serviceState" => input.ServiceState ?? "Unknown", "occurredAt" => input.ObservedAtUtc.ToString("O", CultureInfo.InvariantCulture),
+                "offlineSummary" => input.OfflineSummary?.Summary ?? "", "offlineCount" => input.OfflineSummary is { } offline
+                    ? (offline.OfflineCount - offline.SuppressedCount).ToString(CultureInfo.InvariantCulture) : "0",
+                "offlineClients" => input.OfflineSummary?.ClientNames ?? "", _ => throw new InvalidOperationException("mapping-template") });
             index = end;
         }
         return output.ToString();

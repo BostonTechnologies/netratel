@@ -121,7 +121,8 @@ public sealed partial class FlowPersistenceService
             action.Status is not (FlowActionStatus.Pending or FlowActionStatus.RetryWaiting) ||
             await db.Set<FlowReceiverEvidenceRecord>().AnyAsync(x => x.RunId == lease.RunId && x.NodeId == nodeId && x.MayHaveCommitted, ct))
             return false;
-        if (Now >= run.CreatedAtUtc + FlowLimits.MaximumRetryAge || run.Attempts >= FlowLimits.MaximumActionAttempts * 2)
+        if (Now >= run.CreatedAtUtc + FlowLimits.MaximumRetryAge ||
+            run.Attempts >= FlowLimits.MaximumActionAttempts * 2 * Math.Max(1, FlowGraphValidator.ActionTargets(lease.Version.Graph).Count))
         { action.Status = FlowActionStatus.Failed; action.Code = "execution-budget-exhausted"; action.NextAttemptAtUtc = null; }
         else
         {

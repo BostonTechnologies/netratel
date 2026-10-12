@@ -31,6 +31,7 @@ public sealed partial class MonitoringStore
         {
             if (claims.Count >= request.MaximumCount) break;
             var intent = Deserialize<MonitoringOutboxIntent>(candidate.IntentJson);
+            var offline = MonitoringOfflinePresentation.IsSeries(intent.Series);
             var client = new ClientKey(intent.Series.TenantId, intent.Series.AgentId);
             MonitoringEvidenceFence? fence = null;
             var evidenceValid = false;
@@ -38,10 +39,10 @@ public sealed partial class MonitoringStore
             if (candidate.FlowRunId is null)
             {
                 configuration ??= await ReadConfigurationAsync(db, request.TenantId, configRow.Revision, cancellationToken).ConfigureAwait(false);
-                if (await db.Agents.AsNoTracking().AnyAsync(agent => agent.TenantId == client.TenantId && agent.Id == client.AgentId &&
+                if (!offline && await db.Agents.AsNoTracking().AnyAsync(agent => agent.TenantId == client.TenantId && agent.Id == client.AgentId &&
                     agent.IsEnabled && agent.Status == AgentStatus.Active && agent.RevokedAtUtc == null && agent.DeletedAtUtc == null && agent.SupersededAtUtc == null,
                     cancellationToken).ConfigureAwait(false)) eligible = [client.AgentId];
-                fence = await LockCurrentEvidenceAsync(db, client, cancellationToken).ConfigureAwait(false);
+                fence = offline ? null : await LockCurrentEvidenceAsync(db, client, cancellationToken).ConfigureAwait(false);
                 evidenceValid = fence is not null;
             }
             var series = await LockSeriesAsync(db, intent.Series, cancellationToken).ConfigureAwait(false);
@@ -68,7 +69,7 @@ public sealed partial class MonitoringStore
             }
             var currentRule = configuration!.Rules.SingleOrDefault(rule => rule.RuleId == intent.Series.RuleId);
             var state = series is null ? null : ReadState(series);
-            if (state is null || currentRule is null || !Applicable(currentRule, client.AgentId, configuration, eligible) ||
+            if (state is null || currentRule is null || !(offline ? currentRule.Enabled && currentRule.AlertIfOffline : Applicable(currentRule, client.AgentId, configuration, eligible)) ||
                 state.Occurrence?.OccurrenceId != intent.OccurrenceId || state.Occurrence.EndedAtUtc is not null)
             {
                 if (row.Attempts > 0)
@@ -87,10 +88,16 @@ public sealed partial class MonitoringStore
                 await FailUnstartedAsync(db, row, state, "published_flow_unavailable", configRow.Revision, row.Attempts > 0, cancellationToken).ConfigureAwait(false);
                 continue;
             }
-            if (!evidenceValid || fence is null || state.Cursor?.ConnectionEpoch != fence.ConnectionEpoch ||
-                !_evaluator.CanDispatch(state, currentRule, intent, fence.EvidenceStreamId, configuration.Bypasses, configuration.Groups))
-                continue;
-            if (!await CheckEpochAsync(db, fence, cancellationToken).ConfigureAwait(false)) continue;
+            if (offline)
+            {
+                if (!await CanDispatchOfflineAsync(db, state, currentRule, intent, configuration, timeProvider, cancellationToken).ConfigureAwait(false)) continue;
+            }
+            else
+            {
+                if (!evidenceValid || fence is null || state.Cursor?.ConnectionEpoch != fence.ConnectionEpoch ||
+                    !_evaluator.CanDispatch(state, currentRule, intent, fence.EvidenceStreamId, configuration.Bypasses, configuration.Groups)) continue;
+                if (!await CheckEpochAsync(db, fence, cancellationToken).ConfigureAwait(false)) continue;
+            }
             row.Status = MonitoringOutboxStatus.Leased; row.WorkerId = request.WorkerId; row.LeaseId = Guid.NewGuid();
             row.LeaseFence = checked(row.LeaseFence + 1); row.LeaseExpiresAtUtc = NormalizeDatabaseTime(now + request.LeaseDuration); row.Attempts = checked(row.Attempts + 1);
             claims.Add((row, intent, fence));
@@ -164,7 +171,8 @@ public sealed partial class MonitoringStore
         {
             var expected = completion.Status switch { MonitoringOutboxStatus.Completed => MonitoringFlowOutcomeKind.Succeeded, MonitoringOutboxStatus.Skipped => MonitoringFlowOutcomeKind.Skipped,
                 MonitoringOutboxStatus.Failed => MonitoringFlowOutcomeKind.Failed, _ => MonitoringFlowOutcomeKind.DeliveryUnknown };
-            if (completion.Outcome?.Outcome != expected) throw new ArgumentException("matching_flow_outcome_required");
+            if (completion.Outcome?.Outcome != expected && !(completion.Status == MonitoringOutboxStatus.Completed &&
+                completion.Outcome?.Outcome == MonitoringFlowOutcomeKind.PartiallySucceeded)) throw new ArgumentException("matching_flow_outcome_required");
         }
         else if (completion.Outcome is not null) throw new ArgumentException("retry_cannot_complete_outcome");
         await using var scope = scopeFactory.CreateAsyncScope();

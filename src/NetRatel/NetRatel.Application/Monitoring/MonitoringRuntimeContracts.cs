@@ -60,6 +60,9 @@ public sealed record MonitoringOutboxCompletion(MonitoringOutboxLease Lease, Mon
 /// <summary>Scoped persistence commits state+occurrence+event+outbox+audit atomically before any fanout.</summary>
 public interface IMonitoringStore
 {
+    Task<int> EvaluateOfflineAsync(int tenantId, CancellationToken cancellationToken) => Task.FromResult(0);
+    Task<ImmutableArray<MonitoringSeriesState>> LoadClientOfflineAsync(ClientKey client, CancellationToken cancellationToken) =>
+        Task.FromResult(ImmutableArray<MonitoringSeriesState>.Empty);
     Task<MonitoringSeriesState?> LoadSeriesAsync(MonitoringSeriesKey series, CancellationToken cancellationToken);
     Task<ImmutableArray<MonitoringSeriesState>> LoadClientAsync(ClientKey client, CancellationToken cancellationToken);
     Task<MonitoringSeriesPageDto> ReadTenantSeriesAsync(int tenantId, int maximumCount, string? cursor, CancellationToken cancellationToken);

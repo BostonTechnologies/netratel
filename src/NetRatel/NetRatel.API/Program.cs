@@ -870,6 +870,7 @@ builder.Services.AddSystemPairing(builder.Configuration);
 builder.Services.AddPairingApi();
 builder.Services.AddOrchestrationManagedServices();
 builder.Services.AddRatelDeskReceiverAdapter(builder.Configuration);
+builder.Services.AddNotificationConnectors();
 builder.Services.AddIdentityCore<LocalUser>(options =>
     {
         options.User.RequireUniqueEmail = true;

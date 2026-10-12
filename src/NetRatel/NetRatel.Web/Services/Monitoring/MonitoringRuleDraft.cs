@@ -12,6 +12,8 @@ public sealed class MonitoringRuleDraft
     public Guid RuleId { get; set; } = Guid.NewGuid();
     public string Name { get; set; } = "";
     public bool Enabled { get; set; }
+    public bool AlertIfOffline { get; set; }
+    public int OfflineGraceSeconds { get; set; } = MonitoringOfflinePresentation.DefaultGraceSeconds;
     public MonitoringSeverity Severity { get; set; } = MonitoringSeverity.Warning;
     public MonitoringTargetMode TargetMode { get; set; } = MonitoringTargetMode.Selected;
     public HashSet<Guid> AgentIds { get; set; } = [];
@@ -39,6 +41,7 @@ public sealed class MonitoringRuleDraft
         if (rule is not null)
         {
             draft.RuleId = rule.RuleId; draft.Name = rule.Name; draft.Enabled = rule.Enabled; draft.Severity = rule.Severity;
+            draft.AlertIfOffline = rule.AlertIfOffline; draft.OfflineGraceSeconds = rule.OfflineGraceSeconds ?? MonitoringOfflinePresentation.DefaultGraceSeconds;
             draft.TargetMode = rule.Targets.Mode; draft.AgentIds = rule.Targets.AgentIds.ToHashSet(); draft.GroupIds = rule.Targets.GroupIds.ToHashSet();
             draft.Metric = rule.Condition.Kind; draft.Unit = rule.Condition.Unit ?? MonitoringNumericUnit.Percent;
             draft.BreachThreshold = rule.Condition.BreachThreshold ?? 0; draft.RecoveryThreshold = rule.Condition.RecoveryThreshold ?? 0;
@@ -81,7 +84,8 @@ public sealed class MonitoringRuleDraft
             Name.Trim(), Enabled, Severity, targets, condition, TimeSpan.FromSeconds(BreachHoldSeconds), TimeSpan.FromSeconds(RecoveryHoldSeconds),
             TimeSpan.FromSeconds(FreshnessSeconds), PublishedFlowVersionId,
             PublishedFlowVersionId == Original?.PublishedFlowVersionId ? Original?.ExecutionPrincipalId : null,
-            PublishedFlowVersionId == Original?.PublishedFlowVersionId ? Original?.ExecutionCredentialId : null);
+            PublishedFlowVersionId == Original?.PublishedFlowVersionId ? Original?.ExecutionCredentialId : null,
+            AlertIfOffline, AlertIfOffline ? OfflineGraceSeconds : null);
         // The evaluator revision changes only through an explicitly acknowledged condition/scope reset.
         if (Original is not null && ValidForDefinition(candidate) &&
             MonitoringContractValidator.EvaluationFingerprint(candidate) != MonitoringContractValidator.EvaluationFingerprint(Original))
@@ -106,6 +110,8 @@ public sealed class MonitoringRuleDraft
         if (BreachHoldSeconds is < 1 or > 3600) return Invalid(nameof(BreachHoldSeconds), "Full breach hold must be 1–3600 seconds.", out field);
         if (RecoveryHoldSeconds is < 1 or > 3600) return Invalid(nameof(RecoveryHoldSeconds), "Full recovery hold must be 1–3600 seconds.", out field);
         if (FreshnessSeconds is < 1 or > 900) return Invalid(nameof(FreshnessSeconds), "Freshness budget must be 1–900 seconds.", out field);
+        if (AlertIfOffline && OfflineGraceSeconds is < 1 or > 3600)
+            return Invalid(nameof(OfflineGraceSeconds), "Offline grace must be 1–3600 seconds.", out field);
         if (!ValidForDefinition(rule))
         {
             if (Metric == MonitoringMetricKind.ServiceExpectedState)
@@ -126,5 +132,5 @@ public sealed class MonitoringRuleDraft
     private static bool ValidForDefinition(MonitoringRuleDto rule) => MonitoringContractValidator.TryValidateRule(
         rule with { PublishedFlowVersionId = null, ExecutionPrincipalId = null, ExecutionCredentialId = null }, out _);
     private string Signature() => JsonSerializer.Serialize(new { Name, Enabled, Severity, TargetMode, Agents = AgentIds.Order(), Groups = GroupIds.Order(), Metric, Unit,
-        BreachThreshold, RecoveryThreshold, ResourceName, Platform, States = ExpectedStates.Order(), BreachHoldSeconds, RecoveryHoldSeconds, FreshnessSeconds, PublishedFlowVersionId });
+        BreachThreshold, RecoveryThreshold, ResourceName, Platform, States = ExpectedStates.Order(), BreachHoldSeconds, RecoveryHoldSeconds, FreshnessSeconds, PublishedFlowVersionId, AlertIfOffline, OfflineGraceSeconds });
 }

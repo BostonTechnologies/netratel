@@ -28,6 +28,74 @@ namespace NetRatel.Tests.Infrastructure;
 public sealed class MonitoringFlowBridgePostgresTests(PostgreSqlPersistenceFixture postgres)
 {
     [Fact]
+    public async Task Grouped_offline_scan_dispatches_without_telemetry_or_live_owner_and_survives_replica_restart()
+    {
+        await using var rig = await Rig.CreateAsync(postgres);
+        var extra = Enumerable.Range(1, 12).Select(index => new Agent
+        {
+            Id = Guid.NewGuid(), TenantId = rig.Client.TenantId, Name = $"Factory-{index:D2}", CreatedAtUtc = rig.Clock.GetUtcNow()
+        }).ToArray();
+        await using (var scope = rig.Provider.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            db.Agents.AddRange(extra);
+            await db.SaveChangesAsync();
+        }
+        var members = extra.Select(agent => agent.Id).Prepend(rig.Client.AgentId).ToImmutableArray();
+        var group = new MonitoringGroupDto(rig.Client.TenantId, Guid.NewGuid(), 1, "Factory site", members);
+        (await rig.Configuration.SaveGroupAsync(new(group, 1, Guid.Parse(rig.Authority.PrincipalId), "Monitor factory site"), default))
+            .Disposition.Should().Be(MonitoringConfigurationWriteDisposition.Stored);
+        var rule = rig.Rule with { Revision = 2, EvaluationRevision = 2, AlertIfOffline = true, OfflineGraceSeconds = 1,
+            Targets = new(MonitoringTargetMode.Selected, [], [group.GroupId]) };
+        (await rig.Configuration.SaveRuleAsync(new(rule, 2, Guid.Parse(rig.Authority.PrincipalId), "Enable grouped offline alert",
+            MonitoringConditionResetPolicy.SuspendOccurrenceAndRequireNewWindow), default)).Disposition.Should().Be(MonitoringConfigurationWriteDisposition.Stored);
+        var fence = rig.Evidence.Current!;
+        (await rig.Store.EndEvidenceStreamAsync(fence, default)).Should().BeTrue();
+        await rig.Provider.GetRequiredService<IClientConnectionEpochStore>().RetireAsync(
+            new(rig.Client, fence.ConnectionId, fence.ConnectionEpoch), RetirementReason.ExplicitClose, null, default);
+        await using (var scope = rig.Provider.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            var removed = await db.Agents.SingleAsync(agent => agent.Id == extra[0].Id);
+            removed.DeletedAtUtc = rig.Clock.GetUtcNow();
+            db.ClientOffboardingOperations.Add(new()
+            {
+                Id = Guid.NewGuid(), TenantId = rig.Client.TenantId, AgentId = extra[1].Id, State = ClientOffboardingState.Requested,
+                ConnectionId = Guid.NewGuid(), ConnectionEpoch = 1, CreatedAtUtc = rig.Clock.GetUtcNow(), UpdatedAtUtc = rig.Clock.GetUtcNow(),
+                StartDeadlineUtc = rig.Clock.GetUtcNow().AddMinutes(1), ReceiptExpiresAtUtc = rig.Clock.GetUtcNow().AddDays(1)
+            });
+            await db.SaveChangesAsync();
+        }
+        await rig.Store.EvaluateOfflineAsync(rig.Client.TenantId, default);
+        rig.Clock.Advance(TimeSpan.FromSeconds(2));
+        await rig.Store.EvaluateOfflineAsync(rig.Client.TenantId, default);
+        rig.Clock.Advance(TimeSpan.FromSeconds(2));
+        await using var restarted = rig.NewProvider();
+        var other = restarted.GetRequiredService<IMonitoringStore>();
+        await Task.WhenAll(rig.Store.EvaluateOfflineAsync(rig.Client.TenantId, default), other.EvaluateOfflineAsync(rig.Client.TenantId, default));
+        var key = MonitoringOfflinePresentation.Series(rig.Client.TenantId, rule.RuleId);
+        var state = (await other.LoadSeriesAsync(key, default))!;
+        state.Phase.Should().Be(MonitoringPhase.Firing);
+        state.OfflineAgentIds.Should().HaveCount(11).And.NotContain(extra[0].Id).And.NotContain(extra[1].Id);
+        state.LatestEvidence!.OfflineSummary!.OfflineCount.Should().Be(11);
+        state.LatestEvidence.OfflineSummary.ClientNames.Should().BeEmpty();
+        (await other.ReadTenantSummaryAsync(rig.Client.TenantId, default)).OfflineClients.Should().Be(11);
+        var occurrence = state.Occurrence!.OccurrenceId;
+        var lease = await rig.ClaimAsync();
+        (await rig.Bridge.ProcessLeaseAsync(lease, default)).Should().BeTrue();
+        var run = (await rig.Definitions.GetRunsAsync(rig.Client.TenantId, rig.Version.FlowId)).Should()
+            .ContainSingle("the grouped offline handoff must persist a flow run").Which;
+        run.Status.Should().Be(FlowRunStatus.Queued, "successful lease completion must represent an admitted outage");
+        (await rig.Provider.GetRequiredService<FlowRunProcessor>().ProcessOneAsync()).Should().BeTrue();
+        rig.Dispatcher.Sends.Should().Be(1);
+        rig.Dispatcher.LastRequest!.Event.Data.OfflineSummary!.Summary.Should().Be("11 clients are offline.");
+        rig.Clock.Advance(TimeSpan.FromSeconds(2));
+        await other.EvaluateOfflineAsync(rig.Client.TenantId, default);
+        (await other.LoadSeriesAsync(key, default))!.Occurrence!.OccurrenceId.Should().Be(occurrence);
+        await rig.AssertOneEffectAsync();
+    }
+
+    [Fact]
     public async Task AdmittedActorRaiseExecutesActualVeloxOnceAndPersistsMatchingIncidentReceipt()
     {
         await using var rig = await Rig.CreateAsync(postgres);

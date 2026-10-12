@@ -132,6 +132,7 @@ builder.Services.AddScoped<IClientApiService>(sp => sp.GetRequiredService<Client
 builder.Services.AddScoped<IScriptLibraryService>(sp => sp.GetRequiredService<ScriptService>());
 builder.Services.AddScoped<IJobApiClient, JobApiClient>();
 builder.Services.AddScoped<INetRatelNotificationApiClient, NetRatelNotificationApiClient>();
+builder.Services.AddScoped<INotificationConnectorApiService, NotificationConnectorApiService>();
 builder.Services.AddScoped<IGlobalSearchService, GlobalSearchService>();
 builder.Services.AddScoped<IAppBarVersionApiClient, AppBarVersionApiClient>();
 builder.Services.AddScoped<NetRatelNotificationEventBus>();

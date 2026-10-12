@@ -104,13 +104,19 @@ public sealed partial class MonitoringStore(IServiceScopeFactory scopeFactory, T
         await using var scope = scopeFactory.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
         var query = db.MonitoringSeries.Where(row => row.TenantId == tenantId);
+        var offlineClients = await db.Database.SqlQuery<long>($"""
+            SELECT COUNT(DISTINCT member."ClientId")::bigint AS "Value" FROM "MonitoringSeries"
+            CROSS JOIN LATERAL jsonb_array_elements_text(COALESCE("StateJson" -> 'OfflineAgentIds', '[]'::jsonb)) AS member("ClientId")
+            WHERE "TenantId" = {tenantId} AND "AgentId" = {Guid.Empty} AND "ResourceKey" = {MonitoringOfflinePresentation.ResourceKey}
+                AND "Phase" <> {(short)MonitoringPhase.Suspended} AND "Phase" <> {(short)MonitoringPhase.NotApplicable}
+            """).SingleAsync(cancellationToken).ConfigureAwait(false);
         return new(tenantId, await query.LongCountAsync(cancellationToken),
             await query.LongCountAsync(row => row.ActiveOccurrenceId != null, cancellationToken),
             await query.LongCountAsync(row => row.Phase == MonitoringPhase.Pending, cancellationToken),
             await query.LongCountAsync(row => row.EvidenceQuality == MonitoringEvidenceQuality.Unknown, cancellationToken),
             await query.LongCountAsync(row => row.ActiveOccurrenceId != null && row.Acknowledged, cancellationToken),
             await query.LongCountAsync(row => row.ActiveOccurrenceId != null && row.Suppressed, cancellationToken), timeProvider.GetUtcNow(),
-            await query.LongCountAsync(row => row.ActiveOccurrenceId != null && row.Phase == MonitoringPhase.Firing, cancellationToken));
+            await query.LongCountAsync(row => row.ActiveOccurrenceId != null && row.Phase == MonitoringPhase.Firing, cancellationToken), offlineClients);
     }
 
     private static async Task<ImmutableArray<Guid>> EligibleAsync(OrchestratorDbContext db, int tenantId, CancellationToken ct)
@@ -175,7 +181,7 @@ public sealed partial class MonitoringStore(IServiceScopeFactory scopeFactory, T
     private static void RequireSeries(MonitoringSeriesKey key)
     {
         RequireTenant(key.TenantId);
-        if (key.RuleId == Guid.Empty || key.AgentId == Guid.Empty || string.IsNullOrWhiteSpace(key.ResourceKey) ||
+        if (key.RuleId == Guid.Empty || key.AgentId == Guid.Empty && !MonitoringOfflinePresentation.IsSeries(key) || string.IsNullOrWhiteSpace(key.ResourceKey) ||
             key.ResourceKey.Length > MonitoringLimits.MaximumResourceKeyLength || key.ResourceKey.Any(char.IsControl)) throw new ArgumentException("invalid_series");
     }
     private static string? ReadHistoryDetail(string json, string property)

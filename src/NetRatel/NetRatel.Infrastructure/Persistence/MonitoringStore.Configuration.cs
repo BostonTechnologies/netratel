@@ -232,8 +232,9 @@ public sealed partial class MonitoringStore
             else if (resetRule == rule.RuleId) result = _evaluator.ResetDefinition(state, rule, MonitoringConditionResetPolicy.SuspendOccurrenceAndRequireNewWindow, operatorId, reason);
             else
             {
-                var wasApplicable = Applicable(oldRule, state.Series.AgentId, before, eligible);
-                var applicable = Applicable(rule, state.Series.AgentId, after, eligible);
+                var offline = MonitoringOfflinePresentation.IsSeries(state.Series);
+                var wasApplicable = offline ? oldRule.Enabled && oldRule.AlertIfOffline && eligible.Any(id => Applicable(oldRule, id, before, eligible)) : Applicable(oldRule, state.Series.AgentId, before, eligible);
+                var applicable = offline ? rule.Enabled && rule.AlertIfOffline && eligible.Any(id => Applicable(rule, id, after, eligible)) : Applicable(rule, state.Series.AgentId, after, eligible);
                 if (!applicable && (state.Phase is not (MonitoringPhase.Suspended or MonitoringPhase.NotApplicable) || state.Occurrence is { EndedAtUtc: null }))
                     result = _evaluator.SetApplicability(state, rule, false, operatorId, reason);
                 else if (applicable && (!wasApplicable || state.Phase is MonitoringPhase.Suspended or MonitoringPhase.NotApplicable))
@@ -241,8 +242,8 @@ public sealed partial class MonitoringStore
                 else if (applicable)
                 {
                     // Configuration changes may update suppression, but cannot replay old evidence into a hold.
-                    var fence = await directory.GetCurrentEvidenceAsync(new(state.Series.TenantId, state.Series.AgentId), ct).ConfigureAwait(false);
-                    result = _evaluator.Refresh(state, rule, after.Bypasses, fence?.EvidenceStreamId, after.Groups);
+                    var streamId = offline ? rule.RuleId : (await directory.GetCurrentEvidenceAsync(new(state.Series.TenantId, state.Series.AgentId), ct).ConfigureAwait(false))?.EvidenceStreamId;
+                    result = _evaluator.Refresh(state, rule, after.Bypasses, streamId, after.Groups);
                 }
             }
                 if (result is not null && result.State.StateRevision != result.ExpectedStateRevision)

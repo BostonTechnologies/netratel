@@ -65,6 +65,7 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
     public DbSet<ClientWindowsSessionSnapshot> ClientWindowsSessionSnapshots => Set<ClientWindowsSessionSnapshot>();
     public DbSet<ClientServicesSnapshotRecord> ClientServicesSnapshots => Set<ClientServicesSnapshotRecord>();
     public DbSet<RatelDeskConnectorRecord> RatelDeskConnectors => Set<RatelDeskConnectorRecord>();
+    public DbSet<NotificationConnectorRecord> NotificationConnectors => Set<NotificationConnectorRecord>();
     public DbSet<FlowReceiverEvidenceRecord> FlowReceiverEvidence => Set<FlowReceiverEvidenceRecord>();
     public DbSet<MonitoringTenantConfigurationRecord> MonitoringTenantConfigurations => Set<MonitoringTenantConfigurationRecord>();
     public DbSet<MonitoringRuleRecord> MonitoringRules => Set<MonitoringRuleRecord>();
@@ -126,6 +127,15 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
         MonitoringPersistenceModel.Configure(modelBuilder);
         FlowPersistenceModel.Configure(modelBuilder);
         FlowReceiverEvidenceModel.Configure(modelBuilder);
+        modelBuilder.Entity<NotificationConnectorRecord>(entity =>
+        {
+            entity.ToTable("NotificationConnectors");
+            entity.HasKey(record => new { record.TenantId, record.Id });
+            entity.Property(record => record.Revision).IsConcurrencyToken();
+            entity.Property(record => record.OwnerPrincipalId).HasMaxLength(32).IsRequired();
+            entity.Property(record => record.ConfigurationJson).HasColumnType("jsonb").IsRequired();
+            entity.Property(record => record.ProtectedWebhookUrl).IsRequired();
+        });
         modelBuilder.Entity<RatelDeskConnectorRecord>(entity =>
         {
             entity.ToTable("RatelDeskConnectors");
