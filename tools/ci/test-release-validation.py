@@ -2416,6 +2416,33 @@ class PublicationImageJournalTests(unittest.TestCase):
         journal = self.write(args)
         self.assertEqual(journal["inputReceipt"], receipt)
 
+    def test_receipt_download_selects_latest_upload_by_time_across_partial_reruns(self):
+        self.original_run.update(event="push", head_branch=f"v{self.version}", run_attempt=2)
+        for metadata in self.metadata:
+            runtime = {101: None, 102: "linux-x64", 103: "win-x64", 104: "osx-arm64"}[metadata["id"]]
+            metadata["name"] = (f"netratel-client-{self.version}-{runtime}" if runtime else
+                                f"netratel-{self.version}-linux-x64")
+            metadata["created_at"] = "2026-01-01T00:00:00Z"
+            archive = self.archives[metadata["id"]]
+            with zipfile.ZipFile(archive, "a") as output:
+                members = [(name, item) for name, item in self.receipt["files"].items()
+                           if item["artifactId"] == metadata["id"]]
+                output.writestr("SHA256SUMS", "".join(f"{item['sha256']}  {name}\n" for name, item in members))
+            metadata["digest"] = "sha256:" + self.promotion.sha256(archive)
+        # The earlier upload has a larger ID and occurs first in the API result.
+        older = dict(self.metadata[0], id=999, created_at="2025-12-31T23:59:00Z")
+        self.metadata.insert(0, older)
+        inputs = self.root / "downloaded"
+        output = self.root / "downloaded-receipt.json"
+        self.promotion.create_input_receipt(inputs, output, 1010, self.version, self.revision, download=True)
+        receipt = json.loads(output.read_text())
+        self.assertEqual({item["artifactId"] for item in receipt["files"].values()}, {101, 102, 103, 104})
+        self.promotion.verified_input_receipt(inputs, output, self.version, self.revision)
+        self.assertNotIn(999, self.downloads)
+        older["created_at"] = self.metadata[1]["created_at"]
+        with self.assertRaisesRegex(ValueError, "Ambiguous"):
+            self.promotion.create_input_receipt(self.root / "ambiguous", output, 1010, self.version, self.revision, download=True)
+
     def test_authentication_checks_outer_zip_digest_and_selected_inner_payload_bytes(self):
         self.archives[101].write_bytes(self.archives[101].read_bytes() + b"unapproved outer bytes")
         self.refuse()

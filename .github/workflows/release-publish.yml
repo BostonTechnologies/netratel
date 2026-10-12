@@ -141,13 +141,7 @@ jobs:
           set -euo pipefail
           cd "$NETRATEL_RELEASE_SOURCE_ROOT"
           mkdir -p "$RUNNER_TEMP/review-inputs"
-          gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" \
-            --name "netratel-${VERSION}-linux-x64" \
-            --name "netratel-client-${VERSION}-linux-x64" \
-            --name "netratel-client-${VERSION}-win-x64" \
-            --name "netratel-client-${VERSION}-osx-arm64" \
-            --dir "$RUNNER_TEMP/review-inputs"
-          python3 "$GITHUB_WORKSPACE/tooling/tools/ci/promote-release.py" receipt \
+          python3 "$GITHUB_WORKSPACE/tooling/tools/ci/promote-release.py" receipt --download \
             --inputs "$RUNNER_TEMP/review-inputs" \
             --output "$RUNNER_TEMP/release-receipt.json" \
             --run-id "$RUN_ID"
@@ -213,13 +207,7 @@ jobs:
           bash tools/ci/scan-public-image.sh \
             --image "$tag" --version "$VERSION" --revision "$REVISION"
           mkdir -p "$RUNNER_TEMP/image-journal" "$RUNNER_TEMP/review-inputs"
-          gh run download "$RELEASE_BUILD_RUN_ID" --repo "$GITHUB_REPOSITORY" \
-            --name "netratel-${VERSION}-linux-x64" \
-            --name "netratel-client-${VERSION}-linux-x64" \
-            --name "netratel-client-${VERSION}-win-x64" \
-            --name "netratel-client-${VERSION}-osx-arm64" \
-            --dir "$RUNNER_TEMP/review-inputs"
-          python3 "$GITHUB_WORKSPACE/tooling/tools/ci/promote-release.py" receipt \
+          python3 "$GITHUB_WORKSPACE/tooling/tools/ci/promote-release.py" receipt --download \
             --inputs "$RUNNER_TEMP/review-inputs" \
             --output "$RUNNER_TEMP/image-journal/original-input-receipt.json" \
             --run-id "$RELEASE_BUILD_RUN_ID"
@@ -316,13 +304,7 @@ jobs:
           cd "$NETRATEL_RELEASE_SOURCE_ROOT"
           test "$(git rev-parse HEAD)" = "$REVISION"
           mkdir -p "$RUNNER_TEMP/review-inputs"
-          gh run download "$RELEASE_RUN_ID" --repo "$GITHUB_REPOSITORY" \
-            --name "netratel-${VERSION}-linux-x64" \
-            --name "netratel-client-${VERSION}-linux-x64" \
-            --name "netratel-client-${VERSION}-win-x64" \
-            --name "netratel-client-${VERSION}-osx-arm64" \
-            --dir "$RUNNER_TEMP/review-inputs"
-          python3 "$GITHUB_WORKSPACE/tooling/tools/ci/promote-release.py" receipt \
+          python3 "$GITHUB_WORKSPACE/tooling/tools/ci/promote-release.py" receipt --download \
             --inputs "$RUNNER_TEMP/review-inputs" \
             --output "$RUNNER_TEMP/release-receipt.json" \
             --run-id "$RELEASE_RUN_ID"

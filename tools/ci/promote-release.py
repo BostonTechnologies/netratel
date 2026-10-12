@@ -299,7 +299,7 @@ def verified_input_receipt(inputs, receipt_path, version, revision):
     }
 
 
-def create_input_receipt(inputs, output, run_id, version, revision):
+def create_input_receipt(inputs, output, run_id, version, revision, download=False):
     """Record the exact successful tag run and its downloaded artifact files."""
     details = json.loads(run("gh", "api", f"repos/{REPOSITORY}/actions/runs/{run_id}"))
     if (details.get("conclusion"), details.get("head_sha"), details.get("head_branch"),
@@ -310,8 +310,20 @@ def create_input_receipt(inputs, output, run_id, version, revision):
     if not isinstance(attempt, int) or attempt < 1:
         raise ValueError("Selected run has no valid attempt")
     metadata = json.loads(run("gh", "api", f"repos/{REPOSITORY}/actions/runs/{run_id}/artifacts?per_page=100"))
-    artifacts = {item.get("name"): item for item in metadata.get("artifacts", [])}
+    # Reruns retain same-named immutable artifacts. API order and numeric IDs
+    # do not identify the latest upload; select by creation time instead.
+    artifacts = {}
+    for item in metadata.get("artifacts", []):
+        name = item.get("name")
+        previous = artifacts.get(name)
+        if previous is not None:
+            if not item.get("created_at") or not previous.get("created_at") or item["created_at"] == previous["created_at"]:
+                raise ValueError(f"Ambiguous workflow artifact uploads: {name}")
+            if item["created_at"] < previous["created_at"]:
+                continue
+        artifacts[name] = item
     required = required_artifacts(version)
+    downloaded = set()
     files = {}
     for name in required:
         runtime = re.match(rf"netratel-client-{re.escape(version)}-(linux-x64|win-x64|osx-arm64)", name)
@@ -322,6 +334,17 @@ def create_input_receipt(inputs, output, run_id, version, revision):
                 not re.fullmatch(r"sha256:[a-f0-9]{64}", artifact.get("digest", "")):
             raise ValueError(f"Missing authenticated workflow artifact: {artifact_name}")
         directory = inputs / artifact_name
+        if download and artifact_name not in downloaded:
+            if directory.exists():
+                raise ValueError(f"Artifact download destination already exists: {directory}")
+            with tempfile.TemporaryDirectory(prefix="netratel-release-download-") as temporary:
+                archive = Path(temporary) / "artifact.zip"
+                download_artifact(artifact["id"], archive)
+                if sha256(archive) != artifact["digest"].removeprefix("sha256:"):
+                    raise ValueError("Authenticated artifact download digest differs from metadata")
+                directory.mkdir(parents=True)
+                extract_artifact(archive, directory)
+            downloaded.add(artifact_name)
         path = directory / name
         sums = directory / "SHA256SUMS"
         if not path.is_file() or not sums.is_file() or path.is_symlink() or sums.is_symlink():
@@ -728,6 +751,7 @@ if __name__ == "__main__":
     staging.add_argument("--output", required=True, type=Path)
     staging.add_argument("--version", required=True)
     receipt_parser = commands.add_parser("receipt", help="Create a receipt from a successful tagged workflow run")
+    receipt_parser.add_argument("--download", action="store_true", help="Download exact immutable artifact IDs before recording the receipt")
     receipt_parser.add_argument("--inputs", required=True, type=Path)
     receipt_parser.add_argument("--output", required=True, type=Path)
     receipt_parser.add_argument("--run-id", required=True, type=int)
@@ -767,7 +791,7 @@ if __name__ == "__main__":
             stage(args.inputs, args.output, args.version)
         elif args.command == "receipt":
             version = product_version()
-            create_input_receipt(args.inputs, args.output, args.run_id, version, run("git", "rev-parse", "HEAD"))
+            create_input_receipt(args.inputs, args.output, args.run_id, version, run("git", "rev-parse", "HEAD"), download=args.download)
         elif args.command == "preflight":
             preflight(args)
         elif args.command == "publish":
