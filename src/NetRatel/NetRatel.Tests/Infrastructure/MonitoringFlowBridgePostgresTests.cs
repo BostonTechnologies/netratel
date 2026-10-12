@@ -83,6 +83,9 @@ public sealed class MonitoringFlowBridgePostgresTests(PostgreSqlPersistenceFixtu
         var occurrence = state.Occurrence!.OccurrenceId;
         var lease = await rig.ClaimAsync();
         (await rig.Bridge.ProcessLeaseAsync(lease, default)).Should().BeTrue();
+        var run = (await rig.Definitions.GetRunsAsync(rig.Client.TenantId, rig.Version.FlowId)).Should()
+            .ContainSingle("the grouped offline handoff must persist a flow run").Which;
+        run.Status.Should().Be(FlowRunStatus.Queued, "successful lease completion must represent an admitted outage");
         (await rig.Provider.GetRequiredService<FlowRunProcessor>().ProcessOneAsync()).Should().BeTrue();
         rig.Dispatcher.Sends.Should().Be(1);
         rig.Dispatcher.LastRequest!.Event.Data.OfflineSummary!.Summary.Should().Be("11 clients are offline.");

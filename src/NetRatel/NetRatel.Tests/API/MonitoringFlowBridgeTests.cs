@@ -26,6 +26,7 @@ public sealed class MonitoringFlowBridgeTests
     {
         var rig = new Rig();
         var canonical = MonitoringFlowEventFactory.Create(rig.Intent)!;
+        canonical.Should().Be(MonitoringCanonicalFlowEvent.Create(rig.Intent));
         rig.Clock.Now = rig.Clock.Now.AddHours(1);
         MonitoringFlowEventFactory.Create(rig.Intent).Should().Be(canonical);
         canonical.Data.ClientName.Should().Be(rig.Client.AgentId.ToString("D"));
@@ -39,6 +40,30 @@ public sealed class MonitoringFlowBridgeTests
             _ => canonical with { Data = canonical.Data with { ClientName = "un-pinned friendly name" } }
         };
         MonitoringFlowEventFactory.Matches(altered, rig.Intent).Should().BeFalse();
+    }
+
+    [Fact]
+    public void GroupedOfflineIntentUsesTheSameValidEnvelopeAtTheBridgeAndPersistenceBoundary()
+    {
+        var rig = new Rig();
+        var summary = new MonitoringOfflineSnapshotDto(11, 11, "", true);
+        var intent = rig.Intent with
+        {
+            Series = MonitoringOfflinePresentation.Series(rig.Client.TenantId, rig.Rule.RuleId),
+            PinnedRule = rig.Rule with { AlertIfOffline = true, Targets = new(MonitoringTargetMode.Selected, [], [Guid.NewGuid()]) },
+            PinnedEvidence = rig.Intent.PinnedEvidence with { NumericValue = 11, OfflineSummary = summary },
+            OfflineSummary = summary
+        };
+        var input = MonitoringFlowEventFactory.Create(intent);
+        input.Should().NotBeNull();
+        input.Should().Be(MonitoringCanonicalFlowEvent.Create(intent));
+        FlowContractValidation.ValidEnvelope(input!).Should().BeTrue();
+        input!.Data.AgentId.Should().Be(Guid.Empty);
+        input.Data.ClientName.Should().Be("Monitored clients");
+        input.Data.Resource.Should().Be(MonitoringOfflinePresentation.ResourceKey);
+        input.Data.Metric.Should().Be("ClientOffline");
+        input.Data.OfflineSummary.Should().Be(summary);
+        MonitoringOfflinePresentation.IsValid(input.Data.OfflineSummary).Should().BeTrue();
     }
 
     [Fact]
