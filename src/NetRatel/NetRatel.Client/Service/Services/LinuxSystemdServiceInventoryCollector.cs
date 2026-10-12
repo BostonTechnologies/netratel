@@ -35,17 +35,22 @@ public sealed class LinuxSystemdServiceInventoryCollector(
         try
         {
             // Installed units include stopped/unloaded services; loaded units include transient services.
-            var installed = await _adapter.QueryAsync(["list-unit-files", "--type=service", "--no-legend", "--no-pager", "--plain"], deadline.Token).ConfigureAwait(false);
-            var loaded = await _adapter.QueryAsync(["list-units", "--type=service", "--all", "--no-legend", "--no-pager", "--plain"], deadline.Token).ConfigureAwait(false);
-            if (installed.ExitCode != 0 || loaded.ExitCode != 0)
-                return Result(ServiceSnapshotKind.Inventory, ServiceCollectionStatus.Error, observed, [], "systemd-query-failed");
+            var installed = await _adapter.QueryAsync(["list-unit-files", "--type=service", "--no-legend", "--no-pager", "--plain", "--full"], deadline.Token).ConfigureAwait(false);
+            var loaded = await _adapter.QueryAsync(["list-units", "--type=service", "--all", "--no-legend", "--no-pager", "--plain", "--full"], deadline.Token).ConfigureAwait(false);
             var unitFiles = ParseUnitFiles(installed.Output);
-            var names = unitFiles.Keys.Concat(ParseLoadedNames(loaded.Output)).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
-            var truncated = installed.Truncated || loaded.Truncated || names.Length > ClientServicesLimits.MaximumServices ||
-                HasMalformedListRows(installed.Output, 2) || HasMalformedListRows(loaded.Output, 4);
+            // Bare definitions have no runtime instance. Exclude them from inventory; preserve foo@bar.service.
+            var names = unitFiles.Keys.Concat(ParseLoadedNames(loaded.Output)).Where(name => !IsBareTemplate(name))
+                .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
+            var discoveryError = installed.Truncated || loaded.Truncated ? "systemd-output-truncated" :
+                installed.ExitCode != 0 || loaded.ExitCode != 0 ? "systemd-query-failed" :
+                HasMalformedListRows(installed.Output, 2) || HasMalformedListRows(loaded.Output, 4) ? "systemd-output-malformed" :
+                names.Length > ClientServicesLimits.MaximumServices ? "inventory-limit" : null;
+            if (names.Length == 0 && discoveryError == "systemd-query-failed")
+                return Result(ServiceSnapshotKind.Inventory, ServiceCollectionStatus.Error, observed, [], discoveryError);
             var observations = await QueryServicesAsync(names.Take(ClientServicesLimits.MaximumServices).ToArray(), unitFiles, false, observed, deadline.Token).ConfigureAwait(false);
-            return Result(ServiceSnapshotKind.Inventory, truncated || observations.Partial ? ServiceCollectionStatus.Partial : ServiceCollectionStatus.Complete,
-                observed, observations.Services, truncated ? "inventory-limit" : observations.Partial ? "systemd-query-partial" : null);
+            var error = discoveryError ?? observations.ErrorCode;
+            return Result(ServiceSnapshotKind.Inventory, error is not null ? ServiceCollectionStatus.Partial : ServiceCollectionStatus.Complete,
+                observed, observations.Services, error);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch (OperationCanceledException) { return Result(ServiceSnapshotKind.Inventory, ServiceCollectionStatus.Error, observed, [], "collection-timeout"); }
@@ -60,7 +65,8 @@ public sealed class LinuxSystemdServiceInventoryCollector(
         var observed = _timeProvider.GetUtcNow();
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(ClientServicesLimits.CollectionTimeout);
-        if (names.Count > ClientServicesLimits.MaximumWatchServices || names.Any(name => !ClientServiceContractValidator.IsValidServiceName(name, ClientServicePlatform.LinuxSystemd)))
+        if (names.Count > ClientServicesLimits.MaximumWatchServices || names.Any(name =>
+            !ClientServiceContractValidator.IsValidServiceName(name, ClientServicePlatform.LinuxSystemd) || IsBareTemplate(name)))
             return Result(ServiceSnapshotKind.Watch, ServiceCollectionStatus.Error, observed, [], "invalid-watch-policy", policyRevision);
         try
         {
@@ -68,7 +74,7 @@ public sealed class LinuxSystemdServiceInventoryCollector(
             var evidence = queried.Partial ? queried.Services.Select(service => service.AuthoritativeMissing
                 ? service with { State = ClientServiceState.Unknown, AuthoritativeMissing = false } : service).ToArray() : queried.Services;
             return Result(ServiceSnapshotKind.Watch, queried.Partial ? ServiceCollectionStatus.Partial : ServiceCollectionStatus.Complete,
-                observed, evidence, queried.Partial ? "systemd-query-partial" : null, policyRevision);
+                observed, evidence, queried.ErrorCode, policyRevision);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch (OperationCanceledException) { return Result(ServiceSnapshotKind.Watch, ServiceCollectionStatus.Error, observed, [], "collection-timeout", policyRevision); }
@@ -78,39 +84,44 @@ public sealed class LinuxSystemdServiceInventoryCollector(
         }
     }
 
-    private async Task<(IReadOnlyList<ClientServiceObservation> Services, bool Partial)> QueryServicesAsync(
+    private async Task<(IReadOnlyList<ClientServiceObservation> Services, bool Partial, string? ErrorCode)> QueryServicesAsync(
         IReadOnlyList<string> names, IReadOnlyDictionary<string, string> unitFiles, bool allowMissing,
         DateTimeOffset observed, CancellationToken cancellationToken)
     {
         var services = new List<ClientServiceObservation>();
         var partial = false;
+        string? error = null;
         foreach (var batch in names.Chunk(QueryBatchSize))
         {
             cancellationToken.ThrowIfCancellationRequested();
             var arguments = new List<string> { "show", "--no-pager", "--property=" + string.Join(',', Properties), "--" };
             arguments.AddRange(batch);
             var query = await _adapter.QueryAsync(arguments, cancellationToken).ConfigureAwait(false);
-            var blocks = ParsePropertyBlocks(query.Output);
+            var blocks = ParsePropertyBlocks(query.Output, query.Truncated);
             var successful = query.ExitCode == 0 && !query.Truncated;
             partial |= !successful;
+            if (query.Truncated) error = "systemd-output-truncated";
+            else if (query.ExitCode != 0) error ??= "systemd-query-partial";
             foreach (var name in batch)
             {
-                if (!successful || !blocks.TryGetValue(name, out var properties) || !HasStateProperties(properties))
+                if (!blocks.TryGetValue(name, out var properties) || !HasStateProperties(properties))
                 {
                     partial = true;
+                    error ??= "systemd-query-partial";
                     services.Add(Unknown(name, observed, unitFiles.GetValueOrDefault(name)));
                     continue;
                 }
                 var load = Value(properties, "LoadState");
                 var active = Value(properties, "ActiveState");
                 var sub = Value(properties, "SubState");
-                var missing = allowMissing && load == "not-found";
+                var missing = allowMissing && successful && load == "not-found";
+                if (!allowMissing && load == "not-found") { partial = true; error ??= "systemd-query-partial"; }
                 services.Add(new ClientServiceObservation(name, BoundedDisplayName(Value(properties, "Description"), name), ClientServicePlatform.LinuxSystemd,
                     NormalizeState(load, active, sub, missing), Bounded(active + "/" + sub), null, Bounded(load), Bounded(active), Bounded(sub),
                     Bounded(Value(properties, "UnitFileState"), unitFiles.GetValueOrDefault(name)), observed, missing));
             }
         }
-        return (services, partial);
+        return (services, partial, error);
     }
 
     internal static ClientServiceState NormalizeState(string load, string active, string sub, bool authoritativeMissing = false) =>
@@ -142,7 +153,7 @@ public sealed class LinuxSystemdServiceInventoryCollector(
         .Where(parts => parts.Length >= 4 && IsUnitName(parts[0]))
         .Select(parts => parts[0]);
 
-    internal static Dictionary<string, Dictionary<string, string>> ParsePropertyBlocks(string output)
+    internal static Dictionary<string, Dictionary<string, string>> ParsePropertyBlocks(string output, bool truncated = false)
     {
         var result = new Dictionary<string, Dictionary<string, string>>(StringComparer.Ordinal);
         var block = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -166,12 +177,15 @@ public sealed class LinuxSystemdServiceInventoryCollector(
             var key = line[..separator];
             if (Array.IndexOf(Properties, key) >= 0) block[key] = line[(separator + 1)..].TrimEnd('\r');
         }
-        AddBlock();
+        // A truncated trailing block may end in the middle of an otherwise valid property value.
+        if (!truncated) AddBlock();
         return result;
     }
 
     private static bool HasStateProperties(IReadOnlyDictionary<string, string> properties) =>
-        properties.ContainsKey("LoadState") && properties.ContainsKey("ActiveState") && properties.ContainsKey("SubState");
+        !string.IsNullOrEmpty(Value(properties, "LoadState")) && !string.IsNullOrEmpty(Value(properties, "ActiveState")) &&
+        !string.IsNullOrEmpty(Value(properties, "SubState"));
+    private static bool IsBareTemplate(string name) => name.EndsWith("@.service", StringComparison.Ordinal);
     private static bool IsUnitName(string name) => name.EndsWith(".service", StringComparison.Ordinal) && !name.Any(char.IsWhiteSpace) && ClientServiceContractValidator.IsValidServiceName(name, ClientServicePlatform.LinuxSystemd);
     private static bool HasMalformedListRows(string output, int minimumColumns) => output.Split('\n').Where(line => !string.IsNullOrWhiteSpace(line))
         .Select(line => line.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))

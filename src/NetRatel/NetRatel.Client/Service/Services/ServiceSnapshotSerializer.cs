@@ -16,17 +16,25 @@ internal static class ServiceSnapshotSerializer
         var chunks = new List<ServiceSnapshotChunk>();
         var chunk = CreateChunk(result, 0);
         var totalBytes = 0;
-        var truncated = result.Services.Count > ClientServicesLimits.MaximumServices;
+        var truncated = false;
+        string? observationError = null;
         var maximumEntries = result.Kind == ServiceSnapshotKind.Watch ? ClientServicesLimits.MaximumWatchServices : ClientServicesLimits.MaximumServices;
-        var acceptedNames = new HashSet<string>(StringComparer.Ordinal);
+        var acceptedNames = new HashSet<string>(result.Services.Count > 0 && result.Services[0].Platform == ClientServicePlatform.Windows
+            ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
         foreach (var observation in result.Services)
         {
-            if (acceptedNames.Count >= maximumEntries) { truncated = true; break; }
-            if (!ClientServiceContractValidator.TryValidateObservation(observation, out _) || !acceptedNames.Add(observation.Name))
+            if (!ClientServiceContractValidator.TryValidateObservation(observation, out _))
             {
-                truncated = true;
+                observationError = "invalid-observation";
                 continue;
             }
+            if (acceptedNames.Contains(observation.Name))
+            {
+                observationError ??= "duplicate-observation";
+                continue;
+            }
+            if (acceptedNames.Count >= maximumEntries) { truncated = true; break; }
+            acceptedNames.Add(observation.Name);
             var service = ToWire(observation);
             chunk.Services.Add(service);
             if (EnvelopeSize(chunk, session, protocolVersion) > ClientServicesLimits.MaximumChunkPayloadBytes)
@@ -51,12 +59,12 @@ internal static class ServiceSnapshotSerializer
         }
         chunks.Add(chunk);
         chunks[^1].IsFinal = true;
-        if (truncated)
+        if (truncated || observationError is not null)
         {
             foreach (var item in chunks)
             {
                 item.Status = (ServiceCollectionCompleteness)(int)ServiceCollectionStatus.Partial;
-                item.ErrorCode = "inventory-limit";
+                item.ErrorCode = truncated ? "inventory-limit" : observationError!;
                 foreach (var service in item.Services)
                 {
                     if (!service.AuthoritativeMissing) continue;

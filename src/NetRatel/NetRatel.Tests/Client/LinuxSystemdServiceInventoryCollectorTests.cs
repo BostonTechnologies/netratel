@@ -8,6 +8,47 @@ namespace NetRatel.Tests.Client;
 public sealed class LinuxSystemdServiceInventoryCollectorTests
 {
     [Fact]
+    public async Task BareTemplates_DoNotPoisonRuntimeBatch_WhileInstancesAndTransientServicesRemain()
+    {
+        var adapter = new FixtureAdapter(arguments => arguments[0] switch
+        {
+            "list-unit-files" => new(0, "worker@.service disabled enabled\nworker@blue.service enabled enabled\nstopped.service disabled enabled\n"),
+            "list-units" => new(0, "transient.service loaded active running Transient\n"),
+            // systemctl can print useful blocks, then fail to resolve a bare template.
+            "show" => new(arguments.Contains("worker@.service") ? 1 : 0,
+                Block("worker@blue.service", "active", "running", "enabled") +
+                Block("stopped.service", "inactive", "dead", "disabled") +
+                Block("transient.service", "active", "running", "transient")),
+            _ => throw new InvalidOperationException()
+        });
+        var result = await new LinuxSystemdServiceInventoryCollector(adapter).CollectInventoryAsync(CancellationToken.None);
+        result.Status.Should().Be(ServiceCollectionStatus.Complete);
+        result.Services.Select(service => service.Name).Should().BeEquivalentTo("worker@blue.service", "stopped.service", "transient.service");
+        adapter.Commands.Single(command => command[0] == "show").Should().NotContain("worker@.service");
+    }
+
+    [Theory]
+    [InlineData(1, false, "systemd-query-partial")]
+    [InlineData(0, true, "systemd-output-truncated")]
+    public async Task FailedOrTruncatedBatch_PreservesFinishedValidBlocks(int exitCode, bool truncated, string error)
+    {
+        var adapter = new FixtureAdapter(arguments => arguments[0] switch
+        {
+            "list-unit-files" => new(0, "healthy.service disabled enabled\nunreadable.service enabled enabled\n"),
+            "list-units" => new(0, ""),
+            "show" => new(exitCode, Block("healthy.service", "active", "exited", "disabled") +
+                "Id=unreadable.service\nLoadState=loaded\nActiveState=act", truncated),
+            _ => throw new InvalidOperationException()
+        });
+        var result = await new LinuxSystemdServiceInventoryCollector(adapter).CollectInventoryAsync(CancellationToken.None);
+        result.Status.Should().Be(ServiceCollectionStatus.Partial);
+        result.ErrorCode.Should().Be(error);
+        result.Services.Single(service => service.Name == "healthy.service").State.Should().Be(ClientServiceState.Running);
+        result.Services.Single(service => service.Name == "unreadable.service").State.Should().Be(ClientServiceState.Unknown);
+        adapter.Commands.Should().HaveCount(3); // No unbounded per-unit retries.
+    }
+
+    [Fact]
     public async Task Inventory_UnionsInstalledStoppedAndLoadedTransientUnits_WithoutCommandsOrEnvironment()
     {
         var adapter = new FixtureAdapter(arguments => arguments[0] switch

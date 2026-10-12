@@ -17,7 +17,7 @@ public interface IClientServicesLiveStreamService
 /// <summary>One read-only, bounded SSE stream owned by an open Services viewer.</summary>
 public sealed class ClientServicesLiveStreamService(IHttpClientFactory factory) : IClientServicesLiveStreamService
 {
-    private const int MaximumEventCharacters = 2 * 1024 * 1024;
+    private const int MaximumEventCharacters = 8 * ClientServicesLimits.MaximumInventoryBytes;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly HttpClient _http = factory.CreateClient("OrchestratorApiStreaming");
 
@@ -107,6 +107,7 @@ public sealed class ClientServicesLiveStreamService(IHttpClientFactory factory) 
                 {
                     var model = JsonSerializer.Deserialize<ClientServicesReadModelDto>(data.ToString(), JsonOptions);
                     if (model is not null && (model.LastCompleteInventory is null || model.LastCompleteInventory.Services is { Count: <= ClientServicesLimits.MaximumServices }) &&
+                        (model.LastPartialInventory is null || model.LastPartialInventory is { Status: ServiceCollectionStatus.Partial, Services.Count: <= ClientServicesLimits.MaximumServices }) &&
                         model.WatchedServices is { Count: <= ClientServicesLimits.MaximumWatchServices } &&
                         model.MonitoredServiceNames is { Count: <= ClientServicesLimits.MaximumWatchServices })
                         yield return model;

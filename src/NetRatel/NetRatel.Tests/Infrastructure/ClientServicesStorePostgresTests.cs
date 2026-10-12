@@ -21,6 +21,41 @@ namespace NetRatel.Tests.Infrastructure;
 public sealed class ClientServicesStorePostgresTests(PostgreSqlPersistenceFixture fixture)
 {
     [Fact]
+    public async Task PolicyAndTimeoutExceptions_CannotMutatePartialEvidenceAfterOwnerReplacement()
+    {
+        var connection = await fixture.CreateDatabaseAsync();
+        await using var provider = CreateProvider(connection);
+        await using (var scope = provider.CreateAsyncScope())
+            await scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>().Database.MigrateAsync();
+        var client = new ClientKey(27, Guid.NewGuid());
+        var epochs = provider.GetRequiredService<IClientConnectionEpochStore>();
+        var owner = await ActivateAsync(epochs, client);
+        var store = provider.GetRequiredService<IClientServicesStore>();
+        var observed = DateTimeOffset.UtcNow;
+        var attempt = new ServiceCollectionAttemptDto(Guid.NewGuid(), ServiceSnapshotKind.Inventory,
+            ServiceCollectionStatus.Partial, owner.Owner.Epoch, 2, observed, observed, 0);
+        var state = ClientServicesState.Empty(client) with
+        {
+            Revision = 1, ConnectionId = owner.Owner.ConnectionId, ConnectionEpoch = owner.Owner.Epoch, LastAcceptedSequence = 2,
+            LatestAttempt = attempt, LatestInventoryAttempt = attempt,
+            LastPartialInventory = new(Guid.NewGuid(), owner.Owner.Epoch, 1, observed, observed,
+                [ServicesTestData.Service("partial")], ServiceCollectionStatus.Partial, "systemd-query-partial")
+        };
+        (await store.SaveAsync(state, 0, default)).Disposition.Should().Be(ClientServicesStoreWriteDisposition.Stored);
+        await ActivateAsync(epochs, client);
+        var policy = state with { Revision = 2, WatchPolicyRevision = 1, MonitoredServiceNames = ["partial"] };
+        var altered = state.LastPartialInventory! with { Services = [ServicesTestData.Service("forged")] };
+        (await store.SaveAsync(policy with { LastPartialInventory = altered }, 1, default)).Disposition.Should().Be(ClientServicesStoreWriteDisposition.Conflict);
+        (await store.SaveAsync(policy with { LatestInventoryAttempt = attempt with { IsFinal = true } }, 1, default)).Disposition.Should().Be(ClientServicesStoreWriteDisposition.Conflict);
+        (await store.SaveAsync(policy, 1, default)).Disposition.Should().Be(ClientServicesStoreWriteDisposition.Stored);
+        var timeoutAttempt = attempt with { IsFinal = true, Status = ServiceCollectionStatus.Error, ErrorCode = "assembly_timeout" };
+        var timeout = policy with { Revision = 3, LatestAttempt = timeoutAttempt, LatestInventoryAttempt = timeoutAttempt };
+        (await store.SaveAsync(timeout with { LastPartialInventory = altered }, 2, default)).Disposition.Should().Be(ClientServicesStoreWriteDisposition.Conflict);
+        (await store.SaveAsync(timeout, 2, default)).Disposition.Should().Be(ClientServicesStoreWriteDisposition.Stored);
+        (await store.LoadAsync(client, default))!.LastPartialInventory!.Services.Single().Name.Should().Be("partial");
+    }
+
+    [Fact]
     public async Task Migration_actor_and_process_restart_preserve_complete_inventory_partial_attempt_and_fences()
     {
         var connection = await fixture.CreateDatabaseAsync();
@@ -49,7 +84,8 @@ public sealed class ClientServicesStorePostgresTests(PostgreSqlPersistenceFixtur
             (await actor.Ask<ClientServicesMessageResult>(new RecordClientServicesChunk(complete)))
                 .Disposition.Should().Be(ClientServicesMessageDisposition.Accepted);
             await actor.Ask<ClientServicesState>(new UpdateClientServiceWatchPolicy(ServicesTestData.Policy(client, 2, "durable")));
-            var partial = ServicesTestData.Chunk(client, 101, ServicesTestData.Service("unfinished")) with { IsFinal = false };
+            var partial = ServicesTestData.Chunk(client, 101, ServicesTestData.Service("useful-partial")) with
+                { Status = ServiceCollectionStatus.Partial, ErrorCode = "systemd-query-partial" };
             await actor.Ask<ClientServicesMessageResult>(new RecordClientServicesChunk(partial));
             await actor.GracefulStop(TimeSpan.FromSeconds(3));
             await presence.GracefulStop(TimeSpan.FromSeconds(3));
@@ -61,6 +97,10 @@ public sealed class ClientServicesStorePostgresTests(PostgreSqlPersistenceFixtur
             var state = await actor.Ask<ClientServicesState>(new GetClientServices(client));
             state.LastCompleteInventory!.Services.Single().Name.Should().Be("durable");
             state.LatestAttempt!.Status.Should().Be(ServiceCollectionStatus.Partial);
+            state.LatestInventoryAttempt!.IsFinal.Should().BeTrue();
+            state.LastPartialInventory!.Services.Single().Name.Should().Be("useful-partial");
+            state.LastPartialInventory.ObservedAtUtc.Should().Be(partial.ObservedAtUtc);
+            state.LastPartialInventory.ErrorCode.Should().Be("systemd-query-partial");
             state.LastAcceptedSequence.Should().Be(101);
             state.WatchPolicyRevision.Should().Be(2);
             state.MonitoredServiceNames.Should().Equal("durable");
@@ -72,6 +112,7 @@ public sealed class ClientServicesStorePostgresTests(PostgreSqlPersistenceFixtur
             var twiceRecovered = await restartedStore.LoadAsync(client, CancellationToken.None);
             twiceRecovered!.LatestAttempt!.Status.Should().Be(ServiceCollectionStatus.Partial);
             twiceRecovered.LastCompleteInventory!.Services.Single().Name.Should().Be("durable");
+            twiceRecovered.LastPartialInventory!.Services.Single().Name.Should().Be("useful-partial");
 
             presence = system.ActorOf(PresenceActor.Props(client, new NetRatelAkkaOptions(), ActorRefs.Nobody,
                 restartedProvider.GetRequiredService<IClientConnectionEpochStore>()));

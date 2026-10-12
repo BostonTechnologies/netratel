@@ -8,6 +8,24 @@ namespace NetRatel.Tests.Client;
 public sealed class ServiceCollectionCoordinatorTests
 {
     [Fact]
+    public async Task RefreshDuringInventory_CoalescesWithTheRunningCollection()
+    {
+        var time = new ManualTimeProvider();
+        var collector = new RecordingCollector(time);
+        using var coordinator = new ServiceCollectionCoordinator(collector, time);
+        coordinator.BeginStream();
+        coordinator.StartDueCollection(CancellationToken.None);
+        coordinator.ApplyPolicy(Policy(time, 1, [], Guid.NewGuid())).Should().BeTrue();
+        collector.Complete(ServiceSnapshotKind.Inventory);
+        await coordinator.PendingCollection!;
+        coordinator.TryTakeCompleted(out var result).Should().BeTrue();
+        result!.Status.Should().Be(ServiceCollectionStatus.Complete);
+        time.Advance(ClientServicesLimits.MinimumRefreshInterval);
+        coordinator.StartDueCollection(CancellationToken.None);
+        collector.InventoryCalls.Should().Be(1);
+    }
+
+    [Fact]
     public async Task InventoryAndWatch_ShareOneOutstandingCollection_AndWatchUsesOnlyServerSelection()
     {
         var time = new ManualTimeProvider();

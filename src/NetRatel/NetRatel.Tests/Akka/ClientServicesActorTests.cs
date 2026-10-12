@@ -13,6 +13,38 @@ namespace NetRatel.Tests.Akka;
 
 public sealed class ClientServicesActorTests : IAsyncLifetime
 {
+    [Fact]
+    public async Task FinalPartialInventory_IsRetainedSeparately_AndWatchDoesNotReplaceInventoryOutcome()
+    {
+        var client = new ClientKey(7, Guid.NewGuid());
+        var actor = _system.ActorOf(ClientServicesActor.Props(client, _store));
+        var first = ServicesTestData.Chunk(client, 1, ServicesTestData.Service("first")) with
+            { IsFinal = false, Status = ServiceCollectionStatus.Partial, ErrorCode = "systemd-query-partial" };
+        await Record(actor, first);
+        var state = await actor.Ask<ClientServicesState>(new GetClientServices(client));
+        state.LatestInventoryAttempt!.IsFinal.Should().BeFalse();
+        state.LastPartialInventory.Should().BeNull();
+        await Record(actor, first with { Sequence = 2, ChunkIndex = 1, IsFinal = true, Services = [ServicesTestData.Service("second")] });
+        await actor.GracefulStop(TimeSpan.FromSeconds(3));
+        actor = _system.ActorOf(ClientServicesActor.Props(client, _store));
+        state = await actor.Ask<ClientServicesState>(new GetClientServices(client));
+        state.LastCompleteInventory.Should().BeNull();
+        state.LastPartialInventory!.Services.Select(service => service.Name).Should().Equal("first", "second");
+        state.LastPartialInventory.Status.Should().Be(ServiceCollectionStatus.Partial);
+        state.LastPartialInventory.ObservedAtUtc.Should().Be(first.ObservedAtUtc);
+        state.LastPartialInventory.ErrorCode.Should().Be("systemd-query-partial");
+        state.LatestInventoryAttempt!.IsFinal.Should().BeTrue();
+        await actor.Ask<ClientServicesState>(new UpdateClientServiceWatchPolicy(ServicesTestData.Policy(client, 1, "first")));
+        await Record(actor, ServicesTestData.Chunk(client, 3, ServicesTestData.Service("first")) with { Kind = ServiceSnapshotKind.Watch, WatchPolicyRevision = 1 });
+        state = await actor.Ask<ClientServicesState>(new GetClientServices(client));
+        state.LatestAttempt!.Kind.Should().Be(ServiceSnapshotKind.Watch);
+        state.LatestInventoryAttempt!.CollectionId.Should().Be(first.CollectionId);
+        await Record(actor, ServicesTestData.Chunk(client, 4, ServicesTestData.Service("complete")));
+        state = await actor.Ask<ClientServicesState>(new GetClientServices(client));
+        state.LastPartialInventory.Should().BeNull();
+        state.LastCompleteInventory!.Services.Single().Name.Should().Be("complete");
+    }
+
     private ActorSystem _system = null!;
     private readonly MemoryServicesStore _store = new();
     public ValueTask InitializeAsync() { _system = ActorSystem.Create($"services-tests-{Guid.NewGuid():N}"); return ValueTask.CompletedTask; }
@@ -66,6 +98,8 @@ public sealed class ClientServicesActorTests : IAsyncLifetime
         state = await actor.Ask<ClientServicesState>(new GetClientServices(client));
         state.LastCompleteInventory!.Services.Select(service => service.Name).Should().Equal("first", "second");
         state.LatestAttempt!.Status.Should().Be(ServiceCollectionStatus.Error);
+        state.LatestAttempt.IsFinal.Should().BeTrue();
+        state.LastPartialInventory!.Services.Single().Name.Should().Be("partial");
         state.LatestAttempt.ErrorCode.Should().Be("permission_denied");
     }
 
@@ -137,6 +171,7 @@ public sealed class ClientServicesActorTests : IAsyncLifetime
         var state = await actor.Ask<ClientServicesState>(new GetClientServices(client));
         state.LatestAttempt!.Status.Should().Be(ServiceCollectionStatus.Error);
         state.LatestAttempt.ErrorCode.Should().Be("assembly_timeout");
+        state.LatestInventoryAttempt!.IsFinal.Should().BeTrue();
         state.LastCompleteInventory.Should().BeNull();
     }
 

@@ -1,6 +1,8 @@
 using AwesomeAssertions;
 using Google.Protobuf;
 using Google.Protobuf.WellKnownTypes;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using NetRatel.Application.Presence;
 using NetRatel.Application.Services;
 using NetRatel.Shared.Contracts.Services;
@@ -12,6 +14,28 @@ namespace NetRatel.Tests.Services;
 public sealed class ClientServicesContractTests
 {
     private static readonly DateTimeOffset Now = new(2026, 10, 2, 12, 0, 0, TimeSpan.Zero);
+
+    [Fact]
+    public void StoredStateBeforePartialEvidence_LoadsWithCompatibleDefaults()
+    {
+        var state = ClientServicesState.Empty(new ClientKey(3, Guid.NewGuid())) with
+        {
+            LastCompleteInventory = new(Guid.NewGuid(), 1, 3, Now, Now.AddSeconds(1), [WindowsObservation()]),
+            LatestAttempt = new(Guid.NewGuid(), ServiceSnapshotKind.Inventory, ServiceCollectionStatus.Partial, 1, 4, Now, Now, 0)
+        };
+        var json = JsonSerializer.SerializeToNode(state)!.AsObject();
+        json.Remove("LastPartialInventory");
+        json.Remove("LatestInventoryAttempt");
+        json["LastCompleteInventory"]!.AsObject().Remove("Status");
+        json["LastCompleteInventory"]!.AsObject().Remove("ErrorCode");
+        json["LatestAttempt"]!.AsObject().Remove("IsFinal");
+        var loaded = json.Deserialize<ClientServicesState>()!;
+        loaded.LastCompleteInventory!.Status.Should().Be(ServiceCollectionStatus.Complete);
+        loaded.LastCompleteInventory.Services.Single().Name.Should().Be(state.LastCompleteInventory.Services.Single().Name);
+        loaded.LastPartialInventory.Should().BeNull();
+        loaded.LatestInventoryAttempt.Should().BeNull();
+        loaded.LatestAttempt!.IsFinal.Should().BeFalse("historical Partial does not establish collection completion");
+    }
 
     [Fact]
     public void CollectionFailureCannotClaimThatAnExpectedServiceIsMissing()

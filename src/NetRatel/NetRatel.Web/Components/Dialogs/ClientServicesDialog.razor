@@ -16,20 +16,21 @@
         </header>
         <div class="client-services-body">
         <section class="client-services-summary" aria-live="polite" data-testid="services-summary">
-            @if (_model?.LastCompleteInventory is { } inventory)
+            @if (DisplayedInventory is { } inventory)
             {
-                <span><strong>@(_model.Connected ? "Last complete inventory" : "Cached offline inventory")</strong> · @Age(inventory.ObservedAtUtc) · <time datetime="@inventory.ObservedAtUtc.ToString("O")">@inventory.ObservedAtUtc.ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss 'UTC'")</time></span>
+                <span><strong>@(inventory.Status == ServiceCollectionStatus.Partial ? "Partial inventory" : _model!.Connected ? "Last complete inventory" : "Cached offline inventory")</strong> · @Age(inventory.ObservedAtUtc) · <time datetime="@inventory.ObservedAtUtc.ToString("O")">@inventory.ObservedAtUtc.ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss 'UTC'")</time></span>
                 @if (IsStale(inventory.ObservedAtUtc)) { <span class="services-stale">Stale inventory</span> }
+                @if (inventory.Status == ServiceCollectionStatus.Partial) { <span>@ClientServicesPresentation.Reason(inventory.ErrorCode) Omitted services are not proven missing.</span> }
             }
             else { <span>No complete inventory received.</span> }
-            <span data-testid="services-live-state">@_streamState</span>
+            <span data-testid="services-live-state">Update connection: @_streamState</span>
         </section>
         <section class="client-services-controls" aria-label="Services controls">
             <label class="client-services-search">Search services
                 <input type="search" @bind="_search" @bind:event="oninput" placeholder="Name or display name" aria-label="Search services" data-testid="services-search" />
             </label>
             <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.Refresh" OnClick="RefreshAsync"
-                       Disabled="@(!CanRefresh)" data-testid="services-refresh">@(_refreshing ? "Requesting…" : "Refresh")</MudButton>
+                       Disabled="@(!CanRefresh)" data-testid="services-refresh">@(_refreshing ? "Requesting…" : _refreshWait is not null ? "Waiting…" : "Refresh")</MudButton>
             <div class="client-services-filters" aria-label="Service state filters">
                 @foreach (var filter in Filters)
                 {
@@ -44,11 +45,11 @@
             @if (_refreshMessage is not null) { <MudAlert Severity="Severity.Info" Dense="true" data-testid="services-refresh-result">@_refreshMessage</MudAlert> }
             @if (_model is { Connected: true, SupportsServices: false })
             {
-                <MudAlert Severity="Severity.Info" Dense="true" data-testid="services-unsupported">Services collection is unsupported by this client. A client upgrade may be required. Cached inventory remains available.</MudAlert>
+                <MudAlert Severity="Severity.Info" Dense="true" data-testid="services-unsupported">Services collection is unsupported by this client. A client upgrade may be required. @RetainedInventoryMessage</MudAlert>
             }
-            @if (_model?.LatestAttempt is { Status: ServiceCollectionStatus.Error or ServiceCollectionStatus.Partial or ServiceCollectionStatus.Unsupported } attempt)
+            @if (ClientServicesRefreshWait.InventoryAttempt(_model) is { Status: ServiceCollectionStatus.Error or ServiceCollectionStatus.Partial or ServiceCollectionStatus.Unsupported } attempt)
             {
-                <MudAlert Severity="Severity.Warning" Dense="true" data-testid="services-attempt">Latest @attempt.Kind.ToString().ToLowerInvariant() collection: @attempt.Status · @Age(attempt.ObservedAtUtc). Last complete inventory is retained; this attempt does not prove a service is missing.</MudAlert>
+                <MudAlert Severity="Severity.Warning" Dense="true" data-testid="services-attempt">Latest inventory collection: @(attempt.Status == ServiceCollectionStatus.Partial && !attempt.IsFinal ? "In progress or interrupted" : attempt.Status.ToString()) · @Age(attempt.ObservedAtUtc). @ClientServicesPresentation.Reason(attempt.ErrorCode) @RetainedInventoryMessage This attempt does not prove a service is missing.</MudAlert>
             }
             @if (_model is { Connected: false })
             {
@@ -56,7 +57,7 @@
             }
             @if (!_loading && _model is not null && Rows.Count == 0)
             {
-                <p data-testid="services-empty">@(_model.LastCompleteInventory is not null ? "The complete inventory contains no services." : "No service inventory is available yet.")</p>
+                <p data-testid="services-empty">@(DisplayedInventory is not null ? "The displayed inventory contains no services." : "No service inventory is available yet.")</p>
             }
             else if (!_loading && FilteredRows.Count == 0 && Rows.Count != 0)
             {
@@ -128,12 +129,14 @@ else
     private string _streamState = "Connecting";
     private string? _error;
     private string? _refreshMessage;
-    private Guid? _refreshInventoryId;
-    private bool _waitingForInventory;
+    private ClientServicesRefreshWait? _refreshWait;
     private DateTimeOffset _now = DateTimeOffset.UtcNow;
 
     private string ConnectionLabel => _model is null ? "Loading" : _model.Connected ? "Online" : "Offline";
-    private bool CanRefresh => !_loading && !_refreshing && _model is { Connected: true, SupportsServices: true };
+    private bool CanRefresh => !_loading && !_refreshing && _refreshWait is null && _model is { Connected: true, SupportsServices: true };
+    private ClientServicesSnapshotDto? DisplayedInventory => _model?.LastCompleteInventory ?? _model?.LastPartialInventory;
+    private string RetainedInventoryMessage => _model?.LastCompleteInventory is not null ? "Last complete inventory is retained." :
+        _model?.LastPartialInventory is not null ? "Available partial inventory is retained." : "";
 
     protected override async Task OnParametersSetAsync()
     {
@@ -150,7 +153,7 @@ else
         _error = null;
         _refreshMessage = null;
         _refreshing = false;
-        _waitingForInventory = false;
+        _refreshWait = null;
         _search = "";
         _filter = "All";
         _streamState = "Connecting";
@@ -173,6 +176,9 @@ else
             {
                 _loading = false;
                 _ageTask = UpdateAgeAsync(generation, token);
+                // Render cached rows before awaiting admission; once per tenant/client opening.
+                StateHasChanged();
+                if (CanRefresh) _ = RefreshAsync();
             }
         }
     }
@@ -207,10 +213,15 @@ else
             (model.Revision == _model.Revision && model.GeneratedAtUtc < _model.GeneratedAtUtc))) return;
         _model = model;
         _now = DateTimeOffset.UtcNow;
-        if (_waitingForInventory && model?.LastCompleteInventory is { } inventory && inventory.CollectionId != _refreshInventoryId)
+        CheckRefreshOutcome();
+    }
+
+    private void CheckRefreshOutcome()
+    {
+        if (_refreshWait?.Outcome(_model, _now) is { } outcome)
         {
-            _waitingForInventory = false;
-            _refreshMessage = "Complete inventory received.";
+            _refreshWait = null;
+            _refreshMessage = outcome;
         }
     }
 
@@ -218,9 +229,9 @@ else
     {
         try
         {
-            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(15));
+            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(5));
             while (await timer.WaitForNextTickAsync(token))
-                await InvokeAsync(() => { if (IsCurrent(generation)) { _now = DateTimeOffset.UtcNow; StateHasChanged(); } });
+                await InvokeAsync(() => { if (IsCurrent(generation)) { _now = DateTimeOffset.UtcNow; CheckRefreshOutcome(); StateHasChanged(); } });
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
     }
@@ -232,32 +243,31 @@ else
         var token = _runCancellation.Token;
         _refreshing = true;
         _refreshMessage = null;
-        _refreshInventoryId = _model?.LastCompleteInventory?.CollectionId;
-        _waitingForInventory = false;
+        var wait = new ClientServicesRefreshWait(_model, DateTimeOffset.UtcNow);
+        _refreshWait = wait;
         try
         {
             var response = await ServicesApi.RefreshAsync(_activeTenant, _activeAgent, token);
             if (!IsCurrent(generation)) return;
             _refreshMessage = response.Status switch
             {
-                ClientServicesRefreshStatus.Requested => "Refresh requested. Waiting for a complete inventory; the cached observation remains visible.",
+                ClientServicesRefreshStatus.Requested => "Refresh requested. Waiting for a subsequent inventory outcome. Available observations remain visible.",
                 ClientServicesRefreshStatus.Offline => "The client is offline. No refresh was requested.",
                 ClientServicesRefreshStatus.Unsupported => "This client does not support services collection. No refresh was requested.",
                 ClientServicesRefreshStatus.Throttled => response.RetryAfterUtc is { } retry
-                    ? $"A refresh was requested recently. Try again after {retry.ToUniversalTime():HH:mm:ss} UTC."
+                    ? $"A refresh was requested recently. Waiting for a subsequent inventory outcome. Try again after {retry.ToUniversalTime():HH:mm:ss} UTC."
                     : "A refresh was requested recently. Try again shortly.",
                 _ => "The refresh result is unavailable."
             };
-            if (response.Status == ClientServicesRefreshStatus.Requested)
-            {
-                _waitingForInventory = _model?.LastCompleteInventory?.CollectionId == _refreshInventoryId;
-                if (!_waitingForInventory) _refreshMessage = "Complete inventory received.";
-            }
+            _refreshWait = response.Status == ClientServicesRefreshStatus.Requested ||
+                response.Status == ClientServicesRefreshStatus.Throttled && response.RequestId is not null ? wait : null;
+            _now = DateTimeOffset.UtcNow;
+            CheckRefreshOutcome();
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
         catch (Exception exception) when (exception is HttpRequestException or System.Text.Json.JsonException)
-        { if (IsCurrent(generation)) _refreshMessage = "Refresh admission could not be confirmed. The cached observation remains visible."; }
-        finally { if (IsCurrent(generation)) _refreshing = false; }
+        { if (IsCurrent(generation)) { _refreshWait = null; _refreshMessage = "Refresh admission could not be confirmed. Available observations remain visible."; } }
+        finally { if (IsCurrent(generation)) { _refreshing = false; StateHasChanged(); } }
     }
 
     private IReadOnlyList<ServiceRow> Rows
@@ -267,8 +277,9 @@ else
             if (_model is null) return [];
             bool IsMonitored(ClientServiceObservation service) => _model.MonitoredServiceNames.Contains(service.Name,
                 service.Platform == ClientServicePlatform.Windows ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
-            var rows = (_model.LastCompleteInventory?.Services ?? []).ToDictionary(ServiceIdentity,
-                service => new ServiceRow(service, IsMonitored(service), false, "Inventory"), StringComparer.Ordinal);
+            var rows = (DisplayedInventory?.Services ?? []).ToDictionary(ServiceIdentity,
+                service => new ServiceRow(service, IsMonitored(service), false,
+                    DisplayedInventory?.Status == ServiceCollectionStatus.Partial ? "Partial inventory" : "Inventory"), StringComparer.Ordinal);
             foreach (var observation in _model.WatchedServices)
                 rows[ServiceIdentity(observation)] = new ServiceRow(observation, IsMonitored(observation), true, "Selected watch");
             var platform = rows.Values.FirstOrDefault()?.Observation.Platform ?? ClientServicePlatform.Unknown;
