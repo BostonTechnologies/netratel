@@ -9,6 +9,22 @@ namespace NetRatel.Tests.Client;
 
 public sealed class ServiceSnapshotSerializerTests
 {
+    [Theory]
+    [InlineData(false, "duplicate-observation")]
+    [InlineData(true, "invalid-observation")]
+    public void RejectedObservations_AreNotReportedAsCapacityLimits(bool invalid, string error)
+    {
+        var service = new ClientServiceObservation("Spooler", "Print Spooler", ClientServicePlatform.Windows,
+            ClientServiceState.Running, "Running", "Auto", null, null, null, null, DateTimeOffset.UtcNow);
+        var rejected = invalid ? service with { Name = "../invalid" } : service with { Name = "spooler" };
+        var session = new GatewayPresenceSession(4, Guid.NewGuid(), 1, Guid.NewGuid());
+        var chunks = ServiceSnapshotSerializer.CreateChunks(new(Guid.NewGuid(), ServiceSnapshotKind.Inventory,
+            ServiceCollectionStatus.Complete, service.ObservedAtUtc, [service, rejected]), session, "1.0");
+        chunks.SelectMany(chunk => chunk.Services).Should().ContainSingle();
+        chunks.Should().OnlyContain(chunk => (int)chunk.Status == (int)ServiceCollectionStatus.Partial && chunk.ErrorCode == error);
+        chunks[^1].IsFinal.Should().BeTrue();
+    }
+
     [Fact]
     public void Chunking_MeasuresActualProtobufEnvelope_WithUnicodeAndMaximumSequence()
     {

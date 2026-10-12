@@ -86,8 +86,7 @@ public sealed class ClientServicesResponsiveTests(ClientsManagementBrowserFixtur
         await Assertions.Expect(page.GetByTestId("service-row")).ToContainTextAsync("Running");
         await Assertions.Expect(page.GetByTestId("service-row")).ToContainTextAsync("Sub: exited");
         await page.GetByTestId("services-search").FillAsync("");
-        await page.GetByTestId("services-refresh").ClickAsync();
-        await Assertions.Expect(page.GetByTestId("services-refresh-result")).ToContainTextAsync("Complete inventory received");
+        await Assertions.Expect(page.GetByTestId("services-refresh-result")).ToContainTextAsync("Subsequent complete inventory received");
         Assert.Equal(1, fixture.ServicesData.Refreshes);
         Assert.Equal(1, fixture.ServicesData.Subscriptions);
         Assert.False(await page.Locator("#blazor-error-ui").IsVisibleAsync());
@@ -258,7 +257,7 @@ internal sealed class FixtureClientServicesService : IClientServicesApiService, 
     public Task<ClientServicesRefreshResponse> RefreshAsync(int tenantId, Guid agentId, CancellationToken cancellationToken = default)
     {
         Interlocked.Increment(ref _refreshes);
-        _events.Writer.TryWrite(new("Live", Model(tenantId, agentId, Guid.NewGuid())));
+        _events.Writer.TryWrite(new("Live", Model(tenantId, agentId, Guid.NewGuid(), (ulong)Refreshes + 1)));
         return Task.FromResult(new ClientServicesRefreshResponse(ClientServicesRefreshStatus.Requested, Guid.NewGuid()));
     }
 
@@ -273,14 +272,14 @@ internal sealed class FixtureClientServicesService : IClientServicesApiService, 
         finally { Cancelled.TrySetResult(); }
     }
 
-    private static ClientServicesReadModelDto Model(int tenantId, Guid agentId, Guid collection)
+    private static ClientServicesReadModelDto Model(int tenantId, Guid agentId, Guid collection, ulong sequence = 1)
     {
         var offline = agentId == Guid.Parse("99f5a0b0-5e61-4039-8d09-6c9d44c7c100");
         var observed = DateTimeOffset.UtcNow.AddMinutes(offline ? -45 : -1);
         ClientServiceObservation Service(string name, string display, ClientServiceState state, string subState) => new(name, display,
             ClientServicePlatform.LinuxSystemd, state, $"{(state == ClientServiceState.Running ? "active" : "inactive")}/{subState}", null,
             "loaded", state == ClientServiceState.Running ? "active" : "inactive", subState, "enabled", observed);
-        var inventory = new ClientServicesSnapshotDto(collection, 1, 1, observed, observed,
+        var inventory = new ClientServicesSnapshotDto(collection, 1, sequence, observed, observed,
         [
             Service("worker-with-a-very-long-stable-unit-name.service", "Worker with a deliberately long display name that must wrap at narrow widths", ClientServiceState.Running, "running"),
             Service("disabled.service", "Optional stopped service", ClientServiceState.Stopped, "dead"),

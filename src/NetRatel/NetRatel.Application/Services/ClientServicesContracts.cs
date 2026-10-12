@@ -69,7 +69,9 @@ public sealed record ClientServicesState(
     IReadOnlyList<ClientServiceObservation> WatchedServices,
     IReadOnlyList<string> MonitoredServiceNames,
     ulong WatchPolicyRevision,
-    Guid? ConnectionId = null)
+    Guid? ConnectionId = null,
+    ClientServicesSnapshotDto? LastPartialInventory = null,
+    ServiceCollectionAttemptDto? LatestInventoryAttempt = null)
 {
     public static ClientServicesState Empty(ClientKey client) =>
         new(client, 0, 0, 0, null, null, [], [], 0);

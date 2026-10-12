@@ -40,7 +40,8 @@ public sealed class ClientServicesCoordinator(
             sessions.GetStatus(client).RegistrationId == session.RegistrationId;
         return new(client.TenantId, client.AgentId, state.LastCompleteInventory, state.LatestAttempt,
             state.WatchedServices, state.MonitoredServiceNames, state.WatchPolicyRevision,
-            connected, connected && session.SupportsServices, timeProvider.GetUtcNow(), state.Revision);
+            connected, connected && session.SupportsServices, timeProvider.GetUtcNow(), state.Revision,
+            state.LastPartialInventory, state.LatestInventoryAttempt);
     }
 
     public async Task<ClientServiceWatchPolicyDto> GetPolicyAsync(ClientKey client, CancellationToken cancellationToken)

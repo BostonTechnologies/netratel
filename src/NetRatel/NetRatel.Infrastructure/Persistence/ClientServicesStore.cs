@@ -31,13 +31,15 @@ public sealed class ClientServicesStore(IServiceScopeFactory scopeFactory, TimeP
             throw new ArgumentException("A cache write must advance its expected revision once.", nameof(candidate));
         if (candidate.ConnectionEpoch < 0 || candidate.WatchedServices.Count > ClientServicesLimits.MaximumWatchServices ||
             candidate.MonitoredServiceNames.Count > ClientServicesLimits.MaximumWatchServices ||
-            candidate.LastCompleteInventory?.Services.Count > ClientServicesLimits.MaximumServices)
+            candidate.LastCompleteInventory?.Services.Count > ClientServicesLimits.MaximumServices ||
+            candidate.LastPartialInventory?.Services.Count > ClientServicesLimits.MaximumServices ||
+            candidate.LastPartialInventory is { Status: not ServiceCollectionStatus.Partial })
             throw new ArgumentException("Invalid services cache bounds.", nameof(candidate));
 
         var json = JsonSerializer.Serialize(candidate);
         // The inventory wire bytes are bounded separately. JSON property names and escaped characters
         // increase the stored representation, so cap the whole durable record as well.
-        if (Encoding.UTF8.GetByteCount(json) > ClientServicesLimits.MaximumInventoryBytes * 4)
+        if (Encoding.UTF8.GetByteCount(json) > ClientServicesLimits.MaximumInventoryBytes * 8)
             throw new ArgumentException("Services cache exceeds its storage limit.", nameof(candidate));
 
         await using var scope = scopeFactory.CreateAsyncScope();
@@ -114,6 +116,8 @@ public sealed class ClientServicesStore(IServiceScopeFactory scopeFactory, TimeP
         candidate.ConnectionId == current.ConnectionId && candidate.ConnectionEpoch == current.ConnectionEpoch &&
         candidate.LastAcceptedSequence == current.LastAcceptedSequence &&
         SamePhysicalValue(current.LastCompleteInventory, candidate.LastCompleteInventory) &&
+        SamePhysicalValue(current.LastPartialInventory, candidate.LastPartialInventory) &&
+        SamePhysicalValue(current.LatestInventoryAttempt, candidate.LatestInventoryAttempt) &&
         SamePhysicalValue(current.LatestAttempt, candidate.LatestAttempt) &&
         // The existing authorized policy path may prune old selected names;
         // it cannot add or change any accepted physical observation offline.
@@ -126,8 +130,12 @@ public sealed class ClientServicesStore(IServiceScopeFactory scopeFactory, TimeP
             candidate.WatchPolicyRevision != current.WatchPolicyRevision ||
             !candidate.MonitoredServiceNames.SequenceEqual(current.MonitoredServiceNames, StringComparer.Ordinal) ||
             !SamePhysicalValue(current.LastCompleteInventory, candidate.LastCompleteInventory) ||
+            !SamePhysicalValue(current.LastPartialInventory, candidate.LastPartialInventory) ||
             current.LatestAttempt is not { } attempt ||
-            !SamePhysicalValue(candidate.LatestAttempt, attempt with { Status = ServiceCollectionStatus.Error, ErrorCode = "assembly_timeout" }))
+            attempt.IsFinal || attempt.Status != ServiceCollectionStatus.Partial ||
+            !SamePhysicalValue(candidate.LatestAttempt, attempt with { Status = ServiceCollectionStatus.Error, ErrorCode = "assembly_timeout", IsFinal = true }) ||
+            !SamePhysicalValue(candidate.LatestInventoryAttempt, attempt.Kind == ServiceSnapshotKind.Inventory
+                ? candidate.LatestAttempt : current.LatestInventoryAttempt))
             return false;
         if (attempt.Kind != ServiceSnapshotKind.Watch)
             return SamePhysicalValue(current.WatchedServices, candidate.WatchedServices);

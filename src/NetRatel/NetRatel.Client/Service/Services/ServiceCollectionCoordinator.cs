@@ -21,6 +21,7 @@ internal sealed class ServiceCollectionCoordinator(IServiceInventoryCollector co
     private Guid? _lastRefreshRequest;
     private ulong _streamGeneration;
     private ulong _collectionGeneration;
+    private bool _collectingInventory;
 
     public Task? PendingCollection => _collection;
 
@@ -62,8 +63,10 @@ internal sealed class ServiceCollectionCoordinator(IServiceInventoryCollector co
         if (policy.RefreshRequestId is Guid request && request != _lastRefreshRequest)
         {
             _lastRefreshRequest = request;
-            _nextInventoryAt = now > _lastInventoryStartedAt.Add(ClientServicesLimits.MinimumRefreshInterval)
-                ? now : _lastInventoryStartedAt.Add(ClientServicesLimits.MinimumRefreshInterval);
+            // The in-flight inventory already supplies subsequent evidence to an open viewer.
+            if (_collection is null || !_collectingInventory || _collectionGeneration != _streamGeneration)
+                _nextInventoryAt = now > _lastInventoryStartedAt.Add(ClientServicesLimits.MinimumRefreshInterval)
+                    ? now : _lastInventoryStartedAt.Add(ClientServicesLimits.MinimumRefreshInterval);
         }
         return true;
     }
@@ -88,7 +91,8 @@ internal sealed class ServiceCollectionCoordinator(IServiceInventoryCollector co
             _nextWatchAt = now.AddSeconds(activePolicy!.WatchIntervalSeconds * (0.9 + Random.Shared.NextDouble() * 0.2));
         }
         _collectionGeneration = _streamGeneration;
-        _collection = CollectAsync(inventory, activePolicy, _collectionCancellation.Token);
+        _collectingInventory = inventory;
+        _collection = CollectAsync(inventory, activePolicy, _collectionCancellation.Token, streamCancellation);
     }
 
     public bool TryTakeCompleted(out ServiceCollectionResult? result)
@@ -109,7 +113,8 @@ internal sealed class ServiceCollectionCoordinator(IServiceInventoryCollector co
         return true;
     }
 
-    private async Task<ServiceCollectionResult> CollectAsync(bool inventory, ClientServiceWatchPolicyDto? policy, CancellationToken cancellationToken)
+    private async Task<ServiceCollectionResult> CollectAsync(bool inventory, ClientServiceWatchPolicyDto? policy,
+        CancellationToken cancellationToken, CancellationToken streamCancellation)
     {
         var kind = inventory ? ServiceSnapshotKind.Inventory : ServiceSnapshotKind.Watch;
         try
@@ -120,7 +125,9 @@ internal sealed class ServiceCollectionCoordinator(IServiceInventoryCollector co
         }
         catch (OperationCanceledException)
         {
-            return new ServiceCollectionResult(Guid.NewGuid(), kind, ServiceCollectionStatus.Error, timeProvider.GetUtcNow(), [], "collection-cancelled", policy?.Revision ?? 0);
+            var reason = cancellationToken.IsCancellationRequested && !streamCancellation.IsCancellationRequested
+                ? "collection-timeout" : "collection-cancelled";
+            return new ServiceCollectionResult(Guid.NewGuid(), kind, ServiceCollectionStatus.Error, timeProvider.GetUtcNow(), [], reason, policy?.Revision ?? 0);
         }
         catch (Exception)
         {

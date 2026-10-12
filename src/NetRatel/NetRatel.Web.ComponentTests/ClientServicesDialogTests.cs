@@ -36,7 +36,7 @@ public sealed class ClientServicesDialogTests : AsyncBunitContext
         {
             SupportsServices = false,
             LatestAttempt = new(Guid.NewGuid(), ServiceSnapshotKind.Inventory, ServiceCollectionStatus.Partial,
-                1, 2, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, 0, "inventory_limit")
+                1, 2, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, 0, "inventory_limit", IsFinal: true)
         };
         var cut = RenderDialog();
         cut.WaitForAssertion(() =>
@@ -80,8 +80,6 @@ public sealed class ClientServicesDialogTests : AsyncBunitContext
     {
         _api.RefreshResponse = new(status, status == ClientServicesRefreshStatus.Requested ? Guid.NewGuid() : null, DateTimeOffset.UtcNow.AddSeconds(15));
         var cut = RenderDialog();
-        cut.WaitForAssertion(() => cut.Find("[data-testid='services-refresh']").HasAttribute("disabled").Should().BeFalse());
-        cut.Find("[data-testid='services-refresh']").Click();
         cut.WaitForAssertion(() => cut.Find("[data-testid='services-refresh-result']").TextContent.Should().Contain(message));
         _api.RefreshCount.Should().Be(1);
         cut.FindAll("[data-testid='service-row']").Should().HaveCount(3);
@@ -92,7 +90,6 @@ public sealed class ClientServicesDialogTests : AsyncBunitContext
     {
         var cut = RenderDialog();
         cut.WaitForAssertion(() => _live.Subscriptions.Should().Be(1));
-        cut.Find("[data-testid='services-refresh']").Click();
         var newModel = Model() with
         {
             GeneratedAtUtc = DateTimeOffset.UtcNow.AddSeconds(1),
@@ -107,7 +104,7 @@ public sealed class ClientServicesDialogTests : AsyncBunitContext
         {
             cut.FindAll("[data-testid='service-row']").Should().ContainSingle();
             cut.Find("[data-testid='service-row']").TextContent.Should().Contain("new.service");
-            cut.Find("[data-testid='services-refresh-result']").TextContent.Should().Contain("Complete inventory received");
+            cut.Find("[data-testid='services-refresh-result']").TextContent.Should().Contain("Subsequent complete inventory received");
         });
     }
 
@@ -117,7 +114,6 @@ public sealed class ClientServicesDialogTests : AsyncBunitContext
         _api.PendingRefresh = new(TaskCreationOptions.RunContinuationsAsynchronously);
         var cut = RenderDialog();
         cut.WaitForAssertion(() => _live.Subscriptions.Should().Be(1));
-        cut.Find("[data-testid='services-refresh']").Click();
         cut.WaitForAssertion(() => _api.RefreshCount.Should().Be(1));
         cut.Find("[data-testid='services-refresh']").HasAttribute("disabled").Should().BeTrue();
         cut.Find("[data-testid='close-services']").Click();
@@ -139,6 +135,62 @@ public sealed class ClientServicesDialogTests : AsyncBunitContext
             cut.Find("[data-testid='services-refresh']").HasAttribute("disabled").Should().BeTrue();
         });
         _api.RefreshCount.Should().Be(0);
+    }
+
+    [Fact]
+    public void FirstFinishedPartialInventory_DisplaysRowsTimeReasonAndFilters_WithoutClaimingCompleteCache()
+    {
+        var snapshot = Model().LastCompleteInventory! with { Status = ServiceCollectionStatus.Partial, ErrorCode = "systemd-query-partial" };
+        _api.Model = Model(connected: false) with
+        {
+            LastCompleteInventory = null, LastPartialInventory = snapshot,
+            LatestInventoryAttempt = new(snapshot.CollectionId, ServiceSnapshotKind.Inventory, ServiceCollectionStatus.Partial,
+                1, 1, snapshot.ObservedAtUtc, snapshot.ReceivedAtUtc, 0, snapshot.ErrorCode, IsFinal: true),
+            WatchedServices = [], MonitoredServiceNames = []
+        };
+        var cut = RenderDialog();
+        cut.WaitForAssertion(() => cut.FindAll("[data-testid='service-row']").Should().HaveCount(3));
+        var summary = cut.Find("[data-testid='services-summary']");
+        summary.TextContent.Should().Contain("Partial inventory").And.Contain("systemd service properties");
+        summary.QuerySelector("time")!.GetAttribute("datetime").Should().Be(snapshot.ObservedAtUtc.ToString("O"));
+        cut.Markup.Should().NotContain("Last complete inventory is retained");
+        cut.Find("[data-testid='services-filter-stopped']").Click();
+        cut.FindAll("[data-testid='service-row']").Should().ContainSingle();
+        cut.Find("[data-testid='services-search']").Input("disabled");
+        cut.FindAll("[data-testid='service-row']").Should().ContainSingle();
+    }
+
+    [Theory]
+    [InlineData(ServiceCollectionStatus.Partial, "Partial")]
+    [InlineData(ServiceCollectionStatus.Error, "Error")]
+    [InlineData(ServiceCollectionStatus.Unsupported, "Unsupported")]
+    public async Task OpeningRefresh_WaitsThroughWatchAndIntermediateChunks_ThenEndsOnTerminalInventory(ServiceCollectionStatus status, string outcome)
+    {
+        var cut = RenderDialog();
+        cut.WaitForAssertion(() => _api.RefreshCount.Should().Be(1));
+        cut.Find("[data-testid='services-search']").Input("worker");
+        cut.Find("[data-testid='services-filter-running']").Click();
+        cut.Render();
+        _api.RefreshCount.Should().Be(1);
+        var model = _api.Model;
+        var attempt = new ServiceCollectionAttemptDto(Guid.NewGuid(), ServiceSnapshotKind.Inventory, ServiceCollectionStatus.Partial,
+            1, 2, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, 0, "systemd-query-partial");
+        await _live.Events.Writer.WriteAsync(new("Live", model with { Revision = 1, LatestAttempt = attempt with { Kind = ServiceSnapshotKind.Watch, IsFinal = true } }));
+        await _live.Events.Writer.WriteAsync(new("Live", model with { Revision = 2, LatestInventoryAttempt = attempt }));
+        cut.WaitForAssertion(() =>
+        {
+            cut.Find("[data-testid='services-attempt']").TextContent.Should().Contain("In progress");
+            cut.Find("[data-testid='services-refresh-result']").TextContent.Should().Contain("Waiting for a subsequent");
+        });
+        await _live.Events.Writer.WriteAsync(new("Live", model with { Revision = 3, LatestInventoryAttempt = attempt with { Sequence = 3, IsFinal = true, Status = status } }));
+        cut.WaitForAssertion(() =>
+        {
+            cut.Find("[data-testid='services-refresh-result']").TextContent.Should().Contain($"finished: {outcome}");
+            cut.Find("[data-testid='services-refresh']").HasAttribute("disabled").Should().BeFalse();
+            cut.Find("[data-testid='services-summary']").TextContent.Should().Contain("Last complete inventory");
+        });
+        cut.Find("[data-testid='services-refresh']").Click();
+        cut.WaitForAssertion(() => _api.RefreshCount.Should().Be(2));
     }
 
     [Fact]

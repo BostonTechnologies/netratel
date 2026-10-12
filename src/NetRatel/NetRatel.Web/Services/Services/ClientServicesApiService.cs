@@ -10,7 +10,7 @@ public interface IClientServicesApiService
     Task<ClientServicesRefreshResponse> RefreshAsync(int tenantId, Guid agentId, CancellationToken cancellationToken = default);
 }
 
-/// <summary>Reads cached evidence; only an explicit refresh requests client collection.</summary>
+/// <summary>Reads cached evidence; the dialog requests fresh collection through the refresh API.</summary>
 public sealed class ClientServicesApiService(IHttpClientFactory factory) : IClientServicesApiService
 {
     private readonly HttpClient _http = factory.CreateClient("OrchestratorApi");

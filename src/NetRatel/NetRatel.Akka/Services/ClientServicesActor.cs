@@ -157,11 +157,16 @@ public sealed class ClientServicesActor : ReceiveActor
             LastAcceptedSequence = chunk.Sequence,
             Revision = checked(_state.Revision + 1),
             LatestAttempt = new(chunk.CollectionId, chunk.Kind, attemptStatus, chunk.ConnectionEpoch, chunk.Sequence,
-                chunk.ObservedAtUtc, chunk.ReceivedAtUtc, chunk.WatchPolicyRevision, chunk.ErrorCode)
+                chunk.ObservedAtUtc, chunk.ReceivedAtUtc, chunk.WatchPolicyRevision, chunk.ErrorCode, chunk.IsFinal)
         };
+        if (chunk.Kind == ServiceSnapshotKind.Inventory)
+            candidate = candidate with { LatestInventoryAttempt = candidate.LatestAttempt };
         if (chunk.IsFinal && chunk.Status == ServiceCollectionStatus.Complete && chunk.Kind == ServiceSnapshotKind.Inventory)
             candidate = candidate with { LastCompleteInventory = new(chunk.CollectionId, chunk.ConnectionEpoch, chunk.Sequence,
-                chunk.ObservedAtUtc, chunk.ReceivedAtUtc, next.Services.ToArray()) };
+                chunk.ObservedAtUtc, chunk.ReceivedAtUtc, next.Services.ToArray()), LastPartialInventory = null };
+        if (chunk.IsFinal && chunk.Status == ServiceCollectionStatus.Partial && chunk.Kind == ServiceSnapshotKind.Inventory && next.Services.Count > 0)
+            candidate = candidate with { LastPartialInventory = new(chunk.CollectionId, chunk.ConnectionEpoch, chunk.Sequence,
+                chunk.ObservedAtUtc, chunk.ReceivedAtUtc, next.Services.ToArray(), ServiceCollectionStatus.Partial, chunk.ErrorCode) };
         if (chunk.IsFinal && chunk.Kind == ServiceSnapshotKind.Watch)
             candidate = candidate with { WatchedServices = chunk.Status == ServiceCollectionStatus.Complete
                 ? next.Services.ToArray() : UnknownWatchEvidence(next.Services, chunk.ObservedAtUtc) };
@@ -249,10 +254,12 @@ public sealed class ClientServicesActor : ReceiveActor
         var candidate = _state with
         {
             Revision = checked(_state.Revision + 1),
-            LatestAttempt = _state.LatestAttempt with { Status = ServiceCollectionStatus.Error, ErrorCode = "assembly_timeout" },
+            LatestAttempt = _state.LatestAttempt with { Status = ServiceCollectionStatus.Error, ErrorCode = "assembly_timeout", IsFinal = true },
             WatchedServices = _assembly.First.Kind == ServiceSnapshotKind.Watch
                 ? UnknownWatchEvidence([], _timeProvider.GetUtcNow()) : _state.WatchedServices
         };
+        if (_assembly.First.Kind == ServiceSnapshotKind.Inventory)
+            candidate = candidate with { LatestInventoryAttempt = candidate.LatestAttempt };
         var saved = await _store.SaveAsync(candidate, _state.Revision, cancellationToken);
         _state = saved.State;
         ClearAssembly();
@@ -267,6 +274,8 @@ public sealed class ClientServicesActor : ReceiveActor
     {
         LastCompleteInventory = state.LastCompleteInventory is null ? null : state.LastCompleteInventory with
             { Services = state.LastCompleteInventory.Services.ToArray() },
+        LastPartialInventory = state.LastPartialInventory is null ? null : state.LastPartialInventory with
+            { Services = state.LastPartialInventory.Services.ToArray() },
         WatchedServices = state.WatchedServices.ToArray(),
         MonitoredServiceNames = state.MonitoredServiceNames.ToArray()
     };

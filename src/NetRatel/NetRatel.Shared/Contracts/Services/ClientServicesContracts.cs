@@ -67,7 +67,9 @@ public sealed record ClientServicesSnapshotDto(
     ulong Sequence,
     DateTimeOffset ObservedAtUtc,
     DateTimeOffset ReceivedAtUtc,
-    IReadOnlyList<ClientServiceObservation> Services);
+    IReadOnlyList<ClientServiceObservation> Services,
+    ServiceCollectionStatus Status = ServiceCollectionStatus.Complete,
+    string? ErrorCode = null);
 
 public sealed record ServiceCollectionAttemptDto(
     Guid CollectionId,
@@ -78,7 +80,8 @@ public sealed record ServiceCollectionAttemptDto(
     DateTimeOffset ObservedAtUtc,
     DateTimeOffset ReceivedAtUtc,
     ulong WatchPolicyRevision,
-    string? ErrorCode = null);
+    string? ErrorCode = null,
+    bool IsFinal = false);
 
 /// <summary>Server-selected exact names. Expiration stops stale watches; it never runs service control.</summary>
 public sealed record ClientServiceWatchPolicyDto(
@@ -101,7 +104,9 @@ public sealed record ClientServicesReadModelDto(
     bool Connected,
     bool SupportsServices,
     DateTimeOffset GeneratedAtUtc,
-    long Revision = 0);
+    long Revision = 0,
+    ClientServicesSnapshotDto? LastPartialInventory = null,
+    ServiceCollectionAttemptDto? LatestInventoryAttempt = null);
 
 public enum ClientServicesRefreshStatus
 {
