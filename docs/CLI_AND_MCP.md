@@ -193,7 +193,7 @@ the applicable `flow.execute` authority.
 
 ### Folder browsing and mutations
 
-`files-v2 browse` and `stat` return nullable `createdUtc` and
+`files-v2 browse` returns nullable `createdUtc` and
 `lastModifiedUtc` values from the client. Listings inspect immediate entries
 only: they do not recursively scan folder contents or calculate folder sizes.
 An older client or a filesystem without available metadata can return null;
