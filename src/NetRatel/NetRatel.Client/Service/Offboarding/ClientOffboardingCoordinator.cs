@@ -235,6 +235,7 @@ public sealed class ClientOffboardingCoordinator
         var credential = Auth.AgentCredentialStore.DefaultPath();
         OffboardingState.AssertProtectedPath(credential);
         OffboardingState.AssertProtectedPath(update);
+        if (File.Exists(Path.Combine(update, "update.lock"))) OffboardingState.AssertProtectedPath(Path.Combine(update, "update.lock"));
         string image;
         string? unitHash = null, updaterHash = null;
         if (OperatingSystem.IsWindows())
@@ -245,7 +246,7 @@ public sealed class ClientOffboardingCoordinator
             image = service.RootElement.GetProperty("PathName").GetString() ?? string.Empty;
             if (!WindowsRecoveryPolicyAdapter.IsOwnedImage(image, executable) ||
                 service.RootElement.GetProperty("ProcessId").GetInt32() != Environment.ProcessId ||
-                service.RootElement.GetProperty("StartName").GetString() != "LocalSystem") throw new IOException("offboarding_service_not_owned");
+                service.RootElement.GetProperty("StartName").GetString() is not ("LocalSystem" or "NT AUTHORITY\\SYSTEM")) throw new IOException("offboarding_service_not_owned");
         }
         else
         {

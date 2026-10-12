@@ -57,7 +57,7 @@ public static class ClientOffboardingHelper
                     Console.Error.WriteLine("Offboarding completion was not accepted; retrying the persisted result until its deadline.");
                 }
                 catch (RpcException exception) when (exception.StatusCode is StatusCode.Unavailable or StatusCode.DeadlineExceeded or
-                    StatusCode.Internal or StatusCode.ResourceExhausted or StatusCode.Cancelled && !cancellationToken.IsCancellationRequested)
+                    StatusCode.Internal or StatusCode.Unknown or StatusCode.ResourceExhausted or StatusCode.Cancelled && !cancellationToken.IsCancellationRequested)
                 {
                     Console.Error.WriteLine("Offboarding completion delivery is pending; retrying the persisted result.");
                 }

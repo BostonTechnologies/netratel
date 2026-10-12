@@ -154,10 +154,10 @@ internal static class OffboardingPlatformScripts
         } finally { if ($null -ne $runKey) { $runKey.Dispose() } }
         $service = Get-CimInstance Win32_Service -Filter "Name='NetRatel.Client'" -OperationTimeoutSec 10
         if ($null -ne $service) {
-            if ($service.PathName -cne {{Ps(request.ServiceImage)}} -or $service.StartName -ne 'LocalSystem') { throw 'offboarding_service_changed' }
+            if ($service.PathName -cne {{Ps(request.ServiceImage)}} -or $service.StartName -notin @('LocalSystem', 'NT AUTHORITY\SYSTEM')) { throw 'offboarding_service_changed' }
             & $sc config $serviceName start= disabled | Out-Null
             if ($LASTEXITCODE -ne 0) { throw 'offboarding_disable_failed' }
-            Stop-Service -Name $serviceName -Force -ErrorAction Stop
+            Stop-Service -Name $serviceName -ErrorAction Stop
             $stopped = Get-CimInstance Win32_Service -Filter "Name='NetRatel.Client'" -OperationTimeoutSec 10
             if ($stopped.State -ne 'Stopped' -or $stopped.ProcessId -ne 0) { throw 'offboarding_stop_failed' }
             & $sc delete $serviceName | Out-Null
